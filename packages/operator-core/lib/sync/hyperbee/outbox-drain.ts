@@ -32,7 +32,7 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { createConcurrencyGate, type ConcurrencyGate } from '@papercusp/sync';
 import type { BootedHarnessHandle, LocalWriteOp } from './boot';
-import { CDC_CAPTURED_TABLES, outboxRowToLocalWriteOp, UnknownOutboxTableError, type OutboxRow } from './feature-issue-op-keys';
+import { outboxRowToLocalWriteOp, UnknownOutboxTableError, type OutboxRow } from './feature-issue-op-keys';
 import { recordLocalWrite } from './clobber-events';
 import { shouldEncryptOpForRekey } from './hive-epoch-content-ops';
 import { isSessionClosedError } from './own-log-fork-guard';
@@ -73,51 +73,9 @@ export const OUTBOX_PRIORITY_TABLES: ReadonlySet<string> = new Set([
   'coord_thread_posts',
 ]);
 
-/** `OUTBOX_PRIORITY_TABLES` as a plain array — the shape `unnest()`/`= ANY()`
+/** `OUTBOX_PRIORITY_TABLES` as a plain array — the shape `= ANY()`/`!= ALL()`
  *  bind params need. Computed once at module scope (tiny, constant). */
 const OUTBOX_PRIORITY_TABLE_LIST: readonly string[] = Array.from(OUTBOX_PRIORITY_TABLES);
-
-/**
- * EI-22138988923269437 durable fix (priority lane + starvation guard):
- * `drainOutboxOnce`'s old SELECT was a flat `ORDER BY id LIMIT batch` over
- * the WHOLE undrained backlog for this (workspace, harness) — so whichever
- * table's rows happened to have the smallest ids (a bulk backfill, always,
- * since it was enqueued in one shot long ago) filled EVERY single batch,
- * head-of-line-blocking every other table for as long as that backlog took
- * to clear. There was no notion of a table's FAIR SHARE of a pass, let alone
- * of some tables mattering more than others.
- *
- * This computes, for one pass, a per-table_name CAP: each table in
- * `priorityTables` gets a generous cap (the whole `batch` — pending priority
- * rows are normally sparse, so in practice this just means "never capped");
- * every OTHER known table shares the REMAINING capacity equally. The caller
- * runs one bounded `ORDER BY id LIMIT <cap>` sub-scan PER table_name (a
- * LATERAL join — see `drainOutboxOnce`) instead of one flat scan, so a
- * single table can contribute AT MOST its cap to this pass regardless of how
- * large its backlog is — the starvation guard — and the final result orders
- * priority-table candidates first — the priority lane — so they are never
- * displaced by a non-priority table's numerically-older rows.
- *
- * Pure + exported for unit testing without a live database.
- */
-export function computeOutboxDrainCaps(
-  batch: number,
-  allTables: readonly string[] = CDC_CAPTURED_TABLES,
-  priorityTables: ReadonlySet<string> = OUTBOX_PRIORITY_TABLES,
-): { tableNames: string[]; caps: number[]; nonPriorityCap: number } {
-  const nonPriority = allTables.filter((t) => !priorityTables.has(t));
-  // A table with zero backlog costs an essentially-free empty LATERAL probe,
-  // so it is cheap to always list every known table rather than discover
-  // which ones actually have rows pending.
-  const nonPriorityCap = Math.max(1, Math.ceil(batch / Math.max(1, nonPriority.length)));
-  const tableNames: string[] = [];
-  const caps: number[] = [];
-  for (const t of allTables) {
-    tableNames.push(t);
-    caps.push(priorityTables.has(t) ? batch : nonPriorityCap);
-  }
-  return { tableNames, caps, nonPriorityCap };
-}
 
 /** Unmapped outbox table_names already logged (dedupe the forward-compat skip
  *  warning so an undrained unknown row doesn't spam the log every drain pass). */
@@ -681,34 +639,80 @@ export async function drainOutboxOnce(
     }
   }
 
+  // EI-22138988923269437 (priority lane): two independently-bounded scans —
+  // `priority` (the small OUTBOX_PRIORITY_TABLES set) and `rest` (every other
+  // table, unchanged flat FIFO, INCLUDING a forward-compat table_name this
+  // build's CDC_CAPTURED_TABLES registry doesn't know about yet — same
+  // UnknownOutboxTableError skip-with-log path as before) — unioned, then
+  // ORDER BY priority-flag DESC, id ASC LIMIT batch. Because priority rows are
+  // fetched by their OWN query (never competing with `rest`'s id ordering to
+  // even be CONSIDERED), they are included in the final LIMIT regardless of
+  // how old a bulk backfill sitting in `rest` is — that alone fixes the filed
+  // defect (a bulk backfill head-of-line-blocking coordination traffic).
+  //
+  // Deliberately NOT per-non-priority-table-fair: an earlier version of this
+  // fix additionally capped EVERY registered CDC table to an equal share of
+  // `batch` (dividing by the full static table count, ~20), which regressed
+  // ordinary single-table throughput ~20x (caught by the pre-existing
+  // "respects the batch limit" test: batch=2 against one busy table now drained
+  // only 1/pass). That broader non-priority-vs-non-priority fairness was never
+  // part of the filed defect — only coordination-vs-backfill was — so it was
+  // removed rather than tuned; `rest` keeps the ORIGINAL flat semantics.
+  //
+  // `priority`'s own `LIMIT batch` needs mig 1095's
+  // (workspace_id, harness_slug, table_name, drained_at, id) index to stay a
+  // cheap per-table-name-scoped range scan — without it, filtering to 4
+  // table_names while ordering by the GLOBAL id (ascending) would degrade to
+  // an O(backlog) scan past every smaller-id non-priority row first (the
+  // exact cost this fix exists to avoid).
   const rows = await logIfStageStalls(
     scope,
     'select-undrained-batch',
     pg<OutboxDbRow[]>`
-    SELECT id, table_name, op, key, row, ts,
-           -- D-001: read op_hlc RESILIENTLY via to_jsonb so an outbox provisioned
-           -- before migration 314 (an older boot snapshot / a hand-rolled test rig)
-           -- degrades to NULL (stampOpHlc fallback) instead of the drain crashing
-           -- on a missing op_hlc column. Production (314 applied) returns the value.
-           (to_jsonb(substrate_outbox.*) ->> 'op_hlc') AS op_hlc
-      FROM harness_shared.substrate_outbox
-     WHERE workspace_id = ${handle.workspaceId}
-       AND harness_slug = ${handle.harnessSlug}
-       AND drained_at IS NULL
-       -- mig 645 (WI-3896 follow-up): a PERSISTED-quarantined poison row is
-       -- excluded at the SQL level too — not just the post-fetch
-       -- opts.quarantinedIds check below — so it stops occupying a batch
-       -- slot on every single pass forever (the live incident: a growing
-       -- engineer_issues backlog for papercusp where a handful of ancient
-       -- quarantined rows sat at the head of ORDER BY id and were
-       -- re-fetched-then-skipped on every pass, wasting throughput that real
-       -- candidates behind them needed). Read RESILIENTLY via to_jsonb (same
-       -- pattern as op_hlc above) so an outbox provisioned before migration 645
-       -- degrades to "column absent -> NULL -> not excluded" instead of the
-       -- drain crashing on a missing quarantined_at column.
-       AND (to_jsonb(substrate_outbox.*) ->> 'quarantined_at') IS NULL
-     ORDER BY id
-     LIMIT ${batch}`,
+    WITH priority AS (
+      SELECT id, table_name, op, key, row, ts,
+             -- D-001: read op_hlc RESILIENTLY via to_jsonb so an outbox
+             -- provisioned before migration 314 degrades to NULL
+             -- (stampOpHlc fallback) instead of crashing.
+             (to_jsonb(o.*) ->> 'op_hlc') AS op_hlc
+        FROM harness_shared.substrate_outbox o
+       WHERE o.workspace_id = ${handle.workspaceId}
+         AND o.harness_slug = ${handle.harnessSlug}
+         AND o.table_name = ANY(${OUTBOX_PRIORITY_TABLE_LIST}::text[])
+         AND o.drained_at IS NULL
+         -- mig 645 (WI-3896 follow-up): a PERSISTED-quarantined poison row is
+         -- excluded at the SQL level too, read RESILIENTLY via to_jsonb (same
+         -- pattern as op_hlc above) so a pre-645 outbox degrades to "column
+         -- absent -> NULL -> not excluded" instead of crashing.
+         AND (to_jsonb(o.*) ->> 'quarantined_at') IS NULL
+       ORDER BY o.id
+       LIMIT ${batch}
+    ),
+    rest AS (
+      SELECT id, table_name, op, key, row, ts,
+             (to_jsonb(o.*) ->> 'op_hlc') AS op_hlc
+        FROM harness_shared.substrate_outbox o
+       WHERE o.workspace_id = ${handle.workspaceId}
+         AND o.harness_slug = ${handle.harnessSlug}
+         AND o.table_name != ALL(${OUTBOX_PRIORITY_TABLE_LIST}::text[])
+         AND o.drained_at IS NULL
+         AND (to_jsonb(o.*) ->> 'quarantined_at') IS NULL
+       ORDER BY o.id
+       LIMIT ${batch}
+    ),
+    -- Postgres forbids an arbitrary expression in the ORDER BY of a bare
+    -- UNION/UNION ALL (only output column names/ordinals are allowed there —
+    -- "invalid UNION/INTERSECT/EXCEPT ORDER BY clause"). Wrap the union in its
+    -- own CTE so the priority-lane ORDER BY below applies to a plain SELECT
+    -- over it, where a computed expression is fine.
+    combined AS (
+      SELECT * FROM priority
+      UNION ALL
+      SELECT * FROM rest
+    )
+    SELECT * FROM combined
+    ORDER BY (table_name = ANY(${OUTBOX_PRIORITY_TABLE_LIST}::text[])) DESC, id
+    LIMIT ${batch}`,
   );
 
   const rowTimeoutMs = opts.rowTimeoutMs ?? ROW_STAGE_TIMEOUT_MS;

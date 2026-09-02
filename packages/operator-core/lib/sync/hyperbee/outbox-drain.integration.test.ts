@@ -272,6 +272,73 @@ describe('outbox-drain (Stage 3, real PG)', () => {
     expect(await drainOutboxOnce(handle, db.sql, { batch: 2 })).toBe(0);
   });
 
+  // ── EI-22138988923269437: priority lane + starvation guard ─────────────────
+  // Regression test for the measured incident: a bulk backfill of a
+  // non-priority table (enqueued FIRST, so its ids are numerically smallest)
+  // used to head-of-line-block coord_event_log rows enqueued AFTER it, because
+  // the old drain was one flat `ORDER BY id LIMIT batch` over the whole
+  // backlog. This must fail against that old query (it would drain 0 coord
+  // rows here) and pass against the per-table-capped priority-lane query.
+  it('PRIORITY LANE: coord_event_log rows drain in the SAME pass as an older bulk backlog, despite being numerically the newest ids (old flat FIFO would exclude them entirely)', async () => {
+    // The bulk backfill: enqueued first, so these ids are the smallest in the
+    // table. 20 rows — comfortably more than the drain batch below, so under
+    // the OLD flat query they alone would fill every slot of the first pass.
+    for (let i = 0; i < 20; i++) {
+      await seedOutbox(db.sql, {
+        table_name: 'harness_features_consolidated',
+        op: 'put',
+        key: `BULK-${i}`,
+        row: featureRow(`BULK-${i}`),
+      });
+    }
+    // Coordination traffic enqueued AFTER the backfill — numerically the
+    // newest ids in the table, so a flat `ORDER BY id LIMIT batch` would never
+    // reach them until the entire 20-row backlog drained first.
+    const coordIds: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      coordIds.push(
+        await seedOutbox(db.sql, {
+          table_name: 'coord_event_log',
+          op: 'put',
+          key: `msg-${i}`,
+          row: { workspace_id: WS, harness_slug: SLUG, msg_id: `msg-${i}`, surface: 'test', body: {}, ts: Date.now() },
+        }),
+      );
+    }
+
+    // A batch far smaller than the 20-row backlog — the old flat query would
+    // drain exactly 5 backlog rows and ZERO coord rows in this one pass.
+    const { handle, appends } = makeFakeHandle();
+    const drainedThisPass = await drainOutboxOnce(handle, db.sql, { batch: 5 });
+
+    // The starvation guard: the backlog table did not consume the whole
+    // batch — it shares capacity with every other known table, so this one
+    // pass drained fewer rows than the batch limit.
+    expect(drainedThisPass).toBeLessThan(5);
+    expect(drainedThisPass).toBeGreaterThan(0);
+
+    // The priority lane: every coord_event_log row drained in THIS SAME
+    // pass, despite being the numerically newest ids in the table.
+    const coordRows = await db.sql<{ id: number; drained_at: number | null }[]>`
+      SELECT id, drained_at FROM harness_shared.substrate_outbox
+       WHERE table_name = 'coord_event_log' ORDER BY id`;
+    expect(coordRows).toHaveLength(3);
+    expect(coordRows.every((r) => r.drained_at !== null)).toBe(true);
+    expect(appends.filter((a) => a.table === 'coord-messages').map((a) => a.hbKey).sort()).toEqual([
+      'msg-0',
+      'msg-1',
+      'msg-2',
+    ]);
+
+    // Sanity: with batch=5 and a 23-row total backlog, at least one bulk row
+    // is still undrained after this single pass (the fix doesn't just drain
+    // everything at once).
+    const [{ undrainedBulk }] = await db.sql<{ undrainedBulk: number }[]>`
+      SELECT count(*)::int AS "undrainedBulk" FROM harness_shared.substrate_outbox
+       WHERE table_name = 'harness_features_consolidated' AND drained_at IS NULL`;
+    expect(undrainedBulk).toBeGreaterThan(0);
+  });
+
   it('issue put maps to a valid HarnessIssueRow value (found_at → epoch ms)', async () => {
     await seedOutbox(db.sql, { table_name: 'harness_issues_consolidated', op: 'put', key: 'I-1', row: issueRow('I-1') });
     const { handle, appends } = makeFakeHandle();
