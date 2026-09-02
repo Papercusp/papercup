@@ -144,10 +144,22 @@ vi.mock('./issues-engineer', () => ({
 import { createWorkItem } from './work-items';
 import createTool from './agent-tools/work_items/create';
 
-// The memory-injection leg deliberately reaches the HNSW capability probe in
-// this suite's test environment. A missing probe seam is an expected
-// fail-open diagnostic; capture only that warning so unrelated warnings still
-// fail the suite under vitest-fail-on-console.
+// The memory-injection leg deliberately reaches the HNSW capability probe AND the
+// mem0 credential probe in this suite's test environment. A missing probe seam or an
+// absent credential is an expected fail-open diagnostic; capture only those so
+// unrelated warnings still fail the suite under vitest-fail-on-console.
+//
+// The mem0 prefixes were added after this file held the green gate red (#97, candidate
+// a75fd97b, and still failing at tip 429ec758): the gate runner has no Anthropic/OpenAI
+// key in operator-credentials or env, so mem0 fail-opens with
+//   "[mem0-session] Claude session token present but auth-rejected by the probe …"
+//   "[mem0] no Claude session and no Anthropic or OpenAI API key …"
+// while a developer box WITH credentials emits neither — which is exactly why it passed
+// locally 6/6 every time and failed CI on clean (worktreeDirty:false) rows. The absence
+// of a credential is a property of the RUNNER, not a defect this suite should police.
+// The list ALLOWS these warnings, it does not require them, so both environments pass.
+const EXPECTED_WARN_PREFIXES = ['[hnsw-iterative-scan]', '[mem0]', '[mem0-session]'] as const;
+
 let warn: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -159,7 +171,10 @@ beforeEach(() => {
 afterEach(() => {
   const unexpected = warn.mock.calls.filter((call: unknown[]) => {
     const message = call[0];
-    return typeof message !== 'string' || !message.startsWith('[hnsw-iterative-scan]');
+    return (
+      typeof message !== 'string' ||
+      !EXPECTED_WARN_PREFIXES.some((prefix) => message.startsWith(prefix))
+    );
   });
   expect(unexpected).toEqual([]);
   vi.restoreAllMocks();
