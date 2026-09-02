@@ -313,7 +313,8 @@ async function fileFindings(summary: RunSummary, tierLabel: string): Promise<voi
         `; PSI some avg60 mem=${psiMem !== null && psiMem !== undefined ? `${psiMem.toFixed(1)}%` : 'n/a'} ` +
         `cpu=${psiCpu !== null && psiCpu !== undefined ? `${psiCpu.toFixed(1)}%` : 'n/a'}) — skipping auto-filing of ` +
         `${summary.sloViolations.length} SLO violation(s) / ` +
-        `${summary.regressions.length} regression(s)${formatCoverage(summary)} ` +
+        `${summary.regressions.length} regression(s) / ` +
+        `${summary.scenarioFailures.length} scenario crash(es)${formatCoverage(summary)} ` +
         `as unreliable under contention (EI-8843); see ${summary.reportPath} for the raw numbers.`,
     );
     return;
@@ -329,7 +330,18 @@ async function fileFindings(summary: RunSummary, tierLabel: string): Promise<voi
   const regressionKeys = summary.regressions.map(
     (r) => `p2p-perf-regression:${r.scenario}:${r.paramsKey}:${r.metric}`,
   );
-  const alreadyOpen = await openIssueExistsForKeys([...sloKeys, ...convergenceKeys, ...regressionKeys]);
+  // EI-22042363019140442: a proc-mesh scenario crash (e.g. MeshFormationError's
+  // "writer never became ready") gets the SAME exact-key dedup as the other three
+  // finding types below (EI-7254 pattern) — the failure string embeds no live
+  // numbers (scenario id + static error message), so it is already a stable key
+  // across runs without any further normalization.
+  const scenarioCrashKeys = summary.scenarioFailures.map((f) => `p2p-perf-crash:${f}`);
+  const alreadyOpen = await openIssueExistsForKeys([
+    ...sloKeys,
+    ...convergenceKeys,
+    ...regressionKeys,
+    ...scenarioCrashKeys,
+  ]);
 
   for (let idx = 0; idx < convergenceViolations.length; idx++) {
     const v = convergenceViolations[idx]!;
@@ -430,6 +442,34 @@ async function fileFindings(summary: RunSummary, tierLabel: string): Promise<voi
       /* dedup-decline / capture failure never breaks the routine */
     });
   }
+  for (let idx = 0; idx < summary.scenarioFailures.length; idx++) {
+    const f = summary.scenarioFailures[idx]!;
+    const watchdogKey = scenarioCrashKeys[idx]!;
+    if (alreadyOpen.has(watchdogKey)) continue; // EI-22042363019140442: a standing crash already has an open EI
+    await captureImprovement({
+      kind: 'bug',
+      severity: 'major',
+      title: `p2p-perf scenario crashed in ${tierLabel} run: ${f.slice(0, 140)}`,
+      body:
+        `${tierLabel} run ${summary.runId} (profile ${summary.profile}): scenario failure.\n${f}\n` +
+        `artifacts: ${summary.outDir}\nreport: ${summary.reportPath}\n` +
+        `(auto-filed by system:p2p-perf — p2p-performance-suite-2026-06-07 P-014)`,
+      source: 'su',
+      sourceRole: 'system',
+      dedupScope: 'open',
+      createdBy: 'system:p2p-perf',
+      // EI-22042363019140442: same fix as the SLO/convergence/regression captures
+      // above (EI-7254 pattern) — without a stable watchdogKey a STANDING crash
+      // (the observed case to date: MeshFormationError's "proc mesh: writer never
+      // became ready" / "reader N never admitted the writer") re-files as a fresh
+      // near-duplicate every night instead of deduping against the still-open
+      // original. (openIssueExistsForKeys() above is the authoritative guard;
+      // this stays as defense-in-depth against capture-core's fuzzy dedup.)
+      watchdogKey,
+    }).catch(() => {
+      /* dedup-decline / capture failure never breaks the routine */
+    });
+  }
 }
 
 /** Exported for the watchdogKey-stability unit test (EI-3909). */
@@ -520,19 +560,12 @@ async function runTier(ctx: SystemActionCtx, tier: '--tier1' | '--tier2', timeou
         `${summary.regressions.length} regressions${formatCoverage(summary)}, ` +
         `${summary.improvements} improvements (advisory — D-005). Report: ${summary.reportPath}`,
     );
+    // EI-22042363019140442: scenario-crash filing moved INTO fileFindings() so it
+    // shares the same host-oversubscription gate (EI-8843) and watchdogKey dedup
+    // (EI-7254 pattern) as the other three finding types — it used to be a separate
+    // ungated loop here with no watchdogKey, which re-filed a standing crash as a
+    // fresh near-duplicate every night.
     await fileFindings(summary, label);
-    for (const f of summary.scenarioFailures) {
-      await captureImprovement({
-        kind: 'bug',
-        severity: 'major',
-        title: `p2p-perf scenario crashed in ${label} run: ${f.slice(0, 140)}`,
-        body: `Run ${summary.runId}: scenario failure.\n${f}\nartifacts: ${summary.outDir}\n(auto-filed by system:p2p-perf — P-014)`,
-        source: 'su',
-        sourceRole: 'system',
-        dedupScope: 'open',
-        createdBy: 'system:p2p-perf',
-      }).catch(() => {});
-    }
     void ctx;
   } finally {
     releasePerfLock(tier);

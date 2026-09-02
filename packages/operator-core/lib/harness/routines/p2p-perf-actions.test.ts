@@ -220,6 +220,39 @@ describe('fileFindings watchdogKey stability (EI-3909/EI-5846/EI-5829/EI-6585)',
     const keys = captureImprovementMock.mock.calls.map((c) => c[0].watchdogKey);
     expect(new Set(keys).size).toBe(2);
   });
+
+  it('stamps a STABLE watchdogKey for a scenario crash — same failure string, two "nights", same key (EI-22042363019140442)', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+    const failure = 'replication.sustained: proc mesh: writer never became ready';
+
+    await fileFindings(summaryWith({ scenarioFailures: [failure] }), 'nightly Tier-1');
+    await fileFindings(summaryWith({ scenarioFailures: [failure] }), 'nightly Tier-1');
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(2);
+    const firstKey = captureImprovementMock.mock.calls[0]![0].watchdogKey;
+    const secondKey = captureImprovementMock.mock.calls[1]![0].watchdogKey;
+    expect(firstKey).toBe(`p2p-perf-crash:${failure}`);
+    expect(firstKey).toBe(secondKey);
+    expect(captureImprovementMock.mock.calls[0]![0].kind).toBe('bug');
+  });
+
+  it('gives a DIFFERENT watchdogKey to two DIFFERENT scenario crashes in the same run', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+
+    await fileFindings(
+      summaryWith({
+        scenarioFailures: [
+          'replication.sustained: proc mesh: writer never became ready',
+          'churn.cold-join: proc mesh: reader 3 never admitted the writer',
+        ],
+      }),
+      'nightly Tier-1',
+    );
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(2);
+    const keys = captureImprovementMock.mock.calls.map((c) => c[0].watchdogKey);
+    expect(new Set(keys).size).toBe(2);
+  });
 });
 
 describe('fileFindings exact watchdogKey pre-filter (EI-7254)', () => {
@@ -325,6 +358,33 @@ describe('fileFindings exact watchdogKey pre-filter (EI-7254)', () => {
     expect(captureImprovementMock).toHaveBeenCalledTimes(1);
     expect(captureImprovementMock.mock.calls[0]![0].kind).toBe('bug');
   });
+
+  it('SKIPS a scenario crash when an OPEN issue already carries its exact watchdogKey (EI-22042363019140442, EI-7254 pattern)', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+    const failure = 'replication.sustained: proc mesh: writer never became ready';
+    const key = `p2p-perf-crash:${failure}`;
+    findIssuesByWatchdogKeysMock.mockResolvedValue([
+      { id: 'EI-22042363019140442', state: 'open', payload: { watchdogKey: key }, updatedAt: new Date().toISOString() },
+    ]);
+
+    await fileFindings(summaryWith({ scenarioFailures: [failure] }), 'nightly Tier-1');
+
+    expect(findIssuesByWatchdogKeysMock).toHaveBeenCalledWith([key]);
+    expect(captureImprovementMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT skip a scenario crash when the existing issue with the same key is already RESOLVED', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+    const failure = 'churn.cold-join: proc mesh: reader 3 never admitted the writer';
+    const key = `p2p-perf-crash:${failure}`;
+    findIssuesByWatchdogKeysMock.mockResolvedValue([
+      { id: 'EI-1', state: 'resolved', payload: { watchdogKey: key }, updatedAt: new Date().toISOString() },
+    ]);
+
+    await fileFindings(summaryWith({ scenarioFailures: [failure] }), 'nightly Tier-1');
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('fileFindings host-contention gate (EI-8843)', () => {
@@ -394,5 +454,37 @@ describe('fileFindings host-contention gate (EI-8843)', () => {
     );
 
     expect(captureImprovementMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('EI-22042363019140442: also skips scenario-crash filing when the run sampled an oversubscribed host — this used to be a SEPARATE ungated loop in runTier() that ignored this gate entirely', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+
+    await fileFindings(
+      summaryWith({
+        scenarioFailures: ['replication.sustained: proc mesh: writer never became ready'],
+        hostLoad: { loadavg1m: 150, cpus: 128, ratio1m: 1.17, oversubscribed: true },
+      }),
+      'nightly Tier-1',
+    );
+
+    expect(captureImprovementMock).not.toHaveBeenCalled();
+    expect(findIssuesByWatchdogKeysMock).not.toHaveBeenCalled();
+  });
+
+  it('files a scenario crash normally when hostLoad is present but NOT oversubscribed', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+
+    await fileFindings(
+      summaryWith({
+        scenarioFailures: ['replication.sustained: proc mesh: writer never became ready'],
+        hostLoad: { loadavg1m: 20, cpus: 128, ratio1m: 0.16, oversubscribed: false },
+      }),
+      'nightly Tier-1',
+    );
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(1);
+    expect(captureImprovementMock.mock.calls[0]![0].watchdogKey).toBe(
+      'p2p-perf-crash:replication.sustained: proc mesh: writer never became ready',
+    );
   });
 });
