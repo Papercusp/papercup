@@ -1439,6 +1439,13 @@ export function checkpointVerdictSiblingKeys(pipeline: string): string[] {
     `release:green:${pipeline}`,
     "green-checkpoint:red",
     `green-checkpoint:red:${pipeline}`,
+    // EI-20689157831228179: the held outcome is a fourth mutually-exclusive terminal
+    // verdict for this candidate — a later green/red/inconclusive for a DIFFERENT
+    // candidate must retire a stale pending "held" wait exactly like it retires a
+    // stale pending green/red wait, and a held emit must retire any stale pending
+    // green/red/inconclusive wait in the same call.
+    "green-checkpoint:held",
+    `green-checkpoint:held:${pipeline}`,
   ];
 }
 
@@ -1482,6 +1489,49 @@ export async function emitInconclusiveCheckpointVerdict(
   });
   await emit({
     key: `green-checkpoint:inconclusive:${pipeline}`,
+    summary,
+    payload,
+    source: "green-checkpoint",
+    cancelSiblingKeysFor,
+  });
+}
+
+/**
+ * EI-20689157831228179: emit the HELD verdict pair — the suite passed
+ * (`result.green === true`) but a post-suite gate withheld promotion
+ * (`result.advanced === false`, `result.reason` names which gate: e.g.
+ * `desktop-perf-held`, `perf-held`, `delta-held`, `cupboard-hygiene-held`). Mirrors
+ * `emitInconclusiveCheckpointVerdict`'s shape exactly (global + pipeline-scoped keys,
+ * shared sibling-cancellation) so a `checkpoint:await` caller wakes on this outcome
+ * instead of sleeping to its full timeout with `eventCount:0` on the single most
+ * actionable result the gate can produce: the fix worked, only promotion is blocked.
+ */
+export async function emitHeldCheckpointVerdict(
+  result: CheckpointResult,
+  pipeline: string,
+  emit: (opts: EmitAwaitedEventOpts) => Promise<unknown>,
+): Promise<void> {
+  const summary = `${pipelineTag(pipeline)} green-checkpoint: ${result.candidate.slice(0, 8)} PASSED but HELD (${result.reason}) — promotion withheld${result.summary ? `: ${result.summary}` : ""}`;
+  const payload = {
+    sha: result.candidate,
+    from: result.from,
+    pipeline,
+    candidateSource: result.candidateSource ?? "tip",
+    ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}),
+    reason: result.reason,
+    summary: result.summary ?? null,
+    runId: result.runId ?? null,
+  };
+  const cancelSiblingKeysFor = checkpointVerdictSiblingKeys(pipeline);
+  await emit({
+    key: "green-checkpoint:held",
+    summary,
+    payload,
+    source: "green-checkpoint",
+    cancelSiblingKeysFor,
+  });
+  await emit({
+    key: `green-checkpoint:held:${pipeline}`,
     summary,
     payload,
     source: "green-checkpoint",

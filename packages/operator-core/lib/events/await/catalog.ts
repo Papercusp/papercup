@@ -354,6 +354,36 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     // not a second claim on this one.
     payloadFiltered: true,
   },
+  {
+    // EI-20689157831228179: the FOURTH terminal outcome — the suite passed
+    // (`CheckpointResult.green === true`) but a post-suite gate (desktop-perf, perf,
+    // delta, cupboard-hygiene) deliberately withheld promotion (`advanced: false`,
+    // `reason: '<gate>-held'`). Before this existed, that outcome fired NEITHER
+    // `checkpoint` (which only dispatches on an actual advance) NOR `checkpoint-red`
+    // (green is true, not false) NOR `checkpoint-inconclusive` (`green` is `true`, not
+    // `null` — this run absolutely rendered a verdict). A `checkpoint:await` caller slept
+    // to its full deadline on the single MOST actionable outcome there is: the code fix
+    // worked, only promotion is blocked. Measured live 2026-08-17 on oddsmith candidate
+    // 7c6e395f: three armed awaits (green/red/inconclusive), zero fires, eventCount:0.
+    family: 'checkpoint-held',
+    keyTemplate: 'green-checkpoint:held:<pipeline>',
+    params: [
+      {
+        name: 'pipeline',
+        required: false,
+        describe:
+          "the pipeline's repo basename (e.g. 'papercusp'); omit to wake on ANY pipeline's held tick (global key)",
+      },
+    ],
+    describe:
+      'The green-checkpoint PASSED but promotion is HELD by a post-suite gate (payload.reason names which, e.g. desktop-perf-held/perf-held/delta-held/cupboard-hygiene-held; payload.summary explains it) — the suite is green, only promotion is blocked.',
+    emitter: 'green-checkpoint (apps/operator/lib/release/green-checkpoint.ts)',
+    exists: true,
+    // Same convention as checkpoint-red/checkpoint-inconclusive: the green family owns
+    // the `checkpoint:await` verb; this outcome is awaited by key (checkpoint:await
+    // arms it alongside the other three by default — see events/sugar.ts).
+    payloadFiltered: true,
+  },
   // ── Locks / plan runs ─────────────────────────────────────────────────────
   {
     family: 'lock',
