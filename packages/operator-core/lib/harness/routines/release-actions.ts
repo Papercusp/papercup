@@ -31,6 +31,7 @@ import { recordGateFire } from '../../release/gate-fire-ledger';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../../release/gate-verdict-target';
 import { pipelineName, pipelineTag } from '../../release/pipeline-name';
+import type { FreezeAndConvergeDisposition } from '../../release/freeze-disposition';
 import { releaseCheckpointConfig, readQualificationAdmission } from '../../release-checkpoint-config';
 import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '../../release/green-checkpoint-schedule';
 import {
@@ -4413,6 +4414,58 @@ export async function writeFrozenCandidateRepairQueue(
   // simply leaves the hook silent (today's behaviour).
   const { projectFrozenRepairMarker } = await import('../../release/frozen-repair-edit-marker');
   projectFrozenRepairMarker(queue);
+}
+
+/**
+ * WI-2141736 P-004: record WHAT the gate just did with freeze-and-converge, and WHY, where a
+ * reader can query it — `gate_health.freezeAndConverge`.
+ *
+ * Deliberately a SEPARATE writer from `writeFrozenCandidateRepairQueue` above, unlike the
+ * `convergence` projection that shares its statement. The two dispositions that matter most
+ * are exactly the ones that write NO queue: a retire (which clears the row) and a
+ * flag-suppressed red (which never creates one). A projection riding the queue write is
+ * silent for both — which is how 20 retirements and 0 resumes in one day left no trace
+ * outside the per-run logs.
+ *
+ * SHALLOW merge (`|| $3`), never a replace: the red streak, failing-test list and
+ * `observedCandidate` are written by other paths at other times, and a replace here would
+ * clobber whichever a concurrent reader depends on. `jsonb_set(..., true)` creates
+ * `gate_health` when the row has none.
+ *
+ * Best-effort and non-throwing by construction: observability must never be able to fail a
+ * gate tick. A write that does not land leaves the previous record standing, and its
+ * `observedAtMs` is what tells a reader the record has gone stale.
+ */
+export async function writeFreezeAndConvergeDisposition(
+  target: GateVerdictTarget,
+  disposition: FreezeAndConvergeDisposition,
+): Promise<void> {
+  try {
+    const { buildFreezeAndConvergeGateHealth } = await import(
+      '../../release/freeze-disposition'
+    );
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const fragment = buildFreezeAndConvergeGateHealth(disposition, Date.now());
+    await sql.unsafe(
+      `UPDATE harness_shared.routines
+          SET metadata = jsonb_set(
+                COALESCE(metadata, '{}'::jsonb),
+                '{gate_health}',
+                COALESCE(metadata->'gate_health', '{}'::jsonb) || $3::jsonb,
+                true
+              ),
+              updated_at = now()
+        WHERE workspace_id = $1
+          AND install_slug = $2
+          AND target_role = 'system:green-checkpoint'`,
+      [target.workspaceId, target.installSlug, JSON.stringify(fragment)],
+    );
+  } catch (e) {
+    console.warn(
+      `${orchestratorStdoutTag()} freeze-disposition write failed (non-fatal): ${e instanceof Error ? e.message : e}`,
+    );
+  }
 }
 
 /**
