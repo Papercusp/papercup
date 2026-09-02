@@ -1128,10 +1128,15 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     // ...but no longer invisible.
     const seen = rows().filter((r) => r.kind === 'inject-owner-indeterminate');
     expect(seen).toHaveLength(1);
+    // `sockOwnerId` is the FILENAME-DERIVED witness, verbatim — the whole `.sock` stem,
+    // not an owner id parsed out of it. That is the point of the field: it records what
+    // the cheap witness actually said, suffix and all, so a census row shows the real
+    // socket rather than a cleaned-up guess at who it belonged to. Derived here through
+    // the same helper the detector uses, so the rule is stated in exactly one place.
     expect(seen[0]).toMatchObject({
       mode: 'turn',
       envelopeOwnerId: OWNER_A,
-      sockOwnerId: sanitizeKey(OWNER_B),
+      sockOwnerId: sockOwnerIdFromPath(orphan),
     });
   });
 
