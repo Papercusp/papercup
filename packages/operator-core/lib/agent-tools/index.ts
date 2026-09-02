@@ -42,6 +42,12 @@ import './context-gauge-wiring';
 // rejection indistinguishable from a typo. See server-vintage-wiring.ts.
 import './server-vintage-wiring';
 
+// Wire tooldef's ambient-dispatch-arg-keys seam to `PROJECTION_ARG` —
+// EI-22174225494240206: without this, an `Unrecognized key` hint's "accepts ONLY"
+// list omits genuinely-accepted dispatch-level args (`projection`) and tells the
+// caller, in imperative terms, to re-send without them. See ambient-args-wiring.ts.
+import './ambient-args-wiring';
+
 // unified-agent-state-plane-2026-07-27: install the built-in CELL registrations.
 // Until this existed, registerBuiltinCells() was called only by tests, so every
 // running operator served an EMPTY cell registry — state:read returned a cheerful

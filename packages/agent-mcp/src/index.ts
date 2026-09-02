@@ -193,6 +193,16 @@ export {
   formatVintageAge,
 } from '@papercusp/tooldef';
 export type { ServerVintage } from '@papercusp/tooldef';
+// Host "ambient dispatch arg keys" seam (EI-22174225494240206) — the `Unrecognized
+// key` invalid_args hint otherwise omits genuinely-accepted dispatch-level args
+// (e.g. `projection`) from its "accepts ONLY" list because they never reach the
+// tool's own schema. The operator wires it to result-projection's `PROJECTION_ARG`
+// via ambient-args-wiring.ts, same shape as server-vintage-wiring.ts.
+export {
+  setAmbientArgKeysResolver,
+  resetAmbientArgKeysResolver,
+  readAmbientArgKeys,
+} from '@papercusp/tooldef';
 // Tool-result SEMANTIC-delta flag seam (agent-tool-delta-protocol-2026-06-22, the
 // flag-bite): tooldef gates the `mode:'delta'` upgrade behind this resolver, the
 // host wires it to FLAGS.TOOL_DELTA_PROTOCOL (see operator-core's
