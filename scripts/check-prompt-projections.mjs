@@ -32,10 +32,14 @@ export const CANONICAL_PROMPT_PATH =
  *
  * The desktop primary sidecar under src-tauri/sidecar is intentionally not
  * required here: it is ignored build output and is absent in clean checkpoint
- * trees. The desktop staging projection is tracked and is the durable artifact.
+ * trees. The same now holds for apps/operator/dist-sidecar/ — it was untracked
+ * and gitignored on 2026-09-02 (WI-2141120), so its su.md projection exists
+ * only in a tree that has run the bundle build and is absent in the
+ * green-checkpoint checkout; requiring it there reads as 'missing-projection'
+ * on every candidate. The desktop staging projection is tracked and is the
+ * durable artifact.
  */
 export const GENERATED_PROMPT_PATHS = Object.freeze([
-  'apps/operator/dist-sidecar/blueprints/base/prompts/su.md',
   'papercusp-desktop/src-tauri/env-sidecars/staging/harness/blueprints/base/prompts/su.md',
 ]);
 
