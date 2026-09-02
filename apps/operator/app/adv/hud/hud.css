@@ -2083,6 +2083,23 @@ button.hud__pkgcard:focus-visible {
   white-space: nowrap;
 }
 
+/* Provenance marker (EI-21605510614702802): this reading was typed by an agent,
+ * not measured by the platform. Same text-plus-class vocabulary as the breach
+ * chip above, and deliberately QUIETER than it — a hand-set value is the normal
+ * case for a domain metric, not an alarm. It is a caveat on how much the number
+ * is worth, so it recedes rather than competing with the reading it qualifies.
+ * No border: the breach chip's box is what makes that one shout, and reusing it
+ * here would flatten the difference between "past your limit" and "unverified". */
+.hud-goal__bar-handset {
+  margin-left: 6px;
+  font-size: 9px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  white-space: nowrap;
+  opacity: 0.65;
+}
+
 .hud-goal__ceiling {
   display: flex;
   align-items: baseline;

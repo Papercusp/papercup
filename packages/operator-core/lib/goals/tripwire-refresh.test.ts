@@ -271,6 +271,39 @@ describe('breachedTripwires', () => {
  * a mere "a stamp exists" check, which is how this would most plausibly regress.
  */
 describe('provenance — a hand-set value can never pass for a measurement', () => {
+  /**
+   * FALSIFIABILITY CONTROL. A guard test that has never failed is a guard nobody
+   * has tested, and the way this one would most plausibly regress is someone
+   * "simplifying" the value comparison in `isDerived` down to a presence check —
+   * which still passes every happy-path test above. Rather than mutate the
+   * shared tree to prove otherwise (that races the git-sync sweep), the wrong
+   * implementation lives here permanently as a control, exactly as the repo's
+   * mutation-probe guidance prescribes for an imported module.
+   */
+  const presenceOnlyIsDerived = (t: GoalTripwireLike): boolean => !!t.measuredBy;
+
+  it('DISCRIMINATES against a presence-only stamp check — the likely regression', () => {
+    const tampered: GoalTripwireLike = {
+      metric: 'spend_usd',
+      label: 'spend',
+      threshold: 50,
+      current: 12,
+      measuredBy: { source: 'resolver:spend_usd', atMs: 1_000, value: 346.18 },
+    };
+
+    // The control is FOOLED — it calls a hand-edited number a measurement...
+    expect(presenceOnlyIsDerived(tampered)).toBe(true);
+    // ...and the real implementation is not. If these two ever agree here, the
+    // comparison has been weakened and this test is what fails.
+    expect(isDerived(tampered)).toBe(false);
+
+    // CALIBRATION: both must agree on a genuinely derived reading, or the
+    // discrimination above could be an artifact of a broken control instead.
+    const honest: GoalTripwireLike = { ...tampered, current: 346.18 };
+    expect(presenceOnlyIsDerived(honest)).toBe(true);
+    expect(isDerived(honest)).toBe(true);
+  });
+
   it('reports a hand-set reading as NOT derived, however plausible the number', () => {
     // Verbatim shape from goal 9425fe, the filing's own example.
     const handSet: GoalTripwireLike[] = [

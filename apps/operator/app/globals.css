@@ -28449,6 +28449,18 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
   font-variant-numeric: tabular-nums;
 }
 
+/* Provenance marker (EI-21605510614702802): an agent typed this reading; the
+   platform did not measure it. Quiet on purpose — a hand-set domain metric is
+   the ordinary case, so this qualifies the number's weight rather than alarming
+   about it. `tabular-nums` above is for digits, so opt this word back out. */
+.op-ph-bar-handset {
+  margin-left: 6px;
+  font-size: 9px;
+  text-transform: uppercase;
+  font-variant-numeric: normal;
+  opacity: 0.6;
+}
+
 /* Agent rows — one line per su agent: liveness dot, id, verdict, lane, intent,
    age. The intent column is the elastic one; everything else is intrinsic. */
 .op-ph-agents { gap: 4px; }

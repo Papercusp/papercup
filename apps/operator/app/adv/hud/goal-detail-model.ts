@@ -404,14 +404,13 @@ export function tripwireBar(t: GoalDetailTripwire): TripwireBar {
   else tone = 'ok';
 
   /*
-   * A hand-set reading is still a reading and still shows its number — the
-   * number is the point. What it must not do is pass for a measurement, because
-   * an unmarked `0 of 30` typed weeks ago is indistinguishable on screen from a
-   * spend figure the platform refreshes every five minutes, and reads as
-   * reassurance nobody actually earned.
+   * PROVENANCE IS STRUCTURAL, NOT CONCATENATED. `derived` and the title sentence
+   * carry it; `valueText` stays the reading phrase alone. Appending "· hand-set"
+   * here would reach both render surfaces for free, but it would also be
+   * unstylable (a marker deserves to be dimmed or badged, not bolded into the
+   * number) and it would pad every bar in the compact PotHealthPane. The two
+   * components render it instead — see TripwireRow / TripwireBar.
    */
-  if (hasCurrent && !derived) valueText = `${valueText} · hand-set`;
-
   const title =
     tone === 'breached'
       ? `${label}: past its limit — this is a reason to stop the goal`

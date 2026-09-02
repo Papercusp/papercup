@@ -211,6 +211,15 @@ function TripwireBar({ bar }: { bar: ReturnType<typeof tripwireBars>[number] }) 
         )}
       </span>
       <span className="op-ph-bar-value">{bar.valueText}</span>
+      {/* A reading nobody measured must not read like one that was
+          (EI-21605510614702802). Only for a reading that EXISTS — an unread bar
+          already says so, and a second caveat there would be noise.
+
+          A SIBLING of the value, not a child: `.op-ph-bar-value` is asserted on
+          by textContent, and more importantly it should contain the value and
+          nothing else — nesting the marker inside it makes both the assertion
+          and a screen reader run "$310 of $500" and "hand-set" together. */}
+      {bar.measured && !bar.derived ? <span className="op-ph-bar-handset">hand-set</span> : null}
     </div>
   );
 }

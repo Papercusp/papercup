@@ -1489,6 +1489,11 @@ function TripwireRow({ bar }: { bar: TripwireBar }) {
          never by `pct` — pct is also null for a reading with no threshold,
          which is measured. */
       data-measured={bar.measured ? 'true' : 'false'}
+      /* The SECOND question, and a different one: `data-measured` says a reading
+         exists, this says the platform took it. A hand-set reading is the normal
+         case for a domain metric and is not an error — but it must not be
+         readable as a live measurement (EI-21605510614702802). */
+      data-derived={bar.derived ? 'true' : 'false'}
     >
       <span className="hud-goal__bar-label">{bar.label}</span>
       {/* ── P-012: real progressbar semantics ──────────────────────────────
@@ -1545,6 +1550,15 @@ function TripwireRow({ bar }: { bar: TripwireBar }) {
         {bar.tone === 'breached' ? (
           <span className="hud-goal__bar-breach" data-testid="goal-tripwire-breach">
             past limit
+          </span>
+        ) : null}
+        {/* Same vocabulary as the breach marker above — text plus a class, no
+            icon — for the reason documented there. Shown only for a reading that
+            EXISTS but nobody measured; an unread bar already says so itself, and
+            stacking a second caveat on it would be noise. */}
+        {bar.measured && !bar.derived ? (
+          <span className="hud-goal__bar-handset" data-testid="goal-tripwire-handset">
+            hand-set
           </span>
         ) : null}
       </span>

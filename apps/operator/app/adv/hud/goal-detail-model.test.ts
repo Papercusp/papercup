@@ -72,6 +72,64 @@ describe('tripwireBar', () => {
     expect(noThreshold.valueText).toBe('12');
   });
 
+  /*
+   * PROVENANCE (EI-21605510614702802). `measured` answers "is there a reading",
+   * `derived` answers "who took it". The tests above pin the first; these pin
+   * the second, and pin that adding it did not quietly redefine the first.
+   */
+  it('reports a bare reading as measured but NOT derived — a hand-set number', () => {
+    // The filing's own example: an agent typed `0 of 30` and nothing has
+    // re-scored it since. It is a reading, so `measured` stays true; it is
+    // nobody's measurement, so `derived` is false and the two do not collapse.
+    const handSet = tripwireBar({ metric: 'surfaces_verified', label: 'Surfaces', threshold: 30, current: 0 });
+    expect(handSet.measured).toBe(true);
+    expect(handSet.derived).toBe(false);
+    expect(handSet.measuredAtMs).toBeNull();
+    expect(handSet.title).toBe('Surfaces: 0 of 30 — entered by hand, not measured by the platform');
+    // The number itself is still shown: the reading is the point.
+    expect(handSet.valueText).toBe('0 of 30');
+  });
+
+  it('reports a platform-stamped reading as derived, and exposes its age', () => {
+    const stamped = tripwireBar({
+      metric: 'spend_usd',
+      label: 'Spend',
+      threshold: 500,
+      current: 310,
+      unit: 'usd',
+      measuredBy: { source: 'resolver:spend_usd', atMs: 1_700_000, value: 310 },
+    });
+    expect(stamped.derived).toBe(true);
+    expect(stamped.measuredAtMs).toBe(1_700_000);
+    expect(stamped.title).toBe('Spend: $310 of $500');
+  });
+
+  it('VOIDS a stamp that no longer matches the reading it vouches for', () => {
+    // The hand-edit-after-measurement case, at the render layer: the platform
+    // measured $310, then someone wrote $12 over it. A present-but-stale stamp
+    // must not lend the edited number the measurement's credibility.
+    const tampered = tripwireBar({
+      metric: 'spend_usd',
+      label: 'Spend',
+      threshold: 500,
+      current: 12,
+      unit: 'usd',
+      measuredBy: { source: 'resolver:spend_usd', atMs: 1_700_000, value: 310 },
+    });
+    expect(tampered.measured).toBe(true);
+    expect(tampered.derived).toBe(false);
+    expect(tampered.measuredAtMs).toBeNull();
+  });
+
+  it('never calls an UNREAD bar derived', () => {
+    const unread = tripwireBar({ metric: 'spend', label: 'Spend', threshold: 500, unit: 'usd' });
+    expect(unread.measured).toBe(false);
+    expect(unread.derived).toBe(false);
+    expect(unread.measuredAtMs).toBeNull();
+    // An unread bar keeps its own phrasing — provenance never overwrites it.
+    expect(unread.title).toBe('Spend: no reading has been taken yet');
+  });
+
   it('warns in the last fifth and breaches at the limit', () => {
     expect(tripwireBar({ metric: 'm', label: 'm', threshold: 100, current: 79 }).tone).toBe('ok');
     expect(tripwireBar({ metric: 'm', label: 'm', threshold: 100, current: 80 }).tone).toBe('warn');
