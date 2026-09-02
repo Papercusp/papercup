@@ -1620,8 +1620,24 @@ export async function reconcileLoopRoutines(
           completedAt = lastFiredMs;
           via = 'claim-dispatch-gap';
         } else {
+          // EI-22171105225585428: bound the "still recent" half of this OR the same way
+          // WI-2140827 bounded the sibling deliveredWakeWithoutLoopTurn() presence leg above.
+          // `lastActiveMs` is OWNER-WIDE presence — activity from ANYTHING the session does,
+          // not just this loop's woken turn — so measuring recency purely against it lets
+          // unrelated activity (a stray coord:glance, another loop's turn, an owner message)
+          // repeatedly refresh the clock and defer "stuck" recognition indefinitely, well past
+          // the intended stuckParkMs-from-FIRE bound (measured live 2026-09-02: two stray
+          // coord:glance calls 30min into a park re-based the dwell off themselves and pushed
+          // recovery to ~stuckParkMs after THEM instead of ~stuckParkMs after the fire).
+          // `stuckParkElapsed` — absolute time since the fire, independent of any presence
+          // beat — is hoisted here so it can cap the OR: once it elapses, treat the loop as
+          // looksDeadOrStuck regardless of how recent the last (possibly unrelated) beat was.
+          const stuckParkElapsed = nowMs - lastFiredMs >= stuckParkMs(intervalMs);
           const looksDeadOrStuck =
-            row.parked && (lastActiveMs <= lastFiredMs || nowMs - lastActiveMs >= stuckParkMs(intervalMs));
+            row.parked &&
+            (lastActiveMs <= lastFiredMs ||
+              nowMs - lastActiveMs >= stuckParkMs(intervalMs) ||
+              stuckParkElapsed);
           if (deliveredWakeRetryAt == null && !looksDeadOrStuck) {
             continue; // still in flight (recent post-fire activity) / nothing to fold — leave it
           }
@@ -1633,7 +1649,6 @@ export async function reconcileLoopRoutines(
         ).catch(() => null);
         const consecutiveErrors = priorState?.consecutiveErrors ?? 0;
         const circuitOpen = consecutiveErrors >= circuitThreshold();
-        const stuckParkElapsed = nowMs - lastFiredMs >= stuckParkMs(intervalMs);
         // WI-2714 quick-retry leg: eligible ONLY before the classic dwell (stuckParkElapsed
         // already subsumes it), never once the circuit is open (that path is reserved for the
         // terminal guard's decoupled fast path below — quick-retrying a circuit-open loop would
