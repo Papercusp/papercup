@@ -16,7 +16,7 @@ describe('host-code handoff × context-trimming env (WI-2140943 lane 2)', () => 
     expect(claude.ENABLE_TOOL_SEARCH).toBe('true');
     expect(claude.PAPERCUSP_CONTEXT_TIER).toBe('trimmed');
     expect(typeof claude.PAPERCUSP_TOOLS).toBe('string');
-    expect(claude.PAPERCUSP_TOOLS.split(',').length).toBeGreaterThan(5);
+    expect(String(claude.PAPERCUSP_TOOLS ?? '').split(',').length).toBeGreaterThan(5);
     expect(Object.keys(contextTrimmingEnv('codex'))).toEqual(['PAPERCUSP_CONTEXT_TIER']);
     expect(Object.keys(contextTrimmingEnv('omp'))).toEqual(['PAPERCUSP_CONTEXT_TIER']);
   });

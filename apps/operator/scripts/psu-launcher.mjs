@@ -4379,6 +4379,10 @@ export function buildResumeEnv(
     // retirement env must be re-stamped exactly as on a fresh launch — without
     // it a resumed Claude session silently regains native auto-compact + /compact.
     ...nativeCompactionEnv(session?.agent),
+    // Same rationale for the context-trimming trio (WI-2140943 lane 2): a resume
+    // spawns a NEW CLI, and a gateway-routed claude without ENABLE_TOOL_SEARCH /
+    // PAPERCUSP_TOOLS / PAPERCUSP_CONTEXT_TIER boots with the whole catalog inline.
+    ...contextTrimmingEnv(session?.agent),
     ...(accountEnv?.env ?? {}),
   };
 }
