@@ -562,15 +562,22 @@ export function buildBoundedPriorAttemptBrief(
   for (const entry of residue) entry.items = entry.items.map((item) => boundedLine(item, 160));
 
   for (const record of ordinaryRecords) {
-    if (admitted >= maxRecords) {
-      dropRecord(record);
-      continue;
-    }
-    // D-008 ladder + D-010's honest degradation: a record whose rollup depth leaves
-    // it with nothing but empty rungs is DISCLOSED, never rendered hollow.
+    // D-008 ladder + D-010's honest degradation: a record whose rollup depth leaves it
+    // with nothing but empty rungs is DISCLOSED, never rendered hollow.
+    //
+    // ⚠ THIS RUNS BEFORE THE BUDGET CHECK, deliberately. Ordered the other way, a
+    // record that renders to NOTHING at its depth gets labelled `budget` once the
+    // record cap is reached — telling the reader to raise the budget to see something
+    // that would still be empty, and burning an admission slot a record with real
+    // content could have used. An empty projection costs no bytes, so it cannot be a
+    // budget casualty.
     const projected = briefRecordAtDepth(record, maxTextChars);
     if (!projected) {
       dropRecord(record, 'empty-at-depth');
+      continue;
+    }
+    if (admitted >= maxRecords) {
+      dropRecord(record);
       continue;
     }
     attempts.push(projected);
