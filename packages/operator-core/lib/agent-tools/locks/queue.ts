@@ -38,12 +38,43 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     paths: z.array(z.string()).optional(),
+    external_paths: z
+      .array(z.string().min(1))
+      .max(50)
+      .optional()
+      .describe(
+        'absolute configuration-file paths below the current user home; mapped to @external/home/* lock keys — the same mapping locks:acquire uses — then merged into the paths filter',
+      ),
     owner: z.string().optional(),
     include_completed: z.boolean().optional(),
   }),
   async handler(args, ctx) {
     await ensureBootstrap();
     const sql = getTxPool();
+
+    // EI-22075918402561858: `paths` is repo-relative; a home-directory file locked
+    // via locks:acquire's external_paths lives under a distinct @external/home/*
+    // key that a raw absolute path never matches. Map external_paths through the
+    // identical helper acquire uses and merge into the paths filter so external
+    // holders are inspectable through this diagnostic too. Only enter the merge
+    // when the caller actually supplied a filter — omitting both stays an
+    // unfiltered scan, and an explicit paths:[] (with no external_paths) must
+    // keep failing closed exactly as before.
+    let paths = args.paths;
+    if (args.external_paths !== undefined) {
+      try {
+        paths = [...(args.paths ?? []), ...args.external_paths.map((p) => externalHomePathToLockKey(p))];
+      } catch (err: unknown) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }),
+            },
+          ],
+        };
+      }
+    }
 
     // EI-7454: readQueue scopes a 1s statement_timeout to this read (plan §6.1) —
     // under fleet-load DB contention a plain indexed SELECT can transiently trip
@@ -60,7 +91,7 @@ export default defineTool({
         // null domain spans those namespaces and returns each row's domain for
         // attribution; acquire/release paths remain domain-scoped.
         coordinationDomain: null,
-        paths: args.paths,
+        paths,
         owner: args.owner,
         includeCompleted: args.include_completed,
       }),

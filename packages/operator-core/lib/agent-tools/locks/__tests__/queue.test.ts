@@ -6,6 +6,8 @@
  * strings inside the MCP text-content envelope.
  */
 
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const H = vi.hoisted(() => {
@@ -49,6 +51,12 @@ describe('locks:queue tool metadata', () => {
     expect(tool.args.safeParse({ paths: 'a.ts' }).success).toBe(false);
   });
 
+  it('EI-22075918402561858: accepts external_paths in the args schema', () => {
+    expect(tool.args.safeParse({ external_paths: ['/home/x/.config/y.list'] }).success).toBe(true);
+    expect(tool.description).toContain('external_paths');
+    expect(tool.guidance?.chaining).toContain('external_paths');
+  });
+
   it('keeps ptool JSON responses parseable when the queue snapshot exceeds the result door', () => {
     expect((tool as { skipResultDoor?: string }).skipResultDoor).toBe('programmatic-caller');
   });
@@ -73,6 +81,53 @@ describe('locks:queue handler', () => {
     expect(H.readQueue).toHaveBeenCalledWith(expect.anything(), {
       coordinationDomain: null,
       paths: [],
+      owner: undefined,
+      includeCompleted: undefined,
+    });
+  });
+
+  it('EI-22075918402561858: maps external_paths to @external/home/* keys and merges with paths', async () => {
+    await tool.handler({ paths: ['x.ts'], external_paths: [join(homedir(), '.config', 'mimeapps.list')] }, ctx);
+    expect(H.readQueue).toHaveBeenCalledWith(expect.anything(), {
+      coordinationDomain: null,
+      paths: ['x.ts', '@external/home/.config/mimeapps.list'],
+      owner: undefined,
+      includeCompleted: undefined,
+    });
+  });
+
+  it('EI-22075918402561858: external_paths alone (paths omitted) filters by the mapped key only', async () => {
+    await tool.handler({ external_paths: [join(homedir(), '.config', 'mimeapps.list')] }, ctx);
+    expect(H.readQueue).toHaveBeenCalledWith(expect.anything(), {
+      coordinationDomain: null,
+      paths: ['@external/home/.config/mimeapps.list'],
+      owner: undefined,
+      includeCompleted: undefined,
+    });
+  });
+
+  it('EI-22075918402561858: an explicit empty external_paths (paths omitted) still fails closed', async () => {
+    await tool.handler({ external_paths: [] }, ctx);
+    expect(H.readQueue).toHaveBeenCalledWith(expect.anything(), {
+      coordinationDomain: null,
+      paths: [],
+      owner: undefined,
+      includeCompleted: undefined,
+    });
+  });
+
+  it('EI-22075918402561858: an external_paths entry outside home returns a validation error, not a throw', async () => {
+    const out = payload((await tool.handler({ external_paths: ['/etc/hosts'] }, ctx)) as never);
+    expect(out).toMatchObject({ ok: false });
+    expect(out.error).toMatch(/below/);
+    expect(H.readQueue).not.toHaveBeenCalled();
+  });
+
+  it('omitting both paths and external_paths stays an unfiltered scan', async () => {
+    await tool.handler({}, ctx);
+    expect(H.readQueue).toHaveBeenCalledWith(expect.anything(), {
+      coordinationDomain: null,
+      paths: undefined,
       owner: undefined,
       includeCompleted: undefined,
     });
