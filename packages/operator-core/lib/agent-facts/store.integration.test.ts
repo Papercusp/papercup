@@ -73,6 +73,121 @@ afterAll(() => __setFactCapsForTests(null));
 
 let db: FreshPgDb;
 
+/**
+ * ── VOLATILE-PARTITION TEST KIT (P-002 / D-004 §1) ────────────────────────────
+ *
+ * D-003 made the ORDINARY cap a refusal ceiling, so the eviction ranking
+ * (confidence, then remaining-TTL FRACTION, then `updated_at`) no longer runs
+ * on that partition at all. D-004 §1 rules that the ranking is RETAINED and is
+ * now VOLATILE-ONLY — bounded snapshot churn is that partition's declared
+ * purpose — and states plainly that it "is NOT dead code and must not be
+ * 'finished' by a later cleanup".
+ *
+ * That ruling is only as good as its coverage: a mechanism with no test is
+ * exactly what a later cleanup deletes. So every eviction/receipt/preview/
+ * disclosure guard that used to prove itself against the ordinary partition is
+ * ported here rather than dropped, and these helpers are what make the port
+ * honest.
+ *
+ * ⚠ WHY SEEDING GOES THROUGH SQL AND NOT `assertFact`. A volatile write has its
+ * `ttlSec` CLAMPED to FACT_VOLATILE_MAX_TTL_SEC (15 min), and ranking key 2 is
+ * the remaining SHARE of declared life — `(expires_at - now()) / (expires_at -
+ * created_at)`. Seeding a cohort through `assertFact` therefore gives every row
+ * the same denominator and a fraction of ~1.0, which FLATTENS the very key the
+ * ranking tests exist to discriminate on. They would still pass, on ties broken
+ * by `updated_at` — i.e. they would silently degrade back into the
+ * write-recency ranking WI-6935 (c) was written to kill. Seeding the two
+ * timestamps directly is what keeps the fraction observable.
+ */
+function volatileMeasurement(ageSec = 0): string {
+  return JSON.stringify({ subjectVolatile: true, measuredAt: new Date(Date.now() - ageSec * 1000).toISOString() });
+}
+
+type VolatileSeed = {
+  key: string;
+  confidence?: 'verified' | 'provisional' | 'suspected';
+  /** Seconds of declared life this row has ALREADY spent (the fraction's numerator loss). */
+  ageSec?: number;
+  /** The row's DECLARED lifetime — the fraction's denominator. */
+  ttlSec?: number;
+  createdBy?: string;
+  kind?: 'convention';
+  body?: string;
+  /** H6: a FOREIGN partition row, which no local sweep may ever touch. */
+  sourceHive?: string;
+};
+
+/**
+ * Insert volatile-partition rows with an explicit age and declared lifetime, so
+ * a test can place each incumbent at a chosen point on the ranking.
+ */
+async function seedVolatile(scope: 'owner' | 'harness', scopeRef: string, seeds: VolatileSeed[]): Promise<void> {
+  for (const seed of seeds) {
+    const ageSec = seed.ageSec ?? 0;
+    const ttlSec = seed.ttlSec ?? FACT_VOLATILE_MAX_TTL_SEC;
+    await db.sql`
+      INSERT INTO harness_shared.agent_facts
+        (workspace_id, scope, scope_ref, key, body, created_by, created_at, updated_at,
+         expires_at, confidence, kind, measurement, source_hive)
+      VALUES (${WS}, ${scope}, ${scopeRef}, ${seed.key}, ${seed.body ?? 'a snapshot'},
+              ${seed.createdBy ?? 'su-int'},
+              now() - ${ageSec}::int * interval '1 second',
+              now() - ${ageSec}::int * interval '1 second',
+              now() + ${ttlSec - ageSec}::int * interval '1 second',
+              ${seed.confidence ?? 'verified'}, ${seed.kind ?? null},
+              ${volatileMeasurement(ageSec)}::text::jsonb, ${seed.sourceHive ?? null})`;
+  }
+}
+
+/** `n` interchangeable volatile incumbents — the saturating cohort. */
+function volatileCohort(n: number, seed: Omit<VolatileSeed, 'key'> & { prefix?: string } = {}): VolatileSeed[] {
+  const { prefix = 'incumbent', ...rest } = seed;
+  return Array.from({ length: n }, (_unused, i) => ({ ...rest, key: `${prefix}-${i}` }));
+}
+
+/** An `assertFact`/`previewFactCapImpact` input that lands in the VOLATILE partition. */
+function volatileWrite(
+  scope: 'owner' | 'harness',
+  scopeRef: string,
+  key: string,
+  extra: Record<string, unknown> = {},
+) {
+  return {
+    scope,
+    scopeRef,
+    workspaceId: WS,
+    key,
+    body: 'an arriving snapshot',
+    createdBy: 'su-int',
+    confidence: 'verified' as const,
+    subjectVolatile: true,
+    measuredAt: new Date(Date.now() - 1_000).toISOString(),
+    ttlSec: FACT_VOLATILE_MAX_TTL_SEC,
+    ...extra,
+  } as Parameters<typeof assertFact>[0];
+}
+
+/** Live rows in one partition of a (scope, ref), plus how many were destroyed. */
+async function partitionCensus(
+  scope: 'owner' | 'harness',
+  scopeRef: string,
+  partition: 'volatile' | 'ordinary',
+): Promise<{ live: number; evicted: number }> {
+  const marker =
+    partition === 'volatile'
+      ? db.sql`measurement->'subjectVolatile' = 'true'::jsonb`
+      : db.sql`measurement->'subjectVolatile' IS DISTINCT FROM 'true'::jsonb`;
+  const [row] = await db.sql<{ live: number; evicted: number }[]>`
+    SELECT count(*) FILTER (
+             WHERE superseded_at IS NULL AND retracted_at IS NULL AND expires_at > now()
+           )::int AS live,
+           count(*) FILTER (WHERE evicted_at IS NOT NULL)::int AS evicted
+      FROM harness_shared.agent_facts
+     WHERE workspace_id = ${WS} AND scope = ${scope} AND coalesce(scope_ref, '') = ${scopeRef}
+       AND source_hive IS NULL AND ${marker}`;
+  return row;
+}
+
 beforeAll(async () => {
   db = await createFreshPgDb('agent-facts-store');
   // Stub the capture fn BEFORE 461/462 create triggers on it (no-op: the outbox
@@ -2527,7 +2642,12 @@ describe('volatile fact-cap partition (EI-20365165629381535)', () => {
     expect(ordinaryPreview.populationSize).toBe(CAP);
     expect(ordinaryPreview.cap).toBe(CAP);
     expect(ordinaryPreview.atCap).toBe(true);
-    expect(ordinaryPreview.wouldEvict.length).toBeGreaterThan(0);
+    // P-002 / D-004 §1: the two partitions now run DIFFERENT mechanisms, which
+    // is the sharpest available statement of their isolation. The saturated
+    // ordinary side forecasts a REFUSAL and names no victim…
+    expect(ordinaryPreview.wouldRefuse).toBe(true);
+    expect(ordinaryPreview.wouldEvict).toEqual([]);
+    expect(ordinaryPreview.survival).toBeNull();
 
     const volatilePreview = await previewFactCapImpact(
       {
@@ -2541,20 +2661,24 @@ describe('volatile fact-cap partition (EI-20365165629381535)', () => {
       },
       db.sql,
     );
+    // …while the equally-saturated volatile side still evicts, by ranking, and
+    // names exactly who dies. Same scope, same saturation, opposite outcome.
     expect(volatilePreview.populationSize).toBe(VOLATILE_CAP);
     expect(volatilePreview.cap).toBe(VOLATILE_CAP);
     expect(volatilePreview.atCap).toBe(true);
+    expect(volatilePreview.wouldRefuse).toBe(false);
     expect(volatilePreview.wouldEvict).toHaveLength(1);
     expect(volatilePreview.wouldEvict[0]?.key).toBe('volatile-seed-0');
 
-    // The ordinary write consumes only ordinary capacity; the volatile cohort
-    // remains untouched. This also makes the two-cap isolation observable
-    // before the volatile write exercises preview/write parity.
-    const ordinaryWrite = await assertFact(
-      { ...base, key: 'ordinary-arrival', body: 'ordinary', confidence: 'verified', ttlSec: 30 * 86400 },
-      db.sql,
-    );
-    expect(ordinaryWrite.evicted?.length).toBe(1);
+    // The refused ordinary write costs the VOLATILE cohort nothing — the
+    // isolation direction that matters most, since a ceiling that reached
+    // across partitions would destroy snapshots to protect standing facts.
+    await expect(
+      assertFact(
+        { ...base, key: 'ordinary-arrival', body: 'ordinary', confidence: 'verified', ttlSec: 30 * 86400 },
+        db.sql,
+      ),
+    ).rejects.toThrow(/REFUSED before write/);
     const [{ volatileBefore }] = await db.sql<{ volatileBefore: number }[]>`
       SELECT count(*)::int AS "volatileBefore"
         FROM harness_shared.agent_facts
@@ -2588,6 +2712,13 @@ describe('volatile fact-cap partition (EI-20365165629381535)', () => {
          AND retracted_at IS NULL AND expires_at > now()
          AND measurement->'subjectVolatile' = 'true'::jsonb`;
     expect(volatileAfter).toBe(VOLATILE_CAP);
+
+    // …and the volatile sweep took its victim from its OWN partition only: the
+    // ordinary population is still exactly at its ceiling, undamaged. Stated at
+    // the row level because the receipt is produced by the same statement that
+    // would have done the damage, so a cross-partition over-evict has to be
+    // caught against the table rather than against the receipt.
+    expect(await partitionCensus('harness', scopeRef, 'ordinary')).toEqual({ live: CAP, evicted: 0 });
 
     // All three malformed/legacy rows remain live ordinary facts after both
     // writes. In particular, the string marker must not have been treated as a
