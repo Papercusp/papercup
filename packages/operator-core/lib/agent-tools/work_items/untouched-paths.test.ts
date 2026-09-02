@@ -51,12 +51,12 @@ describe('untouchedPathsInCompletion', () => {
 
   it('reports only the untouched paths and leaves the genuinely changed ones alone', () => {
     const result = untouchedPathsInCompletion(
-      evidence('packages/touched.ts', 'packages/untouched.ts'),
+      evidence('packages/changed.ts', 'packages/stale.ts'),
       SINCE_SEC,
-      { ...baseProbe, lastCommitAt: (_root, p) => (p.endsWith('touched.ts') ? RECENT_SEC : OLD_SEC) },
+      { ...baseProbe, lastCommitAt: (_root, p) => (p.endsWith('changed.ts') ? RECENT_SEC : OLD_SEC) },
     );
 
-    expect(result?.untouched.map((u) => u.path)).toEqual(['packages/untouched.ts']);
+    expect(result?.untouched.map((u) => u.path)).toEqual(['packages/stale.ts']);
   });
 
   // ── Proof-of-work route 1: the edit exists but git-sync has not swept it ──────────────
@@ -225,12 +225,15 @@ describe('untouchedPathsInCompletion', () => {
     expect(asDate?.since).toBe(SINCE_ISO);
   });
 
-  // ── Derived-truth pin ────────────────────────────────────────────────────────────────
+  // ── The grace constant ───────────────────────────────────────────────────────────────
 
-  it('keeps its grace equal to the repo-wide landing-race window it is copied from', () => {
-    // The constant is duplicated rather than imported into the resolver (that module is a
-    // pure resolver; the source is an .mjs gate helper). This assertion is what stops the
-    // copy drifting from the original — see the note on UNTOUCHED_GRACE_SEC.
-    expect(UNTOUCHED_GRACE_SEC).toBe(LANDING_RACE_WINDOW_SEC);
+  it('keeps a grace that strictly covers the git-sync sweep window it must absorb', () => {
+    // The grace exists to absorb TWO sources of boundary error, and must cover the larger.
+    // The sweep race is the one the repo already quantifies, so it is the floor: a grace
+    // at or below it would accuse edits git-sync simply had not swept yet. The rest of the
+    // margin is for work that predates its own work-item, which no constant bounds — see
+    // the measurement recorded on UNTOUCHED_GRACE_SEC for why it is set at a day.
+    expect(UNTOUCHED_GRACE_SEC).toBeGreaterThan(LANDING_RACE_WINDOW_SEC);
+    expect(UNTOUCHED_GRACE_SEC).toBe(24 * 60 * 60);
   });
 });
