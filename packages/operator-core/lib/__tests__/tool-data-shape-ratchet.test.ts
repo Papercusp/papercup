@@ -265,6 +265,16 @@ for (const file of TOOL_FILES) {
 // anywhere (there is no isError slot in `{ data }`, so migrating such a tool would
 // silently drop its error signaling), and the stringify confirmed to sit inside the
 // `return { content: [...] }`.
+//
+// 2026-09-02 (WI-212675 gate-red streak, su-97f1e): reds at 431 vs 429 — this one WAS
+// attributable: two tools added 09-01 hand-rolled inline JSON (inbox/automation-policy,
+// operator/resource-governor-cutover). Fixed both offenders, then paid the headroom back
+// in the intended currency — two more mechanical single-return, no-isError helpers
+// migrated to `{ data }`: learning/set-scout-budget, db/txn-timeouts. inbox/
+// automation-policy.test.ts had a direct-handler `body()` reader on the legacy
+// content[0].text shape → repointed to accept EITHER shape (the 07-26 pattern); the
+// other three had no shape-reading test. Real count 431 → 427, verified by re-running
+// the discovery walk; ceiling STAYS 429, restoring the established two slots.
 const BASELINE = 429;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {

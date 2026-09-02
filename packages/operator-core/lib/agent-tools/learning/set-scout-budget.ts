@@ -26,8 +26,9 @@ import {
   type ScoutBudgetOverrides,
 } from '../../learning-governor/scout-budget-overrides';
 
+// Canonical `{ data }` ToolResponse — the framework owns wire encoding (tool-data-shape-ratchet).
 function json(obj: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
+  return { data: obj };
 }
 
 export default defineTool({

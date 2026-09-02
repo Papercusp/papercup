@@ -19,8 +19,10 @@ import {
   writeStandingBulkAutomationPolicy,
 } from '../../attention/automation-policy';
 
+// Canonical `{ data }` ToolResponse — the framework owns wire encoding
+// (tool-data-shape-ratchet.test.ts); never hand-roll inline JSON here.
 function json(value: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(value) }] };
+  return { data: value };
 }
 
 export default defineTool({

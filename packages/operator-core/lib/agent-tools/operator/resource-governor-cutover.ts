@@ -151,6 +151,7 @@ export default defineTool({
       );
     }
     const payload = await runAdmissionCutoverOperation(args);
-    return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
+    // Canonical `{ data }` shape — the framework owns wire encoding (tool-data-shape-ratchet).
+    return { data: payload };
   },
 });

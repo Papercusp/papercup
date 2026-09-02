@@ -36,8 +36,13 @@ const writeM = vi.mocked(writeStandingBulkAutomationPolicy);
 
 const tool = (await import('./automation-policy')).default;
 
-type Out = { content: { text: string }[] };
-const body = (value: unknown) => JSON.parse((value as Out).content[0]!.text);
+// Accept EITHER ToolResponse shape (the ratchet's established repoint pattern):
+// canonical `{ data }` today, legacy inline-JSON `content[0].text` if it ever regresses.
+type Out = { data?: unknown; content?: { text: string }[] };
+const body = (value: unknown) => {
+  const out = value as Out;
+  return 'data' in out ? out.data : JSON.parse(out.content![0]!.text);
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
