@@ -1506,6 +1506,33 @@ export async function reconcileLoopRoutines(
       // post-grace retries still pass through terminal-guard handling.
       const loopTurnAtMs = loopTurnCompletionAt(row, lastFiredMs);
       const wakeAtMs = tsMs(row.last_wake_at);
+      // EI-22177872501023528: a 'suppressed-redundant' delivery is settled WITHOUT spending a
+      // turn because one was already in flight, and the psu-host stacks the queued prompt into
+      // the NEXT turn. But that stacked prompt only carries `turn_origin='loop-fire'` when the
+      // LOOP's wake is what opens that turn — when a watchdog / wake-pump / coord wake opens it
+      // first, the prompt rides in under THAT origin and the strict loop-turn clock never
+      // advances. Pair that with a WARM session, whose lifecycle 'ended' marker "in practice
+      // only fires at a genuine session restart" (layer 1, module header), and NO signal this
+      // suppression waits for can ever arrive — so the owner-wide ladder stays suppressed until
+      // the layer-3 stuck-park backstop, a flat 30-min floor (max(30min, interval*4)) that is
+      // 30x cadence for a 60s loop.
+      //
+      // Presence bumps on tool calls, so it is the in-flight evidence this leg actually wants:
+      // once it has been quiet for FALLBACK_QUIET_MS the turn that swallowed the stacked prompt
+      // is demonstrably over. Lift the suppression there and let the ordinary ladder settle the
+      // fire as 'ok' via presence-quiescence, instead of riding the backstop. Deliberately
+      // scoped to this ONE channel: a psu-socket-inject delivery genuinely should have produced
+      // a loop-origin turn, so its pre-existing retry/circuit path is untouched.
+      //
+      // Measured 2026-09-02 (papercusp-workspace): warm + suppressed-redundant = 8 parked loops,
+      // 8/8 with zero post-fire loop-fire turns, averaging 17.5x their own interval, against
+      // 1.8-5.2x for every other parked group.
+      const presenceLastActiveMs = tsMs(row.presence_last_active_at);
+      const suppressedRedundantTurnEnded =
+        row.last_wake_channel === 'suppressed-redundant' &&
+        presenceLastActiveMs != null &&
+        presenceLastActiveMs > lastFiredMs &&
+        nowMs - presenceLastActiveMs >= FALLBACK_QUIET_MS;
       const hasDeliveredWakeWithoutLoopTurn =
         row.carry !== 'cold' &&
         !row.is_cron &&
@@ -1523,7 +1550,9 @@ export async function reconcileLoopRoutines(
         // a busy session's loop with NO reachable settle layer. Past the stuck-park dwell,
         // restore the pre-existing ladder — a real lifecycle/turn-journal settle then re-arms
         // the loop as 'ok' rather than letting it ride the retry leg's 'error' indefinitely.
-        nowMs - wakeAtMs < stuckParkMs(intervalMs);
+        nowMs - wakeAtMs < stuckParkMs(intervalMs) &&
+        // EI-22177872501023528 — see the note above this block.
+        !suppressedRedundantTurnEnded;
       const signal = completionSignal(row, lastFiredMs, nowMs, {
         suppressOwnerWideSignals: hasDeliveredWakeWithoutLoopTurn,
       });
