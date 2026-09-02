@@ -375,6 +375,22 @@ export interface WorkspaceHostBootstrapInput {
   minimumNodeMajor: number;
   service: WorkspaceHostBootstrapService;
   isolation?: WorkspaceHostBootstrapIsolation;
+  /**
+   * OpenSSH public keys authorized for the workspace SSH account. REQUIRED and non-empty.
+   *
+   * `harden-os` locks this host down to `AuthenticationMethods publickey` +
+   * `AllowUsers $WORKSPACE_USER`, and the workspace account is created with `usermod --lock`.
+   * A render with no key therefore produces a host that is unreachable by construction — sshd
+   * accepts public keys only, for exactly one account, and that account has none. Provider
+   * metadata cannot rescue it either: the GCP provider sets `block-project-ssh-keys=TRUE` and
+   * `enable-oslogin=TRUE` unconditionally, so `ssh-keys` metadata is ignored, and the workspace
+   * account is a plain local user that OS Login's `google_authorized_keys` never answers for.
+   *
+   * This field is required rather than optional precisely because the failure is silent: the
+   * bootstrap succeeds, attests `status:"healthy"`, and only the NEXT connection discovers the
+   * host was bricked. Measured on p046-canary-04, 2026-09-02 (D-238).
+   */
+  workspaceAuthorizedKeys: readonly string[];
   entrypoints?: Partial<WorkspaceHostBootstrapEntrypoints>;
   /** Persistable labels only. Secret-shaped keys and private-key values are rejected. */
   publicMetadata?: Readonly<Record<string, unknown>>;
@@ -658,7 +674,48 @@ function validateInput(
     serviceGroup,
     workspaceUser,
     workspaceGroup,
+    workspaceAuthorizedKeys: normalizedAuthorizedKeys(
+      input.workspaceAuthorizedKeys,
+    ),
   };
+}
+
+/**
+ * A plain OpenSSH public key: `<type> <base64>` with an optional free-text comment.
+ *
+ * Deliberately NOT the full authorized_keys grammar — an options prefix
+ * (`command="…"`, `permitopen=…`) is refused rather than passed through, because the
+ * sshd hardening this bootstrap writes is the security boundary and a per-key option
+ * would silently reshape it.
+ */
+const SSH_PUBLIC_KEY =
+  /^(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]+={0,3}(?: [^\r\n]*)?$/;
+
+function normalizedAuthorizedKeys(
+  keys: readonly string[] | undefined,
+): readonly string[] {
+  requireCondition(
+    Array.isArray(keys) && keys.length > 0,
+    'workspaceAuthorizedKeys must list at least one OpenSSH public key — harden-os sets ' +
+      'AuthenticationMethods publickey and AllowUsers $WORKSPACE_USER, so a render with no key ' +
+      'produces a host that is unreachable by construction (D-238)',
+  );
+  const normalized = (keys as readonly string[]).map((key) =>
+    typeof key === 'string' ? key.trim() : '',
+  );
+  normalized.forEach((key, index) => {
+    requireCondition(
+      SSH_PUBLIC_KEY.test(key),
+      `workspaceAuthorizedKeys[${index}] must be one plain OpenSSH public key line ` +
+        `('<type> <base64> [comment]', no authorized_keys options and no newline)`,
+    );
+  });
+  const unique = [...new Set(normalized)];
+  requireCondition(
+    unique.length === normalized.length,
+    'workspaceAuthorizedKeys must not repeat a key',
+  );
+  return unique;
 }
 
 function assignment(name: string, value: string): string {
@@ -679,6 +736,7 @@ export function buildWorkspaceHostBootstrap(
     serviceGroup,
     workspaceUser,
     workspaceGroup,
+    workspaceAuthorizedKeys,
   } = validateInput(input);
   const digest = input.release.bundleSha256.toLowerCase();
   const signingKeyDigest = input.release.signingKeySha256.toLowerCase();
