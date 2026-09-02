@@ -22,6 +22,7 @@ import {
   foldEffectiveItemAudits,
   gitBlobSha,
   harnessCitationRepoRoot,
+  independentSiblingRepos,
   registeredCitationRepoRoots,
   selectHarnessCitationRepoRoot,
   planItemTextHash,
@@ -748,5 +749,80 @@ describe('per-item audit provenance (plan D-006/D-007)', () => {
         },
       ]),
     ).toEqual([]);
+  });
+});
+
+describe('independentSiblingRepos — a checkout directly under $HOME (EI-22188958812917965)', () => {
+  // Fully isolated from the real machine's home directory (opts.homeRoot), matching this
+  // file's own stated discipline: the guard must hold on a box where the reported shape
+  // does not happen to exist for real. The reported bug: a sibling checkout that sits
+  // directly under $HOME — one tier further out than the conventional
+  // `~/papercupai-workspace/`-style workspace directory — was invisible to this resolver
+  // no matter how the caller repo-qualified the path, because the scan never looked past
+  // `dirname(repoRoot)`.
+  let homeRoot: string;
+  let workspaceRoot: string;
+  let repoRoot: string;
+
+  beforeAll(() => {
+    homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-home-'));
+    workspaceRoot = path.join(homeRoot, 'papercupai-workspace');
+    repoRoot = path.join(workspaceRoot, 'papercusp');
+    fs.mkdirSync(path.join(repoRoot, '.git'), { recursive: true });
+
+    // The conventional tier: a sibling INSIDE workspaceRoot, beside repoRoot.
+    fs.mkdirSync(path.join(workspaceRoot, 'sidestage', '.git'), { recursive: true });
+
+    // The reported tier: a sibling directly under $HOME, one level further out —
+    // `~/Restart`, not `~/papercupai-workspace/Restart`.
+    fs.mkdirSync(path.join(homeRoot, 'Restart', '.git'), { recursive: true });
+
+    // A non-repo directory directly under $HOME must NOT be admitted (no `.git` dir).
+    fs.mkdirSync(path.join(homeRoot, 'Downloads'));
+
+    // A worktree pointer FILE (not a directory) under $HOME must be excluded too, matching
+    // the existing workspace-tier worktree exclusion.
+    fs.mkdirSync(path.join(homeRoot, 'papercusp-release'));
+    fs.writeFileSync(path.join(homeRoot, 'papercusp-release', '.git'), 'gitdir: ../elsewhere\n');
+  });
+
+  afterAll(() => {
+    fs.rmSync(homeRoot, { recursive: true, force: true });
+  });
+
+  it('finds a sibling directly under $HOME, not just inside the conventional workspace directory', () => {
+    const siblings = independentSiblingRepos(repoRoot, { homeRoot });
+    expect(siblings.has('Restart')).toBe(true);
+    expect(siblings.get('Restart')).toBe(homeRoot);
+  });
+
+  it('still finds the conventional workspace-tier sibling, resolved against workspaceRoot', () => {
+    const siblings = independentSiblingRepos(repoRoot, { homeRoot });
+    expect(siblings.has('sidestage')).toBe(true);
+    expect(siblings.get('sidestage')).toBe(workspaceRoot);
+  });
+
+  it('does not admit a non-repo directory or a worktree pointer file under $HOME', () => {
+    const siblings = independentSiblingRepos(repoRoot, { homeRoot });
+    expect(siblings.has('Downloads')).toBe(false);
+    expect(siblings.has('papercusp-release')).toBe(false);
+  });
+
+  it('the returned parent resolves the exact reported repro path to a real, readable file', () => {
+    // The bug's repro: filesChanged: ["apps/web/lib/sheets.ts"] (bare) and
+    // ["Restart/apps/web/lib/sheets.ts"] (repo-qualified) both reported "absent-from-both".
+    // A consumer (repoCitationDeps's `within()`, or completionRepoRootsFromRegistry) resolves
+    // a sibling name against `siblings.get(name)` — never a hardcoded workspaceRoot — which is
+    // exactly what makes the repo-qualified form work now.
+    fs.mkdirSync(path.join(homeRoot, 'Restart', 'apps', 'web', 'lib'), { recursive: true });
+    fs.writeFileSync(
+      path.join(homeRoot, 'Restart', 'apps', 'web', 'lib', 'sheets.ts'),
+      'export const sheets = 1;\n',
+    );
+    const siblings = independentSiblingRepos(repoRoot, { homeRoot });
+    const parent = siblings.get('Restart');
+    expect(parent).toBe(homeRoot);
+    const abs = path.resolve(parent!, 'Restart', 'apps/web/lib/sheets.ts');
+    expect(fs.readFileSync(abs, 'utf8')).toContain('sheets');
   });
 });

@@ -150,12 +150,21 @@ describe('unresolvedPathsInCompletion — stays SILENT (the fail-open contract)'
   });
 
   it('resolves one registered sibling Hive checkout as a unit (the measured SideStage case)', () => {
-    const roots = completionRepoRootsFromRegistry(ROOT, {
-      projects: [
-        { slug: 'papercusp', path: ROOT, harness_kind: 'hive', self_repo: true },
-        { slug: 'sidestage', path: SIDESTAGE_ROOT },
-      ],
-    });
+    // homeRoot pinned to `dirname(ROOT)` ('/') so the EI-22188958812917965 $HOME-tier scan
+    // is a no-op — this file's own header states "the filesystem is injected, so this
+    // never touches a real tree", and the real machine's actual home directory is exactly
+    // that kind of untracked real-tree leak.
+    const roots = completionRepoRootsFromRegistry(
+      ROOT,
+      {
+        projects: [
+          { slug: 'papercusp', path: ROOT, harness_kind: 'hive', self_repo: true },
+          { slug: 'sidestage', path: SIDESTAGE_ROOT },
+        ],
+      },
+      [],
+      { homeRoot: '/' },
+    );
     expect(
       unresolvedPathsInCompletion(ev(['apps/api/src/auction/auction.service.ts', 'apps/api/src/app.module.ts']), {
         ...probe,
@@ -174,7 +183,9 @@ describe('unresolvedPathsInCompletion — stays SILENT (the fail-open contract)'
   });
 
   it('admits an explicitly discovered Hive root without changing primary-root ordering', () => {
-    expect(completionRepoRootsFromRegistry(ROOT, { projects: [] }, [SIDESTAGE_ROOT])).toEqual([ROOT, SIDESTAGE_ROOT]);
+    expect(
+      completionRepoRootsFromRegistry(ROOT, { projects: [] }, [SIDESTAGE_ROOT], { homeRoot: '/' }),
+    ).toEqual([ROOT, SIDESTAGE_ROOT]);
   });
 
   it('resolves the conventional `<repoName>/`-prefixed cross-repo form against its OWN root (EI-21850619651553189)', () => {
@@ -189,12 +200,17 @@ describe('unresolvedPathsInCompletion — stays SILENT (the fail-open contract)'
   });
 
   it('resolves the sibling-prefixed form against the SIBLING root, not the primary one, among multiple registered roots', () => {
-    const roots = completionRepoRootsFromRegistry(ROOT, {
-      projects: [
-        { slug: 'papercusp', path: ROOT, harness_kind: 'hive', self_repo: true },
-        { slug: 'sidestage', path: SIDESTAGE_ROOT },
-      ],
-    });
+    const roots = completionRepoRootsFromRegistry(
+      ROOT,
+      {
+        projects: [
+          { slug: 'papercusp', path: ROOT, harness_kind: 'hive', self_repo: true },
+          { slug: 'sidestage', path: SIDESTAGE_ROOT },
+        ],
+      },
+      [],
+      { homeRoot: '/' },
+    );
     expect(
       unresolvedPathsInCompletion(ev(['sidestage/apps/api/src/app.module.ts']), { ...probe, repoRoots: roots }),
     ).toBeUndefined();

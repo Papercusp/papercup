@@ -404,7 +404,11 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     writeFileSync(join(sidestageRoot, '.git', 'HEAD'), `${SIDESTAGE_SHA}\n`);
     writeFileSync(join(sidestageRoot, 'apps', 'web', 'src', 'BuyerTab.thumbnail.test.tsx'), 'test\n');
 
-    const roots = completionRepoRootsFromRegistry(operatorRoot, { projects: [] });
+    // homeRoot pinned to workspaceRoot (same value) so the EI-22188958812917965 $HOME-tier
+    // scan is a no-op here — this fixture asserts only the conventional workspace-tier
+    // sibling, and must not pick up whatever real sibling checkouts happen to sit under
+    // the machine's actual home directory.
+    const roots = completionRepoRootsFromRegistry(operatorRoot, { projects: [] }, [], { homeRoot: workspaceRoot });
     expect(roots).toEqual([operatorRoot, sidestageRoot]);
     expect(
       completionTreeStampForEvidence({ filesChanged: ['apps/web/src/BuyerTab.thumbnail.test.tsx'] }, roots),

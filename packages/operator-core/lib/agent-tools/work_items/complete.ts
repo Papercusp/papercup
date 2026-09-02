@@ -53,6 +53,10 @@ import { harnessScopeMismatch } from '../../work-items-harness-scope';
 // standalone module, not from '../../work-items', which this file's unit tests mock
 // wholesale — the guard would be `undefined` exactly here.
 import { lookupRemoteAuthorEndedAt } from '../../work-items-orphan-author';
+// Same LEAF-module rule as the line above (EI-22189521072988065): imported from the
+// standalone module, not from '../../work-items', which this file's unit tests mock
+// wholesale — the guard would be `undefined` exactly here.
+import { decideTerminalOwnerOriginHeal } from '../../work-items-terminal-owner-origin-heal';
 import {
   getWorkItem,
   setWorkItemStateWithAliasInfo,
@@ -1031,6 +1035,7 @@ export function completionRepoRootsFromRegistry(
   primaryRoot: string | null,
   registry: Pick<HarnessRegistry, 'projects'>,
   additionalRoots: readonly string[] = [],
+  opts: { homeRoot?: string } = {},
 ): string[] {
   const roots = new Set<string>();
   if (primaryRoot) roots.add(nodePath.resolve(primaryRoot));
@@ -1043,7 +1048,11 @@ export function completionRepoRootsFromRegistry(
     // actually found under, not a hardcoded workspaceRoot — a checkout directly under
     // $HOME (one tier further out than the conventional workspace directory) resolves
     // wrong otherwise, which is exactly the reported "absent-from-both" failure.
-    for (const [siblingName, parentDir] of independentSiblingRepos(primaryRoot)) {
+    // `opts.homeRoot` lets a test point this at an isolated fixture instead of the
+    // real machine's home directory; production leaves it unset and gets the real one.
+    for (const [siblingName, parentDir] of independentSiblingRepos(primaryRoot, {
+      homeRoot: opts.homeRoot,
+    })) {
       roots.add(nodePath.resolve(parentDir, siblingName));
     }
   }
@@ -2171,7 +2180,27 @@ async function completeOne(
   // work-items.ts) happens inside setWorkItemStateWithAliasInfo → setWorkItemState, which this
   // function calls further down when `it.state` is set.
   const callerIsAuthor = !!existing.createdBy && existing.createdBy === ident.ownerId;
-  if (it.state && existing.family === 'issue' && existing.origin === 'remote' && !callerIsAuthor) {
+  // EI-22189521072988065: the sibling stranding to the orphaned-author case just below —
+  // the caller is not the row's original creator but IS its recorded `terminal_owner`,
+  // re-affirming/upgrading completion evidence on a row that was ALREADY terminal before
+  // this call. `existing.state` (read above, before this call) is what decides
+  // "already settled" — never the requested `it.state` — so this can never widen into a
+  // fresh-completion bypass. Uses the SAME policy function the deeper write path's
+  // self-heal (selfHealTerminalOwnerOriginIfStranded, work-items.ts) runs, so the two
+  // can never disagree about which rows qualify.
+  const callerIsTerminalOwnerOfAlreadySettledRow = decideTerminalOwnerOriginHeal({
+    origin: existing.origin,
+    wasAlreadySettled: TERMINAL_WORK_ITEM_STATES.has((existing.state ?? '').toLowerCase()),
+    terminalOwner: existing.terminalOwner,
+    callerOwnerId: ident.ownerId,
+  }).permit;
+  if (
+    it.state &&
+    existing.family === 'issue' &&
+    existing.origin === 'remote' &&
+    !callerIsAuthor &&
+    !callerIsTerminalOwnerOfAlreadySettledRow
+  ) {
     // EI-21919769900781478: this fast-fail must not refuse a row the real write path
     // would legitimately heal. When the recorded authoring peer's session has provably
     // ENDED, the remedy this error names ("its authoring peer must claim/resolve it")
