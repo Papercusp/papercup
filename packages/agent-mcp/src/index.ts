@@ -299,6 +299,7 @@ export {
   PROJECTED_TOOL_REGISTRY_SOURCE,
   projectedToolRegistryRevision,
   projectedToolCallContract,
+  projectedToolAdmitted,
   assertProjectedToolCallContract,
   renderProjectedToolCall,
   projectedToolCorrectiveCalls,
