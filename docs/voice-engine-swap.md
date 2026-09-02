@@ -203,3 +203,48 @@ the hot path must contain no `uv pip install`, `download_model.py`, `curl`, or
 **Preview returns `502`.** That now means a genuine outage — check
 `curl http://127.0.0.1:8880/health` (kokoro) and `:2022/health` (whisper). A
 credential problem reports `401`/`404`, not `502`.
+
+**A scripted engine swap "clicks" the option and nothing changes.** The pickers
+are `@radix-ui/react-select` (`apps/operator/app/harness/Select.tsx`), and two of
+its mechanics defeat the obvious automation. Both are read from
+`node_modules/@radix-ui/react-select/dist/index.js`, not inferred:
+
+- **Pick the option by `data-state`, never by comparing its text to the
+  trigger's.** `SelectItem` stamps `data-state="checked" | "unchecked"`, so
+  "an option that is not the current one" is exactly
+  `[data-state="unchecked"]`. Text comparison does *not* give you that: the
+  trigger renders `RS.Value` alone while the item renders `RS.ItemText` **plus**
+  an `RS.ItemIndicator`, so the currently-selected item can compare as
+  "different", get picked, and re-select the value that was already set — the
+  trigger never changes and the run looks like broken selection.
+  `aria-selected` is no substitute either; Radix sets it to
+  `isSelected && isFocused`, so it is `false` for the selected item whenever
+  focus is elsewhere.
+- **A synthetic pointer burst must carry `pointerType: "mouse"`.** `SelectItem`
+  keeps a `pointerTypeRef` that **defaults to `"touch"`** and has two mutually
+  exclusive selection paths: `onPointerUp` selects only when the ref is
+  `"mouse"`, `onClick` only when it is not. A `new PointerEvent(...)` with no
+  `pointerType` sets the ref to the empty string — the one value landing in
+  *neither* path — so the event fires, nothing throws, and nothing is selected.
+  There are no `isTrusted` guards, so a correctly-shaped synthetic event is
+  enough. Dispatching the mouse burst *and* a bare `.click()` is safe: the two
+  paths cannot both run.
+- **Do not target Web Speech (or Deepgram): they are consent-gated and will
+  not persist.** `setSttEngine` opens the privacy modal and returns *without
+  saving* while `prefs.webSpeechLeakAcked` is false — correct behaviour, since
+  Web Speech ships audio to the browser vendor's cloud. The trap is that the
+  option is `unchecked` and not `aria-disabled`, so it looks like any other
+  choice: a script picking "the first unchecked option" selects it, nothing
+  saves, and the failure is indistinguishable from a broken picker. It is also
+  **deterministic under `VERIFY_TAURI_ISOLATED_DB=1`**, whose fresh profile
+  always starts with that ack false — and correspondingly invisible against a
+  shared DB where it has already been acknowledged. Pick an ungated option, and
+  assert the gate itself separately (`verify-voice-settings.sh` step 6c does
+  both).
+
+**STT works in every unit test but is dead in the desktop app.** This webview is
+**WebKitGTK, not Chrome, and has no `window.SpeechRecognition`.** Any STT path
+that quietly falls back to the Web Speech API is green in jsdom and broken in the
+shipping app. `scripts/verify-voice-settings.sh` pins this explicitly, which is
+why that assertion exists even though it looks like it is testing the browser
+rather than us.

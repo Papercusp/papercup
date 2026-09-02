@@ -288,11 +288,27 @@ STT_PICK="$("$TAT" eval --pid "$PID" '
     // the trigger never changes, and the run reds as though selection is broken.
     // aria-selected is no substitute: Radix sets it to `isSelected && isFocused`,
     // so it is false for the selected item whenever focus is elsewhere.
+    // ...and EXCLUDE THE CONSENT-GATED ENGINES, which are unchecked and
+    // enabled yet deliberately do not persist on selection. page.tsx
+    // setSttEngine early-returns and opens a privacy modal for "webspeech" /
+    // "deepgram" while prefs.webSpeechLeakAcked is false, saving nothing:
+    //     if ((kind === "webspeech" || kind === "deepgram") && !acked) {
+    //       setShowLeakWarning(true); return; }
+    // The isolated DB this rig ENFORCES starts every run with that ack false,
+    // so "the first unchecked option" deterministically chose the one engine
+    // that cannot persist — a red that looked exactly like broken selection
+    // and could never reproduce against a shared DB where the owner had
+    // already acknowledged. Step 6c below asserts that gate deliberately;
+    // this step needs an ordinary, ungated state change.
+    const GATED = /web speech|deepgram/i;
     const target = items.find(i => i.getAttribute("data-state") === "unchecked"
-                                && i.getAttribute("aria-disabled") !== "true");
+                                && i.getAttribute("aria-disabled") !== "true"
+                                && !GATED.test(i.textContent || ""));
     window.__stt = {
       before,
       pickedItemText: target ? (target.textContent || "").trim() : null,
+      gatedSkipped: items.filter(i => GATED.test(i.textContent || ""))
+                         .map(i => (i.textContent || "").trim()),
       pointerCtor: typeof PointerEvent === "function",
       itemStates: items.map(i => ({ t: (i.textContent || "").trim().slice(0, 40),
                                     s: i.getAttribute("data-state") })),
@@ -378,6 +394,58 @@ printf 'STT DIAG: %s\n' "$STT_DIAG"
     // missing trigger would also read "" — that pair must FAIL, not pass.
     return !!expected && now === expected;
   })()'
+
+# ── STEP 6c: THE WEB-SPEECH PRIVACY GATE ACTUALLY HOLDS ─────────────────────
+# The mirror image of 6b, and a real privacy invariant rather than a workaround
+# for it. Web Speech ships audio to the browser vendor's cloud, so page.tsx
+# refuses to select it silently: setSttEngine opens the leak modal and returns
+# WITHOUT saving until webSpeechLeakAcked is true. Assert BOTH halves — the
+# warning appears AND the engine did not change — because "nothing happened" on
+# its own is also what a broken picker looks like, which is precisely the
+# ambiguity that made 6b expensive to diagnose.
+say "6c. selecting Web Speech warns and does NOT silently change the engine"
+"$TAT" click --pid "$PID" 'button.h-select-trigger[aria-label="STT engine"]' >/dev/null 2>&1 || true
+"$TAT" wait --pid "$PID" --selector '.h-select-item' --timeout 20000 >/dev/null 2>&1 \
+  || echo "DIAG: the portalled listbox never reopened for 6c"
+
+WEBSPEECH_PICK="$("$TAT" eval --pid "$PID" '
+  (() => {
+    try {
+      const trig = document.querySelector("button.h-select-trigger[aria-label=\"STT engine\"]");
+      const item = [...document.querySelectorAll(".h-select-item")]
+        .find(i => /web speech/i.test(i.textContent || ""));
+      if (!item) return JSON.stringify({ skipped: "no Web Speech option offered" });
+      window.__ws = { before: (trig.textContent || "").trim() };
+      const o = { bubbles: true, cancelable: true, pointerId: 1, isPrimary: true,
+                  pointerType: "mouse", button: 0 };
+      item.dispatchEvent(new PointerEvent("pointerdown", o));
+      item.dispatchEvent(new PointerEvent("pointermove", o));
+      item.dispatchEvent(new PointerEvent("pointerup", o));
+      return JSON.stringify(window.__ws);
+    } catch (e) { return JSON.stringify({ wsError: String(e) }); }
+  })()' 2>&1 || echo '{"wsError":"webspeech eval command failed"}')"
+printf 'WEBSPEECH PICK: %s\n' "$WEBSPEECH_PICK"
+
+# The modal's own copy, and the engine still unchanged. Asserting the exact
+# sentence (not merely "a dialog exists") is what distinguishes the privacy
+# warning from any other modal that might be open.
+"$POLL" --require '.pc-settings-page--voice' --eval '
+  (() => {
+    const t = document.body.innerText || "";
+    const warned = /Web Speech sends audio to the cloud/i.test(t);
+    const trig = document.querySelector("button.h-select-trigger[aria-label=\"STT engine\"]");
+    const unchanged = !!trig && (trig.textContent || "").trim() === (window.__ws && window.__ws.before);
+    return warned && unchanged;
+  })()'
+
+# Dismiss it so step 7 inspects the settled page rather than a modal.
+"$TAT" eval --pid "$PID" '
+  (() => {
+    const b = [...document.querySelectorAll("button")]
+      .find(x => (x.textContent || "").trim() === "Cancel");
+    if (b) b.click();
+    return !!b;
+  })()' >/dev/null 2>&1 || true
 
 # ── STEP 7 ──────────────────────────────────────────────────────────────────
 say "7. no console errors were raised while driving the surface"
