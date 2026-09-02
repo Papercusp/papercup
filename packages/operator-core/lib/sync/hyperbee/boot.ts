@@ -1368,6 +1368,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // device is not the owner; keep that adversarial path conclusive even while
   // the bounded bootstrap window is open.
   let joinedHiveOwnerDevice: string | null = null;
+  // WI-2039866 (P-004): the GitHub user id THIS peer announces as (set once the announce
+  // identity resolves in joinForBinding). The EN-4 owner exemption treats a remote log
+  // bound to the same identity as one of the owner's own devices — the tower↔VM rig
+  // is exactly that shape (one human, several attested devices), and its membership
+  // allowlist must never be able to lock those devices out of each other.
+  let localAnnounceGithubUserId: number | null = null;
   let hiveHomeProjectionSlug = await resolveHiveHomeProjectionSlug(opts.swarmBinding);
   // A-003 diagnostic (env-gated, off by default → zero test impact): show the
   // boot-time hive-home binding decision in the harness log so a live witness can
@@ -3639,6 +3645,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // is `scopedApply` itself — byte-for-byte the prior behavior. Author attribution keys
       // off the unforgeable receiver-stamped sourceLogKeyHex via admittedIdentities; an
       // author-dependent rule with an unresolved author fails CLOSED (the wrappers' contract).
+      // WI-2039866 (P-004): per-pass dedupe so a multi-million-op replay of a locked-out
+      // log bumps each (reason, author, table) witness once per pass, not once per op.
+      const policyDropSeen = new Set<string>();
       const enforcedApply = ownerPolicy
         ? makePolicyEnforcedApply({
             currentPolicy: () => ownerPolicy,
@@ -3648,6 +3657,40 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             },
             ownLogKeyHex: ownLog.keyHex,
             isContentTakenDown: (policy, op) => isContentTakenDown(policy, op.hbKey ?? ''),
+            // Owner exemption (policy-admission.ts header, WI-2039866): the pot owner's own
+            // devices are never locked out of the owner's pot by the membership layers.
+            // Joiner side: the source log's device IS the device that vouched this peer in.
+            // Owner side (and owner-device ↔ owner-device): the source log is bound to the
+            // SAME GitHub identity this peer announces as (`localAnnounceGithubUserId`).
+            isOwnerSourceLog: (k) => {
+              const id = admittedIdentities.get(k);
+              if (!id) return false;
+              if (joinedHiveOwnerDevice && id.devicePubkey === joinedHiveOwnerDevice) return true;
+              return localAnnounceGithubUserId != null && id.githubUserId === localAnnounceGithubUserId;
+            },
+            // A policy drop is a visible witness, never a silent cursor advance: one
+            // boot-history event + one refused-op counter bump per (reason, author,
+            // table) per pass. Best-effort — observability must never abort the merge.
+            onDrop: (info) => {
+              const key = `${info.reason}|${info.author ?? 'unresolved'}|${info.table ?? '?'}`;
+              if (policyDropSeen.has(key)) return;
+              policyDropSeen.add(key);
+              try {
+                recordBootEvent(
+                  opts.workspaceId,
+                  opts.harnessSlug,
+                  'policy_drop',
+                  `${info.reason} author=${info.author ?? '<unresolved>'} table=${info.table ?? '?'} scope=${policyScopeSlug}`,
+                );
+              } catch {
+                // observability must never abort the merge pass
+              }
+              void bumpRefusedOpCounter({
+                workspaceId: opts.workspaceId,
+                potSlug: policyScopeSlug,
+                reason: `policy:${info.reason}`,
+              }).catch(() => {});
+            },
             apply: makeRateLimitedApply({
               limiter: rateLimiter,
               nicheLimiter: eliteNicheLimiter,
@@ -4908,6 +4951,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         ...(opts.announceIdentityOverride?.resolveOpts ?? {}),
         logCoreKeyHex: ownLog.keyHex,
       }));
+      // WI-2039866: feed the EN-4 owner exemption (mergeOnePass) the identity peers
+      // actually attribute this device to — the announce identity, NOT the gh-CLI login
+      // (on the tower those differ: gh=papercupai, announce=aviynw, and the gap is what
+      // produced an allowlist that excluded the owner's own devices).
+      localAnnounceGithubUserId = identity.githubUserId;
       // The signer defaults to the keychain-backed `signWithDeviceKey`; tests
       // inject a signer over a self-generated keypair so no OS keychain is
       // touched (see `announceIdentityOverride`).
