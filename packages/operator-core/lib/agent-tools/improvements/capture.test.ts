@@ -454,6 +454,8 @@ describe('improvements:capture tool envelope', () => {
       requireCompleteDedupCoverage: false,
       origin: 'drill',
       createdBy: 'su-owner',
+      // WI-2140701 (b): the concrete workspace the goal-provenance stamp resolves in.
+      workspaceId: 'ws-1',
       source: 'su',
       reviewRequired: true,
       reviewHarness: 'foo',
