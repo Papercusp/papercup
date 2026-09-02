@@ -266,7 +266,18 @@ async function readRelease(
     problems.push(`release manifest '${manifestPath}' has no 'artifact' object`);
     return undefined;
   }
-  const errors = validateWorkspaceHostImageArtifact(artifact as WorkspaceHostImageArtifact);
+  // The validator is fed UNTRUSTED file bytes here, unlike its in-process callers who hand it an
+  // artifact they just built. It reaches into nested build-manifest structure, so a
+  // partially-shaped document makes it throw rather than return errors. A throw escaping this
+  // function would surface as a bare TypeError instead of the fail-closed, named refusal the rest
+  // of this module promises — so an unparseable manifest is reported as what it is.
+  let errors: readonly string[];
+  try {
+    errors = validateWorkspaceHostImageArtifact(artifact as WorkspaceHostImageArtifact);
+  } catch (error) {
+    problems.push(`release manifest '${manifestPath}' is not a valid image artifact: ${message(error)}`);
+    return undefined;
+  }
   if (errors.length > 0) {
     problems.push(`release manifest '${manifestPath}' is not a valid image artifact: ${errors.join('; ')}`);
     return undefined;
