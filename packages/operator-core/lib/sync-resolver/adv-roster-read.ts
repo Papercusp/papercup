@@ -89,6 +89,13 @@ export interface ReadAdvRosterOptions {
    * {@link ROSTER_READ_BUDGET_MS} out. Defaults to {@link ROSTER_READ_BUDGET_MS}.
    */
   budgetMs?: number;
+  /**
+   * Test-only clock override for the stale-while-revalidate cache (see below).
+   * A FUNCTION parameter, never a wire field — same reasoning as `budgetMs`:
+   * it lets a guard prove FRESH_MS/STALE_MS boundaries fire without a real
+   * (or fake-timer) wait. Defaults to `Date.now`.
+   */
+  nowMs?: () => number;
 }
 
 /**
@@ -220,7 +227,7 @@ function rosterCacheKey(workspaceId: string | null, endedLimit: number): string 
 function refreshRosterCache(key: string, opts: ReadAdvRosterOptions): Promise<RosterSnapshot> {
   return dedupeInFlight(rosterInFlight, key, async () => {
     const result = await readAdvRosterUncached(opts);
-    rosterCache.set(key, { result, computedAt: Date.now() });
+    rosterCache.set(key, { result, computedAt: (opts.nowMs ?? Date.now)() });
     return result;
   });
 }
@@ -247,7 +254,7 @@ export async function readAdvRoster(opts: ReadAdvRosterOptions = {}): Promise<Ro
   const key = rosterCacheKey(workspaceId, endedLimit);
   const cached = rosterCache.get(key);
   if (cached) {
-    const age = Date.now() - cached.computedAt;
+    const age = (opts.nowMs ?? Date.now)() - cached.computedAt;
     if (age < ROSTER_CACHE_FRESH_MS) return cached.result;
     if (age < ROSTER_CACHE_STALE_MS) {
       void refreshRosterCache(key, opts).catch(() => {
