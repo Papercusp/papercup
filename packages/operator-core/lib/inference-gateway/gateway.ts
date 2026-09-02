@@ -5286,7 +5286,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // An absorb that gave up still routed and still owes its outcome
               // record; a downgrade-rung forward never recorded one.
               if (absorbGaveUp) {
-                recordRoute(wantOwner, active.accountId, model);
+                recordRoute(affinityKey ?? wantOwner, active.accountId, model);
                 recordOwnerOutcome(
                   wantOwner,
                   taken.status < 400 ? 'ok' : taken.status === 429 ? 'upstream_429' : 'upstream_error',
