@@ -202,11 +202,79 @@ describe('capability:bash_output — durable task attachment', () => {
       running: true,
       recovered_from_ledger: true,
       tracking_lost: true,
+      output_recoverable: false,
       output_is_tail: true,
       output: '',
     });
     expect(payload).not.toHaveProperty('reason', 'tracking_lost_process_alive');
+    // EI-22185525501280167: no on-disk log was ever created at either candidate
+    // path, so this reply must never advertise a growing tail or a readable path.
+    expect(payload).not.toHaveProperty('log_path');
+    expect(String(payload.advice)).toContain('UNRECOVERABLE');
+    expect(String(payload.advice)).not.toContain('will keep growing');
+    expect(String(payload.advice)).not.toContain('read log_path directly');
     expect(jobs.startBackground).not.toHaveBeenCalled();
+  });
+
+  // EI-22185525501280167: the exact reported shape — systemd CONFIRMS the job's
+  // durable service is active, but neither the ledger-recorded log path nor the
+  // worker-local scratch log exists on disk. Before the fix this returned
+  // `log_path` pointing at a file that would 404, plus advice promising the tail
+  // "will keep growing" and inviting a "read log_path directly" — an
+  // unrecoverable-output job reading identically to a merely-quiet one.
+  it('marks output unrecoverable and omits log_path when scope-active recovery finds no log anywhere', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-scope-unrecoverable-'));
+    try {
+      const fakeBin = join(stateDir, 'bin');
+      mkdirSync(fakeBin, { recursive: true });
+      const fakeSystemctl = join(fakeBin, 'systemctl');
+      writeFileSync(fakeSystemctl, '#!/bin/sh\nprintf "active\\n"\n');
+      chmodSync(fakeSystemctl, 0o755);
+      const queuedRow = taskRow({
+        taskId: 'tskcarry5678',
+        rootTaskId: 'tskcarry5678',
+        pid: null,
+        processIdentity: null,
+        cgroupPath: null,
+        scopeUnit: 'pc-tskcarry5678.service',
+        logPath: join(stateDir, 'never-written.log'),
+      });
+      store.getTask.mockResolvedValue(queuedRow);
+      jobs.getJob.mockReturnValue(null);
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
+
+      try {
+        const result = await bashOutput.handler({ task_id: 'tskcarry5678' }, ctx('ws-current', stateDir));
+        const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+        expect(result.isError).toBeUndefined();
+        expect(payload).toMatchObject({
+          ok: true,
+          task_id: 'tskcarry5678',
+          status: 'running',
+          running: true,
+          recovered_from_ledger: true,
+          recovered_from_scope: true,
+          liveness_proof: 'systemd_active_state',
+          tracking_lost: true,
+          output_recoverable: false,
+          output_is_tail: true,
+          output: '',
+        });
+        expect(payload).not.toHaveProperty('log_path');
+        expect(String(payload.advice)).toContain('UNRECOVERABLE');
+        expect(String(payload.advice)).toContain('CONFIRMED ACTIVE');
+        expect(String(payload.advice)).not.toContain('will keep growing');
+        expect(String(payload.advice)).not.toContain('read log_path directly');
+        expect(jobs.startBackground).not.toHaveBeenCalled();
+      } finally {
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+      }
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 
   it('prefers the ledger log path over a stale same-id local-worker log', async () => {
