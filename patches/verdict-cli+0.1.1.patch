@@ -1,5 +1,5 @@
 diff --git a/node_modules/verdict-cli/bin/browse.mjs b/node_modules/verdict-cli/bin/browse.mjs
-index a3392d2..e8a9dc0 100755
+index a3392d2..357f029 100755
 --- a/node_modules/verdict-cli/bin/browse.mjs
 +++ b/node_modules/verdict-cli/bin/browse.mjs
 @@ -20,7 +20,9 @@ const SERVER_SCRIPT = resolve(__dirname, '..', 'src', 'server.mjs');
@@ -61,14 +61,41 @@ index a3392d2..e8a9dc0 100755
  }
  
  async function send(state, command, args) {
-@@ -179,1 +179,5 @@ if (command === 'sessions') {
+@@ -69,7 +89,19 @@ async function send(state, command, args) {
+     headers: { 'Authorization': `Bearer ${state.token}`, 'Content-Type': 'application/json' },
+     body: JSON.stringify({ command, args })
+   });
+-  return await res.text();
++  const text = await res.text();
++  // EI-22165824068092618: the status used to be discarded, so a command that
++  // FAILED server-side (500 from a thrown handler, 400 for an unknown command)
++  // printed its error text on stdout and still exited 0. A caller checking `$?`
++  // — or a `&&` chain — read that as success. Handler-returned "Error: ..."
++  // strings still come back 200 and are unchanged; only real HTTP failures exit
++  // non-zero here.
++  if (!res.ok) {
++    const err = new Error(text.replace(/^Error:\s*/, '') || `HTTP ${res.status}`);
++    err.httpStatus = res.status;
++    throw err;
++  }
++  return text;
+ }
+ 
+ function output(text) {
+@@ -176,7 +208,11 @@ if (command === 'sessions') {
+         body: JSON.stringify({ command: 'stop', args: [] })
+       });
+       output(`Session "${target}" stopped.`);
 -    } catch { output(`Session "${target}" stopped (was not responding).`); }
 +    } catch {
 +      // A normal daemon shutdown can close the response socket before fetch
 +      // receives it; the session has still been stopped.
 +      output(`Session "${target}" stopped.`);
 +    }
-@@ -193,9 +217,18 @@ if (!state || !isAlive(state.pid)) {
+     process.exit(0);
+   } else {
+     outputError(`Unknown sessions subcommand: ${sub}. Use: sessions list, sessions stop <name>`);
+@@ -193,9 +229,21 @@ if (!state || !isAlive(state.pid)) {
  try {
    output(await send(state, command, args));
  } catch (e) {
@@ -85,15 +112,37 @@ index a3392d2..e8a9dc0 100755
 +  } else if (isConnErr) {
      process.stderr.write('Server down, restarting...\n');
      state = await startServer();
-     output(await send(state, command, args));
+-    output(await send(state, command, args));
 -  } else if (command === "stop") { output("Server stopped."); } else { outputError(e.message); }
++    // The retry can itself fail server-side; send() now throws on a non-2xx, so
++    // without this catch that rejection would go unhandled instead of becoming
++    // a clean non-zero exit.
++    try { output(await send(state, command, args)); } catch (e2) { outputError(e2.message); }
 +  } else { outputError(e.message); }
  }
 diff --git a/node_modules/verdict-cli/src/server.mjs b/node_modules/verdict-cli/src/server.mjs
-index 249847c..f5ea49d 100644
+index 249847c..97dbfe7 100644
 --- a/node_modules/verdict-cli/src/server.mjs
 +++ b/node_modules/verdict-cli/src/server.mjs
-@@ -62,6 +62,27 @@ let cursorRefCounter = 0;
+@@ -54,6 +54,17 @@ function profilePath(name) {
+ const { chromium } = await import('playwright');
+ 
+ let browser, context, page;
++// EI-22165824068092618: the top-level Page we descended FROM, kept at module
++// scope. It used to be stashed as `page._mainPage`, but `frame` then reassigns
++// `page` to a Playwright *Frame*, which does not carry that property — so
++// `frame-exit` read undefined, answered "Already main." and was a permanent
++// no-op. You could never leave the first frame you entered.
++let mainPage = null;
++// Bounded, so a selector that matches nothing fails in seconds instead of
++// stalling on Playwright's 30s default (long enough that callers wrap the CLI
++// in a shorter `timeout`, which kills it before it can print its own error —
++// which is why this failure was reported as "prints nothing at all").
++const FRAME_TIMEOUT_MS = parseInt(process.env.VERDICT_FRAME_TIMEOUT_MS) || 5000;
+ let idleTimer;
+ const refs = new Map();
+ const cursorRefs = new Map();
+@@ -62,6 +73,27 @@ let cursorRefCounter = 0;
  let lastSnapshot = '';
  let previousSnapshot = '';
  const styleHistory = [];
@@ -121,7 +170,7 @@ index 249847c..f5ea49d 100644
  
  function resetIdle() {
    clearTimeout(idleTimer);
-@@ -136,13 +157,14 @@ const commands = {
+@@ -136,13 +168,14 @@ const commands = {
    async goto(args) {
      const url = args[0];
      if (!url) return 'Error: URL required';
@@ -139,7 +188,7 @@ index 249847c..f5ea49d 100644
    async url() { return page.url(); },
    async title() { return await page.title(); },
  
-@@ -405,6 +427,7 @@ const commands = {
+@@ -405,6 +438,7 @@ const commands = {
      browser = await chromium.launch({ headless: false });
      context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
      page = await context.newPage();
@@ -147,7 +196,7 @@ index 249847c..f5ea49d 100644
      if (cookies.length) await context.addCookies(cookies);
      if (currentUrl && currentUrl !== 'about:blank') await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
      return `Switched to headed mode. Browser visible.\nURL: ${page.url()}\nComplete manual work, then run: resume`;
-@@ -419,8 +442,6 @@ const commands = {
+@@ -419,8 +453,6 @@ const commands = {
      page = await context.newPage();
      if (cookies.length) await context.addCookies(cookies);
      if (currentUrl && currentUrl !== 'about:blank') { await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}); await page.evaluate((s) => { for (const [k, v] of Object.entries(s.localStorage || {})) localStorage.setItem(k, v); }, storage); }
@@ -156,7 +205,7 @@ index 249847c..f5ea49d 100644
      return `Resumed headless mode.\nURL: ${page.url()}\nCookies: ${cookies.length}\nUse auth-save <name> to persist.`;
    },
    async 'goto-auth'(args) {
-@@ -430,6 +451,7 @@ const commands = {
+@@ -430,6 +462,7 @@ const commands = {
      if (pi !== -1) { profileName = args[pi + 1]; clean.splice(pi, 2); }
      const url = clean[0]; if (!url) return 'Error: URL required';
      if (profileName) { const r = await commands['auth-load']([profileName]); if (r.startsWith('Error')) return r; }
@@ -164,7 +213,7 @@ index 249847c..f5ea49d 100644
      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
      await page.waitForLoadState('networkidle').catch(() => {});
      const finalUrl = page.url();
-@@ -467,7 +489,7 @@ const commands = {
+@@ -467,21 +500,48 @@ const commands = {
  
    // Tabs
    async tabs() { return context.pages().map((p, i) => `${i}: ${p.url()}${p === page ? ' (active)' : ''}`).join('\n'); },
@@ -173,7 +222,55 @@ index 249847c..f5ea49d 100644
    async tab(args) { const i = parseInt(args[0]), ps = context.pages(); if (isNaN(i) || i < 0 || i >= ps.length) return `Invalid tab. ${ps.length} open.`; page = ps[i]; return `Tab ${i}: ${page.url()}`; },
    async closetab() { if (context.pages().length <= 1) return 'Cannot close last tab.'; await page.close(); page = context.pages()[0]; return `Closed. Active: ${page.url()}`; },
  
-@@ -508,10 +530,7 @@ const commands = {
+   // Frames
+   async frame(args) {
+-    if (!args[0]) return page.frames().map((f, i) => `${i}: ${f.url()}`).join('\n');
+-    const el = await page.locator(args[0]).elementHandle();
+-    const fr = await el.contentFrame();
+-    if (!fr) return `No frame for ${args[0]}`;
+-    page._mainPage = page._mainPage || page;
++    // List from the top document: once `page` is a Frame it has no .frames(),
++    // so the old form threw here after any successful `frame`.
++    if (!args[0]) {
++      const top = mainPage || page;
++      // Identity, not URL: two panes of the same app legitimately share a URL,
++      // and marking both "current" would reintroduce exactly the ambiguity this
++      // command exists to resolve.
++      const here = typeof page.mainFrame === 'function' ? page.mainFrame() : page;
++      return top.frames().map((f, i) => `${i}: ${f.url()}${f === here ? '  <- current' : ''}`).join('\n');
++    }
++    const sel = args[0];
++    let fr = null;
++    try {
++      const el = await page.locator(sel).elementHandle({ timeout: FRAME_TIMEOUT_MS });
++      fr = el ? await el.contentFrame() : null;
++    } catch { fr = null; }
++    if (!fr) {
++      // Never retain the previous realm on failure. Silently staying put is what
++      // turns a failed selector into a confident WRONG measurement: the next
++      // probe re-measures the frame we were already in and reads as an
++      // independent confirmation of a different pane.
++      const wasIn = page.url();
++      if (mainPage) { page = mainPage; mainPage = null; }
++      throw new Error(
++        `frame: no match for ${sel} (searched in ${wasIn}); reset to top document ${page.url()} — ` +
++        `the previous frame was NOT retained, so re-enter the frame you want before probing.`,
++      );
++    }
++    if (!mainPage) mainPage = page;
+     page = fr;
+-    return `Frame: ${args[0]} (${fr.url()})`;
++    return `Frame: ${sel} (${fr.url()})`;
++  },
++  async 'frame-exit'() {
++    if (mainPage) { page = mainPage; mainPage = null; return `Main frame. (${page.url()})`; }
++    return `Already main. (${page.url()})`;
+   },
+-  async 'frame-exit'() { if (page._mainPage) { page = page._mainPage; return 'Main frame.'; } return 'Already main.'; },
+ 
+   // Advanced
+   async diff(args) {
+@@ -508,10 +568,7 @@ const commands = {
  };
  
  // Console & network collectors

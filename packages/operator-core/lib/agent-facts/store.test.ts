@@ -70,9 +70,12 @@ describe('assertFact WI-1564 stranding guard (F1-4)', () => {
   it('lets a hive-PRIVATE fact through the guard on any partition (reaches SQL)', async () => {
     // shareable !== true ⇒ never rides the wire ⇒ the coordination partition is
     // fine; the assert must get PAST the guard (and hit the failSql stub).
+    // ttlSec is REQUIRED to reach SQL at all (facts-require-explicit-expiry-2026-09-02
+    // P-001): an undeclared lifetime is refused before any other guard runs, so a
+    // fixture asserting "this reaches SQL" must declare one or it proves nothing.
     await expect(
       assertFact(
-        { scope: 'workspace', key: 'k', body: 'b', createdBy: 'su-test', workspaceId: 'default' },
+        { scope: 'workspace', key: 'k', body: 'b', createdBy: 'su-test', workspaceId: 'default', ttlSec: 3600 },
         failSql,
       ),
     ).rejects.toThrow(/SQL SHOULD NOT BE REACHED/);
@@ -141,7 +144,8 @@ describe('EI-7463 — a caller-side scope/ref validation failure throws InvalidI
   it('a genuinely valid assert is unaffected — still reaches SQL (the stub throw proves it)', async () => {
     await expect(
       assertFact(
-        { scope: 'harness', scopeRef: 'papercusp', key: 'k', body: 'b', createdBy: 'su-test', workspaceId: 'papercusp-workspace' },
+        // ttlSec: P-001 requires an explicit lifetime before SQL is reachable.
+        { scope: 'harness', scopeRef: 'papercusp', key: 'k', body: 'b', createdBy: 'su-test', workspaceId: 'papercusp-workspace', ttlSec: 3600 },
         failSql,
       ),
     ).rejects.toThrow(/SQL SHOULD NOT BE REACHED/);
@@ -317,6 +321,7 @@ describe('volatile measurement validation (EI-20191740437408337)', () => {
           body: 'currently 4 open',
           createdBy: 'su-test',
           measuredAt: '2026-08-11T20:50:00.000Z',
+          ttlSec: 3600, // P-001: an explicit lifetime is required to reach SQL.
         },
         failSql,
       ),
@@ -397,7 +402,8 @@ describe('assertFact audienceScope guard (P-007 — refuse before any write)', (
   it('a valid fleet audience passes the guard (reaches SQL)', async () => {
     await expect(
       assertFact(
-        { scope: 'workspace', key: 'k', body: 'b', createdBy: 'su-test', audienceScope: 'fleet:backend' },
+        // ttlSec: P-001 requires an explicit lifetime before SQL is reachable.
+        { scope: 'workspace', key: 'k', body: 'b', createdBy: 'su-test', audienceScope: 'fleet:backend', ttlSec: 3600 },
         failSql,
       ),
     ).rejects.toThrow(/SQL SHOULD NOT BE REACHED/);

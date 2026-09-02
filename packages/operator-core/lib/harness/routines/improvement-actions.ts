@@ -53,6 +53,7 @@ import { buildDigest, type ScoredItem } from '../improvements/digest';
 import { triageIdea } from '../improvements/triage';
 import { applyTriageDecision, selectUntriaged, type ApplyTriageInput, type ApplyTriageResult } from '../improvements/triage-core';
 import { runInvalidArgsMinerTick } from '../improvements/invalid-args-miner';
+import { runToolRejectionMinerTick } from '../improvements/tool-rejection-miner';
 import { LEARNING_MODEL_SPEC } from '../../learning/model-policy';
 
 /** The claim identity the dispatch stamps on an in-flight item (close-loop D-001). */
