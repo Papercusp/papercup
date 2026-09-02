@@ -17,98 +17,29 @@ import type { CSSProperties, ReactNode } from 'react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { BOOT_HISTORY_KIND_COLOR, BOOT_HISTORY_KIND_FALLBACK } from '../theme';
 
-// Keep in sync with the canonical union in
-// `lib/sync/hyperbee/boot-history.ts`. The KIND_MARK map below must stay
-// exhaustive over every kind; kind hues live centrally in harness/theme.ts
-// (BOOT_HISTORY_KIND_COLOR — the status-map lint's one home for these).
-export type BootHistoryKind =
-  | 'boot_start'
-  | 'boot_ok'
-  | 'boot_fail'
-  | 'close'
-  | 'peer_connected'
-  // WI-1910 hardening: join-lifecycle witnesses (started at joinForBinding
-  // entry; succeeded after the swarm join returns; the failure side is the
-  // existing 'swarm_join_failed'). started-without-either-outcome = a wedged
-  // join — the silent state the WI-1910 hunt could not distinguish.
-  | 'join_started'
-  | 'join_succeeded'
-  | 'swarm_join_failed'
-  | 'peer_rejected'
-  | 'peer_rate_limited'
-  // P-008 (harden-shared-hive-to-256-peers): drive-by fix while syncing
-  // 'replication_stalled' below — this kind existed in the canonical union
-  // (boot-history.ts) but was missing here, a pre-existing exhaustiveness
-  // drift (harmless: an unmapped kind renders with no color/mark, not a crash).
-  | 'peer_cap_near'
-  // WI-6063: per-topic outbound-dial throttling by the peer-budget fairness
-  // evaluator (edge-triggered pause/resume). Mirrored here at the same time as
-  // the canonical union rather than left to drift — page.tsx feeds canonical
-  // BootHistoryEntry[] into this table, so a missing kind is a build break.
-  | 'peer_dial_throttled'
-  | 'peer_capped'
-  | 'peer_revoked'
-  | 'peer_unrevoked'
-  | 'replication_stalled'
-  // P-004 (WI-1840): attached-but-dead replication — was in the canonical
-  // union but missing here (same exhaustiveness drift as peer_cap_near above).
-  | 'replication_frozen'
-  | 'announce_admitted'
-  | 'announce_pending'
-  | 'announce_rejected'
-  // WI-1662: recorded alongside 'announce_rejected' when the reason is specifically
-  // clock skew (>5min stale_ts) rather than a bad/forged signature.
-  | 'announce_clock_skew'
-  | 'announce_error'
-  | 'merge_error'
-  | 'rekey_grant_failed'
-  | 'rekey_grant_skipped'
-  | 'rekey_boundary_skipped'
-  // WI-6043 (2026-07-26): the success-path twin of rekey_boundary_skipped — see
-  // boot-history.ts for the full rationale (the boundary advance was previously silent
-  // on success, indistinguishable-from-never-reached in a banked serve.log).
-  | 'rekey_boundary_applied'
-  | 'epoch_gate_built'
-  | 'epoch_boot_device'
-  // WI-6043 drive-by fix: this kind existed in the canonical union (boot-history.ts,
-  // added for the same WI-6043 investigation) but was missing here — the same
-  // exhaustiveness-drift class noted for peer_cap_near/replication_frozen above, caught
-  // this time by the compiler (dogfood-substrate/page.tsx feeds the canonical
-  // BootHistoryEntry[] into this table, so a missing kind here is a real build break,
-  // not just a cosmetic gap).
-  | 'epoch_gate_skipped'
-  | 'epoch_gate_seen'
-  | 'epoch_defer'
-  | 'epoch_decrypt_fail'
-  | 'epoch_applied'
-  // WI-3604 (split-DHT-universe recurrence guard): recorded once per harness
-  // join, right after this process's shared swarm resolves its DHT
-  // bootstrap. See boot-history.ts for the full incident rationale.
-  | 'dht_universe_ok'
-  | 'dht_universe_mismatch'
-  // WI-3684 repair-on-detect: a connected_never_replicated zombie session
-  // re-attach applied (or failed) under the merge gate. See boot-history.ts.
-  | 'replication_repair'
-  | 'replication_repair_failed'
-  // EI-13317 rung (b) / WI-5340: same pre-existing exhaustiveness-drift class as
-  // epoch_gate_skipped above — these three existed in the canonical union but were
-  // never mirrored here. See boot-history.ts for the full rationale.
-  | 'replication_repair_exhausted'
-  | 'replication_repair_rejoin_failed'
-  | 'replication_repair_confirmation_failed'
-  // EI-18723690188615364: the recovery + bounded-deferral outcomes of the same
-  // post-repair confirmation window. See boot-history.ts for the rationale.
-  | 'replication_repair_confirmed'
-  | 'replication_repair_confirmation_deferred'
-  | 'replication_repair_confirmation_abandoned';
+// The kind union and the entry shape are DERIVED from the canonical module
+// (`lib/sync/hyperbee/boot-history.ts`), never copied. This file used to carry a
+// hand-maintained duplicate of `BootHistoryKind`, and it drifted behind the
+// canonical union five recorded times (peer_cap_near, replication_frozen,
+// epoch_gate_skipped, three replication_repair_* kinds, and finally
+// 'policy_drop', which red-pinned the release gate's lint:tsc:workspaces leg on
+// 2026-09-02 — dogfood-substrate/page.tsx feeds the canonical BootHistoryEntry[]
+// into this table, so any missing kind is a build break, not a cosmetic gap).
+// A type-only import is erased at build time, so this client component gains no
+// runtime dependency on operator-core. The re-export keeps every consumer's
+// import path (BootHistoryTableClient, the tests) unchanged.
+//
+// KIND_MARK below stays `Record<BootHistoryKind, string>` ON PURPOSE: that is the
+// compile-time pin that forces a mark for every NEW canonical kind (the build
+// break moves from an opaque TS2322 on the prop to a named missing key here).
+// Kind hues live centrally in harness/theme.ts (BOOT_HISTORY_KIND_COLOR — the
+// status-map lint's one home for these) and fall back for an unmapped kind.
+import type {
+  BootHistoryEntry,
+  BootHistoryKind,
+} from '@papercusp/operator-core/lib/sync/hyperbee/boot-history';
 
-export interface BootHistoryEntry {
-  ts: number;
-  workspaceId: string;
-  harnessSlug: string;
-  kind: BootHistoryKind;
-  message?: string;
-}
+export type { BootHistoryEntry, BootHistoryKind };
 
 export interface BootHistoryTableProps {
   entries: ReadonlyArray<BootHistoryEntry>;
@@ -146,6 +77,8 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   announce_admitted: '➕',
   announce_pending: '⏳',
   announce_rejected: '⛔',
+  // WI-2039866: a REMOTE op the owner-policy seam dropped (see boot-history.ts).
+  policy_drop: '⊘',
   announce_clock_skew: '🕒',
   announce_error: '✗',
   merge_error: '✗',

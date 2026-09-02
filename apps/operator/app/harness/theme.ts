@@ -403,6 +403,9 @@ export const BOOT_HISTORY_KIND_COLOR: Record<string, string> = {
   announce_admitted: 'var(--good)',
   announce_pending: 'var(--warn)',
   announce_rejected: 'var(--warn)',
+  // WI-2039866: a REMOTE op the owner-policy seam dropped — a drop is a warning
+  // (the op was refused by policy), not a fault of this host.
+  policy_drop: 'var(--warn)',
   announce_clock_skew: 'var(--warn)',
   announce_error: 'var(--bad)',
   merge_error: 'var(--bad)',
