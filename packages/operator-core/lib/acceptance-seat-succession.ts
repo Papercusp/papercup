@@ -10,7 +10,7 @@
  * A session OUTSIDE the lineage is not the author. A session INSIDE it is
  * refused for being inside it. With a dead author the intersection is EMPTY and
  * the plan is permanently unshippable. `plans:set-plan-status force:{reason}`
- * does not help: it waives only the four code-truth checks and explicitly never
+ * does not help: it waives only the code-truth family and explicitly never
  * waives the implementer verdict. On a fleet where members are routinely reaped
  * this is not an edge case — the rubric author is normally the implementer, and
  * implementers are exactly the sessions that get reaped.

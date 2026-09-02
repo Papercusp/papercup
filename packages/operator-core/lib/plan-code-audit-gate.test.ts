@@ -14,11 +14,13 @@ import { evaluatePlanAcceptanceGate } from './plan-acceptance-gate';
 import { getAcceptanceRubricsForPlan } from './rubrics';
 import {
   getEffectiveItemAudits,
+  getLatestActivationAudit,
   getLatestPlanAudit,
   getPlanItemStatuses,
   gitBlobSha,
   planItemTextHash,
   repoCitationContextForHarness,
+  type ActivationAuditMapping,
   type AuditItemEntry,
   type EffectiveItemAudit,
   type PlanAudit,
@@ -44,6 +46,7 @@ vi.mock('./plan-audits', async (importOriginal) => {
   return {
     ...actual,
     getEffectiveItemAudits: vi.fn(),
+    getLatestActivationAudit: vi.fn(),
     getLatestPlanAudit: vi.fn(),
     getPlanItemStatuses: vi.fn(),
     repoCitationContextForHarness: vi.fn(),
@@ -57,6 +60,7 @@ const mockLatestAudit = vi.mocked(getLatestPlanAudit);
 const mockEffectiveAudits = vi.mocked(getEffectiveItemAudits);
 const mockPlanItems = vi.mocked(getPlanItemStatuses);
 const mockCitationContext = vi.mocked(repoCitationContextForHarness);
+const mockActivationAudit = vi.mocked(getLatestActivationAudit);
 
 const PLAN = 'some-plan-2026-08-13';
 let files: Map<string, string>;
@@ -118,6 +122,9 @@ beforeEach(() => {
   mockLatestAudit.mockResolvedValue(audit());
   mockEffectiveAudits.mockResolvedValue([]);
   mockPlanItems.mockResolvedValue([]);
+  // P-014 default: no activation audit, so the requirement-realization join is
+  // inert. Every pre-P-014 case therefore keeps its original meaning.
+  mockActivationAudit.mockResolvedValue(null);
   mockCitationContext.mockImplementation(async () => ({
     repoRoot: '/repo',
     rootSource: 'registry' as const,
@@ -344,5 +351,106 @@ describe('evaluatePlanAcceptanceGate — per-item code audit freshness', () => {
         checks: ['audit_coverage_stale', 'audit_citations_unresolved'],
       },
     });
+  });
+});
+
+/**
+ * P-014 — the activation↔completion JOIN, at the gate level. The pure rules live in
+ * plan-requirement-realization.test.ts; these cases prove the WIRING: that the gate
+ * actually reads the activation audit, that a violation reaches the caller as
+ * `requirement_unrealized`, and that the join is force-waivable like its code-truth
+ * siblings rather than silently exempt.
+ */
+describe('requirement_unrealized (the activation↔completion join)', () => {
+  /** A covered mapping routed at P-001. */
+  const activationAudit = (mappings: ActivationAuditMapping[]): PlanAudit =>
+    audit({
+      auditKind: 'activation',
+      activation: {
+        sourceRanges: [],
+        mappings,
+        repairedOmissions: [],
+        rejectedOrSuperseded: [],
+        unresolvedBlockers: [],
+      },
+    });
+
+  const coveredAtP001 = (over: Partial<ActivationAuditMapping> = {}): ActivationAuditMapping => ({
+    id: 'M-001',
+    sourceRefs: ['session_turn:owner:s1:4'],
+    requirement: 'the ship gate must read the activation audit',
+    planTargets: ['P-001'],
+    disposition: 'covered',
+    ...over,
+  });
+
+  /** P-001, audited but with a doc citation only — explicitly NOT verification (D-008). */
+  const docOnlyP001 = (): EffectiveItemAudit => ({
+    auditSeq: 1,
+    entry: {
+      itemId: 'P-001',
+      verdict: 'implemented',
+      citations: [{ kind: 'doc', ref: 'internal/docs/x', reason: 'design note' }],
+      auditedSha: 'head-1',
+      auditedAt: '2026-08-13T11:00:00.000Z',
+      itemTextHash: planItemTextHash('first requirement'),
+    },
+  });
+
+  const itemDone = () => [{ itemId: 'P-001', status: 'done', itemText: 'first requirement' }];
+
+  it('refuses when a covered requirement reached an item with no verifying citation', async () => {
+    mockEffectiveAudits.mockResolvedValue([docOnlyP001()]);
+    mockPlanItems.mockResolvedValue(itemDone());
+    mockActivationAudit.mockResolvedValue(activationAudit([coveredAtP001()]));
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict).toMatchObject({ satisfied: false, code: 'requirement_unrealized' });
+    expect(verdict.message).toContain('M-001');
+    expect(verdict.message).toContain('P-001');
+  });
+
+  it('passes once that same item carries a verifying code citation', async () => {
+    mockEffectiveAudits.mockResolvedValue([effective({ itemId: 'P-001', itemText: 'first requirement' })]);
+    mockPlanItems.mockResolvedValue(itemDone());
+    mockActivationAudit.mockResolvedValue(activationAudit([coveredAtP001()]));
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict.code).not.toBe('requirement_unrealized');
+  });
+
+  it('does not refuse for a requirement routed to a DECISION — decisions carry no item audit', async () => {
+    mockEffectiveAudits.mockResolvedValue([]);
+    mockPlanItems.mockResolvedValue([]);
+    mockActivationAudit.mockResolvedValue(activationAudit([coveredAtP001({ planTargets: ['D-004'] })]));
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict.code).not.toBe('requirement_unrealized');
+  });
+
+  it('does not refuse for a rejected/open disposition — they claim no absorption', async () => {
+    mockEffectiveAudits.mockResolvedValue([]);
+    mockPlanItems.mockResolvedValue([]);
+    mockActivationAudit.mockResolvedValue(
+      activationAudit([coveredAtP001({ disposition: 'rejected' }), coveredAtP001({ id: 'M-002', disposition: 'open' })]),
+    );
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict.code).not.toBe('requirement_unrealized');
+  });
+
+  it('is force-waivable, and records itself in forcedPast like its code-truth siblings', async () => {
+    mockEffectiveAudits.mockResolvedValue([docOnlyP001()]);
+    mockPlanItems.mockResolvedValue(itemDone());
+    mockActivationAudit.mockResolvedValue(activationAudit([coveredAtP001()]));
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN, { force: { reason: 'requirement tracked elsewhere' } });
+
+    expect(verdict.satisfied).toBe(true);
+    expect(verdict.forcedPast?.checks).toContain('requirement_unrealized');
   });
 });
