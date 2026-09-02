@@ -2701,7 +2701,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // read only — the durable store is `operator_owner_pins` (migration 416, deployment/account-owner-pins.ts):
   // accounts:pin writes the DB first, then pushes here for immediate effect, and launch.ts re-seeds this Map
   // from the DB at gateway startup + on its periodic resync, so a pin survives a gateway restart.
-  const ownerPinMap = new Map<string, { accountId: string; hard: boolean }>();
+  // `setAt`: when the route was (re)set — an explicit dynamic `auto` route resets auto-affinity's memory of
+  // routes served BEFORE it (WI-2140943 × WI-4402: "return this session to fresh selection" must not be
+  // undone by affinity re-pinning it to the account it was just told to leave).
+  const ownerPinMap = new Map<string, { accountId: string; hard: boolean; setAt: number }>();
   // COLD-START RATE SEED (account-cold-start-seed-2026-06-29): the DURABLE per-account rate projection
   // (pausedUntil / 5h+7d utilization + window resets), loaded by the launch layer at startup + on its poll.
   // Right after a gateway restart the LIVE per-account governor is blank, so it can't yet know an account is
@@ -3724,7 +3727,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
     let affinityPinned: ActiveAccount | null = null;
     if (affinityKey) {
       const prior = lastRouteByOwner.get(affinityKey);
-      if (prior && Date.now() - prior.at <= AUTO_AFFINITY_TTL_MS) affinityPinned = pool.select?.(prior.account) ?? null;
+      // An explicit dynamic `auto` route (accounts:pin … auto) means "return this session to fresh
+      // selection" — routes remembered from BEFORE it was set do not count, so affinity cannot re-pin the
+      // caller to the account it was just told to leave (WI-4402). Picks made AFTER the override stick.
+      const priorUsable =
+        prior !== undefined &&
+        Date.now() - prior.at <= AUTO_AFFINITY_TTL_MS &&
+        !(dynPin !== undefined && wantAccount === undefined && prior.at <= dynPin.setAt);
+      if (priorUsable) affinityPinned = pool.select?.(prior.account) ?? null;
       autoAffinityTally[affinityPinned ? 'hits' : 'cold']++;
     } else if (headerPinned === null) {
       autoAffinityTally.nokey++;
@@ -7952,7 +7962,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             });
             return;
           }
-          ownerPinMap.set(ownerId, { accountId: account, hard: !!body.hard });
+          ownerPinMap.set(ownerId, { accountId: account, hard: !!body.hard, setAt: Date.now() });
           sendJson(res, 200, { ok: true, ownerId, pin: ownerPinMap.get(ownerId), count: ownerPinMap.size });
         })
         .catch((e) =>
@@ -8719,7 +8729,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     setOwnerPins(pins: ReadonlyArray<{ ownerId: string; account: string; hard?: boolean }>): void {
       ownerPinMap.clear();
       for (const p of pins) {
-        if (p?.ownerId && p?.account) ownerPinMap.set(p.ownerId, { accountId: p.account, hard: p.hard === true });
+        if (p?.ownerId && p?.account) {
+          ownerPinMap.set(p.ownerId, { accountId: p.account, hard: p.hard === true, setAt: Date.now() });
+        }
       }
     },
     // COLD-START RATE SEED (account-cold-start-seed-2026-06-29): replace the durable per-account rate hint
