@@ -145,6 +145,7 @@ describe('turn-start-orientation — when it speaks', () => {
     const committed = fingerprintOrientation(withWork, EPOCH);
     for (const changed of [
       { ...withWork, unansweredDirected: 3 },
+      { ...withWork, openAsks: { count: 1, oldestAgeMs: 1_000, oldestTo: 'su-peer' } },
       { ...withWork, loopArmed: false },
       { ...withWork, loopFireWithheld: true },
       { ...withWork, held: [{ id: 'WI-1', status: 'blocked' }] },
@@ -676,6 +677,65 @@ describe('never-drop facts fold', () => {
     });
     expect(out).toContain('directed msg(s) awaiting YOUR reply');
     expect(out).toContain('never-drop facts');
+  });
+});
+
+/**
+ * WI-2142142 — the SENDER-side mirror of the unanswered-directed line: asks
+ * THIS agent made that a peer has not yet answered ("what am I still owed?",
+ * as opposed to `unansweredDirected`'s "what do I still owe?").
+ */
+describe('open asks (WI-2142142 — "what am I still owed?")', () => {
+  const openAsks = { count: 3, oldestAgeMs: 3_600_000, oldestTo: 'su-peer' };
+
+  it('renders a line when there is at least one open ask', () => {
+    const out = composeOrientationBlock({
+      state: { ...base, openAsks },
+      committed: null,
+      epoch: EPOCH,
+    });
+    expect(out).toContain('3 open ask(s) sent');
+    expect(out).toContain('awaiting su-peer');
+  });
+
+  it('is absent, and does not break isEmptyOrientation, when openAsks is null', () => {
+    expect(isEmptyOrientation(base)).toBe(true);
+    expect(composeOrientationBlock({ state: base, committed: null, epoch: EPOCH })).toBe('');
+  });
+
+  it('renders below the unanswered-directed line — an ask you are owed never outranks one you owe', () => {
+    const lines = renderOrientationLines({ ...withWork, openAsks });
+    const directed = lines.findIndex((l) => l.includes('awaiting YOUR reply'));
+    const owed = lines.findIndex((l) => l.includes('open ask(s) sent'));
+    expect(directed).toBeGreaterThanOrEqual(0);
+    expect(owed).toBeGreaterThan(directed);
+  });
+
+  it('says NOTHING on a turn where the open-ask count is unchanged — mirrors unansweredDirected', () => {
+    const state = { ...withWork, openAsks };
+    const committed = fingerprintOrientation(state, EPOCH);
+    expect(composeOrientationBlock({ state, committed, epoch: EPOCH })).toBe('');
+  });
+
+  it('the fingerprint is COUNT-ONLY: age moving alone must not re-emit, but the count moving must', () => {
+    const state = { ...withWork, openAsks };
+    const committed = fingerprintOrientation(state, EPOCH);
+    // Same age-token exclusion rule as `unanswered` beside it: a fingerprint keyed
+    // on oldestAgeMs would re-emit every turn purely because time passed.
+    expect(
+      composeOrientationBlock({
+        state: { ...state, openAsks: { ...openAsks, oldestAgeMs: openAsks.oldestAgeMs + 60_000 } },
+        committed,
+        epoch: EPOCH,
+      }),
+    ).toBe('');
+    expect(
+      composeOrientationBlock({
+        state: { ...state, openAsks: { ...openAsks, count: openAsks.count + 1 } },
+        committed,
+        epoch: EPOCH,
+      }),
+    ).not.toBe('');
   });
 });
 
