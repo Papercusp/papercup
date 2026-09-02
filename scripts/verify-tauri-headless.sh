@@ -187,6 +187,18 @@
 #                                isolated from terminal processes/windows.
 #   PAPERCUSP_REPO_DIR          repo root (default: derived from this script)
 #   VERIFY_TAURI_DISPLAY_NUM    Xvfb display number (default: auto-picked, >=90)
+#   VERIFY_TAURI_WINDOW         window size the desktop BOOTS at, <width>x<height>
+#                                (e.g. 1800x1000). Default unset = the real
+#                                config's 1280x800, unchanged. Use this for
+#                                responsive/viewport assertions and run ONE BOOT
+#                                PER VIEWPORT: resizing the live window does not
+#                                stick on this rig (innerWidth stayed 1280 for
+#                                both a wide and a narrow xdotool request, and
+#                                window.__TAURI__ is unavailable), so a resize
+#                                mid-run silently measures the original width.
+#                                Lowers minWidth/minHeight to match a narrow
+#                                request, and grows the Xvfb screen past its
+#                                1920x1080 default for a larger one.
 #   VERIFY_TAURI_TIMEOUT        seconds to wait for the bridge AFTER the desktop
 #                                binary starts (default 180)
 #   VERIFY_TAURI_BUILD_TIMEOUT  seconds to wait for cargo to start the desktop
@@ -648,6 +660,61 @@ case "$NATIVE_TERMINAL" in
     exit 2
     ;;
 esac
+# VIEWPORT GEOMETRY IS A BOOT-TIME PROPERTY HERE, NOT A RUNTIME ONE.
+# Measured 2026-09-02 on this rig: resizing the LIVE window from inside an
+# assertion does not stick. `xdotool windowsize` against the mapped toplevel
+# (win=24117251) left window.innerWidth at 1280 for BOTH a 1800x1000 and a
+# 900x1000 request, and the Tauri window API path is unreachable besides, because
+# withGlobalTauri is off so the webview has no window.__TAURI__. Note this is NOT
+# "no window manager": openbox runs on the display (start_display_server below),
+# so a ConfigureRequest has someone to honour it — the cause is upstream of the
+# WM and was not worth chasing, because the size a window BOOTS at needs no WM
+# cooperation at all. GTK applies it at map time and nothing re-asserts over it.
+#
+# Why this matters more than it sounds: an assertion that resizes and then reads
+# matchMedia measures the ORIGINAL width, so every narrow-viewport expectation
+# fails at once and reads as a broken responsive layout. That is six red
+# assertions which all in fact mean "the window never resized". Boot one instance
+# per viewport instead:
+#   VERIFY_TAURI_WINDOW=1800x1000 scripts/verify-tauri-headless.sh -- <assertions>
+#   VERIFY_TAURI_WINDOW=900x1000  scripts/verify-tauri-headless.sh -- <assertions>
+# Unset (the default) changes the launch config in no way whatsoever, so every
+# existing caller keeps precisely the window it has today.
+WINDOW_GEOMETRY="${VERIFY_TAURI_WINDOW:-}"
+WINDOW_W=""
+WINDOW_H=""
+WINDOW_MIN_W=""
+WINDOW_MIN_H=""
+XVFB_SCREEN_W=1920
+XVFB_SCREEN_H=1080
+if [ -n "$WINDOW_GEOMETRY" ]; then
+  if ! printf '%s' "$WINDOW_GEOMETRY" | grep -Eq '^[0-9]+x[0-9]+$'; then
+    echo "FATAL: VERIFY_TAURI_WINDOW must be <width>x<height> in pixels, e.g. 1800x1000 (got '$WINDOW_GEOMETRY')" >&2
+    exit 2
+  fi
+  WINDOW_W="${WINDOW_GEOMETRY%x*}"
+  WINDOW_H="${WINDOW_GEOMETRY#*x}"
+  if [ "$WINDOW_W" -lt 200 ] || [ "$WINDOW_H" -lt 200 ] || [ "$WINDOW_W" -gt 7680 ] || [ "$WINDOW_H" -gt 4320 ]; then
+    echo "FATAL: VERIFY_TAURI_WINDOW out of range — each dimension must be 200..7680/4320 (got '$WINDOW_GEOMETRY')" >&2
+    exit 2
+  fi
+  # src-tauri/tauri.conf.json pins minWidth 800 / minHeight 600. GTK clamps the
+  # window UP to those floors, so a deliberately-narrow request (a 900x1000
+  # responsive check, say) would silently boot wider than asked unless the floor
+  # moves with it. Lower the floor only as far as the request needs.
+  WINDOW_MIN_W=800
+  WINDOW_MIN_H=600
+  if [ "$WINDOW_W" -lt "$WINDOW_MIN_W" ]; then WINDOW_MIN_W="$WINDOW_W"; fi
+  if [ "$WINDOW_H" -lt "$WINDOW_MIN_H" ]; then WINDOW_MIN_H="$WINDOW_H"; fi
+  # Xvfb has no panning and openbox frames the window, so a window as large as
+  # the screen is clamped to fit it — which would hand the assertions a narrower
+  # window than they asked for while every log line still claimed the request.
+  # Grow the virtual screen instead. The margins cover openbox's frame and are
+  # deliberately generous — erring large costs only Xvfb memory, while erring
+  # small reproduces the very failure this block exists to remove.
+  if [ "$((WINDOW_W + 64))" -gt "$XVFB_SCREEN_W" ]; then XVFB_SCREEN_W="$((WINDOW_W + 64))"; fi
+  if [ "$((WINDOW_H + 96))" -gt "$XVFB_SCREEN_H" ]; then XVFB_SCREEN_H="$((WINDOW_H + 96))"; fi
+fi
 # EI-11641: pin the isolated verify sidecar's memory-watchdog high-water mark. The
 # sidecar boots the full operator (substrate + the DBOS routines tick that
 # dev-operator-ifneeded.sh enables), so its FRESH-boot RSS is background-primary-
@@ -1698,7 +1765,7 @@ verify_assertion_input_integrity() {
 # teardown() and the SIGTERM/SIGINT handlers below already read those as
 # ambient globals, so a re-run's fresh PIDs are picked up with no other wiring.
 start_display_server() {
-  XVFB_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-xvfb" "$WORK/xvfb.log" Xvfb ":$DISPLAY_NUM" -screen 0 1920x1080x24 -nolisten tcp)"
+  XVFB_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-xvfb" "$WORK/xvfb.log" Xvfb ":$DISPLAY_NUM" -screen 0 "${XVFB_SCREEN_W}x${XVFB_SCREEN_H}x24" -nolisten tcp)"
   sleep 1
   DISPLAY=":$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 || { echo "FATAL: Xvfb :$DISPLAY_NUM never came up — see $WORK/xvfb.log" >&2; exit 1; }
   OPENBOX_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-openbox" "$WORK/openbox.log" env DISPLAY=":$DISPLAY_NUM" openbox)"
@@ -2066,16 +2133,31 @@ SPA_ENV_LINE=""
 write_and_launch_tauri() {
   local TAURI_DEV_URL="http://127.0.0.1:$DEV_PORT"
   local TAURI_CONFIG
+  # ONE definition of the window shape, shared by both branches below, so they
+  # cannot drift on geometry. `--config` JSON REPLACES the windows array
+  # wholesale, so every field src-tauri/tauri.conf.json sets has to be restated
+  # here or it silently reverts to a Tauri default. Geometry comes from
+  # VERIFY_TAURI_WINDOW when set (see its block above) and is otherwise the
+  # config's own 1280x800.
+  local WIN_W="${WINDOW_W:-1280}"
+  local WIN_H="${WINDOW_H:-800}"
+  local WIN_MIN_W="${WINDOW_MIN_W:-800}"
+  local WIN_MIN_H="${WINDOW_MIN_H:-600}"
+  local WINDOW_JSON="\"label\":\"main\",\"title\":\"Papercusp\",\"width\":$WIN_W,\"height\":$WIN_H,\"minWidth\":$WIN_MIN_W,\"minHeight\":$WIN_MIN_H,\"resizable\":true,\"fullscreen\":false,\"center\":true,\"decorations\":true,\"dragDropEnabled\":false"
   if [ "$ISOLATED_DB" = "1" ]; then
     # The query is a client-side belt-and-braces guard: even if a future
     # profile change accidentally exposes ambient localStorage, voice-mode will
     # not restore a persisted microphone mode in a write-safe verifier.
     TAURI_DEV_URL="${TAURI_DEV_URL}?verify-tauri-isolated=1"
-    # `--config` JSON replaces the windows array, so carry forward the complete
-    # current window shape while adding the per-run relative WebView profile.
+    # Adds the per-run relative WebView profile to the shared shape above.
     # Tauri resolves this below XDG_DATA_HOME/<label>, which is private above.
-    TAURI_CONFIG="{\"build\":{\"devUrl\":\"$TAURI_DEV_URL\"},\"app\":{\"windows\":[{\"label\":\"main\",\"title\":\"Papercusp\",\"width\":1280,\"height\":800,\"minWidth\":800,\"minHeight\":600,\"resizable\":true,\"fullscreen\":false,\"center\":true,\"decorations\":true,\"dragDropEnabled\":false,\"dataDirectory\":\"verify-tauri-isolated-$DISPLAY_NUM\"}]}}"
+    TAURI_CONFIG="{\"build\":{\"devUrl\":\"$TAURI_DEV_URL\"},\"app\":{\"windows\":[{$WINDOW_JSON,\"dataDirectory\":\"verify-tauri-isolated-$DISPLAY_NUM\"}]}}"
+  elif [ -n "$WINDOW_GEOMETRY" ]; then
+    TAURI_CONFIG="{\"build\":{\"devUrl\":\"$TAURI_DEV_URL\"},\"app\":{\"windows\":[{$WINDOW_JSON}]}}"
   else
+    # No geometry requested and no isolated profile to inject: emit the bare
+    # devUrl override exactly as before, so the shared-DB default path keeps
+    # using the real config's window array untouched.
     TAURI_CONFIG="{\"build\":{\"devUrl\":\"$TAURI_DEV_URL\"}}"
   fi
   cat > "$WORK/launch.sh" <<LAUNCH

@@ -5,7 +5,10 @@ import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracl
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { GOAL_HOLDER_PRODUCTIVITY_GRACE_MS } from '../goals/activity';
 import type { GoalPortfolioThroughputRead } from '../goals/portfolio-throughput';
+import type { GoalHolderLaunchCapacityVerdict } from '../goals/holder-launch-capacity';
 import {
+  GOAL_HOLDER_CAPACITY_DEFER_ESCALATE_MS,
+  GOAL_HOLDER_CAPACITY_DEFER_LOG_INTERVAL_MS,
   GOAL_HOLDER_REKICK_INTERVAL_MS,
   GOAL_HOLDER_REKICK_MAX,
   GOAL_LIVENESS_GRACE_MS,
@@ -790,6 +793,15 @@ function respawnDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): GoalHolder
     reserveRateSlot: async () => ({ kind: 'reserved', attemptsInWindow: 1 }),
     pauseNeedsHuman: async () => {},
     escalateGiveUp: async () => {},
+    // WI-2140573 finding 5: the default assessor reads live accounts:status; a
+    // unit fixture measures capacity as clear unless a test says otherwise.
+    assessLaunchCapacity: async () => ({
+      kind: 'clear',
+      target: { provider: 'claude', accountId: null, agent: 'claude' },
+      reason: 'fixture: capacity clear',
+    }),
+    escalateCapacityDeferral: async () => {},
+    capacityDeferrals: new Map(),
     now: () => NOW,
     states: new Map(),
     ...overrides,
@@ -873,6 +885,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
       neutralizeFailed: 0,
       gaveUp: 0,
       rekicked: 0,
+      deferredCapacity: 0,
       skipped: false,
     });
   });
@@ -1906,5 +1919,170 @@ describe('runGoalHolderRespawnOnce — re-kick a live-but-idle holder before lau
     expect(launch).not.toHaveBeenCalled();
     expect([...rekickStates.values()][0]?.attemptsAtMs.length).toBe(1);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('re-kick 1/3 failed'));
+  });
+});
+
+describe('runGoalHolderRespawnOnce — defers recovery while the launch target is usage-walled (WI-2140573 finding 5)', () => {
+  const sql = {} as never;
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+  const target = { provider: 'codex' as const, accountId: null, agent: 'codex' };
+  const walled = (untilMs: number | null = NOW + 5 * 24 * 3_600_000): GoalHolderLaunchCapacityVerdict => ({
+    kind: 'deferred',
+    target,
+    binding: 'usage-wall',
+    untilMs,
+    accountIds: ['chatgpt-sub-cli'],
+    reason: "no 'codex' account can serve on a fresh reading (1 usage-walled, 0 rate-paused of 1)",
+    pool: {
+      provider: 'codex',
+      total: 1,
+      serviceable: 0,
+      walledFresh: 1,
+      paused: 0,
+      pacing: 0,
+      unknown: 0,
+      atCapacity: true,
+      binding: 'usage-wall',
+      reason: 'walled',
+    },
+  });
+  const ratePaused = (): GoalHolderLaunchCapacityVerdict => ({
+    ...walled(NOW + 5 * 60_000),
+    binding: 'rate-pause',
+  });
+  const clear: GoalHolderLaunchCapacityVerdict = { kind: 'clear', target, reason: '1 of 1 can serve' };
+  const liveButIdle = (ownerId: string): LivenessVerdict => ({
+    ...verdict(ownerId, 'parked', 'none'),
+    heartbeatFresh: true,
+  });
+
+  it('spends NOTHING on a lost holder while the pool is measured usage-walled: no re-kick, no damping, no rate slot, no launch — and escalates once', async () => {
+    const launch = vi.fn(async (g: GoalRowLike) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }));
+    const rekick = vi.fn(async () => ({ woken: 1, staged: 0 }));
+    const reserveRateSlot = vi.fn(async () => ({ kind: 'reserved' as const, attemptsInWindow: 1 }));
+    const escalateCapacityDeferral = vi.fn(async () => {});
+    const states = new Map();
+    const capacityDeferrals = new Map();
+    let now = NOW;
+    const deps = respawnDeps({
+      // The measured shape: the holder's process is up but idle (it died at the model layer).
+      resolveLiveness: async () => vmap(liveButIdle('su-2c130be1')),
+      assessLaunchCapacity: async () => walled(),
+      escalateCapacityDeferral,
+      capacityDeferrals,
+      launch,
+      rekick,
+      rekickStates: new Map(),
+      reserveRateSlot,
+      states,
+      now: () => now,
+    });
+    const first = await runGoalHolderRespawnOnce(sql, deps);
+    expect(first).toMatchObject({ eligible: 1, deferredCapacity: 1, rekicked: 0, attempted: 0, respawned: 0 });
+    expect(rekick).not.toHaveBeenCalled();
+    expect(reserveRateSlot).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+    expect(states.size).toBe(0);
+    // A usage wall escalates on the FIRST deferred tick, and exactly once per episode.
+    expect(escalateCapacityDeferral).toHaveBeenCalledTimes(1);
+    expect(escalateCapacityDeferral.mock.calls[0]?.[1]).toMatchObject({ binding: 'usage-wall' });
+
+    // Ten more 60-second ticks: still deferred, still nothing spent, no second escalation.
+    for (let i = 0; i < 10; i += 1) {
+      now += 60_000;
+      expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ deferredCapacity: 1, attempted: 0 });
+    }
+    expect(launch).not.toHaveBeenCalled();
+    expect(escalateCapacityDeferral).toHaveBeenCalledTimes(1);
+    expect(capacityDeferrals.size).toBe(1);
+    // The deferral is logged on entry and then at most once per log interval — not per tick.
+    const deferredLines = warn.mock.calls.filter((c) => String(c[0]).includes('recovery DEFERRED')).length;
+    expect(deferredLines).toBe(1 + Math.floor((10 * 60_000) / GOAL_HOLDER_CAPACITY_DEFER_LOG_INTERVAL_MS));
+  });
+
+  it('resumes the ordinary path on the first tick that measures capacity back', async () => {
+    const launch = vi.fn(async (g: GoalRowLike) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }));
+    const capacityDeferrals = new Map();
+    let capacity: GoalHolderLaunchCapacityVerdict = walled();
+    const deps = respawnDeps({
+      resolveLiveness: async () => vmap(verdict('su-2c130be1', 'ended')),
+      assessLaunchCapacity: async () => capacity,
+      escalateCapacityDeferral: async () => {},
+      capacityDeferrals,
+      launch,
+      states: new Map(),
+    });
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ deferredCapacity: 1, attempted: 0 });
+    capacity = clear;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ deferredCapacity: 0, attempted: 1, respawned: 1 });
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(capacityDeferrals.size).toBe(0);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('capacity back'))).toBe(true);
+  });
+
+  it('escalates a RATE PAUSE only once the deferral episode outlasts the budget', async () => {
+    const escalateCapacityDeferral = vi.fn(async () => {});
+    let now = NOW;
+    const deps = respawnDeps({
+      resolveLiveness: async () => vmap(verdict('su-2c130be1', 'ended')),
+      assessLaunchCapacity: async () => ratePaused(),
+      escalateCapacityDeferral,
+      capacityDeferrals: new Map(),
+      launch: vi.fn(async () => ({ ownerId: 'must-not-launch', warnings: [] })),
+      states: new Map(),
+      now: () => now,
+    });
+    await runGoalHolderRespawnOnce(sql, deps);
+    expect(escalateCapacityDeferral).not.toHaveBeenCalled();
+    now += GOAL_HOLDER_CAPACITY_DEFER_ESCALATE_MS - 1;
+    await runGoalHolderRespawnOnce(sql, deps);
+    expect(escalateCapacityDeferral).not.toHaveBeenCalled();
+    now += 1;
+    await runGoalHolderRespawnOnce(sql, deps);
+    expect(escalateCapacityDeferral).toHaveBeenCalledTimes(1);
+    expect(escalateCapacityDeferral.mock.calls[0]?.[1]).toMatchObject({ binding: 'rate-pause' });
+  });
+
+  it('proceeds as UNKNOWN when the capacity read throws or cannot measure — a guess never withholds recovery', async () => {
+    const launch = vi.fn(async (g: GoalRowLike) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }));
+    const throwing = respawnDeps({
+      resolveLiveness: async () => vmap(verdict('su-2c130be1', 'ended')),
+      assessLaunchCapacity: async () => {
+        throw new Error('accounts:status unreachable');
+      },
+      launch,
+      states: new Map(),
+    });
+    expect(await runGoalHolderRespawnOnce(sql, throwing)).toMatchObject({ deferredCapacity: 0, attempted: 1 });
+    const unknown = respawnDeps({
+      resolveLiveness: async () => vmap(verdict('su-2c130be1', 'ended')),
+      assessLaunchCapacity: async () => ({ kind: 'unknown', target, reason: 'all readings stale' }),
+      launch,
+      states: new Map(),
+    });
+    expect(await runGoalHolderRespawnOnce(sql, unknown)).toMatchObject({ deferredCapacity: 0, attempted: 1 });
+    expect(launch).toHaveBeenCalledTimes(2);
+  });
+
+  it('closes a deferral episode silently when the holder turns out to be held again', async () => {
+    const capacityDeferrals = new Map([
+      [goalHolderRespawnKey(respawnGoal()), { sinceMs: NOW - 60_000, lastLoggedAtMs: NOW - 60_000, reason: 'x', escalated: true }],
+    ]);
+    const assessLaunchCapacity = vi.fn(async () => walled());
+    const deps = respawnDeps({
+      resolveLiveness: async () => vmap(verdict('su-2c130be1', 'live', 'loop')),
+      assessLaunchCapacity,
+      capacityDeferrals,
+      states: new Map(),
+    });
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ deferredCapacity: 0, attempted: 0 });
+    expect(assessLaunchCapacity).not.toHaveBeenCalled();
+    expect(capacityDeferrals.size).toBe(0);
   });
 });

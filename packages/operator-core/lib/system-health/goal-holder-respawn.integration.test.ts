@@ -204,6 +204,15 @@ function drillDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): {
     neutralize: async () => {},
     notifyHandoff: async () => {},
     escalateGiveUp: async () => {},
+    // WI-2140573 finding 5: the default assessor reads the box's LIVE account
+    // pool, which this drill must not depend on — measure capacity as clear.
+    assessLaunchCapacity: async () => ({
+      kind: 'clear',
+      target: { provider: 'claude', accountId: null, agent: 'claude' },
+      reason: 'drill fixture: capacity clear',
+    }),
+    escalateCapacityDeferral: async () => {},
+    capacityDeferrals: new Map(),
     states: new Map(),
     ...overrides,
   };
