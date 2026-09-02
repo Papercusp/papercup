@@ -2009,7 +2009,7 @@ describe('runGoalHolderRespawnOnce — defers recovery while the launch target i
     expect(deferredLines).toBe(1 + Math.floor((10 * 60_000) / GOAL_HOLDER_CAPACITY_DEFER_LOG_INTERVAL_MS));
   });
 
-  it('resumes the ordinary path on the first tick that measures capacity back', async () => {
+  it('resumes the ordinary path only once capacity reads back for GOAL_HOLDER_CAPACITY_RESUME_CONFIRM_TICKS consecutive ticks', async () => {
     const launch = vi.fn(async (g: GoalRowLike) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }));
     const capacityDeferrals = new Map();
     let capacity: GoalHolderLaunchCapacityVerdict = walled();
@@ -2023,10 +2023,97 @@ describe('runGoalHolderRespawnOnce — defers recovery while the launch target i
     });
     expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ deferredCapacity: 1, attempted: 0 });
     capacity = clear;
+    // First clear tick: the episode stays open (streak 1/2) and nothing is spent.
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ deferredCapacity: 1, attempted: 0 });
+    expect(launch).not.toHaveBeenCalled();
+    expect(capacityDeferrals.size).toBe(1);
+    expect(warn.mock.calls.some((c: unknown[]) => String(c[0]).includes('capacity back'))).toBe(false);
+    // Second consecutive clear tick: confirmed — the episode closes and the launch is paid.
     expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ deferredCapacity: 0, attempted: 1, respawned: 1 });
     expect(launch).toHaveBeenCalledTimes(1);
     expect(capacityDeferrals.size).toBe(0);
-    expect(warn.mock.calls.some((c: unknown[]) => String(c[0]).includes('capacity back'))).toBe(true);
+    const back = warn.mock.calls.filter((c: unknown[]) => String(c[0]).includes('capacity back'));
+    expect(back).toHaveLength(1);
+    expect(String(back[0]?.[0])).toContain('2 consecutive clear readings');
+  });
+
+  it('holds the deferral through a FLAPPING reading — unknown ticks and a lone clear tick between walled ticks never pay a launch (measured 2026-09-02 06:16–08:52Z)', async () => {
+    const launch = vi.fn(async (g: GoalRowLike) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }));
+    const rekick = vi.fn(async () => ({ woken: 1, staged: 0 }));
+    const capacityDeferrals = new Map();
+    const unknown: GoalHolderLaunchCapacityVerdict = {
+      kind: 'unknown',
+      target,
+      reason: "no 'codex' account can serve on a fresh reading (0 usage-walled, 0 rate-paused of 7; 7 stale)",
+    };
+    // The measured shape: deferred → stale/unknown → one clear flicker → deferred again → …
+    const readings: GoalHolderLaunchCapacityVerdict[] = [walled(), unknown, unknown, clear, walled(), clear, unknown, walled()];
+    let tick = 0;
+    let now = NOW;
+    const deps = respawnDeps({
+      resolveLiveness: async () => vmap(liveButIdle('su-2c130be1')),
+      assessLaunchCapacity: async () => readings[Math.min(tick, readings.length - 1)]!,
+      escalateCapacityDeferral: async () => {},
+      capacityDeferrals,
+      launch,
+      rekick,
+      rekickStates: new Map(),
+      states: new Map(),
+      now: () => now,
+    });
+    for (tick = 0; tick < readings.length; tick += 1) {
+      now += 60_000;
+      expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ deferredCapacity: 1, rekicked: 0, attempted: 0 });
+    }
+    expect(launch).not.toHaveBeenCalled();
+    expect(rekick).not.toHaveBeenCalled();
+    expect(capacityDeferrals.size).toBe(1);
+    expect(warn.mock.calls.some((c: unknown[]) => String(c[0]).includes('capacity back'))).toBe(false);
+    expect(warn.mock.calls.some((c: unknown[]) => String(c[0]).includes('capacity NOT confirmed'))).toBe(true);
+
+    // Two consecutive clear readings confirm the wall lifted: the ordinary path resumes exactly once.
+    readings.push(clear, clear);
+    now += 60_000;
+    tick = readings.length - 2;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ deferredCapacity: 1, rekicked: 0, attempted: 0 });
+    now += 60_000;
+    tick = readings.length - 1;
+    const resumed = await runGoalHolderRespawnOnce(sql, deps);
+    expect(resumed.deferredCapacity).toBe(0);
+    expect(capacityDeferrals.size).toBe(0);
+    expect(warn.mock.calls.filter((c: unknown[]) => String(c[0]).includes('capacity back'))).toHaveLength(1);
+    // The resumed path is the ordinary one: a live-but-idle holder is re-kicked before any launch is paid.
+    expect(rekick).toHaveBeenCalledTimes(1);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('closes an episode on a non-deferred reading once the wall\'s own lift time has passed, even without a confirmed streak', async () => {
+    const launch = vi.fn(async (g: GoalRowLike) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }));
+    const capacityDeferrals = new Map();
+    const untilMs = NOW + 30 * 60_000;
+    let capacity: GoalHolderLaunchCapacityVerdict = walled(untilMs);
+    let now = NOW;
+    const deps = respawnDeps({
+      resolveLiveness: async () => vmap(verdict('su-2c130be1', 'ended')),
+      assessLaunchCapacity: async () => capacity,
+      escalateCapacityDeferral: async () => {},
+      capacityDeferrals,
+      launch,
+      states: new Map(),
+      now: () => now,
+    });
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ deferredCapacity: 1, attempted: 0 });
+    // Readings go stale (unknown) before the lift time: still held.
+    capacity = { kind: 'unknown', target, reason: 'readings stale' };
+    now += 60_000;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ deferredCapacity: 1, attempted: 0 });
+    // Past the lift time the same unknown reading may close the episode.
+    now = untilMs + 1;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ deferredCapacity: 0, attempted: 1, respawned: 1 });
+    expect(capacityDeferrals.size).toBe(0);
+    const back = warn.mock.calls.filter((c: unknown[]) => String(c[0]).includes('capacity back'));
+    expect(back).toHaveLength(1);
+    expect(String(back[0]?.[0])).toContain('wall lift time passed');
   });
 
   it('escalates a RATE PAUSE only once the deferral episode outlasts the budget', async () => {
@@ -2075,7 +2162,10 @@ describe('runGoalHolderRespawnOnce — defers recovery while the launch target i
 
   it('closes a deferral episode silently when the holder turns out to be held again', async () => {
     const capacityDeferrals = new Map([
-      [goalHolderRespawnKey(respawnGoal()), { sinceMs: NOW - 60_000, lastLoggedAtMs: NOW - 60_000, reason: 'x', escalated: true }],
+      [
+        goalHolderRespawnKey(respawnGoal()),
+        { sinceMs: NOW - 60_000, lastLoggedAtMs: NOW - 60_000, reason: 'x', escalated: true, clearStreak: 0, untilMs: null },
+      ],
     ]);
     const assessLaunchCapacity = vi.fn(async () => walled());
     const deps = respawnDeps({

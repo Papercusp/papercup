@@ -162,6 +162,18 @@ export const GOAL_HOLDER_CAPACITY_DEFER_LOG_INTERVAL_MS = 10 * 60_000;
  * escalates only once a deferral episode has outlasted this budget.
  */
 export const GOAL_HOLDER_CAPACITY_DEFER_ESCALATE_MS = 10 * 60_000;
+
+/**
+ * WI-2140573 finding 5b (measured 2026-09-02 06:16–08:52Z): consecutive `clear`
+ * verdicts an OPEN deferral episode must observe before ordinary recovery
+ * resumes. The pool reading flaps — one account flickers serviceable for a
+ * single tick, or a stale reading yields `unknown` — and a single non-deferred
+ * tick used to close the episode and pay a launch that died at kickoff
+ * (06:29:16Z: "1 of 7 can serve right now" → launch → 0 responses). A wall
+ * that has genuinely lifted reads `clear` on every tick, so requiring two costs
+ * one tick of latency and nothing else.
+ */
+export const GOAL_HOLDER_CAPACITY_RESUME_CONFIRM_TICKS = 2;
 /**
  * WI-2140573 (measured 2026-09-01): a `lost` holder whose PROCESS is still up
  * (`holderIsRekickable`) is WOKEN with a retry brief before any launch is paid.
@@ -1467,6 +1479,18 @@ export interface GoalHolderCapacityDeferral {
   /** The verdict reason last logged; a change re-logs immediately. */
   reason: string;
   escalated: boolean;
+  /**
+   * Consecutive `clear` verdicts since the last deferred tick (hysteresis —
+   * GOAL_HOLDER_CAPACITY_RESUME_CONFIRM_TICKS). An `unknown` tick holds the
+   * streak (it is not evidence either way); a deferred tick resets it.
+   */
+  clearStreak: number;
+  /**
+   * The last deferred verdict's `untilMs`. Once it has passed, a non-deferred
+   * reading may close the episode even without a confirmed streak, so a wall
+   * whose readings go stale after it lifts cannot hold recovery forever.
+   */
+  untilMs: number | null;
 }
 
 /** Process-local re-kick ledger for ONE goal: attempts against the CURRENT elected holder. */
@@ -2060,9 +2084,18 @@ export async function runGoalHolderRespawnOnce(
       const episode = capacityDeferrals.get(key);
       if (capacity?.kind === 'deferred') {
         const nowMs = deps.now();
-        const current: GoalHolderCapacityDeferral =
-          episode ?? { sinceMs: nowMs, lastLoggedAtMs: 0, reason: '', escalated: false };
+        const current: GoalHolderCapacityDeferral = episode ?? {
+          sinceMs: nowMs,
+          lastLoggedAtMs: 0,
+          reason: '',
+          escalated: false,
+          clearStreak: 0,
+          untilMs: null,
+        };
         capacityDeferrals.set(key, current);
+        // A deferred reading resets the resume streak: the wall is measurably still up.
+        current.clearStreak = 0;
+        current.untilMs = capacity.untilMs;
         const deferredForMs = nowMs - current.sinceMs;
         if (
           current.reason !== capacity.reason ||
@@ -2095,10 +2128,39 @@ export async function runGoalHolderRespawnOnce(
         continue;
       }
       if (episode) {
+        // WI-2140573 finding 5b (measured 2026-09-02 06:16–08:52Z): inside an
+        // OPEN episode a single non-deferred tick is not proof the wall lifted.
+        // The pool reading flapped three times in two hours — `unknown` on a
+        // stale reading ("no 'codex' account can serve on a fresh reading"),
+        // and one account flickering serviceable for exactly one tick — and
+        // each flap closed the episode, re-kicked, and at 06:29:16Z paid a
+        // launch that died at kickoff with zero responses. Resume only after
+        // GOAL_HOLDER_CAPACITY_RESUME_CONFIRM_TICKS consecutive `clear`
+        // readings, or once the wall's own lift time has passed. `unknown`
+        // holds the streak; a deferred tick (above) resets it.
+        const nowMs = deps.now();
+        if (capacity?.kind === 'clear') episode.clearStreak += 1;
+        const wallLifted = episode.untilMs != null && nowMs >= episode.untilMs;
+        const confirmed = episode.clearStreak >= GOAL_HOLDER_CAPACITY_RESUME_CONFIRM_TICKS;
+        if (!confirmed && !wallLifted) {
+          if (nowMs - episode.lastLoggedAtMs >= GOAL_HOLDER_CAPACITY_DEFER_LOG_INTERVAL_MS) {
+            episode.lastLoggedAtMs = nowMs;
+            console.warn(
+              `[goal-holder-respawner] capacity NOT confirmed for ${goal.goalId}: ` +
+                `${capacity?.kind ?? 'unreadable'} reading (${episode.clearStreak}/${GOAL_HOLDER_CAPACITY_RESUME_CONFIRM_TICKS} consecutive clear) ` +
+                `after ${Math.round((nowMs - episode.sinceMs) / 60_000)} min deferred — still no re-kick, no rate slot, no launch` +
+                (capacity ? ` — ${capacity.reason}` : ''),
+            );
+          }
+          summary.deferredCapacity += 1;
+          continue;
+        }
         capacityDeferrals.delete(key);
         console.warn(
           `[goal-holder-respawner] capacity back for ${goal.goalId} after ` +
-            `${Math.round((deps.now() - episode.sinceMs) / 60_000)} min deferred; ordinary recovery resumes` +
+            `${Math.round((nowMs - episode.sinceMs) / 60_000)} min deferred ` +
+            `(${wallLifted && !confirmed ? 'wall lift time passed' : `${episode.clearStreak} consecutive clear readings`}); ` +
+            `ordinary recovery resumes` +
             (capacity ? ` — ${capacity.reason}` : ''),
         );
       }
