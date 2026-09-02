@@ -657,6 +657,39 @@ describe('work_items observe — `rd` (D-004, real PG)', () => {
     expect(obs).toMatchObject({ available: false, claimedBy: 'agB' });
     expect(obs?.gated).toBeUndefined();
   });
+
+  // EI-22122824405906276: the admission-pending (duplicate-screening) floor is the FIRST
+  // gate observeWorkItem checks — and, before this fix, the ONLY gated:true case that
+  // carried no distinguishing field whatsoever (unlike claim-hold/plan-lane, which already
+  // named themselves). A caller — or coord:dispatch, which folds this straight into its
+  // `admission_gated` skip reason — could not tell "wait, this clears on its own" from any
+  // other permanent refusal without re-deriving the fix from work-items-admission.ts by hand.
+  it('reports admissionPending {reason, remedy} for a duplicate-screening-pending item — distinct from the G2/trust gate', async () => {
+    await seedFeature('F-admission-pending', { admission: 'pending' });
+    const obs = await wi.observeWorkItem('F-admission-pending', { harness: H });
+    expect(obs).toMatchObject({ available: false, claimedBy: null, gated: true });
+    expect(obs?.admissionPending?.reason).toMatch(/CLEARS ON ITS OWN/);
+    expect(obs?.admissionPending?.remedy).toContain('assign_to');
+    // The claim path genuinely refuses it too, for the same reason.
+    expect(await wi.claimWorkItem('F-admission-pending', 'agA', { harness: H })).toBeNull();
+  });
+
+  it('an admitted (non-pending) item never carries admissionPending', async () => {
+    await seedFeature('F-admitted-plain', { admission: 'unreviewed' });
+    const obs = await wi.observeWorkItem('F-admitted-plain', { harness: H });
+    expect(obs).toMatchObject({ available: true, claimedBy: null });
+    expect(obs?.admissionPending).toBeUndefined();
+  });
+
+  it('the G2/trust gate (remote, un-admitted) reports gated:true WITHOUT admissionPending — a different floor', async () => {
+    // Distinguishes the two `gated:true` populations: this one is a property of the ROW
+    // (origin/trust), not a temporal duplicate-screening wait, so it must not carry the
+    // "clears on its own" explanation — that would be actively misleading here.
+    await seedFeature('F-remote-pending-vs-trust', { origin: 'remote', auditVerdict: null });
+    const obs = await wi.observeWorkItem('F-remote-pending-vs-trust', { harness: H });
+    expect(obs).toMatchObject({ available: false, claimedBy: null, gated: true });
+    expect(obs?.admissionPending).toBeUndefined();
+  });
 });
 
 describe('work_items:list admissibleOnly — claimable selector matches the claim gate (EI-7841)', () => {
