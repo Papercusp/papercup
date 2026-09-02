@@ -139,6 +139,51 @@ describe('runSessionArchiveReconcileOnce', () => {
     expect(stats.dbStampedEmpty).toBe(0);
     expect(db.stamped).toEqual([]); // stamping would strand the live transcript un-archived forever
     expect(stats.endedUnarchivedRemaining).toBe(3); // still in the scan set — retried next tick
+    // Fix direction 4: the per-tick count alone cannot distinguish "the guard
+    // protected three different live sessions" from "one row is stuck forever".
+    // The oldest row's AGE is what separates them, so it must be measured.
+    expect(stats.oldestEndedUnarchivedAgeMs).toBe(3 * 3600_000);
+  });
+
+  it('db-side LIVENESS invariant (EI-22126624550252124 fix direction 4): the oldest ended-unarchived age is measured, and is null only when nothing is pending', async () => {
+    const nowMs = Date.now();
+    const common = {
+      store: new MiniStore(),
+      dirRoots: [],
+      protectedIdentity: { ownerIds: new Set<string>(), sessionKeys: new Set<string>() },
+      nowMs,
+    };
+
+    // EMPTY scan set ⇒ null. Deliberately distinct from 0: "nothing pending" and
+    // "something pending, aged zero" are different readings and a `?? 0` on this
+    // field would make a stuck-row alarm unreachable.
+    const empty = await runSessionArchiveReconcileOnce({
+      ...common,
+      db: fakeDb([]),
+      ompRoot: await tmp('sar-inv-empty-'),
+      runAdvArchive: async () => ({ ok: false, reason: 'no_files' }),
+    });
+    expect(empty.oldestEndedUnarchivedAgeMs).toBeNull();
+
+    // The stuck shape: rows arrive ORDER BY ended_at ASC, so the OLDEST is the
+    // one reported — not the newest, and not whichever happened to be scanned last.
+    const stuck = await runSessionArchiveReconcileOnce({
+      ...common,
+      db: fakeDb([
+        { id: 21, endedAtMs: nowMs - 30 * 3600_000 },
+        { id: 22, endedAtMs: nowMs - 1 * 3600_000 },
+      ]),
+      ompRoot: await tmp('sar-inv-stuck-'),
+      runAdvArchive: async () => ({ ok: false, reason: 'owner_live' }),
+    });
+    expect(stuck.dbSkippedLive).toBe(2);
+    expect(stuck.oldestEndedUnarchivedAgeMs).toBe(30 * 3600_000);
+
+    // DELIBERATELY-WRONG CONTROL: reporting the NEWEST row's age instead of the
+    // oldest is the plausible implementation slip, and it reads as healthy (1h)
+    // on exactly the input the invariant exists to catch (30h). If this ever
+    // stops differing, the field has silently become the wrong measurement.
+    expect(stuck.oldestEndedUnarchivedAgeMs).not.toBe(1 * 3600_000);
   });
 
   it('db-side: the default archive pass receives the tick\'s protected set (one instrument for both sides)', async () => {

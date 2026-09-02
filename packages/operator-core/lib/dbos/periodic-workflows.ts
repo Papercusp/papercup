@@ -311,6 +311,47 @@ function logCodexHomeInvariant(
   else console.log(line);
 }
 
+/** How long an ended-but-unarchived row may persist before the live-skip
+ *  invariant stops reading as "the guard working" and starts reading as "an adv
+ *  row wrongly marked ended under a live owner".
+ *
+ *  The reconciler ticks hourly, and a legitimately-just-ended session clears on
+ *  the next tick once its transcript passes LIVE_TRANSCRIPT_GRACE_MS (10 min).
+ *  12h is therefore far outside any normal skip and well inside the window in
+ *  which the original incident (a live transcript deleted at 00:03Z, noticed by
+ *  the owner hours later) would have been surfaced by a machine instead. */
+const LIVE_SKIP_STUCK_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * INVARIANT (EI-22126624550252124, fix direction 4) — ALWAYS emitted, like
+ * {@link logCodexHomeInvariant}.
+ *
+ * The liveness guard that stops the archiver deleting a live session's
+ * transcript is silent by design: refusing a pass is a non-event. That is
+ * correct per tick and wrong over time, because the one shape it must not hide
+ * looks identical to it — a row wrongly marked `ended` under a live owner is
+ * refused EVERY tick, so it is never archived and never stamped, and no per-tick
+ * count can tell the two apart. Age can: a stuck row holds `ended_at` old while
+ * `archived_at` stays NULL.
+ *
+ * `null` age means the scan set was EMPTY (nothing pending), which is the
+ * healthy reading — deliberately distinct from "not evaluated".
+ */
+function logLiveSkipInvariant(skippedLive: number, oldestAgeMs: number | null): void {
+  const head = '[session-archive-reconciler] live-skip invariant';
+  if (oldestAgeMs === null) {
+    console.log(`${head}: ${skippedLive} live-skipped, nothing ended-unarchived pending`);
+    return;
+  }
+  const hours = (oldestAgeMs / 3_600_000).toFixed(1);
+  const line = `${head}: ${skippedLive} live-skipped, oldest ended-unarchived ${hours}h`;
+  if (oldestAgeMs > LIVE_SKIP_STUCK_MS) {
+    console.warn(
+      `${line} — STUCK past ${LIVE_SKIP_STUCK_MS / 3_600_000}h. An adv row is marked ended while its owner reads live: the guard is correctly refusing to delete the transcript, but nothing clears ended_at, so it will never archive. Investigate the row rather than the archiver.`,
+    );
+  } else console.log(line);
+}
+
 async function sessionArchiveReconcileTick(): Promise<void> {
   await DBOS.runStep(
     async () => {
@@ -340,12 +381,22 @@ async function sessionArchiveReconcileTick(): Promise<void> {
           s.dbFailed ||
           s.diskFailed ||
           s.diskSkippedFresh ||
-          s.skippedDisk
+          s.skippedDisk ||
+          // EI-22126624550252124: dbSkippedLive was PRINTED in the line below but
+          // was not one of the conditions that decided whether to print it, so a
+          // tick whose only event was "we refused to archive a LIVE session"
+          // emitted nothing at all. The guard's own evidence was invisible unless
+          // some unrelated counter happened to be non-zero in the same tick —
+          // which is the same shape as the incident itself, where every safety net
+          // went dark at once and only the owner noticed.
+          s.dbSkippedLive
         ) {
           console.log(
             `[session-archive-reconciler] db: ${s.dbArchived} archived / ${s.dbStampedEmpty} stamped-empty / ${s.dbSkippedLive} live-skipped / ${s.dbFailed} failed (${s.endedUnarchivedRemaining} remaining); disk: ${s.diskSessionsArchived} archived + ${s.diskLeftoversDeleted} leftovers${s.diskLeftoversRetained ? ` (+${s.diskLeftoversRetained} shared-state RETAINED)` : ''} across ${s.diskDirsScanned} dirs (${s.diskSkippedFresh} fresh-skipped${s.skippedDisk ? `; SWEEP SKIPPED: ${s.skippedDisk}` : ''}); omp: ${s.ompFilesArchived}`,
           );
         }
+        // INVARIANT (EI-22126624550252124) — always emitted, see the helper.
+        logLiveSkipInvariant(s.dbSkippedLive, s.oldestEndedUnarchivedAgeMs);
         // INVARIANT (EI-20419472483823685) — always emitted, see the helper.
         logCodexHomeInvariant(
           s.codexHomesMissingConfig,
