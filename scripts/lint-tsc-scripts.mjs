@@ -27,10 +27,23 @@ const baselineFile = resolve(ROOT, 'scripts/.tsc-baseline.json');
 export const TSC_COMMAND =
   'npx tsc -p scripts/tsconfig.json --noEmit --incremental false';
 
+// WI-2141049 — this project owns by far the LARGEST share of the generated-declaration surface:
+// 58 of `tsconfig.declarations.json`'s 70 inputs live under `scripts/` (33 loose + 25 in
+// `scripts/lib`), and `scripts/**/*.ts` CLIs import them through their tracked `.d.mts`
+// companions (pg-url, okf-backfill-packs, okf-backfill-insights, write-stdout-sync, …). Without
+// this preflight the first typecheck after any such `.mjs` export change judges the STALE
+// committed declaration and reports the resulting phantoms as the caller's regression. See the
+// same guard on lint-tsc-operator.mjs and, originally, lint-tsc.mjs (EI-21441555291852229);
+// `lint-tsc-declaration-preflight.test.ts` derives which legs require it, so a future leg cannot
+// be added without one. Costs ~5s against a ~150s compile.
+/** @type {string} */
+export const TSC_PREFLIGHT_COMMAND = 'npm run gen:declarations';
+
 async function main() {
   await runTscBaselineGate({
     root: ROOT,
     tscCommand: TSC_COMMAND,
+    preTscCommand: TSC_PREFLIGHT_COMMAND,
     baselineFile,
     label: 'scripts',
     argv: process.argv.slice(2),

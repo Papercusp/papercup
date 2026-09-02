@@ -45,6 +45,24 @@ const baselineFile = resolve(ROOT, 'apps/operator/.tsc-baseline.json');
 /** @type {string} */
 export const TSC_COMMAND = 'npx tsc -p apps/operator/tsconfig.json --noEmit --incremental false';
 
+// WI-2141049 — apps/operator consumes tracked `.d.mts` companions GENERATED from its own `.mjs`
+// modules (9 of `tsconfig.declarations.json`'s inputs live under apps/operator, with 13 TS
+// importers inside this project: psu-pty-host, psu-launcher, ptool, operator-discovery). Without
+// this preflight, the FIRST typecheck after any `.mjs` export change measures the stale committed
+// declaration and attributes the resulting phantoms to the caller — measured 2026-09-02 as 14
+// phantom errors (11x TS2554 "Expected 2 arguments, but got 1", 3x TS2353 "'agent' does not exist
+// in type '{ capBytes?: number }'") against a signature change that was already correct, reported
+// as `status=regressed`. operator-core's leg has carried this guard since EI-21441555291852229;
+// this leg owns 3x more generated inputs than that one and was missing it, so the trap stayed
+// armed exactly where these modules actually live. Costs ~5s against a ~150s compile.
+//
+// ⚠ NOT the tsbuildinfo. That was this bug's first, WRONG diagnosis: `--incremental false` above
+// is honoured (tsc 7.0.2 `--showConfig` resolves `incremental:false`, and the run writes no
+// buildinfo), and a warm cache was measured to produce a byte-identical diagnostic set. The
+// variable that actually moved was the regenerated `.d.mts`.
+/** @type {string} */
+export const TSC_PREFLIGHT_COMMAND = 'npm run gen:declarations';
+
 // Cross-package files this gate MEASURES but does not OWN (EI-18649014117371738), mirroring
 // lint-tsc-operator-vite.mjs's FOREIGN_BASELINES: apps/operator's type graph pulls
 // packages/operator-core in transitively via the `@papercusp/operator-core` path alias, so a
@@ -76,6 +94,7 @@ async function main() {
   await runTscBaselineGate({
     root: ROOT,
     tscCommand: TSC_COMMAND,
+    preTscCommand: TSC_PREFLIGHT_COMMAND,
     baselineFile,
     label: 'operator',
     argv,

@@ -62,7 +62,17 @@ vi.mock('../../deployment/account-session-override', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../deployment/account-session-override')>();
   return { ...actual, getAccountOverride: mockGetAccountOverride };
 });
-vi.mock('../../deployment/account-pool-store', () => ({ accountStatus: mockAccountStatus }));
+vi.mock('../../deployment/account-pool-store', async (importOriginal) => {
+  // Same split as account-session-override above: keep the REAL poolVerdictByProvider (a pure
+  // rows -> per-provider rollup) and mock only accountStatus (the DB-backed read). capacity.ts's
+  // poolVerdictFor dynamically imports this module, so a whole-module stub left the export
+  // undefined and every test reaching it died on "No 'poolVerdictByProvider' export is defined".
+  // A `() => []` stand-in would be worse than the crash: poolVerdictFor returns null for an empty
+  // rollup, and per its own contract a null pool reads as an UNMEASURED leg — so the tests that
+  // assert a MEASURED pool snapshot would have gone quietly vacuous instead of failing.
+  const actual = await importOriginal<typeof import('../../deployment/account-pool-store')>();
+  return { ...actual, accountStatus: mockAccountStatus };
+});
 // Keep the end-to-end handler test hermetic (no live DB): the flag read is best-effort
 // (handler already `.catch(() => false)`s a failure), so a fixed resolved value is fine.
 vi.mock('@papercusp/flags', () => ({ FLAGS: { MUG_CAPACITY_DISPATCH: 'MUG_CAPACITY_DISPATCH' } }));
