@@ -281,6 +281,7 @@
     "lint:sql-guidance-justified:report": "node scripts/check-sql-guidance-justified.mjs --report",
     "lint:no-control-bytes": "node scripts/check-no-control-bytes.mjs",
     "lint:guard-reachability": "node scripts/check-lint-guard-reachability.mjs",
+    "lint:guidance-returns-schema": "node scripts/check-guidance-returns-schema.mjs",
     "lint:guard-reachability:census": "node scripts/check-lint-guard-reachability.mjs --census",
     "lint:mock-cast-escape": "node scripts/check-mock-cast-escape.mjs",
     "lint:mock-cast-escape:update": "node scripts/check-mock-cast-escape.mjs --update",
