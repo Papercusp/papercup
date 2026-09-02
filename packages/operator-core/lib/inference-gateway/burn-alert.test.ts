@@ -62,8 +62,10 @@ describe('recordAccountWindowWithBurnAlert (leg c)', () => {
     const { transition } = await recordAccountWindowWithBurnAlert('a1', { utilization7d: 0.7 }, T0 + HR);
     expect(transition).toEqual(expect.objectContaining({ from: 'none', to: 'shed' }));
     expect(h.assertFact).toHaveBeenCalledTimes(1);
+    // The FACT is the pool-wide aggregate key — NOT `account-burn:a1`. The broadcast below is
+    // still per-account; only the continuously-rewritten fact was collapsed.
     expect(h.assertFact.mock.calls[0]![0]).toEqual(
-      expect.objectContaining({ scope: 'workspace', key: 'account-burn:a1' }),
+      expect.objectContaining({ scope: 'workspace', key: 'account-burn' }),
     );
     expect(h.broadcastSevereEvent).toHaveBeenCalledTimes(1);
     expect(h.broadcastSevereEvent.mock.calls[0]![0]).toEqual(
@@ -89,7 +91,7 @@ describe('recordAccountWindowWithBurnAlert (leg c)', () => {
     expect(transition).toEqual(expect.objectContaining({ from: 'shed', to: 'none' }));
     expect(h.retractFact).toHaveBeenCalledTimes(1);
     expect(h.retractFact.mock.calls[0]![0]).toEqual(
-      expect.objectContaining({ scope: 'workspace', key: 'account-burn:a1' }),
+      expect.objectContaining({ scope: 'workspace', key: 'account-burn' }),
     );
     expect(h.broadcastSevereEventResolved).toHaveBeenCalledTimes(1);
     expect(h.broadcastSevereEventResolved.mock.calls[0]![0]).toEqual(
@@ -119,11 +121,15 @@ describe('recordAccountWindowWithBurnAlert (leg c)', () => {
     await recordAccountWindowWithBurnAlert('a1', { utilization7d: 0.7 }, T0 + HR);
 
     // The FACT is folded into every agent's orient — it is the highest-leverage string here.
+    // It is now the POOL AGGREGATE, so it groups by disposition and names the accounts rather
+    // than rendering one account's verdict label; the invariant under test is unchanged — a
+    // pacing projection must never be readable as a measured capacity wall.
     const factBody = String((h.assertFact.mock.calls[0]![0] as { body: string }).body);
-    expect(factBody).toContain('pacing projection, not a measured wall');
-    expect(factBody).toContain('util7d 0.70');
+    expect(factBody).toContain('PACING PROJECTION');
     expect(factBody).toContain('NOT A PROVIDER WALL');
     expect(factBody).toContain('do not remedy it by throttling the fleet');
+    expect(factBody).toContain('a1'); // the burning account is still named
+    expect(factBody).not.toContain('MEASURED WALL');
     expect(factBody).not.toContain("provider's own 7d meter is exhausted");
 
     const ev = h.broadcastSevereEvent.mock.calls[0]![0] as { summary: string; body: string };
@@ -137,14 +143,67 @@ describe('recordAccountWindowWithBurnAlert (leg c)', () => {
     await recordAccountWindowWithBurnAlert('a1', { utilization7d: 1.0, ...RESET }, T0);
 
     const factBody = String((h.assertFact.mock.calls[0]![0] as { body: string }).body);
-    expect(factBody).toContain('USAGE-WALLED (measured; util7d 1.00)');
+    expect(factBody).toContain('MEASURED WALL');
     expect(factBody).toContain("provider's own 7d meter is exhausted");
-    expect(factBody).not.toContain('pacing projection');
+    expect(factBody).toContain('a1');
+    expect(factBody).not.toContain('PACING PROJECTION');
 
     const ev = h.broadcastSevereEvent.mock.calls[0]![0] as { summary: string; body: string };
     expect(ev.summary).toContain('USAGE-WALLED (measured; util7d 1.00)');
     expect(ev.body).toContain("provider's own rolling 7-day meter reads exhausted");
     expect(ev.body).not.toContain('PACING POLICY');
+  });
+
+  // ── P-001 of memory-fold-pollution-and-cap-eviction-2026-09-02: ONE fold line ─────────────
+
+  it('many burning accounts collapse to ONE fact key, grouped by disposition', async () => {
+    h.state.pool = registerAccount(h.state.pool as AccountPool, { id: 'a2', credentialRef: 'cred-a2' }, T0 - HR);
+    h.state.pool = registerAccount(h.state.pool as AccountPool, { id: 'a3', credentialRef: 'cred-a3' }, T0 - HR);
+    for (const id of ['a1', 'a2', 'a3']) {
+      await recordAccountWindowWithBurnAlert(id, { utilization7d: 0.4, ...RESET }, T0);
+    }
+
+    await recordAccountWindowWithBurnAlert('a1', { utilization7d: 0.7 }, T0 + HR); // pacing projection
+    await recordAccountWindowWithBurnAlert('a2', { utilization7d: 1.0 }, T0 + HR); // measured wall
+
+    // THE POINT OF THE ITEM: every assert targets the SAME single key, so N burning accounts
+    // cost one fold slot and one cap seat rather than N. A regression to per-account keys
+    // fails here first.
+    const keys = new Set(h.assertFact.mock.calls.map((c) => (c[0] as { key: string }).key));
+    expect([...keys]).toEqual(['account-burn']);
+
+    const latest = String((h.assertFact.mock.calls.at(-1)![0] as { body: string }).body);
+    expect(latest).toContain('2 of 3 accounts burning');
+    // The two dispositions are stated SEPARATELY and name different accounts — never summed
+    // into one count, which would erase the distinction the disposition contract protects.
+    // Segment the body rather than regex across it: each section contains sentence periods.
+    const measuredAt = latest.indexOf('MEASURED WALL');
+    const pacingAt = latest.indexOf('PACING PROJECTION');
+    expect(measuredAt).toBeGreaterThan(-1);
+    expect(pacingAt).toBeGreaterThan(measuredAt);
+    const measuredSection = latest.slice(measuredAt, pacingAt);
+    const pacingSection = latest.slice(pacingAt);
+    expect(measuredSection).toContain('a2');
+    expect(measuredSection).not.toContain('a1');
+    expect(pacingSection).toContain('a1');
+    expect(pacingSection).not.toContain('a2');
+  });
+
+  it('the aggregate retracts only when the LAST burning account recovers', async () => {
+    h.state.pool = registerAccount(h.state.pool as AccountPool, { id: 'a2', credentialRef: 'cred-a2' }, T0 - HR);
+    await recordAccountWindowWithBurnAlert('a1', { utilization7d: 0.4, ...RESET }, T0);
+    await recordAccountWindowWithBurnAlert('a2', { utilization7d: 0.4, ...RESET }, T0);
+    await recordAccountWindowWithBurnAlert('a1', { utilization7d: 0.7 }, T0 + HR); // both burning
+    await recordAccountWindowWithBurnAlert('a2', { utilization7d: 0.7 }, T0 + HR);
+
+    // a1 recovers, a2 is STILL burning — the shared line must stay up.
+    await recordAccountWindowWithBurnAlert('a1', { utilization7d: 0.3 }, T0 + 2 * HR);
+    expect(h.retractFact).not.toHaveBeenCalled();
+
+    // a2 recovers — now the last wall is gone and the line comes down.
+    await recordAccountWindowWithBurnAlert('a2', { utilization7d: 0.3 }, T0 + 3 * HR);
+    expect(h.retractFact).toHaveBeenCalledTimes(1);
+    expect(h.retractFact.mock.calls[0]![0]).toEqual(expect.objectContaining({ key: 'account-burn' }));
   });
 
   it('unknown account id: no-op write, nothing stated', async () => {
