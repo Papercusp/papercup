@@ -648,3 +648,127 @@ describe('processes:list structured output', () => {
     expect(structured.live).not.toHaveProperty('verifierGroups');
   });
 });
+
+/**
+ * P-023/D-111 — the tool must DERIVE confinement, never surface the stored column.
+ *
+ * `confinement.test.ts` proves the resolver. Nothing proved the TOOL calls it, and that
+ * is the regression with teeth: replacing `resolveTaskConfinement(r)` with the obvious
+ * `cgroupPath: r.cgroupPath` leaves every other assertion in this file passing, ships a
+ * field that LOOKS authoritative, and answers the one question it exists for —
+ * "would restarting the operator kill this?" — with the pre-EI-9748 YES.
+ *
+ * So the fixture below stores exactly that wrong value. Asserting on the stored path
+ * (rather than only on the derived one) is what makes this test fail on the regression:
+ * a test that merely checked `cgroupPath` was a non-empty string would pass either way.
+ */
+describe('processes:list confinement (P-023/D-111)', () => {
+  const ctx = (runId: string) => ({
+    log: vi.fn(),
+    signal: new AbortController().signal,
+    progress: vi.fn(),
+    emit: vi.fn(),
+    workspaceId: 'default',
+    runId,
+    role: 'operator' as const,
+    gateBypass: { role: true, capability: true, quota: true },
+    transport: 'mcp' as const,
+    requestedFormat: 'json' as const,
+    requestedStructured: true,
+    tx: makeTx(),
+  });
+
+  // The operator's OWN cgroup — what completeSyncEnrolment wrote for ~1300 agent-session
+  // rows by reading /proc/<spawner-pid>/cgroup after `systemd-run --scope` forked away.
+  const STORED_SPAWNER_CGROUP = '/user.slice/user-1000.slice/user@1000.service/papercup-dev-api.service';
+
+  const confinedRow = (over: Partial<TaskRow> = {}): TaskRow =>
+    ({
+      taskId: 'agent-row',
+      workspaceId: 'default',
+      rootTaskId: 'agent-row',
+      class: 'agent-session',
+      title: 'agent-row',
+      argv: [],
+      launchedBy: 'su-launcher',
+      workItemId: null,
+      planSlug: null,
+      parentTaskId: null,
+      confined: true,
+      state: 'running',
+      startedAt: '2026-09-02T01:00:00.000Z',
+      lastSeenAt: '2026-09-02T01:00:00.000Z',
+      lastMemoryBytes: null,
+      peakMemoryBytes: null,
+      cpuUsec: 0,
+      pidsCurrent: 1,
+      scopeUnit: 'pc-agent-row.scope',
+      cgroupPath: STORED_SPAWNER_CGROUP,
+      memoryMaxBytes: null,
+      deadlineAt: null,
+      exitCode: null,
+      exitReason: null,
+      logPath: null,
+      detail: {},
+      ...over,
+    }) as TaskRow;
+
+  async function tasksFor(row: TaskRow, args: Record<string, unknown> = {}) {
+    const { listTasks } = await import('../../../task-manager/store');
+    vi.mocked(listTasks).mockClear();
+    vi.mocked(listTasks).mockResolvedValueOnce([row]);
+
+    const dispatched = await dispatchProjectedTool(projected, 'processes:list', args, ctx('confinement-test'), {});
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    return (
+      dispatched.result?.structuredContent as {
+        tasks: Array<{
+          taskId: string;
+          confinement: {
+            confined: boolean;
+            cgroupPath: string | null;
+            scopeUnit: string | null;
+            source: string;
+            insideOperatorCgroup?: boolean;
+            reason?: string;
+          };
+        }>;
+      }
+    ).tasks;
+  }
+
+  it('derives the path from scope_unit and does NOT echo the stored spawner cgroup', async () => {
+    const [task] = await tasksFor(confinedRow());
+
+    expect(task!.confinement.source).toBe('derived-from-scope-unit');
+    expect(task!.confinement.scopeUnit).toBe('pc-agent-row.scope');
+    // The derived root depends on the host's own cgroup, so assert the PROPERTY that
+    // distinguishes derivation from a column read rather than a literal path.
+    expect(task!.confinement.cgroupPath).toContain('pc-agent-row.scope');
+    expect(task!.confinement.cgroupPath).not.toBe(STORED_SPAWNER_CGROUP);
+    expect(task!.confinement.cgroupPath).not.toContain('papercup-dev-api.service');
+  });
+
+  it('reports a confined row with no scope unit as UNKNOWN, not as unconfined', async () => {
+    const [task] = await tasksFor(confinedRow({ scopeUnit: null }));
+
+    expect(task!.confinement.confined).toBe(true);
+    expect(task!.confinement.source).toBe('not-derivable');
+    expect(task!.confinement.cgroupPath).toBeNull();
+    // The stored column is present and wrong; "no scope unit" must not fall back to it.
+    expect(task!.confinement.cgroupPath).not.toBe(STORED_SPAWNER_CGROUP);
+    // Absent, never false — a `false` here reads as "safe from an operator restart".
+    expect(task!.confinement).not.toHaveProperty('insideOperatorCgroup');
+  });
+
+  it('passes coordOwnerId through to the ledger read as its own filter', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    await tasksFor(confinedRow(), { coordOwnerId: 'su-mine' });
+
+    // Distinct from launchedBy on purpose: for a fleet member they differ, which is why
+    // launchedBy cannot answer "which row is me".
+    expect(vi.mocked(listTasks)).toHaveBeenCalledWith(
+      expect.objectContaining({ coordOwnerId: 'su-mine', launchedBy: undefined }),
+    );
+  });
+});
