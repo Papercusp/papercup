@@ -26,6 +26,7 @@
  * catch (measured on one plan: 6 of 24 non-terminal items cite a terminal
  * work-item; only one was verified load-bearing).
  */
+import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -65,14 +66,25 @@ export interface CitedWorkItemRefState {
  */
 export async function getWorkItemRefStates(
   refs: string[],
+  /**
+   * WI-2142684: a background sweep (no per-window request context) must never
+   * resolve `activeWorkspaceId()` — that reads request-scoped/process-pinned
+   * ambient state, which is simply the WRONG workspace for a routine iterating
+   * many workspaces. `sql`/`workspaceId` let such a caller pass its own
+   * already-scoped connection + explicit target instead of relying on ambient
+   * state; both default to the prior (request-scoped) behavior, so the one
+   * existing caller (items.ts, itself request-scoped) is unaffected.
+   */
+  opts: { sql?: Sql; workspaceId?: string } = {},
 ): Promise<Map<string, CitedWorkItemRefState>> {
   const out = new Map<string, CitedWorkItemRefState>();
   if (refs.length === 0) return out;
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const rows = await sql<{ feature_id: string; status: string | null }[]>`
     SELECT DISTINCT ON (feature_id) feature_id, status
       FROM harness_shared.work_items
-     WHERE workspace_id = ${activeWorkspaceId()}
+     WHERE workspace_id = ${workspaceId}
        AND feature_id = ANY(${refs}::text[])
      ORDER BY feature_id, updated_ts DESC`;
   for (const r of rows) {
