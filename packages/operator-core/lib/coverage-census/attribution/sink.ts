@@ -56,6 +56,27 @@ import {
 export const HTTP_ROUTE_KIND = 'http-route';
 export const MCP_TOOL_KIND = 'mcp-tool';
 
+/**
+ * The census kinds this sink can actually OBSERVE — every kind a `record*` entry point
+ * below emits, and nothing else.
+ *
+ * WHY THIS IS EXPORTED RATHER THAN LEFT FOR EACH READER TO RE-DERIVE. A censused surface
+ * whose kind is absent here can never acquire traffic evidence by ANY path, so its
+ * permanent place at the bottom of the coverage ladder is a structural fact about the
+ * OBSERVER population, not a measurement of test coverage. A reader that cannot tell
+ * those apart reports "below floor — work the gap queue" over surfaces where writing a
+ * test changes nothing. Measured 2026-09-02 (P-008): 251 of 2,017 live surfaces — the
+ * whole `sync-query` kind, 12.4% — sit in exactly that state, censused by
+ * `providers/sync-queries.ts` with no observer anywhere.
+ *
+ * It lives beside the constants and the `record*` functions that emit them so a third
+ * observer cannot be written without this set in the author's eye, and the paired
+ * behavioural guard in `observed-surface-kinds.test.ts` DRIVES the real entry points and
+ * fails when the set and the emitted kinds disagree. That makes this derived from
+ * behaviour rather than asserted — the ladder's rung 2, not a hand-maintained list.
+ */
+export const OBSERVED_SURFACE_KINDS: readonly string[] = [HTTP_ROUTE_KIND, MCP_TOOL_KIND];
+
 /** What a flush needs of a backend. Injected so the buffer + hooks are testable without PG. */
 export interface EvidenceStore {
   write(

@@ -60,6 +60,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { toIso } from '../_pg-timestamp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import { OBSERVED_SURFACE_KINDS } from '../../coverage-census/attribution/sink';
 
 const DEFAULT_LIMIT = 50;
 
@@ -184,6 +185,8 @@ export interface CoverageRawInput {
         meets_l3: string | number;
         meets_l4: string | number;
         meets_floor: string | number;
+        /** Surfaces carrying ANY evidence basis — observed traffic or authored. */
+        evidenced: string | number;
         below_unwaived_l1: string | number;
         below_unwaived_l2: string | number;
         below_unwaived_l3: string | number;
@@ -254,6 +257,7 @@ export type TestingCoverageFloorAssessment =
   | 'no-population'
   | 'meets-floor'
   | 'below-floor'
+  | 'no-evidence'
   | 'measured-with-waivers';
 
 /** PURE. Numeric zero is interpreted only with its population provenance. */
@@ -267,15 +271,39 @@ export function assessTestingCensusPopulation(input: {
   return input.lastCensusAt === null ? 'census-not-run' : 'empty-measured';
 }
 
-/** PURE. The aggregate, never the limit-capped rows, decides the floor. */
+/**
+ * PURE. The aggregate, never the limit-capped rows, decides the floor.
+ *
+ * `evidenced` REFINES THE SHORTFALL BRANCH ONLY, AND THAT NARROWNESS IS THE POINT (P-008).
+ * `assessTestingCensusPopulation` above already refuses to let a zero DENOMINATOR stand
+ * without its provenance; until now the NUMERATOR had no such protection, so one
+ * `below-floor` absorbed two states that call for opposite actions:
+ *
+ *   - surfaces a test could cover and does not — the gap queue is real work;
+ *   - surfaces no evidence has EVER reached, because nothing armed an observer that can
+ *     persist into this scope — where every item in that queue is unactionable, and
+ *     writing tests moves nothing.
+ *
+ * Measured 2026-09-02: all 2,017 live surfaces read `below-floor` / `belowUnwaived=2017`
+ * while `coverage_evidence` held ZERO rows, because `isAttributionArmed()` is only ever
+ * set on test-spawn paths, the unit rail stands down at flush, and the integration rail
+ * writes to a throwaway database under a synthetic scope. The queue was 2,017 rows deep
+ * and none of it was work. That is the reading this code exists to prevent.
+ *
+ * It refines ONLY the `belowUnwaived > 0` branch on purpose: a missing numerator can make
+ * a shortfall unattributable, but it must never be able to turn a passing floor into a
+ * failing one, so `meets-floor` and `measured-with-waivers` are left untouched.
+ */
 export function assessTestingCoverageFloor(input: {
   verdict: 'measured' | 'not-measured';
   surfaces: number;
   below: number;
   belowUnwaived: number;
+  /** Surfaces carrying ANY evidence basis — observed traffic or authored. */
+  evidenced: number;
 }): TestingCoverageFloorAssessment {
   if (input.verdict === 'not-measured' || input.surfaces === 0) return 'no-population';
-  if (input.belowUnwaived > 0) return 'below-floor';
+  if (input.belowUnwaived > 0) return input.evidenced === 0 ? 'no-evidence' : 'below-floor';
   if (input.below > 0) return 'measured-with-waivers';
   return 'meets-floor';
 }
@@ -352,6 +380,22 @@ export function assembleCoverage(input: CoverageRawInput) {
   const meetsFloor = num(totals?.meets_floor);
   const belowUnwaivedFloor = num(totals?.below_unwaived_floor);
   const belowFloor = surfaces - meetsFloor;
+  const evidenced = num(totals?.evidenced);
+
+  /**
+   * P-008. Surfaces whose KIND no observer emits — they cannot acquire traffic evidence
+   * by any path, so their place at the bottom of the ladder is a fact about the observer
+   * population and not a coverage measurement.
+   *
+   * Derived from the sink's own exported set rather than a list maintained here: a third
+   * observer must not require an edit in this file to be counted correctly, and a kind
+   * that LOSES its observer must not keep flattering the queue. Counted from `byKindRows`,
+   * which the aggregate already reads, so this costs no extra query.
+   */
+  const unobservable = input.byKindRows.reduce(
+    (acc, r) => (OBSERVED_SURFACE_KINDS.includes(r.kind) ? acc : acc + num(r.n)),
+    0,
+  );
 
   return {
     scope,
@@ -367,6 +411,7 @@ export function assembleCoverage(input: CoverageRawInput) {
         surfaces,
         below: belowFloor,
         belowUnwaived: belowUnwaivedFloor,
+        evidenced,
       }),
     },
 
@@ -395,6 +440,19 @@ export function assembleCoverage(input: CoverageRawInput) {
         belowUnwaived: belowUnwaivedFloor,
         fidelityCounts,
       }),
+
+      /**
+       * P-008. The two numbers that say whether a shortfall is WORK.
+       *
+       * `evidenced` is how many surfaces the evidence apparatus has ever reached;
+       * `unobservable` is how many belong to a kind no observer emits, so they can never
+       * be reached at all. Both are carried beside the ratio rather than folded into it,
+       * because a caller acting on the gap queue needs to subtract them and a caller
+       * reporting coverage must not: they change what the shortfall MEANS, not its size.
+       */
+      evidenced,
+      unobservable,
+
       /** Every rung, so a caller sees the shape of the ladder without four calls.
        *  Each carries its own markers — a per-rung number is an aggregate too. */
       byRung: Object.fromEntries(
@@ -464,6 +522,7 @@ export default defineTool({
       'Aggregates are computed in SQL over the WHOLE matching set and do not move with `limit`; only `rows` is capped, and reports count/total/truncatedByLimit.',
       "Rungs are judged by the view's meets_lN FLAG, never depth >= N — the rungs are not nested (an intent-tested surface the fuzzer never ran against is L3 with no L2), so `depth` is a human-facing summary only.",
       'census { surfaces, retired, lastCensusAt, ageMs, providersRegistered, providersEnabled } describes the POPULATION. providersRegistered:0 means the census loop has nothing to iterate and cannot ever write a row (WI-39809) — the state that reads as a healthy zero everywhere else.',
+      'BEFORE WORKING A GAP QUEUE, read coverage.evidenced and coverage.unobservable. evidenced:0 means nothing has EVER been measured about this scope, so the shortfall is a fact about the apparatus and no test you write will move it — the assessment says `no-evidence` rather than `below-floor` for exactly that case. unobservable counts surfaces whose kind no observer emits, which arming cannot fix. Subtract both before sizing the work.',
     ].join(' '),
     seeAlso: ['testing:runs (did this test file pass — the run ledger)', 'testing:run (actually run test files)'],
   },
@@ -614,6 +673,7 @@ export async function readCoverage(args: CoverageArgs) {
         meets_l3: string;
         meets_l4: string;
         meets_floor: string;
+        evidenced: string;
         below_unwaived_l1: string;
         below_unwaived_l2: string;
         below_unwaived_l3: string;
@@ -637,7 +697,16 @@ export async function readCoverage(args: CoverageArgs) {
              count(*) FILTER (WHERE NOT meets_l2 AND NOT waived)            AS below_unwaived_l2,
              count(*) FILTER (WHERE NOT meets_l3 AND NOT waived)            AS below_unwaived_l3,
              count(*) FILTER (WHERE NOT meets_l4 AND NOT waived)            AS below_unwaived_l4,
-             count(*) FILTER (WHERE NOT ${meetsCol} AND NOT waived)         AS below_unwaived_floor
+             count(*) FILTER (WHERE NOT ${meetsCol} AND NOT waived)         AS below_unwaived_floor,
+             -- P-008. Does the NUMERATOR have any provenance at all? Counted over the
+             -- whole matching population, and deliberately BROADER than any single
+             -- rung: a surface with observed traffic OR authored evidence has been
+             -- reached by the apparatus, even when what it proved falls short. Only a
+             -- zero here means nothing ever reached this scope, which is why the floor
+             -- assessment may spend it to tell an unactionable gap queue from a real one.
+             count(*) FILTER (
+               WHERE last_evidence_at IS NOT NULL OR COALESCE(authored_evidence, 0) > 0
+             )                                                             AS evidenced
         FROM harness_shared.testing_surface_depth
         ${where}
     `;

@@ -1520,9 +1520,20 @@ export const TESTING_COVERAGE_FLOOR_CELL: CellSpec = {
    * seeing it, and the second is the subtle one:
    *   - the vacuous ratio: 0 of 0 rendered as 0% or 100%.
    *   - the TRUNCATED population: a ratio computed over a world smaller than the real
-   *     one, which always flatters. Measured 2026-08-18: the mcp-tool population
-   *     censused as 49 against 675 tool files on disk (WI-39812), so that kind's ratio
-   *     was computed over 7% of its world and could not show the other 93% as gaps.
+   *     one, which always flatters, because a surface the census never enumerated
+   *     cannot appear as a gap.
+   *
+   * ⚠ THE WORKED EXAMPLE THAT USED TO SIT HERE HAS BEEN DELETED RATHER THAN UPDATED, and
+   * that is the durable lesson (P-008). It read that the mcp-tool population "censused as
+   * 49 against 675 tool files on disk (WI-39812), so that kind's ratio was computed over
+   * 7% of its world" — a hand-maintained measurement, unpinned by any check, load-bearing
+   * enough that P-008 was written to re-verify it. By 2026-09-02 the census held 884 live
+   * mcp-tool surfaces and no such truncation survived, but the prose still asserted it
+   * with a date and a work-item id, which reads as corroboration. Replacing it with
+   * today's number would only re-arm the same trap in fresher paint, so the STRUCTURAL
+   * risk is what stays here and the number lives where it can be re-read:
+   * `state:read { cell: 'testing.census.population' }`, whose own codes separate an empty
+   * census from an unregistered provider.
    */
   /**
    * D-010, with the code RENAMED to `no-population` per D-012 — the truth table called
@@ -1557,6 +1568,12 @@ export const TESTING_COVERAGE_FLOOR_CELL: CellSpec = {
         meaning: 'Surfaces sit below the floor without a waiver.',
         safeAction: 'Work the returned unwaived gap queue.',
       },
+      'no-evidence': {
+        meaning:
+          'Surfaces sit below the floor, but NOTHING has ever been measured about them — `coverage.evidenced` is 0, so no observed traffic and no authored evidence has reached this scope. The shortfall is a fact about the apparatus, not about the tests.',
+        safeAction:
+          'Do NOT work the gap queue — every row in it is unactionable, and writing tests will not move this number. Repair the evidence path first: check that an observer is armed somewhere that can PERSIST into this scope, then re-read. `coverage.unobservable` says how much of the population no observer emits at all, which no arming can fix.',
+      },
       'measured-with-waivers': {
         meaning:
           'Nothing is below the floor UNWAIVED, but surfaces ARE below it under live waivers — the apparent pass rests on accepted exceptions.',
@@ -1564,7 +1581,19 @@ export const TESTING_COVERAGE_FLOOR_CELL: CellSpec = {
           'Record that the gaps are waived rather than covered, and re-check the waivers before relying on the floor as evidence.',
       },
     },
-    evidence: ['census.surfaces', 'coverage.below', 'coverage.belowUnwaived', 'verdict'],
+    evidence: [
+      'census.surfaces',
+      'coverage.below',
+      'coverage.belowUnwaived',
+      'verdict',
+      /**
+       * P-008. Carried so a reader can tell an ACTIONABLE shortfall from an unactionable
+       * one without a second call: `evidenced` 0 means nothing ever measured this scope,
+       * and `unobservable` is the slice no observer emits, which arming cannot fix.
+       */
+      'coverage.evidenced',
+      'coverage.unobservable',
+    ],
   },
 
   /**
