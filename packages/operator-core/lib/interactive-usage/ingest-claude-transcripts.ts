@@ -26,6 +26,7 @@ import path from 'node:path';
 import { costFromTokens } from '@papercusp/model-pricing';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
+import type { TranscriptAdapter } from './ingest-adapters';
 
 export interface TranscriptDelta {
   /** Assistant turns (API calls) parsed in this delta. */
@@ -149,7 +150,7 @@ export interface IngestOptions {
   maxBytesPerFile?: number;
   /** Adapter set to ingest (P-015). Default: claude + codex + OMP
    *  (`defaultAdapters()` from ingest-adapters.ts). */
-  adapters?: Array<{ name: string; root: string; parse: (chunk: string) => ParsedChunk }>;
+  adapters?: TranscriptAdapter[];
   /** Also sweep each per-session Claude isolation root
    *  (`~/.papercusp/session-claude/<owner>/projects`) in addition to the
    *  global `~/.claude/projects` claude adapter. Default true; only applies
@@ -161,6 +162,12 @@ export interface IngestOptions {
    *  holding one subdir per owner (default `~/.papercusp/session-claude`,
    *  same default as `claudeProjectsRoots()`). Test seam only. */
   isolationBase?: string;
+  /** Codex isolation base override for the per-session `CODEX_HOME` sweep —
+   *  the parent dir holding one `session-<advId>/` home per psu-launched codex
+   *  session (default `~/.papercusp/su-codex-homes`, same default as
+   *  `codexSessionRoots()`). Swept under the same `includeIsolationRoots`
+   *  switch as the Claude isolation roots. Test seam only. */
+  codexIsolationBase?: string;
 }
 
 export interface IngestResult {
@@ -229,11 +236,26 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
     // matches name==='claude' only) can't collide two adapters onto the same
     // directory and double-ingest a tick.
     const { claudeProjectsRoots, defaultClaudeProjectsRoot } = await import('../claude-sessions');
+    const { codexSessionRoots, parseCodexChunk, codexSessionIdForFile } = await import('./ingest-adapters');
     const globalRoot = defaultClaudeProjectsRoot();
     const isoRoots = (await claudeProjectsRoots(globalRoot, opts.isolationBase)).filter((r) => r !== globalRoot);
+    // WI-2140701 (a): psu-launched codex sessions run under a per-session
+    // CODEX_HOME (`~/.papercusp/su-codex-homes/session-<advId>/`) and write
+    // their rollouts under `<home>/sessions/**` — EI-19964643447670242's
+    // isolation-root blindness on the codex lane. The default `codex` adapter
+    // only ever swept the global `~/.codex/sessions`, so every psu codex agent
+    // (the codex everything-goal holder included) had ZERO usage samples and
+    // its goal's spend rollup could not see the holder's own cost.
+    const codexIsoRoots = await codexSessionRoots(opts.codexIsolationBase);
     adapters = [
       ...adapters,
       ...isoRoots.map((root, i) => ({ name: `claude-iso-${i}`, root, parse: parseTranscriptChunk })),
+      ...codexIsoRoots.map((root, i) => ({
+        name: `codex-iso-${i}`,
+        root,
+        parse: parseCodexChunk,
+        sessionIdForFile: codexSessionIdForFile,
+      })),
     ];
   }
 
@@ -278,7 +300,9 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
         const chunk = await readFileDelta(file, offset, capBytes);
         const { perModel, consumedBytes } = adapter.parse(chunk);
         if (consumedBytes === 0) continue; // no complete line yet — retry next tick
-        const sessionId = path.basename(file, '.jsonl');
+        // The value every spend join keys on (= adv_sessions.session_id); codex
+        // rollouts need the adapter's extractor, see TranscriptAdapter.sessionIdForFile.
+        const sessionId = adapter.sessionIdForFile ? adapter.sessionIdForFile(file) : path.basename(file, '.jsonl');
 
         await sql.begin(async (tx) => {
           for (const [model, d] of perModel) {

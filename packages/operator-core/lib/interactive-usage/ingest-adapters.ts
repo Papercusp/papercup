@@ -25,8 +25,10 @@
  *       `message.model`. Deduped by line `id` (max-merge), mirroring the
  *       Claude parser's message.id discipline.
  */
+import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { codexHomesRoot } from '@papercusp/orchestrator/session-launch-dirs';
 import type { ParsedChunk, TranscriptDelta } from './ingest-claude-transcripts';
 import { parseTranscriptChunk } from './ingest-claude-transcripts';
 
@@ -71,6 +73,7 @@ export function parseCodexChunk(chunk: string): ParsedChunk {
           last_token_usage?: {
             input_tokens?: number;
             cached_input_tokens?: number;
+            cache_write_input_tokens?: number;
             output_tokens?: number;
           } | null;
         } | null;
@@ -89,6 +92,7 @@ export function parseCodexChunk(chunk: string): ParsedChunk {
     acc.turns += 1;
     acc.inputTokens += Math.max(0, input - cached); // input INCLUDES the cached subset
     acc.cacheReadTokens += cached;
+    acc.cacheCreationTokens += u.cache_write_input_tokens ?? 0;
     acc.outputTokens += u.output_tokens ?? 0;
     perModel.set(model, acc);
   }
@@ -162,9 +166,71 @@ export interface TranscriptAdapter {
   root: string;
   /** Chunk parser (complete-lines-only; returns the watermark advance). */
   parse: (chunk: string) => ParsedChunk;
+  /**
+   * Native session id for a transcript file — the value written to
+   * `agent_usage_samples.session_id`, which MUST equal `adv_sessions.session_id`
+   * for every spend join (loop cost-cap, goal spend rollup, the goal_id stamp
+   * via `goal_id_for_usage_session`) to find the row. Default: the basename
+   * minus `.jsonl` (correct for Claude `<uuid>.jsonl` and OMP thread files).
+   * Codex names its rollouts `rollout-<ts>-<uuid>.jsonl`, so its adapter
+   * extracts the trailing uuid — WI-2140701 (a): without this every codex
+   * sample carried an unmatchable `rollout-…` session_id and a NULL goal_id.
+   */
+  sessionIdForFile?: (filePath: string) => string;
 }
 
-/** The default adapter set: Claude Code + codex + OMP rollouts. */
+/** `rollout-2026-09-02T01-10-49-<uuid>.jsonl` → `<uuid>` — the same shape the
+ *  wake-executor / compaction-usage codex handles key on. */
+const CODEX_ROLLOUT_UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+
+/** Codex rollout file → `adv_sessions.session_id` (the bare rollout uuid).
+ *  Falls back to the basename when the file is not rollout-named. */
+export function codexSessionIdForFile(filePath: string): string {
+  const m = CODEX_ROLLOUT_UUID_RE.exec(path.basename(filePath));
+  return m ? m[1].toLowerCase() : path.basename(filePath, '.jsonl');
+}
+
+/** Base dir holding one per-session `CODEX_HOME` per psu-launched codex
+ *  session (`~/.papercusp/su-codex-homes/session-<advId>/`); each home writes
+ *  its rollouts under `<home>/sessions/YYYY/MM/DD/`. */
+export function defaultCodexHomesBase(): string {
+  return codexHomesRoot();
+}
+
+/**
+ * Every per-session codex transcript root: `<base>/<home>/sessions` for each
+ * per-session CODEX_HOME under the base (WI-2140701 (a)). The global
+ * `~/.codex/sessions` root is NOT included — the default `codex` adapter
+ * already covers it. Mirrors `claudeProjectsRoots()` for Claude's isolation
+ * roots, because the same structural blindness (EI-19964643447670242) applied
+ * on the codex lane: every psu-launched codex agent — the codex
+ * everything-goal holder included — wrote rollouts under a root no ingester
+ * ever scanned. Only the one known `sessions` level is enumerated (a per-home
+ * recursive readdir would descend into ~20 config subdirs per home — the
+ * 2026-07-05 sweep-hang class). Fail-soft: a missing/unreadable base → [].
+ */
+export async function codexSessionRoots(isolationBase: string = defaultCodexHomesBase()): Promise<string[]> {
+  const roots: string[] = [];
+  let homes: string[];
+  try {
+    homes = await fs.readdir(isolationBase);
+  } catch {
+    return roots; // no per-session codex homes on this machine
+  }
+  for (const home of homes) {
+    const sessions = path.join(isolationBase, home, 'sessions');
+    try {
+      if ((await fs.stat(sessions)).isDirectory()) roots.push(sessions);
+    } catch {
+      // a home with no rollouts yet, or a stray file — skip
+    }
+  }
+  return roots;
+}
+
+/** The default adapter set: Claude Code + codex + OMP rollouts at their GLOBAL
+ *  roots. The per-session isolation roots (claude + codex) are appended by
+ *  `ingestInteractiveUsage` on its default path. */
 export function defaultAdapters(): TranscriptAdapter[] {
   const home = os.homedir();
   return [
@@ -177,6 +243,7 @@ export function defaultAdapters(): TranscriptAdapter[] {
       name: 'codex',
       root: path.join(home, '.codex', 'sessions'),
       parse: parseCodexChunk,
+      sessionIdForFile: codexSessionIdForFile,
     },
     {
       name: 'omp',

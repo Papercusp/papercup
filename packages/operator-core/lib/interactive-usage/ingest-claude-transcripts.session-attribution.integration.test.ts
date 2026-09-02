@@ -158,6 +158,50 @@ describe('ingestInteractiveUsage — per-owner isolation root sweep (EI-19964643
     expect(rows[0].cost_usd).toBeGreaterThan(0);
   });
 
+  it('ingests a codex rollout under <codexIsolationBase>/session-N/sessions/ keyed by the rollout uuid (WI-2140701 (a))', async () => {
+    // Mirrors the REAL on-disk shape every psu-launched codex agent writes to:
+    // ~/.papercusp/su-codex-homes/session-<advId>/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl.
+    // Before this fix the codex adapter swept only the global ~/.codex/sessions AND
+    // keyed samples by the whole basename ("rollout-…"), so the codex everything-goal
+    // holder had zero attributable usage samples (WI-2140701 card-4 finding).
+    const uuid = '01a06086-e882-7e10-9079-aa29e6a00097';
+    const claudeBase = await fs.mkdtemp(path.join(os.tmpdir(), 'p3-claude-empty-'));
+    const codexBase = await fs.mkdtemp(path.join(os.tmpdir(), 'p3-codex-homes-'));
+    tmpDirs.push(claudeBase, codexBase);
+    const day = path.join(codexBase, 'session-21396', 'sessions', '2026', '09', '02');
+    await fs.mkdir(day, { recursive: true });
+    await fs.writeFile(
+      path.join(day, `rollout-2026-09-02T01-10-49-${uuid}.jsonl`),
+      JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-5.6-sol' } }) +
+        '\n' +
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'token_count',
+            info: { last_token_usage: { input_tokens: 17396, cached_input_tokens: 16000, cache_write_input_tokens: 0, output_tokens: 55 } },
+          },
+        }) +
+        '\n',
+    );
+
+    const res = await ingestInteractiveUsage({
+      adapters: [],
+      includeIsolationRoots: true,
+      isolationBase: claudeBase, // empty — keeps the claude sweep off the real $HOME
+      codexIsolationBase: codexBase,
+    });
+    expect(res.samples).toBe(1);
+
+    const rows = await sql<Array<{ session_id: string | null; source: string; model: string | null; cache_read_tokens: string | null }>>`
+      SELECT session_id, source, model, cache_read_tokens FROM harness_shared.agent_usage_samples
+       WHERE workspace_id = ${WS} AND provider = 'openai'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].session_id).toBe(uuid); // the bare uuid — NOT "rollout-2026-…-<uuid>"
+    expect(rows[0].source).toBe('interactive');
+    expect(rows[0].model).toBe('gpt-5.6-sol');
+    expect(Number(rows[0].cache_read_tokens)).toBe(16000);
+  });
+
   it('a caller-supplied `adapters` array WITHOUT includeIsolationRoots opts out — no real-$HOME sweep', async () => {
     // Recurrence guard for the test-pollution risk: every pre-existing test in this
     // file relies on exactly this default (adapters given, includeIsolationRoots

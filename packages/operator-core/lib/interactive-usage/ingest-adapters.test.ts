@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { parseCodexChunk, parseOmpChunk, providerForModel, defaultAdapters } from './ingest-adapters';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  codexSessionIdForFile,
+  codexSessionRoots,
+  defaultAdapters,
+  parseCodexChunk,
+  parseOmpChunk,
+  providerForModel,
+} from './ingest-adapters';
 
 const codexLine = (o: unknown) => JSON.stringify(o) + '\n';
 
@@ -93,5 +103,53 @@ describe('providerForModel / defaultAdapters', () => {
     const names = defaultAdapters().map((a) => a.name);
     expect(names).toEqual(['claude', 'codex', 'omp']);
     for (const a of defaultAdapters()) expect(a.root).toMatch(/\/\.(claude|codex|omp)\//);
+  });
+});
+
+describe('codex session identity + per-session isolation roots (WI-2140701 (a))', () => {
+  it('codexSessionIdForFile: rollout-<ts>-<uuid>.jsonl → the bare uuid (= adv_sessions.session_id)', () => {
+    expect(
+      codexSessionIdForFile(
+        '/home/x/.papercusp/su-codex-homes/session-21396/sessions/2026/09/02/rollout-2026-09-02T01-10-49-01a06086-e882-7e10-9079-aa29e6a00097.jsonl',
+      ),
+    ).toBe('01a06086-e882-7e10-9079-aa29e6a00097');
+  });
+
+  it('codexSessionIdForFile: a non-rollout name falls back to the basename (the pre-fix behaviour)', () => {
+    expect(codexSessionIdForFile('/tmp/whatever/abc-123.jsonl')).toBe('abc-123');
+  });
+
+  it('only the default codex adapter carries the rollout extractor; claude/omp keep the basename default', () => {
+    const byName = new Map(defaultAdapters().map((a) => [a.name, a]));
+    expect(byName.get('codex')?.sessionIdForFile).toBe(codexSessionIdForFile);
+    expect(byName.get('claude')?.sessionIdForFile).toBeUndefined();
+    expect(byName.get('omp')?.sessionIdForFile).toBeUndefined();
+  });
+
+  it('parseCodexChunk captures cache_write_input_tokens as cacheCreationTokens', () => {
+    const chunk = codexLine({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: {
+          last_token_usage: { input_tokens: 1000, cached_input_tokens: 600, cache_write_input_tokens: 250, output_tokens: 40 },
+        },
+      },
+    });
+    const d = parseCodexChunk(chunk).perModel.get('gpt-5.5')!;
+    expect(d).toMatchObject({ turns: 1, inputTokens: 400, cacheReadTokens: 600, cacheCreationTokens: 250, outputTokens: 40 });
+  });
+
+  it('codexSessionRoots: one root per <base>/<home>/sessions; homes without one and stray files are skipped; missing base → []', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-homes-'));
+    try {
+      await fs.mkdir(path.join(base, 'session-1', 'sessions', '2026', '09', '02'), { recursive: true });
+      await fs.mkdir(path.join(base, 'session-2', 'config-only'), { recursive: true });
+      await fs.writeFile(path.join(base, 'stray.txt'), 'x');
+      expect(await codexSessionRoots(base)).toEqual([path.join(base, 'session-1', 'sessions')]);
+      expect(await codexSessionRoots(path.join(base, 'does-not-exist'))).toEqual([]);
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
   });
 });
