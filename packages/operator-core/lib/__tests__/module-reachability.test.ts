@@ -69,6 +69,28 @@ describe('parseImportSpecifiers', () => {
       './static',
     ]);
   });
+
+  // REGRESSION. The gap before the specifier must cross NEWLINES. A long specifier is
+  // wrapped onto its own line by the formatter, which is the ordinary shape of a
+  // dynamic import of a workspace subpath — so with a horizontal-only gap, whether a
+  // module counted as wired depended on how prettier happened to wrap the call. Three
+  // live green-checkpoint dependencies were reported TESTED-BUT-UNWIRED, whose stated
+  // remedy is "wire or delete"; deleting them would have removed live gate code.
+  it('finds a dynamic import whose specifier is wrapped onto the next line', () => {
+    const wrapped = [
+      'const { buildFrozenRepairConvergenceBroadcast } = await import(',
+      '  "@papercusp/operator-core/lib/release/frozen-repair-agent-routing"',
+      ');',
+    ].join('\n');
+    expect(parseImportSpecifiers(wrapped)).toEqual([
+      '@papercusp/operator-core/lib/release/frozen-repair-agent-routing',
+    ]);
+  });
+
+  it('finds wrapped `from` and `require` forms too', () => {
+    expect(parseImportSpecifiers('import { a }\n  from\n  "./sibling";')).toEqual(['./sibling']);
+    expect(parseImportSpecifiers('const z = require(\n  "./thing"\n);')).toEqual(['./thing']);
+  });
 });
 
 describe('resolveSpecifier', () => {
@@ -258,6 +280,44 @@ describe('buildImportGraph', () => {
     expect(graph.unresolvedRelative).toEqual([
       { from: 'apps/operator/lib/release/caller.ts', specifier: './missing' },
     ]);
+  });
+
+  // REGRESSION. "Named in an npm script" is the first case the path-mention scan exists
+  // to cover, but a workspace's own package.json can only spell the path relative to
+  // itself — which the repo-relative mention regex can never match. The CLI whose npm
+  // script runs it was therefore reported called-by-nothing, under "wire or delete".
+  it('resolves a workspace-relative detector path named in that workspace package.json', () => {
+    const files = [DETECTOR, 'apps/operator/package.json'];
+    const bodies: Record<string, string> = {
+      [DETECTOR]: 'export const x = 1;',
+      'apps/operator/package.json':
+        '{"scripts":{"release:x":"tsx lib/release/prompt-divergence.ts"}}',
+    };
+    const graph = buildImportGraph({ files, readFile: (f: string) => bodies[f] ?? '' });
+
+    expect([...(graph.pathMentions.get(DETECTOR) ?? [])]).toEqual(['apps/operator/package.json']);
+  });
+
+  // The lookbehind that keeps the fix above from inventing an edge: the TAIL of a
+  // repo-relative mention must not be re-resolved against the manifest's own workspace,
+  // or a same-named file in a different workspace reads as a caller — a dead module
+  // reported alive, the one direction this instrument must never fail in.
+  it('does not re-resolve the tail of a repo-relative mention against the wrong workspace', () => {
+    // Same basename in two workspaces. The manifest lives in apps/operator and names the
+    // PACKAGES copy by its full repo-relative path; the tail of that path is
+    // `lib/release/prompt-divergence.ts`, which would resolve against the manifest's own
+    // workspace straight onto DETECTOR if the lookbehind were dropped.
+    const OTHER = 'packages/operator-core/lib/release/prompt-divergence.ts';
+    const files = [DETECTOR, OTHER, 'apps/operator/package.json'];
+    const bodies: Record<string, string> = {
+      [DETECTOR]: 'export const x = 1;',
+      [OTHER]: 'export const y = 1;',
+      'apps/operator/package.json': `{"scripts":{"release:x":"tsx ${OTHER}"}}`,
+    };
+    const graph = buildImportGraph({ files, readFile: (f: string) => bodies[f] ?? '' });
+
+    expect([...(graph.pathMentions.get(OTHER) ?? [])]).toEqual(['apps/operator/package.json']);
+    expect([...(graph.pathMentions.get(DETECTOR) ?? [])]).toEqual([]);
   });
 });
 
