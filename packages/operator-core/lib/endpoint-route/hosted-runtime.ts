@@ -112,6 +112,36 @@ export const HOSTED_RUNTIME_RESOLVED_SECRET_REFS = [
 ] as const satisfies readonly { field: keyof HostedRuntimeConfiguration; env: string }[];
 
 /**
+ * The configuration names whose value IS the configuration — never a pointer to
+ * one — paired with the environment variable that carries each.
+ *
+ * The sibling of `HOSTED_RUNTIME_RESOLVED_SECRET_REFS`, and required for the
+ * same reason: a deployment gate has to test these two sets DIFFERENTLY (a
+ * literal is tested directly, a reference is dereferenced), so it necessarily
+ * holds its own copy of the partition and can drift from this one on either
+ * leg. Pinning only the reference leg moves that drift rather than stopping it
+ * — WI-2141766, which is what this list exists to close.
+ *
+ * Together the two lists are exactly what `readHostedRuntimeConfiguration`
+ * REQUIRES; `hosted-cutover-gate-ref-set.test.ts` proves that by exercising the
+ * reader rather than by re-reading it, so a fourth copy cannot silently appear.
+ */
+export const HOSTED_RUNTIME_LITERAL_CONFIGURATION = [
+  { field: 'publicOrigin', env: 'PAPERCUSP_HOSTED_PUBLIC_ORIGIN' },
+  { field: 'controlPlaneWorkspaceId', env: 'PAPERCUSP_HOSTED_CONTROL_PLANE_WORKSPACE_ID' },
+  { field: 'workosClientId', env: 'WORKOS_CLIENT_ID' },
+] as const satisfies readonly { field: keyof HostedRuntimeConfiguration; env: string }[];
+
+/**
+ * The optional provenance LABEL: present in the configuration, never required,
+ * never dereferenced. See `HOSTED_RUNTIME_RESOLVED_SECRET_REFS` for why the
+ * `_REF` suffix on this env name does not make it a reference.
+ */
+export const HOSTED_RUNTIME_OPTIONAL_LABELS = [
+  { field: 'workosWebhookSignatureKeyRef', env: 'WORKOS_WEBHOOK_SECRET_KEY_REF' },
+] as const satisfies readonly { field: keyof HostedRuntimeConfiguration; env: string }[];
+
+/**
  * Turn a resolver failure into a fixed, value-safe message.
  *
  * The resolver's own errors name the REFERENCE and never the value, so their
