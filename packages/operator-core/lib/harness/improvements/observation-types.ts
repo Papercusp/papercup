@@ -82,10 +82,47 @@ export type ObservationRatings = Record<string, ObservationRatingEntry>;
  * the acceptance-rubric author records this separate judgment only after reading
  * a complete independent grading.
  */
+/**
+ * WI-2141007: the audited record of an acceptance seat inherited from a DEAD
+ * rubric author. Server-stamped by `scorecards:emit` only — `acceptance` is a
+ * `.strict()` zod object, so a caller cannot supply this field and cannot forge
+ * a succession it did not earn.
+ *
+ * This exists because the acceptance seat used to be permanently unfillable once
+ * its author session ended: only the author may record the verdict, and any
+ * session in the author's lineage is refused as a grader, so with a dead author
+ * the eligible set is EMPTY and the plan can never ship. The alternative repair
+ * the old refusal advertised — `coord:rebind-identity` — is identity CONTINUITY
+ * (one agent reclaiming its own surfaces after its sid changed) and migrates the
+ * dead author's ENTIRE owner-keyed surface set (loops, claims, locks, facts,
+ * fleet membership). Using it merely to pass an independence control both
+ * defeats the control and moves state nobody asked to move (EI-22135313244682666).
+ * This record transfers the SEAT ALONE, and says so on the card.
+ */
+export interface AcceptanceSeatSuccession {
+  /** The recorded rubric author whose seat was inherited. */
+  succeededFrom: string;
+  /** The author's session state observed at succession time; never a live state. */
+  authorSessionState: string;
+  /** The work-item the successor holds that makes them accountable for the plan. */
+  basisWorkItemId: string;
+  /** The subject plan that work-item belongs to. */
+  basisPlanSlug: string;
+  succeededAt: string;
+}
+
 export interface ScorecardAcceptance {
   verdict: 'accept' | 'reject';
   /** Why the independent grading is (or is not) acceptable for this plan. */
   reasoning: string;
+  /**
+   * Present ONLY when this verdict was recorded by a successor rather than the
+   * recorded author. Absent on the ordinary path. Readers that ask "is this an
+   * author-side verdict?" must treat a card carrying this as authoritative —
+   * see `plan-acceptance-gate.ts`, which would otherwise misclassify a
+   * successor's verdict as an independent grading.
+   */
+  seat?: AcceptanceSeatSuccession;
 }
 
 /**
