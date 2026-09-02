@@ -46,11 +46,18 @@ describe('locks:acquire guidance.argRedirects', () => {
   });
 
   it('redirects a rejected `resource` key to locks:acquire_resource', () => {
-    expect(acquireTool.guidance?.argRedirects?.resource).toEqual({
+    const redirect = acquireTool.guidance?.argRedirects?.resource;
+    expect(redirect).toMatchObject({
       tool: 'locks:acquire_resource',
       args: { resource: '<registered resource>', mode: 'exclusive', reason: '<why>' },
-      note: expect.stringContaining('locks:acquire_resource'),
     });
+
+    // The note must carry the PREREQUISITE the tool name alone does not: a named
+    // resource is not free-form, so a caller who just retries with the sibling tool
+    // and an invented name hits a second rejection.
+    const note = (redirect as { note?: string }).note ?? '';
+    expect(note).toContain('locks:register_resource');
+    expect(note).toMatch(/paths/i);
   });
 
   it('does NOT accept `mode` as a real arg — the redirect must stay a redirect', () => {
