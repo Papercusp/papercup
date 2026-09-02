@@ -136,6 +136,29 @@ const RATINGS = {
   'crit-b': { rating: 'pass', evidence: 'observed B working' },
 };
 
+// EI-22177729599840121: a valid meta-acceptance-rubric attestation for the CURRENT
+// rubric revision (7, matching getRubricPlanRevisionM's default) — satisfies the
+// vet-before-grade check emitScorecard now runs for every non-implementer
+// acceptance-kind grading. Module-scoped so any describe block can hand it to
+// listM.mockResolvedValue([...]) to represent "this rubric has been vetted".
+const vettingCard = (critics: string[]) =>
+  ({
+    issueId: 'EI-vetting',
+    createdAt: '2026-08-25T21:00:12Z',
+    createdBy: 'su-vetting-author',
+    rubricRef: 'meta-acceptance-rubric',
+    subject: { kind: 'rubric', ref: 'acceptance-rubric' },
+    ratings: RATINGS,
+    nKeys: 2,
+    missingKeys: [],
+    extraKeys: [],
+    rubricResolved: true,
+    synthesized: false,
+    score10: 10,
+    linkedItems: [],
+    vetting: { consultId: 'conv-vet-1', rubricRevision: 7, critiquePosts: 1, critics },
+  }) as unknown as ScorecardRow;
+
 const RERUN_RECIPE = {
   schemaVersion: 1 as const,
   evaluator: 'plans:evaluate-spec-test-adequacy' as const,
@@ -870,6 +893,10 @@ describe('emitScorecard', () => {
 
   it('an independent acceptance grader emits ratings without an implementer verdict', async () => {
     getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    // EI-22177729599840121: emitScorecard now refuses a non-implementer acceptance
+    // grading unless the rubric already carries a current meta-rubric attestation —
+    // this test is about the independence contract, not vetting, so satisfy it.
+    listM.mockResolvedValue([vettingCard(['su-critic'])]);
     const r = await emitScorecard({ rubricRef: 'acceptance-rubric', ratings: RATINGS }, { createdBy: 'su-grader' });
     expect(r).toMatchObject({ ok: true, created: true });
     expect(captureM.mock.calls[0][0]).toMatchObject({
@@ -949,6 +976,10 @@ describe('emitScorecard', () => {
     lineageRelatedM.mockImplementation(
       async (author, candidate) => author === candidate || (author === 'su-implementer' && candidate === 'su-grader-2'),
     );
+    // EI-22177729599840121: satisfy the vet-before-grade prerequisite so this test's
+    // clean graders (su-grader-1) reach the lineage logic under test, not an
+    // unrelated unvetted-rubric refusal.
+    listM.mockResolvedValue([vettingCard(['su-critic'])]);
 
     const first = await emitScorecard(
       { rubricRef: 'acceptance-rubric', ratings: RATINGS },
@@ -1412,23 +1443,7 @@ describe('acceptance-grader eligibility is answerable BEFORE the grading work (E
   // refusal it predicts in the same case: an advisory that drifts from its rail is
   // the failure this module exists to prevent (WI-905074 widened the refusal and
   // left the advisory speaking for it on the old narrow test).
-  const vettingCard = (critics: string[]) =>
-    ({
-      issueId: 'EI-vetting',
-      createdAt: '2026-08-25T21:00:12Z',
-      createdBy: 'su-vetting-author',
-      rubricRef: 'meta-acceptance-rubric',
-      subject: { kind: 'rubric', ref: 'acceptance-rubric' },
-      ratings: RATINGS,
-      nKeys: 2,
-      missingKeys: [],
-      extraKeys: [],
-      rubricResolved: true,
-      synthesized: false,
-      score10: 10,
-      linkedItems: [],
-      vetting: { consultId: 'conv-vet-1', rubricRevision: 7, critiquePosts: 1, critics },
-    }) as unknown as ScorecardRow;
+  // (vettingCard is module-scoped above — shared with the vet-before-grade tests.)
 
   it('the sole vetting critic is told it is disqualified by the PRE-FLIGHT, with the same code emit refuses with', async () => {
     getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);

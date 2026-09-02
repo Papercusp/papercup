@@ -124,6 +124,30 @@ const RATINGS: ObservationRatings = {
 
 const EMIT_INPUT = { createdBy: 'su-grader', ctxHarness: 'papercusp', checkRoot: '/tmp/fake-root' };
 
+// EI-22177729599840121: a valid meta-acceptance-rubric attestation for CHECKED_RUBRIC's
+// current revision (3, matching getRubricPlanRevision's default below) — satisfies the
+// vet-before-grade prerequisite emitScorecard now enforces for every non-implementer
+// acceptance-kind grading (EMIT_INPUT's 'su-grader' ≠ CHECKED_RUBRIC's author 'su-author').
+// Returned only for a query against the META rubric ref, so the pre-existing
+// duplicate/dedup listScorecards({ rubricRef: args.rubricRef, ... }) queries against
+// 'ar-checked-plan' are left exactly as they were (empty), unlike a blanket mockResolvedValue.
+const META_VETTING_CARD = {
+  issueId: 'EI-vetting',
+  createdAt: '2026-08-25T21:00:12Z',
+  createdBy: 'su-vetting-author',
+  rubricRef: 'meta-acceptance-rubric',
+  subject: { kind: 'rubric', ref: 'ar-checked-plan' },
+  ratings: RATINGS,
+  nKeys: 2,
+  missingKeys: [],
+  extraKeys: [],
+  rubricResolved: true,
+  synthesized: false,
+  score10: 10,
+  linkedItems: [],
+  vetting: { consultId: 'conv-vet-1', rubricRevision: 3, critiquePosts: 1, critics: ['su-critic'] },
+};
+
 const PASS_RUN: CriterionCheckRun = {
   kind: 'tests',
   files: ['packages/x/real.test.ts'],
@@ -158,7 +182,14 @@ beforeEach(() => {
   );
   getRubricPlanRevision.mockReset().mockResolvedValue(3);
   readRubricPlanRevision.mockReset().mockResolvedValue({ ok: true, revision: 3 });
-  listScorecards.mockReset().mockResolvedValue([]);
+  // EI-22177729599840121: vet-before-grade now queries listScorecards for the
+  // meta-acceptance-rubric before every non-implementer acceptance grading — answer
+  // that one query with a satisfying attestation, everything else stays '[]' exactly
+  // as before (this file's own dedup/duplicate-detection queries key on the REAL
+  // rubricRef, 'ar-checked-plan', never the meta ref).
+  listScorecards.mockReset().mockImplementation(async (filter: { rubricRef?: string } = {}) =>
+    filter.rubricRef === 'meta-acceptance-rubric' ? [META_VETTING_CARD] : [],
+  );
   captureImprovement.mockReset().mockResolvedValue({ created: true, issue: { id: 'EI-1' } });
   resolveHarnessPaths.mockReset();
   resolvePlanHarnessSlug.mockReset();
