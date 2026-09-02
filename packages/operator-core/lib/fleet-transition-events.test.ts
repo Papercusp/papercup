@@ -16,7 +16,9 @@ import {
   fleetTransitionKey,
   indexObservations,
   isActionableFleetObservation,
+  type FleetDeadLatchEntry,
   type FleetMemberObservation,
+  type FleetTransitionEdge,
 } from './fleet-transition-events';
 
 const member = (over: Partial<FleetMemberObservation> = {}): FleetMemberObservation => ({
@@ -328,5 +330,129 @@ describe('the work-item co-fires', () => {
     emitFleetItemCompletedEvent(null, { id: 'WI-1', state: 'resolved' }, { emit });
     await settle();
     expect(emit).not.toHaveBeenCalled();
+  });
+});
+
+describe('detectFleetTransitions — the member-dead latch (rule 3)', () => {
+  /**
+   * Drive a sequence of one-minute sweeps for a single member, feeding each
+   * sweep's observations forward as the next sweep's `prev` exactly as the real
+   * sweep does.
+   */
+  const runSweeps = (
+    states: readonly { sessionState: string; atMs: number }[],
+    opts: { deadLatch?: Map<string, FleetDeadLatchEntry>; rearmDwellMs?: number } = {},
+  ) => {
+    let prev = new Map<string, FleetMemberObservation>();
+    const fired: FleetTransitionEdge[] = [];
+    for (const s of states) {
+      const obs = [member({ sessionState: s.sessionState })];
+      fired.push(...detectFleetTransitions(prev, obs, { ...opts, nowMs: s.atMs }));
+      prev = indexObservations(obs);
+    }
+    return fired;
+  };
+
+  /**
+   * The MEASURED shape from EI-22125312396899848, not an invented one: a dead
+   * session keeps drawing a 2–7/hour trickle of `agent_activity`, and each row
+   * re-satisfies the ~10-minute liveTurn window. So the derived verdict reads
+   * `live` for ~10 minutes, lapses to `ended`, and repeats — for hours.
+   */
+  const trickleFlap = (hours: number) => {
+    const out: { sessionState: string; atMs: number }[] = [];
+    for (let m = 0; m < hours * 60; m++) {
+      out.push({ sessionState: m % 12 < 10 ? 'live' : 'ended', atMs: m * 60_000 });
+    }
+    return out;
+  };
+
+  it('fires ONCE for a member whose verdict oscillates ended→live→ended all night', () => {
+    const edges = runSweeps(trickleFlap(10), { deadLatch: new Map() });
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({ kind: 'member-dead', agentId: 'su-a' });
+  });
+
+  it('CONTROL — the same sequence without the latch fires on every lapse (this is the measured bug)', () => {
+    // Falsifiability: if this control ever stops firing dozens of times, the
+    // scenario above has stopped exercising the flap and its `toHaveLength(1)`
+    // would be passing for the wrong reason.
+    const edges = runSweeps(trickleFlap(10));
+    expect(edges.length).toBeGreaterThan(40);
+  });
+
+  it('re-arms after SUSTAINED liveness, so a genuine relaunch that dies again is still reported', () => {
+    const seq = [
+      { sessionState: 'live', atMs: 0 },
+      { sessionState: 'ended', atMs: 60_000 }, // first death — fires
+      // a real relaunch: continuously live for well past the dwell
+      ...Array.from({ length: 40 }, (_, i) => ({ sessionState: 'live', atMs: (2 + i) * 60_000 })),
+      { sessionState: 'ended', atMs: 42 * 60_000 }, // second, genuine death — fires again
+    ];
+    expect(runSweeps(seq, { deadLatch: new Map() })).toHaveLength(2);
+  });
+
+  it('does NOT re-arm on a live window shorter than the dwell — the flap must not look like a relaunch', () => {
+    const seq = [
+      { sessionState: 'live', atMs: 0 },
+      { sessionState: 'ended', atMs: 60_000 },
+      // 20 minutes of "live" — long, but under the 30-minute dwell
+      ...Array.from({ length: 20 }, (_, i) => ({ sessionState: 'live', atMs: (2 + i) * 60_000 })),
+      { sessionState: 'ended', atMs: 22 * 60_000 },
+    ];
+    expect(runSweeps(seq, { deadLatch: new Map() })).toHaveLength(1);
+  });
+
+  it('keeps accruing the dwell across a snapshot gap, so a restart cannot strand a member latched forever', () => {
+    const latch = new Map<string, FleetDeadLatchEntry>();
+    runSweeps([{ sessionState: 'live', atMs: 0 }, { sessionState: 'ended', atMs: 60_000 }], { deadLatch: latch });
+    expect(latch.size).toBe(1);
+    // The post-restart shape: `prev` is empty every sweep, so rule 1 suppresses
+    // any edge — but rule 3's dwell must still count, or the member stays
+    // latched forever and a real later death is never reported.
+    for (let i = 0; i < 40; i++) {
+      detectFleetTransitions(new Map(), [member({ sessionState: 'live' })], {
+        deadLatch: latch,
+        nowMs: (2 + i) * 60_000,
+      });
+    }
+    expect(latch.size).toBe(0);
+  });
+
+  it('prunes latch entries by AGE, never by absence from a sweep', () => {
+    const latch = new Map<string, FleetDeadLatchEntry>();
+    runSweeps([{ sessionState: 'live', atMs: 0 }, { sessionState: 'ended', atMs: 60_000 }], { deadLatch: latch });
+    expect(latch.size).toBe(1);
+    // A sweep that does not mention the member must NOT drop its latch —
+    // isActionableFleetObservation filters members out transiently, and pruning
+    // on absence would hand back the very re-fire this rule exists to stop.
+    detectFleetTransitions(new Map(), [], { deadLatch: latch, nowMs: 2 * 60_000 });
+    expect(latch.size).toBe(1);
+    // Past the TTL it is dropped, capping the worst case at one notice per day.
+    detectFleetTransitions(new Map(), [], { deadLatch: latch, nowMs: 25 * 60 * 60 * 1000 });
+    expect(latch.size).toBe(0);
+  });
+
+  it('latches per (fleet, agent) — one member going quiet never suppresses another', () => {
+    const latch = new Map<string, FleetDeadLatchEntry>();
+    const first = detectFleetTransitions(
+      indexObservations([
+        member({ agentId: 'su-a', sessionState: 'live' }),
+        member({ agentId: 'su-b', sessionState: 'live' }),
+      ]),
+      [member({ agentId: 'su-a', sessionState: 'ended' }), member({ agentId: 'su-b', sessionState: 'live' })],
+      { deadLatch: latch, nowMs: 0 },
+    );
+    expect(first).toHaveLength(1);
+    const second = detectFleetTransitions(
+      indexObservations([
+        member({ agentId: 'su-a', sessionState: 'ended' }),
+        member({ agentId: 'su-b', sessionState: 'live' }),
+      ]),
+      [member({ agentId: 'su-a', sessionState: 'ended' }), member({ agentId: 'su-b', sessionState: 'ended' })],
+      { deadLatch: latch, nowMs: 60_000 },
+    );
+    expect(second).toHaveLength(1);
+    expect(second[0].agentId).toBe('su-b');
   });
 });
