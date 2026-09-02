@@ -120,6 +120,13 @@ export default function FeaturesAdmin() {
     const source = createResilientEventSource({
       url: '/api/flags/stream',
       withCredentials: true,
+      // WI-2141694: the safest yield candidate in the app — /api/flags/stream is
+      // replay-backed (ring buffer + Last-Event-ID, with a `resync` → full
+      // refetch fallback), AND both handlers below are a bare refresh(), so this
+      // stream accumulates no state of its own. Lowest priority: an admin page's
+      // flag ticker should step aside before anything else on the page.
+      yieldOnContention: true,
+      streamPriority: -20,
       handlers: {
         flag_changed: () => void refresh(),
         flags_payload: () => void refresh(),

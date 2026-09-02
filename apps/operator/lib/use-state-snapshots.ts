@@ -118,6 +118,19 @@ function acquireSnapshotStream(): () => void {
       // deltas (gated by the papercusp-state-snapshot-deltas flag, default OFF). The
       // delta handler below applies them; full snapshots remain the fallback.
       url: '/api/operator/state-snapshot?delta=1',
+      // WI-2141694: because this stream is always-on and app-wide, it is one of
+      // the connections that starves the same-origin pool — embedded :3070
+      // iframes (HUD, launched-sessions) hang at readyState=interactive with an
+      // empty root when every slot is held. It is safe to step aside because the
+      // endpoint emits a FULL per-run snapshot as "the baseline on connect"
+      // (routes/operator/state-snapshot.ts), and a resume IS a fresh connect —
+      // so the parked interval is repaired by re-baselining, independently of
+      // the delta flag (deltas are computed against the last snapshot emitted on
+      // THIS connection, so a new connection cannot inherit a stale base).
+      // Ranked below the default 0 so user-facing streams (chat, pty,
+      // agent-thinking) hold their slots and this one yields first.
+      yieldOnContention: true,
+      streamPriority: -10,
       // Always-on, app-wide stream (eagerly mounted via OperatorChatSidebar) —
       // feed the same shared connectivity signal @papercusp/sync's own SSE
       // transport reports to, so a down operator surfaces as ONE consolidated
