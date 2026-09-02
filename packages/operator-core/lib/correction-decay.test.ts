@@ -334,7 +334,7 @@ describe('probe coverage (derived-truth PIN)', () => {
           'packages/agent-mcp/src',
           'libs/generic/tooldef/src',
         ],
-        { cwd: repoRoot, encoding: 'utf8' },
+        { cwd: repoRoot, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
       );
     } catch (e) {
       // grep exits 1 on "no matches" — a real answer, not a failure.
