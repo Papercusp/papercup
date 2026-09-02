@@ -1128,6 +1128,9 @@ import './scheduler/set_claim_spec';
 // EI-7678: the READ counterpart to set_claim_spec — confirm a bee's/fleet's current spec
 // (source/revision/updatedBy/updatedAt) without grepping source or guessing.
 import './scheduler/get_claim_spec';
+// EI-7014: one queryable view of WHY each get_next call returned what it returned, over a
+// time window — reads the existing tool_invocations ledger get_next already writes.
+import './scheduler/pull_ledger';
 // agent-epistemics-2026-08-02 P-005: what a proposed spec revision would change BY ITEM,
 // before the write — set_claim_spec's poolEffect gives a count, this gives the rows.
 import './scheduler/preview_spec_delta';

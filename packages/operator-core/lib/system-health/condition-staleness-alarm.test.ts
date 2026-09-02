@@ -65,7 +65,7 @@ describe('readInfraLivenessHealthFromSharedSnapshot', () => {
     expect(result).toEqual(new Map([[key, true]]));
   });
 
-  it('treats a missing/stale shared snapshot as unknown and never false-clears a key', async () => {
+  it('treats a missing shared snapshot as unknown and never false-clears a key', async () => {
     let beesReads = 0;
     const result = await readInfraLivenessHealthFromSharedSnapshot([key], {
       workspaceId: () => 'ws-shared',
@@ -78,6 +78,69 @@ describe('readInfraLivenessHealthFromSharedSnapshot', () => {
 
     expect(result).toEqual(new Map());
     expect(beesReads).toBe(0);
+  });
+
+  // EI-22175580395708679: `readSharedSystemHealthSnapshot` itself accepts a row up
+  // to several minutes old — too old to ground a "verified healthy RIGHT NOW"
+  // claim used to auto-clear an open alarm. A snapshot that old must be treated
+  // exactly like a MISSING one (unknown), never trusted as current.
+  it('treats a shared snapshot older than the verify-freshness bar as unknown, never a false clear', async () => {
+    const now = Date.parse('2026-09-02T18:31:00.000Z');
+    const staleHealth = { ...mkHealthySystemHealth(), evaluatedAt: now - 5 * 60_000 }; // 5min old
+    let beesReads = 0;
+    const result = await readInfraLivenessHealthFromSharedSnapshot([key], {
+      workspaceId: () => 'ws-shared',
+      readHealth: async () => staleHealth,
+      readBeesLiveness: async () => {
+        beesReads += 1;
+        return undefined;
+      },
+      now: () => now,
+    });
+
+    expect(result).toEqual(new Map());
+    // The staleness gate must reject the snapshot BEFORE the bees-liveness read
+    // (and therefore before evaluateLivenessAlarm) ever runs.
+    expect(beesReads).toBe(0);
+  });
+
+  it('still trusts a snapshot comfortably inside the verify-freshness bar', async () => {
+    const now = Date.parse('2026-09-02T18:31:00.000Z');
+    const freshHealth = { ...mkHealthySystemHealth(), evaluatedAt: now - 10_000 }; // 10s old
+    const result = await readInfraLivenessHealthFromSharedSnapshot([key], {
+      workspaceId: () => 'ws-shared',
+      readHealth: async () => freshHealth,
+      readBeesLiveness: async () => undefined,
+      now: () => now,
+    });
+
+    expect(result).toEqual(new Map([[key, true]]));
+  });
+
+  it('CONTROL: threads the real snapshot age into evaluateLivenessAlarm, not a hardcoded null', async () => {
+    // Regression guard for the actual defect: previously this call passed `null`
+    // for snapshotAgeMs unconditionally, which evaluateLivenessAlarm reads as
+    // "computed fresh this tick" and therefore disables ITS OWN tick-stale
+    // suppression — masking exactly the kind of stale-cache read this file's
+    // own health-tick-stale signal exists to catch. A snapshot just OUTSIDE this
+    // reconciler's tighter verify bar but still comfortably inside
+    // liveness-alarm's own (looser) tick-stale bar exercises this: the fix's
+    // explicit gate must reject it before evaluateLivenessAlarm is ever called.
+    const now = Date.parse('2026-09-02T18:31:00.000Z');
+    const justOverVerifyBar = { ...mkHealthySystemHealth(), evaluatedAt: now - 91_000 }; // 91s old
+    let evaluated = false;
+    const result = await readInfraLivenessHealthFromSharedSnapshot([key], {
+      workspaceId: () => 'ws-shared',
+      readHealth: async () => justOverVerifyBar,
+      readBeesLiveness: async () => {
+        evaluated = true;
+        return undefined;
+      },
+      now: () => now,
+    });
+
+    expect(result).toEqual(new Map());
+    expect(evaluated).toBe(false);
   });
 });
 

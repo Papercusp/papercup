@@ -352,13 +352,40 @@ export function selectReconcilableConditions(
 }
 
 /**
- * Default health source for the `infra-liveness:*` family: read a FRESH shared
- * SystemHealth snapshot and re-run the exact `evaluateLivenessAlarm` the source
- * watchdog fires from (liveness-alarm.ts) — so this reconciler can never disagree
- * with "is this infra-liveness signal actually firing right now". Any open
- * `infra-liveness:<sig>` key whose `<sig>` is NOT in the freshly-computed firing
- * set is verified healthy. Fail-soft: a read error leaves every key unset
- * (unknown), never a false clear.
+ * How old a shared SystemHealth snapshot may be and still ground a "verified
+ * healthy" auto-clear (EI-22175580395708679).
+ *
+ * Deliberately far TIGHTER than `SHARED_SYSTEM_HEALTH_MAX_AGE_MS` (5min — the
+ * bound `readSharedSystemHealthSnapshot` itself uses to decide whether a row
+ * exists at all) and `liveness-alarm.ts`'s own `DEFAULT_SNAPSHOT_STALE_MS`
+ * (6min — its tick-stale gate). This reconciler is not merely READING health,
+ * it is asserting the underlying signal is healthy RIGHT NOW and using that
+ * assertion to auto-CLOSE an open alarm — a materially stronger claim than "I
+ * have some evidence", so it needs a materially tighter freshness bar.
+ *
+ * Measured incident: within a single ~3min window, `dev:why`'s pool-stage read
+ * (computed live at query time) reported all 14 LLM pool accounts unavailable
+ * while this reconciler's "verified healthy" clear fired for
+ * `infra-liveness:accounts-starved` — both true for their own sampling instant,
+ * but the reconciler's read came from a cross-process cache that can trail the
+ * live pool state by up to the 5-6min bounds above, and `tk.accountsAvailable`
+ * can read >0 from a moment just before a pool goes fully starved. ~3x the
+ * ~30s health-tick cadence (see `readSharedSystemHealthSnapshot`'s own comment)
+ * gives real margin for a normally-ticking writer while still refusing a
+ * snapshot old enough to have missed a state change.
+ */
+const INFRA_LIVENESS_HEALTH_VERIFY_MAX_AGE_MS = 90_000;
+
+/**
+ * Default health source for the `infra-liveness:*` family: read a shared
+ * SystemHealth snapshot recent enough to trust and re-run the exact
+ * `evaluateLivenessAlarm` the source watchdog fires from (liveness-alarm.ts) —
+ * so this reconciler can never disagree with "is this infra-liveness signal
+ * actually firing right now". Any open `infra-liveness:<sig>` key whose `<sig>`
+ * is NOT in the freshly-computed firing set is verified healthy. Fail-soft: a
+ * read error, a missing snapshot, OR a snapshot older than
+ * `INFRA_LIVENESS_HEALTH_VERIFY_MAX_AGE_MS` leaves every key unset (unknown),
+ * never a false clear.
  */
 export async function readInfraLivenessHealthFromSharedSnapshot(
   openInfraKeys: readonly string[],
@@ -366,6 +393,8 @@ export async function readInfraLivenessHealthFromSharedSnapshot(
     readHealth?: (workspaceId: string) => Promise<SystemHealth | null>;
     readBeesLiveness?: (health: SystemHealth) => Promise<BeesLivenessContext | undefined>;
     workspaceId?: () => string;
+    /** Injectable for tests; default `Date.now`. */
+    now?: () => number;
   } = {},
 ): Promise<Map<string, boolean>> {
   const out = new Map<string, boolean>();
@@ -378,10 +407,20 @@ export async function readInfraLivenessHealthFromSharedSnapshot(
       deps.readHealth ??
       (async (ws: string) => (await import('./compute')).readSharedSystemHealthSnapshot(ws));
     const health = await readHealth(workspaceId());
-    // Missing/stale shared evidence is UNKNOWN. Leave every key unset so this
+    // Missing shared evidence is UNKNOWN. Leave every key unset so this
     // reconciler cannot false-clear an open condition and cannot fall back to a
     // request-worker compute.
     if (!health) return out;
+    // EI-22175580395708679: a snapshot `readSharedSystemHealthSnapshot` deems
+    // "present" can still be several minutes old — too old to ground a
+    // "verified healthy RIGHT NOW" claim used to auto-clear an open alarm.
+    // Treat a too-old snapshot the SAME as a missing read (unknown, never a
+    // false clear) rather than silently trusting it as current.
+    const now = (deps.now ?? Date.now)();
+    const snapshotAgeMs = now - health.evaluatedAt;
+    if (!Number.isFinite(snapshotAgeMs) || snapshotAgeMs > INFRA_LIVENESS_HEALTH_VERIFY_MAX_AGE_MS) {
+      return out;
+    }
     // EI-15006: thread the SAME cup-placeable + capacity gate the source alarm
     // uses so this reconciler can never disagree with it on whether `panel:bees`
     // is firing — otherwise it would re-derive the pre-fix raw-frontier gate and
@@ -389,7 +428,13 @@ export async function readInfraLivenessHealthFromSharedSnapshot(
     // idle one open.
     const readBeesLiveness = deps.readBeesLiveness ?? readBeesLivenessContext;
     const beesLiveness = await readBeesLiveness(health).catch(() => undefined);
-    const firing = new Set(evaluateLivenessAlarm(health, null, { beesLiveness }).map((s) => s.key));
+    // EI-22175580395708679: pass the REAL snapshot age, not `null` (which tells
+    // evaluateLivenessAlarm "computed fresh this tick" — untrue for a
+    // cross-process cache read, and previously disabled ITS OWN tick-stale
+    // gate for this caller). Belt-and-suspenders with the explicit gate above.
+    const firing = new Set(
+      evaluateLivenessAlarm(health, snapshotAgeMs, { beesLiveness }).map((s) => s.key),
+    );
     for (const key of openInfraKeys) {
       const sig = key.slice(INFRA_LIVENESS_PREFIX.length);
       out.set(key, !firing.has(sig));

@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 844,
+  "count": 845,
   "tools": [
     {
       "name": "ablation:report",
@@ -26513,6 +26513,44 @@
         "when": "Before scheduler:set_claim_spec on a live cup/fleet — especially a NARROWING revision, a `not:`/glob exclusion, or any `states` change. Also to explain a starved lane: preview the CURRENT spec against a wider candidate to see what it is holding back.",
         "notWhen": "Writing the spec — scheduler:set_claim_spec. Reading the stored spec — scheduler:get_claim_spec. Today's claimable count/breakdown for ONE spec — work_items:claimable.",
         "chaining": "scheduler:get_claim_spec (current) → scheduler:preview_spec_delta (what the revision costs) → scheduler:set_claim_spec (write it)."
+      }
+    },
+    {
+      "name": "scheduler:pull_ledger",
+      "http": {
+        "path": "/api/agent-tools/scheduler/pull_ledger",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "History of scheduler:get_next calls: who pulled what, when, under which spec, and why a pull came up empty. Reads the existing tool_invocations ledger get_next already writes — no new table.",
+      "capabilities": [
+        "work_items:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "After re-steering a fleet's claim spec, or debugging a mis-steer: see what { fleet } (ever-members) or { bee } actually pulled and under which specId@revision. One of fleet|bee is required.",
+        "notWhen": "Live state, not history — scheduler:running. Current floor breakdown — work_items:claimable. A rank/floor REPLAY of one past pull is not carried (would add a query to get_next's hot path) — that stays get_next's own live diagnosis on an actual miss.",
+        "chaining": "scheduler:set_claim_spec → scheduler:pull_ledger { fleet } → scheduler:running."
       }
     },
     {
