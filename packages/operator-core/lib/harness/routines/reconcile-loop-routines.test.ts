@@ -2445,6 +2445,134 @@ describe('reconcileLoopRoutines — gate-backoff leg leaves a DISPATCHED in-flig
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// EI-22127560919383327 — a wake settled 'suppressed-redundant' (a turn was already in flight)
+// is NOT a failed delivery.
+//
+// The defect these pin: the await engine settles a loop wake that lands mid-turn WITHOUT
+// spending a turn (channel 'suppressed-redundant', status still 'delivered'); the psu-host
+// stacks the queued prompt into the NEXT turn once the running one ends. deliveredWakeWithoutLoopTurn
+// read only the status, so after the 120s grace + 60s of presence quiet (presence bumps only on
+// tool calls — a turn generating a large edit is silent) it returned 'retry' and fed
+// recordFire('error') for a wake that was never attempted. Measured 2026-09-02 on
+// loop-su-a7410503: fire 05:37:32Z mid-turn → transition #402464 'rearmed via
+// delivered-wake-no-loop-turn' at 05:41:09Z → consecutive_errors 0→1 on a healthy loop.
+//
+// FALSIFIABILITY: the CONTROL drives the identical row through channel 'psu-socket-inject' and
+// must still take the pre-existing retry, proving the branch reads the CHANNEL VALUE; the
+// STRAND-BOUND case proves a lost lifecycle 'ended' report cannot park the loop forever.
+describe("reconcileLoopRoutines — a 'suppressed-redundant' wake waits for the in-flight turn to end (EI-22127560919383327)", () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  /** Fired at T0 while a turn was already running; the engine settled the wake without a turn
+   *  1s later. No loop-origin turn, no lifecycle end since the fire, presence silent. */
+  const suppressedRow = (over: Record<string, unknown> = {}) => ({
+    id: 'rt-suppressed',
+    target_owner_id: 'su-suppressed',
+    interval_sec: 60,
+    parked: true,
+    is_cron: false,
+    install_slug: 'papercusp',
+    name: 'loop-su-suppressed',
+    routine_workspace_id: 'ws-papercusp',
+    last_fired_at: pgString(T0),
+    fire_state_last_fired_at: pgString(T0 + 500),
+    fire_state_last_withheld_at: null,
+    last_wake_at: pgString(T0 + 1_000),
+    last_wake_status: 'delivered',
+    last_wake_channel: 'suppressed-redundant',
+    last_loop_turn_at: null,
+    lifecycle_completed_at: null,
+    turn_journal_completed_at: null,
+    lifecycle_started_at: null,
+    carry: null,
+    armed_at: null,
+    note_updated_ts: null,
+    presence_last_active_at: null,
+    last_assistant_text_after_fire: null,
+    turns_ingest_watermark: null,
+    payload_template: null,
+    monitor_delta_at: null,
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('does NOT retry (or feed the circuit) while the in-flight turn has not ended, even past grace + presence quiet', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql([suppressedRow()], updates),
+      nowMs: T0 + 220_000, // 120s grace + 60s FALLBACK_QUIET_MS both long elapsed
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(0);
+    expect(res.loops).toEqual([]);
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL — the identical row on channel psu-socket-inject still takes the pre-existing retry', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql([suppressedRow({ last_wake_channel: 'psu-socket-inject' })], updates),
+      nowMs: T0 + 220_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-suppressed', via: 'delivered-wake-no-loop-turn' });
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-suppressed', 'loop-delivered-wake-no-loop-turn', 'error');
+  });
+
+  it('once the in-flight turn ENDS, the grace runs from that lifecycle clock — then the ordinary retry applies', async () => {
+    const ended = suppressedRow({ lifecycle_completed_at: pgString(T0 + 150_000) });
+    // 10s after the turn ended: the queued prompt is only now being injected — still awaiting.
+    const early = await reconcile({
+      sql: fakeSql([ended], []),
+      nowMs: T0 + 160_000,
+      recordFire: vi.fn(async () => {}),
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(early.rearmed).toBe(0);
+    // 150s after the turn ended (> the 120s grace), no loop-origin turn and presence silent:
+    // now it IS a failed handoff, and the pre-existing retry + circuit feed apply unchanged.
+    const recordFire = vi.fn(async () => {});
+    const late = await reconcile({
+      sql: fakeSql([ended], []),
+      nowMs: T0 + 300_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(late.rearmed).toBe(1);
+    expect(late.loops[0]).toMatchObject({ via: 'delivered-wake-no-loop-turn', completedAt: T0 + 1_000 });
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-suppressed', 'loop-delivered-wake-no-loop-turn', 'error');
+  });
+
+  it('STRAND-BOUND — with NO lifecycle end ever observed, the wait is capped at the stuck-park dwell, after which the ladder judges it as before', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql([suppressedRow()], updates),
+      nowMs: T0 + 30 * 60_000 + 1_000, // max(30min, 4×60s) + 1s past the wake
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ via: 'delivered-wake-no-loop-turn' });
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-suppressed', 'loop-delivered-wake-no-loop-turn', 'error');
+  });
+});
+
 /**
  * P-004 (anti-babysitting-monitor-enforcement-2026-08-25) — the MONITOR settlement branch.
  *

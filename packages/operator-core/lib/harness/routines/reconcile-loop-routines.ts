@@ -805,6 +805,11 @@ interface LoopRow {
   last_wake_at: Date | string | null;
   /** Latest delivery state for this exact routine source (`loop:<routineId>`). */
   last_wake_status?: string | null;
+  /** EI-22127560919383327: the delivery CHANNEL of that same latest row. 'suppressed-redundant'
+   *  means the await engine settled the delivery WITHOUT spending a turn because one was already
+   *  in flight — the psu-host stacks the queued prompt into the NEXT turn — so a missing
+   *  loop-origin turn is EXPECTED until that in-flight turn ends, not evidence of a failed wake. */
+  last_wake_channel?: string | null;
   /** Strict per-fire loop-turn completion clock. This is the latest assistant
    *  turn paired to a user prompt carrying `turn_origin='loop-fire'`, not an
    *  owner-wide assistant/journal signal. */
@@ -895,10 +900,30 @@ function deliveredWakeWithoutLoopTurn(
   const loopTurnAtMs = tsMs(row.last_loop_turn_at);
   if (loopTurnAtMs != null && loopTurnAtMs >= wakeAtMs) return null;
 
+  const intervalMs = row.interval_sec * 1000;
+  // EI-22127560919383327: a 'suppressed-redundant' delivery was settled by the await engine
+  // WITHOUT spending a turn because a turn was ALREADY IN FLIGHT; the psu-host stacks the queued
+  // loop-fire prompt into the next turn once that one ends (measured 2026-09-02: fires 05:37:32Z
+  // and 05:43:01Z both arrived as ONE loop-fire prompt at 05:44:33Z, behind an 8-min turn). So a
+  // missing loop-origin turn is EXPECTED until the in-flight turn ends — and presence, which bumps
+  // only on tool calls, cannot see a turn that is generating text for >60s. Scoring that as
+  // 'retry' fed recordFire('error') into the fire-circuit for a wake that was never attempted
+  // (transition #402464: streak 0→1 on a healthy loop; 8 such long turns open the circuit and
+  // hand the loop to the WI-36792/WI-2141029 gate-backoff path). Wait for a lifecycle 'ended'
+  // newer than the wake, then run the ordinary grace from THAT clock. Bounded by the stuck-park
+  // dwell so a lost 'ended' report (the detached POST that "CAN be lost") can never strand a
+  // loop here — past the dwell the pre-existing ladder judges it exactly as before.
+  let graceFromMs = wakeAtMs;
+  if (row.last_wake_channel === 'suppressed-redundant' && nowMs - wakeAtMs < stuckParkMs(intervalMs)) {
+    const lifecycleEndMs = tsMs(row.lifecycle_completed_at);
+    if (lifecycleEndMs == null || lifecycleEndMs < wakeAtMs) return { kind: 'awaiting-turn' };
+    graceFromMs = lifecycleEndMs;
+  }
+
   // A delivery is a handoff attempt, not proof that a model turn completed.
   // While the bounded grace is open, suppress the owner-wide completion
   // signals below so unrelated activity cannot settle this fire early.
-  if (nowMs - wakeAtMs < claimDispatchGraceMs(row.interval_sec * 1000)) {
+  if (nowMs - graceFromMs < claimDispatchGraceMs(intervalMs)) {
     return { kind: 'awaiting-turn' };
   }
 
@@ -1122,6 +1147,7 @@ export async function reconcileLoopRoutines(
            fs.last_withheld_at AS fire_state_last_withheld_at,
            lw.last_wake_at,
            lw.status AS last_wake_status,
+           lw.channel AS last_wake_channel,
            -- EI-21743034835075378: pair each loop-fire USER prompt with the
            -- assistant output before the next user prompt. Unlike the
            -- owner-wide lifecycle/journal/presence clocks below, this proves
@@ -1225,6 +1251,7 @@ export async function reconcileLoopRoutines(
       ) fs ON true
       LEFT JOIN LATERAL (
         SELECT w.status,
+               w.channel,
                COALESCE(w.delivered_at, w.created_at) AS last_wake_at
           FROM harness_shared.event_wake_deliveries w
          WHERE w.subscriber_id = r.target_owner_id
