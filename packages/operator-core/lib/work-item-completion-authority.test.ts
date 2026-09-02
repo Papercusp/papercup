@@ -260,6 +260,80 @@ describe('a ledgered red run refuses `committed` (P-002 / D-017)', () => {
   });
 });
 
+describe('an unfaithful requirement disposition refuses `committed` (P-021 / D-014)', () => {
+  const GREEN = { verifiedHow: 'unit', testsRun: 'testing:run', testResult: 'passed' } as const;
+  const shortfall = (kind: 'absent' | 'unfaithful', over: Record<string, string[]> = {}) => ({
+    requirementDispositionShortfall: {
+      kind,
+      notQuotedFromSource: [],
+      implementedWithoutResolvingCitation: [],
+      deferredWithoutFollowUp: [],
+      ...over,
+    },
+  });
+
+  it('leaves today’s grade untouched when nothing was judged', () => {
+    // The same fail-open property the other two findings assert from this side: the whole
+    // check is opt-in on the caller running the probe, so an absent finding cannot move
+    // the grade. This is what keeps a probe that could not run from reading as a verdict.
+    expect(authorityForCompletion(GREEN, {})).toBe('committed');
+    expect(authorityForCompletion(GREEN, undefined)).toBe('committed');
+  });
+
+  it('downgrades a close that declares deferred work without saying what was deferred', () => {
+    expect(authorityForCompletion(GREEN, shortfall('absent'))).toBe('proposed');
+    expect(insufficientEvidenceReason(GREEN, shortfall('absent'))).toBe('no-requirement-disposition');
+  });
+
+  it('downgrades a disposition whose quote is not a span of the ask', () => {
+    expect(
+      insufficientEvidenceReason(GREEN, shortfall('unfaithful', { notQuotedFromSource: ['a paraphrase'] })),
+    ).toBe('requirement-disposition-unfaithful');
+  });
+
+  it('reports the RED RUN ahead of an unfaithful disposition when both fire', () => {
+    // Ordering is load-bearing: a red run means the WORK is unfinished, while a bad
+    // disposition means the RECORD is wrong about finished work. Told the record first,
+    // the agent repairs the smaller problem and re-closes on a suite that still fails.
+    expect(
+      insufficientEvidenceReason(GREEN, {
+        ...shortfall('unfaithful', { notQuotedFromSource: ['x'] }),
+        testRunContradictedByLedger: { runGroupId: 'g1', failingFiles: ['a.test.ts'], filesInRun: 1 },
+      }),
+    ).toBe('test-result-contradicted-by-run');
+  });
+
+  it('reports an unfaithful disposition ahead of a fabricated path when both fire', () => {
+    // Being wrong about the ASK is more serious than being wrong about the file list, so
+    // the agent hears about the ask first.
+    expect(
+      insufficientEvidenceReason(GREEN, {
+        ...shortfall('unfaithful', { deferredWithoutFollowUp: ['x'] }),
+        filesChangedNeverExisted: ['imaginary/file.ts'],
+      }),
+    ).toBe('requirement-disposition-unfaithful');
+  });
+
+  it('still reports a MISSING field ahead of the disposition checks', () => {
+    // Supplying an omitted field is the cheaper repair than re-reading the originating
+    // body and enumerating it, so the missing-field family keeps precedence.
+    expect(
+      insufficientEvidenceReason({ testsRun: 'testing:run', testResult: 'passed' }, shortfall('absent')),
+    ).toBe('no-verified-how');
+  });
+
+  it('reports the absent disposition AFTER the other missing-field reasons but BEFORE the findings', () => {
+    // Its remedy — re-read the ask and enumerate it — is the most expensive of the
+    // missing-field family, and cheaper than nothing for the present-and-wrong ones.
+    expect(
+      insufficientEvidenceReason(GREEN, {
+        ...shortfall('absent'),
+        filesChangedNeverExisted: ['imaginary/file.ts'],
+      }),
+    ).toBe('no-requirement-disposition');
+  });
+});
+
 describe('`addedTests: true` makes a path necessary (EI-18685043434033870)', () => {
   // The owner's complaint was a close that was "entirely true, but unverifiable until I
   // asked for a path". A path is not required unconditionally — see the calibration note

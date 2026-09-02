@@ -107,6 +107,7 @@ import {
   type CompletionEvidenceFindings,
 } from '../../work-item-completion-authority';
 import { fabricatedPathsInCompletion } from './fabricated-paths';
+import { requirementDispositionShortfall } from './requirement-disposition';
 import {
   MAX_TEST_BINDING_LOOKBACK_MS,
   testResultContradictedByRun,
@@ -1660,7 +1661,13 @@ function completionEvidenceFromRecord(
   const verifiedHow = nested.verifiedHow ?? rec.verifiedHow;
   const addedTests = nested.addedTests ?? rec.addedTests;
   const coverage = nested.coverage ?? rec.coverage;
+  // P-021 / D-014: canonical-nested ONLY, deliberately no top-level alias. The aliases
+  // above are legacy carry-over that CompletionRecordSchema already documents as such;
+  // minting a new one would widen the tool's arg surface for a field that has no legacy
+  // callers to keep cheap.
+  const requirementDisposition = nested.requirementDisposition;
   const evidence: CompletionVerificationEvidence = {};
+  if (requirementDisposition?.length) evidence.requirementDisposition = requirementDisposition;
   if (filesChanged?.length) evidence.filesChanged = filesChanged;
   if (testsRun?.trim()) evidence.testsRun = testsRun;
   if (testResult?.trim()) evidence.testResult = testResult;
@@ -2686,11 +2693,34 @@ async function completeOne(
         })
       : undefined;
 
+  // P-021 / D-014: make the close's account of THE ASK falsifiable, not just its account
+  // of the files and the tests. The source is the originating item's own body — the text
+  // a quote must be a literal span of — and `deferred` is what makes an absent disposition
+  // self-contradictory rather than merely missing (see D-019 for why the demand is scoped
+  // to that population and not to every code-shaped close).
+  //
+  // Gated on `authorityByEvidence === 'committed'` for the same reason as the ledger probe
+  // above: a close already landing `proposed` cannot be lowered further, so the fs probes
+  // buy nothing there.
+  const requirementShortfall =
+    authorityByEvidence === 'committed'
+      ? requirementDispositionShortfall(completionEvidenceForGate, {
+          sourceText: `${existing.title ?? ''}\n${existing.summary ?? ''}`,
+          declaresDeferredWork: Boolean(it.completion.deferred?.some((d) => d.trim())),
+          // `registeredRepoRoots` is only computed on the unresolved-path branch above, so
+          // fall back to the primary checkout the way `unresolvedPathsInCompletion` does —
+          // otherwise the citation check would sit permanently unjudgeable on the closes
+          // that resolve cleanly, which is most of them.
+          probe: { repoRoots: registeredRepoRoots ?? [detectPapercupRoot()] },
+        })
+      : undefined;
+
   const completionEvidenceFindings: CompletionEvidenceFindings | undefined =
-    fabricatedPaths || testRunContradiction
+    fabricatedPaths || testRunContradiction || requirementShortfall
       ? {
           ...(fabricatedPaths ? { filesChangedNeverExisted: fabricatedPaths.neverExisted } : {}),
           ...(testRunContradiction ? { testRunContradictedByLedger: testRunContradiction } : {}),
+          ...(requirementShortfall ? { requirementDispositionShortfall: requirementShortfall } : {}),
         }
       : undefined;
   // Re-run the SAME single decision point with the findings folded in, rather than overriding
@@ -2733,6 +2763,49 @@ async function completeOne(
       `run group is refused outright), or by \`skip\`/\`cancelled\`/\`running\` rows, all of which are ` +
       `silent. To fix: make those files pass, re-run them with testing:run, and re-call ` +
       `work_items:complete — the newer green run then supersedes this one.`
+    : undefined;
+
+  // Same anti-refusal-loop obligation as the two warnings above: name the exact entries and
+  // the exact test each failed, and say plainly what is SILENT, so the message cannot read
+  // as a general accusation. The two kinds have genuinely different remedies, so they get
+  // genuinely different messages rather than one hedged paragraph covering both.
+  const requirementShortfallWarning = requirementShortfall
+    ? requirementShortfall.kind === 'absent'
+      ? `completion for ${it.id} landed authority:'proposed' rather than 'committed': this close ` +
+        `DECLARES deferred work but supplies no \`verification.requirementDisposition\`, so it says ` +
+        `it did not deliver everything asked without saying which part of the ask was left. That is ` +
+        `the gap D-014 exists to close: under-delivery is mostly an ENUMERATION failure, and ` +
+        `enumeration is mechanically checkable (a citation resolves or it does not), unlike a ` +
+        `self-grade. This is NOT asked of every close — a close declaring no deferred work, one ` +
+        `naming no files, or one whose originating item has no substantive body to quote is silent. ` +
+        `To fix: re-read the originating item body and pass ` +
+        `\`verification.requirementDisposition: [{ requirement: "<VERBATIM quote from that body>", ` +
+        `disposition: "deferred", followUp: "EI-123" }, …]\` — one entry per distinct requirement, ` +
+        `each quote a literal span of the body, \`implemented\` entries citing a path that exists.`
+      : `completion for ${it.id} landed authority:'proposed' rather than 'committed': its ` +
+        `\`verification.requirementDisposition\` does not hold up. ` +
+        (requirementShortfall.notQuotedFromSource.length
+          ? `${requirementShortfall.notQuotedFromSource.length} entr(ies) are NOT a verbatim span of ` +
+            `the originating item body (or are too short to be a distinct requirement): ` +
+            `${requirementShortfall.notQuotedFromSource.join(' | ')}. Paraphrase is exactly where ` +
+            `silent narrowing hides — "make the retry robust" becomes "added a retry" — which is why ` +
+            `the quote is substring-checked rather than read. Whitespace is normalised, so a quote ` +
+            `spanning a line wrap is fine; copy the words exactly. `
+          : '') +
+        (requirementShortfall.implementedWithoutResolvingCitation.length
+          ? `${requirementShortfall.implementedWithoutResolvingCitation.length} entr(ies) are marked ` +
+            `\`implemented\` with no citation that resolves against the tree: ` +
+            `${requirementShortfall.implementedWithoutResolvingCitation.join(' | ')}. Pass ` +
+            `\`citations: ["repo/relative/path.ts"]\` naming a file that exists. A glob, an absolute ` +
+            `path, or any path outside the checkout is NOT judged and never triggers this. `
+          : '') +
+        (requirementShortfall.deferredWithoutFollowUp.length
+          ? `${requirementShortfall.deferredWithoutFollowUp.length} entr(ies) are marked \`deferred\` ` +
+            `with no filed follow-up ref: ${requirementShortfall.deferredWithoutFollowUp.join(' | ')}. ` +
+            `File the follow-up and pass its id as \`followUp: "EI-123"\` — a deferral nobody filed is ` +
+            `indistinguishable from work silently dropped. `
+          : '') +
+        `Re-call work_items:complete with the corrected list.`
     : undefined;
 
   // EI-18682004530991057 (proposal 3): stamp WHAT TREE this evidence was observed
@@ -3512,6 +3585,7 @@ async function completeOne(
     ...(unresolvedPathsWarning ? { unresolvedPathsWarning } : {}),
     ...(fabricatedPathsWarning ? { fabricatedPathsWarning } : {}),
     ...(testRunContradictionWarning ? { testRunContradictionWarning } : {}),
+    ...(requirementShortfallWarning ? { requirementShortfallWarning } : {}),
     ...(gateRedClaimWarning
       ? {
           gateRedClaimWarning,
