@@ -42,7 +42,12 @@ import { hasValidGitEntry } from './agent-tools/locks/valid-git-entry';
 import { analyzeImageBlankness } from '@papercusp/image-blankness';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY, type CompletionVerificationEvidence } from './coord-lifecycle/records';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
-import type { WorkItemCompletionAuthority } from './work-item-completion-authority';
+import {
+  authorityForCompletion,
+  type CompletionEvidenceFindings,
+  type WorkItemCompletionAuthority,
+} from './work-item-completion-authority';
+import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
@@ -301,6 +306,31 @@ export const KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES: readonly string[] = [
 export const RECONCILER_SYSTEM_ACTOR = 'system:plan-item-reconcile' as const;
 
 /**
+ * Automation identities that close through the ORDINARY completion gate — they supply a
+ * `completionRef` and never pass `skipCompletionGate`, so
+ * {@link KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES} (whose whole definition is that bypass)
+ * cannot name them, and neither {@link SYSTEM_OWNER_PREFIXES} convention covers them either.
+ *
+ * They were invisible until something asked a question that depended on the answer.
+ * Measured 2026-09-02 over 7 days in `papercusp-workspace`: `structural-error-verifier`
+ * closed 397 work-items and every one classified `agent` — the exact misfiling the
+ * `watchdog-green-resolve` note above says a membership-only test would produce, reappearing
+ * because the membership list is keyed on a bypass these callers do not use.
+ *
+ * Registration is PINNED, not remembered: `completion-audit-system-closers.test.ts` scans
+ * the tree for terminal-close call sites whose `by` is a bare string literal and fails when
+ * one classifies `agent`. That is what makes the list a derived-truth rung-2 pin rather than
+ * the hand-maintained "grep the repo to keep this exhaustive" instruction above — which is
+ * the instruction that had already silently failed twice by the time it was checked.
+ */
+export const KNOWN_SYSTEM_GATED_CLOSER_IDENTITIES: readonly string[] = [
+  // harness/structural-error-verifier.ts:256 — resolves issues whose structural error cleared.
+  'structural-error-verifier',
+  // harness/routines/tsc-red-sweep.ts:490 — resolves tsc-red filings once the type error is gone.
+  'tsc-red-cleared-resolve',
+];
+
+/**
  * Which KIND of actor a `terminal_owner` names. Used to attribute a burn-down delta
  * (work_items:burn_down `deltaBy`) so a harness-wide close count is never read as one
  * fleet's output — the misread that reported ~30 closes/hour to an owner when the
@@ -335,7 +365,71 @@ export function classifyTerminalOwner(owner: string | null | undefined): Termina
   if (SYSTEM_OWNER_PREFIXES.some((p) => id.startsWith(p))) return 'system';
   if (id === RECONCILER_SYSTEM_ACTOR) return 'system';
   if (KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES.includes(id)) return 'system';
+  if (KNOWN_SYSTEM_GATED_CLOSER_IDENTITIES.includes(id)) return 'system';
   return 'agent';
+}
+
+/**
+ * The authority a terminal write should stamp when its caller judged nothing — or `null`
+ * to leave today's behaviour untouched.
+ *
+ * ── WHAT THIS CLOSES (design-to-code-coverage-seam-2026-09-02 P-003) ────────────────
+ * The completion gate is satisfied by EITHER a `completionRef` or a `completionAuthority`
+ * (P-004), so a close supplying only a ref passes without any evidence ever being judged,
+ * and the writer stores `authority = NULL`. `countsTowardBurnDown` reads a NULL terminal
+ * authority as a LEGACY close and COUNTS it (D-005) — an exemption whose stated scope is
+ * closes "made before the authority contract existed".
+ *
+ * Applied to a close being made TODAY, by a live agent, under that contract, the exemption
+ * is simply false — and it inverts the incentive it was written to protect: an evidence-FREE
+ * ref close counts toward burn-down, while an evidence-bearing but weak close lands
+ * `proposed` and does not. Judging the ref path with the same function removes that
+ * inversion. This is a coherence check on D-005's own definition, not the blanket policy
+ * call D-019 declined: it demands no new field from anybody, and changes only what a close
+ * that already declared nothing is CALLED.
+ *
+ * ── WHAT IT DELIBERATELY LEAVES ALONE ───────────────────────────────────────────────
+ * Every guard here is a case where a stamp would assert a judgement nobody made:
+ *  - a caller that supplied its own authority has already judged (never re-judge it);
+ *  - `skipCompletionGate` paths are "not completions at all" — restore, watchdog sweeps,
+ *    reconcile — so they carry no evidence to grade and keep their legacy NULL;
+ *  - a `force` ref-only correction must preserve the authority a real close already earned;
+ *  - a SYSTEM identity closes on outcomes with no code evidence in principle ("replication
+ *    recovered", "duplicate collapse"). Measured 2026-09-02, grading those would manufacture
+ *    ~1,600 meaningless `proposed` rows a week, which is the opposite of the point — and it
+ *    is why {@link KNOWN_SYSTEM_GATED_CLOSER_IDENTITIES} had to exist before this could be
+ *    correct at all;
+ *  - a TRANSPORT-ONLY identity has no live agent behind it (see `isTransportOnlyIdentity`),
+ *    so there is nobody whose evidence this would be.
+ *
+ * `findings` is the impure half {@link authorityForCompletion} accepts and is normally
+ * absent here by construction: the caller that HAS findings (`work_items:complete`) is
+ * exactly the caller that supplies its own authority and returns at the first guard.
+ * Absence means "not judged", never "judged clean" — the same fail-open contract as
+ * {@link CompletionEvidenceFindings} itself.
+ */
+export function derivedTerminalCompletionAuthority(input: {
+  /** Is the state being written terminal for this row's family? */
+  isTerminal: boolean;
+  /** The closing identity (`by`) this write stamps as `terminal_owner`. */
+  by: string | null | undefined;
+  skipCompletionGate?: boolean;
+  /** The authority the caller judged for itself, if any. */
+  suppliedAuthority?: WorkItemCompletionAuthority | null;
+  /** True when this write must preserve the stored completion record (a `force` ref-only correction). */
+  preserveExistingRecord?: boolean;
+  evidence?: CompletionVerificationEvidence | null;
+  findings?: CompletionEvidenceFindings;
+}): WorkItemCompletionAuthority | null {
+  if (input.suppliedAuthority) return null;
+  if (!input.isTerminal) return null;
+  if (input.skipCompletionGate) return null;
+  if (input.preserveExistingRecord) return null;
+  const by = input.by?.trim();
+  if (!by) return null;
+  if (isTransportOnlyIdentity(by)) return null;
+  if (classifyTerminalOwner(by) !== 'agent') return null;
+  return authorityForCompletion(input.evidence, input.findings);
 }
 
 /**
