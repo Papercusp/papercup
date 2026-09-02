@@ -33,7 +33,7 @@ export default defineTool({
   profile: 'engineer',
   capability: 'harness:read',
   guidance: {
-    when: 'User asks "what harnesses do I have?", "show me my projects", or you need a slug to feed into harness:get / harness:status.',
+    when: 'User asks "what harnesses do I have?", "show me my projects", or you need a slug to feed into harness:get / harness:status. Returns EVERY registered harness, hive/pot homes included — the registry stores no kind, so there is no includeHives-style filter and none is needed.',
     notWhen: 'For ONE specific harness, use `harness:get`. For a single harness\'s live health (active/done counts), use `harness:status`.',
     chaining: 'Pair with `harness:get` (detail) or `harness:status` (live counts) once you have the slug.',
   },
