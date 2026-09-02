@@ -28,6 +28,9 @@ SS_BIN="${PAPERCUSP_CLOUD_PORTAL_SS:-ss}"
 PS_BIN="${PAPERCUSP_CLOUD_PORTAL_PS:-ps}"
 READLINK_BIN="${PAPERCUSP_CLOUD_PORTAL_READLINK:-readlink}"
 KILL_BIN="${PAPERCUSP_CLOUD_PORTAL_KILL:-kill}"
+GIT_BIN="${PAPERCUSP_CLOUD_PORTAL_GIT:-git}"
+DATE_BIN="${PAPERCUSP_CLOUD_PORTAL_DATE:-date}"
+ALLOW_STALE_RELEASE="${PAPERCUSP_CLOUD_PORTAL_ALLOW_STALE_RELEASE:-0}"
 HEALTH_PATH="${PAPERCUSP_CLOUD_PORTAL_HEALTH_PATH:-/}"
 HEALTH_WAIT_SEC="${PAPERCUSP_CLOUD_PORTAL_HEALTH_WAIT_SEC:-60}"
 CURL_TIMEOUT_SEC="${PAPERCUSP_CLOUD_PORTAL_CURL_TIMEOUT_SEC:-5}"
@@ -65,7 +68,8 @@ Environment overrides:
   PAPERCUSP_CLOUD_PORTAL_TMPDIR,
   PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL, PAPERCUSP_CLOUD_PORTAL_SYSTEMD_ANALYZE,
   PAPERCUSP_CLOUD_PORTAL_CURL, PAPERCUSP_CLOUD_PORTAL_HEALTH_PATH,
-  PAPERCUSP_CLOUD_PORTAL_HEALTH_WAIT_SEC
+  PAPERCUSP_CLOUD_PORTAL_HEALTH_WAIT_SEC, PAPERCUSP_CLOUD_PORTAL_GIT,
+  PAPERCUSP_CLOUD_PORTAL_ALLOW_STALE_RELEASE
 EOF
 }
 
@@ -267,6 +271,71 @@ require_production_current_release() {
   log "  spawns   -> \$HOME/$entry_rel"
   log "  expected -> $PORTAL_ROOT/server.js"
   die "portal current release is a foreign-checkout build; re-point current at a release built from $PORTAL_ROOT, then retry (EI-22123385977067109)"
+}
+
+# `current` is immutable once built, but $PORTAL_ROOT keeps changing after
+# every publish. A `current` that is present, valid, and built from
+# $PORTAL_ROOT (the checks above) can still be a build of source that is hours
+# or days old: every gate above passes and the handoff cuts over to the wrong
+# code, with no error anywhere. Compare the release's recorded `publishedAt`
+# against how recently $PORTAL_ROOT's source has actually moved (its HEAD
+# commit time, or "now" if the working tree is dirty) and refuse a cutover
+# that looks stale. A pure age threshold is not enough — an intentionally-old
+# `current` (a deliberate rollback) must still deploy cleanly — so this checks
+# whether the SOURCE has moved since the build, not how old the build is, and
+# ships an explicit override for that rollback case (WI-2141210).
+#
+# `publishStandaloneRuntime()` does not yet record a content digest in
+# `.papercusp-release.json` (only schemaVersion/buildId/release/sourceRoot/
+# publishedAt), so this compares against git history rather than a hash —
+# recording and comparing an actual source digest would need a portal-repo
+# change, which is deliberately out of scope here (see the work item).
+require_fresh_current_release() {
+  local manifest="$CURRENT_RELEASE_REAL/.papercusp-release.json"
+  if [[ ! -f "$manifest" ]]; then
+    log "current release has no .papercusp-release.json; cannot verify staleness, proceeding"
+    return 0
+  fi
+  if ! "$GIT_BIN" -C "$PORTAL_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    log "$PORTAL_ROOT is not a git checkout; cannot verify release staleness, proceeding"
+    return 0
+  fi
+
+  local published_at
+  published_at="$(sed -n 's/.*"publishedAt": *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
+  if [[ -z "$published_at" ]]; then
+    log "current release manifest has no publishedAt field; cannot verify staleness, proceeding"
+    return 0
+  fi
+  local published_epoch
+  published_epoch="$("$DATE_BIN" -d "$published_at" +%s 2>/dev/null || true)"
+  if [[ -z "$published_epoch" ]]; then
+    log "cannot parse release publishedAt '$published_at'; cannot verify staleness, proceeding"
+    return 0
+  fi
+
+  local head_iso head_epoch=""
+  head_iso="$("$GIT_BIN" -C "$PORTAL_ROOT" log -1 --format=%cI HEAD 2>/dev/null || true)"
+  [[ -n "$head_iso" ]] && head_epoch="$("$DATE_BIN" -d "$head_iso" +%s 2>/dev/null || true)"
+
+  local dirty=0
+  [[ -n "$("$GIT_BIN" -C "$PORTAL_ROOT" status --porcelain 2>/dev/null)" ]] && dirty=1
+
+  local reason=""
+  if [[ -n "$head_epoch" ]] && ((head_epoch > published_epoch)); then
+    reason="$PORTAL_ROOT has a commit newer than the release (built $published_at)"
+  fi
+  if ((dirty)); then
+    reason="${reason:+$reason; }$PORTAL_ROOT has uncommitted changes"
+  fi
+  [[ -n "$reason" ]] || return 0
+
+  if [[ "$ALLOW_STALE_RELEASE" == "1" ]]; then
+    log "WARNING: current release looks STALE ($reason) — proceeding: PAPERCUSP_CLOUD_PORTAL_ALLOW_STALE_RELEASE=1"
+    return 0
+  fi
+  die "portal current release looks STALE: $reason." \
+    " Rebuild and republish from \$PORTAL_ROOT, or set PAPERCUSP_CLOUD_PORTAL_ALLOW_STALE_RELEASE=1 to deploy anyway (e.g. a deliberate rollback)."
 }
 
 managed_unit_runs_current_artifact() {
