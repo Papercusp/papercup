@@ -867,6 +867,88 @@ export function staleVerdictSafeLever(
   return `Verify the CURRENT candidate before fixing anything — the named failures may belong to a run that has already been abandoned (stale verdict: ${reasonCode}).`;
 }
 
+/**
+ * EI-22173032622074833 — the sibling of `staleVerdictSafeLever` above, for the OTHER state in
+ * which a re-cut lever contradicts the mechanism that owns it.
+ *
+ * `release:checkpoint-run` ALWAYS cuts a FRESH candidate at tip (`candidateSource: tip`; it
+ * exposes no candidate arg), so firing it while a frozen repair queue is live discards that
+ * queue and restarts the treadmill freeze-and-converge (P-013 / D-007) exists to prevent.
+ *
+ * The queue's OWN `nextAction` already encodes the safe move for every state it can be in, so
+ * this DEFERS to it rather than inventing second advice:
+ *   • non-null, recoverable — "do NOT retire it … release:repair-queue { op: 'converge' }",
+ *     which is also the precise answer to "the judged candidate predates my commit":
+ *     converging lands the fix ON the judged lineage instead of re-cutting away from it.
+ *   • non-null, terminal — the retire recipe, for a decision the mechanism itself called
+ *     finished (`recut-at-tip` / `hold-exhausted`).
+ *   • null — the queue is NOT retirable (live fixer, active dispatch reservation, or unknown
+ *     liveness). That is where firing is MOST wrong, and it is the one case with no
+ *     queue-authored sentence to defer to, so say so explicitly rather than letting the
+ *     re-cut lever stand.
+ *
+ * Why a projection at the stage boundary rather than one more arm in the lever ternary: that
+ * ternary ALREADY has a `g.repairQueue?.nextAction` arm, but it sits in the branch reached
+ * only when the judged candidate ALREADY CONTAINS the change. A frozen candidate necessarily
+ * ages behind a tree ~100 agents commit to continuously, which makes `notInCandidate` the
+ * STEADY STATE of a live queue rather than a corner case — so the existing arm is unreachable
+ * in exactly the state that matters. That gap is why this was filed four separate times
+ * (EI-21347137633438058, EI-22065259669472144, EI-22133273714016740, EI-22173032622074833)
+ * against a lever that already appeared to handle repair queues. The existing arm is left in
+ * place: it still outranks the `inconclusive` / `fireStale` / stalled arms for levers that
+ * never name a checkpoint run, which is a different job from this veto.
+ *
+ * Only re-cut advice is rewritten. A null lever (nothing to fire) and an unrelated lever
+ * (`git-sync:run`, `db:migrate`) keep their existing meaning, exactly as in
+ * `staleVerdictSafeLever`.
+ */
+export function frozenRepairQueueSafeLever(
+  repairQueue: PipelinePosition['gate']['repairQueue'],
+  lever: string | null,
+): string | null {
+  if (!repairQueue) return lever;
+  if (lever === null) return null;
+  if (!/release:checkpoint-run/i.test(lever)) return lever;
+  if (repairQueue.nextAction) return repairQueue.nextAction;
+  // `nextAction: null` is `retireAllowed:false` — the queue is held by something live. Name
+  // WHICH, because a bare "do not fire" with no reason is the advice readers talk themselves
+  // out of.
+  const pin = (repairQueue.frozenCandidate ?? repairQueue.candidate).slice(0, 12);
+  const why =
+    repairQueue.retireRefusal === 'live-fixer'
+      ? 'a live fixer holds it'
+      : repairQueue.retireRefusal === 'active-dispatch-reservation'
+        ? 'a dispatch reservation is active on it'
+        : repairQueue.retireRefusal === 'liveness-unknown'
+          ? "its fixer's liveness is UNKNOWN, which is not evidence the fixer is gone"
+          : `its phase (${repairQueue.phase}) is not one a retire may act on`;
+  // ⚠ This sentence must NOT contain the tokens `staleVerdictSafeLever` matches
+  // (`release:checkpoint-run` / `fix the reds`). It composes OUTSIDE this function, so a veto
+  // that named the verb literally would be rewritten into the stale-verdict caution whenever a
+  // stale verdict and a live queue coincide — silently dropping the reason and the converge
+  // instruction. `safeGateLever` and its test pin that interaction.
+  return (
+    `Do NOT cut a fresh candidate — a frozen repair queue is live on candidate ${pin} ` +
+    `(${repairQueue.phase}, decision '${repairQueue.decision}') and ${why}, so it cannot even be retired. ` +
+    `A checkpoint run always cuts a fresh candidate at tip and would discard this queue. ` +
+    `Land your fix on the judged lineage with release:repair-queue { op: 'converge', paths: ['<your changed path>'] }.`
+  );
+}
+
+/**
+ * The gate stage's two lever vetoes, composed in the order that keeps both meaningful.
+ *
+ * The frozen-repair-queue veto runs INNERMOST deliberately. Run the other way round, a stale
+ * verdict rewrites a `release:checkpoint-run` lever into its own "verify the current
+ * candidate" caution, which no longer matches the re-cut pattern — so the repair queue's
+ * concrete `op: 'converge'` instruction would be silently swallowed whenever BOTH conditions
+ * hold. Neither order can emit re-cut advice while a queue is live; this order also keeps the
+ * actionable half.
+ */
+export function safeGateLever(gate: PipelinePosition['gate'], lever: string | null): string | null {
+  return staleVerdictSafeLever(gate.verdictStaleReasonCode, frozenRepairQueueSafeLever(gate.repairQueue, lever));
+}
+
 export function assessGateCandidate(input: {
   judgingSha: string | null;
   judgingShaSource?: ChangeInCandidate['judgingShaSource'];
@@ -3517,8 +3599,8 @@ export function computeStages(
       detail: gateDetail === null ? null : `${gateDetail}${livenessNote}`,
       // Containment outranks the gate's own health: firing a verdict on a candidate that
       // cannot see your change buys nothing, so fixing THAT comes before greening reds.
-      lever: staleVerdictSafeLever(
-        g.verdictStaleReasonCode,
+      lever: safeGateLever(
+        g,
         !p.positions.inMain
           ? candidateNotYetPublished
             ? null
