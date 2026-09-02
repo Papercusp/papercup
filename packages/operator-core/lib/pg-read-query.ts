@@ -1071,7 +1071,21 @@ async function probeTenantPopulation(
   const checkHs = info.hasHarnessSlug && !!resolved.harnessSlug;
   if (!checkWs && !checkHs) return null;
 
-  const cached = tenantPopulationCache.get(table);
+  // EI-21338326327553651 — the probed population is SCOPE-RELATIVE: `ws_hit`/`hs_hit`
+  // answer "does THIS caller's resolved workspace/harness match at least one row", and
+  // `actualWorkspaceIds`/`actualHarnessSlugs` are the values a MISS should name. Keyed by
+  // `table` alone, the first caller's scope-specific verdict was served to every other
+  // scope for the TTL. That is how the advisory came to prescribe the ACTIVE workspace for
+  // rows legitimately pinned elsewhere (loop carry notes pin to DEFAULT_COORD_WORKSPACE),
+  // i.e. it recommended a predicate matching nothing. The key must carry the scope the
+  // verdict was computed FOR. JSON.stringify keeps it unambiguous and greppable — a
+  // delimiter-joined key would collide on any value containing the delimiter.
+  const cacheKey = JSON.stringify([
+    table,
+    checkWs ? resolved.workspaceId : null,
+    checkHs ? resolved.harnessSlug : null,
+  ]);
+  const cached = tenantPopulationCache.get(cacheKey);
   if (cached && Date.now() - cached.at < TENANT_POPULATION_CACHE_TTL_MS) return cached;
 
   const params: string[] = [];
@@ -1112,7 +1126,7 @@ async function probeTenantPopulation(
       actualHarnessSlugs: (r.hs_vals ?? []).slice(0, 3),
       at: Date.now(),
     };
-    tenantPopulationCache.set(table, pop);
+    tenantPopulationCache.set(cacheKey, pop);
     return pop;
   } catch {
     // Fail OPEN — an unprobed table keeps the pre-existing advisory verbatim.
