@@ -43,7 +43,7 @@ import Protomux from 'protomux';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import c from 'compact-encoding';
 import type { HyperswarmLike } from './swarm';
-import { readWireStats } from './wire-stats';
+import { SocketInboundLedger, DEFAULT_SOCKET_LIVENESS_WINDOW_MS } from './wire-stats';
 
 /** FAST per-topic discovery-refresh cadence — re-runs the DHT announce + lookup
  *  round so peers converge even when the first round misses (it reliably does
@@ -174,9 +174,11 @@ export const DEFAULT_SEVERED_ESCALATION_MS = 5 * 60_000;
  *
  * The effective window is `min(this, severedEscalationMs)` unless the caller
  * passes `socketLivenessWindowMs` explicitly; `0` disables the predicate
- * (byte-identical EI-13317/WI-5481 unconditional eviction).
+ * (byte-identical EI-13317/WI-5481 unconditional eviction). The constant and
+ * the per-socket ledger live in ./wire-stats.ts, shared with swarm.ts's
+ * escalation (which had the same defect from the tower side).
  */
-export const DEFAULT_SOCKET_LIVENESS_WINDOW_MS = 120_000;
+export { DEFAULT_SOCKET_LIVENESS_WINDOW_MS };
 
 export interface TopicGossipHandle<Frame> {
   /** Join a gossip topic. Opens the topic's channel on every existing
@@ -315,48 +317,17 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
    * pairs a channel on it, or when a gossip frame arrives on any of its
    * channels (the fallback when the raw stream exposes no counters).
    */
-  interface SocketActivity {
-    /** Last sampled UDX `bytesReceived` (undefined = no counter exposed). */
-    lastBytesReceived: number | undefined;
-    /** Last time inbound activity was OBSERVED on this socket. */
-    lastInboundMs: number;
-  }
-  const socketActivity = new WeakMap<object, SocketActivity>();
-  const noteInbound = (socket: unknown, now: number): void => {
-    const a = socketActivity.get(socket as object);
-    if (a) a.lastInboundMs = now;
-    else {
-      socketActivity.set(socket as object, {
-        lastBytesReceived: readWireStats(socket).bytesReceived,
-        lastInboundMs: now,
-      });
-    }
-  };
-  /** One refresh tick's wire sample: a `bytesReceived` that advanced since the
-   *  last sample is inbound activity. Reads one property per socket. */
-  const sampleWireActivity = (now: number): void => {
-    for (const socket of sockets) {
-      const a = socketActivity.get(socket as object);
-      if (!a) continue;
-      const bytesReceived = readWireStats(socket).bytesReceived;
-      if (bytesReceived === undefined) continue;
-      if (a.lastBytesReceived !== undefined && bytesReceived > a.lastBytesReceived) {
-        a.lastInboundMs = now;
-      }
-      a.lastBytesReceived = bytesReceived;
-    }
-  };
+  const socketActivity = new SocketInboundLedger();
+  const noteInbound = (socket: unknown, now: number): void => socketActivity.note(socket, now);
+  const sampleWireActivity = (now: number): void => socketActivity.sample(sockets, now);
   const resolveSocketLivenessWindowMs = (severedEscalationMs: number): number =>
     opts.socketLivenessWindowMs ?? Math.min(DEFAULT_SOCKET_LIVENESS_WINDOW_MS, severedEscalationMs);
-  /** True when the socket showed inbound activity within the liveness window.
-   *  A socket with no ledger entry (never registered through `handler`) or
-   *  none within the window is NOT proven live → evicted, exactly as
-   *  EI-13317/WI-5481 requires for the dead-socket case. */
-  const isSocketProvenLive = (socket: unknown, now: number, windowMs: number): boolean => {
-    if (windowMs <= 0) return false;
-    const a = socketActivity.get(socket as object);
-    return !!a && now - a.lastInboundMs < windowMs;
-  };
+  /** True only on POSITIVE evidence of inbound activity within the window. A
+   *  socket with no evidence (never registered, or nothing observed) is NOT
+   *  proven live → evicted, exactly as EI-13317/WI-5481 requires for the
+   *  dead-socket case. */
+  const isSocketProvenLive = (socket: unknown, now: number, windowMs: number): boolean =>
+    socketActivity.recentlyLive(socket, now, windowMs) === true;
 
   /**
    * WI-5355: true when `socket` currently holds ZERO live paired channels
@@ -608,14 +579,14 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
     // P-203: connecting is inbound activity — a socket younger than the
     // liveness window is never destroyed by another topic's escalation (it may
     // be the very reconnect that escalation is trying to provoke).
-    noteInbound(socket, Date.now());
+    socketActivity.track(socket, Date.now(), /* grace */ true);
     // Unclean disconnect guard — same as joinHarnessSwarm's handler: an
     // unhandled socket 'error' (peer reset) is an uncaught exception that can
     // crash the host. Found by the P-004 swarm-chaos test.
     (socket as { on?: (ev: string, fn: (e: unknown) => void) => unknown }).on?.('error', () => {});
     (socket as { once?: (ev: string, fn: () => void) => unknown }).once?.('close', () => {
       sockets.delete(socket);
-      socketActivity.delete(socket as object);
+      socketActivity.forget(socket);
     });
     for (const st of topics.values()) openTopicChannel(socket, st);
   };

@@ -36,7 +36,13 @@ import type { AdmissionResult } from './read-admission';
 import { wireHiveGitServe, type PotGitServeConfig } from '../pot-git/serve-wiring';
 import { wireHiveGitDial, resolveVerifiedDevicePubkeyForSocket } from '../pot-git/peer-dial-registry';
 import { loadOrGenerateSwarmSeed } from '../../identity/swarm-keypair';
-import { readWireStats, dataPathProven, type PeerWireStats } from './wire-stats';
+import {
+  readWireStats,
+  dataPathProven,
+  SocketInboundLedger,
+  DEFAULT_SOCKET_LIVENESS_WINDOW_MS,
+  type PeerWireStats,
+} from './wire-stats';
 
 /** Protomux protocol id for the signed-announce exchange (Model B Stage 4b).
  *  Exported for the A-002 multi-hive demonstrator test. */
@@ -376,6 +382,16 @@ export interface JoinHarnessSwarmOpts {
    * entirely (byte-identical pre-EI-13317 behavior).
    */
   severedEscalationMs?: number;
+  /**
+   * P-203 / EI-22137294505377834: how recently a peer socket must have shown
+   * INBOUND activity (UDX `bytesReceived` advancing between refresh ticks) for
+   * a forced rejoin to SPARE it — see `DEFAULT_SOCKET_LIVENESS_WINDOW_MS` in
+   * ./wire-stats.ts for the forensics. Default
+   * `min(DEFAULT_SOCKET_LIVENESS_WINDOW_MS, severedEscalationMs)`. `0`
+   * disables the predicate (the escalating participant then evicts
+   * unconditionally — WI-6324 behavior).
+   */
+  socketLivenessWindowMs?: number;
   /**
    * EI-13317 observability: fires when the severed-link escalation trips
    * (see `severedEscalationMs`) — the LOUD signal the "correct state"
@@ -2388,6 +2404,11 @@ export async function joinHarnessSwarm(
   // `forceRejoinNow` sweeps this (filtered through the cross-harness
   // `swarmJoinSocketTopics` registry) before every leave()+join().
   const mySockets = new Set<unknown>();
+  /** P-203: per-socket inbound-activity ledger behind `evictOwnSockets`'s
+   *  liveness predicate — sampled every refresh tick below. NO connect grace
+   *  here (unlike topic-gossip): `handle.forceRejoin()` is an explicit "this
+   *  link is dead" lever and must not be blunted by a fresh-socket allowance. */
+  const inboundLedger = new SocketInboundLedger();
   /** Per-live-socket release for THIS handle's announce registration. */
   const releaseAnnounceBySocket = new Map<unknown, () => void>();
   /**
@@ -2411,6 +2432,7 @@ export async function joinHarnessSwarm(
     connectionCount++;
     liveConnectionCount++;
     mySockets.add(socket);
+    inboundLedger.track(socket, Date.now());
     // WI-5672/WI-5355/WI-5481 diagnostic (env-gated, off by default): the live
     // gate has shown a recurring HIGH-RATE reconnect churn on this exact
     // 'connection' handler (100s of opens/closes per two-frame session) that
@@ -2566,6 +2588,7 @@ export async function joinHarnessSwarm(
       // so a real close never needs eviction help). Prune our own bookkeeping so
       // a later forceRejoinNow doesn't waste a destroy() on an already-dead ref.
       mySockets.delete(socket);
+      inboundLedger.forget(socket);
       releaseAnnounceBySocket.get(socket)?.();
       releaseAnnounceBySocket.delete(socket);
       swarmJoinSocketTopics.get(socket as object)?.delete(topicHex);
@@ -2861,7 +2884,15 @@ export async function joinHarnessSwarm(
     const considered = mySockets.size;
     let evicted = 0;
     let skippedLiveDataPath = 0;
+    let skippedRecentInbound = 0;
     const wireDetail: string[] = [];
+    const now = Date.now();
+    const livenessWindowMs =
+      opts.socketLivenessWindowMs ??
+      Math.min(
+        DEFAULT_SOCKET_LIVENESS_WINDOW_MS,
+        opts.severedEscalationMs ?? DEFAULT_SUBSTRATE_SEVERED_ESCALATION_MS,
+      );
     for (const socket of mySockets) {
       // WI-5971: WI-5923 made this function fire for EVERY sibling registered
       // on the same (swarm,topic) whenever ANY ONE participant's own link
@@ -2880,9 +2911,17 @@ export async function joinHarnessSwarm(
       // dead-or-unproven one still gets evicted below.
       const wire = readWireStats(socket);
       const proven = dataPathProven(wire);
+      // P-203 / EI-22137294505377834: the RECENT-DELTA reading — did this
+      // socket's bytesReceived advance within the liveness window? Unlike
+      // `proven` (cumulative), a zombie cannot satisfy it, and a socket that is
+      // busy for OTHER topics/pots muxed over the same peer connection does —
+      // which is what the tower kept destroying (measured 2026-09-02 08:27:57Z:
+      // role=escalating considered=1 evicted=1 wire=[br=783878 pr=6667]).
+      const recent = inboundLedger.recentlyLive(socket, now, livenessWindowMs);
       if (wireDetail.length < 4) {
         wireDetail.push(
-          `[br=${wire.bytesReceived ?? '?'} pr=${wire.packetsReceived ?? '?'} proven=${proven === null ? 'unknown' : proven}]`,
+          `[br=${wire.bytesReceived ?? '?'} pr=${wire.packetsReceived ?? '?'} proven=${proven === null ? 'unknown' : proven} ` +
+            `recent=${recent === null ? 'unknown' : recent}]`,
         );
       }
       // WI-6324: this guard applies to SIBLINGS ONLY — never to the participant
@@ -2909,7 +2948,22 @@ export async function joinHarnessSwarm(
       // unconditionally, exactly as it did before WI-5971. A sibling that is
       // ALSO zombied is not stranded by this: its own detector escalates
       // independently, and it is the escalating participant on that pass.
-      if (proven === true && !escalating) {
+      //
+      // P-203 refinement of BOTH rules above: a socket whose counter ADVANCED
+      // within the liveness window is live for something — spare it in every
+      // role (the escalating participant's own link on this topic is dead, but
+      // the peer is not: it stopped serving this topic, or this topic's channel
+      // wedged, and the channel re-open + DHT rejoin below still run). A socket
+      // with a frozen counter is evicted in every role once it has been
+      // sampled (a zombie sibling no longer waits for its own detector). The
+      // cumulative `proven` rule survives only where the ledger has NO
+      // evidence yet (untracked / never sampled), and only for a sibling —
+      // exactly WI-5971's original guard.
+      if (recent === true) {
+        skippedRecentInbound++;
+        continue;
+      }
+      if (proven === true && !escalating && recent === null) {
         skippedLiveDataPath++;
         continue;
       }
@@ -2937,7 +2991,8 @@ export async function joinHarnessSwarm(
       console.info(
         `[swarm] force-rejoin eviction topic=${topicHex.slice(0, 16)}… ` +
           `role=${escalating ? 'escalating' : 'sibling'} considered=${considered} ` +
-          `evicted=${evicted} skippedLiveDataPath=${skippedLiveDataPath}` +
+          `evicted=${evicted} skippedLiveDataPath=${skippedLiveDataPath} ` +
+          `skippedRecentInbound=${skippedRecentInbound} livenessWindowMs=${livenessWindowMs}` +
           (wireDetail.length > 0 ? ` wire=${wireDetail.join('')}` : ''),
       );
     } catch {
@@ -3098,6 +3153,9 @@ export async function joinHarnessSwarm(
         // fire the loud, rate-limited health signal the "correct state"
         // requires instead of a silently-frozen rail.
         const severedEscalationMs = opts.severedEscalationMs ?? DEFAULT_SUBSTRATE_SEVERED_ESCALATION_MS;
+        // P-203: sample every live socket's wire counter each tick so a forced
+        // rejoin can tell a socket that is STILL receiving (spare) from a zombie.
+        inboundLedger.sample(mySockets, now);
         if (severedEscalationMs > 0) {
           const severedMs = now - fastWindowStartMs;
           const genuinelySevered = connectionCount > 0 && liveConnectionCount === 0;

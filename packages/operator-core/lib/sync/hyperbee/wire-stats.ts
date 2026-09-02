@@ -76,3 +76,117 @@ export function dataPathProven(stats: PeerWireStats): boolean | null {
   if (!stats.present || stats.bytesReceived === undefined) return null;
   return stats.bytesReceived > 0;
 }
+
+/**
+ * P-203 / EI-22137294505377834: the severed-link escalations' SOCKET LIVENESS
+ * window (topic-gossip.ts AND swarm.ts). A peer socket that showed INBOUND
+ * activity within this many ms — its UDX `bytesReceived` advanced between two
+ * refresh ticks, or the caller noted activity (a gossip frame, a remote
+ * pairing) — is SPARED by an escalation; only a socket with NO inbound evidence
+ * for the whole window (a true zombie) is destroyed.
+ *
+ * `dataPathProven` above cannot serve this purpose: it reads a CUMULATIVE
+ * counter, so it is `true` for every socket that ever completed a handshake,
+ * a zombie included (WI-6324: br=988 pr=3 → "proven"). The escalating ladders
+ * therefore evicted UNCONDITIONALLY (EI-13317/WI-5481), which destroyed a LIVE
+ * socket whenever a peer merely stopped serving one topic — measured on the
+ * two-machine rig 2026-09-02: the VM's topic-gossip killed its only tower
+ * socket every 300s for two hive-directory topics the tower no longer gossips,
+ * and the tower's swarm.ts escalation killed a socket at br=783878 pr=6667
+ * ("role=escalating considered=1 evicted=1") for the pot topic that socket had
+ * just lost. A RECENT DELTA is the honest signal: hyperdht keeps every live
+ * connection alive with a 5s keepalive (`connectionKeepAlive: 5000`), so a
+ * socket with no inbound bytes for two minutes is dead, and a dead socket
+ * cannot fake a delta — the WI-5481 deadlock stays broken.
+ *
+ * Callers use `min(this, severedEscalationMs)`; `0` disables the predicate.
+ */
+export const DEFAULT_SOCKET_LIVENESS_WINDOW_MS = 120_000;
+
+interface InboundRow {
+  /** Last sampled UDX `bytesReceived` (undefined = no counter exposed). */
+  lastBytesReceived: number | undefined;
+  /** Last time inbound activity was OBSERVED; null = none observed yet. */
+  lastInboundMs: number | null;
+  /** True once at least one wire sample has been compared against the
+   *  baseline taken at `track()` — before that there is no evidence either way. */
+  sampled: boolean;
+}
+
+/**
+ * Per-socket INBOUND-activity ledger behind the liveness predicate. One
+ * instance per gossip/join instance; keyed weakly so a socket that closes
+ * without `forget()` cannot leak.
+ */
+export class SocketInboundLedger {
+  private readonly rows = new WeakMap<object, InboundRow>();
+
+  /**
+   * Start tracking `socket`, taking the wire-counter baseline now. With
+   * `grace`, registration itself counts as inbound activity (a socket younger
+   * than the window is then spared — it may be the very reconnect an
+   * escalation is trying to provoke); without it the socket has no evidence
+   * until its counter advances or `note()` is called.
+   */
+  track(socket: unknown, now: number, grace = false): void {
+    if (!socket || typeof socket !== 'object') return;
+    const existing = this.rows.get(socket);
+    if (existing) {
+      if (grace) existing.lastInboundMs = Math.max(existing.lastInboundMs ?? now, now);
+      return;
+    }
+    this.rows.set(socket, {
+      lastBytesReceived: readWireStats(socket).bytesReceived,
+      lastInboundMs: grace ? now : null,
+      sampled: false,
+    });
+  }
+
+  /** Record OBSERVED inbound activity on `socket` (a frame, a remote pairing). */
+  note(socket: unknown, now: number): void {
+    if (!socket || typeof socket !== 'object') return;
+    const row = this.rows.get(socket);
+    if (!row) {
+      this.track(socket, now, true);
+      return;
+    }
+    row.lastInboundMs = Math.max(row.lastInboundMs ?? now, now);
+  }
+
+  /** One refresh tick's wire sample: a `bytesReceived` that advanced since the
+   *  previous sample is inbound activity. One property read per socket. */
+  sample(sockets: Iterable<unknown>, now: number): void {
+    for (const socket of sockets) {
+      if (!socket || typeof socket !== 'object') continue;
+      const row = this.rows.get(socket);
+      if (!row) continue;
+      const bytesReceived = readWireStats(socket).bytesReceived;
+      if (bytesReceived === undefined) continue;
+      if (row.lastBytesReceived !== undefined && bytesReceived > row.lastBytesReceived) {
+        row.lastInboundMs = now;
+      }
+      row.lastBytesReceived = bytesReceived;
+      row.sampled = true;
+    }
+  }
+
+  forget(socket: unknown): void {
+    if (socket && typeof socket === 'object') this.rows.delete(socket);
+  }
+
+  /**
+   * `true` = inbound activity observed within `windowMs`; `false` = tracked
+   * and sampled, nothing within the window (a zombie); `null` = no evidence
+   * either way (untracked, or tracked but never sampled or noted).
+   * `windowMs <= 0` disables the predicate (always `false`).
+   */
+  recentlyLive(socket: unknown, now: number, windowMs: number): boolean | null {
+    if (windowMs <= 0) return false;
+    if (!socket || typeof socket !== 'object') return null;
+    const row = this.rows.get(socket);
+    if (!row) return null;
+    if (row.lastInboundMs !== null && now - row.lastInboundMs < windowMs) return true;
+    if (row.lastInboundMs === null && !row.sampled) return null;
+    return false;
+  }
+}
