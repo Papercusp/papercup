@@ -8064,6 +8064,24 @@ describe("buildGreenCheckpointEnv (the gate measures COMMITTED defaults)", () =>
     expect(env.PAPERCUSP_TEST_RUN_SOURCE).toBe("ci");
   });
 
+  it("arms coverage attribution in gate children, overriding any host value", () => {
+    // P-006 (design-to-code-coverage-seam-2026-09-02). The gate's children are the largest
+    // body of test execution on this box; without this they contribute no surface→test
+    // evidence at all. Behavioural, not a source grep: the env builder is the chokepoint every
+    // gate-spawned process passes through, so asserting the built env is asserting the thing
+    // that actually reaches a fork.
+    //
+    // Overriding a host value matters here for the same reason it does for RUN_SOURCE: a host
+    // that had explicitly DISARMED attribution must not be able to silence the gate's own runs.
+    const env = buildGreenCheckpointEnv(
+      "b",
+      partialEnv({ PAPERCUSP_TEST_ATTRIBUTION: "0" }),
+    );
+    expect(env.PAPERCUSP_TEST_ATTRIBUTION).toBe("1");
+    // And from a host that never mentioned it at all.
+    expect(buildGreenCheckpointEnv("b", partialEnv({})).PAPERCUSP_TEST_ATTRIBUTION).toBe("1");
+  });
+
   it("disables Python bytecode writes in gate children, overriding any host value", () => {
     const env = buildGreenCheckpointEnv(
       "b",

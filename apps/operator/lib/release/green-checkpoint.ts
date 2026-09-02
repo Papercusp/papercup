@@ -7076,13 +7076,15 @@ export function buildGreenCheckpointEnv(
   //
   // ⚠ READ THIS BEFORE CONCLUDING ANYTHING FROM A ZERO. Arming here does NOT make the gate
   // measure coverage today, and the difference is not a subtlety — it is the whole finding.
-  // `greenCmd` defaults to `npm run test:affected`, which runs the UNIT lane; `defineVitestConfig`
-  // wires `setup-no-real-pg.ts` into exactly that lane, pinning PAPERCUSP_FORBID_REAL_PG=1, and
-  // the sink's flush stands DOWN on that rail by design (it gates the store, not the hooks). So
-  // the unit lane can OBSERVE traffic and can never WRITE a row. What this line buys is the
-  // integration lane (`affected-tests.mjs --integration`, no such rail) and every future gate
-  // leg that spawns through this one chokepoint — arming at the chokepoint rather than at each
-  // caller is what keeps that true without anyone having to remember.
+  // Every configured `greenCmd` on this box resolves to `scripts/affected-tests.mjs` WITHOUT
+  // `--integration` (the default is `npm run test:related`; see the resolver in
+  // release-config.ts, and do not trust a remembered value — it is an env-overridable chain).
+  // That is the UNIT lane, and `defineVitestConfig` wires `setup-no-real-pg.ts` into exactly
+  // that lane, pinning PAPERCUSP_FORBID_REAL_PG=1; the sink's flush stands DOWN on that rail by
+  // design (it gates the STORE, not the hooks). So the unit lane can OBSERVE traffic and can
+  // never WRITE a row. What this line buys is the integration lane (`--integration`, no such
+  // rail) and every future gate leg that spawns through this one chokepoint — arming at the
+  // chokepoint rather than at each caller is what keeps that true without anyone remembering to.
   //
   // The claim that a zero here means "the seam was not reached" is falsifiable, and falsified,
   // by attribution/seam-reachability.test.ts — the positive control P-006 exists to build.
@@ -12836,9 +12838,13 @@ export const WORKSPACE_RERUN_TIMEOUT_MS = 15 * 60_000;
  * "No affected workspaces." (exit 0) green path and the `spaBuildWorkspace===''`
  * SPA-build skip in {@link realCheckpointDeps}. This is a PURE decision so it is unit
  * testable without a real checkout/suite run:
- *   - Guarded to an NPM-based greenCmd (default `npm run test:affected`): a non-npm
- *     greenCmd (e.g. `cargo test`) can gate real code with no `package.json`, so it is
- *     NEVER treated as nothing-to-gate.
+ *   - Guarded to an NPM-based greenCmd: a non-npm greenCmd (e.g. `cargo test`) can gate real
+ *     code with no `package.json`, so it is NEVER treated as nothing-to-gate. (This used to
+ *     name a default of `npm run test:affected`. That was WRONG — the resolver in
+ *     release-config.ts falls through to `npm run test:related` — and the value is
+ *     env-overridable per install besides, so no comment can hold it correctly. The predicate
+ *     below reads the ACTUAL `greenCmd` it is passed; naming a default here only ever
+ *     manufactured a claim a reader would take on trust. P-006.)
  *   - Fires ONLY when the tree has NO root `package.json`. The papercusp integration
  *     tree — and every real coding pot — always commits a root `package.json`, so this
  *     is a STRICT no-op for the fleet-critical pipeline: it can only ever flip the
