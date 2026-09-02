@@ -10557,6 +10557,10 @@ export function trackedForkEnvelopeEnv(bootstrapEnvelopeEnv, agent = "claude") {
     ...bootstrapEnvelopeEnv,
     PAPERCUSP_AGENT_SESSION: "1",
     ...nativeCompactionEnv(agent),
+    // WI-2140943 lane 2: the context-trimming trio is a launcher-side concern too
+    // (the server envelope never carries it) — a fork without it boots the whole
+    // catalog inline, exactly like the host-handoff successor did.
+    ...contextTrimmingEnv(agent),
   };
 }
 
