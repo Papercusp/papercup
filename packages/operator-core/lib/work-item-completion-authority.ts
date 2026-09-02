@@ -442,7 +442,8 @@ export type InsufficientEvidenceReason =
   | 'test-result-contradicted-by-run'
   | 'requirement-disposition-unfaithful'
   | 'completion-claim-falsified'
-  | 'files-changed-never-existed';
+  | 'files-changed-never-existed'
+  | 'files-changed-untouched';
 
 /**
  * Impurely-derived findings about a completion, computed by the CALLER and handed in.
@@ -471,6 +472,28 @@ export interface CompletionEvidenceFindings {
    * from cause 2, and only cause 1 belongs here.
    */
   filesChangedNeverExisted?: readonly string[];
+
+  /**
+   * Declared `filesChanged` paths that are REAL BUT UNTOUCHED — the file exists in this
+   * tree, the working tree is clean at it, and its last commit predates the work window.
+   *
+   * P-005 / D-016: once `filesChangedNeverExisted` makes an invented path cost a grade,
+   * the cheapest way to satisfy that check is to name a real file you did not touch. This
+   * is the next rung — D-016 calls P-005 the "strictly stronger successor" — and the two
+   * fields are DISJOINT BY CONSTRUCTION: that one judges only paths absent from disk,
+   * this one only paths present on it, so one defect can never be graded twice.
+   *
+   * Resolution lives in `agent-tools/work_items/untouched-paths.ts`. Its load-bearing
+   * safety property is the WORKING-TREE check: this repo shares one checkout swept by
+   * git-sync on a schedule, so at close time an honest edit is usually still uncommitted
+   * and its git history still predates the item. Git history alone would therefore accuse
+   * exactly the agent who did the work — which is why the sibling detector
+   * `preExistingChangedPathsInCompletion` is, and stays, warn-only. A path is cleared by
+   * EITHER proof of work: a dirty working tree, or a commit inside the window. Submodule
+   * paths, unknown history, an unreadable tree and any throw are all silence. Absence
+   * means "not judged", never "judged clean".
+   */
+  filesChangedUntouched?: readonly { path: string; lastCommitAt: string }[];
 
   /**
    * Declared `verification.claims` that were RE-EVALUATED against the source and found
@@ -621,6 +644,18 @@ export function insufficientEvidenceReason(
   // container, or any throw leaves the field undefined and falls through to today's grade.
   if (findings?.claimsFalsified?.length) return 'completion-claim-falsified';
   if (findings?.filesChangedNeverExisted?.length) return 'files-changed-never-existed';
+  // P-005 / D-016. LAST, below its own predecessor. The two are disjoint populations (absent
+  // from disk vs present on it), so this ordering almost never arbitrates a real tie — but
+  // where it could, "this path never existed" is the more concrete defect and the cheaper
+  // repair, so it should be heard first. This one is also the weaker claim of the pair: it
+  // says a real file was named without being changed, which a closer may need git history to
+  // check, whereas a fabricated path is self-evident once pointed at.
+  //
+  // Reaching this line means the caller ran the probe AND it cleared the path by neither
+  // proof of work — the tree is clean at it and no commit touched it inside the window. A
+  // dirty tree, a commit in the window, a submodule path, unknown history, an unreadable
+  // tree, or any throw leaves the field undefined and falls through to today's grade.
+  if (findings?.filesChangedUntouched?.length) return 'files-changed-untouched';
   return undefined;
 }
 
