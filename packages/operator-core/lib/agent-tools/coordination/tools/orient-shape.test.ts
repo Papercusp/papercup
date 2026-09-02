@@ -298,6 +298,47 @@ describe('shapeOrient trimmed', () => {
     });
   });
 
+  // P-004 / D-006. The two fact-truncation disclosures COMPOSE and are easy to
+  // conflate, because the obvious name for either is `factsTruncated`:
+  //   factsFoldTruncated — the DATABASE bound. The fold's `ORDER BY updated_at
+  //     DESC LIMIT n` never returned the rest, so those rows were never in this
+  //     payload to drop. Set upstream in orient.ts.
+  //   factsTruncated — the PAYLOAD bound. Rows the fold DID return, dropped here
+  //     to fit the budget. Set by this shaper.
+  // Measured live on one :3170 orient 2026-09-02: the fold returned 12 of 495
+  // workspace + 12 of 366 harness, then the shaper showed 4 of those 24. Reading
+  // `factsTruncated` alone says "24 exist" against a true population of 861.
+  //
+  // This guard exists because the collision ALREADY happened: the first cut of
+  // D-006 named its field `factsTruncated`, the shaper silently overwrote it, and
+  // every unit test stayed green — only an end-to-end call against the live
+  // population exposed it. That is precisely the detector gap this closes.
+  describe('the fold bound and the payload bound are separate disclosures', () => {
+    it('the shaper does NOT clobber an upstream factsFoldTruncated', () => {
+      const foldBound = {
+        limitPerSelector: 12,
+        scopes: [{ scope: 'workspace', scopeRef: null, shown: 12, total: 495 }],
+        reason: 'fold LIMIT, not payload budget',
+      };
+      const shaped = shapeOrient({ ...fixture(), factsFoldTruncated: foldBound }, 'trimmed') as Record<
+        string,
+        unknown
+      >;
+      // Survives shaping intact — a reader must still learn 483 rows never left the DB.
+      expect(shaped.factsFoldTruncated).toEqual(foldBound);
+      // ...and is NOT the same object the shaper writes for its own, narrower cut.
+      expect(shaped.factsTruncated).not.toEqual(foldBound);
+      expect(shaped.factsTruncated).toMatchObject({ more: 'facts:list { all:true }' });
+    });
+
+    it('both keys ride the facts leg, so neither is evicted without the other', () => {
+      const factsLeg = ORIENT_OPTIONAL_EVICTION_PRIORITY.find((l) => l.name === 'facts');
+      expect(factsLeg).toBeDefined();
+      expect(factsLeg!.fields).toContain('factsFoldTruncated');
+      expect(factsLeg!.fields).toContain('factsTruncated');
+    });
+  });
+
   it('discloses how many fact BODIES it clipped, not just how many facts it dropped', () => {
     // Distinct from factsTruncated: a fact can survive the COUNT cap and still be
     // delivered with most of its body gone. Both cuts are losses; both are named.

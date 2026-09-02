@@ -81,7 +81,18 @@ export const ORIENT_OPTIONAL_PRIORITY = {
   tier4: [
     {
       name: 'facts',
-      fields: ['facts', 'factsWithheld', 'factsNarrowed', 'factsTruncated', 'factsBodiesTruncated'],
+      // P-004 / D-006: factsFoldTruncated is the DATABASE bound (the fold's LIMIT
+      // never returned the rest); factsTruncated beside it is the PAYLOAD bound
+      // (returned rows dropped to fit the budget). They compose, so both ride the
+      // same leg — dropping either one leaves a reader under-counting the corpus.
+      fields: [
+        'facts',
+        'factsWithheld',
+        'factsNarrowed',
+        'factsFoldTruncated',
+        'factsTruncated',
+        'factsBodiesTruncated',
+      ],
       recoverVia: 'facts:list { all:true }',
     },
     {

@@ -459,14 +459,18 @@ export interface OrientResult {
    *  none stand. Absent ⇒ the fold was full. A monitor tick passing
    *  afterCompaction:true gets the full fold and no marker. */
   factsNarrowed?: { fold: 'never-drop'; prefixes: string[]; reason: string };
-  /** P-004 / D-006: present iff the per-selector LIMIT dropped facts this scope
-   *  actually holds — i.e. `facts` above is the NEWEST N of that scope, not its
-   *  population. Sibling of `factsNarrowed` and the same principle: a bounded read
-   *  must never render as a total. This one is the bigger of the two and fires on
-   *  every FULL fold, not only monitor ticks — measured 2026-09-02, scope
-   *  `workspace` showed 12 of 495 (2.4%) and `harness:papercusp` 12 of 366 (3.3%).
-   *  Absent ⇒ every selector's whole live population is in `facts`. */
-  factsTruncated?: {
+  /** P-004 / D-006: present iff the per-selector fold LIMIT dropped facts the scope
+   *  actually holds — i.e. `facts` is the NEWEST N of that scope, not its population.
+   *  Absent ⇒ every selector's whole live population reached the fold.
+   *
+   *  ⚠ NOT the same as `factsTruncated`, and the two COMPOSE — read both or you will
+   *  under-count by an order of magnitude. `factsFoldTruncated` is the DATABASE bound
+   *  (the `ORDER BY updated_at DESC LIMIT n` never returned the rest);
+   *  `factsTruncated` is the PAYLOAD bound (rows the fold DID return, dropped to fit
+   *  the output budget). Measured live 2026-09-02 on one orient: the fold returned 12
+   *  of 495 workspace + 12 of 366 harness, then the payload showed 4 of those 24 — so
+   *  `factsTruncated` alone reads as "24 exist", against a true population of 861. */
+  factsFoldTruncated?: {
     limitPerSelector: number;
     scopes: Array<{ scope: string; scopeRef: string | null; shown: number; total: number }>;
     reason: string;
@@ -1706,7 +1710,7 @@ export async function composeOrient(
       // a re-ranking, the fix.
       const truncatedScopes = factsCensus.filter((c) => c.truncated);
       if (truncatedScopes.length > 0) {
-        result.factsTruncated = {
+        result.factsFoldTruncated = {
           limitPerSelector: FACTS_FOLD_LIMIT,
           scopes: truncatedScopes.map((c) => ({
             scope: c.scope,
