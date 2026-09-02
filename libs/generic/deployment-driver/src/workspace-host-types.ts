@@ -462,6 +462,26 @@ export interface WorkspaceHostProviderContext {
   connection: WorkspaceHostProviderConnection;
   actorId?: string;
   signal?: AbortSignal;
+  /**
+   * SERVER-AUTHORED host bootstrap, rendered by the controller at plan time and attached to the
+   * new instance's provider startup metadata after the durable-filesystem mount.
+   *
+   * It arrives on the CONTEXT rather than on the desired spec because of what the rendered script
+   * contains: the release `bundleUrl`/`bundleSha256`/`signingPublicKey` trust pins AND the
+   * OpenSSH public key authorized for the workspace SSH account. A caller who can name any of
+   * those chooses which code the host installs and who may log into it, so a caller-supplied
+   * value is an access-granting trust hole rather than a convenience. Providers therefore REFUSE
+   * a `desired.provider.startupScript` outright and read this field instead — the desired spec is
+   * caller-authored and durably persisted, the context is controller-authored per operation.
+   *
+   * Rendering here rather than persisting into `desired_spec` is also why the ~20KB script never
+   * enters the stored intent: the spec keeps the small provisioning intent, and the script is
+   * re-derived from the controller's own trusted release each time it is needed.
+   *
+   * Omitted ⇒ the instance gets the durable mount only (the pre-P-046 behaviour), which is
+   * correct for lifecycle actions that do not create a fresh host.
+   */
+  hostBootstrapScript?: string;
   log?: (
     level: WorkspaceHostLogLevel,
     message: string,

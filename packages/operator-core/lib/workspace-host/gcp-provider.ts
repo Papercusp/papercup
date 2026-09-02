@@ -404,7 +404,6 @@ export interface GcpWorkspaceHostDesiredProviderSettings {
   dataDiskType: string;
   dataDiskResizePolicy: typeof GCP_DATA_DISK_RESIZE_POLICY;
   kmsKeyName?: string;
-  startupScript?: string;
   metadata: Readonly<Record<string, string>>;
 }
 
@@ -563,12 +562,6 @@ function requireString(value: unknown, label: string): string {
 
 function optionalString(value: unknown, label: string): string | undefined {
   return value === undefined ? undefined : requireString(value, label);
-}
-
-function optionalPayload(value: unknown, label: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} must be a non-empty string`);
-  return value;
 }
 
 function dataDeviceName(value: unknown): string {
@@ -983,6 +976,19 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
   if (!desired.data.encrypted) throw new Error('GCP workspace-host data disks must be encrypted');
   const provider = desired.provider ?? {};
   assertWorkspaceHostSecretIsolation(provider, 'gcp.desired.provider');
+  // The host bootstrap is CONTROLLER-authored and arrives on the provider context, never on the
+  // caller-authored desired spec. The rendered script pins the release bundleUrl/bundleSha256/
+  // signingPublicKey AND the OpenSSH key authorized for the workspace SSH account, so a caller
+  // who can name it chooses both which code the host installs and who may log into it. Refusing
+  // it here — rather than merging it, or preferring one source over the other — keeps the single
+  // trusted producer provable by reading this function: no path carries request input into
+  // instance startup metadata.
+  if (provider.startupScript !== undefined) {
+    throw new Error(
+      'gcp.desired.provider.startupScript is not accepted: the host bootstrap is rendered ' +
+        'server-side at provision time and delivered through the provider context',
+    );
+  }
   // Single source of truth, shared with the initialization path — see the helper's comment.
   const { projectId, zone, instanceName } = resolveGcpWorkspaceHostInstanceIdentity(desired);
   const imageId = assertGcpImmutableImageId(desired.image.id, 'gcp.desired.image.id');
@@ -1051,7 +1057,6 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
     dataDiskType: optionalString(provider.dataDiskType, 'gcp.desired.provider.dataDiskType') ?? 'pd-balanced',
     dataDiskResizePolicy: GCP_DATA_DISK_RESIZE_POLICY,
     kmsKeyName: optionalString(provider.kmsKeyName, 'gcp.desired.provider.kmsKeyName'),
-    startupScript: optionalPayload(provider.startupScript, 'gcp.desired.provider.startupScript'),
     metadata: stringRecord(provider.metadata, 'gcp.desired.provider.metadata'),
   };
 }
@@ -1094,6 +1099,7 @@ function assertManagedHostResource(observed: GcpResourceObservation, hostId: str
 function metadata(
   settings: GcpWorkspaceHostDesiredProviderSettings,
   hostId: string,
+  hostBootstrapScript?: string,
 ): readonly { key: string; value: string }[] {
   const entries = new Map<string, string>(Object.entries(settings.metadata));
   entries.set('block-project-ssh-keys', 'TRUE');
@@ -1101,15 +1107,28 @@ function metadata(
   entries.set('enable-oslogin', 'TRUE');
   entries.set('papercusp-host-id', hostId);
   entries.set('papercusp-data-resize-policy', settings.dataDiskResizePolicy);
-  entries.set('startup-script', durableFilesystemStartupScript(settings));
+  entries.set('startup-script', durableFilesystemStartupScript(settings, hostBootstrapScript));
   return [...entries.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => ({ key, value }));
 }
 
-function durableFilesystemStartupScript(settings: GcpWorkspaceHostDesiredProviderSettings): string {
+/**
+ * The instance's `startup-script`: the durable data mount, then the controller-authored host
+ * bootstrap.
+ *
+ * The bootstrap runs AFTER the mount because it installs the release and its state under paths
+ * that live on the durable disk; running it first would write the release onto the boot disk and
+ * have the mount hide it. `hostBootstrapScript` reaches this function only from the provider
+ * CONTEXT — `readSettings` refuses a caller-supplied `provider.startupScript`, so there is no
+ * second producer for this argument.
+ */
+function durableFilesystemStartupScript(
+  settings: GcpWorkspaceHostDesiredProviderSettings,
+  hostBootstrapScript?: string,
+): string {
   const device = `/dev/disk/by-id/google-${settings.dataDeviceName}`;
-  const userScript = settings.startupScript?.trim().replace(/^#![^\n]*(?:\n|$)/, '');
+  const userScript = hostBootstrapScript?.trim().replace(/^#![^\n]*(?:\n|$)/, '');
   return [
     '#!/usr/bin/env bash',
     'set -euo pipefail',
@@ -1739,7 +1758,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             },
           ],
           serviceAccounts: [{ email: settings.serviceAccountEmail, scopes: settings.serviceAccountScopes }],
-          metadata: { items: metadata(settings, desired.hostId) },
+          metadata: { items: metadata(settings, desired.hostId, ctx.hostBootstrapScript) },
         },
       } satisfies GcpStepInput,
     });
