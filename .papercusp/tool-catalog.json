@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 843,
+  "count": 844,
   "tools": [
     {
       "name": "ablation:report",
@@ -16663,6 +16663,37 @@
         "when": "You need one deterministic \"is this pot production-ready yet?\" verdict backed by concrete operational metrics instead of a judgment call.",
         "notWhen": "You only need the next wake / subscriptions / placements summary — that is pot:status. Per-session loop state is loop:status.",
         "chaining": "Use with pot:status for the live wake/placements view, or the Learning tab panel for the same verdict in the UI."
+      }
+    },
+    {
+      "name": "loop:standdown-all",
+      "http": {
+        "path": "/api/agent-tools/loop/standdown-all",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Bulk-pause EVERY active per-session engine loop (loop-su-% routines) workspace-wide, or scoped to one fleet's CURRENT members with `fleetSlug` — the fleet-wide-stand-down primitive routines:group-set cannot reach (loops are never group members). Requires `reason`. ALWAYS stamps a finite auto-resume expiry (default 4h, override with `pauseTtlHours`) — there is no open-ended stand-down — so a broadcast can never strand every loop the way an ad-hoc hand-called routines:set stand-down twice did. Returns the ACTUAL {pausedCount, targets} touched, a checkable number instead of an assertion. Audited + one-call-revertible.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Pausing EVERY (or one fleet's) active engine loop at once for a coordinated stand-down (a delicate host restart, a shared-tree operation that must not race concurrent loop wakes) — instead of hand-calling routines:set once per loop, which is how a stand-down silently misses most of the fleet and how it drifts into an unbounded hold with no attributed resume.",
+        "notWhen": "To pause your OWN loop, use loop:end (permanent, no TTL — by design). To pause one specific OTHER loop, routines:set { name, active:false }. To pause a routine GROUP (not engine loops), routines:group-set.",
+        "chaining": "loop:status / fleet:assignments before, to see which loops are active. After `pauseTtlHours` lapses (or an early routines:set { active:true } per routine), a stood-down loop auto-resumes via the SAME routines-engine sweep release-pause-ttl.ts uses — loop:status renders the stand-down banner while it is held."
       }
     },
     {

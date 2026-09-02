@@ -709,6 +709,19 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'release-pause-ttl-sweep' },
   );
 
+  // EI-22138154596110669: the SAME "a deliberate pause must carry a finite expiry"
+  // sweep, one section down, for `loop:standdown-all`'s fleet-wide engine-loop
+  // stand-down pauses (marker-gated in SQL — see release-pause-ttl.ts's LOOP
+  // STAND-DOWN section header for why an ordinary loop:end pause must never be
+  // swept here). Bounded + fail-soft inside the module, same as the sweep above.
+  await DBOS.runStep(
+    async () => {
+      const { sweepExpiredLoopStanddowns } = await import('../harness/routines/release-pause-ttl');
+      await sweepExpiredLoopStanddowns(sql);
+    },
+    { name: 'loop-standdown-ttl-sweep' },
+  );
+
   // overwatch-role-2026-06-15 B-09 / D-004: the OVERWATCH liveness sweep — the
   // who-watches-the-watcher backstop, the same deterministic dead-man's switch as
   // the hive sweep above but for the overwatch supervisor's own wake channel. It

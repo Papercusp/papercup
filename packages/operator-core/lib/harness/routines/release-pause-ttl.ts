@@ -363,6 +363,280 @@ export async function sweepExpiredReleasePauses(
  * `notifyAttentionOnce` because a DBOS step retry must not deliver twice; the key
  * is the lapsed expiry, so a LATER pause on the same routine notifies again.
  */
+// ─────────────────────────────────────────────────────────────────────────────
+// LOOP STAND-DOWN (EI-22138154596110669) — the SAME "a deliberate pause must
+// carry a finite expiry, and lapsing it must never depend on a human staying
+// alive" pattern as the release-group pause above, applied to a fleet-wide
+// engine-loop stand-down (`loop:standdown-all`, agent-tools/loop/standdown-all.ts).
+//
+// Motivation: a stand-down broadcast asserted "all engine loops are paused"
+// (routines:set active:false, resumable) but had, by hand-calling routines:set
+// a few times, actually touched only 2 of 26+ active loop-su-% rows — there was
+// no dedicated bulk-pause tool for engine loops (routines:group-set bulk-pauses
+// a routine GROUP, and loop-su-% rows are never group members). No expiry was
+// stamped on the ad-hoc pause either, so the broadcast's sole resume authority
+// dying would have stranded every paused loop indefinitely.
+//
+// UNLIKE a release-group pause, a stand-down pause is not scoped by
+// `group_slug` and is ALWAYS finite (loop:standdown-all never accepts an
+// open-ended hold) — so there is no group gating and no quiescence exclusion to
+// replicate. It is scoped instead by a discriminating MARKER
+// (`pause.standdownAll === true`) stamped only by loop:standdown-all itself.
+//
+// ⚠ THE MARKER IS LOAD-BEARING, not decorative. `loop:end` (deactivateLoop
+// above) ALSO stamps `metadata.pause` on the routine it deactivates — a
+// DELIBERATE, PERMANENT stop with no TTL. Sweeping every paused loop-su-% row
+// the way the release sweep scans every paused release-group row would
+// auto-REVIVE a loop its owner intentionally ended, which is a strictly worse
+// bug than the one this section fixes. The marker turns "was this row paused BY
+// THIS mechanism" into a positive check instead of an inferred default, so an
+// ended loop's pause (no marker) is never a sweep candidate.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The `metadata.pause` marker key `loop:standdown-all` stamps — the sweep's
+ *  positive discriminator (see the section header above for why it must be
+ *  positive rather than inferred from the mere presence of a pause). */
+export const LOOP_STANDDOWN_MARKER = 'standdownAll';
+
+/**
+ * Does this RAW `metadata.pause` value carry the loop:standdown-all marker?
+ * Takes the raw jsonb value (not `readRoutinePause`'s parsed record, which
+ * intentionally drops unrecognized keys) so the marker survives untouched.
+ * Never true for an ordinary per-loop pause (routines:set, loop:end) — only
+ * for a bulk stand-down this module's own writer stamped.
+ */
+export function isLoopStanddownPause(rawPause: unknown): boolean {
+  if (rawPause == null || typeof rawPause !== 'object' || Array.isArray(rawPause)) return false;
+  return (rawPause as Record<string, unknown>)[LOOP_STANDDOWN_MARKER] === true;
+}
+
+/**
+ * WRITE side for a stand-down pause: ALWAYS finite (unlike resolvePauseExpiryMs,
+ * which returns null for anything outside the release group) — reuses the SAME
+ * default constant and rounding rather than forking the math.
+ */
+export function resolveLoopStanddownExpiryMs(opts: { pausedAtMs: number; ttlHours?: number | null }): number {
+  const hours =
+    typeof opts.ttlHours === 'number' && Number.isFinite(opts.ttlHours) && opts.ttlHours > 0
+      ? opts.ttlHours
+      : DEFAULT_RELEASE_PAUSE_TTL_HOURS;
+  return Math.round(opts.pausedAtMs + hours * 3_600_000);
+}
+
+export type FinitePauseExpiryVerdict =
+  | { expired: false; reason: 'not-paused' | 'undatable' | 'not-yet'; expiresAtMs: number | null }
+  | { expired: true; expiresAtMs: number; overdueMs: number; legacy: boolean };
+
+/**
+ * PURE, group-agnostic sibling of `classifyReleasePauseExpiry`: has this pause
+ * outlived its (explicit or legacy-default) TTL, with no group/quiescence
+ * gating? Every stand-down pause stamps `expiresAtMs` explicitly
+ * (`resolveLoopStanddownExpiryMs` never returns null), so the legacy
+ * (`pausedAtMs + DEFAULT_RELEASE_PAUSE_TTL_MS`) branch below only matters
+ * defensively — a hand-edited or pre-this-module row with no `expiresAtMs`.
+ */
+export function classifyFinitePauseExpiry(pause: RoutinePauseRecord, nowMs: number): FinitePauseExpiryVerdict {
+  if (!pause.present) return { expired: false, reason: 'not-paused', expiresAtMs: null };
+  const expiresAtMs = pause.expiresAtMs ?? (pause.pausedAtMs != null ? pause.pausedAtMs + DEFAULT_RELEASE_PAUSE_TTL_MS : null);
+  if (expiresAtMs == null) return { expired: false, reason: 'undatable', expiresAtMs: null };
+  if (nowMs <= expiresAtMs) return { expired: false, reason: 'not-yet', expiresAtMs };
+  return { expired: true, expiresAtMs, overdueMs: nowMs - expiresAtMs, legacy: pause.expiresAtMs == null };
+}
+
+const stampIso = (ms: number | null): string => (ms == null ? 'unknown' : new Date(ms).toISOString());
+
+/**
+ * The `loop:status` / fleet-health rendering of an active stand-down — the
+ * loop-scoped analog of `gatePausedBanner` above. Returns null when the pause
+ * is absent, so a caller can render it unconditionally. Callers must first
+ * confirm `isLoopStanddownPause(rawPause)` before parsing + passing the record
+ * here — this function does not itself re-check the marker.
+ */
+export function loopStanddownBanner(opts: { pause: RoutinePauseRecord; nowMs: number }): string | null {
+  if (!opts.pause.present) return null;
+  const heldMs = opts.pause.pausedAtMs != null ? Math.max(0, opts.nowMs - opts.pause.pausedAtMs) : null;
+  const heldFor = heldMs != null ? ` (held ~${Math.max(1, Math.round(heldMs / 60_000))}m)` : '';
+  const verdict = classifyFinitePauseExpiry(opts.pause, opts.nowMs);
+  const resume =
+    verdict.expiresAtMs == null
+      ? ' — ⚠ NO auto-resume is scheduled (undatable pause); resume it deliberately with routines:set { active: true }.'
+      : verdict.expired
+        ? ` — its TTL LAPSED at ${stampIso(verdict.expiresAtMs)}; the routines engine auto-resumes it on the next tick.`
+        : ` — auto-resumes ${stampIso(verdict.expiresAtMs)}.`;
+  return (
+    `⛔ STAND-DOWN ACTIVE since ${stampIso(opts.pause.pausedAtMs)} by ${opts.pause.pausedBy ?? '(unknown)'} ` +
+    `(${opts.pause.reason ?? 'no reason recorded'})${heldFor}${resume}`
+  );
+}
+
+/** One loop this sweep re-armed. */
+export interface LoopStanddownAutoResume {
+  workspaceId: string;
+  installSlug: string;
+  name: string;
+  targetOwnerId: string | null;
+  expiresAtMs: number;
+  overdueMs: number;
+  legacy: boolean;
+  pauseReason: string | null;
+  pausedBy: string | null;
+  pausedAtMs: number | null;
+}
+
+interface LoopStanddownRow {
+  workspace_id: string;
+  install_slug: string;
+  name: string;
+  target_owner_id: string | null;
+  active: boolean | null;
+  pause: unknown;
+}
+
+/**
+ * One bounded sweep pass: auto-resume every loop-su-% routine whose
+ * loop:standdown-all pause has outlived its TTL, and record a notice for each.
+ * Sibling of `sweepExpiredReleasePauses` — same row-scan/re-arm shape, scoped to
+ * `reschedule_interval_sec IS NOT NULL` (a loop row) instead of `group_slug`,
+ * and gated on the `standdownAll` marker in SQL so a legacy/ordinary loop pause
+ * (routines:set, loop:end) can never be a scan candidate in the first place —
+ * belt-and-suspenders alongside `isLoopStanddownPause`/`classifyFinitePauseExpiry`
+ * being marker-and-record-shape driven rather than presence-driven.
+ *
+ * Fail-soft + race-guarded identically to the release sweep: a bad row or dead
+ * notification rail must never break the shared routines tick, and the re-arm
+ * UPDATE is guarded on the EXACT pause blob classified so a pause that changed
+ * between read and write is left for the next pass instead of clobbered.
+ */
+export async function sweepExpiredLoopStanddowns(
+  sql: Sql,
+  opts: { nowMs?: number; limit?: number; notify?: boolean } = {},
+): Promise<LoopStanddownAutoResume[]> {
+  const nowMs = opts.nowMs ?? Date.now();
+  const limit = opts.limit ?? SWEEP_ROW_CAP;
+  const resumed: LoopStanddownAutoResume[] = [];
+
+  let rows: LoopStanddownRow[];
+  try {
+    rows = await sql<LoopStanddownRow[]>`
+      SELECT workspace_id, install_slug, name, target_owner_id, active, metadata->'pause' AS pause
+        FROM harness_shared.routines
+       WHERE reschedule_interval_sec IS NOT NULL
+         AND active = false
+         AND metadata->'pause'->>'standdownAll' = 'true'
+       LIMIT ${limit}`;
+  } catch (e) {
+    console.warn(`[loop-standdown] scan failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    return resumed;
+  }
+
+  for (const row of rows) {
+    const pause = readRoutinePause(row.pause);
+    const verdict = classifyFinitePauseExpiry(pause, nowMs);
+    if (!verdict.expired) continue;
+
+    try {
+      const lastPause = {
+        ...((row.pause as Record<string, unknown> | null) ?? {}),
+        resumedAtMs: nowMs,
+        autoResumedAtMs: nowMs,
+        autoResumedBy: 'loop-standdown-ttl',
+        autoResumeReason: verdict.legacy ? 'legacy-pause-default-ttl-lapsed' : 'standdown-ttl-lapsed',
+        expiresAtMs: verdict.expiresAtMs,
+      };
+      const updated = await sql<{ install_slug: string }[]>`
+        UPDATE harness_shared.routines r
+           SET active = true,
+               next_fire_at = now(),
+               metadata = jsonb_set(
+                 COALESCE(r.metadata, '{}'::jsonb) - 'pause',
+                 '{lastPause}',
+                 ${JSON.stringify(lastPause)}::text::jsonb,
+                 true
+               ),
+               updated_at = now()
+         WHERE r.workspace_id = ${row.workspace_id}
+           AND r.install_slug = ${row.install_slug}
+           AND r.name = ${row.name}
+           AND r.reschedule_interval_sec IS NOT NULL
+           AND r.active = false
+           AND r.metadata->'pause' = ${JSON.stringify(row.pause)}::text::jsonb
+        RETURNING r.install_slug`;
+      if (!updated[0]) continue; // raced — the next pass classifies the new state
+
+      const record: LoopStanddownAutoResume = {
+        workspaceId: row.workspace_id,
+        installSlug: row.install_slug,
+        name: row.name,
+        targetOwnerId: row.target_owner_id,
+        expiresAtMs: verdict.expiresAtMs,
+        overdueMs: verdict.overdueMs,
+        legacy: verdict.legacy,
+        pauseReason: pause.reason,
+        pausedBy: pause.pausedBy,
+        pausedAtMs: pause.pausedAtMs,
+      };
+      resumed.push(record);
+      console.warn(
+        `[loop-standdown] AUTO-RESUMED ${row.install_slug}/${row.name} (owner ${row.target_owner_id ?? '(unknown)'}) — ` +
+          `stand-down by ${pause.pausedBy ?? '(unknown)'} ("${pause.reason ?? 'no reason recorded'}") lapsed at ` +
+          `${stampIso(verdict.expiresAtMs)} (${Math.round(verdict.overdueMs / 60_000)}m overdue${
+            verdict.legacy ? ', legacy pause / default TTL' : ''
+          })`,
+      );
+
+      if (opts.notify !== false) await notifyLoopStanddownAutoResume(record);
+    } catch (e) {
+      console.warn(
+        `[loop-standdown] auto-resume failed for ${row.install_slug}/${row.name} (non-fatal): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+  }
+  return resumed;
+}
+
+/** Same notice primitive as `notifyAutoResume` above — deliberately not a new channel. */
+async function notifyLoopStanddownAutoResume(record: LoopStanddownAutoResume): Promise<void> {
+  try {
+    const { notifyAttentionOnce } = await import('../../attention-notify');
+    await notifyAttentionOnce({
+      kind: 'intervention',
+      importance: 'high',
+      harnessSlug: record.installSlug,
+      workspaceId: record.workspaceId,
+      title: `Engine loop AUTO-RESUMED — stand-down TTL lapsed (${record.targetOwnerId ?? record.name})`,
+      body:
+        `A loop:standdown-all pause on "${record.name}" (owner ${record.targetOwnerId ?? '(unknown)'}, ${record.installSlug}) ` +
+        `lapsed at ${stampIso(record.expiresAtMs)} (${Math.round(record.overdueMs / 60_000)}m overdue)` +
+        `${record.legacy ? ' — this pause predates TTL stamping, so the default TTL was applied to it' : ''}, ` +
+        `and the routines engine has re-armed it. The stand-down was taken by ${record.pausedBy ?? '(unknown)'}: ` +
+        `"${record.pauseReason ?? 'no reason recorded'}". If the stand-down is still needed, re-issue loop:standdown-all ` +
+        'with an explicit `pauseTtlHours` rather than assuming it stays down.',
+      dedupeKey: `loop-standdown-ttl:${record.installSlug}:${record.name}:${record.expiresAtMs}`,
+      data: {
+        routine: record.name,
+        targetOwnerId: record.targetOwnerId,
+        installSlug: record.installSlug,
+        event: 'loop-standdown-ttl-auto-resume',
+        expiresAtMs: record.expiresAtMs,
+        overdueMs: record.overdueMs,
+        legacyPause: record.legacy,
+        pausedBy: record.pausedBy,
+        pauseReason: record.pauseReason,
+      },
+    });
+  } catch (e) {
+    console.warn(`[loop-standdown] auto-resume notice failed (non-fatal): ${e instanceof Error ? e.message : e}`);
+  }
+  try {
+    const { notifySyncInvalidate } = await import('../../sync-sse');
+    notifySyncInvalidate('automation.catalog');
+  } catch {
+    /* SSE hub unavailable — the automation pane refreshes on its next read */
+  }
+}
+
 async function notifyAutoResume(record: ReleasePauseAutoResume): Promise<void> {
   try {
     const { notifyAttentionOnce } = await import('../../attention-notify');

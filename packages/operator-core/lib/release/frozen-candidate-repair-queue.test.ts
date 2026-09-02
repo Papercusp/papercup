@@ -140,6 +140,36 @@ describe('frozen-candidate repair queue', () => {
     });
   });
 
+  it('WI-2141347: tests a CONVERGED repairHead instead of retiring, when dispatch is infeasible', () => {
+    // repairHead diverged from candidate via convergence (shouldConvergeRepairHead) — still an
+    // ancestor of staging, already vetted, never unpushed fixer content — while candidate itself
+    // stays frozen and the queue is still unassigned/awaiting-fixer (a walled provider).
+    const converged: FrozenCandidateRepairQueue = { ...fresh(), repairHead: C1 };
+    expect(
+      decideFrozenRepairDispatchInfeasible(converged, {
+        nowMs: T0 + 1,
+        zeroAttemptStallMs: 1,
+      }),
+    ).toEqual({
+      kind: 'test-candidate',
+      candidate: C1,
+      gateDisposition: 'initial-candidate',
+      runSuite: true,
+      recordVerdict: true,
+    });
+  });
+
+  it('WI-2141347: still retires-at-tip when the repairHead never converged (no fixes to test)', () => {
+    // Falsifiability control for the fix above: an UNconverged queue (repairHead === candidate,
+    // the fresh() default) must keep the original recut-at-tip behavior unchanged.
+    expect(
+      decideFrozenRepairDispatchInfeasible(fresh(), {
+        nowMs: T0 + 1,
+        zeroAttemptStallMs: 1,
+      }),
+    ).toMatchObject({ kind: 'recut-at-tip', repairHead: C });
+  });
+
   it('persists C before its first suite, resumes that exact SHA, and transitions red in place', () => {
     const queue = createFrozenCandidateQueue({
       candidate: C,
