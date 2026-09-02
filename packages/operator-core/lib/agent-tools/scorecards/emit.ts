@@ -44,6 +44,7 @@ import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from '.
 import {
   collapseCriticsToSoleParty,
   resolveAcceptanceGraderEligibility,
+  resolveAggregatedVettingCritics,
   retiredAcceptanceRubricRefusal,
 } from './grader-eligibility';
 import { acceptanceGraderLabelPrefix, advanceGradingCascadeOnCard } from '../../acceptance-grader';
@@ -930,9 +931,25 @@ export async function emitScorecard(
     // An advisory narrower than the rail it speaks for is worse than none: its
     // silence reads as clearance.
     const advisoryCritics = vetting?.critics ?? [];
+    // EI-22182364716054326: this attestation is ONE channel's critique — a second
+    // independent critic may already be recorded on the OTHER channel (a prior
+    // vettingWorkItem card when this one is vettingConsult, or vice versa).
+    // resolveAggregatedVettingCritics reads only PERSISTED cards, so it cannot
+    // see the one this very call is about to write; union it in here so the
+    // advisory predicts what resolveAcceptanceGraderEligibility will compute
+    // once this card lands, instead of judging this channel in isolation.
+    let unionedAdvisoryCritics = advisoryCritics;
+    if (advisoryCritics.length > 0 && args.subject?.ref) {
+      const { critics: otherChannelCritics } = await resolveAggregatedVettingCritics(
+        args.subject.ref,
+        vetting?.rubricRevision ?? null,
+      );
+      const seen = new Set(advisoryCritics);
+      unionedAdvisoryCritics = [...advisoryCritics, ...otherChannelCritics.filter((c) => !seen.has(c))];
+    }
     const soleVettingParty =
-      advisoryCritics.length > 0
-        ? await collapseCriticsToSoleParty(advisoryCritics, {
+      unionedAdvisoryCritics.length > 0
+        ? await collapseCriticsToSoleParty(unionedAdvisoryCritics, {
             workspaceId: input.workspaceId || activeWorkspaceId(),
             lineageRelated: deps.lineageRelated ?? areAcceptanceLineageRelated,
           })
@@ -940,9 +957,9 @@ export async function emitScorecard(
     const vettingWarning =
       soleVettingParty != null
         ? `vetting for acceptance rubric '${args.subject?.ref ?? 'unknown'}' records ` +
-          (advisoryCritics.length === 1
+          (unionedAdvisoryCritics.length === 1
             ? `a sole critic '${soleVettingParty}'`
-            : `${advisoryCritics.length} vetting critics who all resolve to one party ('${soleVettingParty}')`) +
+            : `${unionedAdvisoryCritics.length} vetting critics who all resolve to one party ('${soleVettingParty}')`) +
           `. That party cannot later emit the independent acceptance grade; the sole-vetting-critic rail will refuse it. ` +
           `Use another lineage-independent grader or obtain a second independent critic before grading.`
         : undefined;

@@ -82,6 +82,71 @@ export function retiredAcceptanceRubricRefusal(
 }
 
 /**
+ * A vetting scorecard restricted to the fields the aggregation below reads —
+ * a structural subset of `ScorecardRow` (avoids importing the full row type
+ * into this identity-only module).
+ */
+export interface VettingScorecardLike {
+  rubricResolved: boolean;
+  missingKeys: readonly unknown[];
+  synthesized: boolean;
+  vetting?: {
+    consultId?: string | null;
+    workItemId?: string | null;
+    rubricRevision?: number | string | null;
+    critics?: readonly string[];
+  } | null;
+}
+
+/**
+ * Union the DISTINCT critic identities recorded across EVERY current-revision
+ * vetting attestation for `rubricId` — regardless of which channel (consult or
+ * work-item) each one cited.
+ *
+ * EI-22182364716054326: `scorecards:emit` accepts exactly one vetting channel
+ * per attestation (WI-41477 — "pass EXACTLY ONE of vettingConsult /
+ * vettingWorkItem"), so two independent critics who vetted through DIFFERENT
+ * channels land in two SEPARATE scorecards. The old caller here used
+ * `vettingCards.find(...)` — the FIRST matching card — and read only ITS
+ * `.critics`, so a rubric vetted twice (once per channel) was judged solely on
+ * whichever one attestation happened to sort first, misreporting a genuine
+ * two-critic vetting as sole-critic and barring an independent critic from
+ * grading on the strength of a field that could not represent what happened.
+ * The rail this feeds ("is grading self-sealing?") is a fact about the WORLD's
+ * critic population, not about which one channel a caller happened to read —
+ * so read every matching card and union their critics instead of picking one.
+ */
+export async function resolveAggregatedVettingCritics(
+  rubricId: string,
+  currentRevision: number | string | null | undefined,
+): Promise<{ critics: string[]; cardsConsidered: number }> {
+  const vettingCards = (await listScorecards({
+    rubricRef: META_ACCEPTANCE_RUBRIC_ID,
+    subjectRef: rubricId,
+    limit: 50,
+  })) as VettingScorecardLike[];
+  const matching = vettingCards.filter(
+    (card) =>
+      card.rubricResolved &&
+      card.missingKeys.length === 0 &&
+      !card.synthesized &&
+      (card.vetting?.consultId != null || card.vetting?.workItemId != null) &&
+      (currentRevision == null || card.vetting?.rubricRevision === currentRevision),
+  );
+  const seen = new Set<string>();
+  const critics: string[] = [];
+  for (const card of matching) {
+    for (const critic of card.vetting?.critics ?? []) {
+      if (!seen.has(critic)) {
+        seen.add(critic);
+        critics.push(critic);
+      }
+    }
+  }
+  return { critics, cardsConsidered: matching.length };
+}
+
+/**
  * Collapse a recorded vetting-critic list to the SINGLE party it represents, or
  * null when it names two or more genuinely independent parties.
  *
@@ -218,20 +283,11 @@ export async function resolveAcceptanceGraderEligibility(params: {
     };
   }
   const currentRevision = revisionRead.revision;
-  const vettingCards = await listScorecards({
-    rubricRef: META_ACCEPTANCE_RUBRIC_ID,
-    subjectRef: rubric.rubricId,
-    limit: 50,
-  });
-  const currentVetting = vettingCards.find(
-    (card) =>
-      card.rubricResolved &&
-      card.missingKeys.length === 0 &&
-      !card.synthesized &&
-      (card.vetting?.consultId != null || card.vetting?.workItemId != null) &&
-      (currentRevision == null || card.vetting?.rubricRevision === currentRevision),
-  );
-  const critics = currentVetting?.vetting?.critics ?? [];
+  // EI-22182364716054326: read the UNION of critics across every current-revision
+  // vetting card (both channels), not just the first one a `.find()` happens to
+  // return — see resolveAggregatedVettingCritics for why a single-card read
+  // misreports a genuinely two-critic vetting as sole-critic.
+  const { critics } = await resolveAggregatedVettingCritics(rubric.rubricId, currentRevision);
   // WI-905074: what preserves the three-party chain is an INDEPENDENT critic,
   // not a second row in the list. The old `critics.length === 1` made the
   // identity comparison unreachable for two or more critics, so a vetting record
