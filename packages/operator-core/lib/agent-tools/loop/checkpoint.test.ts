@@ -279,6 +279,84 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
     expect(loopGuaranteesNextWake(loop({ maxDurationSec: 21_600, armedAt: null }), now)).toBe(false);
     expect(loopGuaranteesNextWake(loop({ maxDurationSec: 21_600, intervalSec: null }), now)).toBe(false);
   });
+
+  // EI-22089924844237484 — a third dead-man shape distinct from both branches above:
+  // an active, UN-PARKED loop whose current arm has produced zero fires despite the
+  // engine having had at least two interval-sized opportunities, with a concrete
+  // nextFireAt already in the past. Neither the max-fires nor max-duration branch
+  // above covers this (both need bounds configured; this loop has none), and neither
+  // `stalled` nor cadence-drift covers it either (both require evidence this loop
+  // never accrues while the whole routine engine is down).
+  it('rejects an armed, un-parked loop that missed >=2 expected opportunities with zero fires and an overdue nextFireAt', () => {
+    const now = Date.parse('2026-08-25T04:20:00.000Z'); // armedAt + 20min, interval 5min => 4 expected
+    expect(
+      loopGuaranteesNextWake(
+        loop({
+          parked: false,
+          expectedFiresSinceArm: 4,
+          nextFireAt: '2026-08-25T04:05:00.000Z', // overdue by 15min
+        }),
+        now,
+      ),
+    ).toBe(false);
+  });
+
+  it('does not spuriously reject a freshly-armed loop that has not yet reached 2 expected opportunities', () => {
+    const now = Date.parse('2026-08-25T04:06:00.000Z'); // armedAt + 6min, interval 5min => 1 expected
+    expect(
+      loopGuaranteesNextWake(
+        loop({
+          parked: false,
+          expectedFiresSinceArm: 1,
+          nextFireAt: '2026-08-25T04:05:00.000Z', // overdue, but only 1 opportunity missed
+        }),
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it('does not reject an overdue-but-parked loop (mid-turn, covered by the stalled signal instead)', () => {
+    const now = Date.parse('2026-08-25T04:20:00.000Z');
+    expect(
+      loopGuaranteesNextWake(
+        loop({
+          parked: true,
+          expectedFiresSinceArm: 4,
+          nextFireAt: null, // parked loops carry no concrete nextFireAt
+        }),
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it('does not reject a healthy loop whose nextFireAt is still in the future', () => {
+    const now = Date.parse('2026-08-25T04:20:00.000Z');
+    expect(
+      loopGuaranteesNextWake(
+        loop({
+          parked: false,
+          expectedFiresSinceArm: 4,
+          nextFireAt: '2026-08-25T04:25:00.000Z', // still ahead of now
+        }),
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it('does not reject once fires have actually been delivered, even with an overdue nextFireAt', () => {
+    const now = Date.parse('2026-08-25T04:20:00.000Z');
+    expect(
+      loopGuaranteesNextWake(
+        loop({
+          parked: false,
+          firesSinceArm: 3,
+          expectedFiresSinceArm: 4,
+          nextFireAt: '2026-08-25T04:05:00.000Z',
+        }),
+        now,
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('loop:checkpoint — the loop carry-note producer', () => {

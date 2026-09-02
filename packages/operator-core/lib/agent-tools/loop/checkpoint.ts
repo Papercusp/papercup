@@ -155,12 +155,33 @@ function priorChecksOverCapCount(priorNote: string | null | undefined): number {
  * Missing arm-time evidence under a configured duration bound cannot support a guarantee
  * (the fire path falls back to `created_at`, which this status shape intentionally does not
  * expose), so fail closed rather than inventing headroom.
+ *
+ * EI-22089924844237484 — a THIRD dead-man shape distinct from the two above: an active,
+ * un-parked loop whose current arm has produced ZERO fires despite at least two
+ * interval-sized opportunities having elapsed (`expectedFiresSinceArm >= 2`), with a
+ * concrete `nextFireAt` sitting in the past. This is what "the whole routine engine
+ * (bg-host) is down" looks like from a loop row: the loop was never parked (no in-flight
+ * turn to be stuck in), so `LoopStatus.stalled`/fire-starvation — which both hard-require
+ * `parked` — read false; and cadence-drift needs >=3 HISTORICAL fires to compute a slow
+ * ratio, so a fresh arm sitting at zero fires can never trip it either. Nothing else in
+ * this module detects it, and an AUTO session trusting a stale `rewakeGuaranteed:true`
+ * here is the exact silent-halt risk this gate exists to prevent — see EI-22089924844237484
+ * for the full incident (loop armed 19:43Z, 0 fires by 19:47Z against 4 expected, because a
+ * peer's seed re-cut had quiesced bg-host for the whole window).
  */
 export function loopGuaranteesNextWake(
   loop:
     | Pick<
         LoopStatus,
-        'active' | 'armedAt' | 'firesSinceArm' | 'intervalSec' | 'maxDurationSec' | 'maxFires' | 'nextFireAt'
+        | 'active'
+        | 'armedAt'
+        | 'firesSinceArm'
+        | 'intervalSec'
+        | 'maxDurationSec'
+        | 'maxFires'
+        | 'nextFireAt'
+        | 'parked'
+        | 'expectedFiresSinceArm'
       >
     | null
     | undefined,
@@ -182,6 +203,16 @@ export function loopGuaranteesNextWake(
       ? Math.max(nowMs, scheduledAtMs)
       : nowMs + Math.max(0, loop.intervalSec!) * 1_000;
     if (nextAttemptAtMs - armedAtMs > loop.maxDurationSec * 1_000) return false;
+  }
+
+  // EI-22089924844237484: armed, un-parked, zero fires despite >=2 expected
+  // opportunities, and a concrete scheduled fire already in the past — the
+  // engine had a due fire and never even attempted it. Neither `stalled` (parked-
+  // only) nor cadence-drift (needs historical fires) covers this shape; see the
+  // doc comment above.
+  if (!loop.parked && loop.firesSinceArm === 0 && loop.expectedFiresSinceArm != null && loop.expectedFiresSinceArm >= 2) {
+    const scheduledAtMs = loop.nextFireAt == null ? Number.NaN : Date.parse(loop.nextFireAt);
+    if (Number.isFinite(scheduledAtMs) && scheduledAtMs < nowMs) return false;
   }
 
   return true;
