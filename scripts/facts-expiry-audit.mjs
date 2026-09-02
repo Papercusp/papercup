@@ -61,7 +61,20 @@ function arg(name, fallback = undefined) {
   return v && !v.startsWith('--') ? v : true;
 }
 
-/** One-line review record. Compact on purpose: a reviewer reads thousands of these. */
+/**
+ * One-line review record.
+ *
+ * ⚠ THE EXCERPT MUST NOT SILENTLY TRUNCATE. The original default was 200 chars, which
+ * hid 98.1% of the corpus (8,279 of 8,439 current rows exceed 200 chars; mean 357-1129,
+ * max 1200) — and the hidden tail is exactly where durable content lives, because facts
+ * are written with a status preamble first. Measured cost: the first urgent-reaper pass
+ * judged 9 rows off the excerpt and got 8 of them wrong (6 L->P, 2 L->E); each opened
+ * "WI-6451 DONE (36a92d5)..." or "Owner grant re-issued..." and read as completion
+ * status, while the durable trap sat past the cut. They were hours from a hard DELETE.
+ *
+ * So: the default is now the full body, and any truncation ANNOUNCES itself inline.
+ * A reviewer must never be unable to tell a complete body from a clipped one.
+ */
 function reviewLine(r, excerpt) {
   const flags = [
     r.kind ? r.kind[0].toUpperCase() : '-',
@@ -73,10 +86,14 @@ function reviewLine(r, excerpt) {
   ]
     .filter(Boolean)
     .join('');
-  const body = String(r.body ?? '')
+  const full = String(r.body ?? '')
     .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, excerpt);
+    .trim();
+  // excerpt <= 0 means "no limit". Any real clip is marked, never silent.
+  const body =
+    excerpt > 0 && full.length > excerpt
+      ? `${full.slice(0, excerpt)} …⚠CLIPPED+${full.length - excerpt}ch — READ THE FULL BODY BEFORE JUDGING`
+      : full;
   const ref = r.scope === 'workspace' ? '' : `:${r.scope_ref ?? ''}`;
   return `${r.id} ${r.scope}${ref} | ${r.key} | ${flags} | ${body}`;
 }
@@ -84,7 +101,9 @@ function reviewLine(r, excerpt) {
 async function cmdDump() {
   const outDir = String(arg('out', '.papercusp/scratch/facts-expiry-audit'));
   const shardSize = Number(arg('shard', 200));
-  const excerpt = Number(arg('excerpt', 200));
+  // 0 = full body (the default). Only pass a positive --excerpt for a deliberate
+  // skim; the clip then announces itself on every affected line.
+  const excerpt = Number(arg('excerpt', 0));
   mkdirSync(join(outDir, 'shards'), { recursive: true });
   mkdirSync(join(outDir, 'verdicts'), { recursive: true });
 
@@ -470,6 +489,53 @@ async function cmdVerify() {
   }
 }
 
+/**
+ * reshard — re-render existing shard .txt files from the audited population.jsonl.
+ *
+ * Deliberately does NOT re-query the database. A fresh `dump` would re-snapshot a corpus
+ * that ~100 agents are writing to and that the 30-day reaper is deleting from, producing
+ * a DIFFERENT population and a DIFFERENT partition — which would silently invalidate
+ * every verdict already keyed to the current shard boundaries. This re-renders the same
+ * ids, in the same shards, in the same order, changing only how much of each body a
+ * reviewer is shown.
+ */
+async function cmdReshard() {
+  const outDir = String(arg('out', '.papercusp/scratch/facts-expiry-audit'));
+  const excerpt = Number(arg('excerpt', 0));
+  const byId = new Map();
+  for (const line of readFileSync(join(outDir, 'population.jsonl'), 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    const r = JSON.parse(line);
+    byId.set(String(r.id), r);
+  }
+  const shardDir = join(outDir, 'shards');
+  let files = 0;
+  let rendered = 0;
+  let missing = 0;
+  for (const name of readdirSync(shardDir).filter((f) => f.endsWith('.txt')).sort()) {
+    const prev = readFileSync(join(shardDir, name), 'utf8').split('\n');
+    const ids = prev
+      .filter((l) => l.trim() && !l.startsWith('#'))
+      .map((l) => l.split(' ')[0]);
+    const rows = [];
+    for (const id of ids) {
+      const r = byId.get(id);
+      if (r) rows.push(r);
+      else missing++;
+    }
+    const header =
+      `# ${name} — ${rows.length} facts | scopes: ${[...new Set(rows.map((r) => r.scope))].join(',')}\n` +
+      `# <id> <scope>:<ref> | <key> | <kind><conf><flags><expiry-state> | <body${excerpt > 0 ? ' excerpt' : ' — FULL'}>\n`;
+    writeFileSync(join(shardDir, name), header + rows.map((r) => reviewLine(r, excerpt)).join('\n') + '\n');
+    files++;
+    rendered += rows.length;
+  }
+  console.log(`RESHARD_FILES\t${files}`);
+  console.log(`RESHARD_ROWS\t${rendered}`);
+  console.log(`RESHARD_MISSING_FROM_SNAPSHOT\t${missing}`);
+  console.log(`RESHARD_EXCERPT\t${excerpt > 0 ? `${excerpt} (clips marked)` : 'FULL BODY'}`);
+}
+
 const cmd = process.argv[2];
 const run =
   cmd === 'dump'
@@ -480,9 +546,13 @@ const run =
         ? cmdApply
         : cmd === 'verify'
           ? cmdVerify
-          : null;
+          : cmd === 'reshard'
+            ? cmdReshard
+            : null;
 if (!run) {
-  console.error('usage: facts-expiry-audit.mjs <dump|class-verdicts|apply|verify> [...]');
+  console.error(
+    'usage: facts-expiry-audit.mjs <dump|class-verdicts|apply|verify|reshard> [...]',
+  );
   process.exit(2);
 }
 run().catch((e) => {
