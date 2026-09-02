@@ -1900,44 +1900,6 @@ export function summarizeAdmittedRows(rows: readonly AdmittedCompositionRow[]): 
 }
 
 /**
- * The ONE rendering of "how much of this lane is nit/minor", for every consumer that
- * says it in prose (`work_items:claimable`'s COMPOSITION WARNING and
- * `fleet:launch-on-plan`'s DEGENERATE LANE warning today).
- *
- * EI-22184028605968917: both sites hand-rendered `Math.round(share * 100)`, and at
- * 2,363 of 2,366 that prints **"100% of this lane is nit/minor severity"** — while three
- * major-severity rows sit in the same payload. Any share ≥ 99.5% rounds up, so at this
- * lane size up to ~11 non-low rows are erased by the prose. The erased rows are exactly
- * the population the warning exists to protect: a sentence whose job is to stop a reader
- * quoting the count as a workload deleted the only rows in it that WERE workload. It had
- * already propagated into a plan Decision titled "the admitted claim pool is now 100%
- * low-severity".
- *
- * Two rules, both structural rather than advisory:
- *  - FLOOR to one decimal, never round: the sentence may understate the share, never
- *    overstate it, so "N% low-severity" is always safe to read as "at least N%".
- *  - "100%" is printed ONLY when `low === total`. It is a claim of EMPTINESS about the
- *    non-low population, so it is gated on that population actually being empty, not on
- *    a percentage that happens to land there.
- *
- * The COUNTS lead the percentage for the same reason `total` travels with the share
- * above: "2363 of 2366" cannot round away a row, and it carries its own denominator.
- * `low` is recomputed from `bySeverity` (exact integers, the same nit+minor definition
- * {@link summarizeAdmittedRows} folds) rather than from the float share.
- */
-export function formatLowSeverityShare(
-  comp: Pick<IssueClaimAdmittedComposition, 'total' | 'bySeverity'>,
-  noun = 'row(s)',
-): string {
-  const total = comp.total;
-  const low = (comp.bySeverity.nit ?? 0) + (comp.bySeverity.minor ?? 0);
-  if (total <= 0) return `0 of 0 ${noun} are nit/minor severity`;
-  const pct = low >= total ? 100 : Math.floor((low / total) * 1000) / 10;
-  const rendered = Number.isInteger(pct) ? `${pct}` : pct.toFixed(1);
-  return `${low} of ${total} ${noun} (${rendered}%) are nit/minor severity`;
-}
-
-/**
  * Composition of the ADMITTED set, in the caller's snapshot. Same subquery + same floor
  * predicate as {@link listIssueClaimableRows}, so it describes exactly the population the
  * count reports and the queue serves — it cannot drift from either.

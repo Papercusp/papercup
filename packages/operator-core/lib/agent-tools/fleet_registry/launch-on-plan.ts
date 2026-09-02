@@ -2987,7 +2987,8 @@ export default defineTool({
                 // simply looks like a healthy backlog. WARN, never refuse: a legitimately
                 // low-severity lane (a nit-sweep fleet) is a real thing to want.
                 try {
-                  const { aggregateAdmittedComposition, formatLowSeverityShare } = await import('../../scheduler/get-next');
+                  const { aggregateAdmittedComposition } = await import('../../scheduler/get-next');
+                  const { formatLowSeverityShare } = await import('../../scheduler/admitted-composition-format');
                   const comp = await aggregateAdmittedComposition(validated.spec.view.filter, {
                     harness,
                     states: validated.spec.states,

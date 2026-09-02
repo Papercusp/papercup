@@ -441,17 +441,19 @@ describe('work_items:claimable handler', () => {
 
     it('a DEGENERATE pool appends the warning, naming the share, the burst day and the item id', async () => {
       admittedValue = {
-        total: 12_564,
-        byKind: { change: 12_564 },
-        bySeverity: { nit: 11_584, minor: 980 },
-        lowSeverityShare: 0.987,
+        total: 12_729,
+        byKind: { change: 12_729 },
+        bySeverity: { nit: 11_584, minor: 980, major: 165 },
+        lowSeverityShare: 12_564 / 12_729,
         degenerate: true,
         peakDay: { day: '2026-07-31', count: 9_312 },
       };
       const out = await run({ harness: 'papercup' });
       expect(out.note).toMatch(/⚠ COMPOSITION WARNING/);
-      expect(out.note).toContain('99% of this lane is nit/minor severity'); // 0.987 → rounded
-      expect(out.note).toContain('9312 of it was filed on a single day (2026-07-31)');
+      // EI-22184028605968917: counts first, then a FLOORED percentage — 98.70% renders as
+      // 98.7, and the 165 major rows stay visible in the sentence, not just in the buckets.
+      expect(out.note).toContain('12564 of 12729 row(s) in this lane (98.7%) are nit/minor severity');
+      expect(out.note).toContain('9312 of them were filed on a single day (2026-07-31)');
       expect(out.note).toContain('is NOT a workload');
       expect(out.note).toContain('WI-6673');
     });
@@ -467,8 +469,27 @@ describe('work_items:claimable handler', () => {
       };
       const out = await run({ harness: 'papercup' });
       expect(out.note).toMatch(/⚠ COMPOSITION WARNING/);
-      expect(out.note).toContain('100% of this lane is nit/minor severity');
+      // 100% is reachable — but only because the non-low population really IS empty here.
+      expect(out.note).toContain('900 of 900 row(s) in this lane (100%) are nit/minor severity');
       expect(out.note).not.toContain('filed on a single day');
+    });
+
+    it('REGRESSION (EI-22184028605968917): a lane with major-severity rows can never print 100%', async () => {
+      // The measured payload: 2018 minor + 345 nit + 3 major = 2366, share 99.873%.
+      // `Math.round(share * 100)` printed "100% of this lane is nit/minor severity",
+      // erasing the only three rows in the lane that were actual workload — and that
+      // rounded sentence propagated into a plan Decision as a durable claim.
+      admittedValue = {
+        total: 2_366,
+        byKind: { change: 2_366 },
+        bySeverity: { major: 3, minor: 2_018, nit: 345 },
+        lowSeverityShare: 2_363 / 2_366,
+        degenerate: true,
+        peakDay: null,
+      };
+      const out = await run({ harness: 'papercup' });
+      expect(out.note).toContain('2363 of 2366 row(s) in this lane (99.8%) are nit/minor severity');
+      expect(out.note).not.toContain('100%');
     });
 
     it('the warning rides on `note`, where a caller reading the count cannot miss it — not a field they must know to ask for', async () => {
