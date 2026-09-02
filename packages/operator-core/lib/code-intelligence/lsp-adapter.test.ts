@@ -21,11 +21,13 @@ import {
   ensureOpen,
   healthForAnswer,
   readinessStrategyFor,
+  readinessVerdict,
   resolveSymbolSearchScope,
   specForLanguage,
   resolveServerBin,
   symbolSearchEmptyCaveat,
   type LspReadinessIntent,
+  type LspReadinessStrategy,
 } from './lsp-adapter.ts';
 import { isTrustworthyEmpty, type BackendHealth } from './contracts.ts';
 
@@ -562,5 +564,132 @@ describe('workspace_symbols search scope', () => {
     // or all four assertions above would be asserting against nothing.
     expect(body).toContain("const intent: CodeIntelIntent = 'symbol-search'");
     expect(body.length).toBeGreaterThan(500);
+  });
+});
+
+describe('readinessVerdict — only the server may certify; silence is never proof (WI-2142382)', () => {
+  const settleWindow = (settleMs = 5_000): LspReadinessStrategy => ({
+    kind: 'settle-window',
+    intent: 'definition',
+    settleMs,
+  });
+  const progressSignal: LspReadinessStrategy = {
+    kind: 'progress-signal',
+    intent: 'references',
+  };
+
+  /**
+   * The MEASURED state at the instant a false proof was minted, copied from
+   * the live client rather than imagined. Probe: a cross-project `definition`
+   * at packages/operator-core/lib/pty-bridge.ts:169, isolated one case per
+   * process. The second query returned sites=[nothing] health=healthy
+   * error=null while the client read exactly this.
+   */
+  const measuredAtFalseProof = {
+    quiescent: null,
+    everSettled: true,
+    idle: true,
+    idleForMs: 5_001,
+  } as const;
+
+  it('REGRESSION: the exact measured state yields canary, NOT certified', () => {
+    // Before the fix this returned 'certified', which put 'definition' into
+    // certifiedReadiness, which made healthForAnswer hand an EMPTY answer the
+    // client's 'healthy' — a false absence that isTrustworthyEmpty then
+    // reported as fact, irrevocably for that client's life.
+    expect(readinessVerdict(settleWindow(), measuredAtFalseProof)).toBe('canary');
+  });
+
+  it('DEMONSTRATES why the everSettled guard was the wrong fix — it was already true', () => {
+    // The originally-filed root cause was "the settle-window branch certifies
+    // on pure silence because it lacks the everSettled guard its sibling has".
+    // The measurement refuted it: everSettled was TRUE at the false proof, so
+    // that guard would have changed nothing on the real failing case. These
+    // assertions pin the reason — the verdict is identical either way, so
+    // everSettled is orthogonal here and cannot be the discriminator.
+    expect(measuredAtFalseProof.everSettled).toBe(true);
+    expect(readinessVerdict(settleWindow(), measuredAtFalseProof)).toBe('canary');
+    expect(readinessVerdict(settleWindow(), { ...measuredAtFalseProof, everSettled: false })).toBe(
+      'canary',
+    );
+  });
+
+  it('certifies ONLY on the server’s own quiescent verdict', () => {
+    expect(readinessVerdict(settleWindow(), { ...measuredAtFalseProof, quiescent: true })).toBe(
+      'certified',
+    );
+    expect(readinessVerdict(progressSignal, { ...measuredAtFalseProof, quiescent: true })).toBe(
+      'certified',
+    );
+  });
+
+  it('an explicit NOT-quiescent outranks any amount of idle, in both strategies', () => {
+    const busy = { ...measuredAtFalseProof, quiescent: false, idleForMs: 600_000 };
+    expect(readinessVerdict(settleWindow(), busy)).toBe('wait');
+    expect(readinessVerdict(progressSignal, busy)).toBe('wait');
+  });
+
+  it('waits while progress is in flight, however long the strategy window is', () => {
+    // The FIRST measured query sat here: pendingProgress=1, so not idle. It
+    // polled to the deadline and refused honestly. That is the code working.
+    const loading = { quiescent: null, everSettled: false, idle: false, idleForMs: 0 };
+    expect(readinessVerdict(settleWindow(1), loading)).toBe('wait');
+    expect(readinessVerdict(progressSignal, loading)).toBe('wait');
+  });
+
+  it('holds until the settle window has actually elapsed', () => {
+    expect(
+      readinessVerdict(settleWindow(5_000), { ...measuredAtFalseProof, idleForMs: 4_999 }),
+    ).toBe('wait');
+  });
+
+  it('progress-signal still requires a COMPLETED cycle before even a canary', () => {
+    // Pre-first-progress silence carries no information from a server that
+    // announces its indexing.
+    const neverSettled = { quiescent: null, everSettled: false, idle: true, idleForMs: 600_000 };
+    expect(readinessVerdict(progressSignal, neverSettled)).toBe('wait');
+    expect(readinessVerdict(progressSignal, { ...neverSettled, everSettled: true })).toBe('canary');
+  });
+
+  it('a canary-query strategy is unproven by construction', () => {
+    const strategy: LspReadinessStrategy = {
+      kind: 'canary-query',
+      intent: 'references',
+      minimumSites: 1,
+    };
+    expect(readinessVerdict(strategy, { ...measuredAtFalseProof, quiescent: true })).toBe('canary');
+  });
+
+  it('END TO END: a settle-window empty is now UNTRUSTWORTHY, a non-empty still answers', () => {
+    // 'canary' means the intent never enters certifiedReadiness, and
+    // certifyCanaryAnswer refuses a zero-site answer. So the empty degrades.
+    expect(readinessVerdict(settleWindow(), measuredAtFalseProof)).toBe('canary');
+    const uncertified = ts();
+    expect(healthForAnswer(uncertified, 'definition', 0)).toBe('degraded');
+    expect(
+      isTrustworthyEmpty({
+        sites: [],
+        error: null,
+        freshness: {
+          health: healthForAnswer(uncertified, 'definition', 0),
+          indexedAt: null,
+          staleVsDisk: null,
+          indexedCommit: null,
+        },
+      } as never),
+    ).toBe(false);
+
+    // Availability is NOT what we gave up: a non-empty answer is still served.
+    expect(healthForAnswer(uncertified, 'definition', 1)).toBe('healthy');
+  });
+
+  it('CONTROL: the pre-fix rule really would have certified this state', () => {
+    // Falsifiability control, kept permanently. This reproduces the OLD
+    // predicate literally. If it ever stops returning true, this suite is
+    // passing for the wrong reason and the regression above proves nothing.
+    const oldSettleWindowWouldCertify = (o: typeof measuredAtFalseProof, settleMs: number) =>
+      o.quiescent !== false && o.idle && o.idleForMs >= settleMs;
+    expect(oldSettleWindowWouldCertify(measuredAtFalseProof, 5_000)).toBe(true);
+    expect(readinessVerdict(settleWindow(), measuredAtFalseProof)).not.toBe('certified');
   });
 });

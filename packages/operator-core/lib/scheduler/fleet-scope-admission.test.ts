@@ -1211,6 +1211,81 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect((miss as { planTerminality?: unknown }).planTerminality).toEqual(planTerminality);
     });
 
+    it('EI-22179902813950215: a plan-complete verdict survives a degraded (null) issue-floor breakdown', () => {
+      // Reproduces the observed bug: two scheduler:get_next calls against the SAME unchanged
+      // terminal plan gave materially different diagnoses, ~4 minutes apart, depending only on
+      // whether the UNRELATED issue-floor breakdown query happened to time out.
+      // diagnoseFleetScopeIssueFloorMiss fails soft to null on any query error/timeout, by
+      // design (see its doc comment) — a plan's terminality is read directly from the plan's
+      // own lifecycle and does not depend on that query, so a null breakdown must not silently
+      // suppress it and fall through to the generic miss + its unfollowable
+      // park-a-work-item:claimable-await advice.
+      const completedPlanScope = {
+        ...issueScope,
+        fleetSlug: 'completed-plan-fleet-degraded-breakdown',
+        record: {
+          ...issueScope.record,
+          spec: {
+            ...issueScope.record.spec,
+            specId: 'completed-plan-lane-degraded-breakdown',
+            revision: 5,
+            view: { filter: { field: 'plan', op: '=' as const, value: 'finished-plan' } },
+          },
+        },
+      };
+      const planTerminality = {
+        planSlugs: ['finished-plan'],
+        terminalPlanSlugs: ['finished-plan'],
+        allTerminal: true,
+      };
+      const miss = fleetScopedMiss(completedPlanScope, [], {
+        // issueBreakdown intentionally OMITTED — the degraded/timed-out case.
+        planTerminality,
+      });
+
+      expect(miss.reason).toBe('plan_complete');
+      expect(miss.windDown).toBe(true);
+      expect(miss.error).toMatch(/PLAN COMPLETE/);
+      expect(miss.advice).toMatch(/successful completed-plan wind-down/);
+      expect(miss.advice).toMatch(/Do NOT escalate, widen, or re-author/);
+      // The pre-fix generic fallback shape must NOT appear.
+      expect(miss.error).not.toMatch(/NOT allowed to fall through to the generic backlog/);
+      expect(miss.advice).not.toMatch(/park ONE events:await/);
+      expect((miss as { planTerminality?: unknown }).planTerminality).toEqual(planTerminality);
+    });
+
+    it('EI-22179902813950215: a successfully-read nonzero issue-floor breakdown still overrides plan terminality', () => {
+      // The belt-and-suspenders half of the same fix: when the issue-floor breakdown DID
+      // succeed and reports a live matching row, that must still veto plan_complete even
+      // though planTerminality independently reads allTerminal:true — the two would be
+      // genuinely contradictory, and only a NULL (unavailable) breakdown should defer to
+      // planTerminality alone.
+      const completedPlanScope = {
+        ...issueScope,
+        fleetSlug: 'completed-plan-fleet-nonzero-breakdown',
+        record: {
+          ...issueScope.record,
+          spec: {
+            ...issueScope.record.spec,
+            specId: 'completed-plan-lane-nonzero-breakdown',
+            revision: 7,
+            view: { filter: { field: 'plan', op: '=' as const, value: 'finished-plan' } },
+          },
+        },
+      };
+      const planTerminality = {
+        planSlugs: ['finished-plan'],
+        terminalPlanSlugs: ['finished-plan'],
+        allTerminal: true,
+      };
+      const miss = fleetScopedMiss(completedPlanScope, [], {
+        issueBreakdown: { ...zeroMatchBreakdown, matchedByFilter: 2 },
+        planTerminality,
+      });
+
+      expect(miss.reason).not.toBe('plan_complete');
+    });
+
     it('EI-20260781488788952: a dead leader changes the zero-match handoff without changing the spec verdict', () => {
       const miss = fleetScopedMiss(issueScope, [], {
         issueBreakdown: zeroMatchBreakdown,

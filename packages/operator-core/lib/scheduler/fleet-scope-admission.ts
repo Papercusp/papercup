@@ -1797,11 +1797,23 @@ export function fleetScopedMiss(
   // EI-20260781488788952: a plan-level terminality read closes the family blind spot in the
   // row-level exhaustion check. Only an explicitly positive all-terminal result is trusted;
   // false/null/absent leaves the old miss diagnosis in place.
+  //
+  // EI-22179902813950215: `breakdown` (the issue-floor diagnosis) FAILS SOFT to null on any
+  // query error/timeout — a transient failure of that UNRELATED query used to silently
+  // suppress this whole diagnosis, because it originally hard-required `breakdown != null`.
+  // Plan terminality is read directly from the plan's own lifecycle
+  // (diagnoseFleetScopePlanTerminality) and does not depend on the issue-floor breakdown at
+  // all, so a null breakdown must not veto it — only a breakdown that SUCCEEDED and reported a
+  // nonzero matchedByFilter should (a live row still matching the spec would genuinely
+  // contradict "every bound plan is terminal"). Before this fix, two scheduler:get_next calls
+  // against the SAME unchanged terminal plan could report materially different diagnoses
+  // depending only on whether that one query happened to time out, with the degraded call
+  // falling all the way through to the generic "no claimable work-item matched fleet scope"
+  // miss and its unfollowable park-a-work-item:claimable-await advice.
   const planComplete =
     !paused &&
     !featureFamilyMiss &&
-    breakdown != null &&
-    breakdown.matchedByFilter === 0 &&
+    (breakdown == null || breakdown.matchedByFilter === 0) &&
     opts?.planTerminality?.allTerminal === true;
   // EI-20186990913643457: terminal rows leave the claimable-state universe before the issue
   // breakdown counts `matchedByFilter`, so an all-terminal tranche otherwise looks like a stale

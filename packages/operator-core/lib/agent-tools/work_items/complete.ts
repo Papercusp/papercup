@@ -106,6 +106,7 @@ import {
   reconcileStampedAuthority,
   type CompletionEvidenceFindings,
 } from '../../work-item-completion-authority';
+import { evaluateCompletionClaims, repoSourceReader } from '../../completion-claims';
 import { fabricatedPathsInCompletion } from './fabricated-paths';
 import { requirementDispositionShortfall } from './requirement-disposition';
 import {
@@ -2715,12 +2716,33 @@ async function completeOne(
         })
       : undefined;
 
+  // EI-22175397357614106: re-evaluate every DECLARED claim against the source. Unlike the
+  // probes above this is pure fs + AST with no ledger and no network, so it is not gated on
+  // `authorityByEvidence === 'committed'`: a `proposed` close cannot be lowered further, but
+  // the verdicts are still recorded and returned so the closer is told which of their own
+  // claims is false. Self-catching — any throw yields no finding, i.e. today's grade.
+  const claimVerdicts = (() => {
+    const declared = completionEvidenceForGate?.claims;
+    if (!declared?.length) return undefined;
+    try {
+      const root = registeredRepoRoots?.[0] ?? detectPapercupRoot();
+      if (!root) return undefined;
+      return evaluateCompletionClaims(declared, repoSourceReader(root));
+    } catch {
+      return undefined;
+    }
+  })();
+  const claimsFalsified = claimVerdicts?.results
+    .filter((r) => r.verdict === 'falsified')
+    .map((r) => ({ claim: JSON.stringify(r.claim), reason: r.reason }));
+
   const completionEvidenceFindings: CompletionEvidenceFindings | undefined =
-    fabricatedPaths || testRunContradiction || requirementShortfall
+    fabricatedPaths || testRunContradiction || requirementShortfall || claimsFalsified?.length
       ? {
           ...(fabricatedPaths ? { filesChangedNeverExisted: fabricatedPaths.neverExisted } : {}),
           ...(testRunContradiction ? { testRunContradictedByLedger: testRunContradiction } : {}),
           ...(requirementShortfall ? { requirementDispositionShortfall: requirementShortfall } : {}),
+          ...(claimsFalsified?.length ? { claimsFalsified } : {}),
         }
       : undefined;
   // Re-run the SAME single decision point with the findings folded in, rather than overriding
@@ -2806,6 +2828,28 @@ async function completeOne(
             `indistinguishable from work silently dropped. `
           : '') +
         `Re-call work_items:complete with the corrected list.`
+    : undefined;
+
+  // Same anti-refusal-loop obligation as the warnings above. This one can afford to be the
+  // most concrete of the four, because the claim was DECLARED in a structured form: the
+  // message can quote the exact assertion and the exact reason the source contradicts it,
+  // so the closer never has to guess which field to change. Naming what is SILENT matters
+  // as much here as elsewhere — an `unevaluatable` claim never affects the grade, so a
+  // renamed container or an unreadable path must not read as an accusation of falsity.
+  const claimsFalsifiedWarning = claimsFalsified?.length
+    ? `completion for ${it.id} landed authority:'proposed' rather than 'committed': ` +
+      `${claimsFalsified.length} declared \`verification.claims\` entr(ies) were re-evaluated against ` +
+      `the source and found FALSE: ` +
+      `${claimsFalsified.map((c) => `${c.claim} → ${c.reason}`).join(' | ')}. Every other evidence ` +
+      `check is a PRESENCE test, so before this one a close whose evidence was present, well-formed ` +
+      `and wrong still earned 'committed' (EI-22175397357614106: WI-37365 closed 'committed' asserting ` +
+      `a verb had reached the live seeded tool surface when it had not, and that false close became ` +
+      `the premise for a downstream falsifier armed against a verb no session could call). This is ` +
+      `NOT triggered by a claim the server could not decide — an unreadable path, a renamed or ` +
+      `missing container, or membership hidden behind a spread all yield 'unevaluatable' and are ` +
+      `silent, because absence of judgement is never judged-clean. To fix: correct the claim to match ` +
+      `the source (or drop it) and re-call work_items:complete. You are not required to declare claims ` +
+      `at all — but a declared one is re-derived from the tree, never believed.`
     : undefined;
 
   // EI-18682004530991057 (proposal 3): stamp WHAT TREE this evidence was observed
@@ -3586,6 +3630,21 @@ async function completeOne(
     ...(fabricatedPathsWarning ? { fabricatedPathsWarning } : {}),
     ...(testRunContradictionWarning ? { testRunContradictionWarning } : {}),
     ...(requirementShortfallWarning ? { requirementShortfallWarning } : {}),
+    ...(claimsFalsifiedWarning ? { claimsFalsifiedWarning } : {}),
+    // The full per-claim verdict set, including the ones that HELD and the ones that could
+    // not be decided — returned even when nothing was falsified, so a closer can see that
+    // their claims were actually evaluated rather than silently skipped. A check whose
+    // success is invisible is one nobody trusts.
+    ...(claimVerdicts
+      ? {
+          claimVerdicts: {
+            held: claimVerdicts.held,
+            falsified: claimVerdicts.falsified,
+            unevaluatable: claimVerdicts.unevaluatable,
+            results: claimVerdicts.results.map((r) => ({ verdict: r.verdict, reason: r.reason })),
+          },
+        }
+      : {}),
     ...(gateRedClaimWarning
       ? {
           gateRedClaimWarning,

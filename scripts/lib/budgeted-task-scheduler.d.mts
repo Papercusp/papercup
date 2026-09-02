@@ -277,6 +277,24 @@ export interface SharedAdmissionOptions {
 export function formatAdmissionHolder(ownerText: unknown, now?: number): string;
 
 /**
+ * WI-2142172 — render the WAITER's own prognosis as a clause appended to the queued notice:
+ * can this caller plausibly be admitted before its budget runs out?
+ *
+ * Returns "" when there is nothing sound to say. One-directional by construction: the
+ * holder's `etaMinSec` is a declared LOWER BOUND, so it can warn (`PROJECTED TO STARVE` at
+ * >=1.0 of the remaining budget, `ADMISSION AT RISK` at >=0.5) but never certify safety —
+ * there is deliberately no it-looks-fine band, and the absence of a clause is not
+ * reassurance. An ETA covering 0 tasks is reported as `PROSPECT UNKNOWN` rather than
+ * skipped. Falls open to "" on any parse failure; it prints while a caller is already
+ * blocked and must never be the thing that throws.
+ */
+export function formatAdmissionProspect(
+  ownerText: unknown,
+  waiter: { elapsedMs: number; budgetMs: number },
+  now?: number,
+): string;
+
+/**
  * WI-1639265 — the launcher-published wall-clock deadline, absolute epoch ms.
  *
  * Must stay byte-identical to `TASK_DEADLINE_EPOCH_MS_ENV` in

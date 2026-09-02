@@ -21,6 +21,7 @@ import { z } from 'zod';
 // P-008 (d): type-only, so the payload contract and the resolver cannot disagree
 // about the stored shape without a compile error — and so no runtime import cycle
 // is created between this module and the facts substrate.
+import { COMPLETION_CLAIMS_CONTRACT, CompletionClaimSchema } from '../completion-claims';
 import type { ResolvedAssumption } from '../agent-facts/assumptions';
 // A leaf module with no imports of its own, so this edge cannot form a cycle.
 import type { PersistedSelfReviewJudgement } from '../work-item-self-review';
@@ -446,6 +447,22 @@ export const CompletionVerificationEvidenceSchema = z.object({
   treeStamp: CompletionTreeStampSchema.optional().describe(COMPLETION_TREE_STAMP_CONTRACT),
   /** Server-derived causal receipt for code completions awaiting git-sync settlement. */
   settlementManifest: CompletionSettlementManifestSchema.optional(),
+  /**
+   * EI-22175397357614106 — structured, machine-checkable assertions the close makes about
+   * the source, so a claim that is present, well-formed and WRONG can be caught.
+   *
+   * Every other evidence check here is a PRESENCE test. The measured gap: WI-37365 closed
+   * `committed` asserting a verb had reached the live seeded tool surface when it had not,
+   * and that false close then became the premise for a downstream falsifier armed against
+   * a verb no session could call.
+   *
+   * Caller-supplied, unlike `treeStamp`/`settlementManifest` above — and deliberately so,
+   * because it is NOT asked to be believed. The caller supplies the CLAIM and the server
+   * supplies the VERDICT by re-evaluating it against the tree (`evaluateCompletionClaims`),
+   * which is what separates this from `filesChanged`-style testimony. A falsified claim
+   * arrives back as the `claimsFalsified` finding and DOWNGRADES the close.
+   */
+  claims: z.array(CompletionClaimSchema).max(50).optional().describe(COMPLETION_CLAIMS_CONTRACT),
 });
 export type CompletionVerificationEvidence = z.infer<typeof CompletionVerificationEvidenceSchema>;
 

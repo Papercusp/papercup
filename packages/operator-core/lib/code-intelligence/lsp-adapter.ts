@@ -875,6 +875,81 @@ async function getClient(language: LspLanguage, rootPath: string): Promise<LspCl
 
 type IntentReadinessPreparation = 'certified' | 'canary' | 'timeout';
 
+/** What the readiness loop can conclude from ONE observation; 'wait' = poll again. */
+export type ReadinessVerdict = 'certified' | 'canary' | 'wait';
+
+/** The readiness-relevant state of a client at one instant. */
+export interface ReadinessObservation {
+  /** The server's OWN done-verdict. `null` means it has not reported one. */
+  readonly quiescent: boolean | null;
+  /** True once at least one progress cycle has COMPLETED. */
+  readonly everSettled: boolean;
+  /** Whether the pending-progress set is empty right now. */
+  readonly idle: boolean;
+  /** How long it has been CONTINUOUSLY idle. */
+  readonly idleForMs: number;
+}
+
+/**
+ * The readiness decision, as a pure function of one observation (WI-2142382).
+ *
+ * ONE RULE, and it is the module's own doctrine applied without an exception:
+ * **only the server's own `quiescent === true` certifies. Every inference from
+ * silence is a canary.**
+ *
+ * `healthForAnswer` already states the principle, about the progress-signal
+ * fallback: the settle window is "strictly weaker evidence than the server's
+ * own verdict — good enough to answer on, not good enough to certify an
+ * absence." The settle-window STRATEGY was the same weak evidence, but it
+ * returned `certified` and so routed itself around the very rule written to
+ * contain it: a proof lands in `certifiedReadiness`, `healthForAnswer` then
+ * hands an EMPTY answer the client's `healthy`, and `isTrustworthyEmpty()`
+ * reports a false absence as fact.
+ *
+ * MEASURED, and the reason this is not a guard on `everSettled`: at the moment
+ * the bad proof was minted for a cross-project `definition`, the client read
+ * `everSettled=true, pendingProgress=0, progressGeneration=1` — a genuine,
+ * COMPLETED progress cycle. It was not certifying on silence; it was
+ * certifying between PHASES. `everSettled`'s own doc comment says why that is
+ * undecidable here: "HAS SETTLED ONCE" IS STRICTLY WEAKER THAN "IS DONE" — a
+ * server that loads in phases is legitimately idle between them, with the flag
+ * already true. Nothing in the progress protocol distinguishes silence between
+ * phases from silence after the last one, so an `everSettled` guard would have
+ * been a no-op on the real failure. TypeScript never sends
+ * `experimental/serverStatus` at all, so for it `quiescent` is permanently
+ * `null` and NO amount of waiting can produce a completeness proof.
+ *
+ * The consequence is deliberate: a TypeScript EMPTY is no longer certifiable,
+ * so it stays `degraded` and `lspQuery` turns it into an honest refusal. A
+ * NON-EMPTY answer is unaffected in availability — it is returned, and can
+ * still earn a proof through `certifyCanaryAnswer`'s answer-change plus
+ * progress-boundary evidence. We give up claiming to prove absence for a
+ * server that cannot tell us it is done, which we could never actually prove.
+ */
+export function readinessVerdict(
+  strategy: LspReadinessStrategy,
+  observation: ReadinessObservation,
+): ReadinessVerdict {
+  // An explicit canary-query strategy is unproven by construction.
+  if (strategy.kind === 'canary-query') return 'canary';
+
+  // The server's own verdict outranks every inference, in BOTH directions.
+  if (observation.quiescent === true) return 'certified';
+  if (observation.quiescent === false) return 'wait';
+
+  if (!observation.idle) return 'wait';
+
+  if (strategy.kind === 'progress-signal') {
+    // Requires a COMPLETED cycle before even a canary: this server announces
+    // its indexing, so pre-first-progress silence carries no information.
+    return observation.everSettled && observation.idleForMs >= PROGRESS_SETTLE_WINDOW_MS
+      ? 'canary'
+      : 'wait';
+  }
+
+  return observation.idleForMs >= strategy.settleMs ? 'canary' : 'wait';
+}
+
 /** Pinned module state may contain a pre-WI-41090 client until host restart. */
 function readinessProofs(client: LspClient): Set<LspReadinessIntent> {
   const compatible = client as LspClient & {
@@ -934,33 +1009,17 @@ async function prepareIntentReadiness(
     if (idle) idleSince ??= Date.now();
     else idleSince = null;
 
-    if (strategy.kind === 'progress-signal') {
-      // rust-analyzer's own verdict outranks momentary idle in BOTH directions.
-      if (client.quiescent === true) {
-        proofs.add(intent);
-        return 'certified';
-      }
-      // Older servers may omit serverStatus. Preserve availability after a
-      // sustained completed progress cycle, but keep the answer UNPROVEN: a
-      // positive result may act as a canary; an empty remains degraded.
-      if (
-        client.quiescent === null &&
-        client.everSettled &&
-        idle &&
-        idleSince !== null &&
-        Date.now() - idleSince >= PROGRESS_SETTLE_WINDOW_MS
-      ) {
-        return 'canary';
-      }
-    } else if (
-      client.quiescent !== false &&
-      idle &&
-      idleSince !== null &&
-      Date.now() - idleSince >= strategy.settleMs
-    ) {
+    const verdict = readinessVerdict(strategy, {
+      quiescent: client.quiescent,
+      everSettled: client.everSettled,
+      idle,
+      idleForMs: idleSince === null ? 0 : Date.now() - idleSince,
+    });
+    if (verdict === 'certified') {
       proofs.add(intent);
       return 'certified';
     }
+    if (verdict === 'canary') return 'canary';
     if (Date.now() > deadline) return 'timeout';
     await new Promise((r) => setTimeout(r, 50));
   }

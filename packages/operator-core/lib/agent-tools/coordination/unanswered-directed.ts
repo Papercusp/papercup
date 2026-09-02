@@ -463,3 +463,243 @@ export async function fetchUnansweredDirected(
   `;
   return rowsToUnansweredMap(rows, nowMs, cap);
 }
+
+/**
+ * fetchOpenAsks — the SENDER-side mirror of fetchUnansweredDirected above
+ * (WI-2142142). unanswered-directed answers "what do I still OWE?" (a
+ * per-RECIPIENT aggregate); this answers "what am I still OWED?" — directed
+ * messages THIS agent sent, expecting a reply, that the recipient has not
+ * yet answered by any of the same rules (exact thread, or the WI-6729
+ * narrowed+paired loose-reply branch).
+ *
+ * Filed from a turn-start-orientation review: the per-recipient "what do I
+ * still owe?" counter has no sender-side counterpart anywhere in the block,
+ * so an agent is told what it owes and never what it is owed. Measured
+ * 2026-09-02 (same query shape as below, workspace papercusp-workspace): 79
+ * open asks across 34 distinct askers, mean age 17.0h.
+ *
+ * SAME exclusion rules as fetchUnansweredDirected, mirrored rather than
+ * reimplemented from scratch, so the two definitions cannot silently diverge
+ * on what counts as "directed" / "expects reply" / "noise":
+ *   - directed, non-broadcast, sender != recipient (WI-4537-style);
+ *   - expectsReply / expects!='none' (EI-19315474516256070), with the
+ *     release_request carve-out (WI-7147);
+ *   - machine-sender exclusion (WI-4537 a/b);
+ *   - the ACK-PING-PONG exclusion (WI-4537 c), reversed: a message THIS
+ *     sender sent that is itself a reply to something the RECIPIENT sent is
+ *     our answer arriving to them, not a fresh ask on them;
+ *   - the exact-thread-reply check (open_asks), and the WI-6729
+ *     narrowed+paired loose-reply branch (open_final) — a reply threaded to
+ *     a DIFFERENT message is not evidence for THIS ask, and one loose reply
+ *     clears at most one ask (newest-first).
+ *
+ * NOT mirrored: the P-013 expectEffect satisfied-directive exclusion
+ * (fetchSatisfiedDirectiveMessageIds). That reads "did the RECIPIENT already
+ * satisfy this by an observed side effect", which needs the recipient set
+ * BEFORE it can be queried — this function derives that set FROM the sent
+ * CTE below, so resolving it would need a second round trip. Left as a
+ * known scope boundary: an ask whose obligation was satisfied by effect
+ * rather than reply will show here as still-open until the recipient also
+ * replies (or it ages out of the lookback window). Filed as a follow-up
+ * rather than blocking this fold on it.
+ *
+ * PERFORMANCE: unlike the recipient-side query (which scans the WHOLE
+ * roster against the whole table and needed the WI-7048 indexes + WI-6875
+ * materialization to avoid a per-row full scan), this is scoped from the
+ * start to senderIds — typically ONE owner, called once per turn. The sent
+ * CTE is bounded by the existing coord_event_log_msgs_from_idx partial
+ * index (migration 1053), and replier_authored is bounded by that same
+ * index to only the recipients sent actually names (never the whole
+ * roster) — the same equivalence-preserving pre-filter shape WI-6875
+ * established, just derived from sent instead of a caller-supplied array.
+ */
+export interface OpenAskEntry {
+  msgId: string;
+  /** The recipient we are still waiting on. */
+  to: string;
+  summary?: string;
+  ageMs: number;
+}
+
+export interface OpenAskSummary {
+  count: number;
+  oldestAgeMs: number;
+  /** The recipient of the OLDEST open ask — computed directly in SQL so it
+   *  is always correct even when `count` exceeds the `newest` cap below. */
+  oldestTo: string;
+  /** Newest-first, capped at NEWEST_CAP even when `count` is larger. */
+  newest: OpenAskEntry[];
+}
+
+export interface OpenAskRow {
+  sender: string;
+  cnt: string | number;
+  oldest_ts_ms: string | number;
+  oldest_to: string | null;
+  newest_ids: (string | null)[] | null;
+  newest_to: (string | null)[] | null;
+  newest_summary: (string | null)[] | null;
+  newest_ts_ms: (string | number | null)[] | null;
+}
+
+/**
+ * PURE: fold the aggregated SQL rows into the per-sender summary map.
+ * Mirrors rowsToUnansweredMap — unit-testable with hand-built rows, no PG
+ * required. A row with `oldest_to` null (should not happen once `cnt` > 0,
+ * since the aggregate always has at least one member) degrades to the
+ * first `newest` entry's recipient rather than an empty string.
+ */
+export function rowsToOpenAsksMap(
+  rows: readonly OpenAskRow[],
+  nowMs: number,
+  cap: number = UNANSWERED_NEWEST_CAP,
+): Map<string, OpenAskSummary> {
+  const out = new Map<string, OpenAskSummary>();
+  for (const r of rows) {
+    const cnt = Number(r.cnt);
+    if (!Number.isFinite(cnt) || cnt <= 0) continue;
+    const oldestTs = Number(r.oldest_ts_ms);
+    const ids = r.newest_ids ?? [];
+    const tos = r.newest_to ?? [];
+    const summaries = r.newest_summary ?? [];
+    const timestamps = r.newest_ts_ms ?? [];
+    const newest: OpenAskEntry[] = [];
+    for (let i = 0; i < ids.length && newest.length < cap; i++) {
+      const msgId = ids[i];
+      const to = tos[i];
+      if (!msgId || !to) continue;
+      const ts = Number(timestamps[i]);
+      newest.push({
+        msgId,
+        to,
+        ...(summaries[i] ? { summary: summaries[i] as string } : {}),
+        ageMs: Number.isFinite(ts) ? Math.max(0, nowMs - ts) : 0,
+      });
+    }
+    out.set(r.sender, {
+      count: cnt,
+      oldestAgeMs: Number.isFinite(oldestTs) ? Math.max(0, nowMs - oldestTs) : 0,
+      oldestTo: r.oldest_to ?? newest[0]?.to ?? '',
+      newest,
+    });
+  }
+  return out;
+}
+
+/**
+ * IO seam: batch-read open (unanswered-by-recipient) directed messages sent
+ * BY a set of senderIds. Only senders with >=1 open ask come back (absent ⇒
+ * zero), mirroring fetchUnansweredDirected's contract.
+ */
+export async function fetchOpenAsks(
+  senderIds: string[],
+  opts: { nowMs?: number; lookbackMs?: number; perRecipientCap?: number } = {},
+): Promise<Map<string, OpenAskSummary>> {
+  if (senderIds.length === 0 || !coordHasPgFastPath()) return new Map();
+  const nowMs = opts.nowMs ?? Date.now();
+  const sinceMs = nowMs - (opts.lookbackMs ?? UNANSWERED_LOOKBACK_MS);
+  const cap = opts.perRecipientCap ?? UNANSWERED_NEWEST_CAP;
+  const sql = coordSql();
+  const workspaceId = coordWorkspaceId();
+  const rows = await sql<OpenAskRow[]>`
+    WITH sent AS MATERIALIZED (
+      SELECT
+        e.id,
+        e.workspace_id,
+        e.body->>'msg_id'             AS msg_id,
+        e.body->>'from'               AS from_id,
+        e.body->>'summary'            AS summary,
+        (extract(epoch FROM (e.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms,
+        e.body ? 'related_msg_id'     AS has_related,
+        e.body->>'related_msg_id'     AS related_msg_id,
+        r                             AS recipient
+        FROM harness_shared.coord_event_log e
+        CROSS JOIN LATERAL jsonb_array_elements_text(e.body->'to') AS r
+       WHERE e.workspace_id = ${workspaceId}
+         AND e.surface = 'messages'
+         AND e.body->>'from' = ANY(${senderIds}::text[])
+         AND jsonb_typeof(e.body->'to') = 'array'
+         AND r IS DISTINCT FROM e.body->>'from'
+         AND (e.body->>'kind' IS NULL OR e.body->>'kind' = 'message')
+         AND NOT (e.body ? 'audience')
+         AND (e.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
+         AND (e.body->>'expectsReply') = 'true'
+         AND ((e.body->>'expects') IS DISTINCT FROM 'none' OR e.body->>'lifecycle' = 'release_request')
+         AND ((e.body->>'auto') IS DISTINCT FROM 'true' OR e.body->>'lifecycle' = 'release_request')
+         AND NOT (e.body->>'from' ~ ${MACHINE_SENDER_PATTERN})
+    ),
+    -- Bounded by the sent CTE above, never the whole roster — the recipients
+    -- we might be waiting on are exactly (and only) the ones sent already named.
+    replier_authored AS MATERIALIZED (
+      SELECT ra.id,
+             ra.workspace_id,
+             ra.body->>'from'              AS from_id,
+             ra.body->>'msg_id'            AS msg_id,
+             ra.body->>'related_msg_id'    AS related_msg_id,
+             ra.body ? 'related_msg_id'    AS has_related,
+             ra.body->'to'                 AS to_arr,
+             (ra.body->>'ts')::timestamptz AS ts
+        FROM harness_shared.coord_event_log ra
+       WHERE ra.workspace_id = ${workspaceId}
+         AND ra.surface = 'messages'
+         AND ra.body->>'from' IN (SELECT DISTINCT recipient FROM sent)
+    ),
+    loose_replies AS MATERIALIZED (
+      SELECT DISTINCT ra.id, ra.workspace_id, ra.from_id, rt AS to_id,
+             (extract(epoch FROM ra.ts) * 1000)::bigint AS ts_ms
+        FROM replier_authored ra
+        CROSS JOIN LATERAL jsonb_array_elements_text(ra.to_arr) AS rt
+       WHERE NOT ra.has_related
+         AND jsonb_typeof(ra.to_arr) = 'array'
+         AND ra.ts >= to_timestamp(${sinceMs}::double precision / 1000)
+    ),
+    -- WI-4537(c) mirrored: a message WE sent that is itself a reply to
+    -- something the RECIPIENT sent is our answer arriving, not a fresh ask.
+    candidate AS (
+      SELECT s.* FROM sent s
+       WHERE NOT (
+         s.has_related
+         AND EXISTS (
+           SELECT 1 FROM replier_authored ra
+            WHERE ra.workspace_id = s.workspace_id
+              AND ra.msg_id = s.related_msg_id
+              AND ra.from_id = s.recipient
+         )
+       )
+    ),
+    open_asks AS (
+      SELECT c.*,
+             row_number() OVER (
+               PARTITION BY c.recipient, c.from_id ORDER BY c.ts_ms DESC, c.msg_id DESC
+             ) AS ask_rank
+        FROM candidate c
+       WHERE NOT EXISTS (
+         SELECT 1 FROM replier_authored ra
+          WHERE ra.workspace_id = c.workspace_id
+            AND ra.from_id = c.recipient
+            AND ra.related_msg_id = c.msg_id
+       )
+    ),
+    open_final AS (
+      SELECT o.* FROM open_asks o
+       WHERE (
+         SELECT count(*) FROM loose_replies lr
+          WHERE lr.workspace_id = o.workspace_id
+            AND lr.from_id = o.recipient
+            AND lr.to_id = o.from_id
+            AND lr.ts_ms >= o.ts_ms
+       ) < o.ask_rank
+    )
+    SELECT from_id AS sender,
+           count(*) AS cnt,
+           min(ts_ms) AS oldest_ts_ms,
+           (array_agg(recipient ORDER BY ts_ms ASC))[1] AS oldest_to,
+           (array_agg(msg_id ORDER BY ts_ms DESC))[1:${cap}] AS newest_ids,
+           (array_agg(recipient ORDER BY ts_ms DESC))[1:${cap}] AS newest_to,
+           (array_agg(summary ORDER BY ts_ms DESC))[1:${cap}] AS newest_summary,
+           (array_agg(ts_ms ORDER BY ts_ms DESC))[1:${cap}] AS newest_ts_ms
+      FROM open_final
+     GROUP BY from_id
+  `;
+  return rowsToOpenAsksMap(rows, nowMs, cap);
+}

@@ -1614,6 +1614,23 @@ export default defineTool({
             featureFamilyMatched = null; // claimed on retry — nothing left to explain
           }
         }
+      } else if (!issueBreakdown) {
+        // EI-22179902813950215: diagnoseFleetScopeIssueFloorMiss FAILS SOFT (returns null) on
+        // any query error/timeout — by design, a diagnosis must never turn a clean miss into a
+        // thrown error. But every diagnosis gated on it above — including plan terminality,
+        // whose OWN read (diagnoseFleetScopePlanTerminality) does not query the issue-floor
+        // breakdown at all — silently goes unset when that happens, collapsing a genuine
+        // plan-complete wind-down into the least-informative generic "no claimable work-item
+        // matched fleet scope" miss on the very next retry against an UNCHANGED terminal plan
+        // (observed live: two scheduler:get_next calls ~4 minutes apart, same claim spec, same
+        // terminal plan — the first correctly reported `reason:"plan_complete"` with stand-down
+        // advice, the second reported the generic miss and told the member to park a
+        // work-item:claimable await that a terminal plan can never satisfy). Recompute the
+        // plan-terminality signal here on its own; it fails soft to null exactly like every
+        // other diagnosis in this block, so a caller with no plan predicate (or a
+        // further-degraded read) pays one cheap extra query for nothing worse than today's
+        // behavior.
+        planTerminality = await diagnoseFleetScopePlanTerminality({ scope: reconciliation.scope });
       }
     }
     // EI-8579: a self-puller with NEITHER a per-bee NOR an inherited fleet spec resolves to

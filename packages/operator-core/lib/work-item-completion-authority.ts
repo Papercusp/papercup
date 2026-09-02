@@ -441,6 +441,7 @@ export type InsufficientEvidenceReason =
   | 'no-requirement-disposition'
   | 'test-result-contradicted-by-run'
   | 'requirement-disposition-unfaithful'
+  | 'completion-claim-falsified'
   | 'files-changed-never-existed';
 
 /**
@@ -470,6 +471,24 @@ export interface CompletionEvidenceFindings {
    * from cause 2, and only cause 1 belongs here.
    */
   filesChangedNeverExisted?: readonly string[];
+
+  /**
+   * Declared `verification.claims` that were RE-EVALUATED against the source and found
+   * FALSE — e.g. a close asserting `'coord:dispatch'` is an element of
+   * `CORE_MCP_TOOL_NAMES` when the array does not contain it.
+   *
+   * EI-22175397357614106: every other check in this module is a presence test, so a close
+   * whose evidence is present, well-formed and WRONG grades `committed`. This is the
+   * falsity half. It is the one finding here that the CLOSER opted into — the claim is
+   * caller-declared — which is exactly why it carries no risk of unchecked testimony: a
+   * declared claim is re-derived from the tree, never believed.
+   *
+   * Carries only claims whose verdict was `falsified`. An `unevaluatable` claim (source
+   * unreadable, container renamed, membership hidden behind a spread) is deliberately NOT
+   * included: absence means "not judged", never "judged clean", and a detector that
+   * punished undecidability would fire hardest on honest closes touching moving code.
+   */
+  claimsFalsified?: readonly { claim: string; reason: string }[];
 
   /**
    * The closing agent's own most recent `testing:run` went RED in the `test_runs` ledger,
@@ -589,6 +608,18 @@ export function insufficientEvidenceReason(
   // Reaching this line means the caller ran the probe AND it returned a confident verdict.
   // An unrun or unjudgeable probe leaves `findings` (or the field) undefined and falls
   // through to `undefined` below — today's grade, unchanged.
+  // EI-22175397357614106. Placed BEFORE the fabricated-path check and after the red-run
+  // one, following the same ordering rationale as its neighbours: a red suite means the
+  // WORK is unfinished (blocks harder), while a falsified claim and a fabricated path both
+  // mean the RECORD is wrong. Of those two, a false claim about what the code DOES is the
+  // more serious — it is the substantive assertion a reader would act on, and the measured
+  // instance propagated three items downstream into an armed falsifier — whereas a wrong
+  // path list misdescribes where the work landed.
+  //
+  // Reaching this line means claims were DECLARED and at least one was re-evaluated against
+  // the source and found false. No declared claims, an unreadable source, a renamed
+  // container, or any throw leaves the field undefined and falls through to today's grade.
+  if (findings?.claimsFalsified?.length) return 'completion-claim-falsified';
   if (findings?.filesChangedNeverExisted?.length) return 'files-changed-never-existed';
   return undefined;
 }
