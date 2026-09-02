@@ -557,8 +557,11 @@ export async function createOneWorkItem(
         // Fire-and-forget, deduplicated (bumps one open escalation's repeat count
         // rather than spamming); never awaited on the create's hot path.
         if (semanticLeg === 'unavailable') {
+          // Resolve through the shared scope helper, not `args.harness ?? ctx.harnessSlug`:
+          // a raw `*` is TRUTHY but is not a registered harness, so it would tag this
+          // escalation with a slug that resolves to nothing and read as a clean empty result.
           void reportSemanticDedupProbeUnavailable({
-            harnessSlug: args.harness ?? ctx.harnessSlug ?? undefined,
+            harnessSlug: resolveConcreteHarnessSlug(args.harness, ctx) ?? undefined,
           }).catch(() => {});
         }
       }
