@@ -924,6 +924,39 @@ const changedPathsOverride = (() => {
   return [...new Set(requested.flatMap(normalizeExplicitChangedPath))];
 })();
 const printAffected = has("--print-affected");
+
+// ── P-009 part (a): the `--coverage` passthrough ───────────────────────────────
+//
+// Plan design-to-code-coverage-seam-2026-09-02, decision D-028. Until this landed,
+// NOTHING automated ever passed `--coverage`: the shared Vitest provider block in
+// libs/test-config/src/vitest-config.ts was complete and functional but INERT, and
+// this runner hard-rejected the flag, so the nightly's `--all --integration` step
+// could not be fixed by appending it. That is why P-009's stated premise ("fed by
+// the lcov P-007 emits") was false, and why the item is three parts — (a) here,
+// (b) scripts/merge-coverage.ts, (c) scripts/patch-coverage.ts.
+//
+// FORWARDED ONLY TO TASKS THAT ACTUALLY RUN VITEST. A workspace script that is a
+// composite shell line (`npm run a && npm run b`, how standalone packages aggregate
+// their suites) gets `-- --coverage` appended to the LAST sub-command only — neither
+// what the caller asked for nor visible in the exit code. Requiring the script text
+// to invoke vitest directly excludes those, and excludes every non-vitest lint guard,
+// rather than producing a partial report nobody can tell is partial. What was and was
+// not instrumented is REPORTED (see the COVERAGE_PASSTHROUGH line below), because a
+// silently partial lcov is what makes the downstream patch gate vacuous.
+const coverageRequested = has("--coverage");
+
+/** Does this workspace script invoke vitest directly (not via a composite line)? */
+function scriptRunsVitestDirectly(scriptText) {
+  return /(^|[\s;&|])vitest(\s|$)/.test(scriptText ?? "");
+}
+
+/** The coverage args to append for ONE task — empty unless `--coverage` applies. */
+function coverageArgsFor(t) {
+  if (!coverageRequested) return [];
+  if (t.isInvariantGuard) return [];
+  return scriptRunsVitestDirectly(t.ws.scripts?.[t.script]) ? ["--coverage"] : [];
+}
+
 // --related — narrow each affected workspace's run to the TEST FILES that could
 // actually be reached by the changed files, instead of running its whole suite.
 // See scripts/lib/related-tests.mjs for the measured narrowing (median ~5.4x in
@@ -4316,6 +4349,35 @@ for (const line of derivationBannerLines(derivationSummary, {
   errSync(line);
 }
 
+// P-009 part (a): say what `--coverage` actually reached. A partial instrumentation
+// set is not a defect — a lint guard and a composite script are excluded on purpose —
+// but an UNANNOUNCED partial set is, because the merged lcov downstream then looks
+// like a complete report and the patch gate reports files it never measured as
+// "changed but uninstrumented" with no way back to why. Emitted on stderr beside the
+// AFFECTED_DERIVATION banner, and only when the flag was passed, so ordinary stdout
+// stays byte-identical for every existing consumer of these lines.
+if (coverageRequested) {
+  const instrumented = tasks.filter((t) => coverageArgsFor(t).length > 0);
+  const skipped = tasks.filter((t) => coverageArgsFor(t).length === 0);
+  errSync(
+    `COVERAGE_PASSTHROUGH instrumented=${instrumented.length} skipped=${skipped.length} ` +
+      `of=${tasks.length} reportsAt=<workspace>/coverage/lcov.info ` +
+      `merge='npm run coverage:merge'`,
+  );
+  for (const t of skipped) {
+    const why = t.isInvariantGuard
+      ? "repo-wide invariant guard (would clobber the workspace's real report)"
+      : "script does not invoke vitest directly";
+    errSync(`  COVERAGE_SKIPPED\t${t.ws.name} :: ${t.script}\t${why}`);
+  }
+  if (instrumented.length === 0) {
+    errSync(
+      "  ⚠ NO task was instrumented — the merged report would be empty and every patch-coverage\n" +
+        "    verdict built on it vacuous. Widen the run, or drop --coverage.",
+    );
+  }
+}
+
 if (printAffected) {
   for (const ws of affected) outSync(`AFFECTED_WS\t${ws.name}`);
   // One line per SELECTED TASK, carrying the command that actually runs it. A bare
@@ -4325,7 +4387,7 @@ if (printAffected) {
   // itself the signal that running it would measure nothing.
   for (const t of tasks) {
     outSync(
-      `AFFECTED_WS_CMD\t${t.ws.name}\t${formatWorkspaceCommand(t.ws, t.script)}`,
+      `AFFECTED_WS_CMD\t${t.ws.name}\t${formatWorkspaceCommand(t.ws, t.script, coverageArgsFor(t))}`,
     );
   }
   for (const guard of selectedInvariantGuards) {
@@ -4975,36 +5037,6 @@ const recordLeg = (task, ms) => {
   if (phaseLastEndMs === null || end > phaseLastEndMs) phaseLastEndMs = end;
   taskLegs.push({ name: `${task.ws.name} :: ${task.script}`, ms });
 };
-// ── P-009 part (a): the `--coverage` passthrough ───────────────────────────────
-//
-// Plan design-to-code-coverage-seam-2026-09-02, decision D-028. Until this landed,
-// NOTHING automated ever passed `--coverage`: the shared Vitest provider block in
-// libs/test-config/src/vitest-config.ts was complete and functional but INERT, and
-// this runner hard-rejected the flag, so `--all --integration` could not be fixed by
-// appending it. That is why P-009's stated premise ("fed by the lcov P-007 emits")
-// was false and why the item is three parts — (a) here, (b) scripts/merge-coverage.ts,
-// (c) scripts/patch-coverage.ts.
-//
-// FORWARDED ONLY TO TASKS THAT ACTUALLY RUN VITEST. A workspace script that is a
-// composite shell line (`npm run a && npm run b`, how standalone packages aggregate)
-// receives `-- --coverage` appended to the LAST sub-command only, which is neither
-// what the caller asked for nor detectable from the exit code. Requiring the script
-// text to invoke vitest directly excludes those, and excludes every non-vitest lint
-// guard, instead of producing a partial report nobody can tell is partial.
-const coverageRequested = has("--coverage");
-
-/** Does this workspace script invoke vitest directly (not via a composite line)? */
-function scriptRunsVitestDirectly(scriptText) {
-  return /(^|[\s;&|])vitest(\s|$)/.test(scriptText ?? "");
-}
-
-/** The coverage args to append for ONE task — empty unless `--coverage` applies. */
-function coverageArgsFor(t) {
-  if (!coverageRequested) return [];
-  if (t.isInvariantGuard) return [];
-  return scriptRunsVitestDirectly(t.ws.scripts?.[t.script]) ? ["--coverage"] : [];
-}
-
 const taskContexts = tasks.map((t) => ({
   t,
   isQuarantined: quarantined.has(t.ws.name),
