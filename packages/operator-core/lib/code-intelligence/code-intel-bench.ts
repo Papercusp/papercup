@@ -681,6 +681,41 @@ export interface LspLegReport {
 }
 
 /**
+ * How much of the leg budget one probe may spend, given which languages still
+ * have not had a turn.
+ *
+ * Extracted and exported so the reservation property is assertable without
+ * standing up real language servers: the integration leg it governs takes ~600s,
+ * which is far too slow to be the only thing proving a budget rule.
+ *
+ * The floor is a RESERVATION, not a cap — it is withheld only while a language
+ * is still waiting, so the last language to run is never charged for it.
+ */
+export function probeBudget(args: {
+  readonly legBudgetMs: number;
+  readonly elapsedMs: number;
+  readonly language: string;
+  readonly legLanguages: ReadonlySet<string>;
+  readonly languagesStarted: ReadonlySet<string>;
+}): {
+  readonly remainingMs: number;
+  readonly reservedForOthersMs: number;
+  readonly unstartedOtherLanguages: number;
+} {
+  const { legBudgetMs, elapsedMs, language, legLanguages, languagesStarted } = args;
+  const perLanguageFloorMs = legBudgetMs / Math.max(1, legLanguages.size);
+  const unstartedOtherLanguages = [...legLanguages].filter(
+    (lang) => lang !== language && !languagesStarted.has(lang),
+  ).length;
+  const reservedForOthersMs = unstartedOtherLanguages * perLanguageFloorMs;
+  return {
+    remainingMs: legBudgetMs - elapsedMs - reservedForOthersMs,
+    reservedForOthersMs,
+    unstartedOtherLanguages,
+  };
+}
+
+/**
  * Run the in-operator LSP adapter across the probe set.
  *
  * Ordering matters: probes are grouped by file extension so each language
@@ -707,17 +742,49 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
   const languagesStarted = new Set<string>();
   const legStarted = Date.now();
 
+  // Every language in the probe set is entitled to a FLOOR of the leg budget.
+  //
+  // Without a floor the budget is first-come-first-served, and the last language
+  // is not merely unlucky — it is structurally unreachable. Two probes that never
+  // converge each poll for their full `deadlineMs`, and the integration leg runs
+  // 300_000ms x 2 against a 600_000ms budget, so the rust probe reported
+  // `attempts=0 (not attempted)` on every run. Raising `legBudgetMs` cannot fix
+  // that: it raises what the earlier probes are permitted to consume by exactly
+  // as much. Reserving per language is what makes a second backend measurable at
+  // all, and rust-analyzer is one of exactly two pinned backends
+  // (EI-22174876232438025).
+  const probeLanguage = (file: string): string => file.slice(file.lastIndexOf('.'));
+  const legLanguages = new Set(probes.map((p) => probeLanguage(p.file)));
+
   for (const probe of probes) {
     const kase = corpusCase(probe.caseId);
     if (!kase) throw new Error(`bench probe references unknown corpus case '${probe.caseId}'`);
 
     const cursor = resolveProbeCursor(probe, repoRoot);
-    const ext = probe.file.slice(probe.file.lastIndexOf('.'));
+    const ext = probeLanguage(probe.file);
     const serverWasCold = !languagesStarted.has(ext);
 
-    // Bound this probe by whichever runs out first: its own deadline, or what
-    // is left of the whole leg.
-    const remaining = legBudgetMs - (Date.now() - legStarted);
+    // Bound this probe by whichever runs out first: its own deadline, or what is
+    // left of the leg AFTER honouring the floor still owed to languages that have
+    // not run yet.
+    //
+    // The floor is a RESERVATION, not a cap. It is withheld only while a language
+    // is still waiting for its turn, so once every language has started, nothing
+    // is held back and a probe may use the entire remainder. That keeps the
+    // original property — a slow probe yields a partial report rather than a lost
+    // run — while removing the ordering bias that made the last language
+    // unreachable.
+    const {
+      remainingMs: remaining,
+      reservedForOthersMs: reservedForOthers,
+      unstartedOtherLanguages,
+    } = probeBudget({
+      legBudgetMs,
+      elapsedMs: Date.now() - legStarted,
+      language: ext,
+      legLanguages,
+      languagesStarted,
+    });
     if (remaining <= 0) {
       measurements.push({
         caseId: kase.id,
@@ -732,7 +799,16 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
         correct: false,
         trustworthyEmpty: true, // never queried, so it made no empty claim at all
         grade: { correct: false, missing: [], extra: [], reason: 'not attempted' },
-        error: `leg budget of ${legBudgetMs}ms exhausted before this probe ran`,
+        // Name WHICH of the two causes fired. A probe cut short because a peer
+        // language still holds its reserved floor has NOT hit an exhausted
+        // budget, and reporting it as one would send a reader to raise
+        // `legBudgetMs` — the one change that cannot help.
+        error:
+          reservedForOthers > 0
+            ? `this probe's share of the ${legBudgetMs}ms leg budget is spent; ` +
+              `${Math.round(reservedForOthers)}ms remains reserved for ` +
+              `${unstartedOtherLanguages} language(s) that have not run yet`
+            : `leg budget of ${legBudgetMs}ms exhausted before this probe ran`,
         returnedSites: [],
         emptyThenFilledMs: null,
         notAttempted: true,

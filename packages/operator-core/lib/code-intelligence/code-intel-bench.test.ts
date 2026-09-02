@@ -36,6 +36,7 @@ import {
   median,
   resolveProbeCursor,
   type BenchMeasurement,
+  probeBudget,
 } from './code-intel-bench.ts';
 import { corpusCase } from './acceptance-corpus.ts';
 import {
@@ -550,5 +551,107 @@ describe('cold-start budget grading (P-018: coldStartMsMax was a dead field)', (
       expect(k.observedCeilingMs).toBeLessThanOrEqual(300_000);
       expect(k.why.length).toBeGreaterThan(80);
     }
+  });
+});
+
+/**
+ * The leg budget must not be first-come-first-served.
+ *
+ * Before EI-22174876232438025 it was, and the consequence was not a slow run but
+ * a SILENT COVERAGE HOLE: `rust-trait-implementations` — the corpus's only
+ * non-TypeScript case, covering one of exactly two pinned backends — reported
+ * `attempts=0 (not attempted)` on every run, while the suite still read 10/12
+ * green. The arithmetic was exact rather than unlucky: the integration leg runs
+ * `deadlineMs` 300_000 against `legBudgetMs` 600_000, so any TWO
+ * never-converging TypeScript probes consumed the whole leg before rust was
+ * reached.
+ */
+describe('probeBudget — per-language reservation', () => {
+  const TWO = new Set(['.ts', '.rs']);
+
+  it('withholds a floor from the first language while another has not run', () => {
+    const b = probeBudget({
+      legBudgetMs: 600_000,
+      elapsedMs: 0,
+      language: '.ts',
+      legLanguages: TWO,
+      languagesStarted: new Set(),
+    });
+    // The regression control: the OLD implementation returned the whole
+    // 600_000 here, which is precisely what let TypeScript spend rust's share.
+    expect(b.remainingMs).toBe(300_000);
+    expect(b.remainingMs).not.toBe(600_000);
+    expect(b.reservedForOthersMs).toBe(300_000);
+    expect(b.unstartedOtherLanguages).toBe(1);
+  });
+
+  it('still reaches the last language after the first has exhausted its share', () => {
+    // THE bug, stated as an assertion: TypeScript has burned 590s of a 600s leg.
+    // Rust must still be measurable — under the old code it got nothing at all.
+    const b = probeBudget({
+      legBudgetMs: 600_000,
+      elapsedMs: 590_000,
+      language: '.rs',
+      legLanguages: TWO,
+      languagesStarted: new Set(['.ts']),
+    });
+    expect(b.reservedForOthersMs).toBe(0);
+    expect(b.remainingMs).toBeGreaterThan(0);
+  });
+
+  it('treats the floor as a reservation, not a cap', () => {
+    // TypeScript finished fast. Nothing is owed to anyone, so rust may use the
+    // ENTIRE remainder — well past its own 300_000 floor. A cap would have
+    // clamped this to 300_000 and thrown away real measuring time.
+    const b = probeBudget({
+      legBudgetMs: 600_000,
+      elapsedMs: 10_000,
+      language: '.rs',
+      legLanguages: TWO,
+      languagesStarted: new Set(['.ts']),
+    });
+    expect(b.remainingMs).toBe(590_000);
+  });
+
+  it('withholds nothing on a single-language leg', () => {
+    const b = probeBudget({
+      legBudgetMs: 600_000,
+      elapsedMs: 0,
+      language: '.ts',
+      legLanguages: new Set(['.ts']),
+      languagesStarted: new Set(),
+    });
+    expect(b.reservedForOthersMs).toBe(0);
+    expect(b.remainingMs).toBe(600_000);
+  });
+
+  it('scales the floor to the number of languages', () => {
+    const three = new Set(['.ts', '.rs', '.py']);
+    const b = probeBudget({
+      legBudgetMs: 600_000,
+      elapsedMs: 0,
+      language: '.ts',
+      legLanguages: three,
+      languagesStarted: new Set(),
+    });
+    expect(b.unstartedOtherLanguages).toBe(2);
+    expect(b.reservedForOthersMs).toBe(400_000);
+    expect(b.remainingMs).toBe(200_000);
+  });
+
+  it('reports a spent share as non-positive so the caller records not-attempted', () => {
+    const b = probeBudget({
+      legBudgetMs: 600_000,
+      elapsedMs: 300_000,
+      language: '.ts',
+      legLanguages: TWO,
+      languagesStarted: new Set(),
+    });
+    expect(b.remainingMs).toBeLessThanOrEqual(0);
+    // reservedForOthersMs > 0 is what makes the caller report this as a spent
+    // SHARE rather than an exhausted BUDGET — the distinction matters because
+    // "exhausted" sends a reader to raise legBudgetMs, the one change that
+    // cannot help.
+    expect(b.reservedForOthersMs).toBeGreaterThan(0);
   });
 });
