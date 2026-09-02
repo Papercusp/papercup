@@ -260,6 +260,18 @@ interface ChannelState {
    *  the peer never acks). Latches the FIRST send; a deliberate re-send passes
    *  `{ resend: true }` past it. See `maybeSendHello`. */
   helloSent: boolean;
+  /** WHICH device_pubkey the last initiated hello carried; null when none was
+   *  sent yet (or on state built before this field existed — treated as
+   *  UNKNOWN, never as a mismatch). P-203 Leg A (2026-09-02): the identity a
+   *  hello left under was seeded from the per-MUXER config that every harness
+   *  sharing the connection overwrites, so on a box hosting harnesses under
+   *  two accounts the papercusp topic greeted as the other account's device;
+   *  the peer filed our socket under it and every dial of our announcing
+   *  device missed for the connection's life. `helloSent` cannot see that —
+   *  the send happened. This records AS WHOM, so an identity correction
+   *  (`register()` applying the topic's own identity, or `healSweep`)
+   *  re-sends instead of trusting the latch. */
+  helloSentAs: string | null;
   /** A hello send is mid-flight (the signature is async). Separate from
    *  `helloSent` because that one must stay latched forever while this must
    *  clear — without the split, a re-send racing the first send could emit two
@@ -322,6 +334,47 @@ const dialConfigByMuxer = new WeakMap<object, MuxerDialConfig>();
  *  global), and the gate this must NEVER weaken is signing for a
  *  remote-chosen id nobody here wired. */
 const wiredTopics = new Map<string, Buffer>();
+
+/** The identity that EXPLICITLY wired each topic — process-global, keyed by
+ *  topicHex, last wire wins per topic. This is the signer a hello on that
+ *  topic must carry. `MuxerDialConfig.selfDevicePubkeyBase64` is per
+ *  CONNECTION and is overwritten by every harness that wires any topic on it,
+ *  so on a box hosting harnesses under more than one account it holds
+ *  "whichever harness wired last", which is the wrong device for every other
+ *  harness's topic (P-203 Leg A live finding, 2026-09-02: the tower's
+ *  papercusp topic sent its hello as the aviynw device XPAsvso1 while its
+ *  announcements were signed by the papercupai device IXfGu216 — the VM
+ *  filed the tower's socket under the wrong key and every VM→tower dial
+ *  missed for 210+ minutes). A topic's own wiring identity cannot be confused
+ *  by a sibling harness on another topic; the muxer config stays the
+ *  fallback only for a topic this box never explicitly wired. */
+const wiredTopicIdentity = new Map<
+  string,
+  { selfDevicePubkeyBase64: string; sign: (bytes: Buffer) => Promise<Buffer> | Buffer }
+>();
+
+/** Apply the topic's own wiring identity to `state` when it has one — the
+ *  seed every channel materialization and heal pass must prefer. Returns
+ *  whether an identity was applied. */
+function applyWiredTopicIdentity(state: ChannelState, topicHex: string): boolean {
+  const wired = wiredTopicIdentity.get(topicHex);
+  if (!wired) return false;
+  state.selfDevicePubkeyBase64 = wired.selfDevicePubkeyBase64;
+  state.sign = wired.sign;
+  return true;
+}
+
+/** A hello went out under a device that is no longer this channel's identity
+ *  (the muxer-config race above, or a later re-wire under another account).
+ *  An unknown `helloSentAs` (legacy state) is NOT stale — only positive
+ *  evidence of a mismatch may bypass the first-send latch. */
+function helloIdentityStale(state: ChannelState): boolean {
+  return (
+    state.helloSentAs !== null &&
+    state.selfDevicePubkeyBase64 !== null &&
+    state.helloSentAs !== state.selfDevicePubkeyBase64
+  );
+}
 
 /** Muxers with pot-git-hello state worth heal-sweeping (see `healSweep`).
  *  Strong refs are fine: entries are dropped on the first sweep after their
@@ -391,7 +444,12 @@ function healSweep(): void {
       //                           incident had helloSent=true on both sides and
       //                           a hello lost in flight, so the old
       //                           `helloSent`-only gate skipped it forever.
-      if (state.helloSent && state.remoteDevicePubkey) continue;
+      //   helloSentAs ≠ self    — ours went out under the WRONG device (the
+      //                           per-muxer identity race; P-203 Leg A). As
+      //                           dead as a lost hello: the peer holds our
+      //                           socket under a key no dial will ask for.
+      applyWiredTopicIdentity(state, topicHex);
+      if (state.helloSent && state.remoteDevicePubkey && !helloIdentityStale(state)) continue;
       if (!state.selfDevicePubkeyBase64 || !state.sign) {
         if (!cfg || !wiredTopics.has(topicHex)) continue;
         state.selfDevicePubkeyBase64 = cfg.selfDevicePubkeyBase64;
@@ -425,6 +483,7 @@ function newState(): ChannelState {
     selfDevicePubkeyBase64: null,
     sign: null,
     helloSent: false,
+    helloSentAs: null,
     helloInFlight: false,
     remoteDevicePubkey: null,
     localSocket: null,
@@ -462,8 +521,11 @@ function maybeSendHello(state: ChannelState, topic: Buffer, opts?: { resend?: bo
   // One in-flight hello per channel, always — a re-send must never overlap the
   // send it is retrying.
   if (state.helloInFlight) return;
-  // The first-send latch. `resend` deliberately bypasses it; nothing else does.
-  if (state.helloSent && !opts?.resend) return;
+  // The first-send latch. `resend` deliberately bypasses it, and so does a
+  // hello that demonstrably went out under a DIFFERENT device than this
+  // channel's identity now is (`helloSentAs` ≠ self — the per-muxer identity
+  // race; see `wiredTopicIdentity`). Nothing else does.
+  if (state.helloSent && !opts?.resend && !helloIdentityStale(state)) return;
   // Mark sent BEFORE the async sign resolves — a second `maybeSendHello` call
   // racing in (onopen firing while register() is still mid-flight, or vice
   // versa) must not send two hellos on the same channel.
@@ -471,6 +533,7 @@ function maybeSendHello(state: ChannelState, topic: Buffer, opts?: { resend?: bo
   state.helloInFlight = true;
   const self = state.selfDevicePubkeyBase64;
   const sign = state.sign;
+  state.helloSentAs = self;
   void (async () => {
     try {
       const signature = await sign(helloSignContext(topic));
@@ -512,9 +575,15 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
     // land the wire on a since-dead muxer, leaving the surviving muxer's
     // pair-materialized channel able to RECEIVE the peer's hello but never
     // answer, so one fetch direction stays dead for the connection's life.
-    // The identity is always this muxer's own config; the global set only
-    // widens the topic gate, never the signer.
-    if (cfg.topics.has(topicHex) || wiredTopics.has(topicHex)) {
+    // The global set only widens the topic gate, never the signer — and the
+    // signer is the identity that WIRED THIS TOPIC (`wiredTopicIdentity`),
+    // never the muxer's "whoever wired last" config: `onopen` can fire
+    // synchronously inside `createChannel()` below when the peer's open is
+    // already pending, i.e. BEFORE `wireHiveGitDial`'s `register()` gets to
+    // apply the topic's own identity, and that seeded identity is what the
+    // latched first hello then carries (P-203 Leg A, 2026-09-02). The muxer
+    // config is the fallback only for a topic never explicitly wired here.
+    if (!applyWiredTopicIdentity(state, topicHex) && cfg.topics.has(topicHex)) {
       state.selfDevicePubkeyBase64 = cfg.selfDevicePubkeyBase64;
       state.sign = cfg.sign;
     }
@@ -540,10 +609,15 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
       // close fires. An unconditional delete then clobbers that LIVE registration
       // and the device reads as unreachable while a working socket exists. Only
       // ever evict our OWN entry.
-      if (state!.remoteDevicePubkey) {
+      // Evict EVERY device this channel's socket was registered under on this
+      // topic — not only the last-remembered remote. A peer that corrected
+      // its hello identity mid-connection (the identity-race repair above,
+      // run on ITS side) registers twice on one channel; evicting one would
+      // leave the other pointing at a dead socket for a future dial to hit.
+      if (state!.localSocket) {
         const reg = registryFor(topicHex);
-        if (reg.get(state!.remoteDevicePubkey) === state!.localSocket) {
-          reg.delete(state!.remoteDevicePubkey);
+        for (const [device, socket] of reg) {
+          if (socket === state!.localSocket) reg.delete(device);
         }
       }
       // The verified-device binding is keyed per-SOCKET, and one socket carries
@@ -747,9 +821,10 @@ export function wireHiveGitDial(
     const topicHex = topic.toString('hex');
     cfg.topics.add(topicHex);
     // Process-global (survives this connection): any later muxer may sign
-    // hellos for this explicitly-wired topic — with its OWN identity — and
-    // the heal sweep watches the muxer from now on (WI-5210).
+    // hellos for this explicitly-wired topic — under THIS topic's identity —
+    // and the heal sweep watches the muxer from now on (WI-5210).
     wiredTopics.set(topicHex, topic);
+    wiredTopicIdentity.set(topicHex, { selfDevicePubkeyBase64, sign });
     trackedMuxers.add(mux);
     ensureHealSweep();
     const register = (): void => {
@@ -883,9 +958,15 @@ export const _testing = {
   dialConfigByMuxer,
   maybeSendHello,
   newState,
+  // P-203 Leg A identity-race repair — exposed so a unit test can drive a
+  // synchronous-onopen channel materialization through a fake muxer and assert
+  // WHICH device the first hello carries.
+  wiredTopicIdentity,
+  ensureChannel,
   reset(): void {
     registryByTopic.clear();
     wiredTopics.clear();
+    wiredTopicIdentity.clear();
     trackedMuxers.clear();
     lastRegisteredAt.clear();
     registrationWaiters.clear();
