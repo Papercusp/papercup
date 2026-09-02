@@ -162,6 +162,7 @@ import {
 } from "../../../../scripts/check-format.mjs";
 import {
   FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+  FROZEN_REPAIR_CONVERGENCE_HOLD_MS,
   type FrozenCandidateRepairQueue,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 
@@ -13099,7 +13100,13 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     deps.checkFixerProviderCapacity = async () => ({
       ok: false,
       summary: "all codex accounts are usage-walled",
-      retryAtMs: RESET_AT,
+      // WI-2141736: a SHORT wall, deliberately — retiring is only the correct answer when
+      // waiting could not help for long. A wall that OUTLASTS the zero-attempt stall window
+      // now HOLDS the freeze instead (agent/human convergence becomes the repair path); that
+      // branch is covered by frozen-candidate-repair-queue.test.ts. Before this distinction
+      // existed, a six-day wall retired every queue after 15 minutes — 20 retirements and 0
+      // resumes in one day, with freeze-and-converge silently off fleet-wide.
+      retryAtMs: Date.now() + 1_000,
     });
 
     // Move the integration branch after the frozen queue was opened: the retired queue must
@@ -13168,6 +13175,117 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
       reason: "repair-in-progress",
     });
     expect(result.summary).toContain("not yet stalled");
+  });
+
+  it("WI-2141736 P-002: HOLDS a STALLED zero-attempt queue when the measured wall OUTLASTS the stall window", async () => {
+    // The falsifier this whole plan exists for. It is the EXACT twin of "retires an
+    // unassigned zero-attempt queue" above — same 16-minute-old queue, same moved staging
+    // tip, same everything — except the wall's own reset time: seconds away there, ~24h away
+    // here. Retiring is only correct when waiting could not help; a wall that outlasts the
+    // stall window makes retiring a treadmill, because the re-cut queue meets the same wall.
+    // Measured cost of the missing distinction: a six-day codex wall produced 20 retirements
+    // and 0 resumes in one day, with freeze-and-converge silently off fleet-wide.
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    // Moving the integration branch matters: retiring would follow this tip, so asserting we
+    // stay on `frozen` proves the hold rather than merely a no-op run.
+    await commit("c", "3", "current staging tip");
+    let queue: FrozenCandidateRepairQueue | null = {
+      ...unassignedQueue(frozen, ready),
+      attempts: 0,
+      openedAtMs: Date.now() - 16 * 60 * 1_000,
+      updatedAtMs: Date.now() - 15 * 60 * 1_000,
+    };
+    const { deps } = stubDeps(true);
+    const cleaned: string[] = [];
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.cleanupFrozenRepairWorktree = async (oldQueue) => {
+      cleaned.push(oldQueue.candidate);
+    };
+    deps.prepareFrozenRepairWorktree = async () => {
+      throw new Error("a capacity-held queue must not prepare a fixer worktree");
+    };
+    deps.dispatchFrozenRepairFixer = async () => {
+      throw new Error("a capacity-held queue must not launch a fixer");
+    };
+    deps.checkFixerProviderCapacity = async () => ({
+      ok: false,
+      summary: "all codex accounts are usage-walled",
+      retryAtMs: RESET_AT,
+    });
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    // SURVIVES the run: no worktree cleanup, no abandonment, still pinned to the candidate
+    // agents are converging on.
+    expect(cleaned).toEqual([]);
+    expect(queue).toMatchObject({ candidate: frozen, attempts: 0 });
+    expect(result).toMatchObject({
+      advanced: false,
+      candidate: frozen,
+      green: null,
+      reason: "repair-in-progress",
+    });
+    // P-004: the REASON is on the returned summary, not only in the run log — a caller
+    // reading the verdict can see why the candidate is held without log archaeology.
+    expect(result.summary).toContain("Held for convergence");
+    expect(result.summary).not.toContain("not yet stalled");
+  });
+
+  it("WI-2141736 P-002: the convergence hold is BOUNDED — a queue nobody converged is retired once the hold window elapses", async () => {
+    // The other half of the falsifier: holding must not become pinning-forever. Same long
+    // wall as the test above; the ONLY difference is the queue's age, now past
+    // FROZEN_REPAIR_CONVERGENCE_HOLD_MS (4h). Without this bound, a walled provider plus a
+    // red nobody fixes would freeze the gate on one candidate indefinitely.
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const movingTip = await commit("c", "3", "current staging tip");
+    const heldTooLongMs = FROZEN_REPAIR_CONVERGENCE_HOLD_MS + 60_000;
+    let queue: FrozenCandidateRepairQueue | null = {
+      ...unassignedQueue(frozen, ready),
+      attempts: 0,
+      openedAtMs: Date.now() - heldTooLongMs,
+      updatedAtMs: Date.now() - heldTooLongMs,
+    };
+    const { deps, calls } = stubDeps(true);
+    const cleaned: string[] = [];
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.cleanupFrozenRepairWorktree = async (oldQueue) => {
+      cleaned.push(oldQueue.candidate);
+    };
+    deps.prepareFrozenRepairWorktree = async () => {
+      throw new Error(
+        "a hold-expired queue must not prepare a fixer worktree",
+      );
+    };
+    deps.dispatchFrozenRepairFixer = async () => {
+      throw new Error("a hold-expired queue must not launch a fixer");
+    };
+    deps.checkFixerProviderCapacity = async () => ({
+      ok: false,
+      summary: "all codex accounts are usage-walled",
+      retryAtMs: RESET_AT,
+    });
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(calls).toContain("runGreen");
+    expect(cleaned).toEqual([frozen, movingTip]);
+    expect(queue).toBeNull();
+    expect(result).toMatchObject({
+      advanced: true,
+      candidate: movingTip,
+      green: true,
+      reason: "advanced",
+    });
   });
 
   it("dispatches rather than freezing when the capacity probe itself throws", async () => {

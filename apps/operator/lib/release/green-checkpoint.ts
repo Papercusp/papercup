@@ -9239,10 +9239,17 @@ async function runGreenCheckpointInner(
           // Hold the frozen candidate exactly like an already-attempted queue's capacity hold
           // below — no suite run, no verdict recorded, no queue mutation — and let the next
           // tick re-measure.
-          const summary = frozenRepairCapacityHoldSummary(
+          const baseSummary = frozenRepairCapacityHoldSummary(
             repairQueue.repairHead,
             dispatch.capacityHold,
           );
+          // WI-2141736 P-004: the hold REASON rides on the result summary, not only the run
+          // log. Freeze-and-converge was off fleet-wide for a full day and the only evidence
+          // was a grep across checkpoint logs; a caller reading the verdict must be able to
+          // see WHY the candidate is being held without going log-archaeology.
+          const summary = dispatchInfeasible.zeroAttemptStalled
+            ? `${baseSummary} Held for convergence: the wall outlasts the ${dispatchInfeasible.zeroAttemptStallMs}ms stall window, so the freeze is kept and agent/human convergence is the repair path (${dispatchInfeasible.ageMs}ms of ${dispatchInfeasible.convergenceHoldMs}ms).`
+            : `${baseSummary} Zero-attempt, not yet stalled: ${dispatchInfeasible.ageMs}ms of ${dispatchInfeasible.zeroAttemptStallMs}ms before this queue is retired.`;
           deps.log(
             dispatchInfeasible.zeroAttemptStalled
               ? // The LONG-WALL hold: the stall window HAS elapsed, but the measured wall
@@ -9250,17 +9257,12 @@ async function runGreenCheckpointInner(
                 // wall again. Held for agent/human convergence instead, bounded by
                 // convergenceHoldMs. Saying "before this queue is retired" here would be
                 // false — nothing is counting down toward a retire on that window.
-                `${summary} (zero-attempt, HELD FOR CONVERGENCE: the provider wall outlasts the ` +
-                  `${dispatchInfeasible.zeroAttemptStallMs}ms stall window` +
-                  `${
-                    dispatchInfeasible.capacityRetryAtMs
-                      ? ` (retry at ${new Date(dispatchInfeasible.capacityRetryAtMs).toISOString()})`
-                      : ""
-                  }, so the freeze is kept and agent/human convergence is the repair path; ` +
-                  `${dispatchInfeasible.ageMs}ms of ${dispatchInfeasible.convergenceHoldMs}ms ` +
-                  `before the hold gives up and retires)`
-              : `${summary} (zero-attempt, not yet stalled: ${dispatchInfeasible.ageMs}ms of ` +
-                  `${dispatchInfeasible.zeroAttemptStallMs}ms before this queue is retired)`,
+                `${summary}${
+                  dispatchInfeasible.capacityRetryAtMs
+                    ? ` Wall lifts at ${new Date(dispatchInfeasible.capacityRetryAtMs).toISOString()}.`
+                    : ""
+                }`
+              : summary,
           );
           return withFossilAbandonment({
             advanced: false,
