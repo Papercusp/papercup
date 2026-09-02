@@ -215,10 +215,36 @@ async function cmdApply() {
          FROM harness_shared.agent_facts WHERE ${SURFACE}`,
     );
     const population = new Map(popRows.map((r) => [Number(r.id), r]));
-    const missing = [...population.keys()].filter((id) => !verdicts.has(id));
+
+    // The corpus is LIVE — ~10 agents were writing to it during this audit and the surface
+    // grew by 7 rows in 20 minutes. So coverage must be judged against the SNAPSHOT that was
+    // actually audited, not against the moving table: rows created after the dump were never
+    // reviewable and must not block the apply, while rows that WERE audited and have since
+    // been reaped or superseded must not be demanded either. Pass --snapshot <population.jsonl>
+    // to get that honest denominator; without it the check falls back to the live table.
+    const snapshotPath = arg('snapshot');
+    let auditable = new Set(population.keys());
+    let postSnapshotNew = 0;
+    if (typeof snapshotPath === 'string') {
+      const snapIds = new Set(
+        readFileSync(snapshotPath, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => Number(JSON.parse(l).id)),
+      );
+      auditable = new Set([...population.keys()].filter((id) => snapIds.has(id)));
+      postSnapshotNew = population.size - auditable.size;
+      const goneSinceSnapshot = [...snapIds].filter((id) => !population.has(id)).length;
+      console.log(`SNAPSHOT_ROWS\t${snapIds.size}`);
+      console.log(`POST_SNAPSHOT_NEW\t${postSnapshotNew}\t(not auditable — created after the dump)`);
+      console.log(`GONE_SINCE_SNAPSHOT\t${goneSinceSnapshot}\t(reaped/retracted/superseded since the dump)`);
+    }
+
+    const missing = [...auditable].filter((id) => !verdicts.has(id));
     const unknown = [...verdicts.keys()].filter((id) => !population.has(id));
 
     console.log(`POPULATION\t${population.size}`);
+    console.log(`AUDITABLE\t${auditable.size}`);
     console.log(`UNJUDGED\t${missing.length}`);
     console.log(`NOT_IN_POPULATION\t${unknown.length}`);
     if (unknown.length) console.log(`NOT_IN_POPULATION_SAMPLE\t${unknown.slice(0, 10).join(',')}`);
