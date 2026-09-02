@@ -140,6 +140,72 @@ describe('frozen-candidate repair queue', () => {
     });
   });
 
+  describe('WI-2141736: a wall that OUTLASTS the stall window holds the freeze instead of retiring', () => {
+    // THE REGRESSION, measured 2026-09-02: the fixer's provider was usage-walled for SIX
+    // DAYS. Every queue stalled out after the 15-minute zero-attempt window, retired, and
+    // re-cut at tip — 20 retirements and 0 resumes in one day, with freeze-and-converge
+    // silently off fleet-wide. Retiring bought nothing (the next queue met the same wall
+    // 15 minutes later) and cost the entire convergence property.
+    const SIX_DAYS = 6 * 24 * 60 * 60 * 1_000;
+
+    it('HOLDS past the stall window when the wall reset is further away than that window', () => {
+      expect(
+        decideFrozenRepairDispatchInfeasible(fresh(), {
+          nowMs: T0 + 1,
+          zeroAttemptStallMs: 1,
+          capacityRetryAtMs: T0 + SIX_DAYS,
+        }),
+      ).toMatchObject({
+        kind: 'wait-for-dispatch-capacity',
+        // Distinguishes the long-wall hold from the momentary-churn hold: the window HAS
+        // elapsed, and the freeze is being held anyway — deliberately, not prematurely.
+        zeroAttemptStalled: true,
+        capacityRetryAtMs: T0 + SIX_DAYS,
+      });
+    });
+
+    it('still RETIRES once the hold budget itself is exhausted, so nobody can pin the gate forever', () => {
+      expect(
+        decideFrozenRepairDispatchInfeasible(fresh(), {
+          nowMs: T0 + SIX_DAYS,
+          zeroAttemptStallMs: 1,
+          capacityRetryAtMs: T0 + SIX_DAYS * 2,
+          convergenceHoldMs: 60_000,
+        }),
+      ).toMatchObject({ kind: 'recut-at-tip', reason: 'dispatch-infeasible' });
+    });
+
+    it('retires as before for a SHORT wall — waiting there really would buy nothing', () => {
+      expect(
+        decideFrozenRepairDispatchInfeasible(fresh(), {
+          nowMs: T0 + 10_000,
+          zeroAttemptStallMs: 5_000,
+          // Wall lifts in 1s, well inside the stall window: this is ordinary pool churn.
+          capacityRetryAtMs: T0 + 11_000,
+        }),
+      ).toMatchObject({ kind: 'recut-at-tip' });
+    });
+
+    it('retires as before when the wall reset is UNKNOWN — an unknown must not extend a freeze', () => {
+      expect(
+        decideFrozenRepairDispatchInfeasible(fresh(), {
+          nowMs: T0 + 10_000,
+          zeroAttemptStallMs: 5_000,
+          capacityRetryAtMs: null,
+        }),
+      ).toMatchObject({ kind: 'recut-at-tip' });
+    });
+
+    it('still prefers testing a CONVERGED repairHead over holding — convergence beats waiting', () => {
+      expect(
+        decideFrozenRepairDispatchInfeasible(
+          { ...fresh(), repairHead: C1 },
+          { nowMs: T0 + 1, zeroAttemptStallMs: 1, capacityRetryAtMs: T0 + SIX_DAYS },
+        ),
+      ).toMatchObject({ kind: 'test-candidate', candidate: C1 });
+    });
+  });
+
   it('WI-2141347: tests a CONVERGED repairHead instead of retiring, when dispatch is infeasible', () => {
     // repairHead diverged from candidate via convergence (shouldConvergeRepairHead) — still an
     // ancestor of staging, already vetted, never unpushed fixer content — while candidate itself
@@ -168,6 +234,93 @@ describe('frozen-candidate repair queue', () => {
         zeroAttemptStallMs: 1,
       }),
     ).toMatchObject({ kind: 'recut-at-tip', repairHead: C });
+  });
+
+  it('WI-2141736 Layer 2: holds a fresh zero-attempt queue instead of retiring on the FIRST measured capacity wall', () => {
+    // The pre-Layer-2 defect: an unconverged queue that has been open only 1ms was retired
+    // immediately on any single dispatch-infeasible reading, discarding the frozen candidate
+    // for a reason unrelated to the code under test. It must now wait until the wall has
+    // genuinely persisted past zeroAttemptStallMs before giving up.
+    expect(
+      decideFrozenRepairDispatchInfeasible(fresh(), {
+        nowMs: T0 + 1,
+        zeroAttemptStallMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
+      }),
+    ).toEqual({
+      kind: 'wait-for-dispatch-capacity',
+      repairHead: C,
+      attempts: 0,
+      ageMs: 1,
+      zeroAttemptStalled: false,
+      zeroAttemptStallMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
+      gateDisposition: 'inconclusive',
+      runSuite: false,
+      recordVerdict: false,
+    });
+  });
+
+  it('WI-2141736 Layer 2: still recuts once the zero-attempt wall has genuinely stalled', () => {
+    // Falsifiability control for the wait above: crossing the SAME threshold with the SAME
+    // (unconverged) queue must still reach the original recut-at-tip outcome.
+    expect(
+      decideFrozenRepairDispatchInfeasible(fresh(), {
+        nowMs: T0 + FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
+        zeroAttemptStallMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
+      }),
+    ).toEqual({
+      kind: 'recut-at-tip',
+      reason: 'dispatch-infeasible',
+      abandonedCandidate: C,
+      repairHead: C,
+      attempts: 0,
+      ageMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
+      zeroAttemptStalled: true,
+      zeroAttemptStallMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
+      gateDisposition: 'recut',
+      runSuite: false,
+      recordVerdict: false,
+    });
+  });
+
+  it('WI-2141736 Layer 2: a CONVERGED repairHead still tests immediately, unaffected by the wait gate', () => {
+    // The wait gate only applies to the "nothing to test yet" (repairHead === candidate) path;
+    // WI-2141347's converged-repairHead behavior must be untouched regardless of age.
+    const converged: FrozenCandidateRepairQueue = { ...fresh(), repairHead: C1 };
+    expect(
+      decideFrozenRepairDispatchInfeasible(converged, {
+        nowMs: T0 + 1,
+        zeroAttemptStallMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
+      }),
+    ).toEqual({
+      kind: 'test-candidate',
+      candidate: C1,
+      gateDisposition: 'initial-candidate',
+      runSuite: true,
+      recordVerdict: true,
+    });
+  });
+
+  it('WI-2141736 Layer 2: decideFrozenCandidateRepairQueue holds the candidate end-to-end when not yet stalled', () => {
+    // Same scenario as 'falls through a measured dispatch-infeasible zero-attempt queue instead
+    // of freezing C' above, but measured immediately (ageMs=0) instead of past the stall
+    // threshold — the exact WI-2141736 filing scenario: a single early capacity-wall reading
+    // must not discard the frozen candidate.
+    expect(
+      decideFrozenCandidateRepairQueue(fresh(), {
+        nowMs: T0,
+        dispatchFeasible: false,
+      }),
+    ).toEqual({
+      kind: 'wait-for-dispatch-capacity',
+      repairHead: C,
+      attempts: 0,
+      ageMs: 0,
+      zeroAttemptStalled: false,
+      zeroAttemptStallMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
+      gateDisposition: 'inconclusive',
+      runSuite: false,
+      recordVerdict: false,
+    });
   });
 
   it('persists C before its first suite, resumes that exact SHA, and transitions red in place', () => {

@@ -63,6 +63,18 @@ export const FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS = 5 * 60 * 1_000;
  */
 export const FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS = 15 * 60 * 1_000;
 
+/**
+ * WI-2141736: how long a frozen candidate may be HELD, past the zero-attempt stall, while a
+ * measured provider wall outlasts that stall window — i.e. while the only available repair
+ * path is agent/human convergence rather than an auto-fixer dispatch.
+ *
+ * 4h matches the queue's own `maxAgeMs` budget, so a held candidate cannot outlive the
+ * bound the queue already carries. Without this hold the 15-minute stall retires every
+ * queue against a multi-day wall, which is how freeze-and-converge went silently off for a
+ * full day (20 retirements, 0 resumes, 2026-09-02).
+ */
+export const FROZEN_REPAIR_CONVERGENCE_HOLD_MS = 4 * 60 * 60 * 1_000;
+
 const MAX_PERSISTED_FAILURES = 50;
 const MAX_PERSISTED_FAILURE_CHARS = 500;
 
@@ -218,6 +230,7 @@ export type FrozenRepairQueueDecision =
       recordVerdict: false;
     }
   | FrozenRepairDispatchInfeasibleDecision
+  | FrozenRepairDispatchPendingDecision
   | {
       kind: 'recover-dead-fixer';
       fixerSpawnId: string;
@@ -323,6 +336,39 @@ export interface FrozenRepairDispatchInfeasibleDecision {
 }
 
 /**
+ * WI-2141736 Layer 2: a single measured capacity wall on a zero-attempt queue is not proof the
+ * fixer's real provider is durably unreachable — this workspace pools many accounts behind a
+ * rate governor specifically because a momentary wall is common and routinely clears within
+ * minutes (see repo playbook: "a true quota wall is rare... verify before giving up"). Treating
+ * the very first such reading as a structural dead end (the pre-Layer-2 behavior) discards the
+ * frozen candidate and re-cuts at tip for a reason that has nothing to do with the code under
+ * test — reinstating exactly the re-cut-at-tip treadmill D-007's freeze-and-converge exists to
+ * stop. This decision holds the candidate — inconclusive, no verdict recorded — until the wall
+ * has genuinely persisted past `zeroAttemptStallMs`; only then does `recut-at-tip` fire.
+ */
+export interface FrozenRepairDispatchPendingDecision {
+  kind: 'wait-for-dispatch-capacity';
+  repairHead: string;
+  attempts: number;
+  ageMs: number;
+  /**
+   * `true` only on the LONG-WALL hold below: the stall window HAS elapsed, but the wall
+   * outlasts it, so retiring would buy nothing and cost the freeze. Kept distinct from the
+   * momentary-churn hold (`false`) so a reader can tell "too early to judge" from
+   * "deliberately holding for agent convergence".
+   */
+  zeroAttemptStalled: boolean;
+  zeroAttemptStallMs: number;
+  /** Set on a long-wall hold: when the measured provider wall is expected to lift. */
+  capacityRetryAtMs?: number | null;
+  /** Set on a long-wall hold: the age past which the hold gives up and retires anyway. */
+  convergenceHoldMs?: number;
+  gateDisposition: 'inconclusive';
+  runSuite: false;
+  recordVerdict: false;
+}
+
+/**
  * WI-2141347: the dispatch-infeasible retire, but for a queue whose movable `repairHead` has
  * already CONVERGED past its frozen `candidate` (see `shouldConvergeRepairHead` — only ever an
  * ancestor of staging, so already vetted, never unpushed fixer content). Retiring that queue and
@@ -333,6 +379,7 @@ export interface FrozenRepairDispatchInfeasibleDecision {
  */
 export type FrozenRepairDispatchInfeasibleOutcome =
   | FrozenRepairDispatchInfeasibleDecision
+  | FrozenRepairDispatchPendingDecision
   | Extract<FrozenRepairQueueDecision, { kind: 'test-candidate' }>;
 
 export interface FrozenRepairQueueObservation {
@@ -484,7 +531,21 @@ export function buildFrozenRepairStatusIdentity(queue: FrozenCandidateRepairQueu
  */
 export function decideFrozenRepairDispatchInfeasible(
   queue: FrozenCandidateRepairQueue,
-  observation: { nowMs: number; zeroAttemptStallMs?: number },
+  observation: {
+    nowMs: number;
+    zeroAttemptStallMs?: number;
+    /**
+     * When the measured provider wall is expected to lift, from the capacity preflight's
+     * own `retryAtMs`. Absent/null = unknown, which keeps the pre-existing behaviour.
+     */
+    capacityRetryAtMs?: number | null;
+    /**
+     * How long a long-wall hold may keep the freeze while waiting for agent/human
+     * convergence, before giving up and retiring anyway. Defaults to
+     * FROZEN_REPAIR_CONVERGENCE_HOLD_MS.
+     */
+    convergenceHoldMs?: number;
+  },
 ): FrozenRepairDispatchInfeasibleOutcome {
   assertTimestamp(observation.nowMs, 'nowMs');
   const zeroAttemptStallMs = observation.zeroAttemptStallMs ?? FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS;
@@ -511,6 +572,57 @@ export function decideFrozenRepairDispatchInfeasible(
     };
   }
   const ageMs = Math.max(0, observation.nowMs - queue.openedAtMs);
+  const zeroAttemptStalled = queue.attempts === 0 && ageMs >= zeroAttemptStallMs;
+  if (!zeroAttemptStalled) {
+    // A momentary capacity wall on a queue that just opened (or has been open only briefly)
+    // is not yet distinguishable from ordinary pool churn. Hold the candidate and report
+    // inconclusive so the next tick re-measures rather than discarding it outright.
+    return {
+      kind: 'wait-for-dispatch-capacity',
+      repairHead: queue.repairHead,
+      attempts: queue.attempts,
+      ageMs,
+      zeroAttemptStalled: false,
+      zeroAttemptStallMs,
+      gateDisposition: 'inconclusive',
+      runSuite: false,
+      recordVerdict: false,
+    };
+  }
+  // WI-2141736: the stall window has elapsed — but retiring is only the right answer when
+  // waiting could plausibly help. Measured 2026-09-02: the fixer's provider was walled for
+  // SIX DAYS, so every queue stalled out after 15 minutes, retired, and re-cut at tip — 20
+  // retirements, 0 resumes in one day, and freeze-and-converge was silently off fleet-wide.
+  // Retiring bought nothing (the next queue hit the same wall 15 minutes later) and cost the
+  // whole convergence property.
+  //
+  // "The AUTO-FIXER cannot be dispatched" is NOT "this queue is unreachable-green": agents
+  // and humans converge onto frozen candidates routinely, and the `test-candidate` branch
+  // above exists precisely to test a repairHead one of them advanced. So when the wall
+  // OUTLASTS the stall window, hold the freeze and let convergence do the repair — bounded by
+  // convergenceHoldMs so a candidate nobody converges still cannot pin the gate forever.
+  const convergenceHoldMs = observation.convergenceHoldMs ?? FROZEN_REPAIR_CONVERGENCE_HOLD_MS;
+  if (!Number.isFinite(convergenceHoldMs) || convergenceHoldMs <= 0) {
+    throw new Error('convergenceHoldMs must be a positive finite duration');
+  }
+  const retryAtMs = observation.capacityRetryAtMs ?? null;
+  const wallOutlastsStallWindow =
+    retryAtMs !== null && Number.isFinite(retryAtMs) && retryAtMs - observation.nowMs > zeroAttemptStallMs;
+  if (wallOutlastsStallWindow && ageMs < convergenceHoldMs) {
+    return {
+      kind: 'wait-for-dispatch-capacity',
+      repairHead: queue.repairHead,
+      attempts: queue.attempts,
+      ageMs,
+      zeroAttemptStalled: true,
+      zeroAttemptStallMs,
+      capacityRetryAtMs: retryAtMs,
+      convergenceHoldMs,
+      gateDisposition: 'inconclusive',
+      runSuite: false,
+      recordVerdict: false,
+    };
+  }
   return {
     kind: 'recut-at-tip',
     reason: 'dispatch-infeasible',
@@ -518,7 +630,7 @@ export function decideFrozenRepairDispatchInfeasible(
     repairHead: queue.repairHead,
     attempts: queue.attempts,
     ageMs,
-    zeroAttemptStalled: queue.attempts === 0 && ageMs >= zeroAttemptStallMs,
+    zeroAttemptStalled: true,
     zeroAttemptStallMs,
     gateDisposition: 'recut',
     runSuite: false,
