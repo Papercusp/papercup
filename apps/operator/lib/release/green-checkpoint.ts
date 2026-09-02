@@ -14434,6 +14434,36 @@ export function selectFixerCapacityRows<
   return { measured: rows, scope: `the ${provider} pool`, narrowed: false };
 }
 
+/**
+ * Resolve the account-pool PROVIDER the release-fixer dispatch will authenticate as,
+ * from the same `agent-config` row that governs the launch (`roleBackends['release-fixer']`,
+ * falling back to the global backend). This is the resolver whose absence the capacity
+ * preflight used to work around with a hand-maintained "codex" literal.
+ *
+ * Returns undefined — never a guess — when the backend has no account-pool provider
+ * (`omp`, `auto`) or the config cannot be read, so the caller keeps failing OPEN to its
+ * named default rather than withholding a dispatch on an unknown. That is the same
+ * unknown-must-not-masquerade-as-a-wall rule the stale-reading branch below follows.
+ *
+ * Exported for unit testing: the call site's own tests stub `checkFixerProviderCapacity`
+ * wholesale and therefore cannot observe this mapping at all.
+ */
+export async function resolveReleaseFixerProvider(): Promise<string | undefined> {
+  try {
+    const { readAgentConfig } = await import(
+      "@papercusp/operator-core/lib/agent-config"
+    );
+    const cfg = await readAgentConfig();
+    const backend = cfg.roleBackends?.["release-fixer"] ?? cfg.backend;
+    // Only backends that map onto a real account-pool `provider` may answer.
+    if (backend === "claude-code") return "claude";
+    if (backend === "codex") return "codex";
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function realCheckpointDeps(
   cfg: ReleaseConfig,
   execRaw: CheckpointExec = runCmd,
@@ -14901,12 +14931,22 @@ export function realCheckpointDeps(
     async checkFixerProviderCapacity() {
       const { accountStatus } =
         await import("@papercusp/operator-core/lib/deployment/account-pool-store");
-      // No role->provider resolver exists anywhere in this tree (grepped 2026-08-29), so
-      // the fixer's backend is NAMED here rather than derived — the one hand-maintained
-      // fact in this preflight, kept overridable so a pot that moves the fixer off codex
-      // does not have to patch the gate. Everything below is measured, not assumed.
+      // The fixer's provider is DERIVED from the same agent-config row the dispatch
+      // actually launches on, not named here. It used to be a hand-maintained "codex"
+      // literal, and that is a derived-truth-ladder violation with teeth: on 2026-09-02
+      // the owner moved release-fixer to claude-opus-5:xhigh on claude-code, and because
+      // this preflight kept measuring CODEX it went on reading the (walled) codex pool,
+      // withheld every dispatch, and retired the frozen repair queue 20 times in one day
+      // — silently disabling freeze-and-converge fleet-wide while the fixer's real
+      // provider had headroom. A config-only switch could not take effect.
+      //
+      // Precedence: explicit env override > the role's configured backend > "codex".
+      // Every branch fails OPEN to the old literal, so a config read that throws, or a
+      // backend with no account-pool provider (omp), behaves exactly as before.
       const provider = (
-        process.env.PAPERCUSP_RELEASE_FIXER_PROVIDER?.trim() || "codex"
+        process.env.PAPERCUSP_RELEASE_FIXER_PROVIDER?.trim() ||
+        (await resolveReleaseFixerProvider()) ||
+        "codex"
       ).toLowerCase();
       const rows = (await accountStatus()).filter(
         (r) => r.provider === provider,

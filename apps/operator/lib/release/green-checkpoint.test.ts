@@ -146,6 +146,7 @@ import {
   // assertion resolves the tag instead of hardcoding the production literal.
   orchestratorStdoutTag,
   selectFixerCapacityRows,
+  resolveReleaseFixerProvider,
 } from "./green-checkpoint";
 import { git, revParse, advanceReady } from "./git-ops";
 import {
@@ -12908,6 +12909,68 @@ describe("EI-22062873162576188: capacity preflight measures the credential the f
     });
 
     expect(narrowed).toBe(false);
+  });
+});
+
+describe("WI-2141736: the fixer's provider is DERIVED from agent-config, never hardcoded", () => {
+  // THE REGRESSION. The preflight named "codex" as a literal. On 2026-09-02 the owner
+  // moved release-fixer to claude-opus-5:xhigh on claude-code; the preflight went on
+  // measuring the (weekly-exhausted) codex pool, withheld every dispatch, and retired the
+  // frozen repair queue 20 times in one day — disabling freeze-and-converge fleet-wide
+  // while the fixer's real provider had 34% headroom. A config-only switch was a no-op.
+  const withConfig = async (
+    cfg: Record<string, unknown>,
+  ): Promise<string | undefined> => {
+    vi.doMock("@papercusp/operator-core/lib/agent-config", () => ({
+      readAgentConfig: async () => cfg,
+    }));
+    try {
+      const mod = await import("./green-checkpoint");
+      return await mod.resolveReleaseFixerProvider();
+    } finally {
+      vi.doUnmock("@papercusp/operator-core/lib/agent-config");
+      vi.resetModules();
+    }
+  };
+
+  it("follows the role backend to claude when release-fixer is pinned to claude-code", async () => {
+    await expect(
+      withConfig({ backend: "codex", roleBackends: { "release-fixer": "claude-code" } }),
+    ).resolves.toBe("claude");
+  });
+
+  it("still answers codex when the role is pinned to codex", async () => {
+    await expect(
+      withConfig({ backend: "claude-code", roleBackends: { "release-fixer": "codex" } }),
+    ).resolves.toBe("codex");
+  });
+
+  it("falls back to the GLOBAL backend when the role carries no override", async () => {
+    await expect(withConfig({ backend: "claude-code", roleBackends: {} })).resolves.toBe(
+      "claude",
+    );
+  });
+
+  // Failing OPEN is the contract: an unknown must never masquerade as a measured wall,
+  // so a backend with no account-pool provider yields undefined and the caller keeps its
+  // named default rather than withholding a dispatch.
+  it("returns undefined for a backend with no account-pool provider", async () => {
+    await expect(withConfig({ backend: "omp", roleBackends: {} })).resolves.toBeUndefined();
+  });
+
+  it("returns undefined rather than throwing when the config cannot be read", async () => {
+    vi.doMock("@papercusp/operator-core/lib/agent-config", () => ({
+      readAgentConfig: async () => {
+        throw new Error("config unreadable");
+      },
+    }));
+    try {
+      const mod = await import("./green-checkpoint");
+      await expect(mod.resolveReleaseFixerProvider()).resolves.toBeUndefined();
+    } finally {
+      vi.doUnmock("@papercusp/operator-core/lib/agent-config");
+      vi.resetModules();
+    }
   });
 });
 
