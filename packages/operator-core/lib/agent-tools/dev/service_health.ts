@@ -554,7 +554,16 @@ export default defineTool({
     argRedirects: {
       target: {
         tool: 'dev:restart',
-        args: { target: '<the service to restart>' },
+        // WI-2142574: this generated call is VALIDATED against dev:restart's own schema by
+        // assertProjectedToolGuidanceConformance(), and `target` there is a z.enum. A
+        // descriptive placeholder (`'<the service to restart>'`) reads fine to a human but
+        // can never validate, and the failure is not local: the conformance assert THROWS,
+        // _guidance-adapter's loadToolGuidancePages() catches and returns [], and all ~835
+        // tool-guidance pages vanish at once — which red-pins the green-checkpoint gate.
+        // Placeholders remain correct for FREE-FORM args (work_items:tag uses
+        // "<work-item-id>"); an enum arg must carry a real member. 'staging' matches this
+        // tool's own `when` clause and the papercusp-staging-api example in `note` below.
+        args: { target: 'staging' },
         note: 'dev:service_health probes a FIXED endpoint set and takes only `units` + `scope` — there is no `target` to aim it at. Restarting a named service is dev:restart { target }; to VERIFY that restart, call this tool with units:["papercusp-staging-api"], scope:"user" and read unitsUnknown before unitStates',
       },
     },
