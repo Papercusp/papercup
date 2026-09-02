@@ -636,6 +636,58 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
   });
 });
 
+// EI-22131227584499489: `focus`/`continueNote` are free text the CALLING owner
+// writes itself — verify the integrity caution is actually wired into the
+// injected first prompt (carry-brief.test.ts covers unverifiedFocusRefs /
+// renderFocusIntegrityWarning as pure functions; this covers the WIRING).
+describe('session:request-compaction — focus-integrity warning wired into the note (EI-22131227584499489)', () => {
+  // checkpoint is non-null so the P-016 flush-enforcement gate (above) does not
+  // itself refuse the cut before the focus-integrity branch ever runs.
+  const briefWithHeld = {
+    ownerId: 'su-caller',
+    loop: null,
+    heldItems: [{ id: 'WI-3319', title: null, body: null, harness: 'papercusp', checkpoint: 'in progress' }],
+    walls: [],
+    facts: [],
+    awaits: [],
+    fleet: null,
+  };
+
+  it('prepends a ⚠ FOCUS INTEGRITY caution to the injected note when focus names a WI/carry-hash the owner does not hold', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    buildCarryBrief.mockResolvedValue(briefWithHeld);
+    await call({
+      focus: "Resume the gate-red repair. Read the loop carry-note (e5729a1f033a) and WI-2140920's checkpoint.",
+    });
+    const msg = injected();
+    expect(msg.data).toContain('⚠ FOCUS INTEGRITY');
+    expect(msg.data).toContain('WI-2140920');
+    expect(msg.data).toContain('carry-note e5729a1f033a');
+  });
+
+  it("stays SILENT when focus only names the owner's own held item (no false positive)", async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    buildCarryBrief.mockResolvedValue(briefWithHeld);
+    await call({ focus: 'resume WI-3319' });
+    const msg = injected();
+    expect(msg.data).not.toContain('FOCUS INTEGRITY');
+  });
+
+  it('is not evaluated when an OPEN OWNER MESSAGE supplies firstPrompt directly (the free-text branch never runs)', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    buildCarryBrief.mockResolvedValue(briefWithHeld);
+    buildOwnerRespawnLaunchSpec.mockResolvedValue({
+      ...closedSpec,
+      firstPrompt: 'resume WI-9999999 per the owner’s own words',
+      openOwnerQuestion: { crossesOpenOwnerMessage: true },
+    });
+    const b = body(await call({ focus: 'irrelevant' }));
+    const msg = injected();
+    expect(msg.data).not.toContain('FOCUS INTEGRITY');
+    expect(b.firstPromptSource).toBe('open-owner-message');
+  });
+});
+
 /**
  * EI-18676518990229124: a successful carry-respawn must mark the owner
  * "respawn expected" so activity:report's SessionEnd/Stop P-002 fast path

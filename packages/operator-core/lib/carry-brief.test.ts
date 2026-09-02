@@ -28,6 +28,8 @@ import {
   renderCitedRefLivenessSections,
   annotateCarryNoteLiveContradictions,
   detectRetractionShapedLines,
+  unverifiedFocusRefs,
+  renderFocusIntegrityWarning,
   CARRY_BRIEF_FOCUS_MAX,
   CARRY_BRIEF_MAX_FACTS,
   CARRY_BRIEF_MAX_AWAITS,
@@ -38,6 +40,7 @@ import {
   type CarryBriefDeferredItem,
   type BuildCarryBriefOpts,
 } from './carry-brief';
+import { shortCarryHash } from './carry-note';
 
 /** Minimal tagged-template `sql` stub returning fixed `engineer_issues` rows. */
 function fakeIssuesSql(rows: Array<{ issue_id: string; title: string | null; body: string | null; scope: string }>) {
@@ -599,6 +602,77 @@ describe('renderCarryBriefFocus — the /compact focus line', () => {
     expect(focus.endsWith('…')).toBe(true);
     // Held-item ids outrank facts under truncation (ordered most-load-bearing first).
     expect(focus).toContain('WI-9000');
+  });
+});
+
+describe('unverifiedFocusRefs / renderFocusIntegrityWarning (EI-22131227584499489)', () => {
+  const ownNoteText = '## Did\nlanded the thing\n\n## Next action\nship P-004';
+  const ownHash = shortCarryHash(ownNoteText);
+
+  const brief: CarryBrief = {
+    ownerId: 'su-abc',
+    loop: {
+      harness: 'papercusp',
+      active: true,
+      intervalSec: 120,
+      carry: 'cold',
+      goal: null,
+      carryNote: ownNoteText,
+      carryNoteUpdatedAtMs: Date.now(),
+    },
+    heldItems: [{ id: 'WI-3319', title: null, body: null, harness: 'papercusp', checkpoint: null }],
+    directives: [],
+    directivesTotalOpen: 0,
+    walls: [],
+    facts: [],
+    awaits: [],
+    fleet: null,
+  };
+
+  it('flags a WI id and a carry-note hash that are NOT the owner\'s own', () => {
+    // The exact shape observed in EI-22131227584499489: a judge-role successor's
+    // focus named another live owner's held item + loop carry-note short-hash.
+    const text =
+      "Resume the gate-red repair. Read the loop carry-note (e5729a1f033a) and " +
+      "WI-2140920's checkpoint before acting.";
+    const refs = unverifiedFocusRefs(text, brief);
+    expect(refs.workItemIds).toEqual(['WI-2140920']);
+    expect(refs.carryHashes).toEqual(['e5729a1f033a']);
+
+    const warning = renderFocusIntegrityWarning(refs);
+    expect(warning).toContain('⚠ FOCUS INTEGRITY');
+    expect(warning).toContain('WI-2140920');
+    expect(warning).toContain('carry-note e5729a1f033a');
+  });
+
+  it('does NOT flag the owner\'s own held item id or its own loop carry-note hash (no false positive)', () => {
+    const text = `resume WI-3319 — carry-note (${ownHash}) still applies`;
+    const refs = unverifiedFocusRefs(text, brief);
+    expect(refs).toEqual({ workItemIds: [], carryHashes: [] });
+    expect(renderFocusIntegrityWarning(refs)).toBe('');
+  });
+
+  it('a text with no ids/hashes at all yields no findings and an empty warning', () => {
+    const refs = unverifiedFocusRefs('just keep going, nothing to resume', brief);
+    expect(refs).toEqual({ workItemIds: [], carryHashes: [] });
+    expect(renderFocusIntegrityWarning(refs)).toBe('');
+  });
+
+  it('a null brief flags everything found (no owner state to corroborate against)', () => {
+    const refs = unverifiedFocusRefs('resume WI-2140920, carry-note (e5729a1f033a)', null);
+    expect(refs.workItemIds).toEqual(['WI-2140920']);
+    expect(refs.carryHashes).toEqual(['e5729a1f033a']);
+  });
+
+  it("renderCarryBriefFocus's own system-derived output never trips the detector", async () => {
+    // The system-derived default focus only ever names ids drawn FROM the brief
+    // and never prints a hash literal — it must never false-positive here, or
+    // every ordinary /compact focus would carry a spurious integrity caution.
+    const fullBrief = await buildCarryBrief('su-abc', fullOpts());
+    const focus = renderCarryBriefFocus(fullBrief);
+    const refs = unverifiedFocusRefs(focus, fullBrief);
+    expect(refs).toEqual({ workItemIds: [], carryHashes: [] });
+    expect(renderFocusIntegrityWarning(refs)).toBe('');
   });
 });
 
