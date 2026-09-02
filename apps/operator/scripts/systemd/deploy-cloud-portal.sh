@@ -334,8 +334,7 @@ require_fresh_current_release() {
     log "WARNING: current release looks STALE ($reason) — proceeding: PAPERCUSP_CLOUD_PORTAL_ALLOW_STALE_RELEASE=1"
     return 0
   fi
-  die "portal current release looks STALE: $reason." \
-    " Rebuild and republish from \$PORTAL_ROOT, or set PAPERCUSP_CLOUD_PORTAL_ALLOW_STALE_RELEASE=1 to deploy anyway (e.g. a deliberate rollback)."
+  die "portal current release looks STALE: $reason. Rebuild and republish from $PORTAL_ROOT, or set PAPERCUSP_CLOUD_PORTAL_ALLOW_STALE_RELEASE=1 to deploy anyway (e.g. a deliberate rollback)."
 }
 
 managed_unit_runs_current_artifact() {
@@ -443,6 +442,7 @@ handoff() {
   # `current` names at this instant. Inspection modes stay usable on a foreign
   # current; only the cutover refuses.
   require_production_current_release
+  require_fresh_current_release
 
   install_unit
   reload_and_enable

@@ -86,6 +86,50 @@ function envFor(files: Fixture): NodeJS.ProcessEnv {
   };
 }
 
+function gitCommitAll(portalRoot: string, message: string) {
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "test",
+    GIT_AUTHOR_EMAIL: "test@example.com",
+    GIT_COMMITTER_NAME: "test",
+    GIT_COMMITTER_EMAIL: "test@example.com",
+  };
+  spawnSync("git", ["init", "-q"], { cwd: portalRoot, env });
+  spawnSync("git", ["add", "-A"], { cwd: portalRoot, env });
+  spawnSync("git", ["commit", "-q", "-m", message, "--allow-empty"], { cwd: portalRoot, env });
+}
+
+function writeReleaseManifest(runtimeRoot: string, publishedAt: string) {
+  writeFileSync(
+    join(runtimeRoot, "current", ".papercusp-release.json"),
+    JSON.stringify(
+      { schemaVersion: 2, buildId: "build-one", release: "build-one", sourceRoot: "/x", publishedAt },
+      null,
+      2,
+    ) + "\n",
+  );
+}
+
+function staleTestSystemctl(files: Fixture): string {
+  const systemctl = join(files.binDir, "systemctl");
+  writeFileSync(
+    systemctl,
+    `#!/usr/bin/env bash
+set -eu
+shift
+case "$1" in
+  daemon-reload|enable|stop|reset-failed|start) exit 0 ;;
+  restart) printf '%s\\0%s\\0' node '${files.portalRoot}/scripts/start-web.mjs' > '${files.procRoot}/4242/cmdline'; exit 0 ;;
+  is-active) exit 0 ;;
+  show) printf '4242\n'; exit 0 ;;
+  *) exit 1 ;;
+esac
+`,
+  );
+  chmodSync(systemctl, 0o755);
+  return systemctl;
+}
+
 function run(files: Fixture, args: string[], extraEnv: NodeJS.ProcessEnv = {}) {
   return spawnSync("bash", [SCRIPT, ...args], {
     encoding: "utf8",
@@ -240,6 +284,87 @@ esac
       expect(result.stdout).toContain("running a stale command; restarting onto the standalone artifact");
       expect(result.stdout).toContain("runs the standalone production artifact and passed health check");
       expect(readFileSync(files.logPath, "utf8")).toContain("--user restart papercusp-cloud-portal.service\n");
+    } finally {
+      rmSync(files.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses handoff onto a stale current release when the checkout has moved on (WI-2141210)", () => {
+    const files = fixture();
+    try {
+      gitCommitAll(files.portalRoot, "initial");
+      writeReleaseManifest(files.runtimeRoot, "2000-01-01T00:00:00.000Z");
+      const result = run(files, ["--handoff"]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("portal current release looks STALE");
+      expect(result.stderr).toContain("commit newer than the release");
+      expect(result.stderr).toContain("PAPERCUSP_CLOUD_PORTAL_ALLOW_STALE_RELEASE=1");
+    } finally {
+      rmSync(files.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses handoff when the checkout has uncommitted changes, even with a future-dated release", () => {
+    const files = fixture();
+    try {
+      gitCommitAll(files.portalRoot, "initial");
+      writeReleaseManifest(files.runtimeRoot, "2099-01-01T00:00:00.000Z");
+      writeFileSync(join(files.portalRoot, "package.json"), '{"name":"portal-fixture","dirty":true}\n');
+      const result = run(files, ["--handoff"]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("portal current release looks STALE");
+      expect(result.stderr).toContain("uncommitted changes");
+    } finally {
+      rmSync(files.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("deploys cleanly when the release postdates the checkout's last commit", () => {
+    const files = fixture();
+    const systemctl = staleTestSystemctl(files);
+    try {
+      gitCommitAll(files.portalRoot, "initial");
+      writeReleaseManifest(files.runtimeRoot, "2099-01-01T00:00:00.000Z");
+      const result = run(files, ["--handoff"], {
+        PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL: systemctl,
+        PAPERCUSP_CLOUD_PORTAL_CURL: "/bin/true",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).not.toContain("STALE");
+    } finally {
+      rmSync(files.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("deploys a stale current release when explicitly overridden (deliberate rollback)", () => {
+    const files = fixture();
+    const systemctl = staleTestSystemctl(files);
+    try {
+      gitCommitAll(files.portalRoot, "initial");
+      writeReleaseManifest(files.runtimeRoot, "2000-01-01T00:00:00.000Z");
+      const result = run(files, ["--handoff"], {
+        PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL: systemctl,
+        PAPERCUSP_CLOUD_PORTAL_CURL: "/bin/true",
+        PAPERCUSP_CLOUD_PORTAL_ALLOW_STALE_RELEASE: "1",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("WARNING: current release looks STALE");
+    } finally {
+      rmSync(files.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not check staleness when the checkout is not a git repository (skip, not refuse)", () => {
+    const files = fixture();
+    const systemctl = staleTestSystemctl(files);
+    try {
+      writeReleaseManifest(files.runtimeRoot, "2000-01-01T00:00:00.000Z");
+      const result = run(files, ["--handoff"], {
+        PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL: systemctl,
+        PAPERCUSP_CLOUD_PORTAL_CURL: "/bin/true",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).not.toContain("STALE");
     } finally {
       rmSync(files.dir, { recursive: true, force: true });
     }
