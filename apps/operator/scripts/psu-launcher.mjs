@@ -12116,6 +12116,14 @@ async function roleFlow(args, role, rolesMeta) {
         : {}),
       PAPERCUSP_AGENT_SESSION: "1",
       ...(roleModel ? { PAPERCUSP_MODEL: roleModel } : {}),
+      // WI-2140943 lane 2 (2026-09-02): role sessions owe the SAME trio as launchFreshSu.
+      // This was the last uncovered spawn path — buildResumeEnv, trackedForkEnvelopeEnv and
+      // launchFreshSu all stamp it, and runWrapper's healContextTrimmingEnv only fires on the
+      // hostHandoff branch, so a role session got none of it. A role session is how a system
+      // routine launches an agent (`--launched-by=system:…`), and without ENABLE_TOOL_SEARCH
+      // claude inlines every advertised schema on a gateway-routed launch: measured 753,066
+      // boot tokens on the consult-expiry-sweep session (su-a961ddec) vs 94–150k fleet-wide.
+      ...contextTrimmingEnv(res.agent),
       // P-022: native auto-compact is retired — every Claude launch runs with
       // DISABLE_AUTO_COMPACT; the carry-respawn ladder owns the boundary.
       ...nativeCompactionEnv(res.agent),
