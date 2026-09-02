@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { BulkRunRow } from '../attention/bulk-run-store';
+import type { BulkAutomationPolicy } from '../attention/bulk-dispositions';
 import { DEFAULT_ENLIST_PLAN_LIMIT, type CleanupFinding } from './scanner';
 import type { CleanupRunFindingRow } from './run-store';
 import { runDeterministicPlanCleanup } from './deterministic-runner';
 
-function run(seedRefs: string[] = ['plan-a']): BulkRunRow {
+function run(seedRefs: string[] = ['plan-a'], automationPolicy?: BulkAutomationPolicy): BulkRunRow {
   return {
     runId: 'run-1',
     workspaceId: 'workspace-1',
@@ -16,6 +17,7 @@ function run(seedRefs: string[] = ['plan-a']): BulkRunRow {
     seedRefs,
     filterSnapshot: {},
     launchSnapshot: {},
+    automationPolicy,
     totalItems: 1,
     autoResolved: 0,
     recommended: 0,
@@ -237,5 +239,56 @@ describe('runDeterministicPlanCleanup', () => {
       authorityRefusal: { reason: 'run_authority_revoked', phase: 'review' },
     });
     expect(settle).not.toHaveBeenCalled();
+  });
+
+  it('withholds a provable finding from auto-apply under a review-all/L0 standing policy and routes it to the resolver (WI-2141525)', async () => {
+    const rows: CleanupRunFindingRow[] = [];
+    const store = storeHarness(rows);
+    const provable = finding('flip-to-done', true);
+    const dispatch = vi.fn(async () => ({ ok: true }));
+    const settle = vi.fn();
+
+    const result = await runDeterministicPlanCleanup({
+      run: run(['plan-a'], { mode: 'review-all', level: 'L0', minConfidence: 'high' }),
+      call: vi.fn(),
+      deps: {
+        scanRun: vi.fn(async () => [provable]),
+        ...store,
+        dispatch,
+        settle,
+        notify: vi.fn(async () => undefined),
+      } as never,
+    });
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ needsResolver: true, applied: 0, failed: 0 });
+    expect(result.recommendationFindingIds).toEqual([provable.findingId]);
+    expect(result.appliedFindingIds).toEqual([]);
+    expect(rows[0]?.outcome).toBe('pending');
+    expect(settle).not.toHaveBeenCalled();
+  });
+
+  it('still auto-applies a provable finding when the standing policy permits automation', async () => {
+    const rows: CleanupRunFindingRow[] = [];
+    const store = storeHarness(rows);
+    const provable = finding('flip-to-done', true);
+    const dispatch = vi.fn(async () => ({ ok: true }));
+    const settle = vi.fn(async () => ({ ...run(), phase: 'complete' as const }));
+
+    const result = await runDeterministicPlanCleanup({
+      run: run(['plan-a'], { mode: 'safe-high', level: 'L1', minConfidence: 'high' }),
+      call: vi.fn(),
+      deps: {
+        scanRun: vi.fn(async () => [provable]),
+        ...store,
+        dispatch,
+        settle,
+        notify: vi.fn(async () => undefined),
+      } as never,
+    });
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ needsResolver: false, phase: 'complete', applied: 1, failed: 0 });
+    expect(result.appliedFindingIds).toEqual([provable.findingId]);
   });
 });
