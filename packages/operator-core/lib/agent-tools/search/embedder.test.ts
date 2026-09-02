@@ -391,7 +391,7 @@ describe('buildQueryEmbedder — skipAcquisitionWhenCold (WI-3923)', () => {
   it('not in cooldown → opt-in has no effect; normal cascade still resolves an embedder', async () => {
     vi.mocked(isLocalEmbedAcquisitionCheap).mockReturnValue(false); // cold, but irrelevant here
     vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
-    vi.mocked(loadVoicePrefs).mockResolvedValue({ memoryEmbedderMode: 'openai' } as never);
+    mockResolvedTyped(vi.mocked(loadVoicePrefs), { ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'openai' });
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ data: [{ embedding: [0.9] }] }) })),
@@ -404,7 +404,7 @@ describe('buildQueryEmbedder — skipAcquisitionWhenCold (WI-3923)', () => {
     markOpenAiEmbedFailure();
     vi.mocked(isLocalEmbedAcquisitionCheap).mockReturnValue(true);
     vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
-    vi.mocked(loadVoicePrefs).mockResolvedValue({ memoryEmbedderMode: 'openai' } as never);
+    mockResolvedTyped(vi.mocked(loadVoicePrefs), { ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'openai' });
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ data: [{ embedding: [0.7] }] }) })),
@@ -417,7 +417,7 @@ describe('buildQueryEmbedder — skipAcquisitionWhenCold (WI-3923)', () => {
     markOpenAiEmbedFailure();
     vi.mocked(isLocalEmbedAcquisitionCheap).mockReturnValue(false);
     vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
-    vi.mocked(loadVoicePrefs).mockResolvedValue({ memoryEmbedderMode: 'openai' } as never);
+    mockResolvedTyped(vi.mocked(loadVoicePrefs), { ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'openai' });
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ data: [{ embedding: [0.3] }] }) })),
