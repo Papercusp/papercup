@@ -184,9 +184,27 @@ describe('no module in the perf peer-child import graph calls @papercusp/db-org 
       `export function later(): OrgPg {`,
       `  return getOrgPg();`,
       `}`,
+      ``,
+      // The real shape that produced this guard's first false positive
+      // (p2p/foreign-workspaces.ts:268): a default parameter, evaluated per CALL.
+      `export async function listLiveForeignRoots(sql: OrgSql = getOrgPg().sql) {`,
+      `  return sql;`,
+      `}`,
+      ``,
+      // Same deferral, arrow form.
+      `export const lazily = (sql = getOrgPg().sql) => sql;`,
     ].join('\n');
     expect(dbOrgValueNames(safe)).toEqual(['getOrgPg']);
     expect(topLevelCalls(safe, dbOrgValueNames(safe))).toEqual([]);
+
+    // ...but the EAGER assignment form is still caught — the exclusions above must not have
+    // widened into "anything with an `=` is fine".
+    const eager = [
+      `import { getOrgPg } from '@papercusp/db-org';`,
+      ``,
+      `export const pool = getOrgPg();`,
+    ].join('\n');
+    expect(topLevelCalls(eager, dbOrgValueNames(eager))).toEqual([{ name: 'getOrgPg', line: 3 }]);
   });
 
   it('walks the real child graph deeply enough to be able to fail (scope calibration)', () => {
