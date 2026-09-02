@@ -17,17 +17,28 @@
  * it, and `child-driver.test.ts` failed for days as an opaque 30s timeout on the
  * green-checkpoint gate.
  *
- * So the export list is a SECOND COPY of a truth the workspace sources own, and it
- * WILL drift — it already did, twice. `no-pg-stub-covers-db-org-imports.test.ts` DERIVES
- * the required set by scanning every `from '@papercusp/db-org'` named import across EVERY
- * npm workspace (the set is read from the root package.json, not curated here) and fails
- * if any name is missing. Add names by making that guard pass, never by hand alone.
+ * So the export list is a SECOND COPY of a truth the sources own, and it WILL drift — it
+ * already did, twice. `no-pg-stub-covers-db-org-imports.test.ts` DERIVES the required set
+ * and fails if any name is missing. Add names by making that guard pass, never by hand.
  *
- * The second break (2026-09-02, WI-2141194 #9) is why the scan is workspace-wide:
- * `packages/agent-mcp/src/auth.ts` gained `getOrgPgListener` on 2026-08-28. The child's
- * graph reaches agent-mcp through operator-core (~1,500 imports), but the guard scanned
- * only `packages/operator-core/lib/`, so it stayed green while every peer-child died at
- * link time for five days.
+ * ⚠ ITS SCOPE, STATED EXACTLY — an earlier revision of this paragraph claimed the guard
+ * reads "every npm workspace ... from the root package.json". It does not, and believing
+ * that is worse than knowing the real bound. `PACKAGES_ROOT` is a hardcoded relative path
+ * that resolves to `packages/`, and the walk covers every `.ts`/`.mts` beneath it
+ * (skipping node_modules, dist and dotfiles). Nothing reads the root package.json.
+ * So `libs/`, `apps/` and `scripts/` are NOT scanned: a db-org import added there is
+ * invisible to this guard, and the peer-child would die at link time with the guard green.
+ *
+ * The second break (2026-09-02, WI-2141194 #9) is what widened the walk from
+ * `packages/operator-core/lib/` to all of `packages/`: `packages/agent-mcp/src/auth.ts`
+ * gained `getOrgPgListener` on 2026-08-28. The child's graph reaches agent-mcp through
+ * operator-core (~1,500 imports), so every peer-child died at link time for five days
+ * while the guard, looking only at operator-core, stayed green.
+ *
+ * ⚠ AND THE STAGE THIS GUARD CANNOT SEE AT ALL: it checks WHICH NAMES EXIST, never WHEN
+ * they are called. A name that is present and throwing, but invoked while a module is
+ * being EVALUATED, kills the child just as dead — same opaque 30s symptom, different
+ * cause. That is the third break (also WI-2141194 #9); see the inert bindings below.
  */
 
 const REASON =
@@ -109,6 +120,7 @@ export const listUnconsumedEvents = stub('listUnconsumedEvents');
 export const longLivedPoolConnectionOptions = stub('longLivedPoolConnectionOptions');
 export const normalizeNextFireAt = stub('normalizeNextFireAt');
 export const ObservedStoreIdentity = stub('ObservedStoreIdentity');
+export const OrgPg = stub('OrgPg');
 export const orgPg = stub('orgPg');
 export const parseStoreIdentity = stub('parseStoreIdentity');
 export const PG_BIGINT_AS_NUMBER_TYPES = stub('PG_BIGINT_AS_NUMBER_TYPES');
