@@ -17,11 +17,17 @@
  * it, and `child-driver.test.ts` failed for days as an opaque 30s timeout on the
  * green-checkpoint gate.
  *
- * So the export list is a SECOND COPY of a truth the operator-core sources own, and it
- * WILL drift — it already did. `no-pg-stub-covers-db-org-imports.test.ts` DERIVES the
- * required set by scanning every `from '@papercusp/db-org'` named import under
- * `packages/operator-core/lib/` and fails if any name is missing here. Add names by
- * making that guard pass, never by hand alone.
+ * So the export list is a SECOND COPY of a truth the workspace sources own, and it
+ * WILL drift — it already did, twice. `no-pg-stub-covers-db-org-imports.test.ts` DERIVES
+ * the required set by scanning every `from '@papercusp/db-org'` named import across EVERY
+ * npm workspace (the set is read from the root package.json, not curated here) and fails
+ * if any name is missing. Add names by making that guard pass, never by hand alone.
+ *
+ * The second break (2026-09-02, WI-2141194 #9) is why the scan is workspace-wide:
+ * `packages/agent-mcp/src/auth.ts` gained `getOrgPgListener` on 2026-08-28. The child's
+ * graph reaches agent-mcp through operator-core (~1,500 imports), but the guard scanned
+ * only `packages/operator-core/lib/`, so it stayed green while every peer-child died at
+ * link time for five days.
  */
 
 const REASON =
@@ -51,7 +57,7 @@ const stub = (name) => {
   return fn;
 };
 
-// ── Names imported from '@papercusp/db-org' anywhere under packages/operator-core/lib.
+// ── Names imported from '@papercusp/db-org' anywhere in any npm workspace of this repo.
 // Type-only names are included deliberately: tsx erases them, so an extra binding is
 // inert, while a MISSING one is a hard link error. Guarded by
 // no-pg-stub-covers-db-org-imports.test.ts — do not prune by hand.
@@ -61,6 +67,7 @@ export const buildConnectionOptions = stub('buildConnectionOptions');
 export const consumeEvents = stub('consumeEvents');
 export const createDedicatedOrgPg = stub('createDedicatedOrgPg');
 export const createGoal = stub('createGoal');
+export const createInsertSchema = stub('createInsertSchema');
 export const DbCallDeadlineError = stub('DbCallDeadlineError');
 export const DEFAULT_DB_CALL_DEADLINE_MS = stub('DEFAULT_DB_CALL_DEADLINE_MS');
 export const DEFAULT_TX_ACQUIRE_DEADLINE_MS = stub('DEFAULT_TX_ACQUIRE_DEADLINE_MS');
@@ -68,21 +75,32 @@ export const deleteRoutine = stub('deleteRoutine');
 export const describeStoreIdentityMismatch = stub('describeStoreIdentityMismatch');
 export const dSql = stub('dSql');
 export const endStalePool = stub('endStalePool');
+export const explainOnConflictSkew = stub('explainOnConflictSkew');
 export const fireRoutine = stub('fireRoutine');
 export const formatLineageForPrompt = stub('formatLineageForPrompt');
-export const generated = stub('generated');
+// Inert for the same reason as `schemaOf` (see its note): `generated` is the drizzle TABLE
+// METADATA registry — plain schema descriptors, no connection and no query. Tool modules read
+// it at module top level (`const projects = generated.projectsInHarnessShared`) purely to hand
+// the descriptor to `schemaOf`, so any defined value is enough to let evaluation finish.
+export const generated = new Proxy(
+  {},
+  { get: (_t, prop) => (prop === 'then' ? undefined : {}) },
+);
 export const getFeatureLineage = stub('getFeatureLineage');
 export const getHarnessPg = stub('getHarnessPg');
 export const getLegacyClient = stub('getLegacyClient');
 export const getOrgPg = stub('getOrgPg');
+export const getOrgPgListener = stub('getOrgPgListener');
 export const getOrgPgLosslessBigint = stub('getOrgPgLosslessBigint');
 export const GOAL_SPEND_SNAPSHOT_SOURCE = stub('GOAL_SPEND_SNAPSHOT_SOURCE');
 export const GOAL_SPEND_TICK_SOURCE = stub('GOAL_SPEND_TICK_SOURCE');
 export const goalSpend = stub('goalSpend');
 export const GoalSpend = stub('GoalSpend');
+export const goalsForPot = stub('goalsForPot');
 export const harnessQuery = stub('harnessQuery');
 export const HOSTED_SERVICE_ROLE = stub('HOSTED_SERVICE_ROLE');
 export const isParkedNextFire = stub('isParkedNextFire');
+export const linkPot = stub('linkPot');
 export const listActiveEphemeralRoutines = stub('listActiveEphemeralRoutines');
 export const listDueCronRoutines = stub('listDueCronRoutines');
 export const listGoals = stub('listGoals');
@@ -99,17 +117,47 @@ export const pinOrVerifyStoreIdentity = stub('pinOrVerifyStoreIdentity');
 export const poolIdleTimeoutSec = stub('poolIdleTimeoutSec');
 export const potsForGoal = stub('potsForGoal');
 export const recordEphemeralFire = stub('recordEphemeralFire');
+export const restoreRawJsonbSerializer = stub('restoreRawJsonbSerializer');
 export const retryOnRetryableDbDeadline = stub('retryOnRetryableDbDeadline');
 export const RoutineRow = stub('RoutineRow');
-export const schemaOf = stub('schemaOf');
+// Inert for the same reason as `setAdminPoolStatementTimeoutProvider` below — see that note
+// for the full rule. `schemaOf(table)` derives three zod shapes FROM drizzle table metadata
+// (libs/db/src/schema/zod.ts); it opens nothing and queries nothing. It is evaluated at MODULE
+// TOP LEVEL by agent-mcp tool modules the child's graph drags in — e.g.
+// `packages/agent-mcp/src/tools/harness/get.ts:19`, `const ProjectSelect = schemaOf(projects).select`
+// — so a throwing binding kills the child mid-evaluation instead of at a Postgres call.
+// The derived shapes are consumed by `z.infer<...>`, which tsx erases, so undefined is inert.
+export const schemaOf = () => ({ insert: undefined, select: undefined, update: undefined });
 export const SerializableRetryOptions = stub('SerializableRetryOptions');
-export const setAdminPoolStatementTimeoutProvider = stub('setAdminPoolStatementTimeoutProvider');
+// THE ONE DELIBERATE NO-OP, and the reason it is not "softening the stub" (WI-2141194 #9).
+//
+// Every other binding here throws when CALLED, which works because every other binding is
+// called from a code PATH — the child can boot, and only a peer that actually reaches
+// Postgres dies. This one is different: `agent-tools/locks/configure.ts` calls it at MODULE
+// TOP LEVEL, and every operator-side locks shim imports that module for its side effect, so
+// it runs while the child's graph is still being EVALUATED. A throwing binding there kills
+// the child before it can emit a single event — which defeats this file's own stated goal
+// ("satisfy the LINKER so the child boots far enough to report a real error") and surfaces
+// as exactly the opaque 30s `expected null to match { evt: 'ready' }` timeout the docstring
+// above describes. It is the same failure as a missing export, one stage later.
+//
+// Making it inert is sound rather than merely convenient: it REGISTERS a statement-timeout
+// provider on the db-org connection factory. It opens nothing, queries nothing, and in this
+// child the factory it would configure IS this stub — there is no org pool to construct, so
+// there is no timeout to apply and no Postgres access to hide. Every binding that could
+// actually reach a database still throws, so a perf run that touches PG still cannot be
+// misread as a measurement.
+//
+// Keep this list to registration setters that are provably side-effect-free. Anything that
+// opens, queries, listens or transacts stays a throwing `stub(...)`.
+export const setAdminPoolStatementTimeoutProvider = () => {};
 export const setRoutineActive = stub('setRoutineActive');
 export const setRoutinesPerWorkspaceConflict = stub('setRoutinesPerWorkspaceConflict');
 export const slugToSchemaName = stub('slugToSchemaName');
 export const STORE_IDENTITY_SQL = stub('STORE_IDENTITY_SQL');
 export const storeIdentityViolation = stub('storeIdentityViolation');
 export const typedSql = stub('typedSql');
+export const unlinkPot = stub('unlinkPot');
 export const upsertRoutine = stub('upsertRoutine');
 export const VerifiedTenantServerContext = stub('VerifiedTenantServerContext');
 export const withAcquisitionDeadline = stub('withAcquisitionDeadline');
