@@ -2342,6 +2342,109 @@ describe('reconcileLoopRoutines — gate-backoff re-arm for a parked loop (WI-36
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WI-2141029 (EI-22123519641932348) — the gate-backoff leg must NOT fire on a DISPATCHED turn.
+//
+// The defect these pin: the WI-36792 leg above rescues a claim the gate REFUSED. But a fire
+// the gate ALLOWED looks identical for its first ~30s (no completion signal, presence not yet
+// bumped, circuit still open from the prior streak), and re-arming it UN-PARKS the row — so
+// when the turn settles the next tick takes the armed-loop `continue` and recordFire('ok')
+// never runs. The streak never decays; a 60s loop fires hourly forever. Measured 2026-09-02
+// on loop-su-a7410503: fire 04:41:33Z → 'gate-backoff' re-arm 04:42:04Z (to 05:41Z) → settle
+// 04:45:08Z → consecutive_errors still 10, for ~4h across four fires.
+//
+// The discriminator is the dispatch clock the production SELECT already carries: loop-fire's
+// recordFire('attempt') advances autoloop_state.last_fired_at to ≥ the claim's
+// routines.last_fired_at; a withhold writes only last_withheld_at. The CONTROL case drives the
+// identical row with the fired clock OLDER than the claim and must still take the WI-36792
+// rescue — proving the branch reads the clock's VALUE, not merely the columns' presence.
+describe('reconcileLoopRoutines — gate-backoff leg leaves a DISPATCHED in-flight turn parked (WI-2141029)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  /** Parked at the claim (T0); the fire went THROUGH 2s later (dispatch clock ≥ claim, wake
+   *  sent); the turn has produced nothing observable yet — the first ~30s of a real turn. */
+  const dispatchedRow = (over: Record<string, unknown> = {}) => ({
+    id: 'rt-dispatched',
+    target_owner_id: 'su-dispatched',
+    interval_sec: 60,
+    parked: true,
+    install_slug: 'papercusp',
+    name: 'loop-su-dispatched',
+    routine_workspace_id: 'ws-papercusp',
+    last_fired_at: pgString(T0),
+    lifecycle_completed_at: null,
+    presence_last_active_at: null,
+    fire_state_last_fired_at: pgString(T0 + 2_000),
+    fire_state_last_withheld_at: null,
+    last_wake_at: pgString(T0 + 2_000),
+    ...over,
+  });
+
+  /** The incident's fire-state: streak 10 (circuit OPEN, ≥ threshold 8) with the backoff clock
+   *  just advanced by the dispatch — exactly what made the gate read 'backoff' again 30s later. */
+  const OPEN_CIRCUIT_JUST_FIRED = vi.fn(async () => ({ lastFiredAt: new Date(T0 + 2_000), consecutiveErrors: 10 }));
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('does NOT re-arm via gate-backoff 26s into a dispatched turn — leaves it parked and records nothing', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql([dispatchedRow()], updates),
+      nowMs: T0 + 26_000,
+      recordFire,
+      readFireState: OPEN_CIRCUIT_JUST_FIRED,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(0);
+    expect(res.loops.find((l) => l.via === 'gate-backoff')).toBeUndefined();
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it("then the settle records 'ok' — the streak decays precisely because the row stayed parked to observe it", async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql([dispatchedRow({ lifecycle_completed_at: pgString(T0 + 200_000) })], updates),
+      nowMs: T0 + 210_000,
+      recordFire,
+      readFireState: OPEN_CIRCUIT_JUST_FIRED,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('lifecycle');
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-dispatched', 'loop-lifecycle', 'ok');
+  });
+
+  it('CONTROL — the same row with the fired clock OLDER than the claim (a WITHHELD claim) still takes the WI-36792 rescue', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          dispatchedRow({
+            // A withhold advances ONLY last_withheld_at; the fired clock and the wake stay older.
+            fire_state_last_fired_at: pgString(T0 - 9_000),
+            fire_state_last_withheld_at: pgString(T0 + 2_000),
+            last_wake_at: pgString(T0 - 9_000),
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 26_000,
+      recordFire,
+      readFireState: vi.fn(async () => ({ lastFiredAt: new Date(T0 - 9_000), consecutiveErrors: 10 })),
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('gate-backoff');
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+});
+
 /**
  * P-004 (anti-babysitting-monitor-enforcement-2026-08-25) — the MONITOR settlement branch.
  *

@@ -1608,6 +1608,27 @@ export async function reconcileLoopRoutines(
           // and `priorState` (a full FireState) is already read at the top of this path, so
           // this adds no query and no new failure surface. Guarded on `row.parked` so a
           // cron+loop with a live schedule is never pulled sooner by this leg.
+          //
+          // WI-2141029 (EI-22123519641932348): this leg rescues a claim the gate REFUSED. A fire
+          // the gate ALLOWED reaches the very same shape for its first ~30s — no completion
+          // signal yet, presence not bumped since the claim, circuit still open from the prior
+          // streak — and re-arming it here UN-PARKS the row, so when the turn settles the next
+          // tick takes the `!row.parked` armed-loop `continue` above and recordFire('ok') never
+          // runs: consecutive_errors never decays, and every later fire repeats the hourly
+          // re-arm. Measured 2026-09-02 on a 60s loop: fire 04:41:33Z → 'gate-backoff' re-arm
+          // at 04:42:04Z (to 05:41Z) → turn settled 04:45:08Z → streak stayed 10, for ~4h across
+          // four fires; an explicit loop:arm could not break it (its first fire was withheld too).
+          // The two cases are told apart by the dispatch clock the SELECT already carries:
+          // loop-fire's recordFire('attempt') advances autoloop_state.last_fired_at to ≥ the
+          // claim's routines.last_fired_at, while a withhold writes only last_withheld_at and
+          // leaves it older. Absent clock columns (legacy/unit seams) fail open to the WI-36792
+          // behaviour. A dispatched turn that never settles is still caught by the
+          // stuck-backstop once the dwell elapses — this only defers, never hides.
+          const dispatchedFireInFlight =
+            hasDispatchClockEvidence && fireStateLastFiredMs != null && fireStateLastFiredMs >= lastFiredMs;
+          if (dispatchedFireInFlight) {
+            continue; // a turn is running — stay parked so its settle records 'ok' and decays the streak
+          }
           const gate = evaluateFireGate(priorState, new Date(nowMs));
           if (!row.parked || gate.allow || !gate.retryAfterSec || gate.retryAfterSec <= 0) {
             continue;
