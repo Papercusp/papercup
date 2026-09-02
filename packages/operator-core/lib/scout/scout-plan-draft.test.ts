@@ -50,9 +50,22 @@ describe('buildScoutPlanTemplate', () => {
 });
 
 describe('createScoutPlanDraft', () => {
-  function fakeLock(over: { current?: string | null; busy?: boolean } = {}): { deps: ScoutPlanDraftDeps; captured: { body: string | null; revisionCalls: unknown[] } } {
-    const captured = { body: null as string | null, revisionCalls: [] as unknown[] };
+  function fakeLock(over: { current?: string | null; busy?: boolean; stampThrows?: boolean } = {}): {
+    deps: ScoutPlanDraftDeps;
+    captured: { body: string | null; revisionCalls: unknown[]; stampCalls: unknown[] };
+  } {
+    const captured = {
+      body: null as string | null,
+      revisionCalls: [] as unknown[],
+      stampCalls: [] as unknown[],
+    };
     const deps: ScoutPlanDraftDeps = {
+      // Always injected, so no test can reach the real helper (which opens the org PG).
+      stampPlanGoalProvenance: (async (args) => {
+        captured.stampCalls.push(args);
+        if (over.stampThrows) throw new Error('goal holder authority: not the elected holder');
+        return 'goal-from-owner-context';
+      }) as NonNullable<ScoutPlanDraftDeps['stampPlanGoalProvenance']>,
       withPlanLock: (async (_ctx, opts, mutator) => {
         if (over.busy) return { kind: 'busy', busy: [] };
         const { newBody, value } = await mutator(over.current ?? null, null);
@@ -98,6 +111,119 @@ describe('createScoutPlanDraft', () => {
     const r = await createScoutPlanDraft({ slug: 'idea-2026-06-08', title: 'T' }, deps);
     expect(r.created).toBe(false);
     expect(captured.body).toBeNull();
+  });
+
+  /**
+   * Goal attribution (WI-2142649). This rail is a THIRD plan-creation path beside
+   * plans:new and plans:launch, and it reached NEITHER goal stamp — so every draft
+   * routed through `blender:route-idea` landed with `harness_plans.goal_id` NULL and
+   * was invisible on the goal page (measured: 4 of 4 routed origins over 48h). These
+   * pin the same three properties `launch.goal-stamp.test.ts` pins for plans:launch.
+   */
+  describe('goal provenance', () => {
+    // Typed fixture, not a cast: it stays checked against AgentIdentity, so a field
+    // added to the real interface strands HERE at tsc (the same discipline
+    // launch.goal-stamp.test.ts uses for its identity fixture).
+    const routerIdentity: NonNullable<
+      Parameters<typeof createScoutPlanDraft>[0]['revisionIdentity']
+    > = {
+      ownerId: 'su-router-1',
+      ownerLabel: 'su · router',
+      source: 'omp-hook-session',
+      workspaceId: 'ws-test',
+      userId: null,
+    };
+
+    /** The single assertion under test, so the control below can be aimed at it. */
+    function expectStampedOnCreate(stampCalls: unknown[], planSlug: string) {
+      expect(stampCalls).toHaveLength(1);
+      expect(stampCalls[0]).toEqual({
+        workspaceId: 'ws-test',
+        harnessSlug: 'papercup',
+        planSlug,
+        ownerId: 'su-router-1',
+      });
+    }
+
+    // CALIBRATION: the REAL subject must satisfy the assertion.
+    it('stamps a newly-created draft from the RESOLVED scope and the caller identity', async () => {
+      const { deps, captured } = fakeLock({ current: null });
+      // `harnessSlug: 'member-harness'` is deliberately NOT the scope the lock
+      // resolved ('papercup'): the stamp must follow the pair the row was actually
+      // written with, or it misses pot-scoped plans as a silent zero-row UPDATE.
+      const r = await createScoutPlanDraft(
+        {
+          slug: 'stamped-idea',
+          title: 'T',
+          date: '2026-06-08',
+          harnessSlug: 'member-harness',
+          revisionIdentity: routerIdentity,
+        },
+        deps,
+      );
+
+      expect(r.created).toBe(true);
+      expectStampedOnCreate(captured.stampCalls, 'stamped-idea-2026-06-08');
+    });
+
+    /**
+     * FALSIFIABILITY CONTROL (CLAUDE.md § "Proving a guard is falsifiable", MODULE
+     * tier: keep a deliberately-wrong implementation as a permanent control rather
+     * than mutating production code). A guard that has never failed is untested, and
+     * the assertion above would be vacuous if it passed on the PRE-FIX rail — which
+     * recorded the revision and stamped nothing. Aimed at the same helper the
+     * calibration case uses, so the two cannot drift apart.
+     */
+    it('CONTROL: those assertions REJECT the pre-fix rail, which stamped nothing', () => {
+      const preFixStampCalls: unknown[] = []; // what blender:route-idea did before WI-2142649
+      expect(() => expectStampedOnCreate(preFixStampCalls, 'stamped-idea-2026-06-08')).toThrow();
+
+      // ...and reject a stamp aimed at the CALLER's raw harness instead of the
+      // resolved one — the silent zero-row UPDATE new.ts documents.
+      const rawHarnessStamp = [
+        {
+          workspaceId: 'ws-test',
+          harnessSlug: 'member-harness',
+          planSlug: 'stamped-idea-2026-06-08',
+          ownerId: 'su-router-1',
+        },
+      ];
+      expect(() => expectStampedOnCreate(rawHarnessStamp, 'stamped-idea-2026-06-08')).toThrow();
+    });
+
+    it('does not stamp on the idempotent already-exists path', async () => {
+      const { deps, captured } = fakeLock({ current: '---\ntitle: existing\n---\n' });
+      const r = await createScoutPlanDraft(
+        { slug: 'idea-2026-06-08', title: 'T', revisionIdentity: routerIdentity },
+        deps,
+      );
+      // A replayed routine step must not stamp a plan it did not author.
+      expect(r.created).toBe(false);
+      expect(captured.stampCalls).toEqual([]);
+    });
+
+    it('passes no ownerId for a system scout-cycle step, so nothing is attributed', async () => {
+      const { deps, captured } = fakeLock({ current: null });
+      await createScoutPlanDraft({ slug: 'system-idea', title: 'T', date: '2026-06-08' }, deps);
+      // The `scout:route-idea` static fallback identity is for the REVISION row only.
+      // Handing it to the stamp would attribute a routine's draft to a pseudo-owner;
+      // an undefined ownerId makes the helper's own guard decline instead.
+      expect(captured.stampCalls).toHaveLength(1);
+      expect((captured.stampCalls[0] as { ownerId?: string }).ownerId).toBeUndefined();
+    });
+
+    it('never fails a created plan when the stamp throws', async () => {
+      const { deps, captured } = fakeLock({ current: null, stampThrows: true });
+      // withPlanLock AWAITS afterWrite, so an unswallowed rejection here would fail a
+      // plan that was already written. Provenance is metadata; the create still stands.
+      const r = await createScoutPlanDraft(
+        { slug: 'resilient-idea', title: 'T', date: '2026-06-08', revisionIdentity: routerIdentity },
+        deps,
+      );
+      expect(r).toEqual({ slug: 'resilient-idea-2026-06-08', created: true });
+      expect(captured.stampCalls).toHaveLength(1);
+      expect(captured.revisionCalls).toHaveLength(1);
+    });
   });
 
   it('throws on lock contention (busy)', async () => {
