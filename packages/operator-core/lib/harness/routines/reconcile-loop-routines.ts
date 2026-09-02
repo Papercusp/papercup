@@ -927,8 +927,36 @@ function deliveredWakeWithoutLoopTurn(
     return { kind: 'awaiting-turn' };
   }
 
+  // WI-2140827: this presence leg must carry the SAME stuck-park bound as the
+  // 'suppressed-redundant' leg above, for the same reason stated there. Its premise is
+  // "recent activity ⇒ the woken turn is still running", but `coord_presence.last_active_at`
+  // is OWNER-WIDE: a session that keeps working on ANYTHING ELSE (peer coord wakes, event
+  // awaits, owner turns) bumps it every few seconds forever. So for a continuously-busy
+  // session the deferral never expires, and — because `hasDeliveredWakeWithoutLoopTurn`
+  // simultaneously suppresses the whole owner-wide ladder and `looksDeadOrStuck` reads false
+  // off that same recent activity — layers 1, 1.5, 2 AND the layer-3 stuck-park backstop are
+  // all unreachable at once. The loop stays parked at 'infinity' for as long as its session
+  // stays busy, while every health surface reads active:true / turnsStalled:false.
+  //
+  // Measured live 2026-09-02, workspace papercusp-workspace: 4 warm loops wedged this way,
+  // each with a presence beat 1–68s old — including a 60s loop parked 2574s (43× its
+  // interval) and a 900s loop parked 4955s. All four had ordinary turns landing throughout;
+  // none had a `turn_origin='loop-fire'` turn after its fire (newest such turn was 30min–6.5h
+  // stale while ingest was current to the second, so this is a missing loop-origin stamp, not
+  // ingest lag). The property is inverted from the intent: the BUSIER the session, the more
+  // certainly its loop is wedged — and a quiet one is rescued by the backstop within ~30min.
+  //
+  // Bounded exactly like the leg above: inside the dwell nothing changes (the psu-host stacks
+  // a queued loop-fire prompt into the next turn well within it, so EI-22127560919383327's
+  // in-flight case is still fully protected); past the dwell the pre-existing ladder judges
+  // it exactly as before, which for a genuinely lost wake is the retry below.
   const lastActiveMs = tsMs(row.presence_last_active_at);
-  if (lastActiveMs != null && lastActiveMs >= wakeAtMs && nowMs - lastActiveMs < FALLBACK_QUIET_MS) {
+  if (
+    lastActiveMs != null &&
+    lastActiveMs >= wakeAtMs &&
+    nowMs - lastActiveMs < FALLBACK_QUIET_MS &&
+    nowMs - wakeAtMs < stuckParkMs(intervalMs)
+  ) {
     return { kind: 'awaiting-turn' };
   }
   return { kind: 'retry', completedAt: wakeAtMs, via: 'delivered-wake-no-loop-turn' };
@@ -1450,7 +1478,15 @@ export async function reconcileLoopRoutines(
         row.last_wake_status === 'delivered' &&
         wakeAtMs != null &&
         wakeAtMs > lastFiredMs &&
-        (loopTurnAtMs == null || loopTurnAtMs < wakeAtMs);
+        (loopTurnAtMs == null || loopTurnAtMs < wakeAtMs) &&
+        // WI-2140827: the suppression is a GRACE, so it has to expire. Unbounded, it was the
+        // other half of the wedge documented in deliveredWakeWithoutLoopTurn(): the strict
+        // loop-origin clock is the discriminator only while it can still plausibly arrive, and
+        // when the loop-origin stamp simply never lands, holding the ladder off forever leaves
+        // a busy session's loop with NO reachable settle layer. Past the stuck-park dwell,
+        // restore the pre-existing ladder — a real lifecycle/turn-journal settle then re-arms
+        // the loop as 'ok' rather than letting it ride the retry leg's 'error' indefinitely.
+        nowMs - wakeAtMs < stuckParkMs(intervalMs);
       const signal = completionSignal(row, lastFiredMs, nowMs, {
         suppressOwnerWideSignals: hasDeliveredWakeWithoutLoopTurn,
       });

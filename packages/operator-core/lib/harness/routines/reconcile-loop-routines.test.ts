@@ -2801,3 +2801,113 @@ describe('reconcileLoopRoutines — monitor standdown (P-004)', () => {
     expect(standdownWrites(seen)).toHaveLength(0);
   });
 });
+
+// WI-2140827: a warm pure loop whose SESSION STAYS BUSY on unrelated work was wedged at
+// 'infinity' with no reachable settle layer. `coord_presence.last_active_at` is owner-wide, so
+// peer coord wakes / event awaits / owner turns bump it every few seconds forever; the
+// delivered-wake deferral read that as "the woken turn is still running" and never expired,
+// while `hasDeliveredWakeWithoutLoopTurn` simultaneously suppressed the owner-wide ladder and
+// `looksDeadOrStuck` read false off that same recent activity — so layers 1, 1.5, 2 AND the
+// layer-3 stuck-park backstop were all unreachable AT ONCE. The property was inverted from the
+// intent: the busier the session, the more certainly its loop was wedged, while a quiet one was
+// rescued within ~30min. Measured live 2026-09-02: 4 warm loops wedged, presence beats 1–68s
+// old, including a 60s loop parked 2574s (43× interval) and a 900s loop parked 4955s.
+//
+// FALSIFIABILITY: the INSIDE-THE-DWELL control drives the identical row 10 min in and must still
+// wait (no re-arm, no circuit write) — that is EI-22127560919383327's protection, and it proves
+// these tests read the DWELL BOUND rather than passing for any busy row.
+describe('reconcileLoopRoutines — a busy session no longer wedges its own loop forever (WI-2140827)', () => {
+  const T0 = 1_782_000_000_000;
+  const DWELL_MS = 30 * 60_000; // stuckBackstopCadenceMs(60s) = max(30min, 4×60s)
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  /** Warm 60s loop, fired at T0, wake DELIVERED at T0+1s on an ordinary channel, and no
+   *  loop-origin turn ever stamped. The session is alive and working on other things, so
+   *  presence keeps beating — `presence_last_active_at` is set per-case relative to now. */
+  const busyRow = (over: Record<string, unknown> = {}) => ({
+    id: 'rt-busy',
+    target_owner_id: 'su-busy',
+    interval_sec: 60,
+    parked: true,
+    is_cron: false,
+    install_slug: 'papercusp',
+    name: 'loop-su-busy',
+    routine_workspace_id: 'ws-papercusp',
+    last_fired_at: pgString(T0),
+    fire_state_last_fired_at: pgString(T0 + 500),
+    fire_state_last_withheld_at: null,
+    last_wake_at: pgString(T0 + 1_000),
+    last_wake_status: 'delivered',
+    last_wake_channel: 'psu-socket-inject',
+    last_loop_turn_at: null,
+    lifecycle_completed_at: null,
+    turn_journal_completed_at: null,
+    lifecycle_started_at: null,
+    carry: null,
+    armed_at: null,
+    note_updated_ts: null,
+    presence_last_active_at: null,
+    last_assistant_text_after_fire: null,
+    turns_ingest_watermark: null,
+    payload_template: null,
+    monitor_delta_at: null,
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('CONTROL — inside the dwell, a fresh presence beat still defers (EI-22127560919383327 intact)', async () => {
+    const nowMs = T0 + 1_000 + 600_000; // 10 min in — well inside the 30 min dwell
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql([busyRow({ presence_last_active_at: pgString(nowMs - 5_000) })], []),
+      nowMs,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(0);
+    expect(res.loops).toEqual([]);
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it('past the dwell, a continuously-busy session no longer holds its loop parked forever', async () => {
+    const nowMs = T0 + 1_000 + DWELL_MS + 60_000;
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      // presence beat 5s ago — the exact shape that used to defer indefinitely
+      sql: fakeSql([busyRow({ presence_last_active_at: pgString(nowMs - 5_000) })], []),
+      nowMs,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-busy', via: 'delivered-wake-no-loop-turn' });
+  });
+
+  it('past the dwell the ordinary ladder is restored, so a real turn settles it as ok (not an error retry)', async () => {
+    const nowMs = T0 + 1_000 + DWELL_MS + 60_000;
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          busyRow({
+            presence_last_active_at: pgString(nowMs - 5_000),
+            turn_journal_completed_at: pgString(T0 + 30_000),
+          }),
+        ],
+        [],
+      ),
+      nowMs,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-busy', via: 'turn-journal' });
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-busy', 'loop-turn-journal', 'ok');
+  });
+});

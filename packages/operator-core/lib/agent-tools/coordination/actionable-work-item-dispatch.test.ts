@@ -113,6 +113,58 @@ describe('assignActionableWorkItems', () => {
       holder: 'agent-other',
     });
   });
+
+  it('EI-22122824405906276: an admission-pending gate renders the explanation + remedy, not the generic frontier text', async () => {
+    const claim = vi.fn();
+    const d = deps({
+      claim,
+      observe: vi.fn(async (id) => ({
+        item: workItem(id),
+        available: false,
+        claimedBy: null,
+        gated: true,
+        admissionPending: {
+          reason: 'duplicate screening is pending — CLEARS ON ITS OWN in 30 minutes',
+          remedy: 'An item created FOR a named agent should not be born pending; use assign_to.',
+        },
+      })),
+    });
+
+    const result = await assignActionableWorkItems({ workItemIds: ['WI-PENDING'], targetAgent: 'agent-email-stable' }, d);
+
+    expect(claim).not.toHaveBeenCalled();
+    expect(result.skipped[0]).toMatchObject({ workItemId: 'WI-PENDING', code: 'admission_gated' });
+    // The reason must carry BOTH halves — a caller reading only `reason` (coord:dispatch's
+    // JSON refusal) has no other field to fall back to for the remedy.
+    expect(result.skipped[0]?.reason).toContain('CLEARS ON ITS OWN');
+    expect(result.skipped[0]?.reason).toContain('assign_to');
+    // Never the old unactionable text once a remedy is available.
+    expect(result.skipped[0]?.reason).not.toContain('outside the canonical admission frontier');
+  });
+
+  it('a gated item with no admissionPending detail keeps the generic frontier text (other gates: trust/federation)', async () => {
+    const claim = vi.fn();
+    const d = deps({
+      claim,
+      observe: vi.fn(async (id) => ({
+        item: workItem(id),
+        available: false,
+        claimedBy: null,
+        gated: true,
+        // No `admissionPending` — e.g. the feature-family trust gate or a remote,
+        // not-locally-claimable issue. Neither is a temporal admission-pending wait.
+      })),
+    });
+
+    const result = await assignActionableWorkItems({ workItemIds: ['WI-UNTRUSTED'], targetAgent: 'agent-email-stable' }, d);
+
+    expect(claim).not.toHaveBeenCalled();
+    expect(result.skipped[0]).toMatchObject({
+      workItemId: 'WI-UNTRUSTED',
+      code: 'admission_gated',
+      reason: 'work-item is outside the canonical admission frontier',
+    });
+  });
 });
 
 describe('assignAndWakeActionableWorkItems', () => {

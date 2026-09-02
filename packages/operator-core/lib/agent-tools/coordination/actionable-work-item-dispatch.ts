@@ -264,13 +264,23 @@ async function classifyOne(
   }
   if (retainedByTarget) return { kind: 'retained', workItemId };
   if (!observed.available) {
+    // EI-22122824405906276: the admission-pending floor (the FIRST gate observeWorkItem
+    // checks) is a WAIT with a documented remedy, not a permanent refusal — render the
+    // SAME explanation + remedy work-items-admission.ts renders on the claim-refusal path,
+    // instead of the generic "outside the frontier" text that gave a caller no way to tell
+    // "not yet" from "never" or to see the one-argument create-time fix. Every OTHER
+    // `gated:true` case (the feature-family trust gate, an un-admitted remote issue) has no
+    // `admissionPending` and keeps the generic text, which is accurate for those.
+    const admissionPending = observed.admissionPending;
     return {
       kind: 'skip',
       skipped: {
         workItemId,
         code: observed.gated ? 'admission_gated' : 'read_failed',
         reason: observed.gated
-          ? 'work-item is outside the canonical admission frontier'
+          ? admissionPending
+            ? `${admissionPending.reason} ${admissionPending.remedy}`
+            : 'work-item is outside the canonical admission frontier'
           : 'work-item is not currently available for assignment',
       },
     };
