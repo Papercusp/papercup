@@ -43,6 +43,8 @@ import {
   submitExhaustionTerminatesHost,
   submitVerificationFailureReason,
   quotaLimitBannerVisible,
+  quotaLimitBannerMatch,
+  quotaBannerPatternsForAgent,
   makeQuotaBlockDetector,
   verifyNativeTurnStartWithRetry,
   carryTurnProofRequiresNativeId,
@@ -2162,6 +2164,111 @@ describe('makeQuotaBlockDetector (WI-1386682 (1)/(2) — quota-wall ring-buffer 
     expect(d.isBlocked()).toBe(false);
     // A fresh child's first bytes must not be read against the old wall text.
     expect(d.observe('ordinary boot output')).toBeNull();
+    expect(d.isBlocked()).toBe(false);
+  });
+});
+
+// WI-2140984: the quota-wall patterns are CLAUDE COPY, and the host used to
+// match them against every pty. A codex child paints ordinary chrome that hits
+// them, so healthy headless codex fleet members were read as walled and every
+// turn/reset was deferred — permanently, because repainted chrome refills the
+// ring buffer as fast as it is evicted. Measured 2026-09-02: two members logged
+// one quota-block-detected then 110 turn-deferred-quota-blocked with ZERO
+// clears while the account read util7d 0.03 with no 429s.
+//
+// The fixtures below are VERBATIM strings taken from the shipped codex binary
+// (`strings .../vendor/x86_64-unknown-linux-musl/bin/codex`), not paraphrases —
+// that is what makes this a regression test rather than a restatement of the
+// patterns.
+describe('quota-wall banner patterns are scoped per agent (WI-2140984)', () => {
+  // Ordinary, non-wall codex UI chrome. The first is a slash-command
+  // DESCRIPTION from the command palette.
+  const CODEX_CHROME = [
+    'view account usage or use a usage limit reset',
+    ' Consumes usage limits faster',
+    'Goal hit usage limits (/goal resume)',
+    'No usage limit resets available.',
+    'Usage limit resets',
+    'Your usage does not need a reset right now.',
+  ];
+
+  // Codex's REAL wall copy — these must still block.
+  const CODEX_WALL = [
+    "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits",
+    "You've hit your usage limit. Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus),",
+    'Usage limit reached',
+    "You've reached your workspace credit limit",
+    'Your workspace is out of credits. Ask your workspace owner to add more. Notify owner?',
+  ];
+
+  it('reads codex chrome as NOT walled', () => {
+    for (const chrome of CODEX_CHROME) {
+      expect(quotaLimitBannerVisible(chrome, 'codex')).toBe(false);
+    }
+  });
+
+  it('still recognizes codex own wall copy', () => {
+    for (const wall of CODEX_WALL) {
+      expect(quotaLimitBannerVisible(wall, 'codex')).toBe(true);
+    }
+  });
+
+  // The calibration case: these SAME chrome strings DO match the claude set.
+  // Without this the test above would pass just as well against a detector
+  // that had been broken to match nothing at all.
+  it('confirms the claude pattern set is what mis-fired on that chrome', () => {
+    const hits = CODEX_CHROME.filter((c) => quotaLimitBannerVisible(c, 'claude'));
+    expect(hits.length).toBeGreaterThan(0);
+    expect(quotaLimitBannerVisible('view account usage or use a usage limit reset', 'claude')).toBe(
+      true,
+    );
+  });
+
+  it('keeps claude behaviour unchanged for an explicit or absent agent', () => {
+    for (const agent of ['claude', '', undefined]) {
+      expect(quotaLimitBannerVisible("You've hit your weekly limit.", agent)).toBe(true);
+      expect(quotaLimitBannerVisible('Welcome back!', agent)).toBe(false);
+    }
+    expect(quotaBannerPatternsForAgent('claude')).toEqual(quotaBannerPatternsForAgent(undefined));
+  });
+
+  it('gives an UNKNOWN agent no patterns rather than another product copy', () => {
+    expect(quotaBannerPatternsForAgent('omp')).toEqual([]);
+    expect(quotaLimitBannerVisible("You've hit your weekly limit.", 'omp')).toBe(false);
+  });
+
+  it('reports which pattern matched and the text around it', () => {
+    const hit = quotaLimitBannerMatch('some scrollback\nUsage limit reached\nmore', 'codex');
+    expect(hit.matched).toBe(true);
+    expect(hit.pattern).toContain('usage limit reached');
+    expect(hit.excerpt).toContain('Usage limit reached');
+    const miss = quotaLimitBannerMatch('nothing to see', 'codex');
+    expect(miss).toEqual({ matched: false, pattern: null, excerpt: null });
+  });
+
+  it('never blocks a codex session that only ever repaints chrome', () => {
+    const d = makeQuotaBlockDetector({ agent: 'codex' });
+    // This is the shape that bricked the members: the same chrome, redrawn.
+    for (let i = 0; i < 50; i += 1) {
+      expect(d.observe(`${CODEX_CHROME.join(' ')}\x1b[0m`)).toBeNull();
+    }
+    expect(d.isBlocked()).toBe(false);
+  });
+
+  it('exposes lastMatch() so a detected row can name what it saw', () => {
+    const d = makeQuotaBlockDetector({ agent: 'codex' });
+    expect(d.lastMatch()).toEqual({ matched: false, pattern: null, excerpt: null });
+    expect(d.observe('Usage limit reached')).toBe('detected');
+    expect(d.lastMatch().excerpt).toContain('Usage limit reached');
+    d.reset();
+    expect(d.lastMatch()).toEqual({ matched: false, pattern: null, excerpt: null });
+  });
+
+  it('a codex detector still blocks on a real wall, and clears on real churn', () => {
+    const d = makeQuotaBlockDetector({ agent: 'codex', capBytes: 64 });
+    expect(d.observe('Usage limit reached')).toBe('detected');
+    expect(d.isBlocked()).toBe(true);
+    expect(d.observe('x'.repeat(64))).toBe('cleared');
     expect(d.isBlocked()).toBe(false);
   });
 });
