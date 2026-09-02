@@ -20,7 +20,7 @@ import { checkActiveCheckpointRun } from '../../release-checkpoint-launch';
 import { readCheckpointSerializerAuthority } from '../../release/checkpoint-serializer-authority';
 import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-ownership';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
-import { readRoutineSnap, writeRoutineSnap, type RoutineSnap } from './routine-snapshot';
+import { readRoutineSnap, writeRoutineSnap, stableJson, type RoutineSnap } from './routine-snapshot';
 import { DEFAULT_RELEASE_PAUSE_TTL_HOURS, resolvePauseExpiryMs } from '../../harness/routines/release-pause-ttl';
 
 /**
@@ -348,8 +348,19 @@ export default defineTool({
             (args.group === undefined || cur.groupSlug === next.groupSlug) &&
             // The payload merge must actually be READABLE back, not just written — a silent
             // no-op write here would leave the caller believing a live knob was retuned.
+            //
+            // Compared via stableJson (order-independent), NOT a raw JSON.stringify: Postgres
+            // jsonb does not preserve JS object insertion order on a round-trip (it reorders by
+            // key length then lexicographically for its binary encoding), so `next` — an
+            // in-memory object with any NEW key appended at the end by deepMergePlain — never
+            // string-equals `cur` — the same object freshly read back from jsonb, reordered — even
+            // when every key/value pair matches. That false mismatch made every additive
+            // payloadTemplate patch (e.g. adding a `model` override) spuriously fail verify and
+            // get auto-reverted (EI-22136767702523358). routineSnapEqual below already solves this
+            // for a whole RoutineSnap; stableJson is its same order-independent primitive, reused
+            // here since this check compares only the payloadTemplate field.
             (args.payloadTemplate === undefined ||
-              JSON.stringify(cur.payloadTemplate) === JSON.stringify(next.payloadTemplate));
+              JSON.stringify(stableJson(cur.payloadTemplate)) === JSON.stringify(stableJson(next.payloadTemplate)));
           return { ok, detail: ok ? undefined : 'routine row did not reflect the change' };
         },
         describe: (prev) => ({

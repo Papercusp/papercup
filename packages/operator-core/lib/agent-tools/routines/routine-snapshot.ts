@@ -44,7 +44,14 @@ export function parseRoutineSnap(value: unknown): RoutineSnap | null {
   };
 }
 
-function stableJson(value: unknown): unknown {
+/**
+ * Canonicalize object key order (recursively, sorted) so a JSON.stringify
+ * comparison is independent of insertion order. Exported for any caller that
+ * needs to order-independently compare a JSON-ish VALUE directly (routines:set's
+ * verify step compares just `payload_template`, not a whole RoutineSnap, so it
+ * cannot reuse routineSnapEqual below) — see routines/set.ts's `verify`.
+ */
+export function stableJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableJson);
   if (isRecord(value)) {
     return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableJson(value[key])]));

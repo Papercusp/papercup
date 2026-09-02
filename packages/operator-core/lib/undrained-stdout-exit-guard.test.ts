@@ -57,9 +57,18 @@ describe('the mechanism this guard exists for (live control)', () => {
     const withoutExit = run(`console.log('x'.repeat(${N}))`);
     const withExitCode = run(`console.log('x'.repeat(${N})); process.exitCode = 0`);
 
-    // The defect: the payload is cut, and to far less than the oft-quoted 64 KiB.
+    // The defect: the payload is CUT. Assert only THAT — never how many bytes survive.
+    // How much flushes before process.exit() is a SCHEDULING artifact (how far the
+    // reader drained the pipe before the writer died), not a property of the mechanism.
+    // Measured on this box across runs: 8_192, 65_536 and 81_920 — the last under gate
+    // load. An absolute `toBeLessThanOrEqual(65_536)` bound here therefore went RED
+    // under fleet load and GREEN on an idle box (WI-2141324), and 65_536 was the MODAL
+    // value rather than a ceiling, so the control sat exactly on its own bound.
+    // A flake in a guard's own positive control is worse than an ordinary flake: red
+    // reads as "the guard found something", green as "someone fixed it" — neither true.
+    // This stays falsifiable: were pipe writes ever to become synchronous, the payload
+    // would arrive whole, withExit would be N + 1, and this assertion would red.
     expect(withExit).toBeLessThan(N);
-    expect(withExit).toBeLessThanOrEqual(65_536);
     // The two controls: both remedies deliver the payload IN FULL.
     expect(withoutExit).toBe(N + 1);
     expect(withExitCode).toBe(N + 1);
