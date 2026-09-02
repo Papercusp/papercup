@@ -614,7 +614,51 @@ export const KNOWN_COLD_START_EXCEEDANCES: readonly {
       'ceiling here would be a flake generator, and a flaky gate test freezes ' +
       'the whole fleet.',
   }),
+  Object.freeze({
+    language: 'typescript' as LspLanguage,
+    observedMs: 11_483,
+    observedCeilingMs: 60_000,
+    why:
+      'tsserver must load the monorepo project graph — tsconfig resolution, ' +
+      'project references, and the transitive import closure of the asking ' +
+      'file — before it can answer a cross-package definition, so its ' +
+      'time-to-CORRECT does not meet the 10s budget on this repo either. ' +
+      'Measured 10,306 / 10,665 / 11,483ms across bakeoff legs v1-v3 ' +
+      '(WI-2142287): over budget on 3 of 3, never by more than 15%. ' +
+      'This entry exists because the budget is REPO-SCALE, not rust-specific. ' +
+      '`coldStartMsMax` was a dead field until P-018 activated it, and the ' +
+      'table it feeds was populated from the only language anyone had a ' +
+      'number for — leg v1 starved the rust probe entirely (attempts=0), so ' +
+      'rust was measured first and got the sole entry. In leg v3 rust came in ' +
+      'at 9,762ms, UNDER budget, while this unaccounted probe breached: the ' +
+      'one language carrying an accounting entry was the one that met the ' +
+      'budget. Nothing regressed — a second language simply became visible. ' +
+      'The ceiling is a tripwire for an ORDER-OF-MAGNITUDE regression, not a ' +
+      'performance target, and is deliberately TIGHTER than rust’s 120s: ' +
+      'rust earns that headroom because a cold cargo cache costs minutes of ' +
+      'proc-macro BUILDING, whereas tsserver only ever parses and resolves, ' +
+      'so it has no comparable multi-minute cold path to absorb. Do not ' +
+      'tighten it toward the observed number — typescript is the STABLE leg ' +
+      'here (11% spread vs rust’s 60%), but this box runs at high fleet ' +
+      'load and a tight ceiling would be a flake generator on the gate.',
+  }),
 ]);
+
+/**
+ * The part of an accounting table `classifyColdStarts` actually reads.
+ *
+ * Exists so the guard's control can INJECT a table instead of naming a
+ * language absent from the real one. `LspLanguage` has exactly two members
+ * and both are now accounted (WI-2142287), so "an over-budget language nobody
+ * accounted for" is no longer expressible in real data — and a control that
+ * depends on the table staying incomplete stops being a control the moment
+ * someone completes it. Silently, and precisely when the integration
+ * assertion it guards has become decorative.
+ */
+export type ColdStartAccounting = readonly {
+  readonly language: LspLanguage;
+  readonly observedCeilingMs: number;
+}[];
 
 /** One cold start graded against the budget. */
 export interface ColdStartVerdict {
@@ -638,12 +682,13 @@ export interface ColdStartVerdict {
  */
 export function classifyColdStarts(
   measurements: readonly BenchMeasurement[],
+  accounting: ColdStartAccounting = KNOWN_COLD_START_EXCEEDANCES,
 ): readonly ColdStartVerdict[] {
   const out: ColdStartVerdict[] = [];
   for (const m of measurements) {
     if (!m.serverWasCold || m.notAttempted || m.timeToCorrectMs === null) continue;
     const language = probeLanguage(m.caseId);
-    const known = KNOWN_COLD_START_EXCEEDANCES.find((k) => k.language === language);
+    const known = accounting.find((k) => k.language === language);
     const overBudget = m.timeToCorrectMs > DEFAULT_RESOURCE_BUDGET.coldStartMsMax;
     out.push({
       caseId: m.caseId,
@@ -772,6 +817,65 @@ export function probeBudget(args: {
     reservedForOthersMs,
     perProbeFloorMs,
   };
+}
+
+/**
+ * Whether the poll loop has learned everything it is going to, and if so WHY.
+ * `null` means keep asking.
+ *
+ * Extracted for the same reason `probeBudget` was — the loop it governs needs
+ * real language servers and ~600s to exercise — but also for a reason specific
+ * to this decision: the missing case that became WI-2142253 was invisible
+ * BECAUSE the conditions were four `break` statements scattered through a
+ * sixty-line loop, separated by paragraphs of commentary. Nothing anywhere
+ * enumerated them, so "a non-empty answer that is not healthy" was not a case
+ * anyone had decided to leave out; it was a case nobody could see wasn't there.
+ * Stated as one total function, the gap is a missing branch instead of an
+ * absence, and the tests below can enumerate the space.
+ */
+export function pollStopDecision(args: {
+  readonly correct: boolean;
+  readonly errorText: string | null;
+  readonly health: string;
+  readonly siteCount: number;
+  /** How long the site set has been unchanged, in ms. */
+  readonly siteSetUnchangedForMs: number;
+  readonly stableForMs: number;
+}): Exclude<BenchMeasurement['pollStoppedOn'], 'deadline' | 'never-queried'> | null {
+  const { correct, errorText, health, siteCount, siteSetUnchangedForMs, stableForMs } = args;
+
+  if (correct) return 'correct';
+  // An unserved intent will never become correct by waiting.
+  if (errorText && /not served/.test(errorText)) return 'not-served';
+
+  // A HEALTHY answer WITH SITES is the server's FINAL word, right or wrong.
+  // Polling past it cannot change the result — it only spins to the deadline
+  // and then reports a TIMEOUT, which misattributes a correctness failure as a
+  // latency failure. (Measured: this turned an 8s wrong answer into a 420s fake
+  // hang, and sent me looking at the box and the language server instead of at
+  // the answer I already had.)
+  if (health === 'healthy' && siteCount > 0) return 'healthy-final';
+
+  // The same reasoning, one step weaker, for the answer that previously had no
+  // exit at all: NON-EMPTY, not entitled to call itself healthy, but no longer
+  // moving.
+  //
+  // A degraded non-empty is not final on ARRIVAL — `healthForAnswer` downgrades
+  // a non-empty answer whose intent readiness is unproven, and the measured
+  // cold-open failure returned two real sites while hundreds were still
+  // missing, so sites genuinely do arrive late. But "not final on arrival" is
+  // not "worth re-asking forever": once the set has held still for
+  // `stableForMs`, further polling is indistinguishable from waiting. The loop
+  // was spending a whole probe deadline to learn that — 569 attempts over ~290s,
+  // ending with the eight sites it already held on attempt 1 (WI-2142253).
+  if (siteCount > 0 && siteSetUnchangedForMs >= stableForMs) return 'converged';
+
+  // Everything else keeps polling — and the case that matters here is the EMPTY
+  // answer, which is deliberately excluded from the rule above. An empty never
+  // "converges" however long it sits still, because a stalled empty and a
+  // still-loading empty are the same bytes. That is the false-empty the
+  // acceptance corpus exists to catch, so it keeps its full deadline.
+  return null;
 }
 
 /**
@@ -920,49 +1024,17 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
         siteSetLastChangedAt = Date.now();
       }
 
-      if (grade.correct) {
-        pollStoppedOn = 'correct';
-        break;
-      }
-      // An unserved intent will never become correct by waiting.
-      if (last.error && /not served/.test(last.error)) {
-        pollStoppedOn = 'not-served';
-        break;
-      }
-      // A HEALTHY answer WITH SITES is the server's FINAL word, right or wrong.
-      // Polling past it cannot change the result — it only spins to the
-      // deadline and then reports a TIMEOUT, which misattributes a correctness
-      // failure as a latency failure. (Measured: this turned an 8s wrong answer
-      // into a 420s fake hang, and sent me looking at the box and the language
-      // server instead of at the answer I already had.)
-      if (last.freshness.health === 'healthy' && last.sites.length > 0) {
-        pollStoppedOn = 'healthy-final';
-        break;
-      }
-
-      // The same reasoning, one step weaker, for the answer this loop had no
-      // exit for at all: a NON-EMPTY answer that is not entitled to call itself
-      // healthy, but whose site set has stopped moving.
-      //
-      // A degraded non-empty is NOT final on arrival — `healthForAnswer`
-      // downgrades a non-empty answer whose intent readiness is unproven, and
-      // the measured cold-open failure returned two real sites while hundreds
-      // were still missing, so sites genuinely do arrive late. But "not final on
-      // arrival" is not "worth re-asking forever". Once the set has been
-      // unchanged for `stableForMs`, further polling is indistinguishable from
-      // waiting, and the loop was spending an entire probe deadline to learn it:
-      // measured at 569 attempts over ~290s, ending with the eight sites it held
-      // on attempt 1 (WI-2142253).
-      //
-      // Deliberately gated on `sites.length > 0`. An EMPTY answer never
-      // converges in this sense however long it sits still, because a stalled
-      // empty and a still-loading empty are the same bytes — that one is the
-      // false-empty the corpus exists to catch, and it keeps its full deadline.
-      if (
-        last.sites.length > 0 &&
-        Date.now() - siteSetLastChangedAt >= stableForMs
-      ) {
-        pollStoppedOn = 'converged';
+      // Every reason to stop lives in one total function — see pollStopDecision.
+      const stop = pollStopDecision({
+        correct: grade.correct,
+        errorText: last.error,
+        health: last.freshness.health,
+        siteCount: last.sites.length,
+        siteSetUnchangedForMs: Date.now() - siteSetLastChangedAt,
+        stableForMs,
+      });
+      if (stop !== null) {
+        pollStoppedOn = stop;
         break;
       }
 
