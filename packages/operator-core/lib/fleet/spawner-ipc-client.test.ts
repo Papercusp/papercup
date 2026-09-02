@@ -353,9 +353,12 @@ describe('SpawnerIpcClient — re-dials a replacement sidecar (WI-2141693)', () 
       });
     } finally {
       c.close();
-      if (live) {
-        live.killConnections();
-        await new Promise<void>((resolve) => live.server.close(() => resolve()));
+      // Bind to a const: the `if (live)` narrowing does not survive into the
+      // arrow closure below, so `live.server` there is `possibly null` to tsc.
+      const started = live;
+      if (started) {
+        started.killConnections();
+        await new Promise<void>((resolve) => started.server.close(() => resolve()));
       }
       if (fs.existsSync(p)) { try { fs.unlinkSync(p); } catch { /* already gone */ } }
     }

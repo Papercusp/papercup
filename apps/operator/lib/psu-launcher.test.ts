@@ -133,8 +133,11 @@ import {
   pendingSessionEndWitnessPath,
   readPendingSessionEndWitness,
   NO_LIVE_CODEX_WRITER_EVIDENCE,
+  NO_LIVE_CLAUDE_PROCESS_EVIDENCE,
   normalizeResumeLocalLivenessEvidence,
   normalizeCodexResumeLocalLivenessEvidence,
+  normalizeClaudeResumeLocalLivenessEvidence,
+  claudeSessionProcessHolder,
   reportSessionResumed,
   acquireSessionResumeWithRecovery,
   reportSessionResumeFinalized,
@@ -6772,6 +6775,274 @@ describe("mintRecycleArgs (WI-1980 — a cold-loop RECYCLE respawn gets a FRESH 
   });
 });
 
+describe("respawn model carry (WI-2141859 — an in-session /model switch must survive the respawn)", () => {
+  const UUID = "0123abcd-1234-5678-9abc-def012345678";
+  const FRESH = "ffffabcd-1234-5678-9abc-def012345678";
+  const mintId = () => FRESH;
+  // The exact specs measured on the live fleet 2026-09-02: the flag the chain
+  // was launched with, and the model the owner's `/model` switch actually ran.
+  const LAUNCHED = "claude-fable-5-1[1m]";
+  const SWITCHED_TO = "claude-opus-5";
+
+  describe("splitRespawnModelSpec", () => {
+    it("separates identity from the effort suffix and the window marker", () => {
+      expect(splitRespawnModelSpec("claude-fable-5-1[1m]:max")).toEqual({
+        id: "claude-fable-5-1",
+        effort: "max",
+      });
+      expect(splitRespawnModelSpec("claude-opus-5")).toEqual({
+        id: "claude-opus-5",
+        effort: "",
+      });
+    });
+
+    it("does NOT treat a non-effort colon suffix as effort", () => {
+      // A provider-qualified id (`vendor/model:tag`) must keep its tag as part of
+      // the identity — mis-splitting it would compare two different models equal.
+      expect(splitRespawnModelSpec("openrouter/stealth/ox-alpha:preview")).toEqual({
+        id: "openrouter/stealth/ox-alpha:preview",
+        effort: "",
+      });
+    });
+  });
+
+  describe("reconcileRespawnModelSpec", () => {
+    it("re-pins the successor to the model the session actually switched to", () => {
+      // THE bug, in one assertion: launched on fable, `/model`-switched to opus,
+      // so the successor must launch on opus — not on the inherited fable flag.
+      expect(reconcileRespawnModelSpec(LAUNCHED, SWITCHED_TO)).toBe(
+        "claude-opus-5[1m]",
+      );
+    });
+
+    it("carries the inherited EFFORT across a model change", () => {
+      // `/model` changes the model; it does not restate the effort the session
+      // was launched at, and the transcript never records effort — so dropping it
+      // would silently demote a `:max` session to the model default.
+      expect(reconcileRespawnModelSpec("claude-fable-5-1[1m]:max", SWITCHED_TO)).toBe(
+        "claude-opus-5[1m]:max",
+      );
+    });
+
+    it("returns null when the model has NOT changed, so an unchanged argv is untouched", () => {
+      // The transcript records the bare id while the flag carries the decorated
+      // spec; a raw string compare would report a change on every single respawn.
+      expect(reconcileRespawnModelSpec("claude-opus-5[1m]:max", "claude-opus-5")).toBeNull();
+    });
+
+    it("does NOT convert an ALIAS pin into a version pin", () => {
+      // A read-only probe over the live fleet caught this before it shipped: 4
+      // running sessions carry `sonnet[1m]`, whose transcript resolves to
+      // `claude-sonnet-5`. An exact-id compare calls that a change and rewrites
+      // the flag — silently turning "latest sonnet" into "sonnet 5 forever".
+      expect(reconcileRespawnModelSpec("sonnet[1m]", "claude-sonnet-5")).toBeNull();
+      expect(reconcileRespawnModelSpec("opus:high", "claude-opus-5")).toBeNull();
+    });
+
+    it("does NOT chase a point release inside the same family", () => {
+      // `claude-fable-5` resolving to `claude-fable-5-1` is the CLI picking the
+      // current build, not the owner switching model.
+      expect(reconcileRespawnModelSpec("claude-fable-5[1m]", "claude-fable-5-1")).toBeNull();
+    });
+
+    it("still acts on a real FAMILY change, which is what /model produces", () => {
+      expect(reconcileRespawnModelSpec("sonnet[1m]", "claude-opus-5")).toBe("claude-opus-5[1m]");
+      expect(reconcileRespawnModelSpec("claude-fable-5-1[1m]", "claude-haiku-5")).toBe(
+        "claude-haiku-5",
+      );
+    });
+
+    it("falls back to an exact compare when neither id has a known family", () => {
+      // Provider-qualified / local ids are an open vocabulary — no family to read,
+      // so identity is the only honest comparison.
+      expect(
+        reconcileRespawnModelSpec("openrouter/stealth/ox-alpha", "openrouter/stealth/ox-alpha"),
+      ).toBeNull();
+    });
+
+    it("fails soft to the inherited spec on every uncertain input", () => {
+      expect(reconcileRespawnModelSpec(null, SWITCHED_TO)).toBeNull(); // never ADD a flag
+      expect(reconcileRespawnModelSpec(LAUNCHED, null)).toBeNull(); // nothing detected
+      expect(reconcileRespawnModelSpec(LAUNCHED, "")).toBeNull();
+      expect(reconcileRespawnModelSpec(LAUNCHED, "<synthetic>")).toBeNull(); // junk
+    });
+  });
+
+  describe("modelSpecFromRecycleArgv", () => {
+    it("reads both flag spellings, and reports absence as null", () => {
+      expect(modelSpecFromRecycleArgv(["claude", "--model", LAUNCHED])).toBe(LAUNCHED);
+      expect(modelSpecFromRecycleArgv(["claude", `--model=${LAUNCHED}`])).toBe(LAUNCHED);
+      expect(modelSpecFromRecycleArgv(["claude", "--session-id", UUID])).toBeNull();
+    });
+  });
+
+  describe("mintRecycleArgs — the --model swap", () => {
+    it("REPLACES the inherited --model with the session's current one", () => {
+      // THE bug lived in the copy loop's bare `out.push(a)`, exactly as the P-002
+      // persona staleness did. An explicit --model OVERRIDES the CLI's in-session
+      // `/model` selection, so copying it through actively UNDOES the owner's switch.
+      const { args } = mintRecycleArgs(
+        ["claude", "--session-id", UUID, "--model", LAUNCHED, "--foo"],
+        { mintId, agent: "claude", model: "claude-opus-5[1m]" },
+      );
+      expect(args).toEqual([
+        "claude",
+        "--session-id",
+        FRESH,
+        "--model",
+        "claude-opus-5[1m]",
+        "--foo",
+      ]);
+    });
+
+    it("replaces the inline --model=<spec> spelling too", () => {
+      const { args } = mintRecycleArgs(
+        ["claude", "--session-id", UUID, `--model=${LAUNCHED}`],
+        { mintId, agent: "claude", model: "claude-opus-5[1m]" },
+      );
+      expect(args).toEqual([
+        "claude",
+        "--session-id",
+        FRESH,
+        "--model=claude-opus-5[1m]",
+      ]);
+    });
+
+    it("emits exactly ONE --model flag — never appends a second", () => {
+      // claude takes the last one, but relying on that is an accident waiting to
+      // be reordered.
+      const { args } = mintRecycleArgs(
+        ["claude", "--session-id", UUID, "--model", LAUNCHED],
+        { mintId, agent: "claude", model: "claude-opus-5[1m]" },
+      );
+      expect(args.filter((a: string) => a.startsWith("--model")).length).toBe(1);
+    });
+
+    it("keeps the inherited spec when no current model was detected", () => {
+      // Fail-soft: a stale model beats a successor booting on the wrong one.
+      const { args } = mintRecycleArgs(
+        ["claude", "--session-id", UUID, "--model", LAUNCHED],
+        { mintId, agent: "claude", model: null },
+      );
+      expect(args).toEqual(["claude", "--session-id", FRESH, "--model", LAUNCHED]);
+    });
+
+    it("never ADDS a --model flag to an argv that had none", () => {
+      // Such a session already honours `/model` across respawns on its own (the
+      // CLI persists the selection and there is no flag to override it), so
+      // adding one would newly pin a session that currently self-corrects.
+      const { args } = mintRecycleArgs(["claude", "--session-id", UUID], {
+        mintId,
+        agent: "claude",
+        model: "claude-opus-5[1m]",
+      });
+      expect(args).toEqual(["claude", "--session-id", FRESH]);
+    });
+
+    it("carry-respawn gets the swap from the same code path", () => {
+      const { args } = mintCarryRespawnArgs(
+        ["claude", "--session-id", UUID, "--model", LAUNCHED],
+        {
+          systemPromptAddendum: "# carry doc",
+          ownerId: "su-wi2141859-test",
+          mintId,
+          agent: "claude",
+          model: "claude-opus-5[1m]",
+        },
+      );
+      expect(args).toContain("claude-opus-5[1m]");
+      expect(args).not.toContain(LAUNCHED);
+    });
+  });
+
+  describe("detectRespawnModelSpec", () => {
+    const argv = ["claude", "--session-id", UUID, "--model", LAUNCHED];
+
+    it("reads the session's own transcript and reports the switched-to model", () => {
+      expect(
+        detectRespawnModelSpec(argv, {
+          ownerId: "su-x",
+          agent: "claude",
+          readLastActiveModel: () => SWITCHED_TO,
+        }),
+      ).toBe("claude-opus-5[1m]");
+    });
+
+    it("asks about the session named by the argv being replaced", () => {
+      // The native id rotates on every respawn, so detection must read the CURRENT
+      // child's transcript, not a remembered one.
+      let asked: unknown = null;
+      detectRespawnModelSpec(argv, {
+        ownerId: "su-x",
+        agent: "claude",
+        readLastActiveModel: (session: { sessionId?: string }) => {
+          asked = session.sessionId;
+          return SWITCHED_TO;
+        },
+      });
+      expect(asked).toBe(UUID);
+    });
+
+    it("returns null (keep inherited) when the transcript read throws", () => {
+      expect(
+        detectRespawnModelSpec(argv, {
+          ownerId: "su-x",
+          agent: "claude",
+          readLastActiveModel: () => {
+            throw new Error("unreadable");
+          },
+        }),
+      ).toBeNull();
+    });
+
+    it("does not read a transcript at all when there is no --model to replace", () => {
+      let called = false;
+      const out = detectRespawnModelSpec(["claude", "--session-id", UUID], {
+        ownerId: "su-x",
+        agent: "claude",
+        readLastActiveModel: () => {
+          called = true;
+          return SWITCHED_TO;
+        },
+      });
+      expect(out).toBeNull();
+      expect(called).toBe(false);
+    });
+
+    it("leaves an explicitly non-claude agent alone", () => {
+      // codex/omp compose model flags differently; an empty agent still means the
+      // claude argv shape, because the host passes an env var that can be unset.
+      expect(
+        detectRespawnModelSpec(argv, {
+          agent: "omp",
+          readLastActiveModel: () => SWITCHED_TO,
+        }),
+      ).toBeNull();
+      expect(
+        detectRespawnModelSpec(argv, {
+          agent: undefined,
+          readLastActiveModel: () => SWITCHED_TO,
+        }),
+      ).toBe("claude-opus-5[1m]");
+    });
+  });
+
+  it("END TO END: the measured live regression no longer reproduces", () => {
+    // su-60757119 on 2026-09-02 ran: fable, fable, fable, OPUS, FABLE, fable —
+    // the owner's `/model opus` held for one session, then the respawn reverted it.
+    // Detection + swap together are what stop the 5th hop going back to fable.
+    const live = ["claude", "--session-id", UUID, "--model", LAUNCHED];
+    const detected = detectRespawnModelSpec(live, {
+      ownerId: "su-60757119-f49f-4207-a8e6-70505b6c463a",
+      agent: "claude",
+      readLastActiveModel: () => SWITCHED_TO, // what the transcript records post-/model
+    });
+    const { args } = mintRecycleArgs(live, { mintId, agent: "claude", model: detected });
+    expect(args).toContain("claude-opus-5[1m]");
+    expect(args).not.toContain(LAUNCHED);
+  });
+});
+
 describe("mintRecycleArgs — personaFile swap (stale-prompt-render-in-live-sessions-2026-08-02 P-002)", () => {
   const UUID = "0123abcd-1234-5678-9abc-def012345678";
   const FRESH = "ffffabcd-1234-5678-9abc-def012345678";
@@ -8943,6 +9214,238 @@ describe("Codex resume local-liveness evidence", () => {
   });
 });
 
+describe("WI-2141892 — Claude resume local-liveness evidence", () => {
+  const canonical = { version: 1, kind: "no-live-claude-process" };
+
+  // A `/proc` the probe can be pointed at without touching the real one.
+  const fakeProc = ({ pids, cmdlines, parents = {} }) => ({
+    listProcPids: () => pids,
+    readCmdline: (pid) => {
+      if (!(pid in cmdlines)) throw new Error(`ESRCH ${pid}`);
+      return cmdlines[pid];
+    },
+    readStat: (pid) => `${pid} (node) S ${parents[pid] ?? 0} 0 0`,
+  });
+
+  it("normalizes the claude witness alongside the codex one, and nothing else", () => {
+    expect(NO_LIVE_CLAUDE_PROCESS_EVIDENCE).toEqual(canonical);
+    expect(normalizeResumeLocalLivenessEvidence(canonical)).toEqual(canonical);
+    // A fresh object every time: a shared frozen singleton on the wire would let
+    // one caller's mutation reach another's payload.
+    expect(normalizeResumeLocalLivenessEvidence(canonical)).not.toBe(canonical);
+
+    for (const value of [
+      { version: 1, kind: "no-live-claude-process", extra: true },
+      { version: 2, kind: "no-live-claude-process" },
+      { version: 1, kind: "no-live-claude-writer" },
+      { version: 1, kind: "clean-scan" },
+    ]) {
+      expect(normalizeResumeLocalLivenessEvidence(value)).toBeNull();
+    }
+  });
+
+  it("reports a live holder when another process carries the session id", () => {
+    const holder = claudeSessionProcessHolder("sess-abc", {
+      ...fakeProc({
+        pids: [10, 11],
+        cmdlines: { 10: "claude --resume sess-abc", 11: "unrelated" },
+      }),
+      selfPid: 11,
+    });
+    expect(holder).toMatchObject({ held: true, pid: 10, reason: "argv-match" });
+  });
+
+  it("EXCLUDES the caller's whole ancestor chain, not just its own pid", () => {
+    // The trap this guard exists for: psu's own argv carries `--resume <uuid>`,
+    // and so does the shell that launched it. pid 12 is the probe, 11 its
+    // parent, 10 its grandparent — all three name the session.
+    const proc = fakeProc({
+      pids: [10, 11, 12],
+      cmdlines: {
+        10: "bash -c psu --resume sess-abc",
+        11: "psu --resume sess-abc",
+        12: "node psu-launcher --resume sess-abc",
+      },
+      parents: { 12: 11, 11: 10, 10: 1 },
+    });
+    expect(
+      claudeSessionProcessHolder("sess-abc", { ...proc, selfPid: 12 }),
+    ).toMatchObject({ held: false, reason: "clean-scan" });
+
+    // POSITIVE CONTROL — without the ancestor walk the very same scan reports a
+    // holder, so the assertion above is not passing for a trivial reason.
+    expect(
+      claudeSessionProcessHolder("sess-abc", {
+        ...proc,
+        readStat: () => {
+          throw new Error("no chain");
+        },
+        selfPid: 12,
+      }),
+    ).toMatchObject({ held: true, reason: "argv-match" });
+  });
+
+  it("fails CLOSED on every probe failure — an unknown scan is not an absence", () => {
+    // The opposite of the codex writer-lock probe: that one may only improve a
+    // message, this one RELAXES a guard, so it may never guess.
+    expect(claudeSessionProcessHolder("", {})).toMatchObject({
+      held: false,
+      reason: "no-session-id",
+    });
+    expect(
+      claudeSessionProcessHolder("sess-abc", {
+        listProcPids: () => {
+          throw new Error("no /proc");
+        },
+      }),
+    ).toMatchObject({ held: false, reason: "no-proc" });
+    expect(
+      claudeSessionProcessHolder("sess-abc", { listProcPids: () => [] }),
+    ).toMatchObject({ held: false, reason: "scan-empty" });
+
+    // Only "clean-scan" is a witness; the other three false results are unknown.
+    for (const reason of ["no-session-id", "no-proc", "scan-empty"]) {
+      expect(
+        normalizeClaudeResumeLocalLivenessEvidence({
+          agent: "claude",
+          liveHost: null,
+          processHolder: { held: false, reason },
+        }),
+      ).toBeNull();
+    }
+  });
+
+  it("skips a pid that exits mid-scan rather than calling it a holder", () => {
+    // A read error on one pid must not make the witness unobtainable on a busy
+    // box — that pid is gone, which is the opposite of holding the session.
+    expect(
+      claudeSessionProcessHolder("sess-abc", {
+        ...fakeProc({ pids: [10, 11], cmdlines: { 11: "unrelated" } }),
+        selfPid: 99,
+      }),
+    ).toMatchObject({ held: false, reason: "clean-scan" });
+  });
+
+  it("emits the witness only for a non-fork Claude with both positive oracles", () => {
+    expect(
+      normalizeClaudeResumeLocalLivenessEvidence({
+        agent: "claude",
+        fork: false,
+        forceResume: undefined,
+        liveHost: null,
+        processHolder: { held: false, reason: "clean-scan" },
+      }),
+    ).toEqual(canonical);
+
+    const clean = { held: false, reason: "clean-scan" };
+    for (const value of [
+      // wrong backend — the oracles ask different questions and are not
+      // interchangeable, which the server re-checks independently
+      { agent: "codex", liveHost: null, processHolder: clean },
+      { agent: "omp", liveHost: null, processHolder: clean },
+      // a fork needs no witness: it never reuses the identity
+      { agent: "claude", fork: true, liveHost: null, processHolder: clean },
+      // a force means "take over a host I can SEE" — it must not manufacture an
+      // absence claim the probe did not make
+      { agent: "claude", forceResume: "1", liveHost: null, processHolder: clean },
+      // a live PTY host is the first oracle saying no
+      { agent: "claude", liveHost: {}, processHolder: clean },
+      // the PTY-host oracle never ran (undefined, not null)
+      { agent: "claude", processHolder: clean },
+      { agent: "claude", liveHost: null, processHolder: { held: true, reason: "argv-match" } },
+      { agent: "claude", liveHost: null, processHolder: null },
+      { agent: "claude", liveHost: null, processHolder: [] },
+    ]) {
+      expect(normalizeClaudeResumeLocalLivenessEvidence(value)).toBeNull();
+    }
+  });
+
+  it("degrades to the pre-witness claim when the operator 400s an unknown kind", async () => {
+    // MIXED-VERSION ROLLOUT, measured 2026-09-02: `psu` execs this launcher
+    // straight from the staging checkout, while :3070/:3170/:3270 all still
+    // rejected `no-live-claude-process`. Without this fallback, teaching the
+    // launcher a new kind makes the very bug being fixed strictly WORSE — the
+    // owner's refusal becomes "operator returned HTTP 400" until a deploy lands.
+    const bodies: any[] = [];
+    const notices: string[] = [];
+    const fetchImpl = async (_url: string, opts: any) => {
+      const body = JSON.parse(opts.body);
+      bodies.push(body);
+      if (body.localLivenessEvidence) {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ error: "unknown kind" }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, acquired: true, status: "acquired" }),
+      };
+    };
+
+    const outcome = await reportSessionResumed(22127, {
+      fetchImpl,
+      token: "t",
+      resumeClaimKey: "claim-rollout",
+      localLivenessEvidence: { version: 1, kind: "no-live-claude-process" },
+      onNotice: (m: string) => notices.push(m),
+    });
+
+    expect(outcome).toMatchObject({ claimed: true, status: "acquired" });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0].localLivenessEvidence).toEqual({
+      version: 1,
+      kind: "no-live-claude-process",
+    });
+    // The retry is the OLD request, not a new shape...
+    expect(bodies[1].localLivenessEvidence).toBeUndefined();
+    // ...on the SAME key, so the endpoint's replay contract cannot mint a
+    // second claimant.
+    expect(bodies[1].resumeClaimKey).toBe("claim-rollout");
+    expect(notices.join("")).toContain("no-live-claude-process");
+  });
+
+  it("does NOT retry a 400 that was not caused by the witness", async () => {
+    // POSITIVE CONTROL for the fallback's narrowness: a 400 on a request that
+    // carried no witness must surface as today's http refusal, not loop.
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls += 1;
+      return { ok: false, status: 400, json: async () => ({}) };
+    };
+    const outcome = await reportSessionResumed(22127, {
+      fetchImpl,
+      token: "t",
+      resumeClaimKey: "claim-plain-400",
+      onNotice: () => {},
+    });
+    expect(calls).toBe(1);
+    expect(outcome).toMatchObject({ claimed: false, reason: "http" });
+  });
+
+  it("names a route in the refusal instead of only --fork", () => {
+    const live = { status: "live" };
+    const held = describeResumeClaimRefusal(live, {
+      agent: "claude",
+      processHolder: { held: true, pid: 4242, reason: "argv-match" },
+    });
+    expect(held).toContain("pid 4242");
+    expect(held).toContain("coord:send");
+    expect(held).toContain("processes:kill");
+
+    const unknown = describeResumeClaimRefusal(live, {
+      agent: "claude",
+      processHolder: { held: false, reason: "no-proc" },
+    });
+    expect(unknown).toContain("no-proc");
+    expect(unknown).toContain("--fork");
+    // The owner must be told what --fork COSTS; the old text offered it flatly.
+    expect(unknown).toContain("NEW identity");
+  });
+});
+
 describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", () => {
   it("POSTs the row id to bootstrap-su/session-resumed with the bearer", async () => {
     const calls = [];
@@ -9558,12 +10061,21 @@ describe("describeResumeClaimRefusal — four causes must not share one sentence
     expect(describeResumeClaimRefusal(live, { agent: "codex" })).toContain(
       "native writer-lock guard",
     );
+    // WI-2141892: with no probe result supplied, claude falls back to the
+    // could-not-determine branch rather than asserting anything about a host it
+    // did not observe. The probe-aware branches are covered in the
+    // "Claude resume local-liveness evidence" block below.
     expect(describeResumeClaimRefusal(live, { agent: "claude" })).toContain(
-      "Claude host/process",
+      "No live managed-PTY host was found",
     );
     expect(describeResumeClaimRefusal(live, { agent: "omp" })).toContain(
       "OMP host/process",
     );
+    // Each backend still gets its OWN sentence — the point of this test.
+    const perBackend = (["codex", "claude", "omp"] as const).map((agent) =>
+      describeResumeClaimRefusal(live, { agent }),
+    );
+    expect(new Set(perBackend).size).toBe(3);
   });
 
   it("renders a DISTINCT sentence per reason, and surfaces the detail", () => {

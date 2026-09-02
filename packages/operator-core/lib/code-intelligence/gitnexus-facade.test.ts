@@ -27,6 +27,8 @@ import {
   GITNEXUS_NOT_ROUTABLE,
   MAX_SITES_PER_ANSWER,
   truncationNotice,
+  fileEdgeNotice,
+  FILE_LEVEL_EDGE_DETAIL,
 } from './gitnexus-facade.ts';
 import { isTrustworthyEmpty, RIPGREP_SCOPE_GUIDANCE, toOneIndexed } from './contracts.ts';
 import { ACCEPTANCE_CORPUS } from './acceptance-corpus.ts';
@@ -518,7 +520,12 @@ describe('freshness note parsing is defensive', () => {
   });
 });
 
-describe('adoption telemetry', () => {
+// These counters are a PROCESS-LOCAL probe, not the adoption measurement —
+// adoption is derived from `tool_invocations` (see the facade's comment on
+// GitnexusAdoptionCounters). The suite name says so, because the old name
+// ("adoption telemetry") is what let a module-global nobody reads be mistaken
+// for a metric.
+describe('process-local dispatch counters (NOT adoption — see tool_invocations)', () => {
   it('counts dispatches per op and refusals per intent', async () => {
     configureGitnexusDispatch(withIndexHealth(async () => contextFoundEnvelope()));
     await gitnexusFacade('symbol', { name: 'a' });
@@ -542,6 +549,167 @@ describe('adoption telemetry', () => {
     s.byOp.symbol = 999;
     expect(gitnexusAdoptionSnapshot().dispatched).toBe(1);
     expect(gitnexusAdoptionSnapshot().byOp.symbol).toBe(1);
+  });
+});
+
+/**
+ * The file-level-edge fixtures are the REAL rows measured 2026-09-02 against
+ * gitnexus 1.6.9 at index commit acab51f9, reached through the live
+ * `graph:query` tool. `callers('pinModuleState')` returned three edges of which
+ * exactly one was a call site; `index.test.ts` appeared TWICE — once as the
+ * true caller `make`, once as the bare containing file.
+ *
+ * The load-bearing detail is that enrichment does not FAIL on a file node. It
+ * answers `status:'found'` with a symbol that simply has no `kind` and no
+ * `startLine`, so "the probe succeeded" is not evidence a call site was found.
+ * A guard written against a thrown/absent enrichment would miss this entirely.
+ */
+const CALLER_EDGE_ROWS = [
+  {
+    uid: 'Function:libs/generic/module-singleton/src/index.test.ts:make',
+    name: 'make',
+    filePath: 'libs/generic/module-singleton/src/index.test.ts',
+  },
+  {
+    uid: 'File:libs/generic/module-singleton/src/pinned-subject.fixture.ts',
+    name: 'pinned-subject.fixture.ts',
+    filePath: 'libs/generic/module-singleton/src/pinned-subject.fixture.ts',
+  },
+  {
+    uid: 'File:libs/generic/module-singleton/src/index.test.ts',
+    name: 'index.test.ts',
+    filePath: 'libs/generic/module-singleton/src/index.test.ts',
+  },
+];
+
+/** Enrichment responses, keyed by uid — symbol nodes carry a line, files do not. */
+const ENRICHED_BY_UID: Record<string, Record<string, unknown>> = {
+  'Function:libs/generic/module-singleton/src/index.test.ts:make': {
+    uid: 'Function:libs/generic/module-singleton/src/index.test.ts:make',
+    name: 'make',
+    kind: 'Function',
+    filePath: 'libs/generic/module-singleton/src/index.test.ts',
+    startLine: 71,
+  },
+  'File:libs/generic/module-singleton/src/pinned-subject.fixture.ts': {
+    uid: 'File:libs/generic/module-singleton/src/pinned-subject.fixture.ts',
+    name: 'pinned-subject.fixture.ts',
+    filePath: 'libs/generic/module-singleton/src/pinned-subject.fixture.ts',
+  },
+  'File:libs/generic/module-singleton/src/index.test.ts': {
+    uid: 'File:libs/generic/module-singleton/src/index.test.ts',
+    name: 'index.test.ts',
+    filePath: 'libs/generic/module-singleton/src/index.test.ts',
+  },
+};
+
+function mixedEdgeDispatch(edgeKey: 'incoming' | 'outgoing'): DispatchResponder {
+  return withIndexHealth(async (tool, args) => {
+    if (tool !== 'context') throw new Error(`unexpected tool ${tool}`);
+    const uid = (args as { uid?: string }).uid;
+    if (uid) {
+      const symbol = ENRICHED_BY_UID[uid];
+      if (!symbol) throw new Error(`unexpected uid ${uid}`);
+      return envelope({ status: 'found', symbol });
+    }
+    return envelope({
+      status: 'found',
+      symbol: {
+        uid: 'Function:libs/generic/module-singleton/src/index.ts:pinModuleState',
+        name: 'pinModuleState',
+        kind: 'Function',
+        filePath: 'libs/generic/module-singleton/src/index.ts',
+        startLine: 105,
+      },
+      ...(edgeKey === 'incoming'
+        ? { incoming: { calls: CALLER_EDGE_ROWS }, outgoing: {} }
+        : { incoming: { calls: [] }, outgoing: { calls: CALLER_EDGE_ROWS } }),
+    });
+  });
+}
+
+describe('file-level graph edges are never passed off as call sites', () => {
+  it('labels a file node instead of rendering it as an unexplained null line', async () => {
+    configureGitnexusDispatch(mixedEdgeDispatch('incoming'));
+    const a = await gitnexusFacade('callers', { name: 'pinModuleState' });
+
+    expect(a.sites).toHaveLength(3);
+
+    // The resolved call site leads, and carries a real one-indexed line
+    // (71 zero-indexed -> 72), so a `limit` cut keeps the answer, not the noise.
+    expect(a.sites[0]).toMatchObject({
+      path: 'libs/generic/module-singleton/src/index.test.ts',
+      line1: 72,
+      kind: 'function',
+      detail: 'make',
+    });
+
+    // Both file rows are labelled. Before this fix they were
+    // `{ line1: null, kind: null, detail: 'index.test.ts' }` — which reads as
+    // "a caller named index.test.ts".
+    for (const site of a.sites.slice(1)) {
+      expect(site.kind).toBe('file');
+      expect(site.line1).toBeNull();
+      expect(site.detail).toBe(FILE_LEVEL_EDGE_DETAIL);
+      // The detail must not be the bare basename any more: that spelling is
+      // exactly what made a file indistinguishable from a symbol.
+      expect(site.detail).not.toBe('index.test.ts');
+    }
+  });
+
+  it('tells the caller the split, because counting rows overstates the total', async () => {
+    configureGitnexusDispatch(mixedEdgeDispatch('incoming'));
+    const a = await gitnexusFacade('callers', { name: 'pinModuleState' });
+
+    // 3 rows, 1 real caller. `index.test.ts` is present twice — once resolved,
+    // once as a file — so the row count is not the caller count.
+    expect(a.error).toBeTruthy();
+    expect(String(a.error)).toContain('1 resolved call site');
+    expect(String(a.error)).toContain('2 FILE-level edge');
+    expect(String(a.error)).toMatch(/overstates the real total/i);
+  });
+
+  it('applies the same rail to callees', async () => {
+    configureGitnexusDispatch(mixedEdgeDispatch('outgoing'));
+    const a = await gitnexusFacade('callees', { name: 'pinModuleState' });
+
+    expect(a.sites[0]?.line1).toBe(72);
+    expect(a.sites.filter((s) => s.kind === 'file')).toHaveLength(2);
+    expect(String(a.error)).toContain('2 FILE-level edge');
+  });
+
+  it('stays silent when every edge resolves — the notice is not boilerplate', async () => {
+    // Falsifier for the three tests above: if `fileEdgeNotice` returned a
+    // string unconditionally they would all pass while proving nothing.
+    configureGitnexusDispatch(withIndexHealth(async () => contextFoundEnvelope()));
+    const a = await gitnexusFacade('callers', { name: 'pinModuleState' });
+
+    expect(a.sites.every((s) => s.kind !== 'file')).toBe(true);
+    expect(a.error).toBeNull();
+    expect(fileEdgeNotice('callers', 3, 0)).toBeNull();
+  });
+
+  it('an all-file answer is not reported as a set of callers', async () => {
+    // The worst case: nothing resolved. Sites are non-empty, so
+    // isTrustworthyEmpty is not the rail that saves the reader here — the
+    // label and the notice are.
+    configureGitnexusDispatch(
+      withIndexHealth(async (tool, args) => {
+        if (tool !== 'context') throw new Error(`unexpected tool ${tool}`);
+        const uid = (args as { uid?: string }).uid;
+        if (uid) return envelope({ status: 'found', symbol: ENRICHED_BY_UID[uid] });
+        return envelope({
+          status: 'found',
+          symbol: { name: 'pinModuleState', filePath: 'x.ts', startLine: 0 },
+          incoming: { calls: CALLER_EDGE_ROWS.slice(1) },
+        });
+      }),
+    );
+    const a = await gitnexusFacade('callers', { name: 'pinModuleState' });
+
+    expect(a.sites).toHaveLength(2);
+    expect(a.sites.every((s) => s.kind === 'file')).toBe(true);
+    expect(String(a.error)).toContain('0 resolved call site');
   });
 });
 

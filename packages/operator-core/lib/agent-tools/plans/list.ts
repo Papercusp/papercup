@@ -18,6 +18,7 @@ import {
   getPlanContentsBySlugs,
   resolveHarnessPlansDir,
   resolvePlanScope,
+  isUnknownPlanScopeError,
   type PlanIndexRow,
 } from './source';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -591,8 +592,20 @@ export default defineTool({
               // uncaught. Both resolvePlanScope failure messages are swallowed
               // here; any OTHER error (a real DB/query fault) still throws so
               // genuine failures stay loud.
-              const msg = err instanceof Error ? err.message : String(err);
-              if (/not registered|not a Hive home/i.test(msg)) {
+              //
+              // P-014 / EI-19286551248996972: this used to test the message inline
+              // with a bare /not registered|not a Hive home/i — no `resolvePlanScope:`
+              // anchor, so it matched those words ANYWHERE in the string. That made a
+              // registry READ FAULT swallowable as an absence: RegistryReadUnavailableError
+              // appends `Underlying: <cause.message>`, and a DB/pool fault whose text
+              // happens to contain "not registered" would then be reported as ok:true + []
+              // for a harness that actually holds rows — the precise incident that filed
+              // this. Classification now goes through the shared, TYPE-first predicate in
+              // ./source (which rejects the fault by `instanceof` before reading any text),
+              // so a fault cannot be spelled into an absence. It is also the same predicate
+              // plans:items uses, so the two read tools can no longer disagree about what
+              // "unknown harness" means.
+              if (isUnknownPlanScopeError(err)) {
                 batchUnknown.push(harnessSlug);
               } else {
                 throw err;

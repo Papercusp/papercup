@@ -25,6 +25,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { GitPipelineSnapshot, RoutineInfo } from './git-pipeline-stats';
 import { gitPipelineSnapshot, releaseTriggerControlBlockReason } from './git-pipeline-stats';
+import { summarizeFreezeAndConverge } from './release/freeze-disposition';
 import {
   buildDeployTerminalShell,
   readDeployTerminalMarker,
@@ -384,6 +385,10 @@ export function computeDeployStatus(
   inFlight: DeployInFlight | null = null,
   liveCertification?: LiveReleaseCertification | null,
   manualRunAuthority: ReleaseTraceManualRunAuthority | null = null,
+  /** WI-2141736 P-004: clock for the freeze-and-converge staleness note appended to
+   *  `summary`. Defaults to the real clock so every existing caller is unchanged; tests
+   *  pin it so the "last observed Nm ago" wording is deterministic. */
+  nowMs: number = Date.now(),
 ): DeployStatus {
   const g = snap.gate;
   const d = snap.deploy;
@@ -725,7 +730,17 @@ export function computeDeployStatus(
       'Could not determine the deploy position from the snapshot (a ref may be unresolved). Inspect dev:pipeline_position / the /admin Git tab.';
   }
 
-  const summary = `[${state}] ${recommendation}`;
+  // WI-2141736 P-004: the freeze's own disposition, in prose, on the surface an agent
+  // actually reads. Without this the record is structured-only, so "why is the freeze
+  // off" stays archaeology for anyone not inspecting the raw payload — the exact gap
+  // that let freeze-and-converge sit disabled fleet-wide for a day unnoticed. Null
+  // (absent or malformed record) appends NOTHING rather than a healthy-sounding default.
+  const freezeLine = summarizeFreezeAndConverge(
+    { freezeAndConverge: g.freezeAndConverge ?? null },
+    nowMs,
+  );
+  const summary =
+    `[${state}] ${recommendation}` + (freezeLine ? ` · ${freezeLine}` : '');
   return {
     gate: {
       green: gateGreen,

@@ -28,7 +28,11 @@ import type { Sql } from 'postgres';
 import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { loadHarnessRegistry } from '../../harness-registry';
-import { resolveProject, resolveWorkspaceForHarnessSlug } from '../../harness-core';
+import {
+  resolveProject,
+  resolveWorkspaceForHarnessSlug,
+  RegistryReadUnavailableError,
+} from '../../harness-core';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { canonicalHarnessSlug, operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
@@ -482,6 +486,42 @@ export async function resolvePlanScope(
     );
   }
   return { workspaceId, harnessSlug: hiveHome };
+}
+
+/**
+ * Does this error mean "this harness genuinely has no Hive plan scope" — a stale,
+ * deregistered, or standalone-non-Hive slug, for which a LIST read is legitimately
+ * empty rather than a failure?
+ *
+ * This is the single classifier for that question (P-014 / EI-19286551248996972).
+ * It lives beside `resolvePlanScope`, which throws the errors it classifies, so the
+ * predicate cannot drift away from the thrower.
+ *
+ * THE TYPE CHECK BELOW IS THE POINT, AND IT MUST STAY FIRST. The incident this
+ * closes is a registry READ FAULT rendering as "not registered": callers folded the
+ * fault into the same empty-result path as a confirmed absence, so `plans:list`
+ * answered `ok:true` with `[]` for a harness that in fact held 960 rows. An
+ * error-STRING match can never separate those two — a fault and an absence can
+ * render the same words — so the distinction has to be typed at the source.
+ *
+ * Concretely: `RegistryReadUnavailableError`'s own prose deliberately avoids the
+ * phrases matched below, but it appends `Underlying: <cause.message>`, and the
+ * cause is whatever the failing registry read threw. Nothing stops a DB/pool fault
+ * from containing the words "not registered", and if it ever does, a purely textual
+ * classifier silently reports the fault as an absence — reintroducing the exact bug.
+ * The `instanceof` guard makes that unreachable regardless of message text.
+ *
+ * The regex is retained only for the genuine-absence case, where `resolvePlanScope`
+ * is the thrower and the message shape is ours. It is anchored on that `resolvePlanScope:`
+ * prefix so an unrelated error carrying similar words still propagates.
+ */
+export function isUnknownPlanScopeError(error: unknown): boolean {
+  // A read that FAILED is never evidence of absence — check the type before the text.
+  if (error instanceof RegistryReadUnavailableError) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  return /resolvePlanScope:\s+(?:harness .* is not registered|plans are Hive-scoped, but .* is not a Hive home)/i.test(
+    message,
+  );
 }
 
 /**

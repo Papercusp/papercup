@@ -1142,17 +1142,39 @@ const RESUME_CLAIM_WINDOW_SEC = 300;
 export const RESUME_RESERVATION_LEASE_SEC = 60;
 
 /**
- * Positive local evidence that an exact Codex resume has no competing writer.
+ * Positive local evidence that an exact resume has no competing agent process.
  *
  * This is intentionally a closed discriminant rather than a boolean. A missing
  * or malformed probe result is unknown and must not weaken the recent-row race
  * guard. The launcher is the only producer today; the server validates it again
  * because this endpoint is a trust boundary.
+ *
+ * Each kind names the ORACLE that produced it, and each oracle can only speak
+ * for one agent backend:
+ *   - `no-live-codex-writer`  — codex's own thread-writer flock reported free
+ *     (WI-41663).
+ *   - `no-live-claude-process` — no psu PTY host AND a complete `/proc` scan
+ *     found no live argv carrying the native session id (WI-2141892).
+ * {@link ADV_SESSION_LIVENESS_EVIDENCE_AGENT} binds them, so a claude witness can
+ * never reconcile a codex row: the two probes ask genuinely different questions
+ * and a cross-applied one would be an unearned liveness claim.
  */
+export type AdvSessionLocalLivenessEvidenceKind =
+  | 'no-live-codex-writer'
+  | 'no-live-claude-process';
+
 export type AdvSessionLocalLivenessEvidence = {
   version: 1;
-  kind: 'no-live-codex-writer';
+  kind: AdvSessionLocalLivenessEvidenceKind;
 };
+
+/** Which `agent` each witness kind is allowed to reconcile. */
+export const ADV_SESSION_LIVENESS_EVIDENCE_AGENT: Readonly<
+  Record<AdvSessionLocalLivenessEvidenceKind, string>
+> = Object.freeze({
+  'no-live-codex-writer': 'codex',
+  'no-live-claude-process': 'claude',
+});
 
 /** Strict runtime validation for the local-liveness trust-boundary payload. */
 export function isAdvSessionLocalLivenessEvidence(
@@ -1165,8 +1187,21 @@ export function isAdvSessionLocalLivenessEvidence(
     keys.length === 2 &&
     keys.every((key) => key === 'version' || key === 'kind') &&
     record.version === 1 &&
-    record.kind === 'no-live-codex-writer'
+    typeof record.kind === 'string' &&
+    Object.prototype.hasOwnProperty.call(ADV_SESSION_LIVENESS_EVIDENCE_AGENT, record.kind)
   );
+}
+
+/**
+ * Does this witness speak for this row's agent backend? False for an absent or
+ * malformed witness, and false for a kind produced by another backend's oracle.
+ */
+export function advSessionLivenessEvidenceCoversAgent(
+  agent: string | null,
+  evidence: unknown,
+): boolean {
+  if (!isAdvSessionLocalLivenessEvidence(evidence)) return false;
+  return ADV_SESSION_LIVENESS_EVIDENCE_AGENT[evidence.kind] === agent;
 }
 
 export type AdvSessionResumeReservation =
@@ -1246,10 +1281,16 @@ export async function acquireAdvSessionResume(
     const staleActive = new Date(row.started_at).getTime() <= nowMs - boundedStaleSec * 1_000;
     const expiredReservation = row.resume_claim_key != null && !leaseLive;
     // A recent unended row normally wins the fail-closed liveness decision.
-    // Only the launcher-produced, strictly validated Codex absence witness may
-    // reconcile that one case; it never relaxes the lease or row lock.
-    const canReconcileRecentActive =
-      row.agent === 'codex' && isAdvSessionLocalLivenessEvidence(localLivenessEvidence);
+    // Only a launcher-produced, strictly validated absence witness whose ORACLE
+    // speaks for this row's backend may reconcile that one case; it never relaxes
+    // the lease or the row lock. Without this, a session that died with no end
+    // witness is unresumable for the whole recent-active window with no override
+    // at all — PSU_FORCE_RESUME gates only psu's local double-host guard, never
+    // this check (WI-41663 for codex, WI-2141892 for claude).
+    const canReconcileRecentActive = advSessionLivenessEvidenceCoversAgent(
+      row.agent,
+      localLivenessEvidence,
+    );
     if (!replayed && !terminal && !staleActive && !canReconcileRecentActive && !expiredReservation) {
       return { status: 'live', acquired: false } as const;
     }

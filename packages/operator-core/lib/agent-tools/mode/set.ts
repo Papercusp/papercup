@@ -560,6 +560,18 @@ export default defineTool({
               ownerDirected: Boolean(args.ownerDirected && ownerAuthorized),
               setBy: ident.ownerId,
             }),
+            // P-001/P-002 (facts-require-explicit-expiry-2026-09-02) — the LIFETIME
+            // declaration, which this write previously left to the silent 7d default.
+            // A mode's standing instructions are normative ("while this mode is on, do
+            // X"), so kind:'convention' is the honest modality AND the correct
+            // lifetime: it makes them permanent, and it takes them out of the
+            // cap-eviction population. Both matter here, because this row's lifecycle
+            // is RETRACT-driven — the `else` branch below clears it when the mode is
+            // disabled. Under the old default a long-running mode silently lost its
+            // instructions after a week (or to an eviction) while still reporting
+            // enabled, which is exactly the "policy retracted by a cap" failure P-028
+            // exempts conventions from.
+            kind: 'convention',
             // A plain anchor, NOT the platform-verified 'owner-turn' token: that
             // one is resolved by the facts tool layer, and claiming it from here
             // would badge the fact with provenance nothing verified.

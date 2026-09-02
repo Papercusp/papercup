@@ -1381,3 +1381,90 @@ describe('readDeployStatus wiring', () => {
     expect(s.state).toBe('green-deployable');
   });
 });
+
+/**
+ * WI-2141736 P-004: the freeze-and-converge disposition must be READABLE in the prose an
+ * agent actually sees, not only in the structured payload. `repairQueue: null` is three
+ * different facts wearing one value — the owner switched the freeze off, the gate just
+ * retired a candidate, or nothing was ever frozen — and collapsing them is what let
+ * freeze-and-converge sit disabled fleet-wide for a day with nobody noticing.
+ */
+describe('computeDeployStatus — freeze-and-converge disposition in the summary', () => {
+  const T0 = 1_800_000_000_000;
+  type FreezeRecord = NonNullable<GitPipelineSnapshot['gate']['freezeAndConverge']>;
+  const freeze = (over: Partial<FreezeRecord>): FreezeRecord =>
+    ({
+      enabled: true,
+      state: 'held',
+      reason: 'provider capacity wall outlasts the stall window',
+      candidate: 'c'.repeat(40),
+      holdUntilMs: T0 + 3_600_000,
+      capacityRetryAtMs: T0 + 7_200_000,
+      observedAtMs: T0,
+      ...over,
+    }) as FreezeRecord;
+
+  it('states that the freeze is ON, its state, and its reason', () => {
+    const s = computeDeployStatus(
+      mkSnap({ freezeAndConverge: freeze({}) }, {}),
+      null,
+      null,
+      null,
+      T0 + 60_000,
+    );
+    expect(s.summary).toContain('freeze-and-converge is ON, held');
+    expect(s.summary).toContain('provider capacity wall outlasts the stall window');
+    // The state/recommendation half is untouched — the disposition is APPENDED, never
+    // substituted for the deploy verdict a caller is already reading.
+    expect(s.summary.startsWith(`[${s.state}]`)).toBe(true);
+  });
+
+  it('states that the freeze is OFF and WHY — the read that used to be archaeology', () => {
+    const s = computeDeployStatus(
+      mkSnap(
+        {
+          freezeAndConverge: freeze({
+            enabled: false,
+            state: 'off',
+            reason: 'RELEASE_FREEZE_AND_CONVERGE flag is disabled',
+          }),
+        },
+        {},
+      ),
+      null,
+      null,
+      null,
+      T0 + 60_000,
+    );
+    expect(s.summary).toContain('freeze-and-converge is OFF');
+    expect(s.summary).toContain('RELEASE_FREEZE_AND_CONVERGE flag is disabled');
+  });
+
+  it('FALSIFIER: an absent record appends NOTHING rather than a healthy-sounding default', () => {
+    const withRecord = computeDeployStatus(
+      mkSnap({ freezeAndConverge: freeze({}) }, {}),
+      null,
+      null,
+      null,
+      T0,
+    );
+    const without = computeDeployStatus(mkSnap({}, {}), null, null, null, T0);
+    // Positive control: the same call DOES append when a record exists, so an empty
+    // summary here is a real absence and not a summarizer that never fires.
+    expect(withRecord.summary).toContain('freeze-and-converge is');
+    expect(without.summary).not.toContain('freeze-and-converge');
+    expect(without.summary).toBe(`[${without.state}] ${without.recommendation}`);
+  });
+
+  it('marks a record the gate has stopped refreshing as history, not current state', () => {
+    const s = computeDeployStatus(
+      mkSnap({ freezeAndConverge: freeze({}) }, {}),
+      null,
+      null,
+      null,
+      T0 + 5 * 60 * 60 * 1_000,
+    );
+    expect(s.summary).toContain('last observed');
+    expect(s.summary).toContain('history, not current state');
+  });
+});

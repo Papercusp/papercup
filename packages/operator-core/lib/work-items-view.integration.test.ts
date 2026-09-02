@@ -202,7 +202,19 @@ describe('WI-5493 — engineer_issues_view_dml() payload `||` merge must not arr
       INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, title, body, state, kind, payload)
       VALUES ('default', 'WI-402', 'array payload', '', 'open', 'bug', '["not", "an", "object"]'::jsonb)`;
     const rows = await db.sql<{ payload: unknown }[]>`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = 'WI-402'`;
-    expect(rows[0]!.payload).toEqual({});
+
+    // Migration 1096 (P-003 / WI-6688) stopped the view subtracting `_ei`, so
+    // the projection now faithfully shows the stored blob and this reads
+    // { _ei: {} } rather than {}. The GUARD this test exists for is unchanged
+    // and is asserted directly below: the `||` merge must never turn a
+    // non-object NEW.payload into a jsonb ARRAY (["<json-text>", {...}]), which
+    // destroyed every named key. Assert that property, not the old projection.
+    const payload = rows[0]!.payload as Record<string, unknown>;
+    expect(Array.isArray(payload)).toBe(false);
+    expect(typeof payload).toBe('object');
+    const { _ei, ...rest } = payload;
+    expect(rest).toEqual({});
+    expect(_ei).toEqual({});
   });
 
   it('applies the same guard on the UPDATE path', async () => {

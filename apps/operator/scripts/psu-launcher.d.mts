@@ -826,34 +826,45 @@ export function nativeSessionIdFromLaunchArgs(args?: any[]): string | null;
  * for tests.
  */
 export function stripKickoffPositional(args?: any[]): string[];
-export function mintRecycleArgs(args?: any[], { mintId, agent, personaFile, model, }?: {
-    mintId?: (() => `${string}-${string}-${string}-${string}-${string}`) | undefined;
-    agent?: null | undefined;
-    personaFile?: null | undefined;
-    model?: null | undefined;
+/**
+ * @param {string[]} [args]
+ * @param {{ mintId?: () => string, agent?: string | null, personaFile?: string | null, model?: string | null }} [opts]
+ */
+export function mintRecycleArgs(args?: string[], { mintId, agent, personaFile, model, }?: {
+    mintId?: () => string;
+    agent?: string | null;
+    personaFile?: string | null;
+    model?: string | null;
 }): {
-    args: any[];
+    args: string[];
     nativeId: null;
 } | {
-    args: any[];
-    nativeId: `${string}-${string}-${string}-${string}-${string}`;
+    args: string[];
+    nativeId: string;
 };
-export function mintCarryRespawnArgs(args?: any[], { systemPromptAddendum, ownerId, mintId, home, agent, personaFile, codexHome, model, }?: {
-    ownerId?: null | undefined;
-    mintId?: (() => `${string}-${string}-${string}-${string}-${string}`) | undefined;
-    home?: string | undefined;
-    agent?: string | undefined;
-    personaFile?: null | undefined;
-    codexHome?: null | undefined;
-    model?: null | undefined;
+/**
+ * @param {string[]} [args]
+ * @param {{ systemPromptAddendum?: string, ownerId?: string | null, mintId?: () => string,
+ *          home?: string, agent?: string | null, personaFile?: string | null,
+ *          codexHome?: string | null, model?: string | null }} [opts]
+ */
+export function mintCarryRespawnArgs(args?: string[], { systemPromptAddendum, ownerId, mintId, home, agent, personaFile, codexHome, model, }?: {
+    systemPromptAddendum?: string;
+    ownerId?: string | null;
+    mintId?: () => string;
+    home?: string;
+    agent?: string | null;
+    personaFile?: string | null;
+    codexHome?: string | null;
+    model?: string | null;
 }): {
     args: string[];
     nativeId: null;
     launchContextPath: string;
     codexAgentsPath: string;
 } | {
-    args: any[];
-    nativeId: `${string}-${string}-${string}-${string}-${string}`;
+    args: string[];
+    nativeId: string;
     launchContextPath: string;
     codexAgentsPath?: undefined;
 };
@@ -952,6 +963,9 @@ export function splitRespawnModelSpec(spec: any): {
     id: string;
     effort: string;
 };
+/** The Claude model FAMILY a spec belongs to, or null for a non-Claude /
+ *  unrecognized id. Kept in the same vocabulary as DEFAULT_1M_FAMILY_RE. */
+export function respawnModelFamily(id: any): string | null;
 /**
  * WI-2141859: the model spec a successor should be launched with, given the
  * spec its predecessor's argv carried and the model that predecessor was
@@ -959,12 +973,25 @@ export function splitRespawnModelSpec(spec: any): {
  *
  * Null on every uncertain input — no inherited flag (we never ADD one; see
  * mintRecycleArgs), nothing detected, an unrecognizable detected id, or an
- * unchanged identity. A change is composed as detected-identity + the
- * INHERITED effort: `/model` in the chat changes the model, it does not restate
- * the effort the session was launched at, so effort rides across rather than
- * being silently dropped to the model default. normalizeModelSpec then re-adds
- * the `[1m]` window marker exactly as the resume path does, so an opus/fable/
+ * unchanged model. A change is composed as detected-identity + the INHERITED
+ * effort: `/model` in the chat changes the model, it does not restate the
+ * effort the session was launched at, so effort rides across rather than being
+ * silently dropped to the model default. normalizeModelSpec then re-adds the
+ * `[1m]` window marker exactly as the resume path does, so an opus/fable/
  * sonnet-5 successor keeps its 1M window. Pure; exported for tests.
+ *
+ * "UNCHANGED" IS COMPARED AT FAMILY GRANULARITY, and that is the whole
+ * conservatism of this function. The flag holds what the LAUNCH asked for
+ * (`sonnet[1m]`, `claude-fable-5`) while the transcript holds what the CLI
+ * RESOLVED it to (`claude-sonnet-5`, `claude-fable-5-1`) — so an exact-id
+ * compare calls those a change and rewrites the flag, quietly converting an
+ * alias pin ("latest sonnet") into a version pin, and a release pin into a
+ * point-release pin. Neither is anything the owner did. Caught by a read-only
+ * probe over the live fleet before this shipped: 4 running sessions carrying
+ * `sonnet[1m]` would have been rewritten to `claude-sonnet-5[1m]`. Only a
+ * FAMILY change (fable → opus) is an owner `/model` switch, which is the only
+ * thing this exists to preserve. Two ids with no recognizable family (a
+ * provider-qualified or local id) fall back to an exact compare.
  */
 export function reconcileRespawnModelSpec(inheritedSpec: any, detectedModel: any): any;
 /** The `--model` spec an argv carries, or null. Pure; the read half of the
@@ -983,13 +1010,28 @@ export function modelSpecFromRecycleArgv(args?: any[]): string | null;
  * null so a respawn keeps the inherited spec rather than being blocked or
  * re-pinned on a guess.
  */
-export function detectRespawnModelSpec(args?: any[], { ownerId, agent, home, configDir, readLastActiveModel, }?: {
-    ownerId?: null | undefined;
-    agent?: null | undefined;
-    home?: string | undefined;
-    configDir?: null | undefined;
-    readLastActiveModel?: typeof lastActiveModelFor | undefined;
-}): any;
+/**
+ * @param {string[]} [args]
+ * @param {{ ownerId?: string | null, agent?: string | null, home?: string,
+ *          configDir?: string | null,
+ *          readLastActiveModel?: (session: { agent: string, sessionId: string, coordOwnerId?: string | null, configDir?: string },
+ *                                 opts?: { home?: string }) => string | null }} [opts]
+ * @returns {string | null}
+ */
+export function detectRespawnModelSpec(args?: string[], { ownerId, agent, home, configDir, readLastActiveModel, }?: {
+    ownerId?: string | null;
+    agent?: string | null;
+    home?: string;
+    configDir?: string | null;
+    readLastActiveModel?: (session: {
+        agent: string;
+        sessionId: string;
+        coordOwnerId?: string | null;
+        configDir?: string;
+    }, opts?: {
+        home?: string;
+    }) => string | null;
+}): string | null;
 /** Map a plan picker value to the bootstrap-su `plan_slug` (NO_PLAN → null). Pure. */
 export function planValue(picked: any): any;
 /**
@@ -2353,7 +2395,8 @@ export function reportSessionResumeReleased(advSessionId: number | string | null
  *           detail?: string, status?: 'reserved'|'live'|'missing',
  *           retryAfterMs?: number, leaseExpiresAt?: string,
  *           resumeClaimKey?: string }} outcome
- * @param {{ agent?: 'claude'|'omp'|'codex'|null }} [context]
+ * @param {{ agent?: 'claude'|'omp'|'codex'|null,
+ *           processHolder?: { held?: boolean, pid?: number|null, reason?: string }|null }} [context]
  * @returns {string}
  */
 export function describeResumeClaimRefusal(outcome: {
@@ -2364,8 +2407,13 @@ export function describeResumeClaimRefusal(outcome: {
     retryAfterMs?: number;
     leaseExpiresAt?: string;
     resumeClaimKey?: string;
-}, { agent }?: {
+}, { agent, processHolder }?: {
     agent?: "claude" | "omp" | "codex" | null;
+    processHolder?: {
+        held?: boolean;
+        pid?: number | null;
+        reason?: string;
+    } | null;
 }): string;
 /**
  * Best-effort "my managed host RESPAWNED the child under a fresh native id"
@@ -2654,11 +2702,83 @@ export function codexThreadWriterHolder(codexHome: any, sessionId: any, { readPr
     sessionId: any;
     reason: string;
 };
-/** Normalize a wire value to the one canonical local-liveness witness. */
-export function normalizeResumeLocalLivenessEvidence(value: any): {
-    version: 1;
-    kind: "no-live-codex-writer";
-} | null;
+/**
+ * WI-2141892 — the same second oracle, for CLAUDE.
+ *
+ * WHY THIS EXISTS. `acquireAdvSessionResume` refuses a non-terminal adv row whose
+ * `started_at` is inside the 300s recent-active window, and until now only a
+ * `codex` row could be reconciled by local evidence. So a claude session that
+ * exited WITHOUT an end witness (window closed, host killed, box rebooted — the
+ * row keeps ended_at/exit_code/shutdown_accepted_at NULL) was unresumable for
+ * five minutes with NO override: `PSU_FORCE_RESUME=1` gates only psu's own
+ * double-host guard and never reaches the server acquire, leaving `--fork` —
+ * which mints a FRESH identity and abandons the coord ownerId every lock, await
+ * and presence row is keyed on. The refusal even reported that no managed-PTY
+ * host was found, then discarded that fact. This turns it into evidence.
+ *
+ * WHAT IT ASKS. Codex has one authority to consult (its writer flock). Claude has
+ * none, so the witness is the conjunction of two independent local oracles, and
+ * this is the second: does any live process on this box carry the native session
+ * uuid in its argv? A psu-hosted claude runs `claude … --resume <uuid>` /
+ * `--session-id <uuid>`, and a headless loop-driven one — the shape the PTY
+ * registry cannot see, exactly the WI-41663 gap — carries it too.
+ *
+ * FAIL-CLOSED, EVERY PATH, which is the OPPOSITE of the codex writer-lock probe
+ * above. That one may only improve a message for an error already about to
+ * happen, so an unreadable /proc means "not held". This one RELAXES a guard, so
+ * an unreadable /proc, a non-Linux host, a missing session id, or any argv hit it
+ * cannot attribute must report unknown and leave the guard closed.
+ *
+ * SELF-MATCH IS THE TRAP. This launcher's OWN argv contains `--resume <uuid>`, so
+ * a naive scan always finds "a live process holding the session" — itself — and
+ * the witness could never be produced. Excluding just `process.pid` is not
+ * enough: psu runs under a shell/wrapper whose argv carries the same uuid. The
+ * caller's whole ANCESTOR CHAIN is excluded, the same fix `scripts/proc-guard.mjs`
+ * applies to the `pgrep -f` self-match class.
+ */
+/** `/proc/<pid>/stat`'s ppid, or null. The `comm` field can itself contain spaces
+ *  and parentheses, so fields are read after the LAST ')' — splitting on
+ *  whitespace from the start misreads any process named e.g. `(foo bar)`.
+ *  Pure apart from the injected reader — exported for tests. */
+export function procParentPid(pid: any, { readStat }?: {
+    readStat?: ((pid: any) => string) | undefined;
+}): number | null;
+/** The caller's pid plus every ancestor pid, walking `/proc/<pid>/stat`. Bounded
+ *  and cycle-safe: a corrupted chain must not spin. Pure apart from the injected
+ *  reader — exported for tests. */
+export function procAncestorPids(startPid: any, { readStat, maxDepth }?: {
+    readStat?: ((pid: any) => string) | undefined;
+    maxDepth?: number | undefined;
+}): Set<any>;
+/**
+ * Is any live process (outside the caller's own ancestor chain) carrying this
+ * native session id in its argv?
+ * `{ held, pid, cmdline, reason }` — fail-CLOSED: `held` is false ONLY on a
+ * complete, successful scan that found nothing.
+ *
+ * `reason` distinguishes the two false results that must not be conflated:
+ * `"clean-scan"` is the positive absence witness; everything else
+ * (`no-session-id`, `no-proc`, `scan-empty`) is unknown and must not relax the
+ * guard. Pure apart from the injected readers — exported for tests.
+ */
+export function claudeSessionProcessHolder(sessionId: any, { listProcPids, readCmdline, readStat, selfPid, }?: {
+    listProcPids?: typeof defaultListProcPids | undefined;
+    readCmdline?: ((pid: any) => string) | undefined;
+    readStat?: ((pid: any) => string) | undefined;
+    selfPid?: number | undefined;
+}): {
+    held: boolean;
+    pid: null;
+    cmdline: null;
+    reason: any;
+} | {
+    held: boolean;
+    pid: number;
+    cmdline: string;
+    reason: string;
+};
+/** Normalize a wire value to one canonical local-liveness witness. */
+export function normalizeResumeLocalLivenessEvidence(value: any): any;
 /**
  * Build the positive witness for an exact Codex resume only when both local
  * liveness oracles positively say there is no competing writer. Every other
@@ -2667,10 +2787,23 @@ export function normalizeResumeLocalLivenessEvidence(value: any): {
 export function normalizeCodexResumeLocalLivenessEvidence({ agent, fork, forceResume, liveHost, writerHolder, }?: {
     fork?: boolean | undefined;
     forceResume?: string | undefined;
-}): {
-    version: 1;
-    kind: "no-live-codex-writer";
-} | null;
+}): any;
+/**
+ * Build the positive witness for an exact Claude resume only when BOTH local
+ * liveness oracles positively say no process owns this session: the psu PTY-host
+ * registry found none, and a complete `/proc` scan found no live argv carrying
+ * the native session id. Every other result — including a probe that could not
+ * complete — stays unknown and returns null (fail closed).
+ *
+ * `PSU_FORCE_RESUME=1` deliberately does NOT produce this witness. That variable
+ * means "take over a host I can SEE is alive"; this witness means "I looked and
+ * there is nothing alive". Letting a force manufacture an absence claim would
+ * make the server's audit trail lie about what was actually observed.
+ */
+export function normalizeClaudeResumeLocalLivenessEvidence({ agent, fork, forceResume, liveHost, processHolder, }?: {
+    fork?: boolean | undefined;
+    forceResume?: string | undefined;
+}): any;
 /**
  * The CODEX_HOME a resume of `session` will run in — an explicit `codexHome`
  * (WI-3884: the home a rollout was actually FOUND in by disk scan) wins over the
@@ -3403,13 +3536,19 @@ export const MIN_UPTIME_BEFORE_SELF_EXIT_MS: number;
 export const CODEX_DIAGNOSTIC_RUST_LOG: "codex_core=info,codex_tui=info";
 export const LIVE_HOST_IDLE_THRESHOLD_MS: number;
 /**
- * The only local liveness witness accepted by the resume endpoint. Keep this
- * closed and exact: a probe result that is missing, malformed, or from an
- * unknown failure mode must not relax the server's recent-active guard.
+ * The local liveness witnesses accepted by the resume endpoint. Keep this closed
+ * and exact: a probe result that is missing, malformed, or from an unknown
+ * failure mode must not relax the server's recent-active guard. Each kind is
+ * bound to ONE agent backend on the server, so a claude witness can never
+ * reconcile a codex row (or the reverse).
  */
 export const NO_LIVE_CODEX_WRITER_EVIDENCE: Readonly<{
     version: 1;
     kind: "no-live-codex-writer";
+}>;
+export const NO_LIVE_CLAUDE_PROCESS_EVIDENCE: Readonly<{
+    version: 1;
+    kind: "no-live-claude-process";
 }>;
 /**
  * WI-4889 (owner directive 2026-07-14): the resume "choose a different model"
@@ -3602,4 +3741,6 @@ export type RunWrapperOptions = {
 };
 import { spawnSync } from "node:child_process";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
+/** Numeric pid entries under `/proc`. Exported for tests via the injectable. */
+declare function defaultListProcPids(): number[];
 export {};

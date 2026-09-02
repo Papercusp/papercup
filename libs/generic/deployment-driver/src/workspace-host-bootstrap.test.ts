@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX,
@@ -26,6 +27,8 @@ import {
   type WorkspaceHostBootstrapInput,
 } from "./workspace-host-bootstrap";
 import { deriveWorkspaceHostCanonicalArtifactUrls } from './workspace-host-build-manifest';
+import { WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV } from './workspace-host-remote-initializer';
+import { WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV } from './workspace-host-credential-delivery';
 
 const DIGEST = 'a'.repeat(64);
 const KEY_DIGEST = 'b'.repeat(64);
@@ -311,6 +314,47 @@ describe('buildWorkspaceHostBootstrap', () => {
     );
     expect(conduit).toContain(
       "Defaults!PAPERCUSP_WORKSPACE_HOST_DELIVERY env_reset, !setenv",
+    );
+  });
+
+  it("dispatches both privileged conduits through the bundled interpreter, in the wrapper and the sudoers allowlist alike", () => {
+    // REGRESSION (p046-canary-03, 2026-09-02). Both targets are `#!/usr/bin/env node` scripts and
+    // the sudoers entries pin `env_reset, !setenv`, so the shebang resolves `node` against sudo's
+    // secure_path — which never contains the bundle's own runtime. Every privileged invocation
+    // therefore died with `/usr/bin/env: 'node': No such file or directory` (exit 127) before
+    // reading its request, while file ownership, mode and `visudo -cf` all reported green.
+    //
+    // The sibling case above could not catch it: it asserts the SUBSTRING
+    // "papercusp-remote-initializer --protocol-version …", which stays true no matter what does
+    // (or does not) precede the script. So this pins the whole command VECTOR — interpreter, then
+    // script, then argv — which is what sudo actually matches and what execve actually needs.
+    const script = buildWorkspaceHostBootstrap(input());
+    const node = `${WORKSPACE_HOST_RUNTIME_ROOT}/current/${DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.node}`;
+
+    for (const [target, argv] of [
+      [
+        DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.remoteInitializer,
+        WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV,
+      ],
+      [
+        DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.credentialDelivery,
+        WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV,
+      ],
+    ] as const) {
+      const program = `${WORKSPACE_HOST_RUNTIME_ROOT}/current/${target}`;
+      // The wrapper's exec line: sudo, then interpreter, then script — never the script alone.
+      expect(script).toContain(
+        `exec /usr/bin/sudo -n -- '${node}' '${program}' "$@"`,
+      );
+      // The allowlist repeats that same vector; a mismatch here refuses the invocation above.
+      expect(script).toContain(`${node} ${program} ${argv.join(" ")}`);
+      expect(script).not.toContain(`exec /usr/bin/sudo -n -- '${program}'`);
+    }
+
+    // And the stage verifies at run time what static emission cannot: that the pinned interpreter
+    // is really present and executable on the host being bootstrapped.
+    expect(script).toContain(
+      'die "conduit interpreter is missing or not executable',
     );
   });
 

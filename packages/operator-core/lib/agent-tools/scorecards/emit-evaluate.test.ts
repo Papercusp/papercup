@@ -730,6 +730,35 @@ describe('emitScorecard', () => {
     expect(captureM).not.toHaveBeenCalled();
   });
 
+  // WI-2141737: the reporter's exact case — an explicit sourceHive against a
+  // PRE-STAMP card that carries no sourceHive key at all. The old refusal
+  // rendered the absent prior value as '', which reads as a value the caller
+  // could pass; the arg schema is min(1), so no caller can pass it, and the
+  // reporter reasonably concluded such cards were permanently un-finalizable.
+  // The refusal must distinguish ABSENT from empty and name the form that works.
+  it('tells a caller to omit sourceHive when the superseded card has none at all', async () => {
+    mockResolvedTyped(getIssueM, issueWith({ observation: { rubricRef: 'test-rubric', ratings: RATINGS } }));
+
+    const r = await emitScorecard(
+      {
+        rubricRef: 'test-rubric',
+        ratings: RATINGS,
+        sourceHive: 'papercusp',
+        supersedes: 'ISS-LEGACY',
+      },
+      { createdBy: 'su-1', ctxHarness: 'papercusp' },
+    );
+
+    expect(r).toMatchObject({ ok: false });
+    const message = (r as { error: string }).error;
+    // Never render an absent stored value as a passable empty string.
+    expect(message).not.toContain("belongs to sourceHive ''");
+    expect(message).toContain('no sourceHive');
+    // Name the satisfiable form, so the refusal does not read as a dead end.
+    expect(message).toContain('omit sourceHive');
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
   it('refuses to supersede a scorecard from another rubric', async () => {
     mockResolvedTyped(getIssueM, issueWith({ observation: { rubricRef: 'other-rubric', ratings: RATINGS } }));
     const r = await emitScorecard(

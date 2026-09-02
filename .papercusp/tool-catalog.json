@@ -10568,7 +10568,7 @@
           "POST"
         ]
       },
-      "description": "Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/orient until it expires (default TTL 7d; kind:convention without ttlSec is permanent) or is retracted. Delivery is deterministic, unlike memory:remember's fuzzy recall. Re-asserting a key refreshes body + TTL. At the cap a write evicts the lowest-ranked live fact, but is REFUSED if that victim is another author's verified fact; dryRun:true forecasts the cost. Typed safety slots and conventions take no cap seat.",
+      "description": "Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/orient until it expires or is retracted. ⚠ You MUST declare a lifetime: ttlSec, or permanent:true (cap-exempt rows only). There is no default — but kind:'convention' (permanent), a wall:/dead-end:/guard-rail: slot, and confidence:'provisional'|'suspected' each declare one on their own. Delivery is deterministic, unlike memory:remember's fuzzy recall. Re-asserting a key refreshes body + TTL. At the cap a write evicts the lowest-ranked live fact, but is REFUSED if that victim is another author's verified fact; dryRun:true forecasts the cost. Typed safety slots and conventions take no cap seat.",
       "capabilities": [
         "coord:write"
       ],

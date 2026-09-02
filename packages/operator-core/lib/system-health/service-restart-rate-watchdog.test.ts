@@ -17,7 +17,9 @@ function read(over: Partial<JournalReadResult> = {}): JournalReadResult {
     matched: 0,
     collapsed: 0,
     truncated: false,
-    window: { since: '-1h', until: null },
+    // `resolved: null` = the absolute window was NOT resolved (P-022) — correct
+    // for this fixture, which is never on readJournal's zero-row diagnosis path.
+    window: { since: '-1h', until: null, resolved: null },
     units: [UNIT],
     journalAvailable: true,
     backend: 'systemd',

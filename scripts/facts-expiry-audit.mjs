@@ -1,39 +1,58 @@
 #!/usr/bin/env node
 /**
- * facts-expiry-audit.mjs — WI-2141854.
+ * facts-expiry-audit.mjs — WI-2141854, plan standing-facts-expiry-audit-2026-09-02.
  *
- * Agents supplied `ttlSec: null` to facts:assert, which defaults to a 7-day TTL, so
- * durable standing conclusions silently lapsed out of every brief/orient fold. This
- * script is the restoration half: it DUMPS the lapsed population for per-fact audit,
- * and APPLIES the audited verdicts back as a direct `expires_at` UPDATE.
+ * `facts:assert` defaults `ttlSec` to 7 days when the caller omits it, and callers
+ * omitted it almost universally — so the whole standing-fact corpus sits on a 7-day
+ * fuse whether a fact states a durable invariant or a passing observation. This script
+ * is the audit instrument: it DUMPS the corpus into reviewable shards, and APPLIES the
+ * per-fact verdicts back on two axes (expiry, kind).
  *
- * Why a direct UPDATE and not facts:assert — assert SUPERSEDES the row (new version,
- * new created_by = the restoring agent, new created_at, TTL capped at 90d). That
- * destroys exactly the provenance an audit exists to preserve. Unexpiring is an
- * expiry-field correction on the SAME row, so the author, the assertion time and the
- * version chain all survive.
+ * Why a direct UPDATE and not facts:assert (plan D-002) — assert SUPERSEDES the row:
+ * new version, `created_by` rewritten to the restoring agent, `created_at` reset, TTL
+ * capped at 90d. That destroys exactly the provenance an audit exists to preserve, and
+ * would stamp ~8,000 facts as authored by one session.
  *
- * The lapsed population is defined by the fold predicate itself
- * (store.ts liveFactPredicate): a fold serves rows where
- *   superseded_at IS NULL AND retracted_at IS NULL AND expires_at > now()
- * so the only rows that EXPIRY (rather than supersession or retraction) removed are
- *   expires_at <= now() AND superseded_at IS NULL AND retracted_at IS NULL.
+ * The audit surface is defined by the fold predicate itself (store.ts liveFactPredicate):
+ * a fold serves `superseded_at IS NULL AND retracted_at IS NULL AND expires_at > now()`,
+ * so every row that is a CURRENT version and unretracted is in scope regardless of
+ * whether it has already lapsed. Superseded rows (a corrected prior version) and
+ * retracted rows (a decision, or a cap eviction) are out of scope — see D-001.
  *
  * Usage:
- *   node scripts/facts-expiry-audit.mjs dump   --out <dir>
- *   node scripts/facts-expiry-audit.mjs apply  --verdicts <jsonl> [--execute]
- *   node scripts/facts-expiry-audit.mjs verify --verdicts <jsonl>
+ *   node scripts/facts-expiry-audit.mjs dump   --out <dir> [--shard 200] [--excerpt 200]
+ *   node scripts/facts-expiry-audit.mjs apply  --verdicts <dir> [--execute] [--allow-partial]
+ *   node scripts/facts-expiry-audit.mjs verify --verdicts <dir>
  *
- * `apply` is DRY-RUN unless --execute is passed.
+ * `apply` is DRY-RUN unless --execute is passed, and REFUSES a ledger that does not
+ * carry a verdict for every row in the population (coverage is the whole point).
+ *
+ * ## Verdict file format (compact, one fact per line)
+ *
+ *     <id> <expiry> <kind> <reason>
+ *
+ *   expiry : P        permanent (expires_at = 'infinity')
+ *            L        leave as-is (already correct: correctly lapsed, or correctly short-lived)
+ *            E<days>  extend to now() + <days> days
+ *   kind   : -  leave | C convention | N conclusion | A assumption | U undecidable
+ *   reason : a short token, no spaces (invariant, ephemeral, session-bound, snapshot, ...)
+ *
+ * Lines beginning `#` are comments. A `CLASS <sql-predicate-name> <expiry> <kind> <reason>`
+ * line is NOT supported on purpose: a class verdict is expanded to its member ids at dump
+ * time so that coverage stays checkable per row.
  */
-import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { connectScriptPg } from './lib/pg-url.mjs';
 
-const LAPSED_PREDICATE = `expires_at <= now() AND superseded_at IS NULL AND retracted_at IS NULL`;
+/** The audit surface — every CURRENT, unretracted fact (plan D-001). */
+const SURFACE = `retracted_at IS NULL AND superseded_at IS NULL`;
 
 /** Permanent-expiry sentinel — FACT_PERMANENT_EXPIRY in agent-facts/store.ts. */
 const PERMANENT = 'infinity';
+
+/** Kind letters used in the verdict files. */
+const KINDS = { C: 'convention', N: 'conclusion', A: 'assumption', U: 'undecidable' };
 
 function arg(name, fallback = undefined) {
   const i = process.argv.indexOf(`--${name}`);
@@ -42,146 +61,206 @@ function arg(name, fallback = undefined) {
   return v && !v.startsWith('--') ? v : true;
 }
 
+/** One-line review record. Compact on purpose: a reviewer reads thousands of these. */
+function reviewLine(r, excerpt) {
+  const flags = [
+    r.kind ? r.kind[0].toUpperCase() : '-',
+    r.confidence ? r.confidence[0] : '-',
+    r.has_measurement ? 'M' : '',
+    r.has_recheck ? 'R' : '',
+    r.settled_by ? 'S' : '',
+    r.expires_at === 'infinity' ? 'PERM' : r.lapsed ? 'LAPSED' : 'live',
+  ]
+    .filter(Boolean)
+    .join('');
+  const body = String(r.body ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, excerpt);
+  const ref = r.scope === 'workspace' ? '' : `:${r.scope_ref ?? ''}`;
+  return `${r.id} ${r.scope}${ref} | ${r.key} | ${flags} | ${body}`;
+}
+
 async function cmdDump() {
   const outDir = String(arg('out', 'tmp/facts-expiry-audit'));
-  mkdirSync(outDir, { recursive: true });
+  const shardSize = Number(arg('shard', 200));
+  const excerpt = Number(arg('excerpt', 200));
+  mkdirSync(join(outDir, 'shards'), { recursive: true });
+  mkdirSync(join(outDir, 'verdicts'), { recursive: true });
+
   const client = await connectScriptPg();
   try {
     const { rows } = await client.query(`
       SELECT id, workspace_id, scope, scope_ref, key, body, source_ref, created_by,
-             created_at::text AS created_at, updated_at::text AS updated_at,
-             expires_at::text AS expires_at, kind, confidence, audience_scope,
-             settled_by, origin, source_hive,
+             created_at::text AS created_at, expires_at::text AS expires_at,
+             (expires_at <= now()) AS lapsed,
+             kind, confidence, audience_scope, settled_by,
              (measurement IS NOT NULL) AS has_measurement,
              (recheck IS NOT NULL) AS has_recheck,
-             (depends_on IS NOT NULL) AS has_depends_on,
-             (enforcement IS NOT NULL) AS has_enforcement
+             (depends_on IS NOT NULL) AS has_depends_on
         FROM harness_shared.agent_facts
-       WHERE ${LAPSED_PREDICATE}
+       WHERE ${SURFACE}
        ORDER BY scope, coalesce(scope_ref,''), key, id`);
 
-    const jsonl = rows.map((r) => JSON.stringify(r)).join('\n');
-    writeFileSync(join(outDir, 'lapsed-facts.jsonl'), jsonl + '\n');
+    writeFileSync(
+      join(outDir, 'population.jsonl'),
+      rows.map((r) => JSON.stringify(r)).join('\n') + '\n',
+    );
 
-    // A compact per-fact review line: everything a verdict needs, nothing else.
-    const compact = rows
-      .map((r) => {
-        const flags = [
-          r.kind ? `k=${r.kind}` : '',
-          r.confidence ? `c=${r.confidence}` : '',
-          r.has_measurement ? 'MEAS' : '',
-          r.has_recheck ? 'RECHK' : '',
-          r.has_depends_on ? 'DEPS' : '',
-          r.settled_by ? 'SETTLED' : '',
-        ]
-          .filter(Boolean)
-          .join(' ');
-        const body = String(r.body ?? '').replace(/\s+/g, ' ').trim();
-        return `#${r.id}\t${r.scope}:${r.scope_ref ?? ''}\t${r.key}\t[${flags}]\tby=${r.created_by}\texp=${String(r.expires_at).slice(0, 10)}\t${body}`;
+    // Two machine-written classes are judged as classes (plan D-006). They are split out
+    // so the heterogeneous remainder is what gets read row by row — but their member ids
+    // are still written out individually, so coverage stays checkable per row.
+    const isClass = (r) => r.key === 'launch-provenance' || r.key.startsWith('mode-instructions:');
+    const classRows = rows.filter(isClass);
+    const residual = rows.filter((r) => !isClass(r));
+
+    writeFileSync(
+      join(outDir, 'class-members.txt'),
+      classRows
+        .map((r) => `${r.id} ${r.key === 'launch-provenance' ? 'launch-provenance' : 'mode-instructions'}`)
+        .join('\n') + '\n',
+    );
+
+    // Homogeneity evidence for the class verdicts: distinct body SHAPES per class, so the
+    // claim "these are homogeneous" is measured rather than asserted (D-006).
+    const shapes = {};
+    for (const r of classRows) {
+      const cls = r.key === 'launch-provenance' ? 'launch-provenance' : 'mode-instructions';
+      const shape = String(r.body ?? '')
+        .replace(/\s+/g, ' ')
+        .replace(/su-[0-9a-f-]{6,}/g, '<agent>')
+        .replace(/[a-z0-9-]+-\d{4}-\d{2}-\d{2}/g, '<plan>')
+        .replace(/[0-9]+/g, '<n>')
+        .slice(0, 110);
+      shapes[cls] ??= {};
+      shapes[cls][shape] = (shapes[cls][shape] ?? 0) + 1;
+    }
+    const shapeReport = Object.entries(shapes)
+      .map(([cls, m]) => {
+        const sorted = Object.entries(m).sort((a, b) => b[1] - a[1]);
+        const total = sorted.reduce((a, [, n]) => a + n, 0);
+        return [
+          `## ${cls} — ${total} rows, ${sorted.length} distinct body shapes`,
+          ...sorted.slice(0, 25).map(([s, n]) => `${String(n).padStart(5)}  ${s}`),
+        ].join('\n');
       })
-      .join('\n');
-    writeFileSync(join(outDir, 'lapsed-facts.tsv'), compact + '\n');
+      .join('\n\n');
+    writeFileSync(join(outDir, 'class-homogeneity.txt'), shapeReport + '\n');
 
-    console.log(`DUMPED\t${rows.length}\t${outDir}`);
-    console.log(`BODY_CHARS\t${rows.reduce((a, r) => a + String(r.body ?? '').length, 0)}`);
+    // Shard the residual by scope so a reviewer works one blast-radius tier at a time.
+    const order = { workspace: 0, harness: 1, role: 2, owner: 3, work_item: 4 };
+    residual.sort(
+      (a, b) =>
+        (order[a.scope] ?? 9) - (order[b.scope] ?? 9) ||
+        String(a.scope_ref ?? '').localeCompare(String(b.scope_ref ?? '')) ||
+        a.key.localeCompare(b.key),
+    );
+    let n = 0;
+    for (let i = 0; i < residual.length; i += shardSize) {
+      const chunk = residual.slice(i, i + shardSize);
+      const name = `shard-${String(++n).padStart(3, '0')}.txt`;
+      const header = `# ${name} — ${chunk.length} facts | scopes: ${[...new Set(chunk.map((r) => r.scope))].join(',')}\n# <id> <scope>:<ref> | <key> | <kind><conf><flags><expiry-state> | <body excerpt>\n`;
+      writeFileSync(
+        join(outDir, 'shards', name),
+        header + chunk.map((r) => reviewLine(r, excerpt)).join('\n') + '\n',
+      );
+    }
+
+    console.log(`POPULATION\t${rows.length}`);
+    console.log(`CLASS_ROWS\t${classRows.length}`);
+    console.log(`RESIDUAL\t${residual.length}`);
+    console.log(`SHARDS\t${n}\t(${shardSize}/shard, ${excerpt}-char excerpts)`);
+    console.log(`OUT\t${outDir}`);
   } finally {
     await client.end();
   }
 }
 
-/**
- * Read a verdict ledger. One JSON object per line:
- *   { id, verdict: 'restore'|'restore-bounded'|'leave', reason, ttlDays? }
- * `restore` sets expires_at = 'infinity'; `restore-bounded` sets now() + ttlDays.
- */
-function readVerdicts(path) {
-  const seen = new Map();
+/** Parse every `*.txt` verdict file in a directory into id → verdict. */
+function readVerdicts(dir) {
+  const files = readdirSync(dir).filter((f) => f.endsWith('.txt')).sort();
+  const verdicts = new Map();
   const dupes = [];
-  const lines = readFileSync(path, 'utf8').split('\n');
-  for (const [i, line] of lines.entries()) {
-    const t = line.trim();
-    if (!t || t.startsWith('//')) continue;
-    let v;
-    try {
-      v = JSON.parse(t);
-    } catch {
-      throw new Error(`verdict ledger ${path}:${i + 1} is not JSON: ${t.slice(0, 120)}`);
+  for (const f of files) {
+    const lines = readFileSync(join(dir, f), 'utf8').split('\n');
+    for (const [i, raw] of lines.entries()) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const m = line.match(/^(\d+)\s+(P|L|E\d+)\s+([-CNAU])\s+(\S+)\s*$/);
+      if (!m) throw new Error(`${f}:${i + 1} unparseable verdict line: ${line.slice(0, 120)}`);
+      const id = Number(m[1]);
+      if (verdicts.has(id)) dupes.push(`${id} (${f}:${i + 1})`);
+      verdicts.set(id, { id, expiry: m[2], kind: m[3], reason: m[4], src: `${f}:${i + 1}` });
     }
-    if (typeof v.id !== 'number' && typeof v.id !== 'string') {
-      throw new Error(`verdict ledger ${path}:${i + 1} has no id`);
-    }
-    if (!['restore', 'restore-bounded', 'leave'].includes(v.verdict)) {
-      throw new Error(`verdict ledger ${path}:${i + 1} bad verdict ${JSON.stringify(v.verdict)}`);
-    }
-    if (!v.reason) throw new Error(`verdict ledger ${path}:${i + 1} has no reason`);
-    if (v.verdict === 'restore-bounded' && !(Number(v.ttlDays) > 0)) {
-      throw new Error(`verdict ledger ${path}:${i + 1} restore-bounded needs ttlDays > 0`);
-    }
-    const id = Number(v.id);
-    if (seen.has(id)) dupes.push(id);
-    seen.set(id, { ...v, id });
   }
-  return { verdicts: seen, dupes };
-}
-
-/**
- * Coverage is the whole point of the audit: refuse to apply a ledger that does not
- * carry a verdict for EVERY lapsed row, and refuse one carrying verdicts for rows
- * that are not in the population (a stale id is a sign the ledger drifted).
- */
-async function loadPopulation(client) {
-  const { rows } = await client.query(
-    `SELECT id FROM harness_shared.agent_facts WHERE ${LAPSED_PREDICATE}`,
-  );
-  return new Set(rows.map((r) => Number(r.id)));
+  return { verdicts, dupes, files };
 }
 
 async function cmdApply() {
-  const path = String(arg('verdicts'));
+  const dir = String(arg('verdicts'));
   const execute = arg('execute') === true;
   const allowPartial = arg('allow-partial') === true;
-  if (!path || !existsSync(path)) throw new Error(`--verdicts <jsonl> required (got ${path})`);
-  const { verdicts, dupes } = readVerdicts(path);
+  if (!dir || !existsSync(dir)) throw new Error(`--verdicts <dir> required (got ${dir})`);
+  const { verdicts, dupes, files } = readVerdicts(dir);
   if (dupes.length) {
-    throw new Error(`verdict ledger has ${dupes.length} duplicate ids, e.g. ${dupes.slice(0, 5)}`);
+    throw new Error(`REFUSED: ${dupes.length} duplicate verdicts, e.g. ${dupes.slice(0, 5).join(', ')}`);
   }
+  console.log(`VERDICT_FILES\t${files.length}`);
+  console.log(`VERDICTS\t${verdicts.size}`);
 
   const client = await connectScriptPg();
   try {
-    const population = await loadPopulation(client);
-    const missing = [...population].filter((id) => !verdicts.has(id));
+    const { rows: popRows } = await client.query(
+      `SELECT id, kind, (expires_at='infinity') AS permanent, (expires_at<=now()) AS lapsed
+         FROM harness_shared.agent_facts WHERE ${SURFACE}`,
+    );
+    const population = new Map(popRows.map((r) => [Number(r.id), r]));
+    const missing = [...population.keys()].filter((id) => !verdicts.has(id));
     const unknown = [...verdicts.keys()].filter((id) => !population.has(id));
 
     console.log(`POPULATION\t${population.size}`);
-    console.log(`VERDICTS\t${verdicts.size}`);
     console.log(`UNJUDGED\t${missing.length}`);
     console.log(`NOT_IN_POPULATION\t${unknown.length}`);
-
-    if (unknown.length) {
-      // An id already restored by a previous --execute run leaves the population, so
-      // a re-run is expected to report these. Anything else means ledger drift.
-      console.log(`NOT_IN_POPULATION_SAMPLE\t${unknown.slice(0, 10).join(',')}`);
-    }
+    if (unknown.length) console.log(`NOT_IN_POPULATION_SAMPLE\t${unknown.slice(0, 10).join(',')}`);
     if (missing.length && !allowPartial) {
       console.log(`UNJUDGED_SAMPLE\t${missing.slice(0, 20).join(',')}`);
       throw new Error(
-        `REFUSED: ${missing.length} lapsed facts carry no verdict. The audit must cover every ` +
-          `row. Pass --allow-partial only for a deliberate staged batch.`,
+        `REFUSED: ${missing.length} facts carry no verdict. The audit must cover every row; ` +
+          `pass --allow-partial only for a deliberate staged batch.`,
       );
     }
 
-    const restore = [];
-    const bounded = [];
-    for (const id of population) {
+    /** @type {Map<string, number[]>} */
+    const expiryBuckets = new Map(); // 'infinity' | '<days>' -> ids
+    /** @type {Map<string, number[]>} */
+    const kindBuckets = new Map(); // kind name -> ids
+    let expiryNoop = 0;
+    let kindNoop = 0;
+
+    for (const [id, cur] of population) {
       const v = verdicts.get(id);
       if (!v) continue;
-      if (v.verdict === 'restore') restore.push(id);
-      else if (v.verdict === 'restore-bounded') bounded.push([id, Number(v.ttlDays)]);
+      if (v.expiry === 'P') {
+        if (cur.permanent) expiryNoop++;
+        else push(expiryBuckets, 'infinity', id);
+      } else if (v.expiry.startsWith('E')) {
+        push(expiryBuckets, v.expiry.slice(1), id);
+      } else {
+        expiryNoop++;
+      }
+      if (v.kind !== '-') {
+        const want = KINDS[v.kind];
+        if (cur.kind === want) kindNoop++;
+        else push(kindBuckets, want, id);
+      } else {
+        kindNoop++;
+      }
     }
-    const leave = population.size - restore.length - bounded.length - missing.length;
-    console.log(`PLAN_RESTORE_PERMANENT\t${restore.length}`);
-    console.log(`PLAN_RESTORE_BOUNDED\t${bounded.length}`);
-    console.log(`PLAN_LEAVE\t${leave}`);
+
+    for (const [k, ids] of expiryBuckets) console.log(`PLAN_EXPIRY_${k}\t${ids.length}`);
+    console.log(`PLAN_EXPIRY_UNCHANGED\t${expiryNoop}`);
+    for (const [k, ids] of kindBuckets) console.log(`PLAN_KIND_${k}\t${ids.length}`);
+    console.log(`PLAN_KIND_UNCHANGED\t${kindNoop}`);
 
     if (!execute) {
       console.log('DRY_RUN — nothing written. Re-run with --execute to apply.');
@@ -189,35 +268,35 @@ async function cmdApply() {
     }
 
     await client.query('BEGIN');
-    let n = 0;
-    if (restore.length) {
-      const r = await client.query(
-        `UPDATE harness_shared.agent_facts
-            SET expires_at = $2::timestamptz, updated_at = now()
-          WHERE id = ANY($1::bigint[]) AND ${LAPSED_PREDICATE}`,
-        [restore, PERMANENT],
-      );
-      n += r.rowCount;
-      console.log(`APPLIED_PERMANENT\t${r.rowCount}`);
+    let writes = 0;
+    for (const [bucket, ids] of expiryBuckets) {
+      const r =
+        bucket === 'infinity'
+          ? await client.query(
+              `UPDATE harness_shared.agent_facts SET expires_at=$2::timestamptz, updated_at=now()
+                WHERE id = ANY($1::bigint[]) AND ${SURFACE}`,
+              [ids, PERMANENT],
+            )
+          : await client.query(
+              `UPDATE harness_shared.agent_facts
+                  SET expires_at = now() + ($2::int * interval '1 day'), updated_at=now()
+                WHERE id = ANY($1::bigint[]) AND ${SURFACE}`,
+              [ids, Number(bucket)],
+            );
+      writes += r.rowCount;
+      console.log(`APPLIED_EXPIRY_${bucket}\t${r.rowCount}`);
     }
-    // Group bounded restores by ttlDays so each distinct horizon is one statement.
-    const byTtl = new Map();
-    for (const [id, days] of bounded) {
-      if (!byTtl.has(days)) byTtl.set(days, []);
-      byTtl.get(days).push(id);
-    }
-    for (const [days, ids] of byTtl) {
+    for (const [kind, ids] of kindBuckets) {
       const r = await client.query(
-        `UPDATE harness_shared.agent_facts
-            SET expires_at = now() + ($2::int * interval '1 day'), updated_at = now()
-          WHERE id = ANY($1::bigint[]) AND ${LAPSED_PREDICATE}`,
-        [ids, days],
+        `UPDATE harness_shared.agent_facts SET kind=$2, updated_at=now()
+          WHERE id = ANY($1::bigint[]) AND ${SURFACE}`,
+        [ids, kind],
       );
-      n += r.rowCount;
-      console.log(`APPLIED_BOUNDED_${days}d\t${r.rowCount}`);
+      writes += r.rowCount;
+      console.log(`APPLIED_KIND_${kind}\t${r.rowCount}`);
     }
     await client.query('COMMIT');
-    console.log(`APPLIED_TOTAL\t${n}`);
+    console.log(`APPLIED_TOTAL\t${writes}`);
   } catch (err) {
     try {
       await client.query('ROLLBACK');
@@ -230,28 +309,136 @@ async function cmdApply() {
   }
 }
 
-async function cmdVerify() {
-  const path = String(arg('verdicts'));
-  const { verdicts } = readVerdicts(path);
-  const wanted = [...verdicts.values()].filter((v) => v.verdict !== 'leave').map((v) => v.id);
+function push(map, key, val) {
+  if (!map.has(key)) map.set(key, []);
+  map.get(key).push(val);
+}
+
+/**
+ * Expand the two CLASS verdicts (plan D-006) to one verdict line per member id, so
+ * coverage stays checkable per row rather than per class.
+ *
+ * Both classes are session/mode-BOUND by their own text — "report milestones to them
+ * while live", "while '<mode>' is on ... retracted when the mode is turned off" — so
+ * their correct expiry is the lifetime of that binding, not permanence. Two carve-outs,
+ * each measured rather than assumed:
+ *
+ *  - OFF-TEMPLATE rows (15 launch-provenance, 1 mode-instructions as of 2026-09-02) are
+ *    NOT covered by the class verdict. Somebody wrote something else under that key; they
+ *    go to a review shard and are judged individually.
+ *  - A `mode-instructions:<m>` fact whose agent is STILL REGISTERED in mode <m> is the
+ *    exact bug this audit exists to fix: the agent is in the mode but silently lost its
+ *    scope instructions when the 7-day default fired. Those are EXTENDED. 90 days, not
+ *    permanent: mode:set retracts the fact when the mode exits, so the retraction is the
+ *    real terminator and the TTL only has to outlive any realistic mode while still
+ *    self-cleaning if the agent dies without exiting.
+ */
+async function cmdClassVerdicts() {
+  const outDir = String(arg('out', 'tmp/facts-expiry-audit'));
   const client = await connectScriptPg();
   try {
-    const { rows } = await client.query(
-      `SELECT count(*) FILTER (WHERE expires_at > now()) AS live,
+    const { rows } = await client.query(`
+      SELECT f.id, f.key, f.body, (f.expires_at <= now()) AS lapsed,
+             (m.owner_id IS NOT NULL) AS still_in_mode
+        FROM harness_shared.agent_facts f
+        LEFT JOIN harness_shared.agent_modes m
+               ON m.owner_id = f.scope_ref
+              AND m.mode = replace(f.key, 'mode-instructions:', '')
+              AND f.key LIKE 'mode-instructions:%'
+       WHERE ${SURFACE}
+         AND (f.key = 'launch-provenance' OR f.key LIKE 'mode-instructions:%')`);
+
+    const verdicts = [];
+    const offTemplate = [];
+    let extended = 0;
+    for (const r of rows) {
+      const body = String(r.body ?? '');
+      const isLp = r.key === 'launch-provenance';
+      const onTemplate = isLp
+        ? body.startsWith('You were launched by')
+        : /^[A-Z-]+ SCOPE — while /.test(body);
+      if (!onTemplate) {
+        offTemplate.push(r);
+        continue;
+      }
+      if (!isLp && r.still_in_mode) {
+        // NOT a liveness claim: agent_modes is not reliably cleaned (6,235 distinct agents
+        // hold rows while ~90 are alive), so a standing row means only "this mode was set
+        // and never explicitly exited". Extending anyway is the safe direction because the
+        // asymmetry is stark — a wrong EXTEND costs one dead agent's private owner scope,
+        // which nothing folds; a wrong LEAVE silently strips an owner-given mode scope from
+        // an agent that is still in that mode, which is the defect this audit exists to fix.
+        verdicts.push(`${r.id} E90 - mode-row-still-standing`);
+        extended++;
+      } else {
+        verdicts.push(`${r.id} L - ${isLp ? 'session-bound' : 'mode-bound'}`);
+      }
+    }
+
+    const header = [
+      '# CLASS verdicts — plan standing-facts-expiry-audit-2026-09-02 D-006, expanded per row.',
+      '# launch-provenance + mode-instructions:* are machine-written and session/mode-BOUND by',
+      '# their own text, so their correct expiry is that binding, not permanence.',
+      `# Carve-out: ${extended} mode-instructions facts whose agent_modes row still STANDS are`,
+      '# EXTENDED to 90d. That is not a liveness claim (agent_modes is not reliably cleaned);',
+      '# it is the safe side of an asymmetry — a wrong extend costs one dead agent private',
+      '# scope nothing folds, a wrong leave strips an owner-set mode scope from a live agent.',
+      `# ${offTemplate.length} off-template rows are NOT class-judged; see shards/shard-000-off-template.txt`,
+      '',
+    ].join('\n');
+    writeFileSync(join(outDir, 'verdicts', 'class-000.txt'), header + verdicts.join('\n') + '\n');
+
+    if (offTemplate.length) {
+      const lines = offTemplate.map(
+        (r) => `${r.id} ${r.key} | ${r.lapsed ? 'LAPSED' : 'live'} | ${String(r.body ?? '').replace(/\s+/g, ' ').slice(0, 400)}`,
+      );
+      writeFileSync(
+        join(outDir, 'shards', 'shard-000-off-template.txt'),
+        `# Off-template rows under a CLASS key — judged individually, NOT by the class verdict.\n# <id> <key> | <state> | <body>\n` +
+          lines.join('\n') +
+          '\n',
+      );
+    }
+
+    console.log(`CLASS_ROWS\t${rows.length}`);
+    console.log(`CLASS_VERDICTS\t${verdicts.length}`);
+    console.log(`EXTENDED_STILL_IN_MODE\t${extended}`);
+    console.log(`OFF_TEMPLATE_FOR_REVIEW\t${offTemplate.length}`);
+  } finally {
+    await client.end();
+  }
+}
+
+async function cmdVerify() {
+  const dir = String(arg('verdicts'));
+  const { verdicts } = readVerdicts(dir);
+  const wantPermanent = [...verdicts.values()].filter((v) => v.expiry === 'P').map((v) => v.id);
+  const wantExtended = [...verdicts.values()].filter((v) => v.expiry.startsWith('E')).map((v) => v.id);
+  const wantConvention = [...verdicts.values()].filter((v) => v.kind === 'C').map((v) => v.id);
+  const client = await connectScriptPg();
+  try {
+    const chk = async (label, ids, predicate) => {
+      if (!ids.length) return console.log(`${label}\t0\t0`);
+      const { rows } = await client.query(
+        `SELECT count(*) AS matched FROM harness_shared.agent_facts
+          WHERE id = ANY($1::bigint[]) AND ${predicate}`,
+        [ids],
+      );
+      console.log(`${label}\t${ids.length}\t${rows[0].matched}`);
+    };
+    console.log('CHECK\texpected\tactual');
+    await chk('PERMANENT', wantPermanent, `expires_at = 'infinity'`);
+    await chk('EXTENDED_LIVE', wantExtended, `expires_at > now()`);
+    await chk('KIND_CONVENTION', wantConvention, `kind = 'convention'`);
+    const { rows: sum } = await client.query(
+      `SELECT count(*) AS surface,
+              count(*) FILTER (WHERE expires_at > now()) AS live,
               count(*) FILTER (WHERE expires_at = 'infinity') AS permanent,
-              count(*) FILTER (WHERE expires_at <= now()) AS still_expired,
-              count(*) FILTER (WHERE retracted_at IS NOT NULL) AS retracted,
-              count(*) FILTER (WHERE superseded_at IS NOT NULL) AS superseded,
-              count(*) AS total
-         FROM harness_shared.agent_facts WHERE id = ANY($1::bigint[])`,
-      [wanted],
+              count(*) FILTER (WHERE expires_at <= now()) AS lapsed,
+              count(*) FILTER (WHERE kind='convention') AS conventions
+         FROM harness_shared.agent_facts WHERE ${SURFACE}`,
     );
-    console.log(`EXPECTED_RESTORED\t${wanted.length}`);
-    console.log(JSON.stringify(rows[0]));
-    const { rows: pop } = await client.query(
-      `SELECT count(*) AS remaining_lapsed FROM harness_shared.agent_facts WHERE ${LAPSED_PREDICATE}`,
-    );
-    console.log(`REMAINING_LAPSED\t${pop[0].remaining_lapsed}`);
+    console.log(`SURFACE_AFTER\t${JSON.stringify(sum[0])}`);
   } finally {
     await client.end();
   }
@@ -259,9 +446,17 @@ async function cmdVerify() {
 
 const cmd = process.argv[2];
 const run =
-  cmd === 'dump' ? cmdDump : cmd === 'apply' ? cmdApply : cmd === 'verify' ? cmdVerify : null;
+  cmd === 'dump'
+    ? cmdDump
+    : cmd === 'class-verdicts'
+      ? cmdClassVerdicts
+      : cmd === 'apply'
+        ? cmdApply
+        : cmd === 'verify'
+          ? cmdVerify
+          : null;
 if (!run) {
-  console.error('usage: facts-expiry-audit.mjs <dump|apply|verify> [...]');
+  console.error('usage: facts-expiry-audit.mjs <dump|class-verdicts|apply|verify> [...]');
   process.exit(2);
 }
 run().catch((e) => {

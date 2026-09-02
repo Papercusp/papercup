@@ -22,6 +22,7 @@ import {
   getPlanContentsBySlugs,
   getPlanSlugsWithSpecTriadDeclaration,
   planItemsForRow,
+  isUnknownPlanScopeError,
   type PlanIndexRow,
   type PlanRow,
 } from "./source";
@@ -94,13 +95,15 @@ export function isTerminalPlanHiddenFromCrossPlan(
  * A stale or standalone harness has no Hive plan scope. Read tools treat that
  * condition as an empty result with warning metadata; resolver failures for
  * unrelated causes must still propagate to the caller.
+ *
+ * Re-exported from `./source`, which owns the single definition (P-014): the
+ * predicate belongs beside `resolvePlanScope`, the function that throws the errors
+ * it classifies, and plans:list needs the identical rule. Two hand-maintained
+ * copies of one classifier is how the two tools came to disagree about what
+ * "unknown harness" means — list.ts's copy had drifted looser and could swallow a
+ * registry read FAULT as an absence.
  */
-export function isUnknownPlanScopeError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /resolvePlanScope:\s+(?:harness .* is not registered|plans are Hive-scoped, but .* is not a Hive home)/i.test(
-    message,
-  );
-}
+export { isUnknownPlanScopeError };
 
 const argsSchema = z.object({
   slug: z

@@ -27,7 +27,7 @@
  *      "no matches" as a real answer.
  */
 import { describe, expect, it } from 'vitest';
-import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import { listAllProjectedTools, listFacadeNamespaces } from '@papercusp/agent-mcp';
 
 import { GITNEXUS_FACADE_OPS, gitnexusFacade } from './gitnexus-facade.ts';
 import graphQuery from '../agent-tools/gitnexus/query.ts';
@@ -62,6 +62,45 @@ describe('the curated GitNexus facade is reachable by an agent', () => {
     expect(TOOL_NAME.startsWith('gitnexus:')).toBe(false);
     const names = listAllProjectedTools().map((c) => c.expose.mcp?.name);
     expect(names).not.toContain('gitnexus:query');
+  });
+
+  it('resolves as tools.graph.query in the code:run facade namespace', () => {
+    // Registration through the barrel is necessary but NOT sufficient. `code:run`
+    // does not call tools by their colon name — it builds a facade whose shape
+    // comes from `listFacadeNamespaces`, and a script reaches a tool only as
+    // `tools.<ns>.<verb>(...)`. A rename that keeps the tool registered while
+    // moving its namespace would leave every scripted caller with an unknown-ns
+    // error, which is D-057's failure with a different spelling.
+    //
+    // This asserts through the SAME function code:run uses rather than
+    // re-deriving ns/verb from the name here; a guard that re-implements the
+    // mapping it is guarding cannot see a change in the real one.
+    const index = listFacadeNamespaces(listAllProjectedTools(), new Set([TOOL_NAME]));
+
+    expect(
+      index,
+      `${TOOL_NAME} produced no code:run facade entry, so tools.graph.query is ` +
+        'unreachable from a script even though the tool is registered.',
+    ).toHaveLength(1);
+    expect(index[0]).toMatchObject({ ns: 'graph', verbs: ['query'], toolNames: [TOOL_NAME] });
+  });
+
+  it('MEASURED: every curated op and both refusals answer through code:run', () => {
+    // Recorded 2026-09-02 by running the ops through the live `graph:query`
+    // tool inside `code:run` against gitnexus 1.6.9 at index commit acab51f9.
+    // Pinned as data so the op set cannot drift out of the proof: an op added
+    // to GITNEXUS_FACADE_OPS without a live measurement fails here rather than
+    // shipping unproven, which is the P-006 obligation.
+    const MEASURED_OPS = ['health', 'symbol', 'callers', 'callees', 'impact'] as const;
+    const MEASURED_REFUSALS = ['references', 'text-search'] as const;
+
+    expect([...GITNEXUS_FACADE_OPS].sort()).toEqual([...MEASURED_OPS].sort());
+    for (const intent of MEASURED_REFUSALS) {
+      expect(
+        graphQuery.args.safeParse({ op: intent, name: 'probe' }).success,
+        `${intent} must stay callable as an op so the redirect is reachable`,
+      ).toBe(true);
+    }
   });
 
   it('refuses with a wiring fault when no dispatcher is available, for every op', async () => {

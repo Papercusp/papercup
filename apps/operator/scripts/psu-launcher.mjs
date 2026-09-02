@@ -2767,6 +2767,10 @@ export function stripKickoffPositional(args = []) {
   return out;
 }
 
+/**
+ * @param {string[]} [args]
+ * @param {{ mintId?: () => string, agent?: string | null, personaFile?: string | null, model?: string | null }} [opts]
+ */
 export function mintRecycleArgs(
   args = [],
   {
@@ -2909,6 +2913,12 @@ function stripManagedCarrySection(text) {
   return marker ? source.slice(0, marker.index) : source;
 }
 
+/**
+ * @param {string[]} [args]
+ * @param {{ systemPromptAddendum?: string, ownerId?: string | null, mintId?: () => string,
+ *          home?: string, agent?: string | null, personaFile?: string | null,
+ *          codexHome?: string | null, model?: string | null }} [opts]
+ */
 export function mintCarryRespawnArgs(
   args = [],
   {
@@ -3285,6 +3295,13 @@ export function splitRespawnModelSpec(spec) {
   };
 }
 
+/** The Claude model FAMILY a spec belongs to, or null for a non-Claude /
+ *  unrecognized id. Kept in the same vocabulary as DEFAULT_1M_FAMILY_RE. */
+export function respawnModelFamily(id) {
+  const m = /(haiku|sonnet|opus|fable)/i.exec(String(id ?? ""));
+  return m ? m[1].toLowerCase() : null;
+}
+
 /**
  * WI-2141859: the model spec a successor should be launched with, given the
  * spec its predecessor's argv carried and the model that predecessor was
@@ -3292,12 +3309,25 @@ export function splitRespawnModelSpec(spec) {
  *
  * Null on every uncertain input — no inherited flag (we never ADD one; see
  * mintRecycleArgs), nothing detected, an unrecognizable detected id, or an
- * unchanged identity. A change is composed as detected-identity + the
- * INHERITED effort: `/model` in the chat changes the model, it does not restate
- * the effort the session was launched at, so effort rides across rather than
- * being silently dropped to the model default. normalizeModelSpec then re-adds
- * the `[1m]` window marker exactly as the resume path does, so an opus/fable/
+ * unchanged model. A change is composed as detected-identity + the INHERITED
+ * effort: `/model` in the chat changes the model, it does not restate the
+ * effort the session was launched at, so effort rides across rather than being
+ * silently dropped to the model default. normalizeModelSpec then re-adds the
+ * `[1m]` window marker exactly as the resume path does, so an opus/fable/
  * sonnet-5 successor keeps its 1M window. Pure; exported for tests.
+ *
+ * "UNCHANGED" IS COMPARED AT FAMILY GRANULARITY, and that is the whole
+ * conservatism of this function. The flag holds what the LAUNCH asked for
+ * (`sonnet[1m]`, `claude-fable-5`) while the transcript holds what the CLI
+ * RESOLVED it to (`claude-sonnet-5`, `claude-fable-5-1`) — so an exact-id
+ * compare calls those a change and rewrites the flag, quietly converting an
+ * alias pin ("latest sonnet") into a version pin, and a release pin into a
+ * point-release pin. Neither is anything the owner did. Caught by a read-only
+ * probe over the live fleet before this shipped: 4 running sessions carrying
+ * `sonnet[1m]` would have been rewritten to `claude-sonnet-5[1m]`. Only a
+ * FAMILY change (fable → opus) is an owner `/model` switch, which is the only
+ * thing this exists to preserve. Two ids with no recognizable family (a
+ * provider-qualified or local id) fall back to an exact compare.
  */
 export function reconcileRespawnModelSpec(inheritedSpec, detectedModel) {
   const inherited = splitRespawnModelSpec(inheritedSpec);
@@ -3307,7 +3337,13 @@ export function reconcileRespawnModelSpec(inheritedSpec, detectedModel) {
   // a future marker would not be). Only a plausible model id may re-pin a live
   // session's model; anything else fails soft to the inherited spec.
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(detected.id)) return null;
-  if (detected.id === inherited.id) return null;
+  const inheritedFamily = respawnModelFamily(inherited.id);
+  const detectedFamily = respawnModelFamily(detected.id);
+  const unchanged =
+    inheritedFamily && detectedFamily
+      ? inheritedFamily === detectedFamily
+      : detected.id === inherited.id;
+  if (unchanged) return null;
   return composeResumeModelSpec(detected.id, detected.effort || inherited.effort);
 }
 
@@ -3334,6 +3370,14 @@ export function modelSpecFromRecycleArgv(args = []) {
  * whenever the owner switched mid-session. Reads FS; every failure path returns
  * null so a respawn keeps the inherited spec rather than being blocked or
  * re-pinned on a guess.
+ */
+/**
+ * @param {string[]} [args]
+ * @param {{ ownerId?: string | null, agent?: string | null, home?: string,
+ *          configDir?: string | null,
+ *          readLastActiveModel?: (session: { agent: string, sessionId: string, coordOwnerId?: string | null, configDir?: string },
+ *                                 opts?: { home?: string }) => string | null }} [opts]
+ * @returns {string | null}
  */
 export function detectRespawnModelSpec(
   args = [],
@@ -8049,34 +8093,60 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
     const canonicalLocalLivenessEvidence = normalizeResumeLocalLivenessEvidence(
       localLivenessEvidence,
     );
-    const response = await fetchWithResilience(
-      operatorUrl + "/api/agent-mcp/console/bootstrap-su/session-resumed",
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+    const post = (evidence) =>
+      fetchWithResilience(
+        operatorUrl + "/api/agent-mcp/console/bootstrap-su/session-resumed",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+          },
+          body: JSON.stringify({
+            advSessionId: Number(advSessionId),
+            resumeClaimKey: claimKey,
+            ...(evidence ? { localLivenessEvidence: evidence } : {}),
+          }),
         },
-        body: JSON.stringify({
-          advSessionId: Number(advSessionId),
-          resumeClaimKey: claimKey,
-          ...(canonicalLocalLivenessEvidence
-            ? { localLivenessEvidence: canonicalLocalLivenessEvidence }
-            : {}),
-        }),
-      },
-      {
-        fetchImpl,
-        sleep,
-        now,
-        onNotice,
-        timeoutMs,
-        connectBudgetMs,
-        timeoutRetries,
-        retryBootstrapFailures: true,
-        label: `resume claim for session #${advSessionId}`,
-      },
-    );
+        {
+          fetchImpl,
+          sleep,
+          now,
+          onNotice,
+          timeoutMs,
+          connectBudgetMs,
+          timeoutRetries,
+          retryBootstrapFailures: true,
+          label: `resume claim for session #${advSessionId}`,
+        },
+      );
+    let response = await post(canonicalLocalLivenessEvidence);
+    // MIXED-VERSION ROLLOUT. This launcher runs straight from the staging
+    // checkout (`psu` execs it by path) while the operator serves the green
+    // release pin, so a witness KIND can be hours or days newer than the
+    // endpoint that validates it — and an unknown kind is a hard 400. Without
+    // this fallback, teaching the launcher a new kind would turn a refusal the
+    // owner could at least act on into "operator returned HTTP 400", i.e. make
+    // the very bug being fixed strictly worse until a deploy lands. Measured
+    // 2026-09-02: :3070, :3170 and :3270 all rejected `no-live-claude-process`
+    // while the launcher serving it was already live.
+    //
+    // Retrying WITHOUT the witness is exactly the pre-witness behavior, so the
+    // degraded path is the old one, not a new one. The claim key is unchanged:
+    // replaying it is the endpoint's documented idempotency contract, so this
+    // cannot create a second claimant.
+    if (
+      response?.ok === false &&
+      response?.status === 400 &&
+      canonicalLocalLivenessEvidence
+    ) {
+      onNotice(
+        `psu: this operator does not recognize the '${canonicalLocalLivenessEvidence.kind}' local-liveness ` +
+          `witness (HTTP 400); retrying the resume claim without it. Deploy the current operator to restore ` +
+          `evidence-based reconciliation of a stale-live row.\n`,
+      );
+      response = await post(null);
+    }
     if (!response?.ok || typeof response.json !== "function") {
       const status =
         typeof response?.status === "number" ? response.status : null;
@@ -8421,10 +8491,14 @@ export function reportSessionResumeReleased(advSessionId, resumeClaimKey, opts =
  *           detail?: string, status?: 'reserved'|'live'|'missing',
  *           retryAfterMs?: number, leaseExpiresAt?: string,
  *           resumeClaimKey?: string }} outcome
- * @param {{ agent?: 'claude'|'omp'|'codex'|null }} [context]
+ * @param {{ agent?: 'claude'|'omp'|'codex'|null,
+ *           processHolder?: { held?: boolean, pid?: number|null, reason?: string }|null }} [context]
  * @returns {string}
  */
-export function describeResumeClaimRefusal(outcome, { agent = null } = {}) {
+export function describeResumeClaimRefusal(
+  outcome,
+  { agent = null, processHolder = null } = {},
+) {
   const detail = outcome?.detail ? ` (${outcome.detail})` : "";
   if (outcome?.status === "reserved") {
     const expiry = outcome.leaseExpiresAt
@@ -8436,11 +8510,32 @@ export function describeResumeClaimRefusal(outcome, { agent = null } = {}) {
     );
   }
   if (outcome?.status === "live") {
+    // WI-2141892: for claude the local absence probe now runs BEFORE this check
+    // and, on a clean scan, reconciles the row outright — so reaching a `live`
+    // refusal means one of exactly two things, and saying WHICH is the
+    // difference between a route and a dead end.
+    const claudeContext = () => {
+      if (processHolder?.held) {
+        return (
+          ` A live process (pid ${processHolder.pid}) still carries this session id in its argv — that agent ` +
+          `is RUNNING, most likely headless rather than in a window you can see. Talk to it (coord:send with ` +
+          `wake:'required'), stop it first (processes:kill by taskId — never pkill -f), or branch alongside it with --fork.`
+        );
+      }
+      const why = processHolder?.reason
+        ? ` (${processHolder.reason})`
+        : "";
+      return (
+        ` No live managed-PTY host was found, and the local process probe could not return a clean absence` +
+        `${why}, so the guard stayed closed. Re-run psu --resume once the probe can complete, wait out the ` +
+        `recent-active window, or use --fork (which mints a NEW identity and abandons this coord ownerId).`
+      );
+    };
     const backendContext =
       agent === "codex"
         ? " Codex's native writer-lock guard ran before this database check; if it reported no holder, verify the adv-session row or use --fork."
         : agent === "claude"
-          ? " No live managed-PTY host was found before this database check; verify the recorded Claude host/process or use --fork."
+          ? claudeContext()
           : agent === "omp"
             ? " No live managed-PTY host was found before this database check; verify the recorded OMP host/process or use --fork."
             : "";
@@ -9820,16 +9915,170 @@ export function codexThreadWriterHolder(
 }
 
 /**
- * The only local liveness witness accepted by the resume endpoint. Keep this
- * closed and exact: a probe result that is missing, malformed, or from an
- * unknown failure mode must not relax the server's recent-active guard.
+ * WI-2141892 — the same second oracle, for CLAUDE.
+ *
+ * WHY THIS EXISTS. `acquireAdvSessionResume` refuses a non-terminal adv row whose
+ * `started_at` is inside the 300s recent-active window, and until now only a
+ * `codex` row could be reconciled by local evidence. So a claude session that
+ * exited WITHOUT an end witness (window closed, host killed, box rebooted — the
+ * row keeps ended_at/exit_code/shutdown_accepted_at NULL) was unresumable for
+ * five minutes with NO override: `PSU_FORCE_RESUME=1` gates only psu's own
+ * double-host guard and never reaches the server acquire, leaving `--fork` —
+ * which mints a FRESH identity and abandons the coord ownerId every lock, await
+ * and presence row is keyed on. The refusal even reported that no managed-PTY
+ * host was found, then discarded that fact. This turns it into evidence.
+ *
+ * WHAT IT ASKS. Codex has one authority to consult (its writer flock). Claude has
+ * none, so the witness is the conjunction of two independent local oracles, and
+ * this is the second: does any live process on this box carry the native session
+ * uuid in its argv? A psu-hosted claude runs `claude … --resume <uuid>` /
+ * `--session-id <uuid>`, and a headless loop-driven one — the shape the PTY
+ * registry cannot see, exactly the WI-41663 gap — carries it too.
+ *
+ * FAIL-CLOSED, EVERY PATH, which is the OPPOSITE of the codex writer-lock probe
+ * above. That one may only improve a message for an error already about to
+ * happen, so an unreadable /proc means "not held". This one RELAXES a guard, so
+ * an unreadable /proc, a non-Linux host, a missing session id, or any argv hit it
+ * cannot attribute must report unknown and leave the guard closed.
+ *
+ * SELF-MATCH IS THE TRAP. This launcher's OWN argv contains `--resume <uuid>`, so
+ * a naive scan always finds "a live process holding the session" — itself — and
+ * the witness could never be produced. Excluding just `process.pid` is not
+ * enough: psu runs under a shell/wrapper whose argv carries the same uuid. The
+ * caller's whole ANCESTOR CHAIN is excluded, the same fix `scripts/proc-guard.mjs`
+ * applies to the `pgrep -f` self-match class.
+ */
+
+/** `/proc/<pid>/stat`'s ppid, or null. The `comm` field can itself contain spaces
+ *  and parentheses, so fields are read after the LAST ')' — splitting on
+ *  whitespace from the start misreads any process named e.g. `(foo bar)`.
+ *  Pure apart from the injected reader — exported for tests. */
+export function procParentPid(pid, { readStat = readProcStatText } = {}) {
+  let text;
+  try {
+    text = readStat(pid);
+  } catch {
+    return null;
+  }
+  const close = String(text ?? "").lastIndexOf(")");
+  if (close < 0) return null;
+  // After `<pid> (<comm>)` the next fields are `<state> <ppid> …`.
+  const rest = text.slice(close + 1).trim().split(/\s+/);
+  const ppid = Number(rest[1]);
+  return Number.isInteger(ppid) && ppid > 0 ? ppid : null;
+}
+
+/** The caller's pid plus every ancestor pid, walking `/proc/<pid>/stat`. Bounded
+ *  and cycle-safe: a corrupted chain must not spin. Pure apart from the injected
+ *  reader — exported for tests. */
+export function procAncestorPids(
+  startPid,
+  { readStat = readProcStatText, maxDepth = 64 } = {},
+) {
+  const seen = new Set();
+  let pid = Number(startPid);
+  for (let depth = 0; depth < maxDepth; depth += 1) {
+    if (!Number.isInteger(pid) || pid <= 0 || seen.has(pid)) break;
+    seen.add(pid);
+    const parent = procParentPid(pid, { readStat });
+    if (parent == null) break;
+    pid = parent;
+  }
+  return seen;
+}
+
+const readProcStatText = (pid) => readFileSync(`/proc/${pid}/stat`, "utf8");
+const readProcCmdlineText = (pid) =>
+  readFileSync(`/proc/${pid}/cmdline`, "utf8");
+
+/**
+ * Is any live process (outside the caller's own ancestor chain) carrying this
+ * native session id in its argv?
+ * `{ held, pid, cmdline, reason }` — fail-CLOSED: `held` is false ONLY on a
+ * complete, successful scan that found nothing.
+ *
+ * `reason` distinguishes the two false results that must not be conflated:
+ * `"clean-scan"` is the positive absence witness; everything else
+ * (`no-session-id`, `no-proc`, `scan-empty`) is unknown and must not relax the
+ * guard. Pure apart from the injected readers — exported for tests.
+ */
+export function claudeSessionProcessHolder(
+  sessionId,
+  {
+    listProcPids = defaultListProcPids,
+    readCmdline = readProcCmdlineText,
+    readStat = readProcStatText,
+    selfPid = process.pid,
+  } = {},
+) {
+  const miss = (reason) => ({ held: false, pid: null, cmdline: null, reason });
+  const id = String(sessionId ?? "").trim();
+  if (!id) return miss("no-session-id");
+  let pids;
+  try {
+    pids = listProcPids();
+  } catch {
+    return miss("no-proc");
+  }
+  if (!Array.isArray(pids) || pids.length === 0) return miss("scan-empty");
+  const excluded = procAncestorPids(selfPid, { readStat });
+  for (const pid of pids) {
+    if (excluded.has(pid)) continue;
+    let cmdline;
+    try {
+      cmdline = readCmdline(pid);
+    } catch {
+      // A pid that exited mid-scan cannot be holding the session. Any other
+      // read error is equally unattributable to THIS session, and treating it
+      // as a holder would make the witness unobtainable on a busy box.
+      continue;
+    }
+    if (!cmdline || !cmdline.includes(id)) continue;
+    return {
+      held: true,
+      pid,
+      cmdline: cmdline.replace(/\0/g, " ").trim().slice(0, 400),
+      reason: "argv-match",
+    };
+  }
+  return miss("clean-scan");
+}
+
+/** Numeric pid entries under `/proc`. Exported for tests via the injectable. */
+function defaultListProcPids() {
+  const out = [];
+  for (const entry of safeReaddir("/proc")) {
+    const name = typeof entry === "string" ? entry : entry?.name;
+    if (!name || !/^\d+$/.test(name)) continue;
+    out.push(Number(name));
+  }
+  if (out.length === 0) throw new Error("/proc listed no pids");
+  return out;
+}
+
+/**
+ * The local liveness witnesses accepted by the resume endpoint. Keep this closed
+ * and exact: a probe result that is missing, malformed, or from an unknown
+ * failure mode must not relax the server's recent-active guard. Each kind is
+ * bound to ONE agent backend on the server, so a claude witness can never
+ * reconcile a codex row (or the reverse).
  */
 export const NO_LIVE_CODEX_WRITER_EVIDENCE = Object.freeze({
   version: 1,
   kind: "no-live-codex-writer",
 });
 
-/** Normalize a wire value to the one canonical local-liveness witness. */
+export const NO_LIVE_CLAUDE_PROCESS_EVIDENCE = Object.freeze({
+  version: 1,
+  kind: "no-live-claude-process",
+});
+
+const RESUME_LOCAL_LIVENESS_EVIDENCE_KINDS = Object.freeze({
+  "no-live-codex-writer": NO_LIVE_CODEX_WRITER_EVIDENCE,
+  "no-live-claude-process": NO_LIVE_CLAUDE_PROCESS_EVIDENCE,
+});
+
+/** Normalize a wire value to one canonical local-liveness witness. */
 export function normalizeResumeLocalLivenessEvidence(value) {
   if (
     value == null ||
@@ -9838,15 +10087,16 @@ export function normalizeResumeLocalLivenessEvidence(value) {
   )
     return null;
   const keys = Object.keys(value);
+  const canonical = RESUME_LOCAL_LIVENESS_EVIDENCE_KINDS[value.kind];
   if (
     keys.length !== 2 ||
     !keys.includes("version") ||
     !keys.includes("kind") ||
     value.version !== 1 ||
-    value.kind !== "no-live-codex-writer"
+    !canonical
   )
     return null;
-  return { ...NO_LIVE_CODEX_WRITER_EVIDENCE };
+  return { ...canonical };
 }
 
 /**
@@ -9875,6 +10125,40 @@ export function normalizeCodexResumeLocalLivenessEvidence({
   )
     return null;
   return normalizeResumeLocalLivenessEvidence(NO_LIVE_CODEX_WRITER_EVIDENCE);
+}
+
+/**
+ * Build the positive witness for an exact Claude resume only when BOTH local
+ * liveness oracles positively say no process owns this session: the psu PTY-host
+ * registry found none, and a complete `/proc` scan found no live argv carrying
+ * the native session id. Every other result — including a probe that could not
+ * complete — stays unknown and returns null (fail closed).
+ *
+ * `PSU_FORCE_RESUME=1` deliberately does NOT produce this witness. That variable
+ * means "take over a host I can SEE is alive"; this witness means "I looked and
+ * there is nothing alive". Letting a force manufacture an absence claim would
+ * make the server's audit trail lie about what was actually observed.
+ */
+export function normalizeClaudeResumeLocalLivenessEvidence({
+  agent,
+  fork = false,
+  forceResume = process.env.PSU_FORCE_RESUME,
+  liveHost,
+  processHolder,
+} = {}) {
+  if (
+    agent !== "claude" ||
+    fork ||
+    forceResume === "1" ||
+    liveHost !== null ||
+    processHolder == null ||
+    typeof processHolder !== "object" ||
+    Array.isArray(processHolder) ||
+    processHolder.held !== false ||
+    processHolder.reason !== "clean-scan"
+  )
+    return null;
+  return normalizeResumeLocalLivenessEvidence(NO_LIVE_CLAUDE_PROCESS_EVIDENCE);
 }
 
 /**
@@ -9977,6 +10261,7 @@ async function launchResume(
   // overrides for recovery of a wedged-but-technically-alive host.
   let liveHostForResume;
   let localLivenessEvidence = null;
+  let claudeProcessHolder = null;
   if (!fork && session.coordOwnerId && process.env.PSU_FORCE_RESUME !== "1") {
     const live = findLiveHostFor(session.coordOwnerId);
     liveHostForResume = live;
@@ -10039,6 +10324,22 @@ async function launchResume(
       forceResume: process.env.PSU_FORCE_RESUME,
       liveHost: liveHostForResume,
       writerHolder: holder,
+    });
+  }
+  // WI-2141892: the same reconciliation for CLAUDE. The PTY-host guard above
+  // already returned null for this session (a found host exits before here), so
+  // the remaining question is whether a HEADLESS claude — invisible to that
+  // registry — still holds the native session id. Only a complete scan that
+  // finds nothing produces the witness; every failure mode leaves the server's
+  // recent-active guard closed exactly as it is today.
+  if (!fork && session.agent === "claude") {
+    claudeProcessHolder = claudeSessionProcessHolder(session.sessionId || null);
+    localLivenessEvidence = normalizeClaudeResumeLocalLivenessEvidence({
+      agent: session.agent,
+      fork,
+      forceResume: process.env.PSU_FORCE_RESUME,
+      liveHost: liveHostForResume,
+      processHolder: claudeProcessHolder,
     });
   }
   let resumeClaimed = false;
@@ -10123,7 +10424,7 @@ async function launchResume(
     });
     if (!claim.claimed) {
       console.error(
-        `psu: refusing to resume session #${session.id} — ${describeResumeClaimRefusal(claim, { agent: session.agent })}; no agent process was spawned.`,
+        `psu: refusing to resume session #${session.id} — ${describeResumeClaimRefusal(claim, { agent: session.agent, processHolder: claudeProcessHolder })}; no agent process was spawned.`,
       );
       // Headless revival runs this launcher beneath a detached, non-interactive
       // shell whose lifetime is the launcher's lifetime. Setting exitCode and

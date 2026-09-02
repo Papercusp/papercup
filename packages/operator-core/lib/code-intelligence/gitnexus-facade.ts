@@ -177,7 +177,34 @@ export function configureGitnexusDispatch(impl: GitnexusDispatch | null): void {
   dispatchImpl = impl;
 }
 
-/** Telemetry: per-op dispatch + refusal counts, for adoption measurement. */
+/**
+ * PROCESS-LOCAL dispatch/refusal counts. NOT the adoption measurement.
+ *
+ * These were introduced as "adoption telemetry", and that framing was wrong in
+ * a way worth naming, because it is the same mistake one rung up from the one
+ * this module already guards. The counters live in a module global: they reset
+ * on every restart, they are invisible across the ~100 processes that actually
+ * call this plane, and outside this file's own unit test nothing has ever read
+ * them. A number nobody can read cannot measure adoption.
+ *
+ * The real measurement already exists and is durable — `tool_invocations`
+ * records every `graph:query` call with its args, so per-op adoption is
+ * DERIVED rather than hand-maintained (CLAUDE.md, "derive, pin, or attest"):
+ *
+ *   SELECT args_json->>'op' AS op, count(*), count(DISTINCT coord_owner_id)
+ *     FROM harness_shared.tool_invocations
+ *    WHERE workspace_id = 'papercusp-workspace' AND tool_name = 'graph:query'
+ *    GROUP BY 1 ORDER BY 2 DESC;
+ *
+ * Measured 2026-09-02: 42 `graph:query` calls from 9 distinct callers, all 42
+ * carrying `op` — against 90 raw `gitnexus.context` calls from 14 callers. The
+ * uncurated plane is still ahead, which is precisely the fact P-006 wanted
+ * visible, and it is visible today with no new surface.
+ *
+ * Keep these counters for what they honestly are: an in-process probe the unit
+ * tests assert against. Do not report them as adoption, and do not build a
+ * reporting surface on top of them — extend the ledger query instead.
+ */
 export interface GitnexusAdoptionCounters {
   dispatched: number;
   refused: number;

@@ -955,6 +955,13 @@ export async function syncLaunchModeToRegistry(opts: {
           scopeRef: opts.ownerId,
           key,
           body: launchMode.instructions,
+          // P-001/P-002 — declare the lifetime; this write used to take the silent 7d
+          // default. Same reasoning as the mode:set writer of this identical key
+          // (agent-tools/mode/set.ts): a mode's standing instructions are normative and
+          // retract-driven, so kind:'convention' is both the honest modality and the
+          // right lifetime — permanent, and out of the cap-eviction population. A drain
+          // fleet outliving a week would otherwise silently lose its instructions.
+          kind: 'convention',
           sourceRef: `bootstrap-su:launch-mode 'drain' by ${opts.ownerId}`,
           createdBy: opts.ownerId,
           workspaceId: opts.workspaceId,
@@ -3270,7 +3277,8 @@ const sessionResumed = defineTool({
       if (Object.prototype.hasOwnProperty.call(body, 'localLivenessEvidence')) {
         if (!isAdvSessionLocalLivenessEvidence(body.localLivenessEvidence)) {
           return jsonRes({
-            error: 'localLivenessEvidence must be { version: 1, kind: \'no-live-codex-writer\' }',
+            error:
+              "localLivenessEvidence must be { version: 1, kind: 'no-live-codex-writer' | 'no-live-claude-process' }",
           }, 400);
         }
         localLivenessEvidence = body.localLivenessEvidence;

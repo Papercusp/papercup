@@ -1022,9 +1022,25 @@ export async function emitScorecard(
       // opening an unscoped transport just to reproduce the old partition.
       if (args.sourceHive === undefined) sourceHive = prior.sourceHive;
       if ((prior.sourceHive ?? undefined) !== (sourceHive ?? undefined)) {
+        // WI-2141737: say which of the two facts this is, and name the form that
+        // settles it. An ABSENT stored sourceHive (a card filed before the stamp
+        // existed) is not the same fact as an empty one, but rendering it as ''
+        // made it read as a value the caller could pass — and `sourceHive` is
+        // declared min(1), so no caller can pass ''. Read together, those two
+        // signals say "this card can never be superseded", which is false: the
+        // inherit-on-omit branch directly above finalizes exactly these cards.
+        // The reporter of WI-2141737 lost an investigation to that reading and
+        // shipped a card whose supersede edge is still unwritten, so the refusal
+        // owes the caller the satisfiable form rather than only the mismatch.
+        const priorLabel =
+          prior.sourceHive === undefined
+            ? 'no sourceHive at all (filed before the sourceHive stamp existed)'
+            : `sourceHive '${prior.sourceHive}'`;
         return {
           ok: false as const,
-          error: `superseded scorecard '${args.supersedes}' belongs to sourceHive '${prior.sourceHive ?? ''}', not '${sourceHive ?? ''}'`,
+          error:
+            `superseded scorecard '${args.supersedes}' belongs to ${priorLabel}, not '${sourceHive ?? ''}' — ` +
+            'omit sourceHive to inherit the superseded card\'s own value instead of this session\'s hive',
         };
       }
     }

@@ -808,8 +808,24 @@ export interface AssertFactInput {
   /** P-010: how to re-run the claim and what concrete result disproves it. */
   recheck?: FactRecheck | null;
   createdBy: string;
-  /** Explicit TTL; omitted conventions are permanent, other facts default to 7d. */
+  /**
+   * P-001 (facts-require-explicit-expiry-2026-09-02) — one half of the REQUIRED
+   * lifetime declaration; see {@link validateFactLifetime}. There is no silent 7d
+   * fallback any more: a write that declares no lifetime AT ALL is refused. A
+   * volatile subject's ttlSec is still CLAMPED to {@link FACT_VOLATILE_MAX_TTL_SEC},
+   * never refused (D-011).
+   */
   ttlSec?: number;
+  /**
+   * P-002 — the other half: permanence stated SEMANTICALLY rather than as a magic
+   * number. Accepted ONLY where {@link isFactCapExempt} already holds
+   * (kind:'convention', or a wall:/dead-end:/guard-rail: key), because eviction ranks
+   * by remaining-TTL-fraction DESC — so an unbounded row in the RANKED population is
+   * the LEAST evictable row there and becomes an unevictable squatter that crowds out
+   * live observations. Refused outright for a volatile subject: a snapshot of a moving
+   * subject is never a standing fact.
+   */
+  permanent?: boolean;
   workspaceId?: string;
   /** F0-2 (federated-scout-gym): OPT-IN federation egress — only shareable
    *  facts ever leave the hive. Default false (privacy default, D-001/D-005). */
@@ -839,6 +855,158 @@ export function defaultTtlSecForConfidence(confidence: FactConfidence | null | u
   if (confidence === 'provisional') return FACT_PROVISIONAL_DEFAULT_TTL_SEC;
   if (confidence === 'suspected') return FACT_SUSPECTED_DEFAULT_TTL_SEC;
   return undefined; // null / undefined / 'verified' — ordinary default applies
+}
+
+/**
+ * D-002 — a `dead-end:` is a claim about CURRENT CODE, so it gets a long but FINITE
+ * life rather than permanence. Long enough that it cannot silently lapse at the old 7d
+ * and become reaper-eligible (the WI-2141838 defect); finite enough that a dead-end
+ * invalidated by a later fix is eventually re-affirmed instead of standing forever.
+ *
+ * A `guard-rail:` is a standing DECISION, not a claim about code, so it is permanent —
+ * that asymmetry is the decision, not an oversight. `wall:` stays finite for a third
+ * reason again: its lapse watchdog fires ON the lapse.
+ */
+export const DEAD_END_DEFAULT_TTL_SEC = WALL_DEFAULT_TTL_SEC;
+
+/** The shape {@link validateFactLifetime} and {@link resolveFactLifetime} both read. */
+export interface FactLifetimeInput {
+  key: string;
+  kind?: string | null;
+  ttlSec?: number | null;
+  permanent?: boolean;
+  confidence?: FactConfidence | null;
+  subjectVolatile?: boolean;
+}
+
+/**
+ * P-001/P-002/P-003 (plan facts-require-explicit-expiry-2026-09-02) — the LIFETIME
+ * DECLARATION, and the one thing this store will not choose on a caller's behalf.
+ *
+ * ⚠ THE SILENT DEFAULT IS GONE ON PURPOSE. `FACT_DEFAULT_TTL_SEC` used to apply to any
+ * write that said nothing — measured 2,104 writes in 7 days (papercusp-workspace,
+ * 2026-09-02) whose lifetime nobody chose, which then expired unread. The owner's
+ * ruling was "Require explicit expiry; drop default-forever", and BOTH halves bind:
+ * defaulting to permanent instead was REJECTED on the eviction evidence below.
+ *
+ * A lifetime is declared in exactly one of five ways; the first that applies wins:
+ *
+ *   1. `permanent: true`   — explicit, and GATED (see below).
+ *   2. `ttlSec: <int>`     — explicit and bounded.
+ *   3. `kind:'convention'` — normative state, permanent. The P-002 semantic route.
+ *   4. a typed safety slot — `guard-rail:` permanent; `dead-end:`/`wall:` long but
+ *                            FINITE (D-002, {@link DEAD_END_DEFAULT_TTL_SEC}).
+ *   5. `confidence:'provisional'|'suspected'` — these ALREADY imply a short TTL
+ *      (EI-18681964809855890), so stating one is stating a lifetime.
+ *
+ * Anything else is refused. That is exactly the write which declared nothing at all —
+ * NOT the ~22,000 writes a week that already pass an explicit ttlSec, and not the
+ * high-frequency system writers, all of which are already compliant by construction.
+ *
+ * ⚠ WHY PERMANENCE IS GATED ON CAP-EXEMPTION rather than offered freely: eviction ranks
+ * by confidence, then REMAINING TTL FRACTION DESC. An unbounded row has the maximal
+ * remaining fraction, so inside the ranked population it is the LEAST evictable thing
+ * there. Free permanence would therefore not make facts durable — it would fill a
+ * capped, contended pool with near-unevictable rows, converting a legible failure ("my
+ * fact expired") into a silent one ("my fact was evicted immediately, or crowded out a
+ * real convention"). {@link isFactCapExempt} is REUSED rather than re-spelled as
+ * `kind === 'convention'` so the exempt population keeps exactly one definition.
+ *
+ * Validated in the STORE and not only in the tool, for the same reason as
+ * {@link validateUndecidableSettledBy} and {@link validateConventionEnforcement}: a
+ * non-tool caller (a routine, a backfill) must not be able to write a lifetime nobody
+ * chose. Tool-only enforcement is the same hole, one layer down.
+ *
+ * PURE — no IO, unit-testable without PG. Returns an error string, or null when the
+ * input declares a lifetime.
+ */
+export function validateFactLifetime(input: FactLifetimeInput): string | null {
+  const key = (input.key ?? '').trim();
+  const hasTtl = input.ttlSec != null;
+  const wantsPermanent = input.permanent === true;
+
+  if (hasTtl && wantsPermanent) {
+    return (
+      'facts:assert — declare ONE lifetime, not two: this call passed both ttlSec and permanent:true. ' +
+      'Drop ttlSec for an unbounded fact, or drop permanent:true for a bounded one.'
+    );
+  }
+
+  if (wantsPermanent) {
+    // A snapshot of a moving subject is never a standing fact. Refused rather than
+    // clamped: clamping an explicit ttlSec shortens a stated intent (D-011), but
+    // silently converting "permanent" to 15 minutes would invert one.
+    if (input.subjectVolatile === true) {
+      return (
+        'facts:assert — permanent:true is refused for a volatile measurement: a snapshot of a moving subject ' +
+        `is never a standing fact. Pass ttlSec instead (it is clamped to ${FACT_VOLATILE_MAX_TTL_SEC}s), or drop ` +
+        'the volatile marker if the claim really is a standing property rather than a measured value.'
+      );
+    }
+    if (!isFactCapExempt({ key, kind: input.kind ?? null })) {
+      return (
+        'facts:assert — permanent:true is accepted only for a fact EXEMPT from the per-scope cap: ' +
+        `kind:'convention', or a key under '${WALL_KEY_PREFIX}' / '${DEAD_END_KEY_PREFIX}' / ` +
+        `'${GUARD_RAIL_KEY_PREFIX}'. An unbounded row in the ranked population has the maximal remaining-TTL ` +
+        'fraction, which makes it the LEAST evictable row there: it would never expire AND would crowd out live ' +
+        "observations. If this is a standing rule, declare kind:'convention' — that makes it permanent on its " +
+        'own. If it is a finding about current code, it SHOULD expire: pass ttlSec and a recheck.'
+      );
+    }
+    return null;
+  }
+
+  if (hasTtl) return null;
+  if (input.kind === 'convention') return null;
+  // The typed safety slots declare durability by construction; isFactCapExempt with a
+  // null kind is exactly the "is this a wall:/dead-end:/guard-rail: key" question.
+  if (isFactCapExempt({ key, kind: null })) return null;
+  if (input.confidence === 'provisional' || input.confidence === 'suspected') return null;
+
+  return (
+    'facts:assert — state how long this fact should live; there is no default any more. Pass ttlSec:<seconds> ' +
+    "for a bounded fact, or permanent:true for a standing one (accepted for kind:'convention' and the " +
+    "wall:/dead-end:/guard-rail: slots). Declaring kind:'convention' makes it permanent on its own, and " +
+    "confidence:'provisional'|'suspected' already implies a short TTL. The silent 7-day default was removed " +
+    'because it was being applied to facts whose lifetime nobody had chosen, which then expired unread.'
+  );
+}
+
+/**
+ * Resolve the DECLARED lifetime to what gets stored. Total by construction: every
+ * caller runs {@link validateFactLifetime} first, so the un-declared case cannot reach
+ * here — the final fallback exists only to keep this a total function.
+ *
+ * Takes `effectiveTtlSec` (the caller's ttlSec AFTER the volatile clamp) rather than the
+ * raw input, so the D-011 clamp stays in exactly one place instead of being re-derived.
+ *
+ * PURE — no IO, unit-testable without PG.
+ */
+export function resolveFactLifetime(
+  input: Omit<FactLifetimeInput, 'ttlSec'> & { subjectVolatile: boolean; effectiveTtlSec: number | null },
+): { permanent: boolean; ttlSec: number } {
+  const key = (input.key ?? '').trim();
+
+  // An explicit (already-clamped) TTL always wins — including over a slot default, so a
+  // caller who deliberately wants a short-lived wall or dead-end still gets one.
+  if (input.effectiveTtlSec != null && input.effectiveTtlSec > 0) {
+    return { permanent: false, ttlSec: input.effectiveTtlSec };
+  }
+  // A volatile subject can never reach the permanent branches below.
+  if (input.subjectVolatile) return { permanent: false, ttlSec: FACT_VOLATILE_MAX_TTL_SEC };
+
+  if (input.permanent === true) return { permanent: true, ttlSec: 0 };
+  if (input.kind === 'convention') return { permanent: true, ttlSec: 0 };
+  if (key.startsWith(GUARD_RAIL_KEY_PREFIX)) return { permanent: true, ttlSec: 0 }; // D-002
+  if (key.startsWith(DEAD_END_KEY_PREFIX)) return { permanent: false, ttlSec: DEAD_END_DEFAULT_TTL_SEC }; // D-002
+  if (key.startsWith(WALL_KEY_PREFIX)) return { permanent: false, ttlSec: WALL_DEFAULT_TTL_SEC };
+
+  const byConfidence = defaultTtlSecForConfidence(input.confidence);
+  if (byConfidence != null) return { permanent: false, ttlSec: byConfidence };
+
+  // UNREACHABLE while validateFactLifetime runs first — asserted by
+  // `resolve-is-total-only-past-validate` in store.test.ts. Never treat this as a default.
+  return { permanent: false, ttlSec: FACT_DEFAULT_TTL_SEC };
 }
 
 /**
@@ -1395,14 +1563,30 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // P-006 / D-011: reads `effectiveTtlSec`, NOT `input.ttlSec` — that is what makes the
   // volatile clamp above actually bind. Outside the clamped case the two are identical, so
   // every pre-existing TTL path is unchanged.
-  const permanentConvention = input.kind === 'convention' && input.ttlSec == null && !subjectVolatile;
-  const ttl = subjectVolatile
-    ? effectiveTtlSec && effectiveTtlSec > 0
-      ? effectiveTtlSec
-      : FACT_VOLATILE_MAX_TTL_SEC
-    : effectiveTtlSec && effectiveTtlSec > 0
-      ? effectiveTtlSec
-      : (defaultTtlSecForConfidence(input.confidence) ?? FACT_DEFAULT_TTL_SEC);
+  // P-001/P-002/P-003 — the lifetime is DECLARED, never defaulted. This REFUSES the
+  // write that chose nothing (the case the old `?? FACT_DEFAULT_TTL_SEC` tail silently
+  // absorbed), and it refuses here in the store rather than only in the tool so a
+  // routine or a backfill cannot slip past it — the same reasoning that puts
+  // validateUndecidableSettledBy and validateConventionEnforcement on this side.
+  const lifetimeError = validateFactLifetime({
+    key: input.key,
+    kind: input.kind ?? null,
+    ttlSec: input.ttlSec ?? null,
+    permanent: input.permanent,
+    confidence: input.confidence ?? null,
+    subjectVolatile,
+  });
+  if (lifetimeError) throw new InvalidInputError(lifetimeError);
+  const lifetime = resolveFactLifetime({
+    key: input.key,
+    kind: input.kind ?? null,
+    permanent: input.permanent,
+    confidence: input.confidence ?? null,
+    subjectVolatile,
+    effectiveTtlSec,
+  });
+  const permanentFact = lifetime.permanent;
+  const ttl = lifetime.ttlSec;
   const confidence = input.confidence ?? null;
   // P-008 (b), migration 690. `dependsOn` arrives ALREADY RESOLVED (see
   // AssertFactInput.dependsOn) — the store's job is to normalize and persist it,
@@ -1542,7 +1726,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        COALESCE(${input.potHomeSlug ?? null}, (SELECT harness_slug FROM superseded)),
        ${input.scope}, ${ref}, ${key}, ${body},
        ${input.sourceRef ?? null}, ${input.createdBy ?? null},
-       ${permanentConvention ? sql`'infinity'::timestamptz` : sql`now() + make_interval(secs => ${ttl})`},
+       ${permanentFact ? sql`'infinity'::timestamptz` : sql`now() + make_interval(secs => ${ttl})`},
        ${input.shareable === true},
        ${audienceScope},
        ${input.sourceProvenance ? JSON.stringify(input.sourceProvenance) : null}::text::jsonb,

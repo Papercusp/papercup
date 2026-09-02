@@ -2369,6 +2369,112 @@ describe('clean sync outcome', () => {
       }),
     }));
   });
+
+  it('EI-22154166487566939: a stalled post-legs leg (github-bridge) is bounded by its own liveness guard, names the hung leg, and never reaches the terminal complete write', async () => {
+    // Regression for a fleet-wide wedge: the post-legs phase (github-bridge,
+    // bootstrap, own-head-publish, ref-announce, integrator,
+    // ref-announce-post-integrator, worktree-bridge) used to run with ZERO
+    // idle/hard-timeout protection — the local-sync liveness guard is stopped in
+    // its own finally before this phase begins. A hang in any one leg wedged
+    // `phase: 'post-legs'` indefinitely, with `last_status` still reading
+    // 'synced' from the tick before. The fix gives post-legs its own
+    // independent liveness guard (postLegsLiveness/guardedPostLegs); this test
+    // pins that a hang inside the FIRST post-legs leg (github-bridge's
+    // `loadHarnessRegistry` await) is bounded, named, and recorded as a
+    // terminal error rather than left stuck.
+    const savedIdle = process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS;
+    const savedHard = process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;
+    process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS = '25';
+    process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = '1000';
+    vi.useFakeTimers();
+    resetScheduledRegistry();
+    const timers: Array<{ cb: () => void; ms: number; stopped: boolean; handle: TimerHandle }> = [];
+    const timerByHandle = new Map<TimerHandle, (typeof timers)[number]>();
+    configureScheduledRegistry({
+      setIntervalImpl: (cb, ms) => {
+        const handle: TimerHandle = { unref: () => undefined };
+        const timer = { cb, ms, stopped: false, handle };
+        timers.push(timer);
+        timerByHandle.set(handle, timer);
+        return handle;
+      },
+      clearIntervalImpl: (handle) => {
+        const timer = timerByHandle.get(handle);
+        if (timer) timer.stopped = true;
+      },
+    });
+    potGitMode = 'bridged';
+    registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
+    try {
+      // Local-sync's own runGitSync call must complete NORMALLY — this fix is
+      // scoped strictly to legs AFTER local-sync. Flip hangArmed the instant it
+      // resolves so the FIRST post-legs await (github-bridge's
+      // loadHarnessRegistry — the same established hang-point technique used
+      // elsewhere in this file, e.g. EI-18121952237624498) never settles.
+      let hangArmed = false;
+      runGitSyncMock.mockImplementationOnce(async () => {
+        hangArmed = true;
+        return { status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] };
+      });
+      let bridgeHangStarted!: () => void;
+      const bridgeHangStartedPromise = new Promise<void>((resolve) => {
+        bridgeHangStarted = resolve;
+      });
+      loadHarnessRegistryMock.mockImplementation(async (workspaceId?: string) => {
+        if (hangArmed) {
+          bridgeHangStarted();
+          // Deliberately never settles — this is the hang the fix must bound.
+          return new Promise<never>(() => {});
+        }
+        return { projects: workspaceId ? registryProjects : ambientRegistryProjects ?? registryProjects };
+      });
+
+      const running = action(ctx);
+      const settled = running.then(
+        () => ({ value: undefined as unknown, error: undefined as unknown }),
+        (error) => ({ value: undefined as unknown, error }),
+      );
+
+      await bridgeHangStartedPromise;
+      // Local-sync completed (and its OWN guard already stopped) before the
+      // hang — proves the hang is scoped to a post-legs leg, not local-sync.
+      expect(runGitSyncMock).toHaveBeenCalledOnce();
+      expect(gitSyncActivityPatches().map((activity) => activity.phase)).toEqual(['local-sync', 'post-legs']);
+
+      await vi.advanceTimersByTimeAsync(30);
+      const settledResult = await settled;
+      const thrown = settledResult.error;
+      expect(thrown).toBeInstanceOf(GitSyncActionTimeoutError);
+      expect(thrown).toMatchObject({
+        phase: 'git-sync:github-bridge',
+        timeoutKind: 'idle',
+        timeoutMs: 25,
+      });
+
+      // Recorded as a terminal error — never left stuck at 'post-legs', and the
+      // pipeline never reaches the terminal 'complete' write.
+      const phases = gitSyncActivityPatches().map((activity) => activity.phase);
+      expect(phases).not.toContain('complete');
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({
+        active: false,
+        phase: 'error',
+        outcome_status: null,
+      });
+    } finally {
+      resetScheduledRegistry();
+      vi.useRealTimers();
+      // This test is the only one that overrides loadHarnessRegistryMock's
+      // implementation (vs. just inspecting its calls) — restore the module's
+      // own default so a later test never inherits an armed, hanging mock.
+      loadHarnessRegistryMock.mockImplementation(async (workspaceId?: string) => ({
+        projects: workspaceId ? registryProjects : ambientRegistryProjects ?? registryProjects,
+      }));
+      if (savedIdle === undefined) delete process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS;
+      else process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS = savedIdle;
+      if (savedHard === undefined) delete process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;
+      else process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = savedHard;
+    }
+  });
 });
 
 describe('P-010/P-012 merge-conflict path', () => {

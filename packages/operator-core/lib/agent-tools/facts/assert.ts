@@ -30,7 +30,6 @@ import {
   DEAD_END_KEY_PREFIX,
   WALL_KEY_PREFIX,
   GUARD_RAIL_KEY_PREFIX,
-  WALL_DEFAULT_TTL_SEC,
   FACT_VOLATILE_MAX_TTL_SEC,
   type AgentFact,
   type FactDependency,
@@ -428,7 +427,7 @@ export default defineTool({
   name: 'facts:assert',
   capability: 'coord:write',
   description:
-    `Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/orient until it expires (default TTL 7d; kind:convention without ttlSec is permanent) or is retracted. Delivery is deterministic, unlike memory:remember's fuzzy recall. Re-asserting a key refreshes body + TTL. At the cap a write evicts the lowest-ranked live fact, but is REFUSED if that victim is another author's verified fact; dryRun:true forecasts the cost. Typed safety slots and conventions take no cap seat.`,
+    `Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/orient until it expires or is retracted. ⚠ You MUST declare a lifetime: ttlSec, or permanent:true (cap-exempt rows only). There is no default — but kind:'convention' (permanent), a wall:/dead-end:/guard-rail: slot, and confidence:'provisional'|'suspected' each declare one on their own. Delivery is deterministic, unlike memory:remember's fuzzy recall. Re-asserting a key refreshes body + TTL. At the cap a write evicts the lowest-ranked live fact, but is REFUSED if that victim is another author's verified fact; dryRun:true forecasts the cost. Typed safety slots and conventions take no cap seat.`,
   guidance: {
     when:
       'You reached a durable CONCLUSION that should shape future turns — yours or your role\'s: "X is owner-residue, exclude it", "this harness\'s tests need Docker". Scope it as narrowly as true: workspace (global), role, owner (just you), harness, or work_item.',
@@ -495,7 +494,7 @@ export default defineTool({
       .enum(['dead-end', 'wall', 'guard-rail'])
       .optional()
       .describe(
-        "Typed slot. 'dead-end' (P-015) = a tried-and-failed approach, recorded so successors never re-try it: the key is normalized under 'dead-end:' and the body rendered with the ⛔ DEAD END marker in every future fold. 'wall' (owner-wall-ttl-lapse-hardening) = an OWNER-GATED blocker whose absence must never be read as resolved: the key is normalized under 'wall:' and the body rendered with the ⚠ WALL marker; TTL defaults to 90d instead of the ordinary 7d (still overridable via ttlSec, capped at 90d) and an unretracted lapse is escalated LOUDLY by the wall-lapse watchdog rather than silently vanishing from folds. 'guard-rail' (EI-21154276512983646) = a settled do-not-repeat instruction: the key is normalized under 'guard-rail:' and the body rendered with the 🛡️ GUARD RAIL marker; it is exempt from cap eviction and included in monitor never-drop folds. State the approach AND why it failed / the condition and what remediates it; pair with sourceRef to anchor the evidence.",
+        "Typed slot. 'dead-end' (P-015) = a tried-and-failed approach, recorded so successors never re-try it: the key is normalized under 'dead-end:' and the body rendered with the ⛔ DEAD END marker in every future fold; TTL defaults to 90d, not permanent (D-002 — a dead-end is a claim about CURRENT code and is the row most likely to be quietly invalidated by a later fix, so it is re-affirmed rather than standing forever). 'wall' (owner-wall-ttl-lapse-hardening) = an OWNER-GATED blocker whose absence must never be read as resolved: the key is normalized under 'wall:' and the body rendered with the ⚠ WALL marker; TTL defaults to 90d and stays FINITE on purpose — the lapse is what the watchdog fires on (still overridable via ttlSec, capped at 90d) and an unretracted lapse is escalated LOUDLY by the wall-lapse watchdog rather than silently vanishing from folds. 'guard-rail' (EI-21154276512983646) = a settled do-not-repeat instruction: the key is normalized under 'guard-rail:' and the body rendered with the 🛡️ GUARD RAIL marker; it is exempt from cap eviction, included in monitor never-drop folds, and PERMANENT by default (D-002 — a guard-rail is a standing decision rather than a claim about current code, which is what earns it permanence where 'dead-end' gets 90d). State the approach AND why it failed / the condition and what remediates it; pair with sourceRef to anchor the evidence.",
       ),
     audienceScope: z.string().max(160).optional().describe('Restrict WHO receives this fact in folds (v1 grammar: "fleet:<slug>") — it then folds ONLY into orients of that fleet\'s members. Omit = every reader of the scope. Orthogonal to `scope` (what the fact is about). facts:list still shows it to everyone (delivery relevance, not secrecy).'),
     confidence: z
@@ -560,9 +559,30 @@ export default defineTool({
       .max(90 * 24 * 3600)
       .optional()
       .describe(
-        `TTL seconds (default 7d for ordinary facts; omitted kind:convention means permanent; max 90d). ` +
-          `A volatile fact's ttlSec is CLAMPED, never refused (D-011): anything over ` +
+        `TTL seconds (max 90d). ⚠ THERE IS NO DEFAULT: every assert must declare a lifetime, and a call ` +
+          `that declares none is REFUSED (the old silent 7d default was removed — it was being applied to ` +
+          `facts nobody had chosen a lifetime for, which then expired unread). Pass this for a bounded fact, ` +
+          `or permanent:true for a standing one. You do NOT need either if the fact already implies a ` +
+          `lifetime: kind:'convention' is permanent on its own, a wall:/dead-end:/guard-rail: slot carries its ` +
+          `own durable default, and confidence:'provisional'|'suspected' already means a short TTL. ` +
+          `⚠ CONDITIONAL MAX: a volatile fact's ttlSec is CLAMPED, never refused (D-011) — anything over ` +
           `${FACT_VOLATILE_MAX_TTL_SEC}s (15 minutes) is shortened to it and disclosed back as ttlClampedFrom.`,
+      ),
+    permanent: z
+      .boolean()
+      .optional()
+      .describe(
+        `Declare this fact PERMANENT (no expiry) — the semantic alternative to ttlSec, and the way to say ` +
+          `"this should never lapse" without inventing a large number. ACCEPTED ONLY for a fact that is exempt ` +
+          `from the per-scope cap: kind:'convention', or a key under '${WALL_KEY_PREFIX}' / ` +
+          `'${DEAD_END_KEY_PREFIX}' / '${GUARD_RAIL_KEY_PREFIX}'. Everywhere else it is REFUSED, and that is ` +
+          `deliberate rather than a restriction to work around: eviction ranks by remaining-TTL FRACTION ` +
+          `descending, so an unbounded row inside the ranked population is the LEAST evictable row there — it ` +
+          `would never expire AND would crowd out live observations, turning "my fact expired" into the much ` +
+          `quieter "my fact was evicted immediately". Choose by WHAT THE ROW IS, not by how durable it feels: ` +
+          `a standing rule or decision is kind:'convention' and permanent by that fact alone; a finding about ` +
+          `current code SHOULD expire, so give it a ttlSec and a recheck. Refused for a volatile measurement — ` +
+          `a snapshot of a moving subject is never a standing fact.`,
       ),
     dryRun: z
       .boolean()
@@ -829,17 +849,19 @@ export default defineTool({
         );
       }
     }
-    // A wall slot with no EXPLICIT ttlSec defaults to WALL_DEFAULT_TTL_SEC (90d)
-    // rather than the ordinary 7d, so an owner-gated blocker cannot quietly lapse
-    // out of folds. An explicit ttlSec always wins (a caller who deliberately
-    // wants a shorter wall can have one).
+    // P-003 / WI-2141838 — the slot TTL defaults MOVED INTO THE STORE, keyed on the
+    // key PREFIX rather than on this tool's `slot` argument. The line here used to read
+    // `args.ttlSec ?? (args.slot === 'wall' ? WALL_DEFAULT_TTL_SEC : undefined)`, which
+    // gave the long TTL to the wall slot ALONE — a dead-end: or guard-rail: fact fell to
+    // the ordinary 7d, lapsed out of folds, and became reaper-eligible. That is exactly
+    // the defect WI-2141838 documented at this file:line. Keying on the PREFIX instead
+    // also covers a caller who writes a `wall:` key without passing slot:'wall', which
+    // this line could never see, and puts the rule where every writer passes through.
     //
-    // Restored 2026-07-26 (WI-5989): this declaration had been deleted while its
-    // use below survived, leaving `ttlSec` an unbound shorthand — a ReferenceError
-    // on EVERY facts:assert call, and a tsc regression that red-pinned the
-    // green-checkpoint typecheck leg. The still-present WALL_DEFAULT_TTL_SEC
-    // import, unused without this line, is what gave the accident away.
-    const ttlSec = args.ttlSec ?? (args.slot === 'wall' ? WALL_DEFAULT_TTL_SEC : undefined);
+    // (This declaration was restored 2026-07-26 by WI-5989 after being deleted while its
+    // use survived — a ReferenceError on EVERY assert. It is removed here WITH its use,
+    // and the WALL_DEFAULT_TTL_SEC import that becomes unused goes with it.)
+    const ttlSec = args.ttlSec;
     // P-008 (b): resolve the declared cell dependencies to DIGESTS now, so a
     // later read can answer "did what this rests on change?" mechanically
     // (D-007/D-012) rather than by eyeballing the fact's age. Fail-soft in two
@@ -891,6 +913,10 @@ export default defineTool({
       // here — the D-016 floor rule has to bind every writer, not just this tool.
       ...(args.enforcement ? { enforcement: args.enforcement } : {}),
       ttlSec,
+      // P-001/P-002: validated inside assertFact (validateFactLifetime), not here —
+      // the rule has to bind every writer, not just this tool. Same reasoning as
+      // enforcement above.
+      ...(args.permanent !== undefined ? { permanent: args.permanent } : {}),
       createdBy: identity.ownerId,
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),
       ...(potHomeSlug ? { potHomeSlug } : {}),
@@ -959,6 +985,23 @@ export default defineTool({
     // it is a mid-sentence INSTRUCTION presented as complete, to every future
     // agent, until someone retracts it. Keep the write; stop calling it clean.
     const truncation = truncationField(slotted.body, fact.body);
+    // EI-22164571843016048: the provenance quote is captured server-side from
+    // the owner's turn and then folded VERBATIM to every reader, so a turn that
+    // also contained a pasted credential would BROADCAST it. The quote is now
+    // scanned and redacted before persisting — but a silent redaction is its
+    // own defect: a redacted quote and a source with nothing quotable render
+    // identically, so the caller is told which one happened. Same
+    // disclose-don't-silently-alter discipline as `truncated` above.
+    const sourceQuoteRedacted = fact.sourceProvenance?.quoteRedacted === true
+      ? {
+          note:
+            'The verified source quote carried a CREDENTIAL-SHAPED value and was replaced with a redaction ' +
+            'marker before it was stored. The fact itself, its source ref and its verified flag are unaffected — ' +
+            'only the quoted snippet was withheld, because a fact folds verbatim into every reader\'s context. ' +
+            'If the source turn really did contain a secret, rotate it: this redaction stops the BROADCAST, it ' +
+            'does not un-paste the credential.',
+        }
+      : undefined;
     // P-008 (b): the same disclosure discipline, for dependencies. A cell the
     // caller DECLARED but that could not be read is stored honestly (it will
     // read `undeterminable` forever, never `fresh`) — but a silent `ok:true`
@@ -1121,6 +1164,7 @@ export default defineTool({
                 }
               : {}),
             ...(truncation ? { truncated: truncation } : {}),
+            ...(sourceQuoteRedacted ? { sourceQuoteRedacted } : {}),
             ...(dependencyWarning ? { dependenciesUnresolved: dependencyWarning } : {}),
             ...(dependsOnSuggestion ? { dependsOnSuggestion } : {}),
             ...recheckReceiptField(fact),

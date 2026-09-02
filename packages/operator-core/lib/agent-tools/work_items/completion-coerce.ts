@@ -102,6 +102,41 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 /**
+ * EI-22166136861574482: words a caller reasonably reaches for to say "this close
+ * changed no files" — the sibling evidence fields accept exactly this kind of
+ * prose (`testsRun: "none — no code change"`, `testResult: "n/a"`), and this
+ * schema's own `coverage.residue` already treats a literal `'none'` as a
+ * reserved no-op token. Left unrecognized, `coerceFilesChanged` used to wrap the
+ * word in a single-element array and hand it to path resolution as if it were a
+ * real path, which is absent from the tree by construction and silently
+ * downgrades the completion's authority to 'proposed' — a no-code-change close
+ * degraded through a field that reads as filled in correctly. Recognize the
+ * small, unambiguous set below and normalize it to the array's genuine empty
+ * form (`[]`) — the form the tool's own recovery warning already prescribes —
+ * BEFORE the single-entry rescue can turn the word into a fabricated path.
+ * Anything not on this list, including a real file that merely CONTAINS one of
+ * these words (`none.txt`, `na/config.ts`), is left untouched: the check is an
+ * exact, case-insensitive match on the WHOLE trimmed string.
+ */
+const NO_FILES_CHANGED_SENTINELS = new Set([
+  'none',
+  'n/a',
+  'na',
+  'nil',
+  'null',
+  'nothing',
+  'no files',
+  'no files changed',
+  'no changes',
+  'no change',
+  '-',
+]);
+
+function isNoFilesChangedSentinel(v: unknown): v is string {
+  return typeof v === 'string' && NO_FILES_CHANGED_SENTINELS.has(v.trim().toLowerCase());
+}
+
+/**
  * Normalize the path-only `filesChanged` field.
  *
  * Unlike prose arrays such as `whatLanded`, a scalar containing commas,
@@ -112,6 +147,8 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * disambiguate it by passing the documented array form.
  */
 function coerceFilesChanged(v: unknown): unknown {
+  if (isNoFilesChangedSentinel(v)) return [];
+
   let entries: unknown[];
   if (typeof v === 'string') {
     entries = v
@@ -125,6 +162,10 @@ function coerceFilesChanged(v: unknown): unknown {
   } else {
     entries = [v];
   }
+
+  // A lone sentinel wrapped in the documented array form (`["none"]`) makes the
+  // same "explicitly zero files" claim as the bare scalar handled above.
+  if (entries.length === 1 && isNoFilesChangedSentinel(entries[0])) return [];
 
   return entries.map((entry) => {
     if (!isPlainObject(entry) || typeof entry.path !== 'string' || !entry.path.trim()) return entry;

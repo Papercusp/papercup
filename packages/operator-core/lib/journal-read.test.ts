@@ -486,12 +486,22 @@ describe('readJournal', () => {
 
   it('reports the window it actually used, including the defaulted one', async () => {
     const out = await readJournal({ units: ['a.service'] }, execReturning(''), noUnknownUnits);
-    expect(out.window).toEqual({ since: JOURNAL_READ_DEFAULT_SINCE, until: null });
+    expect(out.window.since).toBe(JOURNAL_READ_DEFAULT_SINCE);
+    expect(out.window.until).toBeNull();
+    // P-022: these reads are EMPTY, so the absolute window is resolved and stated
+    // too. Asserted by shape, not value — the default resolver shells out to the
+    // host's systemd-analyze, so `sinceUtc` is legitimately null where that is
+    // absent, while the object itself is present either way (see the field doc:
+    // `resolved: null` means NOT ATTEMPTED, which is a different answer).
+    expect(out.window.resolved).not.toBeNull();
+    expect(out.window.resolved!.untilRequested).toBe(false);
+    expect(out.window.resolved!.invertedHint).toBeNull();
   });
 
   it('reports the normalized window for compact relative lookbacks', async () => {
     const out = await readJournal({ units: ['a.service'], since: '40m' }, execReturning(''), noUnknownUnits);
-    expect(out.window).toEqual({ since: '-40 minutes', until: null });
+    expect(out.window.since).toBe('-40 minutes');
+    expect(out.window.until).toBeNull();
     expect(out.command).toContain('--since -40 minutes');
   });
 

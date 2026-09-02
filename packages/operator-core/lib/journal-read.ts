@@ -168,7 +168,41 @@ export interface JournalReadResult {
   collapsed: number;
   /** True when older rows were dropped to honour `limit` (newest are kept). */
   truncated: boolean;
-  window: { since: string; until: string | null };
+  /**
+   * The window this read searched. `since` / `until` are the SPECS as passed
+   * (journalctl's own grammar, normalised); `resolved` is the ABSOLUTE UTC
+   * window those specs actually named.
+   *
+   * P-022 / WI-7133: the specs alone cannot tell you what was searched.
+   * journalctl parses them in the host's LOCAL time while every papercusp
+   * surface reports UTC, so `since: '2026-08-16 21:35:07'` echoes back looking
+   * exactly like the UTC stamp the caller meant while silently naming an instant
+   * four hours away from it. A zero-row result then reads as "no such event was
+   * ever logged" when it means "you searched the wrong hours" — and was read
+   * exactly that way during a live fleet-death investigation, pushing an already
+   * wrong cause further. Echoing the resolved absolute window makes "nothing
+   * there" distinguishable from "wrong there" without the caller re-deriving the
+   * timezone arithmetic that produced the mistake in the first place.
+   *
+   * `windowOutsideJournal` below is the narrower, PROVEN diagnosis (the window
+   * starts after the newest record). `resolved` is unconditional on the
+   * zero-row path: it states what was searched even when nothing is provably
+   * wrong, which is the state a reader most needs and is least able to check.
+   */
+  window: {
+    since: string;
+    until: string | null;
+    /**
+     * The absolute UTC window the specs above resolved to, or `null` when the
+     * resolution was NOT ATTEMPTED — deliberately, on the paths where it buys
+     * nothing: a read that returned rows (those rows carry their own UTC
+     * timestamps), a failed read (`journalError` — the window is not why), and
+     * a non-systemd backend. `null` never means "resolved to nothing": an
+     * attempted-but-unresolvable spec is a null FIELD inside a PRESENT object,
+     * which is a different answer and is reported as one.
+     */
+    resolved: JournalResolvedWindow | null;
+  };
   units: string[];
   /** False ⇒ this host has NO readable host-log backend. Not the same as "no lines". */
   journalAvailable: boolean;
@@ -222,6 +256,42 @@ export interface JournalReadResult {
   windowOutsideJournal: JournalWindowDiagnosis | null;
   /** The exact argv used, so a result is reproducible by hand. */
   command: string;
+}
+
+/**
+ * The ABSOLUTE UTC window a zero-row read actually searched (P-022).
+ *
+ * Resolved through `systemd-analyze timestamp` — journalctl's OWN grammar — for
+ * the same reason `windowOutsideJournal` defers to it: a hand-rolled parser for
+ * '-30 min' | '09:40:00' | '2 hours ago' would eventually disagree with the thing
+ * it is explaining, and a window report that is itself wrong is worse than none.
+ */
+export interface JournalResolvedWindow {
+  /** ISO-8601 UTC `since` resolved to; null ⇒ that spec could not be resolved. */
+  sinceUtc: string | null;
+  /**
+   * ISO-8601 UTC `until` resolved to. Null means EITHER no `until` was passed
+   * OR it could not be resolved — `untilRequested` separates those, because
+   * "unbounded end" and "we could not tell where the end was" are different
+   * windows and only one of them explains an empty result.
+   */
+  untilUtc: string | null;
+  /** True ⇒ the caller passed an `until` at all. */
+  untilRequested: boolean;
+  /** Host offset from UTC in minutes (-240 on an EDT box) — the usual culprit. */
+  hostUtcOffsetMinutes: number;
+  /**
+   * Non-null ⇒ the window CANNOT match anything BY CONSTRUCTION: `until`
+   * resolved to an instant BEFORE `since`. Zero rows then says nothing
+   * whatsoever about what was logged.
+   *
+   * Unlike `windowOutsideJournal` this needs no journal probe to prove — the two
+   * boundary stamps contradict each other on their own — so it is reported even
+   * when the newest-entry probe cannot answer. It is the shape a MIXED-grammar
+   * window produces: a UTC stamp in one bound and a relative spec in the other
+   * silently cross on any host that is not UTC.
+   */
+  invertedHint: string | null;
 }
 
 /** Why a time-bounded read came back empty: the window sits past the journal's end. */
@@ -956,6 +1026,9 @@ export async function readJournal(
     window: {
       since: normalizeJournalWindow(opts.since ?? JOURNAL_READ_DEFAULT_SINCE),
       until: opts.until ? normalizeJournalWindow(opts.until) : null,
+      // Filled in on the zero-row path only (see the field's own doc) — every
+      // early return below is a path where resolving buys the reader nothing.
+      resolved: null as JournalResolvedWindow | null,
     },
     units,
     unitsUnknown: [] as string[],
@@ -1039,16 +1112,46 @@ export async function readJournal(
   const withWindowDiagnosis = async (result: JournalReadResult): Promise<JournalReadResult> => {
     if (backend !== 'systemd' || result.entries.length || !result.journalAvailable || result.journalError) return result;
     const requestedSince = result.window.since;
-    const [resolvedMs, newestMs] = await Promise.all([
+    const requestedUntil = result.window.until;
+    const [resolvedMs, resolvedUntilMs, newestMs] = await Promise.all([
       resolveWindow(requestedSince),
+      // Only paid when the caller actually bounded the end. `until` is the half
+      // the future-window diagnosis below cannot see at all: a `since` that is
+      // perfectly fine plus an `until` that crossed it still returns a clean 0.
+      requestedUntil === null ? Promise.resolve(null) : resolveWindow(requestedUntil),
       newestJournalEntryMs(opts.scope ?? JOURNAL_DEFAULT_SCOPE, run),
     ]);
-    if (resolvedMs === null || newestMs === null || resolvedMs <= newestMs) return result;
-    const aheadByMs = resolvedMs - newestMs;
     const offsetMinutes = -new Date().getTimezoneOffset();
+    const offsetLabel = `UTC${offsetMinutes < 0 ? '' : '+'}${(offsetMinutes / 60).toFixed(0)}`;
+    const inverted = resolvedMs !== null && resolvedUntilMs !== null && resolvedUntilMs < resolvedMs;
+
+    // P-022: state the window that was searched on EVERY zero-row read, not only
+    // the subset that is provably wrong. "Nothing there" and "wrong there" are
+    // the same bytes until the absolute boundaries are on the result.
+    const resolvedWindow: JournalResolvedWindow = {
+      sinceUtc: resolvedMs === null ? null : new Date(resolvedMs).toISOString(),
+      untilUtc: resolvedUntilMs === null ? null : new Date(resolvedUntilMs).toISOString(),
+      untilRequested: requestedUntil !== null,
+      hostUtcOffsetMinutes: offsetMinutes,
+      invertedHint: inverted
+        ? `0 rows because THE WINDOW IS INVERTED, not because nothing was logged: \`until\` ` +
+          `resolved to ${new Date(resolvedUntilMs).toISOString()}, which is BEFORE \`since\` ` +
+          `(${new Date(resolvedMs).toISOString()}) — no line can fall inside it. journalctl ` +
+          `parses BOTH bounds in LOCAL time (this host is ${offsetLabel}) while papercusp ` +
+          `reports UTC, so a UTC stamp in one bound and a relative spec in the other cross ` +
+          `silently. Re-read with both bounds in the same grammar (a RELATIVE window is safest).`
+        : null,
+    };
+    const withResolved: JournalReadResult = {
+      ...result,
+      window: { ...result.window, resolved: resolvedWindow },
+    };
+
+    if (resolvedMs === null || newestMs === null || resolvedMs <= newestMs) return withResolved;
+    const aheadByMs = resolvedMs - newestMs;
     const hours = (aheadByMs / 3_600_000).toFixed(1);
     return {
-      ...result,
+      ...withResolved,
       windowOutsideJournal: {
         requestedSince,
         resolvedSinceUtc: new Date(resolvedMs).toISOString(),

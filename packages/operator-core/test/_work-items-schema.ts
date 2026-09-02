@@ -233,7 +233,12 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       to_timestamp(updated_ts / 1000.0) AS updated_at,
       author_pubkey, origin, _search,
       item_kind AS kind,
-      (payload - '_ei') AS payload,
+      -- migration 1096 (P-003 / WI-6688): the view must NOT subtract '_ei'.
+      -- Subtracting it made payload->'_ei'->>'severity' resolve to NULL for
+      -- every row while the severity COLUMN held the real value, so a
+      -- critical-severity audit written against the base table's accessor
+      -- returned a confident 0. Keep this fixture in lockstep with production.
+      payload AS payload,
       payload->'_ei'->>'assigned_by' AS assigned_by,
       taken_at AS assigned_at,
       assignee_rank, rank_writer, rank_updated_at, fed_ts,

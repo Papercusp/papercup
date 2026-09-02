@@ -880,13 +880,25 @@ export function buildWorkspaceHostBootstrap(
     // The SSH identity deliberately cannot traverse the immutable runtime or credential root. Two
     // root-owned wrappers are therefore the ONLY privilege seam. Each accepts exactly the fixed
     // protocol argv and sudoers repeats that exact allowlist; variable material remains on stdin.
+    //
+    // BOTH programs are Node scripts carrying a `#!/usr/bin/env node` shebang, and the sudoers
+    // entries below pin `env_reset, !setenv` — so the interpreter is resolved against sudo's
+    // `secure_path` (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin` on
+    // stock Ubuntu 24.04), NOT the caller's PATH. The runtime this host is pinned to is the
+    // BUNDLED one at `$RUNTIME_ROOT/current/<node>`, which is deliberately not on that list, so
+    // dispatching through the shebang made every privileged invocation die with
+    // `/usr/bin/env: 'node': No such file or directory` (exit 127) before a single byte of the
+    // request was read — measured live on p046-canary-03, 2026-09-02. Naming the bundled
+    // interpreter explicitly is also the stronger contract: it keeps the privileged seam pinned to
+    // the signed release's own Node rather than to whatever a future image happens to put on
+    // `secure_path`, which a PATH symlink would silently hand it.
     'install -o root -g root -m 0755 /dev/null "$REMOTE_INITIALIZER_CONDUIT"',
     "cat > \"$REMOTE_INITIALIZER_CONDUIT\" <<'PAPERCUSP_INITIALIZER_CONDUIT'",
     "#!/bin/sh",
     "set -eu",
     '[ "$#" -eq 3 ] || { echo "initializer conduit: refused argv" >&2; exit 64; }',
     `[ "$1" = ${shellQuote(WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV[0])} ] && [ "$2" = ${shellQuote(WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV[1])} ] && [ "$3" = ${shellQuote(WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV[2])} ] || { echo "initializer conduit: refused argv" >&2; exit 64; }`,
-    `exec /usr/bin/sudo -n -- ${shellQuote(`${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.remoteInitializer}`)} "$@"`,
+    `exec /usr/bin/sudo -n -- ${shellQuote(`${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.node}`)} ${shellQuote(`${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.remoteInitializer}`)} "$@"`,
     "PAPERCUSP_INITIALIZER_CONDUIT",
     'install -o root -g root -m 0755 /dev/null "$CREDENTIAL_DELIVERY_CONDUIT"',
     "cat > \"$CREDENTIAL_DELIVERY_CONDUIT\" <<'PAPERCUSP_DELIVERY_CONDUIT'",
@@ -894,13 +906,15 @@ export function buildWorkspaceHostBootstrap(
     "set -eu",
     '[ "$#" -eq 3 ] || { echo "credential delivery conduit: refused argv" >&2; exit 64; }',
     `[ "$1" = ${shellQuote(WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV[0])} ] && [ "$2" = ${shellQuote(WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV[1])} ] && [ "$3" = ${shellQuote(WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV[2])} ] || { echo "credential delivery conduit: refused argv" >&2; exit 64; }`,
-    `exec /usr/bin/sudo -n -- ${shellQuote(`${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.credentialDelivery}`)} "$@"`,
+    `exec /usr/bin/sudo -n -- ${shellQuote(`${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.node}`)} ${shellQuote(`${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.credentialDelivery}`)} "$@"`,
     "PAPERCUSP_DELIVERY_CONDUIT",
     'chown root:root "$REMOTE_INITIALIZER_CONDUIT" "$CREDENTIAL_DELIVERY_CONDUIT"',
     'chmod 0755 "$REMOTE_INITIALIZER_CONDUIT" "$CREDENTIAL_DELIVERY_CONDUIT"',
     'cat > "$PRIVILEGED_CONDUIT_SUDOERS" <<PAPERCUSP_CONDUIT_SUDOERS',
-    `Cmnd_Alias PAPERCUSP_WORKSPACE_HOST_INITIALIZER = ${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.remoteInitializer} ${WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV.join(" ")}`,
-    `Cmnd_Alias PAPERCUSP_WORKSPACE_HOST_DELIVERY = ${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.credentialDelivery} ${WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV.join(" ")}`,
+    // The allowlist must repeat the conduit's argv EXACTLY, interpreter included: sudo matches the
+    // whole command vector, so pinning only the script would refuse the very invocation above.
+    `Cmnd_Alias PAPERCUSP_WORKSPACE_HOST_INITIALIZER = ${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.node} ${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.remoteInitializer} ${WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV.join(" ")}`,
+    `Cmnd_Alias PAPERCUSP_WORKSPACE_HOST_DELIVERY = ${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.node} ${WORKSPACE_HOST_RUNTIME_ROOT}/current/${entrypoints.credentialDelivery} ${WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV.join(" ")}`,
     "Defaults!PAPERCUSP_WORKSPACE_HOST_INITIALIZER env_reset, !setenv",
     "Defaults!PAPERCUSP_WORKSPACE_HOST_DELIVERY env_reset, !setenv",
     "$WORKSPACE_USER ALL=(root) NOPASSWD: PAPERCUSP_WORKSPACE_HOST_INITIALIZER, PAPERCUSP_WORKSPACE_HOST_DELIVERY",
@@ -1048,6 +1062,18 @@ export function buildWorkspaceHostBootstrap(
     '[[ "$(stat -c %U:%G:%a "$CREDENTIAL_DELIVERY_CONDUIT")" == root:root:755 ]] || die "credential delivery conduit ownership or mode is unsafe"',
     '[[ "$(stat -c %U:%G:%a "$PRIVILEGED_CONDUIT_SUDOERS")" == root:root:440 ]] || die "conduit sudoers ownership or mode is unsafe"',
     'visudo -cf "$PRIVILEGED_CONDUIT_SUDOERS" >/dev/null || die "conduit sudoers policy is invalid"',
+    // Ownership, mode and sudoers syntax were ALL green on a host whose conduits could not run a
+    // single request: every privileged invocation died 127 resolving its interpreter. Those three
+    // checks describe the wrapper's FILE, and the thing that broke was its EXECUTION, so no
+    // strengthening of them could have caught it. Assert instead that each command vector the
+    // sudoers allowlist pins is actually executable — the interpreter first, since that is the
+    // element `secure_path` decides and the one that was missing.
+    'CONDUIT_NODE="$RUNTIME_ROOT/current/$NODE_ENTRYPOINT"',
+    '[[ -x "$CONDUIT_NODE" ]] || die "conduit interpreter is missing or not executable: $CONDUIT_NODE"',
+    '[[ -x "$RUNTIME_ROOT/current/$REMOTE_INITIALIZER_ENTRYPOINT" ]] || die "conduit initializer target is missing or not executable"',
+    '[[ -x "$RUNTIME_ROOT/current/$CREDENTIAL_DELIVERY_ENTRYPOINT" ]] || die "conduit delivery target is missing or not executable"',
+    'grep -Fq "$CONDUIT_NODE" "$REMOTE_INITIALIZER_CONDUIT" || die "initializer conduit does not pin the bundled interpreter"',
+    'grep -Fq "$CONDUIT_NODE" "$CREDENTIAL_DELIVERY_CONDUIT" || die "credential delivery conduit does not pin the bundled interpreter"',
     'SSHD_POLICY="$(sshd -T -C user="$WORKSPACE_USER",host=localhost,addr=127.0.0.1)"',
     'grep -Fx "allowtcpforwarding local" <<<"$SSHD_POLICY" >/dev/null || die "SSH TCP forwarding must be local-only"',
     'grep -Fx "permitopen 127.0.0.1:$SERVICE_PORT" <<<"$SSHD_POLICY" >/dev/null || die "SSH forwarding must be restricted to the loopback operator"',

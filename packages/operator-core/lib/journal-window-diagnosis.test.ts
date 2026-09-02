@@ -182,3 +182,172 @@ describe('readJournal — an empty window explains itself (WI-7133)', () => {
     expect(probe).not.toContain('-u');
   });
 });
+
+/**
+ * P-022 (silent-wrong-answers-2026-08-01), building on the same WI-7133 incident.
+ *
+ * `windowOutsideJournal` above only fires for the subset that is PROVABLY wrong —
+ * `since` resolved past the newest record. That leaves the far larger case
+ * uncovered: a window that is merely DIFFERENT from the one the caller meant.
+ * The result echoed back `since`/`until` as SPECS, which look identical whether
+ * they named the intended instant or one four hours away, so a zero-row read
+ * still could not say WHICH hours it searched.
+ *
+ * These pin the fix: on the zero-row path the result states the ABSOLUTE UTC
+ * window, and an `until` that crossed `since` — invisible to the probe above,
+ * because `since` itself is perfectly fine — is called out as unmatchable by
+ * construction.
+ */
+describe('readJournal — a zero-row result states the window it searched (P-022)', () => {
+  /** Resolver keyed by the SPEC, so `since` and `until` can resolve differently. */
+  const resolvesBySpec = (bySpec: Record<string, number | null>): WindowResolver =>
+    async (spec) => (spec in bySpec ? bySpec[spec] : null);
+
+  it('states the resolved absolute window even when nothing is provably wrong', async () => {
+    // The calibration case from the block above — window INSIDE the journal, no
+    // diagnosis — is exactly where the old result was least informative and the
+    // reader least able to check it by hand.
+    const sinceMs = NEWEST_MS - 30 * 60_000;
+    const out = await readJournal(
+      { units: ['a.service'], since: '-30 min' },
+      execEmptyWithNewest(NEWEST_MS),
+      noUnknownUnits,
+      resolvesTo(sinceMs),
+    );
+
+    expect(out.entries).toEqual([]);
+    expect(out.windowOutsideJournal).toBeNull(); // nothing provably wrong…
+    expect(out.window.resolved).not.toBeNull(); // …and it STILL says what it searched
+    expect(out.window.resolved!.sinceUtc).toBe(new Date(sinceMs).toISOString());
+    expect(out.window.resolved!.untilRequested).toBe(false);
+    expect(out.window.resolved!.untilUtc).toBeNull();
+    expect(out.window.resolved!.invertedHint).toBeNull();
+  });
+
+  it('resolves and reports the `until` bound too', async () => {
+    const sinceMs = NEWEST_MS - 2 * 3_600_000;
+    const untilMs = NEWEST_MS - 3_600_000;
+    const out = await readJournal(
+      { units: ['a.service'], since: '-2 hours', until: '-1 hour' },
+      execEmptyWithNewest(NEWEST_MS),
+      noUnknownUnits,
+      resolvesBySpec({ '-2 hours': sinceMs, '-1 hour': untilMs }),
+    );
+
+    expect(out.window.resolved!.sinceUtc).toBe(new Date(sinceMs).toISOString());
+    expect(out.window.resolved!.untilUtc).toBe(new Date(untilMs).toISOString());
+    expect(out.window.resolved!.untilRequested).toBe(true);
+    expect(out.window.resolved!.invertedHint).toBeNull();
+  });
+
+  it('DIAGNOSES an inverted window — the half the newest-record probe cannot see', async () => {
+    // The mixed-grammar shape: a relative `since` (correct) plus a UTC stamp in
+    // `until` that a LOCAL-time parser pulls 4h earlier, behind `since`. The
+    // existing diagnosis is silent here by construction — `since` is fine — so
+    // without this the read is a clean, confident, permanently empty answer.
+    const sinceMs = NEWEST_MS - 3_600_000;
+    const untilMs = NEWEST_MS - 5 * 3_600_000;
+    const out = await readJournal(
+      { units: ['a.service'], since: '-1 hour', until: '2026-08-16 20:35:07' },
+      execEmptyWithNewest(NEWEST_MS),
+      noUnknownUnits,
+      resolvesBySpec({ '-1 hour': sinceMs, '2026-08-16 20:35:07': untilMs }),
+    );
+
+    expect(out.entries).toEqual([]);
+    expect(out.journalError).toBeNull();
+    expect(out.windowOutsideJournal).toBeNull(); // proves this is a NEW answer, not the old one
+    const hint = out.window.resolved!.invertedHint;
+    expect(hint).not.toBeNull();
+    // Name the cause and the fix, not merely the emptiness — same bar as above.
+    expect(hint!).toMatch(/INVERTED/);
+    expect(hint!).toMatch(/LOCAL/);
+    expect(hint!).toMatch(/relative window/i);
+    expect(hint!).toContain(new Date(untilMs).toISOString());
+    expect(hint!).toContain(new Date(sinceMs).toISOString());
+  });
+
+  it('diagnoses an inverted window even when the journal has NO records', async () => {
+    // The whole point of the inverted check: the two boundary stamps contradict
+    // each other on their own, so it must not inherit windowOutsideJournal's
+    // dependence on a newest-entry probe that often cannot answer.
+    const out = await readJournal(
+      { units: ['a.service'], since: '-1 hour', until: '-5 hours' },
+      execEmptyWithNewest(null),
+      noUnknownUnits,
+      resolvesBySpec({ '-1 hour': NEWEST_MS - 3_600_000, '-5 hours': NEWEST_MS - 5 * 3_600_000 }),
+    );
+
+    expect(out.windowOutsideJournal).toBeNull(); // no newest record to compare against
+    expect(out.window.resolved!.invertedHint).not.toBeNull();
+  });
+
+  it('CALIBRATION: an equal `until` and `since` is NOT inverted', async () => {
+    // Boundary. An off-by-one here would fire on a legitimate point-in-time read.
+    const out = await readJournal(
+      { units: ['a.service'], since: 'x', until: 'y' },
+      execEmptyWithNewest(NEWEST_MS),
+      noUnknownUnits,
+      resolvesBySpec({ x: NEWEST_MS, y: NEWEST_MS }),
+    );
+    expect(out.window.resolved!.invertedHint).toBeNull();
+  });
+
+  it('an UNRESOLVABLE spec is a null FIELD in a PRESENT object, not an absent window', async () => {
+    // The distinction this whole plan is about: "we could not tell" must not
+    // render as "there was nothing to tell". `resolved: null` means NOT ATTEMPTED;
+    // an attempted-but-unparseable spec reports itself.
+    const out = await readJournal(
+      { units: ['a.service'], since: 'gibberish' },
+      execEmptyWithNewest(NEWEST_MS),
+      noUnknownUnits,
+      resolvesTo(null),
+    );
+    expect(out.window.resolved).not.toBeNull();
+    expect(out.window.resolved!.sinceUtc).toBeNull();
+    expect(out.window.resolved!.invertedHint).toBeNull(); // never guessed from a half-resolved window
+  });
+
+  it('does NOT resolve when the read returned rows — resolution is not paid where it buys nothing', async () => {
+    const exec: JournalExec = async () => ({ stdout: newestEntryStdout(NEWEST_MS) });
+    const out = await readJournal(
+      { units: ['a.service'], since: '-30 min' },
+      exec,
+      noUnknownUnits,
+      resolvesTo(NEWEST_MS - 30 * 60_000),
+    );
+    expect(out.entries.length).toBe(1);
+    expect(out.window.resolved).toBeNull();
+  });
+
+  it('does NOT resolve when the read FAILED — the window is not why it is empty', async () => {
+    const exec: JournalExec = async () => {
+      throw Object.assign(new Error('timed out'), { killed: true, signal: 'SIGTERM' });
+    };
+    const out = await readJournal(
+      { units: ['a.service'], since: '-30 min' },
+      exec,
+      noUnknownUnits,
+      resolvesTo(NEWEST_MS - 30 * 60_000),
+    );
+    expect(out.journalError).not.toBeNull();
+    expect(out.window.resolved).toBeNull();
+  });
+
+  it('does not pay an `until` resolution the caller never asked for', async () => {
+    // One exec per bound, and only for bounds that exist. A resolver call for an
+    // absent `until` would be a wasted systemd-analyze spawn on every empty read.
+    const asked: string[] = [];
+    const resolver: WindowResolver = async (spec) => {
+      asked.push(spec);
+      return NEWEST_MS - 30 * 60_000;
+    };
+    await readJournal(
+      { units: ['a.service'], since: '-30 min' },
+      execEmptyWithNewest(NEWEST_MS),
+      noUnknownUnits,
+      resolver,
+    );
+    expect(asked).toEqual(['-30 min']);
+  });
+});

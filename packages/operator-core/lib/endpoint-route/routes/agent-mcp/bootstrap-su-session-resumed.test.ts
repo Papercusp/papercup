@@ -196,12 +196,37 @@ describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
     expect(claimResumeMock).not.toHaveBeenCalled();
   });
 
+  it('passes the CLAUDE witness through unchanged (WI-2141892)', async () => {
+    // The endpoint is a trust boundary, so it re-validates; what it must NOT do
+    // is silently drop a kind it does not recognise, which would restore the
+    // fail-closed refusal while reporting success.
+    const evidence = { version: 1, kind: 'no-live-claude-process' };
+    const res = await postResumed({
+      advSessionId: 22127,
+      resumeClaimKey: 'resume-claim-claude-evidence',
+      localLivenessEvidence: evidence,
+    });
+
+    expect(res.status).toBe(200);
+    expect(acquireResumeMock).toHaveBeenCalledWith(
+      22127,
+      'resume-claim-claude-evidence',
+      undefined,
+      undefined,
+      evidence,
+    );
+  });
+
   it('400s malformed local-liveness evidence without touching the claim', async () => {
     for (const localLivenessEvidence of [
       null,
       { version: 1, kind: 'free' },
       { version: 1, kind: 'no-live-codex-writer', extra: true },
       'no-live-codex-writer',
+      // near-misses of the new kind, which must not be waved through
+      { version: 1, kind: 'no-live-claude-writer' },
+      { version: 2, kind: 'no-live-claude-process' },
+      { version: 1, kind: 'no-live-claude-process', agent: 'claude' },
     ]) {
       const res = await postResumed({
         advSessionId: 42,

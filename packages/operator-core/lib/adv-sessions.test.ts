@@ -18,6 +18,8 @@ import {
   fallbackCodexLaunchSpecFromAdvSession,
   hasAdvSessionTerminalEvidence,
   isAdvSessionLocalLivenessEvidence,
+  advSessionLivenessEvidenceCoversAgent,
+  ADV_SESSION_LIVENESS_EVIDENCE_AGENT,
   readAdvSessionLaunchRecordByOwner,
   markAdvSessionShutdownAcceptedByOwner,
   reactivateAdvSessionByOwner,
@@ -259,6 +261,147 @@ describe('Codex resume local-liveness evidence (EI-21584243912058462)', () => {
       version: 1,
       kind: 'unknown',
     })).resolves.toEqual({ status: 'live', acquired: false });
+  });
+});
+
+/**
+ * WI-2141892 — the same reconciliation for CLAUDE, and the binding that keeps the
+ * two oracles from being interchangeable.
+ *
+ * The bug: a claude session that exited without an end witness (ended_at,
+ * exit_code and shutdown_accepted_at all NULL — window closed, host killed) left
+ * a row that is non-terminal and recent, so this function refused `live` for the
+ * whole 300s window with NO override. `PSU_FORCE_RESUME=1` gates only psu's local
+ * double-host guard and never reaches here, so the owner's only routes were to
+ * wait or to `--fork`, which mints a fresh identity and abandons the coord
+ * ownerId every lock, await and presence row is keyed on.
+ */
+describe('Claude resume local-liveness evidence (WI-2141892)', () => {
+  const recentActiveClaudeRow = () => ({
+    agent: 'claude',
+    ended_at: null,
+    ended_by: null,
+    started_at: new Date(), // inside the recent-active window
+    resume_claim_key: null,
+    resume_claimed_at: null,
+  });
+
+  const txFor = (row: Record<string, unknown>) =>
+    vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
+      const sql = strings.join(' ');
+      if (sql.includes('SELECT agent, ended_at')) return [row];
+      if (sql.includes('UPDATE harness_shared.adv_sessions')) {
+        return [{ lease_expires_at: new Date(Date.now() + 60_000).toISOString() }];
+      }
+      return [];
+    });
+
+  it('accepts both closed discriminants and nothing else', () => {
+    expect(isAdvSessionLocalLivenessEvidence({ version: 1, kind: 'no-live-claude-process' })).toBe(true);
+    expect(isAdvSessionLocalLivenessEvidence({ version: 1, kind: 'no-live-codex-writer' })).toBe(true);
+    for (const value of [
+      { version: 1, kind: 'no-live-claude-process', extra: true },
+      { version: 2, kind: 'no-live-claude-process' },
+      { version: 1, kind: 'no-live-claude-writer' },
+      { version: 1, kind: 'clean-scan' },
+      { version: 1 },
+    ]) {
+      expect(isAdvSessionLocalLivenessEvidence(value)).toBe(false);
+    }
+  });
+
+  it('binds each witness kind to the ONE backend whose oracle produced it', () => {
+    expect(ADV_SESSION_LIVENESS_EVIDENCE_AGENT).toEqual({
+      'no-live-codex-writer': 'codex',
+      'no-live-claude-process': 'claude',
+    });
+    const claudeWitness = { version: 1, kind: 'no-live-claude-process' };
+    const codexWitness = { version: 1, kind: 'no-live-codex-writer' };
+    expect(advSessionLivenessEvidenceCoversAgent('claude', claudeWitness)).toBe(true);
+    expect(advSessionLivenessEvidenceCoversAgent('codex', codexWitness)).toBe(true);
+    // Cross-application is the unearned liveness claim: codex's flock says
+    // nothing about a claude process, and a /proc scan says nothing about a
+    // codex thread's writer.
+    expect(advSessionLivenessEvidenceCoversAgent('codex', claudeWitness)).toBe(false);
+    expect(advSessionLivenessEvidenceCoversAgent('claude', codexWitness)).toBe(false);
+    expect(advSessionLivenessEvidenceCoversAgent('omp', claudeWitness)).toBe(false);
+    expect(advSessionLivenessEvidenceCoversAgent(null, claudeWitness)).toBe(false);
+    expect(advSessionLivenessEvidenceCoversAgent('claude', null)).toBe(false);
+  });
+
+  it('reconciles a recent-active CLAUDE row that the local probe found dead', async () => {
+    const tx = txFor(recentActiveClaudeRow());
+    advSessionBeginMock.mockImplementation(async (fn) => fn(tx as typeof advSessionRowsMock));
+
+    await expect(acquireAdvSessionResume(22127, 'resume-key', 60, 300, {
+      version: 1,
+      kind: 'no-live-claude-process',
+    })).resolves.toMatchObject({ status: 'acquired', acquired: true });
+  });
+
+  it('POSITIVE CONTROL — the same row without a witness still refuses live', async () => {
+    // Without this the test above would pass for the wrong reason (e.g. if the
+    // row were being read as stale rather than reconciled).
+    const tx = txFor(recentActiveClaudeRow());
+    advSessionBeginMock.mockImplementation(async (fn) => fn(tx as typeof advSessionRowsMock));
+
+    await expect(acquireAdvSessionResume(22127, 'resume-key', 60, 300))
+      .resolves.toEqual({ status: 'live', acquired: false });
+  });
+
+  it('refuses a CLAUDE row presented with a codex witness', async () => {
+    const tx = vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
+      if (strings.join(' ').includes('SELECT agent, ended_at')) return [recentActiveClaudeRow()];
+      throw new Error('unexpected write');
+    });
+    advSessionBeginMock.mockImplementation(async (fn) => fn(tx as typeof advSessionRowsMock));
+
+    await expect(acquireAdvSessionResume(22127, 'resume-key', 60, 300, {
+      version: 1,
+      kind: 'no-live-codex-writer',
+    })).resolves.toEqual({ status: 'live', acquired: false });
+  });
+
+  it('refuses a CODEX row presented with a claude witness', async () => {
+    const tx = vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
+      if (strings.join(' ').includes('SELECT agent, ended_at')) {
+        return [{ ...recentActiveClaudeRow(), agent: 'codex' }];
+      }
+      throw new Error('unexpected write');
+    });
+    advSessionBeginMock.mockImplementation(async (fn) => fn(tx as typeof advSessionRowsMock));
+
+    await expect(acquireAdvSessionResume(22127, 'resume-key', 60, 300, {
+      version: 1,
+      kind: 'no-live-claude-process',
+    })).resolves.toEqual({ status: 'live', acquired: false });
+  });
+
+  it('never lets a witness override a HELD reservation or a missing row', async () => {
+    // The witness reconciles the recent-active liveness read only. It must not
+    // touch the single-winner lease or invent a row.
+    const held = vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
+      if (strings.join(' ').includes('SELECT agent, ended_at')) {
+        return [{
+          ...recentActiveClaudeRow(),
+          resume_claim_key: 'another-launchers-key',
+          resume_claimed_at: new Date(),
+        }];
+      }
+      throw new Error('unexpected write');
+    });
+    advSessionBeginMock.mockImplementation(async (fn) => fn(held as typeof advSessionRowsMock));
+    await expect(acquireAdvSessionResume(22127, 'my-key', 60, 300, {
+      version: 1,
+      kind: 'no-live-claude-process',
+    })).resolves.toMatchObject({ status: 'reserved', acquired: false });
+
+    const missing = vi.fn(async () => []);
+    advSessionBeginMock.mockImplementation(async (fn) => fn(missing as typeof advSessionRowsMock));
+    await expect(acquireAdvSessionResume(22127, 'my-key', 60, 300, {
+      version: 1,
+      kind: 'no-live-claude-process',
+    })).resolves.toEqual({ status: 'missing', acquired: false });
   });
 });
 
