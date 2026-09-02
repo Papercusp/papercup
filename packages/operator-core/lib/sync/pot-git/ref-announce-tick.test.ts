@@ -16,11 +16,14 @@ import { describe, expect, it } from 'vitest';
 import {
   decideRefAnnounceReceiveCursor,
   mergeParkedIntoReceiveBatch,
+  REF_ANNOUNCE_RECEIVE_IDLE_MS,
   type ParkedRefAnnouncements,
   type RefAnnounceReceiveBatchRow,
   type RefAnnounceReceiveResult,
 } from './ref-announce-tick';
 import type { SignedRefAnnouncement } from './ref-announce';
+import { DEFAULT_FETCH_TIMEOUT_MS } from './fetch-transport';
+import { DEFAULT_SERVE_PROGRESS_WINDOW_MS } from './serve-wiring';
 
 // The decision reads `result.action` (+ `stderr`/`timedOut`/`code` for a
 // failure) and the row's `announcement.{device_pubkey,version}`. A non-failed
@@ -262,5 +265,20 @@ describe('mergeParkedIntoReceiveBatch', () => {
   it('tolerates a malformed parked entry (no announcement) instead of crashing the tick', () => {
     const parked = { Z: { rowId: 1, parkedSinceMs: NOW, attempts: 1 } } as unknown as ParkedRefAnnouncements;
     expect(mergeParkedIntoReceiveBatch(parked, [row(2, 'A')])).toEqual([row(2, 'A')]);
+  });
+});
+
+describe('REF_ANNOUNCE_RECEIVE_IDLE_MS (WI-2039873: the receive leg must outlive the serve window)', () => {
+  it('is the transport default, not a tighter leg-local ceiling', () => {
+    expect(REF_ANNOUNCE_RECEIVE_IDLE_MS).toBe(DEFAULT_FETCH_TIMEOUT_MS);
+  });
+
+  it('is comfortably longer than serve-wiring’s progress window, so a requester never kills a serve the server still protects', () => {
+    // serve-wiring sizes its window as "far under the requester's own 120s idle
+    // ceiling". A leg that gives up sooner than the window inverts that and
+    // livelocks a cold join (killed at 15s, refused busy-streaming for 30s,
+    // repeat). Pin the ORDER, with margin, so a future "let's tighten the
+    // receive leg" edit fails here instead of on the rig.
+    expect(REF_ANNOUNCE_RECEIVE_IDLE_MS).toBeGreaterThanOrEqual(2 * DEFAULT_SERVE_PROGRESS_WINDOW_MS);
   });
 });

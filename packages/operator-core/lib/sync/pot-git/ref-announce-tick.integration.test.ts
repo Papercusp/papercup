@@ -456,6 +456,59 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
       expect(await readNamespaceRef(repoA, devD.pubkeyBase64, 'refs/heads/work')).toBe(shaD1);
     });
 
+    it('WI-2039873: after a device’s fetch fails, its remaining queued announcements this tick fail fast WITHOUT another dial (one dial per dead device per tick)', async () => {
+      // The rig shape: twelve announcements from one peer queued behind a
+      // failed fetch. Each used to re-dial in turn — twelve fresh same-repo
+      // requests at the serving peer, each superseding or refused behind the
+      // previous one's winding-down serve. The newest is parked for next tick
+      // anyway, so the repeats must not touch the transport at all.
+      const devH = mkDevice();
+      const shaH1 = await mintCommit(repoB, 'H work 1');
+      await writeNamespaceRef(repoB, devH.pubkeyBase64, 'refs/heads/work', shaH1);
+      const tH = await runRefAnnouncePublishTick({
+        repoPath: repoB,
+        devicePubkeyBase64: devH.pubkeyBase64,
+        sign: devH.sign,
+        nowMs: 10_000,
+      });
+      const announcement = tH.announcement as SignedRefAnnouncement;
+      expect(announcement).not.toBeNull();
+
+      let dials = 0;
+      const out = await runRefAnnounceReceiveTick({
+        repoPath: repoA,
+        // Three queued announcements from the same device (a replayed row is a
+        // faithful model: the mirror never gains the ref, so every one of them
+        // would otherwise drive a fresh fetch).
+        pending: [announcement, announcement, announcement],
+        selfDevice: devA.pubkeyBase64,
+        allowedDevices: [...members(), devH.pubkeyBase64],
+        nowMs: 10_000,
+        openStream: () => {
+          dials++;
+          const stub = new Duplex({ read() {}, write(_c, _e, cb) { cb(); } });
+          stub.on('error', () => {});
+          stub.destroy(new Error('hive-git: no live swarm join for this harness yet'));
+          return stub;
+        },
+        timeoutMs: 5_000,
+      });
+
+      expect(out.results).toHaveLength(3); // one result per queued announcement, positionally aligned
+      expect(out.results.map((r) => r.result.action)).toEqual(['fetch-failed', 'fetch-failed', 'fetch-failed']);
+      expect(dials).toBe(1); // the caller's dial seam was reached exactly once
+      const second = out.results[1]!.result;
+      expect(second.action === 'fetch-failed' && second.stderr).toContain('dial skipped');
+      // Still parked (newest per device) for next tick's re-drive — nothing lost.
+      const decision = decideRefAnnounceReceiveCursor(
+        out.results,
+        [1, 2, 3].map((rowId) => ({ rowId, announcement })),
+        3,
+      );
+      expect(decision.cursor).toBe(3);
+      expect(decision.parked[devH.pubkeyBase64]).toMatchObject({ rowId: 3, attempts: 1 });
+    });
+
     it('EI-15335: a FAILED device-fetch reports fetch-failed and the cursor is held (never advanced past a missed announce)', async () => {
       // Live-incident path (WI-3499 Leg D): the announcing peer has no live
       // swarm dial yet, so `openStream` yields an already-destroyed duplex —

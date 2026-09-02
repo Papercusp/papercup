@@ -82,6 +82,7 @@ import {
   runRefAnnounceReceiveTick,
   decideRefAnnounceReceiveCursor,
   mergeParkedIntoReceiveBatch,
+  REF_ANNOUNCE_RECEIVE_IDLE_MS,
   type ParkedRefAnnouncements,
   type RefAnnounceReceiveBatchRow,
 } from '../../sync/pot-git/ref-announce-tick';
@@ -4582,7 +4583,10 @@ async function runRefAnnounceLeg(
           peerGithubUserId: actor.githubUserId,
         });
       },
-      timeoutMs: 15_000,
+      // WI-2039873: the transport default, NOT a bare 15s — see the constant's
+      // doc for the livelock a 15s ceiling generated against serve-wiring's
+      // 30s progress window on the two-machine rig.
+      timeoutMs: REF_ANNOUNCE_RECEIVE_IDLE_MS,
     });
 
     // EI-15335 / P-203 Leg A: the receive tick returns one result per driven
