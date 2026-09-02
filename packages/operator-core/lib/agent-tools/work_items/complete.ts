@@ -104,7 +104,9 @@ import {
   countsTowardBurnDown,
   insufficientEvidenceReason,
   reconcileStampedAuthority,
+  type CompletionEvidenceFindings,
 } from '../../work-item-completion-authority';
+import { fabricatedPathsInCompletion } from './fabricated-paths';
 import { gateRedCompletionClaimWarning } from '../../release/gate-red-completion-claim';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
@@ -2572,6 +2574,48 @@ async function completeOne(
     ? await completionRepoRootsForWorkspace(ctx.workspaceId, declaredCompletionPaths)
     : undefined;
 
+  // P-001 / D-016 (design-to-code-coverage-seam-2026-09-02): make `filesChanged` FALSIFIABLE.
+  //
+  // `unresolvedPathsInCompletion` above is warn-only BY DESIGN and stays that way — an absent
+  // path may have been DELETED by this very change or live in an unchecked-out submodule, so
+  // grading on bare absence would down-grade exactly the honest refactor closes. Git history is
+  // the discriminator: absent-but-known-to-git is a plausible deletion, absent AND unknown to
+  // git never existed in this tree. Only the second may lower a grade.
+  //
+  // Gated on `initialUnresolvedPaths` so the git work is paid ONLY on a close that already has
+  // missing paths — the overwhelming majority of closes never reach it. `?? []` preserves the
+  // explicit-empty-means-cannot-judge contract, so a registry failure yields silence, never a
+  // downgrade.
+  const fabricatedPaths = initialUnresolvedPaths
+    ? fabricatedPathsInCompletion(completionEvidenceForGate, { repoRoots: registeredRepoRoots ?? [] })
+    : undefined;
+  const completionEvidenceFindings: CompletionEvidenceFindings | undefined = fabricatedPaths
+    ? { filesChangedNeverExisted: fabricatedPaths.neverExisted }
+    : undefined;
+  // Re-run the SAME single decision point with the findings folded in, rather than overriding
+  // its verdict afterwards — so the grade and its explanation stay computed once and cannot
+  // disagree, which is the property work-item-completion-authority.ts exists to guarantee.
+  const authorityWithFindings = authorityForCompletion(completionEvidenceForGate, completionEvidenceFindings);
+  // A downgrade nobody is told about is the refusal-loop failure this module warns against:
+  // the agent sees `proposed`, cannot tell which of several gates produced it, and re-submits
+  // the fields it already sent. Name the exact paths and the exact discriminator, and say
+  // plainly what does NOT trigger it — deletion is legitimate and must not read as an accusation.
+  const fabricatedPathsWarning =
+    fabricatedPaths && authorityByEvidence === 'committed'
+      ? `completion for ${it.id} landed authority:'proposed' rather than 'committed': ` +
+        `${fabricatedPaths.neverExisted.length} \`filesChanged\` path(s) are absent from the tree AND ` +
+        `unknown to git history, so they have never existed in this checkout: ` +
+        `${fabricatedPaths.neverExisted.join(', ')}. This is NOT triggered by deleting a file — a path ` +
+        `git has any record of, on any branch, is treated as a legitimate deletion and does not affect ` +
+        `the grade; nor by a glob, an absolute path, a submodule path, or any case the probe cannot ` +
+        `judge, all of which are silent. Measured 2026-08-10 (EI-20093150500083378): an agent filed 12 ` +
+        `paths across two closes and 8 were fabricated — an \`agent-tools/\` segment and a \`__tests__/\` ` +
+        `dir this repo does not use — and both closes still landed 'committed'. The fabricated paths ` +
+        `were MORE conventional than the real ones, which is why review does not catch them. To fix: ` +
+        `verify the paths on disk and re-call work_items:complete with an ARRAY of bare repo-relative ` +
+        `paths that actually exist, for example \`filesChanged: ["path/to/file.ts"]\`.`
+      : undefined;
+
   // EI-18682004530991057 (proposal 3): stamp WHAT TREE this evidence was observed
   // against. Applied to the PERSISTED object only — never to `completionEvidenceForGate`
   // — for the same reason `summary` is kept out of it above: `hasTests`,
@@ -2596,12 +2640,16 @@ async function completeOne(
           return settlementManifest ? { ...stamped, settlementManifest } : stamped;
         })()
       : completionEvidenceBeforeStamp;
+  // P-001: `authorityWithFindings` supersedes `authorityByEvidence` from here on — it is the
+  // same judgement with the tree-resolution finding folded in. `authorityByEvidence` remains
+  // the PRE-findings verdict and is still what the caller-facing explanation below reports on,
+  // so a downgrade can be attributed to its actual cause rather than to the evidence fields.
   const committedContentIdentityMissing = committedCloseDowngradedForUnprovenContentIdentity(
-    authorityByEvidence,
+    authorityWithFindings,
     completionEvidenceForGate?.filesChanged,
     treeStamp,
   );
-  const completionAuthority = committedContentIdentityMissing ? 'proposed' : authorityByEvidence;
+  const completionAuthority = committedContentIdentityMissing ? 'proposed' : authorityWithFindings;
   // EI-20268156880922192: the completion record is durable, but a cited
   // session-local scratch path or account-local artifact URL is not. Scan the
   // exact persisted evidence shape, warn after recording, and fail open if the
@@ -3343,6 +3391,7 @@ async function completeOne(
     ...(typeEvidenceWarning ? { typeEvidenceWarning } : {}),
     ...(liveDriveEvidenceWarning ? { liveDriveEvidenceWarning } : {}),
     ...(unresolvedPathsWarning ? { unresolvedPathsWarning } : {}),
+    ...(fabricatedPathsWarning ? { fabricatedPathsWarning } : {}),
     ...(gateRedClaimWarning
       ? {
           gateRedClaimWarning,
