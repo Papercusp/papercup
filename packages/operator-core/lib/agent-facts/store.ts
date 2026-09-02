@@ -1076,6 +1076,70 @@ export function validateFactScope(scope: string, scopeRef?: string | null): stri
   return null;
 }
 
+/** A work-item id: the shape `scope:'work_item'` requires, and the one most often
+ *  mis-filed under another scope (see validateFactScopeRefShape). */
+const WORK_ITEM_REF_RE = /^(WI|EI|F)-[0-9]+$/;
+
+/**
+ * EI-22179589084262757 — reject a `scope_ref` whose SHAPE can never match the fold
+ * selector for its scope. Presence is already checked by validateFactScope above;
+ * this checks that the ref could plausibly BE what the scope means.
+ *
+ * WHY THIS IS A LOUD REFUSAL AND NOT A LINT: every reader is selector-scoped
+ * (`orient` folds {workspace}, {owner,ownerId}, {harness,slug}), so a row keyed to
+ * the wrong KIND of identifier is unreadable BY CONSTRUCTION — it is written, stored,
+ * counted against nothing, and never folded. Nothing reports it, so the author
+ * believes the fact stands. Measured 2026-09-02 on papercusp-workspace: 41 such rows,
+ * from 12+ independent callers over six weeks, the newest a day old. The dominant
+ * shape is a work-item id under scope 'harness' or 'owner' (33 rows) — agents
+ * recording the PROVENANCE of a finding in the nearest string field. `source_ref`
+ * is that field, which is why this error names it.
+ *
+ * DENYLIST, NOT ALLOWLIST, deliberately: it rejects only shapes proven unfoldable,
+ * so a legitimate future owner/harness id form is never refused by a stale pattern.
+ * Not wired into `validateFactScope` because `retractFact` shares that function —
+ * tightening it there would make the ~41 existing orphans unretractable, blocking
+ * the cleanup this enables. PURE; assert-path only.
+ */
+export function validateFactScopeRefShape(scope: string, scopeRef?: string | null): string | null {
+  const ref = (scopeRef ?? '').trim();
+  if (!ref || scope === 'workspace') return null; // ref-less scope: presence rules already applied
+
+  const unfoldable = (why: string, remedy: string): string =>
+    `scope_ref '${ref}' cannot be a '${scope}' reference — ${why}. A fact is folded by ` +
+    `selector (scope + scope_ref), so this row would be stored but UNREADABLE: no ` +
+    `orient/carry fold could ever match it, and nothing would report that to you. ${remedy}`;
+
+  if (/\s/.test(ref)) {
+    return unfoldable(
+      'it contains whitespace, so it is prose rather than an identifier',
+      "Put the note in `body`, and the provenance in `source_ref` — scope_ref is a lookup key, not a free-text field.",
+    );
+  }
+  if (ref.includes('/') || ref.includes('\\')) {
+    return unfoldable(
+      'it is a filesystem path',
+      "To record a fact about code, use a scope whose ref is an identity (harness/owner/work_item) and cite the path in `body` or `source_ref`.",
+    );
+  }
+  if (scope === 'work_item') {
+    if (!WORK_ITEM_REF_RE.test(ref)) {
+      return unfoldable(
+        "scope 'work_item' is keyed by a work-item id (WI-/EI-/F-<digits>)",
+        'Pass the item id, or choose the scope that matches what the fact is about.',
+      );
+    }
+    return null;
+  }
+  if (WORK_ITEM_REF_RE.test(ref)) {
+    return unfoldable(
+      `a work-item id is not a '${scope}' identity`,
+      "If the fact is ABOUT that item, use scope:'work_item'. If it is a harness/owner-wide fact you DISCOVERED on that item, keep this scope and record the item in `source_ref`.",
+    );
+  }
+  return null;
+}
+
 /** P-007 v1 audience grammar: `fleet:<slug>`. Grows by adding alternatives HERE
  *  (one grammar, shared by assert-validation and any future selector renderer). */
 const AUDIENCE_SCOPE_RE = /^fleet:[a-z0-9][a-z0-9._-]*$/i;
@@ -1470,6 +1534,11 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // schema-validation path already avoids via InvalidInputError).
   const err = validateFactScope(input.scope, input.scopeRef);
   if (err) throw new InvalidInputError(`facts:assert — ${err}`);
+  // EI-22179589084262757: the ref is PRESENT (checked above) but may be the wrong KIND
+  // of identifier for this scope, which stores an unfoldable row and reports nothing.
+  // Assert-path only — retractFact must still be able to address the existing orphans.
+  const refShapeErr = validateFactScopeRefShape(input.scope, input.scopeRef);
+  if (refShapeErr) throw new InvalidInputError(`facts:assert — ${refShapeErr}`);
   // P-007: a typo'd audience is a caller-input mistake — reject loudly (stored
   // unmatchable = fact hidden from everyone; see validateAudienceScope).
   const audienceErr = validateAudienceScope(input.audienceScope);

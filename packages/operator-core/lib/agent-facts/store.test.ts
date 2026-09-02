@@ -21,6 +21,7 @@ import {
   retractFact,
   validateAudienceScope,
   validateFactScope,
+  validateFactScopeRefShape,
   type AgentFact,
   type FactSourceProvenance,
 } from './store';
@@ -98,6 +99,75 @@ describe('validateFactScope (D-001 scoping)', () => {
 
   it('rejects unknown scopes', () => {
     expect(validateFactScope('galaxy', 'x')).toMatch(/unknown scope/);
+  });
+});
+
+describe('validateFactScopeRefShape (EI-22179589084262757 — an unfoldable scope_ref)', () => {
+  // Every case below is a SHAPE measured in harness_shared.agent_facts on
+  // 2026-09-02, not an invented one: 41 rows from 12+ independent callers whose
+  // scope_ref could never match the fold selector for its scope, so the fact was
+  // stored and silently unreadable.
+
+  it('rejects a work-item id under a scope that is not work_item — the dominant real shape (33 rows)', () => {
+    for (const scope of ['harness', 'owner', 'role']) {
+      expect(validateFactScopeRefShape(scope, 'EI-21141007299141608')).toMatch(/not a '.*' identity/);
+      expect(validateFactScopeRefShape(scope, 'WI-39450')).toMatch(/UNREADABLE/);
+    }
+  });
+
+  it("names source_ref in the remedy — the diagnosed cause was provenance going into the nearest string field", () => {
+    const err = validateFactScopeRefShape('harness', 'EI-20443544252779323');
+    expect(err).toMatch(/source_ref/);
+    expect(err).toMatch(/scope:'work_item'/);
+  });
+
+  it('rejects prose and filesystem paths (the two singleton shapes observed)', () => {
+    expect(
+      validateFactScopeRefShape('harness', 'EI-19453584934952289; doc-part verify-mixed-family'),
+    ).toMatch(/whitespace/);
+    expect(
+      validateFactScopeRefShape('harness', 'packages/operator-core/lib/agent-tools/session/end.ts'),
+    ).toMatch(/filesystem path/);
+  });
+
+  it('requires a work-item id when the scope IS work_item', () => {
+    expect(validateFactScopeRefShape('work_item', 'papercusp')).toMatch(/keyed by a work-item id/);
+    expect(validateFactScopeRefShape('work_item', 'EI-21141007299141608')).toBeNull();
+  });
+
+  it('ACCEPTS every shape the live table actually uses — this is a denylist, not an allowlist', () => {
+    // Calibration: if these started failing, the guard would be refusing legitimate
+    // writes, which is the expensive direction of a write-boundary refusal.
+    expect(validateFactScopeRefShape('owner', 'su-54b7836d-d1b0-4ec6-8c4c-ea5b718c68c7')).toBeNull();
+    expect(validateFactScopeRefShape('harness', 'papercusp')).toBeNull();
+    expect(validateFactScopeRefShape('harness', 'oddsmith-hive')).toBeNull();
+    expect(validateFactScopeRefShape('role', 'su')).toBeNull();
+    expect(validateFactScopeRefShape('work_item', 'F-1234')).toBeNull();
+    expect(validateFactScopeRefShape('workspace', null)).toBeNull();
+    // An owner id form this workspace has never written must still pass: the point
+    // of a denylist is that a future identity form is not refused by a stale pattern.
+    expect(validateFactScopeRefShape('owner', 'cup-abc123')).toBeNull();
+  });
+
+  it('CONTROL — the accept-leg above can actually fail (an allowlist would break the fleet)', () => {
+    // A guard that has never failed is a guard nobody has tested, and the accept-leg
+    // is the one whose breakage is expensive: it refuses legitimate writes. This is
+    // the tempting wrong implementation — allowlist the owner forms seen in the live
+    // table — kept here permanently so the assertions above are demonstrably load-bearing.
+    const allowlistVersion = (scope: string, ref: string): string | null =>
+      scope === 'owner' && !/^su-/.test(ref) ? `'${ref}' is not a known owner id` : null;
+
+    expect(allowlistVersion('owner', 'su-54b7836d-d1b0-4ec6-8c4c-ea5b718c68c7')).toBeNull();
+    // ...but it refuses a legitimate non-`su-` owner, which the real guard admits:
+    expect(allowlistVersion('owner', 'cup-abc123')).toMatch(/not a known owner id/);
+    expect(validateFactScopeRefShape('owner', 'cup-abc123')).toBeNull();
+  });
+
+  it('leaves the RETRACT path able to address the existing orphans', () => {
+    // The 41 bad rows can only be cleaned up if retractFact can still name them, and
+    // retractFact validates with validateFactScope — which must NOT gain this check.
+    expect(validateFactScope('harness', 'EI-21141007299141608')).toBeNull();
+    expect(validateFactScope('harness', 'packages/operator-core/lib/agent-tools/session/end.ts')).toBeNull();
   });
 });
 

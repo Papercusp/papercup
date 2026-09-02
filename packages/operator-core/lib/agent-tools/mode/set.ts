@@ -28,6 +28,7 @@ import { modeById, MODES, modeImpliesAutonomy, modeRequiresSubject } from '../..
 import { setMode, getModeSubject } from '../../modes/store';
 import { goalHolderPolicyProblem, readGoalLaunchSettings } from '../../goal-launch-settings';
 import { assertFact, retractFact, FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 import { deactivateLoopForGoal, getLoopStatus } from '../../harness/routines/loop';
 import { notifyGoalHolderHandoff } from '../../goals/holder-handoff';
@@ -311,7 +312,20 @@ export default defineTool({
     // context), so this is a tool-layer-VERIFIED check, not a trusted claim.
     const callerIsOwnerAuthority = ident.ownerId === ADMIN_COORD_UI_OWNER;
     const ownerAuthorized = isSelf || callerIsOwnerAuthority;
-    const workspaceId = ident.workspaceId ?? 'default';
+    // EI-22179589084262757 — resolveConcreteWorkspaceId, NOT `ident.workspaceId ?? 'default'`.
+    // `ident.workspaceId` is `'*'` for a superuser session that chose no workspace
+    // (_mcp-handler's `workspaceId || '*'` fallback), and `'*'` is TRUTHY, so the old
+    // `??` let it through: the wildcard is a read-scoping sentinel and is never a
+    // storable workspace value — a row stamped with it is invisible to every
+    // concrete-workspace read (see resolveConcreteWorkspaceId's contract, EI-3409/WI-892).
+    // MEASURED 2026-09-02 before this fix: harness_shared.agent_modes held 95 rows under
+    // '*' across 48 distinct owners (plus 6 'default', 2 'papercusp'), i.e. 48 agents had
+    // registered a mode that no concrete read could see — the "a registered mode survives
+    // compaction" contract failing silently. The same variable feeds the mode row AND the
+    // mode-instructions fact below, which is why it is fixed here rather than at either
+    // write: fixing only one would SPLIT a session's mode row and its instructions across
+    // two workspaces, which is worse than being consistently wrong.
+    const workspaceId = resolveConcreteWorkspaceId(ident.workspaceId);
 
     // Capture the incumbent GOAL subject before clearing it. The mode row is
     // deleted by setMode, so this is the only point where the surrendered
@@ -577,11 +591,11 @@ export default defineTool({
             // would badge the fact with provenance nothing verified.
             sourceRef: `mode:set '${def.id}' by ${ident.ownerId}`,
             createdBy: ident.ownerId,
-            // Spread, not `?? undefined`: apps/operator compiles with
-            // exactOptionalPropertyTypes, where an explicit `undefined` is not
-            // assignable to an optional `string`. Omitting the key lets the
-            // store fall back to the active workspace, which is the intent.
-            ...(ident.workspaceId ? { workspaceId: ident.workspaceId } : {}),
+            // The SAME concrete id the mode row above was written under (resolved once,
+            // at the top of the handler). Previously this spread `ident.workspaceId`
+            // straight through, so a `'*'` session stamped its instructions fact with the
+            // wildcard and no concrete read could fold it back.
+            workspaceId,
           });
           instructionsFact = 'asserted';
         } else if (!enabled || instructions === '') {
@@ -591,7 +605,10 @@ export default defineTool({
             key: modeInstructionsFactKey(def.id),
             retractedBy: ident.ownerId,
             reason: `mode '${def.id}' instructions cleared`,
-            ...(ident.workspaceId ? { workspaceId: ident.workspaceId } : {}),
+            // Must resolve identically to the assert above, or a clear would look up a
+            // different workspace than the one the instruction was written to and
+            // silently fail to retract it.
+            workspaceId,
           });
           if (removed) instructionsFact = 'retracted';
         }

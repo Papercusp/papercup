@@ -165,6 +165,7 @@ import setTool, {
   renderImpliedNote,
 } from './set';
 import { ADMIN_COORD_UI_OWNER } from '../coordination/identity';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const run = (args: Record<string, unknown>) => setTool.handler(args as any, {} as any);
@@ -857,5 +858,51 @@ describe('implied-mode reporting', () => {
     // ONLY the newly-entered one: the agent has already read the other's rules.
     expect(Object.keys(out.impliedContracts)).toEqual(['auto']);
     expect(out.impliedContracts.auto).toContain('AUTO mode');
+  });
+});
+
+describe("EI-22179589084262757 — a '*' session must not stamp the wildcard on stored rows", () => {
+  // `ident.workspaceId` is `'*'` for a superuser session that chose no workspace
+  // (_mcp-handler's `workspaceId || '*'`). `'*'` is a READ-scoping sentinel and is never
+  // storable: a row carrying it is invisible to every concrete-workspace read. The old
+  // `ident.workspaceId ?? 'default'` let it through because '*' is TRUTHY.
+  // MEASURED 2026-09-02 before the fix: harness_shared.agent_modes held 95 rows under
+  // '*' across 48 distinct owners — 48 agents whose registered mode no concrete read
+  // could see, i.e. "a registered mode survives compaction" failing silently.
+  it('resolves the mode row AND its instructions fact to the same CONCRETE workspace', async () => {
+    currentIdentity = {
+      ownerId: ME,
+      ownerLabel: 'su · me',
+      source: 'omp-hook-session',
+      workspaceId: '*',
+      userId: null,
+    };
+    await run({ mode: 'auto', reason: 'go', instructions: 'keep going' });
+
+    // Assert the calls HAPPENED before reading them. `calls[0]?.[0]` is undefined when
+    // the write never occurred, and `expect(undefined).not.toBe('*')` passes vacuously —
+    // a test that proves nothing while looking green is the exact failure class this
+    // whole work-item is about.
+    expect(h.setMode).toHaveBeenCalledTimes(1);
+    expect(h.assertFact).toHaveBeenCalledTimes(1);
+    const modeWs = h.setMode.mock.calls[0]![0] as { workspaceId?: string };
+    const factWs = h.assertFact.mock.calls[0]![0] as { workspaceId?: string };
+
+    // A concrete, non-empty id — not '*', and not absent.
+    expect(typeof modeWs.workspaceId).toBe('string');
+    expect(modeWs.workspaceId).not.toBe('*');
+    expect(modeWs.workspaceId).not.toBe('');
+    expect(factWs.workspaceId).not.toBe('*');
+    // The SAME value on both: fixing only one write would split a session's mode row
+    // from its instructions across two workspaces — worse than consistently wrong.
+    expect(factWs.workspaceId).toBe(modeWs.workspaceId);
+  });
+
+  it('CONTROL — the old expression really did pass the wildcard through', () => {
+    // Kept permanently so the assertion above is demonstrably load-bearing rather than
+    // passing for some unrelated reason.
+    const oldForm = (ws: string | null | undefined) => ws ?? 'default';
+    expect(oldForm('*')).toBe('*'); // truthy, so `??` never fires — the whole bug
+    expect(resolveConcreteWorkspaceId('*')).not.toBe('*');
   });
 });
