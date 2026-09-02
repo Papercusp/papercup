@@ -56,7 +56,13 @@ const fakeProjectClient: ProjectClientFn = (parts, { budget }) => {
     dropped.push(victim);
     text = compose();
   }
-  return { text, dropped };
+  // `kept` is what the real projector returns and what `deprojected` is decided from:
+  // the parts that actually REACH this file. Modelling it as "every candidate minus the
+  // cut ones" is the same relation the real projectClient holds.
+  const kept = parts.filter(
+    (p) => !dropped.some((d) => d.part_key === p.part_key),
+  );
+  return { text, dropped, kept };
 };
 
 const impactFor = (
@@ -64,6 +70,7 @@ const impactFor = (
   after: ProjectionRow[],
   budget: number,
   projectClient: ProjectClientFn = fakeProjectClient,
+  partKey = "edited",
 ): ClientImpact =>
   evictionDelta({
     before,
@@ -72,6 +79,7 @@ const impactFor = (
     docId: "claude-md",
     budget,
     projectClient,
+    partKey,
   })[0];
 
 describe("evictionDelta", () => {
@@ -233,6 +241,7 @@ describe("renderImpact", () => {
           file: "CLAUDE.md",
           evicted,
           restored: [],
+          deprojected: false,
           headroomBefore: 30,
           headroomAfter: 5,
         },
@@ -251,6 +260,7 @@ describe("renderImpact", () => {
           file: "CLAUDE.md",
           evicted: ["mine"],
           restored: [],
+          deprojected: false,
           headroomBefore: 30,
           headroomAfter: 100,
         },
@@ -269,6 +279,7 @@ describe("renderImpact", () => {
           file: "CLAUDE.md",
           evicted: ["theirs"],
           restored: [],
+          deprojected: false,
           headroomBefore: 30,
           headroomAfter: 100,
         },
@@ -287,6 +298,7 @@ describe("renderImpact", () => {
           file: "CLAUDE.md",
           evicted: [],
           restored: [],
+          deprojected: false,
           headroomBefore: Number.NaN,
           headroomAfter: Number.NaN,
           failed: "budget too small to be honoured",
