@@ -45,6 +45,7 @@ import {
 import {
   citationBlobSha,
   getEffectiveItemAudits,
+  getLatestActivationAudit,
   getLatestPlanAudit,
   getPlanItemStatuses,
   isCitationContextFailure,
@@ -53,6 +54,7 @@ import {
   resolveCitation,
   UNFINISHED_ITEM_STATUSES,
 } from './plan-audits';
+import { describeUnrealized, judgeRequirementRealization } from './plan-requirement-realization';
 import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
 import { citationDeploymentForPaths, type CitationDeployment } from './deployment-position';
 
@@ -77,6 +79,10 @@ export type PlanAcceptanceGateCode =
   | 'acceptance_unaudited'
   | 'audit_coverage_stale'
   | 'audit_citations_unresolved'
+  // design-to-code-coverage-seam-2026-09-02 P-014 — the activation↔completion JOIN.
+  // The two audits were both present and never compared, so a requirement could be
+  // recorded `covered` while its plan item was audited with no verifying citation.
+  | 'requirement_unrealized'
   // A plan cannot ship a report that exists only in a session/account-local
   // presentation surface. The URL/path detector is shared with the advisory
   // turn-end warnings; this code is the completion-time enforcement leg.
@@ -599,6 +605,48 @@ export async function evaluatePlanAcceptanceGate(
               `${broken.length > 5 ? ` (+${broken.length - 5} more)` : ''}. Re-run plans:audit for ONLY the ` +
               `listed items; all other item audits carry forward unchanged. To ship anyway, pass force:{ reason }.`,
           };
+        }
+      }
+
+      // ── REQUIREMENT REALIZATION (design-to-code-coverage-seam-2026-09-02 P-014) ──
+      // Join the ACTIVATION audit to the COMPLETION audit. Both datasets already
+      // existed, both are keyed by plan_slug, and nothing had ever compared them — so
+      // a requirement could be dispositioned `covered` while the plan item it was
+      // routed to carried no verifying citation. The activation audit then asserts the
+      // requirement was absorbed while the completion audit records that nothing was
+      // proven. Each half is individually valid; only the join sees the disagreement.
+      //
+      // Placed last in the code-truth family and still ahead of rubric ceremony, for
+      // the same reason as its siblings: a plan whose requirements are not realized
+      // should be sent to realize them, not to author a rubric. `force`-waivable like
+      // the rest of the family — it is an evidence-truth check, not the separate owner
+      // ruling the rubric family encodes.
+      const activationAudit = await getLatestActivationAudit(planSlug);
+      const activationMappings = activationAudit?.activation?.mappings ?? [];
+      if (activationMappings.length > 0) {
+        const realization = judgeRequirementRealization({
+          mappings: activationMappings,
+          itemAudits: effectiveAudits,
+        });
+        if (!realization.ok) {
+          if (force) {
+            forcedChecks.push('requirement_unrealized');
+          } else {
+            const lines = realization.unrealized.map(describeUnrealized);
+            return {
+              satisfied: false,
+              code: 'requirement_unrealized',
+              message:
+                `plan '${planSlug}' cannot be marked shipped: ${realization.unrealized.length} requirement(s) ` +
+                `the activation audit dispositioned covered/repaired never reached a VERIFIED plan item — ` +
+                `${lines.slice(0, 5).join('; ')}${lines.length > 5 ? ` (+${lines.length - 5} more)` : ''}. ` +
+                `Each names a requirement the plan claims it absorbed; only code/test citations count as ` +
+                `verification (D-008), so a target audited with doc/none is unproven. Either audit the named ` +
+                `item(s) against the real code with plans:audit, or — if the requirement genuinely was not ` +
+                `absorbed — correct its disposition to 'rejected'/'open' via plans:audit { phase:'activation' } ` +
+                `so the record stops claiming otherwise. To ship anyway, pass force:{ reason }.`,
+            };
+          }
         }
       }
     }
