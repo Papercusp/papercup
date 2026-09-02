@@ -57,7 +57,13 @@ export interface SpecClauseWrite {
   specId: string;
   expectedRevision: number;
   sourceValId?: string | null;
-  /** In the ad-hoc scope this is the WORK-ITEM id, not a `P-NNN`; the row is created lazily. */
+  /**
+   * The owning item label. Stays a `P-NNN` even in the ad-hoc scope —
+   * `plan_spec_clause_revisions_plan_item_id_check` enforces `^P-[0-9]{3,}$` at the
+   * database, so a work-item id cannot stand in however natural that reads. In the ad-hoc
+   * scope its `plan_items` row is created lazily; per-work-item identity rides on `specId`
+   * and on `work_item_spec_revision_edges.work_item_id`, not on this label.
+   */
   planItemId: string;
   behavior: string;
   behaviorClass: SpecBehaviorClass;

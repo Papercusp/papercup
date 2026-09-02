@@ -213,7 +213,7 @@ describe('ad-hoc work-items carry spec evidence with no plan (P-022 / D-018)', (
     const authored = await specs.setSpecClause(
       clause({
         planSlug: undefined,
-        planItemId: 'WI-900',
+        planItemId: 'P-900',
         specId: 'WI-900:S-001',
         sourceValId: null,
         behavior: 'The ad-hoc close names each requirement it disposed of.',
@@ -254,7 +254,14 @@ describe('ad-hoc work-items carry spec evidence with no plan (P-022 / D-018)', (
       VALUES (${WORKSPACE}, ${HARNESS}, 'WI-901', NULL)`;
     for (const wi of ['WI-900', 'WI-901', 'WI-900']) {
       await specs.setSpecClause(
-        clause({ planSlug: undefined, planItemId: wi, specId: `${wi}:S-001`, sourceValId: null }),
+        clause({
+          planSlug: undefined,
+          // A `P-NNN` label, not the work-item id: the revisions CHECK enforces that shape.
+          // Per-item identity rides on `spec_id` and the edge row's `work_item_id`.
+          planItemId: `P-${wi.slice(-3)}`,
+          specId: `${wi}:S-001`,
+          sourceValId: null,
+        }),
       );
     }
     const plans = await db.sql`
@@ -265,7 +272,7 @@ describe('ad-hoc work-items carry spec evidence with no plan (P-022 / D-018)', (
       SELECT item_id, seq FROM harness_shared.plan_items
        WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${ADHOC}
        ORDER BY item_id`;
-    expect(items.map((r) => r.item_id)).toEqual(['WI-900', 'WI-901']);
+    expect(items.map((r) => r.item_id)).toEqual(['P-900', 'P-901']);
     expect(new Set(items.map((r) => Number(r.seq))).size, 'seq must stay distinct').toBe(2);
   });
 
@@ -583,8 +590,8 @@ describe('cross-namespace spec revision edges (D-013)', () => {
       INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug)
       VALUES (${WORKSPACE}, ${HARNESS}, 'other-plan')`;
     await db.sql`
-      INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id)
-      VALUES (${WORKSPACE}, ${HARNESS}, 'other-plan', 'P-009')`;
+      INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id, seq)
+      VALUES (${WORKSPACE}, ${HARNESS}, 'other-plan', 'P-009', 1)`;
   });
 
   it('reads edges across every plan namespace when planSlug is omitted, and only one when it is not', async () => {

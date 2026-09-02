@@ -28,6 +28,15 @@
  * the existing keys already make.
  */
 
+import type postgres from 'postgres';
+
+/**
+ * The shape `plan_spec_clause_revisions_plan_item_id_check` enforces on the owning item.
+ * Mirrored here so this module refuses early rather than letting the database reject the
+ * write from a table the caller never mentioned.
+ */
+const ADHOC_ITEM_ID_SHAPE = /^P-[0-9]{3,}$/;
+
 /** The shared scope slug. Stable — it is written into immutable evidence rows. */
 export const ADHOC_WORK_ITEM_SPEC_SCOPE = 'adhoc-work-item-specs';
 
@@ -61,8 +70,15 @@ export const ADHOC_SCOPE_CONTENT = [
   'spec and evidence tables reference it with ON DELETE RESTRICT.',
 ].join('\n');
 
-/** Minimal shape of the `postgres` tagged-template client both stores already hold. */
-type TaggedSql = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>;
+/**
+ * The `postgres` client both stores already hold inside their transaction.
+ *
+ * Deliberately the library's own type rather than a hand-rolled tagged-template shape: a
+ * structural stand-in looks equivalent and is not (`Sql<{}>` carries call signatures a
+ * minimal `(strings, ...values) => Promise<unknown>` cannot satisfy), so the narrower type
+ * compiles here and rejects every real caller.
+ */
+type TaggedSql = postgres.Sql;
 
 /**
  * Resolve the scope a write belongs to: the caller's plan when they named one, otherwise
@@ -81,8 +97,13 @@ export async function resolveSpecScopeSlug(
   /**
    * The clause's owning item. Supplied by the CLAUSE writer, which requires a matching
    * `plan_items` row; the evidence writer omits it, because by then the clause (and so the
-   * item) already exists. In the ad-hoc scope the "item" is the work-item itself, so the
-   * id passed here is a work-item id rather than a `P-NNN`.
+   * item) already exists.
+   *
+   * MUST be a `P-NNN` label even here: `plan_spec_clause_revisions_plan_item_id_check`
+   * enforces `^P-[0-9]{3,}$` at the database, so a work-item id cannot stand in as the
+   * owning item however natural that reads. Per-work-item identity is carried by
+   * `spec_id` namespacing and by `work_item_spec_revision_edges.work_item_id`, which is
+   * where it belongs anyway — this label is just the scope's internal bucket.
    */
   planItemId?: string | null,
 ): Promise<string> {
@@ -93,7 +114,10 @@ export async function resolveSpecScopeSlug(
     VALUES (${workspaceId}, ${harnessSlug}, ${ADHOC_WORK_ITEM_SPEC_SCOPE}, ${ADHOC_SCOPE_CONTENT})
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING`;
   const itemId = planItemId?.trim();
-  if (itemId) {
+  // Refuse to materialise an item the revisions CHECK would later reject. Creating the row
+  // anyway would trade a clear `plan_item_not_found` for a raw 23514 constraint violation
+  // thrown three statements later, from a table the caller never named.
+  if (itemId && ADHOC_ITEM_ID_SHAPE.test(itemId)) {
     // `plan_spec_clauses` writes require an owning `plan_items` row, so the scope alone is
     // not enough for the first ad-hoc clause. `seq` is NOT NULL with no default, hence the
     // computed next value rather than a literal.
