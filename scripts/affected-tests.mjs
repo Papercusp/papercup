@@ -1766,6 +1766,30 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|sh|bash|py|rs|sql|toml|yml|yaml)$/.test(f),
   },
   {
+    // WI-39362 — check-lint-guard-reachability flagged this as the repo's ONLY
+    // partially-covered guard: it "enumerates the WHOLE tree but only runs when
+    // packages/operator-core is affected", so a pipefail/SIGPIPE regression in any
+    // *.sh outside that workspace got no local signal and would first surface as a
+    // red FLEET gate. REGISTERED rather than appended to ACKNOWLEDGED_PARTIAL_COVERAGE,
+    // which is SHRINK-ONLY by design (check-lint-guard-reachability.mjs).
+    //
+    // Safe to wire NOW on the same precedent as the entries around it: measured green
+    // over the whole real tree FIRST — exit 0, "115 pipefail script(s) scanned, 75
+    // shape match(es), none with an unbounded producer" — so registering it cannot
+    // red-pin the fleet on defects that accrued while it slept.
+    //
+    // TRIGGER SCOPE — the guard's subject is `git ls-files -z '*.sh'`, so the only
+    // source change that can add an unbounded-producer site is a tracked shell
+    // script; keep this predicate in step with that enumeration.
+    workspace: "@papercusp/operator-core",
+    script: "lint:pipefail-sigpipe",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "packages/operator-core/package.json" ||
+      f === "scripts/check-pipefail-sigpipe.mjs" ||
+      f.endsWith(".sh"),
+  },
+  {
     // WI-1472680 — this guard was declared in package.json and run by NOTHING:
     // check-lint-guard-reachability reported it verbatim as "nothing runs it at all".
     // WIRED rather than retired, and the wiring is safe to do NOW because the
@@ -1822,6 +1846,32 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === "packages/operator-core/package.json" ||
       f === "scripts/check-narrowing-gated-assertions.mjs" ||
       /\.[cm]?tsx?$/.test(f),
+  },
+  {
+    // EI-22176104184812266 — same PARTIAL-COVERAGE class as the entry above, and the
+    // sole hard failure of `lint:guard-reachability` when this was wired: the guard
+    // "enumerates the WHOLE tree but only runs when packages/operator-core is
+    // affected". Its subject is shell scripts, which live overwhelmingly OUTSIDE
+    // operator-core (papercusp-desktop/bin, apps/operator/scripts/systemd, scripts/),
+    // so the workspace trigger excluded almost everything it polices — a *.sh edit in
+    // papercusp-desktop got no local signal and would first surface as a red FLEET gate.
+    //
+    // Safe to wire NOW on the precedent the entries above set: measured green over the
+    // whole real tree FIRST (2026-09-02, "clean — 115 pipefail script(s) scanned, 75
+    // shape match(es), none with an unbounded producer", exit 0), so registering it
+    // cannot red-pin the fleet on defects accrued while it slept.
+    //
+    // TRIGGER SCOPE — the guard's own enumeration is `git ls-files -z '*.sh'`, so the
+    // predicate is exactly tracked shell scripts plus the guard's own inputs. Keep the
+    // two in step: widening the guard's glob without widening this predicate silently
+    // recreates the partial coverage this entry exists to close.
+    workspace: "@papercusp/operator-core",
+    script: "lint:pipefail-sigpipe",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "packages/operator-core/package.json" ||
+      f === "scripts/check-pipefail-sigpipe.mjs" ||
+      f.endsWith(".sh"),
   },
   {
     // EI-18697393226276295 — `vi.useFakeTimers()` in an integration test whose path reaches
