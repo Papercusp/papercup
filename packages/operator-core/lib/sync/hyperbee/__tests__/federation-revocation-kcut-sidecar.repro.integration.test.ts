@@ -77,7 +77,16 @@ import Hyperswarm from 'hyperswarm';
 //    hive-epoch-crypto-impl uses keychainLoad/Store), so the mock is complete + safe. ──
 const { mem } = vi.hoisted(() => ({ mem: new Map<string, Buffer>() }));
 const DEVICE_SVC = 'papercusp-device-keypair';
-vi.mock('../../../identity/keychain', () => ({
+// WI-4075: spread the REAL module first, then override ONLY the three functions
+// this test needs faked. A hand-listed factory silently strands every export it
+// omits — `identity/keychain` exports 8, this test faked 3, and when production
+// added `isRequestOnlyIdentityProcess` the swarm-join path began throwing
+// [vitest] No "isRequestOnlyIdentityProcess" export is defined on the ... mock,
+// so `handle.swarm` came back null and the epoch K-CUT assertion at ~line 570
+// failed BEFORE any crypto ran — a stranded-mock failure wearing a crypto
+// failure's clothes. importOriginal keeps this mock correct as the module grows.
+vi.mock('../../../identity/keychain', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../identity/keychain')>()),
   keychainStore: async (id: string, der: Buffer, serviceName: string = DEVICE_SVC) => {
     mem.set(serviceName + ':' + id, Buffer.from(der));
   },
