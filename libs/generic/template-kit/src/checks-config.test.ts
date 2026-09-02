@@ -109,6 +109,34 @@ describe("validateChecksConfig", () => {
     expect(errors).toContain("gym.requiredSignals: must be non-empty");
   });
 
+  it("accepts boot.pgDataDir as an optional non-empty string", () => {
+    expect(
+      validateChecksConfig({
+        app: { name: "x" },
+        boot: {
+          mode: "spawn",
+          discoveryFile: "~/.x/operator.json",
+          command: ["node", "server.js"],
+          pgDataDir: "~/.x/postgres",
+        },
+      }),
+    ).toEqual([]);
+  });
+
+  it("rejects boot.pgDataDir when present but empty", () => {
+    const errors = validateChecksConfig({
+      app: { name: "x" },
+      boot: {
+        mode: "attach",
+        discoveryFile: "~/.x/operator.json",
+        pgDataDir: "",
+      },
+    });
+    expect(errors).toContain(
+      "boot.pgDataDir: must be a non-empty string when present",
+    );
+  });
+
   it("rejects a seam section missing its gates and fixtures", () => {
     const errors = validateChecksConfig({
       app: { name: "x" },
