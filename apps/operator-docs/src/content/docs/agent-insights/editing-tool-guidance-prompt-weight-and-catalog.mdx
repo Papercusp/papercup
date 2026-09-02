@@ -21,7 +21,7 @@ CLAUDE.md warns that nearly every prompt-weight gate red comes from *growing* an
 
 A guidance edit costs **twice** the characters you type **only when the tool declares no explicit `description` field**. In that case the projection composes one:
 
-```
+```text
 "When to use: {when}\n\nWhen NOT to use: {notWhen}\n\nChaining: {chaining}"
 ```
 
@@ -64,12 +64,29 @@ npm run gen:tool-catalog
 
 `gen:tool-catalog:check` is in the affected-guard set for tool edits, so skipping this fails the gate. Confirm the diff is scoped to the tool you touched — a 2-line (or 1-line) diff naming only your tool is what correct looks like.
 
-⚠ Read the check's own `✓`/`✗` line, not a piped exit code. `npm run … gen:tool-catalog:check | tail -5` reports **tail's** status, so a stale catalog can print `EXIT=0` directly beneath a `✗`. Use `${PIPESTATUS[0]}`, or redirect to a file and read it separately.
+⚠ Read the check's own pass/fail line, not a piped exit code. Piping the check into `tail` reports **tail's** status, so a stale catalog can print a zero exit directly beneath a failure mark. Use the first element of PIPESTATUS, or redirect to a file and read it separately.
 
 ## Where the clarification goes
 
 Per repo convention, per-tool when/not-when belongs on the tool, cross-tool patterns in `<role>.tools.md`, behavior rules in `<role>.persona.md`.
 
-A useful pattern for "an agent invented an argument": say what does *not* exist **and** hand over the route that does. `docs:search` gained `No \`section\` filter here (docs:outline has one) — scope via docs:outline { section } then docs:get.` That names the asymmetry so the argument is not re-invented, and gives the working alternative rather than only a refusal.
+A useful pattern for "an agent invented an argument": say what does *not* exist **and** hand over the route that does. The clarification added to `docs:search` reads:
 
-Naming the invented argument verbatim is deliberate: the next agent who greps for it now finds the answer instead of nothing.
+```text
+No `section` filter here (docs:outline has one) — scope via docs:outline { section } then docs:get.
+```
+
+That names the asymmetry so the argument is not re-invented, and gives the working alternative rather than only a refusal. Naming the invented argument verbatim is deliberate: the next agent who greps for it now finds the answer instead of nothing.
+
+## ⚠ Writing this doc broke the docs build — MDX evaluates braces
+
+The first version of this page quoted that clarification inline, with escaped backticks nested inside a backtick span. Markdown ends an inline code span at the **first** backtick, so the nesting failed and the braces were exposed to MDX, which evaluates `{ ... }` as a JSX expression:
+
+```text
+[ERROR] ReferenceError: section is not defined
+[ERROR] [build] Caught error rendering /llms-full.txt: ReferenceError: section is not defined
+```
+
+That aborts the **entire** corpus build — every agent's `docs:rebuild`, not just yours — and the failure surfaces far from its cause, during static route generation.
+
+Two rules follow. Quote any argument-shaped text containing braces in a **fenced** block, which is fully literal, rather than an inline span with nested backticks. And when a build fails, do not pipe it through `tail`: that discards the real error and leaves only npm boilerplate. Redirect to a file you own and read it.
