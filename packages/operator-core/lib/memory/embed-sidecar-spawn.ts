@@ -410,6 +410,26 @@ export function isEmbedSidecarRunning(): boolean {
   return !!sidecarProcess && !sidecarProcess.killed;
 }
 
+/**
+ * Has the host-local sidecar THIS process spawned completed its ready
+ * handshake (LISTEN)? False before any spawn, while a spawn is cold-starting,
+ * or if this process never spawned one; true from the ready line onward until
+ * a crash/stop resets it (the `exit` handler clears `sidecarReady` — see
+ * `scheduleRespawn`).
+ *
+ * Deliberately distinct from `isEmbedSidecarRunning()`, which flips true the
+ * INSTANT the child is forked (`sidecarProcess` is set at `spawn()`, well
+ * before the ready line) — so it cannot answer "would acquiring this
+ * sidecar's URL be cheap right now". This can (WI-3923): a caller bounding
+ * its own acquisition (e.g. `buildQueryEmbedderResolved`'s interactive path)
+ * uses this to tell a genuinely-cold spawn (worth skipping and warming in the
+ * background) from an already-ready one (worth waiting the normal ~instant
+ * `ensureEmbedSidecar()` resolve for).
+ */
+export function isEmbedSidecarReady(): boolean {
+  return sidecarReady;
+}
+
 /** Test seam — inject a fake sidecar ChildProcess without spawning a real child. */
 export function _setEmbedSidecarProcessForTests(proc: ChildProcess | null): void {
   sidecarProcess = proc;

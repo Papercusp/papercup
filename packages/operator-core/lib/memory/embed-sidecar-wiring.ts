@@ -36,7 +36,13 @@ import {
   type GemmaEmbedKind,
 } from '@papercusp/memory';
 import { buildSidecarFirstReranker, type RerankScoreFn } from '@papercusp/rerank';
-import { describeUnfitSidecar, ensureEmbedSidecar, probeSidecarHealth } from './embed-sidecar-spawn';
+import {
+  describeUnfitSidecar,
+  embedSidecarEnabled,
+  ensureEmbedSidecar,
+  isEmbedSidecarReady,
+  probeSidecarHealth,
+} from './embed-sidecar-spawn';
 import {
   EMBED_SIDECAR_CAP_EMBED,
   EMBED_SIDECAR_CAP_RERANK,
@@ -112,6 +118,42 @@ export async function resolveProcessSidecarUrl(
 /** Test seam — clear the once-per-condition skew log memo. */
 export function _resetSidecarSkewReportForTests(): void {
   reportedSkew.clear();
+}
+
+/**
+ * Would resolving this process's LOCAL embed acquisition (the
+ * no-explicit-URL leg of `resolveProcessSidecarUrl`) be cheap right now, or
+ * does it require waiting out a cold sidecar spawn? WI-3923: a bounded
+ * interactive caller (e.g. `buildQueryEmbedderResolved`'s
+ * `skipAcquisitionWhenCold`) uses this to avoid paying its FULL acquisition
+ * budget on every query while OpenAI embed is in cooldown and the local
+ * pipeline hasn't warmed yet — skip attempting local for THIS query (degrade
+ * straight to BM25) while a background acquisition still warms the pipeline
+ * for the next one.
+ *
+ * Mirrors `resolveProcessSidecarUrl`'s own branching so it can never drift
+ * from what that function actually does:
+ *  - an EXPLICIT sidecar URL (owned by another process) only ever costs a
+ *    capped ~1.5s `/healthz` probe (`probeSidecarHealth`) — already well
+ *    under a typical interactive budget, so always "cheap".
+ *  - NO sidecar configured on this host at all: `buildSidecarFirstEmbedder`
+ *    degenerates to the in-process fallback with ZERO acquisition overhead
+ *    (its model load is deferred past acquisition, to the first actual
+ *    `embed(text)` call) — always "cheap".
+ *  - a host-local sidecar THIS process is responsible for spawning
+ *    (`PAPERCUSP_EMBED_SIDECAR=1`) is cheap only once it has completed its
+ *    ready handshake — the one case that can genuinely cost several seconds.
+ */
+export function isLocalEmbedAcquisitionCheap(
+  deps: { resolveUrl: () => string | null; sidecarEnabled: () => boolean; sidecarReady: () => boolean } = {
+    resolveUrl: resolveEmbedSidecarUrl,
+    sidecarEnabled: embedSidecarEnabled,
+    sidecarReady: isEmbedSidecarReady,
+  },
+): boolean {
+  if (deps.resolveUrl()) return true;
+  if (!deps.sidecarEnabled()) return true;
+  return deps.sidecarReady();
 }
 
 /**

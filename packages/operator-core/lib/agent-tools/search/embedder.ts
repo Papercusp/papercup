@@ -36,7 +36,7 @@
 
 import type { Embedder } from '@papercusp/search';
 import { normalizeEmbeddingText } from '@papercusp/memory';
-import { buildSidecarAwareEmbedder } from '../../memory/embed-sidecar-wiring';
+import { buildSidecarAwareEmbedder, isLocalEmbedAcquisitionCheap } from '../../memory/embed-sidecar-wiring';
 import { embedAdmission, headersToRecord, retryAfterMs } from '../../memory/embed-admission';
 import {
   resolveEmbedderWith,
@@ -109,6 +109,23 @@ export interface ResolvedQueryEmbedder {
  *  endpoint-route/routes/adv/sessions.ts; see WI-3922. */
 export interface QueryEmbedderAcquireOpts {
   acquireBudgetMs?: number;
+  /** WI-3923: for an INTERACTIVE caller only. When true AND OpenAI embed is in
+   *  its post-failure cooldown (isOpenAiEmbedInCooldown) AND the local
+   *  acquisition is currently known-cold (!isLocalEmbedAcquisitionCheap —
+   *  i.e. a host-local sidecar this process must spawn hasn't finished its
+   *  ready handshake yet), skip attempting the acquisition for THIS call and
+   *  degrade straight to BM25 (resolve null) — rather than paying the FULL
+   *  `acquireBudgetMs` bound on every single query while cold, as
+   *  `withAcquireBudget` otherwise always does (there is nothing for it to
+   *  resolve early to). The acquisition is still fired in the background
+   *  (fire-and-forget, errors swallowed) so the pipeline keeps warming for a
+   *  later query — the exact same "losing acquisition keeps warming"
+   *  behavior `withAcquireBudget` already has on a timeout, just entered
+   *  without waiting first. Default false/undefined: zero behavior change
+   *  for any caller that doesn't opt in (batch/background acquisitions that
+   *  intentionally wait a long budget — e.g. transcript-search-warmup's 60s
+   *  — must NOT set this). */
+  skipAcquisitionWhenCold?: boolean;
 }
 
 /** Interactive default acquisition budget (ms) — env-overridable via
@@ -254,6 +271,13 @@ export async function buildQueryEmbedderResolved(
       // must check `dims` before ranking against it.
       buildHarrier: () => buildSidecarAwareEmbedder('harrier', 'query'),
     });
+    if (opts?.skipAcquisitionWhenCold && isOpenAiEmbedInCooldown() && !isLocalEmbedAcquisitionCheap()) {
+      // Never surfaces as an unhandled rejection; it exists purely to warm the
+      // process-memoized pipeline for a LATER query (same contract as the
+      // orphaned acquisition on a withAcquireBudget timeout, below).
+      acquire.catch(() => {});
+      return null;
+    }
     const resolved = await withAcquireBudget(acquire, opts?.acquireBudgetMs ?? 0);
     if (resolved === null || resolved.mode === 'disabled') return null;
     // WI-4734: memoized per (mode, dims, query) — see queryEmbedCache above.
