@@ -47,6 +47,43 @@ export const SEND_TOOL = 'coord:send';
  */
 export const DISPATCH_SAMPLE_WINDOW_DAYS = 14;
 
+/**
+ * The seed lists a LIVE role can actually be handed. `QUEEN_MCP_TOOL_NAMES` is
+ * deliberately absent: it belongs to `role === 'mug'`, the retired autonomous
+ * tier, so presence there reaches no running agent.
+ */
+export const LIVE_SEED_LIST_NAMES = [
+  'CORE_MCP_TOOL_NAMES',
+  'BEE_MCP_TOOL_NAMES',
+  'OVERWATCH_MCP_TOOL_NAMES',
+] as const;
+
+/**
+ * Is the P-011 intervention — `coord:dispatch` on a seeded tool surface — actually
+ * LIVE? This is the precondition the falsifier's `retire` branch asserts about
+ * itself, lifted out to where it can be checked.
+ *
+ * MEASURED 2026-09-02 (WI-2142095): **false**. `coord:dispatch` appears exactly
+ * once in `libs/papercusp/packages/orchestrator/src/invoke.ts`, at line 809,
+ * inside `QUEEN_MCP_TOOL_NAMES` (783–885) — the retired mug tier. It is in none
+ * of {@link LIVE_SEED_LIST_NAMES}, so no live role is seeded with it and no live
+ * agent can reach the verb without already knowing its name.
+ *
+ * ⚠ WHY A PINNED CONSTANT AND NOT A RUNTIME IMPORT. Deriving this at runtime
+ * means importing the orchestrator's seed lists into the sampler, and the only
+ * export path is the package ROOT (`@papercusp/orchestrator`), which carries
+ * `invoke()` and the whole agent main loop — far too much to pull into a
+ * telemetry read. So this is rung 2 of the derived-truth ladder (PIN, not
+ * DERIVE): the constant states the measurement, and
+ * `dispatch-intervention-reachable.test.ts` imports the real seed lists and
+ * FAILS if this value ever stops matching them. Flip it by making the code true,
+ * never by editing this line to make a test pass.
+ *
+ * FALSIFIER: `coord:dispatch` appearing in any of {@link LIVE_SEED_LIST_NAMES}.
+ * When seeding lands, that test goes red and tells you to set this to `true`.
+ */
+export const DISPATCH_INTERVENTION_REACHABLE = false;
+
 /** How much of the requested window the retained data could actually support. */
 export interface DispatchAdoptionCoverage {
   /** the window we asked for. */
@@ -131,6 +168,7 @@ export async function loadDispatchAdoptionSample(opts: {
       sendCalls: Number(row.send_calls),
       windowDays,
       asOf: isoDay(now),
+      interventionReachable: DISPATCH_INTERVENTION_REACHABLE,
     },
     coverage: {
       requestedWindowDays,

@@ -43,6 +43,7 @@ import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
 import { readRoutineEngineLiveness } from './routine-engine-liveness';
+import type { IneligibleReason } from '../harness/git-sync/git-sync-eligibility';
 
 /** Tree HEAD unchanged this long while the routine is active ⇒ commits aren't landing.
  *  EI-7531: the papercusp tree stranded 2622 dirty paths for 10.5h while git-sync looked
@@ -72,9 +73,36 @@ const DEFAULT_ERROR_STALL_MIN_SWEEPS = 2;
 const DEFAULT_STALL_SUSTAIN_MIN_SWEEPS = 2;
 /** How often the watchdog sweeps. git-sync is every 3 min; 15m is ample + matches green-stall. */
 const DEFAULT_WATCHDOG_INTERVAL_MS = 15 * 60 * 1000; // 15 min
+/** EI-1835: consecutive sweeps a routine must be observed eligibility-gate-skipped before the
+ *  eligibility-loss alarm fires (mirrors DEFAULT_STALL_SUSTAIN_MIN_SWEEPS — a first-observed
+ *  ineligible sweep alone never alarms, so a same-sweep-window registry blip self-heals silently). */
+const DEFAULT_ELIGIBILITY_SUSTAIN_MIN_SWEEPS = 2;
 
 const WATCHDOG_PHASE = 'git-sync-watchdog';
 const WATCHDOG_KIND = 'git-sync-watchdog';
+/** EI-1835: a DISTINCT harness_escalations phase from WATCHDOG_PHASE — the table's key is
+ *  (harness_slug, phase), so a shared phase would let the two alert classes clobber each other. */
+const ELIGIBILITY_WATCHDOG_PHASE = 'git-sync-eligibility-watchdog';
+const ELIGIBILITY_WATCHDOG_KIND = 'git-sync-eligibility-watchdog';
+
+/**
+ * EI-1835: the P-008 eligibility-gate skip reasons (git-sync-eligibility.ts `IneligibleReason`) —
+ * kept as a local exhaustive map (not a runtime export from that pure, import-light module) so a
+ * union member added/removed there fails typecheck HERE instead of silently under/over-matching.
+ * `metadata.last_skip_reason` is a SHARED field: a lock-contention skip ('locked-path') and an I/O
+ * fail-closed skip ('live-lock-read-failed') write into it too, and neither is an eligibility
+ * regression — both are already covered by the existing errorStall/commit-staleness signals. Only
+ * these six literal reasons mean "the P-008 gate itself skipped this tick".
+ */
+const ELIGIBILITY_SKIP_REASON_MAP: Record<IneligibleReason, true> = {
+  ephemeral_debris: true,
+  hive_home: true,
+  remote_hive_view: true,
+  no_path: true,
+  non_local_deployment: true,
+  not_a_git_repo: true,
+};
+const ELIGIBILITY_SKIP_REASONS = new Set<string>(Object.keys(ELIGIBILITY_SKIP_REASON_MAP));
 
 export interface GitSyncStallThresholds {
   headStaleMs?: number;
@@ -85,6 +113,10 @@ export interface GitSyncStallThresholds {
   errorStallMinSweeps?: number;
   /** EI-9030b: consecutive stalled sweeps required before the alarm BROADCASTS (default 2). */
   stallSustainMinSweeps?: number;
+  /** EI-1835: consecutive eligibility-gate-skipped sweeps required before the eligibility-loss
+   *  alarm fires (default DEFAULT_ELIGIBILITY_SUSTAIN_MIN_SWEEPS). A separate knob from
+   *  stallSustainMinSweeps — a different alert class, same edge-triggering shape. */
+  eligibilitySustainMinSweeps?: number;
 }
 
 /** The bits of one git-sync routine the verdict is computed from. */

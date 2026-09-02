@@ -99,6 +99,19 @@ export interface DispatchAdoptionSample {
   windowDays: number;
   /** ISO date the sample was taken. */
   asOf: string;
+  /**
+   * Was the intervention under test actually REACHABLE by live agents across the
+   * sampled window — i.e. did P-011 put `coord:dispatch` on a tool surface some
+   * live role is seeded with?
+   *
+   * ⚠ REQUIRED ON PURPOSE, and deliberately NOT defaulted to `true`. This whole
+   * falsifier asks whether disuse is DELIVERY or absent DEMAND; a sample that
+   * cannot say whether the verb was even delivered cannot answer it. Defaulting
+   * an unstated declaration to "reachable" would silently restore exactly the
+   * conflation the field exists to prevent, so an omission must break the call
+   * site and make someone measure it.
+   */
+  interventionReachable: boolean;
 }
 
 export type DispatchAdoptionVerdict =
@@ -166,6 +179,29 @@ export function evaluateDispatchAdoption(
       liftVsBaseline: lift,
       denominator,
       why: `${rate.toFixed(2)}/1k sends across ${sample.dispatchAgents} agents — ${lift.toFixed(1)}x the ${DISPATCH_BASELINE.ratePerThousand}/1k baseline, clearing the ${floor.ratePerThousand}/1k + ${floor.distinctAgents}-agent bar. The delivery theory held: the verb was unreachable, not unwanted.`,
+    };
+  }
+
+  // ⚠ THE RETIRE BRANCH ASSERTS ITS OWN PRECONDITION — check it before firing.
+  //
+  // The `why` below states, as settled fact, that `coord:dispatch` "was seeded
+  // onto the live surface AND handed to agents pre-addressed". That sentence is
+  // the entire warrant for reading a low rate as falsified DEMAND rather than
+  // failed DELIVERY. Measured 2026-09-02 (WI-2142095), it was false: the verb is
+  // seeded ONLY into QUEEN_MCP_TOOL_NAMES (invoke.ts:809), the retired mug tier,
+  // so no live role could reach it — and the rate over such a window is an
+  // artifact of the delivery gap, not a measurement of demand.
+  //
+  // Note this gates the DESTRUCTIVE direction only, mirroring the asymmetry
+  // documented above: `undetermined` is never upgraded to `retire`, and now an
+  // undelivered intervention is never downgraded to a falsified one. A passing
+  // rate still returns `keep` — calls that happened are their own proof of
+  // reachability, so the precondition cannot suppress a genuine survival.
+  if (!sample.interventionReachable) {
+    return {
+      verdict: 'undetermined',
+      denominator,
+      why: `sampled over a window in which the intervention was NOT REACHABLE — coord:dispatch was not on any live role's seeded tool surface, so ${sample.dispatchCalls} call(s) measures the delivery gap, not demand. This is the falsifier's own premise failing, not a verdict against the verb: re-measure only after seeding actually lands (WI-2142095). Do NOT read this as evidence for retirement.`,
     };
   }
 

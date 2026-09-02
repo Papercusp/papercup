@@ -19,6 +19,7 @@ const sample = (over: Partial<DispatchAdoptionSample> = {}): DispatchAdoptionSam
   sendCalls: 4_000,
   windowDays: 30,
   asOf: '2026-09-10',
+  interventionReachable: true,
   ...over,
 });
 
@@ -95,5 +96,42 @@ describe('evaluateDispatchAdoption', () => {
       const v = evaluateDispatchAdoption(s);
       expect(v.denominator).toEqual({ sendCalls: s.sendCalls, windowDays: s.windowDays });
     }
+  });
+});
+
+/**
+ * The retire branch asserts its OWN precondition — that the verb "was seeded onto
+ * the live surface". Measured 2026-09-02 (WI-2142095) that was false: coord:dispatch
+ * sits only in QUEEN_MCP_TOOL_NAMES, the retired mug tier. Firing RETIRE on such a
+ * window would read a DELIVERY gap as falsified DEMAND — the precise conflation this
+ * falsifier was built to prevent, committed by the falsifier itself.
+ */
+describe('an unreachable intervention cannot produce a RETIRE verdict', () => {
+  const failing = { dispatchCalls: 0, dispatchAgents: 0 };
+
+  it('RETIREs on a failing sample when the intervention WAS reachable', () => {
+    // Calibration: without this, the test below passes for the wrong reason.
+    const v = evaluateDispatchAdoption(sample({ ...failing, interventionReachable: true }));
+    expect(v.verdict).toBe('retire');
+  });
+
+  it('returns UNDETERMINED instead when it was NOT reachable', () => {
+    const v = evaluateDispatchAdoption(sample({ ...failing, interventionReachable: false }));
+    expect(v.verdict).toBe('undetermined');
+    expect((v as { why: string }).why).toMatch(/NOT REACHABLE/);
+    expect((v as { why: string }).why).toMatch(/WI-2142095/);
+  });
+
+  it('still publishes its denominator when the precondition fires (D-003)', () => {
+    const s = sample({ ...failing, interventionReachable: false });
+    const v = evaluateDispatchAdoption(s);
+    expect(v.denominator).toEqual({ sendCalls: s.sendCalls, windowDays: s.windowDays });
+  });
+
+  it('does NOT suppress a genuine KEEP — calls prove their own reachability', () => {
+    // The precondition guards the destructive direction only, mirroring the
+    // documented asymmetry (undetermined is never upgraded to retire).
+    const v = evaluateDispatchAdoption(sample({ interventionReachable: false }));
+    expect(v.verdict).toBe('keep');
   });
 });

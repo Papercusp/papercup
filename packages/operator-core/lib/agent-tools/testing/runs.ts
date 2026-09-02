@@ -166,16 +166,40 @@ export default defineTool({
     since: z.string().max(64).optional().describe('Only runs started at/after this ISO-8601 timestamp.'),
     sinceHours: z
       .number()
-      .min(0.1)
+      // EI-21677405671312383: the floor was 0.1 (6 min), which refused a legitimately
+      // tight poll ("did this file run in the last 2 minutes?") and pushed the caller
+      // to `since` for no reason. Any positive window is meaningful. Zero is still
+      // refused deliberately — see the `!= null` guard below: 0 is falsy, so admitting
+      // it would silently drop the time predicate entirely and return the WHOLE ledger
+      // as if it were the last instant.
+      .gt(0)
       .max(2160)
       .optional()
-      .describe('Relative window: only runs started within the last N hours. Ignored when `since` is given.'),
+      .describe(
+        'Relative window: only runs started within the last N hours; fractional values are fine (0.05 = 3 min). Ignored when `since` is given.',
+      ),
     workspace: z
       .string()
       .max(120)
       .optional()
       .describe(
         'Filter to one workspace_id. WARNING: excludes every CI/gate row (those are NULL by design) — omit for CI triage.',
+      ),
+    // EI-21669113109175663 / EI-21675813584516519: `harness` was rejected while its
+    // twin `workspace` was accepted, though `test_runs.harness_slug` exists and
+    // `test_runs_harness_scope_idx` is keyed (harness_slug, workspace_id, file_path,
+    // finished_at) precisely for per-hive Tests-tab reads. The asymmetry was an
+    // omission, not a policy: both columns carry identical NULL-on-CI semantics, so
+    // the CI-exclusion warning is the same one `workspace` already carries. Safe to
+    // declare because `harness` is NOT a framework-ambient arg here (the ambient set
+    // is `projection`/`view` per ambient-args-wiring.ts, plus tooldef's payloadTier),
+    // so it is never auto-injected — a caller has to ask for the scoping to get it.
+    harness: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        'Filter to one harness_slug. WARNING: like `workspace`, excludes every CI/gate row (those are NULL by design) — omit for CI triage.',
       ),
     rollup: z
       .enum(['commit', 'runGroup'])
@@ -217,10 +241,11 @@ export default defineTool({
     const runGroup = args.runGroup ?? null;
     const source = defaultRollupSource(args.rollup, args.source);
     const workspace = args.workspace ?? null;
+    const harness = args.harness ?? null;
     const statuses = args.status ?? null;
     const sinceTs =
       args.since ??
-      (args.sinceHours ? new Date(Date.now() - args.sinceHours * 3_600_000).toISOString() : null);
+      (args.sinceHours != null ? new Date(Date.now() - args.sinceHours * 3_600_000).toISOString() : null);
     // Naming a file means you want THAT FILE'S HISTORY; asking broadly means
     // you want the current picture, where a stale red would mislead.
     const latestPerFile = args.latestPerFile ?? args.filePath === undefined;
@@ -231,6 +256,7 @@ export default defineTool({
          AND (${runGroup}::text IS NULL OR run_group_id = ${runGroup})
          AND (${source}::text IS NULL OR source = ${source})
          AND (${workspace}::text IS NULL OR workspace_id = ${workspace})
+         AND (${harness}::text IS NULL OR harness_slug = ${harness})
          AND (${statuses}::text[] IS NULL OR status = ANY(${statuses}::text[]))
          AND (${sinceTs}::timestamptz IS NULL OR started_at >= ${sinceTs}::timestamptz)`;
 

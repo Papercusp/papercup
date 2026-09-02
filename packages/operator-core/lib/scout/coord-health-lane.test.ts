@@ -732,6 +732,11 @@ describe('buildCoordHealthPatterns — the coord:dispatch retirement falsifier (
       sendCalls: 4_000,
       windowDays: 14,
       asOf: '2026-09-10',
+      // Default TRUE so these lane tests keep exercising the real keep/retire
+      // bar. The production sampler supplies the measured value
+      // (DISPATCH_INTERVENTION_REACHABLE, currently false); the precondition
+      // itself is covered in dispatch-adoption-falsifier.test.ts.
+      interventionReachable: true,
       ...over,
     };
     return {

@@ -956,7 +956,11 @@ and test files — as the last thing you do.
 
 
 ⚠ **`test:affected` runs the suites of the WORKSPACES your changed paths map into —
-so "green" can mean "nothing ran". To see what your change actually selects, ask:**
+so "green" can mean "nothing ran". To see what your change actually selects, ask
+`testing:run { changedPaths: [...] }` — the same derivation, ~0.4s, and NO pc-heavy
+admission ticket (it returns the PLAN and runs nothing, so read `mode:"plan"` and never
+as a verdict). Or run the probe directly:**
+
 
 ```bash
 node scripts/affected-tests.mjs --changed-paths scripts/lint-tsc.mjs,libs/flags/src/types.ts --print-affected
