@@ -455,17 +455,25 @@ describe('tests.ts model tracks the real testing:run (D-015)', () => {
     expect(accepts({ files: ONE_FILE, testNamePattern: '' }), 'an empty -t is now accepted; the refusal is stale').toBe(false);
   });
 
-  it('testing:run still takes an EXPLICIT file list and nothing that derives one', () => {
+  it('testing:run may DERIVE a plan, but still RUNS only an explicit file list', () => {
     expectArgSurface(
       testingRun,
       'testing:run',
-      ['files', 'maxFailures', 'testNamePattern', 'timeoutMs'],
-      'two verdicts rest on this surface. (1) `tests.affected` is recorded `not-a-substitute` ONLY because there ' +
-        'is no arg that derives a file list from a diff or dependency graph — an `affected`/`changed`/`since` arg ' +
-        'would make 206 corpus atoms across 48 sessions suddenly expressible, and this pair would be actively ' +
-        'telling agents to keep shelling out. (2) Both equivalent patterns EXCLUDE commands passing ' +
-        '`--reporter`/`--config`/`--root` because the tool fixes the reporter at json and derives the config from ' +
-        'each file\'s owning workspace; a reporter or config arg would make those exclusions stale.',
+      // `changedPaths` was ADDED after this pin was written, and the re-derivation it
+      // forced is recorded here rather than in a commit message. It derives the
+      // test:affected plan from edited SOURCE files — so the old rationale below
+      // ("there is no arg that derives a file list") is dead, and any advisory still
+      // saying the tool "cannot compute one" is now the WI-6146 regression itself.
+      // The VERDICT nevertheless survives: `run.ts` answers a changedPaths call with
+      // the plan and RUNS NOTHING, while `npm run test:affected` runs what it selects.
+      // Planning is not running, which is why `tests.affected` stays not-a-substitute.
+      ['changedPaths', 'files', 'maxFailures', 'testNamePattern', 'timeoutMs'],
+      'two verdicts rest on this surface. (1) `tests.affected` is recorded `not-a-substitute` because no arg makes ' +
+        'the tool RUN a list it derived — `changedPaths` returns the plan and executes nothing. An arg that ' +
+        'EXECUTED a derived selection would make 206 corpus atoms across 48 sessions suddenly expressible, and ' +
+        'this pair would be actively telling agents to keep shelling out. (2) Both equivalent patterns EXCLUDE ' +
+        'commands passing `--reporter`/`--config`/`--root` because the tool fixes the reporter at json and derives ' +
+        "the config from each file's owning workspace; a reporter or config arg would make those exclusions stale.",
     );
   });
 

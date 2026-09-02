@@ -172,6 +172,20 @@ export const PIPELINE_GATE_FIELDS_NOT_PROJECTED = [
   // Raw observation timestamp; `candidateAgeMs` + `verdictStale` express the same staleness
   // in the terms a caller acts on.
   'verdictObservedAtMs',
+  // A 7-field nested struct carrying a prose `reason` — the same overflow shape as
+  // `ownerBrief` above, and this door's budget has already blown twice.
+  //
+  // The drift harm the pin test guards does NOT apply to it today: that harm is a state
+  // CELL declaring a path this projection drops, and no cell in `cell-registrations.ts`
+  // reads `gate.freezeAndConverge`. Its documented readers are OTHER doors that project it
+  // from the snapshot directly — `gate_health.freezeAndConverge` and `release:deploy`
+  // status (`agent-tools/release/deploy.ts`) — so projecting it here would spend this
+  // door's budget on a second copy nobody reads through it.
+  //
+  // ⚠ FLIP THIS DECISION the moment a cell IS registered on `gate.freezeAndConverge`:
+  // at that point `readCell` finds the declared path missing and blames the RESOLVER for
+  // a defect in this list, which is exactly how the two prior drifts presented.
+  'freezeAndConverge',
 ] as const;
 
 function compactPipelineGate(value: unknown, opts: { textChars: number; arrayLimit: number }): JsonRecord | undefined {

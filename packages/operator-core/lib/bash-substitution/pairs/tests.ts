@@ -35,8 +35,12 @@
  *
  * ── The envelope, read from the tool, not assumed ────────────────────────────
  * `testing:run` (lib/agent-tools/testing/run.ts) takes
- * `{ files: string[1..50], testNamePattern?: string(1..200), timeoutMs?,
- * maxFailures? }`. Consequences that decide coverage below:
+ * `{ files: string[1..50], changedPaths?, testNamePattern?: string(1..200),
+ * timeoutMs?, maxFailures? }`. Consequences that decide coverage below:
+ *  • `changedPaths` is mutually exclusive with `files` and DERIVES the
+ *    test:affected plan from edited source files — then runs nothing. It is why
+ *    `tests.affected` below is not-a-substitute for "planning is not running",
+ *    NOT for "the tool cannot compute a list"; that older reason is false.
  *  • `files` are handed to the router as-is, so a path must be REPO-ROOT
  *    relative or absolute. `atomize` splits `cd apps/operator && vitest run
  *    app/x.test.ts` into two atoms, so a cwd-relative operand arrives with the
@@ -452,7 +456,7 @@ export const affectedTests: BashSubstitutionPair = {
   bashPattern: /^npm\s+run\s+test:affected/,
   toolName: 'testing:run',
   advisoryText:
-    'No substitute: `npm run test:affected` derives its own file list from the dependency graph. testing:run takes an explicit list. Keep using the script.',
+    'No substitute for RUNNING them: keep using the script. But to see only WHAT it would select, `testing:run { changedPaths }` returns that plan in ~0.4s without a pc-heavy admission ticket — and running nothing is exactly why it does not replace this command.',
   // `use` names the tool it was audited against even though the verdict is
   // negative — the routing test requires it, and the reason is sound: the row
   // records WHICH tool was rejected for this intent, not just that one was.
@@ -468,7 +472,8 @@ export const affectedTests: BashSubstitutionPair = {
     void atom;
     return {
       covered: false,
-      reason: 'derives the test list from the git diff + dependency graph; testing:run requires an explicit file list and cannot compute one',
+      reason:
+        'runs what the dependency graph selects; testing:run can DERIVE that selection (changedPaths) but executes nothing from it, so it plans where this command runs',
     };
   },
 };
