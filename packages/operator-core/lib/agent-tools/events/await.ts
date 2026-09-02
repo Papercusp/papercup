@@ -163,15 +163,15 @@ export default defineTool({
     argRedirects: {
       policy: {
         tool: 'watch:create',
-        args: { targetKind: 'topic', wake: false },
-        note: 'events:await has NO policy axis — every await is a one-shot WAKE that costs a turn. The wake-vs-inject choice is a different verb: watch:create { wake:false } registers ambient interest that injects into your inbox cheaply instead of waking you. If you meant the DEADLINE behaviour rather than delivery, that is `on_timeout` ("wake" | "expire")',
+        args: { pattern: '<topic-slug>', targetKind: 'topic', wake: false },
+        note: 'events:await has NO policy axis — every await is a one-shot WAKE that costs a turn. The wake-vs-inject choice is a different verb: watch:create { pattern, targetKind:"topic", wake:false } registers ambient interest that injects into your inbox cheaply instead of waking you. If you meant the DEADLINE behaviour rather than delivery, that is `on_timeout` ("wake" | "expire")',
       },
       // Retired delivery keys: events:await never took either, and both read as a delivery
       // switch, so they route to the verb that actually has one rather than to a near-name.
       wake: {
         tool: 'watch:create',
-        args: { targetKind: 'topic', wake: false },
-        note: 'an await IS the wake — there is no `wake` toggle to pass. For the non-waking form (cheap inbox inject) use watch:create { wake:false }; for what happens at the DEADLINE use `on_timeout`',
+        args: { pattern: '<topic-slug>', targetKind: 'topic', wake: false },
+        note: 'an await IS the wake — there is no `wake` toggle to pass. For the non-waking form (cheap inbox inject) use watch:create { pattern, wake:false }; for what happens at the DEADLINE use `on_timeout`',
       },
       once: {
         tool: 'events:await',

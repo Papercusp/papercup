@@ -87,7 +87,17 @@ describe('guidance corpus — live tree', () => {
 
     const a = guidanceAdapter();
     const pages = await a.listPages();
+    const c = a.lastCensus()!;
     const got = pages.filter((p) => p.slug.startsWith('tool-guidance/'));
-    expect(got.length).toBe(expected.size);
+
+    // Skip-and-warn (EI-22187811297314993): a tool whose corrective-call
+    // remedy fails registry conformance drops ONLY its own page, named in
+    // `toolGuidanceSkipped` — never the whole corpus. In the healthy case
+    // nothing is skipped, so this is asserted explicitly rather than folded
+    // silently into the count below: a regression that starts skipping real
+    // tools must fail THIS assertion loudly, not be absorbed by a permissive
+    // "count minus however many" comparison.
+    expect(c.toolGuidanceSkipped).toEqual([]);
+    expect(got.length).toBe(expected.size - c.toolGuidanceSkipped.length);
   });
 });
