@@ -290,6 +290,65 @@ describe('the parked-migration dependency guard (EI-20208711931756460)', () => {
     expect(result.references.map((r) => r.column)).toEqual(['ended_signal']);
   });
 
+  it('never returns the SCHEMA as a table when the ALTER TABLE target is dynamic', () => {
+    // EI-22144711421464181, measured on migration 1093. The schema-qualifier branch cannot match
+    // `.%I` (`%` does not start an identifier), so the capture stopped at the schema and
+    // `.split('.').pop()` handed back the literal token `harness_shared`. Nearly every source file
+    // in this repo mentions that token, so ONE poisoned entry made the whole table filter vacuous
+    // via `tableTokens.some(...)` — reinstating the 357-file flood the filter exists to prevent,
+    // while still LOOKING qualified. That is worse than no filter, because it is not visible.
+    const dynamic =
+      "EXECUTE format('ALTER TABLE harness_shared.%I ADD COLUMN IF NOT EXISTS fc_probe_mode text', t);";
+
+    expect(alteredTablesFor(dynamic)).toEqual([]);
+    expect(alterTargetsFor(dynamic).unresolved).toHaveLength(1);
+  });
+
+  it('treats %s and an unqualified dynamic target as unresolved as well', () => {
+    // The same hole reached through the other two spellings of the idiom.
+    expect(alteredTablesFor("EXECUTE format('ALTER TABLE harness_shared.%s ADD COLUMN x int', t);")).toEqual([]);
+    expect(alteredTablesFor("EXECUTE format('ALTER TABLE %I ADD COLUMN x int', t);")).toEqual([]);
+  });
+
+  it('CALIBRATION: a literal schema-qualified target still resolves to the bare table', () => {
+    // Without this, every assertion above would pass just as well if `alteredTablesFor` had been
+    // "fixed" by returning [] for everything — which would disable the filter outright.
+    expect(alteredTablesFor('ALTER TABLE harness_shared.fc_probe_backends ADD COLUMN x int;')).toEqual([
+      'fc_probe_backends',
+    ]);
+    expect(alterTargetsFor('ALTER TABLE harness_shared.fc_probe_backends ADD COLUMN x int;').unresolved).toEqual([]);
+  });
+
+  it('declines to qualify on a PARTIALLY resolved target set, and says so', () => {
+    // The safety property behind the fix. A table list is sound as an EXCLUSION filter only when
+    // COMPLETE: qualifying on the literal half here would silently exclude a file that reads the
+    // DYNAMICALLY altered table — a false negative in a guard whose whole job is catching that
+    // read. So a partial parse falls back to the column-only scan and reports the cause.
+    const sql = [
+      'ALTER TABLE harness_shared.fc_probe_backends ADD COLUMN IF NOT EXISTS fc_probe_mode text;',
+      "EXECUTE format('ALTER TABLE harness_shared.%I ADD COLUMN IF NOT EXISTS fc_probe_mode text', t);",
+    ].join('\n');
+    const result = findDraftColumnReferences(sql, [
+      { file: 'packages/plugin-loader/src/daemon/supervisor.ts', text: 'const fc_probe_mode = "ready";\n' },
+    ]);
+
+    expect(result.unresolvedTargets).toHaveLength(1);
+    expect(result.references.map((r) => r.file)).toEqual(['packages/plugin-loader/src/daemon/supervisor.ts']);
+  });
+
+  it('CALIBRATION: that same file IS excluded once every target resolves', () => {
+    // The falsifier for the test above. Identical source file, identical column — only the
+    // unresolvable statement is gone. If this did not exclude, the pair would merely be asserting
+    // that the scan matches everything, and both halves would pass with the filter deleted.
+    const result = findDraftColumnReferences(
+      'ALTER TABLE harness_shared.fc_probe_backends ADD COLUMN IF NOT EXISTS fc_probe_mode text;',
+      [{ file: 'packages/plugin-loader/src/daemon/supervisor.ts', text: 'const fc_probe_mode = "ready";\n' }],
+    );
+
+    expect(result.unresolvedTargets).toEqual([]);
+    expect(result.references).toEqual([]);
+  });
+
   it('keeps the source scan domain explicit and production-oriented', () => {
     expect(SOURCE_ROOTS).toEqual([
       'apps',
