@@ -1386,6 +1386,23 @@ export default defineTool({
   timeoutSec: SCORECARD_EMIT_TIMEOUT_SEC,
   agentRoles: [...COORD_ROLES, 'judge'],
   args: scorecardEmitArgs,
+  // The `returns` prose above INTERPRETS this result; the structural shape comes from
+  // here (guidance-output-schema-live-guard). `ok` is a BOOLEAN, not a literal true:
+  // the ObservationEvidenceError path returns `{ ok:false, error }`. Everything past
+  // the five promised fields is conditional — gradingAudit*, acceptance, provisional,
+  // supersedes, checkRuns, warning, acceptanceGraderCleanup are all spread in only when
+  // they apply — so the object stays OPEN rather than enumerating a shape the handler
+  // does not always produce.
+  result: z
+    .object({
+      ok: z.boolean(),
+      created: z.boolean().optional(),
+      issueId: z.string().nullable().optional(),
+      evidenceFingerprint: z.string().optional(),
+      canonicalRatings: z.record(z.string(), z.unknown()).optional(),
+      error: z.string().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const ctxHarness =
