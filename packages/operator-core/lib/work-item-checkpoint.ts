@@ -23,7 +23,14 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
-import { setCarryNote, setCarryNoteWithPrior, getCarryNote, workItemScope } from './carry-note';
+import {
+  setCarryNote,
+  setCarryNoteWithPrior,
+  getCarryNote,
+  getCarryJournal,
+  workItemScope,
+  type CarryJournalEntry,
+} from './carry-note';
 import {
   DECLARED_DEPS_VERSION,
   computeFreshness,
@@ -316,7 +323,7 @@ export async function setWorkItemCheckpointWithPrior(
     // Only pass `deps` when the caller spoke — otherwise the substrate preserves
     // the existing declaration (see setCarryNoteWithPrior's `deps` tri-state).
     {
-      journal: false,
+      journal: true,
       guard: opts?.guard,
       ...(opts?.transform ? { transform: opts.transform } : {}),
       ...(depsSpecified ? { deps: depsPayload } : {}),
@@ -336,19 +343,59 @@ export async function setWorkItemCheckpointWithPrior(
 }
 
 /** Read a work-item checkpoint's declared dependencies, or `null` when it declared
- *  none (or the payload is malformed — which always means undeclared, never stale). */
+ *  none (or the payload is malformed — which always means undeclared, never stale).
+ *
+ *  P-003: a BLANK note is treated as undeclared even when the row survives. With the
+ *  journal ring on, clearing a checkpoint keeps its row (the ring outlives the note),
+ *  and the surviving row still carries the cleared note's `deps`. Reporting those
+ *  would hand a freshness verdict for a checkpoint that no longer exists — a
+ *  confident answer about nothing, which is strictly worse than the `undeclared`
+ *  fallback to the time heuristics. */
 export async function getWorkItemCheckpointDeps(ref: WorkItemCheckpointRef): Promise<DeclaredDeps | null> {
   const ws = resolveConcreteWorkspaceId(ref.workspaceId);
   if (!ws || !ref.workItemId) return null;
   const scope = workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId);
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{ deps: unknown }[]>`
-      SELECT deps FROM harness_shared.carry_notes
+    const rows = await sql<{ deps: unknown; note: string | null }[]>`
+      SELECT deps, note FROM harness_shared.carry_notes
        WHERE workspace_id = ${ws} AND scope = ${scope} LIMIT 1`;
+    if (!((rows[0]?.note ?? '').trim())) return null;
     return parseDeclaredDeps(rows[0]?.deps);
   } catch {
     return null;
+  }
+}
+
+/**
+ * P-003: the work-item checkpoint's TRAJECTORY RING, newest first.
+ *
+ * This is the reader that makes the ring worth writing. Before P-003 a work-item
+ * checkpoint was replace-on-write, so the only thing a later agent could see was the
+ * LAST snapshot — every earlier one had been destroyed in place. The ring keeps up to
+ * {@link CARRY_JOURNAL_MAX_ENTRIES} prior snapshots on the row the checkpoint already
+ * occupies, and this returns them so the briefing (prior-attempt-context) can spend
+ * them against its own budget.
+ *
+ * ⚠ NOT a claim-time read. `getClaimTimeCheckpointHint` deliberately stays
+ * { checkpoint, checkpointAgeMs }: the ring is bounded storage, not delivered payload,
+ * which is exactly why turning it on cost a fleet member zero tokens. Anything that
+ * calls this is spending budget and must say so.
+ *
+ * Fails soft to `[]` — a missing ring is the normal state for the 10,326 rows written
+ * before P-003, and it must never be distinguishable from a read error at a call site
+ * that is enriching rather than deciding.
+ */
+export async function getWorkItemCheckpointJournal(ref: WorkItemCheckpointRef): Promise<CarryJournalEntry[]> {
+  const ws = resolveConcreteWorkspaceId(ref.workspaceId);
+  if (!ws || !ref.workItemId) return [];
+  try {
+    return await getCarryJournal({
+      scope: workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId),
+      workspaceId: ws,
+    });
+  } catch {
+    return [];
   }
 }
 
