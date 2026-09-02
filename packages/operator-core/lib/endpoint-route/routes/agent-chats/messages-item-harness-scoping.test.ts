@@ -197,7 +197,7 @@ async function runAndCapture(slug = 'chat-owning-harness', context?: unknown) {
 
 describe('agent-chats messagesRoute — explicit agent-config surface (P-005/D-008)', () => {
   it('threads the portal server selector into the existing chat tool', async () => {
-    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'portal' } as never);
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'portal' });
     computeCupWakeDossierMock.mockResolvedValue('PORTAL DOSSIER');
     getWorkItemCheckpointMock.mockResolvedValue(null);
 
@@ -218,7 +218,7 @@ describe('agent-chats messagesRoute — explicit agent-config surface (P-005/D-0
 
 describe('agent-chats messagesRoute — bounded UI context (WI-41425)', () => {
   it('injects the hosting-surface context as explicitly untrusted data without changing authority scope', async () => {
-    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' });
     computeCupWakeDossierMock.mockResolvedValue('DOSSIER TEXT for WI-CROSS-1');
     getWorkItemCheckpointMock.mockResolvedValue(null);
 
@@ -249,7 +249,7 @@ describe('agent-chats messagesRoute — bounded UI context (WI-41425)', () => {
 
 describe('agent-chats messagesRoute — item-own-harness scoping (P-003)', () => {
   it('keys dossier/checkpoint to the WORK ITEM\'s own harness, not the chat/queue-view slug', async () => {
-    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' });
     computeCupWakeDossierMock.mockResolvedValue('DOSSIER TEXT for WI-CROSS-1');
     getWorkItemCheckpointMock.mockResolvedValue(null);
 
@@ -283,7 +283,7 @@ describe('agent-chats messagesRoute — item-own-harness scoping (P-003)', () =>
   });
 
   it('renders a LOUD "no dossier available" notice on a miss instead of silent absence', async () => {
-    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' });
     computeCupWakeDossierMock.mockResolvedValue(null);
     getWorkItemCheckpointMock.mockResolvedValue(null);
 
@@ -295,7 +295,7 @@ describe('agent-chats messagesRoute — item-own-harness scoping (P-003)', () =>
   });
 
   it('does NOT render the miss notice when a dossier successfully loads', async () => {
-    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' });
     computeCupWakeDossierMock.mockResolvedValue('all good here');
     getWorkItemCheckpointMock.mockResolvedValue(null);
 
@@ -308,7 +308,7 @@ describe('agent-chats messagesRoute — item-own-harness scoping (P-003)', () =>
 
 describe('agent-chats messagesRoute — memory-recall budget (P-008, D-003/D-004)', () => {
   it('renders the memory block into the prompt when buildMemoryContextBlock resolves', async () => {
-    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' });
     computeCupWakeDossierMock.mockResolvedValue(null);
     getWorkItemCheckpointMock.mockResolvedValue(null);
     buildMemoryContextBlockMock.mockResolvedValue('RECALLED MEMORY TEXT');
@@ -319,7 +319,7 @@ describe('agent-chats messagesRoute — memory-recall budget (P-008, D-003/D-004
   });
 
   it('a hung buildMemoryContextBlock times out via the 3s outer budget instead of stalling the chat reply', async () => {
-    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' });
     computeCupWakeDossierMock.mockResolvedValue(null);
     getWorkItemCheckpointMock.mockResolvedValue(null);
     // Simulates the live P-008 finding: buildMemoryContextBlock's own internal
@@ -344,7 +344,7 @@ describe('agent-chats messagesRoute — memory-recall budget (P-008, D-003/D-004
 
 describe('agent-chats messagesRoute — blueprint-aware lock notice (P-003)', () => {
   it('a LEGACY (non-hive) item harness keeps the .papercusp/notes guidance', async () => {
-    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' });
     computeCupWakeDossierMock.mockResolvedValue(null);
     getWorkItemCheckpointMock.mockResolvedValue(null);
     loadHarnessRegistryMock.mockResolvedValue({
@@ -361,7 +361,7 @@ describe('agent-chats messagesRoute — blueprint-aware lock notice (P-003)', ()
   });
 
   it('a NON-legacy (hive) item harness drops .papercusp/notes for work_items:comment guidance', async () => {
-    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' });
     computeCupWakeDossierMock.mockResolvedValue(null);
     getWorkItemCheckpointMock.mockResolvedValue(null);
     loadHarnessRegistryMock.mockResolvedValue({
@@ -382,7 +382,7 @@ describe('agent-chats messagesRoute — blueprint-aware lock notice (P-003)', ()
 
 describe('agent-chats messagesRoute — dossier-first ordering (P-002/P-006)', () => {
   it('places the dossier immediately after the persona — BEFORE the lock notice, plan context, and memory sections', async () => {
-    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' });
     computeCupWakeDossierMock.mockResolvedValue('DOSSIER-MARKER for WI-CROSS-1');
     getWorkItemCheckpointMock.mockResolvedValue(null);
     loadHarnessRegistryMock.mockResolvedValue({
@@ -419,7 +419,7 @@ describe('agent-chats messagesRoute — dossier-first ordering (P-002/P-006)', (
   });
 
   it('still renders the dossier-miss notice FIRST even when later sections are present', async () => {
-    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' } as never);
+    getWorkItemMock.mockResolvedValue({ id: 'WI-CROSS-1', harness: 'item-owning-harness' });
     computeCupWakeDossierMock.mockResolvedValue(null);
     getWorkItemCheckpointMock.mockResolvedValue(null);
     readFeatureLockStateMock.mockResolvedValue({

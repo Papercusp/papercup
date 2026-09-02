@@ -1730,7 +1730,7 @@ describe('loop:arm — carry-only retune inherits interval/goal (EI-214768962424
     tool.handler(args as never, { harnessSlug: 'papercusp' } as never) as Promise<Out>;
 
   it('inherits intervalSec and goal from the active loop on a carry-only retune', async () => {
-    priorLoopM.mockResolvedValue(ACTIVE_PRIOR as never);
+    mockResolvedTyped(priorLoopM, ACTIVE_PRIOR);
     const b = body(await rawCall({ carry: 'cold' }));
     expect(b.ok).toBe(true);
     expect(materializeM).toHaveBeenCalledWith(

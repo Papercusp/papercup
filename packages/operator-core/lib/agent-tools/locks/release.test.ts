@@ -479,10 +479,10 @@ describe('locks:release — native edit attribution requires positive proof', ()
   const LOCK = '77777777-7777-4777-8777-777777777777';
 
   it('records attribution only when a successful recognized edit proof exactly matches released paths', async () => {
-    routeM.mockResolvedValue({
+    mockResolvedTyped(routeM, {
       value: { ok: true, released: ['a.ts'] },
       via: 'local-authority',
-    } as never);
+    });
 
     await call({
       lock_id: LOCK,
@@ -502,10 +502,10 @@ describe('locks:release — native edit attribution requires positive proof', ()
     ['unknown native tool', { success: true, source: 'claude', tool: 'Read', paths: ['a.ts'] }],
     ['path mismatch', { success: true, source: 'claude', tool: 'Edit', paths: ['other.ts'] }],
   ])('does not attribute %s', async (_label, nativeEditProof) => {
-    routeM.mockResolvedValue({
+    mockResolvedTyped(routeM, {
       value: { ok: true, released: ['a.ts'] },
       via: 'local-authority',
-    } as never);
+    });
 
     await call({ lock_id: LOCK, native_edit_proof: nativeEditProof });
 
