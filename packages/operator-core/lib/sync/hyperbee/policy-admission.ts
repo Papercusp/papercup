@@ -38,6 +38,22 @@
  * existing hives are byte-for-byte unaffected. Local (own-log) ops are NEVER
  * enforced (you don't moderate yourself).
  *
+ * ## Owner exemption (WI-2039866, P-004 tower↔VM outage, 2026-09-02)
+ * The MEMBERSHIP layers (ban / allowlist / the unresolved-author fail-closed) exist
+ * to keep strangers out. They must never lock the pot OWNER's own devices out of
+ * the owner's own pot — yet that is exactly what happened: the owner's boot-time
+ * policy re-author wrote an allowlist that omitted the login the owner's devices
+ * are attested under, and from then on every peer (the owner's own tower and VM
+ * included) silently dropped the other's ops as `policy_not_allowlisted` while the
+ * merge cursor advanced and "replication live" read green. Two invariants close
+ * that class here:
+ *   1. `isOwnerSourceLog` — an op whose source log boot resolves to the pot owner
+ *      (the device that vouched this joiner in, or a device bound to the same GitHub
+ *      identity this peer announces as) is exempt from ban / allowlist / the
+ *      unresolved-author drop. Takedown + content rules still apply to everyone.
+ *   2. `onDrop` is a CONTRACT, not a nicety — boot wires it into the refused-op
+ *      counters + boot-history, so a policy drop is never invisible again.
+ *
  * ## Author attribution is unforgeable + fail-closed
  * Attribution keys off the receiver-stamped `op.sourceLogKeyHex` (D-004), resolved
  * via the admission map — NOT the self-declared `writerPubkey`. When an
