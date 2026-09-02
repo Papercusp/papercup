@@ -27,6 +27,12 @@ vi.mock('./slot-parked-store', () => ({ parkSlotMessage: vi.fn(async () => ({ id
 vi.mock('./federation-scope', () => ({
   resolveWorkspaceHiveScope: vi.fn(async () => ({ kind: 'none' })),
 }));
+// The nursery-alias leg (EI-21987499463893160) is a real PG read inside the
+// addressee resolver; with the faked `sql` handle above it would fall into its
+// best-effort console.warn and trip vitest-fail-on-console (EI-22125768448497294).
+vi.mock('./nursery-alias-liveness', () => ({
+  listRunningNurseryAliasRows: vi.fn(async () => []),
+}));
 vi.mock('./log', () => ({
   coordLog: { appendLine: vi.fn(async () => undefined) },
   coordSql: () => ({}),
