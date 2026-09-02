@@ -344,6 +344,14 @@ interface LspClient {
    */
   stderrTail?: string;
   /**
+   * Bounded tail of the server's `window/logMessage` stream (WI-2142840).
+   *
+   * This — not `stderrTail` — is where a tsserver death is actually announced.
+   * See the notification registration for why the stderr stream cannot carry
+   * it, and what this one says when the semantic server goes.
+   */
+  logTail?: string;
+  /**
    * URIs the server currently holds open, each stamped with the disk state we
    * opened them AT (WI-40251). The stamp is what makes staleness detectable:
    * an open document ignores disk per the LSP spec, so without it a peer's
@@ -588,7 +596,10 @@ export function evictIfLanguageServiceDead(
     `the ${client.language} language service died while its wrapper process survived; ` +
     `every answer since has been an empty one. The client has been discarded and the ` +
     `next query will start a fresh server` +
-    (client.stderrTail?.trim() ? `. Server stderr tail: ${client.stderrTail.trim().slice(-600)}` : '');
+    (client.stderrTail?.trim() ? `. Server stderr tail: ${client.stderrTail.trim().slice(-600)}` : '') +
+    // The wrapper's log is where the death is actually described (WI-2142840);
+    // stderr above is the wrapper's own and stays empty through a child death.
+    (client.logTail?.trim() ? `. Server log tail: ${client.logTail.trim().slice(-600)}` : '');
   client.health = 'unhealthy';
   client.lastError = reason;
   clients.delete(clientKey(client.language, client.rootPath));
@@ -950,6 +961,35 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
         diags: Array.isArray(params.diagnostics) ? params.diagnostics : [],
         receivedAt: Date.now(),
       });
+    },
+  );
+
+  // WI-2142840: the wrapper ANNOUNCES tsserver's death here, and nothing was
+  // listening — which is why five investigations found a corpse and no cause.
+  //
+  // Why `stderrTail` above cannot carry it: `typescript-language-server` forks
+  // tsserver with `silent: true`, so the child's stderr is a private pipe to
+  // the WRAPPER, never to us. And in syntax-routing mode — the mode we run in,
+  // which is why the wrapper owns TWO children — the wrapper's own
+  // `SyntaxRoutingTsServer.onStdErr` is a literal no-op (`onStdErr(_handler) {}`),
+  // so it discards that pipe by construction. `stderrTail` is the WRAPPER's
+  // stderr; the process that dies is its child. That is the whole reason a
+  // death here has always looked silent, and it means "wrote zero bytes to
+  // stderr" was never evidence about tsserver at all.
+  //
+  // What the wrapper DOES do on losing its semantic server is log
+  // `[tsserver] Exited. Code: <code>. Signal: <signal>` as a `window/logMessage`
+  // notification. That one line separates the live hypotheses — SIGABRT is a V8
+  // heap abort (tsserver runs at node's DEFAULT old-space, ~2240MB on this box,
+  // because `maxTsServerMemory` is unset), SIGKILL is an external kill. Keep a
+  // bounded tail so the next death explains itself instead of being re-derived.
+  connection.onNotification(
+    'window/logMessage',
+    (params: { type?: number; message?: string }) => {
+      const message = params?.message;
+      if (typeof message !== 'string' || message.length === 0) return;
+      const next = `${client.logTail ?? ''}${message}\n`;
+      client.logTail = next.length > 8000 ? next.slice(next.length - 8000) : next;
     },
   );
 
