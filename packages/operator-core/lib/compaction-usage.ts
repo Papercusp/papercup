@@ -17,6 +17,7 @@ import * as path from 'node:path';
 import { findSessionTranscript, papercuspSessionClaudeBase, newestTranscriptUnderOwner } from './claude-sessions';
 import { findCodexRolloutPath, findCodexRolloutPathByUuid } from './session-transcript-resolvers';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import { MODEL_WINDOW_1M, MODEL_WINDOW_DEFAULT } from './agent-config-constants';
 
 // P-016 fallback resolver — RELOCATED to claude-sessions.ts (2026-07-04, WI-2680) so
 // the agents-roster live-thinking pane + stream share the SAME resume-rotation
@@ -113,6 +114,10 @@ export function codexContextSnapshotFromRollout(pathStr: string): CodexContextSn
 }
 
 export interface EstimateContextDeps {
+  /** WI-2140943 seam: resolve the owner's session ref (default {@link resolveSessionRefReconciled}). */
+  resolveRef?: (ownerId: string) => Promise<SessionRef | null>;
+  /** WI-2140943 seam: the gateway's SERVED route for the owner (default {@link gatewayServedRouteForOwner}). */
+  servedRoute?: (ownerId: string) => Promise<GatewayServedRoute | null>;
   findCodexRollout?: typeof findCodexRolloutPath;
   /** WI-42507 seam: resolve a rollout by its native session id under a given home. */
   findCodexRolloutByUuid?: typeof findCodexRolloutPathByUuid;
@@ -542,10 +547,22 @@ export function fallbackTranscriptFresh(p: string, nowMs = Date.now()): boolean 
  * transcript lives outside the owner root entirely are covered by the mechanical
  * `autoCompactWindow` cap (P-014), not this estimate.
  */
-export async function estimateContextTokensForOwner(ownerId: string): Promise<number | null> {
-  const ref = await resolveSessionRefReconciled(ownerId);
+export async function estimateContextTokensForOwner(
+  ownerId: string,
+  deps: EstimateContextDeps = {},
+): Promise<number | null> {
+  const ref = await (deps.resolveRef ?? resolveSessionRefReconciled)(ownerId);
   if (!ref) return null;
-  const primary = await estimateContextTokens(ref, ownerId);
+  const primary = await estimateContextTokens(ref, ownerId, deps);
+  // WI-2140943 lane 2: the gateway read the EXACT context size off the last `message_start`
+  // (input + cache_read + cache_creation). bytes/4 under-reads real usage by ~28% on code-heavy
+  // transcripts (da701a71: 720KB ⇒ ~180k estimated vs 248,703 real), which is the margin between
+  // "under the limit" and "Prompt is too long". Within ONE native session context only grows, so the
+  // exact reading is a floor and the larger of the two is the safe estimate. Bound to the native
+  // session id: a carry-respawn successor (same owner, new id) never inherits its predecessor's 248k.
+  const served = await servedRouteBoundToRef(ownerId, ref, deps);
+  const exact = served?.usage?.inputTotal;
+  if (exact != null && exact > 0) return Math.max(exact, primary ?? 0);
   if (primary != null) return primary;
   if (ref.agent === 'omp' || ref.agent === 'codex') return null;
   const alt = newestTranscriptUnderOwner(ownerId);
@@ -553,15 +570,101 @@ export async function estimateContextTokensForOwner(ownerId: string): Promise<nu
   return tokensFromFileSize(alt);
 }
 
-/** Exact effective window reported by the current Codex rollout. Null for
- * Claude/OMP or before Codex's first token_count event. */
+/** Exact effective window of the session's CURRENT model: for Codex the rollout's
+ * reported window; for Claude the window of the model the gateway actually SERVED
+ * last (`model` + whether the 1M beta was forwarded), bound to the same native
+ * session. Null for OMP, before the first turn, or when the gateway has no route
+ * for this native session — the caller then falls back to the launch-spec window.
+ *
+ * Why the served model and not the launch spec (WI-2140943 lane 2, 2026-09-02):
+ * a CLI launched on `claude-fable-5-1[1m]` silently re-requested a bare
+ * `claude-opus-5` after one 429 — a 1M→200k window drop no spec anywhere in
+ * papercusp recorded — and then the gateway's WI-1073 rung downgraded that to
+ * sonnet. The watchdog kept reading the 248,703-token session as "under a 400k
+ * limit" while every request died. The served route is the only place the real
+ * window is known. */
 export async function estimateContextWindowForOwner(
   ownerId: string,
   deps: EstimateContextDeps = {},
 ): Promise<number | null> {
-  const ref = await resolveSessionRefReconciled(ownerId);
-  if (!ref || ref.agent !== 'codex') return null;
-  return (await codexSnapshotForRef(ref, ownerId, deps))?.modelContextWindow ?? null;
+  const ref = await (deps.resolveRef ?? resolveSessionRefReconciled)(ownerId);
+  if (!ref) return null;
+  if (ref.agent === 'codex') return (await codexSnapshotForRef(ref, ownerId, deps))?.modelContextWindow ?? null;
+  if (ref.agent === 'omp') return null;
+  const served = await servedRouteBoundToRef(ownerId, ref, deps);
+  return servedWindowForRoute(served);
+}
+
+/** The inference gateway's SERVED route for one owner — GET `/admin/route?owner=` (gateway.ts). */
+export interface GatewayServedRoute {
+  account: string | null;
+  /** The model as FORWARDED upstream (after `[1m]` normalization and any last-resort downgrade). */
+  model: string | null;
+  /** Whether the forwarded request carried the 1M-context beta. Null ⇒ pre-upgrade gateway. */
+  context1m: boolean | null;
+  /** The caller's native session id (from the CLI's `metadata.user_id`); null for non-CLI callers. */
+  nativeSessionId: string | null;
+  /** Exact input usage from the last `message_start` for that native session. */
+  usage: { inputTotal: number; at: number } | null;
+  at: number | null;
+}
+
+function gatewayPortForRouteRead(): number {
+  const p = Number(process.env.PAPERCUSP_GATEWAY_PORT);
+  return Number.isFinite(p) && p > 0 ? p : 8788;
+}
+
+/** Read the gateway's served route for `ownerId`. Null on any failure (gateway down, no
+ *  route, malformed) — every caller treats null as "unknown", never as "no usage". */
+export async function gatewayServedRouteForOwner(
+  ownerId: string,
+  opts: { timeoutMs?: number; fetchImpl?: typeof fetch } = {},
+): Promise<GatewayServedRoute | null> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  try {
+    const res = await fetchImpl(
+      `http://127.0.0.1:${gatewayPortForRouteRead()}/admin/route?owner=${encodeURIComponent(ownerId)}`,
+      { signal: AbortSignal.timeout(opts.timeoutMs ?? 1500) },
+    );
+    if (!res.ok) return null;
+    const j = (await res.json()) as Partial<GatewayServedRoute> & { ok?: boolean };
+    if (!j || j.ok !== true || typeof j.model !== 'string') return null;
+    const usage =
+      j.usage && typeof j.usage.inputTotal === 'number' && Number.isFinite(j.usage.inputTotal)
+        ? { inputTotal: j.usage.inputTotal, at: typeof j.usage.at === 'number' ? j.usage.at : 0 }
+        : null;
+    return {
+      account: typeof j.account === 'string' ? j.account : null,
+      model: j.model,
+      context1m: typeof j.context1m === 'boolean' ? j.context1m : null,
+      nativeSessionId: typeof j.nativeSessionId === 'string' ? j.nativeSessionId : null,
+      usage,
+      at: typeof j.at === 'number' ? j.at : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** The served route ONLY when it is bound to the ref's own native session — the binding is
+ *  what keeps a successor from inheriting a predecessor's window/usage (same owner id). A
+ *  route without a native id (pre-upgrade gateway, non-CLI caller) is not trusted for either. */
+async function servedRouteBoundToRef(
+  ownerId: string,
+  ref: SessionRef,
+  deps: EstimateContextDeps,
+): Promise<GatewayServedRoute | null> {
+  if (ref.agent !== 'claude' || !ref.sessionId) return null;
+  const served = await (deps.servedRoute ?? gatewayServedRouteForOwner)(ownerId);
+  if (!served?.nativeSessionId) return null;
+  return served.nativeSessionId.toLowerCase() === ref.sessionId.toLowerCase() ? served : null;
+}
+
+/** The hard window of a served route: 1M when the beta was forwarded, else the 200k default.
+ *  Null when the route is unknown or its gateway predates the `context1m` field (never guess). */
+export function servedWindowForRoute(route: GatewayServedRoute | null | undefined): number | null {
+  if (!route?.model || route.context1m == null) return null;
+  return route.context1m ? MODEL_WINDOW_1M : MODEL_WINDOW_DEFAULT;
 }
 
 /**

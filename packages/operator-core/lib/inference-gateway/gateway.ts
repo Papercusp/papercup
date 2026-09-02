@@ -50,7 +50,7 @@ import {
 } from './provider-admission-lifecycle';
 import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT } from './account-failover';
 import { selectAffectedOwners } from './affected-owners';
-import { withOAuthBeta, scrubSecrets } from './credential-store';
+import { CLAUDE_CONTEXT_1M_BETA, withOAuthBeta, scrubSecrets } from './credential-store';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
 import { dbHealthSnapshot, type DbHealthSnapshot } from './db-health';
 import { evaluateSelfHeal, pickReclaimTarget, classifySlotReconcile } from './gateway-self-heal';
@@ -2877,7 +2877,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const ownerLedger = new Map<string, OwnerLedgerEntry>();
   function recordOwnerOutcome(
     ownerId: string | undefined,
-    kind: 'request' | 'ok' | 'upstream_error' | 'upstream_429' | 'shed' | 'stall' | 'pin_yield',
+    kind:
+      | 'request'
+      | 'ok'
+      | 'upstream_error'
+      | 'upstream_429'
+      | 'shed'
+      | 'stall'
+      | 'pin_yield'
+      | 'context_1m_restored',
     opts: { account?: string; status?: number; detail?: string } = {},
   ): void {
     if (!ownerId) return;
@@ -4311,7 +4319,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (shouldRestoreContext1m(prior, model, est.inTok, Date.now())) {
           context1m = true;
           recordOwnerOutcome(wantOwner, 'context_1m_restored', {
-            account: null,
             detail: `${model} est≈${est.inTok} (prior ${prior?.model}@1M)`,
           });
           log(
