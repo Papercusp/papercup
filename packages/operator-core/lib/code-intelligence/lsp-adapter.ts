@@ -27,7 +27,7 @@
  *     whole design is built to prevent.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
@@ -325,6 +325,24 @@ interface LspClient {
   taskId: string;
   language: LspLanguage;
   rootUri: string;
+  /** The project root this client is keyed under — see `clientKey`. */
+  rootPath: string;
+  /**
+   * WI-2142693. Have we ever OBSERVED this wrapper owning a child process?
+   *
+   * `child` is the typescript-language-server WRAPPER; the process that
+   * actually answers queries is `tsserver`, its child. The wrapper outlives its
+   * tsserver silently, so "no children" only means DEATH for a server we have
+   * previously seen alive — before the first spawn it means "not yet". This
+   * flag is what separates those two, and it is the whole reason the liveness
+   * verdict cannot be read from a single sample.
+   */
+  tsserverSeen?: boolean;
+  /**
+   * Bounded tail of the server's stderr, kept so a death can explain itself.
+   * Not a health signal — measured, this stream stays EMPTY when tsserver dies.
+   */
+  stderrTail?: string;
   /**
    * URIs the server currently holds open, each stamped with the disk state we
    * opened them AT (WI-40251). The stamp is what makes staleness detectable:
@@ -476,6 +494,105 @@ const state = pinModuleState<AdapterState>(
 
 function clientKey(language: LspLanguage, rootPath: string): string {
   return `${language}::${rootPath}`;
+}
+
+/**
+ * Direct children of `pid`, read from /proc without spawning anything.
+ *
+ * A subprocess per check would be absurd on a path that runs whenever an answer
+ * comes back empty; this is one small file read. Linux-only by construction —
+ * anywhere else the file is absent and the caller gets `null`, which it must
+ * treat as UNKNOWN rather than as "no children".
+ */
+function childPidsOf(pid: number): number[] | null {
+  try {
+    const raw = readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').trim();
+    return raw ? raw.split(/\s+/).filter(Boolean).map(Number) : [];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is the process that actually ANSWERS still alive? (WI-2142693)
+ *
+ * `client.child` is the typescript-language-server WRAPPER. The program, the
+ * type checker — everything that can answer a `definition` — lives in
+ * `tsserver`, a CHILD of that wrapper. When tsserver dies the wrapper does not:
+ * measured, it stays alive, exits nothing, sends no notification, writes ZERO
+ * bytes to stderr, and answers `null` to a query that returned a real site
+ * seconds earlier. It does not respawn tsserver either — a killed one was still
+ * dead 30s later, and a wrapper found on this box had sat childless for over
+ * three hours while its siblings ran normally.
+ *
+ * So `child.on('exit')` — the only liveness contract this adapter had, and one
+ * whose own comment reads "a dead server must never answer emptily and
+ * confidently again" — cannot fire for the failure it was written to catch. It
+ * watches the wrong process. `experimental/serverStatus` does not close the gap
+ * either: that notification is rust-analyzer's, and rust-analyzer is not what
+ * dies here.
+ *
+ * Two traps are deliberately encoded below, because each produces a confident
+ * wrong answer rather than an error:
+ *
+ *  - **Only TypeScript has the wrapper/child split.** rust-analyzer is a single
+ *    process with no children, so a naive "no children ⇒ dead" would condemn
+ *    every healthy rust client on its first empty answer.
+ *  - **"No children" is ambiguous before the first spawn.** It means "not yet"
+ *    just as readily as "died". Only a wrapper we have SEEN owning a child can
+ *    be pronounced dead by its absence — which is why `tsserverSeen` exists and
+ *    why this returns `unknown`, not `alive`, when it has never been set.
+ *
+ * A tempting alternative was measured and REJECTED: `documentSymbol` on an
+ * already-open document still returns all 37 symbols with tsserver dead (the
+ * wrapper answers it from its own syntactic parse). A canary built on it would
+ * have reported "alive" forever.
+ */
+export function probeLanguageServiceLiveness(
+  client: Pick<LspClient, 'language' | 'tsserverSeen'> & {
+    child: Pick<LspClient['child'], 'pid' | 'exitCode' | 'killed'>;
+  },
+  readChildPids: (pid: number) => number[] | null = childPidsOf,
+): 'alive' | 'dead' | 'unknown' {
+  // The wrapper itself dying is still a real death, and still worth catching.
+  if (client.child.exitCode !== null || client.child.killed) return 'dead';
+  if (client.language !== 'typescript') return 'unknown';
+  const pid = client.child.pid;
+  if (typeof pid !== 'number') return 'unknown';
+
+  const kids = readChildPids(pid);
+  if (kids === null) return 'unknown';
+  if (kids.length > 0) {
+    client.tsserverSeen = true;
+    return 'alive';
+  }
+  return client.tsserverSeen ? 'dead' : 'unknown';
+}
+
+/**
+ * Mark a client dead and UNREGISTER it, so the next query starts a fresh server.
+ *
+ * Eviction is the half that turns a crash back into something recoverable.
+ * Detection alone would only make the outage honest: `getClient` reuses any
+ * client whose health is not 'unhealthy', so without the `delete` a dead server
+ * is handed to every future caller for the life of the process. Returns the
+ * reason when it evicted, else null.
+ */
+export function evictIfLanguageServiceDead(
+  client: LspClient,
+  clients: Map<string, LspClient>,
+  readChildPids: (pid: number) => number[] | null = childPidsOf,
+): string | null {
+  if (probeLanguageServiceLiveness(client, readChildPids) !== 'dead') return null;
+  const reason =
+    `the ${client.language} language service died while its wrapper process survived; ` +
+    `every answer since has been an empty one. The client has been discarded and the ` +
+    `next query will start a fresh server` +
+    (client.stderrTail?.trim() ? `. Server stderr tail: ${client.stderrTail.trim().slice(-600)}` : '');
+  client.health = 'unhealthy';
+  client.lastError = reason;
+  clients.delete(clientKey(client.language, client.rootPath));
+  return reason;
 }
 
 /**
@@ -727,6 +844,18 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
     throw new Error(`managedSpawn returned a ${language} server child without piped stdio`);
   }
 
+  // WI-2142693. stderr is PIPED (see spawnOptions) and was never read. Two
+  // costs, one of them silent: an undrained pipe blocks the writer once its
+  // ~64KB buffer fills, and — measured across five probes — an abort message
+  // written here is the only place a server death would explain ITSELF. Every
+  // investigation of this outage found a corpse and no cause because this
+  // stream was discarded. Keep a bounded tail; it is diagnosis, not a signal.
+  child.stderr?.setEncoding('utf8');
+  child.stderr?.on('data', (chunk: string) => {
+    const next = `${client.stderrTail ?? ''}${chunk}`;
+    client.stderrTail = next.length > 8000 ? next.slice(next.length - 8000) : next;
+  });
+
   const connection = createMessageConnection(
     new StreamMessageReader(child.stdout),
     new StreamMessageWriter(child.stdin),
@@ -739,6 +868,7 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
     taskId: spawned.taskId,
     language,
     rootUri: pathToFileURL(rootPath).href,
+    rootPath,
     openDocs: new Map(),
     health: 'unknown',
     lastError: null,
@@ -1397,6 +1527,16 @@ export async function lspQuery(
       JSON.stringify(sites),
     );
 
+    // WI-2142693. An empty answer is the ONLY symptom a dead language service
+    // produces, so this is the one place its death can be caught — and the
+    // check must run on EVERY empty, not just an uncertified one. A corpse
+    // whose readiness was certified before it died still reports `healthy`, and
+    // that is the worst case of all: silence blessed as a proven absence.
+    if (sites.length === 0) {
+      const died = evictIfLanguageServiceDead(client, state.clients);
+      if (died) return fail(died, 'unhealthy');
+    }
+
     const answerHealth = healthForAnswer(client, readinessIntent, sites.length);
     // `isTrustworthyEmpty` accepts an error as an honest degraded answer, while
     // `error:null` plus degraded health would be an untrustworthy silent empty.
@@ -1526,6 +1666,16 @@ export async function lspDiagnostics(query: {
       detail: [d.source, d.code, d.message].filter(Boolean).join(' ') || null,
     }));
     certifyCanaryAnswer(client, intent, readiness, sites.length, JSON.stringify(sites));
+
+    // WI-2142693, and the reason this matters MORE here than for definition: an
+    // empty diagnostics result legitimately means "this file is clean", so a
+    // dead server's silence is indistinguishable from good news. Check liveness
+    // before reporting a clean bill of health that nobody actually issued.
+    if (sites.length === 0) {
+      const died = evictIfLanguageServiceDead(client, state.clients);
+      if (died) return fail(died, 'unhealthy');
+    }
+
     const answerHealth = healthForAnswer(client, intent, sites.length);
     // A publish proves that the server spoke about this URI, not that an empty
     // result is complete. If readiness is still unproven, keep the empty loud:
