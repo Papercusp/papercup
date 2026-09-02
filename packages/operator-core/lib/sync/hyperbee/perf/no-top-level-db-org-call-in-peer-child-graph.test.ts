@@ -1,7 +1,16 @@
 /**
  * The perf peer-child resolves `@papercusp/db-org` to `no-pg-stub.mjs` (see no-pg-hooks.mjs),
- * whose every binding THROWS when called. A module that calls one of those bindings at MODULE
- * TOP LEVEL therefore kills the child during import — before it can emit a single event.
+ * where almost every binding THROWS when called. A module that calls a THROWING binding at
+ * MODULE TOP LEVEL therefore kills the child during import — before it can emit a single event.
+ *
+ * "Almost" is load-bearing, and is why the throwing set below is DERIVED from the stub rather
+ * than assumed: the stub deliberately keeps a short list of INERT bindings — registration setters
+ * and metadata helpers that provably open nothing, query nothing and transact nothing
+ * (`setAdminPoolStatementTimeoutProvider`, `schemaOf`). Calling one of those at top level is
+ * SAFE, so flagging it would be a false positive that pressures the next agent to undo a
+ * deliberate, well-argued exemption. Reading the set from `no-pg-stub.mjs` means this guard
+ * cannot disagree with the stub: add an inert binding there and this stops flagging it; make one
+ * throw again and this starts.
  *
  * This is a DIFFERENT failure mode from its sibling guard `no-pg-stub-covers-db-org-imports`,
  * and neither catches the other:
@@ -140,6 +149,21 @@ export function topLevelCalls(text: string, names: readonly string[]): Array<{ n
   return hits;
 }
 
+/**
+ * The names `no-pg-stub.mjs` binds to a THROWING stub, read from the stub itself.
+ *
+ * A throwing binding is written `export const <name> = stub('<name>');`. Anything else there —
+ * an inert `() => {}` setter, a metadata helper returning a plain object — is deliberately safe
+ * to call, including at module top level. Deriving this instead of hardcoding it keeps the guard
+ * from becoming a second, drifting copy of the stub's own policy (derived-truth ladder).
+ */
+function throwingStubNames(): Set<string> {
+  const stubSrc = readFileSync(fileURLToPath(new URL('./no-pg-stub.mjs', import.meta.url)), 'utf8');
+  const names = new Set<string>();
+  for (const m of stubSrc.matchAll(/^export\s+const\s+([A-Za-z0-9_$]+)\s*=\s*stub\(/gm)) names.add(m[1]);
+  return names;
+}
+
 function walkChildGraph(): Map<string, string> {
   const seen = new Map<string, string>();
   const queue = [PEER_CHILD];
@@ -225,13 +249,31 @@ describe('no module in the perf peer-child import graph calls @papercusp/db-org 
     }
   });
 
-  it('has no module reaching db-org at import time', () => {
+  it('derives the throwing-stub set from no-pg-stub.mjs (policy calibration)', () => {
+    const throwing = throwingStubNames();
+
+    // A parse that found nothing would silence this guard entirely while still reporting green.
+    expect(throwing.size).toBeGreaterThan(30);
+    expect(throwing.has('getOrgPg')).toBe(true);
+
+    // The stub's deliberate exemptions must NOT be in the throwing set — if one is, either the
+    // parse is wrong or the stub changed its mind, and this guard would start failing a call the
+    // stub has decided is safe. Both are worth failing here rather than in the gate.
+    for (const inert of ['setAdminPoolStatementTimeoutProvider', 'schemaOf']) {
+      expect(throwing.has(inert), `${inert} is inert in no-pg-stub.mjs but parsed as throwing`).toBe(
+        false,
+      );
+    }
+  });
+
+  it('has no module reaching a THROWING db-org binding at import time', () => {
     const graph = walkChildGraph();
+    const throwing = throwingStubNames();
     const violations: string[] = [];
 
     for (const [file, text] of graph) {
       if (!text.includes('@papercusp/db-org')) continue;
-      const names = dbOrgValueNames(text);
+      const names = dbOrgValueNames(text).filter((n) => throwing.has(n));
       for (const hit of topLevelCalls(text, names)) {
         violations.push(`  ${file.slice(REPO_ROOT.length)}:${hit.line}  ${hit.name}(...)`);
       }
@@ -241,16 +283,20 @@ describe('no module in the perf peer-child import graph calls @papercusp/db-org 
       violations,
       violations.length === 0
         ? ''
-        : `${violations.length} module(s) in the perf peer-child's import graph call ` +
-          `'@papercusp/db-org' at MODULE TOP LEVEL. Every binding in no-pg-stub.mjs throws, so ` +
-          `each of these kills the child during import — surfacing only as an opaque 30s ` +
-          `"expected null to match object { evt: 'ready' }" in child-driver.test.ts.\n\n` +
+        : `${violations.length} module(s) in the perf peer-child's import graph call a THROWING ` +
+          `'@papercusp/db-org' binding at MODULE TOP LEVEL. That throws while the child's graph ` +
+          `is still being evaluated, killing it before it emits anything — surfacing only as an ` +
+          `opaque 30s "expected null to match object { evt: 'ready' }" in child-driver.test.ts.\n\n` +
           `${violations.join('\n')}\n\n` +
-          `Fix the GRAPH, not the stub: the call itself is usually correct for the operator host ` +
-          `— what is wrong is that the perf child reaches it. Import the pure leaf you actually ` +
+          `PREFER fixing the GRAPH: the call itself is usually correct for the operator host — ` +
+          `what is wrong is that the perf child reaches it. Import the pure leaf you actually ` +
           `need (e.g. 'agent-tools/plans/derive-index', not 'agent-tools/plans/source'), or make ` +
-          `the offending module's registration lazy. Do NOT soften no-pg-stub.mjs: the throwing ` +
-          `binding is what keeps a perf run that reaches Postgres from being read as a measurement.`,
+          `the offending module's registration lazy.\n` +
+          `Making the binding INERT in no-pg-stub.mjs is legitimate ONLY for a registration ` +
+          `setter or metadata helper that provably opens, queries, listens and transacts nothing ` +
+          `— see that file's note on setAdminPoolStatementTimeoutProvider. Anything that could ` +
+          `reach a database must keep throwing, or a perf run that touched PG could be read as a ` +
+          `measurement.`,
     ).toEqual([]);
   });
 });
