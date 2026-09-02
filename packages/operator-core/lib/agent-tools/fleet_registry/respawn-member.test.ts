@@ -25,6 +25,7 @@ const assembleRolePrompt = vi.fn();
 const readAgentConfig = vi.fn();
 const getFleet = vi.fn();
 const setFleetLaunchTransaction = vi.fn();
+const findLiveHost = vi.fn();
 
 const LEADER = 'su-leader';
 const MEMBER = 'su-member-abc';
@@ -75,6 +76,9 @@ vi.mock('../../agent-fleets-store', async (importOriginal) => {
     setFleetLaunchTransaction: (...a: unknown[]) => setFleetLaunchTransaction(...a),
   };
 });
+vi.mock('../../events/await/psu-pty-discovery', () => ({
+  findLiveHost: (...a: unknown[]) => findLiveHost(...a),
+}));
 vi.mock('./_shared', () => ({
   ROUTING_LADDER: 'ladder',
   json: (payload: Record<string, unknown>, isError = false) => ({
@@ -178,6 +182,9 @@ beforeEach(() => {
   resolveSessionStates.mockReset().mockResolvedValue(new Map());
   getFleet.mockResolvedValue({ lastLaunchTransaction: null });
   setFleetLaunchTransaction.mockResolvedValue(true);
+  // WI-2141730: no colliding live host by default — the ordinary respawn path never sees this
+  // guard fire. Individual tests override this to exercise the refusal.
+  findLiveHost.mockReturnValue(null);
   // Roster: the old member before the kill, a NEW live owner once the replacement has booted.
   // mockReset (not clearAllMocks) — a leftover `once` value would be consumed by the verification
   // poll instead of the snapshot, and the test would then really wait out the 90s window.
@@ -413,6 +420,36 @@ describe('fleet:respawn-member (P-008)', () => {
     );
     expect(p.launched).toContain('Launched su-new');
     expect(p.newMember).toBe(p.replacementOwner);
+  });
+
+  it('refuses to launch a replacement whose freshly-minted identity already has a live host (WI-2141730)', async () => {
+    // Simulates a reused (fleetSlug, memberOwnerId, idempotencyKey) triple after the launch
+    // claim TTL expired: the deterministic replacementOwnerId() collides with a still-live
+    // earlier replacement's psu-pty host. The old member has ALREADY been killed by this point
+    // (drain happens before the identity is pinned), so this must NOT double-launch.
+    findLiveHost.mockReturnValue({ ownerId: 'su-respawn-collide', pid: 4242, sock: '/tmp/collide.sock' });
+
+    const res = await tool.handler(
+      { member: MEMBER, model: 'opus[1m]', idempotencyKey: 'reused-key' } as never,
+      {} as never,
+    );
+    const p = parse(res);
+
+    expect(p).toMatchObject({
+      ok: false,
+      error: 'replacement_identity_already_live',
+      fleet: SLUG,
+      oldMember: MEMBER,
+      collidingPid: 4242,
+      launched: false,
+    });
+    expect(p.replacementOwner).toEqual(expect.stringMatching(/^su-respawn-/));
+    expect(p.message).toContain(p.replacementOwner);
+    expect(p.message).toContain('4242');
+    // the old member's drain already happened — this must not be a silent no-op
+    expect(killHandler).toHaveBeenCalledWith(expect.objectContaining({ owner: MEMBER, close_terminal: true }), expect.anything());
+    // but launching a SECOND process under the colliding identity must be refused
+    expect(launchHandler).not.toHaveBeenCalled();
   });
 
   it('preflights an unknown persisted persona role before killing, preserving the diagnostic on refusal', async () => {

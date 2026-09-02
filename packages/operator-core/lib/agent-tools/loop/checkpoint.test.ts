@@ -878,12 +878,37 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
   });
 
   it('WI-2148: falls back to args/ctx/home-hive when getLoopStatus errors (fail-open, never blocks a checkpoint write)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     getLoopStatus.mockRejectedValueOnce(new Error('pg down'));
-    await call({ next: 'x' }, { harnessSlug: 'papercusp', workspaceId: 'ws-1' });
+    const result = await call({ next: 'x' }, { harnessSlug: 'papercusp', workspaceId: 'ws-1' });
     expect(setLoopCarryNote).toHaveBeenCalledWith(
       expect.objectContaining({ harness: 'papercusp' }),
       expect.any(String),
     );
+    // EI-22166372050218668: fail-open stays unblocked (assertion above), but the
+    // caller must now be told the resolved scope was NOT confirmed against the armed
+    // routine — the write is no longer silently indistinguishable from a verified one.
+    const body = JSON.parse(result.content[0].text as string);
+    expect(body.routineProbeFailed).toEqual(
+      expect.objectContaining({ wroteTo: 'papercusp' }),
+    );
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('EI-22166372050218668: a getLoopStatus failure stays silent when an explicit harness argument resolves the write anyway', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    getLoopStatus.mockRejectedValueOnce(new Error('pg down'));
+    const result = await call({ next: 'x', harness: 'papercusp' }, { harnessSlug: '*', workspaceId: 'ws-1' });
+    expect(setLoopCarryNote).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: 'papercusp' }),
+      expect.any(String),
+    );
+    // The explicit `harness` argument itself resolved the scope, so the probe failure
+    // never had a chance to silently misroute the write — no warning flag is owed.
+    const body = JSON.parse(result.content[0].text as string);
+    expect(body.routineProbeFailed).toBeUndefined();
+    warn.mockRestore();
   });
 
   it('EI-21183575241304993: uses the durable session scope before an unrelated owner loop under wildcard transport', async () => {

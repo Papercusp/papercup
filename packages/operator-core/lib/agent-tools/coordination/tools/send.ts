@@ -104,6 +104,7 @@ import { runBulk, bulkContent, type BulkEnvelope, type BulkItemResult } from '..
 import { cellTranscriptionHint } from '../../../cell-transcription-detector';
 import {
   messageBodyArg,
+  PREMISES_REF_OBJECT_REENCODING,
   BODY_MUST_BE_ARRAY_MESSAGE,
   blockingArg,
   whyArg,
@@ -2269,6 +2270,11 @@ export default defineTool({
       'WI-5341: replying to a message whose `expects` was not `none`? set related_msg_id to it — a broadcast or unthreaded reply keeps you reading as "unanswered" in leader-brief/fleet:assignments even though you replied.',
     ],
   },
+  // P-016 / D-107 — auto-correct-and-RUN `premises: [{ref}] -> ["ref"]`, the single largest
+  // rejection class on this verb (1,211/7d across 555 agents, 68% of all coord:send
+  // refusals, 99.8% one shape). Declared here, authored beside `premisesArg` in
+  // message-fields.ts. Bare-string and no-`ref` premises keep the taught refusal.
+  argReencodings: [PREMISES_REF_OBJECT_REENCODING],
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],

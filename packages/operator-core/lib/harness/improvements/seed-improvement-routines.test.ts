@@ -37,6 +37,7 @@ describe('improvement routine membership — Learning tab Pause all', () => {
       'improvement-watchdog',
       'improvement-triage',
       'improvement-invalid-args-miner',
+      'improvement-tool-rejection-scorecard',
       'improvement-implement',
     ]);
   });

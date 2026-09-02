@@ -137,6 +137,10 @@ describe('WI-2003 — incremental merge read-throw recovery (no permanent wedge)
     };
     const apply = async (_op: OpEnvelope): Promise<boolean> => true;
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // WI-2141796: the retry semantics below are UNCHANGED, but the stall is no
+    // longer silent — it now warns (throttled). Mocked so the console guard does
+    // not fail the run, and asserted below so the two contracts stay distinct.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     // Several passes with a real (tiny) timeout — must stay at position 0 forever
     // (unavailable ops are NEVER dead-lettered, unlike read-errors) and must NOT
@@ -146,6 +150,11 @@ describe('WI-2003 — incremental merge read-throw recovery (no permanent wedge)
     }
     expect(cursor.positions.get('A') ?? 0).toBe(0);
     expect(errSpy).not.toHaveBeenCalledWith(expect.stringContaining('WI-2003 quarantine'), expect.anything());
+    // WI-2141796: an unavailable read is REPORTED (once, throttled) and counted
+    // every pass — the retry stayed unbounded, it just stopped being invisible.
+    expect(warnSpy.mock.calls.filter((c) => String(c[0]).includes('read stall'))).toHaveLength(1);
+    expect(cursor.readStalls?.get('A:0')).toBe(4);
     errSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 });

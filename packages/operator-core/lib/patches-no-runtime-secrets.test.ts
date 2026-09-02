@@ -1,0 +1,64 @@
+/**
+ * EI-22165824068092618 fallout guard — a patch file must never carry runtime state.
+ *
+ * `npx patch-package <pkg>` diffs the WHOLE installed package directory against a
+ * clean copy, and verdict-cli writes its per-session daemon state — port, pid and a
+ * live BEARER TOKEN — into `node_modules/verdict-cli/.verdict-data/sessions/<sid>/`.
+ * Regenerating that patch without an exclude therefore sweeps every OTHER agent's
+ * live daemon credentials into `patches/verdict-cli+0.1.1.patch`, which is tracked
+ * and which git-sync commits within minutes.
+ *
+ * This was caught in the working tree once and never reached a commit. The correct
+ * regeneration is:
+ *   npx patch-package verdict-cli --exclude '(^|/)\.verdict-data/'
+ *
+ * The guard is deliberately about SHAPE, not about one package: any patch that
+ * starts carrying tokens or per-session runtime directories fails here.
+ */
+import { readdir, readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { describe, expect, it } from 'vitest';
+
+const patchesDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'patches');
+
+/** Secret/runtime shapes that have no business in a dependency patch. */
+const FORBIDDEN: ReadonlyArray<{ label: string; pattern: RegExp }> = [
+  { label: 'a bearer/daemon token value', pattern: /"token"\s*:\s*"[^"]{8,}"/ },
+  { label: 'a per-session runtime data directory', pattern: /\.verdict-data\// },
+  { label: 'a captured daemon pid+port state blob', pattern: /"pid"\s*:\s*\d+\s*,\s*"started"\s*:/ },
+];
+
+describe('dependency patches carry no runtime state (EI-22165824068092618)', () => {
+  it('has patch files to check', async () => {
+    const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch'));
+    // A positive control: if this ever reads zero files the assertions below
+    // would all pass vacuously, which is the exact false-green shape this
+    // whole guard exists to prevent.
+    expect(entries.length).toBeGreaterThan(0);
+  });
+
+  it('contains no tokens, pids or per-session data directories', async () => {
+    const entries = (await readdir(patchesDir)).filter((f) => f.endsWith('.patch'));
+    const offenders: string[] = [];
+
+    for (const entry of entries) {
+      const body = await readFile(join(patchesDir, entry), 'utf8');
+      for (const { label, pattern } of FORBIDDEN) {
+        if (pattern.test(body)) offenders.push(`${entry}: ${label}`);
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('detects a planted secret, so the check above cannot pass by being broken', () => {
+    // Calibration. Built from fragments so the literal never sits in a tracked
+    // file as a scannable secret (the tree secrets-guard and the pot-git publish
+    // guard both match on assembled token shapes).
+    const planted = `+  {"port":1234,"${'token'}":"${'8d283a06'}-ab1c-4034-bba2-4cbd0c98be16"}`;
+    const caught = FORBIDDEN.some(({ pattern }) => pattern.test(planted));
+    expect(caught).toBe(true);
+  });
+});

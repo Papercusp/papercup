@@ -298,6 +298,31 @@ registerSystemAction('improvement-invalid-args-miner', async (ctx: SystemActionC
   );
 });
 
+// ── P-017: the weekly per-verb schema-rejection scorecard (capture only) ─────
+// Reads the per-verb rejection RATE (never the fleet aggregate — that aggregate
+// read 0.50% while one verb rejected 56 of 56 calls) and files against each verb
+// sustaining >= 10% over >= 3 separate days. See tool-rejection-miner.ts.
+//
+// Weekly, and deliberately NOT on the 15-min watchdog tick: the daily aggregate
+// scans ~3.4M rows over its window with a heap fetch for tenant scoping, and
+// `TOOL_REJECTION_MIN_BREACH_DAYS` cannot be satisfied faster than 3 days anyway.
+// Offset 30 min from the invalid-args miner so two heavy tool_invocations scans
+// never land on the same minute.
+registerSystemAction('improvement-tool-rejection-scorecard', async (ctx: SystemActionCtx) => {
+  const windowDays = intFromEnv('PAPERCUSP_TOOL_REJECTION_WINDOW_DAYS', 7, { min: 1 });
+  const maxPerTick = intFromEnv('PAPERCUSP_TOOL_REJECTION_MAX_PER_TICK', 5, { min: 0 });
+  const result = await runToolRejectionMinerTick(ctx.workspaceId, { windowDays, maxPerTick });
+  console.log(
+    `[improvement-tool-rejection-scorecard] ${result.totalCalls} schema-boundary call(s) across ` +
+      `${result.toolsSeen} verb(s)/${windowDays}d — fleet aggregate ${result.aggregatePct}%, ` +
+      `${result.breaching} verb(s) breaching, captured ${result.captured.length}` +
+      (result.captured.length ? ` (${result.captured.join(', ')})` : '') +
+      `, ${result.declined} duplicate(s) declined` +
+      (result.skippedSelf ? `, ${result.skippedSelf} improvement-loop verb(s) skipped` : '') +
+      (result.failed ? `, ${result.failed} capture(s) FAILED` : ''),
+  );
+});
+
 // ── Phase 3: the auto-implement loop (flag-gated OFF) ────────────────────────
 
 /**

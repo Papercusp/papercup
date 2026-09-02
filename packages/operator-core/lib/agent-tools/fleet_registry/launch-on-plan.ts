@@ -1013,6 +1013,39 @@ export function describeFleetFillOutcome(o: {
   return { fleetSize, shortfall, complete, clause };
 }
 
+/**
+ * EI-22168623726023643 — the headline for a wave that opened ZERO members.
+ *
+ * P-006 made {@link describeFleetFillOutcome} compute the ⚠ shortfall clause and the CAUSE,
+ * and the zero-open branch then discarded both, emitting a flat "No member terminals were
+ * started for fleet `X`." beside `ok:true`. That reads as a benign no-op in precisely the
+ * case where it is the opposite: a capacity clamp to zero leaves the caller holding a LIVE,
+ * REGISTERED leader and an EMPTY fleet, so the plan looks staffed and is not. Two real
+ * launches were reported as successful placements that way.
+ *
+ * The benign/malign split is `fill.complete`, not the opened count: a fleet ALREADY at target
+ * correctly opens nothing, and warning there would be a false alarm on the common top-up path.
+ */
+export function describeZeroOpenFleetHeadline(o: {
+  fleetSlug: string;
+  /** The fill verdict from {@link describeFleetFillOutcome} — its clause already names the cause. */
+  fill: { complete: boolean; clause: string };
+  /** The capacity clamp's own reason, when one suppressed the wave. */
+  clampReason?: string | null;
+}): string {
+  if (o.fill.complete) {
+    // Not a shortfall: the deficit was already satisfied, so nothing needed opening.
+    return `No new member terminals were needed for fleet \`${o.fleetSlug}\` — ${o.fill.clause}.`;
+  }
+  const reason = o.clampReason?.trim() ? ` ${o.clampReason.trim()}.` : '';
+  return (
+    `⚠ NO member terminals were started for fleet \`${o.fleetSlug}\` — ${o.fill.clause}.${reason} ` +
+    'The fleet now has a LIVE LEADER and NO members, so the plan LOOKS staffed while nothing is working it. ' +
+    're-call this tool once capacity recovers (the live-member deficit guard opens only the remaining deficit), ' +
+    'and do not record the plan as staffed on this result.'
+  );
+}
+
 /** Backward-compatible export for p2p delegated-spawn callers. */
 export const memberLaunchCommand = sharedMemberLaunchCommand;
 
@@ -4935,7 +4968,14 @@ export default defineTool({
     lines.push(
       opened.length
         ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole})${planSlug ? ` on plan \`${planSlug}\`` : ' (claim-spec fleet)'} — ${fill.clause}${args.headless ? ' (no desktop windows — tail the per-member log paths below)' : ''}${carryMode === 'cold' ? ' [COLD carry]' : ''}${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${clampSuffix}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
-        : `No ${args.headless ? 'headless ' : ''}member${args.headless ? 's were' : ' terminals were'} started for fleet \`${fleetSlug}\`.`,
+        : // EI-22168623726023643: carry the fill verdict and the clamp reason into the
+          // ZERO-open case too. The old flat sentence dropped both and read as a benign
+          // no-op beside ok:true, which is how an empty fleet was recorded as staffed.
+          describeZeroOpenFleetHeadline({
+            fleetSlug,
+            fill,
+            clampReason: capacityClamp?.clamped ? capacityClamp.reason : null,
+          }),
     );
     for (const o of opened) {
       const displayNote = o.display ? ` [DISPLAY=${o.display}]` : '';

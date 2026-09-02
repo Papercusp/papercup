@@ -82,7 +82,7 @@ function reviewLine(r, excerpt) {
 }
 
 async function cmdDump() {
-  const outDir = String(arg('out', 'tmp/facts-expiry-audit'));
+  const outDir = String(arg('out', '.papercusp/scratch/facts-expiry-audit'));
   const shardSize = Number(arg('shard', 200));
   const excerpt = Number(arg('excerpt', 200));
   mkdirSync(join(outDir, 'shards'), { recursive: true });
@@ -360,7 +360,7 @@ function push(map, key, val) {
  *    self-cleaning if the agent dies without exiting.
  */
 async function cmdClassVerdicts() {
-  const outDir = String(arg('out', 'tmp/facts-expiry-audit'));
+  const outDir = String(arg('out', '.papercusp/scratch/facts-expiry-audit'));
   const client = await connectScriptPg();
   try {
     const { rows } = await client.query(`

@@ -397,10 +397,35 @@ export interface MergeCursor {
    * "silent REV fed_event outage class", WI-2003). Optional for back-compat.
    */
   readThrows?: Map<string, number>;
+  /**
+   * WI-2141796: per-position CONSECUTIVE read-STALL counter (`${log.keyHex}:${pos}`
+   * → count) for the `unavailable` (transient-timeout) branch. That branch is
+   * deliberately an UNBOUNDED retry-via-break and this counter does NOT change
+   * that — it exists purely so the retry is VISIBLE.
+   *
+   * The measured failure it makes observable (2026-09-02, tower): the papercusp
+   * cursor on log `cb54460d98d8` sat at position 12048 for hours while the writer
+   * ran on to 25k+, so every inbound coordination row behind it was unreachable.
+   * NOTHING reported it. The `unavailable` break logs nothing, no apply is
+   * attempted (so no timeout/quarantine/constraint error fires), the peer stays
+   * connected so replication-liveness reads `live`/`healthy`, and the cursor ROW's
+   * `updated_at` keeps moving because positions are persisted as ONE map — a
+   * sibling log advancing re-stamps the frozen one. A moving `updated_at` beside a
+   * frozen `position` reads exactly like a healthy merge, which is what made this
+   * cost hours to find: every available signal was a per-op or per-connection
+   * bound, and the failure lives in whether a SPECIFIC POSITION ever advances.
+   */
+  readStalls?: Map<string, number>;
 }
 
 export function createMergeCursor(): MergeCursor {
-  return { positions: new Map(), winners: new Map(), applyThrows: new Map(), readThrows: new Map() };
+  return {
+    positions: new Map(),
+    winners: new Map(),
+    applyThrows: new Map(),
+    readThrows: new Map(),
+    readStalls: new Map(),
+  };
 }
 
 /**
@@ -1326,7 +1351,29 @@ export async function mergeAdmittedLogsIncremental(
       let op: PeerLogOp | null;
       try {
         const got = await readOpBoundedDetailed(log, pos, getTimeoutMs);
-        if (got.kind === 'unavailable') break; // retry from here next pass
+        if (got.kind === 'unavailable') {
+          // WI-2141796 — retry from here next pass (UNBOUNDED, unchanged: a peer
+          // withholding one block is usually transient and dead-lettering a
+          // readable-later op would lose it). What IS new is that we SAY SO. A
+          // permanent stall here pins this log's cursor forever and every
+          // subsequent op in a strictly-sequential single-writer log is
+          // unreachable behind it — previously with no output at all.
+          const stalls = (cursor.readStalls ??= new Map());
+          const ident = `${log.keyHex}:${pos}`;
+          const n = (stalls.get(ident) ?? 0) + 1;
+          stalls.set(ident, n);
+          if (n === 1 || n % 100 === 0) {
+            console.warn(
+              `[read-merge] read stall (${n}×): log ${log.keyHex.slice(0, 12)}#${pos} did not resolve within ` +
+                `${getTimeoutMs}ms — cursor HELD at ${pos}, ${Math.max(0, log.length - pos)} op(s) behind it are ` +
+                `UNREACHABLE until this position reads. Retrying every pass (not quarantined, not lost). A count ` +
+                `that keeps climbing on the SAME position is a wedged log, not a blip: the peer is serving the ` +
+                `swarm but not this block. NOTE the cursor ROW is not a witness here — positions persist as one ` +
+                `map, so a sibling log advancing re-stamps this row's updated_at while its position stays frozen.`,
+            );
+          }
+          break;
+        }
         if (got.kind === 'read-error') {
           const throws = (cursor.readThrows ??= new Map());
           const ident = `${log.keyHex}:${pos}`;
@@ -1349,6 +1396,7 @@ export async function mergeAdmittedLogsIncremental(
           op = null; // treated like a version-gated drop below — cursor advances past it
         } else {
           cursor.readThrows?.delete(`${log.keyHex}:${pos}`); // success clears any throw streak
+          cursor.readStalls?.delete(`${log.keyHex}:${pos}`); // …and any read-stall streak (WI-2141796)
           op = got.op;
         }
       } catch {

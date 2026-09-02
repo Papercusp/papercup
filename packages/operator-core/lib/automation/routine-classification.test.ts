@@ -119,6 +119,7 @@ describe('spendForTargetRole', () => {
       'system:improvement-watchdog',
       'system:improvement-human-digest',
       'system:improvement-invalid-args-miner',
+      'system:improvement-tool-rejection-scorecard',
     ]) {
       expect(spendForTargetRole(role), role).toBe('none');
     }

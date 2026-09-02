@@ -39,6 +39,11 @@
  */
 
 import { z } from 'zod';
+import {
+  boundValue,
+  type AppliedArgCorrection,
+  type ArgReencoding,
+} from '@papercusp/tooldef';
 // TYPE-ONLY, and it must stay that way: `couplings.ts` opens a PG handle at
 // module scope, and this module is imported by every message-shaped surface.
 import type { DerivedCouplingRelation } from '../../coord/couplings';
@@ -611,6 +616,119 @@ const premisesArg = shapeTaughtArray('premises', z.string().min(1), PREMISES_SHA
       'may be cited; the ref KIND decides whether it can go stale (a doc is declarable, never ' +
       'invalidatable). Distinct from `basedOn`, which is what you READ and is auto-derived.',
   );
+
+/** Identifies the rule in every `corrected:[…]` disclosure it produces. */
+export const PREMISES_REENCODING_RULE = 'premises.unwrap-ref-objects';
+
+/** Bounded so a pathological nesting cannot make a repair path expensive. */
+const PREMISES_WALK_MAX_DEPTH = 6;
+
+/** Every member is an object carrying a non-empty string `ref` — D-107's auto-run condition. */
+function isRefObjectArray(value: unknown): value is Array<Record<string, unknown>> {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((member) => {
+      if (!member || typeof member !== 'object' || Array.isArray(member)) return false;
+      const ref = (member as Record<string, unknown>).ref;
+      return typeof ref === 'string' && ref.trim().length > 0;
+    })
+  );
+}
+
+/**
+ * P-016 / D-107 — auto-run `premises: [{ ref: "WI-1" }] -> ["WI-1"]`.
+ *
+ * WHY THIS ONE, AND WHY IT IS NOT THE BANNED CHANGE. Measured 2026-09-02 over 7d of
+ * `tool_invocations`, wrong-shape `premises` is 1,211 rejections across 555 agents — 68% of
+ * ALL coord:send rejections — and 99.8% of them send exactly this shape, with >=98% of members
+ * carrying a string `ref`. The comment above says why they do it: the section's OTHER
+ * structured field, `forYouBecause`, IS an object, so `premises: [{ ref }]` is the natural
+ * generalization. Unwrapping is total, deterministic, has exactly ONE candidate output, and
+ * the output is literally the string the caller already supplied — D-104 RE-ENCODING, so it
+ * may run.
+ *
+ * It is the OPPOSITE of the change banned at the top of this file. That ban forbids accepting
+ * a bare STRING in place of structure (prose replacing citations; `provenance` collapsing to
+ * an invented 'authored'). Here the caller sent MORE structure than declared and we unwrap to
+ * the declared scalar: nothing is invented, no free-text alternative appears, and a citation
+ * stays a citation. `SHAPE_REFUSAL_TAIL`'s promise that this is "not sugar-coated to accept a
+ * bare string" is untouched — see the two cases this rule deliberately does NOT repair.
+ *
+ * WHY AUTO-CORRECT RATHER THAN A BETTER MESSAGE — the question D-104 makes you answer before
+ * promoting anything to this tier. This field ALREADY GOT the better message:
+ * `PREMISES_SHAPE_MESSAGE` was added 2026-08-10 for precisely this error and diagnoses the
+ * cause exactly. Measured after it shipped: still 1,211 refusals, still 555 agents, still one
+ * shape. A taught refusal was tried here and is insufficient at scale, which is the evidence
+ * D-104 requires — not an assumption that teaching would not have worked.
+ *
+ * TWO CASES IT MUST NOT TOUCH (D-107 rulings 2 and 4):
+ *   - a BARE STRING premise stays refused. All 3 observed are prose, and coercing prose into a
+ *     ref manufactures a citation the caller never made — the exact free-text hazard the owner
+ *     banned, and the one failure mode here that would corrupt data rather than waste a call.
+ *   - a member with NO `ref` (34 observed, 1.7%) stays refused: choosing which of its keys is
+ *     the ref is DISAMBIGUATION, which D-104 assigns to refuse-and-teach.
+ * Both fall out of `isRefObjectArray` returning false, so the ordinary taught refusal renders
+ * unchanged.
+ *
+ * PURE BY CONTRACT. Rebuilds only the objects along a changed path and returns the original
+ * node by identity otherwise, so `tool_invocations.args_json` keeps the shape the caller
+ * actually sent. That ledger is the decay instrument D-104's endgame clause depends on — see
+ * `reencode-args.ts` for why that is worth more than a bespoke correction log.
+ */
+export const PREMISES_REF_OBJECT_REENCODING: ArgReencoding = {
+  rule: PREMISES_REENCODING_RULE,
+  reencode: (input) => {
+    const corrections: AppliedArgCorrection[] = [];
+
+    const walk = (node: unknown, path: string, depth: number): unknown => {
+      if (depth > PREMISES_WALK_MAX_DEPTH || !node || typeof node !== 'object') return node;
+      const join = (segment: string | number) => (path ? `${path}.${segment}` : String(segment));
+
+      if (Array.isArray(node)) {
+        let changed = false;
+        const next = node.map((item, index) => {
+          const rewritten = walk(item, join(index), depth + 1);
+          if (rewritten !== item) changed = true;
+          return rewritten;
+        });
+        return changed ? next : node;
+      }
+
+      let changed = false;
+      const next: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+        const childPath = join(key);
+        if (key === 'premises' && isRefObjectArray(value)) {
+          const refs = value.map((member) => member.ref as string);
+          // Naming what we discard is what makes the correction admissible (D-107 ruling 1):
+          // dropping a supplied field silently is the EI-10883 hazard in miniature.
+          const dropped = [
+            ...new Set(value.flatMap((member) => Object.keys(member).filter((k) => k !== 'ref'))),
+          ];
+          corrections.push({
+            path: childPath,
+            sent: boundValue(value),
+            ran: boundValue(refs),
+            rule: PREMISES_REENCODING_RULE,
+            ...(dropped.length > 0 ? { dropped } : {}),
+          });
+          next[key] = refs;
+          changed = true;
+          continue;
+        }
+        const rewritten = walk(value, childPath, depth + 1);
+        if (rewritten !== value) changed = true;
+        next[key] = rewritten;
+      }
+      return changed ? next : node;
+    };
+
+    const rewritten = walk(input, '', 0);
+    if (corrections.length === 0) return null;
+    return { input: rewritten, corrections };
+  },
+};
 
 const youMayNotKnowArg = shapeTaughtArray(
   'youMayNotKnow',

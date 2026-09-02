@@ -336,12 +336,19 @@ describe('O(delta) + ts-guarded apply (the EI-79 residual contract)', () => {
       return true;
     };
 
+    // WI-2141796: an undownloaded block now WARNS (throttled) while the halt
+    // semantics below stay exactly as they were. Mocked so the console guard does
+    // not fail the run; asserted so the two contracts stay distinct.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
     const r1 = await mergeAdmittedLogsIncremental([log], cursor, {
       applyImpl: apply,
       getTimeoutMs: 50,
     });
     expect(r1.caughtUp).toBe(false);
     expect(seen).toEqual(['k-0', 'k-1', 'k-2', 'k-3', 'k-4']); // stopped AT 5, not past it
+    // the halt is announced, and names the position it is stuck at
+    expect(warnSpy.mock.calls.filter((c) => String(c[0]).includes('read stall'))).toHaveLength(1);
 
     blockIndex5 = false; // the block "downloads"
     const r2 = await mergeAdmittedLogsIncremental([log], cursor, {

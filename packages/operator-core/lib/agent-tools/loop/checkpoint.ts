@@ -735,9 +735,31 @@ export default defineTool({
     // reconciliation checkpoint in the wrong carry-note store. Preserve
     // EI-211835's wildcard transport behavior by consulting the durable session
     // scope before the normal session-context/home fallback.
-    const armedRoutine = await getLoopStatus(ownerId).catch(() => null);
+    // EI-22166372050218668: WI-2148's fail-open contract (below) is deliberate and stays
+    // untouched — a checkpoint write must never block on a getLoopStatus hiccup. But
+    // fail-open was previously SILENT: a caller whose probe failed got byte-identical
+    // `ok:true` whether or not the resolved scope actually matched the armed routine, so
+    // a session whose loop lived under a DIFFERENT harness than its current ctx.harnessSlug
+    // (observed live: loop armed under 'sb-devboard-hive', session context drifted to
+    // 'papercusp') could silently checkpoint into the wrong store for the rest of its life
+    // with zero signal on either side — the writer saw `ok:true`, the cold reader saw a
+    // well-formed but frozen note. Track whether the probe itself failed (vs. genuinely
+    // resolved "no active routine") so the response below can say so out loud.
+    let routineProbeFailed = false;
+    const armedRoutine = await getLoopStatus(ownerId).catch((e) => {
+      routineProbeFailed = true;
+      console.warn(
+        '[loop:checkpoint] getLoopStatus probe failed while resolving carry-note scope (fail-open, WI-2148):',
+        e as Error,
+      );
+      return null;
+    });
     const activeRoutine = armedRoutine?.active === true;
     const activeRoutineHarness = activeRoutine ? armedRoutine.harnessSlug : null;
+    // Only meaningful when the probe failure could actually have changed the outcome: a
+    // request that already named an explicit harness (a read, or read-only diagnostics)
+    // is not silently misrouted by this — the caller's own argument still resolves it.
+    const routineProbeFailureIsSilent = routineProbeFailed && !explicitHarness;
     // An active routine already carries the cold reader's authoritative install scope, so
     // do not spend a second database read on the durable session brief. When no routine,
     // explicit harness, or concrete session context is available, the brief is only a
@@ -903,6 +925,19 @@ export default defineTool({
               // session: a silently inferred store is exactly what makes a
               // wrong-scope note expensive to diagnose later.
               ...(inferredScopeFrom ? { scopeInferredFrom: inferredScopeFrom } : {}),
+              // EI-22166372050218668: this read could not confirm the armed routine's
+              // real scope either (getLoopStatus failed and no explicit `harness` argument
+              // was given to fall back on), so `harness` above came from session/context
+              // fallback rather than a verified routine match — say so rather than let a
+              // clean-looking `ok:true` read imply the scope was confirmed.
+              ...(routineProbeFailureIsSilent
+                ? {
+                    routineProbeFailed: {
+                      resolvedTo: harness,
+                      why: 'The armed-loop scope probe (getLoopStatus) failed, so this harness could not be confirmed against the actually-armed routine and was resolved from session/context fallback instead. If a cold wake reads a stale-looking note, re-check with loop:status and pass an explicit `harness` here to be sure.',
+                    },
+                  }
+                : {}),
               ownerId,
               note,
               contentHash: note === null ? null : shortCarryHash(note),
@@ -1698,6 +1733,23 @@ export default defineTool({
                     requested: explicitHarness,
                     wroteTo: harness,
                     why: 'An armed loop routine outranks the `harness` argument on a WRITE, so the note lands where the next cold wake will read it. This is not overridable; to READ the other scope, pass the same argument to loop:checkpoint { read:true, harness } — reads honour it.',
+                  },
+                }
+              : {}),
+            // EI-22166372050218668: WI-2148's fail-open write (never blocked by a
+            // getLoopStatus hiccup) previously left this SILENT — the write reported the
+            // same bare `ok:true` whether `harness` above was CONFIRMED against the armed
+            // routine or merely fell back to session/context because the confirming probe
+            // failed. A session whose loop lives under a different harness than its
+            // current ctx.harnessSlug could checkpoint into the wrong store indefinitely
+            // with no signal on either side. Say so on the write result itself, right where
+            // the caller (or a successor re-reading this tool_invocations row) can see it —
+            // never gated behind a separate loop:status call the caller has to think to make.
+            ...(routineProbeFailureIsSilent
+              ? {
+                  routineProbeFailed: {
+                    wroteTo: harness,
+                    why: 'The armed-loop scope probe (getLoopStatus) failed, so this write could NOT confirm which harness the loop is actually armed under and fell back to session/context scope instead (fail-open, per WI-2148 — a checkpoint write is never blocked by this). If the loop is really armed elsewhere, this note is stranded: call loop:status to check loop.harnessSlug, and if it disagrees with `harness` above, re-checkpoint with an explicit `harness` matching it.',
                   },
                 }
               : {}),

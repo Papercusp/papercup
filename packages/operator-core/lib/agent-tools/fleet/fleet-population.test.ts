@@ -207,6 +207,10 @@ describe('selectFleetPopulation', () => {
       population: 'member(s)',
       basis: 'shown if alive',
       candidates: 4,
+      candidatesStatus: 'measured',
+      candidatesAreFloor: false,
+      candidatesNote: null,
+      measureWith: null,
       counted: 4, // stale label: written when the filter was a no-op
       withheld: 0,
       withheldReason: null,

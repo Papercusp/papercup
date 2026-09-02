@@ -10,6 +10,10 @@
  *      tool_invocations invalid-input rows by (tool, offending key) and files a
  *      recurring pattern as a kind=change improvement (an alias candidate, a
  *      confusing schema field, or an agent-prior drift). Capture only.
+ *   - `improvement-tool-rejection-scorecard` (weekly): P-017 — the per-VERB
+ *      schema-rejection rate, filed against any verb sustaining >= 10% over >= 3
+ *      days. Its sibling above asks WHICH FIELD agents get wrong; this one asks
+ *      WHICH VERB is wrong often enough to be a schema defect. Capture only.
  *   - `improvement-implement` (every 30 min): the auto-implement loop (Phase 3).
  *      ADDITIONALLY gated by the `papercusp-improvement-auto-implement` flag
  *      (default OFF) AND a configured PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS (D-006);
@@ -68,6 +72,19 @@ export const IMPROVEMENT_ROUTINES = [
     arm: 'safe',
     group: LEARNING_ROUTINE_GROUP,
   }, // weekly, Sun 04:00
+  // P-017 (coordination-spec-adoption-2026-08-03): the per-verb schema-rejection
+  // scorecard — files against any verb sustaining >= 10% rejection over >= 3 days.
+  // Capture only (kind=change) ⇒ safe tier, like the miner beside it. Weekly at
+  // 04:30 rather than daily: the tick scans ~3.4M rows, and "sustained over 3
+  // days" cannot be answered faster than that anyway. The :30 offset keeps it off
+  // the same minute as the invalid-args miner's own heavy tool_invocations scan.
+  {
+    name: 'improvement-tool-rejection-scorecard',
+    target: 'system:improvement-tool-rejection-scorecard',
+    cron: '0 30 4 * * 0',
+    arm: 'safe',
+    group: LEARNING_ROUTINE_GROUP,
+  }, // weekly, Sun 04:30
   // knowledge-pack-loop-integrity-2026-07-19 P-006/P-008 (registered in
   // routines/knowledge-pack-actions.ts): the fleet-lessons last-mile delivery
   // pass (bounded, D-003-preserving — clashes always skip) and the

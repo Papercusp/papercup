@@ -49,6 +49,13 @@
  */
 
 import type { SessionState } from '../coordination/presence-wakeability';
+import {
+  measuredCensus,
+  selectPopulation,
+  withShownCount as withShownCountCensus,
+  type MeasuredPopulationCensus,
+  type PopulationMeta,
+} from '../../population-census';
 
 /** How a row's liveness verdict is read. Null/undefined ⇒ counted as unknown. */
 export type SessionStateOf<T> = (row: T) => SessionState | null | undefined;
@@ -135,22 +142,18 @@ export function composeLiveness<T>(
   };
 }
 
-/** What a response counted, stated beside the count itself. */
-export interface FleetPopulationCensus {
-  /** Stable name of the population — the thing `counted` is a count OF. */
-  population: string;
-  /** One sentence: what qualifies a row for this population. */
-  basis: string;
-  /** Rows considered BEFORE this response's filter ran. */
-  candidates: number;
-  /** Rows that passed the filter — the number every count in this response describes. */
-  counted: number;
-  /** candidates - counted. Always present, including when it is 0. */
-  withheld: number;
-  /** Why the withheld rows were withheld; null only when none were. */
-  withheldReason: string | null;
-  /** The exact argument that would include them; null when there is no such lever. */
-  reveal: string | null;
+/**
+ * What a response counted, stated beside the count itself.
+ *
+ * The counting half lives in `population-census.ts`, which every filtered read
+ * can reach; this is the fleet flavour of it. Extending
+ * {@link MeasuredPopulationCensus} rather than re-declaring the fields is what
+ * keeps the two from drifting into separate vocabularies for one concept — and
+ * it records, in the type, the guarantee this call site has and a SQL-backed
+ * read does not: the denominator came from the same array as the rows, so it is
+ * always `candidatesStatus: 'measured'` and never a floor.
+ */
+export interface FleetPopulationCensus extends MeasuredPopulationCensus {
   /**
    * What the counted rows ARE, by liveness verdict. Present whenever the caller
    * could resolve `sessionState`; absent means nobody asked, NOT that every row
@@ -170,12 +173,12 @@ export interface FleetPopulationCensus {
   shownReason?: string;
 }
 
-export interface FleetPopulationMeta {
-  population: string;
-  basis: string;
-  withheldReason: string;
-  reveal: string | null;
-}
+/**
+ * Descriptive metadata about a fleet population. One definition, shared with
+ * every other filtered read — an alias rather than a copy, so a field added to
+ * the contract cannot reach only half of its callers.
+ */
+export type FleetPopulationMeta = PopulationMeta;
 
 /**
  * Shared population/lifecycle contract used by fleet:status, fleet:leader-brief,
@@ -345,15 +348,13 @@ function lifecycleRosterCensus<T extends { sessionState?: SessionState | null }>
   withheldReason: string,
   reveal: string,
 ): FleetPopulationCensus {
-  const withheld = candidates.length - rows.length;
   return {
-    population,
-    basis,
-    candidates: candidates.length,
-    counted: rows.length,
-    withheld,
-    withheldReason: withheld > 0 ? withheldReason : null,
-    reveal: withheld > 0 ? reveal : null,
+    ...measuredCensus(rows.length, candidates.length, {
+      population,
+      basis,
+      withheldReason,
+      reveal,
+    }),
     liveness: composeLiveness(rows, (row) => row.sessionState ?? null),
   };
 }
@@ -509,18 +510,13 @@ export function selectFleetPopulation<T>(
   meta: FleetPopulationMeta,
   sessionStateOf?: SessionStateOf<T>,
 ): { rows: T[]; census: FleetPopulationCensus } {
-  const rows = candidates.filter((row) => keep(row));
-  const withheld = candidates.length - rows.length;
+  // The one-pass guarantee is `selectPopulation`'s, not a second copy of it here:
+  // rows and denominator come from the same array and the same predicate.
+  const { rows, census } = selectPopulation(candidates, keep, meta);
   return {
     rows,
     census: {
-      population: meta.population,
-      basis: meta.basis,
-      candidates: candidates.length,
-      counted: rows.length,
-      withheld,
-      withheldReason: withheld > 0 ? meta.withheldReason : null,
-      reveal: withheld > 0 ? meta.reveal : null,
+      ...census,
       ...(sessionStateOf ? { liveness: composeLiveness(rows, sessionStateOf) } : {}),
     },
   };
@@ -556,8 +552,7 @@ export function withShownCount(
   shown: number,
   shownReason: string,
 ): FleetPopulationCensus {
-  if (!Number.isFinite(shown) || shown >= census.counted) return census;
-  return { ...census, shown, shownReason };
+  return withShownCountCensus(census, shown, shownReason);
 }
 
 /**

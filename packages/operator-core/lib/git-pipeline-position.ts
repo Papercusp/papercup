@@ -1631,10 +1631,31 @@ export const GIT_SYNC_STALE_AFTER_MS = 25 * 60_000;
  * EI-18746827803289687), which makes it a missing state surface rather than four
  * careless readings.
  *
- * The comparison is TEMPORAL, never a git read: there is no reliable
- * sha-of-the-running-process (the checkout can advance under a process that
- * already imported the old modules), so the honest question is "did this process
- * start AFTER the code it runs last changed?".
+ * TWO evidence sources answer it, and `evidence` says which one did:
+ *
+ *  - `health-sha` (WI-2141731, PREFERRED) — the serving process's OWN
+ *    `/api/health` sha, compared against the deployed sha. This is an
+ *    OBSERVATION of the process rather than a comparison of two fragile
+ *    timestamps, and it needs no path, so a sha-only probe can use it.
+ *  - `start-time` (the fallback) — "did this process start AFTER the code it
+ *    runs last changed?". Used verbatim whenever health does not answer.
+ *
+ * WHY the health sha is trustworthy, since it is NOT free of the caveat this
+ * comment used to state absolutely ("the checkout can advance under a process
+ * that already imported the old modules"): `getBuildInfo()` prefers the
+ * deploy-set `PAPERCUSP_BUILD_SHA`, then a bundle's baked sha, and only then
+ * falls back to `git rev-parse HEAD` of the running checkout — a read that is
+ * NOT by itself a loaded-code identity. What makes the fallback sound is WHEN
+ * it runs: `apps/operator/bin/serve.ts` resolves it at MODULE LOAD (EI-9002)
+ * and `build-info.ts` caches it for the process's life, so the value is the
+ * checkout as of THIS PROCESS'S BOOT, which is exactly the code it imported.
+ *
+ * That invariant is load-bearing and otherwise unguarded, so it is pinned by a
+ * test (`build-info` boot-warm guard): make the resolve lazy-at-request and the
+ * sha silently becomes a live checkout read, which on a git-sync-swept tree
+ * would report a sha the process is NOT running — failing toward a confident
+ * false "live". Hence `evidence`: a caller must always be able to tell an
+ * observation from an inference.
  */
 export interface ServingTruth {
   /** The long-lived process this verdict describes (the path's primary runtime owner). */
@@ -1682,6 +1703,20 @@ export interface ServingTruth {
    * deploy coming. Only an affirmative in-flight reading suppresses.
    */
   restartSupersededBy: ServingRestartSuperseded | null;
+  /**
+   * WHICH evidence produced `startedSinceCodeChange` — `health-sha` (the process
+   * reported its own build sha) or `start-time` (the timestamp inference).
+   * `null` when the verdict is unknown, so nothing was concluded from either.
+   *
+   * Reported rather than inferred by the caller because the two are NOT equally
+   * strong and must not be presented as if they were: `start-time` establishes
+   * "it restarted after the code changed", which is a strictly weaker claim than
+   * "it is running THIS sha" (a restart that loaded DIFFERENT code than expected
+   * satisfies the first and fails the second).
+   */
+  evidence: 'health-sha' | 'start-time' | null;
+  /** The sha the serving process reported for itself, when it answered. */
+  reportedSha: string | null;
   /**
    * Why the answer is `null`, when it is — ENUMERATED, never prose (D-038 axis 2
    * corollary). `code` is what a caller branches on (`not-applicable` is a final
@@ -1767,6 +1802,18 @@ export function evaluateServing(args: {
     startedAtMs: number | null;
     source: 'systemd' | 'systemd-unavailable';
   } | null;
+  /**
+   * WI-2141731: the serving process's OWN reported build sha, already fetched by
+   * the caller. A PURE INPUT on purpose — this function is documented as doing no
+   * probing, and it is the only directly-testable part of the stage, so the fetch
+   * stays in the impure resolver and only its RESULT arrives here.
+   *
+   * `null` (did not answer / not probed) falls through to the start-time
+   * inference completely unchanged, which is what keeps this strictly additive.
+   */
+  servingHealthSha?: string | null;
+  /** The sha believed deployed, to compare `servingHealthSha` against. */
+  deployedSha?: string | null;
 }): ServingTruth {
   const { runtime, process: proc, codeAsOfMs, codeAsOfSource, deployInFlight } = args;
   const host = runtime?.host ?? null;
@@ -1782,6 +1829,8 @@ export function evaluateServing(args: {
     codeAsOfSource,
     startedSinceCodeChange: null,
     behindMin: null,
+    evidence: null,
+    reportedSha: null,
     restartLever,
     // Scoped to `operator-release` ON PURPOSE. That host's lever IS a deploy
     // (servingRestartLever returns deploy-cli for it), so a running deploy really
@@ -1805,12 +1854,37 @@ export function evaluateServing(args: {
     unknownReason: null,
   };
 
+  // WI-2141731 — DIRECT EVIDENCE FIRST, and deliberately ABOVE the `!runtime`
+  // return: the whole point of the health sha is that it needs no path, so this
+  // is what makes a sha-only probe answerable instead of permanently
+  // not-applicable (the retry-forever loop WI-2141716 fixed the verdict for).
+  //
+  // Strictly additive: it only fires when the process actually answered AND we
+  // have a deployed sha to compare against. Every other case falls through to
+  // the untouched inference below.
+  const reportedSha = normalizeSha(args.servingHealthSha);
+  const deployedShaForCompare = normalizeSha(args.deployedSha);
+  if (reportedSha && deployedShaForCompare) {
+    const executing = shaPrefixMatches(reportedSha, deployedShaForCompare);
+    return {
+      ...base,
+      startedSinceCodeChange: executing,
+      // NOT derivable from two shas — it is a duration, and the whole point here
+      // is that we did not use timestamps. Null is the honest answer; a caller
+      // that needs "how far behind" must fall back to the inference.
+      behindMin: null,
+      evidence: 'health-sha',
+      reportedSha,
+      unknownReason: null,
+    };
+  }
+
   if (!runtime) {
     return {
       ...base,
       unknownReason: cellUnknown(
         'not-applicable',
-        'No path was given (sha-only probe), so no serving process can be identified.',
+        'No path was given (sha-only probe), and the serving process did not report its own sha, so no serving process can be identified.',
       ),
     };
   }
@@ -1876,7 +1950,33 @@ export function evaluateServing(args: {
     ...base,
     startedSinceCodeChange,
     behindMin: startedSinceCodeChange ? null : Math.max(1, Math.round((codeMs - startedAtMs) / 60_000)),
+    evidence: 'start-time',
   };
+}
+
+/** Trimmed, lower-cased sha, or null for anything that is not usable as one. */
+function normalizeSha(raw: string | null | undefined): string | null {
+  const s = raw?.trim().toLowerCase();
+  return s && /^[0-9a-f]+$/.test(s) ? s : null;
+}
+
+/**
+ * Does the process's reported sha identify the same commit as the deployed one?
+ *
+ * A prefix compare, because the two are legitimately different LENGTHS: the
+ * health endpoint reports `git rev-parse --short HEAD` (10 chars here) while the
+ * deployed sha is the full 40. Comparing them with `===` would report a MISMATCH
+ * for every healthy deploy — a confident false "restart required".
+ *
+ * The 7-char floor is the safety rail: a short-enough prefix matches unrelated
+ * commits by coincidence, and the failure direction is the bad one (a false
+ * "it's live"). Below the floor we refuse to conclude rather than guess.
+ */
+function shaPrefixMatches(a: string, b: string): boolean {
+  const shorter = a.length <= b.length ? a : b;
+  const longer = a.length <= b.length ? b : a;
+  if (shorter.length < 7) return false;
+  return longer.startsWith(shorter);
 }
 
 /**
@@ -3692,6 +3792,14 @@ export interface PipelinePositionDeps {
    * the ship-it-dark failure this plan exists to avoid.
    */
   probeUnitStart?: (unit: string) => Promise<{ pid: number | null; startedAtMs: number | null } | null>;
+  /**
+   * WI-2141731: ask the serving process for its OWN build sha (`/api/health`).
+   * Injected by TESTS only — the default really probes, for the same reason
+   * `probeUnitStart` does. Fail-soft by contract: it resolves `null` on ANY
+   * error, so a wedged host degrades this stage to today's inference instead of
+   * hanging every `state:read` / `dev:pipeline_position` / `release:trace`.
+   */
+  probeServingHealthSha?: () => Promise<string | null>;
   /** WI-38455: boot-reported identity rows joined to the exact current process. */
   loadRuntimeVintage?: () => Promise<RuntimeVintageRow[]>;
   /** Injectable local hostname for the host+pid identity join. */

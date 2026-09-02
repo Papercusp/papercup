@@ -330,4 +330,87 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
       await rm(fixtureRoot, { recursive: true, force: true });
     }
   }, 8_000);
+
+  it('keeps frame realms distinct and never retains a frame after a failed selector', async () => {
+    // EI-22165824068092618. Two defects compounded into a wrong ANSWER rather
+    // than an error: `frame` stashed the top page as `page._mainPage` and then
+    // reassigned `page` to a Playwright Frame, which does not carry that
+    // property — so `frame-exit` was a permanent no-op. The next `frame`
+    // selector was then evaluated INSIDE the frame we never left, could not
+    // match, and silently kept it. Two probes of two "different" panes both
+    // measured the first pane and read as independent corroboration.
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'verdict-cli-frame-realm-'));
+    const dataDir = join(fixtureRoot, 'data');
+    const env = {
+      ...process.env,
+      VERDICT_DATA_DIR: dataDir,
+      VERDICT_SESSION: 'frame-realm-guard',
+      PAPERCUSP_SID: '',
+      CODEX_SESSION_ID: '',
+      VERDICT_START_TIMEOUT_MS: '5000',
+      VERDICT_IDLE_TIMEOUT: '60000',
+      // Also exercises the bounded-timeout escape hatch; the default is 5s.
+      VERDICT_FRAME_TIMEOUT_MS: '1000',
+    };
+    const run = (command: string, ...args: string[]) =>
+      execFileAsync(
+        process.execPath,
+        [require.resolve('verdict-cli/bin/browse.mjs'), command, ...args],
+        { env, maxBuffer: 32 * 1024, timeout: 20_000 },
+      );
+
+    try {
+      await writeFile(join(fixtureRoot, 'a.html'), '<!doctype html><body><h1>PANE-A</h1></body>', 'utf8');
+      await writeFile(join(fixtureRoot, 'b.html'), '<!doctype html><body><h1>PANE-B</h1></body>', 'utf8');
+      await writeFile(
+        join(fixtureRoot, 'host.html'),
+        '<!doctype html><body><iframe id="a" src="a.html"></iframe>' +
+          '<iframe id="b" src="b.html"></iframe></body>',
+        'utf8',
+      );
+      await run('goto', `file://${join(fixtureRoot, 'host.html')}`);
+
+      await run('frame', 'iframe#a');
+      const paneA = await run('js', 'document.body.innerText');
+      await run('frame-exit');
+      await run('frame', 'iframe#b');
+      const paneB = await run('js', 'document.body.innerText');
+
+      // The regression assertion: before the fix BOTH of these read PANE-A.
+      expect(paneA.stdout).toContain('PANE-A');
+      expect(paneB.stdout).toContain('PANE-B');
+      expect(paneB.stdout).not.toContain('PANE-A');
+
+      // A selector that cannot match must fail LOUDLY (non-zero exit) and drop
+      // back to the top document instead of leaving us pointed at pane A.
+      await run('frame-exit');
+      await run('frame', 'iframe#a');
+      let failure: unknown = null;
+      try {
+        await run('frame', 'iframe#does-not-exist');
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).not.toBeNull();
+      const stderr =
+        typeof failure === 'object' && failure !== null && 'stderr' in failure
+          ? String((failure as { stderr?: unknown }).stderr ?? '')
+          : '';
+      expect(stderr).toContain('no match for iframe#does-not-exist');
+      expect(stderr).toContain('reset to top document');
+
+      const afterFailure = await run('js', 'document.body.innerText');
+      expect(afterFailure.stdout).not.toContain('PANE-A');
+      expect(afterFailure.stdout).not.toContain('PANE-B');
+
+      // Calibration: the instrument still works after the failure, so the two
+      // negative assertions above cannot pass merely because probing broke.
+      await run('frame', 'iframe#b');
+      const recovered = await run('js', 'document.body.innerText');
+      expect(recovered.stdout).toContain('PANE-B');
+    } finally {
+      await run('stop').catch(() => undefined);
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

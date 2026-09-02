@@ -37,6 +37,7 @@ import launchOnPlan, {
   looksLikeInlineLaunchContextText,
   computeFleetTopUpWave,
   describeFleetFillOutcome,
+  describeZeroOpenFleetHeadline,
   VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
   persistedFleetLaunchProfileConflicts,
   fleetRouteSwitchConflict,
@@ -1303,6 +1304,66 @@ describe('describeFleetFillOutcome (P-006 — `count` is a TARGET fleet size, an
     expect(r.clause).not.toContain('NaN');
     expect(r.fleetSize).toBe(0);
     expect(r.shortfall).toBe(0);
+  });
+});
+
+describe('describeZeroOpenFleetHeadline (EI-22168623726023643 — a ZERO-member wave must not render as a benign no-op)', () => {
+  /**
+   * THE REAL INCIDENT: two fleet:launch-on-plan calls returned ok:true with a spawned,
+   * registered leader while the capacity clamp suppressed every member —
+   * requested:2, liveMembers:0, fleetSize:0, shortfall:2, capacityClamp.openCount:0.
+   * P-006 already made `describeFleetFillOutcome` compute the ⚠ shortfall clause AND the
+   * cause... and the zero-open branch of the headline then THREW BOTH AWAY, emitting a flat
+   * "No member terminals were started for fleet `X`." That is the one branch where the
+   * diagnosis matters most: the caller is left holding a live leader and an EMPTY fleet.
+   */
+  const SUPPRESSED = { requested: 2, liveMembers: 0, attempted: 0, opened: 0, limitedBy: 'capacity' as const };
+
+  it('PERMANENT FALSIFIABILITY CONTROL: the PRE-FIX render reads as a benign no-op on the real incident input', () => {
+    // The exact pre-fix expression, kept here forever so this suite cannot go vacuously green.
+    const preFix = 'No member terminals were started for fleet `silent-wrong-answers-2026-08-01-plan-fleet`.';
+    // Nothing in it marks a problem: no warning, no shortfall, no cause, no remedy.
+    expect(preFix).not.toMatch(/⚠|SHORT BY|capacity|clamp/i);
+    // ...while the truth is that a full fleet was requested and none of it exists.
+    expect(describeFleetFillOutcome(SUPPRESSED).shortfall).toBe(2);
+  });
+
+  it('names the shortfall, the cause and the remedy when a suppressed wave leaves the fleet empty', () => {
+    const fill = describeFleetFillOutcome(SUPPRESSED);
+    const headline = describeZeroOpenFleetHeadline({
+      fleetSlug: 'silent-wrong-answers-2026-08-01-plan-fleet',
+      fill,
+      clampReason: 'capacity allows 0 new member terminals now (healthyAccounts 0)',
+    });
+    expect(headline).toMatch(/⚠/);
+    expect(headline).toContain('SHORT BY 2');
+    expect(headline).toContain('capacity-clamped');
+    expect(headline).toContain('healthyAccounts 0');
+    // The remedy must be named, since the caller otherwise reads this as "nothing to do".
+    expect(headline).toMatch(/re-call|retry|recover/i);
+    // It must NOT read as the benign pre-fix sentence.
+    expect(headline).not.toBe('No member terminals were started for fleet `silent-wrong-answers-2026-08-01-plan-fleet`.');
+  });
+
+  it('stays benign when zero opened because the fleet is ALREADY at target — that is not a shortfall', () => {
+    const fill = describeFleetFillOutcome({ requested: 2, liveMembers: 3, attempted: 0, opened: 0 });
+    expect(fill.complete).toBe(true);
+    const headline = describeZeroOpenFleetHeadline({ fleetSlug: 'f', fill, clampReason: null });
+    // No false alarm: an at-target fleet opening nothing is the correct outcome.
+    expect(headline).not.toMatch(/⚠|SHORT BY/);
+  });
+
+  it('still warns when the members were ATTEMPTED and all failed, not merely suppressed', () => {
+    const fill = describeFleetFillOutcome({ requested: 3, liveMembers: 0, attempted: 3, opened: 0 });
+    const headline = describeZeroOpenFleetHeadline({ fleetSlug: 'f', fill, clampReason: null });
+    expect(headline).toMatch(/⚠/);
+    expect(headline).toContain('SHORT BY 3');
+  });
+
+  it('uses the caller noun so a headless fleet does not claim desktop terminals', () => {
+    const fill = describeFleetFillOutcome({ ...SUPPRESSED, noun: 'HEADLESS member' });
+    const headline = describeZeroOpenFleetHeadline({ fleetSlug: 'f', fill, clampReason: null });
+    expect(headline).toContain('HEADLESS member');
   });
 });
 

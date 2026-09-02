@@ -10568,7 +10568,7 @@
           "POST"
         ]
       },
-      "description": "Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/orient until it expires or is retracted. ⚠ You MUST declare a lifetime: ttlSec, or permanent:true (cap-exempt rows only). There is no default — but kind:'convention' (permanent), a wall:/dead-end:/guard-rail: slot, and confidence:'provisional'|'suspected' each declare one on their own. Delivery is deterministic, unlike memory:remember's fuzzy recall. Re-asserting a key refreshes body + TTL. At the cap a write evicts the lowest-ranked live fact, but is REFUSED if that victim is another author's verified fact; dryRun:true forecasts the cost. Typed safety slots and conventions take no cap seat.",
+      "description": "Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/orient until it expires or is retracted. ⚠ You MUST declare a lifetime — there is no default: ttlSec for a claim about CURRENT CODE/STATE (expiry is what forces a re-check), kind:'convention' for a standing rule (permanent). A wall:/dead-end:/guard-rail: slot and confidence:'provisional'|'suspected' also declare one. Re-asserting a key refreshes body + TTL. At the cap a write evicts the lowest-ranked live fact, but is REFUSED if the victim is another author's verified fact. Typed slots and conventions take no cap seat.",
       "capabilities": [
         "coord:write"
       ],
@@ -10629,9 +10629,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "You reached a durable CONCLUSION that should shape future turns — yours or your role's: \"X is owner-residue, exclude it\", \"this harness's tests need Docker\". Scope it as narrowly as true: workspace (global), role, owner (just you), harness, or work_item.",
-        "notWhen": "Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form knowledge (agent-insights), or fuzzy recall (memory:remember). Keep facts under 1200 chars; per-scope cap 200. A fact is not a live measurement: never pin a changing count/status — store the invariant conclusion plus a pointer to the live source a reader can remeasure. A genuinely moving sample needs measuredAt (marks it subjectVolatile, a ≤15-min SNAPSHOT); label intentional history as historical.",
-        "chaining": "facts:list { scope } for what already stands (re-assert refreshes, never duplicates); dryRun:true before a saturated write; facts:retract the moment a fact stops being true — a stale fact folded verbatim is worse than none."
+        "when": "A durable CONCLUSION that should shape future turns — yours or your role's: \"X is owner-residue, exclude it\", \"this harness's tests need Docker\". Scope as narrowly as true: workspace (global), role, owner, harness, or work_item.",
+        "notWhen": "Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form docs (agent-insights), or fuzzy recall (memory:remember). Body cap 1200 chars; per-scope cap 200. A fact is not a measurement: never pin a changing count/status — store the invariant conclusion plus a pointer to the live source. A moving sample needs measuredAt (subjectVolatile, ≤15-min SNAPSHOT); label history as historical.",
+        "chaining": "facts:list { scope } for what stands (re-assert refreshes, never duplicates); dryRun:true before a saturated write; facts:retract the moment one stops being true — a stale fact folded verbatim is worse than none."
       }
     },
     {

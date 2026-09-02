@@ -205,8 +205,10 @@ Compaction discipline is therefore two-phase:
      successor's);
    - an armed loop's state → `loop:checkpoint { did, left, insight, next }`
      (a cold wake reconstructs from it; mandatory on a cold loop);
-   - durable conclusions → `facts:assert` (scoped, TTL'd, folded VERBATIM into
-     every future brief/orient until retracted);
+   - durable conclusions → `facts:assert` (scoped, folded VERBATIM into every
+     future brief/orient until retracted — you MUST declare its lifetime, there
+     is no default: a claim about CURRENT CODE/STATE takes a finite `ttlSec`,
+     a standing decision takes `kind:'convention'`);
    - fuzzy background knowledge → `memory:remember` (the ONE shared store —
      never a client-local silo; MEMORY.md is an auto-regenerated projection and
      must never be hand-edited, so never instruct the reader to append to it).

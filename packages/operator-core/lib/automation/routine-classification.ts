@@ -548,6 +548,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:improvement-triage': { spend: 'none', why: 'Records routing metadata; explicitly never dispatches' },
   'system:improvement-watchdog': { spend: 'none', why: 'SQL pass that files work items' },
   'system:improvement-invalid-args-miner': { spend: 'none', why: 'Mines tool_invocations for invalid args (SQL)' },
+  'system:improvement-tool-rejection-scorecard': {
+    spend: 'none',
+    why: 'Per-verb schema-rejection rate over tool_invocations (SQL); files work items',
+  },
   'system:claim-integrity-sweep': { spend: 'none', why: 'Checks claim invariants in SQL' },
   'system:claim-discipline-watch': { spend: 'none', why: 'Injects a nudge into an existing turn — never wakes' },
   'system:coord-invariant-monitor': { spend: 'none', why: 'Checks coord substrate invariants in SQL' },

@@ -827,13 +827,26 @@ insights = how things work** (spec: `papercusp-su-memory-2026-05-25` +
 mug-memory-hybrid L1b).
 
 - **facts** — `facts:assert/retract/list` (mug-memory-hybrid-2026-07-02): a
-  scoped, TTL'd conclusion delivered VERBATIM into every relevant brief/dossier/
+  scoped conclusion delivered VERBATIM into every relevant brief/dossier/
   `coord:orient` until it expires or you retract it — unlike mem0, delivery never
   depends on embedding similarity. Use for conclusions that must shape future
   turns ("X is owner-residue, exclude it"; "this harness's tests need Docker");
   scope as narrowly as true (workspace | role | owner | harness | work_item —
   harness/work_item optional per D-001). Retract promptly when it stops being
   true: a stale fact folded verbatim misleads every reader.
+  ⚠ **Declare a lifetime — there is NO default.** A silent 7d default used to
+  decide this for you; it was removed because the WRITER, not the clock, knows
+  which kind of claim this is. Choose by asking what the fact IS, never how
+  important it feels: a claim about **CURRENT CODE OR STATE** is FINITE
+  (`ttlSec`) — a later fix can quietly invalidate it, and expiry is the only
+  forcing function that makes anyone re-examine it; a **STANDING DECISION or
+  convention** is PERMANENT (`kind:'convention'`), because it does not go stale
+  when the code changes. Several inputs already declare one, so pass neither arg
+  with them: `kind:'convention'` (permanent), a `wall:` / `dead-end:` /
+  `guard-rail:` slot (90d / 90d / permanent — D-002), and
+  `confidence:'provisional'|'suspected'`. Note `dead-end:` is deliberately NOT
+  permanent: it is the row most likely to be silently invalidated by a later
+  fix, so it re-affirms rather than standing forever.
 - **checkpoints — in-flight continuity** (`carry_notes`, mig 472): your
   transcript does NOT survive a compaction, a cold wake, or a re-spawn — the
   checkpoint is what does. `work_items:checkpoint { id, checkpoint }` parks a
