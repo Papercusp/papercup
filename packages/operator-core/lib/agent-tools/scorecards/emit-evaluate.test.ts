@@ -55,7 +55,8 @@ import { getIssue, type EngineerIssue } from '../../issues-engineer';
 import { listScorecards } from '../../scorecards';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { emitScorecard, scorecardEmitArgs } from './emit';
-import { evaluateScorecard } from './evaluate';
+import evaluateTool, { evaluateScorecard } from './evaluate';
+import listTool from './list';
 import { collapseCriticsToSoleParty } from './grader-eligibility';
 
 const getRubricM = vi.mocked(getRubric);
@@ -1521,5 +1522,68 @@ describe('collapseCriticsToSoleParty — the predicate the refusal and its advis
   it('does NOT collapse two genuinely independent critics — that vetting preserved the three-party chain', async () => {
     await expect(collapseCriticsToSoleParty(['su-a', 'su-b'], { workspaceId: 'ws' })).resolves.toBeNull();
     await expect(collapseCriticsToSoleParty([], { workspaceId: 'ws' })).resolves.toBeNull();
+  });
+});
+
+/**
+ * EI-22076444083578001 / EI-22075966283697642: two callers' jq broke while inspecting
+ * these tools' output — one read the `skeleton` ARRAY as an object, the other tried to
+ * CSV-serialize the object-valued `generationFreshness`. Neither shape was published
+ * anywhere a caller could read it: `scorecards:evaluate` carried no `guidance.returns`
+ * at all, and `scorecards:list`'s named only its scalar fields. That is precisely the
+ * gap `guidance.returns` exists to close (EI-10882) — arg schemas are published, return
+ * shapes were not, so the only way to learn one was to call the tool and stringify it.
+ *
+ * These pin the PROSE to the CODE in both directions: change the emitted shape and the
+ * code half fails; delete the promise and the prose half fails. Neither can drift alone.
+ */
+describe('scorecards result-shape contract is PUBLISHED, and matches what the code emits', () => {
+  /** The repo idiom for reading a default-imported tool's authored guidance. */
+  type GuidanceTool = { guidance?: { returns?: string } };
+
+  it('`skeleton` is an ARRAY, and scorecards:evaluate says so in guidance.returns', async () => {
+    const result = await evaluateScorecard({ rubricRef: 'test-rubric' });
+
+    // The code half: a positional ARRAY of criterion rows, never an object keyed by
+    // criterion — the assumption that broke the reporting caller's jq.
+    const skeleton = (result as { skeleton: unknown }).skeleton;
+    expect(Array.isArray(skeleton)).toBe(true);
+    expect(skeleton).toHaveLength(RUBRIC.criteria.length);
+
+    // The prose half: without it a caller has no published way to learn the above.
+    const returns = (evaluateTool as unknown as GuidanceTool).guidance?.returns ?? '';
+    expect(returns, 'scorecards:evaluate must publish guidance.returns').not.toBe('');
+    expect(returns).toContain('skeleton');
+    expect(returns).toContain('ARRAY');
+  });
+
+  it('`generationFreshness` reaches the caller as a nested OBJECT, and both readers name it', async () => {
+    listM.mockResolvedValue([
+      {
+        issueId: 'EI-1',
+        rubricRef: 'test-rubric',
+        ratings: RATINGS,
+        gradedGeneration: { deployedSha: 'abc', hostStartedAt: '2026-09-02T00:00:00.000Z' },
+        generationFreshness: { status: 'stale' },
+      } as unknown as ScorecardRow,
+    ]);
+
+    // The code half: an OBJECT on the row, which is what a flat/CSV projection breaks on.
+    const result = await evaluateScorecard({ rubricRef: 'test-rubric' });
+    const latest = (result as { latest: { generationFreshness?: unknown } | null }).latest;
+    expect(latest?.generationFreshness).toBeTypeOf('object');
+    expect(latest?.generationFreshness).not.toBeNull();
+
+    // The prose half, on BOTH tools that hand a ScorecardRow to a caller.
+    for (const [name, tool] of [
+      ['scorecards:evaluate', evaluateTool],
+      ['scorecards:list', listTool],
+    ] as const) {
+      const returns = (tool as unknown as GuidanceTool).guidance?.returns ?? '';
+      expect(returns, `${name} must name generationFreshness in guidance.returns`).toContain(
+        'generationFreshness',
+      );
+      expect(returns, `${name} must say it is an OBJECT, not a scalar`).toContain('OBJECT');
+    }
   });
 });
