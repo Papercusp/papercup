@@ -240,4 +240,111 @@ describe('readGateCandidateFailures', () => {
     // retried-and-passed file reads as red forever.
     expect(seen.some((q) => /DISTINCT ON \(file_path\)/.test(q))).toBe(true);
   });
+
+  /**
+   * ── THE NON-TEST-CARRIER TRAP ────────────────────────────────────────────────────
+   * Measured 2026-09-02 on candidate 797454468a / repairHead 607bff8f43: the cell called
+   * three files "real work" and ALL THREE were already fixed — the repairs had landed in
+   * `scripts/check-resource-governor-enforcement.mjs` and `scripts/pc-heavy-jobs.mjs`,
+   * which a TEST-blob comparison cannot see. Wrong 3 times out of 3, in the direction
+   * that manufactures labour.
+   */
+  const tree = (sha: string) => `rev-parse ${sha}^{tree}`;
+  const nameOnly = `diff --name-only ${CANDIDATE} ${REPAIR_HEAD}`;
+
+  it('does NOT call a file "real work" when the fix could be riding a non-test file', async () => {
+    const res = await readGateCandidateFailures({
+      candidateSha: CANDIDATE,
+      repairHeadSha: REPAIR_HEAD,
+      root: '/repo',
+      sql: fakeSql({
+        filesJudged: 6936,
+        failing: [{ file_path: 'packages/operator-core/lib/undrained-stdout-exit-guard.test.ts', status: 'fail', attempts: 5 }],
+      }),
+      git: fakeGit({
+        // The test file itself never moved — the real 2026-09-02 shape.
+        [revParse(CANDIDATE, 'packages/operator-core/lib/undrained-stdout-exit-guard.test.ts')]: 'd397c0ce',
+        [revParse(REPAIR_HEAD, 'packages/operator-core/lib/undrained-stdout-exit-guard.test.ts')]: 'd397c0ce',
+        [tree(CANDIDATE)]: 'tree-aaa',
+        [tree(REPAIR_HEAD)]: 'tree-bbb',
+        // ...but the script it exercises did.
+        [nameOnly]: 'scripts/pc-heavy-jobs.mjs\n',
+      }),
+    });
+
+    const row = res.distinctFailingFiles[0];
+    // The blob fact is unchanged and stays honest.
+    expect(row.fixInRepairHead).toBe(false);
+    expect(res.stillBrokenCount).toBe(1);
+    // But it must NOT be asserted as confirmed work, and must name the decisive next step.
+    expect(res.stillBrokenNeedsRunCount).toBe(1);
+    expect(row.reading).not.toMatch(/This one is real work/i);
+    expect(row.reading).toMatch(/RUN THIS FILE AT repairHead/i);
+    expect(res.changedBetweenRefs).toEqual({ count: 1, sample: ['scripts/pc-heavy-jobs.mjs'] });
+  });
+
+  it('KEEPS the strong "real work" reading when nothing else moved either', async () => {
+    // The hedge must not swallow the instrument: with an identical tree on both sides
+    // there is nowhere for a fix to hide, so `false` is decisive and says so.
+    const res = await readGateCandidateFailures({
+      candidateSha: CANDIDATE,
+      repairHeadSha: REPAIR_HEAD,
+      root: '/repo',
+      sql: fakeSql({ filesJudged: 12, failing: [{ file_path: 'libs/a/b.test.ts', status: 'fail', attempts: 2 }] }),
+      git: fakeGit({
+        [revParse(CANDIDATE, 'libs/a/b.test.ts')]: 'deadbeef',
+        [revParse(REPAIR_HEAD, 'libs/a/b.test.ts')]: 'deadbeef',
+        [tree(CANDIDATE)]: 'same-tree',
+        [tree(REPAIR_HEAD)]: 'same-tree',
+      }),
+    });
+
+    expect(res.stillBrokenCount).toBe(1);
+    expect(res.stillBrokenNeedsRunCount).toBe(0);
+    expect(res.distinctFailingFiles[0].reading).toMatch(/This one is real work/i);
+    expect(res.changedBetweenRefs).toEqual({ count: 0, sample: [] });
+  });
+
+  it('reads an EMPTY diff as "nothing moved", never as an unreadable command', async () => {
+    // `git diff --name-only` prints nothing both when nothing changed and when the call
+    // failed, and the shared fail-soft runner collapses empty stdout to null. Deciding
+    // between them from that alone would reintroduce the exact confident-wrong reading
+    // this module exists to remove, so the tree ids are compared FIRST.
+    const res = await readGateCandidateFailures({
+      candidateSha: CANDIDATE,
+      repairHeadSha: REPAIR_HEAD,
+      root: '/repo',
+      sql: fakeSql({ filesJudged: 12, failing: [{ file_path: 'libs/a/b.test.ts', status: 'fail', attempts: 1 }] }),
+      git: fakeGit({
+        [revParse(CANDIDATE, 'libs/a/b.test.ts')]: 'deadbeef',
+        [revParse(REPAIR_HEAD, 'libs/a/b.test.ts')]: 'deadbeef',
+        [tree(CANDIDATE)]: 'same-tree',
+        [tree(REPAIR_HEAD)]: 'same-tree',
+        [nameOnly]: null, // indistinguishable from a failure at this layer
+      }),
+    });
+
+    expect(res.changedBetweenRefs).toEqual({ count: 0, sample: [] });
+    expect(res.stillBrokenNeedsRunCount).toBe(0);
+  });
+
+  it('hedges when it cannot tell whether anything else moved', async () => {
+    // Unknown must not degrade to the confident reading. An unreadable comparison is
+    // evidence of nothing, and the row has to say so rather than pick a side.
+    const res = await readGateCandidateFailures({
+      candidateSha: CANDIDATE,
+      repairHeadSha: REPAIR_HEAD,
+      root: '/repo',
+      sql: fakeSql({ filesJudged: 12, failing: [{ file_path: 'libs/a/b.test.ts', status: 'fail', attempts: 1 }] }),
+      git: fakeGit({
+        [revParse(CANDIDATE, 'libs/a/b.test.ts')]: 'deadbeef',
+        [revParse(REPAIR_HEAD, 'libs/a/b.test.ts')]: 'deadbeef',
+        // no tree ids, no diff ⇒ unknown
+      }),
+    });
+
+    expect(res.distinctFailingFiles[0].reading).not.toMatch(/This one is real work/i);
+    expect(res.stillBrokenNeedsRunCount).toBe(1);
+    expect(res.changedBetweenRefs).toBeNull();
+  });
 });

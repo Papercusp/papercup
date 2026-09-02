@@ -684,9 +684,9 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
       },
       'repairs-outstanding': {
         meaning:
-          'One or more files are byte-identical at repairHead, so no fix has landed for them. This is the real repair queue.',
+          'One or more files are byte-identical at repairHead. That is a fact about THOSE FILES\' bytes, not proof they are unfixed: a fix landing in a non-test file the test exercises (a script it invokes, a helper, a fixture, a whole-repo scanner) leaves the test blob untouched and is invisible here. `stillBrokenNeedsRunCount` says how many of these are only PRESUMED broken; when it equals `stillBrokenCount`, nothing here is confirmed work yet.',
         safeAction:
-          'Fix the files whose `fixInRepairHead` is false, so the fixes land ON TOP of the frozen candidate. Do not cut a fresh candidate to "try again".',
+          'Read each row\'s `reading` before fixing anything. A row saying nothing else moved is real work — fix it so the fix lands ON TOP of the frozen candidate. A row that hedges needs `testing:run` on that ONE file at repairHead FIRST; measured 2026-09-02, all 3 such rows were already fixed and re-fixing them was wasted work. Never cut a fresh candidate to "try again".',
       },
       'none-failing': {
         meaning:

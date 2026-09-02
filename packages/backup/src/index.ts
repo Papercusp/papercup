@@ -36,6 +36,7 @@ export {
   passthroughStepRunner,
   type BackupSettings,
   type CadenceMode,
+  type LiveBackupSession,
   type RepoStats,
   type RestoreResult,
   type RetentionPolicy,

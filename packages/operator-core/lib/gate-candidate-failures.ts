@@ -38,7 +38,10 @@
  * ways and only one of them is work:
  *
  *   fixInRepairHead: true   → "fixed, awaiting re-verification" — do NOT go fix it
- *   fixInRepairHead: false  → "still broken at repairHead" — THIS is the actual queue
+ *   fixInRepairHead: false  → the TEST FILE's bytes are unchanged. NOT by itself "still
+ *                             broken": see the non-test-carrier trap on `movesBetween`.
+ *                             Decisive only when nothing else moved either; otherwise the
+ *                             row hedges and `stillBrokenNeedsRunCount` counts it.
  *   fixInRepairHead: null   → unmeasurable (blob unresolvable); says nothing either way
  *
  * On the measured incident that single field would have ended a five-hour hunt at
@@ -96,8 +99,23 @@ export interface GateCandidateFailures {
   failingFileCount: number;
   /** Of the failing files, how many already have their fix in repairHead. */
   alreadyFixedCount: number;
-  /** Of the failing files, how many are still broken at repairHead — the real queue. */
+  /**
+   * Of the failing files, how many have an UNCHANGED blob at repairHead. This is a fact
+   * about those files' bytes — read `stillBrokenNeedsRunCount` before calling it a queue.
+   */
   stillBrokenCount: number;
+  /**
+   * Of `stillBrokenCount`, how many are only PRESUMED broken: the test file is unchanged
+   * but other files moved between the two refs, so the fix may sit in a non-test carrier
+   * this test exercises. Each of these needs a run at repairHead before it counts as work.
+   * When this equals `stillBrokenCount`, NOTHING here is confirmed to be real work yet.
+   */
+  stillBrokenNeedsRunCount: number;
+  /**
+   * What moved between candidate and repairHead — the evidence behind the hedge above.
+   * `null` when it could not be read (which is itself why a row may hedge).
+   */
+  changedBetweenRefs: { count: number; sample: string[] } | null;
   /**
    * Whether the gate's non-test legs (lint / perf / desktop / delta) were measured.
    * `null` = not recorded in the readable gate-health snapshot, which is NOT the same
@@ -176,6 +194,8 @@ function unavailable(
     failingFileCount: 0,
     alreadyFixedCount: 0,
     stillBrokenCount: 0,
+    stillBrokenNeedsRunCount: 0,
+    changedBetweenRefs: null,
     postSuiteMeasured: null,
     scope: SCOPE_SENTENCE,
     unavailable: reason,
@@ -197,6 +217,78 @@ function submoduleFor(p: string, subs: readonly string[]): string | null {
   return subs.find((s) => p === s || p.startsWith(s + '/')) ?? null;
 }
 
+/**
+ * What ELSE moved between the candidate and repairHead.
+ *
+ * ⚠ THE NON-TEST-CARRIER TRAP — the same wrong-object failure as the submodule case
+ * above, one level out. `fixInRepairHead` compares the FAILING TEST FILE's blob, which
+ * answers "did the test change", and that is only a proxy for "was this fixed". The
+ * proxy breaks for the commonest repair shape there is: the fix lands in the code UNDER
+ * test — a script the test shells out to, a helper module, a fixture, or a whole-repo
+ * scanner the test invokes — leaving the test file itself byte-identical. The blob
+ * compare then reports "no fix has landed. This one is real work" with full confidence,
+ * and sends an agent to re-fix something already repaired.
+ *
+ * Measured 2026-09-02 on candidate 797454468a / repairHead 607bff8f43: ALL THREE files
+ * the cell called "real work" were already fixed — enforcement-lint and state-snapshot
+ * by `scripts/check-resource-governor-enforcement.mjs`, undrained-stdout-exit-guard by
+ * `scripts/pc-heavy-jobs.mjs` (a `process.exit(0)` → `return` so piped stdout flushes).
+ * All three passed at repairHead. The cell's own instruction was wrong 3 times out of 3.
+ *
+ * So a `false` is only decisive when NOTHING else moved either. This reads that, and
+ * asks it in a form whose empty answer is not ambiguous: tree ids are compared first,
+ * because `git diff --name-only` returns an empty string both when nothing changed and
+ * when the command failed, and collapsing those two would reintroduce the same class of
+ * confident-and-wrong reading this exists to remove.
+ */
+type ElsewhereMoves =
+  | { kind: 'none' }
+  | { kind: 'some'; paths: readonly string[] }
+  | { kind: 'unknown' };
+
+async function movesBetween(
+  git: GitRunner,
+  root: string,
+  candidateSha: string,
+  repairHeadSha: string,
+): Promise<ElsewhereMoves> {
+  const [candTree, headTree] = await Promise.all([
+    git(root, ['rev-parse', `${candidateSha}^{tree}`]),
+    git(root, ['rev-parse', `${repairHeadSha}^{tree}`]),
+  ]);
+  // Tree ids never render empty, so this branch cannot be faked by a failed command.
+  if (candTree !== null && headTree !== null && candTree === headTree) return { kind: 'none' };
+  const out = await git(root, ['diff', '--name-only', candidateSha, repairHeadSha]);
+  if (out === null) return { kind: 'unknown' };
+  const paths = out
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return paths.length === 0 ? { kind: 'none' } : { kind: 'some', paths };
+}
+
+/** The still-broken reading, hedged exactly as far as the evidence supports and no further. */
+function stillBrokenReading(path: string, moves: ElsewhereMoves): string {
+  const others = moves.kind === 'some' ? moves.paths.filter((p) => p !== path) : [];
+  if (moves.kind === 'none' || (moves.kind === 'some' && others.length === 0)) {
+    return (
+      'STILL BROKEN — the file is byte-identical at repairHead AND nothing else moved between ' +
+      'the two refs, so no fix has landed anywhere. This one is real work.'
+    );
+  }
+  const scale =
+    moves.kind === 'unknown'
+      ? 'whether anything else moved could not be read'
+      : `${others.length} other file(s) DID move`;
+  return (
+    `NO FIX IN THIS FILE — it is byte-identical at repairHead, which is all a blob compare can ` +
+    `say. ${scale} between the candidate and repairHead, and a fix landing in a non-test file ` +
+    `this test exercises (a script it invokes, a helper, a fixture, a whole-repo scanner it runs) ` +
+    `is INVISIBLE here. RUN THIS FILE AT repairHead before treating it as real work — measured ` +
+    `2026-09-02, this row was wrong 3 times out of 3.`
+  );
+}
+
 async function compareOne(
   git: GitRunner,
   root: string,
@@ -204,6 +296,7 @@ async function compareOne(
   candidateSha: string,
   repairHeadSha: string,
   subs: readonly string[],
+  moves: ElsewhereMoves,
 ): Promise<Pick<GateCandidateFailingFile, 'fixInRepairHead' | 'comparison' | 'candidateBlob' | 'repairHeadBlob' | 'reading'>> {
   const sub = submoduleFor(path, subs);
   if (sub) {
@@ -243,7 +336,7 @@ async function compareOne(
         ? 'UNMEASURABLE — one of the two blobs did not resolve; this says nothing either way.'
         : fixInRepairHead
           ? 'FIXED AT repairHead, awaiting re-verification — the file changed after the candidate was cut. Do NOT re-fix it.'
-          : 'STILL BROKEN — the file is byte-identical at repairHead, so no fix has landed. This one is real work.',
+          : stillBrokenReading(path, moves),
   };
 }
 
@@ -320,6 +413,11 @@ export async function readGateCandidateFailures(
   const truncated = failing.length > MAX_FAILING_FILES;
   const rows = failing.slice(0, MAX_FAILING_FILES);
 
+  // Read ONCE for the whole result, not per row: it is the same two refs every time.
+  const moves: ElsewhereMoves = repairHeadSha
+    ? await movesBetween(git, opts.root, candidateSha, repairHeadSha)
+    : { kind: 'unknown' };
+
   const files: GateCandidateFailingFile[] = [];
   for (const [i, r] of rows.entries()) {
     const base = {
@@ -349,11 +447,22 @@ export async function readGateCandidateFailures(
       });
       continue;
     }
-    files.push({ ...base, ...(await compareOne(git, opts.root, r.file_path, candidateSha, repairHeadSha, subs)) });
+    files.push({
+      ...base,
+      ...(await compareOne(git, opts.root, r.file_path, candidateSha, repairHeadSha, subs, moves)),
+    });
   }
 
   const alreadyFixedCount = files.filter((f) => f.fixInRepairHead === true).length;
   const stillBrokenCount = files.filter((f) => f.fixInRepairHead === false).length;
+  // Of the still-broken rows, how many are only PRESUMED so — the test blob is unchanged
+  // but other files moved, so a non-test carrier may hold the fix. These need a run at
+  // repairHead before they are work. Split out rather than folded into stillBrokenCount:
+  // the count is a blob fact and stays one, and a reader who wants the queue it can act
+  // on without further measurement subtracts this.
+  const stillBrokenNeedsRunCount = files.filter(
+    (f) => f.fixInRepairHead === false && moves.kind !== 'none' && !(moves.kind === 'some' && moves.paths.filter((p) => p !== f.path).length === 0),
+  ).length;
 
   return {
     candidateSha,
@@ -363,6 +472,11 @@ export async function readGateCandidateFailures(
     failingFileCount: failing.length,
     alreadyFixedCount,
     stillBrokenCount,
+    stillBrokenNeedsRunCount,
+    changedBetweenRefs:
+      moves.kind === 'unknown'
+        ? null
+        : { count: moves.kind === 'none' ? 0 : moves.paths.length, sample: moves.kind === 'none' ? [] : moves.paths.slice(0, 10) },
     postSuiteMeasured: opts.postSuiteMeasured ?? null,
     scope: SCOPE_SENTENCE,
     unavailable: null,

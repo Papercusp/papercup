@@ -31,6 +31,7 @@ function makeBackupMock(snapResult: unknown, listResult: unknown = []) {
   const wb = {
     snapshot: vi.fn(async () => snapResult),
     list: vi.fn(async () => listResult),
+    liveBackupSessions: vi.fn(async () => [] as unknown[]),
     restore: vi.fn(async () => ({ ok: true })),
     rollback: vi.fn(async () => ({ ok: true })),
     diff: vi.fn(async () => ({ ok: true, diff: '' })),
@@ -128,5 +129,28 @@ describe('backup:snapshot_list', () => {
     // Pass 50 explicitly (calling .handler bypasses zod defaults).
     await tool.handler({ limit: 50 }, MAKE_CTX());
     expect(wb.list).toHaveBeenCalledWith(50);
+  });
+
+  // EI-22064935119941678: an empty snapshots[] (no receipt for this workspace's
+  // kopia hook) must never read as "no backup is active" — the independent
+  // host-cron pg_dump has no receipt row at all, so liveBackupSessions[] is the
+  // only signal that can see it. Assert it is surfaced and NOT dropped.
+  it('surfaces liveBackupSessions alongside snapshots, even when snapshots is empty', async () => {
+    const liveSessions = [
+      { pid: 3294839, applicationName: 'pcbackup', state: 'active', xactStartedAt: null, queryStartedAt: '2026-09-01T13:04:00.000Z', ageSec: 369 },
+    ];
+    const { wb, workspaceBackupFor, activeWorkspaceId } = makeBackupMock(undefined, []);
+    wb.liveBackupSessions.mockResolvedValueOnce(liveSessions);
+    vi.doMock('../../backup', () => ({ workspaceBackupFor }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId }));
+
+    const { default: tool } = await import('../backup/snapshot_list');
+    const result = (await tool.handler({ limit: 50 }, MAKE_CTX())) as any;
+
+    expect(wb.liveBackupSessions).toHaveBeenCalledWith();
+    const data = result.data ?? JSON.parse(result.content[0].text);
+    expect(data.snapshots).toHaveLength(0);
+    expect(data.liveBackupSessions).toHaveLength(1);
+    expect(data.liveBackupSessions[0].applicationName).toBe('pcbackup');
   });
 });

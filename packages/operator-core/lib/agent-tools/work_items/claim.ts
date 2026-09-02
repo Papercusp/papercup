@@ -871,6 +871,55 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
   }
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.
   const current = await getWorkItem(it.id, it.harness);
+  // EI-22074465800337362: a force-reclaim's CAS already matched the liveness/authority
+  // leg (claimWorkItem was called with `expectedAssignee: forced.holder`), yet the UPDATE
+  // still returned 0 rows. `admittedWhereSql`/`autoPickableWhereSql` are applied to EVERY
+  // claim UPDATE unconditionally (claimIssue/claimWorkItem — the only bypasses are the
+  // server-derived leaderDispatchAdmission/selfFiledFalloutAdmission capabilities, which a
+  // force takeover never mints), so a WIP item whose holder died while the item was still
+  // admission-pending (e.g. a fleet-leader dispatch of a pending item, which durably assigns
+  // WITHOUT flipping admission — see the leader-dispatch-pending fixtures in
+  // work-items-claim.integration.test.ts) is refused here even though the force guard already
+  // proved the holder is not live. If the row's assignee is UNCHANGED from the exact holder
+  // the force guard authorized against, this is NOT a live peer conflict — falling through to
+  // the generic classifyClaimFailure path below would misreport it as `claim_conflict` with a
+  // hint pointing the caller back at "the stale-claim reclaim lane frees it", i.e. the exact
+  // force takeover they just tried and had silently refused. Diagnose it honestly instead.
+  if (forced && current?.assignee?.trim() === forced.holder) {
+    let claimFloor: ClaimFloorAttribution | null = null;
+    if (current.family === 'issue') {
+      const issueHarness = current.harness ?? it.harness;
+      if (issueHarness) {
+        try {
+          const [floor] = await explainIssueClaimFloors(issueHarness, [it.id], { assignee: claimer });
+          claimFloor = floor && !floor.admissible && floor.refusedBy ? floor : null;
+        } catch {
+          claimFloor = null;
+        }
+      }
+    }
+    const retryHint = claimFloor?.retry
+      ? ` It CLEARS ON ITS OWN — typically within ~${Math.round(claimFloor.retry.expectedWithinSec / 60)}m, ` +
+        `at the latest ~${Math.round(claimFloor.retry.guaranteedWithinSec / 60)}m (${claimFloor.retry.basis}). Retry then.`
+      : '';
+    return {
+      ok: false,
+      id: it.id,
+      error: 'force_blocked_by_claim_floor',
+      holder: forced.holder,
+      workItem: current,
+      ...(claimFloor ? { claimFloor } : {}),
+      hint:
+        `The force takeover was AUTHORIZED (${forced.basis}: ${forced.holder} is not live) but the claim write still refused it. ` +
+        `${forced.holder} still holds it UNCHANGED — this is NOT a live peer conflict, so do not retry the takeover blind or coordinate ` +
+        `with ${forced.holder} (they are the dead holder you were reclaiming from). ` +
+        (claimFloor
+          ? `The claim floor is ${claimFloor.refusedBy}: ${claimFloor.detail ?? 'the item is not claim-path admissible'}. ` +
+            `This gate applies to every claim path INCLUDING a force takeover — liveness/authority authorization does not bypass it.${retryHint}`
+          : "Likely the item's admission/trust gate (still pending duplicate screening, or an un-admitted remote/untrusted origin) — " +
+            'check its admission/origin/auditVerdict directly (dev:pg_query) rather than retrying the takeover blind.'),
+    };
+  }
   const failure = classifyClaimFailure(current, claimer);
   if (failure.reason === 'not_found') {
     return { ok: false, id: it.id, error: `work_item '${it.id}' not found` };

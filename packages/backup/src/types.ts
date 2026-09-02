@@ -73,6 +73,28 @@ export interface SnapshotInfo {
   error: string | null;
 }
 
+/**
+ * A currently-active PostgreSQL session belonging to EITHER backup producer
+ * (`packages/backup/src/application-names.ts`) — the per-workspace kopia
+ * hook or the independent host-level cron `pg_dump` — regardless of whether
+ * it has any receipt row in `harness_shared.backup_snapshots`.
+ *
+ * This is deliberately session-shaped, not snapshot-shaped: it exists to
+ * answer "is a backup holding relation locks on this database RIGHT NOW",
+ * which `SnapshotInfo`'s receipt rows cannot answer for the host producer at
+ * all (EI-22064935119941678 — `backup:snapshot_list` reported an all-clear
+ * while host-cron `pcbackup` sessions still held `AccessShareLock`).
+ */
+export interface LiveBackupSession {
+  pid: number;
+  applicationName: string;
+  state: string;
+  xactStartedAt: string | null;
+  queryStartedAt: string | null;
+  /** Seconds since the session's transaction (or query, if none) started; null if neither is set. */
+  ageSec: number | null;
+}
+
 export type DestinationType = 'local' | 'local+s3' | 'local+b2' | 'local+rclone';
 
 export interface BackupSettings {

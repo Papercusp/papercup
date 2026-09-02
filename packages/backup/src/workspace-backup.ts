@@ -29,6 +29,7 @@ import { runPreSnapshotHook } from './hook';
 import { decryptDestConfig, syncArgsFor, type DestinationType } from './destinations';
 import {
   type BackupSettings,
+  type LiveBackupSession,
   type RepoStats,
   type RetentionPolicy,
   type SnapshotInfo,
@@ -39,6 +40,7 @@ import {
   RETENTION_PRESETS,
 } from './types';
 import { IGNORE_PATTERNS, SELF_EXCLUSION_RULES, diffPolicyIgnores } from './policy';
+import { BACKUP_APPLICATION_NAMES } from './application-names';
 
 const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
 const SNAPSHOT_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -731,6 +733,50 @@ export class WorkspaceBackup {
       bytesTotal: r.bytes_total == null ? null : Number(r.bytes_total),
       sources: (r.sources_json as string[]) ?? [],
       error: r.error_text,
+    }));
+  }
+
+  /**
+   * All currently-active PostgreSQL sessions from EITHER backup producer —
+   * this workspace's kopia hook (`WORKSPACE_BACKUP_APPLICATION_NAME`) or the
+   * independent host-level cron `pg_dump` (`HOST_BACKUP_APPLICATION_NAME`) —
+   * regardless of whether either has a receipt row in
+   * `harness_shared.backup_snapshots`.
+   *
+   * `list()` above answers "what did the workspace-tracked hook capture?"
+   * and is blind to the host producer by construction (it only ever reads
+   * this table). This method answers the different, narrower question an
+   * operator actually needs before treating an empty `list()` as an
+   * all-clear: "is ANY backup holding relation locks on this database RIGHT
+   * NOW?" Deliberately NOT scoped by `workspaceId` — a PG session carries no
+   * workspace context, and the whole point is to catch the producer `list()`
+   * cannot see. Mirrors the exact predicate already proven correct in
+   * db/migrate.ts's `migrationBackupLockGuardSql()` (EI-22064935119941678).
+   */
+  async liveBackupSessions(): Promise<LiveBackupSession[]> {
+    const sql = backupHost().getSql();
+    const rows = await sql<{
+      pid: number;
+      application_name: string;
+      state: string | null;
+      xact_start: string | null;
+      query_start: string | null;
+      age_sec: number | string | null;
+    }[]>`
+      SELECT pid, application_name, state, xact_start, query_start,
+             EXTRACT(EPOCH FROM (now() - COALESCE(xact_start, query_start))) AS age_sec
+      FROM pg_stat_activity
+      WHERE application_name = ANY(${sql.array([...BACKUP_APPLICATION_NAMES])})
+        AND datname = current_database()
+        AND pid <> pg_backend_pid()
+    `;
+    return rows.map((r) => ({
+      pid: r.pid,
+      applicationName: r.application_name,
+      state: r.state ?? 'unknown',
+      xactStartedAt: tsIso(r.xact_start),
+      queryStartedAt: tsIso(r.query_start),
+      ageSec: r.age_sec == null ? null : Number(r.age_sec),
     }));
   }
 

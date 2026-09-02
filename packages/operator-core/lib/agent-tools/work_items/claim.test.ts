@@ -576,6 +576,56 @@ describe('work_items:claim handler (keyed-array)', () => {
       expect(b.results[0].forced).toBeUndefined();
       expect(assessForceM).not.toHaveBeenCalled();
     });
+
+    // EI-22074465800337362: liveness/authority authorization is NOT the only gate a claim
+    // UPDATE applies — the admittedWhereSql/autoPickableWhereSql floor runs unconditionally
+    // and force:true mints no bypass for it. Both the pre-read and the post-claim re-read
+    // resolve through the SAME getWorkItem mock, so returning an unchanged row from both
+    // reproduces exactly what a silently-refused CAS looks like: claimWorkItem resolves null
+    // while the holder never moved.
+    it('reports force_blocked_by_claim_floor — not claim_conflict — when the authorized CAS still matched 0 rows', async () => {
+      getM.mockResolvedValue({
+        id: 'EI-STUCK',
+        assignee: 'dead-holder',
+        family: 'issue',
+        harness: 'papercup',
+        lastProgressAt: '2026-08-20T08:00:00.000Z',
+      } as never);
+      claimM.mockResolvedValue(null as never);
+      explainFloorsM.mockResolvedValue([
+        {
+          id: 'EI-STUCK',
+          admissible: false,
+          refusedBy: 'admission-pending',
+          detail: 'duplicate screening is pending',
+          retry: {
+            clearsOnItsOwn: true,
+            expectedWithinSec: 300,
+            guaranteedWithinSec: 900,
+            basis: 'admission promoter tick',
+          },
+        },
+      ] as never);
+
+      const b = await body({ id: 'EI-STUCK', force: true, reason: 'holder session ended; reclaiming for the drain' });
+
+      expect(explainFloorsM).toHaveBeenCalledWith('papercup', ['EI-STUCK'], { assignee: 'me' });
+      expect(b.results[0]).toMatchObject({
+        ok: false,
+        id: 'EI-STUCK',
+        error: 'force_blocked_by_claim_floor',
+        holder: 'dead-holder',
+        claimFloor: { refusedBy: 'admission-pending' },
+      });
+      expect(b.results[0].hint).toContain('AUTHORIZED');
+      expect(b.results[0].hint).toContain('NOT a live peer conflict');
+      expect(b.results[0].hint).toContain('The claim floor is admission-pending');
+      expect(b.results[0].hint).toContain('~5m');
+      expect(b.results[0].hint).toContain('~15m');
+      // The honest diagnosis short-circuits before the generic path — it must never
+      // relabel this as an ordinary claim_conflict against a live peer.
+      expect(classifyM).not.toHaveBeenCalled();
+    });
   });
 
   it('a not-found item is classified and reported per item', async () => {
