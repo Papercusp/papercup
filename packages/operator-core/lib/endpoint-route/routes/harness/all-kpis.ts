@@ -42,6 +42,13 @@ export async function loadAllKpis() {
     let executedActions24h = 0;
     const opCounts24h: Record<string, number> = {};
     let directiveOpen = 0, directiveAcked = 0;
+    // WI-3885 iteration 7: which named metrics failed to load THIS refresh, so
+    // the frontend can flag exactly what's stale/wrong instead of the caller
+    // only learning about it from server logs (or, worse, a silently-zero
+    // number indistinguishable from a genuine zero). Each failed aggregate
+    // already falls back to its zero/empty default below — this array is
+    // purely additive surfacing, never a behavior change to the fallback.
+    const partialFailures: string[] = [];
 
     if (schemas.length > 0) {
       const schemaNames = schemas.map((s) => s.nspname);
@@ -78,6 +85,7 @@ export async function loadAllKpis() {
           // genuinely-zero count is distinguishable from a silently failing
           // one in the server logs.
           console.error('[all-kpis] messages_24h aggregate failed:', e);
+          partialFailures.push('messages_24h');
         }
       }
 
@@ -99,6 +107,7 @@ export async function loadAllKpis() {
           }
         } catch (e) {
           console.error('[all-kpis] executed_actions_24h aggregate failed:', e);
+          partialFailures.push('executed_actions_24h');
         }
       }
 
@@ -118,6 +127,7 @@ export async function loadAllKpis() {
           directiveAcked += tally.acknowledged;
         } catch (e) {
           console.error('[all-kpis] directive status tally failed:', e);
+          partialFailures.push('directives');
         }
       }
     }
@@ -157,6 +167,7 @@ export async function loadAllKpis() {
       }
     } catch (e) {
       console.error('[all-kpis] autoloop_state query failed:', e);
+      partialFailures.push('autoloop');
     }
 
     const body = {
@@ -171,6 +182,9 @@ export async function loadAllKpis() {
       directives: { open: directiveOpen, acknowledged: directiveAcked },
       audit: { actions_24h_by_op: opCounts24h },
       autoloop: { active: autoloopActive, recent_fires: lastFires },
+      // Always present (possibly empty) — a stable shape the client can check
+      // unconditionally rather than treating "field absent" as "no failures".
+      partial_failures: partialFailures,
       system: {
         // Host uptime in seconds (node:os.uptime()), NOT the operator
         // process's own uptime — the card reads as "how long has this
