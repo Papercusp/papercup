@@ -97,6 +97,49 @@ export function pullLedgerRowFromInvocation(row: PullLedgerInvocationRow): PullL
   };
 }
 
+/**
+ * Registered response contract. `tools:find` renders THIS in preference to
+ * `guidance.returns` (tools/find.ts: `registered-output-schema` wins over
+ * `authored-tool-guidance`), so the structural shape callers see is derived
+ * here rather than hand-maintained in prose — the rule
+ * `guidance-output-schema-live-guard.test.ts` enforces.
+ *
+ * The guard reads the FIRST `{...}` clause of `guidance.returns` as the
+ * TOP-LEVEL shape, so that clause and these top-level keys must agree exactly.
+ */
+const pullLedgerRowSchema = z.object({
+  at: z.string(),
+  bee: z.string().nullable(),
+  harness: z.string(),
+  disposition: z.enum(['claimed', 'no-claim', 'unrecorded']),
+  item: z.string().nullable(),
+  specId: z.string().nullable(),
+  revision: z.number().int().nullable(),
+  specRef: z.string().nullable(),
+  reason: z.string().nullable(),
+  durationMs: z.number().nullable(),
+  status: z.string(),
+});
+
+const pullLedgerResultSchema = z.object({
+  ok: z.boolean(),
+  window: z.object({ sinceTs: z.string(), limit: z.number().int() }),
+  summary: z.object({
+    pulls: z.number().int().nonnegative(),
+    claimed: z.number().int().nonnegative(),
+    noClaim: z.number().int().nonnegative(),
+    // Present only when at least one selected invocation carried no readable
+    // disposition — never guessed as claimed or no-claim.
+    unrecorded: z.number().int().nonnegative().optional(),
+    // Both set together when the row cap was reached.
+    truncated: z.boolean().optional(),
+    hint: z.string().optional(),
+  }),
+  rows: z.array(pullLedgerRowSchema),
+  // Only on the empty ever-members branch below.
+  note: z.string().optional(),
+});
+
 export default defineTool({
   name: 'scheduler:pull_ledger',
   profile: 'engineer',
@@ -109,7 +152,7 @@ export default defineTool({
       "Live state, not history — scheduler:running. Current floor breakdown — work_items:claimable. A rank/floor REPLAY of one past pull is not carried (would add a query to get_next's hot path) — that stays get_next's own live diagnosis on an actual miss.",
     chaining: 'scheduler:set_claim_spec → scheduler:pull_ledger { fleet } → scheduler:running.',
     returns:
-      'rows[]: {at, bee, harness, disposition: claimed|no-claim|unrecorded, item, specId, revision, specRef, reason, durationMs, status}; summary: {pulls, claimed, noClaim, unrecorded?, truncated?}.',
+      '{ok, window: {sinceTs, limit}, summary: {pulls, claimed, noClaim, unrecorded?, truncated?, hint?}, rows: [{at, bee, harness, disposition: claimed|no-claim|unrecorded, item, specId, revision, specRef, reason, durationMs, status}], note?}. `note` appears ONLY when a named fleet resolved to an EMPTY ever-members set — it means "no members known", never "this fleet did nothing"; verify the slug. `summary.truncated` means the row cap was reached, so these are the newest `limit` pulls in the window, not every pull in it. A row reads `disposition:"unrecorded"` when its invocation carried no readable disposition (it errored before one was written) — never read that as a no-claim.',
     seeAlso: [
       'scheduler:running (live-execution view, not history)',
       'scheduler:get_claim_spec (current spec for one bee/fleet)',
@@ -117,6 +160,7 @@ export default defineTool({
       'work_items:claimable (current floor-by-floor claimability breakdown)',
     ],
   },
+  result: pullLedgerResultSchema,
   capability: 'work_items:read',
   // Raw getOrgPg() access, like scheduler:get_claim_spec — never reads ctx.tx, so keeping the
   // dispatcher's ambient workspace transaction open here only pins an unused org-app pool slot.

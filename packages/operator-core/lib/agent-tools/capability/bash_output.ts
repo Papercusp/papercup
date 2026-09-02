@@ -956,6 +956,43 @@ export function applyOutputTailToResult<
   };
 }
 
+/**
+ * Registered response contract. This tool authors `guidance.returns`, and
+ * `guidance-output-schema-live-guard.test.ts` requires any tool that does so to
+ * register the shape rather than let prose become a second, unverifiable type
+ * system — `tools:find` renders this in preference to the prose.
+ *
+ * Deliberately a CORE schema with `.catchall()`, not an exhaustive union: the
+ * response is branch-shaped (live / terminal / stranded / recovered /
+ * resource-limited) and different branches legitimately carry different extra
+ * keys. Declaring the stable, cross-branch fields honestly — and admitting the
+ * rest — beats inventing a closed contract this handler would not keep.
+ */
+const bashOutputResultSchema = z
+  .object({
+    ok: z.boolean(),
+    bash_id: z.string().optional(),
+    task_id: z.string().optional(),
+    status: z.string().optional(),
+    running: z.boolean().optional(),
+    exit_code: z.number().int().nullable().optional(),
+    output: z.string().optional(),
+    output_tail: z.string().optional(),
+    // The three fields the `returns` prose above is about.
+    tracking_lost: z.boolean().optional(),
+    output_recoverable: z.boolean().optional(),
+    liveness_proof: z.string().optional(),
+    // Omitted rather than handed back unverified when not recoverable.
+    log_path: z.string().optional(),
+    total_bytes: z.number().int().nonnegative().optional(),
+    // Set together on the cgroup TasksMax branch named in the description.
+    failure_class: z.string().optional(),
+    test_verdict: z.string().optional(),
+    error: z.string().optional(),
+    advice: z.string().optional(),
+  })
+  .catchall(z.unknown());
+
 export default defineTool({
   name: 'capability:bash_output',
   description:
@@ -973,6 +1010,7 @@ export default defineTool({
     // pointer for exactly the callers most likely to need it.
     seeAlso: ['capability:bash (start the command)', 'processes:kill { taskId } (stop the backgrounded run)'],
   },
+  result: bashOutputResultSchema,
   capability: 'capability:bash',
   requirePrincipal: false,
   // EI-20190459016345227: output polling does not read ctx.tx and can await
