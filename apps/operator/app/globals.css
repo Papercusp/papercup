@@ -14560,7 +14560,7 @@ body:has(.pc-settings-nav-link[href="/settings/plugin-runtime"][aria-current="pa
 }
 
 /* Maximal HUD continuation: remaining settings command surfaces.
-   Route-scoped polish for Oracle/Operator/Profile/Publishing/Shortcuts;
+   Route-scoped polish for Operator/Profile/Publishing/Shortcuts;
    no controls, copy, or layout metrics are changed. */
 @keyframes pcSettingsCommandGrid {
   from { background-position: 0 0, 0 0, 0 0; }
@@ -14578,7 +14578,6 @@ body:has(.pc-settings-nav-link[href="/settings/plugin-runtime"][aria-current="pa
   50% { opacity: 0.82; filter: brightness(1.32); }
 }
 
-body:has(.pc-settings-nav-link[href="/settings/oracle"][aria-current="page"]) .pc-settings-shell > section,
 body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) .pc-settings-shell > section,
 body:has(.pc-settings-nav-link[href="/settings/profile"][aria-current="page"]) .pc-settings-shell > section,
 body:has(.pc-settings-nav-link[href="/settings/publishing"][aria-current="page"]) .pc-settings-shell > section,
@@ -14587,7 +14586,6 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   isolation: isolate;
 }
 
-body:has(.pc-settings-nav-link[href="/settings/oracle"][aria-current="page"]) .pc-settings-shell > section::before,
 body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) .pc-settings-shell > section::before,
 body:has(.pc-settings-nav-link[href="/settings/profile"][aria-current="page"]) .pc-settings-shell > section::before,
 body:has(.pc-settings-nav-link[href="/settings/publishing"][aria-current="page"]) .pc-settings-shell > section::before,
@@ -14606,7 +14604,6 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   /* WI-6542: always-on loop dropped — background-position-only drift, rests at `from`. */
 }
 
-body:has(.pc-settings-nav-link[href="/settings/oracle"][aria-current="page"]) .pc-settings-shell section h1:first-of-type,
 body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) .pc-settings-shell section h1:first-of-type,
 body:has(.pc-settings-nav-link[href="/settings/profile"][aria-current="page"]) .pc-settings-shell section h1:first-of-type,
 body:has(.pc-settings-nav-link[href="/settings/publishing"][aria-current="page"]) .pc-settings-shell section h1:first-of-type,
@@ -14616,7 +14613,6 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
     0 0 42px rgb(from var(--emerald-400) r g b / 0.08);
 }
 
-body:has(.pc-settings-nav-link[href="/settings/oracle"][aria-current="page"]) .pc-settings-shell section h2,
 body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) .pc-settings-shell section h2,
 body:has(.pc-settings-nav-link[href="/settings/profile"][aria-current="page"]) .pc-settings-shell section h3,
 body:has(.pc-settings-nav-link[href="/settings/publishing"][aria-current="page"]) .pc-settings-shell section h2,
@@ -14625,7 +14621,6 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   text-shadow: 0 0 14px rgb(from var(--accent-strong) r g b / 0.14);
 }
 
-body:has(.pc-settings-nav-link[href="/settings/oracle"][aria-current="page"]) .pc-settings-shell form,
 body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) .pc-settings-shell form,
 body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) .pc-settings-shell section,
 body:has(.pc-settings-nav-link[href="/settings/profile"][aria-current="page"]) .pc-settings-shell .pc-card,
@@ -14643,7 +14638,6 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
     0 18px 44px rgba(0, 0, 0, 0.12);
 }
 
-body:has(.pc-settings-nav-link[href="/settings/oracle"][aria-current="page"]) .pc-settings-shell form::after,
 body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) .pc-settings-shell form::after,
 body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) .pc-settings-shell section::after,
 body:has(.pc-settings-nav-link[href="/settings/profile"][aria-current="page"]) .pc-settings-shell .pc-card::after,
@@ -14664,7 +14658,6 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
      `-120% 0` background-position, so at rest only the static radial tint shows. */
 }
 
-body:has(.pc-settings-nav-link[href="/settings/oracle"][aria-current="page"]) .pc-settings-shell form div[style*="min-height"],
 body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) .pc-settings-shell form div[style*="min-height"] {
   border-color: rgb(from var(--accent-strong) r g b / 0.24) !important;
   box-shadow:
@@ -14738,12 +14731,10 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 }
 
 @media (prefers-reduced-motion: reduce) {
-  body:has(.pc-settings-nav-link[href="/settings/oracle"][aria-current="page"]) .pc-settings-shell > section::before,
   body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) .pc-settings-shell > section::before,
   body:has(.pc-settings-nav-link[href="/settings/profile"][aria-current="page"]) .pc-settings-shell > section::before,
   body:has(.pc-settings-nav-link[href="/settings/publishing"][aria-current="page"]) .pc-settings-shell > section::before,
   body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"]) .pc-settings-shell > section::before,
-  body:has(.pc-settings-nav-link[href="/settings/oracle"][aria-current="page"]) .pc-settings-shell form::after,
   body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) .pc-settings-shell form::after,
   body:has(.pc-settings-nav-link[href="/settings/operator"][aria-current="page"]) .pc-settings-shell section::after,
   body:has(.pc-settings-nav-link[href="/settings/profile"][aria-current="page"]) .pc-settings-shell .pc-card::after,
