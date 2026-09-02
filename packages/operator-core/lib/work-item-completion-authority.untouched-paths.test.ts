@@ -84,7 +84,12 @@ describe('insufficientEvidenceReason — files-changed-untouched (P-005)', () =>
     expect(
       insufficientEvidenceReason(goodEvidence, {
         ...base,
-        requirementDispositionShortfall: { kind: 'unfaithful', entries: [] },
+        requirementDispositionShortfall: {
+          kind: 'unfaithful',
+          notQuotedFromSource: ['"implemented the thing"'],
+          implementedWithoutResolvingCitation: [],
+          deferredWithoutFollowUp: [],
+        },
       }),
     ).toBe('requirement-disposition-unfaithful');
   });
