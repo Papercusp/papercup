@@ -85,7 +85,7 @@ describe('file-lock authority leg over the real HTTP transport', async () => {
   function requesterDeps(over: Partial<FileLockRoutingDeps> = {}): FileLockRoutingDeps {
     return {
       domainToHarnessSlug: (d) => (d === DOMAIN ? HARNESS : null),
-      harnessToHiveSlug: () => null,
+      harnessToPotSlug: () => null,
       skipRemotePeersFastPath: true,
       now: () => NOW,
       resolveSelf: async () => ({ githubUserId: 2, devicePubkey: REQUESTER_PUBKEY }),

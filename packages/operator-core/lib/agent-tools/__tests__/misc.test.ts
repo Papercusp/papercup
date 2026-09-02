@@ -134,7 +134,7 @@ describe('autoloop:control', () => {
     vi.doMock('../../autoloop', () => ({ resetFireErrors }));
     vi.doMock('../../workspace-brain-scope', () => ({
       isWorkspaceCoordinationOn: vi.fn(async () => false),
-      workspaceBrainReadKeys: (_workspaceId: string, perHiveSlug: string) => [perHiveSlug],
+      workspaceBrainReadKeys: (_workspaceId: string, perPotSlug: string) => [perPotSlug],
     }));
     mockDbOrgSql([]);
     const { default: tool } = await import('../autoloop/control');
@@ -153,8 +153,8 @@ describe('autoloop:control', () => {
     vi.doMock('../../autoloop', () => ({ resetFireErrors }));
     vi.doMock('../../workspace-brain-scope', () => ({
       isWorkspaceCoordinationOn: vi.fn(async () => true),
-      workspaceBrainReadKeys: (workspaceId: string, perHiveSlug: string, on: boolean) =>
-        on ? [workspaceId, perHiveSlug] : [perHiveSlug],
+      workspaceBrainReadKeys: (workspaceId: string, perPotSlug: string, on: boolean) =>
+        on ? [workspaceId, perPotSlug] : [perPotSlug],
     }));
     mockDbOrgSql([]);
     const { default: tool } = await import('../autoloop/control');

@@ -262,7 +262,7 @@ describe('two-instance HIVE authority serialization over loopback', () => {
           now: () => NOW,
           resolveSelf: async () => ({ githubUserId: 9, devicePubkey: selfPubkey }),
           domainToHarnessSlug: () => 'member-harness',
-          harnessToHiveSlug: () => 'my-hive',
+          harnessToPotSlug: () => 'my-hive',
           fetchHivePresenceRows: async () => HIVE_ROSTER,
           skipRemotePeersFastPath: true,
         },

@@ -11,7 +11,7 @@ vi.mock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws1' }));
 
 import { loadHarnessRegistry } from '../../../harness-registry';
-import { getDomainToHarnessSlug, getHarnessToHiveSlug } from '../../../authority/file-lock-routing';
+import { getDomainToHarnessSlug, getHarnessToPotSlug } from '../../../authority/file-lock-routing';
 import { _testing } from '../file-lock-authority-wiring';
 
 beforeEach(() => {
@@ -48,7 +48,7 @@ describe('file-lock-authority-wiring resolver snapshot', () => {
     (loadHarnessRegistry as Mock).mockResolvedValue(REGISTRY);
     await _testing.refreshResolverSnapshot();
 
-    const hiveResolver = getHarnessToHiveSlug();
+    const hiveResolver = getHarnessToPotSlug();
     expect(hiveResolver('sheets')).toBe('org-hive'); // member → home Hive
     expect(hiveResolver('org-hive')).toBe('org-hive'); // kind:'hive' → itself
     expect(hiveResolver('papercup')).toBeNull(); // non-member → harness-scoped (no Hive)
@@ -60,6 +60,6 @@ describe('file-lock-authority-wiring resolver snapshot', () => {
     // refreshResolverSnapshot rejects; the boot caller swallows it. The maps stay empty.
     await expect(_testing.refreshResolverSnapshot()).rejects.toThrow('PG down');
     expect(getDomainToHarnessSlug()('/fake/sheets')).toBeNull();
-    expect(getHarnessToHiveSlug()('sheets')).toBeNull();
+    expect(getHarnessToPotSlug()('sheets')).toBeNull();
   });
 });

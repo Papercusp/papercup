@@ -665,7 +665,7 @@ describe('cross-peer coordination on a shared Hive — file-lock ops route over 
       const routingDeps = (sql: postgres.Sql, self: { githubUserId: number; devicePubkey: string }): FileLockRoutingDeps => ({
         ...electionDeps(sql, self),
         domainToHarnessSlug: () => HARNESS_SLUG,
-        harnessToHiveSlug: () => HIVE_SLUG,
+        harnessToPotSlug: () => HIVE_SLUG,
         skipRemotePeersFastPath: true,
       });
       const lockAcquire = (who: { sql: postgres.Sql; self: { githubUserId: number; devicePubkey: string } }, owner: string) => {

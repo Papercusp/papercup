@@ -299,19 +299,19 @@ async function checkFileLockRouting(runId: string): Promise<CheckResult> {
   const hiveLocal = await routeFileLockOp(
     '/repo',
     { local: async () => { ranLocal = true; return 1; } },
-    { ...forced, harnessToHiveSlug: () => HIVE, fetchHivePresenceRows: async () => [], resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'aaa' }) },
+    { ...forced, harnessToPotSlug: () => HIVE, fetchHivePresenceRows: async () => [], resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'aaa' }) },
   );
   // Hive member, a remote Swarm 'aaa' is the authority and we're 'zzz' → fail-open, hive-scoped warning.
   const potFailOpen = await routeFileLockOp(
     '/repo',
     { local: async () => 2 },
-    { ...forced, harnessToHiveSlug: () => HIVE, fetchHivePresenceRows: async () => [presenceRow('aaa', now)], resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'zzz' }) },
+    { ...forced, harnessToPotSlug: () => HIVE, fetchHivePresenceRows: async () => [presenceRow('aaa', now)], resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'zzz' }) },
   );
   // NON-Hive harness → harness-scoped authority (unchanged behaviour).
   const harnessScoped = await routeFileLockOp(
     '/repo',
     { local: async () => 3 },
-    { ...forced, harnessToHiveSlug: () => null, fetchPresenceRows: async () => [presenceRow('aaa', now)], resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'zzz' }) },
+    { ...forced, harnessToPotSlug: () => null, fetchPresenceRows: async () => [presenceRow('aaa', now)], resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'zzz' }) },
   );
   // Unmanaged domain → local.
   const unmanaged = await routeFileLockOp('/x', { local: async () => 5 }, { domainToHarnessSlug: () => null });
@@ -320,7 +320,7 @@ async function checkFileLockRouting(runId: string): Promise<CheckResult> {
   const fastPath = await routeFileLockOp(
     '/repo',
     { local: async () => { ranFast = true; return 6; } },
-    { domainToHarnessSlug: () => HARNESS, harnessToHiveSlug: () => `${HIVE}-fp`, now: () => now, fetchHivePresenceRows: async () => [], resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'aaa' }) },
+    { domainToHarnessSlug: () => HARNESS, harnessToPotSlug: () => `${HIVE}-fp`, now: () => now, fetchHivePresenceRows: async () => [], resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'aaa' }) },
   );
 
   const potLocalOk = ranLocal && hiveLocal.via === 'local-authority';

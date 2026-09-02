@@ -255,7 +255,7 @@ export class TwoInstanceAuthorityRig {
     return {
       ...this.requesterAuthorityDeps(),
       domainToHarnessSlug: (d) => (d === domain ? this.harness : null),
-      harnessToHiveSlug: () => null,
+      harnessToPotSlug: () => null,
       skipRemotePeersFastPath: true,
     };
   }

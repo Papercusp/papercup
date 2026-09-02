@@ -101,6 +101,11 @@ beforeAll(async () => {
       workspace_id text NOT NULL,
       harness_slug text NOT NULL,
       plan_slug text NOT NULL,
+      -- P-022: the ad-hoc spec scope is materialised WITH a self-explaining body, so this
+      -- fixture needs the column the real table has. Same class of drift the MIGRATION_929
+      -- note above records (EI-21270668928342264): a hand-rolled fixture silently falling
+      -- one column behind a harness_shared table.
+      content text NOT NULL DEFAULT '',
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
     );
     CREATE TABLE harness_shared.plan_items (
@@ -108,6 +113,8 @@ beforeAll(async () => {
       harness_slug text NOT NULL,
       plan_slug text NOT NULL,
       item_id text NOT NULL,
+      -- Real table: NOT NULL with NO default, which is why the ad-hoc item insert computes it.
+      seq integer NOT NULL,
       owner_gate_marker text,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id)
     );
@@ -177,13 +184,109 @@ beforeEach(async () => {
     INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug)
     VALUES (${WORKSPACE}, ${HARNESS}, 'reconnect-plan')`;
   await db.sql`
-    INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id)
-    VALUES (${WORKSPACE}, ${HARNESS}, 'reconnect-plan', 'P-003'),
-           (${WORKSPACE}, ${HARNESS}, 'reconnect-plan', 'P-004')`;
+    INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id, seq)
+    VALUES (${WORKSPACE}, ${HARNESS}, 'reconnect-plan', 'P-003', 1),
+           (${WORKSPACE}, ${HARNESS}, 'reconnect-plan', 'P-004', 2)`;
   await db.sql`
     INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, source_plan_slug)
     VALUES (${WORKSPACE}, ${HARNESS}, 'WI-101', 'reconnect-plan'),
            (${WORKSPACE}, ${HARNESS}, 'WI-102', 'reconnect-plan')`;
+});
+
+describe('ad-hoc work-items carry spec evidence with no plan (P-022 / D-018)', () => {
+  const ADHOC = 'adhoc-work-item-specs';
+
+  beforeEach(async () => {
+    // A work-item with NO source_plan_slug — the 99.2% ad-hoc regime layer A governs.
+    await db.sql`
+      INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, source_plan_slug)
+      VALUES (${WORKSPACE}, ${HARNESS}, 'WI-900', NULL)`;
+  });
+
+  it('materialises the shared scope lazily, then authors and binds against it', async () => {
+    const before = await db.sql`
+      SELECT plan_slug FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${ADHOC}`;
+    expect(before, 'the scope must not exist until something needs it').toHaveLength(0);
+
+    // No planSlug anywhere in this flow — that is the whole point of the item.
+    const authored = await specs.setSpecClause(
+      clause({
+        planSlug: undefined,
+        planItemId: 'WI-900',
+        specId: 'WI-900:S-001',
+        sourceValId: null,
+        behavior: 'The ad-hoc close names each requirement it disposed of.',
+      }),
+    );
+    expect(authored).toMatchObject({ status: 'created', revision: 1 });
+
+    const bound = await evidenceStore.bindSpecEvidence({
+      workItemId: 'WI-900',
+      specId: 'WI-900:S-001',
+      evidenceKind: 'test',
+      evidenceRef: 'lib/adhoc.test.ts#disposition',
+      sourceFingerprint: 'git:adhoc1',
+      harnessSlug: HARNESS,
+      actorId: 'su-test',
+    });
+    expect(bound).toMatchObject({ status: 'created', planSlug: ADHOC, workItemId: 'WI-900' });
+
+    // The edge row is what makes the evidence findable per work-item, and it carries the
+    // resolved scope rather than a NULL — plan_slug is a PK column and can never be null.
+    const edges = await db.sql<{ plan_slug: string; work_item_id: string }[]>`
+      SELECT plan_slug, work_item_id FROM harness_shared.work_item_spec_revision_edges
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}`;
+    expect(edges).toEqual([{ plan_slug: ADHOC, work_item_id: 'WI-900' }]);
+
+    const scope = await db.sql<{ content: string }[]>`
+      SELECT content FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${ADHOC}`;
+    expect(scope).toHaveLength(1);
+    expect(scope[0]!.content, 'the row must explain itself to whoever finds it').toContain(
+      'Ad-hoc work-item spec scope',
+    );
+  });
+
+  it('is idempotent across work-items — one scope row, one item row each', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, source_plan_slug)
+      VALUES (${WORKSPACE}, ${HARNESS}, 'WI-901', NULL)`;
+    for (const wi of ['WI-900', 'WI-901', 'WI-900']) {
+      await specs.setSpecClause(
+        clause({ planSlug: undefined, planItemId: wi, specId: `${wi}:S-001`, sourceValId: null }),
+      );
+    }
+    const plans = await db.sql`
+      SELECT plan_slug FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${ADHOC}`;
+    expect(plans, 'one scope row per harness, never one per work-item').toHaveLength(1);
+    const items = await db.sql<{ item_id: string; seq: number }[]>`
+      SELECT item_id, seq FROM harness_shared.plan_items
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${ADHOC}
+       ORDER BY item_id`;
+    expect(items.map((r) => r.item_id)).toEqual(['WI-900', 'WI-901']);
+    expect(new Set(items.map((r) => Number(r.seq))).size, 'seq must stay distinct').toBe(2);
+  });
+
+  it('still honours an explicit plan slug — the ad-hoc path is a fallback, not a takeover', async () => {
+    await specs.setSpecClause(clause());
+    const bound = await evidenceStore.bindSpecEvidence({
+      workItemId: 'WI-101',
+      sourceValId: 'VAL-003-01',
+      evidenceKind: 'test',
+      evidenceRef: 'test/reconnect.integration.ts#explicit',
+      sourceFingerprint: 'git:explicit',
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      actorId: 'su-test',
+    });
+    expect(bound).toMatchObject({ status: 'created', planSlug: 'reconnect-plan' });
+    const adhoc = await db.sql`
+      SELECT plan_slug FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${ADHOC}`;
+    expect(adhoc, 'a plan-bound write must not materialise the ad-hoc scope').toHaveLength(0);
+  });
 });
 
 describe('exact spec evidence bindings', () => {

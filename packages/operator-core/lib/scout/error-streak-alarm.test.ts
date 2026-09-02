@@ -221,7 +221,7 @@ describe('checkAndFireErrorStreakAlarm — fail-soft shell', () => {
       { status: 'error', detail: { error: 'transport dead' } },
     ];
 
-    // workspaceBrainScopeKey(workspaceId, perHiveSlug, on) === workspaceId
+    // workspaceBrainScopeKey(workspaceId, perPotSlug, on) === workspaceId
     // when FLAGS.WORKSPACE_COORDINATION is ON — recordScoutTick then writes
     // ticks (and this alarm is invoked) with installSlug === workspaceId.
     await checkAndFireErrorStreakAlarm({ workspaceId: 'papercusp-workspace', installSlug: 'papercusp-workspace' });
