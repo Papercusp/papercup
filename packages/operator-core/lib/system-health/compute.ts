@@ -40,6 +40,7 @@ import type { RawGatewayStats } from '../inference-gateway/gateway-wedge';
 import type { ClaudeAccount } from '../deployment/account-pool';
 import { accountFull } from '../deployment/account-pool';
 import { projectLiveEdgeThrottle } from '../deployment/account-pool-store';
+import { dedupeInFlight } from '../dedupe-in-flight';
 import type { LiveHealthReading, LiveHealthSignalKey, LiveHealthSnapshot } from '../resource-governor/live-health';
 import type {
   SystemHealth,
@@ -3278,25 +3279,13 @@ export function lastSystemHealth(workspaceId?: string): SystemHealth | null {
 }
 
 /**
- * Generic per-key single-flight de-dup (EI-19303672371455669): concurrent callers sharing
- * the same `key` await the SAME in-flight `fn()` promise instead of each independently
- * invoking `fn`. Cleared from `store` the instant the promise SETTLES — success OR failure
- * — so a failed call is retryable on the very next invocation, never cached as a permanent
- * rejection. Generalizes `makeOpenImprovementsReader`'s per-call promise-memo (above) to a
- * keyed map, for the case where the key space itself (e.g. one entry per workspace) can
- * have several independent, concurrently-racing keys rather than just one memoized call.
- * Exported + pure (no module-level state of its own) so it's directly unit-testable without
- * standing up whatever `fn` actually does.
+ * Generic per-key single-flight de-dup (EI-19303672371455669) — extracted to
+ * `../dedupe-in-flight` (EI-22091013068319789) so `sync-resolver/adv-roster-read.ts`
+ * can reuse it without importing this whole module graph. Re-exported here (not
+ * just imported) so every existing importer of `dedupeInFlight` from `./compute`
+ * is unaffected.
  */
-export function dedupeInFlight<T>(store: Map<string, Promise<T>>, key: string, fn: () => Promise<T>): Promise<T> {
-  const existing = store.get(key);
-  if (existing) return existing;
-  const promise = fn().finally(() => {
-    if (store.get(key) === promise) store.delete(key);
-  });
-  store.set(key, promise);
-  return promise;
-}
+export { dedupeInFlight };
 
 /** Per-workspace in-flight store for the tick's full aggregation (EI-19303672371455669).
  *  Concurrent callers racing into a cold cache — `resolveSystemHealth`'s cold path, the
