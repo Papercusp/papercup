@@ -1,0 +1,166 @@
+/**
+ * standdown-all.test.ts — loop:standdown-all (EI-22138154596110669).
+ *
+ * Mocks getOrgPg/workspace + the control harness (separately covered elsewhere) + sync-sse,
+ * so no PG. Same shape as routines/group-set.test.ts, whose runControlMutation fake this
+ * mirrors exactly (capturePrev -> [dryRun short-circuit | apply -> verify]).
+ *
+ * Asserts: role gate · workspace-wide scope by default, fleet-scoped when `fleetSlug` is
+ * given (never both in the same WHERE) · every stand-down pause is stamped with the
+ * standdownAll marker + a FINITE expiresAtMs (default TTL, or the caller's pauseTtlHours) ·
+ * the loud "captured zero active candidates" warning fires on a real, zero-touched apply
+ * (and ONLY then — never on dryRun, never when something was actually paused) · dryRun does
+ * not apply · a partial verify surfaces ok:false.
+ *
+ * Run: cd packages/operator-core && npx vitest run lib/agent-tools/loop/standdown-all.test.ts
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_RELEASE_PAUSE_TTL_MS, LOOP_STANDDOWN_MARKER } from '../../harness/routines/release-pause-ttl';
+
+const { sqlMock } = vi.hoisted(() => ({
+  sqlMock: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
+}));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<Record<string, unknown>>()), getOrgPg: () => ({ sql: sqlMock }) }));
+vi.mock('../../workspace-registry', async (orig) => ({ ...(await orig<Record<string, unknown>>()), activeWorkspaceId: () => 'default' }));
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
+vi.mock('../../gateway-control/control-harness', () => ({
+  runControlMutation: vi.fn(async (spec: any, opts: any = {}) => {
+    const prev = await spec.capturePrev();
+    if (opts.dryRun) return { dryRun: true, applied: false, prev, preview: spec.describe?.(prev) };
+    const next = await spec.apply();
+    const verify = spec.verify ? await spec.verify(next) : undefined;
+    return { dryRun: false, applied: true, prev, next, verify, auditId: 'aud-1' };
+  }),
+}));
+
+const standdownAllTool = (await import('./standdown-all')).default;
+
+// standdown-all returns the canonical { data } shape (definetool-token-optimization P-003
+// migration) — a direct .handler() call (bypassing the wire-encoding path) gets the raw
+// { data } object, not a { content } envelope.
+type Out = { data: Record<string, unknown> };
+const body = (o: unknown) => (o as Out).data;
+
+const NOW = Date.UTC(2026, 8, 2, 12, 0, 0);
+
+const ACTIVE_ROWS = [
+  { install_slug: 'papercusp', name: 'loop-su-alice', target_owner_id: 'su-alice', pause: null },
+  { install_slug: 'papercusp', name: 'loop-su-bob', target_owner_id: 'su-bob', pause: null },
+];
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.spyOn(Date, 'now').mockReturnValue(NOW);
+});
+
+describe('loop:standdown-all', () => {
+  it('rejects a role without operator-config write authority', async () => {
+    await expect(
+      standdownAllTool.handler({ reason: 'host restart' } as never, { role: 'cup' } as never),
+    ).rejects.toThrow(/operator, architect, or mug/i);
+  });
+
+  it('workspace-wide (no fleetSlug): scopes to every active loop-su-% row, never a fleet/coord_presence join', async () => {
+    sqlMock
+      .mockResolvedValueOnce(ACTIVE_ROWS) // capturePrev
+      .mockResolvedValueOnce(ACTIVE_ROWS) // apply's re-read
+      .mockResolvedValueOnce([]) // the bulk pause UPDATE
+      .mockResolvedValueOnce([
+        { target_owner_id: 'su-alice', active: false, standdown: true },
+        { target_owner_id: 'su-bob', active: false, standdown: true },
+      ]); // verify SELECT
+
+    const b = body(
+      await standdownAllTool.handler({ reason: 'coordinated host restart' } as never, { role: 'operator' } as never),
+    );
+    expect(b).toMatchObject({ ok: true, scope: 'workspace', applied: true, pausedCount: 2, verify: { ok: true } });
+    expect(b.targets).toEqual([
+      { ownerId: 'su-alice', routineName: 'loop-su-alice', harness: 'papercusp' },
+      { ownerId: 'su-bob', routineName: 'loop-su-bob', harness: 'papercusp' },
+    ]);
+
+    const calls = sqlMock.mock.calls.map((c) => c.flat().join(' '));
+    const scanCalls = calls.filter((c) => c.includes('FROM harness_shared.routines') && c.includes('active = true'));
+    expect(scanCalls.length).toBeGreaterThan(0);
+    for (const c of scanCalls) expect(c).not.toContain('coord_presence');
+
+    const update = calls.find((c) => c.includes('UPDATE harness_shared.routines') && c.includes('SET active = false'));
+    expect(update).toBeDefined();
+    expect(update).not.toContain('coord_presence');
+    // stamped standdownAll marker + a FINITE default-TTL expiresAtMs, never an open-ended hold
+    expect(update).toContain(`"${LOOP_STANDDOWN_MARKER}":true`);
+    expect(update).toContain(`"expiresAtMs":${NOW + DEFAULT_RELEASE_PAUSE_TTL_MS}`);
+    expect(update).toContain('"reason":"coordinated host restart"');
+  });
+
+  it('fleetSlug: scopes both capture and apply to that fleet\'s CURRENT members (coord_presence), never the whole workspace', async () => {
+    sqlMock
+      .mockResolvedValueOnce([ACTIVE_ROWS[0]]) // capturePrev, fleet-scoped
+      .mockResolvedValueOnce([ACTIVE_ROWS[0]]) // apply's re-read
+      .mockResolvedValueOnce([]) // UPDATE
+      .mockResolvedValueOnce([{ target_owner_id: 'su-alice', active: false, standdown: true }]); // verify
+
+    const b = body(
+      await standdownAllTool.handler(
+        { reason: 'fleet-scoped hold', fleetSlug: 'ei217419-current-head-20260830-1141' } as never,
+        { role: 'operator' } as never,
+      ),
+    );
+    expect(b).toMatchObject({ ok: true, scope: 'fleet:ei217419-current-head-20260830-1141', pausedCount: 1 });
+
+    const calls = sqlMock.mock.calls.map((c) => c.flat().join(' '));
+    const scanCalls = calls.filter((c) => c.includes('FROM harness_shared.routines') && c.includes('active = true'));
+    for (const c of scanCalls) {
+      expect(c).toContain('coord_presence');
+      expect(c).toContain('ei217419-current-head-20260830-1141');
+    }
+    const update = calls.find((c) => c.includes('UPDATE harness_shared.routines') && c.includes('SET active = false'));
+    expect(update).toContain('"fleetSlug":"ei217419-current-head-20260830-1141"');
+  });
+
+  it('an explicit pauseTtlHours overrides the default TTL in the stamped expiresAtMs', async () => {
+    sqlMock
+      .mockResolvedValueOnce(ACTIVE_ROWS)
+      .mockResolvedValueOnce(ACTIVE_ROWS)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { target_owner_id: 'su-alice', active: false, standdown: true },
+        { target_owner_id: 'su-bob', active: false, standdown: true },
+      ]);
+    await standdownAllTool.handler({ reason: 'short hold', pauseTtlHours: 0.5 } as never, { role: 'operator' } as never);
+    const calls = sqlMock.mock.calls.map((c) => c.flat().join(' '));
+    const update = calls.find((c) => c.includes('UPDATE harness_shared.routines') && c.includes('SET active = false'));
+    expect(update).toContain(`"expiresAtMs":${NOW + 0.5 * 3_600_000}`);
+  });
+
+  it('a real apply that captures ZERO active candidates is loudly warned, never a silent success', async () => {
+    sqlMock.mockResolvedValueOnce([]); // capturePrev: nothing active — apply() short-circuits, never re-reads/updates/verifies
+    const b = body(await standdownAllTool.handler({ reason: 'nothing to pause' } as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: true, applied: true, pausedCount: 0 });
+    expect(b.warning).toMatch(/NOTHING was paused/i);
+  });
+
+  it('dryRun previews without pausing anything or warning', async () => {
+    sqlMock.mockResolvedValueOnce(ACTIVE_ROWS); // capturePrev only — apply/verify never run under dryRun
+    const b = body(
+      await standdownAllTool.handler({ reason: 'preview', dryRun: true } as never, { role: 'operator' } as never),
+    );
+    expect(b).toMatchObject({ ok: true, dryRun: true, applied: false, pausedCount: 0 });
+    expect(b.warning).toBeUndefined();
+    expect(sqlMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces verify:{ok:false} when a targeted loop is not actually paused+stamped after the write', async () => {
+    sqlMock
+      .mockResolvedValueOnce(ACTIVE_ROWS)
+      .mockResolvedValueOnce(ACTIVE_ROWS)
+      .mockResolvedValueOnce([])
+      // one of the two rows raced back to active — verify must catch it, not just trust the UPDATE
+      .mockResolvedValueOnce([
+        { target_owner_id: 'su-alice', active: false, standdown: true },
+        { target_owner_id: 'su-bob', active: true, standdown: null },
+      ]);
+    const b = body(await standdownAllTool.handler({ reason: 'race check' } as never, { role: 'operator' } as never));
+    expect(b.verify).toMatchObject({ ok: false, detail: expect.stringContaining('not every targeted loop') });
+  });
+});

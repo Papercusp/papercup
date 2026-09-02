@@ -1380,6 +1380,7 @@ describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does
       mode: 'work' as const,
       monitor: null,
       monitorStanddown: null,
+      standdown: null,
       goal: null,
       fireCount: 3,
       firesSinceArm: 3,

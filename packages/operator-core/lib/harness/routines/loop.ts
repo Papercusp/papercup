@@ -62,6 +62,10 @@ import {
   readPersistedMonitorConfig,
   type MonitorStanddownRecord,
 } from './monitor-standdown';
+// EI-22138154596110669: the loop:standdown-all bulk pause is a distinct marker from an
+// ordinary per-loop pause (routines:set / loop:end) — isLoopStanddownPause gates on the raw
+// jsonb marker before readRoutinePause/loopStanddownBanner are used to render it below.
+import { isLoopStanddownPause, loopStanddownBanner, readRoutinePause } from './release-pause-ttl';
 
 /**
  * The `target_role` a loop routine carries. The DBOS fire (B-LOOP-3) recognises
@@ -960,6 +964,24 @@ export interface LoopStatus {
    *  null when it never did. Survives the deactivation, so `active:false` is explicable. */
   monitorStanddown: MonitorStanddownRecord | null;
   /**
+   * EI-22138154596110669: an active `loop:standdown-all` bulk pause on THIS loop, or null
+   * when none is in force. Distinct from an ordinary per-loop pause (routines:set / loop:end
+   * with no `standdownAll` marker) — those never populate this field, by design, so a
+   * fleet-wide stand-down broadcast can be verified against real per-loop state instead of
+   * trusted at face value (the bug this exists to close: a broadcast asserted "all engine
+   * loops are paused" while only 2 loop routines had actually been touched).
+   * `banner` is the ready-to-render `loop:status` line (`loopStanddownBanner`); the other
+   * fields are the parsed `RoutinePauseRecord` a caller may want to compute its own message
+   * from (e.g. a leader-brief aggregate).
+   */
+  standdown: {
+    banner: string;
+    reason: string | null;
+    pausedBy: string | null;
+    pausedAtMs: number | null;
+    expiresAtMs: number | null;
+  } | null;
+  /**
    * The loop's GOAL text, or null for a loop armed without one (or armed before this
    * field existed — those keep only the kickoff prose and cannot be back-filled).
    *
@@ -1826,6 +1848,19 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastActiveAtMs: presenceMs,
     intervalSec,
   });
+  // EI-22138154596110669: gate on the RAW jsonb marker before parsing — isLoopStanddownPause
+  // never matches an ordinary per-loop pause, so this stays null for those.
+  const rawPause = r.metadata?.pause ?? null;
+  const standdownPause = isLoopStanddownPause(rawPause) ? readRoutinePause(rawPause) : null;
+  const standdown = standdownPause
+    ? {
+        banner: loopStanddownBanner({ pause: standdownPause, nowMs: Date.now() })!,
+        reason: standdownPause.reason,
+        pausedBy: standdownPause.pausedBy,
+        pausedAtMs: standdownPause.pausedAtMs,
+        expiresAtMs: standdownPause.expiresAtMs,
+      }
+    : null;
   return {
     name: r.name,
     ownerId: r.target_owner_id ?? fallbackOwnerId,
@@ -1839,6 +1874,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     // report a policy the reconciler would reject (or miss one it would enforce).
     monitor: readPersistedMonitorConfig(pt),
     monitorStanddown: readMonitorStanddownRecord(r.metadata),
+    standdown,
     // Absent (a loop armed before this field, or with no goal) reads as null — an
     // honest "not recorded", never an empty string that would render as a blank goal.
     goal: typeof pt?.goal === 'string' && pt.goal.trim() ? pt.goal.trim() : null,

@@ -64,6 +64,7 @@ function status(overrides: Partial<LoopStatus> & { turnsStalled: boolean }): Loo
     mode: 'work',
     monitor: null,
     monitorStanddown: null,
+    standdown: null,
     goal: null,
     fireCount: 10,
     firesSinceArm: 10,

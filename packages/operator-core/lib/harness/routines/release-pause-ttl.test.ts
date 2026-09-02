@@ -18,14 +18,20 @@ import { CHECKPOINT_QUIESCENCE_PAUSE_MARKER } from '../../release/checkpoint-ser
 import {
   DEFAULT_RELEASE_PAUSE_TTL_HOURS,
   DEFAULT_RELEASE_PAUSE_TTL_MS,
+  LOOP_STANDDOWN_MARKER,
   RELEASE_ROUTINE_GROUP,
+  classifyFinitePauseExpiry,
   classifyReleasePauseExpiry,
   effectivePauseExpiryMs,
   gatePausedBanner,
   isCheckpointQuiescencePause,
+  isLoopStanddownPause,
   isReleaseGroup,
+  loopStanddownBanner,
   readRoutinePause,
+  resolveLoopStanddownExpiryMs,
   resolvePauseExpiryMs,
+  sweepExpiredLoopStanddowns,
   sweepExpiredReleasePauses,
 } from './release-pause-ttl';
 
@@ -416,6 +422,257 @@ describe('sweepExpiredReleasePauses', () => {
     const { notifyAttentionOnce } = await import('../../attention-notify');
     const { sql } = fakeSql({ rows: [expiredRow()] });
     await sweepExpiredReleasePauses(sql, { nowMs: NOW, notify: false });
+    expect(vi.mocked(notifyAttentionOnce)).not.toHaveBeenCalled();
+  });
+});
+
+// ─── EI-22138154596110669: loop:standdown-all (a GROUP-AGNOSTIC sibling of the ────────
+// release-group machinery above — every stand-down pause is ALWAYS finite, with no
+// group/quiescence gating, and is distinguished from an ordinary per-loop pause
+// (routines:set / loop:end) by a positive marker rather than mere presence). ─────────
+
+describe('isLoopStanddownPause', () => {
+  it('is true only for an object carrying the marker === true', () => {
+    expect(isLoopStanddownPause({ [LOOP_STANDDOWN_MARKER]: true })).toBe(true);
+  });
+
+  it('is false for null / non-object / array / marker-absent / marker-falsy values', () => {
+    for (const v of [null, undefined, 42, 'pause', [1], {}, { standdownAll: false }, { standdownAll: 'true' }]) {
+      expect(isLoopStanddownPause(v)).toBe(false);
+    }
+  });
+
+  it('never matches an ordinary per-loop pause (routines:set / loop:end shape)', () => {
+    expect(isLoopStanddownPause(pause())).toBe(false);
+  });
+});
+
+describe('resolveLoopStanddownExpiryMs (write side — ALWAYS finite, no group gating)', () => {
+  it('stamps the default TTL with no groupSlug/reason arguments at all', () => {
+    expect(resolveLoopStanddownExpiryMs({ pausedAtMs: NOW })).toBe(NOW + DEFAULT_RELEASE_PAUSE_TTL_MS);
+  });
+
+  it('honors an explicit finite positive ttlHours', () => {
+    expect(resolveLoopStanddownExpiryMs({ pausedAtMs: NOW, ttlHours: 0.5 })).toBe(NOW + 0.5 * HOUR);
+  });
+
+  it('a malformed override cannot defeat finiteness — falls back to the default', () => {
+    for (const ttl of [0, -2, Number.NaN, Number.POSITIVE_INFINITY, null, undefined]) {
+      expect(resolveLoopStanddownExpiryMs({ pausedAtMs: NOW, ttlHours: ttl })).toBe(NOW + DEFAULT_RELEASE_PAUSE_TTL_MS);
+    }
+  });
+});
+
+describe('classifyFinitePauseExpiry (read side — group-agnostic sibling of classifyReleasePauseExpiry)', () => {
+  it('an absent pause is not-paused', () => {
+    expect(classifyFinitePauseExpiry(readRoutinePause(null), NOW)).toMatchObject({ expired: false, reason: 'not-paused' });
+  });
+
+  it('a present-but-undatable pause (no expiresAtMs, no pausedAtMs) is undatable — no group fallback exists here', () => {
+    const rec = readRoutinePause({ [LOOP_STANDDOWN_MARKER]: true });
+    expect(classifyFinitePauseExpiry(rec, NOW)).toMatchObject({ expired: false, reason: 'undatable', expiresAtMs: null });
+  });
+
+  it('exactly-at-expiry is not-yet (boundary inclusive of the TTL, same as the release sibling)', () => {
+    const expiresAt = NOW + HOUR;
+    const rec = readRoutinePause(pause({ expiresAtMs: expiresAt }));
+    expect(classifyFinitePauseExpiry(rec, expiresAt)).toMatchObject({ expired: false, reason: 'not-yet', expiresAtMs: expiresAt });
+  });
+
+  it('reports overdueMs + the legacy flag once lapsed (legacy = explicit expiresAtMs never stamped)', () => {
+    const legacyRec = readRoutinePause(pause({ pausedAtMs: NOW - DEFAULT_RELEASE_PAUSE_TTL_MS - 30 * 60_000 }));
+    expect(classifyFinitePauseExpiry(legacyRec, NOW)).toMatchObject({ expired: true, legacy: true, overdueMs: 30 * 60_000 });
+
+    const explicitRec = readRoutinePause(pause({ expiresAtMs: NOW - 60_000 }));
+    expect(classifyFinitePauseExpiry(explicitRec, NOW)).toMatchObject({ expired: true, legacy: false, overdueMs: 60_000 });
+  });
+});
+
+describe('loopStanddownBanner', () => {
+  const banner = (pauseRec: unknown, nowMs: number = NOW) => loopStanddownBanner({ pause: readRoutinePause(pauseRec), nowMs });
+
+  it('renders null when the pause is absent', () => {
+    expect(banner(null)).toBeNull();
+  });
+
+  it('names the pauser, the reason, how long it has been held, and a scheduled auto-resume instant', () => {
+    const b = banner(pause({ expiresAtMs: NOW + HOUR }));
+    expect(b).toContain('⛔ STAND-DOWN ACTIVE');
+    expect(b).toContain('by su-test (deploy-checkout surgery)');
+    expect(b).toContain('(held ~60m)');
+    expect(b).toContain(`auto-resumes ${new Date(NOW + HOUR).toISOString()}`);
+  });
+
+  it('a lapsed TTL says LAPSED and promises the engine auto-resume', () => {
+    const b = banner(pause({ expiresAtMs: NOW - HOUR }));
+    expect(b).toContain(`TTL LAPSED at ${new Date(NOW - HOUR).toISOString()}`);
+    expect(b).toContain('auto-resumes it on the next tick');
+  });
+
+  it('an undatable pause states loudly that no auto-resume is scheduled', () => {
+    const b = banner({ [LOOP_STANDDOWN_MARKER]: true });
+    expect(b).toContain('⚠ NO auto-resume is scheduled');
+    expect(b).toContain('routines:set { active: true }');
+  });
+
+  it('falls back honestly on unknown reason/pausedBy', () => {
+    const b = banner({ [LOOP_STANDDOWN_MARKER]: true, pausedAtMs: NOW });
+    expect(b).toContain('by (unknown)');
+    expect(b).toContain('(no reason recorded)');
+  });
+});
+
+interface FakeLoopRow {
+  workspace_id: string;
+  install_slug: string;
+  name: string;
+  target_owner_id: string | null;
+  active: boolean | null;
+  pause: unknown;
+}
+
+function fakeLoopSql(opts: {
+  rows?: FakeLoopRow[];
+  scanError?: Error;
+  update?: (call: SqlCall, nth: number) => { install_slug: string }[];
+}) {
+  const calls: SqlCall[] = [];
+  let updates = 0;
+  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const text = strings.join('$?');
+    const call: SqlCall = { text, values };
+    calls.push(call);
+    if (/SELECT workspace_id/i.test(text)) {
+      if (opts.scanError) return Promise.reject(opts.scanError);
+      return Promise.resolve(opts.rows ?? []);
+    }
+    if (/UPDATE harness_shared\.routines/i.test(text)) {
+      updates += 1;
+      try {
+        return Promise.resolve(opts.update ? opts.update(call, updates) : [{ install_slug: 'papercusp' }]);
+      } catch (e) {
+        return Promise.reject(e);
+      }
+    }
+    return Promise.resolve([]);
+  }) as unknown as Sql;
+  return { sql, calls };
+}
+
+const expiredLoopRow = (over: Partial<FakeLoopRow> = {}): FakeLoopRow => ({
+  workspace_id: 'ws-1',
+  install_slug: 'papercusp',
+  name: 'loop-su-test-owner',
+  target_owner_id: 'su-test-owner',
+  active: false,
+  pause: pause({
+    [LOOP_STANDDOWN_MARKER]: true,
+    pausedAtMs: NOW - DEFAULT_RELEASE_PAUSE_TTL_MS - 10 * 60_000,
+  }),
+  ...over,
+});
+
+describe('sweepExpiredLoopStanddowns', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('scopes the scan to loop routines carrying the standdownAll marker (never group_slug)', async () => {
+    const { sql, calls } = fakeLoopSql({ rows: [] });
+    await sweepExpiredLoopStanddowns(sql, { nowMs: NOW, notify: false });
+    const scan = calls.find((c) => /SELECT workspace_id/i.test(c.text));
+    expect(scan!.text).toContain('reschedule_interval_sec IS NOT NULL');
+    expect(scan!.text).toContain("metadata->'pause'->>'standdownAll' = 'true'");
+    expect(scan!.text).not.toContain('group_slug');
+  });
+
+  it('a failed scan is non-fatal, warns, and resumes nothing', async () => {
+    const { sql, calls } = fakeLoopSql({ scanError: new Error('pg down') });
+    await expect(sweepExpiredLoopStanddowns(sql, { nowMs: NOW, notify: false })).resolves.toEqual([]);
+    expect(calls).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('scan failed (non-fatal)'));
+  });
+
+  it('auto-resumes a lapsed stand-down and reports the verdict fields, including targetOwnerId', async () => {
+    const { sql } = fakeLoopSql({ rows: [expiredLoopRow()] });
+    const resumed = await sweepExpiredLoopStanddowns(sql, { nowMs: NOW, notify: false });
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0]).toMatchObject({
+      workspaceId: 'ws-1',
+      installSlug: 'papercusp',
+      name: 'loop-su-test-owner',
+      targetOwnerId: 'su-test-owner',
+      legacy: true,
+      overdueMs: 10 * 60_000,
+      pausedBy: 'su-test',
+    });
+  });
+
+  it('guards the re-arm UPDATE on the EXACT pause blob it classified', async () => {
+    const row = expiredLoopRow();
+    const { sql, calls } = fakeLoopSql({ rows: [row] });
+    await sweepExpiredLoopStanddowns(sql, { nowMs: NOW, notify: false });
+    const update = calls.find((c) => /UPDATE harness_shared\.routines/i.test(c.text));
+    expect(update).toBeDefined();
+    expect(update!.values).toContain(JSON.stringify(row.pause));
+    const lastPauseJson = update!.values.find((v): v is string => typeof v === 'string' && v.includes('autoResumedBy'));
+    expect(lastPauseJson).toBeDefined();
+    expect(JSON.parse(lastPauseJson!)).toMatchObject({
+      autoResumedBy: 'loop-standdown-ttl',
+      autoResumeReason: 'legacy-pause-default-ttl-lapsed',
+      resumedAtMs: NOW,
+    });
+  });
+
+  it('a raced UPDATE (pause blob changed underneath) resumes nothing and leaves the row for the next pass', async () => {
+    const { sql } = fakeLoopSql({ rows: [expiredLoopRow()], update: () => [] });
+    await expect(sweepExpiredLoopStanddowns(sql, { nowMs: NOW, notify: false })).resolves.toEqual([]);
+  });
+
+  it('skips non-expired verdicts (not-yet / undatable) even if somehow scanned', async () => {
+    const rows = [
+      expiredLoopRow({ name: 'fresh', pause: pause({ [LOOP_STANDDOWN_MARKER]: true, expiresAtMs: NOW + HOUR }) }),
+      expiredLoopRow({ name: 'undatable', pause: { [LOOP_STANDDOWN_MARKER]: true } }),
+    ];
+    const { sql, calls } = fakeLoopSql({ rows });
+    await expect(sweepExpiredLoopStanddowns(sql, { nowMs: NOW, notify: false })).resolves.toEqual([]);
+    expect(calls.filter((c) => /UPDATE/i.test(c.text))).toHaveLength(0);
+  });
+
+  it('a throwing per-row UPDATE is fail-soft: later rows still resume', async () => {
+    const rows = [expiredLoopRow({ name: 'first' }), expiredLoopRow({ name: 'second' })];
+    const { sql } = fakeLoopSql({
+      rows,
+      update: (_call, nth) => {
+        if (nth === 1) throw new Error('deadlock');
+        return [{ install_slug: 'papercusp' }];
+      },
+    });
+    const resumed = await sweepExpiredLoopStanddowns(sql, { nowMs: NOW, notify: false });
+    expect(resumed.map((r) => r.name)).toEqual(['second']);
+  });
+
+  it('notifies through notifyAttentionOnce with a loop-scoped dedupeKey naming the owner', async () => {
+    const { notifyAttentionOnce } = await import('../../attention-notify');
+    const mock = vi.mocked(notifyAttentionOnce);
+    const row = expiredLoopRow();
+    const { sql } = fakeLoopSql({ rows: [row] });
+    const resumed = await sweepExpiredLoopStanddowns(sql, { nowMs: NOW });
+    expect(resumed).toHaveLength(1);
+    expect(mock).toHaveBeenCalledTimes(1);
+    const arg = mock.mock.calls[0][0] as { dedupeKey?: string; title?: string; body?: string };
+    const expectedExpiry = NOW - DEFAULT_RELEASE_PAUSE_TTL_MS - 10 * 60_000 + DEFAULT_RELEASE_PAUSE_TTL_MS;
+    expect(arg.dedupeKey).toBe(`loop-standdown-ttl:papercusp:loop-su-test-owner:${expectedExpiry}`);
+    expect(arg.title).toContain('AUTO-RESUMED');
+    expect(arg.body).toContain('su-test-owner');
+  });
+
+  it('notify:false suppresses the notice entirely', async () => {
+    const { notifyAttentionOnce } = await import('../../attention-notify');
+    const { sql } = fakeLoopSql({ rows: [expiredLoopRow()] });
+    await sweepExpiredLoopStanddowns(sql, { nowMs: NOW, notify: false });
     expect(vi.mocked(notifyAttentionOnce)).not.toHaveBeenCalled();
   });
 });

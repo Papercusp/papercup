@@ -1531,6 +1531,93 @@ describe('getLoopStatuses — monitor standdown reason reaches the status surfac
   });
 });
 
+describe('getLoopStatuses — loop:standdown-all bulk pause reaches the status surface (EI-22138154596110669)', () => {
+  // Same shape of bug as the monitor-standdown suite above, one column over: `standdown` is
+  // parsed out of `r.metadata.pause`, gated on `isLoopStanddownPause` so an ORDINARY per-loop
+  // pause (routines:set / loop:end, no marker) must NEVER populate it — that discrimination is
+  // the whole point of the marker (a fleet-wide "stand-down" broadcast must be verifiable
+  // against real per-loop state, not conflated with any other reason a loop happens to be off).
+  function pauseRowSql(pause: unknown) {
+    const row = {
+      install_slug: 'papercusp',
+      name: 'loop-su-x',
+      active: false,
+      reschedule_interval_sec: 60,
+      target_owner_id: 'su-x',
+      payload_template: { carry: 'warm', continuation: 'settle', mode: 'work' },
+      fire_count: 3,
+      fire_count_at_arm: 0,
+      last_fired_at: null,
+      armed_at: '2026-08-27T11:00:00.000Z',
+      parked: false,
+      next_fire_at: null,
+      parked_ms: null,
+      last_delivery_outcome: 'queued',
+      consecutive_errors: 0,
+      lifecycle_completed_at: null,
+      last_turn_at: null,
+      last_real_turn_at: null,
+      last_wake_channel: null,
+      last_wake_status: null,
+      last_wake_at: null,
+      last_wake_error: null,
+      presence_last_active_at: null,
+      metadata: pause == null ? {} : { pause },
+    };
+    return transactionalSql(() => [row]);
+  }
+
+  it('surfaces an active stand-down with a ready-to-render banner and the parsed pause fields', async () => {
+    const out = await getLoopStatuses(['su-x'], {
+      sql: pauseRowSql({
+        standdownAll: true,
+        reason: 'coordinated host restart',
+        pausedBy: 'su-leader',
+        pausedAtMs: 1_756_000_000_000,
+        expiresAtMs: 1_756_000_000_000 + 4 * 3_600_000,
+      }) as unknown as Sql,
+    });
+    const s = out.get('su-x')!.standdown;
+    expect(s).not.toBeNull();
+    expect(s).toMatchObject({
+      reason: 'coordinated host restart',
+      pausedBy: 'su-leader',
+      pausedAtMs: 1_756_000_000_000,
+      expiresAtMs: 1_756_000_000_000 + 4 * 3_600_000,
+    });
+    expect(s!.banner).toContain('⛔ STAND-DOWN ACTIVE');
+    expect(s!.banner).toContain('su-leader');
+  });
+
+  it('CALIBRATION: no pause at all reports null', async () => {
+    const out = await getLoopStatuses(['su-x'], { sql: pauseRowSql(null) as unknown as Sql });
+    expect(out.get('su-x')!.standdown).toBeNull();
+  });
+
+  it('an ORDINARY per-loop pause (no standdownAll marker) must NEVER populate this field', async () => {
+    const out = await getLoopStatuses(['su-x'], {
+      sql: pauseRowSql({ reason: 'ad-hoc hold via routines:set', pausedBy: 'su-someone', pausedAtMs: 1 }) as unknown as Sql,
+    });
+    expect(out.get('su-x')!.standdown).toBeNull();
+  });
+
+  it('CAUGHT: the surface DISCRIMINATES a marker-bearing stand-down from an ordinary pause and from no pause', async () => {
+    // The negative control: a mapper hard-wired to null passes the CALIBRATION case above on
+    // its own, so only this comparison catches the column silently dropping out of the SELECT.
+    const stoodDown = await getLoopStatuses(['su-x'], {
+      sql: pauseRowSql({ standdownAll: true, reason: 'x', pausedBy: 'y', pausedAtMs: 1, expiresAtMs: 2 }) as unknown as Sql,
+    });
+    const ordinary = await getLoopStatuses(['su-x'], {
+      sql: pauseRowSql({ reason: 'ad-hoc', pausedBy: 'y', pausedAtMs: 1 }) as unknown as Sql,
+    });
+    const never = await getLoopStatuses(['su-x'], { sql: pauseRowSql(null) as unknown as Sql });
+
+    expect(stoodDown.get('su-x')!.standdown).not.toBeNull();
+    expect(ordinary.get('su-x')!.standdown).toBeNull();
+    expect(never.get('su-x')!.standdown).toBeNull();
+  });
+});
+
 describe('computeLoopCadence (EI-20217869515819188 — configured vs observed cadence)', () => {
   const armedAtMs = Date.parse('2026-08-11T20:03:22.000Z');
   const nowMs = armedAtMs + (7 * 60 * 60 + 47 * 60) * 1000;
