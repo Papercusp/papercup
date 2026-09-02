@@ -107,11 +107,9 @@ export const COMPLETION_CLAIM_KINDS = ['string-in-array', 'symbol-defined'] as c
 export type CompletionClaimKind = (typeof COMPLETION_CLAIM_KINDS)[number];
 
 export const COMPLETION_CLAIMS_CONTRACT =
-  'Structured, machine-checkable assertions this close makes about the source. Each is ' +
-  're-evaluated against the tree by the server — the caller supplies the CLAIM, never the ' +
-  'verdict. Use for membership/definition facts a reader would otherwise have to take on ' +
-  'trust ("X is in array Y", "X is defined in Z"). A claim that cannot be decided is ' +
-  'reported `unevaluatable`, never treated as passing.';
+  'Optional machine-checkable assertions about the source ("X is in array Y", "X is defined ' +
+  'in Z"). The server RE-EVALUATES each against the tree: a false one downgrades this close ' +
+  'to proposed and is named back to you. Undecidable ones are ignored, never treated as passing.';
 
 export type CompletionClaimVerdict = 'holds' | 'falsified' | 'unevaluatable';
 

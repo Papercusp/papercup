@@ -1646,7 +1646,13 @@ function suggestExistingPath(
   }
 }
 
-function completionEvidenceFromRecord(
+/**
+ * Exported for the wiring test only (EI-22175397357614106) — same reason
+ * `isVerificationWorkItem` / `claimsUniversalVerification` below are exported. This is a
+ * WHITELIST, and a field it forgets is dropped silently, so the mapping itself needs a
+ * test that no amount of testing the downstream algorithm can substitute for.
+ */
+export function completionEvidenceFromRecord(
   rec: Omit<CompletionRecord, 'workItem' | 'status'> & { workItem?: string; status?: string },
 ): CompletionVerificationEvidence | undefined {
   const nested = rec.verification ?? {};
@@ -1667,8 +1673,18 @@ function completionEvidenceFromRecord(
   // minting a new one would widen the tool's arg surface for a field that has no legacy
   // callers to keep cheap.
   const requirementDisposition = nested.requirementDisposition;
+  // EI-22175397357614106: canonical-nested ONLY, no top-level alias — same reasoning as
+  // requirementDisposition above (a new field has no legacy callers to keep cheap).
+  //
+  // ⚠ This function is a WHITELIST: a field absent from it is silently dropped, so the
+  // downstream claim evaluation reads `undefined` and every claim goes unchecked while
+  // the close still reports success. That is the "checked zero, therefore green" shape,
+  // and it is invisible to any test that exercises the evaluator directly — which is why
+  // `complete.claims-wiring.test.ts` asserts the plumbing here rather than the algorithm.
+  const claims = nested.claims;
   const evidence: CompletionVerificationEvidence = {};
   if (requirementDisposition?.length) evidence.requirementDisposition = requirementDisposition;
+  if (claims?.length) evidence.claims = claims;
   if (filesChanged?.length) evidence.filesChanged = filesChanged;
   if (testsRun?.trim()) evidence.testsRun = testsRun;
   if (testResult?.trim()) evidence.testResult = testResult;
