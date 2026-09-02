@@ -51,8 +51,9 @@ vi.mock('../../acceptance-author-identity', () => ({
 
 import { getRubric, getRubricPlanRevision, readRubricPlanRevision } from '../../rubrics';
 import { captureImprovement } from '../../harness/improvements/capture-core';
-import { getIssue } from '../../issues-engineer';
+import { getIssue, type EngineerIssue } from '../../issues-engineer';
 import { listScorecards } from '../../scorecards';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 import { emitScorecard, scorecardEmitArgs } from './emit';
 import { evaluateScorecard } from './evaluate';
 import { collapseCriticsToSoleParty } from './grader-eligibility';
@@ -63,6 +64,43 @@ const readRubricPlanRevisionM = vi.mocked(readRubricPlanRevision);
 const captureM = vi.mocked(captureImprovement);
 const listM = vi.mocked(listScorecards);
 const getIssueM = vi.mocked(getIssue);
+
+/** A complete EngineerIssue so getIssue / captureImprovement fixtures typecheck against the
+ *  real return types instead of hiding behind `as never` (check-mock-cast-escape): only
+ *  `payload` varies per test. */
+const ISSUE_BASE: EngineerIssue = {
+  id: 'ISS-1',
+  kind: 'change',
+  scope: 'operator',
+  title: 'scorecard fixture',
+  body: '',
+  severity: 'minor',
+  source: 'su',
+  state: 'open',
+  assignee: null,
+  assignedBy: null,
+  assignedAt: null,
+  lastProgressAt: null,
+  payload: null,
+  parent: null,
+  origin: null,
+  foundDuring: null,
+  linkedFeatureId: null,
+  createdBy: null,
+  signalOrigin: 'organic',
+  assigneeRank: null,
+  rankWriter: null,
+  rankUpdatedAt: null,
+  terminalOwner: null,
+  terminalCompletionRef: null,
+  completionAuthority: null,
+  featureOrder: null,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+  closedAt: null,
+  goalId: null,
+};
+const issueWith = (payload: unknown): EngineerIssue => ({ ...ISSUE_BASE, payload });
 const sameAuthorM = vi.mocked(isAcceptanceAuthorIdentity);
 const lineageRelatedM = vi.mocked(areAcceptanceLineageRelated);
 
@@ -136,7 +174,7 @@ beforeEach(() => {
   getRubricPlanRevisionM.mockResolvedValue(7);
   readRubricPlanRevisionM.mockResolvedValue({ ok: true, revision: 7 });
   listM.mockResolvedValue([]);
-  captureM.mockResolvedValue({ created: true, issue: { id: 'ISS-1' } } as never);
+  mockResolvedTyped(captureM, { ok: true, created: true, issue: ISSUE_BASE, possibleDuplicates: [] });
   getIssueM.mockResolvedValue(null);
 });
 
@@ -606,9 +644,7 @@ describe('emitScorecard', () => {
       evidenceFingerprint: string;
     };
     captureM.mockClear();
-    getIssueM.mockResolvedValue({
-      payload: { observation: { rubricRef: 'test-rubric', ratings: RATINGS } },
-    } as never);
+    mockResolvedTyped(getIssueM, issueWith({ observation: { rubricRef: 'test-rubric', ratings: RATINGS } }));
     listM.mockResolvedValue([
       {
         issueId: 'ISS-OLD',
@@ -634,15 +670,10 @@ describe('emitScorecard', () => {
   });
 
   it('inherits an omitted sourceHive from the superseded scorecard instead of the caller harness', async () => {
-    getIssueM.mockResolvedValue({
-      payload: {
-        observation: {
-          rubricRef: 'test-rubric',
-          ratings: RATINGS,
-          sourceHive: 'prior-hive',
-        },
-      },
-    } as never);
+    mockResolvedTyped(
+      getIssueM,
+      issueWith({ observation: { rubricRef: 'test-rubric', ratings: RATINGS, sourceHive: 'prior-hive' } }),
+    );
 
     const r = await emitScorecard(
       { rubricRef: 'test-rubric', ratings: RATINGS, supersedes: 'ISS-PRIOR' },
@@ -663,9 +694,7 @@ describe('emitScorecard', () => {
   });
 
   it('preserves a legacy empty sourceHive when a Hive-scoped caller supersedes the card', async () => {
-    getIssueM.mockResolvedValue({
-      payload: { observation: { rubricRef: 'test-rubric', ratings: RATINGS } },
-    } as never);
+    mockResolvedTyped(getIssueM, issueWith({ observation: { rubricRef: 'test-rubric', ratings: RATINGS } }));
 
     const r = await emitScorecard(
       { rubricRef: 'test-rubric', ratings: RATINGS, supersedes: 'ISS-LEGACY' },
@@ -678,15 +707,10 @@ describe('emitScorecard', () => {
   });
 
   it('still refuses an explicit sourceHive that conflicts with the superseded scorecard', async () => {
-    getIssueM.mockResolvedValue({
-      payload: {
-        observation: {
-          rubricRef: 'test-rubric',
-          ratings: RATINGS,
-          sourceHive: 'prior-hive',
-        },
-      },
-    } as never);
+    mockResolvedTyped(
+      getIssueM,
+      issueWith({ observation: { rubricRef: 'test-rubric', ratings: RATINGS, sourceHive: 'prior-hive' } }),
+    );
 
     const r = await emitScorecard(
       {
@@ -706,9 +730,7 @@ describe('emitScorecard', () => {
   });
 
   it('refuses to supersede a scorecard from another rubric', async () => {
-    getIssueM.mockResolvedValue({
-      payload: { observation: { rubricRef: 'other-rubric', ratings: RATINGS } },
-    } as never);
+    mockResolvedTyped(getIssueM, issueWith({ observation: { rubricRef: 'other-rubric', ratings: RATINGS } }));
     const r = await emitScorecard(
       { rubricRef: 'test-rubric', ratings: RATINGS, supersedes: 'ISS-OTHER' },
       { createdBy: 'su-1' },
