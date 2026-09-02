@@ -25,7 +25,7 @@
  * ZERO SCHEMA: `coord_threads_parent_uq` is UNIQUE (workspace_id, parent_kind,
  * parent_ref), so a thread is already 1:1 with ANY parent object.
  */
-import { PgThreadStore, type ThreadPostRow, type ObjectRef } from '@papercusp/coordination';
+import { PgThreadStore, type ThreadPostRow, type ObjectRef } from '@papercusp/coordination/capabilities';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-registry';
 import { commentWorkItem } from './work-items';

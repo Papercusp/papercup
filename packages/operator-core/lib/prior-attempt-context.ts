@@ -303,7 +303,13 @@ export function compilePriorAttempts(sources: readonly PriorAttemptSource[]): Pr
       a.rawRef.localeCompare(b.rawRef)
     );
   });
-  const byScope = { 'same-spec': 0, 'same-plan-item': 0, 'plan-wide': 0 } satisfies Record<PriorAttemptScope, number>;
+  const byScope = {
+    self: 0,
+    'same-spec': 0,
+    'same-plan-item': 0,
+    'plan-wide': 0,
+    'goal-wide': 0,
+  } satisfies Record<PriorAttemptScope, number>;
   const byAuthority = Object.fromEntries(
     (Object.keys(AUTHORITY_RANK) as PriorAttemptAuthority[]).map((key) => [key, 0]),
   ) as Record<PriorAttemptAuthority, number>;
@@ -735,6 +741,9 @@ interface CollectorDeps {
   items: typeof listWorkItems;
   thread: typeof getWorkItemThreadWindow;
   checkpoint: typeof getWorkItemCheckpointWithMeta;
+  /** P-003's trajectory ring — the superseded checkpoints a replace-on-write slot
+   *  used to destroy. Injected like every other store so a test can supply one. */
+  journal: typeof getWorkItemCheckpointJournal;
   lifecycle: typeof getWorkItemLifecycleHistory;
   priorWork: typeof getClaimTimePriorWorkHint;
 }
@@ -748,6 +757,7 @@ const DEFAULT_DEPS: CollectorDeps = {
   items: listWorkItems,
   thread: getWorkItemThreadWindow,
   checkpoint: getWorkItemCheckpointWithMeta,
+  journal: getWorkItemCheckpointJournal,
   lifecycle: getWorkItemLifecycleHistory,
   priorWork: getClaimTimePriorWorkHint,
 };
@@ -762,49 +772,102 @@ function planItemIdsOf(item: WorkItem): string[] {
   return id ? [id] : [];
 }
 
-function scopeFor(item: WorkItem, targetSpecIds: Set<string>, edgeSpecs: ReadonlySet<string>, planItemId: string): PriorAttemptScope {
+/**
+ * P-018: position of a candidate item RELATIVE TO THE REQUESTED REF.
+ *
+ * `self` is checked first and unconditionally — the requested item's own history is
+ * distance zero however the plan pointers happen to fall, and for an orphan it is the
+ * only rung that exists at all.
+ */
+function scopeFor(
+  item: WorkItem,
+  targetSpecIds: Set<string>,
+  edgeSpecs: ReadonlySet<string>,
+  planItemId: string | null,
+  requestedWorkItemId: string,
+  descendantDepth?: number,
+): PriorAttemptScope {
+  if (item.id === requestedWorkItemId) return 'self';
   if ([...edgeSpecs].some((id) => targetSpecIds.has(id))) return 'same-spec';
-  if (planItemIdsOf(item).includes(planItemId)) return 'same-plan-item';
+  if (planItemId && planItemIdsOf(item).includes(planItemId)) return 'same-plan-item';
+  // A descendant two hops down (a goal's plan's item) sits on the goal rung; one hop
+  // (a plan's item) sits on the plan rung, which is also where a plan sibling lands.
+  if ((descendantDepth ?? 0) >= 2) return 'goal-wide';
   return 'plan-wide';
 }
 
-function retractionText(text: string): boolean {
-  return /\b(?:retract(?:ed|ion)?|false\s+premise|was\s+wrong|incorrect\s+assumption)\b/i.test(text);
-}
-
-/** Read existing stores and compile their canonical prior-attempt projection. */
+/**
+ * Read existing stores and compile their canonical prior-attempt projection.
+ *
+ * P-018 lifted the plan requirement. The shape is now: resolve the CONTAINMENT TREE
+ * for the requested ref, then read
+ *   - the ref's OWN history (always — this is the rung an orphan has),
+ *   - its ANCESTORS' own history (plan decisions + the plan's thread, the goal's
+ *     thread) and, when a plan resolved, its sibling items, and
+ *   - its DESCENDANTS, only when the caller asked to descend (a leader read).
+ */
 export async function collectPriorAttempts(
   options: CollectPriorAttemptsOptions,
   deps: CollectorDeps = DEFAULT_DEPS,
 ): Promise<PriorAttemptCompilation> {
   const harness = options.harnessSlug;
   const workspaceId = resolveConcreteWorkspaceId();
+  const target: ContainmentRef = options.target ?? {
+    kind: 'work_item',
+    ref: options.workItemId,
+    harness: harness ?? null,
+  };
+  const tree = await resolveContainmentTree(target, {
+    workspaceId: workspaceId || undefined,
+    harness: harness ?? null,
+    direction: options.direction ?? 'up',
+    maxDescendants: options.maxDescendants,
+  }).catch(() => null);
+  const ancestorPlan = tree?.ancestors.find((node) => node.kind === 'plan') ?? null;
+  const ancestorGoal = tree?.ancestors.find((node) => node.kind === 'goal') ?? null;
+  // The plan this read is anchored to: an explicit option, else the requested ref
+  // itself when it IS a plan, else the ref's plan ancestor. May legitimately be null —
+  // that is the 94% case P-018 exists to serve, and every plan-dependent read below
+  // is guarded rather than assumed.
+  const planSlug =
+    options.planSlug ?? (target.kind === 'plan' ? target.ref : null) ?? ancestorPlan?.ref ?? null;
+  const planItemId = options.planItemId ?? null;
+  const planHarness = ancestorPlan?.harness ?? harness ?? null;
+
   const [plan, currentItem, allSpecs, targetEdges] = await Promise.all([
-    deps.getPlan(options.planSlug, harness ? { harnessSlug: harness } : {}).catch(() => null),
-    deps.item(options.workItemId, harness).catch(() => null),
-    deps.specs({ harnessSlug: harness, planSlug: options.planSlug, includeHistory: true }).catch(() => []),
-    deps.edges({ harnessSlug: harness, planSlug: options.planSlug, workItemId: options.workItemId }).catch(() => []),
+    planSlug ? deps.getPlan(planSlug, harness ? { harnessSlug: harness } : {}).catch(() => null) : Promise.resolve(null),
+    target.kind === 'work_item' ? deps.item(options.workItemId, harness).catch(() => null) : Promise.resolve(null),
+    planSlug
+      ? deps.specs({ harnessSlug: harness, planSlug, includeHistory: true }).catch(() => [])
+      : Promise.resolve([]),
+    planSlug
+      ? deps.edges({ harnessSlug: harness, planSlug, workItemId: options.workItemId }).catch(() => [])
+      : Promise.resolve([]),
   ]);
   const derivedSpecIds = targetEdges.map((edge) => edge.specId);
-  const fallbackSpecIds = allSpecs.filter((spec) => spec.planItemId === options.planItemId).map((spec) => spec.specId);
+  const fallbackSpecIds = planItemId
+    ? allSpecs.filter((spec) => spec.planItemId === planItemId).map((spec) => spec.specId)
+    : [];
   const targetSpecIds = new Set(options.specIds?.length ? options.specIds : derivedSpecIds.length ? derivedSpecIds : fallbackSpecIds);
 
-  const evidence = targetSpecIds.size
+  const evidence = targetSpecIds.size && planSlug
     ? await deps.evidence({
         harnessSlug: harness,
-        planSlugs: [options.planSlug],
+        planSlugs: [planSlug],
         specIds: [...targetSpecIds],
         limit: Math.max(options.maxPlanWorkItems ?? 200, 1) * 10,
       }).catch(() => [])
     : [];
   const evidenceItemIds = new Set(evidence.map((entry) => entry.workItemId));
-  const listed = await deps.items({
-    harness,
-    sourcePlanSlug: options.planSlug,
-    includeChildren: true,
-    includeObservations: true,
-    limit: options.maxPlanWorkItems ?? 200,
-  }).catch(() => []);
+  const listed = planSlug
+    ? await deps.items({
+        harness,
+        sourcePlanSlug: planSlug,
+        includeChildren: true,
+        includeObservations: true,
+        limit: options.maxPlanWorkItems ?? 200,
+      }).catch(() => [])
+    : [];
   const candidates = new Map<string, WorkItem>();
   for (const item of listed) candidates.set(item.id, item);
   if (currentItem) candidates.set(currentItem.id, currentItem);
@@ -812,6 +875,17 @@ export async function collectPriorAttempts(
     if (!candidates.has(id)) {
       const item = await deps.item(id, harness).catch(() => null);
       if (item) candidates.set(id, item);
+    }
+  }
+  // P-019: descendants of a plan/goal read, admitted in the tree's priority order and
+  // carrying their DEPTH so the D-008 ladder can spend against it.
+  const descendantDepth = new Map<string, number>();
+  for (const node of tree?.descendants ?? []) {
+    if (node.kind !== 'work_item') continue;
+    descendantDepth.set(node.ref, node.depth);
+    if (!candidates.has(node.ref)) {
+      const item = await deps.item(node.ref, node.harness ?? harness).catch(() => null);
+      if (item) candidates.set(item.id, item);
     }
   }
 
@@ -828,31 +902,74 @@ export async function collectPriorAttempts(
 
   for (const spec of allSpecs) {
     if (!targetSpecIds.has(spec.specId)) continue;
-    sources.push(specSource(spec, options.planItemId));
+    sources.push(specSource(spec, planItemId ?? ''));
   }
-  if (plan) {
+  if (plan && planSlug) {
     for (const decision of parsePlan(plan.content).decisions) {
       sources.push({
         scope: 'plan-wide',
         authority: 'plan-decision',
-        rawRef: `${options.planSlug}#${decision.id}`,
-        planItemId: options.planItemId,
+        rawRef: `${planSlug}#${decision.id}`,
+        planItemId,
         text: `${decision.title}\n${decision.body}`,
       });
     }
   }
 
+  // P-017's CAPTURE SURFACE, read back. A note attached at the plan or goal level
+  // lives on that level's own thread; without these two reads the write side would
+  // have nowhere to be delivered from, and D-004's rule (deliver through machinery
+  // agents already receive) would be satisfied only for item-level notes.
+  const levelThreads = await Promise.all([
+    planSlug && planHarness
+      ? readEffortThread(
+          { kind: 'plan', ref: planSlug, harness: planHarness },
+          options.maxThreadPosts ?? 25,
+          workspaceId || undefined,
+        ).catch(() => [])
+      : Promise.resolve([]),
+    ancestorGoal || target.kind === 'goal'
+      ? readEffortThread(
+          { kind: 'goal', ref: target.kind === 'goal' ? target.ref : ancestorGoal!.ref },
+          options.maxThreadPosts ?? 25,
+          workspaceId || undefined,
+        ).catch(() => [])
+      : Promise.resolve([]),
+  ]);
+  const levelScopes: PriorAttemptScope[] = ['plan-wide', 'goal-wide'];
+  const levelRefs = [planSlug, target.kind === 'goal' ? target.ref : ancestorGoal?.ref ?? null];
+  levelThreads.forEach((posts, index) => {
+    const ref = levelRefs[index];
+    if (!ref) return;
+    for (const post of posts) {
+      sources.push({
+        scope: levelScopes[index]!,
+        authority: retractionText(post.body) ? 'retraction' : 'comment',
+        rawRef: `${levelScopes[index] === 'plan-wide' ? 'plan' : 'goal'}:${ref}#comment:${post.id}`,
+        planItemId,
+        at: post.created_ts,
+        actor: post.author_id,
+        text: post.body,
+      });
+    }
+  });
+
   await Promise.all(
     [...candidates.values()].map(async (item) => {
       const edgeSpecs = edgeSpecsByItem.get(item.id) ?? new Set<string>();
-      const scope = scopeFor(item, targetSpecIds, edgeSpecs, options.planItemId);
+      const depth = descendantDepth.get(item.id) ?? 0;
+      const scope = scopeFor(item, targetSpecIds, edgeSpecs, planItemId, options.workItemId, depth);
       // Plan-wide history is material through its structured completion record.
       // Pulling four deep stores for every plan sibling made a 32-item claim issue
       // 128 independent PG reads and measured at P95 20.144s. Deep history is
       // reserved for same-spec/same-item attempts; plan-wide remains bounded and
       // useful without turning claim enrichment into a fan-out query storm.
-      const deep = item.id === options.workItemId || scope !== 'plan-wide';
-      const [thread, checkpoint, lifecycle, priorWork] = await Promise.all([
+      // `self` and spec/item-tied siblings get the four deep stores; a plan-wide or
+      // goal-wide row stays shallow, because pulling four stores for every sibling
+      // made a 32-item claim issue 128 independent PG reads at P95 20.1s. The
+      // requested ref is ALWAYS deep — for an orphan it is the only rung there is.
+      const deep = item.id === options.workItemId || (scope !== 'plan-wide' && scope !== 'goal-wide');
+      const [thread, checkpoint, lifecycle, priorWork, journal] = await Promise.all([
         deep ? deps.thread(item.id, options.maxThreadPosts ?? 50, harness).catch(() => null) : Promise.resolve(null),
         deep
           ? deps.checkpoint({ harness: item.harness, workItemId: item.id }).catch(() => ({ checkpoint: null, updatedAtMs: null }))
@@ -861,6 +978,12 @@ export async function collectPriorAttempts(
           ? deps.lifecycle({ id: item.id, workspaceId, payload: item.payload, family: item.family }).catch(() => null)
           : Promise.resolve(null),
         deep ? deps.priorWork({ harness: item.harness, workItemId: item.id }).catch(() => null) : Promise.resolve(null),
+        // P-003's trajectory ring. Read ONLY for the requested ref: it is the one item
+        // whose superseded reasoning a claimant is about to repeat, and admitting every
+        // sibling's ring would multiply the deep-read cost the `deep` guard just bounded.
+        item.id === options.workItemId
+          ? deps.journal({ harness: item.harness, workItemId: item.id }).catch(() => [])
+          : Promise.resolve([]),
       ]);
       if (item.terminalCompletionRef || item.terminalCompletionEvidence) {
         const evidenceText = item.terminalCompletionEvidence
@@ -875,6 +998,7 @@ export async function collectPriorAttempts(
           at: item.closedAt ?? item.updatedAt,
           actor: item.terminalOwner,
           text: evidenceText,
+          depth,
           detail: { completionRef: item.terminalCompletionRef, authority: item.completionAuthority },
         });
       }
@@ -887,6 +1011,28 @@ export async function collectPriorAttempts(
           planItemId: planItemIdsOf(item)[0] ?? null,
           at: checkpoint.updatedAtMs ? new Date(checkpoint.updatedAtMs).toISOString() : null,
           text: checkpoint.checkpoint,
+          depth,
+        });
+      }
+      // P-003's ring, newest first — the SUPERSEDED checkpoints that used to be
+      // destroyed in place. Each is a distinct rawRef so it dedups and drills down
+      // like any other record, and the newest few are admitted because a ring entry
+      // is one-wake bookkeeping more often than it is a durable finding (D-003).
+      for (const [index, entry] of journal.slice(0, options.maxJournalEntries ?? DEFAULT_JOURNAL_ENTRIES).entries()) {
+        if (!entry.note?.trim()) continue;
+        // The newest ring entry normally DUPLICATES the live checkpoint (the ring
+        // records what was stored). Skip it rather than pay for the same text twice.
+        if (index === 0 && checkpoint.checkpoint && entry.note.trim() === checkpoint.checkpoint.trim()) continue;
+        sources.push({
+          scope,
+          authority: retractionText(entry.note) ? 'retraction' : 'checkpoint',
+          rawRef: `${item.id}#checkpoint-journal:${entry.at}`,
+          workItemId: item.id,
+          planItemId: planItemIdsOf(item)[0] ?? null,
+          at: Number.isFinite(entry.at) ? new Date(entry.at).toISOString() : null,
+          text: entry.note,
+          depth,
+          detail: { supersededCheckpoint: true, ringIndex: index },
         });
       }
       for (const post of thread?.posts ?? []) {
@@ -899,6 +1045,7 @@ export async function collectPriorAttempts(
           at: post.created_ts,
           actor: post.author_id,
           text: post.body,
+          depth,
         });
       }
       for (const event of lifecycle?.events ?? []) {
@@ -911,6 +1058,7 @@ export async function collectPriorAttempts(
           at: event.at,
           actor: event.by,
           text: `${event.kind}${event.action ? ` (${event.action})` : ''}: ${JSON.stringify(event.detail ?? {})}`,
+          depth,
           detail: { source: event.source, ...event.detail },
         });
       }
@@ -927,6 +1075,7 @@ export async function collectPriorAttempts(
             at: releasedAt,
             actor: lastReleasedBy,
             text: `claim released${lastReleasedBy ? ` by ${lastReleasedBy}` : ''}${releasedAt ? ` at ${releasedAt}` : ''}`,
+            depth,
           });
         }
       }
@@ -951,24 +1100,51 @@ function planPointer(opts: ClaimTimePriorAttemptOptions): { planSlug: string; pl
   return planSlug && planItemId ? { planSlug, planItemId } : null;
 }
 
-/** Shared fail-soft claim enrichment used by every canonical claim surface. */
+/**
+ * Shared fail-soft claim enrichment used by every canonical claim surface.
+ *
+ * ⚠ P-018 REMOVED THE PLAN-POINTER GATE THAT USED TO OPEN THIS FUNCTION.
+ *
+ * It read `const pointer = planPointer(opts); if (!pointer) return null;`, so an item
+ * carrying neither a plan slug nor a plan-item id received a ZERO-BYTE brief — not a
+ * partial one. Measured 2026-09-02: that is 94.0% of open work-items (15,791 of
+ * 16,792). An orphan claimant got only `priorWorkHint` (who/attempts metadata, no
+ * content), the authorship-revalidation warning, and its own checkpoint if one existed
+ * — and only ~10% of items open past 21 days have one.
+ *
+ * The gate was not a policy choice; it fell out of a plan-anchored ladder that had no
+ * vocabulary for an item's own position. Now the requested ref IS the anchor: an
+ * orphan compiles the `self` rung (its checkpoint, its P-003 trajectory ring, its
+ * thread, its lifecycle, its completion), and a plan-backed item compiles exactly what
+ * it always did plus its plan's and goal's own threads.
+ *
+ * BUDGET: an orphan gets {@link ORPHAN_CLAIM_BRIEF_BUDGET}, deliberately NOT the
+ * 50k-char default that was sized for the 5.8% of items carrying a plan (P-021).
+ */
 export async function getClaimTimePriorAttemptBrief(
   opts: ClaimTimePriorAttemptOptions,
   deps: CollectorDeps = DEFAULT_DEPS,
 ): Promise<BoundedPriorAttemptBrief | null> {
   const pointer = planPointer(opts);
-  if (!pointer) return null;
-  const workItemId = opts.workItemId ?? opts.workItem?.id ?? `plan-item:${pointer.planSlug}#${pointer.planItemId}`;
+  const workItemId =
+    opts.workItemId
+    ?? opts.workItem?.id
+    ?? (pointer ? `plan-item:${pointer.planSlug}#${pointer.planItemId}` : null);
+  // With no ref of any kind there is nothing to be about — the one remaining null.
+  if (!workItemId) return null;
   const timeoutMs = Math.max(100, opts.timeoutMs ?? PRIOR_ATTEMPT_CLAIM_BUDGET_MS);
+  const budget = opts.budget ?? (pointer ? undefined : ORPHAN_CLAIM_BRIEF_BUDGET);
   try {
     const compilation = await Promise.race([
       collectPriorAttempts(
         {
           harnessSlug: opts.harness ?? opts.workItem?.harness ?? undefined,
-          planSlug: pointer.planSlug,
-          planItemId: pointer.planItemId,
+          planSlug: pointer?.planSlug ?? opts.planSlug ?? opts.workItem?.sourcePlanSlug ?? null,
+          planItemId: pointer?.planItemId ?? opts.planItemId ?? null,
           workItemId,
-        maxPlanWorkItems: 16,
+          // A CLAIM is a member read: ancestors only, never a descendant rollup (D-007).
+          direction: 'up',
+          maxPlanWorkItems: 16,
           maxThreadPosts: 12,
         },
         deps,
@@ -978,7 +1154,67 @@ export async function getClaimTimePriorAttemptBrief(
         timer.unref?.();
       }),
     ]);
-    return buildBoundedPriorAttemptBrief(compilation, opts.budget);
+    return buildBoundedPriorAttemptBrief(compilation, budget);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * P-019 / D-007: the LEADER rollup read — a plan's or goal's own history UNION its
+ * descendants', nearest-first, at a fixed budget that divides by depth.
+ *
+ * Deliberately a SEPARATE entry point from the claim path rather than a flag on it.
+ * D-007 states the constraint plainly: "the rollup read is a LEADER read, not a member
+ * read ... it must be stated so nobody wires a goal rollup into a member's claim path,
+ * which is exactly where the member budget would be spent." A distinct function is
+ * that statement made mechanical — a member's claim cannot reach this by passing an
+ * argument, and leaders carry a 400k compaction limit against a member's 250k.
+ */
+export async function getContainmentRollupBrief(
+  opts: {
+    target: ContainmentRef;
+    harness?: string | null;
+    budget?: PriorAttemptBriefBudget;
+    timeoutMs?: number;
+    maxDescendants?: number;
+  },
+  deps: CollectorDeps = DEFAULT_DEPS,
+): Promise<(BoundedPriorAttemptBrief & { fanOut: ContainmentTree['fanOut'] }) | null> {
+  if (!opts.target?.ref) return null;
+  const timeoutMs = Math.max(100, opts.timeoutMs ?? PRIOR_ATTEMPT_CLAIM_BUDGET_MS * 2);
+  try {
+    const tree = await resolveContainmentTree(opts.target, {
+      harness: opts.harness ?? opts.target.harness ?? null,
+      direction: 'down',
+      maxDescendants: opts.maxDescendants,
+    });
+    const compilation = await Promise.race([
+      collectPriorAttempts(
+        {
+          harnessSlug: opts.harness ?? opts.target.harness ?? undefined,
+          target: opts.target,
+          // The rollup is ABOUT the level, so no single work-item is "self"; passing the
+          // level's own ref keeps `self` empty rather than crowning an arbitrary child.
+          workItemId: opts.target.kind === 'work_item' ? opts.target.ref : `${opts.target.kind}:${opts.target.ref}`,
+          direction: 'down',
+          maxDescendants: opts.maxDescendants,
+          maxPlanWorkItems: 200,
+          maxThreadPosts: 25,
+        },
+        deps,
+      ),
+      new Promise<never>((_, reject) => {
+        const timer = setTimeout(() => reject(new Error('prior-attempt-rollup-timeout')), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+    const brief = buildBoundedPriorAttemptBrief(compilation, opts.budget);
+    if (!brief) return null;
+    // P-019: a rollup that silently drops children is the failure this discloses. The
+    // fan-out numbers ride the brief so a reader can tell "the plan has 12 items and
+    // you have them all" from "the plan has 126 and you have 24".
+    return { ...brief, fanOut: tree.fanOut };
   } catch {
     return null;
   }
