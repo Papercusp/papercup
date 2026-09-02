@@ -307,6 +307,72 @@ describe('verifyTurnRefs / resolveCurrentTurnStamp (tmp transcript)', () => {
       text: '⟦turn-origin:fleet-kickoff nonce:f5abd41d8d21b75f⟧\nresume',
     }]);
   });
+
+  // EI-22171324436610992: an AskUserQuestion answer arrives as a `tool_result`
+  // user line with NO plain-text block. session-ingest.ts's parseClaudeLine
+  // already promotes this shape into the recall index (see its own tests),
+  // but this raw-transcript reader used to drop it as "tool_result-only
+  // plumbing" — so a ref pointing at a real, resolvable-by-sessions:read
+  // owner-dialog turn came back found:false from verifyTurnRefs's default
+  // (owner-chain / current-session) scope. It must resolve the same way here.
+  it('parseUserTurns promotes a Claude AskUserQuestion tool_result-only turn (owner-dialog)', () => {
+    const answer = 'The user answered: "Ship?"="yes". Read the answers carefully.';
+    const ts = '2026-09-01T15:49:35.226Z';
+    const turns = parseUserTurns(
+      JSON.stringify({
+        type: 'user',
+        timestamp: ts,
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: answer }],
+        },
+      }),
+    );
+    expect(turns).toEqual([{ ts, text: `${OWNER_DIALOG_TURN_MARKER}\n${answer}` }]);
+    expect(classifyRecordedTurn(turns[0].text)).toEqual({ verdict: 'owner-dialog', origin: null });
+  });
+
+  // Regression guard for the same change: an ordinary (non-dialog) tool_result
+  // -only line must still be dropped as plumbing, not swept up by the new check.
+  it('parseUserTurns still drops an ordinary tool_result-only line', () => {
+    const turns = parseUserTurns(
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-09-01T15:49:35.226Z',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'toolu_bash', content: 'command output' }],
+        },
+      }),
+    );
+    expect(turns).toEqual([]);
+  });
+
+  it('verifyTurnRefs resolves an owner-dialog (AskUserQuestion) ref via the raw transcript (owner-chain default scope)', async () => {
+    const answer = 'The user answered: "provision the WorkOS values credentials now"="yes".';
+    const ts = '2026-09-01T15:49:35.226Z';
+    await writeFile(
+      file,
+      JSON.stringify({
+        type: 'user',
+        timestamp: ts,
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: answer }],
+        },
+      }) + '\n',
+      { flag: 'a' },
+    );
+    const refs = parseTurnRefs(formatTurnRef(SID, ts));
+    // No explicit `scope` — this is verifyTurnRefs's DEFAULT (owner-chain /
+    // current-session, reading the raw transcript), the exact path the bug
+    // report showed disagreeing with sessions:read.
+    const [v] = await verifyTurnRefs('owner-x', refs, { filePath: file, sessionId: SID });
+    expect(v.found).toBe(true);
+    expect(v.checked).toBe(true);
+    expect(v.verdict).toBe('owner-dialog');
+    expect(v.snippet).toContain('provision the WorkOS values credentials now');
+  });
 });
 
 // EI-19297300002186512: a checkpoint's [turn:…] ref was reported found:false

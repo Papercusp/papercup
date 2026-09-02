@@ -241,7 +241,19 @@ export function completeSyncEnrolment(
         pid,
         processIdentity: pid ? readProcessIdentity(pid) : null,
         scopeUnit: enrolment.scopeUnit,
-        cgroupPath: pid ? readProcessCgroupPath(pid, fs) : null,
+        // WI-2141828: for a CONFINED task the scope's cgroup is DERIVED, never read
+        // off the client pid — the same rule managed-spawn adopted in WI-37509, which
+        // never reached this seam. `systemd-run --scope` forks the payload, so an early
+        // `/proc/<pid>/cgroup` read here returns the SPAWNER's cgroup: that is how 1326
+        // of 2373 confined agent-session rows (and 2773 of 2856 bash-job rows) came to
+        // record `app.slice/papercusp-dev-api.service` as their own confinement. That
+        // value is not merely imprecise, it is the PRE-EI-9748 location — it answers
+        // "would restarting the operator kill this agent?" with the pre-fix YES when
+        // Route A moved agent sessions into papercusp-agent-session.slice. Callers
+        // already derive this correctly for their own use; deriving it HERE, in the one
+        // shared ledger write, is what stops a future caller from forgetting it.
+        // Unconfined tasks keep the /proc read, where it is correct.
+        cgroupPath: syncEnrolmentScopePath(enrolment, spec.class, fs) ?? (pid ? readProcessCgroupPath(pid, fs) : null),
         confined: enrolment.confined,
         unconfinedReason: enrolment.unconfinedReason,
       });

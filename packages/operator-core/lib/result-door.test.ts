@@ -1101,6 +1101,91 @@ describe('applyResultDoor', () => {
     });
   });
 
+  // EI-22167228731928620: an EXPLICIT payloadTier:'full' request (or an
+  // equivalent transport-cap exemption) that still overflows the transport
+  // door must not be handed a WORSE result than a plain 'trimmed' call would
+  // have produced. `_meta.explicitFullRequest` (serialize-result.ts, set by
+  // payload-tier.ts's explicitFullRequest exempt path) tells the door this
+  // body is the tool's true raw, unshaped output — the door spills it whole
+  // and points at it instead of re-projecting it with the generic,
+  // field-blind bounded-payload walk.
+  describe('explicit full-request overflow (_meta.explicitFullRequest)', () => {
+    const RUN_ID_2 = '66666666-7777-4888-9999-aaaaaaaaaaaa';
+
+    it('spills the RAW body whole and returns a clean reference envelope instead of a generic re-projection', () => {
+      // A flat repeated-char body, not `longText()` — the reference envelope's
+      // spill JSON-stringifies the whole `content` array as ONE nested string,
+      // so a body containing newlines would appear ESCAPED (`\\n`) in the spill
+      // file and never substring-match the raw multi-line original.
+      const original = 'X'.repeat(BUDGET_CHARS * 3);
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }], _meta: { explicitFullRequest: true } },
+        { toolName: 'work_items:get', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+      expect(envelope.state).toBe('incomplete');
+      expect(envelope.incomplete).toMatchObject({ reason: 'explicit-full-request-overflow', recoverable: true });
+      expect(envelope.incomplete.note).toContain("payloadTier:'full'");
+      expect(envelope.content[0]).toMatchObject({
+        kind: 'reference',
+        uri: expect.stringContaining('papercusp://scratch/ws-1/work_items:get/'),
+        byteCount: expect.any(Number),
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+      expect(readSpill('ws-1', 'work_items:get', RUN_ID)).toContain(original);
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        truncated: true,
+        structural: true,
+        reason: 'explicit-full-request-overflow',
+      });
+    });
+
+    it('a small explicit-full body that FITS the door passes through untouched (no spill, no note)', () => {
+      const result = {
+        content: [{ type: 'text' as const, text: 'small full result' }],
+        _meta: { explicitFullRequest: true },
+      };
+      expect(applyResultDoor(result, { toolName: 'work_items:get', workspaceId: 'ws-1', runId: RUN_ID })).toBe(
+        result,
+      );
+    });
+
+    it(
+      'regression: an over-budget explicit-full body is never WORSE than the generic reprojection of the ' +
+        "SAME body without the marker — the concrete repro was a `summary` field the tool's own shaper " +
+        'would prioritize getting crowded out by sibling raw fields once that shaper is skipped for `full`',
+      () => {
+        const body = { summary: 'S'.repeat(4_000), extra: 'E'.repeat(BUDGET_CHARS * 2) };
+        const text = JSON.stringify(body);
+        expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+
+        // Un-marked: takes the generic bounded-payload walk (pre-existing behavior).
+        const generic = applyResultDoor(
+          { content: [{ type: 'text' as const, text }] },
+          { toolName: 'work_items:get', workspaceId: 'ws-1', runId: RUN_ID_2 },
+        );
+        const genericProjected = JSON.parse((generic.content[0] as { text: string }).text) as { summary?: string };
+        const genericSummaryChars = genericProjected.summary?.length ?? 0;
+        // The field-blind walk is not guaranteed to keep the whole 4,000-char
+        // field — asserting it here pins down the actual defect this fix
+        // addresses (it does NOT keep it in full for this shape).
+        expect(genericSummaryChars).toBeLessThan(4_000);
+
+        // Marked: routes to the hard-overflow spill instead of that walk.
+        const marked = applyResultDoor(
+          { content: [{ type: 'text' as const, text }], _meta: { explicitFullRequest: true } },
+          { toolName: 'work_items:get', workspaceId: 'ws-1', runId: RUN_ID },
+        );
+        const envelope = JSON.parse((marked.content[0] as { text: string }).text);
+        expect(envelope.incomplete.reason).toBe('explicit-full-request-overflow');
+        // The FULL summary — and everything else — is recoverable in full from
+        // the spill: strictly more than whatever fraction the generic walk
+        // kept inline, never worse.
+        expect(readSpill('ws-1', 'work_items:get', RUN_ID)).toContain('S'.repeat(4_000));
+      },
+    );
+  });
+
   // EI-18745696571494110: a tool with no `_meta.payloadProjection` can still have
   // truncated an individual FIELD inside its own body (coord:inbox's per-entry
   // `body_truncated`) — the door has no structured signal for this (each tool

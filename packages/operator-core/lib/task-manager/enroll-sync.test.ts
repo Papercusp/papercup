@@ -293,6 +293,43 @@ describe('with the task manager ON', () => {
     );
   });
 
+  // WI-2141828. The mocked `readProcessCgroupPath` returns the OPERATOR's own cgroup
+  // on purpose: `systemd-run --scope` forks the payload, so an early /proc read of the
+  // client pid yields the spawner. Recording that as the task's own confinement is the
+  // defect — it reported `papercup-dev-api.service` (the pre-EI-9748 location) for 1326
+  // of 2373 confined agent-session rows, answering "would an operator restart kill this
+  // agent?" with the pre-fix YES. managed-spawn fixed this in WI-37509; this seam did not.
+  it('records the DERIVED scope cgroup for a confined task, never the spawner /proc read', async () => {
+    const e = beginSyncEnrolment({ class: 'bash-job' });
+    expect(e.confined).toBe(true);
+    completeSyncEnrolment(e, spec as never, 4242);
+    await vi.waitFor(() => expect(markSpawned).toHaveBeenCalledTimes(1));
+    expect(markSpawned).toHaveBeenCalledWith(
+      e.taskId,
+      expect.objectContaining({
+        cgroupPath:
+          '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/papercusp-bash.slice/' +
+          `papercusp-bash-job.slice/${e.scopeUnit}`,
+      }),
+    );
+  });
+
+  // The negative control for the test above: without it, a fix that hardcoded the
+  // derived path would pass while silently breaking the unconfined case, where the
+  // /proc read is the CORRECT source because the child really does live in our cgroup.
+  it('keeps the /proc read for an UNCONFINED task, where it is correct', async () => {
+    const e = beginSyncEnrolment({ class: 'bash-job' }, { confine: false });
+    expect(e.confined).toBe(false);
+    completeSyncEnrolment(e, spec as never, 4242);
+    await vi.waitFor(() => expect(markSpawned).toHaveBeenCalledTimes(1));
+    expect(markSpawned).toHaveBeenCalledWith(
+      e.taskId,
+      expect.objectContaining({
+        cgroupPath: '/user.slice/user-1000.slice/user@1000.service/papercup-dev-api.service',
+      }),
+    );
+  });
+
   it('closes only after the asynchronous registration insert has completed', async () => {
     let releaseRegistration!: () => void;
     const registration = new Promise<void>((resolve) => {
