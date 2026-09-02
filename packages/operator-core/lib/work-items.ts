@@ -7923,6 +7923,19 @@ export interface WorkItemObservation {
    */
   gated?: boolean;
   /**
+   * EI-22122824405906276: set when the item is UNCLAIMED yet gated by the admission /
+   * duplicate-screening floor (`isWorkItemDuplicateAdmitted` — the FIRST floor checked
+   * below, and the only one of the `gated:true` cases here that carried no distinguishing
+   * field at all before this). Rendered from the SAME {@link admissionPendingExplanation} /
+   * {@link admissionPendingCreateRemedy} the claim-refusal path (`explainIssueClaimFloors`'s
+   * `'admission-pending'` floor) already renders, so a caller reading `work_items:observe`
+   * — or `coord:dispatch`'s `actionable-work-item-dispatch.ts`, which folds this into its
+   * `admission_gated` skip reason — sees the SAME "clears on its own" explanation and the
+   * SAME one-argument remedy instead of rediscovering it by hand. Measured cost of the gap
+   * this closes: ~8 tool calls and five refuted hypotheses to rediscover a documented fix.
+   */
+  admissionPending?: { reason: string; remedy: string };
+  /**
    * WI-3667/P-003: set when the item is UNCLAIMED yet carries a plan-item back-pointer
    * (payload.plan_item) whose linked plan lane is effectively `blocked` or needs a human
    * decision (see scheduler/plan-item-lane-guard.ts) — the same check
@@ -7997,7 +8010,13 @@ export async function observeWorkItem(
       workspaceId: wi.family === 'issue' ? issuesScopeWorkspace() : activeWorkspaceId(),
     }))
   ) {
-    return { item: wi, available: false, claimedBy: wi.assignee, gated: true };
+    return {
+      item: wi,
+      available: false,
+      claimedBy: wi.assignee,
+      gated: true,
+      admissionPending: { reason: admissionPendingExplanation(), remedy: admissionPendingCreateRemedy() },
+    };
   }
   if (unclaimed && wi.family === 'feature') {
     // Cheap path first — local/admitted items (the vast majority) resolve without
