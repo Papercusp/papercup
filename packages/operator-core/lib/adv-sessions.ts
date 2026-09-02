@@ -939,6 +939,27 @@ export function advSessionEndedAtCaveat(
 }
 
 /**
+ * Every field-reliability caveat that applies to one row, ready to attach via
+ * {@link withFieldReliability} — the combinator every adv_session-row reading surface
+ * should call.
+ *
+ * EI-22176001691325872: {@link advSessionEndedAtCaveat} and {@link advSessionExitCodeCaveat}
+ * were built, unit-tested, and correct, but had ZERO production callers — every real reading
+ * surface rendered a bare `endedAt`/`exitCode` with nothing attached. This is the one place
+ * that combines them so a surface needs only one call, not two easy-to-forget ones.
+ */
+export function advSessionRowCaveats(
+  row: Pick<AdvSessionRow, 'endedAt' | 'endedBy' | 'exitCode'>,
+): FieldCaveat[] {
+  const caveats: FieldCaveat[] = [];
+  const endedAtCaveat = advSessionEndedAtCaveat(row);
+  if (endedAtCaveat) caveats.push(endedAtCaveat);
+  const exitCodeCaveat = advSessionExitCodeCaveat(row);
+  if (exitCodeCaveat) caveats.push(exitCodeCaveat);
+  return caveats;
+}
+
+/**
  * The one phrase every PROSE surface should use to describe when a session ended.
  *
  * Prose is where this goes wrong most quietly: a structured field can carry a caveat
