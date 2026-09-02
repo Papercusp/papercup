@@ -115,6 +115,57 @@ describe('citationDeploymentForPaths', () => {
     expect(result.unknownPaths).toEqual(['src/boom.ts']);
   });
 
+  it('never reports a NEWER-COMMIT artifact as undeployed, and names it instead', async () => {
+    gitPipelinePosition.mockImplementation(({ path }: { path: string }) =>
+      position(path, {
+        positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+        positionsNewerCommit: ['inMain', 'deployed'],
+      }),
+    );
+
+    const result = await citationDeploymentForPaths(['src/peer-commit.ts']);
+
+    // The probe itself already disclaimed this `false`: it is about the newest commit
+    // touching the file (routinely a peer's, on a whole-tree-swept checkout), not about
+    // the cited change. Publishing it as `undeployedPaths` would tell the ship gate the
+    // graded evidence is not live when nothing of the sort was measured.
+    expect(result.undeployedPaths).toEqual([]);
+    expect(result.newerCommitPaths).toEqual(['src/peer-commit.ts']);
+  });
+
+  it('carries positionsNewerCommit onto the compact row rather than dropping it', async () => {
+    gitPipelinePosition.mockImplementation(({ path }: { path: string }) =>
+      position(path, {
+        positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+        positionsNewerCommit: ['deployed'],
+      }),
+    );
+
+    const result = await citationDeploymentForPaths(['src/peer-commit.ts']);
+
+    // Dropping the flag is how the artifact goes silent: the row would show a bare
+    // `deployed:false` with nothing recording that the probe had disclaimed it.
+    expect(result.paths[0]?.positionsNewerCommit).toEqual(['deployed']);
+  });
+
+  it('suppresses only the DEPLOYED leg, not any newer-commit flag (control)', async () => {
+    gitPipelinePosition.mockImplementation(({ path }: { path: string }) =>
+      position(path, {
+        positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+        // `inMain` is an artifact; `deployed` was genuinely measured.
+        positionsNewerCommit: ['inMain'],
+      }),
+    );
+
+    const result = await citationDeploymentForPaths(['src/not-live.ts']);
+
+    // Without this control the leg-specific `includes('deployed')` test could be
+    // widened to "any newer-commit flag suppresses the path" and every assertion
+    // above would still pass — while real undeployed evidence silently vanished.
+    expect(result.undeployedPaths).toEqual(['src/not-live.ts']);
+    expect(result.newerCommitPaths).toEqual([]);
+  });
+
   it('separates measured-undeployed from deployed and unknown in one batch', async () => {
     gitPipelinePosition.mockImplementation(({ path }: { path: string }) => {
       if (path === 'src/not-live.ts') return undeployed(path);

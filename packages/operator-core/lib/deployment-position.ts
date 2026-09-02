@@ -31,6 +31,18 @@ export type DeploymentPath = {
   positions: PipelinePosition['positions'] | null;
   blockedOn: PipelinePosition['blockedOn'] | null;
   positionsUnknown?: string[];
+  /**
+   * Legs whose `false` the probe ITSELF flags as a newer-commit artifact: the ref does
+   * not contain `targetSha`, but it does contain an EARLIER commit touching the same
+   * path. Carried here because dropping it is how the artifact becomes invisible — the
+   * compact row would otherwise show a bare `deployed:false` with nothing saying the
+   * probe had already disclaimed it.
+   *
+   * With a `path` (and no marker to settle it) `targetSha` is "the newest commit
+   * touching this path", which on this whole-tree-swept checkout is routinely a PEER'S
+   * commit — so the `false` is about that commit, not about the cited change.
+   */
+  positionsNewerCommit?: string[];
 };
 
 export interface DeploymentPositionForPaths {
@@ -57,8 +69,23 @@ export interface CitationDeployment extends DeploymentPositionForPaths {
    * this list (it appears in `unknownPaths` instead), because a `false` produced by
    * a degraded git read is not evidence the stage was not reached — the same rule
    * `positionsUnknown` exists to enforce upstream.
+   *
+   * A leg in `positionsNewerCommit` is excluded for the same reason and lands in
+   * `newerCommitPaths`: the probe has already disclaimed that `false` as being about
+   * a later commit to the same file rather than about the cited change.
    */
   undeployedPaths: string[];
+  /**
+   * Cited paths whose `deployed:false` is a NEWER-COMMIT ARTIFACT — not evidence in
+   * either direction.
+   *
+   * This list exists so the case is LOUD. Excluding these from `undeployedPaths` is
+   * the correctness fix; naming them is what keeps the fix from creating a second
+   * silent gap, where a path the gate could not actually judge simply disappears from
+   * every list and reads as "fine". A reader who needs a verdict for one of these must
+   * settle it with a marker literal the cited change introduced.
+   */
+  newerCommitPaths: string[];
 }
 
 export function compactPosition(path: string, result: PipelinePosition): DeploymentPath {
@@ -69,7 +96,26 @@ export function compactPosition(path: string, result: PipelinePosition): Deploym
     positions: result.positions ?? null,
     blockedOn: result.blockedOn ?? null,
     ...(result.positionsUnknown?.length ? { positionsUnknown: result.positionsUnknown } : {}),
+    ...(result.positionsNewerCommit?.length
+      ? { positionsNewerCommit: result.positionsNewerCommit }
+      : {}),
   };
+}
+
+/**
+ * Is this row's `deployed` leg an actual MEASUREMENT of live state?
+ *
+ * `false` reaches the caller from three different places and only one of them is a
+ * measurement: a real absence, a degraded read (`positionsUnknown`), and a leg the
+ * probe itself flagged as being about a newer commit (`positionsNewerCommit`). The
+ * last two must never be reported as "not live" — that is the confident-wrong-answer
+ * shape this whole record exists to expose, reproduced inside the exposer.
+ */
+function deployedLegIsMeasured(entry: DeploymentPath): boolean {
+  if (entry.positions?.deployed !== false) return false;
+  if ((entry.positionsUnknown ?? []).includes('deployed')) return false;
+  if ((entry.positionsNewerCommit ?? []).includes('deployed')) return false;
+  return true;
 }
 
 /**
@@ -128,11 +174,9 @@ export async function citationDeploymentForPaths(
   paths: readonly string[],
 ): Promise<CitationDeployment> {
   const position = await deploymentPositionForPaths(paths);
-  const undeployedPaths = position.paths
-    .filter(
-      (entry) =>
-        entry.positions?.deployed === false && !(entry.positionsUnknown ?? []).includes('deployed'),
-    )
+  const undeployedPaths = position.paths.filter(deployedLegIsMeasured).map((entry) => entry.path);
+  const newerCommitPaths = position.paths
+    .filter((entry) => (entry.positionsNewerCommit ?? []).includes('deployed'))
     .map((entry) => entry.path);
-  return { ...position, undeployedPaths };
+  return { ...position, undeployedPaths, newerCommitPaths };
 }
