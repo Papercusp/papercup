@@ -245,9 +245,15 @@ const itemSpec = z.object({
 export default defineTool({
   name: 'work_items:release',
   profile: 'engineer',
+  // P-011 prompt-weight: the result shape and the whole not_holder / force_unauthorized
+  // refusal contract lived in the counted `description`. `returns` is free, so they moved
+  // there verbatim — same words, same place a caller looks after a refusal, zero budget
+  // (EI-22083648545226771).
   description:
-    'Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a not-found item never fails the rest. Refuses to clear ANOTHER agent\'s live claim (`{ ok:false, error:"not_holder", holder }` per item); `force:true` is a CHECKED override (WI-4198), not a bypass — non-live holder / queen / the holder\'s fleet leader only, requires `reason`, audited + notifies holder and owner (full rules on the `force` arg); anything else refuses with `force_unauthorized`. A voluntary release records a short re-claim cooldown. `claimHold:true` (both families) ALSO durably parks the item out of claim_next/scheduler:get_next self-select (WI-2797) and requires `claimHoldRelease:{condition,trigger,owner?}`; the writer resolves reachability/evidence from the event ledger. The park survives your session ending, remains claimable by id, and `claimHold:false` clears it.',
+    'Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. `claimHold:true` (both families) ALSO durably parks the item out of claim_next/scheduler:get_next self-select (WI-2797) and requires `claimHoldRelease:{condition,trigger,owner?}`; the writer resolves reachability/evidence from the event ledger. The park survives your session ending, remains claimable by id, and `claimHold:false` clears it.',
   guidance: {
+    returns:
+      'Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a not-found item never fails the rest. Refuses to clear ANOTHER agent\'s live claim (`{ ok:false, error:"not_holder", holder }` per item); `force:true` is a CHECKED override (WI-4198), not a bypass — non-live holder / queen / the holder\'s fleet leader only, requires `reason`, audited + notifies holder and owner (full rules on the `force` arg); anything else refuses with `force_unauthorized`. A voluntary release records a short re-claim cooldown.',
     when: 'You claimed work-item(s) but are no longer working them. Add claimHold:true plus claimHoldRelease when the item must NOT be opportunistically re-claimed until a named event condition changes — plain release lets it re-surface immediately.',
     notWhen: 'A per-item `not_holder` means a LIVE peer currently holds it — coordinate with the `holder` (coord:send), do not blind-force: force is for reclaiming a dead/stuck agent\'s item, never for clearing a peer\'s in-flight claim.',
     chaining: 'work_items:claim → … → work_items:release.',

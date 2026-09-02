@@ -2786,6 +2786,17 @@ export function mergeClaudeHookSettings(
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-cli-entry-nudge.mjs'),
     });
+  // merge_tsc_verdict_stale_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'.
+  // Advisory only: an Edit/Write landing AFTER the session's last `lint:tsc` run invalidates
+  // that run's "clean" verdict (vitest never typechecks, so a green suite cannot stand in for
+  // it), and the hook says so at the edit instead of hours later at the fleet gate. The hook
+  // file shipped in hooks/cc without this registration, so packaged installs copied it and
+  // never ran it (install parity 3/3 in tty-title-target.test.ts caught the allowlist half).
+  if (has('posttooluse-tsc-verdict-stale-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-tsc-verdict-stale-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-tsc-verdict-stale-nudge.mjs'),
+    });
   // merge_statusline — non-destructive: set only when absent or already ours.
   if (has('statusline-fleet.sh')) {
     const sl = p('statusline-fleet.sh');

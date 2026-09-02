@@ -25,9 +25,15 @@ import { json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 
 export default defineTool({
   name: 'fleet:supersede',
+  // P-011 prompt-weight: refusal + post-state prose moved to the free `returns`. NOTE the
+  // `chaining` below is the SHARED ROUTING_LADDER constant — trimming it would silently
+  // reword every other fleet tool, so the budget is recovered here instead
+  // (EI-22083648545226771).
   description:
-    "Retire a PREDECESSOR fleet in favor of a SUCCESSOR carrying its mission forward: recovers leadership over the predecessor if its registered leader is not live (fleet:take-leadership), then applies a TERMINAL fleet:wind-down (noResumePath:true) so its controlState stops reading 'active' and it stops burning governor ticks / confusing fleet:status readers. Refuses when the named successor does not exist or has no live leader, so you can never strand a predecessor's remaining capacity in favor of a fleet that cannot itself continue the mission. The predecessor keeps its registry row (fleets are never deleted, D-003) — only its control state changes.",
+    "Retire a PREDECESSOR fleet in favor of a SUCCESSOR carrying its mission forward: recovers leadership over the predecessor if its registered leader is not live (fleet:take-leadership), then applies a TERMINAL fleet:wind-down (noResumePath:true) so its controlState stops reading 'active' and it stops burning governor ticks / confusing fleet:status readers.",
   guidance: {
+    returns:
+      "Refuses when the named successor does not exist or has no live leader, so you can never strand a predecessor's remaining capacity in favor of a fleet that cannot itself continue the mission. On success the predecessor keeps its registry row (fleets are never deleted, D-003) — only its control state changes.",
     when:
       "A new fleet has taken over an old fleet's mission (same plan/goal, a fresh launch or take-leadership elsewhere) and the old fleet is still controlState='active' with no live members driving it.",
     notWhen:

@@ -67,8 +67,9 @@ export default defineTool({
     'needs force:true (leader override). ⚠ THIS HOLD IS A LEASE, NOT A PERMANENT FENCE: the WI-4531 dead-owner reaper ' +
     'lifts it once you are dead past grace, so the item re-enters self-select when your session ends. To fence ' +
     'anything that must OUTLIVE your session (an owner-gated item, a policy decision), use release { claimHold:true } ' +
-    '— a durable PARK (claim_hold_by) no reaper touches. Auditing why a row is held? read work_items:burn_down\'s ' +
-    'parked reason — it checks both conventions.',
+    // P-011 prompt-weight: the burn_down audit pointer moved to the free `returns`, beside
+    // the not_holder refusal that names the same two conventions (EI-22083648545226771).
+    '— a durable PARK (claim_hold_by) no reaper touches.',
   guidance: {
     when:
       'You are gating an item — verifying, awaiting evidence, or keeping a recurring/leader item alive — and peers must ' +
@@ -86,7 +87,8 @@ export default defineTool({
       'you hit a held_open LEASE or a claim_hold DURABLE PARK), policy_gate_requires_owner_override (force:true alone ' +
       'is refused for a policy-tier reason; a policy-tier reason is also exempt from the reaper, but do NOT rely on ' +
       'reason wording for durability — park it), work_item_unreadable (a READ failure, not a missing item: retry ' +
-      'rather than re-filing), clear_failed, hold_failed.',
+      'rather than re-filing), clear_failed, hold_failed. Auditing why a row is held? read work_items:burn_down\'s ' +
+      'parked reason — it checks both conventions.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,

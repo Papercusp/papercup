@@ -6702,7 +6702,7 @@
           "POST"
         ]
       },
-      "description": "Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, [\"*\"] for fleet scope, or [\"human\"]. `expects` is required: ack|answer|action|none. `why` is { goalRef, note? }, not prose. `basedOn` is OUTPUT-ONLY and auto-derived from recent reads — omit it; use `body[].premises` for authored claim references. `body[].blockedOn` names a section's wait (structured, diffable). `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).",
+      "description": "Send coordination messages. Single: {to, summary, expects, body?}; `summary` is the REQUIRED one-line inbox headline, `body` optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, [\"*\"] for fleet scope, or [\"human\"]. `expects` is required: ack|answer|action|none. `why` is { goalRef, note? }, not prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it; authored claim refs go in `body[].premises`. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).",
       "capabilities": [
         "coord:write"
       ],
@@ -6726,7 +6726,7 @@
         "content-fixer"
       ],
       "guidance": {
-        "when": "Share context or ask. The `summary` is the required inbox headline; include `to` and `expects`; `body` is for detail. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, none exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. `basedOn` is OUTPUT-ONLY and auto-derived from recent reads — omit it; use `body[].premises` for authored claim references. Waiting on something? `blockedOn: { kind, ref }` on the section — a work-item/event REF gets readers a live cleared/pending verdict at read. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.",
+        "when": "Share context or ask. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack and none are exempt. Waiting on something? `blockedOn: { kind, ref }` on that section — a work-item/event REF gets readers a live cleared/pending verdict at read. SHAPES: `premises` is ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.",
         "notWhen": "Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Named work-item transfer: coord:dispatch with workItemIds:[…]; plan-lane transfer: coord:handoff."
       }
     },
@@ -12035,7 +12035,7 @@
           "POST"
         ]
       },
-      "description": "Retire a PREDECESSOR fleet in favor of a SUCCESSOR carrying its mission forward: recovers leadership over the predecessor if its registered leader is not live (fleet:take-leadership), then applies a TERMINAL fleet:wind-down (noResumePath:true) so its controlState stops reading 'active' and it stops burning governor ticks / confusing fleet:status readers. Refuses when the named successor does not exist or has no live leader, so you can never strand a predecessor's remaining capacity in favor of a fleet that cannot itself continue the mission. The predecessor keeps its registry row (fleets are never deleted, D-003) — only its control state changes.",
+      "description": "Retire a PREDECESSOR fleet in favor of a SUCCESSOR carrying its mission forward: recovers leadership over the predecessor if its registered leader is not live (fleet:take-leadership), then applies a TERMINAL fleet:wind-down (noResumePath:true) so its controlState stops reading 'active' and it stops burning governor ticks / confusing fleet:status readers.",
       "capabilities": [
         "fleet:supersede"
       ],
@@ -26567,7 +26567,7 @@
           "POST"
         ]
       },
-      "description": "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. When complete independent scorecards already exist for the same rubric revision, acknowledgeExisting:true is required to append another; force:true only bypasses unchanged-evidence deduplication. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then emits a separate newer card with acceptance:{verdict,reasoning} and no supersedes, so the independent grading remains visible to the plan-acceptance gate. Every emit, including the author acceptance call, still requires schema-complete ratings; acceptance does not replace ratings. Stamps the running generation and stores deterministic instrument snapshots.",
+      "description": "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then emits a separate newer card with acceptance:{verdict,reasoning} and no supersedes, so the independent grading remains visible to the plan-acceptance gate. Every emit, including the author acceptance call, still requires schema-complete ratings; acceptance does not replace ratings.",
       "capabilities": [
         "coord:write"
       ],
@@ -26595,7 +26595,7 @@
       "guidance": {
         "when": "Filing a GRADE-mode or release-readiness scorecard. Prefer this typed surface over hand-assembling improvements:capture observation payloads.",
         "notWhen": "Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.",
-        "chaining": "scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend. If emit returns existing_independent_scorecards, inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance still supplies schema-complete ratings; do not pass supersedes on the author acceptance."
+        "chaining": "scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance still supplies schema-complete ratings; do not pass supersedes on the author acceptance."
       }
     },
     {
@@ -28940,7 +28940,7 @@
           "POST"
         ]
       },
-      "description": "Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). Returns the best-matching tool names with their description, ARG schema, and resolved RESPONSE shape (`returns` + `returnsSource`; registered output schemas outrank authored prose) — so you can write a code:run batch over a tool without calling it once just to learn its field names. ACTIVATION IS CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list (activated:true) and are directly callable; on a full-catalog session there is nothing to expand (activated:false) — call them via tools:invoke. High-confidence runtime symptoms (slow/queued, connection-refused, no-window, change-live?, value-stale?) route their decisive diagnostic to hit #1. Always read `activated` + `howToCall` rather than assuming a direct call resolves.",
+      "description": "Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). ACTIVATION IS CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list (activated:true) and are directly callable; on a full-catalog session there is nothing to expand (activated:false) — call them via tools:invoke. High-confidence runtime symptoms (slow/queued, connection-refused, no-window, change-live?, value-stale?) route their decisive diagnostic to hit #1.",
       "capabilities": [
         "agent_tools:read"
       ],
@@ -30804,7 +30804,7 @@
           "POST"
         ]
       },
-      "description": "Hold a work-item OPEN without releasing your claim: stamps you as held_open_by (+ reason), excludes it from claim_next/scheduler self-select, and makes a terminal transition (done/resolved/closed/dropped) by anyone ELSE refuse until you clear it. { id, reason } to hold; { id, clear:true } to lift. Clearing another agent's hold needs force:true (leader override). ⚠ THIS HOLD IS A LEASE, NOT A PERMANENT FENCE: the WI-4531 dead-owner reaper lifts it once you are dead past grace, so the item re-enters self-select when your session ends. To fence anything that must OUTLIVE your session (an owner-gated item, a policy decision), use release { claimHold:true } — a durable PARK (claim_hold_by) no reaper touches. Auditing why a row is held? read work_items:burn_down's parked reason — it checks both conventions.",
+      "description": "Hold a work-item OPEN without releasing your claim: stamps you as held_open_by (+ reason), excludes it from claim_next/scheduler self-select, and makes a terminal transition (done/resolved/closed/dropped) by anyone ELSE refuse until you clear it. { id, reason } to hold; { id, clear:true } to lift. Clearing another agent's hold needs force:true (leader override). ⚠ THIS HOLD IS A LEASE, NOT A PERMANENT FENCE: the WI-4531 dead-owner reaper lifts it once you are dead past grace, so the item re-enters self-select when your session ends. To fence anything that must OUTLIVE your session (an owner-gated item, a policy decision), use release { claimHold:true } — a durable PARK (claim_hold_by) no reaper touches.",
       "capabilities": [
         "work_items:write"
       ],
@@ -31251,7 +31251,7 @@
           "POST"
         ]
       },
-      "description": "Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a not-found item never fails the rest. Refuses to clear ANOTHER agent's live claim (`{ ok:false, error:\"not_holder\", holder }` per item); `force:true` is a CHECKED override (WI-4198), not a bypass — non-live holder / queen / the holder's fleet leader only, requires `reason`, audited + notifies holder and owner (full rules on the `force` arg); anything else refuses with `force_unauthorized`. A voluntary release records a short re-claim cooldown. `claimHold:true` (both families) ALSO durably parks the item out of claim_next/scheduler:get_next self-select (WI-2797) and requires `claimHoldRelease:{condition,trigger,owner?}`; the writer resolves reachability/evidence from the event ledger. The park survives your session ending, remains claimable by id, and `claimHold:false` clears it.",
+      "description": "Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. `claimHold:true` (both families) ALSO durably parks the item out of claim_next/scheduler:get_next self-select (WI-2797) and requires `claimHoldRelease:{condition,trigger,owner?}`; the writer resolves reachability/evidence from the event ledger. The park survives your session ending, remains claimable by id, and `claimHold:false` clears it.",
       "capabilities": [
         "work_items:write"
       ],

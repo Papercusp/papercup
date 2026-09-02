@@ -783,16 +783,13 @@ if (!process.env.VITEST) {
 export default defineTool({
   name: 'tools:find',
   description:
-    'Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). Returns the ' +
-    'best-matching tool names with their description, ARG schema, and resolved RESPONSE shape ' +
-    '(`returns` + `returnsSource`; registered output schemas outrank authored prose) — so you can write a code:run batch over a tool without calling it once just to learn ' +
-    'its field names. ACTIVATION IS ' +
+    // P-011 prompt-weight: the result-shape prose below moved into the free `returns`
+    // field, which already described this exact payload (EI-22083648545226771).
+    'Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). ACTIVATION IS ' +
     'CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list ' +
     '(activated:true) and are directly callable; on a full-catalog session there is nothing to expand ' +
     '(activated:false) — call them via tools:invoke. High-confidence runtime symptoms (slow/queued, ' +
-    'connection-refused, no-window, change-live?, value-stale?) route their decisive diagnostic to hit #1. ' +
-    'Always read `activated` + `howToCall` rather than ' +
-    'assuming a direct call resolves.',
+    'connection-refused, no-window, change-live?, value-stale?) route their decisive diagnostic to hit #1.',
   guidance: {
     when:
       'You need a tool that is not in your loaded/core set and do not know its exact name — search by what you want to DO ' +
@@ -804,7 +801,9 @@ export default defineTool({
       'means the server surface grew and requested a client refresh; it does not guarantee this client has ' +
       'materialized a direct-call wrapper yet. After a refresh/next turn, direct calls may work.',
     returns:
-      '{ query, count, semantic: "on"|"warming"|"lexical-only", registry: { source, revision }, activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (registered output schema projection, otherwise authored fallback, otherwise null), returnsSource:"registered-output-schema"|"authored-tool-guidance"|null, via }], howToCall }',
+      '{ query, count, semantic: "on"|"warming"|"lexical-only", registry: { source, revision }, activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (registered output schema projection, otherwise authored fallback, otherwise null), returnsSource:"registered-output-schema"|"authored-tool-guidance"|null, via }], howToCall }. ' +
+      'Each hit carries that tool\'s ARG schema AND its resolved RESPONSE shape (registered output schemas outrank authored prose), so you can write a code:run batch over a tool without calling it once just to learn its field names. ' +
+      'ALWAYS read `activated` + `howToCall` rather than assuming a direct call resolves.',
     seeAlso: [
       'agent_tools:list (full permission-annotated dump)',
       'meta:define-tool (define a new tool if none exists)',

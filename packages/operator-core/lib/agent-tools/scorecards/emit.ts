@@ -1354,14 +1354,21 @@ export async function emitScorecard(
 export default defineTool({
   name: 'scorecards:emit',
   profile: 'engineer',
+  // P-011 prompt-weight: `description` + when/notWhen/chaining are counted; `returns` and
+  // `seeAlso` are FREE. This tool had no `returns` at all, so its response and refusal
+  // semantics (the acknowledgeExisting/force dedup rules, the generation + instrument
+  // stamping, the existing_independent_scorecards retry) were being paid for in counted
+  // prose. Moved verbatim below — nothing deleted (EI-22083648545226771).
   description:
-    "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. When complete independent scorecards already exist for the same rubric revision, acknowledgeExisting:true is required to append another; force:true only bypasses unchanged-evidence deduplication. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then emits a separate newer card with acceptance:{verdict,reasoning} and no supersedes, so the independent grading remains visible to the plan-acceptance gate. Every emit, including the author acceptance call, still requires schema-complete ratings; acceptance does not replace ratings. Stamps the running generation and stores deterministic instrument snapshots.",
+    "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then emits a separate newer card with acceptance:{verdict,reasoning} and no supersedes, so the independent grading remains visible to the plan-acceptance gate. Every emit, including the author acceptance call, still requires schema-complete ratings; acceptance does not replace ratings.",
   guidance: {
     when: 'Filing a GRADE-mode or release-readiness scorecard. Prefer this typed surface over hand-assembling improvements:capture observation payloads.',
     notWhen:
       'Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.',
+    returns:
+      "Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.",
     chaining:
-      'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend. If emit returns existing_independent_scorecards, inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance still supplies schema-complete ratings; do not pass supersedes on the author acceptance.',
+      'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance still supplies schema-complete ratings; do not pass supersedes on the author acceptance.',
     seeAlso: ['scorecards:evaluate', 'scorecards:list', 'rubrics:trend'],
   },
   capability: 'coord:write',
