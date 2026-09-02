@@ -23,19 +23,27 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 /// Minimum body width for the Surface B cockpit (P-004 / D-005,
 /// pui-psu-exact-launch-and-task-latency-2026-09-01).
 ///
-/// DERIVED from `draw`'s own horizontal constraints rather than chosen by feel:
-/// the Agent Chat dock is `Length(40)`, the presence rail `Length(30)`, and the
-/// body keeps `Min(48)` — 118 columns, rounded up to 120.
+/// DERIVED, not chosen by feel: the Agent Chat dock is a fixed `Length(40)`
+/// (see `draw`), and the pane beside it must stay a genuinely usable content
+/// body. This suite's own modal render width is 120 columns — more call sites
+/// than any other width — so 120 is what this codebase already treats as
+/// "wide enough to show a surface's content". 40 + 120 = 160.
 ///
-/// This was `260` until WI-2140985 — roughly 2.7x what the layout it guards
-/// actually needs. At 260 the cockpit never rendered on an ordinary terminal,
-/// which is the same user-visible outcome D-005 rejected for the old opt-in
-/// toggle ("hiding Agent Chat behind an optional toggle does not satisfy the
-/// original layout intent"). The suite stayed green because both dock tests
-/// straddled the gap — one renders at 80, the other at 280 — so nothing
-/// exercised 120..=259, where real terminals live. Guarded now by
-/// `operator_dock_renders_at_ordinary_terminal_width`.
-pub(crate) const SURFACE_B_MIN_WIDTH: u16 = 120;
+/// The bare geometric floor is lower (dock 40 + presence rail 30 + body
+/// `Min(48)` = 118), but that floor only guarantees nothing is *clipped*; it
+/// leaves an 80-column body that squeezes the Fleet, Plans, Cupboard, Docs and
+/// Sessions surfaces. 160 is the smallest width at which the cockpit and a
+/// conventional content body coexist, so it is the honest gate.
+///
+/// This was `260` until WI-2140985 — well past any ordinary terminal, so the
+/// cockpit never rendered in practice: the same user-visible outcome D-005
+/// rejected for the old opt-in toggle ("hiding Agent Chat behind an optional
+/// toggle does not satisfy the original layout intent"). The suite could not
+/// see it because both dock tests straddled the gap — one renders at 80, the
+/// other at 280 — so nothing exercised the band between, where real terminals
+/// live. Guarded now by `operator_dock_renders_at_ordinary_terminal_width`
+/// (fails under 260) and `surface_b_min_width_matches_the_layout_constraints_it_guards`.
+pub(crate) const SURFACE_B_MIN_WIDTH: u16 = 160;
 
 pub fn draw(f: &mut Frame, app: &App) {
     // Pinned single-pane dock mode (native-terminal-desktop P-013 / D-011): the
@@ -6168,7 +6176,11 @@ mod tests {
             active_entry: None,
         });
         // A wide terminal has budget for the whole path; a narrow one does not.
-        assert!(render(&app, 220, 12).contains(long));
+        // +40 for the Surface B dock (WI-2140985): above SURFACE_B_MIN_WIDTH the
+        // cockpit takes a fixed 40 columns, so 260 leaves this assertion the same
+        // 220-column body it was authored against. The negative case at 90 is
+        // below the gate, gets no dock, and is unchanged.
+        assert!(render(&app, 260, 12).contains(long));
         assert!(!render(&app, 90, 12).contains(long));
     }
 
@@ -6351,7 +6363,7 @@ mod tests {
             ("plugin".into(), 37),
             ("template".into(), 15),
         ]);
-        let text = render(&app, 240, 18);
+        let text = render(&app, 280, 18);
         assert!(text.contains("[all:137]")); // exact corpus count in the active filter
         assert!(text.contains("app:10"));
         assert!(text.contains("knowledge-pack:5"));
@@ -6370,12 +6382,12 @@ mod tests {
         assert!(text.contains("papercupai"));
         // Arming the confirm flips the detail title.
         app.cupboard_confirm = Some("11111111-1111-1111-1111-111111111111".into());
-        let armed = render(&app, 240, 18);
+        let armed = render(&app, 280, 18);
         assert!(armed.contains("press y to install"));
         // The search composer floats while open.
         app.cupboard_search_open = true;
         app.cupboard_search_input = "worker".into();
-        let search = render(&app, 240, 18);
+        let search = render(&app, 280, 18);
         assert!(search.contains("Search the Cupboard"));
 
         // Unsupported live kinds remain browseable without a false arm/confirm
@@ -6388,7 +6400,7 @@ mod tests {
             ..Default::default()
         }];
         app.cupboard_confirm = Some("plan-1".into());
-        let read_only = render(&app, 240, 18);
+        let read_only = render(&app, 280, 18);
         assert!(read_only.contains("Read-only in PUI"));
         assert!(read_only.contains("https://example.test/plan.json"));
         assert!(!read_only.contains("press y to"));
@@ -7625,13 +7637,13 @@ mod tests {
     /// EI-22123862806145770): the Surface B cockpit must render at an ORDINARY
     /// terminal width, not only an ultra-wide one.
     ///
-    /// The gate was `>= 260` while the layout it guards needs 118 (dock 40 +
-    /// presence rail 30 + body 48), so D-005's "always-visible" Agent Chat pane
-    /// was invisible on every realistic terminal. The suite could not see it:
-    /// `operator_dock_hidden_on_narrow_terminal` renders at 80 and
-    /// `operator_dock_is_persistent_beside_tab_content` at 280, so both pass
-    /// under a gate of 120 OR 260 and nothing covered the band between. This
-    /// test sits inside that band and FAILS under the old 260 gate.
+    /// The gate was `>= 260`, far past any ordinary terminal, so D-005's
+    /// "always-visible" Agent Chat pane was invisible in practice. The suite
+    /// could not see it: `operator_dock_hidden_on_narrow_terminal` renders at 80
+    /// and `operator_dock_is_persistent_beside_tab_content` at 280, so both pass
+    /// under a gate of 160 OR 260 and nothing covered the band between. This
+    /// test renders exactly AT `SURFACE_B_MIN_WIDTH`, inside that band, and so
+    /// FAILS under the old 260 gate.
     #[test]
     fn operator_dock_renders_at_ordinary_terminal_width() {
         let mut app = App::new();
@@ -7665,13 +7677,19 @@ mod tests {
     /// body `Min(48)` = 118, and it must still fit an ordinary wide terminal.
     #[test]
     fn surface_b_min_width_matches_the_layout_constraints_it_guards() {
+        // Hard geometric floor: dock 40 + presence rail 30 + body Min(48).
         assert!(
             SURFACE_B_MIN_WIDTH >= 40 + 30 + 48,
-            "the gate must leave room for the dock, the presence rail and a readable body"
+            "the gate must leave room for the dock, the presence rail and an unclipped body"
+        );
+        // The real bar: the dock plus a conventional 120-column content body.
+        assert!(
+            SURFACE_B_MIN_WIDTH >= 40 + 120,
+            "the body beside the dock must stay a usable content width, not just the unclipped minimum"
         );
         assert!(
-            SURFACE_B_MIN_WIDTH <= 160,
-            "the gate must fit an ordinary wide terminal — above this, D-005's always-visible pane is hidden in practice (WI-2140985)"
+            SURFACE_B_MIN_WIDTH <= 200,
+            "the gate must fit an ordinary maximized terminal — above this, D-005's always-visible pane is hidden in practice (WI-2140985)"
         );
     }
 
