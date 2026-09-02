@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from '../../pg-timestamp';
+import { resolveSpecScopeSlug } from './adhoc-spec-scope';
 import { resolvePlanScope } from './source';
 
 export const SPEC_BEHAVIOR_CLASSES = [
@@ -45,10 +46,18 @@ export interface SpecClauseFalsifierWrite {
 
 export interface SpecClauseWrite {
   harnessSlug?: string;
-  planSlug: string;
+  /**
+   * The plan this clause belongs to. OPTIONAL as of P-022: omit it to author a clause for
+   * an ad-hoc work-item that belongs to no plan, and it is scoped to
+   * `ADHOC_WORK_ITEM_SPEC_SCOPE` instead (see `adhoc-spec-scope.ts` and D-018 for why the
+   * scope is resolved rather than the column made nullable — `plan_slug` is a PRIMARY KEY
+   * column in every table of this chain, so it can never hold NULL).
+   */
+  planSlug?: string;
   specId: string;
   expectedRevision: number;
   sourceValId?: string | null;
+  /** In the ad-hoc scope this is the WORK-ITEM id, not a `P-NNN`; the row is created lazily. */
   planItemId: string;
   behavior: string;
   behaviorClass: SpecBehaviorClass;
@@ -204,7 +213,17 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
   const contentHash = specClauseContentHash(input);
 
   return withWorkspace(scope.workspaceId, async (tx) => {
-    const lockKey = `${scope.workspaceId}:${scope.harnessSlug}:${input.planSlug}:${input.specId}`;
+    // P-022 / D-018: a clause for a work-item that belongs to no plan is authored into the
+    // harness's shared ad-hoc spec scope. Resolved BEFORE the lock and the ownership check
+    // below, because that check is exactly what the scope has to exist to satisfy.
+    const planSlug = await resolveSpecScopeSlug(
+      tx,
+      scope.workspaceId,
+      scope.harnessSlug,
+      input.planSlug,
+      normalized.planItemId,
+    );
+    const lockKey = `${scope.workspaceId}:${scope.harnessSlug}:${planSlug}:${input.specId}`;
     await tx`SELECT pg_advisory_xact_lock(hashtext('plan_spec_clause'), hashtext(${lockKey}))`;
 
     // The optional VAL alias has harness-wide uniqueness. Lock it independently
@@ -221,17 +240,17 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
           SELECT 1 FROM harness_shared.harness_plans
            WHERE workspace_id = ${scope.workspaceId}
              AND harness_slug = ${scope.harnessSlug}
-             AND plan_slug = ${input.planSlug}
+             AND plan_slug = ${planSlug}
         ) AS plan_exists,
         EXISTS (
           SELECT 1 FROM harness_shared.plan_items
            WHERE workspace_id = ${scope.workspaceId}
              AND harness_slug = ${scope.harnessSlug}
-             AND plan_slug = ${input.planSlug}
+             AND plan_slug = ${planSlug}
              AND item_id = ${normalized.planItemId}
         ) AS item_exists`;
     if (!ownership[0]?.plan_exists) {
-      return { status: 'plan_not_found', specId: input.specId, planSlug: input.planSlug };
+      return { status: 'plan_not_found', specId: input.specId, planSlug: planSlug };
     }
     if (!ownership[0]?.item_exists) {
       return { status: 'plan_item_not_found', specId: input.specId, planItemId: normalized.planItemId };
@@ -243,7 +262,7 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
           SELECT 1 FROM harness_shared.plan_spec_clause_revisions
            WHERE workspace_id = ${scope.workspaceId}
              AND harness_slug = ${scope.harnessSlug}
-             AND plan_slug = ${input.planSlug}
+             AND plan_slug = ${planSlug}
              AND spec_id = ${normalized.supersedes.specId}
              AND revision = ${normalized.supersedes.revision}
         ) AS exists`;
@@ -261,7 +280,7 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
         FROM harness_shared.plan_spec_clauses
        WHERE workspace_id = ${scope.workspaceId}
          AND harness_slug = ${scope.harnessSlug}
-         AND plan_slug = ${input.planSlug}
+         AND plan_slug = ${planSlug}
          AND spec_id = ${input.specId}
        FOR UPDATE`;
     const identity = identities[0];
@@ -297,7 +316,7 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
           FROM harness_shared.plan_spec_clause_revisions
          WHERE workspace_id = ${scope.workspaceId}
            AND harness_slug = ${scope.harnessSlug}
-           AND plan_slug = ${input.planSlug}
+           AND plan_slug = ${planSlug}
            AND spec_id = ${input.specId}
            AND revision = ${actualRevision}`;
       if (current[0]?.content_hash === contentHash) {
@@ -309,7 +328,7 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
           workspace_id, harness_slug, plan_slug, spec_id, source_val_id,
           current_revision, created_by
         ) VALUES (
-          ${scope.workspaceId}, ${scope.harnessSlug}, ${input.planSlug}, ${input.specId},
+          ${scope.workspaceId}, ${scope.harnessSlug}, ${planSlug}, ${input.specId},
           ${input.sourceValId ?? null}, 0, ${input.actorId}
         )
         ON CONFLICT DO NOTHING
@@ -320,7 +339,7 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
             FROM harness_shared.plan_spec_clauses
            WHERE workspace_id = ${scope.workspaceId}
              AND harness_slug = ${scope.harnessSlug}
-             AND plan_slug = ${input.planSlug}
+             AND plan_slug = ${planSlug}
              AND spec_id = ${input.specId}`;
         if (raced[0]) {
           return {
@@ -347,7 +366,7 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
             conflictingSpecId: aliases[0].spec_id,
           };
         }
-        throw new Error(`plan_spec_clause_identity_insert_failed:${input.planSlug}:${input.specId}`);
+        throw new Error(`plan_spec_clause_identity_insert_failed:${planSlug}:${input.specId}`);
       }
     }
 
@@ -362,7 +381,7 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
         mutation_required, lifecycle_status, supersedes_spec_id, supersedes_revision,
         exemption, falsifier, content_hash, created_by, accepted_by, accepted_at, acceptance_ref
       ) VALUES (
-        ${scope.workspaceId}, ${scope.harnessSlug}, ${input.planSlug}, ${input.specId}, ${revision},
+        ${scope.workspaceId}, ${scope.harnessSlug}, ${planSlug}, ${input.specId}, ${revision},
         ${normalized.planItemId}, ${normalized.behavior}, ${normalized.behaviorClass},
         ${normalized.requiredEvidence}, ${normalized.requiredTestLayers}, ${normalized.mutationRequired},
         ${normalized.lifecycleStatus}, ${normalized.supersedes?.specId ?? null},
@@ -377,7 +396,7 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
          SET current_revision = ${revision}, updated_at = now()
        WHERE workspace_id = ${scope.workspaceId}
          AND harness_slug = ${scope.harnessSlug}
-         AND plan_slug = ${input.planSlug}
+         AND plan_slug = ${planSlug}
          AND spec_id = ${input.specId}`;
 
     const sourceValId = identity?.source_val_id ?? input.sourceValId ?? null;
@@ -387,7 +406,7 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
           workspace_id, harness_slug, val_id, plan_slug, item_id,
           verify_text, evidence_text, status, requires_test
         ) VALUES (
-          ${scope.workspaceId}, ${scope.harnessSlug}, ${sourceValId}, ${input.planSlug},
+          ${scope.workspaceId}, ${scope.harnessSlug}, ${sourceValId}, ${planSlug},
           ${normalized.planItemId}, ${normalized.behavior}, ${normalized.requiredEvidence.join('; ')},
           'todo', ${normalized.requiredTestLayers.length > 0}
         )

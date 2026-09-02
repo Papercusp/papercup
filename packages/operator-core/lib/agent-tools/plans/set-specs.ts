@@ -5,6 +5,7 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { bulkContent, runBulk } from '../_bulk';
+import { ADHOC_WORK_ITEM_SPEC_SCOPE } from './adhoc-spec-scope';
 import { SPEC_BEHAVIOR_CLASSES, SPEC_LIFECYCLE_STATUSES, setSpecClause } from './spec-clauses-store';
 
 const specWriteSchema = z
@@ -58,7 +59,14 @@ const specWriteSchema = z
 const argsSchema = z
   .object({
     harness: harnessArg,
-    slug: z.string().min(1).describe('Plan slug owning every supplied clause.'),
+    slug: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Plan slug owning every supplied clause. Omit for ad-hoc work-items that belong to no plan; ' +
+          'their clauses are authored into the harness-wide ad-hoc spec scope instead.',
+      ),
     spec: specWriteSchema.optional().describe('Single-clause shorthand (n=1 of the bulk call).'),
     // P-007's dual-arity seam, spelled the way every sibling bulk verb spells it
     // (plans:add-item / add-decision / audit / get-item …): the heterogeneous
@@ -103,15 +111,24 @@ export default defineTool({
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
     const actorId = resolveAgentIdentity(ctx).ownerId;
     const specs = args.items ?? [args.spec!];
+    // P-022 / D-018: report the scope the clause ACTUALLY landed in. An omitted `slug`
+    // resolves to the ad-hoc scope inside the store, and echoing `slug: undefined` would
+    // hide which scope now owns the clause.
+    const reportedSlug = args.slug ?? ADHOC_WORK_ITEM_SPEC_SCOPE;
     const env = await runBulk(
       specs,
       async (spec) => {
-        const result = await setSpecClause({ ...spec, planSlug: args.slug, harnessSlug, actorId });
+        const result = await setSpecClause({
+          ...spec,
+          ...(args.slug ? { planSlug: args.slug } : {}),
+          harnessSlug,
+          actorId,
+        });
         return OK.has(result.status)
-          ? { ok: true as const, slug: args.slug, ...result }
-          : { ok: false as const, slug: args.slug, error: result.status, ...result };
+          ? { ok: true as const, slug: reportedSlug, ...result }
+          : { ok: false as const, slug: reportedSlug, error: result.status, ...result };
       },
-      { keyOf: (spec) => ({ slug: args.slug, specId: spec.specId }) },
+      { keyOf: (spec) => ({ slug: reportedSlug, specId: spec.specId }) },
     );
     return bulkContent(env);
   },
