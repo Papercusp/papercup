@@ -118,6 +118,30 @@ vi.mock('../../attention-notify', () => ({
   notifyAttention: (...a: unknown[]) => notifyAttention(...a),
 }));
 
+// WI-2141541: the green-checkpoint action calls admitCheckpointMemory({ requestG }) before it
+// spawns the suite (release-actions.ts, just above the spawn), and the DEFAULT probe scans the
+// REAL /proc + /sys/fs/cgroup tree for live green-checkpoint scopes and sums their memory.max.
+// That is host state, not a unit-test input: with three checkpoint runs live on the box the
+// action deferred every tick here (`skip my-harness: checkpoint-memory: DEFERRING 16 GiB — 120.0
+// GiB already committed by 3 live scope(s)`), spawnMock was never called, and 16 assertions
+// failed — 14 of them via vitest-fail-on-console on that very warn. Seen on the gate at
+// 2026-08-31 18:38Z and 2026-09-02 11:26Z with unchanged code, passing alone minutes later.
+// Stub the admission to admit; the admission logic keeps its own probe-injected test in
+// release/checkpoint-memory-admission.test.ts. No test here asserts the memory-budget path.
+vi.mock('../../release/checkpoint-memory-admission', async (orig) => ({
+  ...(await orig<typeof import('../../release/checkpoint-memory-admission')>()),
+  admitCheckpointMemory: (opts: { requestG: number }) => ({
+    admit: true,
+    reason: 'admitted-sole-run' as const,
+    requestG: opts.requestG,
+    committedG: 0,
+    budgetG: 125,
+    scopes: 0,
+    unbounded: 0,
+    detail: `checkpoint-memory: TEST STUB — admitting ${opts.requestG} GiB (host scope census is not a unit-test input)`,
+  }),
+}));
+
 // per-hive-git-and-release-gate P-010: the handlers now resolve the operator-home slug to
 // route per-hive (green-checkpoint) / guard leg-3 (release-trigger). Make the fixture's
 // `my-harness` BE the operator-home so these tests exercise the home (default) path; other

@@ -19,6 +19,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./events/await/engine', () => ({
   cancelSupersededCandidateAwaits: vi.fn(async () => ({ cancelled: 0, ids: [] })),
 }));
+// WI-2141541: launchDetachedCheckpoint calls admitCheckpointMemory BEFORE it spawns, and the
+// DEFAULT probe scans the REAL /proc + /sys/fs/cgroup tree for live green-checkpoint scopes and
+// sums their memory.max. That is host state, not a unit-test input: with three checkpoint runs
+// live on the box (the papercusp gate plus other installs' gates) every launch in this file
+// resolved launched:false reason:'memory_budget' and 15 unrelated assertions failed — on the
+// gate at 2026-08-31 18:38Z and again at 2026-09-02 11:26Z, unchanged code both times, passing
+// alone minutes later. Stub the admission to admit; the admission logic keeps its own
+// probe-injected test in release/checkpoint-memory-admission.test.ts. No test here asserts the
+// memory-budget path.
+vi.mock('./release/checkpoint-memory-admission', async (orig) => ({
+  ...(await orig<typeof import('./release/checkpoint-memory-admission')>()),
+  admitCheckpointMemory: (opts: { requestG: number }) => ({
+    admit: true,
+    reason: 'admitted-sole-run' as const,
+    requestG: opts.requestG,
+    committedG: 0,
+    budgetG: 125,
+    scopes: 0,
+    unbounded: 0,
+    detail: `checkpoint-memory: TEST STUB — admitting ${opts.requestG} GiB (host scope census is not a unit-test input)`,
+  }),
+}));
 import { cancelSupersededCandidateAwaits } from './events/await/engine';
 import {
   buildCheckpointSystemdArgv,
