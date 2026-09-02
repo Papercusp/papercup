@@ -195,6 +195,13 @@ export interface GoalDetailLaunchProfile {
    * as `false`.
    */
   headless?: boolean;
+  /**
+   * WI-2140338: the session's compaction ceiling in TOKENS (the schema's
+   * `compactionLimit`, an integer in [50_000, 2_000_000]). The second non-string
+   * profile key; the editor holds it as a string and parses at the boundary.
+   * Absent = unpinned = the tier/system default.
+   */
+  compactionLimit?: number;
 }
 
 /**
