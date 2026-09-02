@@ -38,8 +38,11 @@ SYSTEMD_ANALYZE_BIN="${PAPERCUSP_HOSTED_CP_SYSTEMD_ANALYZE:-systemd-analyze}"
 # The seven names hosted-runtime.ts reads (readHostedRuntimeConfiguration),
 # split by what each name IS — because the correct check differs.
 #
-# LITERAL: the value is the configuration itself, so a non-empty test is both
-# correct and complete.
+# LITERAL: the value is the configuration itself, so it is tested directly
+# rather than dereferenced. A non-empty test alone is NOT sufficient: the
+# hosted env file ships commented fill-me templates and the documented
+# remediation is "uncomment and fill", so a half-followed remediation would
+# otherwise pass the gate with a placeholder. See is_unfilled_placeholder.
 LITERAL_NAMES=(
   PAPERCUSP_HOSTED_PUBLIC_ORIGIN
   PAPERCUSP_HOSTED_CONTROL_PLANE_WORKSPACE_ID
@@ -74,7 +77,9 @@ Usage: deploy-hosted-control-plane.sh [--render-only|--check-env|--install-only]
                  write or call systemd
   --check-env    report the seven hosted configuration names in the environment
                  the unit would assemble (operator .env.local then the hosted
-                 env file): the three literals as set/UNSET, and the four *_REF
+                 env file): the three literals as set/UNSET/PLACEHOLDER — the
+                 last meaning an uncommented but still-unfilled template value,
+                 which fails the gate rather than passing it — and the four *_REF
                  references as resolved/UNRESOLVED — each dereferenced against
                  the encrypted store through the runtime's own resolver, so a
                  present-but-dangling pointer fails. Exit 1 while any is unset
@@ -115,6 +120,26 @@ render() {
     "$TEMPLATE"
 }
 
+# An unfilled template value is WORSE than an unset one: it satisfies a
+# non-empty test while guaranteeing a runtime failure, so the gate would go
+# green and the cut-over would publish a broken deployment. Recognise the
+# fill-me shapes this deployment actually ships (WORKOS_CLIENT_ID is
+# distributed commented-out as client_XXXX…) plus the usual template idioms.
+#
+# Deliberately narrow, to keep a real credential from ever tripping it: the
+# X-run must be 6+ (a real WorkOS/ULID identifier reaching that is ~1e-9),
+# and the word list matches only whole values or a your-/your_ prefix.
+is_unfilled_placeholder() {
+  local value="$1"
+  [[ "$value" =~ XXXXXX ]] && return 0
+  [[ "$value" == '<'*'>' ]] && return 0
+  case "${value,,}" in
+    changeme | change-me | change_me | placeholder | todo | tbd | example | \
+    replace-me | replace_me | fixme | your-* | your_*) return 0 ;;
+  esac
+  return 1
+}
+
 check_env() {
   # Assemble exactly what the unit's ExecStart assembles, in a subshell, and
   # report presence only. Values are never printed.
@@ -138,7 +163,16 @@ check_env() {
 
     rc=0
     for name in "${LITERAL_NAMES[@]}"; do
-      if [[ -n "${!name:-}" ]]; then printf '%s\tset\n' "$name"; else printf '%s\tUNSET\n' "$name"; rc=1; fi
+      literal_value="${!name:-}"
+      if [[ -z "$literal_value" ]]; then
+        printf '%s\tUNSET\n' "$name"; rc=1
+      elif is_unfilled_placeholder "$literal_value"; then
+        # Distinct from UNSET on purpose: this one means the remediation was
+        # started (line uncommented) but not finished (value not filled in).
+        printf '%s\tPLACEHOLDER\tunfilled_template\n' "$name"; rc=1
+      else
+        printf '%s\tset\n' "$name"
+      fi
     done
 
     if ! cd "$OPERATOR_ROOT" 2>/dev/null; then
