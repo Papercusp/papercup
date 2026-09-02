@@ -335,18 +335,46 @@ export type CompletionSettlementManifest = z.infer<typeof CompletionSettlementMa
  * the same way `loop:checkpoint`'s `walls[]` rejects an unrecognized shape: loudly,
  * at the call boundary, with the repair named — never silently recorded as
  * fabricated evidence and never silently dropped.
+ *
+ * EI-22191579345441592: a GLOB PATTERN is the second, disjoint shape that is not a
+ * path either, and it has no whitespace to trip the check above — an audit found
+ * `"packages/.../projections/**\/*.ts (writer contract sweep)"` declared as one of
+ * `filesChanged`'s FOUR entries, TWO of which were glob patterns rather than paths.
+ * A glob is a claim about a POPULATION ("I swept N files"), not a claim that one
+ * path exists, and every downstream blob-containment audit iterates `filesChanged`
+ * as its population: `git rev-parse --verify --quiet <sha>:<entry>` on a glob
+ * resolves to nothing, which is INDISTINGUISHABLE from "absent from the candidate"
+ * — so the entry either silently drops out of the audited population (the
+ * dangerous direction: the audit looks complete over a SUBSET and nothing says
+ * so) or is misreported as a missing file. Reject the same way: loudly, at the
+ * call boundary, with the repair named (enumerate the files the glob matched —
+ * the caller has them, `git diff --name-only` produced them).
+ *
+ * Deliberately narrow to `*`, `?`, `{`, `}` — NOT `[`/`]`. This repo has real,
+ * legitimate paths built from bracketed segments (Next.js dynamic routes, e.g.
+ * `apps/web/app/api/zero-proxy/[...path]/route.ts`), so treating a bracket as a
+ * glob indicator would reject genuine filesChanged evidence on exactly the kind
+ * of change this check must never obstruct.
  */
+const FILES_CHANGED_GLOB_CHARS = /[*?{}]/;
+
 function isPathShapedFilesChangedEntry(entry: string): boolean {
   const hasWhitespace = /\s/.test(entry);
   const hasProsePunctuation = entry.includes('(') || entry.includes(')') || entry.includes(',');
-  return !(hasWhitespace && hasProsePunctuation);
+  if (hasWhitespace && hasProsePunctuation) return false;
+  if (FILES_CHANGED_GLOB_CHARS.test(entry)) return false;
+  return true;
 }
 
 const FILES_CHANGED_NOT_PATH_SHAPED_MESSAGE =
-  'filesChanged entries must be bare repo-relative paths, not prose. An entry containing whitespace ' +
-  "together with '(', ')', or ',' reads like a description that survived splitting a comma-separated " +
-  'string, not a filename — put the description in `summary` / `whatLanded` instead, and pass ' +
-  'filesChanged as an array of bare paths, e.g. filesChanged: ["path/to/file.ts", "path/to/other.ts"].';
+  'filesChanged entries must be bare repo-relative paths, not prose and not a glob pattern. An entry ' +
+  "containing whitespace together with '(', ')', or ',' reads like a description that survived " +
+  "splitting a comma-separated string, not a filename; an entry containing '*', '?', '{', or '}' is a " +
+  'glob describing many files, not a claim that one path exists — every downstream blob-containment ' +
+  'audit iterates filesChanged as its population and a glob entry resolves to nothing there, ' +
+  'indistinguishable from "absent". Put the description in `summary` / `whatLanded` instead, enumerate ' +
+  'what a glob matched, and pass filesChanged as an array of bare paths, e.g. ' +
+  'filesChanged: ["path/to/file.ts", "path/to/other.ts"].';
 
 const FilesChangedSchema = z
   .array(z.string().min(1).refine(isPathShapedFilesChangedEntry, { message: FILES_CHANGED_NOT_PATH_SHAPED_MESSAGE }))
