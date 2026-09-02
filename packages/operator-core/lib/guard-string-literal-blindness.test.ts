@@ -335,7 +335,7 @@ const READS_FILES = /readFileSync|execFileSync\s*\(\s*['"](rg|grep)['"]/;
  * done the right thing and the guard called it debt.
  */
 const SHARED_EXPORT_CALL =
-  /\b(?:stripCommentsAndStrings|stripCommentsOnly|stripSqlComments|stripSqlCommentsAndStrings)\s*\(/;
+  /\b(?:stripCommentsAndStrings|stripCommentsOnly|stripSqlComments|stripSqlCommentsAndStrings|stripShellTrailingComment)\s*\(/;
 
 /**
  * Does this source DEFINE its own stripper, as opposed to importing or aliasing the shared one?
@@ -404,8 +404,18 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
    * from `scripts/lib/strip-comments-and-strings.mjs` instead.
    *
    * Entries that are NOT JS/TS and so cannot use the shared module:
-   *   check-assert-integrity.mjs        — shell `#` comments
    *   check-unenrolled-mjs-imports.mjs  — strips `//` out of JSONC before JSON.parse
+   *
+   * ⚠ "shell `#` comments cannot use the shared module" WAS listed here for
+   * check-assert-integrity.mjs and is now FALSE, for the same reason the SQL claim below died:
+   * the module grew a shell arm (`stripShellTrailingComment`) on 2026-09-02 and that entry was
+   * migrated onto it and REMOVED from this list. The trigger was a SECOND copy appearing —
+   * check-pipefail-sigpipe.mjs landed 2026-09-02T19:15Z carrying the same loop with a NARROWER
+   * `/\s/` predecessor class that missed a `#` after `;`, `&`, `|` or `(`. That is the whole
+   * thesis of this guard observed live: the copy-paste drifted within a day, in the
+   * false-negative direction, and only the shrink-only rule caught it. Both callers now
+   * delegate, and the shared implementation keeps the wider class. "Shell cannot use the
+   * shared module" must never be reintroduced as a reason for adding an entry.
    *
    * ⚠ "SQL cannot use the shared module" WAS listed here as a reason and is now FALSE: the
    * module grew a SQL path (stripSqlComments / stripSqlCommentsAndStrings, dispatched by
@@ -428,7 +438,8 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
    * alone deliberately: it was the live subject of an in-flight gate incident when this landed.
    */
   const BASELINE = new Set([
-    'check-assert-integrity.mjs',
+    // check-assert-integrity.mjs was REMOVED here on 2026-09-02: its private stripShellComments
+    // is now a one-line alias delegating to stripShellTrailingComment. See the shell note above.
     'check-declared-consumed.mjs',
     'check-drop-database-force.mjs',
     'check-lint-guard-reachability.mjs',

@@ -59,6 +59,7 @@
 import { readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { resolve, dirname, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { stripShellTrailingComment } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SCOPE = 'papercusp-desktop/bin/';
@@ -267,18 +268,7 @@ const ASSERT_NAME = /assert/i;
  * would have scored WI-7000 green. (Same trap closed for the same reason in
  * check-declared-consumed.mjs: a comment is not a use.)
  */
-function stripShellComments(line) {
-  let sq = false;
-  let dq = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (c === '\\' && dq) { i++; continue; }
-    if (c === "'" && !dq) sq = !sq;
-    else if (c === '"' && !sq) dq = !dq;
-    else if (c === '#' && !sq && !dq && (i === 0 || /[\s;&|(]/.test(line[i - 1]))) return line.slice(0, i);
-  }
-  return line;
-}
+const stripShellComments = (line) => stripShellTrailingComment(line);
 
 const FN_DEF = /^\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{/;
 const FN_DEF_KW = /^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/;

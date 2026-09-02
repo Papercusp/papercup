@@ -77,6 +77,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { stripShellTrailingComment } from './lib/strip-comments-and-strings.mjs';
 
 /**
  * The tree to scan. Overridable ONLY so `scripts/mutation-probe.sh` can prove this
@@ -192,24 +193,13 @@ export function enablesPipefail(text) {
 /**
  * Strip a trailing `#` comment, respecting quotes. A `#` inside a string is data —
  * `grep -q '#define'` must not be truncated into a different pipeline.
+ *
+ * Delegates to the shared shell arm. This file shipped its own copy for one day
+ * (2026-09-02) with a NARROWER `/\s/` predecessor class that missed a `#` opening a
+ * comment after `;`, `&`, `|` or `(` — the drift that always follows a copy-paste, and
+ * what `guard-string-literal-blindness` caught. The shared version keeps the wider class.
  */
-export function stripTrailingComment(line) {
-  let sq = false;
-  let dq = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (c === '\\' && dq) {
-      i++;
-      continue;
-    }
-    if (c === "'" && !dq) sq = !sq;
-    else if (c === '"' && !sq) dq = !dq;
-    else if (c === '#' && !sq && !dq && (i === 0 || /\s/.test(line[i - 1]))) {
-      return line.slice(0, i);
-    }
-  }
-  return line;
-}
+export const stripTrailingComment = (line) => stripShellTrailingComment(line);
 
 /**
  * Split a command line into pipeline stages on a single `|`, respecting quotes and
