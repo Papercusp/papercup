@@ -136,6 +136,7 @@ import {
   type FrozenCandidateFossilAbandonment,
   type FrozenCandidateRepairQueue,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
+import type { FreezeAndConvergeDisposition } from "@papercusp/operator-core/lib/release/freeze-disposition";
 import {
   describeIntegrationRoot,
   databaseEvidence,
@@ -1031,6 +1032,22 @@ export interface CheckpointDeps {
    * never be able to fail the checkpoint — routing is an aid to repair, not a precondition
    * for one.
    */
+  /**
+   * WI-2141736 P-004: record WHAT this tick did with freeze-and-converge, and WHY, as
+   * queryable STATE rather than a line in a run log.
+   *
+   * The two dispositions that matter most write no queue — a retire clears the row, and a
+   * flag-suppressed red never creates one — so neither is visible through `repairQueue`, and
+   * a retire does not even return through the result wrapper the hold paths use. That gap is
+   * why a full day of silent suppression (20 retirements, 0 resumes) could only be
+   * reconstructed by grepping checkpoint logs.
+   *
+   * ABSENT ⇒ nothing is recorded, which keeps every stub and non-recording CLI run
+   * byte-identical. Best-effort by contract: never throws, never fails a tick.
+   */
+  recordFreezeDisposition?(
+    disposition: FreezeAndConvergeDisposition,
+  ): Promise<void>;
   routeFrozenRepairToAgents?(input: {
     pipeline: string;
     candidate: string;
@@ -1094,6 +1111,21 @@ export interface CheckpointDeps {
     repairHead: string;
     reason: string;
     ordinal: number;
+  }): Promise<void>;
+  /**
+   * WI-2141736 Layer 3: durably record a frozen candidate retired for measured
+   * dispatch-infeasibility (no fixer could be dispatched at all — distinct from the P-008
+   * escape budget above). Best-effort by design: absent or throwing must never block the
+   * retirement itself — a lost observability write is not a functional regression, so the
+   * caller only logs a warning and continues.
+   */
+  recordFrozenCandidateRetirement?(entry: {
+    atMs: number;
+    abandonedCandidate: string;
+    repairHead: string;
+    reason: string;
+    attempts: number;
+    ageMs: number;
   }): Promise<void>;
   /**
    * P-005: classify a DEAD fixer for attempt-refund purposes (infrastructure death with
@@ -9258,6 +9290,17 @@ async function runGreenCheckpointInner(
               `had already converged past it — testing the converged repairHead instead of the ` +
               `current staging tip`,
           );
+          // P-004: a retire CLEARS the queue, so this is precisely the disposition no
+          // `repairQueue` reader can ever see. Record it before the run moves on.
+          await deps.recordFreezeDisposition?.({
+            enabled: true,
+            state: "retired",
+            reason:
+              `retired after measured provider-capacity infeasibility (attempts=0), but its ` +
+              `repairHead ${testedRepairHead.slice(0, 12)} had already converged past it — ` +
+              `testing that converged head rather than falling back to the staging tip`,
+            candidate: abandonedQueue.candidate,
+          });
         } else if (dispatchInfeasible && dispatchInfeasible.kind === "wait-for-dispatch-capacity") {
           // WI-2141736 Layer 2: the wall hasn't persisted long enough yet to treat this
           // zero-attempt queue as a structural dead end (see decideFrozenRepairDispatchInfeasible).
@@ -9289,6 +9332,17 @@ async function runGreenCheckpointInner(
                 }`
               : summary,
           );
+          // P-004: the hold is now a READ, not a log line.
+          await deps.recordFreezeDisposition?.({
+            enabled: true,
+            state: "held",
+            reason: summary,
+            candidate: repairQueue.candidate,
+            holdUntilMs: dispatchInfeasible.zeroAttemptStalled
+              ? repairQueue.openedAtMs + dispatchInfeasible.convergenceHoldMs
+              : null,
+            capacityRetryAtMs: dispatchInfeasible.capacityRetryAtMs ?? null,
+          });
           if (dispatchInfeasible.zeroAttemptStalled) {
             // WI-2141736 P-003: the LONG-WALL hold is the only state in which no fixer will
             // ever be dispatched for this candidate, so the repair has to be routed to
@@ -9335,6 +9389,26 @@ async function runGreenCheckpointInner(
                 `warn: dispatch-infeasible repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
               ),
             );
+          // WI-2141736 Layer 3: durably record this retirement so "was freeze-and-converge
+          // just dissolved, and why" is a queryable field
+          // (gate_health.frozenCandidateRetirements) instead of log-archaeology — this
+          // fall-through path goes on to run the checkpoint against the new candidate, so
+          // this tick's own verdict/summary never carries the retirement. Best-effort: a
+          // lost record must never block the retirement itself.
+          await deps
+            .recordFrozenCandidateRetirement?.({
+              atMs: Date.now(),
+              abandonedCandidate: dispatchInfeasible.abandonedCandidate,
+              repairHead: dispatchInfeasible.repairHead,
+              reason: dispatchInfeasible.reason,
+              attempts: dispatchInfeasible.attempts,
+              ageMs: dispatchInfeasible.ageMs,
+            })
+            .catch((e) =>
+              deps.log(
+                `warn: frozen-repair retirement record failed (retirement proceeds regardless): ${e instanceof Error ? e.message : e}`,
+              ),
+            );
           repairQueue = null;
           candidate = await revParse(
             cfg.integrationRoot,
@@ -9345,6 +9419,16 @@ async function runGreenCheckpointInner(
               `retired after measured provider-capacity infeasibility (attempts=0); ` +
               `falling through to current staging candidate ${candidate.slice(0, 8)}`,
           );
+          // P-004: THE disposition the original outage hid. This branch fired 20 times in one
+          // day with 0 resumes, and the only evidence was the line above, in a per-run log.
+          await deps.recordFreezeDisposition?.({
+            enabled: true,
+            state: "retired",
+            reason:
+              `retired after measured provider-capacity infeasibility (attempts=0); the gate ` +
+              `re-cut at the current staging tip ${candidate.slice(0, 12)}`,
+            candidate: dispatchInfeasible.abandonedCandidate,
+          });
         } else {
           // A walled provider says nothing about a candidate whose repair has already started:
           // keep it inconclusive so it cannot inflate the red streak.
@@ -10708,6 +10792,18 @@ async function runGreenCheckpointInner(
           deps.log(
             `frozen convergence cycle SUPPRESSED for ${candidate.slice(0, 8)} — FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT is OFF (owner-set). The red stands and the candidate is NOT frozen; the next tick re-cuts at tip.`,
           );
+          // P-004: this is the literal question the item names — "the freeze is currently OFF
+          // because X" — so it must be a read. `off` is deliberately distinct from `none`:
+          // an owner-suppressed mechanism and a gate with nothing to freeze look identical
+          // through `repairQueue: null`, and that equivalence is what hid the original outage.
+          await deps.recordFreezeDisposition?.({
+            enabled: false,
+            state: "off",
+            reason:
+              `FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT is OFF (owner-set): this red did NOT ` +
+              `freeze ${candidate.slice(0, 12)}, and the next tick re-cuts at tip`,
+            candidate,
+          });
         } else {
           repairQueue = createFrozenCandidateRepairQueue({
             candidate,
@@ -15220,6 +15316,18 @@ export function realCheckpointDeps(
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
             await writeFrozenCandidateRepairQueue(repairTarget, queue);
           },
+          async recordFreezeDisposition(
+            disposition: FreezeAndConvergeDisposition,
+          ) {
+            // P-004. Deliberately NOT folded into writeFrozenRepairQueue's statement (the
+            // way the `convergence` projection is): the dispositions that matter most —
+            // a retire and a flag-suppressed red — write no queue at all, so a projection
+            // riding that write is silent for exactly them. The writer is non-throwing by
+            // construction; observability must never fail a gate tick.
+            const { writeFreezeAndConvergeDisposition } =
+              await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+            await writeFreezeAndConvergeDisposition(repairTarget, disposition);
+          },
           async reserveFrozenRepairFixer(
             queue: FrozenCandidateRepairQueue,
             options?: { allowCreateIfAbsent?: boolean },
@@ -15622,6 +15730,12 @@ export function realCheckpointDeps(
               "@papercusp/operator-core/lib/release/frozen-candidate-escape-ledger"
             );
             await recordFrozenCandidateEscape(repairTarget, entry);
+          },
+          async recordFrozenCandidateRetirement(entry) {
+            const { recordFrozenCandidateRetirement } = await import(
+              "@papercusp/operator-core/lib/release/frozen-candidate-retirement-ledger"
+            );
+            await recordFrozenCandidateRetirement(repairTarget, entry);
           },
           async classifyDeadFrozenRepairFixer(spawnId: string) {
             const { getOrgPg } = await import("@papercusp/db-org");
