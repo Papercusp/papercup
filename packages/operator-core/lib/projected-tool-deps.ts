@@ -39,6 +39,7 @@ import { maybeBeatPresenceOnDispatch } from './agent-tools/coordination/dispatch
 import { beginInFlightCall, endInFlightCall } from './in-flight-calls';
 import { evaluateCapabilityEnvelope, ROLE_ENVELOPES } from './capability-envelope/policy';
 import { checkSessionConfinement } from './capability-envelope/session-confinement-port';
+import { checkAuditModeMutationGuard } from './capability-envelope/audit-mode-guard';
 // Imported for its INSTALL side effect (D-017 §5): loading the store assigns the session
 // confinement resolver. This gate fails SILENTLY when unresolved — no resolver means every
 // session is unconfined, with nothing thrown and nothing logged — so installation is bound to
@@ -832,6 +833,14 @@ async function checkCapabilityEnvelopeImpl(input: {
   // confinement, i.e. every session until a paired fleet launches one.
   const confined = await checkSessionConfinement({ toolName: input.toolName, ctx: input.ctx });
   if (confined) return confined;
+
+  // WI-2140596: AUDIT mode's read-only-toward-subject clause, mechanically. Same seat and
+  // same reasoning as checkSessionConfinement above — this must run BEFORE the SU/power-user
+  // exemption below (evaluateCapabilityEnvelope exempts isSuperuser||isPowerUser before it
+  // even reads role), because the whole point is binding an su-tier session's own declared
+  // AUDIT contract, not just a fleet role's envelope.
+  const auditBlocked = await checkAuditModeMutationGuard({ toolName: input.toolName, ctx: input.ctx });
+  if (auditBlocked) return auditBlocked;
 
   // P-009 (D-010): merge the runtime per-role overrides OVER the baked ROLE_ENVELOPES (per-role
   // replace) and union the tighten-only protected-floor additions. Both getters are SYNC and

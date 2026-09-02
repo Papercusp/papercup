@@ -977,10 +977,36 @@ function parsePtoolJson(stdout) {
   }
 }
 
+/** EI-22089912517133068: seconds this lane WAITS for an in-flight git-sync to drain.
+ *
+ * `max_drain_sec` and `git_sync_drain_sec` are DIFFERENT arguments and only the first was being
+ * passed. dev:restart refuses on `git_sync_collision_operation_in_flight` iff
+ * `gitSyncPreflightBlocks(blocked, drainSec) === blocked && drainSec === 0`, so omitting this made
+ * the refusal UNCONDITIONAL for the one target that can least afford it: the cgroup check is a
+ * PROXY (EI-21930094737784126) and bg-host is itself the git-sync host, so `blocked` is true far
+ * more often here than the workspace-wide barrier it stands in for is actually held.
+ *
+ * Measured over the durable watchdog log (2026-08-25..2026-09-02): 143 activation attempts, 48
+ * refused on this exact code (33.6%), longest run 8 consecutive — ~40min in which committed
+ * bg-host code did not activate. A fire holds the barrier only ~5-10s, so 20s is ~2x the hold
+ * with margin while staying far under the 120s ceiling.
+ *
+ * Bounded by design: this delay is paid ONLY on the collision path (a free barrier proceeds at
+ * once), and only on the 5-minute activation check — never on the 30s freeze poll. Worst case it
+ * defers freeze detection by 20s against a 100s FREEZE_SILENCE_S threshold. */
+const HOT_PATH_GIT_SYNC_DRAIN_SEC =
+  Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_HOT_PATH_GIT_SYNC_DRAIN_SEC) || 20;
+/** Derived, never a second literal: the ptool budget must cover the drain we just asked it to wait
+ *  out, or a drain that works still lands as `ptool_failed` — trading one refusal code for another. */
+const HOT_PATH_PTOOL_TIMEOUT_MS = 30_000 + HOT_PATH_GIT_SYNC_DRAIN_SEC * 1_000;
+
 /** Invoke the EXISTING coordinated restart tool, never raw systemctl, for committed-code activation.
  * The wrapper owns boot-integrity, green-gate collision, exclusive-resource drain, audit, and the ~13m
- * bg-host cooldown/coalescing rail. max_drain_sec:0 makes this automatic lane refuse immediately when a
- * live resource holder exists rather than waiting through consequential work. */
+ * bg-host cooldown/coalescing rail. max_drain_sec:0 still makes this automatic lane refuse immediately
+ * rather than wait out a live EXCLUSIVE-RESOURCE holder's consequential work; git_sync_drain_sec is the
+ * separate, deliberately-bounded wait for a git-sync fire, which is 5-10s of routine sweeping and is
+ * the supported way through a merely BUSY host (override_git_sync_collision is NOT — it SIGKILLs a
+ * commit mid-flight and strands a peer's uncommitted work, so this lane must never reach for it). */
 export async function requestCommittedHotPathRestart(latestCommitHash, deps = {}) {
   const shImpl = deps.sh ?? sh;
   const ptoolScript = deps.ptoolScript ?? join(dirname(fileURLToPath(import.meta.url)), 'ptool.mjs');
@@ -990,11 +1016,12 @@ export async function requestCommittedHotPathRestart(latestCommitHash, deps = {}
     confirm: true,
     authorize: true,
     max_drain_sec: 0,
+    git_sync_drain_sec: HOT_PATH_GIT_SYNC_DRAIN_SEC,
     reason: `auto-activate committed bg-host hot-path ${shortHash}; clean tree and zero cgroup collateral`,
   };
   const run = await shImpl(process.execPath, [ptoolScript, 'dev:restart', '--json', '-'], {
     stdin: JSON.stringify(args),
-    timeout: 30_000,
+    timeout: HOT_PATH_PTOOL_TIMEOUT_MS,
   });
   if (run.err) {
     return { ok: false, restarted: false, coalesced: false, code: 'ptool_failed', error: run.err.message };

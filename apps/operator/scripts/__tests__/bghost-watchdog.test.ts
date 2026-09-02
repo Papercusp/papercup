@@ -243,7 +243,7 @@ describe('committed bg-host hot-path activation (EI-18133447445064828)', () => {
     expect(statusArgs).not.toContain(':(exclude,glob)**/*.test.ts');
   });
 
-  it('invokes the coordinated dev:restart tool with an immediate drain refusal and no unsafe overrides', async () => {
+  it('waits out a git-sync fire but still fast-fails an exclusive-resource holder, with no unsafe overrides', async () => {
     let observed:
       | { cmd: string; args: string[]; opts?: { stdin?: string; timeout?: number } }
       | undefined;
@@ -267,12 +267,33 @@ describe('committed bg-host hot-path activation (EI-18133447445064828)', () => {
       target: 'bg-host',
       confirm: true,
       authorize: true,
+      // Unchanged: an exclusive-resource holder is doing consequential work, so this automatic
+      // lane still refuses immediately rather than waiting it out.
       max_drain_sec: 0,
     });
     expect(payload.reason).toContain('abcdef123456');
+
+    // EI-22089912517133068 — THE REGRESSION GUARD. dev:restart refuses on
+    // git_sync_collision_operation_in_flight iff `blocked && drainSec === 0`, so a zero/absent
+    // drain makes that refusal unconditional for this lane (measured: 33.6% of 143 activation
+    // attempts, longest run 8 consecutive ≈ 40min of committed code not activating). A bounded
+    // wait is the supported way through; it must be a real, positive number.
+    expect(typeof payload.git_sync_drain_sec).toBe('number');
+    expect(payload.git_sync_drain_sec).toBeGreaterThan(0);
+    // ...and stay under dev:restart's own GIT_SYNC_RESTART_BARRIER_DRAIN_SEC ceiling, or the tool
+    // rejects the call outright — a schema refusal, not a drain.
+    expect(payload.git_sync_drain_sec).toBeLessThanOrEqual(120);
+
+    // The drain must NOT have been bought with the dangerous override: that SIGKILLs an in-flight
+    // commit and strands a peer's uncommitted work. An unattended lane may never reach for it.
+    expect(payload).not.toHaveProperty('override_git_sync_collision');
     expect(payload).not.toHaveProperty('override_gate_collision');
     expect(payload).not.toHaveProperty('override_boot_integrity');
-    expect(observed?.opts?.timeout).toBe(30_000);
+
+    // The ptool budget must COVER the drain we just asked it to wait out. Without this, a drain
+    // that works still lands as `ptool_failed` — trading one refusal code for another.
+    expect(observed?.opts?.timeout).toBeGreaterThan(payload.git_sync_drain_sec * 1_000);
+    expect(observed?.opts?.timeout).toBe(30_000 + payload.git_sync_drain_sec * 1_000);
   });
 
   it('fails closed when ptool fails or returns a refusal', async () => {
