@@ -2369,8 +2369,8 @@ async function completeOne(
       // acted on is a wall, not a gate. The exact path + the two rules that actually
       // fail (total partition, explicit residue field) are now in the message itself.
       misplacedResidueEntries.length > 0
-        ? `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but population entries ${misplacedResidueEntries.map((entry) => JSON.stringify(entry)).join(', ')} are in residue. Residue is not a partition bucket; move those entries to checked, notChecked, or notApplicable. ${COMPLETION_COVERAGE_CONTRACT}`
-        : `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but its completion has no valid enumerated coverage. ${COMPLETION_COVERAGE_CONTRACT} Re-open/keep the item open and re-send the completion with that coverage record; do not claim "every/all/nothing" from a partial pass.`
+        ? `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but population entries ${misplacedResidueEntries.map((entry) => JSON.stringify(entry)).join(', ')} are in residue at completion.verification.coverage (or the equivalent top-level completion.coverage alias). Residue is not a partition bucket; move those entries to checked, notChecked, or notApplicable. ${COMPLETION_COVERAGE_CONTRACT}`
+        : `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but its completion has no valid enumerated coverage. Add it at completion.verification.coverage (or the equivalent top-level completion.coverage alias). ${COMPLETION_COVERAGE_CONTRACT} Re-open/keep the item open and re-send the completion with that coverage record; do not claim "every/all/nothing" from a partial pass.`
     : undefined;
   // EI-20962416980274656: this gate is deterministic from the submitted record,
   // so reject at the completion boundary BEFORE constructing/persisting/emitting a

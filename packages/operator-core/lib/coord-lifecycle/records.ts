@@ -56,9 +56,22 @@ export const CompletionVerifiedHowSchema = z
     "HOW it was verified — a non-empty label. Prefer 'unit' | 'integration' | 'live-drove-ui' | 'live-service' | 'manual' | 'already-passing' for queryable coarse modes; concise free-text labels are also accepted. `live-service` means a real running process/service was restarted or probed without driving UI. Put detailed evidence in `testsRun` / `testResult`.",
   );
 
-/** The complete repair contract shown for malformed coverage input. */
+/**
+ * The complete repair contract shown for malformed coverage input.
+ *
+ * EI-22158326197204788: this text is deliberately PATH-NEUTRAL. `CompletionCoverageSchema`
+ * (below) is mounted at two accepted positions — nested `completion.verification.coverage`
+ * (canonical) and the flat top-level `completion.coverage` alias (line ~677) — and this same
+ * constant is reused verbatim at BOTH mount points via that schema's own `.describe()`. A
+ * hardcoded path here was wrong at whichever mount point it didn't name (previously it always
+ * said "at completion.verification.coverage", which misdescribed the field when introspected
+ * at its top-level `completion.coverage` mount). Callers who need a concrete location for a
+ * MISSING coverage record are told the specific accepted paths at the call site instead (see
+ * the `verificationCoverageError` messages in complete.ts), where the caller and the correct
+ * mount are actually known together.
+ */
 export const COMPLETION_COVERAGE_CONTRACT =
-  'Coverage contract at completion.verification.coverage: population, checked, notChecked, and notApplicable are the partition buckets; residue is a separate list, never a fifth bucket. Every population entry must appear verbatim in exactly one status bucket. All buckets are string arrays; an explicit empty residue array (residue:[]) declares zero residue, and residue:[\'none\'] remains accepted as a compatibility form. Universal-verification closes must include the residue array.';
+  'Coverage contract: population, checked, notChecked, and notApplicable are the partition buckets; residue is a separate list, never a fifth bucket. Every population entry must appear verbatim in exactly one status bucket. All buckets are string arrays; an explicit empty residue array (residue:[]) declares zero residue, and residue:[\'none\'] remains accepted as a compatibility form. Universal-verification closes must include the residue array.';
 
 function isCoverageRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
