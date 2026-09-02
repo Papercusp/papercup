@@ -2242,8 +2242,17 @@ async function notifySkippedLockedPaths(
       outcome.status === 'skipped-locked'
         ? 'No locked path could be committed this tick.'
         : `The unlocked remainder may have synced; this tick's local status is \`${outcome.status}\`.`;
+    // EI-22176521893516708: NAME the path in the summary line, not only in the
+    // body. The one-line notice is what an agent actually reads on a coord
+    // surface, and a bare count sends it hunting through locks:queue to find
+    // out that it is blocking itself — measured at 11 minutes in the report
+    // that asked for this. Keep the leading "skipped N locked dirty path(s)"
+    // wording intact: git-sync-action.test.ts matches on that prefix.
+    const firstPath = `${rows[0].scope}/${rows[0].path}`;
     const summary =
-      `git-sync skipped ${count} locked dirty ${count === 1 ? 'path' : 'paths'} on ${slug} — release your edit lock when done`;
+      `git-sync skipped ${count} locked dirty ${count === 1 ? 'path' : 'paths'} on ${slug}` +
+      ` (${firstPath}${count > 1 ? ` +${count - 1} more` : ''})` +
+      ' — release your edit lock when done';
     const body =
       `git-sync on ${slug} could not include the following dirty path${count === 1 ? '' : 's'} because your live edit lock is still held:\n` +
       `${pathDetails}\n\n` +
