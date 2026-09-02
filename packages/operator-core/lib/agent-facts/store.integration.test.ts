@@ -601,29 +601,38 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(live.find((f) => f.key === 'ver')?.body).toBe(`rev ${CAP + 4}`);
   });
 
-  it('EI-21442182972969040: ranking-aware cross-author verified admission protects weaker writes while allowing a better replacement, and exempt slots remain writable', async () => {
+  it('EI-21442182972969040: the cross-author guard became UNIVERSAL — a BETTER-ranked write is refused too, and exempt slots remain writable', async () => {
     const scopeRef = 'su-protect-verified-cap';
     const peer = 'su-peer-verified';
     const writer = 'su-new-writer';
     const base = { scope: 'owner' as const, scopeRef, workspaceId: WS };
 
-    // Saturate the ordinary partition entirely with another author's verified
-    // facts. The guard must see a real victim, not a scope that merely happens
-    // to be near the cap.
-    for (let i = 0; i < CAP; i++) {
-      await assertFact(
-        {
-          ...base,
-          key: `peer-${i}`,
-          body: `verified peer finding ${i}`,
-          createdBy: peer,
-          confidence: 'verified',
-          ttlSec: 30 * 86400,
-        },
-        db.sql,
-      );
-    }
+    // ── WHY THIS TEST INVERTED (P-002 / D-003) ─────────────────────────────
+    // This guard originally refused a write only when its victim was ANOTHER
+    // author's `verified` fact. On a scope that saturated 100%-verified across
+    // ~130 authors that discriminator went DEGENERATE and the rail read as a
+    // scope-wide write lock (EI-21585375376448939), so it was narrowed to
+    // permit the destruction whenever the incoming write OUTRANKED its victim.
+    // Both settings were reachable only because a stranger's fact was the
+    // currency being spent. D-003 removes the currency: the ceiling COUNTS the
+    // population instead of searching it for a victim, so ranking no longer
+    // buys admission and no incumbent is ever at risk.
+    //
+    // So the case this test used to assert — "a better-ranked cross-author
+    // write is ADMITTED, evicting peer-0" — is precisely the behaviour that was
+    // removed, and the assertions below are the STRONGER form of the same
+    // protection rather than a relaxation of it.
+    await db.sql`
+      INSERT INTO harness_shared.agent_facts
+        (workspace_id, scope, scope_ref, key, body, created_by, expires_at, confidence)
+      SELECT ${WS}, 'owner', ${scopeRef}, 'peer-' || g::text,
+             'verified peer finding ' || g::text, ${peer},
+             now() + interval '30 days', 'verified'
+        FROM generate_series(1, ${CAP}) AS g`;
 
+    // The write the ranking-aware guard USED to admit: a fresh `verified` row,
+    // which holds the maximum remaining-TTL fraction and therefore outranks
+    // every incumbent in the scope.
     const incoming = {
       ...base,
       key: 'incoming-cross-author',
@@ -633,24 +642,17 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
       ttlSec: 30 * 86400,
     };
     const preview = await previewFactCapImpact(incoming, db.sql);
-
-    // The dry-run forecast must establish that the cap is real and identify
-    // the exact peer row the ranking would displace.
     expect(preview.atCap).toBe(true);
     expect(preview.populationSize).toBe(CAP);
-    expect(preview.wouldEvict).toHaveLength(1);
-    expect(preview.wouldEvict[0]).toMatchObject({ confidence: 'verified', createdBy: peer });
+    expect(preview.wouldRefuse).toBe(true);
+    // No victim is named because none exists — a forecast that still named one
+    // would be describing the mechanism this plan removed.
+    expect(preview.wouldEvict).toEqual([]);
+    await expect(assertFact(incoming, db.sql)).rejects.toThrow(/REFUSED before write/);
 
-    // A fresh verified row has the maximum remaining-TTL fraction, so it
-    // outranks the near-death tail even though the victim is another author's
-    // verified fact. The old confidence-only guard incorrectly refused this
-    // write and turned a saturated all-verified scope into a write lock.
-    const admitted = await assertFact(incoming, db.sql);
-    expect(admitted.evicted?.map((row) => row.key)).toEqual(['peer-0']);
-    expect(admitted.survival).toMatchObject({ rank: 1, nextVictim: false });
-
-    // A weaker cross-author write still refuses before insertion: the ranking
-    // tail remains a peer's verified row, and the guard's protection is intact.
+    // A WEAKER write meets the identical outcome. That equality is the point:
+    // the writer's message no longer depends on a comparison against a row it
+    // cannot see, so two writers at the same ceiling get the same answer.
     const weakerIncoming = {
       ...base,
       key: 'incoming-cross-author-weaker',
@@ -661,14 +663,12 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     };
     const weakerPreview = await previewFactCapImpact(weakerIncoming, db.sql);
     expect(weakerPreview.atCap).toBe(true);
-    expect(weakerPreview.wouldEvict).toHaveLength(1);
-    expect(weakerPreview.wouldEvict[0]).toMatchObject({ confidence: 'verified', createdBy: peer });
-    await expect(assertFact(weakerIncoming, db.sql)).rejects.toThrow(
-      /REFUSED before write:.*another author's verified fact/i,
-    );
+    expect(weakerPreview.wouldRefuse).toBe(true);
+    expect(weakerPreview.wouldEvict).toEqual([]);
+    await expect(assertFact(weakerIncoming, db.sql)).rejects.toThrow(/REFUSED before write/);
 
-    // The weaker refusal is pre-write: the admitted row and 199 surviving peer
-    // rows remain live, and only the better write's victim is marked evicted.
+    // Both refusals are pre-write, so the peer's population is COMPLETE — not
+    // one row short as it was when the better-ranked write was admitted.
     const [afterRefusal] = await db.sql<{
       peerLive: number;
       incomingRows: number;
@@ -684,10 +684,10 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
              count(*) FILTER (WHERE evicted_at IS NOT NULL)::int AS "evictedRows"
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}`;
-    expect(afterRefusal.peerLive).toBe(CAP - 1);
-    expect(afterRefusal.incomingRows).toBe(1);
+    expect(afterRefusal.peerLive).toBe(CAP);
+    expect(afterRefusal.incomingRows).toBe(0);
     expect(afterRefusal.weakerIncomingRows).toBe(0);
-    expect(afterRefusal.evictedRows).toBe(1);
+    expect(afterRefusal.evictedRows).toBe(0);
 
     // Typed safety slots and conventions do not consume ordinary cap seats,
     // so they bypass the guard even when the ranked partition is saturated.
@@ -720,9 +720,12 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
              count(*) FILTER (WHERE evicted_at IS NOT NULL)::int AS "evictedRows"
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}`;
-    expect(afterExempt.peerLive).toBe(CAP - 1);
+    // The whole peer population is STILL intact after four exempt writes into a
+    // scope that is refusing ordinary ones: exempt rows take no seat, so they
+    // are neither refused at the ceiling nor paid for by an incumbent.
+    expect(afterExempt.peerLive).toBe(CAP);
     expect(afterExempt.exemptLive).toBe(exemptWrites.length);
-    expect(afterExempt.evictedRows).toBe(1);
+    expect(afterExempt.evictedRows).toBe(0);
   });
 
   it('EI-21488671343297100: concurrent writers cannot race past the ranking-aware cap guard', async () => {
@@ -730,12 +733,16 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     const peer = 'su-peer-verified-race';
 
     // Leave exactly one seat. The trigger below pauses both contenders only
-    // after their admission read, making the old read-check/write gap
-    // deterministic: without the per-partition advisory lock both transactions
-    // see 199 and enter the INSERT together, leaving 201 live rows. Both
-    // contenders are fresh verified findings, so the ranking-aware guard
-    // correctly admits them as better replacements; the lock must still make
-    // the second sweep observe the first write and evict exactly one peer.
+    // after their admission read, making the read-check/write gap deterministic:
+    // without the per-partition advisory lock both transactions count CAP-1,
+    // both conclude there is room, and both INSERT — leaving CAP+1 live rows,
+    // i.e. a ceiling that a concurrent pair can simply walk past.
+    //
+    // P-002 / D-003 makes this the sharper test it could not be before. The
+    // losing contender is now REFUSED rather than admitted-with-an-eviction, so
+    // the outcome is a clean one-of-two split with nothing destroyed; under the
+    // old ranking-aware guard both writes succeeded and the lock was observable
+    // only indirectly, through the eviction count.
     await db.sql`
       INSERT INTO harness_shared.agent_facts
         (workspace_id, scope, scope_ref, key, body, created_by, expires_at, confidence)
@@ -776,8 +783,15 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
       );
       const outcomes = await Promise.allSettled(contenders);
 
-      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(2);
-      expect(outcomes.filter((outcome) => outcome.status === 'rejected')).toHaveLength(0);
+      // EXACTLY one seat, exactly one winner. This is the assertion the lock
+      // exists for: serialize the whole seat DECISION, not merely the write.
+      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+      const rejected = outcomes.filter((outcome) => outcome.status === 'rejected');
+      expect(rejected).toHaveLength(1);
+      // …and the loser is refused for the RIGHT reason — a serialization
+      // failure or a unique-index violation would also land here, and would
+      // mean the ceiling had been enforced by accident rather than by design.
+      expect(String((rejected[0] as PromiseRejectedResult).reason)).toMatch(/REFUSED before write/);
 
       const [afterRace] = await db.sql<{
         liveRows: number;
@@ -794,10 +808,12 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
                count(*) FILTER (WHERE evicted_at IS NOT NULL)::int AS "evictedRows"
           FROM harness_shared.agent_facts
          WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}`;
+      // CAP, not CAP+1: the ceiling held under contention. And nothing died to
+      // make that true — the loser paid, no incumbent did.
       expect(afterRace).toEqual({
         liveRows: CAP,
-        incomingRows: 2,
-        evictedRows: 1,
+        incomingRows: 1,
+        evictedRows: 0,
       });
     } finally {
       await db.sql.unsafe(`
@@ -807,40 +823,45 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     }
   }, 20_000);
 
-  it('WI-6935: a wall/dead-end fact survives a 51st assert — the typed safety slots are exempt from eviction', async () => {
+  it('WI-6935: a wall/dead-end fact survives a cap-evicting write — the typed safety slots are exempt from the ranking', async () => {
     const scopeRef = 'su-slot-cap';
-    const slotted = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
-    await assertFact({ ...slotted, key: 'wall:owner-must-ratify', body: 'HOLD — owner gate' }, db.sql);
-    await assertFact({ ...slotted, key: 'dead-end:already-tried', body: 'do not re-try this' }, db.sql);
 
-    // Fill well past the cap. Asserting these two FIRST makes them the
-    // oldest-updated rows in the scope — precisely the victims the eviction's
-    // `ORDER BY updated_at DESC OFFSET` ranking picks first. That ordering is why
-    // the bug was certain rather than unlikely: a wall is asserted once and then
-    // never touched again, so it sinks to the bottom of the victim ordering.
-    for (let i = 0; i < CAP + 10; i++) {
-      await assertFact({ ttlSec: 3600, ...slotted, key: `ordinary-${i}`, body: `n ${i}` }, db.sql);
-    }
+    // ⚠ PORTED TO THE VOLATILE PARTITION (P-002 / D-004 §1). This guard used to
+    // over-fill the ORDINARY partition, which no longer evicts anything — left
+    // there it would pass against a sweep that never runs, asserting nothing
+    // while looking green. The exemption it pins is now only observable here.
+    //
+    // The two slots are seeded as the WORST-ranked rows in the partition
+    // (`suspected`, with 890 of 900 declared seconds already spent). That is
+    // what made the original bug certain rather than unlikely: a wall is
+    // asserted once and never touched again, so it sinks to the bottom of any
+    // victim ordering. Were the key-prefix exclusions dropped from
+    // capPopulationPredicate, these two would be the FIRST rows to die.
+    await seedVolatile('owner', scopeRef, [
+      { key: 'wall:owner-must-ratify', body: 'HOLD — owner gate', confidence: 'suspected', ageSec: 890, ttlSec: 900 },
+      { key: 'dead-end:already-tried', body: 'do not re-try this', confidence: 'suspected', ageSec: 890, ttlSec: 900 },
+      ...volatileCohort(VOLATILE_CAP, { prefix: 'ordinary' }),
+    ]);
+
+    const arrival = await assertFact(volatileWrite('owner', scopeRef, 'a-new-snapshot'), db.sql);
+
+    // NON-VACUITY FIRST: the cap must actually have BITTEN, or "the wall
+    // survived" is equally true of a scope where eviction never ran at all.
+    expect(arrival.evicted?.length).toBe(1);
+    // …and it took a RANKED row, never one of the exempt slots — even though
+    // both slots rank below every ranked row in the partition.
+    expect(arrival.evicted?.[0].key).toMatch(/^ordinary-\d+$/);
 
     const live = await foldFacts(
       [{ scope: 'owner', scopeRef }],
-      // WI-6935: read past the ordinary cap on purpose — `wall:`/`dead-end:` keys are
-      // EXEMPT from the cap and its eviction ranking, so they live ALONGSIDE the 500
-      // ordinary survivors (502 total here). foldFacts orders by updated_at DESC, and
-      // these two were asserted first (oldest-updated) — a limitPerSelector pinned to
-      // exactly CAP truncates the read before it reaches them, which
-      // reads as "the wall was evicted" when it was actually just never fetched.
-      { workspaceId: WS, audiences: 'all', limitPerSelector: CAP + 100 },
+      // Read past the cap on purpose: the exempt slots live ALONGSIDE the
+      // ranked survivors, and they are the oldest-updated rows here, so a
+      // limitPerSelector pinned to the cap truncates the read before it reaches
+      // them — which reads as "the wall was evicted" when it was never fetched.
+      { workspaceId: WS, audiences: 'all', limitPerSelector: VOLATILE_CAP + 100 },
       db.sql,
     );
     const keys = live.map((f) => f.key);
-    // FIRST prove the cap actually BIT in this scope — otherwise the two
-    // expectations below pass just as happily against an eviction that silently
-    // no-op'd, and the guard would be vacuous. With the slots excluded from the
-    // ranking, 60 ordinary facts are ranked and the 10 oldest-updated fall past
-    // the cap: `ordinary-0` must be gone and `ordinary-<last>` must remain.
-    expect(keys).not.toContain('ordinary-0');
-    expect(keys).toContain(`ordinary-${CAP + 9}`);
     // Still LIVE, not merely still-present: eviction writes `retracted_at`, the same
     // field a deliberate retract writes, and listLapsedWallFacts filters
     // `retracted_at IS NULL` — so an evicted wall is invisible to the watchdog built
@@ -851,22 +872,35 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
 
   it('WI-6935 (c): the cap evicts by DECLARED VALUE, not by write-recency', async () => {
     const scopeRef = 'su-value-rank';
-    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
 
-    // The two rows the OLD `ORDER BY updated_at DESC` ranking would have killed
-    // FIRST, precisely because they are written once and never touched again.
-    // Asserting them before the filler makes them the oldest-updated in the scope.
-    await assertFact(
-      { ...base, key: 'settled', body: 'a verified finding', confidence: 'verified', ttlSec: 30 * 86400 },
-      db.sql,
-    );
-    await assertFact({ ...base, key: 'long-lived', body: 'deliberately given 90 days', ttlSec: 90 * 86400 }, db.sql);
-    // …and a hedge, which SHOULD be the first thing sacrificed.
-    await assertFact({ ...base, key: 'hedge', body: 'a hunch', confidence: 'suspected' }, db.sql);
+    // ⚠ PORTED TO THE VOLATILE PARTITION (P-002 / D-004 §1) — the ranking is
+    // retained but volatile-only, so this is where "value beats recency" can
+    // still be observed. The fixture is built to DISCRIMINATE between the two
+    // orderings rather than merely to be consistent with the current one:
+    //
+    //   • `settled` and `hedge` are the OLDEST-UPDATED rows here (450s in), so
+    //     the pre-WI-6935 `updated_at DESC` ranking would have killed one of
+    //     THEM first — which is exactly the bug, since a settled conclusion is
+    //     written once and then never touched again;
+    //   • under the value ranking the sacrifice is `hedge`, on confidence
+    //     alone, and both verified rows outlive every newer filler decision.
+    await seedVolatile('owner', scopeRef, [
+      { key: 'settled', body: 'a verified finding', confidence: 'verified', ageSec: 450, ttlSec: 900 },
+      { key: 'most-life-left', body: 'barely into its declared life', confidence: 'verified', ageSec: 90, ttlSec: 900 },
+      // The hedge — same elapsed share as `settled`, weaker evidence tier — so
+      // the two are separated by DECLARED VALUE and nothing else.
+      { key: 'hedge', body: 'a hunch', confidence: 'suspected', ageSec: 450, ttlSec: 900 },
+      ...volatileCohort(VOLATILE_CAP - 3, { prefix: 'filler', ageSec: 30, ttlSec: 900 }),
+    ]);
 
-    for (let i = 0; i < CAP; i++) {
-      await assertFact({ ttlSec: 3600, ...base, key: `filler-${i}`, body: `n ${i}` }, db.sql);
-    }
+    const arrival = await assertFact(volatileWrite('owner', scopeRef, 'a-new-snapshot'), db.sql);
+
+    // Prove the cap FIRED — without this the survival assertions below would pass
+    // just as happily against an eviction that never ran (the vacuity trap the
+    // sibling guard above was originally built with).
+    expect(arrival.evicted?.length).toBe(1);
+    // The hedge is sacrificed first…
+    expect(arrival.evicted?.[0].key).toBe('hedge');
 
     const live = await foldFacts(
       [{ scope: 'owner', scopeRef }],
@@ -874,39 +908,34 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
       db.sql,
     );
     const keys = live.map((f) => f.key);
-    // Prove the cap FIRED — without this the survival assertions below would pass
-    // just as happily against an eviction that never ran (the vacuity trap the
-    // sibling guard above was originally built with).
-    expect(keys.length).toBeLessThanOrEqual(CAP);
-    // The hedge is sacrificed first…
     expect(keys).not.toContain('hedge');
-    // …while the verified finding and the deliberately long-lived fact survive,
-    // even though both are the OLDEST-updated rows in the scope and would have been
-    // the very first victims under the previous write-recency ranking.
+    // …while both verified findings survive, even though `settled` is among the
+    // OLDEST-updated rows in the scope and would have been the very first
+    // victim under the previous write-recency ranking.
     expect(keys).toContain('settled');
-    expect(keys).toContain('long-lived');
+    expect(keys).toContain('most-life-left');
   });
 
-  it('WI-7292: an assert never evicts the row it just wrote, so a short-TTL fact can still enter a SATURATED scope', async () => {
+  it('WI-7292: an assert never evicts the row it just wrote, so a WORST-RANKED fact can still enter a SATURATED scope', async () => {
     const scopeRef = 'su-self-eviction';
-    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
 
-    // Reproduce the live shape of harness:papercusp when this was measured:
-    // saturated at exactly the cap, every incumbent verified and long-lived
-    // (soonest survivor 7 days out, ZERO live facts under a 3-day TTL).
-    for (let i = 0; i < CAP; i++) {
-      await assertFact(
-        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
-        db.sql,
-      );
-    }
+    // ⚠ PORTED TO THE VOLATILE PARTITION (P-002 / D-004 §1). The
+    // `id IS DISTINCT FROM ${writtenId}` clause this pins now lives only on the
+    // volatile sweep, so the ordinary partition can no longer exercise it at
+    // all — and a self-eviction is the one failure mode that is invisible from
+    // the receipt, since the caller gets ok:true with a future expiresAt while
+    // the row is already dead (written .710Z, evicted .714Z when measured).
+    //
+    // The arriving row is deliberately the WORST-ranked in the partition: a
+    // `suspected` snapshot among `verified` ones. Without the self-exclusion it
+    // is the row the sweep picks, as part of the very statement that wrote it.
+    await seedVolatile('owner', scopeRef, volatileCohort(VOLATILE_CAP, { confidence: 'verified' }));
 
-    // The urgent, deliberately SHORT-lived fact — the class a fleet acts on within
-    // the hour ("this alarm is false right now"). `expires_at DESC` is the #2 sort
-    // key, so it ranks dead last and the pre-fix sweep retracted it as part of the
-    // very statement that inserted it: written .710Z, evicted .714Z.
-    await assertFact(
-      { ...base, key: 'urgent', body: 'this alarm is false right now', confidence: 'verified', ttlSec: 3600 },
+    const urgent = await assertFact(
+      volatileWrite('owner', scopeRef, 'urgent', {
+        body: 'this alarm is false right now',
+        confidence: 'suspected',
+      }),
       db.sql,
     );
 
@@ -920,8 +949,9 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // Non-vacuity FIRST: the cap must actually have BITTEN. Without this, "urgent
     // survived" proves nothing — it would survive just as happily in a scope where
     // eviction never ran at all (the trap the sibling guards above call out).
-    expect(keys.length).toBe(CAP);
-    expect(keys.filter((k) => k.startsWith('incumbent-')).length).toBe(CAP - 1);
+    expect(urgent.evicted?.length).toBe(1);
+    expect(keys.length).toBe(VOLATILE_CAP);
+    expect(keys.filter((k) => k.startsWith('incumbent-')).length).toBe(VOLATILE_CAP - 1);
 
     // The write survives its own assert — the whole point.
     expect(keys).toContain('urgent');
@@ -941,9 +971,11 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     const scopeRef = 'su-survival-prediction';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
 
-    // Saturated with long-lived `verified` incumbents.
+    // ⚠ PORTED TO THE VOLATILE PARTITION (P-002 / D-004 §1). The survival
+    // receipt is produced by the eviction path, which is volatile-only now, so
+    // this parity pin has to live where the sweep still runs.
     //
-    // ⚠ This fixture changed with EI-19483432832662150. It used to make the
+    // ⚠ This fixture also changed with EI-19483432832662150. It used to make the
     // doomed row a SHORT-TTL write, because key 2 was `expires_at DESC`. Key 2
     // is now the remaining SHARE of declared TTL, and a fresh write always
     // scores ~1.0 — the maximum — so a new row can no longer be pushed last by
@@ -951,16 +983,11 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // CONFIDENCE ranks below the incumbents, which is what this pin needs: a
     // predictable victim, so "the row we named must be the row that dies" stays
     // a real assertion rather than a coin flip.
-    for (let i = 0; i < CAP; i++) {
-      await assertFact(
-        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
-        db.sql,
-      );
-    }
+    await seedVolatile('owner', scopeRef, volatileCohort(VOLATILE_CAP, { confidence: 'verified' }));
 
     // The doomed write: a 'suspected' hedge in a scope of 'verified' findings.
     const doomed = await assertFact(
-      { ...base, key: 'doomed', body: 'a hedge among findings', confidence: 'suspected', ttlSec: 30 * 86400 },
+      volatileWrite('owner', scopeRef, 'doomed', { body: 'a hedge among findings', confidence: 'suspected' }),
       db.sql,
     );
 
@@ -971,8 +998,8 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // The half that used to be withheld.
     expect(doomed.survival).toBeDefined();
     expect(doomed.survival?.nextVictim).toBe(true);
-    expect(doomed.survival?.rank).toBe(CAP);
-    expect(doomed.survival?.liveCount).toBe(CAP);
+    expect(doomed.survival?.rank).toBe(VOLATILE_CAP);
+    expect(doomed.survival?.liveCount).toBe(VOLATILE_CAP);
     // It names the BAR this write failed to clear, in key 2's own units — a
     // share of declared life, not an absolute expiry. A fresh incumbent has
     // spent almost none of its TTL, so the bar sits just under 1.
@@ -986,14 +1013,10 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // what stops the two drifting: a DIFFERENT author asserts, and the row we
     // named must be exactly the row that dies.
     const later = await assertFact(
-      {
-        ...base,
+      volatileWrite('owner', scopeRef, 'a-later-write', {
         createdBy: 'su-other-writer',
-        key: 'a-later-write',
         body: 'by someone else entirely',
-        confidence: 'verified',
-        ttlSec: 30 * 86400,
-      },
+      }),
       db.sql,
     );
     expect(later.evicted?.map((e) => e.key)).toEqual(['doomed']);
@@ -1031,30 +1054,24 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     //
     // ⚠ The fixture MUST hold conventions for this test to mean anything — the
     // non-vacuity block below is what stops it degrading into a tautology.
+    // ⚠ PORTED TO THE VOLATILE PARTITION (P-002 / D-004 §1) — the survival
+    // report is only produced where the sweep still runs. The conventions must
+    // be seeded volatile TOO: they exist here solely to differ from the
+    // evictable population, and an ordinary convention is already excluded by
+    // the partition clause, so the control below would stop discriminating.
     const CONVENTIONS = 3;
-    for (let i = 0; i < CONVENTIONS; i++) {
-      await assertFact(
-        {
-          ...base,
-          key: `governing-convention-${i}`,
-          body: `we do it this way (${i})`,
-          kind: 'convention',
-          enforcement: { tier: 'structural' },
-        },
-        db.sql,
-      );
-    }
-
-    // Saturate the EVICTABLE population to exactly the cap.
-    for (let i = 0; i < CAP; i++) {
-      await assertFact(
-        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
-        db.sql,
-      );
-    }
+    await seedVolatile('owner', scopeRef, [
+      ...Array.from({ length: CONVENTIONS }, (_unused, i) => ({
+        key: `governing-convention-${i}`,
+        body: `we do it this way (${i})`,
+        kind: 'convention' as const,
+      })),
+      // Saturate the EVICTABLE population to exactly the cap.
+      ...volatileCohort(VOLATILE_CAP, { confidence: 'verified' }),
+    ]);
 
     const doomed = await assertFact(
-      { ...base, key: 'doomed', body: 'a hedge among findings', confidence: 'suspected', ttlSec: 30 * 86400 },
+      volatileWrite('owner', scopeRef, 'doomed', { body: 'a hedge among findings', confidence: 'suspected' }),
       db.sql,
     );
 
@@ -1086,6 +1103,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
          AND retracted_at IS NULL AND expires_at > now()
          AND key NOT LIKE 'wall:%'
          AND key NOT LIKE 'dead-end:%'
+         AND measurement->'subjectVolatile' = 'true'::jsonb
          AND COALESCE(kind, '') <> 'convention'`;
 
     // ── THE PERMANENT CONTROL ──────────────────────────────────────────────
@@ -1104,7 +1122,8 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
          AND superseded_at IS NULL
          AND retracted_at IS NULL AND expires_at > now()
          AND key NOT LIKE 'wall:%'
-         AND key NOT LIKE 'dead-end:%'`;
+         AND key NOT LIKE 'dead-end:%'
+         AND measurement->'subjectVolatile' = 'true'::jsonb`;
     // The control must genuinely differ, or this whole test is a tautology.
     expect(preFixPopulation).toBe(evictable + CONVENTIONS);
 
@@ -1125,23 +1144,20 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     const scopeRef = 'su-convention-no-survival';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
 
+    // ⚠ PORTED TO THE VOLATILE PARTITION (P-002 / D-004 §1): survival is a
+    // by-product of the eviction path, so "no survival verdict" is only a
+    // meaningful claim where a verdict would otherwise be produced.
+    //
     // Saturate so the sweep fires on the next write — otherwise "no survival"
     // would be trivially true (survival is only computed on an at-cap write).
-    for (let i = 0; i < CAP; i++) {
-      await assertFact(
-        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
-        db.sql,
-      );
-    }
+    await seedVolatile('owner', scopeRef, volatileCohort(VOLATILE_CAP, { confidence: 'verified' }));
 
     const convention = await assertFact(
-      {
-        ...base,
-        key: 'a-governing-rule',
+      volatileWrite('owner', scopeRef, 'a-governing-rule', {
         body: 'policy, not an observation',
         kind: 'convention',
         enforcement: { tier: 'structural' },
-      },
+      }),
       db.sql,
     );
 
@@ -1161,9 +1177,10 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
        WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}
          AND source_hive IS NULL AND superseded_at IS NULL
          AND retracted_at IS NULL AND expires_at > now()
+         AND measurement->'subjectVolatile' = 'true'::jsonb
          AND COALESCE(kind, '') <> 'convention'
          AND key NOT LIKE 'wall:%' AND key NOT LIKE 'dead-end:%'`;
-    expect(population).toBe(CAP);
+    expect(population).toBe(VOLATILE_CAP);
 
     // ...and the exempt write cost nobody their seat, precisely because it took
     // none (EI-20824216187836980).
@@ -1180,7 +1197,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // very same scope still evicts, so "the convention evicted nothing" is a
     // statement about exemption and not about a sweep that stopped running.
     const ordinary = await assertFact(
-      { ...base, key: 'ordinary-newcomer', body: 'x', confidence: 'verified', ttlSec: 30 * 86400 },
+      volatileWrite('owner', scopeRef, 'ordinary-newcomer', { body: 'x' }),
       db.sql,
     );
     expect(ordinary.evicted?.length).toBe(1);
@@ -1205,20 +1222,18 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // would replace "the receipt tells you too late" with "the forecast tells
     // you the wrong victim", which is strictly worse because it is trusted.
     // So: predict, then execute, then require them to agree on the SAME key.
-    for (let i = 0; i < CAP; i++) {
-      await assertFact(
-        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
-        db.sql,
-      );
-    }
-    // One clearly-worst row, so the victim is determinate rather than a tie.
-    await assertFact(
-      { ...base, key: 'weakest', body: 'a hedge', confidence: 'suspected', ttlSec: 30 * 86400 },
-      db.sql,
-    );
+    //
+    // ⚠ PORTED TO THE VOLATILE PARTITION (P-002 / D-004 §1): the SQL sweep the
+    // TypeScript forecast mirrors runs only here now, so this is the only
+    // partition on which the mirror can still be pinned.
+    await seedVolatile('owner', scopeRef, [
+      ...volatileCohort(VOLATILE_CAP - 1, { confidence: 'verified' }),
+      // One clearly-worst row, so the victim is determinate rather than a tie.
+      { key: 'weakest', body: 'a hedge', confidence: 'suspected' },
+    ]);
 
     const preview = await previewFactCapImpact(
-      { ...base, key: 'the-new-arrival', body: 'incoming', confidence: 'verified', ttlSec: 30 * 86400 },
+      volatileWrite('owner', scopeRef, 'the-new-arrival', { body: 'incoming' }),
       db.sql,
     );
 
@@ -1236,7 +1251,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
 
     // ── THE PIN: the forecast must survive contact with the real sweep ─────
     const real = await assertFact(
-      { ...base, key: 'the-new-arrival', body: 'incoming', confidence: 'verified', ttlSec: 30 * 86400 },
+      volatileWrite('owner', scopeRef, 'the-new-arrival', { body: 'incoming' }),
       db.sql,
     );
     expect(real.evicted?.map((e) => e.key)).toEqual(preview.wouldEvict.map((e) => e.key));
@@ -1255,18 +1270,19 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     const scopeRef = 'su-preview-upsert';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
 
+    // ⚠ PORTED TO THE VOLATILE PARTITION (P-002 / D-004 §1). On the ordinary
+    // partition an upsert-at-the-ceiling is now an ADMISSION question rather
+    // than an eviction one — that half is pinned by the P-002 ceiling suite's
+    // re-assert tests. What survives only here is the original claim: a
+    // superseding write consumes no NEW slot, so it destroys nobody.
+    //
     // Saturate to the cap so a NEW key would certainly evict — that is the
     // control that makes "no eviction" a statement about upserts specifically,
     // rather than about a scope with room to spare.
-    for (let i = 0; i < CAP; i++) {
-      await assertFact(
-        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
-        db.sql,
-      );
-    }
+    await seedVolatile('owner', scopeRef, volatileCohort(VOLATILE_CAP, { confidence: 'verified' }));
 
     const newKey = await previewFactCapImpact(
-      { ...base, key: 'a-brand-new-key', body: 'x', confidence: 'verified', ttlSec: 30 * 86400 },
+      volatileWrite('owner', scopeRef, 'a-brand-new-key', { body: 'x' }),
       db.sql,
     );
     expect(newKey.wouldEvict.length).toBeGreaterThan(0);
@@ -1274,7 +1290,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
 
     // The SAME scope, at the SAME saturation — only the key differs.
     const refresh = await previewFactCapImpact(
-      { ...base, key: 'incumbent-7', body: 'refreshed body', confidence: 'verified', ttlSec: 30 * 86400 },
+      volatileWrite('owner', scopeRef, 'incumbent-7', { body: 'refreshed body' }),
       db.sql,
     );
     expect(refresh.replacesExistingKey).toBe(true);
@@ -1283,7 +1299,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // Confirm against reality: refreshing an existing fact really does destroy
     // nothing, so the forecast above is not merely self-consistent.
     const real = await assertFact(
-      { ...base, key: 'incumbent-7', body: 'refreshed body', confidence: 'verified', ttlSec: 30 * 86400 },
+      volatileWrite('owner', scopeRef, 'incumbent-7', { body: 'refreshed body' }),
       db.sql,
     );
     expect(real.evicted ?? []).toEqual([]);
@@ -1580,14 +1596,25 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     const scopeRef = 'su-evicted-at';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
 
+    // ⚠ PORTED TO THE VOLATILE PARTITION (P-002 / D-004 §1): `evicted_at` is
+    // stamped only by the volatile sweep now, so this is the one partition on
+    // which the ambiguity it resolves can still arise. That the ORDINARY
+    // partition never stamps it at all is the complementary claim, asserted by
+    // the P-002 ceiling suite's `evicted: 0` census.
+    //
     // `deliberate` is asserted first and then explicitly retracted, so it carries a
     // retracted_at that the cap did NOT write — the control case.
     await assertFact({ ttlSec: 3600, ...base, key: 'deliberate', body: 'retract me on purpose' }, db.sql);
     await retractFact({ scope: 'owner', scopeRef, key: 'deliberate', workspaceId: WS }, db.sql);
 
-    for (let i = 0; i < CAP + 10; i++) {
-      await assertFact({ ttlSec: 3600, ...base, key: `ordinary-${i}`, body: `n ${i}` }, db.sql);
-    }
+    // …and a volatile row placed at the bottom of its partition's ranking, so
+    // the machine's choice of victim is determinate rather than a tie.
+    await seedVolatile('owner', scopeRef, [
+      { key: 'doomed-snapshot', confidence: 'suspected', ageSec: 890, ttlSec: 900 },
+      ...volatileCohort(VOLATILE_CAP - 1),
+    ]);
+    const arrival = await assertFact(volatileWrite('owner', scopeRef, 'a-new-snapshot'), db.sql);
+    expect(arrival.evicted?.map((e) => e.key)).toEqual(['doomed-snapshot']);
 
     const rows = await db.sql<{ key: string; retracted: boolean; evicted: boolean }[]>`
       SELECT key,
@@ -1596,14 +1623,14 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}
          AND superseded_at IS NULL
-         AND key IN ('deliberate', 'ordinary-0')`;
+         AND key IN ('deliberate', 'doomed-snapshot')`;
     const byKey = new Map(rows.map((r) => [r.key, r]));
 
     // Both rows are retracted — that is exactly the ambiguity this column resolves.
-    expect(byKey.get('ordinary-0')?.retracted).toBe(true);
+    expect(byKey.get('doomed-snapshot')?.retracted).toBe(true);
     expect(byKey.get('deliberate')?.retracted).toBe(true);
     // …and only the machine-chosen one is stamped evicted.
-    expect(byKey.get('ordinary-0')?.evicted).toBe(true);
+    expect(byKey.get('doomed-snapshot')?.evicted).toBe(true);
     expect(byKey.get('deliberate')?.evicted).toBe(false);
   });
 
@@ -2294,16 +2321,40 @@ describe('H6 local-partition discipline (foreign partitions untouchable locally)
   });
 
   it('cap eviction only ever retracts LOCAL rows', async () => {
-    await seedForeign('cap-foreign');
-    for (let i = 0; i <= CAP; i++) {
-      await assertFact(
-        { ttlSec: 3600, scope: 'harness', scopeRef: 'member-a', key: `cap-${i}`, body: 'x', createdBy: 'su-int', workspaceId: WS },
-        db.sql,
-      );
-    }
+    // ⚠ PORTED TO THE VOLATILE PARTITION (P-002 / D-004 §1). This guard used to
+    // saturate the ORDINARY partition, which no longer evicts anything at all —
+    // left there it would now pass against a sweep that never runs, i.e. it
+    // would assert nothing while looking green.
+    //
+    // The foreign row must also be seeded INTO the volatile partition, and as
+    // the WORST-ranked row in it. `capPopulationPredicate` excludes foreign rows
+    // via `source_hive IS NULL`, so a foreign row that is ordinary — or merely
+    // mid-ranking — survives for reasons that have nothing to do with H6, and
+    // the test would hold just as happily with that clause deleted.
+    await db.sql`
+      INSERT INTO harness_shared.agent_facts
+        (workspace_id, scope, scope_ref, key, body, created_by, created_at, updated_at,
+         expires_at, confidence, shareable, source_hive, origin, measurement)
+      VALUES (${WS}, 'harness', 'member-a', 'cap-foreign', 'a peer observation', 'peer',
+              now() - interval '890 seconds', now() - interval '890 seconds',
+              now() + interval '10 seconds', 'suspected', true, 'peer-log-key', 'remote',
+              ${volatileMeasurement(890)}::text::jsonb)`;
+
+    await seedVolatile('harness', 'member-a', volatileCohort(VOLATILE_CAP, { prefix: 'cap' }));
+    const arrival = await assertFact(volatileWrite('harness', 'member-a', 'cap-arrival'), db.sql);
+
+    // NON-VACUITY: the sweep must actually have FIRED on this write, or "the
+    // foreign row survived" is a statement about a sweep that never ran.
+    expect(arrival.evicted?.length).toBe(1);
+    // …and it took a LOCAL row, despite the foreign one ranking below every
+    // local incumbent (suspected, and 890 of its 900 declared seconds spent).
+    expect(arrival.evicted?.[0].key).toMatch(/^cap-\d+$/);
+
     const foreign = await db.sql`
-      SELECT retracted_at FROM harness_shared.agent_facts WHERE key = 'cap-foreign' AND source_hive IS NOT NULL`;
+      SELECT retracted_at, evicted_at FROM harness_shared.agent_facts
+       WHERE key = 'cap-foreign' AND source_hive IS NOT NULL`;
     expect(foreign[0].retracted_at).toBeNull();
+    expect(foreign[0].evicted_at).toBeNull();
   });
 
   it('foldFacts surfaces BOTH partitions (foreign observations inform briefs)', async () => {
@@ -2892,22 +2943,37 @@ describe('P-018 conventions — enforcement round-trip + cross-scope discovery',
     const bounded = await assertFact(conv({ key: 'bounded-convention', ttlSec: 3600 }), db.sql);
     expect(bounded.expiresAt).not.toBe(FACT_PERMANENT_EXPIRY);
 
-    for (let i = 0; i < CAP + 5; i++) {
-      await assertFact(
-        {
-          scope: 'workspace',
-          key: `ordinary-${i}`,
-          body: `ordinary fact ${i}`,
-          kind: 'conclusion',
-          createdBy: 'su-int',
-          workspaceId: WS,
-          ttlSec: 30 * 86400,
-        },
-        db.sql,
-      );
-    }
+    // Saturate the ordinary population to EXACTLY its ceiling. Under D-003 the
+    // ceiling refuses rather than evicts, so this used to over-fill by 5 and
+    // relied on the conventions surviving the eviction. The property is now the
+    // stronger one: conventions are outside the cap population entirely, so
+    // they neither consume a seat nor are refused when every seat is taken.
+    const ordinary = (i: number) => ({
+      scope: 'workspace' as const,
+      key: `ordinary-${i}`,
+      body: `ordinary fact ${i}`,
+      kind: 'conclusion' as const,
+      createdBy: 'su-int',
+      workspaceId: WS,
+      ttlSec: 30 * 86400,
+    });
+    for (let i = 0; i < CAP; i++) await assertFact(ordinary(i), db.sql);
+
+    // NON-VACUITY: the scope is genuinely full — an ordinary newcomer is
+    // refused. Without this the assertions below hold in a roomy scope too, and
+    // "kept out of the cap population" would be a claim about nothing.
+    await expect(assertFact(ordinary(CAP), db.sql)).rejects.toThrow(/REFUSED before write/);
+
+    // Two conventions already live here, so if they occupied cap seats the
+    // ordinary population could never have reached CAP in the first place —
+    // and a THIRD is still writable at a ceiling that just refused an ordinary
+    // peer, which is the exemption stated in its most falsifiable form.
+    await expect(
+      assertFact(conv({ key: 'a-third-convention', body: 'still recordable at the ceiling' }), db.sql),
+    ).resolves.toBeTruthy();
+
     expect((await listConventionFacts({ workspaceId: WS }, db.sql)).map((f) => f.key)).toEqual(
-      expect.arrayContaining(['migrations-via-runner', 'bounded-convention']),
+      expect.arrayContaining(['migrations-via-runner', 'bounded-convention', 'a-third-convention']),
     );
   });
 
