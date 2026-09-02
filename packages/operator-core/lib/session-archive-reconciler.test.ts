@@ -113,6 +113,61 @@ describe('runSessionArchiveReconcileOnce', () => {
     expect(db.stamped).toEqual([2]);
   });
 
+  it('db-side LIVENESS (EI-22126624550252124): a live-skipped row is counted, never stamped out, never a failure', async () => {
+    const nowMs = Date.now();
+    const db = fakeDb([
+      { id: 11, endedAtMs: nowMs - 3 * 3600_000 }, // OLD (past the empty-stamp grace) but the transcript is still being written
+      { id: 12, endedAtMs: nowMs - 3 * 3600_000 }, // OLD, owner still live
+      { id: 13, endedAtMs: nowMs - 3 * 3600_000 }, // OLD, a successor re-opened the row
+    ]);
+    const skipped: Record<number, 'transcript_fresh' | 'owner_live' | 'row_reopened'> = {
+      11: 'transcript_fresh',
+      12: 'owner_live',
+      13: 'row_reopened',
+    };
+    const stats = await runSessionArchiveReconcileOnce({
+      db,
+      store: new MiniStore(),
+      dirRoots: [],
+      ompRoot: await tmp('sar-live-'),
+      protectedIdentity: { ownerIds: new Set(), sessionKeys: new Set() },
+      nowMs,
+      runAdvArchive: async (id) => ({ ok: false, reason: skipped[id] }),
+    });
+    expect(stats.dbSkippedLive).toBe(3);
+    expect(stats.dbFailed).toBe(0);
+    expect(stats.dbStampedEmpty).toBe(0);
+    expect(db.stamped).toEqual([]); // stamping would strand the live transcript un-archived forever
+    expect(stats.endedUnarchivedRemaining).toBe(3); // still in the scan set — retried next tick
+  });
+
+  it('db-side: the default archive pass receives the tick\'s protected set (one instrument for both sides)', async () => {
+    // No runAdvArchive injected → the reconciler builds the real pass with
+    // { store, protectedIdentity, nowMs }. The row resolves to a per-owner dir
+    // holding a QUIET transcript, so the ONLY thing that can refuse it is the
+    // protected set — prove the set is threaded through by protecting the owner.
+    const nowMs = Date.now();
+    const root = await tmp('sar-thread-');
+    const abs = await claudeOwnerDir(root, 'su-live', SID_LIVE);
+    await ageFile(abs);
+    const { runArchiveForAdvSession } = await import('./session-archive-hook');
+    const store = new MiniStore();
+    const prot = { ownerIds: new Set(['su-live']), sessionKeys: new Set<string>() };
+    const r = await runArchiveForAdvSession(21, {
+      loadRow: async () => ({
+        id: 21, agent: 'claude', mode: 'console', cwd: '/repo', coord_owner_id: 'su-live', session_id: SID_LIVE,
+        ended_at: new Date(nowMs - 3 * 3600_000),
+      }),
+      roots: { claudeSessionRoot: root, codexHomeFor: (id) => `/codex-homes/session-${id}`, ompRoot: '/omp' },
+      store,
+      protectedIdentity: prot,
+      nowMs,
+      ingestFile: async () => {},
+    });
+    expect(r).toMatchObject({ ok: false, reason: 'owner_live' });
+    expect(existsSync(abs)).toBe(true);
+  });
+
   it('disk-side: archives+deletes dead owner dirs, never touches protected ones', async () => {
     const claudeRoot = await tmp('sar-claude-');
     const deadAbs = await claudeOwnerDir(claudeRoot, 'su-dead', SID_DEAD);

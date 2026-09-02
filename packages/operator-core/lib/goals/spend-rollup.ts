@@ -284,6 +284,9 @@ export async function refreshGoalTripwires(
   const res = refreshTripwireCurrents(goal.tripwires, {
     measuredSpentCents: rollup.pot.measured ? rollup.potCents : null,
     goalAgeMs: nowMs - goal.createdAtMs,
+    // The stamp's clock comes from the caller for the same reason the rest of the
+    // measurement does: the refresh stays pure and testable without a fake timer.
+    nowMs,
   });
   if (!res.changed) {
     return { advanced: 0, written: false, breached: breachedTripwires(res.next) };

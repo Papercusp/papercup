@@ -769,14 +769,14 @@ export function submitVerificationFailureReason(result: any): string | null;
  *  historical claude behaviour, matching how the rest of this host reads
  *  PAPERCUSP_AGENT (it only branches on an EXPLICIT non-claude value).
  *  Pure; exported for tests. */
-export function quotaBannerPatternsForAgent(agent: any): RegExp[];
+export function quotaBannerPatternsForAgent(agent?: string): RegExp[];
 /** The matching half of `quotaLimitBannerVisible`, returning WHICH pattern hit
  *  and a short excerpt around it. A bare `quota-block-detected` row is what
  *  made WI-2140984 cost a fleet leader an escalation and a full investigation:
  *  the event recorded that a wall was seen but nothing about what was seen, so
  *  a false positive was indistinguishable from a real wall. Pure; exported for
  *  tests. */
-export function quotaLimitBannerMatch(text: any, agent: any): {
+export function quotaLimitBannerMatch(text: any, agent?: string): {
     matched: boolean;
     pattern: string;
     excerpt: string;
@@ -785,7 +785,7 @@ export function quotaLimitBannerMatch(text: any, agent: any): {
     pattern: null;
     excerpt: null;
 };
-export function quotaLimitBannerVisible(text: any, agent: any): boolean;
+export function quotaLimitBannerVisible(text: any, agent?: string): boolean;
 /** WI-1386682 (1): quota-wall detector. Feed it the SAME raw pty bytes the
  *  activity tracker sees (child.onData); `isBlocked()` reports whether
  *  Claude Code's own usage-limit banner is currently visible in the recent
@@ -802,6 +802,7 @@ export function quotaLimitBannerVisible(text: any, agent: any): boolean;
  *  screen. Pure (no timers, no I/O); exported for tests. */
 export function makeQuotaBlockDetector({ capBytes, agent }?: {
     capBytes?: number | undefined;
+    agent?: string | undefined;
 }): {
     /** Feed one raw pty chunk. Returns the transition ('detected' | 'cleared')
      *  or null when the level didn't change, so a caller can log transitions

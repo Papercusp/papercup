@@ -2203,7 +2203,7 @@ const CODEX_QUOTA_LIMIT_BANNER_PATTERNS = [
  *  historical claude behaviour, matching how the rest of this host reads
  *  PAPERCUSP_AGENT (it only branches on an EXPLICIT non-claude value).
  *  Pure; exported for tests. */
-export function quotaBannerPatternsForAgent(agent) {
+export function quotaBannerPatternsForAgent(agent = '') {
   const a = String(agent ?? '')
     .trim()
     .toLowerCase();
@@ -2218,7 +2218,7 @@ export function quotaBannerPatternsForAgent(agent) {
  *  the event recorded that a wall was seen but nothing about what was seen, so
  *  a false positive was indistinguishable from a real wall. Pure; exported for
  *  tests. */
-export function quotaLimitBannerMatch(text, agent) {
+export function quotaLimitBannerMatch(text, agent = '') {
   const visible = stripAnsi(String(text ?? ''));
   for (const re of quotaBannerPatternsForAgent(agent)) {
     const m = re.exec(visible);
@@ -2233,7 +2233,7 @@ export function quotaLimitBannerMatch(text, agent) {
   return { matched: false, pattern: null, excerpt: null };
 }
 
-export function quotaLimitBannerVisible(text, agent) {
+export function quotaLimitBannerVisible(text, agent = '') {
   return quotaLimitBannerMatch(text, agent).matched;
 }
 
@@ -2259,7 +2259,7 @@ const QUOTA_BLOCK_BUFFER_CHARS = 8_192;
  *  single-byte clear (which would be wrong — a redraw is routinely split
  *  across several small writes) but a level check against the current
  *  screen. Pure (no timers, no I/O); exported for tests. */
-export function makeQuotaBlockDetector({ capBytes = QUOTA_BLOCK_BUFFER_CHARS, agent } = {}) {
+export function makeQuotaBlockDetector({ capBytes = QUOTA_BLOCK_BUFFER_CHARS, agent = '' } = {}) {
   let buffer = '';
   let blocked = false;
   let lastMatch = { matched: false, pattern: null, excerpt: null };

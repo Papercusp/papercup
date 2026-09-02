@@ -11,6 +11,8 @@ import { describe, expect, it } from 'vitest';
 import {
   GENERICALLY_MEASURABLE_METRICS,
   breachedTripwires,
+  evidenceKey,
+  isDerived,
   refreshTripwireCurrents,
   type GoalTripwireLike,
   type TripwireMeasurement,
@@ -107,17 +109,51 @@ describe('refreshTripwireCurrents', () => {
     expect(res.next[0]?.current).toBe(310);
   });
 
-  it('reports unchanged (and writes nothing) when the value already matches', () => {
+  it('reports unchanged (and writes nothing) when the value AND its stamp already match', () => {
     const already: GoalTripwireLike[] = [
-      { metric: 'spend_cents', label: 'spend', threshold: 500, current: 310, unit: 'cents' },
+      {
+        metric: 'spend_cents',
+        label: 'spend',
+        threshold: 500,
+        current: 310,
+        unit: 'cents',
+        measuredBy: { source: 'resolver:spend_cents', atMs: 1_000, value: 310 },
+      },
     ];
     const res = refreshTripwireCurrents(already, { measuredSpentCents: 310, goalAgeMs: 0 });
 
     expect(res.advanced).toBe(0);
+    expect(res.restamped).toBe(0);
     expect(res.changed).toBe(false);
     expect(res.outcomes[0]?.reason).toBe('unchanged');
     // Referential identity lets the caller skip the UPDATE entirely.
     expect(res.next).toBe(already);
+  });
+
+  it('STAMPS a correct-but-unstamped reading, so it stops reading as hand-set', () => {
+    // The value needs no correction, but its PROVENANCE does: without a stamp
+    // this is indistinguishable from a number an agent typed. That is worth the
+    // one write, which is why a re-stamp counts as `changed`.
+    const unstamped: GoalTripwireLike[] = [
+      { metric: 'spend_cents', label: 'spend', threshold: 500, current: 310, unit: 'cents' },
+    ];
+    const res = refreshTripwireCurrents(unstamped, {
+      measuredSpentCents: 310,
+      goalAgeMs: 0,
+      nowMs: 4_242,
+    });
+
+    expect(res.advanced).toBe(0);
+    expect(res.restamped).toBe(1);
+    expect(res.changed).toBe(true);
+    expect(res.next).not.toBe(unstamped);
+    expect(res.next[0]?.current).toBe(310);
+    expect(res.next[0]?.measuredBy).toEqual({
+      source: 'resolver:spend_cents',
+      atMs: 4_242,
+      value: 310,
+    });
+    expect(isDerived(res.next[0]!)).toBe(true);
   });
 
   it('rounds spend_usd to cents precision rather than emitting float noise', () => {
@@ -222,5 +258,215 @@ describe('breachedTripwires', () => {
     ];
 
     expect(breachedTripwires(executorOwned)).toEqual([]);
+  });
+});
+
+/**
+ * THE FALSIFIER (EI-21605510614702802 / WI-2039711).
+ *
+ * The claim under test is not "the platform can measure things" — P-004 already
+ * established that. It is the stronger one this work exists to make true: a
+ * stale hand-set value CANNOT persist while passing for a measurement. Each
+ * test below is written to fail if provenance were reduced to a boolean flag or
+ * a mere "a stamp exists" check, which is how this would most plausibly regress.
+ */
+describe('provenance — a hand-set value can never pass for a measurement', () => {
+  it('reports a hand-set reading as NOT derived, however plausible the number', () => {
+    // Verbatim shape from goal 9425fe, the filing's own example.
+    const handSet: GoalTripwireLike[] = [
+      { metric: 'surfaces_verified', label: 'Surfaces verified', threshold: 30, current: 0 },
+    ];
+    expect(isDerived(handSet[0]!)).toBe(false);
+
+    // ...and the refresh leaves it alone (rule 1) rather than inventing a stamp.
+    const res = refreshTripwireCurrents(handSet, { measuredSpentCents: 34618, goalAgeMs: 0 });
+    expect(res.outcomes[0]?.reason).toBe('no-resolver');
+    expect(res.next[0]?.measuredBy).toBeUndefined();
+    expect(isDerived(res.next[0]!)).toBe(false);
+  });
+
+  it('VOIDS a stamp whose value no longer matches — the hand-edit-after-measurement case', () => {
+    /*
+     * The failure this closes: the platform measures 346.18 and stamps it, then
+     * an agent hand-writes a flattering 12 over the top via goals:update. If the
+     * stamp were merely PRESENT-checked, the edited number would inherit the
+     * measurement's credibility. Comparing `value` is what makes that impossible.
+     */
+    const tampered: GoalTripwireLike = {
+      metric: 'spend_usd',
+      label: 'spend',
+      threshold: 50,
+      current: 12,
+      measuredBy: { source: 'resolver:spend_usd', atMs: 1_000, value: 346.18 },
+    };
+    expect(isDerived(tampered)).toBe(false);
+
+    // A stamp that DOES vouch for the stored number is the only derived case.
+    expect(isDerived({ ...tampered, current: 346.18 })).toBe(true);
+  });
+
+  it('does not treat a malformed or partial stamp as provenance', () => {
+    const base = { metric: 'spend_usd', label: 's', threshold: 50, current: 10 } as const;
+    // No stamp at all.
+    expect(isDerived({ ...base })).toBe(false);
+    // Explicitly null (how a cleared jsonb field arrives).
+    expect(isDerived({ ...base, measuredBy: null })).toBe(false);
+    // A non-finite value can never equal `current`, so it must not vouch for it.
+    expect(
+      isDerived({ ...base, measuredBy: { source: 'resolver:spend_usd', atMs: 1, value: Number.NaN } }),
+    ).toBe(false);
+    // A reading that is itself absent cannot be derived, stamp or not.
+    expect(
+      isDerived({
+        metric: 'spend_usd',
+        label: 's',
+        threshold: 50,
+        measuredBy: { source: 'resolver:spend_usd', atMs: 1, value: 10 },
+      }),
+    ).toBe(false);
+  });
+
+  it('stamps the SOURCE, so a reader can tell which evidence produced the number', () => {
+    const res = refreshTripwireCurrents(
+      [{ metric: 'spend_usd', label: 's', threshold: 50 }],
+      { measuredSpentCents: 34618, goalAgeMs: 0, nowMs: 777 },
+    );
+    expect(res.next[0]?.measuredBy).toEqual({
+      source: 'resolver:spend_usd',
+      atMs: 777,
+      value: 346.18,
+    });
+  });
+
+  it('leaves a stale stamp ORIGINAL when the measurement stops resolving', () => {
+    // Rule 2 is one-directional: the number survives an unmeasured pass. Its
+    // stamp must NOT be refreshed to `now` on that pass, or a source that has
+    // silently stopped reporting would keep looking freshly measured forever —
+    // which is the "stale value persists" failure wearing a stamp.
+    const scored: GoalTripwireLike[] = [
+      {
+        metric: 'spend_usd',
+        label: 'spend',
+        threshold: 50,
+        current: 346.18,
+        measuredBy: { source: 'resolver:spend_usd', atMs: 1_000, value: 346.18 },
+      },
+    ];
+    const res = refreshTripwireCurrents(scored, {
+      measuredSpentCents: null,
+      goalAgeMs: 0,
+      nowMs: 9_999_999,
+    });
+
+    expect(res.changed).toBe(false);
+    expect(res.outcomes[0]?.reason).toBe('unmeasured');
+    expect(res.next[0]?.measuredBy?.atMs).toBe(1_000);
+  });
+});
+
+describe('declared evidence bindings', () => {
+  const bound: GoalTripwireLike[] = [
+    {
+      metric: 'surfaces_verified',
+      label: 'Surfaces verified',
+      threshold: 30,
+      current: 0,
+      evidence: { kind: 'work-item-count', ref: 'surfaces-done' },
+    },
+  ];
+
+  it('advances a metric the platform has no built-in resolver for', () => {
+    const res = refreshTripwireCurrents(bound, {
+      measuredSpentCents: null,
+      goalAgeMs: 0,
+      nowMs: 55,
+      evidence: { 'work-item-count:surfaces-done': 17 },
+    });
+
+    expect(res.advanced).toBe(1);
+    expect(res.next[0]?.current).toBe(17);
+    expect(res.next[0]?.measuredBy).toEqual({
+      source: 'evidence:work-item-count:surfaces-done',
+      atMs: 55,
+      value: 17,
+    });
+    expect(isDerived(res.next[0]!)).toBe(true);
+  });
+
+  it('advances NOTHING when the caller supplied no value for the binding (rule 2)', () => {
+    for (const evidence of [undefined, {}, { 'work-item-count:surfaces-done': null }]) {
+      const res = refreshTripwireCurrents(bound, {
+        measuredSpentCents: null,
+        goalAgeMs: 0,
+        evidence,
+      });
+      expect(res.changed).toBe(false);
+      expect(res.outcomes[0]?.reason).toBe('unmeasured');
+      // Crucially it stays hand-set rather than acquiring an unearned stamp.
+      expect(isDerived(res.next[0]!)).toBe(false);
+    }
+  });
+
+  it('REFUSES to let a binding capture a platform-owned metric', () => {
+    /*
+     * A goal author who declares `spend_usd` bound to evidence of their choosing
+     * must not be able to redirect the spend reading: spend truth comes from the
+     * cost ledger (goal-mode-design-intent-hardening D-003). The built-in
+     * resolver wins, and the binding is ignored entirely.
+     */
+    const hijack: GoalTripwireLike[] = [
+      {
+        metric: 'spend_usd',
+        label: 'spend',
+        threshold: 50,
+        evidence: { kind: 'work-item-count', ref: 'anything' },
+      },
+    ];
+    const res = refreshTripwireCurrents(hijack, {
+      measuredSpentCents: 34618,
+      goalAgeMs: 0,
+      evidence: { 'work-item-count:anything': 1 },
+    });
+
+    expect(res.next[0]?.current).toBe(346.18);
+    expect(res.next[0]?.measuredBy?.source).toBe('resolver:spend_usd');
+  });
+
+  it('ignores a malformed binding rather than guessing at it (rule 1)', () => {
+    const malformed: GoalTripwireLike[] = [
+      { metric: 'surfaces_verified', label: 's', threshold: 30, evidence: { kind: '' } },
+    ];
+    const res = refreshTripwireCurrents(malformed, {
+      measuredSpentCents: null,
+      goalAgeMs: 0,
+      evidence: { ':': 5 },
+    });
+    expect(res.outcomes[0]?.reason).toBe('no-resolver');
+    expect(res.next[0]?.current).toBeUndefined();
+  });
+
+  it('keys evidence stably, including when ref is omitted', () => {
+    expect(evidenceKey({ kind: 'census', ref: 'surfaces' })).toBe('census:surfaces');
+    expect(evidenceKey({ kind: 'census' })).toBe('census:');
+  });
+
+  it('does NOT make an evidence-derived metric breach-eligible', () => {
+    /*
+     * Deliberate, and the conservative half of this change: `breachedTripwires`
+     * gates terminal kill actions, and a derived number is still not necessarily
+     * a consumption-toward-a-ceiling reading (goal-mode-2026-08-07 D-022's
+     * complement convention). Widening kill eligibility is a separate decision
+     * with an owner-facing consequence, so provenance does not smuggle it in.
+     */
+    const derived: GoalTripwireLike[] = [
+      {
+        metric: 'surfaces_verified',
+        label: 's',
+        threshold: 30,
+        current: 31,
+        measuredBy: { source: 'evidence:work-item-count:x', atMs: 1, value: 31 },
+      },
+    ];
+    expect(breachedTripwires(derived)).toEqual([]);
   });
 });
