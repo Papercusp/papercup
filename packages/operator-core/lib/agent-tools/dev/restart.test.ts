@@ -626,6 +626,18 @@ describe('dev:restart bg-host quiesce preflight (WI-2140796)', () => {
 
   it('override_quiesce:true proceeds — reaching guardResource is the proof the refusal did not fire', async () => {
     quiesceM.mockResolvedValue(quiesced({ blocked: false, overridden: true }));
+    // WI-2140796: bg-host carries a cooldownResource, so a call this far down the
+    // pipeline reaches the WI-4221 cooldown claim before guardResource — give it a
+    // successful claim, same shape as the other bg-host restart tests below.
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-QUIESCE-OVERRIDE',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    });
     await call({
       confirm: true,
       authorize: true,
@@ -648,6 +660,16 @@ describe('dev:restart bg-host quiesce preflight (WI-2140796)', () => {
         marker: { pid: 4242, unit: 'papercusp-bg-host.service', reason: 'release seed cut', since: '2026-09-01T20:00:00Z', log: '/tmp/p101-seed-cut.log' },
       }),
     );
+    // WI-2140796: same cooldown-claim reasoning as the test above.
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-QUIESCE-AUDIT',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    });
     const b = body(
       await call({
         confirm: true,
@@ -676,8 +698,21 @@ describe('dev:restart bg-host quiesce preflight (WI-2140796)', () => {
   });
 
   it('fails OPEN when the probe itself could not verify state (checked:false, not blocked)', async () => {
-    guardM.mockImplementation(runGuard(fenceOk()) as never);
+    mockImplementationTyped(guardM, async (_spec: GuardSpec, run: (fence: FenceToken) => Promise<unknown>) => {
+      return { acquired: true, result: await run(fenceOk() as never), lock_id: 'L-test' } as GuardOutcome<unknown>;
+    });
     quiesceM.mockResolvedValue(quiesceVerdict({ probeFailed: true }));
+    // WI-2140796: same cooldown-claim reasoning as the two tests above — probeFailed
+    // fails OPEN (blocked:false), so this call also reaches the bg-host cooldown claim.
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-QUIESCE-PROBE-FAILED',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    });
     await call({ confirm: true, authorize: true, target: 'bg-host', reason: 'x' }).catch(() => undefined);
     expect(guardM).toHaveBeenCalled();
   });
