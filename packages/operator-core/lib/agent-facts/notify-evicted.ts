@@ -191,15 +191,51 @@ function decidingKeyParagraph(ranking?: EvictionRankingContext | null): string {
   );
 }
 
+/** `scope[/scopeRef]`, for log lines — the same label `renderEvictionNotice` shows the owner. */
+function scopeLabel(scope: string, scopeRef?: string | null): string {
+  return scopeRef ? `${scope}/${scopeRef}` : scope;
+}
+
 /**
  * Notify each evicted fact's author. NEVER throws and never rejects — an
  * eviction notice failing must not turn a successful `facts:assert` into an
  * error. Returns the owners actually messaged (for tests/telemetry).
+ *
+ * ── WI-2142302: THREE PATHS USED TO FAIL SILENTLY ──────────────────────────
+ * Before this fix, a totally dead notifier (coord plane down, `sendMessage`
+ * always throwing) was byte-for-byte indistinguishable from a healthy one:
+ * both returned `[]` or a partial list with NOTHING logged, so "does this
+ * still work" could only be answered by querying `coord_event_log` for the
+ * notices it should have produced — a presence check that a silently-broken
+ * notifier trivially passes (zero rows either way). Every catch below now
+ * logs before it swallows, so a dead notifier is loud in the operator logs
+ * even though it still (correctly) never fails the write that triggered it.
+ * The RETURN CONTRACT is unchanged — still `string[]`, still never throws —
+ * so this is pure additive observability, not a behavior change callers or
+ * existing tests need to react to.
  */
 export async function notifyEvictedFactOwners(args: NotifyEvictedArgs): Promise<string[]> {
+  const label = scopeLabel(args.scope, args.scopeRef);
   try {
     const byOwner = groupVictimsByOwner(args.evicted, args.writerOwnerId);
-    if (byOwner.size === 0) return [];
+    if (byOwner.size === 0) {
+      // Two DIFFERENT reasons collapse to the same empty map, and they are not
+      // equally benign. "Every victim was the writer's own fact" is expected
+      // and needs no notice (the writer already has the assert receipt).
+      // "A victim's `createdBy` is blank" means a fact was just destroyed and
+      // there is NO ONE this module can tell — a genuine, silent gap, not a
+      // no-op. Distinguish them so the second case is at least loud in logs.
+      const unresolvable = args.evicted.filter(
+        (e) => !(e.createdBy ?? '').trim() && e.createdBy !== args.writerOwnerId,
+      );
+      if (unresolvable.length > 0) {
+        console.warn(
+          `[notify-evicted] ${unresolvable.length} evicted fact(s) in ${label} have no resolvable ` +
+            `owner (blank createdBy) and cannot be notified: ${unresolvable.map((e) => e.key).join(', ')}`,
+        );
+      }
+      return [];
+    }
 
     // Lazy import: the store is a low-level module and the coord message seam
     // pulls in a large graph. Importing it statically here would couple every
@@ -207,6 +243,7 @@ export async function notifyEvictedFactOwners(args: NotifyEvictedArgs): Promise<
     const { sendMessage } = await import('../agent-tools/coordination/messages');
 
     const notified: string[] = [];
+    const failedOwners: string[] = [];
     for (const [owner, victims] of byOwner) {
       const { summary, body } = renderEvictionNotice(victims, args);
       try {
@@ -228,12 +265,37 @@ export async function notifyEvictedFactOwners(args: NotifyEvictedArgs): Promise<
           },
         );
         notified.push(owner);
-      } catch {
-        // One owner's delivery failing must not block the others.
+      } catch (err) {
+        // One owner's delivery failing must not block the others — but it
+        // must not be invisible either. Loud here is the whole fix.
+        failedOwners.push(owner);
+        console.warn(
+          `[notify-evicted] failed to notify ${owner} of ${victims.length} eviction(s) in ${label}: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
+    // One summary line naming the WRITER, so an agent whose own write caused
+    // evictions has a queryable trail even though they are (deliberately) not
+    // messaged directly — the discoverability gap named in WI-2142302: an
+    // evicting agent otherwise sees no evidence it destroyed anything short of
+    // parsing the raw assert receipt, and one prior incident manually
+    // broadcast a redundant warning because of exactly that.
+    console.log(
+      `[notify-evicted] writer=${args.writerOwnerId} evicted ${args.evicted.length} fact(s) in ${label}; ` +
+        `notified=[${notified.join(', ')}]${failedOwners.length ? `; FAILED=[${failedOwners.join(', ')}]` : ''}`,
+    );
     return notified;
-  } catch {
+  } catch (err) {
+    // Defensive length read: the very thing that made the try block throw can
+    // be `args.evicted` itself (e.g. non-iterable), and a handler that throws
+    // WHILE reporting a failure would break the never-throws contract this
+    // function exists to uphold.
+    const evictedCount = Array.isArray(args.evicted) ? args.evicted.length : '?';
+    console.error(
+      `[notify-evicted] eviction-notice pipeline threw for ${evictedCount} evicted fact(s) in ` +
+        `${label} — NO owner was notified: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return [];
   }
 }
