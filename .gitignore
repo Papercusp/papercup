@@ -229,6 +229,12 @@ yarn.lock
 # Agent scratch/temp under .papercusp (scratch/ + vitest-tmp/ already ignored above).
 .papercusp/tmp/
 .papercusp/tmp-*/
+
+# EI-22169218440134434: belt-and-braces for any script that still defaults its output
+# dir to a bare repo-root tmp/ (e.g. an old cache, a manual run) — anchored to the repo
+# root so it can never match a legitimate nested tmp/ inside a package (e.g.
+# some-package/src/tmp/ source content).
+/tmp/
 .papercusp/logs/
 .papercusp/bench-reports/
 .papercusp/pi-sessions/
