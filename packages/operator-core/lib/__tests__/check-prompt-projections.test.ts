@@ -71,11 +71,11 @@ describe('comparePromptProjections', () => {
   it('fails closed when a committed projection is missing', () => {
     withFixture((root) => {
       seedFixture(root);
-      rmSync(join(root, GENERATED_PROMPT_PATHS[1]));
+      rmSync(join(root, GENERATED_PROMPT_PATHS[0]));
       const result = comparePromptProjections({ root });
       expect(result.ok).toBe(false);
       expect(result.mismatches).toContainEqual({
-        path: GENERATED_PROMPT_PATHS[1],
+        path: GENERATED_PROMPT_PATHS[0],
         reason: 'missing-projection',
       });
     });
