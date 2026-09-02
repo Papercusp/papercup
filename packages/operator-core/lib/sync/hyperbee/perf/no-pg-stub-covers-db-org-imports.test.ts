@@ -44,6 +44,21 @@
  * That is a RECONSTRUCTION of this assertion, not this assertion executing; re-derive it before
  * treating the widened scope as load-bearing.
  *
+ * KNOWN AND ACCEPTED FALSE POSITIVE — do NOT "fix" it by tightening the regex. The scan is raw
+ * TEXT matching, so it cannot tell a real import from a db-org import statement written inside a
+ * STRING: a fixture, a doc example, a code sample. `no-top-level-db-org-call-in-peer-child-graph
+ * .test.ts` builds exactly such fixtures, and its line ``import type { OrgPg } from '@papercusp/
+ * db-org';`` made this guard demand an `OrgPg` export that nothing actually imports (2026-09-02).
+ * The right response is what was done: ADD the inert stub binding. Tightening the pattern to
+ * exclude quoted occurrences trades a harmless false POSITIVE for the risk of a false NEGATIVE,
+ * and a false negative here is fatal — it is the whole failure this file exists to prevent. The
+ * asymmetry is the entire design: an extra binding costs one line, a missing one costs every
+ * peer-child and days of nameless 30s gate timeouts.
+ *
+ * (That red was NOT caused by widening the root: the fixture lives under
+ * `packages/operator-core/lib/`, so the pre-widening scan matched the same string. Attributing it
+ * to the wider scope would argue for reverting the fix to a real blindness.)
+ *
  * ON THE ROOT (measured 2026-09-02, not reasoned): scanning every root-package.json workspace
  * instead of `packages/` adds exactly TWO names — `createInsertSchema` (db-org's own
  * `schema/zod.ts`) and `restoreRawJsonbSerializer` (an `apps/operator` script) — and both are
