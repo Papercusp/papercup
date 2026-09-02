@@ -78,9 +78,9 @@ function mockHandle(): { handle: PresenceWireHandle; appended: LocalWriteOp[] } 
 
 const noTick = () => 0 as unknown as ReturnType<typeof setInterval>;
 
-async function wire(handle: PresenceWireHandle, hiveSlug: string | null = 'my-hive') {
+async function wire(handle: PresenceWireHandle, potSlug: string | null = 'my-hive') {
   return wirePresenceAnnounceForHarness(handle, {
-    resolveHiveSlug: async () => hiveSlug,
+    resolvePotSlug: async () => potSlug,
     setIntervalFn: noTick,
     now: () => 1000,
   });
