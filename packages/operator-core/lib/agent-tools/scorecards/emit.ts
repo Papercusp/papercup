@@ -11,6 +11,7 @@ import {
   META_ACCEPTANCE_RUBRIC_ID,
   readRubricPlanRevision,
 } from '../../rubrics';
+import { getAcceptanceRubricVettingStatus } from '../../acceptance-rubric-vetting';
 import { getIssue } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -140,10 +141,24 @@ const specTestAdequacyRerunRecipeSchema = z
                 evidenceKind: z.string().trim().min(1).max(120),
                 evidenceRef: z.string().trim().min(1).max(2000),
                 sourceFingerprint: specTestAdequacyFingerprintSchema,
-                testFingerprint: specTestAdequacyFingerprintSchema.nullable(),
-                fixtureFingerprint: specTestAdequacyFingerprintSchema.nullable(),
-                rubricFingerprint: specTestAdequacyFingerprintSchema.nullable(),
-                environmentFingerprint: specTestAdequacyFingerprintSchema.nullable(),
+                // EI-21670417404287969 / EI-21723288985786146 / EI-21597519978995942:
+                // `.nullable()` alone makes a key REQUIRED-but-nullable, so a caller had
+                // to spell out `fixtureFingerprint: null` on every row that has no
+                // fixture. The producers legitimately OMIT a dimension they did not
+                // measure — an operational/check row has no test or fixture — so the
+                // documented evaluator→emit chain could not be passed through unchanged,
+                // and three separate plans (P-003, P-006, and a validator pass) each hit
+                // it and filed it. Omission and explicit null mean the same thing here;
+                // `unknownWhenMissing` in `derivation` below already fixes the semantics
+                // of a missing dimension, so requiring the key adds no information.
+                // This matches the three sibling call sites, which were already
+                // `.nullable().optional()`: plans/get-spec-evidence.ts:15,
+                // plans/evaluate-spec-test-adequacy.ts:17, plans/bind-spec-evidence.ts:25
+                // — emit.ts was the lone straggler.
+                testFingerprint: specTestAdequacyFingerprintSchema.nullable().optional(),
+                fixtureFingerprint: specTestAdequacyFingerprintSchema.nullable().optional(),
+                rubricFingerprint: specTestAdequacyFingerprintSchema.nullable().optional(),
+                environmentFingerprint: specTestAdequacyFingerprintSchema.nullable().optional(),
               })
               .strict(),
           )
@@ -618,6 +633,45 @@ export async function emitScorecard(
                 ? ` (and, because you inherited this seat from that dead author, by someone outside YOUR lineage too)`
                 : '') +
               ` — have a non-implementer emit ratings first, then record the implementer's verdict`,
+          };
+        }
+      }
+      // EI-22177729599840121: vet-before-grade ordering was previously enforced ONLY at
+      // ship time (plan-acceptance-gate.ts's acceptance_rubric_vetted_after_grading /
+      // acceptance_rubric_unvetted), discovered only AFTER the independent grading pass
+      // — often unrepeatable, since the independent-grader pool deliberately excludes
+      // the rubric author's whole lineage — had already been spent. The violation is
+      // fully determinable right here: any valid vetting attestation already on record
+      // for the rubric's CURRENT revision necessarily predates the card being emitted
+      // now, so "does a valid attestation exist yet" IS the order check at this moment.
+      // Scoped to the plain independent-grading path (`!callerIsImplementer`, which by
+      // construction above also means `!acceptance` here) — the author's own later
+      // acceptance-verdict re-emit is unaffected, and the ship-time gate remains the
+      // authoritative backstop for whatever this earlier check cannot see.
+      if (!callerIsImplementer) {
+        const vettingStatus = await getAcceptanceRubricVettingStatus(rubric, { listScorecards });
+        if (vettingStatus.required && !vettingStatus.satisfied) {
+          return {
+            ok: false as const,
+            code: 'acceptance_rubric_unvetted' as const,
+            error:
+              vettingStatus.reason === 'stale-attestation'
+                ? `acceptance rubric '${rubric.rubricId}' was vetted at revision ` +
+                  `${vettingStatus.attestedRevisions.join('/') || '(unrecorded)'}, but the rubric is now at ` +
+                  `revision ${vettingStatus.currentRevision} — the content changed after vetting, so the ` +
+                  `attestation no longer covers what you are about to grade. Re-vet the CURRENT revision first: ` +
+                  `scorecards:emit { rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', ` +
+                  `subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, vettingConsult:'<consult conversation_id>' ` +
+                  `(or vettingWorkItem:'<review WI-/EI- id>'), ratings:{ <every meta criterion> } } — THEN grade. ` +
+                  `Grading now would be discovered invalid only at ship, after this pass is spent.`
+                : `acceptance rubric '${rubric.rubricId}' has not been VETTED against the meta-rubric yet ` +
+                  `(consult-min-max-and-rubric-vetting-2026-08-17). Grading it now would be discovered invalid ` +
+                  `only at ship — AFTER your independent grading pass is spent, which the independent-grader pool's ` +
+                  `own constraints can make expensive to redo. Have the rubric AUTHOR vet it first: ` +
+                  `consult:get_feedback for external critique of the rubric, then scorecards:emit ` +
+                  `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
+                  `vettingConsult:'<the consult conversation_id>', ratings:{ <every meta criterion, with evidence> } } ` +
+                  `— THEN grade.`,
           };
         }
       }
