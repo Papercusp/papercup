@@ -32,8 +32,7 @@ import {
   NEVER_DROP_KEY_PREFIXES,
   renderFactsFold,
   factVersions,
-  FACTS_PER_SCOPE_CAP,
-  FACTS_VOLATILE_PER_SCOPE_CAP,
+  __setFactCapsForTests,
   FACT_PERMANENT_EXPIRY,
   FACT_VOLATILE_MAX_TTL_SEC,
   GUARD_RAIL_KEY_PREFIX,
@@ -49,6 +48,28 @@ import { factsCellDelta } from './cells';
 import { assumptionSelectorsFor, resolveAssumptions } from './assumptions';
 
 const WS = 'ws-facts-int';
+
+/**
+ * P-002: the caps this suite exercises the MECHANISM against.
+ *
+ * The production ordinary ceiling is deliberately ~14x working demand (5000),
+ * and a cap test only means anything against a SATURATED scope — so at
+ * production magnitude every saturation test below would insert 5000 rows,
+ * making this suite's runtime a function of a number chosen for production
+ * capacity reasons. Measured: the FIRST such test alone ran past 160s (and was
+ * still going) where the whole file used to take seconds.
+ *
+ * These are small enough to saturate cheaply and large enough that the victim
+ * ranking still has something to order. Every assertion below is written
+ * relative to these names rather than to a literal, so the production constants
+ * stay free to move without touching a single expectation.
+ */
+const CAP = 50;
+const VOLATILE_CAP = 12;
+__setFactCapsForTests({ ordinary: CAP, volatile: VOLATILE_CAP });
+// Restore the production constants: the seam is pinned to the module record, so
+// leaving it set would leak into any later suite that shares it.
+afterAll(() => __setFactCapsForTests(null));
 
 let db: FreshPgDb;
 
@@ -452,7 +473,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
 
   it('the cap counts CURRENT versions, so a heavily-corrected fact cannot evict its neighbours', async () => {
     // One fact revised many times must not consume the (scope, ref) budget.
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP + 5; i++) {
+    for (let i = 0; i < CAP + 5; i++) {
       await assertFact({ ttlSec: 3600, ...base, body: `rev ${i}` }, db.sql);
     }
     const live = await foldFacts(
@@ -462,7 +483,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     );
     expect(live.filter((f) => f.key === 'ver')).toHaveLength(1);
     // …and it is the newest revision, not an evicted one.
-    expect(live.find((f) => f.key === 'ver')?.body).toBe(`rev ${FACTS_PER_SCOPE_CAP + 4}`);
+    expect(live.find((f) => f.key === 'ver')?.body).toBe(`rev ${CAP + 4}`);
   });
 
   it('EI-21442182972969040: ranking-aware cross-author verified admission protects weaker writes while allowing a better replacement, and exempt slots remain writable', async () => {
@@ -474,7 +495,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // Saturate the ordinary partition entirely with another author's verified
     // facts. The guard must see a real victim, not a scope that merely happens
     // to be near the cap.
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+    for (let i = 0; i < CAP; i++) {
       await assertFact(
         {
           ...base,
@@ -501,7 +522,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // The dry-run forecast must establish that the cap is real and identify
     // the exact peer row the ranking would displace.
     expect(preview.atCap).toBe(true);
-    expect(preview.populationSize).toBe(FACTS_PER_SCOPE_CAP);
+    expect(preview.populationSize).toBe(CAP);
     expect(preview.wouldEvict).toHaveLength(1);
     expect(preview.wouldEvict[0]).toMatchObject({ confidence: 'verified', createdBy: peer });
 
@@ -548,7 +569,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
              count(*) FILTER (WHERE evicted_at IS NOT NULL)::int AS "evictedRows"
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}`;
-    expect(afterRefusal.peerLive).toBe(FACTS_PER_SCOPE_CAP - 1);
+    expect(afterRefusal.peerLive).toBe(CAP - 1);
     expect(afterRefusal.incomingRows).toBe(1);
     expect(afterRefusal.weakerIncomingRows).toBe(0);
     expect(afterRefusal.evictedRows).toBe(1);
@@ -584,7 +605,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
              count(*) FILTER (WHERE evicted_at IS NOT NULL)::int AS "evictedRows"
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}`;
-    expect(afterExempt.peerLive).toBe(FACTS_PER_SCOPE_CAP - 1);
+    expect(afterExempt.peerLive).toBe(CAP - 1);
     expect(afterExempt.exemptLive).toBe(exemptWrites.length);
     expect(afterExempt.evictedRows).toBe(1);
   });
@@ -606,7 +627,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
       SELECT ${WS}, 'owner', ${scopeRef}, 'peer-race-' || g::text,
              'verified peer finding ' || g::text, ${peer},
              now() + interval '30 days', 'verified'
-        FROM generate_series(1, ${FACTS_PER_SCOPE_CAP - 1}) AS g`;
+        FROM generate_series(1, ${CAP - 1}) AS g`;
 
     await db.sql.unsafe(`
       CREATE OR REPLACE FUNCTION harness_shared.test_pause_fact_cap_race() RETURNS trigger
@@ -659,7 +680,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
           FROM harness_shared.agent_facts
          WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}`;
       expect(afterRace).toEqual({
-        liveRows: FACTS_PER_SCOPE_CAP,
+        liveRows: CAP,
         incomingRows: 2,
         evictedRows: 1,
       });
@@ -682,7 +703,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // `ORDER BY updated_at DESC OFFSET` ranking picks first. That ordering is why
     // the bug was certain rather than unlikely: a wall is asserted once and then
     // never touched again, so it sinks to the bottom of the victim ordering.
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP + 10; i++) {
+    for (let i = 0; i < CAP + 10; i++) {
       await assertFact({ ttlSec: 3600, ...slotted, key: `ordinary-${i}`, body: `n ${i}` }, db.sql);
     }
 
@@ -692,9 +713,9 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
       // EXEMPT from the cap and its eviction ranking, so they live ALONGSIDE the 500
       // ordinary survivors (502 total here). foldFacts orders by updated_at DESC, and
       // these two were asserted first (oldest-updated) — a limitPerSelector pinned to
-      // exactly FACTS_PER_SCOPE_CAP truncates the read before it reaches them, which
+      // exactly CAP truncates the read before it reaches them, which
       // reads as "the wall was evicted" when it was actually just never fetched.
-      { workspaceId: WS, audiences: 'all', limitPerSelector: FACTS_PER_SCOPE_CAP + 100 },
+      { workspaceId: WS, audiences: 'all', limitPerSelector: CAP + 100 },
       db.sql,
     );
     const keys = live.map((f) => f.key);
@@ -704,7 +725,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // ranking, 60 ordinary facts are ranked and the 10 oldest-updated fall past
     // the cap: `ordinary-0` must be gone and `ordinary-<last>` must remain.
     expect(keys).not.toContain('ordinary-0');
-    expect(keys).toContain(`ordinary-${FACTS_PER_SCOPE_CAP + 9}`);
+    expect(keys).toContain(`ordinary-${CAP + 9}`);
     // Still LIVE, not merely still-present: eviction writes `retracted_at`, the same
     // field a deliberate retract writes, and listLapsedWallFacts filters
     // `retracted_at IS NULL` — so an evicted wall is invisible to the watchdog built
@@ -728,7 +749,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // …and a hedge, which SHOULD be the first thing sacrificed.
     await assertFact({ ...base, key: 'hedge', body: 'a hunch', confidence: 'suspected' }, db.sql);
 
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+    for (let i = 0; i < CAP; i++) {
       await assertFact({ ttlSec: 3600, ...base, key: `filler-${i}`, body: `n ${i}` }, db.sql);
     }
 
@@ -741,7 +762,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // Prove the cap FIRED — without this the survival assertions below would pass
     // just as happily against an eviction that never ran (the vacuity trap the
     // sibling guard above was originally built with).
-    expect(keys.length).toBeLessThanOrEqual(FACTS_PER_SCOPE_CAP);
+    expect(keys.length).toBeLessThanOrEqual(CAP);
     // The hedge is sacrificed first…
     expect(keys).not.toContain('hedge');
     // …while the verified finding and the deliberately long-lived fact survive,
@@ -758,7 +779,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // Reproduce the live shape of harness:papercusp when this was measured:
     // saturated at exactly the cap, every incumbent verified and long-lived
     // (soonest survivor 7 days out, ZERO live facts under a 3-day TTL).
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+    for (let i = 0; i < CAP; i++) {
       await assertFact(
         { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
         db.sql,
@@ -784,8 +805,8 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // Non-vacuity FIRST: the cap must actually have BITTEN. Without this, "urgent
     // survived" proves nothing — it would survive just as happily in a scope where
     // eviction never ran at all (the trap the sibling guards above call out).
-    expect(keys.length).toBe(FACTS_PER_SCOPE_CAP);
-    expect(keys.filter((k) => k.startsWith('incumbent-')).length).toBe(FACTS_PER_SCOPE_CAP - 1);
+    expect(keys.length).toBe(CAP);
+    expect(keys.filter((k) => k.startsWith('incumbent-')).length).toBe(CAP - 1);
 
     // The write survives its own assert — the whole point.
     expect(keys).toContain('urgent');
@@ -815,7 +836,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // CONFIDENCE ranks below the incumbents, which is what this pin needs: a
     // predictable victim, so "the row we named must be the row that dies" stays
     // a real assertion rather than a coin flip.
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+    for (let i = 0; i < CAP; i++) {
       await assertFact(
         { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
         db.sql,
@@ -835,8 +856,8 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // The half that used to be withheld.
     expect(doomed.survival).toBeDefined();
     expect(doomed.survival?.nextVictim).toBe(true);
-    expect(doomed.survival?.rank).toBe(FACTS_PER_SCOPE_CAP);
-    expect(doomed.survival?.liveCount).toBe(FACTS_PER_SCOPE_CAP);
+    expect(doomed.survival?.rank).toBe(CAP);
+    expect(doomed.survival?.liveCount).toBe(CAP);
     // It names the BAR this write failed to clear, in key 2's own units — a
     // share of declared life, not an absolute expiry. A fresh incumbent has
     // spent almost none of its TTL, so the bar sits just under 1.
@@ -910,7 +931,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     }
 
     // Saturate the EVICTABLE population to exactly the cap.
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+    for (let i = 0; i < CAP; i++) {
       await assertFact(
         { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
         db.sql,
@@ -938,7 +959,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
 
     // ── THE PIN ────────────────────────────────────────────────────────────
     // Measure the evictable population directly and require the receipt to
-    // agree with it. Asserting the literal FACTS_PER_SCOPE_CAP would be weaker:
+    // agree with it. Asserting the literal CAP would be weaker:
     // this form states the actual invariant ("liveCount == what the sweep may
     // evict") and stays honest if the cap constant ever moves.
     const [{ count: evictable }] = await db.sql<{ count: number }[]>`
@@ -991,7 +1012,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
 
     // Saturate so the sweep fires on the next write — otherwise "no survival"
     // would be trivially true (survival is only computed on an at-cap write).
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+    for (let i = 0; i < CAP; i++) {
       await assertFact(
         { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
         db.sql,
@@ -1027,7 +1048,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
          AND retracted_at IS NULL AND expires_at > now()
          AND COALESCE(kind, '') <> 'convention'
          AND key NOT LIKE 'wall:%' AND key NOT LIKE 'dead-end:%'`;
-    expect(population).toBe(FACTS_PER_SCOPE_CAP);
+    expect(population).toBe(CAP);
 
     // ...and the exempt write cost nobody their seat, precisely because it took
     // none (EI-20824216187836980).
@@ -1069,7 +1090,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // would replace "the receipt tells you too late" with "the forecast tells
     // you the wrong victim", which is strictly worse because it is trusted.
     // So: predict, then execute, then require them to agree on the SAME key.
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+    for (let i = 0; i < CAP; i++) {
       await assertFact(
         { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
         db.sql,
@@ -1122,7 +1143,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // Saturate to the cap so a NEW key would certainly evict — that is the
     // control that makes "no eviction" a statement about upserts specifically,
     // rather than about a scope with room to spare.
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+    for (let i = 0; i < CAP; i++) {
       await assertFact(
         { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
         db.sql,
@@ -1170,7 +1191,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // NB the reported symptom blamed append-versioning ("the upsert supersedes
     // into a NEW row"). That is not the cause: the non-exempt re-assert case is
     // already correct and already pinned by the dryRun-upsert sibling above.
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+    for (let i = 0; i < CAP; i++) {
       await assertFact(
         { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
         db.sql,
@@ -1224,7 +1245,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
          AND COALESCE(kind, '') <> 'convention'
          AND key NOT LIKE 'wall:%' AND key NOT LIKE 'dead-end:%'
          AND key NOT LIKE 'guard-rail:%'`;
-    expect(ordinaryLive).toBe(FACTS_PER_SCOPE_CAP);
+    expect(ordinaryLive).toBe(CAP);
 
     // ...and all four exempt rows are live alongside it — the cap-bearing
     // population is CAP, the exempt rows sit outside it, and neither displaced
@@ -1244,7 +1265,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     const scopeRef = 'su-exempt-preview';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
 
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+    for (let i = 0; i < CAP; i++) {
       await assertFact(
         { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
         db.sql,
@@ -1306,7 +1327,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // it was written, by the next agent's unrelated assert, because the pool was
     // full of incumbents holding later ABSOLUTE expiries. The scope's survival
     // floor had ratcheted to ~30 days, so nothing shorter could live in it.
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+    for (let i = 0; i < CAP; i++) {
       await assertFact(
         { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
         db.sql,
@@ -1417,7 +1438,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
 
     // Short-lived incumbents this time, so a newcomer with a long TTL outranks
     // most of them rather than sinking to the bottom.
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+    for (let i = 0; i < CAP; i++) {
       await assertFact(
         { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 3600 },
         db.sql,
@@ -1449,7 +1470,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     await assertFact({ ttlSec: 3600, ...base, key: 'deliberate', body: 'retract me on purpose' }, db.sql);
     await retractFact({ scope: 'owner', scopeRef, key: 'deliberate', workspaceId: WS }, db.sql);
 
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP + 10; i++) {
+    for (let i = 0; i < CAP + 10; i++) {
       await assertFact({ ttlSec: 3600, ...base, key: `ordinary-${i}`, body: `n ${i}` }, db.sql);
     }
 
@@ -1476,7 +1497,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
 
     // Saturate the scope so the cap starts evicting incumbents.
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP + 3; i++) {
+    for (let i = 0; i < CAP + 3; i++) {
       await assertFact({ ttlSec: 3600, ...base, key: `sat-${i}`, body: `n ${i}` }, db.sql);
     }
 
@@ -1513,7 +1534,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
   it('EI-19485000346355077: an OUT-OF-WINDOW cap eviction is not disclosed — the read is bounded, not a permanent scar', async () => {
     const scopeRef = 'su-eviction-disclosure-stale';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP + 2; i++) {
+    for (let i = 0; i < CAP + 2; i++) {
       await assertFact({ ttlSec: 3600, ...base, key: `stale-${i}`, body: `n ${i}` }, db.sql);
     }
 
@@ -1981,7 +2002,7 @@ describe('H6 local-partition discipline (foreign partitions untouchable locally)
 
   it('cap eviction only ever retracts LOCAL rows', async () => {
     await seedForeign('cap-foreign');
-    for (let i = 0; i <= FACTS_PER_SCOPE_CAP; i++) {
+    for (let i = 0; i <= CAP; i++) {
       await assertFact(
         { ttlSec: 3600, scope: 'harness', scopeRef: 'member-a', key: `cap-${i}`, body: 'x', createdBy: 'su-int', workspaceId: WS },
         db.sql,
@@ -2295,7 +2316,7 @@ describe('volatile fact-cap partition (EI-20365165629381535)', () => {
         (workspace_id, scope, scope_ref, key, body, created_by, expires_at, confidence)
       SELECT ${WS}, 'harness', ${scopeRef}, 'ordinary-seed-' || i, 'ordinary', 'su-int',
              now() + interval '30 days', 'verified'
-        FROM generate_series(0, ${FACTS_PER_SCOPE_CAP - 4}) AS seed(i)`;
+        FROM generate_series(0, ${CAP - 4}) AS seed(i)`;
 
     const malformed = [
       ['ordinary-marker-string', { subjectVolatile: 'true', measuredAt }],
@@ -2319,14 +2340,14 @@ describe('volatile fact-cap partition (EI-20365165629381535)', () => {
              now() + interval '15 minutes',
              CASE WHEN i = 0 THEN 'suspected' ELSE 'verified' END,
              ${JSON.stringify(validMeasurement)}::text::jsonb
-        FROM generate_series(0, ${FACTS_VOLATILE_PER_SCOPE_CAP - 1}) AS seed(i)`;
+        FROM generate_series(0, ${VOLATILE_CAP - 1}) AS seed(i)`;
 
     const ordinaryPreview = await previewFactCapImpact(
       { ...base, key: 'ordinary-arrival', body: 'ordinary', confidence: 'verified', ttlSec: 30 * 86400 },
       db.sql,
     );
-    expect(ordinaryPreview.populationSize).toBe(FACTS_PER_SCOPE_CAP);
-    expect(ordinaryPreview.cap).toBe(FACTS_PER_SCOPE_CAP);
+    expect(ordinaryPreview.populationSize).toBe(CAP);
+    expect(ordinaryPreview.cap).toBe(CAP);
     expect(ordinaryPreview.atCap).toBe(true);
     expect(ordinaryPreview.wouldEvict.length).toBeGreaterThan(0);
 
@@ -2342,8 +2363,8 @@ describe('volatile fact-cap partition (EI-20365165629381535)', () => {
       },
       db.sql,
     );
-    expect(volatilePreview.populationSize).toBe(FACTS_VOLATILE_PER_SCOPE_CAP);
-    expect(volatilePreview.cap).toBe(FACTS_VOLATILE_PER_SCOPE_CAP);
+    expect(volatilePreview.populationSize).toBe(VOLATILE_CAP);
+    expect(volatilePreview.cap).toBe(VOLATILE_CAP);
     expect(volatilePreview.atCap).toBe(true);
     expect(volatilePreview.wouldEvict).toHaveLength(1);
     expect(volatilePreview.wouldEvict[0]?.key).toBe('volatile-seed-0');
@@ -2363,7 +2384,7 @@ describe('volatile fact-cap partition (EI-20365165629381535)', () => {
          AND source_hive IS NULL AND superseded_at IS NULL
          AND retracted_at IS NULL AND expires_at > now()
          AND measurement->'subjectVolatile' = 'true'::jsonb`;
-    expect(volatileBefore).toBe(FACTS_VOLATILE_PER_SCOPE_CAP);
+    expect(volatileBefore).toBe(VOLATILE_CAP);
 
     const volatileWrite = await assertFact(
       {
@@ -2388,7 +2409,7 @@ describe('volatile fact-cap partition (EI-20365165629381535)', () => {
          AND source_hive IS NULL AND superseded_at IS NULL
          AND retracted_at IS NULL AND expires_at > now()
          AND measurement->'subjectVolatile' = 'true'::jsonb`;
-    expect(volatileAfter).toBe(FACTS_VOLATILE_PER_SCOPE_CAP);
+    expect(volatileAfter).toBe(VOLATILE_CAP);
 
     // All three malformed/legacy rows remain live ordinary facts after both
     // writes. In particular, the string marker must not have been treated as a
@@ -2562,7 +2583,7 @@ describe('P-018 conventions — enforcement round-trip + cross-scope discovery',
     const bounded = await assertFact(conv({ key: 'bounded-convention', ttlSec: 3600 }), db.sql);
     expect(bounded.expiresAt).not.toBe(FACT_PERMANENT_EXPIRY);
 
-    for (let i = 0; i < FACTS_PER_SCOPE_CAP + 5; i++) {
+    for (let i = 0; i < CAP + 5; i++) {
       await assertFact(
         {
           scope: 'workspace',
@@ -2861,7 +2882,7 @@ describe('P-006 / D-001 — the version-chain producer the dispute detector cons
 // cosmetic label: agents are instructed to read standing facts BEFORE asserting,
 // and a dedup check that sees 4 of N cannot find the key it is looking for. The
 // duplicate assert that follows then EVICTS a peer's still-valid fact, because
-// the busy scopes sit permanently at FACTS_PER_SCOPE_CAP.
+// the busy scopes sit permanently at CAP.
 //
 // These pin the property that makes a reported `total` worth trusting: it counts
 // EXACTLY the rows the page draws from, and the page limit does not bound it.

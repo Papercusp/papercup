@@ -13,6 +13,12 @@ import { describe, expect, it, vi } from 'vitest';
 // The surface contract needs one real catalog entry to prove colon→underscore
 // display rewriting. Keep the allowlist narrow and register that definition.
 import '../../agent_tools/list';
+// ...and the tool its argRedirects POINT AT. renderToolsCatalog resolves every
+// corrective-call target through projectedToolCallContract, which fails loudly
+// (by design) on a redirect to an unregistered tool — so a narrow allowlist has
+// to be closed under the redirects of what it admits, not just the tools it
+// names. `agent_tools:list` redirects `query` → `tools:find`.
+import '../../tools/find';
 
 vi.mock('../../../operator-mcp-tools', () => ({
   ALL_AGENT_MCP_TOOLS: ['mcp__agentmcp__agent_tools:list'],

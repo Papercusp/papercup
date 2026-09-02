@@ -381,8 +381,35 @@ describe('resolvePriorAttemptRefs (P-017 raw drill-down)', () => {
     expect(performance.now() - started).toBeLessThan(500);
   });
 
-  it('returns null without a plan pointer rather than guessing a scope', async () => {
-    expect(await resolvePriorAttemptRefs({ workItemId: 'WI-9', rawRefs: ['WI-9#checkpoint'] }, deps as never)).toBeNull();
+  // WI-2142613 RETIRED THE PIN THAT USED TO SIT HERE, deliberately rather than by
+  // tripping over it. It read `it('returns null without a plan pointer rather than
+  // guessing a scope')` and asserted this exact call returned null. Its title states
+  // an intent that P-018 has since answered: the requested ref IS the anchor, so there
+  // is no scope left to guess. Keeping it pinned the drill-down dead for the 94% of
+  // open items carrying no plan — the same population whose BRIEF P-018 had just
+  // fixed — so those items received a bounded brief advertising omitted refs that
+  // could never be resolved. The two tests below split what that one conflated:
+  // "carries no plan" (must now RESOLVE) from "has no anchor at all" (still null).
+  it('resolves an ORPHAN ref from its own self rung, where the plan-pointer gate used to return null', async () => {
+    const resolved = await resolvePriorAttemptRefs(
+      { workItemId: 'WI-9', rawRefs: ['WI-9#checkpoint'] },
+      deps as never,
+    );
+    expect(resolved).not.toBeNull();
+    // CONTENT, not merely a non-null envelope: the whole point of the drill-down is
+    // that a brief which clipped this checkpoint can get the withdrawn premise back.
+    // Asserting only non-null would pass on an empty record set, which is the same
+    // dead end wearing a different shape.
+    expect(resolved!.records.map((record) => record.rawRef)).toEqual(['WI-9#checkpoint']);
+    expect(resolved!.unresolved).toEqual([]);
+    expect(resolved!.records[0]!.text).toContain('False premise: the reader never existed.');
+  });
+
+  it('still returns null when there is NO anchor at all — neither a work-item id nor a plan pointer', async () => {
+    // The narrow guard that legitimately survives the removal. This function needs
+    // SOME ref to resolve against; that is a different condition from "carries no
+    // plan", which is what the removed gate actually tested.
+    expect(await resolvePriorAttemptRefs({ rawRefs: ['WI-9#checkpoint'] }, deps as never)).toBeNull();
   });
 });
 

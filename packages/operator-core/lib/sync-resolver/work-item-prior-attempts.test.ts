@@ -54,18 +54,29 @@ describe('resolveWorkItemPriorAttempts', () => {
     expect(getBrief).not.toHaveBeenCalled();
   });
 
-  it('distinguishes an item with NO plan lane from a collector failure', async () => {
+  // WI-2142613 INVERTED THE ASSERTION THAT USED TO LIVE HERE. It read
+  // `it('distinguishes an item with NO plan lane from a collector failure')` and
+  // expected 'no-plan-pointer' on exactly this input. That distinction was correct
+  // while the collector REQUIRED a plan pointer; P-018 removed the requirement, so an
+  // orphan compiles its own `self` rung and "no plan lane" stopped implying "no
+  // history". The stale reason made the panel render a real collector failure as
+  // "there is no prior-attempt history to compile" for the 94% of items with no plan.
+  it('reports collector-unavailable for an ORPHAN too — a null brief is a FAILURE, never an expected absence', async () => {
     rows = [{ ...planRow, payload: {}, source_plan_slug: null, source_plan_item_ids: null }];
     getBrief.mockResolvedValue(null);
     const out = (await resolveWorkItemPriorAttempts(BASE)) as Array<Record<string, unknown>>;
-    expect(out[0].unavailableReason).toBe('no-plan-pointer');
+    expect(out[0].unavailableReason).toBe('collector-unavailable');
+    // The point is that lacking a plan no longer BUYS a softer explanation: post-P-018
+    // this item had a self rung to compile, so the null means the read failed.
+    expect(out[0].unavailableReason).not.toBe('no-plan-pointer');
   });
 
   it('reports collector-unavailable when the item HAS a lane but the brief came back null', async () => {
     rows = [planRow];
     getBrief.mockResolvedValue(null);
     const out = (await resolveWorkItemPriorAttempts(BASE)) as Array<Record<string, unknown>>;
-    // Same null from the compiler as the previous case — only the pointer tells them apart.
+    // Identical reason to the orphan case above, and that sameness is the fix: a null
+    // brief now has exactly one meaning, so there is exactly one reason to report.
     expect(out[0].unavailableReason).toBe('collector-unavailable');
   });
 

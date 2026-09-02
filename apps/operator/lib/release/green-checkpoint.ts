@@ -7069,6 +7069,24 @@ export function buildGreenCheckpointEnv(
   // still indexes exactly the "recent gate runs" read this exists to serve.
   env.PAPERCUSP_TEST_RUN_SOURCE = "ci";
   if (runId) env.PAPERCUSP_TEST_RUN_GROUP = runId;
+  // P-006 (design-to-code-coverage-seam-2026-09-02): arm coverage attribution on the gate's
+  // child processes, so a gate run contributes the same surface→test evidence an agent's
+  // `testing:run` already does (run.ts) and the admin-UI runner already does
+  // (testing-run-store.ts). One env read when disarmed; see attribution/context.ts.
+  //
+  // ⚠ READ THIS BEFORE CONCLUDING ANYTHING FROM A ZERO. Arming here does NOT make the gate
+  // measure coverage today, and the difference is not a subtlety — it is the whole finding.
+  // `greenCmd` defaults to `npm run test:affected`, which runs the UNIT lane; `defineVitestConfig`
+  // wires `setup-no-real-pg.ts` into exactly that lane, pinning PAPERCUSP_FORBID_REAL_PG=1, and
+  // the sink's flush stands DOWN on that rail by design (it gates the store, not the hooks). So
+  // the unit lane can OBSERVE traffic and can never WRITE a row. What this line buys is the
+  // integration lane (`affected-tests.mjs --integration`, no such rail) and every future gate
+  // leg that spawns through this one chokepoint — arming at the chokepoint rather than at each
+  // caller is what keeps that true without anyone having to remember.
+  //
+  // The claim that a zero here means "the seam was not reached" is falsifiable, and falsified,
+  // by attribution/seam-reachability.test.ts — the positive control P-006 exists to build.
+  env.PAPERCUSP_TEST_ATTRIBUTION = "1";
   // WI-1702898. Deleted first so a stale value can never ride in from the host and
   // attribute this run's rows to a candidate it is not judging — a WRONG sha is worse
   // than the NULL this replaces, because a NULL is visibly unattributed while a wrong

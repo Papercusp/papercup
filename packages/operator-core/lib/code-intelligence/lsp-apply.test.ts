@@ -458,6 +458,8 @@ function harness(over: Partial<ApplyDeps> = {}, seed?: Map<string, string>): Har
           'file:///repo/b.ts': [edit(0, 4, 0, 11, 'newName')],
         },
       },
+      completenessProven: true,
+      completenessWarning: null,
     }),
     realpath: realpathIdentity,
     readText: async (p) => {
@@ -510,6 +512,59 @@ describe('applyRenameEdit — the happy path', () => {
     const r = await applyRenameEdit(REQ, h.deps);
     ok(r);
     expect(r.contentAfter['a.ts']).toBe(contentSha('const newName = 1;\n'));
+  });
+});
+
+// WI-2142449: rename-for-application's readiness gate accepts BOTH a
+// completeness proof ('certified') and a settle-window heuristic
+// ('answerable') — a write can succeed on either. These pin that
+// `computeEdit`'s completeness verdict reaches the caller UNCHANGED on a
+// completed write, rather than being silently dropped between the adapter and
+// `ApplySuccess`.
+describe('WI-2142449 — completeness is reported, never silently dropped', () => {
+  it('a certified rename reports completenessProven:true and no warning', async () => {
+    const h = harness({
+      computeEdit: async () => ({
+        ok: true,
+        projectRoot: ROOT,
+        edit: {
+          changes: {
+            'file:///repo/a.ts': [edit(0, 6, 0, 13, 'newName')],
+            'file:///repo/b.ts': [edit(0, 4, 0, 11, 'newName')],
+          },
+        },
+        completenessProven: true,
+        completenessWarning: null,
+      }),
+    });
+    const r = await applyRenameEdit(REQ, h.deps);
+    ok(r);
+    expect(r.completenessProven).toBe(true);
+    expect(r.completenessWarning).toBeNull();
+  });
+
+  it('a settle-window-only rename still writes, but reports completenessProven:false with a warning — the write is NOT refused on this signal alone', async () => {
+    const warning = 'call-site completeness is NOT proven for this rename: settle-window heuristic only';
+    const h = harness({
+      computeEdit: async () => ({
+        ok: true,
+        projectRoot: ROOT,
+        edit: {
+          changes: {
+            'file:///repo/a.ts': [edit(0, 6, 0, 13, 'newName')],
+            'file:///repo/b.ts': [edit(0, 4, 0, 11, 'newName')],
+          },
+        },
+        completenessProven: false,
+        completenessWarning: warning,
+      }),
+    });
+    const r = await applyRenameEdit(REQ, h.deps);
+    ok(r);
+    // The write still landed — this is TypeScript's normal case, not a fault.
+    expect(r.filesChanged).toEqual(['a.ts', 'b.ts']);
+    expect(r.completenessProven).toBe(false);
+    expect(r.completenessWarning).toBe(warning);
   });
 });
 
@@ -652,6 +707,8 @@ describe('invariant 5 — nothing is written when any file fails validation', ()
             'file:///repo/b.ts': [edit(40, 0, 40, 3, 'newName')],
           },
         },
+        completenessProven: true,
+        completenessWarning: null,
       }),
     });
     const r = await applyRenameEdit(REQ, h.deps);
@@ -762,7 +819,13 @@ describe('backend failures never become writes', () => {
   it('never takes a lock for an edit that resolved to nothing', async () => {
     const withLock = vi.fn();
     const h = harness({
-      computeEdit: async () => ({ ok: true, projectRoot: ROOT, edit: {} }),
+      computeEdit: async () => ({
+        ok: true,
+        projectRoot: ROOT,
+        edit: {},
+        completenessProven: true,
+        completenessWarning: null,
+      }),
       withLock: withLock as unknown as ApplyDeps['withLock'],
     });
     const r = await applyRenameEdit(REQ, h.deps);

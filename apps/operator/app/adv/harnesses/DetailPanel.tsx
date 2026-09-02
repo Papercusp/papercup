@@ -714,11 +714,9 @@ type PriorAttemptsRow = {
     };
     estimatedTokens: number;
   } | null;
-  unavailableReason:
-    | 'work-item-not-found'
-    | 'no-plan-pointer'
-    | 'collector-unavailable'
-    | null;
+  // WI-2142613 removed 'no-plan-pointer': post-P-018 an item with no plan compiles its
+  // own `self` rung, so a null brief always means the collector failed.
+  unavailableReason: 'work-item-not-found' | 'collector-unavailable' | null;
 };
 
 /**
@@ -780,15 +778,17 @@ function PriorAttemptsSection({
           {query.loading ? (
             <div className="det-label">Compiling prior-attempt brief…</div>
           ) : !brief ? (
-            /* NEVER render this as "nothing was tried" — the compiler returns null
-               for a missing plan pointer AND for a collector timeout alike. Say which
-               one actually happened. */
+            /* NEVER render this as "nothing was tried".
+               WI-2142613 deleted the 'no-plan-pointer' arm that used to sit here. It
+               said "No plan lane on this item — there is no prior-attempt history to
+               compile", which P-018 made false: an item with no plan now compiles its
+               own `self` rung, so that string told 94% of items nothing was tried while
+               actually hiding a collector failure — the exact thing this comment
+               forbids. A null brief now has one meaning, so it gets one message. */
             <div className="det-label" data-testid="wi-prior-attempts-unavailable">
-              {row?.unavailableReason === 'no-plan-pointer'
-                ? 'No plan lane on this item — there is no prior-attempt history to compile.'
-                : row?.unavailableReason === 'work-item-not-found'
-                  ? 'Work item not found in this harness.'
-                  : 'Prior-attempt brief unavailable (the collector timed out or errored). This is NOT evidence that nothing was tried.'}
+              {row?.unavailableReason === 'work-item-not-found'
+                ? 'Work item not found in this harness.'
+                : 'Prior-attempt brief unavailable (the collector timed out or errored). This is NOT evidence that nothing was tried.'}
             </div>
           ) : (
             <>

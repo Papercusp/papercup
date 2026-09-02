@@ -83,21 +83,23 @@ export async function resolveWorkItemPriorAttempts(
     sourcePlanItemIds: r.source_plan_item_ids ?? undefined,
   };
 
-  // Does this item even have a plan pointer? Computing it here lets the panel
-  // distinguish "no lane to report on" from "the collector failed" — the compiler
-  // itself collapses both to null.
-  const payloadObj =
-    r.payload && typeof r.payload === 'object' ? (r.payload as Record<string, unknown>) : null;
-  const pointer =
-    payloadObj?.plan_item && typeof payloadObj.plan_item === 'object'
-      ? (payloadObj.plan_item as Record<string, unknown>)
-      : null;
-  const hasPlanPointer = Boolean(
-    (r.source_plan_slug ?? (typeof pointer?.plan_slug === 'string' ? pointer.plan_slug : null)) &&
-      (r.source_plan_item_ids?.[0] ??
-        (typeof pointer?.item_id === 'string' ? pointer.item_id : null)),
-  );
-
+  // ⚠ WI-2142613: THE `no-plan-pointer` REASON IS GONE, and with it the
+  // `hasPlanPointer` computation that used to derive it.
+  //
+  // It existed to let the panel "distinguish 'no lane to report on' from 'the
+  // collector failed'", which was a real and correct distinction while the collector
+  // required a plan pointer. P-018 removed that requirement: an item with no plan now
+  // compiles its OWN `self` rung — its checkpoint, its P-003 journal ring, its thread,
+  // its lifecycle — so "no plan lane" no longer implies "no history to compile".
+  //
+  // Leaving the branch in place turned it into a lie in the one direction that costs
+  // most. A null brief on an orphan means the COLLECTOR FAILED, but the panel rendered
+  // "No plan lane on this item — there is no prior-attempt history to compile", i.e. a
+  // failure disguised as an expected absence, for the 94.0% of open items carrying no
+  // plan. The comment guarding that very branch reads "NEVER render this as 'nothing
+  // was tried'" — which is precisely what it had come to do.
+  //
+  // Post-P-018 a null brief has exactly one meaning, so there is exactly one reason.
   const mod = await import('../prior-attempt-context');
 
   const brief = await mod
@@ -115,11 +117,7 @@ export async function resolveWorkItemPriorAttempts(
       workItemId,
       brief,
       refResolution,
-      unavailableReason: brief
-        ? null
-        : hasPlanPointer
-          ? ('collector-unavailable' as const)
-          : ('no-plan-pointer' as const),
+      unavailableReason: brief ? null : ('collector-unavailable' as const),
     },
   ];
 }

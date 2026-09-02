@@ -801,7 +801,7 @@ const registerSubs = defineTool({
  *   - any other scope     → `parent_slug` (the Phase-1 legacy sub-harness edge).
  *
  * Pure over the registry projects so the formal-vs-legacy precedence is
- * unit-tested without fs/PG (mirrors `resolveCreateHiveMembership`). Exported
+ * unit-tested without fs/PG (mirrors `resolveCreatePotMembership`). Exported
  * for tests + the POST handler.
  */
 export function resolveProjectHiveMembership(

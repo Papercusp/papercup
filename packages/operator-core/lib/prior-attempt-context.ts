@@ -1267,17 +1267,39 @@ export async function resolvePriorAttemptRefs(
 ): Promise<PriorAttemptRefResolution | null> {
   const wanted = [...new Set(opts.rawRefs.filter((ref) => typeof ref === 'string' && ref.trim()))];
   if (!wanted.length) return null;
+  // ⚠ WI-2142613 REMOVED THE PLAN-POINTER GATE THAT USED TO OPEN THIS FUNCTION,
+  // for the same reason P-018 removed it from the briefing path above.
+  //
+  // It read `const pointer = planPointer(opts); if (!pointer) return null;`, so the
+  // DRILL-DOWN returned null for the 94.0% of open work-items carrying no plan
+  // (15,791 of 16,792, measured 2026-09-02) — the very population P-018 had just
+  // extended the BRIEF to reach. That left this module's promise broken on exactly
+  // one side: an orphan now RECEIVES a bounded brief that discloses its omissions via
+  // `omittedRefs`, and then could not resolve a single one of them. A bounded read
+  // that cannot be un-bounded is a truncated answer indistinguishable from a complete
+  // one — the defect class this whole surface exists to remove. Reachable, not
+  // theoretical: ORPHAN_CLAIM_BRIEF_BUDGET admits 12,000 chars / 24 records while a
+  // realistic orphan carries ~9,000 chars of journal ring alone, so omission happens.
+  //
+  // The gate was VESTIGIAL, not load-bearing. The anchor below already PREFERRED an
+  // explicit workItemId and used the plan pointer only as a last-resort fallback, and
+  // collectPriorAttempts has accepted an optional planSlug since P-018 — it resolves
+  // the containment tree from the requested ref, so a plan is a thing it may FIND,
+  // never a precondition. What remains is the narrower and honest guard: this function
+  // needs SOME anchor to resolve against, not specifically a PLAN one.
   const pointer = planPointer(opts);
-  if (!pointer) return null;
-  const workItemId = opts.workItemId ?? opts.workItem?.id ?? `plan-item:${pointer.planSlug}#${pointer.planItemId}`;
+  const workItemId = opts.workItemId
+    ?? opts.workItem?.id
+    ?? (pointer ? `plan-item:${pointer.planSlug}#${pointer.planItemId}` : null);
+  if (!workItemId) return null;
   const timeoutMs = Math.max(100, opts.timeoutMs ?? PRIOR_ATTEMPT_CLAIM_BUDGET_MS);
   try {
     const compilation = await Promise.race([
       collectPriorAttempts(
         {
           harnessSlug: opts.harness ?? opts.workItem?.harness ?? undefined,
-          planSlug: pointer.planSlug,
-          planItemId: pointer.planItemId,
+          planSlug: pointer?.planSlug ?? null,
+          planItemId: pointer?.planItemId ?? null,
           workItemId,
           maxPlanWorkItems: 16,
           maxThreadPosts: 12,

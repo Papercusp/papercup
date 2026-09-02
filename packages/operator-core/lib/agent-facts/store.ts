@@ -31,6 +31,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { InvalidInputError } from '@papercusp/tooldef';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { activeWorkspaceId } from '../workspace-registry';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 // P-008 (b): the unknown vocabulary a failed dependency read records. Imported,
@@ -2518,7 +2519,48 @@ export interface FactSelector {
  */
 type FactCapPartition = 'ordinary' | 'volatile';
 
+/**
+ * TEST SEAM (P-002). Lets a suite exercise the cap MECHANISM without
+ * materializing its production-tuned MAGNITUDE.
+ *
+ * Why this exists: the ordinary ceiling is deliberately ~14x working demand
+ * (see FACTS_PER_SCOPE_CAP), and a bound is only meaningfully tested against a
+ * SATURATED scope. Without this seam every saturation test has to insert 5000
+ * rows, so the suite's runtime becomes a function of a number chosen for
+ * production capacity reasons — and the integration suite duly went from
+ * seconds to over five minutes on the first such test alone when the ceiling
+ * was raised. The tests care whether the mechanism refuses/evicts correctly,
+ * never how big the number is.
+ *
+ * Pinned via `pinModuleState` per the shared-package singleton rule: several
+ * ordinary seams (bare specifier vs relative path, a symlinked
+ * node_modules/@papercusp copy) can give the test file and the code under test
+ * SEPARATE module records, and a plain module-scoped `let` would then be
+ * written by one and read by the other — the override would silently not
+ * apply, which here means the test quietly runs against the production
+ * magnitude instead of the one it asked for.
+ */
+const capSeam = pinModuleState('@papercusp/operator-core.agent-facts.cap-seam', () => ({
+  override: null as { ordinary?: number; volatile?: number } | null,
+}));
+
+/**
+ * Override the per-partition caps for the duration of a test. Pass `null` to
+ * restore the production constants — always do this in an `afterAll`, or the
+ * override leaks into every later suite sharing the module record.
+ */
+export function __setFactCapsForTests(next: { ordinary?: number; volatile?: number } | null): void {
+  capSeam.override = next;
+}
+
 function factCapFor(partition: FactCapPartition): number {
+  const override = capSeam.override;
+  if (override) {
+    const value = partition === 'volatile' ? override.volatile : override.ordinary;
+    // A non-positive override would disable the bound entirely rather than
+    // shrink it, which is the one thing a cap test must never silently get.
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return Math.floor(value);
+  }
   return partition === 'volatile' ? FACTS_VOLATILE_PER_SCOPE_CAP : FACTS_PER_SCOPE_CAP;
 }
 
@@ -2633,15 +2675,37 @@ export interface FactCapPreview {
   populationSize: number;
   /** The cap this scope is measured against. */
   cap: number;
-  /** True when this write would push the population past {@link cap}. */
+  /** True when this write would breach {@link cap} — by refusal (ordinary) or eviction (volatile). */
   atCap: boolean;
   /** An upsert of a live key supersedes it, so it consumes no NEW slot. */
   replacesExistingKey: boolean;
   /** Exempt from the cap entirely (a convention, or a typed safety slot). */
   exempt: boolean;
-  /** WHO would be destroyed if this write happened now. Empty ⇒ nothing dies. */
+  /**
+   * P-002 / D-003: this write would be REFUSED — the ordinary partition is at its
+   * ceiling and nothing is evicted to make room. Only ever true for the ordinary
+   * partition, and mutually exclusive with a non-empty {@link wouldEvict}.
+   *
+   * ⚠ A dry run must never report a cost the real write would not pay. Before
+   * this field existed, the preview forecast `wouldEvict` for an ordinary write
+   * — naming facts that, after this change, CANNOT be destroyed — so a caller
+   * deciding "is this assert worth someone else's fact?" was answering a
+   * question the store no longer asks. The honest ordinary answer is binary:
+   * the write lands, or it is refused.
+   */
+  wouldRefuse: boolean;
+  /**
+   * WHO would be destroyed if this write happened now. Empty ⇒ nothing dies.
+   * VOLATILE PARTITION ONLY since P-002 — always empty for an ordinary write,
+   * which refuses instead (see {@link wouldRefuse}).
+   */
   wouldEvict: FactEviction[];
-  /** Where the written row would land in the victim ranking; null when exempt. */
+  /**
+   * Where the written row would land in the victim ranking; null when exempt.
+   * Also null for the ORDINARY partition since P-002: a victim ranking answers
+   * "how soon will my fact be destroyed", and nothing in that partition is
+   * destroyed by the cap any more, so any rank reported there would be fiction.
+   */
   survival: FactSurvival | null;
   raceCaveat: string;
 }
@@ -2721,7 +2785,14 @@ export async function previewFactCapImpact(
   // over-predicts the destruction its own caller is deciding against.
   const capOffset = Math.max(0, exempt ? cap : cap - 1);
   const orderedIncumbents = orderAsSweepWould(incumbents, nowMs);
-  const doomed = orderedIncumbents.slice(capOffset);
+  // P-002 / D-003: the ordinary partition refuses instead of evicting, so it
+  // forecasts NO victims. `replacesExistingKey` is what keeps this honest for
+  // the commonest assert of all: a refresh of a key already live here consumes
+  // no new seat, so it is never refused even at the ceiling — mirroring the
+  // write path's `key <> incoming` exclusion rather than re-deriving it.
+  const wouldRefuse =
+    capPartition === 'ordinary' && !exempt && !replacesExistingKey && incumbents.length >= cap;
+  const doomed = capPartition === 'volatile' ? orderedIncumbents.slice(capOffset) : [];
   const wouldEvict: FactEviction[] = doomed.map((r) => ({
     key: r.key,
     confidence: parseFactConfidence(r.confidence),
@@ -2734,7 +2805,11 @@ export async function previewFactCapImpact(
   }));
 
   let survival: FactSurvival | null = null;
-  if (!exempt) {
+  // P-002 / D-003: a survival rank answers "how soon does the cap destroy my
+  // fact". The ordinary partition no longer destroys anything, so reporting a
+  // rank there would describe a competition that does not exist. How close the
+  // scope is to its ceiling is still answerable — `populationSize` vs `cap`.
+  if (!exempt && capPartition === 'volatile') {
     // The hypothetical row. A FRESH write always scores the MAXIMUM on ranking
     // key 2 — the fraction is (expires-now)/(expires-created) and created==now,
     // so it is 1.0 for any positive TTL. The declared TTL therefore cannot
@@ -2766,9 +2841,10 @@ export async function previewFactCapImpact(
     scopeRef: ref,
     populationSize: population.length,
     cap,
-    atCap: wouldEvict.length > 0,
+    atCap: wouldRefuse || wouldEvict.length > 0,
     replacesExistingKey,
     exempt,
+    wouldRefuse,
     wouldEvict,
     survival,
     raceCaveat:

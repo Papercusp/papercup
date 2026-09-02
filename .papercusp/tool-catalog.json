@@ -10630,7 +10630,7 @@
       ],
       "guidance": {
         "when": "A durable CONCLUSION that should shape future turns — yours or your role's: \"X is owner-residue, exclude it\", \"this harness's tests need Docker\". Scope as narrowly as true: workspace (global), role, owner, harness, or work_item.",
-        "notWhen": "Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form docs (agent-insights), or fuzzy recall (memory:remember). Body cap 1200 chars; per-scope cap 500. A fact is not a measurement: never pin a changing count/status — store the invariant conclusion plus a pointer to the live source. A moving sample needs measuredAt (subjectVolatile, ≤15-min SNAPSHOT); label history as historical.",
+        "notWhen": "Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form docs (agent-insights), or fuzzy recall (memory:remember). Body cap 1200 chars; per-scope cap 5000. A fact is not a measurement: never pin a changing count/status — store the invariant conclusion plus a pointer to the live source. A moving sample needs measuredAt (subjectVolatile, ≤15-min SNAPSHOT); label history as historical.",
         "chaining": "facts:list { scope } for what stands (re-assert refreshes, never duplicates); dryRun:true before a saturated write; facts:retract the moment one stops being true — a stale fact folded verbatim is worse than none."
       }
     },
@@ -16780,7 +16780,7 @@
           "POST"
         ]
       },
-      "description": "WRITES a compiler-computed rename across every file the pinned language server says it touches. Give it the SAME cursor you would give lsp:query op:\"refactor_preview\" (file, line1 one-indexed, character zero-indexed) plus newName. All-or-nothing: it locks the whole target set atomically, and returns { filesChanged, editsApplied, diagnostics:{before,after,delta,measured}, contentAfter } or refuses with a typed reason and writes NOTHING — stale_document (a peer edited a target since the plan; re-preview), file_locked (a named peer holds a target), lock_unavailable (the lock authority is down; retry), edit_out_of_bounds/overlapping_edits (the plan does not match the files). diagnostics.measured===false means the delta was NOT measured, never that it was clean.",
+      "description": "WRITES a compiler-computed rename across every file the pinned language server says it touches. Give it the SAME cursor you would give lsp:query op:\"refactor_preview\" (file, line1 one-indexed, character zero-indexed) plus newName. All-or-nothing: it locks the whole target set atomically, and returns { filesChanged, editsApplied, diagnostics:{before,after,delta,measured}, contentAfter, completenessProven, completenessWarning } or refuses with a typed reason and writes NOTHING — stale_document (a peer edited a target since the plan; re-preview), file_locked (a named peer holds a target), lock_unavailable (the lock authority is down; retry), edit_out_of_bounds/overlapping_edits (the plan does not match the files). diagnostics.measured===false means the delta was NOT measured, never that it was clean. completenessProven:false (the norm for TypeScript) means call-site completeness is unproven — read completenessWarning and verify independently before trusting the rename is total.",
       "capabilities": [
         "intel:write"
       ],

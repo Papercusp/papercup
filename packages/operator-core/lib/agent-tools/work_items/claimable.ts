@@ -31,7 +31,7 @@ import { z } from 'zod';
 import { defineTool, readJsonResult } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { readIssueClaimability } from '../../scheduler/get-next';
+import { formatLowSeverityShare, readIssueClaimability } from '../../scheduler/get-next';
 import { planItemLaneBlockReason } from '../../scheduler/plan-item-lane-guard';
 import { filingGraceSec } from '../../work-items';
 import { potHomeSlugForHarness } from '../../hive-federation';
@@ -414,8 +414,8 @@ export default defineTool({
           ? ` ⚠ AFFINITY PATH COVERAGE WARNING: ${breakdown.affinityCoverage.nonEmptyPaths}/${breakdown.affinityCoverage.denominator} claimable row(s) carry non-empty payload.paths, below the ${Math.round(breakdown.affinityCoverage.floor * 100)}% floor; affinity ranking is under-informed (EI-16028).`
           : '') +
         (admitted.degenerate
-          ? ` ⚠ COMPOSITION WARNING: ${Math.round((admitted.lowSeverityShare ?? 0) * 100)}% of this lane is nit/minor severity` +
-            (admitted.peakDay ? ` and ${admitted.peakDay.count} of it was filed on a single day (${admitted.peakDay.day})` : '') +
+          ? ` ⚠ COMPOSITION WARNING: ${formatLowSeverityShare(admitted, 'row(s) in this lane')}` +
+            (admitted.peakDay ? `, and ${admitted.peakDay.count} of them were filed on a single day (${admitted.peakDay.day})` : '') +
             `. A count this size is NOT a workload — read admittedBreakdown before quoting it as one (WI-6673).`
           : ''),
     };

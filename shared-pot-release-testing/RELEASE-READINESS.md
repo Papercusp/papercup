@@ -655,7 +655,7 @@ logs are from the green run `m1785117063`.
 |---|---|---|---|
 | 1 | Content bidirectional federation | 🟢 | `scn.content_bidir-220032.log` — "content bidir OK (A→B landed, B→A landed)" |
 | 2 | Plan-part bidirectional federation | 🟢 | `scn.planpart_bidir-220032.log` — item P-001 both directions, `origin=remote` |
-| 3 | Coord control-plane federation + trust boundary | 🟢 | `scn.coord_bidir-220032.log` + `scn.coord_controlplane-220032.log` — harness-scoped msg/escalation/handoff federate; raw presence/watermark/await stay local |
+| 3 | Coord control-plane federation + trust boundary | 🟢 | ⚠ **EVIDENCE RE-BASED 2026-09-02 (`WI-42226`/P-009, plan `p2p-coordination-public-release-2026-08-26`). The 🟢 STANDS — but not on the evidence this row used to cite, and the change is not cosmetic.** ⟨prior basis, retained as history⟩ `scn.coord_bidir-220032.log` + `scn.coord_controlplane-220032.log` — "harness-scoped msg/escalation/handoff federate; raw presence/watermark/await stay local". **That basis is insufficient on its own.** That plan's `#D-002` (binding, from a code-truth read of `papercusp-desktop/bin/lib/scenarios/00-base.sh` `scn_coord_bidir` and `papercusp-desktop/bin/deb-hetzner-coord-controlplane.sh` `_ctrl_coord_probe`) establishes that those two scenarios prove ONLY that a harness-scoped `coord_event_log` row crosses both directions as `origin='remote'`. They never call `coord:send` from a real agent, resolve a remote recipient, prove recipient inbox/feed visibility, thread a reply via `related_msg_id`, exercise wake-on-reply, or deliver a real conversation/report back to the origin. **So this row's original 🟢 was TRANSPORT-LEVEL and quietly overstated its own stated bar ("control-plane federation + trust boundary").** ⟨current basis⟩ P-008's coordination-only live witness, **17/17 GREEN on the REAL two-machine rig** — tower `main-server-Precision-7865-Tower` ↔ `Avis-iMac.local`, 2026-09-02 18:39–19:53Z, `WI-42225`: **CC-1..CC-5** (`papercusp-desktop/bin/vm-rig/coord-controlplane.sh`; CC-3 is `#D-029`'s named acceptance canary and flipped green at 18:43Z), **CR-1..CR-4** (directed reply/report back to origin, conversation visibility ×2, trust negative), **CD-0..CD-7** (`papercusp-desktop/bin/vm-rig/coord-p008-custody.sh` — reconnect / catch-up / restart). Those legs are exactly the gaps `#D-002` named, which is why the row may now carry its own bar. ⚠ **Do not quote this row without the coordination-slice signature that follows §2.5** — the lane carries an OPEN observability residual that this row's correctness scope does not cover, and reading row 3 alone will overstate the lane. |
 | 4 | Concurrent-write convergence (LWW, byte-identical winner) | 🟢 | `scn.concurrent_lww-220032.log` — no loss on distinct keys; deterministic identical winner on the same key |
 | 5 | Restart durability + settle barrier honesty | 🟢 | `scn.restart_durability-220032.log` (cold sidecar restart lost nothing, re-emitted nothing) + `scn.restart_settle_barrier-220032.log`. The barrier itself was fixed under P-415/WI-5772 — it previously reported a false PASS ("order 80 didn't run") when restart_durability had run and FAILED |
 | 6 | Reconnect / catch-up after offline window | 🟢 | `scn.reconnect_catchup-220032.log` — offline member caught up on content + plan-part + coord, no loss/dup, roster intact |
@@ -715,6 +715,53 @@ logs are from the green run `m1785117063`.
 > current with plan v358 and D-044. The verdict may move only after executed,
 > recorded evidence closes **P-302 → P-306 → P-308 → P-402**; documentation or
 > intermediate rig health alone cannot sign GO.
+
+> **Coordination-slice signature — 2026-09-02, `WI-42226`/P-009 (plan
+> `p2p-coordination-public-release-2026-08-26`, and `WI-37110`, the owner-directed
+> lane): the coordination slice contributes GO on functional correctness, carrying
+> ONE named OPEN observability residual. Net for the slice: 🟡, not 🟢.**
+>
+> **SCOPE — read this first.** This signature covers the **coordination** slice ONLY:
+> §2.1 row 3, the `papercusp-presence-gossip` flag row in §7, and the coordination-lane
+> input recorded in the 2026-08-16 block. It is scoped by that plan's `#D-005` and by
+> two independent owner-typed turns (2026-08-08 assigning this lane; 2026-08-11 scoping
+> a *different* agent to "all our p2p features other than the coordination and git
+> features"). **It does NOT touch, soften, or contribute to the document's headline
+> verdict**, which is NO-GO on non-coordination grounds — rows 34–35 (git), §2.1 row 14
+> (mesh scale), W1, and `WI-40537`. Nothing below is a reason to move that verdict, and
+> a GO on this slice is not a GO on the feature.
+>
+> **WHAT IS SIGNED GO.** End-to-end, origin-visible coordination delivery is witnessed
+> **17/17 on the real two-machine rig** (`WI-42225`, 18:39–19:53Z: CC-1..CC-5, CR-1..CR-4,
+> CD-0..CD-7). This is the first evidence in this document that satisfies `#D-002`'s bar
+> rather than the transport-level proxy row 3 previously rested on. Per `#D-029` the
+> acceptance canary was CC-3; it flipped green at 18:43Z and the item closed at 19:54Z,
+> after — not before — its blocker drained.
+>
+> **WHAT IS SIGNED OPEN, and why the slice is 🟡.** Inbound coordination federation
+> suffered a **~8-hour silent outage on 2026-09-02** (substrate merge on log
+> `cb54460d98d8` pinned at position 12048 across ~39 harness cursors; `WI-2141796`).
+> It has since drained — independently re-measured for this signature: remote and local
+> `coord_event_log` ids fully interleave from 18:00Z onward at 119–125 remote rows/hr,
+> agreeing with the two peers who recorded the drain at ~18:35Z. **The outage is over;
+> the DETECTOR gap is not.** Eight hours of dead inbound produced no durable EI (the
+> standing-cooldown gate reads the most recent matching EI; the frozen guard fired 126×
+> in 5h with no repair). `WI-2141796` therefore remains correctly OPEN on the detector,
+> not on the outage, with the discriminator tracked as `WI-2142252`.
+> ⚠ This is the **second** instance of one class in this document: the 2026-08-16 block
+> already records peer machine B federating nothing for 48h with zero alerts
+> (`EI-20579195481991931`, host-local stall detection). Two silent multi-hour federation
+> stalls, neither self-alarmed. **That pattern — not either individual outage — is the
+> coordination slice's open release risk**, and it is why this slice cannot sign 🟢.
+>
+> **MEASUREMENT HAZARD, recorded so the next signer does not repeat it.**
+> `coord_event_log.ts` is a `timestamp with time zone` preserving the **origin's event
+> time**, not the apply time; `id` is the only apply-order truth. Grouping remote rows by
+> `ts` makes a backfill indistinguishable from real-time application — and makes the true
+> stall recorded in `#D-029` read as if it never happened. The discriminator is that
+> backfilled rows carry one contiguous id band far above contemporaneous local ids
+> (measured here: 18183525–18184640 against local 18043870–18128219 for 11:00–16:00Z).
+> Anyone re-checking this row must use `id`, never `ts`.
 
 ---
 

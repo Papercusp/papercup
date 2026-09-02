@@ -101,7 +101,13 @@ export function defaultApplyDeps(ctx: FileLockCtx): ApplyDeps {
         newName: req.newName,
       });
       return r.ok
-        ? { ok: true, edit: r.edit, projectRoot: r.projectRoot }
+        ? {
+            ok: true,
+            edit: r.edit,
+            projectRoot: r.projectRoot,
+            completenessProven: r.completenessProven,
+            completenessWarning: r.completenessWarning,
+          }
         : { ok: false, error: r.error };
     },
     realpath: realpathSync,

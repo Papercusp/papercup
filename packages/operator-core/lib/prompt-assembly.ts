@@ -40,6 +40,7 @@ import { resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
 import {
   listAllProjectedTools,
   projectedToolCorrectiveCalls,
+  projectedToolAdmitted,
   projectedToolRegistryRevision,
   PROJECTED_TOOL_REGISTRY_SOURCE,
   type ProjectedTool,
@@ -467,11 +468,24 @@ export function renderToolsCatalog(
     if (g?.when) lines.push(`  When: ${g.when}`);
     if (g?.notWhen) lines.push(`  Not when: ${g.notWhen}`);
     if (g?.chaining) lines.push(`  Chaining: ${g.chaining}`);
-    const correctiveCalls = Object.values(tool.guidance?.argRedirects ?? {}).some(
-      (redirect) => typeof redirect === 'object' && redirect !== null,
-    )
-      ? projectedToolCorrectiveCalls(name, { role, modality })
-      : [];
+    // Corrective calls are resolved through the registry, which fails LOUDLY on a
+    // redirect to a tool that does not exist — deliberately, and we keep that. But
+    // this catalog is built from a ROLE-INDEPENDENT tool list, so it also renders
+    // tools the current role cannot call, and `projectedToolCorrectiveCalls` throws
+    // for that case too. The two are not the same: a missing tool is a registry
+    // defect, a non-admitted one is ordinary role scoping. Without this guard, adding
+    // `argRedirects` to any tool whose `agentRoles` exclude a rendering role crashes
+    // that role's ENTIRE prompt build — measured: `agent_tools:list` (SU_ROLES) gained
+    // redirects and took the whole `papercup`/Sentinel prompt down with it.
+    // A rejected-arg remedy for a tool this role cannot reach is unreachable advice
+    // anyway, so omitting it is also the right rendering.
+    const correctiveCalls =
+      projectedToolAdmitted(name, { role, modality }) &&
+      Object.values(tool.guidance?.argRedirects ?? {}).some(
+        (redirect) => typeof redirect === 'object' && redirect !== null,
+      )
+        ? projectedToolCorrectiveCalls(name, { role, modality })
+        : [];
     for (const correction of correctiveCalls) {
       const correctiveName = displayTransform ? displayTransform(correction.tool) : correction.tool;
       lines.push(

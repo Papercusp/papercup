@@ -525,6 +525,18 @@ export interface ApplySuccess {
   /** Post-write sha256 per root-relative path — the next CAS token. */
   contentAfter: Record<string, string>;
   latencyMs: number;
+  /**
+   * `true` only when the language server CERTIFIED a complete symbol index
+   * (a completeness proof) before this edit was computed; `false` means the
+   * edit rests on a settle-window heuristic, which is good evidence to answer
+   * on but proves nothing about the call-site set being complete (WI-2142449).
+   * A `false` here does not mean this write was wrong — it means the write
+   * went ahead with the risk EXPLICIT, per the module's own doctrine of
+   * reporting what it can actually prove, rather than silently.
+   */
+  completenessProven: boolean;
+  /** Non-null exactly when `completenessProven` is `false`. */
+  completenessWarning: string | null;
 }
 
 export type ApplyResult = ApplySuccess | ApplyRefusal;
@@ -573,9 +585,17 @@ export interface ApplyDeps {
   /** Both gates: the read facade's flag AND the write flag. */
   flagsEnabled: () => Promise<{ ok: true } | { ok: false; message: string }>;
   /** Ask the language server for the rename's WorkspaceEdit. Read-only. */
-  computeEdit: (
-    req: ApplyRenameRequest,
-  ) => Promise<{ ok: true; edit: unknown; projectRoot: string } | { ok: false; error: string }>;
+  computeEdit: (req: ApplyRenameRequest) => Promise<
+    | {
+        ok: true;
+        edit: unknown;
+        projectRoot: string;
+        /** See `ApplySuccess.completenessProven` — passed straight through. */
+        completenessProven: boolean;
+        completenessWarning: string | null;
+      }
+    | { ok: false; error: string }
+  >;
   realpath: (p: string) => string;
   readText: (absPath: string) => Promise<string>;
   writeText: (absPath: string, text: string) => Promise<void>;
@@ -740,6 +760,8 @@ export async function applyRenameEdit(
           targets.map((t) => [t.relPath, contentSha(nextText.get(t.absPath)!)]),
         ),
         latencyMs: deps.now() - started,
+        completenessProven: computed.completenessProven,
+        completenessWarning: computed.completenessWarning,
       };
     },
   );

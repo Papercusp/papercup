@@ -12,7 +12,15 @@
  * FIRE on only ~30% of multi-call SU spawns — it was BLIND to the dominant pattern; the pipeline
  * kind + tools:invoke unwrap + arg prefill landed 2026-07-12, plan code-run-batch-adoption):
  *  - SAME-TOOL: the same tool ≥ BATCH_NUDGE_THRESHOLD× inside the recent window (a `get` per id, a
- *    check per file) → the list-then-loop skeleton, `inputs` prefilled with the args just seen.
+ *    check per file) → the list-then-fold skeleton (`Promise.all` over `inputs`, WI-2142449),
+ *    `inputs` prefilled with the args just seen. Was a sequential `for`-loop until WI-2142449: every
+ *    input here is a call ALREADY made with its own already-known literal args (none derived from a
+ *    prior call's result in this burst), so the calls are independent by construction — the fixed
+ *    skeleton's own advice ("if these are independent…") no longer contradicts the shape it hands
+ *    back. A sequential fold on this same premise cost MORE than the one-at-a-time pattern it
+ *    corrected the moment any single call took a meaningful share of the script budget (measured:
+ *    an 8-call `dev:pipeline_position` burst — ~3-6s/call — blew the 30s budget as a sum, comfortably
+ *    inside it as a max).
  *  - PIPELINE: ≥ FANOUT_DISTINCT_THRESHOLD distinct tools AND the same distinctive arg value (an
  *    id/slug) threaded through ≥2 DIFFERENT tools — a chained burst (release → claim → comment on
  *    one object). The old fan-out text mislabeled this "independent", handing the agent a false
@@ -484,8 +492,19 @@ function effectiveCall(toolName: string, args: unknown): { tool: string; args: u
   return { tool: toolName, args };
 }
 
-/** The same-tool list-then-loop skeleton: loop the ONE repeated call over `inputs` — prefilled with
- *  the args of the calls just made (P-003), so acting on it is extending a list, not authoring. */
+/** The same-tool list-then-fold skeleton: `Promise.all` the ONE repeated call over `inputs` —
+ *  prefilled with the args of the calls just made (P-003), so acting on it is extending a list, not
+ *  authoring.
+ *
+ *  WI-2142449: this was a sequential `for`-loop until every input here was recognized as
+ *  independent BY CONSTRUCTION — each is a call already made with its own already-known literal
+ *  args, never one derived from a sibling's result in this burst (a genuinely cursor-chained
+ *  sequence could not be expressed as this fixed `inputs` list either way). A serial fold on that
+ *  premise only ever cost more: for `dev:pipeline_position` (~3-6s/call) an 8-call burst summed
+ *  past the 30s script budget while its max sat comfortably inside it.
+ *
+ *  Per-branch `.catch` (EI-21712103510622160's pattern, same as {@link fanoutSkeleton}) so one bad
+ *  input cannot discard results already fetched for the others. */
 function sameToolSkeleton(toolName: string, recent: RecentCall[], timeoutSec?: number): string {
   const renders = recent
     .filter((c) => c.tool === toolName && c.argsRender !== undefined)
@@ -497,8 +516,9 @@ function sameToolSkeleton(toolName: string, recent: RecentCall[], timeoutSec?: n
       : `[/* the args for each ${toolName} call */]`;
   return codeRunCall(
     `  const inputs = ${inputs};\n` +
-      '  const out = [];\n' +
-      `  for (const a of inputs) out.push(await ${facadeCall(toolName, 'a')});\n` +
+      `  const out = await Promise.all(\n` +
+      `    inputs.map((a) => ${facadeCall(toolName, 'a')}.catch((e) => ({ error: String(e) }))),\n` +
+      '  );\n' +
       '  return out;\n',
     timeoutSec,
   );
@@ -582,16 +602,18 @@ interface FoldBudget {
  * pushes the floor down — so a burst with partial timing is judged on the part we measured and can
  * only ever under-estimate, never over-estimate, the risk of recommending it.
  *
- * Shape follows the skeleton each kind emits: `same-tool` and `pipeline` await in sequence (sum),
- * `fanout` is a Promise.all (max).
+ * Shape follows the skeleton each kind emits: `pipeline` awaits in sequence (sum); `same-tool`
+ * (WI-2142449) and `fanout` are both a Promise.all (max — the script waits for the slowest branch).
  */
 function projectFoldCostMs(kind: BatchNudgeKind, recent: readonly RecentCall[], toolName: string): number | undefined {
   const timed = (calls: readonly RecentCall[]): number[] =>
     calls.map((c) => c.durationMs).filter((d): d is number => typeof d === 'number' && Number.isFinite(d) && d >= 0);
 
   if (kind === 'same-tool') {
+    // Promise.all (sameToolSkeleton, WI-2142449): all inputs fold concurrently, so the script waits
+    // for the SLOWEST one, not their sum.
     const ds = timed(recent.filter((c) => c.tool === toolName).slice(-MAX_SKELETON_TOOLS));
-    return ds.length ? ds.reduce((a, b) => a + b, 0) : undefined;
+    return ds.length ? Math.max(...ds) : undefined;
   }
   if (kind === 'pipeline') {
     const ds = timed(recent.slice(-MAX_SKELETON_TOOLS));
@@ -839,9 +861,11 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
     const suggestedScript = sameToolSkeleton(toolName, st.recent, foldTimeoutSec);
     const text =
       `${banner}you've called "${toolName}" from ${sameToolTurns}× separate turns in the last ~${windowS}s${burst} — ` +
-      `that's ${sameToolTurns} separate round-trips, each re-reading your whole context. If these are ` +
-      `independent or mechanically-chained, fold them into ONE code:run loop — ready-to-paste skeleton, ` +
-      `\`inputs\` prefilled from this burst (extend it instead of firing another solo call):\n` +
+      `that's ${sameToolTurns} separate round-trips, each re-reading your whole context. Each call already carries ` +
+      `its own known args, so these are independent by construction — fold them into ONE code:run: Promise.all ` +
+      `over the inputs, ready-to-paste skeleton, \`inputs\` prefilled from this burst (extend it instead of firing ` +
+      `another solo call). If a NEXT call's args must come from one of these results, sequence just that one ` +
+      `separately instead of adding it to this list:\n` +
       `${suggestedScript}\n${TRAILER}${budgetNote}${activate}`;
     return { text, suggestedScript, kind, tool: toolName };
   }

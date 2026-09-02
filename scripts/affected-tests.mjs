@@ -4999,6 +4999,22 @@ function runCapturedTask(
   const childEnv = {
     ...process.env,
     ...(specEnv ?? {}),
+    // P-006 (design-to-code-coverage-seam-2026-09-02): arm coverage attribution for every task
+    // this runner spawns, so a `test:affected` run contributes surface→test evidence the way
+    // `testing:run` and the admin-UI runner already do. Inert unless a seam is exercised — the
+    // first statement in each hook is a cached boolean (see coverage-census/attribution/context.ts).
+    //
+    // ⚠ THIS ARMS BOTH LANES AND ONLY ONE OF THEM CAN WRITE. The UNIT lane runs under
+    // `setup-no-real-pg.ts` (PAPERCUSP_FORBID_REAL_PG=1) and the sink's flush stands down on that
+    // rail by design, so unit tasks OBSERVE and never PERSIST. `--integration` carries no such
+    // rail and is where a row can actually land. A zero from a unit-only run is therefore not a
+    // coverage measurement at all; the falsifiable version of that claim is
+    // packages/operator-core/lib/coverage-census/attribution/seam-reachability.test.ts.
+    //
+    // Note for the passing-task-verdict cache: this is part of the complete child-env hash, so
+    // adding it invalidates cached verdicts ONCE. It is a constant thereafter, so reuse is
+    // unaffected from the next run on.
+    PAPERCUSP_TEST_ATTRIBUTION: "1",
     VITEST_MAX_WORKERS: String(allocation.workers),
     VITEST_MAX_FORKS: String(allocation.workers),
     VITEST_MAX_THREADS: String(allocation.workers),

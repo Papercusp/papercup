@@ -57,6 +57,11 @@ function payloadOf(result: Awaited<ReturnType<typeof assertTool.handler>>): Reco
   return JSON.parse((result as { content: { text: string }[] }).content[0].text);
 }
 
+// P-002 / D-003: an EVICTING preview is now specifically a VOLATILE-partition
+// one — the ordinary partition refuses at its ceiling and destroys nothing, so
+// `wouldEvict` there is always empty (see PREVIEW_REFUSED below). This fixture
+// keeps exercising the eviction-reporting pass-through, which remains live for
+// volatile writes.
 const PREVIEW: FactCapPreview = {
   scope: 'owner',
   scopeRef: 'su-test-dry-run',
@@ -65,6 +70,7 @@ const PREVIEW: FactCapPreview = {
   atCap: true,
   replacesExistingKey: false,
   exempt: false,
+  wouldRefuse: false,
   wouldEvict: [
     {
       key: 'a-peers-finding',
@@ -79,6 +85,25 @@ const PREVIEW: FactCapPreview = {
     },
   ],
   survival: { rank: 200, liveCount: 200, nextVictim: true, survivingFractionFloor: 0.9 },
+  raceCaveat: 'FORECAST, NOT A RESERVATION',
+};
+
+/**
+ * P-002 / D-003: what an ORDINARY at-ceiling preview looks like now — the write
+ * is refused, so there is no victim and no survival rank. Note `wouldEvict: []`
+ * and `survival: null` are not omissions here; they are the answer.
+ */
+const PREVIEW_REFUSED: FactCapPreview = {
+  scope: 'owner',
+  scopeRef: 'su-test-dry-run',
+  populationSize: 5000,
+  cap: 5000,
+  atCap: true,
+  replacesExistingKey: false,
+  exempt: false,
+  wouldRefuse: true,
+  wouldEvict: [],
+  survival: null,
   raceCaveat: 'FORECAST, NOT A RESERVATION',
 };
 
@@ -143,6 +168,30 @@ describe('facts:assert { dryRun } — forecasts the cap cost without writing', (
     // The honesty field must reach the caller — a forecast presented as a
     // reservation is worse than no forecast.
     expect(String(payload.raceCaveat)).toContain('NOT A RESERVATION');
+  });
+
+  it('reports an ORDINARY ceiling as a REFUSAL, naming no victim (P-002 / D-003)', async () => {
+    // The whole point of D-003 is that an ordinary at-cap write costs the WRITER
+    // a refusal instead of costing a stranger their fact. That inversion is only
+    // actionable if it survives the trip to the caller: a preview that still
+    // said "you would destroy these" would send a caller looking for a peer to
+    // coordinate with over a write that simply will not land.
+    previewSpy.mockResolvedValue(PREVIEW_REFUSED);
+
+    const result = await assertTool.handler(
+      { scope: 'owner', scopeRef: 'su-test-dry-run', key: 'k', body: 'b', dryRun: true } as never,
+      ctx,
+    );
+
+    expect(assertFactSpy).not.toHaveBeenCalled();
+    const payload = payloadOf(result);
+    expect(payload.wrote).toBe(false);
+    expect(payload.wouldRefuse).toBe(true);
+    // Nothing dies. Asserted as the concrete empty/null rather than "falsy", so
+    // dropping the field entirely from the payload cannot pass this.
+    expect(payload.wouldEvict).toEqual([]);
+    expect(payload.survival).toBeNull();
+    expect(payload.atCap).toBe(true);
   });
 
   it('the preview is scoped to the SAME resolved fact the write would have used', async () => {

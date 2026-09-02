@@ -1766,7 +1766,28 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
 export async function lspRenameWorkspaceEdit(
   query: LspQuery & { newName: string },
 ): Promise<
-  | { ok: true; edit: unknown; projectRoot: string; language: LspLanguage }
+  | {
+      ok: true;
+      edit: unknown;
+      projectRoot: string;
+      language: LspLanguage;
+      /**
+       * `true` only when the language server itself CERTIFIED a complete
+       * symbol index (`quiescent === true`) before this edit was computed —
+       * a completeness PROOF. `false` means readiness was reached via the
+       * settle-window heuristic alone (`answerable`): good enough to answer
+       * on, never an absence/completeness proof (WI-2142449). Every
+       * TypeScript rename is `false` today — tsserver never sends
+       * `experimental/serverStatus`, so it can never reach `certified`.
+       */
+      completenessProven: boolean;
+      /**
+       * Non-null exactly when `completenessProven` is `false`: states the
+       * residual risk in the caller's own words rather than leaving it to be
+       * inferred from a boolean. `null` when completeness was proven.
+       */
+      completenessWarning: string | null;
+    }
   | { ok: false; error: string; health: BackendHealth }
 > {
   const language = languageForFile(query.file);
@@ -1787,7 +1808,14 @@ export async function lspRenameWorkspaceEdit(
     // reach `certified` on a warm server — which is a capability change this
     // fix has no mandate to make. The residual risk is real and PRE-EXISTING:
     // a settle window cannot prove the call-site set is complete, and this
-    // caller WRITES. Filed separately rather than changed silently here.
+    // caller WRITES.
+    //
+    // WI-2142449 (option 3 of the three it named): the risk is not fixed here
+    // — fixing it would mean tightening the gate, which is exactly the
+    // capability change refused above — it is made VISIBLE. `completenessProven`
+    // / `completenessWarning` below tell the caller which of the two evidence
+    // levels it got, so `lsp.apply`'s result can say so rather than reporting a
+    // silent, indistinguishable success.
     if (readiness !== 'certified' && readiness !== 'answerable') {
       // The same refusal `lspRenamePreview` makes, and for a stronger reason
       // here: a rename plan computed from a half-loaded program MISSES call
@@ -1808,7 +1836,21 @@ export async function lspRenameWorkspaceEdit(
       position: { line: query.line1 - 1, character: query.character },
       newName: query.newName,
     });
-    return { ok: true, edit, projectRoot: project.root, language };
+    const completenessProven = readiness === 'certified';
+    return {
+      ok: true,
+      edit,
+      projectRoot: project.root,
+      language,
+      completenessProven,
+      completenessWarning: completenessProven
+        ? null
+        : `call-site completeness is NOT proven for this rename: readiness was reached via a ` +
+          `settle-window heuristic (sustained server idle), which is good evidence to answer on ` +
+          `but not a completeness proof — it cannot establish that the symbol index is complete. ` +
+          `This rename may miss call sites the server had not yet indexed. Independently verify ` +
+          `(e.g. a broad text search for the old symbol name) before trusting it is total.`,
+    };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err), health: 'unhealthy' };
   }

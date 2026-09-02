@@ -20,6 +20,9 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/scheduler/admitted-composition.test.ts
  */
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   formatLowSeverityShare,
@@ -215,6 +218,20 @@ describe('summarizeAdmittedRows — composition of the admitted set (WI-6673)', 
     it('counts nit+minor only — an `unset` severity is unknown, never low, in the prose as in the buckets', () => {
       const comp = summarizeAdmittedRows([row('change', 'nit', 30), row('change', 'unset', 70)]);
       expect(formatLowSeverityShare(comp)).toBe('30 of 100 row(s) (30%) are nit/minor severity');
+    });
+
+    // The formatter above is only worth having if the sites that SAY this in prose route
+    // through it. Both hand-rendered the same `Math.round(share * 100)` independently, so
+    // fixing one would have left the other armed — and a third consumer would arrive at the
+    // same expression by the same reasoning. Pin the callers, not just the function.
+    it.each([
+      ['work_items:claimable COMPOSITION WARNING', 'lib/agent-tools/work_items/claimable.ts'],
+      ['fleet:launch-on-plan DEGENERATE LANE warning', 'lib/agent-tools/fleet_registry/launch-on-plan.ts'],
+    ])('%s renders the share through formatLowSeverityShare, never a hand-rolled percentage', (_label, rel) => {
+      const source = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../..', rel), 'utf8');
+      expect(source).toContain('formatLowSeverityShare');
+      // Any arithmetic that turns the share into a percentage on its own is the defect.
+      expect(source).not.toMatch(/Math\.(round|ceil)\s*\(\s*\(?[^)]*lowSeverityShare/);
     });
   });
 });

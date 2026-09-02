@@ -1417,7 +1417,7 @@ defineTestDomain({
       globs: [
         'packages/operator-core/lib/agent-tools/pot/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/discovery/pots.test.ts',
-        'packages/operator-core/lib/agent-tools/harness/__tests__/create-hive-membership.test.ts',
+        'packages/operator-core/lib/agent-tools/harness/__tests__/create-pot-membership.test.ts',
       ],
     },
   ],

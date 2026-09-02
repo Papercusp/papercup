@@ -375,29 +375,35 @@ describe('applyResultDoor', () => {
     const original = JSON.stringify(payload);
     expect(original.length).toBeGreaterThan(BUDGET_CHARS);
 
-    const doored = applyResultDoor(
-      { content: [{ type: 'text' as const, text: original }] },
-      { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
-    ) as DoorableResult;
-    const textItems = doored.content.filter((item) => (item as { type?: string }).type === 'text') as Array<{
-      text: string;
-    }>;
-    const parsed = JSON.parse(textItems[0].text) as {
-      results: Array<Record<string, unknown>>;
-      _projection: { truncated: boolean; omittedPreserved?: string[] };
+    const door = (toolName: string) => {
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        { toolName, workspaceId: 'ws-1', runId: RUN_ID },
+      ) as DoorableResult;
+      const textItems = doored.content.filter(
+        (item) => (item as { type?: string }).type === 'text',
+      ) as Array<{ text: string }>;
+      return JSON.parse(textItems[0].text) as {
+        results: Array<Record<string, unknown>>;
+        _projection: { truncated: boolean; omittedPreserved?: string[] };
+      };
     };
 
+    const parsed = door('plans:get');
     expect(parsed._projection.truncated).toBe(true);
     expect(parsed.results[0].shipReadiness).toMatchObject({
       satisfied: false,
       code: 'acceptance_ungraded',
     });
-    // Control: the door really did evict here, and it evicted the payload the
-    // caller did NOT ask for. Without this the assertion above would also pass
-    // on a result that was never truncated at all.
-    expect(parsed.results[0]).not.toHaveProperty('lifecycle');
     // Nothing explicitly selected went missing, so the never-shed marker is absent.
     expect(parsed._projection.omittedPreserved).toBeUndefined();
+
+    // FALSIFIABILITY CONTROL: the SAME bytes through a tool with no preserve
+    // declaration lose the field to the same budget. Without this the assertion
+    // above would also pass on a payload that simply fit.
+    const control = door('plans:list');
+    expect(control._projection.truncated).toBe(true);
+    expect(control.results[0]).not.toHaveProperty('shipReadiness');
   });
 
   it('preserves events:status exact-event generation state when waiter history overflows the door', () => {
