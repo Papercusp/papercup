@@ -16,8 +16,10 @@ import {
   MAX_SIBLINGS,
   getClaimTimeSiblingPathOverlap,
   implementedWorkItemStates,
+  siblingCoordinationOffers,
   siblingPathOverlapWarning,
   type ClaimTimeSiblingPathOverlapHint,
+  type PathOverlapSibling,
 } from './sibling-path-overlap-claim-port';
 import { SETTLED_WORK_ITEM_STATES } from './work-items';
 
@@ -115,10 +117,12 @@ describe('siblingPathOverlapWarning', () => {
         title: 'add redaction at the fixture-write choke point',
         state: 'done',
         inFlight: false,
+        holder: null,
         sharedPaths: ['packages/operator-core/lib/memory/bench/fixtures/prose-corpus.v1.json'],
         rarestSharedPathSharers: 3,
       },
     ],
+    coordinationOffers: [],
     totalMatched: 1,
     implementedCount: 1,
     inFlightCount: 0,
@@ -135,6 +139,7 @@ describe('siblingPathOverlapWarning', () => {
           claimedPaths: ['a.ts'],
           ratedPaths: [],
           siblings: [],
+          coordinationOffers: [],
           totalMatched: 0,
           implementedCount: 0,
           inFlightCount: 0,
@@ -181,10 +186,12 @@ describe('siblingPathOverlapWarning', () => {
           title: 't',
           state: 'open',
           inFlight: true,
+          holder: null,
           sharedPaths: ['a.ts'],
           rarestSharedPathSharers: 2,
         },
       ],
+      coordinationOffers: [],
       totalMatched: 1,
       implementedCount: 0,
       inFlightCount: 1,
@@ -219,5 +226,193 @@ describe('siblingPathOverlapWarning', () => {
     const msg = siblingPathOverlapWarning(landed, 'WI-1') ?? '';
     expect(msg).toContain('1 other work-item(s)');
     expect(msg).not.toContain('shown, strongest first');
+  });
+});
+
+/**
+ * lateral-fleet-coordination-2026-09-02 P-003 / D-005 — the offer half.
+ *
+ * WHY THESE ASSERTIONS AND NOT A VOLUME TEST. D-005 clears this mechanism under D-001
+ * (the owner's ruling that low fleet-wide traffic is deliberate, protecting member
+ * context) on two grounds: it fires rarely, and each send is DIRECTED to one peer.
+ * Rarity is a property of live data and is pinned by D-006's re-runnable population
+ * query, not by a unit test. What a unit test CAN pin — and what D-006 explicitly
+ * assigns here — is that the offer is addressed to the ACTUAL holder. An offer sent to
+ * the wrong agent is wrong at any volume, and it is the one failure that would still
+ * look correct in the rendered string.
+ */
+describe('siblingCoordinationOffers (P-003)', () => {
+  const heldByPeer: PathOverlapSibling = {
+    workItemId: 'WI-6992',
+    title: 'add redaction at the fixture-write choke point',
+    state: 'open',
+    inFlight: true,
+    holder: 'su-peer-1',
+    sharedPaths: ['scripts/lib/identity-leak-patterns.mjs'],
+    rarestSharedPathSharers: 2,
+  };
+  const settledSibling: PathOverlapSibling = {
+    ...heldByPeer,
+    workItemId: 'WI-6991',
+    state: 'done',
+    inFlight: false,
+    holder: null,
+  };
+  const argsOf = (o: { send: { args: Record<string, unknown> } }) =>
+    o.send.args as {
+      to: string[];
+      expects: string;
+      summary: string;
+      body: Array<{
+        text: string;
+        forYouBecause?: { relation: string; ref?: string };
+        couldNotDetermine?: Array<{ what: string }>;
+      }>;
+    };
+
+  it('addresses the HOLDER, not the claiming agent', () => {
+    // The property D-006 pins by test rather than by measurement.
+    const [offer] = siblingCoordinationOffers([heldByPeer], 'WI-6994');
+    expect(offer.holder).toBe('su-peer-1');
+    expect(argsOf(offer).to).toEqual(['su-peer-1']);
+    expect(argsOf(offer).to).not.toContain('WI-6994');
+  });
+
+  it('offers nothing for a settled sibling — that is a do-not-rebuild, not a peer', () => {
+    // A settled item's taken_by is a historical assignee. Messaging them would spend
+    // the budget D-001 protects on someone who has already finished.
+    expect(siblingCoordinationOffers([settledSibling], 'WI-6994')).toEqual([]);
+  });
+
+  it('stays silent when an in-flight sibling has no known holder', () => {
+    // Silence beats an offer addressed to nobody: a rendered but unaddressable offer
+    // reads as a coordination step already available, which is worse than none.
+    const holderless: PathOverlapSibling = { ...heldByPeer, holder: null };
+    expect(siblingCoordinationOffers([holderless], 'WI-6994')).toEqual([]);
+  });
+
+  it('builds a coord:send the recipient can actually accept', () => {
+    // coord:send REQUIRES `expects`, and REQUIRES forYouBecause on at least one section
+    // of a directed message expecting an answer. A handle that would be rejected on
+    // paste is not a handle.
+    const [offer] = siblingCoordinationOffers([heldByPeer], 'WI-6994');
+    expect(offer.send.tool).toBe('coord:send');
+    const args = argsOf(offer);
+    expect(args.expects).toBe('answer');
+    expect(Array.isArray(args.body)).toBe(true);
+    expect(args.body[0].forYouBecause?.relation).toBe('owns');
+    expect(args.body[0].forYouBecause?.ref).toBe('WI-6992');
+    // The honest field: what the sender genuinely cannot establish alone. Its absence
+    // would render the ask as more certain than the evidence supports.
+    expect(args.body[0].couldNotDetermine?.[0].what).toContain('WI-6992');
+  });
+
+  it('names both the shared paths and both work-item ids, so the ask is self-contained', () => {
+    const [offer] = siblingCoordinationOffers([heldByPeer], 'WI-6994');
+    expect(offer.sharedPaths).toEqual(['scripts/lib/identity-leak-patterns.mjs']);
+    const args = argsOf(offer);
+    expect(args.summary).toContain('WI-6992');
+    expect(args.summary).toContain('WI-6994');
+    expect(args.summary).toContain('identity-leak-patterns.mjs');
+  });
+
+  it('offers one send per in-flight holder and skips the settled ones in the same list', () => {
+    const second: PathOverlapSibling = { ...heldByPeer, workItemId: 'WI-7000', holder: 'su-peer-2' };
+    const offers = siblingCoordinationOffers([settledSibling, heldByPeer, second], 'WI-6994');
+    expect(offers.map((o) => o.holder)).toEqual(['su-peer-1', 'su-peer-2']);
+  });
+
+  it('returns nothing without a claiming work-item id', () => {
+    expect(siblingCoordinationOffers([heldByPeer], '')).toEqual([]);
+  });
+
+  describe('falsifiability controls (permanent wrong implementations)', () => {
+    /** The bug the addressing test exists to catch: replying to yourself. */
+    const addressTheClaimer = (s: PathOverlapSibling, claimer: string) => ({ to: [claimer] });
+    /** The other plausible weakening: offer on every sibling, settled ones included. */
+    const offerOnEverySibling = (siblings: readonly PathOverlapSibling[]) => siblings.map((s) => s.workItemId);
+
+    it('the claimer-addressed control fails the assertion the real builder passes', () => {
+      expect(addressTheClaimer(heldByPeer, 'WI-6994').to).toEqual(['WI-6994']);
+      expect(argsOf(siblingCoordinationOffers([heldByPeer], 'WI-6994')[0]).to).toEqual(['su-peer-1']);
+    });
+
+    it('the offer-on-everything control includes the settled sibling the real builder drops', () => {
+      expect(offerOnEverySibling([settledSibling, heldByPeer])).toContain('WI-6991');
+      expect(siblingCoordinationOffers([settledSibling, heldByPeer], 'WI-6994').map((o) => o.workItemId)).not.toContain(
+        'WI-6991',
+      );
+    });
+
+    it('calibration: the real builder is not simply empty', () => {
+      // Without this, an implementation hard-coded to [] would pass both controls above.
+      expect(siblingCoordinationOffers([heldByPeer], 'WI-6994').length).toBe(1);
+    });
+  });
+});
+
+describe('siblingPathOverlapWarning + the P-003 offer', () => {
+  const withOffer = (holder: string | null): ClaimTimeSiblingPathOverlapHint => {
+    const siblings: PathOverlapSibling[] = [
+      {
+        workItemId: 'WI-6992',
+        title: 't',
+        state: 'open',
+        inFlight: true,
+        holder,
+        sharedPaths: ['scripts/lib/identity-leak-patterns.mjs'],
+        rarestSharedPathSharers: 2,
+      },
+    ];
+    return {
+      claimedPaths: ['scripts/lib/identity-leak-patterns.mjs'],
+      ratedPaths: ['scripts/lib/identity-leak-patterns.mjs'],
+      siblings,
+      coordinationOffers: siblingCoordinationOffers(siblings, 'WI-6994'),
+      totalMatched: 1,
+      implementedCount: 0,
+      inFlightCount: 1,
+    };
+  };
+
+  it('NAMES the holder inline, so coordinating does not need a second lookup', () => {
+    // The whole point of P-003: before this, the warning said "held by a peer RIGHT NOW"
+    // and the reader had to go find out who.
+    const msg = siblingPathOverlapWarning(withOffer('su-peer-1'), 'WI-6994') ?? '';
+    expect(msg).toContain('su-peer-1');
+    expect(msg).toContain('su-peer-1 holds WI-6992');
+  });
+
+  it('points at the structured handle rather than inlining the call', () => {
+    // The warning renders on every qualifying claim, so it pays for an id and a pointer,
+    // not for a JSON payload — the dev:pipeline_position `plane` split.
+    const msg = siblingPathOverlapWarning(withOffer('su-peer-1'), 'WI-6994') ?? '';
+    expect(msg).toContain('coordinationOffers');
+    expect(msg).not.toContain('forYouBecause');
+  });
+
+  it('says plainly that NOTHING was sent — it is an offer, not a dispatch', () => {
+    // D-005 clears this under D-001 precisely because the agent still decides. A reader
+    // who thinks the message already went is the one failure that would silently spend
+    // the budget the ruling protects.
+    const msg = siblingPathOverlapWarning(withOffer('su-peer-1'), 'WI-6994') ?? '';
+    expect(msg).toContain('NOTHING WAS SENT');
+  });
+
+  it('falls back to the pre-P-003 sentence when no holder is known', () => {
+    const msg = siblingPathOverlapWarning(withOffer(null), 'WI-6994') ?? '';
+    expect(msg).toContain('held by a peer');
+    expect(msg).not.toContain('coordinationOffers');
+    expect(msg).not.toContain('NOTHING WAS SENT');
+  });
+
+  it('degrades instead of throwing when the hint predates coordinationOffers', () => {
+    // The hint crosses an `unknown`-typed enrichment boundary, so an older serialized
+    // shape must render the old sentence rather than crash a warning renderer.
+    const legacy = withOffer('su-peer-1') as Partial<ClaimTimeSiblingPathOverlapHint>;
+    delete legacy.coordinationOffers;
+    const msg = siblingPathOverlapWarning(legacy as ClaimTimeSiblingPathOverlapHint, 'WI-6994') ?? '';
+    expect(msg).toContain('held by a peer');
+    expect(msg).not.toContain('coordinationOffers');
   });
 });
