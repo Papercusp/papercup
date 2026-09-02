@@ -40,7 +40,13 @@ const CLIENTS = [{ client: "claude", file: "CLAUDE.md", reader: "Claude Code" }]
  * the highest rank is dropped first). This mirrors the property the delta depends on,
  * without a database or the real 57k-char corpus.
  */
-const fakeProjectClient: ProjectClientFn = (parts, { budget }) => {
+const fakeProjectClient: ProjectClientFn = (allParts, { budget, client }) => {
+  // Scope-filter FIRST, exactly as the real projector's `partTargetsClient` does. Without
+  // it every part would look like it reaches every file, and the per-client half of
+  // `deprojected` would pass here while being wrong against the real projector.
+  const parts = allParts.filter(
+    (p) => p.client_scope.includes("all") || p.client_scope.includes(client),
+  );
   const candidates = [...parts].sort(
     (a, b) => b.project_rank - a.project_rank || a.part_key.localeCompare(b.part_key),
   );
@@ -206,6 +212,80 @@ describe("evictionDelta", () => {
   });
 });
 
+describe("deprojected — the edit removes the edited part from the projection", () => {
+  it("REPORTS A SCOPE-EMPTYING EDIT THAT `evicted` STRUCTURALLY CANNOT SEE", () => {
+    // The bug (EI-22179257919368370). Emptying client_scope takes the part out of the
+    // candidate set, so the projector never considers it and never CUTS it — it appears
+    // in no `dropped` list, and `evicted` is derived from `dropped`. Assert the whole
+    // misleading shape, not just the new field: without `deprojected` an author sees an
+    // empty eviction list, a RISING headroom, and a part that silently left the file.
+    const before = [row("edited", "a".repeat(10), 10)];
+    const after = applyEditInMemory(before, "edited", null);
+
+    const impact = impactFor(before, after, 1_000);
+
+    expect(impact.deprojected).toBe(true);
+    expect(impact.evicted).toEqual([]);
+    expect(impact.headroomAfter).toBeGreaterThan(impact.headroomBefore);
+  });
+
+  it("does NOT fire for an ordinary budget eviction of the edited part", () => {
+    // Still a candidate, merely cut — that is already reported by `evicted` with its
+    // "<- the part you are editing" annotation. Reporting it twice, under a name that
+    // says the scope was emptied, would make the new signal untrustworthy.
+    const before = [row("edited", "a".repeat(5), 900), row("other", "b".repeat(10), 10)];
+    const after = applyEditInMemory(
+      before,
+      "edited",
+      row("edited", "a".repeat(40), 900),
+    );
+
+    const impact = impactFor(before, after, 25);
+
+    expect(impact.evicted).toContain("edited");
+    expect(impact.deprojected).toBe(false);
+  });
+
+  it("does NOT fire for a part that was never reaching this file anyway", () => {
+    // Scoped to codex only: emptying its scope changes nothing about CLAUDE.md, so
+    // claiming a de-projection here would be a false alarm — and false alarms are what
+    // make an author pass the override flag reflexively.
+    const codexOnly: ProjectionRow = {
+      ...row("edited", "a".repeat(10), 10),
+      client_scope: ["codex"],
+    };
+    const before = [codexOnly, row("other", "b", 10)];
+    const after = applyEditInMemory(before, "edited", null);
+
+    const impacts = evictionDelta({
+      before,
+      after,
+      clients: [
+        { client: "claude", file: "CLAUDE.md", reader: "Claude Code" },
+        { client: "codex", file: "AGENTS.md", reader: "Codex" },
+      ],
+      docId: "claude-md",
+      budget: 1_000,
+      projectClient: fakeProjectClient,
+      partKey: "edited",
+    });
+
+    expect(impacts.find((i) => i.file === "CLAUDE.md")?.deprojected).toBe(false);
+    expect(impacts.find((i) => i.file === "AGENTS.md")?.deprojected).toBe(true);
+  });
+
+  it("does NOT fire when the part is merely edited and still projects", () => {
+    const before = [row("edited", "a".repeat(10), 10)];
+    const after = applyEditInMemory(
+      before,
+      "edited",
+      row("edited", "a".repeat(11), 10),
+    );
+
+    expect(impactFor(before, after, 1_000).deprojected).toBe(false);
+  });
+});
+
 describe("applyEditInMemory", () => {
   it("REMOVES the part when the edit empties its client scope", () => {
     const rows = [row("a", "x"), row("b", "y")];
@@ -289,6 +369,35 @@ describe("renderImpact", () => {
 
     expect(text).not.toContain("your own part does not fit");
     expect(text).toContain("EVICTS 1 part(s)");
+  });
+
+  it("LEADS WITH THE DE-PROJECTION INSTEAD OF THE GREEN `restores` LINE", () => {
+    // The failure mode is not silence, it is REASSURANCE: a de-projecting edit frees its
+    // own bytes, so previously-cut parts fit again and the honest-looking report is
+    // `✓ restores 2 part(s)` with a rising headroom. Pin that the removal is what the
+    // block leads with, and that the restored parts are not presented as a net win.
+    const text = renderImpact(
+      [
+        {
+          file: "CLAUDE.md",
+          evicted: [],
+          restored: ["comeback-a", "comeback-b"],
+          deprojected: true,
+          headroomBefore: 5,
+          headroomAfter: 900,
+        },
+      ],
+      "mine",
+    );
+
+    expect(text).toContain("DE-PROJECTED");
+    expect(text).toContain("'mine'");
+    expect(text).toContain("NO LONGER REACHES THIS FILE");
+    // The restored parts are still listed — but only under the de-projection heading,
+    // never as the ✓ line that would read as success.
+    expect(text).toContain("comeback-a");
+    expect(text).not.toContain("✓ restores");
+    expect(text.indexOf("DE-PROJECTED")).toBeLessThan(text.indexOf("comeback-a"));
   });
 
   it("surfaces a projector refusal rather than printing meaningless headroom", () => {
