@@ -431,6 +431,47 @@ describe('joinHarnessSwarm severed-link escalation ladder (EI-13317)', () => {
     expect(f.joins).toHaveLength(2);
   });
 
+  it('P-203 / EI-22137294505377834: the ESCALATING participant SPARES a socket whose bytesReceived kept advancing within the liveness window, and evicts it once the counter freezes for the whole window', async () => {
+    // Forensics (tower bg-host, 2026-09-02 08:27:57Z): "role=escalating
+    // considered=1 evicted=1 wire=[br=783878 pr=6667]" — the escalating
+    // participant destroyed a socket that was busy for OTHER pots on the same
+    // peer, purely because ITS topic's channel had gone. Cumulative `proven`
+    // cannot tell that socket from a zombie (WI-6324); a RECENT DELTA can, and
+    // hyperdht's 5s keepalive guarantees one on every live connection.
+    vi.useFakeTimers();
+    const f = makeFakeSwarm();
+    const handle = await joinHarnessSwarm({
+      store: STORE,
+      topic: TOPIC,
+      swarm: f.swarm,
+      guard: ALLOW_GUARD,
+      refreshMs: 50,
+      fastWindowMs: 200,
+      slowRefreshMs: 500,
+      severedEscalationMs: 1000, // liveness window = min(120s, 1000ms) = 1000ms
+    });
+    handles.push(handle);
+    const destroy = vi.fn();
+    const raw = { bytesReceived: 4096, packetsReceived: 40 };
+    const socket = { on: () => {}, once: () => {}, destroy, rawStream: raw };
+    f.emitConnection(socket);
+    // Live: the counter advances across refresh ticks (replication for another pot).
+    const pump = setInterval(() => {
+      raw.bytesReceived += 100;
+    }, 100);
+    await vi.advanceTimersByTimeAsync(400);
+    await handle.forceRejoin();
+    expect(destroy).not.toHaveBeenCalled(); // spared: recent inbound activity
+    expect(f.leaves).toHaveLength(1); // the topic-level leave+rejoin still ran
+    expect(f.joins).toHaveLength(2);
+
+    // Then the peer really dies: the counter freezes for longer than the window.
+    clearInterval(pump);
+    await vi.advanceTimersByTimeAsync(1200);
+    await handle.forceRejoin();
+    expect(destroy).toHaveBeenCalledTimes(1); // zombie: evicted
+  });
+
   it('WI-5971 preserved: a SIBLING on the same topic keeps its proven-live socket when someone else escalates — and still evicts it once ITS own detector fires', async () => {
     vi.useFakeTimers();
     const f = makeFakeSwarm();
