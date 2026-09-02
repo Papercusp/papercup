@@ -33,6 +33,7 @@ vi.mock('../../overwatch/snapshot', () => ({ getOverwatchLiveness: vi.fn() }));
 
 import { listRubrics } from '../../rubrics';
 import { checkScorecardFreshness } from '../../scorecard-freshness';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 const listRubricsM = vi.mocked(listRubrics);
 const checkScorecardFreshnessM = vi.mocked(checkScorecardFreshness);
@@ -81,7 +82,7 @@ const FRESHNESS_STUB = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  checkScorecardFreshnessM.mockResolvedValue(FRESHNESS_STUB as never);
+  mockResolvedTyped(checkScorecardFreshnessM, FRESHNESS_STUB);
 });
 
 describe('scorecards:freshness — args schema (rubricRef / subjectPlan mutual exclusivity)', () => {
@@ -106,7 +107,7 @@ describe('scorecards:freshness — args schema (rubricRef / subjectPlan mutual e
 
 describe('scorecards:freshness — subjectPlan resolution (EI-22084134815763318)', () => {
   it('resolves subjectPlan to the single ACTIVE acceptance rubric and threads it to checkScorecardFreshness', async () => {
-    listRubricsM.mockResolvedValue([rubric('my-plan-2026-09-01-acceptance')] as never);
+    mockResolvedTyped(listRubricsM, [rubric('my-plan-2026-09-01-acceptance')]);
     const body = await runTool({ subjectPlan: 'my-plan-2026-09-01' });
     expect(listRubricsM).toHaveBeenCalledWith({
       subjectPlan: 'my-plan-2026-09-01',
@@ -135,7 +136,7 @@ describe('scorecards:freshness — subjectPlan resolution (EI-22084134815763318)
   });
 
   it('a subjectPlan resolving to MULTIPLE active rubrics is ambiguous, never a silent pick', async () => {
-    listRubricsM.mockResolvedValue([rubric('acceptance-a'), rubric('acceptance-b')] as never);
+    mockResolvedTyped(listRubricsM, [rubric('acceptance-a'), rubric('acceptance-b')]);
     const body = await runTool({ subjectPlan: 'ambiguous-plan' });
     expect(checkScorecardFreshnessM).not.toHaveBeenCalled();
     expect(body.ok).toBe(false);
