@@ -163,6 +163,7 @@ import {
   classifyFrozenRepairFixerSuccession,
   FIXER_SUCCESSION_STALL_MS,
   shouldDispatchReleaseFixer,
+  frozenRepairHasNoMeasuredFailures,
   isStaleReleaseFixerCandidate,
   checkReleaseFixerCandidateStale,
   checkpointFallbackStatus,
@@ -1616,6 +1617,48 @@ describe('isStaleReleaseFixerCandidate (EI-8718: no fixer for a superseded/self-
 
   it('a candidate already reachable from origin/main (self-healed to green) IS stale', () => {
     expect(isStaleReleaseFixerCandidate({ candidateExists: true, candidatePromoted: true })).toBe(true);
+  });
+});
+
+describe('frozenRepairHasNoMeasuredFailures (WI-2140605: no reproduce-fixer with nothing to reproduce)', () => {
+  const repairQueue = (over: Partial<FrozenCandidateRepairQueue> = {}): FrozenCandidateRepairQueue => ({
+    schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+    phase: 'awaiting-fixer',
+    candidate: 'a'.repeat(40),
+    base: 'b'.repeat(40),
+    repairHead: 'c'.repeat(40),
+    worktreePath: '/tmp/frozen-repair',
+    attempts: 1,
+    openedAtMs: 1_800_000_000_000,
+    updatedAtMs: 1_800_000_000_000,
+    fixerSpawnId: null,
+    failingTests: ['lib/broken.test.ts'],
+    ...over,
+  });
+
+  // THE GUARD AGAINST OVER-SUPPRESSION. A frozen red with real measured failures is the
+  // legitimate-dispatch case and must stay dispatchable — freezing the fixer path on an
+  // actually-red gate is the one outcome this predicate must never cause.
+  it('a frozen repair with measured failing tests still dispatches', () => {
+    expect(frozenRepairHasNoMeasuredFailures(repairQueue(), ['lib/broken.test.ts'])).toBe(false);
+  });
+
+  // The measured 2026-09-01 deadlock: failingTests=[] on candidate edaf692e, three
+  // consecutive fixers parked/died at "reproduce" with no target.
+  it('a frozen repair with an EMPTY failing set does not dispatch', () => {
+    expect(frozenRepairHasNoMeasuredFailures(repairQueue({ failingTests: [] }), [])).toBe(true);
+  });
+
+  it('an unmeasured (undefined) failing set is treated the same as empty', () => {
+    expect(frozenRepairHasNoMeasuredFailures(repairQueue({ failingTests: [] }), undefined)).toBe(true);
+  });
+
+  // SCOPE. The ordinary fresh-verdict dispatch path passes no repair queue, and its
+  // behaviour is deliberately untouched — an unextracted failure set there is a different
+  // question, so this predicate must not claim it.
+  it('a non-frozen (fresh-verdict) dispatch is out of scope even with no failing tests', () => {
+    expect(frozenRepairHasNoMeasuredFailures(undefined, [])).toBe(false);
+    expect(frozenRepairHasNoMeasuredFailures(undefined, undefined)).toBe(false);
   });
 });
 
