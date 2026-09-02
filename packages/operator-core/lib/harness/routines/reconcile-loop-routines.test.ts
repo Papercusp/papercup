@@ -412,15 +412,77 @@ describe('reconcileLoopRoutines — turn-journal completion signal (WI-6069)', (
     );
   });
 
-  it('a COLD loop does NOT consult turn_journal_completed_at (it has its own two-signal ladder) — an otherwise-signal-less cold fire is left in flight', async () => {
+  // EI-20476474709976110 — COLD layer-1.5. This REVERSES the previous decision that a cold
+  // loop must ignore turn_journal_completed_at. That exclusion left leg (1) unreachable at an
+  // ordinary turn boundary (lifecycle-report.sh is wired only to SessionStart/SessionEnd,
+  // never to Stop), so a dropped loop:checkpoint silently degraded a cold loop to the >=30min
+  // stuck-park backstop. The three tests below lock the new contract AND the safety property
+  // the old exclusion was protecting.
+  it("a COLD loop re-arms via 'turn-journal' when the per-turn journal write is NEWER than the post-fire 'started' boundary", async () => {
+    const updates: unknown[][] = [];
+    const sql = fakeSql(
+      [
+        warmRow({
+          carry: 'cold',
+          note_updated_ts: null, // agent did NOT call loop:checkpoint — the common real case
+          lifecycle_started_at: pgString(T0 + 1_000), // cold wake booted the fresh child
+          turn_journal_completed_at: pgString(T0 + 5_000), // ...whose turn then finished
+        }),
+      ],
+      updates,
+    );
+    const res = await reconcile({ sql, nowMs: T0 + 10_000 });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-1', via: 'turn-journal' });
+    expect(res.loops[0].completedAt).toBe(T0 + 5_000);
+  });
+
+  it("a COLD loop does NOT settle on a journal write OLDER than the post-fire 'started' — that row is the DYING child's last turn, not the woken iteration", async () => {
     const updates: unknown[][] = [];
     const sql = fakeSql(
       [
         warmRow({
           carry: 'cold',
           note_updated_ts: null,
-          turn_journal_completed_at: pgString(T0 + 5_000), // present, but must be ignored for cold
-          presence_last_active_at: pgString(T0 + 5_000), // active since fire → not stuck either
+          turn_journal_completed_at: pgString(T0 + 2_000), // dying child's turn...
+          lifecycle_started_at: pgString(T0 + 3_000), // ...then the recycle booted the new one
+        }),
+      ],
+      updates,
+    );
+    const res = await reconcile({ sql, nowMs: T0 + 10_000 });
+    expect(res.rearmed).toBe(0);
+    expect(updates).toHaveLength(0);
+  });
+
+  it("a COLD loop does NOT settle on a journal write when there is NO post-fire 'started' — turn_journal is owner-wide, so without a reboot marker it may be unrelated work", async () => {
+    const updates: unknown[][] = [];
+    const sql = fakeSql(
+      [
+        warmRow({
+          carry: 'cold',
+          note_updated_ts: null,
+          lifecycle_started_at: null, // session never demonstrably rebooted for this fire
+          turn_journal_completed_at: pgString(T0 + 5_000), // could be ANY owner turn
+        }),
+      ],
+      updates,
+    );
+    const res = await reconcile({ sql, nowMs: T0 + 10_000 });
+    expect(res.rearmed).toBe(0);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('a COLD loop with NO journal row is still left in flight — the 2026-07-03 booted-but-idle trap stays closed', async () => {
+    const updates: unknown[][] = [];
+    const sql = fakeSql(
+      [
+        warmRow({
+          carry: 'cold',
+          note_updated_ts: null,
+          turn_journal_completed_at: null, // booted, carry inject deferred, NO turn ever ran
+          lifecycle_started_at: pgString(T0 + 1_000),
+          presence_last_active_at: pgString(T0 + 5_000), // quiet-but-alive must NOT settle cold
         }),
       ],
       updates,

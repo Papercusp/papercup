@@ -995,14 +995,43 @@ function completionSignal(
   //    quiescence CANNOT distinguish "booted idle, iteration never ran" from "iteration
   //    done" — so it is NOT a cold settle signal at all.
   //  - What IS: (1) the turn's own Stop-hook 'ended' NEWER than the boundary 'started'
-  //    (the session booted AND its turn finished), or (2) the carry-note REFRESH — the
+  //    (the session booted AND its turn finished), (1.5) the per-turn journal write NEWER
+  //    than that same boundary 'started' (see below), or (2) the carry-note REFRESH — the
   //    cold protocol's required loop:checkpoint before turn end, i.e. the iteration's
-  //    own completion receipt. Take the later of the two (checkpoint-then-more-work
+  //    own completion receipt. Take the LATEST of the three (checkpoint-then-more-work
   //    still re-arms off the latest evidence; the pty host's clean-boundary gate defers
   //    an early-landing cold apply to the turn boundary regardless).
-  //  - A dead boot / dropped iteration produces NEITHER → the loop stays parked until
+  //  - A dead boot / dropped iteration produces NONE → the loop stays parked until
   //    the stuck-park backstop re-fires it, which re-delivers the SAME note — exactly
   //    the right retry.
+  //
+  // EI-20476474709976110 — COLD layer-1.5, the mirror of WI-6069's warm leg.
+  // Leg (1) above CANNOT fire at an ordinary turn boundary: `lifecycle-report.sh` is wired
+  // in ~/.claude/settings.json only to SessionStart/SessionEnd, never to Stop (re-verified
+  // live 2026-09-02), so a cold-woken session that finishes its turn and STAYS ALIVE emits
+  // no 'ended'. That left leg (2) — an agent remembering to call loop:checkpoint — as the
+  // only reachable cold settle, and a dropped checkpoint silently degraded the loop to the
+  // >=30min stuck-park backstop regardless of its configured interval (observed: configured
+  // 300s vs effective 1632s, cadenceRatio 5.44, lastDeliveryOutcome='loop-stuck-backstop').
+  // This is the SAME gap WI-6069 closed for warm, and it is closed here the same way.
+  //
+  // Why this does NOT reintroduce the 2026-07-03 bare-quiescence trap: that trap was a
+  // booted-but-idle session being read as settled. Such a session runs no turn, so the Stop
+  // hook never fires and NO `session_turn_journal` row exists — there is nothing to settle
+  // on. Unlike bare quiescence, this signal is positive evidence that a turn actually ran.
+  //
+  // The gate is BOTH halves of the cold reset boundary, and both are load-bearing because
+  // `turn_journal_completed_at` is an OWNER-WIDE clock, not a per-fire one:
+  //   - `lsCold != null` — a post-fire 'started' must exist, i.e. the session demonstrably
+  //     REBOOTED for this fire. Without it we cannot tell the woken iteration's turn from
+  //     the pre-existing session's unrelated work, and settling on the latter re-arms a fire
+  //     whose iteration never ran (the delivered-wake case EI-21743034835075378 guards).
+  //   - `tjCold > lsCold` — the journal write must be NEWER than that boot marker; an older
+  //     row belongs to the DYING child's last turn, not to the woken iteration.
+  // In the real cold path both are satisfied: lifecycle-report.sh IS wired to SessionStart,
+  // so the reboot marker is present; only the END-of-turn marker was missing, and the Stop
+  // hook's journal write is exactly that. Together these make this leg STRICTLY STRONGER
+  // than the note-refresh leg the cold ladder already accepts (gated only on `> lastFiredMs`).
   if (row.carry === 'cold') {
     const lcCold = tsMs(row.lifecycle_completed_at);
     const lsCold = tsMs(row.lifecycle_started_at);
@@ -1010,13 +1039,21 @@ function completionSignal(
     const rawNoteTs = row.note_updated_ts == null ? null : Number(row.note_updated_ts);
     const noteRefreshed =
       rawNoteTs != null && Number.isFinite(rawNoteTs) && rawNoteTs > lastFiredMs ? rawNoteTs : null;
-    if (turnEnded != null && (noteRefreshed == null || turnEnded >= noteRefreshed)) {
-      return { completedAt: turnEnded, via: 'lifecycle' };
+    const tjCold = tsMs(row.turn_journal_completed_at);
+    const turnJournalled =
+      tjCold != null && lsCold != null && tjCold > lsCold ? tjCold : null;
+    const coldSignals: { completedAt: number; via: Exclude<RebaseVia, 'stuck-backstop'> }[] = [];
+    if (turnEnded != null) coldSignals.push({ completedAt: turnEnded, via: 'lifecycle' });
+    if (turnJournalled != null) {
+      coldSignals.push({ completedAt: turnJournalled, via: 'turn-journal' });
     }
-    if (noteRefreshed != null) {
-      return { completedAt: noteRefreshed, via: 'note-refresh' };
-    }
-    return null;
+    if (noteRefreshed != null) coldSignals.push({ completedAt: noteRefreshed, via: 'note-refresh' });
+    if (coldSignals.length === 0) return null;
+    // Latest evidence wins; ties keep the earlier (stronger) leg, preserving the original
+    // `turnEnded >= noteRefreshed` precedence.
+    return coldSignals.reduce((best, next) =>
+      next.completedAt > best.completedAt ? next : best,
+    );
   }
   const strictLoopTurnAtMs = loopTurnCompletionAt(row, lastFiredMs);
   if (strictLoopTurnAtMs != null) {
