@@ -690,6 +690,68 @@ describe('hostThroughPty real round-trip', () => {
     },
     20_000,
   );
+
+  it(
+    "WI-2141435: control-payload-unaddressed fires with envelope:true for a v1 envelope that " +
+      'simply omits ownerId, and envelope:false for a genuinely non-envelope legacy payload — the ' +
+      "detector the EI-153 guard's reject-only logging could not provide (its silence could not " +
+      "distinguish 'nothing to catch' from 'structurally blind to this class'). DETECTOR ONLY: " +
+      'control flow is unchanged, so this test only asserts the event log, not delivery.',
+    async () => {
+      const ownerId = `su-itest-unaddressed-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { io } = fakeIo();
+
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', 'setTimeout(()=>process.exit(0),4000);'],
+        cwd: '/tmp',
+        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        ownerId,
+        advSessionId: 424535,
+        io,
+        bridgeTty: false,
+        onExit: () => undefined,
+      });
+
+      try {
+        await sleep(400);
+        expect(existsSync(sock)).toBe(true);
+
+        // Case A: a well-formed v1 envelope that simply OMITS ownerId (a pre-EI-153
+        // sender) — decodeControl decodes it normally; only ownerId is unset.
+        await envelopeInject(sock, { mode: 'raw', data: 'x' });
+        await sleep(300);
+
+        // Case B: a genuinely non-envelope payload (not JSON at all) — decodeControl's
+        // legacy promotion to mode:'turn' with no ownerId whatsoever.
+        await new Promise<void>((resolve) => {
+          const c = net.connect(sock, () => {
+            c.write('plain-legacy-text');
+            c.end();
+          });
+          c.on('data', () => {});
+          c.on('error', () => resolve());
+          c.on('close', () => resolve());
+        });
+        await sleep(300);
+
+        const events = readFileSync(eventLog, 'utf8')
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => JSON.parse(l));
+        const unaddressed = events.filter((e) => e.kind === 'control-payload-unaddressed');
+        expect(unaddressed).toHaveLength(2);
+        expect(unaddressed.find((e) => e.mode === 'raw')).toMatchObject({ reason: 'no-ownerId', envelope: true });
+        expect(unaddressed.find((e) => e.mode === 'turn')).toMatchObject({ reason: 'no-ownerId', envelope: false });
+      } finally {
+        await done.catch(() => undefined);
+      }
+    },
+    20_000,
+  );
 });
 
 describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same host (su-cold-auto-mode P-004b)', () => {
