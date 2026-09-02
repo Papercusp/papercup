@@ -3,8 +3,11 @@
  *
  * Per agent-plan-tracking-2026-05-20.md §4.1.
  *
- *   actionable: true   → effectiveStatus === 'todo' and no linked blocked work-item
- *                        (stored todo with all blockers done)
+ *   actionable: true   → effectiveStatus === 'todo', no linked blocked work-item
+ *                        (stored todo with all blockers done), and no LIVE holder
+ *                        on it (EI-22174704695369849 — coverage 'partial'/'full'
+ *                        are withheld; 'held-not-live' and 'held-stalled' stay
+ *                        offered because both are pickable, see isLiveHeldCoverage)
  *   needsHuman: true   → storedStatus === 'needs-human'
  *                        (the human's inbox, §4.3)
  *   status: <token>    → filter by effectiveStatus (NOT storedStatus,
@@ -151,7 +154,9 @@ const argsSchema = z.object({
   actionable: z
     .boolean()
     .optional()
-    .describe('Return items pickable right now: effectiveStatus === "todo" with no linked blocked work-item.'),
+    .describe(
+      'Return items pickable right now: effectiveStatus === "todo", no linked blocked work-item, and nobody live already on it. An item a LIVE peer holds is withheld and counted in `withheldLiveHeld`, so a short list is never mistaken for a drained plan; items whose holder is dead or stalled stay offered, because both are reclaimable.',
+    ),
   needsHuman: z
     .boolean()
     .optional()
@@ -213,7 +218,7 @@ interface ItemRow {
 export default defineTool({
   name: "plans:items",
   description:
-    'Plan-item query across one or all plans. `item:"P-NNN"` (one) or `itemIds:[…]` (many, homogeneous — `ids:[…]` is an accepted alias for `itemIds`) restrict results to exact ids from the required `slug` plan; cross-plan item selection is rejected. actionable=true returns pickable items (effectiveStatus="todo"). needsHuman=true returns the human\'s inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller\'s workspace. Cross-plan queries still require a concrete `harness`; `harness: \'all\'` is valid only in an unscoped (--all-workspaces) session.',
+    'Plan-item query across one or all plans. `item:"P-NNN"` (one) or `itemIds:[…]` (many, homogeneous — `ids:[…]` is an accepted alias for `itemIds`) restrict results to exact ids from the required `slug` plan; cross-plan item selection is rejected. actionable=true returns pickable items (todo, not live-held). needsHuman=true returns the human\'s inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller\'s workspace. Cross-plan queries still require a concrete `harness`; `harness: \'all\'` is valid only in an unscoped (--all-workspaces) session.',
   guidance: {
     when: 'You want to find items by status across all plans — "what can I pick up", "what needs the human", or filter one exact plan\'s items. Use `item:"P-NNN"` (one, matching plans:get-item\'s convention) or `itemIds:[…]` (many) with `slug` for exact item selection. An UNSCOPED session\'s exact-slug reads can auto-resolve their harness; a session already scoped to a concrete harness stays scoped to it (a miss names the actual owner). Cross-plan reads must name one.',
     notWhen:
