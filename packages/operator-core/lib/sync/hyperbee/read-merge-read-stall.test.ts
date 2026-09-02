@@ -78,14 +78,14 @@ describe('WI-2141796 — a permanently-unreadable position announces itself inst
     expect(stallWarnings[0]).toContain('3 op(s) behind it'); // length 4 − position 1
   });
 
-  it('throttles a persistent stall to 1st + every 100th pass, and counts consecutively on the SAME position', async () => {
+  it('counts consecutively on the SAME position, and throttles below one line per pass', async () => {
     const cursor = createMergeCursor();
     const log = logWithStalledIndex('BEEF', [put('a', 1000), put('b', 2000)], 1);
     const apply = async (): Promise<boolean> => true;
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    // 5 passes over a permanently-stalled position: the cursor never advances, but
-    // the journal must not be flooded — only the FIRST pass logs.
+    // 5 passes over a permanently-stalled position: the cursor never advances, and
+    // the journal must report that WITHOUT emitting a line per pass.
     for (let i = 0; i < 5; i++) {
       await mergeAdmittedLogsIncremental([log], cursor, { applyImpl: apply, getTimeoutMs: 10 });
     }
@@ -95,7 +95,11 @@ describe('WI-2141796 — a permanently-unreadable position announces itself inst
     const stallWarnings = warnSpy.mock.calls
       .map((c) => String(c[0]))
       .filter((m) => m.includes('read stall'));
-    expect(stallWarnings).toHaveLength(1); // throttled: 1st only, next at the 100th
+    // Doubling schedule → passes 1,2,4 announce; 3 and 5 stay quiet. Both bounds
+    // matter: fewer than every pass (no flood), more than once (no false silence —
+    // see the persisting-stall test below for why that direction is the dangerous one).
+    expect(stallWarnings.length).toBeGreaterThan(1);
+    expect(stallWarnings.length).toBeLessThan(5);
   });
 
   it('a stall that CLEARS resets the streak, so a transient blip cannot masquerade as a wedged log', async () => {
@@ -166,6 +170,48 @@ describe('WI-2141796 — a permanently-unreadable position announces itself inst
     expect(lines[1]).toContain('CB54460D98D8#2');
     // The whole point: the two lines are not confusable with each other.
     expect(lines[0]).not.toEqual(lines[1]);
+  });
+
+  /**
+   * WI-2141796 follow-up #2, also found by USING the fix. The original throttle was
+   * `n === 1 || n % 100 === 0`, which announces a stall STARTING and then says
+   * nothing for 98 more passes. Measured in production: papercusp stalled at
+   * `cb54460d98d8#15595`, emitted one `1×` line at 17:38:58Z, and the journal stayed
+   * silent for 7+ minutes while the cursor did not advance a single position.
+   *
+   * That silence is the bug reappearing one level up: an operator reading the log
+   * cannot tell "the block arrived and we moved on" from "still wedged, 40 passes
+   * deep". The whole point of the warning was to end exactly that ambiguity.
+   *
+   * TEETH: assert a PERSISTING stall re-announces with a CLIMBING count. Reverting
+   * to the flat `% 100` throttle yields 1 line where this demands several, and the
+   * final assertion pins that the counts are strictly increasing — a throttle that
+   * re-warned with a constant number would satisfy a bare line-count check.
+   */
+  it('keeps announcing a PERSISTING stall with a climbing count, instead of going silent after the first pass', async () => {
+    const cursor = createMergeCursor();
+    const ops = [put('a', 1000), put('b', 2000), put('c', 3000)];
+    const log = logWithStalledIndex('DEAD', ops, 1); // index1 NEVER serves
+    const lines: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((m: unknown) => void lines.push(String(m)));
+
+    // 16 passes over a position that never becomes readable.
+    for (let i = 0; i < 16; i++) {
+      await mergeAdmittedLogsIncremental([log], cursor, {
+        applyImpl: async (): Promise<boolean> => true,
+        getTimeoutMs: 5,
+      });
+    }
+
+    expect(cursor.readStalls?.get('DEAD:1')).toBe(16); // it really did stall every pass
+    expect(cursor.positions.get('DEAD')).toBe(1); // …and the cursor really is held
+
+    // 1,2,4,8,16 → five announcements. The old flat throttle emitted exactly one.
+    const counts = lines.map((l) => Number(/read stall \((\d+)×\)/.exec(l)?.[1]));
+    expect(counts).toEqual([1, 2, 4, 8, 16]);
+    expect(counts.length).toBeGreaterThan(1); // the defect this test exists to catch
+    // Strictly increasing: the count must report DURATION, not just recur.
+    for (let i = 1; i < counts.length; i++) expect(counts[i]).toBeGreaterThan(counts[i - 1]!);
   });
 
   it('omits the label cleanly when no cursorLabel is supplied, so the line stays well-formed', async () => {

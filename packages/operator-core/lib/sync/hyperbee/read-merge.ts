@@ -1378,7 +1378,16 @@ export async function mergeAdmittedLogsIncremental(
           const ident = `${log.keyHex}:${pos}`;
           const n = (stalls.get(ident) ?? 0) + 1;
           stalls.set(ident, n);
-          if (n === 1 || n % 100 === 0) {
+          // Announce on 1, then on each POWER OF TWO, then every 100th. A flat
+          // `n === 1 || n % 100 === 0` leaves passes 2..99 silent — and that is
+          // precisely the window where a one-pass blip turns into a wedged
+          // position. Measured 2026-09-02: papercusp stalled at #15595, emitted
+          // its single `1×` line, then went quiet for 7+ minutes while the cursor
+          // did not move. Silence there is indistinguishable from recovery, which
+          // is the exact failure this warning exists to end. Doubling keeps a
+          // persisting stall announcing itself (2×, 4×, 8×…) at a log-bounded
+          // rate, so the count a reader sees is evidence of DURATION.
+          if (n === 1 || (n & (n - 1)) === 0 || n % 100 === 0) {
             console.warn(
               `[read-merge] ${cursorTag}read stall (${n}×): log ${log.keyHex.slice(0, 12)}#${pos} did not resolve within ` +
                 `${getTimeoutMs}ms — cursor HELD at ${pos}, ${Math.max(0, log.length - pos)} op(s) behind it are ` +
