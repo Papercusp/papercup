@@ -145,6 +145,7 @@ import {
   // WI-37605: re-exported from green-checkpoint.ts (:961). Used so the persisted-log header
   // assertion resolves the tag instead of hardcoding the production literal.
   orchestratorStdoutTag,
+  selectFixerCapacityRows,
 } from "./green-checkpoint";
 import { git, revParse, advanceReady } from "./git-ops";
 import {
@@ -12665,6 +12666,97 @@ describe("WI-42350: the judged-red marker is stamped ONLY by a verdict that actu
     // suppress a future real judgement of this sha.
     expect(result.green).toBe(false);
     expect(stamped).toEqual([]);
+  });
+});
+
+describe("EI-22062873162576188: capacity preflight measures the credential the fixer actually uses", () => {
+  // Synthetic, deliberately NOT under /home — a hardcoded home path in shipped source
+  // reds the identity-lint leg and freezes main (EI-18759401203875869). The value only
+  // has to round-trip through the credentialRef comparison.
+  const LOCAL_HOME = "/fixture/codex-home";
+  // The exact shape measured on 2026-09-02: six walled codex rows including the LOCAL CLI
+  // credential the fixer authenticates as, plus one healthy GATEWAY pool account it can
+  // never reach (launch-blueprint sets no account/gateway env, and the per-spawn
+  // CODEX_HOME symlinks ~/.codex/auth.json).
+  const mixedPool = [
+    {
+      id: "chatgpt-sub-cli",
+      usageWalled: true,
+      readingStatus: "fresh",
+      credentialRef: `codex-cli:${LOCAL_HOME}`,
+    },
+    {
+      id: "aviynw5_codex",
+      usageWalled: false,
+      readingStatus: "fresh",
+      credentialRef: "codex-cli:/creds/aviynw5_codex.codex-cli",
+    },
+    {
+      id: "aviynw6_codex",
+      usageWalled: true,
+      readingStatus: "fresh",
+      credentialRef: "codex-cli:/creds/aviynw6_codex.codex-cli",
+    },
+  ];
+
+  // THE REGRESSION. Before the fix this returned the whole pool, the caller found
+  // aviynw5_codex not-walled, returned ok:true, and the dispatch died at turn 1 on the
+  // walled local credential — burning a repair-queue attempt every hour.
+  it("ignores a healthy gateway account the direct-egress fixer cannot reach", () => {
+    const { measured, scope, narrowed } = selectFixerCapacityRows({
+      rows: mixedPool,
+      provider: "codex",
+      gatewayRouted: false,
+      localCodexHome: LOCAL_HOME,
+    });
+
+    expect(narrowed).toBe(true);
+    expect(measured.map((r) => r.id)).toEqual(["chatgpt-sub-cli"]);
+    // The healthy row must not be in the measured set at all — its presence is exactly
+    // what produced the false "go".
+    expect(measured.some((r) => !r.usageWalled)).toBe(false);
+    expect(scope).toContain(LOCAL_HOME);
+  });
+
+  // Fail-OPEN on an unknown, same rule as the stale-reading branch: if we cannot identify
+  // the fixer's own row we must measure the pool rather than invent a wall.
+  it("falls back to the whole pool when the local credential has no matching row", () => {
+    const { measured, narrowed, scope } = selectFixerCapacityRows({
+      rows: mixedPool,
+      provider: "codex",
+      gatewayRouted: false,
+      localCodexHome: "/fixture/other-codex-home",
+    });
+
+    expect(narrowed).toBe(false);
+    expect(measured).toHaveLength(3);
+    expect(scope).toBe("the codex pool");
+  });
+
+  // When the spawn IS gateway-routed the pool is the correct population — narrowing to the
+  // local credential there would withhold on an account the fixer is not using.
+  it("keeps the pool population when the spawn is gateway-routed", () => {
+    const { measured, narrowed } = selectFixerCapacityRows({
+      rows: mixedPool,
+      provider: "codex",
+      gatewayRouted: true,
+      localCodexHome: LOCAL_HOME,
+    });
+
+    expect(narrowed).toBe(false);
+    expect(measured).toHaveLength(3);
+  });
+
+  // The local-CLI credential story is codex-specific; another provider must be untouched.
+  it("does not narrow for a non-codex provider", () => {
+    const { narrowed } = selectFixerCapacityRows({
+      rows: mixedPool,
+      provider: "claude",
+      gatewayRouted: false,
+      localCodexHome: LOCAL_HOME,
+    });
+
+    expect(narrowed).toBe(false);
   });
 });
 
