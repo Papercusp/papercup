@@ -227,3 +227,60 @@ describe('WI-2141796 — a permanently-unreadable position announces itself inst
     expect(lines[0]).toContain('BEEF#1');
   });
 });
+
+/** A log whose `get(slowIndex)` resolves only AFTER `delayMs` — models a block that
+ *  IS served, just not inside the bound. Every other index resolves normally. */
+function logWithSlowIndex(keyHex: string, ops: PeerLogOp[], slowIndex: number, delayMs: number): AdmittedLog {
+  return {
+    keyHex,
+    length: ops.length,
+    get: async (i) => {
+      if (i === slowIndex) await new Promise((r) => setTimeout(r, delayMs));
+      return ops[i] ?? null;
+    },
+  };
+}
+
+const lateReads = (spy: { mock: { calls: unknown[][] } }): string[] =>
+  spy.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('late read'));
+
+describe('WI-2141796 — SLOW-but-served and genuinely-unreadable must not look identical', () => {
+  // A read-stall line proves only that the read did not FINISH in the bound. Both a
+  // withheld block and a merely-slow one produce that same line, and they imply
+  // OPPOSITE fixes (chase the peer vs. fix what made the read slow). These two tests
+  // pin that the pair is now distinguishable from the journal alone.
+
+  it('says so when the abandoned read DID eventually arrive — the block was slow, not unreadable', async () => {
+    const cursor = createMergeCursor();
+    const log = logWithSlowIndex('CAFEBABE', [put('a', 1000), put('b', 2000)], 1, 60);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await mergeAdmittedLogsIncremental([log], cursor, { applyImpl: async () => true, getTimeoutMs: 5 });
+
+    // The bound gave up and pinned the cursor, exactly as for an unreadable block…
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('read stall'))).toHaveLength(1);
+    expect(cursor.positions.get('CAFEBABE')).toBe(1);
+
+    // …but the read arrives afterwards, and THAT is what must now be reported.
+    await new Promise((r) => setTimeout(r, 120));
+    const late = lateReads(warnSpy);
+    expect(late).toHaveLength(1);
+    expect(late[0]).toContain('CAFEBABE#1');
+    expect(late[0]).toContain('DID eventually resolve');
+  });
+
+  it('stays SILENT for a read that never settles — the control that gives the late-read line its meaning', async () => {
+    const cursor = createMergeCursor();
+    const log = logWithStalledIndex('D00D', [put('a', 1000), put('b', 2000)], 1);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await mergeAdmittedLogsIncremental([log], cursor, { applyImpl: async () => true, getTimeoutMs: 5 });
+    await new Promise((r) => setTimeout(r, 120));
+
+    // Same read-stall line as the slow case — which is precisely why the ABSENCE of a
+    // late-read line has to carry the distinction. A late-read line that fired here
+    // too would tell a reader nothing.
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('read stall'))).toHaveLength(1);
+    expect(lateReads(warnSpy)).toHaveLength(0);
+  });
+});

@@ -1396,6 +1396,28 @@ export async function mergeAdmittedLogsIncremental(
                 `swarm but not this block. NOTE the cursor ROW is not a witness here — positions persist as one ` +
                 `map, so a sibling log advancing re-stamps this row's updated_at while its position stays frozen.`,
             );
+            // WI-2141796 — the line above reports only that the read did not
+            // FINISH. It cannot say whether the block is UNREADABLE or merely
+            // SLOW, and every hypothesis about this outage class has foundered on
+            // exactly that gap: a peer-withholding story and a host-saturation
+            // story fit the same evidence and imply opposite fixes. So watch the
+            // read we just abandoned and report which it turned out to be.
+            //
+            // Attached only at an announce point, so the number of outstanding
+            // observers stays logarithmic in the stall count even for a read that
+            // never settles.
+            const observedPos = pos;
+            const observedAtMs = got.startedAtMs;
+            void got.pending.then((resolved) => {
+              console.warn(
+                `[read-merge] ${cursorTag}late read: log ${log.keyHex.slice(0, 12)}#${observedPos} ` +
+                  `${resolved ? 'DID eventually resolve' : 'eventually REJECTED'} ` +
+                  `${Date.now() - observedAtMs}ms after the ${getTimeoutMs}ms bound gave up. A resolve means the ` +
+                  `block was SLOW, NOT unreadable — it WAS served, just not inside the bound, so the fix belongs ` +
+                  `on whatever made the read slow (or on the bound), NOT on the peer. NO late-read line for a ` +
+                  `position that keeps stalling means the read never settled at all — the genuinely-unavailable case.`,
+              );
+            });
           }
           break;
         }
@@ -1523,9 +1545,14 @@ async function readOpBoundedDetailed(
   log: AdmittedLog,
   i: number,
   timeoutMs: number,
-): Promise<{ kind: 'op'; op: PeerLogOp | null } | { kind: 'unavailable' } | { kind: 'read-error'; err: unknown }> {
+): Promise<
+  | { kind: 'op'; op: PeerLogOp | null }
+  | { kind: 'unavailable'; pending: Promise<boolean>; startedAtMs: number }
+  | { kind: 'read-error'; err: unknown }
+> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const UNAVAILABLE = Symbol('unavailable');
+  const startedAtMs = Date.now();
   try {
     const get = Promise.resolve(log.get(i)).then((op) => ({ kind: 'op' as const, op }));
     if (timeoutMs <= 0) {
@@ -1538,7 +1565,22 @@ async function readOpBoundedDetailed(
       }
     });
     const r = await Promise.race([get, timeout]);
-    return r === UNAVAILABLE ? { kind: 'unavailable' } : r;
+    if (r !== UNAVAILABLE) return r;
+    // WI-2141796 — hand the caller the STILL-PENDING read and when it started.
+    // The bound proves only that the read did not FINISH in time; it says nothing
+    // about whether the block is UNREADABLE or merely SLOW, and that distinction
+    // is the one this outage class has never been able to make. Whether this
+    // promise ever settles decides it.
+    //
+    // Settled to a boolean rather than handed over raw on purpose: the caller
+    // abandons this read, so a raw promise that later REJECTS would be an
+    // unhandled rejection. `true` = the read did eventually arrive (slow, not
+    // unreadable); `false` = it eventually rejected.
+    const pending = get.then(
+      () => true,
+      () => false,
+    );
+    return { kind: 'unavailable', pending, startedAtMs };
   } catch (err) {
     return { kind: 'read-error', err };
   } finally {
