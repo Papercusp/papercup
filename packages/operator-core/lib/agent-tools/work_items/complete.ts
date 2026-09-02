@@ -1039,9 +1039,12 @@ export function completionRepoRootsFromRegistry(
     if (contentPath) roots.add(nodePath.resolve(contentPath));
   }
   if (primaryRoot) {
-    const workspaceRoot = nodePath.dirname(primaryRoot);
-    for (const siblingName of independentSiblingRepos(primaryRoot)) {
-      roots.add(nodePath.resolve(workspaceRoot, siblingName));
+    // EI-22188958812917965: resolve each sibling against the PARENT DIRECTORY it was
+    // actually found under, not a hardcoded workspaceRoot — a checkout directly under
+    // $HOME (one tier further out than the conventional workspace directory) resolves
+    // wrong otherwise, which is exactly the reported "absent-from-both" failure.
+    for (const [siblingName, parentDir] of independentSiblingRepos(primaryRoot)) {
+      roots.add(nodePath.resolve(parentDir, siblingName));
     }
   }
   // Keep the registry/sibling resolver pure for its existing callers, while allowing the
