@@ -262,6 +262,23 @@ function makeWindowProjector(
     // reading is not discarded as a duplicate of the preceding premium 429.
     const hasAnthropic = Object.keys(headers).some((key) => key.toLowerCase().startsWith('anthropic-ratelimit-unified-'));
     const bucket = hasAnthropic ? 'anthropic' : codexRateLimitBucket(headers);
+    if (bucket === 'base_model_inference') {
+      // EI-22103680502746318: the Luna reserve tier is a DIFFERENT meter from the premium weekly/5h
+      // windows this projection describes. Writing its (small) utilization into `rate.utilization[7d]`
+      // un-walls a weekly-exhausted account, the failover pool routes premium traffic onto it, and the
+      // next premium 429 re-walls it — a burn-governor fact assert/retract + fleet broadcast per flip.
+      // Observe it (throttled) but never project it.
+      const skipKey = `${accountId}:reserve-not-projected`;
+      const seen = last.get(skipKey);
+      if (!seen || t - seen.at >= WRITE_MIN_MS * 10) {
+        last.set(skipKey, { util: w.utilization ?? 0, resetAt: 0, util7d: w7.utilization7d ?? 0, resetAt7d: 0, at: t });
+        log(
+          'info',
+          `inference-gateway: '${accountId}' reserve-meter (base_model_inference) reading util=${w.utilization ?? '-'} util7d=${w7.utilization7d ?? '-'} NOT projected — the premium meter is unchanged`,
+        );
+      }
+      return;
+    }
     const modelKey = model.trim().toLowerCase() || 'unknown';
     const projectionKey = `${accountId}:${bucket}:${modelKey}`;
     const prev = last.get(projectionKey);
