@@ -19,7 +19,9 @@ import {
   canaryReadinessIsStable,
   certifyCanaryAnswer,
   ensureOpen,
+  evictIfLanguageServiceDead,
   healthForAnswer,
+  probeLanguageServiceLiveness,
   prepareIntentReadiness,
   readinessStrategyFor,
   readinessVerdict,
@@ -806,5 +808,117 @@ describe('prepareIntentReadiness — a quiet server is not re-timed by every que
     // never let an actively-indexing server answer.
     const client = tsClient(Date.now() - 60_000, ['token-1']);
     await expect(prepareIntentReadiness(client, 'definition', 250)).resolves.toBe('timeout');
+  });
+});
+
+/**
+ * WI-2142693 — the dead-language-service class.
+ *
+ * The adapter spawns `typescript-language-server`, but the process that answers
+ * a query is `tsserver`, ITS CHILD. Measured: kill the child and the wrapper
+ * lives on — no exit, no notification, zero bytes of stderr — answering `null`
+ * to a query that returned a real site seconds before, and never respawning.
+ * `child.on('exit')` therefore cannot fire for the one failure whose own comment
+ * says it exists to catch, and `getClient` re-hands the corpse to every future
+ * caller for the life of the process.
+ *
+ * These cases pin the two decisions that each produce a CONFIDENT WRONG ANSWER
+ * rather than an error, so neither can be "simplified" away later:
+ *  - childless rust is healthy, not dead (rust-analyzer has no child at all);
+ *  - childless-and-never-seen is "not yet", not "died".
+ */
+describe('probeLanguageServiceLiveness (WI-2142693)', () => {
+  const tsChild = (over: Partial<{ pid: number; exitCode: number | null; killed: boolean }> = {}) => ({
+    pid: 4242,
+    exitCode: null as number | null,
+    killed: false,
+    ...over,
+  });
+
+  it('reports alive while the wrapper owns a child, and remembers having seen one', () => {
+    const client = {
+      language: 'typescript' as const,
+      tsserverSeen: undefined as boolean | undefined,
+      child: tsChild(),
+    };
+    expect(probeLanguageServiceLiveness(client, () => [4243, 4244])).toBe('alive');
+    // The latch is the whole basis for any later 'dead' verdict.
+    expect(client.tsserverSeen).toBe(true);
+  });
+
+  it('reports DEAD once a wrapper we have seen with a child has none', () => {
+    const client = { language: 'typescript' as const, tsserverSeen: true, child: tsChild() };
+    expect(probeLanguageServiceLiveness(client, () => [])).toBe('dead');
+  });
+
+  it('reports unknown — NOT dead — for a childless wrapper never seen with a child', () => {
+    // The startup trap: before tsserver is spawned, "no children" means "not
+    // yet". Calling that death would evict every server during its own boot.
+    const client = {
+      language: 'typescript' as const,
+      tsserverSeen: undefined as boolean | undefined,
+      child: tsChild(),
+    };
+    expect(probeLanguageServiceLiveness(client, () => [])).toBe('unknown');
+  });
+
+  it('never condemns a childless rust client', () => {
+    // rust-analyzer is ONE process with no children. A language-blind
+    // "no children ⇒ dead" would evict every healthy rust client on its first
+    // legitimately-empty answer.
+    const client = { language: 'rust' as const, tsserverSeen: true, child: tsChild() };
+    expect(probeLanguageServiceLiveness(client, () => [])).toBe('unknown');
+  });
+
+  it('reports unknown when the child list cannot be read', () => {
+    // Off Linux there is no /proc; an unreadable list must not read as "empty".
+    const client = { language: 'typescript' as const, tsserverSeen: true, child: tsChild() };
+    expect(probeLanguageServiceLiveness(client, () => null)).toBe('unknown');
+  });
+
+  it('still catches the wrapper itself exiting', () => {
+    const client = { language: 'typescript' as const, tsserverSeen: true, child: tsChild({ exitCode: 1 }) };
+    expect(probeLanguageServiceLiveness(client, () => [4243])).toBe('dead');
+  });
+});
+
+describe('evictIfLanguageServiceDead (WI-2142693)', () => {
+  const deadClient = () =>
+    ({
+      language: 'typescript',
+      rootPath: '/repo',
+      tsserverSeen: true,
+      health: 'healthy',
+      lastError: null,
+      child: { pid: 4242, exitCode: null, killed: false },
+    }) as unknown as Parameters<typeof evictIfLanguageServiceDead>[0];
+
+  it('UNREGISTERS the dead client so the next query starts a fresh server', () => {
+    // Detection alone would only make the outage honest. `getClient` reuses any
+    // client whose health is not 'unhealthy', so without the delete the corpse
+    // is handed out forever — the difference between a crash and an outage.
+    const client = deadClient();
+    const clients = new Map([['typescript::/repo', client]]);
+    const reason = evictIfLanguageServiceDead(client, clients, () => []);
+    expect(reason).toMatch(/language service died/i);
+    expect(client.health).toBe('unhealthy');
+    expect(clients.has('typescript::/repo')).toBe(false);
+  });
+
+  it('leaves a live client registered and untouched', () => {
+    const client = deadClient();
+    const clients = new Map([['typescript::/repo', client]]);
+    expect(evictIfLanguageServiceDead(client, clients, () => [4243])).toBeNull();
+    expect(client.health).toBe('healthy');
+    expect(clients.has('typescript::/repo')).toBe(true);
+  });
+
+  it('surfaces the stderr tail when the server left one', () => {
+    // stderr is piped and, before this fix, never read — which is why five
+    // separate probes found a corpse and no cause.
+    const client = deadClient();
+    (client as unknown as { stderrTail: string }).stderrTail = 'FATAL ERROR: heap out of memory';
+    const reason = evictIfLanguageServiceDead(client, new Map(), () => []);
+    expect(reason).toContain('heap out of memory');
   });
 });
