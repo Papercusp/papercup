@@ -54,6 +54,12 @@ export interface GoalDetailTripwire {
   current?: number | null;
   /** `usd` and `days` get bespoke phrasing; anything else is suffixed as-is. */
   unit?: string | null;
+  /**
+   * Provenance for `current`, stamped by the platform refresh. ABSENT — or
+   * carrying a `value` that no longer matches `current` — means an agent typed
+   * the number by hand (EI-21605510614702802).
+   */
+  measuredBy?: { source: string; atMs: number; value: number } | null;
 }
 
 export interface GoalDetailGoalInput {
@@ -301,6 +307,23 @@ export interface TripwireBar {
    * the value a caller would read as absent.
    */
   measured: boolean;
+  /**
+   * Did the PLATFORM measure it, or did an agent type it?
+   *
+   * Deliberately a SECOND field rather than a redefinition of `measured` above,
+   * because they answer different questions and both are worth asking: `measured`
+   * is "is there a reading at all" (its `measured at zero` vs `unread` distinction
+   * is test-guarded), and this is "where did that reading come from". Collapsing
+   * them would lose one of the two.
+   *
+   * False for every hand-set value — which is the ordinary case for a domain
+   * metric, since `TripwireSchema` itself notes most such metrics "live outside
+   * this database entirely". A hand-set number is still shown; it just may not
+   * be presented as a measurement (EI-21605510614702802).
+   */
+  derived: boolean;
+  /** When the platform last wrote this reading; null when hand-set. Lets a caller age it. */
+  measuredAtMs: number | null;
   tone: TripwireTone;
   /** Hover text spelling out what crossing this bar means. */
   title: string;
@@ -335,6 +358,23 @@ export function tripwireBar(t: GoalDetailTripwire): TripwireBar {
   const current = t.current == null ? null : Number(t.current);
   const hasCurrent = current != null && Number.isFinite(current);
 
+  /*
+   * PROVENANCE. A stamp counts only while it still vouches for the number that
+   * is actually stored: `value` is compared, not merely present, so an agent who
+   * hand-edits `current` on a previously-measured tripwire cannot leave the old
+   * stamp behind to keep calling it a measurement. Mirrors `isDerived` in
+   * goals/tripwire-refresh.ts — the writer of the stamp — deliberately, since
+   * this module's whole point is being testable without a server import.
+   */
+  const stamp = t.measuredBy;
+  const derived =
+    hasCurrent &&
+    !!stamp &&
+    typeof stamp.source === 'string' &&
+    Number.isFinite(stamp.value) &&
+    stamp.value === current;
+  const measuredAtMs = derived && Number.isFinite(stamp?.atMs) ? (stamp as { atMs: number }).atMs : null;
+
   const fmt = (n: number): string => (unit === 'usd' ? moneyish(n) : numberish(n));
 
   let valueText: string;
@@ -363,14 +403,35 @@ export function tripwireBar(t: GoalDetailTripwire): TripwireBar {
   else if (pct >= WARN_AT_PCT) tone = 'warn';
   else tone = 'ok';
 
+  /*
+   * A hand-set reading is still a reading and still shows its number — the
+   * number is the point. What it must not do is pass for a measurement, because
+   * an unmarked `0 of 30` typed weeks ago is indistinguishable on screen from a
+   * spend figure the platform refreshes every five minutes, and reads as
+   * reassurance nobody actually earned.
+   */
+  if (hasCurrent && !derived) valueText = `${valueText} · hand-set`;
+
   const title =
     tone === 'breached'
       ? `${label}: past its limit — this is a reason to stop the goal`
       : tone === 'unread'
         ? `${label}: no reading has been taken yet`
-        : `${label}: ${valueText}`;
+        : derived
+          ? `${label}: ${valueText}`
+          : `${label}: ${valueText} — entered by hand, not measured by the platform`;
 
-  return { key: t.metric, label, valueText, pct, measured: hasCurrent, tone, title };
+  return {
+    key: t.metric,
+    label,
+    valueText,
+    pct,
+    measured: hasCurrent,
+    derived,
+    measuredAtMs,
+    tone,
+    title,
+  };
 }
 
 /** Every tripwire on the goal, in author order. Empty is the NORMAL case — a

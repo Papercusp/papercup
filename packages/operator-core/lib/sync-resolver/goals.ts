@@ -57,6 +57,13 @@ export interface GoalTripwire {
   threshold: number;
   current?: number;
   unit?: string;
+  /**
+   * Provenance for `current`, stamped by the platform refresh (goals/tripwire-refresh).
+   * ABSENT means an agent hand-wrote the number — which is the ordinary case for a
+   * domain metric, and which the detail view must not render as a measurement.
+   * `parseTripwires` is a pass-through filter, so this rides the wire for free.
+   */
+  measuredBy?: { source: string; atMs: number; value: number } | null;
 }
 
 import {
