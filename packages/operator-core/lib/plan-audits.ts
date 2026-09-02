@@ -42,6 +42,7 @@ import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
@@ -556,33 +557,59 @@ export function resolveCitation(citation: AuditCitation, deps: CitationDeps): Ci
  * per-root, so the strictness the module header describes is unchanged: a citation
  * passes only when it names a real file under an allowed root.
  */
-export function independentSiblingRepos(repoRoot: string): ReadonlySet<string> {
+/**
+ * Which directory a name returned by {@link independentSiblingRepos} was actually found
+ * under — `workspaceRoot` for the conventional case, `homeRoot` for EI-22188958812917965's
+ * (a checkout sitting directly under `$HOME`, one tier further out). Callers MUST resolve
+ * each name against ITS OWN parent, never a hardcoded `workspaceRoot`: two different tiers
+ * can each hold an entry of the same name, and a bare Set could not tell them apart.
+ */
+export function independentSiblingRepos(
+  repoRoot: string,
+  opts: { homeRoot?: string } = {},
+): ReadonlyMap<string, string> {
   const workspaceRoot = path.dirname(repoRoot);
-  const names = new Set<string>();
+  const names = new Map<string, string>();
   let realRepo = repoRoot;
   try {
     realRepo = fs.realpathSync(repoRoot);
   } catch {
     /* keep the literal root */
   }
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(workspaceRoot, { withFileTypes: true });
-  } catch {
-    return names;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-    const abs = path.join(workspaceRoot, entry.name);
+
+  // EI-22188958812917965: a checkout need not live inside the conventional
+  // `~/papercupai-workspace/` tier at all — the reported case (`~/Restart`) sits
+  // directly under the user's home directory, one tier further out than
+  // `workspaceRoot`. Scan BOTH tiers so a workspace-relative citation and a
+  // home-relative one resolve the same way. `workspaceRoot` is scanned FIRST and
+  // therefore wins a same-name collision (Map.set on an existing key is a no-op
+  // here since each tier is scanned once, but the order still fixes precedence
+  // for the first tier to claim a name).
+  const scanRoots = [workspaceRoot];
+  const homeRoot = opts.homeRoot ?? os.homedir();
+  if (homeRoot && homeRoot !== workspaceRoot) scanRoots.push(homeRoot);
+
+  for (const dir of scanRoots) {
+    let entries: fs.Dirent[];
     try {
-      // `papercup` is a symlink to the monorepo — realpath dedupes it so the repo
-      // can never re-enter as its own sibling under a second name.
-      if (fs.realpathSync(abs) === realRepo) continue;
-      if (!fs.statSync(path.join(abs, '.git')).isDirectory()) continue;
+      entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
       continue;
     }
-    names.add(entry.name);
+    for (const entry of entries) {
+      if (names.has(entry.name)) continue; // an earlier (higher-precedence) tier already claimed this name
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      const abs = path.join(dir, entry.name);
+      try {
+        // `papercup` is a symlink to the monorepo — realpath dedupes it so the repo
+        // can never re-enter as its own sibling under a second name.
+        if (fs.realpathSync(abs) === realRepo) continue;
+        if (!fs.statSync(path.join(abs, '.git')).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      names.set(entry.name, dir);
+    }
   }
   return names;
 }
@@ -622,7 +649,7 @@ export function repoCitationDeps(
   registeredRoots: readonly string[] = [],
 ): CitationDeps {
   const workspaceRoot = path.dirname(repoRoot);
-  let siblings: ReadonlySet<string> | null = null;
+  let siblings: ReadonlyMap<string, string> | null = null;
   const trackedCache = new Map<string, boolean | null>();
   let realRepo: string | null = null;
   try {
@@ -659,8 +686,9 @@ export function repoCitationDeps(
     if (first) {
       // Computed lazily: the overwhelmingly common in-repo citation pays no scan.
       siblings ??= independentSiblingRepos(repoRoot);
-      if (siblings.has(first)) {
-        const inWorkspace = contained(workspaceRoot, rel);
+      const siblingParent = siblings.get(first);
+      if (siblingParent !== undefined) {
+        const inWorkspace = contained(siblingParent, rel);
         if (inWorkspace !== null) return inWorkspace;
       }
     }
@@ -740,7 +768,8 @@ export function repoCitationDeps(
       const first = rel.split('/')[0];
       if (first) {
         siblings ??= independentSiblingRepos(repoRoot);
-        if (siblings.has(first)) roots.push(path.join(workspaceRoot, first));
+        const siblingParent = siblings.get(first);
+        if (siblingParent !== undefined) roots.push(path.join(siblingParent, first));
       }
       roots.push(...admittedRegisteredRoots);
       return roots.join(', ');
@@ -748,11 +777,11 @@ export function repoCitationDeps(
     siblingSuggestion: (rel) => {
       siblings ??= independentSiblingRepos(repoRoot);
       const first = rel.split('/')[0];
-      for (const name of siblings) {
+      for (const [name, parent] of siblings) {
         // Already-prefixed misses were already tried above by `within()` — a
         // second suggestion naming the same prefix would be noise, not a repair.
         if (name === first) continue;
-        const abs = path.resolve(workspaceRoot, name, rel);
+        const abs = path.resolve(parent, name, rel);
         try {
           if (fs.statSync(abs).isFile()) return `${name}/${rel}`;
         } catch {
