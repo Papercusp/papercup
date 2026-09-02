@@ -339,6 +339,67 @@ describe('applyResultDoor', () => {
     expect(doored.structuredContent).toBe(rows);
   });
 
+  it('REGRESSION (EI-22186855527494865): plans:get shipReadiness survives the door while unrequested bulk does not', () => {
+    // shipReadiness is OPT-IN and default-OFF: a caller only sees it by asking
+    // for it by name, so its ABSENCE reads as "nothing is blocking this plan" —
+    // a false green on a ship gate. Measured before the fix on a real read:
+    // ok:true, omittedCount:24, omitted:[], and no shipReadiness key at all.
+    const bulk = (prefix: string, n: number, len: number) =>
+      Object.fromEntries(Array.from({ length: n }, (_, i) => [`${prefix}${i}`, 'x'.repeat(len)]));
+    const payload = {
+      ok: true,
+      results: [{
+        ok: true,
+        slug: 'effort-scoped-continuity-2026-09-02',
+        title: 'Effort-scoped continuity',
+        status: 'draft',
+        counts: { items: 126, decisions: 16, sections: 11 },
+        harness: 'papercusp',
+        // Unrequested default payload that outweighs the whole budget — the
+        // eviction pressure that dropped the requested field.
+        lifecycle: bulk('lc', 40, 400),
+        frontmatter: bulk('fm', 40, 400),
+        now: bulk('now', 40, 400),
+        items: Array.from({ length: 126 }, (_, i) => ({ id: `P-${i}`, text: 'i'.repeat(400) })),
+        // Assigned LAST by plans/get.ts, which is why insertion order could not
+        // be relied on to save it.
+        shipReadiness: {
+          planSlug: 'effort-scoped-continuity-2026-09-02',
+          satisfied: false,
+          code: 'acceptance_ungraded',
+          message: 'No acceptance rubric has been graded.',
+        },
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const original = JSON.stringify(payload);
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
+    ) as DoorableResult;
+    const textItems = doored.content.filter((item) => (item as { type?: string }).type === 'text') as Array<{
+      text: string;
+    }>;
+    const parsed = JSON.parse(textItems[0].text) as {
+      results: Array<Record<string, unknown>>;
+      _projection: { truncated: boolean; omittedPreserved?: string[] };
+    };
+
+    expect(parsed._projection.truncated).toBe(true);
+    expect(parsed.results[0].shipReadiness).toMatchObject({
+      satisfied: false,
+      code: 'acceptance_ungraded',
+    });
+    // Control: the door really did evict here, and it evicted the payload the
+    // caller did NOT ask for. Without this the assertion above would also pass
+    // on a result that was never truncated at all.
+    expect(parsed.results[0]).not.toHaveProperty('lifecycle');
+    // Nothing explicitly selected went missing, so the never-shed marker is absent.
+    expect(parsed._projection.omittedPreserved).toBeUndefined();
+  });
+
   it('preserves events:status exact-event generation state when waiter history overflows the door', () => {
     const original = JSON.stringify({
       ok: true,

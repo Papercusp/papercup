@@ -1215,8 +1215,14 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // in-band markers make a clipped value honest; this only prevents the field
     // from disappearing as an identity-only omission. Merge caller-selected
     // paths rather than replacing them (projection.pick remains additive).
+    // Order is PRIORITY (payload-tier.ts `preservedChildRank`): the earlier path
+    // wins the budget. `shipReadiness` leads because it is opt-in and default-OFF
+    // — a caller only sees it by asking for it BY NAME, and its absence reads as
+    // "nothing is blocking this plan", a false green on a ship gate
+    // (EI-22186855527494865). `items[].text` follows: also load-bearing, but an
+    // items array announces its own truncation in band, so a cut there is visible.
     const preservePaths = [
-      ...(opts.toolName === 'plans:get' ? ['results[].items[].text'] : []),
+      ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
       ...(opts.preservePaths ?? []),
     ];
     const projected = projectBoundedPayload(parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }, {
