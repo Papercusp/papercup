@@ -63,37 +63,61 @@ describe('HotReloader', () => {
   });
 
   it('debounces a burst of changes into a single reload', async () => {
-    await fs.writeFile(join(dir, 'papercusp.json'), JSON.stringify({ name: 'demo', version: '0.1.0' }), 'utf8');
+    // Coalescing is DEFINED only while every inter-event gap stays inside the debounce window
+    // (scheduleChange restarts a plain setTimeout per fs event), so this test has to establish
+    // that precondition rather than assume it. Two prior rounds of a FIXED window both lost the
+    // same bet on host speed:
+    //   - 100ms + `await setTimeout(10)` between writes: one event-loop stall fired the debounce
+    //     mid-burst and landed 2 reloads ("expected 2 to be 1", gate candidate 1d0c4208).
+    //   - WI-38201 dropped the artificial sleeps and widened to 1000ms (~100x margin), and made a
+    //     stall report honestly as a stall instead of masquerading as a broken debouncer. But a
+    //     loaded green-checkpoint host still blew straight through it — a 5-write burst took
+    //     3126ms on candidate 79745446 — and a HOST STALL IS NOT A DEFECT IN HotReloader, so that
+    //     red froze the whole release gate on something this code cannot cause.
+    // No fixed number survives a box running ~76 agents. So stop betting and CALIBRATE: if the
+    // burst did not fit, widen the window to the speed the host just demonstrated and retry.
+    // The coalescing assertion itself is never skipped, softened, or made conditional — a
+    // genuinely broken debouncer emits >1 reload and fails on every attempt — so this cannot
+    // pass vacuously; only the precondition adapts.
+    const MAX_ATTEMPTS = 3;
+    const stalls: string[] = [];
+    let debounceMs = 1000;
 
-    // WI-38201: this test coalesces ONLY while every inter-event gap stays inside the
-    // debounce window (scheduleChange restarts a plain setTimeout per fs event). It used a
-    // 100ms window with `await setTimeout(10)` between writes, so ONE event-loop stall on a
-    // loaded green-checkpoint host pushed a gap past 100ms, fired the debounce mid-burst and
-    // landed 2 reloads ("expected 2 to be 1", gate candidate 1d0c4208). The artificial sleeps
-    // bought nothing — awaited writes are already sequential — and were the stall amplifier.
-    // Dropping them and widening the window takes the margin from ~2x to ~100x.
-    const debounceMs = 1000;
-    hr = new HotReloader(dir, { debounceMs });
-    const reloaded: unknown[] = [];
-    hr.on('reloaded', (e) => reloaded.push(e));
-    await hr.start();
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      await fs.writeFile(join(dir, 'papercusp.json'), JSON.stringify({ name: 'demo', version: '0.1.0' }), 'utf8');
 
-    const burstStart = Date.now();
-    for (let i = 0; i < 5; i++) {
-      await fs.writeFile(join(dir, 'papercusp.json'), JSON.stringify({ name: 'demo', version: `0.${i}.0` }), 'utf8');
+      hr = new HotReloader(dir, { debounceMs });
+      const reloaded: unknown[] = [];
+      hr.on('reloaded', (e) => reloaded.push(e));
+      await hr.start();
+
+      const burstStart = Date.now();
+      for (let i = 0; i < 5; i++) {
+        await fs.writeFile(join(dir, 'papercusp.json'), JSON.stringify({ name: 'demo', version: `0.${i}.0` }), 'utf8');
+      }
+      const burstMs = Date.now() - burstStart;
+
+      await waitFor(() => reloaded.length > 0, debounceMs + 5000);
+      // A straggler event would start a fresh window, so wait one full window for a 2nd reload.
+      await new Promise((r) => setTimeout(r, debounceMs));
+
+      if (burstMs < debounceMs) {
+        expect(reloaded.length).toBe(1);
+        return;
+      }
+
+      stalls.push(`attempt ${attempt}: a 5-write burst took ${burstMs}ms, past the ${debounceMs}ms window`);
+      hr.stop();
+      hr = null;
+      // Re-aim at the speed actually observed, capped so a pathological host cannot stretch the
+      // suite without bound.
+      debounceMs = Math.min(burstMs * 4, 30_000);
     }
-    const burstMs = Date.now() - burstStart;
 
-    await waitFor(() => reloaded.length > 0, 5000);
-    // A straggler event would start a fresh window, so wait one full window for a 2nd reload.
-    await new Promise((r) => setTimeout(r, debounceMs));
-
-    // Assert the PRECONDITION separately: coalescing is only defined when the burst fit in one
-    // window. If the host stalled past it, this fails as "the host stalled" instead of
-    // masquerading as a broken debouncer — and it is an assertion, not a skip, so a stalled
-    // run can never pass vacuously.
-    expect(burstMs).toBeLessThan(debounceMs);
-    expect(reloaded.length).toBe(1);
+    throw new Error(
+      `host too stalled to define debounce coalescing after ${MAX_ATTEMPTS} attempts — ` +
+        `this is a host-capacity signal, NOT a HotReloader defect: ${stalls.join('; ')}`,
+    );
   });
 
   it('stop() closes the watcher so no further events fire', async () => {
