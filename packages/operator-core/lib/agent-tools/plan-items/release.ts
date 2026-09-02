@@ -14,6 +14,8 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolvePlanScope } from '../plans/source';
 import { forceReleaseClaim, getClaim, releaseClaim } from '../../plan-items/claims';
+import { planItemEffectiveStatuses } from '../../plan-items/assignments';
+import { isTerminalPlanItemStatus } from '../../work-item-plan-item-landed';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import {
   assessForceRelease,
@@ -105,10 +107,18 @@ export default defineTool({
               reason: args.reason,
             },
           ];
+    // EI-22073881694336970: the dispatch handle below needs each released item's
+    // harness to read its status, and the per-item harness is resolved HERE (per
+    // row, from it.harness). Capture it rather than re-deriving later from the
+    // batch-level args.harness, which is wrong for a heterogeneous items:[…] call.
+    // `#` is the separator this file already uses for a plan/item pair (see
+    // notifyForceTransition's itemId above).
+    const harnessByKey = new Map<string, string>();
     const env = await runBulk(
       list,
       async (it): Promise<BulkItemResult> => {
         const { workspaceId, harnessSlug } = await resolvePlanScope({ harnessSlug: it.harness });
+        harnessByKey.set(`${it.plan}#${it.item}`, harnessSlug);
         const force = it.force ?? false;
         const reason = it.reason?.trim() ?? '';
         const current = await getClaim(workspaceId, harnessSlug, it.plan, it.item);
@@ -266,8 +276,58 @@ export default defineTool({
       (r): r is BulkItemResult & { plan: string; item: string } =>
         Boolean((r as { ok?: boolean }).ok) && Boolean((r as { released?: boolean }).released),
     );
-    let dispatch: DispatchHandleResult = null;
+    // ── EI-22073881694336970: NEVER offer a TERMINAL lane for pickup.
+    //
+    // The handle's own note says "the lane is free … Claim and continue", so
+    // emitting it for a done/dropped item invites a peer to reopen finished work
+    // — and a release is exactly when that happens, because winding a plan down
+    // means force-releasing the stale claims of items that are ALREADY terminal.
+    // Reproduced twice on P-008/WI-2008163 after terminal wind-down: each force
+    // release suggested handing the completed lane to an unrelated parked agent.
+    //
+    // This is the same dead-dispatch class the sibling surface already guards:
+    // plan_items:assign refuses to (re)assign an ALREADY-TERMINAL item because
+    // doing so "does nothing but fire a stale wake" (EI-2295). Releasing is the
+    // pull leg of it; assign was the push leg.
+    //
+    // FAIL-OPEN, deliberately, matching planItemEffectiveStatus's stated contract:
+    // only an item whose status we positively READ as terminal is withheld. An
+    // undeterminable status (missing plan, un-normalized row, read hiccup) still
+    // gets its handle — suppressing on unknown would silently kill the affordance
+    // for a whole class of plans, and the harm here is specific to items that
+    // really are finished.
+    const dispatchable: typeof releasedLane = [];
     if (releasedLane.length > 0) {
+      try {
+        // One plan read per distinct (harness, plan) — not one per item.
+        const byPlan = new Map<string, { harness: string; plan: string; items: string[] }>();
+        for (const r of releasedLane) {
+          const harness = harnessByKey.get(`${r.plan}#${r.item}`);
+          if (!harness) continue;
+          const key = `${harness}#${r.plan}`;
+          const bucket = byPlan.get(key) ?? { harness, plan: r.plan, items: [] };
+          bucket.items.push(r.item);
+          byPlan.set(key, bucket);
+        }
+        const terminal = new Set<string>();
+        for (const b of byPlan.values()) {
+          const statuses = await planItemEffectiveStatuses(b.harness, b.plan, b.items);
+          for (const [itemId, status] of statuses) {
+            if (status && isTerminalPlanItemStatus(status)) terminal.add(`${b.plan}#${itemId}`);
+          }
+        }
+        for (const r of releasedLane) {
+          if (!terminal.has(`${r.plan}#${r.item}`)) dispatchable.push(r);
+        }
+      } catch {
+        // Status unreadable ⇒ fail open, exactly as above: offer the whole lane.
+        dispatchable.length = 0;
+        dispatchable.push(...releasedLane);
+      }
+    }
+
+    let dispatch: DispatchHandleResult = null;
+    if (dispatchable.length > 0) {
       try {
         // Dynamic import: presence-snapshot pulls the whole wakeability layer, and
         // a static import here would drag it into every plan-items caller
@@ -282,10 +342,10 @@ export default defineTool({
         const peers = (snap.active ?? []) as unknown as DispatchCandidate[];
         dispatch = buildDispatchHandle(
           {
-            planSlug: releasedLane[0].plan,
-            items: releasedLane.map((r) => r.item),
+            planSlug: dispatchable[0].plan,
+            items: dispatchable.map((r) => r.item),
             harness: args.harness ?? null,
-            note: `Releasing ${releasedLane[0].plan} ${releasedLane.map((r) => r.item).join(', ')} — the lane is free and the item bodies are inlined below. Claim and continue.`,
+            note: `Releasing ${dispatchable[0].plan} ${dispatchable.map((r) => r.item).join(', ')} — the lane is free and the item bodies are inlined below. Claim and continue.`,
           },
           peers ?? [],
           { selfOwnerId: id.ownerId },
