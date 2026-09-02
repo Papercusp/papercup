@@ -28,6 +28,7 @@ import {
 } from '../search/self-session';
 import { parseEnvelope } from './turn-provenance';
 import { hasMachineSurfaceMarker, hasSyntheticMarker } from './machine-surface-catalogue';
+import { blockPayloadText, CLAUDE_OWNER_DIALOG_RESULT_PREFIXES } from '../transcript-wire';
 
 /* ------------------------------------------------------------------ */
 /* Ref format                                                          */
@@ -257,6 +258,34 @@ async function readTail(filePath: string, bytes: number): Promise<string> {
   }
 }
 
+/**
+ * EI-22171324436610992: an AskUserQuestion answer is owner speech delivered
+ * inside a synthetic `tool_result` user line — the exact shape
+ * session-ingest.ts's `parseClaudeLine` already promotes into the recall
+ * index (`OWNER_DIALOG_TURN_MARKER`). This raw-transcript reader used to have
+ * no matching special case: its text-block filter only recognizes
+ * `text`/`input_text` parts, so a dialog-answer turn (all `tool_result`, no
+ * plain-text block) produced zero text and was silently dropped as
+ * "tool_result-only plumbing" — even though the turn is real, is owner
+ * speech, and is exactly what `sessions:read`/`sessions:search` (backed by
+ * the indexed store `parseClaudeLine` populates) return for the same ref.
+ * That asymmetry is what made `verifyTurnRefs`'s default `owner-chain` scope
+ * (which reads THIS raw parser, never the index) report `found:false` for a
+ * turn every other reader could see. Mirror `parseClaudeLine`'s detection
+ * here so both readers agree on which turns exist.
+ */
+function findClaudeOwnerDialogAnswer(content: readonly unknown[]): string | null {
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue;
+    const part = block as { type?: string; content?: unknown };
+    if (part.type !== 'tool_result') continue;
+    const payload = blockPayloadText(part.content).trim();
+    if (!CLAUDE_OWNER_DIALOG_RESULT_PREFIXES.some((prefix) => payload.startsWith(prefix))) continue;
+    return `${OWNER_DIALOG_TURN_MARKER}\n${payload}`;
+  }
+  return null;
+}
+
 /** Parse ALL user turns (with timestamps) out of raw JSONL — including
  *  machine-injected ones; classification happens per turn, not by dropping. */
 export function parseUserTurns(jsonl: string): RecordedUserTurn[] {
@@ -270,9 +299,11 @@ export function parseUserTurns(jsonl: string): RecordedUserTurn[] {
       continue; // torn first line of a tail read
     }
     let c: unknown;
+    let isClaudeUserLine = false;
     if (o.type === 'user' && o.isMeta !== true) {
       const m = (o.message ?? {}) as Record<string, unknown>;
       c = m.content;
+      isClaudeUserLine = true;
     } else if (o.type === 'response_item') {
       // Native Codex rollouts store prompts as response_item/message rows,
       // not Claude's top-level `type:'user'` shape. The carry verifier reads
@@ -298,8 +329,17 @@ export function parseUserTurns(jsonl: string): RecordedUserTurn[] {
           },
         )
         .map((b) => b.text);
-      if (!texts.length) continue; // tool_result-only plumbing
-      text = texts.join('\n');
+      if (texts.length) {
+        text = texts.join('\n');
+      } else {
+        // No plain-text block. Before writing this off as tool_result-only
+        // plumbing, check for a Claude owner-dialog answer (AskUserQuestion) —
+        // codex response_item lines never take this shape, so it's gated to
+        // the Claude branch, matching parseClaudeLine.
+        const dialogText = isClaudeUserLine ? findClaudeOwnerDialogAnswer(c) : null;
+        if (dialogText == null) continue; // genuine tool_result-only plumbing
+        text = dialogText;
+      }
     } else {
       continue;
     }

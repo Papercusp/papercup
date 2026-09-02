@@ -58,6 +58,26 @@ export function blockPayloadText(v: unknown): string {
 }
 
 /**
+ * Claude Code has emitted two owner-dialog result lead-ins in live JSONL: the
+ * older single-question form and the current batched-question form. An
+ * AskUserQuestion answer is owner speech delivered inside a synthetic
+ * `tool_result` user line — general tool results are NOT owner speech and must
+ * stay out of any recall/verification corpus, so this allow-list is
+ * deliberately narrow: only these two verified AskUserQuestion carriers count.
+ *
+ * (EI-22171324436610992: moved here from search/session-ingest.ts, which
+ * re-exports it for back-compat, so turn-provenance/turn-ref.ts — which
+ * session-ingest.ts itself imports from — can share this vocabulary too
+ * without a circular import. Two readers independently deciding "is this
+ * tool_result block actually an owner answer" is exactly the drift this
+ * module exists to prevent; see the file header.)
+ */
+export const CLAUDE_OWNER_DIALOG_RESULT_PREFIXES = [
+  'The user answered:',
+  'Your questions have been answered:',
+] as const;
+
+/**
  * The RAW arguments of a codex tool-call response item, whatever field this
  * build of Codex put them in — `function_call` uses `arguments` (a JSON
  * string), `custom_tool_call` uses `input` (usually the raw script/text), and

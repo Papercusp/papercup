@@ -127,4 +127,57 @@ describe('WI-2141796 — a permanently-unreadable position announces itself inst
     expect(cursor.readStalls?.get('CAFE:1')).toBeUndefined(); // streak cleared on success
     expect(cursor.positions.get('CAFE')).toBe(3);
   });
+
+  /**
+   * WI-2141796 follow-up, found by USING the fix above in production. The first
+   * stall line it emitted read `cb54460d98d8#7585` — and the papercusp cursor was
+   * at 14796, because ONE LOG IS FOLDED BY MANY HARNESSES, each through its own
+   * cursor at its own position (39 rows on that log, spanning 6467..15595). A line
+   * naming only `<log>#<pos>` cannot say WHOSE cursor stalled, and the numbers are
+   * close enough to invite correlating one harness's stall with another's position.
+   *
+   * TEETH: the label must reach the emitted line. Dropping `cursorTag` from the
+   * template, or failing to thread `cursorLabel` through from the caller, fails the
+   * first assertion. The second pins the ambiguity itself: two harnesses stalling on
+   * the SAME log at DIFFERENT positions must produce distinguishable lines.
+   */
+  it('names the cursor OWNER in the stall line, so two harnesses folding the same log are distinguishable', async () => {
+    const ops = [put('a', 1000), put('b', 2000), put('c', 3000)];
+    const lines: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((m: unknown) => void lines.push(String(m)));
+    const apply = async (): Promise<boolean> => true;
+
+    // Same log keyHex, two harnesses, stalling at DIFFERENT positions.
+    await mergeAdmittedLogsIncremental([logWithStalledIndex('CB54460D98D8', ops, 1)], createMergeCursor(), {
+      applyImpl: apply,
+      getTimeoutMs: 15,
+      cursorLabel: 'papercusp-workspace/papercusp',
+    });
+    await mergeAdmittedLogsIncremental([logWithStalledIndex('CB54460D98D8', ops, 2)], createMergeCursor(), {
+      applyImpl: apply,
+      getTimeoutMs: 15,
+      cursorLabel: 'papercusp-workspace/hive-canary',
+    });
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('[papercusp-workspace/papercusp]');
+    expect(lines[0]).toContain('CB54460D98D8#1');
+    expect(lines[1]).toContain('[papercusp-workspace/hive-canary]');
+    expect(lines[1]).toContain('CB54460D98D8#2');
+    // The whole point: the two lines are not confusable with each other.
+    expect(lines[0]).not.toEqual(lines[1]);
+  });
+
+  it('omits the label cleanly when no cursorLabel is supplied, so the line stays well-formed', async () => {
+    const lines: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((m: unknown) => void lines.push(String(m)));
+    await mergeAdmittedLogsIncremental(
+      [logWithStalledIndex('BEEF', [put('a', 1000), put('b', 2000)], 1)],
+      createMergeCursor(),
+      { applyImpl: async (): Promise<boolean> => true, getTimeoutMs: 15 },
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('[read-merge] read stall'); // no stray brackets or double space
+    expect(lines[0]).toContain('BEEF#1');
+  });
 });

@@ -31,8 +31,32 @@
 export const ASK_REF_RE = /\[ask:[a-z0-9][a-z0-9_-]{3,63}\]/i;
 
 /** A loop-wall row rendered back into prose carries this marker — the walls
- *  slot is ALSO typed (loop:checkpoint { walls }), so its rendering clears. */
+ *  slot is ALSO typed (loop:checkpoint { walls }), so its rendering clears.
+ *  NOTE: this matches a marker an AUTHOR wrote by hand. The canonical
+ *  `renderWallLine` output does NOT carry it (see WALLS_HEADING_RE below). */
 const WALL_MARKER_RE = /\bOWNER-WALL\b|\[wall\]/i;
+
+/** A markdown section heading; capture group 1 is the heading text. */
+const HEADING_RE = /^#{1,6}\s+(.*?)\s*$/;
+
+/**
+ * The carry-note walls section heading (`## Walls`).
+ *
+ * EI-21762824239199233: rows INSIDE this section are the typed form by
+ * construction, so they must never be scanned. Relying on WALL_MARKER_RE alone
+ * was a false-positive generator: `renderWallLine` emits
+ * `- [#id] <claim> — re-check: <cmd> (since <ISO>)` and carries NEITHER
+ * `OWNER-WALL` nor `[wall]`, so the marker exemption never fired for a real
+ * wall. Any wall whose claim read like an owner question was flagged
+ * `owner-question-prose`, and the remedy text told the author to move it to
+ * `loop:checkpoint { walls }` — where it already was.
+ *
+ * Kept as a local pattern rather than importing CARRY_NOTE_WALLS_HEADING so
+ * this module stays pure and dependency-free; `carry-surface-typed-slots.test.ts`
+ * PINS it against that constant and against real `renderWallLine` output, so
+ * a rename cannot silently reopen this bug.
+ */
+const WALLS_HEADING_RE = /^walls$/i;
 
 /**
  * Owner-blocking-question shapes. Two families, kept deliberately narrow:
@@ -142,10 +166,20 @@ const MATCH_LINE_CAP = 200;
 export function lintOwnerQuestionSlots(text: string | null | undefined): TypedSlotLintResult {
   if (!text) return { flagged: false, matches: [] };
   const matches: TypedSlotLintMatch[] = [];
+  let inWallsSection = false;
   for (const rawLine of text.split('\n')) {
     if (matches.length >= MAX_MATCH_LINES) break;
     const line = rawLine.trim();
     if (!line) continue;
+    // Section tracking runs BEFORE the per-line exemptions: a heading both
+    // enters and LEAVES the walls section, so an owner question in a later
+    // section is still flagged (the walls slot must not blanket the rest).
+    const heading = HEADING_RE.exec(line);
+    if (heading) {
+      inWallsSection = WALLS_HEADING_RE.test(heading[1] ?? '');
+      continue;
+    }
+    if (inWallsSection) continue; // EI-21762824239199233: walls rows ARE the typed form
     if (ASK_REF_RE.test(line)) continue; // the question IS a typed record
     if (WALL_MARKER_RE.test(line)) continue; // the walls slot is the typed form
     const hasUnsuppressedMatch = OWNER_QUESTION_RES.some((re) => {

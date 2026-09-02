@@ -8,9 +8,25 @@
  * live daemon credentials into `patches/verdict-cli+0.1.1.patch`, which is tracked
  * and which git-sync commits within minutes.
  *
- * This was caught in the working tree once and never reached a commit. The correct
- * regeneration is:
- *   npx patch-package verdict-cli --exclude '(^|/)\.verdict-data/'
+ * This was caught in the working tree once and never reached a commit (verified:
+ * every committed revision of the patch carries zero token/session hunks).
+ *
+ * REGENERATE VIA THE SCRIPT, NOT A HAND-TYPED FLAG:
+ *   npm run patch:regen -- verdict-cli
+ *
+ * EI-22171603060331947: the flag form this comment used to recommend
+ * (`--exclude '(^|/)\.verdict-data/'`) is subtly WRONG on its own. patch-package
+ * builds its filter as `makeRegExp(argv.exclude, "exclude", /^package\.json$/)`
+ * (node_modules/patch-package/dist/index.js) — a supplied `--exclude` REPLACES
+ * the default rather than adding to it, so that command silently starts sweeping
+ * each package's `package.json` into the patch. `patch:regen` carries both
+ * alternatives in one regex, which is the whole reason to have a script: the
+ * safe invocation is the one you can actually remember to type.
+ *
+ * This test is the DETECTOR, and a detector alone was not enough here: git-sync
+ * commits the tree on a ~3-minute timer while this only fails at the next test
+ * run, so a swept token would already be pushed by the time it went red. The
+ * script is the PREVENTION.
  *
  * The guard is deliberately about SHAPE, not about one package: any patch that
  * starts carrying tokens or per-session runtime directories fails here.

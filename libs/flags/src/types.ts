@@ -1677,8 +1677,13 @@ export const FLAGS = {
   STANDING_GOAL_BOOT_ARM: "papercusp-standing-goal-boot-arm",
   // EI-19919820196426791 (half 2): gates the unservable-critical watchdog — a
   // deduped escalation per issue that is simultaneously `critical` and
-  // structurally UNCLAIMABLE (lane='observation' or state='needs-human'), past a
-  // 7-day age floor. Those two facts are in conflict and nothing else reported
+  // structurally UNCLAIMABLE — behind ANY structural claim floor, derived from
+  // STRUCTURAL_CLAIM_FLOORS rather than hard-coded here (WI-2141964 widened this
+  // from the original two, observation-lane and needs-human, which were blind to
+  // 26 stranded criticals sitting behind claim-hold / not-claimable-status) — past
+  // a 7-day UNTOUCHED floor, measured from the LAST WRITE (max of updated_at and
+  // last_progress_at), not from creation. Those two facts are in conflict and
+  // nothing else reported
   // it. Sibling of the WRITE-TIME guard already shipped on set_priority/update
   // (structuralClaimabilityWarning), and deliberately not folded into it: that
   // guard only fires when SOMEONE WRITES to the row, and the filed instance was
@@ -1686,7 +1691,10 @@ export const FLAGS = {
   // lane — cup:spawn 100% broken for 19 days behind exactly that shape. Scoped
   // to `critical` ON MEASUREMENT, not taste: on 2026-08-19 the filed
   // critical-OR-major spec matched 57 rows past 7 days (a backlog listing that
-  // trains the reader to ignore it) against 5 for critical alone. DEFAULT ON.
+  // trains the reader to ignore it) against 5 for critical alone. The widened
+  // floor set is measured the same way: on 2026-09-02 the floors alone would have
+  // fired 55 (re-creating that backlog listing), the floors TOGETHER WITH the
+  // last-write basis 34. Neither knob is safe to move alone. DEFAULT ON.
   // OFF = the kill-switch: the timer still ticks but every sweep no-ops before
   // reading engineer_issues.
   UNSERVABLE_CRITICAL_WATCHDOG: "papercusp-unservable-critical-watchdog",

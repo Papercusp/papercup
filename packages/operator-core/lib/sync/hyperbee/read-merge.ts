@@ -1183,6 +1183,19 @@ export interface IncrementalMergeOpts {
   maxWinnersEntries?: number;
   /** Fires (best-effort) whenever a pass evicts `winners` entries under the cap. */
   onWinnersEvicted?: (evictedCount: number, size: number) => void;
+  /**
+   * WI-2141796: who OWNS this cursor — `"<workspaceId>/<harnessSlug>"`. Used only
+   * to disambiguate the read-stall / quarantine log lines.
+   *
+   * Why it is needed: one log is admitted by MANY harnesses, each folding it
+   * through its OWN cursor at its OWN position. Measured 2026-09-02: log
+   * `cb54460d98d8` had 39 cursor rows spanning positions 6467..15595. A log line
+   * naming only `<keyHex>#<pos>` is therefore ambiguous across all of them, and
+   * the failure mode is concrete — the first stall line emitted in production
+   * read `cb54460d98d8#7585` while the papercusp cursor was at 14796, and that
+   * near-miss invites correlating a number with the wrong harness entirely.
+   */
+  cursorLabel?: string;
 }
 
 export interface IncrementalMergeResult {
@@ -1259,6 +1272,9 @@ export async function mergeAdmittedLogsIncremental(
   const onCursorAdvance = opts?.onCursorAdvance;
   const maxWinnersEntries = opts?.maxWinnersEntries ?? DEFAULT_MAX_WINNERS_ENTRIES;
   const onWinnersEvicted = opts?.onWinnersEvicted;
+  // WI-2141796: prefix for the read-stall / quarantine lines. Without it those
+  // lines name a LOG, which many harnesses fold independently — see cursorLabel.
+  const cursorTag = opts?.cursorLabel ? `[${opts.cursorLabel}] ` : '';
 
   let applied = 0;
   let decoded = 0;
@@ -1364,7 +1380,7 @@ export async function mergeAdmittedLogsIncremental(
           stalls.set(ident, n);
           if (n === 1 || n % 100 === 0) {
             console.warn(
-              `[read-merge] read stall (${n}×): log ${log.keyHex.slice(0, 12)}#${pos} did not resolve within ` +
+              `[read-merge] ${cursorTag}read stall (${n}×): log ${log.keyHex.slice(0, 12)}#${pos} did not resolve within ` +
                 `${getTimeoutMs}ms — cursor HELD at ${pos}, ${Math.max(0, log.length - pos)} op(s) behind it are ` +
                 `UNREACHABLE until this position reads. Retrying every pass (not quarantined, not lost). A count ` +
                 `that keeps climbing on the SAME position is a wedged log, not a blip: the peer is serving the ` +
@@ -1386,7 +1402,7 @@ export async function mergeAdmittedLogsIncremental(
           // advance past it instead of wedging the rest of this peer's log forever.
           throws.delete(ident);
           console.error(
-            `[read-merge] WI-2003 quarantine: unreadable op at ${log.keyHex.slice(0, 12)}#${pos} ` +
+            `[read-merge] ${cursorTag}WI-2003 quarantine: unreadable op at ${log.keyHex.slice(0, 12)}#${pos} ` +
               `after ${n} consecutive read failures — advancing past it so the rest of this peer's ` +
               `log can keep folding (this position itself never folds; if this is an identity-` +
               `divergence signature-verify rejection, re-grant/re-emit the underlying wraps so the ` +

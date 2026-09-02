@@ -24,6 +24,7 @@ import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
 import type { PlanItemStamp } from '../../plan-items/convert';
 import { findMirroredOpenItem } from './mirror-guard';
 import { findSemanticDupes, type SemanticDupeCandidate } from './semantic-dupe-guard';
+import { reportSemanticDedupProbeUnavailable } from './semantic-dedup-probe-alarm';
 import { findRecentLexicalDupes } from './recent-lexical-dupe-guard';
 import { findFulltextLexicalDupes } from './fulltext-lexical-dupe-guard';
 import { persistDedupEdges } from './dedup-edges';
@@ -548,7 +549,19 @@ export async function createOneWorkItem(
       });
       // P-004: under the goal gate the semantic leg's health matters for EVERY kind
       // (the gate's whole point is "the probe actually ran"), not only issue-family.
-      if (issueAdmission || args.goalDedupGate) semanticLeg = dupes ? 'ok' : 'unavailable';
+      if (issueAdmission || args.goalDedupGate) {
+        semanticLeg = dupes ? 'ok' : 'unavailable';
+        // EI-22170937574367219: every failure path in semantic-dupe-guard.ts was
+        // silent (fail-open by design, but with no publisher) — the only signal was
+        // whichever agent happened to hit the goal-gate's dedup_unavailable refusal.
+        // Fire-and-forget, deduplicated (bumps one open escalation's repeat count
+        // rather than spamming); never awaited on the create's hot path.
+        if (semanticLeg === 'unavailable') {
+          void reportSemanticDedupProbeUnavailable({
+            harnessSlug: args.harness ?? ctx.harnessSlug ?? undefined,
+          }).catch(() => {});
+        }
+      }
       if (dupes && dupes.soft.length > 0) {
         burstCandidates = dupes.soft;
         similarOpen = dupes.soft;

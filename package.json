@@ -345,6 +345,7 @@
     "mirror:check": "node scripts/templates-mirror-sync.mjs",
     "mirror:push": "node scripts/templates-mirror-sync.mjs --push",
     "test:el-suite": "npm --workspace @papercusp/web run test:el-suite",
+    "patch:regen": "patch-package --exclude '(^package\\.json$|(^|/)\\.verdict-data/)'",
     "postinstall": "node scripts/patch-noble-ciphers-exports.mjs && patch-package"
   },
   "dependencies": {

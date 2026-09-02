@@ -3758,6 +3758,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // more backlog than this advances chunk-by-chunk across the 1Hz poll
         // (≈50k ops/sec/log ingest ceiling) instead of losing its tail (EI-91).
         maxOpsPerPass: MAX_OPS_PER_AUTHOR,
+        // WI-2141796: name the cursor OWNER in read-stall / quarantine lines. One
+        // log is folded by many harnesses at many positions, so a line naming only
+        // the log is ambiguous across all of them (39 cursors on cb54460d98d8).
+        cursorLabel: `${opts.workspaceId}/${opts.harnessSlug}`,
         // Surface standing backlog in boot-history (best-effort observability).
         onBacklog: (keyHex: string, position: number, length: number) => {
           try {

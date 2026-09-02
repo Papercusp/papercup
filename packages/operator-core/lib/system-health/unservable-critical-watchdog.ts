@@ -3,15 +3,25 @@
  * that is simultaneously the HIGHEST-severity thing in the system and invisible
  * to every claim path.
  *
- * THE CLASS THIS ANSWERS. An item in `lane='observation'` or `state='needs-human'`
- * is structurally unclaimable: the observation lane never enters the work queue by
- * design, and a non-`open` state is not claimable. That is correct behaviour. What
- * is NOT correct is that a `critical` item can sit in one of those lanes forever
- * with nothing anywhere reporting the contradiction. The filed instance: cup:spawn
- * was 100% broken for 19 days while BOTH records of it sat in unservable lanes, and
- * three Mug incarnations re-placed cups that died in seconds because severity and
- * feature_order — the only steering levers — cannot move an item out of a lane the
- * claim layer does not serve.
+ * THE CLASS THIS ANSWERS. An item sitting behind a STRUCTURAL claim floor is
+ * unclaimable no matter who wants it: `lane='observation'` never enters the work
+ * queue by design, a non-`open` state is not claimable, a `claim-hold` is a durable
+ * park, and admission gating holds a row out of the pool entirely. Each of those is
+ * correct behaviour on its own. What is NOT correct is that a `critical` item can sit
+ * behind one of them forever with nothing anywhere reporting the contradiction. The
+ * filed instance: cup:spawn was 100% broken for 19 days while BOTH records of it sat
+ * in unservable lanes, and three Mug incarnations re-placed cups that died in seconds
+ * because severity and feature_order — the only steering levers — cannot move an item
+ * out of a lane the claim layer does not serve.
+ *
+ * THE FLOOR SET IS DERIVED, NOT LISTED HERE (WI-2141964). This file used to hard-code
+ * exactly two floors — observation-lane and needs-human — in a union type and in its
+ * own SQL, which made it the THIRD hand-rolled copy of the structural-floor rule and
+ * left it blind to 26 aged `critical` rows that were genuinely stranded behind the
+ * floors it did not watch (mostly `claim-hold` and `not-claimable-status`). The set
+ * now comes from `STRUCTURAL_CLAIM_FLOORS` in `../claim-floor-classification`, pinned
+ * by a totality guard against the claim oracle's own vocabulary, so a floor added to
+ * the claim path can never again be silently unwatched.
  *
  * WHY THE WRITE-TIME GUARD IS NOT ENOUGH (this file's whole reason to exist).
  * `work_items:set_priority` and `work_items:update` already return a
@@ -38,6 +48,15 @@
  * failure mode this watchdog exists to prevent, re-created by the watchdog itself.
  * `critical` alone yields 5. So the severity set is deliberately NOT the filed one;
  * widening it is a decision to be made against a fresh measurement, not a tweak.
+ *
+ * THE SAME MEASUREMENT DISCIPLINE KILLED THE NAIVE FIX (WI-2141964, 2026-09-02).
+ * Widening the floor set alone — the obvious repair for the blindness described above
+ * — takes first-tick volume from 24 to 55 on this workspace, which re-creates the very
+ * backlog-listing failure the paragraph above rejects. It is the widened floor set
+ * TOGETHER WITH the last-write age basis that works: 34 alerts, while covering the 26
+ * stranded rows the two-floor predicate could not see. Measured on papercusp-workspace,
+ * non-terminal `critical`: creation basis 55 (24 already seen + 31 blind), last-write
+ * basis 34 (17 + 17). Re-measure before changing either knob; neither is safe alone.
  *
  * Shape follows the watchdog family (carry-drill-drop, goal-liveness):
  *  - `managedSetInterval`, never a bare setInterval, so it is visible in
@@ -240,7 +259,11 @@ function makeReadRows(sql: Sql): UnservableSweepDeps['readRows'] {
     const { explainIssueClaimFloors } = await import('../work-items');
 
     // The oracle is per-harness, so ask it once per harness rather than once per row.
-    const byHarness = new Map<string, typeof rows>();
+    // The bucket type is a PLAIN ARRAY of row elements, not `typeof rows`: the latter is
+    // postgres.js's `RowList<T[]>`, which carries `count`/`command` alongside the array, so
+    // the `[r]` literal below is not assignable to it (TS2345) even though every element type
+    // matches. Indexing to the element type keeps the rows exactly as strongly typed.
+    const byHarness = new Map<string, (typeof rows)[number][]>();
     for (const r of rows) {
       const harness = r.harness_slug ?? '';
       if (!harness) continue; // no harness scope ⇒ the oracle cannot rule on it

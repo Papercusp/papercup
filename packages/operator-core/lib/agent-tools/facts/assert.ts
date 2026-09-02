@@ -38,6 +38,10 @@ import {
 import { isAssumptionFact, factVersions } from '../../agent-facts/store';
 import { assessKeyContest, type KeyContestAssessment } from '../../facts/contested-key';
 import { resolveScopeRefAlias } from './scope-ctx';
+import {
+  buildSafetySlotIntentWarning,
+  detectSafetySlotKeyIntent,
+} from './safety-slot-key-intent';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import {
   carryProvenanceFields,
@@ -806,6 +810,23 @@ export default defineTool({
           : args.slot === 'guard-rail'
             ? normalizeGuardRailSlot(args.key, safeBody)
             : { key: args.key, body: safeBody };
+    // WI-2142026: a caller who spells the slot intent into the KEY ITSELF
+    // (`wall-unified-web-portal-blocked-on-byoc-gates`) instead of passing
+    // `slot:` receives NONE of the slot's protection — the cap exemption, the
+    // long TTL and the never-drop folds are every one of them keyed on the
+    // normalized prefix the branch above produces, and that branch only runs on
+    // an explicit `slot`. Measured 2026-09-02: both such keys in the workspace
+    // scope had been cap-evicted, one of them that hour while carrying a live
+    // owner-gated blocker.
+    //
+    // Detected HERE because this is the last point where the caller's ORIGINAL
+    // key and their `slot` argument are both still in scope — downstream only
+    // the normalized `slotted.key` survives, and by then the near-miss is
+    // indistinguishable from an ordinary key. Reported on the receipt, never
+    // auto-corrected: rewriting the key would move the upsert target, so the
+    // caller's next re-assert would fork a second fact and orphan this one.
+    const slotIntent = detectSafetySlotKeyIntent(args.key, args.slot ?? null);
+    const slotIntentWarning = slotIntent ? buildSafetySlotIntentWarning(slotIntent) : null;
     // P-016 / EI-212678: classify BEFORE persistence. A response-only lint can
     // be dropped by the caller while the fact is then folded as clean authority.
     // A verified owner-turn source is the sole exception; all other owner prose
@@ -1165,6 +1186,7 @@ export default defineTool({
               : {}),
             ...(truncation ? { truncated: truncation } : {}),
             ...(sourceQuoteRedacted ? { sourceQuoteRedacted } : {}),
+            ...(slotIntentWarning ? { slotIntentWarning } : {}),
             ...(dependencyWarning ? { dependenciesUnresolved: dependencyWarning } : {}),
             ...(dependsOnSuggestion ? { dependsOnSuggestion } : {}),
             ...recheckReceiptField(fact),

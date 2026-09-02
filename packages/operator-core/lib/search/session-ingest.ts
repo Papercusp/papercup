@@ -224,16 +224,10 @@ const BOILERPLATE_PREFIXES = [
   'Caveat: The messages below',
 ];
 
-/**
- * Claude Code has emitted two owner-dialog result lead-ins in live JSONL:
- * the older single-question form and the current batched-question form.
- * Keep the allow-list narrow — general tool results remain out of the recall
- * corpus — but recognize both verified AskUserQuestion carriers.
- */
-export const CLAUDE_OWNER_DIALOG_RESULT_PREFIXES = [
-  'The user answered:',
-  'Your questions have been answered:',
-] as const;
+/** Re-exported for back-compat — the definition moved to transcript-wire.ts
+ *  (EI-22171324436610992) so turn-provenance/turn-ref.ts can share it too
+ *  without a circular import (this module already imports FROM turn-ref.ts). */
+export { CLAUDE_OWNER_DIALOG_RESULT_PREFIXES } from '../transcript-wire';
 
 /** Exported for the archive fall-through reader (session-archive-read.ts,
  *  P-009): archived bytes are VERBATIM, so anything surfaced to agents must

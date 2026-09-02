@@ -159,16 +159,25 @@ describe('createEpisodicEscalator config plumbing', () => {
     });
 
     it('suppresses a re-file when the SAME title was seen (any state) inside the cooldown window', async () => {
-      const esc = make({ standingCooldownMs: 60 * 60 * 1000 }); // 1h
-      reset = esc._resetForTests;
-      const t = title({ key: 'k1', detail: 'x' });
-      // No OPEN match (it was closed 10 minutes ago) — open-only dedup would
-      // re-file here; the cooldown must catch it instead.
-      const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-      const { deps, created } = fakeDeps([], [{ title: t, createdAt: tenMinAgo }]);
-      const id = await esc.file({ key: 'k1', detail: 'd' }, deps);
-      expect(id).toBeNull();
-      expect(created).toHaveLength(0);
+      // WI-2142025: suppressing now WARNS, so this must mock console.warn out —
+      // vitest-fail-on-console fails the test otherwise. That this assertion had
+      // to be added at all is the proof the path was previously silent.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const esc = make({ standingCooldownMs: 60 * 60 * 1000 }); // 1h
+        reset = esc._resetForTests;
+        const t = title({ key: 'k1', detail: 'x' });
+        // No OPEN match (it was closed 10 minutes ago) — open-only dedup would
+        // re-file here; the cooldown must catch it instead.
+        const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+        const { deps, created } = fakeDeps([], [{ title: t, createdAt: tenMinAgo }]);
+        const id = await esc.file({ key: 'k1', detail: 'd' }, deps);
+        expect(id).toBeNull();
+        expect(created).toHaveLength(0);
+        expect(warn).toHaveBeenCalledTimes(1);
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it('files fresh once the cooldown window has elapsed', async () => {
@@ -211,6 +220,99 @@ describe('createEpisodicEscalator config plumbing', () => {
       const id = await esc.file({ key: 'k1', detail: 'd' }, deps);
       expect(id).toBe('EI-777');
       expect(created).toHaveLength(1);
+    });
+
+    /**
+     * WI-2142025: the suppression used to be a bare `return null` with NO output,
+     * so a cooldown started by a benign 9-minute episode silenced the durable EI
+     * for a genuinely new 8-hour outage with nothing observable anywhere. These
+     * pin the notice. They are falsifiable by construction: against the pre-fix
+     * source the gate emitted nothing at all, so every `toHaveBeenCalled` here
+     * fails on it — and the calibration case below proves the spy is really wired
+     * (a warn on the NON-suppressed path would mean these pass vacuously).
+     */
+    describe('suppression is observable (WI-2142025)', () => {
+      const HOUR = 60 * 60 * 1000;
+      const tenMinAgo = () => new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
+      it('speaks on the FIRST swallowed episode, naming the expiry and the resolved-blindness', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          const esc = make({ standingCooldownMs: HOUR });
+          reset = esc._resetForTests;
+          const lastFiled = tenMinAgo();
+          const { deps, created } = fakeDeps([], [{ title: title({ key: 'k1', detail: 'x' }), createdAt: lastFiled }]);
+
+          // Calibration: a filing that is NOT suppressed must stay silent, or the
+          // assertions below would pass for the wrong reason.
+          const other = make({ standingCooldownMs: HOUR });
+          const { deps: quietDeps } = fakeDeps([]);
+          await other.file({ key: 'k9', detail: 'd' }, quietDeps);
+          other._resetForTests();
+          expect(warn).not.toHaveBeenCalled();
+
+          const id = await esc.file({ key: 'k1', detail: 'd' }, deps);
+          expect(id).toBeNull();
+          expect(created).toHaveLength(0);
+          expect(warn).toHaveBeenCalledTimes(1);
+
+          const msg = String(warn.mock.calls[0]?.[0] ?? '');
+          expect(msg).toContain('standing-cooldown SUPPRESSED a durable EI');
+          expect(msg).toContain('topic=demo-topic');
+          expect(msg).toContain(`lastFiledAt=${lastFiled}`);
+          expect(msg).toContain(`cooldownExpiresAt=${new Date(Date.parse(lastFiled) + HOUR).toISOString()}`);
+          expect(msg).toContain('episodesSuppressedSinceLastFiling=1');
+          // The whole point: the reader must be told the prior EI may be RESOLVED.
+          expect(msg).toContain('RESOLVED');
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it('throttles the run — silent between the 1st and the 25th, then speaks again', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          const esc = make({ standingCooldownMs: HOUR });
+          reset = esc._resetForTests;
+          const { deps } = fakeDeps([], [{ title: title({ key: 'k1', detail: 'x' }), createdAt: tenMinAgo() }]);
+
+          for (let i = 0; i < 24; i++) await esc.file({ key: 'k1', detail: 'd' }, deps);
+          expect(warn).toHaveBeenCalledTimes(1); // the 1st only
+
+          await esc.file({ key: 'k1', detail: 'd' }, deps); // the 25th
+          expect(warn).toHaveBeenCalledTimes(2);
+          expect(String(warn.mock.calls[1]?.[0] ?? '')).toContain('episodesSuppressedSinceLastFiling=25');
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it('a real filing ends the run, so the next suppression speaks again from 1', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          const esc = make({ standingCooldownMs: HOUR });
+          reset = esc._resetForTests;
+          const t = title({ key: 'k1', detail: 'x' });
+          const recent = [{ title: t, createdAt: tenMinAgo() }];
+          const { deps } = fakeDeps([], recent);
+
+          await esc.file({ key: 'k1', detail: 'd' }, deps);
+          expect(warn).toHaveBeenCalledTimes(1);
+
+          // Cooldown lapses (the recent filing ages out) and the title files for real…
+          recent[0]!.createdAt = new Date(Date.now() - 2 * HOUR).toISOString();
+          expect(await esc.file({ key: 'k1', detail: 'd' }, deps)).toBe('EI-777');
+
+          // …so a later suppression is a NEW run and must announce itself, rather
+          // than being throttled against the stale tally from before the filing.
+          recent[0]!.createdAt = tenMinAgo();
+          expect(await esc.file({ key: 'k1', detail: 'd' }, deps)).toBeNull();
+          expect(warn).toHaveBeenCalledTimes(2);
+          expect(String(warn.mock.calls[1]?.[0] ?? '')).toContain('episodesSuppressedSinceLastFiling=1');
+        } finally {
+          warn.mockRestore();
+        }
+      });
     });
   });
 

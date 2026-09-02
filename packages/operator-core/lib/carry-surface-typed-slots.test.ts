@@ -6,6 +6,9 @@ import {
   ownerQuestionSlotField,
   OWNER_QUESTION_SLOT_NOTE,
 } from './carry-surface-typed-slots';
+// Real renderer + real heading: the regression below must exercise what
+// loop:checkpoint actually writes, not a hand-typed approximation of it.
+import { CARRY_NOTE_WALLS_HEADING, renderWallLine, type WallEntry } from './carry-note';
 
 describe('lintOwnerQuestionSlots', () => {
   it('is clean on empty / null / ordinary progress prose', () => {
@@ -39,6 +42,59 @@ describe('lintOwnerQuestionSlots', () => {
     expect(
       lintOwnerQuestionSlots('⚠ OWNER-WALL: capital arming needs the owner\'s approval (loop walls row)').flagged,
     ).toBe(false);
+  });
+
+  // EI-21762824239199233 — the lint flagged a row supplied through `walls` and
+  // stored as a wall, and its remedy text prescribed moving it to `walls`. Cause:
+  // the only wall exemption was WALL_MARKER_RE (`OWNER-WALL` / `[wall]`), which
+  // renderWallLine does NOT emit, so the exemption never fired for a real wall.
+  // The pre-existing marker test above passes a hand-written marker string and so
+  // could never catch this; these use the REAL renderer and the REAL heading.
+  describe('walls SECTION rows are the typed form (EI-21762824239199233)', () => {
+    const wall: WallEntry = {
+      claim: "capital arming needs the owner's approval before the first live trade",
+      id: 'capital-arming',
+      recheck: 'ask the owner whether the arming budget is signed off',
+    };
+
+    it('does not flag a rendered wall line inside the walls section', () => {
+      const text = [
+        '## Did',
+        'drained the checkpoint cluster',
+        `## ${CARRY_NOTE_WALLS_HEADING}`,
+        renderWallLine(wall),
+      ].join('\n');
+      expect(lintOwnerQuestionSlots(text).flagged).toBe(false);
+    });
+
+    it('POSITIVE CONTROL: the identical claim OUTSIDE the walls section is still flagged', () => {
+      // Without this, the test above would also pass if the claim simply stopped
+      // matching the owner-question patterns — proving nothing about the exemption.
+      const text = ['## Left', renderWallLine(wall)].join('\n');
+      expect(lintOwnerQuestionSlots(text).flagged).toBe(true);
+    });
+
+    it('the section ENDS at the next heading — a later untyped question is still flagged', () => {
+      const text = [
+        `## ${CARRY_NOTE_WALLS_HEADING}`,
+        renderWallLine(wall),
+        '## Next',
+        'need to ask the owner about the retention window',
+      ].join('\n');
+      const r = lintOwnerQuestionSlots(text);
+      expect(r.flagged).toBe(true);
+      expect(r.matches).toHaveLength(1);
+      expect(r.matches[0].line).toContain('retention window');
+    });
+
+    it('DRIFT PIN: the walls heading the lint skips is the one carry-note renders', () => {
+      // The lint keeps a local pattern to stay dependency-free; this pins it to
+      // the canonical constant so a rename cannot silently reopen the bug.
+      const underCanonical = [`## ${CARRY_NOTE_WALLS_HEADING}`, renderWallLine(wall)].join('\n');
+      const underWrongHeading = ['## Wallz', renderWallLine(wall)].join('\n');
+      expect(lintOwnerQuestionSlots(underCanonical).flagged).toBe(false);
+      expect(lintOwnerQuestionSlots(underWrongHeading).flagged).toBe(true);
+    });
   });
 
   it('is LINE-scoped: an ask ref on one line does not clear a different untyped question', () => {

@@ -33,6 +33,15 @@
 import type { IssueSeverity } from '../issues-engineer';
 
 /**
+ * WI-2142025: throttle for the standing-cooldown suppression notice — the 1st
+ * suppression of a run always speaks, then every Nth. Sized against the observed
+ * rate of the loudest real caller (replication-liveness fired 126 frozen episodes
+ * in 5h on 2026-09-02, ~25/h), so a chronic condition reports roughly hourly
+ * rather than on every sample.
+ */
+const SUPPRESSION_LOG_EVERY = 25;
+
+/**
  * DI seam so an escalator's dedup+file logic unit-tests without PG. `Sev` pins
  * the severity literal a given escalator files at (a stall is 'major', a fork is
  * 'critical'), keeping the wrapper-exported `*EiDeps` types byte-identical.
@@ -437,12 +446,35 @@ export function createEpisodicEscalator<E, R, Sev extends IssueSeverity>(
   /** Per-process in-flight/filed guard (second dedup layer under racing passes). */
   const inFlight = new Set<string>();
 
+  /**
+   * WI-2142025: episodes the standing cooldown has swallowed for a title since
+   * that title last actually filed, so the gate can SAY it is suppressing.
+   *
+   * The suppression below used to be a bare `return null` with no output of any
+   * kind. That makes a benign short episode indistinguishable from a standing
+   * outage: measured live 2026-09-02, a replication-stall episode that opened at
+   * 08:31Z and RECOVERED at 08:40Z started a 24h cooldown, and the total-ingest
+   * outage that began 62 minutes later at 09:42Z then ran 8+ hours with 126
+   * detector fires and ZERO durable EIs — because the gate keys on the last
+   * filing's `createdAt` in ANY state and `listRecentByTopic` carries no status.
+   * The other two reporter legs (console + boot-history) kept firing throughout,
+   * so the process looked loud and healthy while the one leg meant to be visible
+   * fleet-wide was off.
+   *
+   * The suppression POLICY is deliberately UNCHANGED here — both obvious policy
+   * fixes are falsified on evidence (see WI-2142025), and re-filing on a resolved
+   * prior would reintroduce WI-5762's 57 duplicates. This only makes the gate's
+   * state legible, which is what turns an 8-hour invisible gap into one grep.
+   */
+  const suppressedSinceFile = new Map<string, number>();
+
   return {
     topic: config.topic,
     recoveryOwner,
 
     _resetForTests(): void {
       inFlight.clear();
+      suppressedSinceFile.clear();
     },
 
     async file(episode, deps): Promise<string | null> {
@@ -475,6 +507,25 @@ export function createEpisodicEscalator<E, R, Sev extends IssueSeverity>(
               .filter((ms) => Number.isFinite(ms))
               .reduce((max, ms) => Math.max(max, ms), -Infinity);
             if (Number.isFinite(lastFiledAt) && Date.now() - lastFiledAt < config.standingCooldownMs) {
+              // WI-2142025: say so. Throttled to the 1st and every Nth, so a
+              // genuinely chronic condition cannot flood the log while a NEW
+              // one still announces itself on its very first suppression.
+              const swallowed = (suppressedSinceFile.get(title) ?? 0) + 1;
+              suppressedSinceFile.set(title, swallowed);
+              if (swallowed === 1 || swallowed % SUPPRESSION_LOG_EVERY === 0) {
+                try {
+                  console.warn(
+                    `[episodic-ei] standing-cooldown SUPPRESSED a durable EI — topic=${config.topic} ` +
+                      `title=${JSON.stringify(title)} lastFiledAt=${new Date(lastFiledAt).toISOString()} ` +
+                      `cooldownExpiresAt=${new Date(lastFiledAt + config.standingCooldownMs).toISOString()} ` +
+                      `episodesSuppressedSinceLastFiling=${swallowed}. The prior EI may already be ` +
+                      `RESOLVED — this gate reads createdAt in ANY state, so a genuinely NEW episode is ` +
+                      `indistinguishable here from the standing one the cooldown exists to dedup (WI-2142025).`,
+                  );
+                } catch {
+                  /* diagnostic-only — never let logging break the gate */
+                }
+              }
               return null; // standing condition recently reported (open or since-closed) — suppress
             }
           } catch {
@@ -491,6 +542,11 @@ export function createEpisodicEscalator<E, R, Sev extends IssueSeverity>(
           createdBy: config.createdBy,
           foundDuring: config.foundDuring,
         });
+        // WI-2142025: a real filing ends this title's suppression run, so the
+        // NEXT one reports from 1 again (the count is "since the last filing",
+        // not "forever") — otherwise a long-lived process would throttle a
+        // fresh standing period against a stale tally and skip its first line.
+        suppressedSinceFile.delete(title);
         return created.id;
       } catch {
         return null; // best-effort: the registry verdict still surfaces the condition

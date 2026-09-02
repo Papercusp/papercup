@@ -501,6 +501,13 @@ export function detectResultEvidence(content: readonly unknown[]): Array<{
     OUTPUT_EVIDENCE_CLASSES.indexOf(a.evidenceClass) - OUTPUT_EVIDENCE_CLASSES.indexOf(b.evidenceClass));
 }
 
+/** Every route `spillResultAsReferenceEnvelope` can be reached for — see each
+ *  branch's call site for what triggers it. */
+type SpillReason =
+  | 'aggregate-output-budget-exceeded'
+  | 'non-text-result-budget-exceeded'
+  | 'explicit-full-request-overflow';
+
 /**
  * The one actionable fact each spill reason implies, stated where the MODEL
  * reads it — the envelope in `content` — rather than only in
@@ -516,15 +523,37 @@ export function detectResultEvidence(content: readonly unknown[]): Array<{
  * this reason therefore PROVES sibling calls in the same turn had already
  * consumed it, and that this result was not oversized on its own.
  */
-function spillRecoveryNote(reason: 'aggregate-output-budget-exceeded' | 'non-text-result-budget-exceeded'): string {
+function spillRecoveryNote(
+  reason: SpillReason,
+): string {
   const recoverable =
     'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ';
-  return reason === 'aggregate-output-budget-exceeded'
-    ? `${recoverable}This result was NOT too large on its own; the shared per-turn fan-out budget had ` +
-        'already been consumed by SIBLING tool calls in the same turn. Re-issuing this one call by ' +
-        'itself returns it inline.'
-    : `${recoverable}It took this route because a non-text block (image/audio/resource) cannot be ` +
-        'sliced, so re-running the same call alone will spill again — page the reference rather than retrying.';
+  if (reason === 'aggregate-output-budget-exceeded') {
+    return (
+      `${recoverable}This result was NOT too large on its own; the shared per-turn fan-out budget had ` +
+      'already been consumed by SIBLING tool calls in the same turn. Re-issuing this one call by ' +
+      'itself returns it inline.'
+    );
+  }
+  if (reason === 'explicit-full-request-overflow') {
+    // EI-22167228731928620: an explicit payloadTier:'full' skipped the tool's
+    // own field-aware shaper, so the raw body reaching this door is LARGER
+    // than what a 'trimmed' call would have produced — re-projecting it here
+    // with the generic, field-blind bounded-payload walk could leave less
+    // inline than 'trimmed' does, i.e. worse than the tier the caller opted
+    // out of. Spilling the untouched full body and saying so plainly is
+    // honest about the size AND strictly recoverable, unlike that reprojection.
+    return (
+      `${recoverable}This is the RAW, unshaped payload you explicitly requested with payloadTier:'full' ` +
+      "(or an equivalent transport-cap exemption) — it does not fit inline at this size. If you don't need " +
+      "the full raw payload, omit payloadTier (or don't request 'full') for a properly tier-shaped, " +
+      'field-aware inline summary instead — often MORE informative than a generic re-projection of the full body.'
+    );
+  }
+  return (
+    `${recoverable}It took this route because a non-text block (image/audio/resource) cannot be ` +
+    'sliced, so re-running the same call alone will spill again — page the reference rather than retrying.'
+  );
 }
 
 /**
@@ -546,7 +575,7 @@ function spillRecoveryNote(reason: 'aggregate-output-budget-exceeded' | 'non-tex
 function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   result: T;
   opts: ResultDoorOpts;
-  reason: 'aggregate-output-budget-exceeded' | 'non-text-result-budget-exceeded';
+  reason: SpillReason;
   sourceBytes: number;
   nonTextBytes: number;
   doorTokens: number;
