@@ -101,12 +101,24 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # thing it is checking cannot catch a view being dropped from the catalog. The
 # reachability guard (learning-view-reachability.guard.test.ts) is what keeps the
 # two lists honest in the other direction.
+#
+# ⚠ THE COST OF THAT INDEPENDENCE IS DRIFT, AND IT HAS BITTEN ONCE (WI-4366).
+# `wake-efficiency` (MugWakeEfficiencyPanel) was deleted with the Mug/Kettle tier
+# on 2026-08-09 (retire-mug-kettle-su-only-2026-08-09 P-059 / D-074 / D-076) and
+# nobody removed it here. For ~3.5 weeks this gate probed a view that no longer
+# exists, read LearningTab's intentional fallback as "WRONG VIEW ... (undeclared
+# degrade)", and exited 1 on a HEALTHY tree — a permanently-red gate for a
+# non-defect, which is exactly how a gate gets ignored. So do NOT hand-maintain
+# this list against your memory of the app: learning-sweep-view-list-drift.guard
+# .test.ts parses THIS array and fails in ~20ms if it names a view LVIEWS does
+# not, or misses one it does. It reports the divergence; it does not generate
+# this list, so the independence above is intact.
 ALL_VIEWS=(
   signals observations rubrics
   pipeline
   gym improvements
   learnings
-  benchmark orchestration bakeoff wake-efficiency ekg red-queen experiments frontier throughput
+  benchmark orchestration bakeoff ekg red-queen experiments frontier throughput
 )
 
 # Mirrors HIVE_AWARE_VIEWS in LearningTab.tsx — the views whose reads take the
