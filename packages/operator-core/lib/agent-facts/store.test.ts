@@ -286,9 +286,51 @@ describe('renderFactsFold', () => {
     ...over,
   });
 
+  // P-004 / D-006. The fold is `ORDER BY updated_at DESC LIMIT 12` under a header
+  // that reads "### Standing facts", so without a truncation line a 2.4% sample is
+  // byte-indistinguishable from a complete corpus (measured 2026-09-02: scope
+  // `workspace` held 495 fold-eligible facts and showed 12). These three cases pin
+  // the DISCLOSURE, not the ordering — D-006 rules recency correct.
+  describe('P-004 / D-006: a truncated fold says so', () => {
+    it('states the shortfall, per scope, with the read that returns the rest', () => {
+      const out = renderFactsFold([fact({})], 0, [
+        { scope: 'workspace', scopeRef: null, shown: 12, total: 495, truncated: true },
+        { scope: 'harness', scopeRef: 'papercusp', shown: 12, total: 366, truncated: true },
+      ]);
+      expect(out).toContain('TRUNCATED');
+      // The NUMBERS are the point — a bare "some were omitted" leaves the reader
+      // unable to tell 12-of-13 from 12-of-495.
+      expect(out).toContain('workspace showed 12 of 495');
+      expect(out).toContain('harness:papercusp showed 12 of 366');
+      // The specific wrong inference this exists to block, and the way out of it.
+      expect(out).toContain('ABSENCE');
+      expect(out).toContain('facts:list');
+    });
+
+    it('says NOTHING when every scope fit — silence must mean census, not "not computed"', () => {
+      const out = renderFactsFold([fact({})], 0, [
+        { scope: 'workspace', scopeRef: null, shown: 1, total: 1, truncated: false },
+      ]);
+      expect(out).not.toContain('TRUNCATED');
+      expect(out).toContain('### Standing facts');
+    });
+
+    it('names ONLY the scopes that truncated, never the ones that fit', () => {
+      const out = renderFactsFold([fact({})], 0, [
+        { scope: 'workspace', scopeRef: null, shown: 12, total: 495, truncated: true },
+        { scope: 'owner', scopeRef: 'su-quiet', shown: 3, total: 3, truncated: false },
+      ]);
+      expect(out).toContain('workspace showed 12 of 495');
+      expect(out).not.toContain('su-quiet');
+    });
+  });
+
   it('renders one deterministic line per fact with scope, expiry and source', () => {
     const out = renderFactsFold([fact({})], 0);
     expect(out).toContain('### Standing facts');
+    // A census-less call is the pre-D-006 signature and must stay silent rather
+    // than claim completeness it was never given evidence for.
+    expect(out).not.toContain('TRUNCATED');
     expect(out).toContain('[role:mug] WI-1439 is owner-residue');
     expect(out).toContain('expires ~3d');
     expect(out).toContain('src WI-1574');
