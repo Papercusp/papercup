@@ -2987,23 +2987,25 @@ export default defineTool({
                 // simply looks like a healthy backlog. WARN, never refuse: a legitimately
                 // low-severity lane (a nit-sweep fleet) is a real thing to want.
                 try {
-                  const { aggregateAdmittedComposition } = await import('../../scheduler/get-next');
+                  const { aggregateAdmittedComposition, formatLowSeverityShare } = await import('../../scheduler/get-next');
                   const comp = await aggregateAdmittedComposition(validated.spec.view.filter, {
                     harness,
                     states: validated.spec.states,
                   });
                   if (comp.degenerate) {
-                    const pct = Math.round((comp.lowSeverityShare ?? 0) * 100);
                     const burst = comp.peakDay
                       ? ` ${comp.peakDay.count} of them were filed on a single day (${comp.peakDay.day}), the signature of burst auto-filing rather than discovered work.`
                       : '';
-                    // The denominator MUST be the admitted total, not poolEffect.matched: `pct`
-                    // is computed over rows passing ALL claim floors, while `matched` is the
-                    // pre-floor filter match (a strictly larger population). Pairing one with
-                    // the other states a true percentage against the wrong base — the exact
+                    // The denominator MUST be the admitted total, not poolEffect.matched: the
+                    // share is computed over rows passing ALL claim floors, while `matched` is
+                    // the pre-floor filter match (a strictly larger population). Pairing one
+                    // with the other states a true percentage against the wrong base — the exact
                     // defect class WI-6673 exists to catch, reproduced inside its own warning.
+                    // `formatLowSeverityShare` carries that denominator with the share, and
+                    // floors rather than rounds so this sentence can never print "100%" while a
+                    // major-severity row is in the lane (EI-22184028605968917).
                     const degenWarning =
-                      `⚠ DEGENERATE LANE: ${pct}% of the ${comp.total} claimable row(s) are nit/minor severity` +
+                      `⚠ DEGENERATE LANE: ${formatLowSeverityShare(comp, 'claimable row(s)')}` +
                       (poolEffect.matched !== comp.total
                         ? ` (of ${poolEffect.matched} matched before claim floors)`
                         : '') +
