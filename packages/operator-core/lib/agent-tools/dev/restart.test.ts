@@ -198,7 +198,7 @@ beforeEach(() => {
   } as never);
   // Benign default: no live main process to report. Individual tests that care
   // about the coalesce-truth check or the restartedFromPid surfacing override it.
-  probeM.mockResolvedValue({ ok: true, mainPid: 0 } as never);
+  mockResolvedTyped(probeM, { ok: true, mainPid: 0 });
   preflightM.mockResolvedValue(bootVerdict());
   desktopResolveM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
   desktopRestartM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
@@ -922,7 +922,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     } as never);
     guardM.mockImplementation(runGuard(fenceOk(9)) as never);
     // EI-11137: the pre-restart MainPID is captured so the caller can verify a real cycle.
-    probeM.mockResolvedValue({ ok: true, mainPid: 4242, secondsSinceStart: 9999 } as never);
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9999 });
 
     const b = body(await call({ confirm: true, target: 'staging' }));
 
@@ -966,7 +966,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       fence_seq: 21,
     } as never);
     guardM.mockImplementation(runGuard(fenceOk(21)) as never);
-    probeM.mockResolvedValue({ ok: true, mainPid: 4242, secondsSinceStart: 9999 } as never);
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9999 });
 
     const b = body(await call({ confirm: true, target: 'staging' }));
 
@@ -1020,7 +1020,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       ],
     } as never);
     // EI-11137: the service really did restart 12s ago (< 120s window) — genuine coalesce.
-    probeM.mockResolvedValue({ ok: true, mainPid: 555, secondsSinceStart: 12 } as never);
+    mockResolvedTyped(probeM, { ok: true, mainPid: 555, secondsSinceStart: 12 });
 
     const b = body(await call({ confirm: true, target: 'staging' }));
 
@@ -1144,7 +1144,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
         },
       ],
     } as never);
-    probeM.mockResolvedValue({ ok: true, mainPid: 909, secondsSinceStart: 6 * 3600 } as never); // 6h ago
+    mockResolvedTyped(probeM, { ok: true, mainPid: 909, secondsSinceStart: 6 * 3600 }); // 6h ago
     guardM.mockImplementation(runGuard(fenceOk(7)) as never);
 
     const b = body(await call({ confirm: true, target: 'bg-host' }));
@@ -1179,7 +1179,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
         },
       ],
     } as never);
-    probeM.mockResolvedValue({ ok: true, mainPid: 0 } as never); // no live main process
+    mockResolvedTyped(probeM, { ok: true, mainPid: 0 }); // no live main process
     guardM.mockImplementation(runGuard(fenceOk(1)) as never);
 
     const b = body(await call({ confirm: true, target: 'bg-host' }));
@@ -1204,7 +1204,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
         },
       ],
     } as never);
-    probeM.mockResolvedValue({ ok: false } as never); // no systemd / probe error
+    mockResolvedTyped(probeM, { ok: false }); // no systemd / probe error
 
     const b = body(await call({ confirm: true, target: 'staging' }));
 
@@ -1272,7 +1272,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
       fence_seq: 1,
     } as never);
     guardM.mockImplementation(runGuard(fenceOk(11)) as never);
-    probeM.mockResolvedValue({ ok: true, mainPid: 7777, secondsSinceStart: 99999 } as never);
+    mockResolvedTyped(probeM, { ok: true, mainPid: 7777, secondsSinceStart: 99999 });
 
     const b = body(await call({ confirm: true, target: 'bg-host' }));
 
@@ -1303,7 +1303,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
     } as never);
     // 600s ago: outside the OLD 120s window (would have been a phantom / real
     // restart under the pre-fix code) but well inside the NEW 780s window.
-    probeM.mockResolvedValue({ ok: true, mainPid: 8888, secondsSinceStart: 600 } as never);
+    mockResolvedTyped(probeM, { ok: true, mainPid: 8888, secondsSinceStart: 600 });
 
     const b = body(await call({ confirm: true, target: 'bg-host' }));
 
@@ -1336,7 +1336,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
         },
       ],
     } as never);
-    probeM.mockResolvedValue({ ok: true, mainPid: 4321, secondsSinceStart: 900 } as never);
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
     guardM.mockImplementation(runGuard(fenceOk(12)) as never);
 
     const b = body(await call({ confirm: true, target: 'bg-host' }));
