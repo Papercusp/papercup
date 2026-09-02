@@ -34,7 +34,9 @@ describe('buildAllocationResult (EI-19366138707071397 — DRAFT-suffix contract)
     const result = spawnSync(
       process.execPath,
       ['scripts/next-migration.mjs', '--name', '!!!'],
-      { cwd: REPO_ROOT, encoding: 'utf8' },
+      // A sync spawn blocks the pure-lane worker's event loop, so vitest cannot time it
+      // out; bound it here or a hang wedges the whole shared fork (WI-41180 ratchet).
+      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
     );
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/--name is required and must contain at least one letter or digit/);
