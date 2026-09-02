@@ -5345,6 +5345,28 @@ export function hostThroughPty(o) {
             } catch {
               /* never let a diagnostic write break the session */
             }
+            // EI-19480099650947832: record WHY the delivery could not fire, not
+            // just that it didn't. `busy-gate-expired` alone cannot distinguish a
+            // genuinely-busy agent (longest quiet gap ≈ 0ms — something is
+            // redrawing the pty continuously) from a near-miss (gap ≈ quietMs —
+            // the threshold is simply too tight), and those have OPPOSITE fixes.
+            //
+            // WI-2141048: this row is emitted for EVERY deferred mode, and is
+            // deliberately NOT nested inside the carry-respawn branch below. It
+            // used to be, which meant a `turn`/`reset`/`recycle` killed by this
+            // gate left a stderr line and nothing durable — so a member that
+            // booted and never took a turn was undiagnosable after the fact. A
+            // census of the full ~/.papercusp/psu-pty event-log population
+            // (6,795 logs, 2026-09-02) found 11,544 carry-respawn rows and ZERO
+            // turn-mode siblings of any spelling, confirming the whole non-respawn
+            // half of this gate was invisible. `mode` carries what the old
+            // kind-name encoded, so this is one row per defer, never two.
+            appendHostEvent(ownerId, 'busy-gate-expired', {
+              mode: msg.mode,
+              capMs: turnInjectBusyCapMs,
+              observedMaxQuietMs: Number.isFinite(atPrompt?.maxQuietForMs) ? atPrompt.maxQuietForMs : null,
+              quietMs: Number.isFinite(atPrompt?.quietMs) ? atPrompt.quietMs : null,
+            });
             // EI-12655 (fix b, leader-concurred rider: "expired must FAIL LOUD")
             // + EI-12754 (the re-arm leg deferred out of that diff) + WI-5368/
             // WI-5530: a carry-respawn refused here previously vanished with ZERO
@@ -5358,21 +5380,10 @@ export function hostThroughPty(o) {
             // error, the terminal drop) — so op:'report' / op:'verify' always see
             // a durable outcome, and a busy-but-recovering session no longer loses
             // its respawn to one long turn. A duplicate schedule (a retry already
-            // pending for this key) drops terminally here.
+            // pending for this key) drops terminally here. The diagnostic row
+            // above is emitted unconditionally; this branch owns only the
+            // carry-respawn LIFECYCLE verdict (rearm-queued / superseded / drop).
             if (msg.mode === 'carry-respawn') {
-              // EI-19480099650947832: record WHY the first attempt could not
-              // fire, not just that it didn't. `busy-gate-expired` alone cannot
-              // distinguish a genuinely-busy agent (longest quiet gap ≈ 0ms —
-              // something is redrawing the pty continuously) from a near-miss
-              // (gap ≈ quietMs — the threshold is simply too tight), and those
-              // have opposite fixes. Diagnostic only; the rearm-queued row
-              // emitted immediately below still carries the lifecycle verdict.
-              appendHostEvent(ownerId, 'carry-respawn-busy-gate-expired', {
-                mode: 'carry-respawn',
-                capMs: turnInjectBusyCapMs,
-                observedMaxQuietMs: Number.isFinite(atPrompt?.maxQuietForMs) ? atPrompt.maxQuietForMs : null,
-                quietMs: Number.isFinite(atPrompt?.quietMs) ? atPrompt.quietMs : null,
-              });
               const rearmVerdict = carryRearm.schedule(msg);
               // EI-19480099650947832: a PRODUCTION respawn arriving while an
               // earlier one is still re-polling now SUPERSEDES it (the fresher
