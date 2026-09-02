@@ -272,6 +272,22 @@ describe('the committed corpus agrees with the committed manifest', () => {
       why: 'added the raw work-item population/observation-lane warning post-load (new CLAUDE.md section)',
       blocksRemoved: -1,
     },
+    {
+      when: '2026-09-02',
+      plan: 'none — part authored directly into harness_doc_parts, projected in commit da4faafb08',
+      // Commit da4faafb08 (2026-09-02T17:37:08Z) moved corpus-parts 301 -> 302 and
+      // corpus-blocks 261 -> 262 while the frozen manifest remained at 253. Measured
+      // rather than assumed: the corpus diff 8b15166682..da4faafb08 is +20/-2 lines, and
+      // every added line outside the two banner counters is one new section. The added
+      // block is `verify-mixed-family-work-item-citations-file-paths` (confirmed against
+      // harness_shared.harness_doc_parts: doc_id claude-md, kind invariant, ordinal 46,
+      // authored 2026-09-02T17:34:27Z — 3 minutes before the projection commit). It is the
+      // REPO-QUALIFY-the-path guidance (EI-22169368425533789): an unqualified repo-relative
+      // path that actually lives in a sibling checkout fails every same-repo probe and reads
+      // as a hallucination. A standalone new part, not a block that went missing elsewhere.
+      why: 'added the repo-qualify-cross-harness-paths guidance post-load (new CLAUDE.md section)',
+      blocksRemoved: -1,
+    },
   ] as const;
 
   it('has one block per manifest part, less deliberate post-load merges', () => {
