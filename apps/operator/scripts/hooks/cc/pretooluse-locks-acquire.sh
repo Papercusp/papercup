@@ -1326,6 +1326,19 @@ def _best_effort_tool(name, arguments, timeout=3):
 # demonstrably never arrived. That covers the whole class — any guard, any deny
 # reason, any tool — and self-heals the reported case, where the agent's own
 # retry was blocked by the orphan its blocked attempt had just created.
+#
+# ⚠ WHY THIS KEYS ON THE CACHE ENTRY AND NOT ON THE OWNER. There is already a
+# server-side release for hook locks — releaseOwnerHookFileLocks
+# (operator-core/lib/agent-tools/locks/release-hook-locks.ts, EI-21878494442396728)
+# — but it runs ONLY at the carry-respawn point, and its own header explains why
+# it must not be lifted anywhere else: a lock row carries no session id, only an
+# owner, so an owner-keyed release cannot tell a DEAD session's locks from a live
+# successor's and would delete the lock protecting an in-flight edit. This sweep
+# is safe in a LIVE session — the case that surface deliberately cannot cover,
+# because no respawn happens; the agent just keeps working — precisely because it
+# does not key on the owner. It releases one specific tool_use_id whose
+# PostToolUse provably never ran, by that claim's own lock_id; the `.owner`
+# sidecar is only a can-I-release-this filter, never the selector.
 ORPHAN_GRACE_SEC = float(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_GRACE_SEC') or 180)
 # Past the lock's own TTL the row is gone server-side; only the cache litter is
 # left, so those are pruned from disk WITHOUT an API call.
@@ -1653,6 +1666,10 @@ def _grant(granted):
                 f.write(lock_id)
             with open(os.path.join(cache_dir, tool_use_id + '.paths'), 'w') as f:
                 json.dump(release_paths, f)
+            # Stamp the claiming session so the orphan reconcile can tell OUR
+            # abandoned claim from a peer's — only the owner can release it.
+            with open(os.path.join(cache_dir, tool_use_id + '.owner'), 'w') as f:
+                f.write(owner)
             if len(repo_domains) == 1:
                 with open(os.path.join(cache_dir, tool_use_id + '.domain'), 'w') as f:
                     f.write(next(iter(repo_domains)))

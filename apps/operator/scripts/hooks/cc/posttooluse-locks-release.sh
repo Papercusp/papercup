@@ -140,7 +140,10 @@ RETRY_BACKOFFS = (0.4, 0.8, 1.2)
 
 
 def cleanup_sidecars(base_path):
-    for suffix in ('.lock', '.paths', '.domain'):
+    # '.owner' is the claiming session stamped by the PreToolUse hook for the
+    # orphan reconcile (EI-22176521893516708); drop it with the rest so a
+    # released claim leaves nothing the sweep could later re-examine.
+    for suffix in ('.lock', '.paths', '.domain', '.owner'):
         try:
             os.remove(base_path + suffix)
         except Exception:
