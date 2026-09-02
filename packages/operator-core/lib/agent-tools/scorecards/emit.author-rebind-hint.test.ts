@@ -114,15 +114,36 @@ describe('scorecards:emit acceptance-author refusal — rebind-identity recovery
     expect(result.error).toContain('coord:rebind-identity');
   });
 
-  it('CONTROL (falsifiability): omits the hint — and the base message is byte-identical — when the author is live', async () => {
+  it('WI-2141007: a caller IN the author lineage offering a verdict is not told to recruit a grader', async () => {
+    // The reported secondary bug: because the eligibility resolver answered the
+    // GRADING question for an AUTHOR-side request, this caller got
+    // grader_in_implementer_lineage ("recruit an unrelated live session") —
+    // advice for a problem the plan did not have, and returned before seat
+    // succession could ever be considered.
+    const resolveAuthorSessionState = vi.fn().mockResolvedValue('ended');
+    const result = await emitScorecard(acceptanceArgs(), EMIT_INPUT, {
+      sameAcceptanceAuthor: async () => false,
+      lineageRelated: async () => true, // caller IS in the dead author's lineage
+      resolveAuthorSessionState: resolveAuthorSessionState as never,
+    });
+    if (result.ok) throw new Error('expected refusal');
+    expect(result.error).not.toContain('cannot supply the independent grading');
+    expect(result.error).toContain("acceptance must be recorded by the acceptance-rubric author ('su-dead-author')");
+  });
+
+  it('CONTROL (falsifiability): a LIVE author yields no recovery route at all — the seat is not takeable', async () => {
     const resolveAuthorSessionState = vi.fn().mockResolvedValue('live');
     const result = await emitScorecard(acceptanceArgs(), EMIT_INPUT, notAuthorDeps(resolveAuthorSessionState));
     if (result.ok) throw new Error('expected refusal');
-    expect(result.error).toBe(
+    expect(result.error).toContain(
       "acceptance must be recorded by the acceptance-rubric author ('su-dead-author'), " +
         "not grader 'su-grader' — independent graders emit ratings without acceptance",
     );
+    // WI-2141007: the base refusal is unchanged; what follows it must offer NO
+    // route while the author is reachable — neither rebind nor seat succession.
+    expect(result.error).toContain('still reachable');
     expect(result.error).not.toContain('coord:rebind-identity');
+    expect(result.error).not.toContain('work_items:claim');
   });
 
   it.each(['parked', 'draining', 'recorded'] as const)(
@@ -147,9 +168,14 @@ describe('scorecards:emit acceptance-author refusal — rebind-identity recovery
     const result = await emitScorecard(acceptanceArgs(), EMIT_INPUT, notAuthorDeps(resolveAuthorSessionState));
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected refusal');
-    expect(result.error).toBe(
+    expect(result.error).toContain(
       "acceptance must be recorded by the acceptance-rubric author ('su-dead-author'), " +
         "not grader 'su-grader' — independent graders emit ratings without acceptance",
     );
+    // WI-2141007: an unreadable verdict must say so — and must NOT offer a route,
+    // because "the probe faulted" is not evidence that the author is dead.
+    expect(result.error).toContain('could not be read');
+    expect(result.error).not.toContain('coord:rebind-identity');
+    expect(result.error).not.toContain('work_items:claim');
   });
 });

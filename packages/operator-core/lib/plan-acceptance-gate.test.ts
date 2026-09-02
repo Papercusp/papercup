@@ -433,6 +433,111 @@ describe('evaluatePlanAcceptanceGate', () => {
     expect(v.message).toContain("acceptance:{ verdict:'accept'|'reject'");
   });
 
+  describe('WI-2141007 — acceptance seat inherited from a dead rubric author', () => {
+    const seat = {
+      succeededFrom: 'su-implementer',
+      authorSessionState: 'ended',
+      basisWorkItemId: 'WI-1687546',
+      basisPlanSlug: 'some-plan-2026-08-11',
+      succeededAt: '2026-08-21T02:00:00Z',
+    };
+
+    it('accepts a SUCCESSOR verdict whose seat names this rubric author — the plan is no longer bricked', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([
+        scorecard({
+          issueId: 'EI-successor-accept',
+          createdAt: '2026-08-21T02:00:00Z',
+          createdBy: 'su-successor',
+          acceptance: { verdict: 'accept', reasoning: 'Read the independent grading; it meets the plan.', seat },
+        }),
+        scorecard({ issueId: 'EI-independent', createdAt: '2026-08-21T01:00:00Z', createdBy: 'su-grader' }),
+      ]);
+      await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+        satisfied: true,
+        gradedBy: 'su-grader',
+      });
+    });
+
+    it('honors a successor REJECT the same way an author reject is honored', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([
+        scorecard({
+          issueId: 'EI-successor-reject',
+          createdAt: '2026-08-21T02:00:00Z',
+          createdBy: 'su-successor',
+          acceptance: { verdict: 'reject', reasoning: 'The grading rests on a falsified instrument.', seat },
+        }),
+        scorecard({ issueId: 'EI-independent', createdAt: '2026-08-21T01:00:00Z', createdBy: 'su-grader' }),
+      ]);
+      await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+        satisfied: false,
+        code: 'acceptance_rejected',
+      });
+    });
+
+    it('SAFETY: a successor verdict cannot double as its own independent grading', async () => {
+      // The whole point of the seat rails: authority to ACCEPT must never also
+      // supply the independence being accepted. With only the successor's card
+      // on record there is no independent grading at all — and `self_graded_only`
+      // is the precise refusal, which is itself the evidence that the successor
+      // was classified as AUTHOR-side rather than silently counted as its own
+      // independent grader (the failure mode this repair could most easily have
+      // introduced).
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([
+        scorecard({
+          issueId: 'EI-successor-only',
+          createdAt: '2026-08-21T02:00:00Z',
+          createdBy: 'su-successor',
+          acceptance: { verdict: 'accept', reasoning: 'Accepting my own grading.', seat },
+        }),
+      ]);
+      await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+        satisfied: false,
+        code: 'self_graded_only',
+      });
+    });
+
+    it('CONTROL (falsifiability): a seat naming a DIFFERENT author carries no authority here', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([
+        scorecard({
+          issueId: 'EI-foreign-seat',
+          createdAt: '2026-08-21T02:00:00Z',
+          createdBy: 'su-successor',
+          acceptance: {
+            verdict: 'accept',
+            reasoning: 'Seat inherited from some other plan’s author.',
+            seat: { ...seat, succeededFrom: 'su-unrelated-author' },
+          },
+        }),
+        scorecard({ issueId: 'EI-independent', createdAt: '2026-08-21T01:00:00Z', createdBy: 'su-grader' }),
+      ]);
+      await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+        satisfied: false,
+        code: 'acceptance_not_recorded',
+      });
+    });
+
+    it('CONTROL (falsifiability): the same card WITHOUT a seat stamp is still not an author verdict', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([
+        scorecard({
+          issueId: 'EI-unstamped',
+          createdAt: '2026-08-21T02:00:00Z',
+          createdBy: 'su-successor',
+          acceptance: { verdict: 'accept', reasoning: 'No seat succession was recorded.' },
+        }),
+        scorecard({ issueId: 'EI-independent', createdAt: '2026-08-21T01:00:00Z', createdBy: 'su-grader' }),
+      ]);
+      await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+        satisfied: false,
+        code: 'acceptance_not_recorded',
+      });
+    });
+  });
+
   it('a post-grading implementer accept satisfies and a newer reject refuses', async () => {
     mockRubric.mockResolvedValue(acceptanceRubric());
     const independent = scorecard({ createdAt: '2026-08-21T01:00:00Z', createdBy: 'su-grader' });

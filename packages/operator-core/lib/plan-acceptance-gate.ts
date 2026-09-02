@@ -820,8 +820,10 @@ export async function evaluatePlanAcceptanceGate(
       (standingAuthorVerdicts.get(s.supersededBy) === s.issueId &&
         // A legacy author verdict may restore only an INDEPENDENT predecessor.
         // Keeping this guard here prevents an author-authored correction chain
-        // from manufacturing its own independent grader.
-        !isImplementerScorecard(s)),
+        // from manufacturing its own independent grader. A successor's verdict
+        // counts as author-side here too (WI-2141007), or the same chain could be
+        // manufactured one seat along.
+        !holdsAuthorAuthority(s)),
   );
   if (complete.length === 0) {
     return {

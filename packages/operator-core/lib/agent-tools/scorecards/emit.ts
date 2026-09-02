@@ -536,6 +536,12 @@ export async function emitScorecard(
         rubric,
         callerId: input.createdBy,
         workspaceId: identityWorkspace,
+        // WI-2141007: say WHICH question we are asking. Supplying `acceptance`
+        // is an author-side verdict, not an offer of independent grading, so the
+        // grading-independence rails must not answer it — they used to, which
+        // both printed remedy advice for a problem the caller did not have AND
+        // returned before seat succession could be considered at all.
+        intent: acceptance ? 'acceptance' : 'grading',
         deps: { sameAcceptanceAuthor, lineageRelated },
       });
       if (eligibility.refusal) return { ok: false as const, ...eligibility.refusal };
