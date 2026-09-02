@@ -25,6 +25,7 @@ import { getPresence } from '../coordination/presence';
 import { listFleetPresence, type FleetPresenceRow } from '../coordination/presence-fleet';
 import { sendMessage } from '../coordination/messages';
 import { wakeRecipients } from '../coordination/inbox-wake';
+import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { getSessionBrief } from '../../session-brief';
 import { resolveProjectDir } from '../../spawn-config';
@@ -1218,6 +1219,34 @@ export default defineTool({
     // new rows and return the first one. A stable pin also makes an idempotent launch replay
     // verifiable after capability:launch-agent reports deduped.
     const replacementOwner = replacementOwnerId(slug, memberOwnerId, args.idempotencyKey);
+
+    // WI-2141730: claimAgentLaunch's idempotency claim row (Postgres INSERT...ON CONFLICT) safely
+    // dedupes a TRUE-CONCURRENT double-fire of the SAME (fleetSlug, memberOwnerId, idempotencyKey)
+    // triple, but that claim row carries a TTL. If a caller reuses the identical triple for a
+    // genuinely SEPARATE respawn after the TTL has expired, while the FIRST replacement is still
+    // alive, replacementOwnerId() mints the IDENTICAL su-respawn-<sha256> ownerId again — a second
+    // live process would then share the first one's psu-pty meta file AND socket path (both are
+    // named purely from sanitizeKey(ownerId)). findLiveHost's EI-151 cross-owner guard cannot catch
+    // this: both hosts truthfully record the SAME ownerId, so it is not a sanitizeKey collision
+    // between distinct owners — it is a genuine duplicate identity. Refuse loudly instead of
+    // silently spawning a second process under an identity that already has a live host.
+    const collidingLiveHost = findLiveHost(replacementOwner);
+    if (collidingLiveHost) {
+      return json(
+        {
+          ok: false,
+          error: 'replacement_identity_already_live',
+          fleet: slug,
+          oldMember: memberOwnerId,
+          replacementOwner,
+          collidingPid: collidingLiveHost.pid,
+          killed: kill.data,
+          launched: false,
+          message: `The freshly-minted replacement identity ${replacementOwner} already has a live psu-pty host (pid ${collidingLiveHost.pid}) — NOT launching a second process under the same ownerId (would double-run the lane and corrupt the shared meta/socket files). This means the same (fleetSlug, memberOwnerId, idempotencyKey) triple was reused after its launch claim TTL expired while the earlier replacement is still alive. Retry with a fresh idempotencyKey, or wait for the existing replacement to end first.`,
+        },
+        true,
+      );
+    }
 
     // 2. Fresh-launch the replacement into the SAME fleet from the RESOLVED
     //    canonical spec. The caller's explicit delta is already audited above;
