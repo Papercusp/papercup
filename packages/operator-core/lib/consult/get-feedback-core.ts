@@ -34,7 +34,7 @@
 import type { Sql } from 'postgres';
 import type { RouteResult, RoutingCandidate, SelectionVia } from './relevance-router';
 import { DEFAULT_SIM_FLOOR, selectResponders, selectionSnapshot } from './relevance-router';
-import { advanceCascade, makeDigestEntry } from './cascade-core';
+import { advanceCascade, digestFromRow, makeDigestEntry } from './cascade-core';
 import { consultResponderVerbMenu } from './responder-verb-menu';
 
 /** P-006 archive-first retrieval floor: a closed_answered consult whose
@@ -396,6 +396,56 @@ async function rubricGraderExclusions(
   return rows.map((row) => row.owner_id);
 }
 
+/**
+ * EI-22180634511432554: a responder's `closed_cant_help` (D-003/the
+ * responder-verb-menu void exit) and a fully-declined, menu-exhausted
+ * `declined` terminal are both HONEST, deliberately NON-ADVANCING outcomes —
+ * `consultCloseCore` never calls `advanceCascade` for either (by design, see
+ * responder-verb-menu.ts's void-exit doc). But nothing else in this module
+ * remembered that outcome either: a caller who re-asks the verbatim-identical
+ * question — the natural recovery move after a non-advancing close — got no
+ * benefit from it. Routing ran from scratch and could re-select the exact
+ * responder who had just said, on this exact question, that they could not or
+ * would not help — wasting a full consult cycle, re-declining a second time,
+ * and silently minting a second, now-stale conversation id while a genuinely
+ * untried candidate sat unselected in `remaining_candidates`.
+ *
+ * Fold every responder who told THIS requester "not this one" on the
+ * verbatim-identical question into `excludeOwners` automatically, mirroring
+ * the existing `rubricGraderExclusions` seam. EXACT question match only
+ * (never embedding similarity, unlike the archive-serve floor above) — this
+ * answers "did you ask this exact thing before", never "a related topic", so
+ * it can never over-exclude a merely-similar re-ask.
+ *
+ * `responder_id` alone would miss a `declined` menu-exhaustion row's EARLIER
+ * decliners (the column tracks only the cascade's current/last cursor), so
+ * this also folds in every `kind: 'decline'` cascade_digest entry — the
+ * append-only record of who declined this consult, in order.
+ */
+async function priorNonHelpfulResponders(
+  sql: Sql,
+  workspaceId: string,
+  requesterId: string,
+  question: string,
+): Promise<string[]> {
+  const rows = (await sql`
+    SELECT responder_id, cascade_digest
+      FROM harness_shared.consult_state
+     WHERE workspace_id = ${workspaceId}
+       AND requester_id = ${requesterId}
+       AND question = ${question}
+       AND state IN ('closed_cant_help', 'declined')
+  `) as unknown as Array<{ responder_id: string | null; cascade_digest: unknown }>;
+  const owners = new Set<string>();
+  for (const row of rows) {
+    if (row.responder_id) owners.add(row.responder_id);
+    for (const entry of digestFromRow(row.cascade_digest)) {
+      if (entry.kind === 'decline') owners.add(entry.ownerId);
+    }
+  }
+  return [...owners];
+}
+
 function consultTitle(question: string): string {
   const q = question.replace(/\s+/g, ' ').trim();
   return `consult: ${q.length > 90 ? `${q.slice(0, 90)}…` : q}`;
@@ -736,14 +786,17 @@ export async function getFeedbackCore(
   //    independence gate fold into ONE existing excludeOwners seam. The last
   //    leg closes EI-21469207548268721: familiarity is a disqualifier when the
   //    task is to critique an instrument the owner already graded against.
-  const graderExclusions = await rubricGraderExclusions(
-    sql,
-    req.workspaceId,
-    req.question,
-  );
+  const [graderExclusions, priorNonHelpful] = await Promise.all([
+    rubricGraderExclusions(sql, req.workspaceId, req.question),
+    priorNonHelpfulResponders(sql, req.workspaceId, req.requesterId, req.question),
+  ]);
   const excludeOwners = [
-    ...new Set([...(req.excludeOwners ?? []), ...lineageOwners, ...graderExclusions]),
+    ...new Set([...(req.excludeOwners ?? []), ...lineageOwners, ...graderExclusions, ...priorNonHelpful]),
   ];
+  // Only NEW exclusions this call contributed (vs. what the caller already
+  // named) are worth a note — an explicit req.excludeOwners re-call should
+  // not get a redundant "auto-excluded" line for owners it named itself.
+  const autoExcludedNote = priorNonHelpful.filter((o) => !(req.excludeOwners ?? []).includes(o));
   const route = await deps.route({
     workspaceId: req.workspaceId,
     requesterId: req.requesterId,
@@ -1308,10 +1361,19 @@ export async function getFeedbackCore(
   const wakeNote = pickupConfirmed
     ? `wake pickup confirmed for ${finalChosen?.ownerId}`
     : `wake queued for ${finalChosen?.ownerId}; turn pickup is not confirmed — verify a fresh activity/checkpoint before treating it as started`;
+  // EI-22180634511432554: closed_cant_help / a fully-declined menu are
+  // terminal-and-non-advancing BY DESIGN (see priorNonHelpfulResponders) — say
+  // so on the re-route that benefited from it, so a caller who re-asked the
+  // identical question learns their prior conversation id is stale (a
+  // different responder is now this consult) instead of discovering it only
+  // by comparing ids by hand.
+  const autoExcludedNoteText = autoExcludedNote.length
+    ? ` ⚠ ${autoExcludedNote.join(', ')} already told you "not this one" on this EXACT question (closed_cant_help / declined) and ${autoExcludedNote.length === 1 ? 'was' : 'were'} excluded from this re-route — any conversation id you previously published for ${autoExcludedNote.length === 1 ? 'that consult' : 'those consults'} is now stale.`
+    : '';
   const hint = finalChosen
     ? latency === 'hard-blocked'
-      ? `Routed + ${wakeNote}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}${fallbackNote}${revivalNote}`
-      : `Routed + ${wakeNote}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. Declines/expiries advance the cascade SERVER-side (the next selectee is woken with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}${fallbackNote}${revivalNote}`
+      ? `Routed + ${wakeNote}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}${fallbackNote}${revivalNote}${autoExcludedNoteText}`
+      : `Routed + ${wakeNote}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. Declines/expiries advance the cascade SERVER-side (the next selectee is woken with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}${fallbackNote}${revivalNote}${autoExcludedNoteText}`
     : reason === 'embed_unavailable'
       ? `The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.${revivalNote}`
       : reason === 'no_live_responder'

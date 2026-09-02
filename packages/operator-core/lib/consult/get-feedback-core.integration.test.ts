@@ -459,6 +459,107 @@ describe('getFeedbackCore — rubric grader/critic role separation (EI-214692075
   });
 });
 
+describe('getFeedbackCore — prior non-helpful responders on a re-ask (EI-22180634511432554)', () => {
+  /** Mirrors the production routeConsult seam (see the rubric-grader block
+   * above): owners passed in excludeOwners cannot appear in the candidate pool. */
+  function filteringDeps(routed: RouteResult) {
+    const { deps, routeCalls } = makeDeps(routed);
+    deps.route = async (params) => {
+      routeCalls.push(params);
+      const excluded = new Set(params.excludeOwners ?? []);
+      return routeOf(
+        routed.qualified.filter((c) => !excluded.has(c.ownerId)),
+        { all: routed.snapshot.candidates.filter((c) => !excluded.has(c.ownerId)) },
+      );
+    };
+    return { deps, routeCalls };
+  }
+
+  it('excludes a responder who closed_cant_help this EXACT question before, and notes it in the hint', async () => {
+    const question = 'Does rubric-vetting-cycle-fix cover the D-009 independence gate?';
+    const priorResponder = 'su-declined-before';
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question)
+      VALUES (${WS}, 'conv-prior-cant-help', ${baseReq.requesterId}, ${priorResponder}, 'closed_cant_help', ${question})
+    `;
+
+    const routed = routeOf([cand(priorResponder, { score: 0.95 }), cand('su-fresh-candidate', { score: 0.88 })]);
+    const { deps, routeCalls } = filteringDeps(routed);
+
+    const result = asOk(await getFeedbackCore({ ...baseReq, question }, deps));
+
+    expect(routeCalls[0]?.excludeOwners).toEqual([priorResponder]);
+    expect(result.responder?.ownerId).toBe('su-fresh-candidate');
+    expect(result.hint).toContain(priorResponder);
+    expect(result.hint).toContain('already told you "not this one"');
+  });
+
+  it('folds in EVERY decliner of a menu-exhausted `declined` consult on the exact question, via cascade_digest', async () => {
+    const question = 'Is F-9001 ready to ship past its acceptance gate?';
+    const decliner1 = 'su-decliner-one';
+    const decliner2 = 'su-decliner-two';
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question, cascade_digest)
+      VALUES (
+        ${WS}, 'conv-prior-declined', ${baseReq.requesterId}, ${decliner2}, 'declined', ${question},
+        ${rootSql.json([
+          { ownerId: decliner1, kind: 'decline', at: NOW.toISOString(), excerpt: 'not my area' },
+          { ownerId: decliner2, kind: 'decline', at: NOW.toISOString(), excerpt: 'menu exhausted' },
+        ] as never)}
+      )
+    `;
+
+    const routed = routeOf([
+      cand(decliner1, { score: 0.9 }),
+      cand(decliner2, { score: 0.85 }),
+      cand('su-fresh-candidate-2', { score: 0.7 }),
+    ]);
+    const { deps, routeCalls } = filteringDeps(routed);
+
+    const result = asOk(await getFeedbackCore({ ...baseReq, question }, deps));
+
+    expect(new Set(routeCalls[0]?.excludeOwners)).toEqual(new Set([decliner1, decliner2]));
+    expect(result.responder?.ownerId).toBe('su-fresh-candidate-2');
+  });
+
+  it('does NOT exclude across a merely-different question — exact match only, never fuzzy', async () => {
+    const priorResponder = 'su-declined-elsewhere';
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question)
+      VALUES (${WS}, 'conv-different-question', ${baseReq.requesterId}, ${priorResponder}, 'closed_cant_help', 'a completely unrelated prior question')
+    `;
+    const { deps, routeCalls } = makeDeps(routeOf([cand(priorResponder)]));
+
+    const result = asOk(
+      await getFeedbackCore({ ...baseReq, question: 'a fresh, never-before-asked question' }, deps),
+    );
+
+    expect(routeCalls[0]?.excludeOwners).toBeUndefined();
+    expect(result.responder?.ownerId).toBe(priorResponder);
+  });
+
+  it('does not double-report an exclusion the caller already named via excludeOwners', async () => {
+    const question = 'Explicitly-excluded re-ask question (EI-22180634511432554)';
+    const priorResponder = 'su-already-named';
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question)
+      VALUES (${WS}, 'conv-explicit-exclude', ${baseReq.requesterId}, ${priorResponder}, 'closed_cant_help', ${question})
+    `;
+    const routed = routeOf([cand('su-fresh-candidate-3', { score: 0.6 })]);
+    const { deps } = filteringDeps(routed);
+
+    const result = asOk(
+      await getFeedbackCore({ ...baseReq, question, excludeOwners: [priorResponder] }, deps),
+    );
+
+    expect(result.hint).not.toContain('already told you');
+  });
+});
+
 describe('getFeedbackCore — min/max selection (consult-min-max-and-rubric-vetting D-001/D-002/D-003)', () => {
   /** The persisted selection block of a consult_state.routing snapshot. */
   const selectionOf = (routing: unknown) =>
