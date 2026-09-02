@@ -37,6 +37,7 @@ import {
   resolveProbeCursor,
   type BenchMeasurement,
   probeBudget,
+  pollStopDecision,
 } from './code-intel-bench.ts';
 import { corpusCase } from './acceptance-corpus.ts';
 import {
@@ -317,6 +318,13 @@ describe('accounted corpus divergences (P-010: frozen corpus vs LSP semantics)',
       correct: false,
       trustworthyEmpty: true,
       grade: { correct: false, missing: [INDEX], extra: [], reason: `missing ${INDEX}` },
+      // The measured shape of this probe (WI-2142253): degraded, non-empty, and
+      // settled — which is why it now stops on 'converged' instead of burning
+      // its whole deadline.
+      answerHealth: 'degraded',
+      siteSetChanges: 0,
+      sitesStableForMs: 5_000,
+      pollStoppedOn: 'converged',
       error: null,
       returnedSites: [DECL, CONSUMER],
       emptyThenFilledMs: null,
@@ -488,6 +496,10 @@ describe('cold-start budget grading (P-018: coldStartMsMax was a dead field)', (
       correct: true,
       trustworthyEmpty: true,
       grade: { correct: true, missing: [], extra: [], reason: 'ok' },
+      answerHealth: 'healthy',
+      siteSetChanges: 0,
+      sitesStableForMs: 0,
+      pollStoppedOn: 'correct',
       error: null,
       returnedSites: [],
       emptyThenFilledMs: null,
@@ -729,5 +741,118 @@ describe('probeBudget REGRESSION — reserving per LANGUAGE only moved the starv
     const MEASURED_RUST_COLD_START_MS = 15_635;
     const floorMs = LEG_BUDGET_MS / LEG.length;
     expect(floorMs).toBeGreaterThan(MEASURED_RUST_COLD_START_MS * 2);
+  });
+});
+
+describe('pollStopDecision — when the loop has learned all it is going to', () => {
+  const STABLE_MS = 5_000;
+  // The measured shape of the defect (leg v2, WI-2142253): a DEGRADED answer
+  // holding eight real sites, graded incorrect against the frozen corpus.
+  const BARREL_REEXPORT = {
+    correct: false,
+    errorText: null,
+    health: 'degraded',
+    siteCount: 8,
+    stableForMs: STABLE_MS,
+  } as const;
+
+  it('stops on a correct answer before anything else is considered', () => {
+    expect(
+      pollStopDecision({ ...BARREL_REEXPORT, correct: true, siteSetUnchangedForMs: 0 }),
+    ).toBe('correct');
+  });
+
+  it('stops on an unserved intent — waiting cannot make it served', () => {
+    expect(
+      pollStopDecision({
+        ...BARREL_REEXPORT,
+        errorText: 'intent references is not served by this backend',
+        siteSetUnchangedForMs: 0,
+      }),
+    ).toBe('not-served');
+  });
+
+  it('stops immediately on a healthy non-empty answer, however fresh', () => {
+    expect(
+      pollStopDecision({ ...BARREL_REEXPORT, health: 'healthy', siteSetUnchangedForMs: 0 }),
+    ).toBe('healthy-final');
+  });
+
+  it('keeps polling a degraded non-empty answer that is still moving', () => {
+    // Sites DO arrive late — the measured cold-open failure returned two real
+    // sites while hundreds were still missing. A cutoff that fired while the
+    // set was still growing would manufacture divergences.
+    expect(
+      pollStopDecision({ ...BARREL_REEXPORT, siteSetUnchangedForMs: STABLE_MS - 1 }),
+    ).toBeNull();
+  });
+
+  it('stops a degraded non-empty answer once its site set has settled', () => {
+    expect(
+      pollStopDecision({ ...BARREL_REEXPORT, siteSetUnchangedForMs: STABLE_MS }),
+    ).toBe('converged');
+  });
+
+  it('NEVER converges an EMPTY answer, however long it has sat still', () => {
+    // The load-bearing exclusion. A stalled empty and a still-loading empty are
+    // the same bytes, so an empty is never entitled to be called settled — that
+    // is precisely the false-empty the acceptance corpus exists to catch. If
+    // this ever returns a stop reason, the corpus has been quietly defeated.
+    for (const health of ['healthy', 'degraded', 'unhealthy', 'unknown']) {
+      expect(
+        pollStopDecision({
+          ...BARREL_REEXPORT,
+          health,
+          siteCount: 0,
+          siteSetUnchangedForMs: STABLE_MS * 1_000,
+        }),
+      ).toBeNull();
+    }
+  });
+
+  it('CONTROL: the pre-fix rule set never stops the measured barrel probe', () => {
+    // The three break conditions exactly as they stood before WI-2142253, kept
+    // permanently so the regression cannot return unnoticed. A degraded
+    // non-empty answer matched NONE of them, so the loop's only remaining exit
+    // was the deadline: 569 attempts over ~290s to re-learn what it already held
+    // on attempt 1. This control must keep FAILING to stop, or it has stopped
+    // reproducing the bug and is no longer evidence of anything.
+    const preFix = (a: {
+      correct: boolean;
+      errorText: string | null;
+      health: string;
+      siteCount: number;
+    }): string | null => {
+      if (a.correct) return 'correct';
+      if (a.errorText && /not served/.test(a.errorText)) return 'not-served';
+      if (a.health === 'healthy' && a.siteCount > 0) return 'healthy-final';
+      return null;
+    };
+
+    // Calibration: the pre-fix rule was not broken in general — it stops the
+    // cases it WAS written for. Without this, a control that returned null for
+    // every input would look like a faithful reproduction of the defect.
+    expect(preFix({ ...BARREL_REEXPORT, correct: true })).toBe('correct');
+    expect(preFix({ ...BARREL_REEXPORT, health: 'healthy' })).toBe('healthy-final');
+
+    // The defect: settled or not, the pre-fix rule polls on forever.
+    expect(preFix(BARREL_REEXPORT)).toBeNull();
+    expect(
+      pollStopDecision({ ...BARREL_REEXPORT, siteSetUnchangedForMs: STABLE_MS }),
+    ).toBe('converged');
+  });
+
+  it('CONTROL: a cutoff that ignored siteCount would defeat the corpus', () => {
+    // The most likely wrong simplification — dropping the `siteCount > 0` guard
+    // because "settled is settled". It reads as a tidy-up and silently converts
+    // every false-empty into a fast, confident, WRONG absence.
+    const withoutEmptyGuard = (a: { siteSetUnchangedForMs: number }): string | null =>
+      a.siteSetUnchangedForMs >= STABLE_MS ? 'converged' : null;
+
+    const stalledEmpty = { siteSetUnchangedForMs: STABLE_MS * 10 };
+    expect(withoutEmptyGuard(stalledEmpty)).toBe('converged');
+    expect(
+      pollStopDecision({ ...BARREL_REEXPORT, siteCount: 0, ...stalledEmpty }),
+    ).toBeNull();
   });
 });
