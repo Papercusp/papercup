@@ -27,6 +27,7 @@ import {
   readinessVerdict,
   resolveSymbolSearchScope,
   specForLanguage,
+  typescriptInitializationOptions,
   resolveServerBin,
   symbolSearchEmptyCaveat,
   type LspReadinessIntent,
@@ -920,5 +921,48 @@ describe('evictIfLanguageServiceDead (WI-2142693)', () => {
     (client as unknown as { stderrTail: string }).stderrTail = 'FATAL ERROR: heap out of memory';
     const reason = evictIfLanguageServiceDead(client, new Map(), () => []);
     expect(reason).toContain('heap out of memory');
+  });
+});
+
+describe('typescriptInitializationOptions — the tsserver memory ceiling (WI-2142840)', () => {
+  /**
+   * MEASURED, same probe, one variable changed: at node's default old-space
+   * tsserver reached 4314MB RSS and self-aborted (`Signal: SIGABRT`), taking
+   * every TypeScript answer down with it; at 6144 it reached 4981MB, SURVIVED,
+   * and returned the correct site for the query that had never once answered.
+   *
+   * These cases exist because the option was a literal buried in the spawn
+   * path, where deleting it would break nothing any unit run could see — the
+   * damage shows up only as an empty `definition` against a large package,
+   * which is exactly the shape that stayed misdiagnosed for five investigations.
+   */
+  it('passes maxTsServerMemory, so tsserver does not run at the ceiling it dies at', () => {
+    expect(typescriptInitializationOptions('/x/tsserver.js', 6144)).toEqual({
+      tsserver: { path: '/x/tsserver.js' },
+      maxTsServerMemory: 6144,
+    });
+  });
+
+  it('carries a default that clears the measured 4314MB abort point', () => {
+    const opts = typescriptInitializationOptions('/x/tsserver.js');
+    // Not an equality assertion on 6144: the value may be retuned, but a
+    // default at or below where it demonstrably aborts is the regression.
+    expect(opts.maxTsServerMemory ?? 0).toBeGreaterThan(4314);
+  });
+
+  it('OMITS the key when null, so an opt-out restores node default rather than pinning another number', () => {
+    const opts = typescriptInitializationOptions('/x/tsserver.js', null);
+    expect(opts).toEqual({ tsserver: { path: '/x/tsserver.js' } });
+    expect('maxTsServerMemory' in opts).toBe(false);
+  });
+
+  it('CONTROL: the assertion really does catch the pre-fix shape', () => {
+    // The pre-fix options object was exactly this, and it is what shipped the
+    // crash. If the guard above ever stops failing on it, it has gone slack.
+    const preFix = { tsserver: { path: '/x/tsserver.js' } } as {
+      tsserver: { path: string };
+      maxTsServerMemory?: number;
+    };
+    expect(preFix.maxTsServerMemory ?? 0).not.toBeGreaterThan(4314);
   });
 });

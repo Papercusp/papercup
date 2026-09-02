@@ -445,6 +445,39 @@ export interface LspDiagnostic {
 const PROJECT_READY_TIMEOUT_MS = 60_000;
 
 /**
+ * tsserver's V8 old-space ceiling in MB, or null to leave node's default
+ * (WI-2142840).
+ *
+ * `typescript-language-server` turns this into `--max-old-space-size=<N>` on
+ * the tsserver fork (`getExecArgv`). Unset, tsserver runs at node's DEFAULT
+ * old-space — measured 2240MB on this box — and self-aborts with SIGABRT when
+ * a second large program is added to a server that already holds one. That
+ * abort is what took every TypeScript answer down.
+ *
+ * MEASURED both ways, same probe, one variable changed:
+ *   default ceiling  -> peak RSS 4314MB, `Signal: SIGABRT`, query answers
+ *                       `[nothing]`, and every later TypeScript answer is empty
+ *   6144             -> peak RSS 4981MB, server ALIVE, and the operator-core
+ *                       query returns the correct site
+ *
+ * 6144 is chosen as measured-sufficient with headroom, not guessed. The
+ * apparent cost — "up to 6GB per agent on a box running ~100 of them" — is
+ * mostly illusory, and that is the non-obvious part: this is a CAP, not an
+ * allocation. A small project still sits at ~200MB. It binds only on programs
+ * that were ALREADY consuming 4.3GB immediately before aborting, so the real
+ * marginal cost over the status quo is the ~700MB between crashing and
+ * working.
+ *
+ * It is a ceiling, not a cure: it does not stop ONE tsserver accumulating
+ * every project an agent touches (see `resolveProjectRoot`, which returns
+ * `fallbackRoot` unconditionally and so leaves the `clientKey(language,
+ * rootPath)` registry key inert). A big enough working set will still reach
+ * any ceiling; defect A's liveness eviction is what makes that survivable.
+ */
+const MAX_TSSERVER_MEMORY_MB: number | null =
+  Number(process.env.PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB ?? '') || 6144;
+
+/**
  * How long the progress set must stay CONTINUOUSLY empty before a
  * progress-signal server may issue an UNPROVEN canary when it never sends
  * `experimental/serverStatus` (WI-40224).
@@ -604,6 +637,30 @@ export function evictIfLanguageServiceDead(
   client.lastError = reason;
   clients.delete(clientKey(client.language, client.rootPath));
   return reason;
+}
+
+/**
+ * The `initializationOptions` a TypeScript client starts with (WI-2142840).
+ *
+ * Extracted so the memory ceiling is REACHABLE BY A TEST. It was a literal
+ * inside the spawn path, where nothing could assert it and deleting it would
+ * have silently restored the crash — the failure would not reappear in any
+ * unit run, only as an empty `definition` answer against a large package hours
+ * later, which is precisely how this bug stayed unexplained for so long.
+ *
+ * `maxTsServerMemory` is the wrapper's own option name; it becomes
+ * `--max-old-space-size=<N>` on the tsserver fork (`getExecArgv`). Passing null
+ * omits the key entirely, so an explicit opt-out really does restore node's
+ * default rather than pinning it to some other number.
+ */
+export function typescriptInitializationOptions(
+  tsserverPath: string,
+  maxTsServerMemoryMb: number | null = MAX_TSSERVER_MEMORY_MB,
+): { tsserver: { path: string }; maxTsServerMemory?: number } {
+  return {
+    tsserver: { path: tsserverPath },
+    ...(maxTsServerMemoryMb ? { maxTsServerMemory: maxTsServerMemoryMb } : {}),
+  };
 }
 
 /**
@@ -1002,7 +1059,7 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
 
   const initializationOptions =
     language === 'typescript'
-      ? { tsserver: { path: resolveTsserverPath() } }
+      ? typescriptInitializationOptions(resolveTsserverPath())
       : { cargo: { buildScripts: { enable: false } }, procMacro: { enable: false } };
 
   const t0 = Date.now();
