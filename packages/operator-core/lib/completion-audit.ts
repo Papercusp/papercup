@@ -41,6 +41,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { hasValidGitEntry } from './agent-tools/locks/valid-git-entry';
 import { analyzeImageBlankness } from '@papercusp/image-blankness';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY, type CompletionVerificationEvidence } from './coord-lifecycle/records';
+import { COMPLETION_CLAIM_RECHECK_KEY } from './completion-claim-recheck';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import {
   authorityForCompletion,
@@ -171,6 +172,26 @@ type OrgSql = ReturnType<typeof getOrgPg>['sql'];
  *    not built here" actually landed (2026-08-12) — the ref went away and the authority
  *    arrived, so the row now carries the opposite signature to the one documented. Read the
  *    write site before reasoning from any description of it, including this one.
+ *
+ *  - `claim-since-falsified` (WI-2142447) — a terminal row whose declared
+ *    `verification.claims` HELD when the close was written and has since been FALSIFIED by
+ *    the code moving underneath it. Every other bucket here judges the close as written;
+ *    this one judges whether it is still true, which is the only thing that protects a
+ *    reader who finds the close weeks later and acts on it.
+ *
+ *    ⚠ THE PREDICATE READS A RECORDED OBSERVATION, NEVER AN INFERENCE — and it must, because
+ *    the finding is not SQL-decidable at all. Deciding it means re-parsing source files and
+ *    re-evaluating an AST claim, which no `WHERE` clause can express; and the finding is a
+ *    TRANSITION (`holds` then, `falsified` now), which even a perfect view of the current
+ *    tree cannot distinguish from a claim that was already false at close and was already
+ *    graded for it. So `completion-claim-recheck-action.ts` performs the comparison in
+ *    process, against the close-time baseline persisted on `_completionEvidence.claimVerdicts`,
+ *    and STAMPS its verdict onto the row; this predicate selects that stamp. Naming the bucket
+ *    after a judgement its own predicate could not make is precisely the shape this module's
+ *    header exists to warn about — an audit that cannot return the row it is named for.
+ *
+ *    A row that has never been swept therefore does not match, which is correct: never-checked
+ *    and checked-clean are different states, and only the sweep may collapse one into the other.
  */
 export const COMPLETION_AUDITS = [
   'no-completion-record',
@@ -179,6 +200,7 @@ export const COMPLETION_AUDITS = [
   'geometry-unverified',
   'intermittent-underevidenced',
   'reconciler-sourced',
+  'claim-since-falsified',
 ] as const;
 export type CompletionAudit = (typeof COMPLETION_AUDITS)[number];
 
@@ -609,6 +631,11 @@ export function auditPredicateSql(sql: OrgSql, audit: WorkItemAudit) {
       sql.unsafe(`payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->>'testsRun'`),
     );
   }
+  if (audit === 'claim-since-falsified') {
+    // WI-2142447: selects the sweep's own STAMP, not a re-derivation of it. See this
+    // bucket's module-header paragraph for why the finding is not SQL-decidable.
+    return sql.unsafe(`payload->'${COMPLETION_CLAIM_RECHECK_KEY}'->>'verdict' = 'regressed'`);
+  }
   // 'reconciler-sourced' (EI-18677799334390930, rescued by D-012 from the deleted
   // `no-evidence` branch). Keyed on the ACTOR alone — never on an evidence key — so a
   // future caller adding a well-meaning but misleading evidence stamp to the reconcile
@@ -650,6 +677,10 @@ export function auditPredicateSqlFor(sql: OrgSql, audit: WorkItemAudit, alias: s
       sql.unsafe(`${alias}.payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->>'testResult'`),
       sql.unsafe(`${alias}.payload->'${TERMINAL_COMPLETION_EVIDENCE_KEY}'->>'testsRun'`),
     );
+  }
+  if (audit === 'claim-since-falsified') {
+    // Same stamp-reading rule as auditPredicateSql above, aliased.
+    return sql.unsafe(`${alias}.payload->'${COMPLETION_CLAIM_RECHECK_KEY}'->>'verdict' = 'regressed'`);
   }
   // 'reconciler-sourced': same actor-keyed rule as auditPredicateSql above.
   return sql`${owner} = ${RECONCILER_SYSTEM_ACTOR}`;
