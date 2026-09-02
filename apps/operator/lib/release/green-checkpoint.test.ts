@@ -13157,6 +13157,10 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
         "dispatch-infeasible-but-not-stalled queue must not launch a fixer",
       );
     };
+    let routedCount = 0;
+    deps.routeFrozenRepairToAgents = async () => {
+      routedCount += 1;
+    };
     deps.checkFixerProviderCapacity = async () => ({
       ok: false,
       summary: "all codex accounts are usage-walled",
@@ -13167,6 +13171,10 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
 
     // The frozen candidate survives untouched: no worktree cleanup, no queue abandonment.
     expect(cleaned).toEqual([]);
+    // P-003 negative control: this hold resolves inside the 15-minute stall window, so no
+    // work-item is minted. Routing ordinary pool churn to the fleet is how a useful alarm
+    // becomes noise nobody claims.
+    expect(routedCount).toBe(0);
     expect(queue).toMatchObject({ candidate: frozen, attempts: 0 });
     expect(result).toMatchObject({
       advanced: false,
@@ -13199,6 +13207,11 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     };
     const { deps } = stubDeps(true);
     const cleaned: string[] = [];
+    const routed: Parameters<
+      NonNullable<
+        Parameters<typeof runGreenCheckpoint>[1]["routeFrozenRepairToAgents"]
+      >
+    >[0][] = [];
     deps.readFrozenRepairQueue = async () => queue;
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
@@ -13212,6 +13225,9 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     deps.dispatchFrozenRepairFixer = async () => {
       throw new Error("a capacity-held queue must not launch a fixer");
     };
+    deps.routeFrozenRepairToAgents = async (input) => {
+      routed.push(input);
+    };
     deps.checkFixerProviderCapacity = async () => ({
       ok: false,
       summary: "all codex accounts are usage-walled",
@@ -13223,6 +13239,15 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     // SURVIVES the run: no worktree cleanup, no abandonment, still pinned to the candidate
     // agents are converging on.
     expect(cleaned).toEqual([]);
+    // P-003: holding is only worth something if the repair reaches somebody. With no fixer
+    // dispatchable, agents ARE the repair path, so the hold must route — naming the frozen
+    // candidate (not tip) and the failing set to converge onto it.
+    expect(routed).toHaveLength(1);
+    expect(routed[0]).toMatchObject({
+      candidate: frozen,
+      repairHead: frozen,
+      failingTests: ["lib/broken.test.ts"],
+    });
     expect(queue).toMatchObject({ candidate: frozen, attempts: 0 });
     expect(result).toMatchObject({
       advanced: false,
@@ -13269,6 +13294,10 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     deps.dispatchFrozenRepairFixer = async () => {
       throw new Error("a hold-expired queue must not launch a fixer");
     };
+    let routedCount = 0;
+    deps.routeFrozenRepairToAgents = async () => {
+      routedCount += 1;
+    };
     deps.checkFixerProviderCapacity = async () => ({
       ok: false,
       summary: "all codex accounts are usage-walled",
@@ -13278,6 +13307,9 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
     expect(calls).toContain("runGreen");
+    // P-003 negative control: the candidate this alarm would name no longer exists once the
+    // queue is retired, so nothing is routed on the retire path.
+    expect(routedCount).toBe(0);
     expect(cleaned).toEqual([frozen, movingTip]);
     expect(queue).toBeNull();
     expect(result).toMatchObject({

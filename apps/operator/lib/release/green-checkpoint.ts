@@ -1017,6 +1017,31 @@ export interface CheckpointDeps {
     summary: string;
     retryAtMs?: number | null;
   }>;
+  /**
+   * WI-2141736 P-003: route a HELD frozen repair to AGENTS, because the fixer cannot run.
+   *
+   * Called once per tick for as long as a zero-attempt queue is held on a long provider
+   * wall (the `wait-for-dispatch-capacity` + `zeroAttemptStalled` branch). Holding the
+   * freeze is only worth anything if someone converges onto `repairHead`; a held queue with
+   * no fixer and no owner just waits out its budget and is retired, which is the treadmill
+   * D-007 diagnosed taking the slow road.
+   *
+   * ABSENT ⇒ no routing, which keeps every existing stub and non-recording CLI run
+   * byte-identical. Best-effort by contract: the implementation must never throw and must
+   * never be able to fail the checkpoint — routing is an aid to repair, not a precondition
+   * for one.
+   */
+  routeFrozenRepairToAgents?(input: {
+    pipeline: string;
+    candidate: string;
+    repairHead: string;
+    failingTests: readonly string[];
+    worktreePath?: string | null;
+    capacityRetryAtMs?: number | null;
+    capacitySummary?: string | null;
+    heldMs: number;
+    convergenceHoldMs: number;
+  }): Promise<void>;
   /** D-001 / WI-39944: the one serialized frozen-candidate repair queue. These hooks
    * live on the existing gate dependency seam so test stubs and non-recording CLI runs
    * keep the old behavior when the routine metadata target is unavailable. */
@@ -9264,6 +9289,33 @@ async function runGreenCheckpointInner(
                 }`
               : summary,
           );
+          if (dispatchInfeasible.zeroAttemptStalled) {
+            // WI-2141736 P-003: the LONG-WALL hold is the only state in which no fixer will
+            // ever be dispatched for this candidate, so the repair has to be routed to
+            // agents or the hold converges nowhere. Deliberately only on the stalled branch:
+            // the not-yet-stalled hold resolves inside the 15-minute stall window, and
+            // minting a work-item for it would page the fleet for ordinary pool churn.
+            //
+            // Best-effort, and swallowing here is the point: routing failing must never
+            // convert a held candidate into a failed checkpoint.
+            await deps
+              .routeFrozenRepairToAgents?.({
+                pipeline: pipelineName(cfg.integrationRoot),
+                candidate: repairQueue.candidate,
+                repairHead: repairQueue.repairHead,
+                failingTests: repairQueue.failingTests,
+                worktreePath: repairQueue.worktreePath,
+                capacityRetryAtMs: dispatchInfeasible.capacityRetryAtMs,
+                capacitySummary: dispatch.capacityHold.summary,
+                heldMs: dispatchInfeasible.ageMs,
+                convergenceHoldMs: dispatchInfeasible.convergenceHoldMs,
+              })
+              .catch((e) =>
+                deps.log(
+                  `warn: frozen-repair agent routing failed (candidate stays held): ${e instanceof Error ? e.message : e}`,
+                ),
+              );
+          }
           return withFossilAbandonment({
             advanced: false,
             candidate: repairQueue.repairHead,
@@ -14972,6 +15024,40 @@ export function realCheckpointDeps(
     runId,
     qualificationAttemptId:
       process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined,
+    async routeFrozenRepairToAgents(input) {
+      // WI-2141736 P-003. The condition bridge is what turns this alarm into exactly ONE
+      // claimable convergence work-item — the same substrate `gate-red-streak:<pipeline>`
+      // uses — so the key comes back FROM the builder rather than being typed here: a
+      // near-miss key would mint a second work-item for the same held candidate.
+      //
+      // No `oneShot`: unlike the red-streak emitter (which fires once per episode and whose
+      // silence therefore carries no information), this one re-fires every tick while the
+      // hold holds, so the condition-staleness sweep closing it on absence is the correct
+      // recovery path. See the contract note in frozen-repair-agent-routing.ts.
+      try {
+        const { buildFrozenRepairConvergenceBroadcast } = await import(
+          "@papercusp/operator-core/lib/release/frozen-repair-agent-routing"
+        );
+        const { broadcastSevereEvent } = await import(
+          "@papercusp/operator-core/lib/severe-event-broadcast"
+        );
+        const ev = buildFrozenRepairConvergenceBroadcast({
+          ...input,
+          nowMs: Date.now(),
+        });
+        await broadcastSevereEvent({
+          summary: ev.summary,
+          body: ev.body,
+          category: "severe-event",
+          conditionKey: ev.conditionKey,
+        });
+      } catch (e) {
+        // Never fatal: a held candidate that could not be routed is still correctly held.
+        console.warn(
+          `[green-checkpoint] frozen-repair agent routing failed (non-fatal): ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    },
     async checkFixerProviderCapacity() {
       const { accountStatus } =
         await import("@papercusp/operator-core/lib/deployment/account-pool-store");

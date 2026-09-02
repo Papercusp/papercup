@@ -48,6 +48,16 @@ export interface ActionableCondition {
 export const GITHUB_BRIDGE_AGENT_ACTIONABLE_CONDITION_PREFIX = 'github-bridge-agent-actionable:';
 
 /**
+ * Stable condition namespace for a frozen candidate HELD for agent convergence
+ * (WI-2141736 P-003). Declared here, in the zero-import leaf, and imported by the
+ * emitter (release/frozen-repair-agent-routing.ts) rather than the other way round: the
+ * catalog must not grow imports, and a prefix spelled twice is a key that can drift out
+ * of its own opt-in entry — at which point the alarm broadcasts and silently mints
+ * nothing, which is indistinguishable from no red at all.
+ */
+export const FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX = 'frozen-repair-convergence:';
+
+/**
  * The opt-in catalog. See {@link ActionableCondition.harnessFrom} for why the
  * harness derivation is explicit per-entry rather than parsed.
  */
@@ -61,6 +71,18 @@ export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   // already fires the urgent stall alert, so the condition's open/close cannot drift
   // from the state machine that decides the gate is stuck. Critical: `main` is frozen.
   { prefix: 'gate-red-streak:', harnessFrom: 'suffix', severity: 'critical' },
+  // WI-2141736 P-003 (frozen-candidate-freeze-actually-holds-2026-09-02). Distinct from
+  // `gate-red-streak:` above, which says "the gate is red, own it". THIS one says the
+  // frozen candidate is being HELD with no dispatchable fixer — so agent/human convergence
+  // onto a NAMED sha, by a named call, within a stated deadline, is the only remaining
+  // repair path before the candidate is retired. Measured 2026-09-02: a six-day provider
+  // wall produced 20 retirements and 0 resumes in one day, and nothing ever asked an agent
+  // to converge. Opted in because it is durable (bounded by the 4h convergence hold, not a
+  // per-tick flap) and actionable (the body carries the exact `release:repair-queue`
+  // converge call). Emitted by green-checkpoint's `routeFrozenRepairToAgents` dep on every
+  // tick the hold holds; suffix is `pipelineName(integrationRoot)`, the same slug the other
+  // gate entries use. Critical: it is the last path off a frozen `main`.
+  { prefix: FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX, harnessFrom: 'suffix', severity: 'critical' },
   { prefix: 'main-behind-staging:', harnessFrom: 'suffix', severity: 'major' },
   { prefix: 'release-trigger-freeze:', harnessFrom: 'suffix', severity: 'major' },
   { prefix: 'release-trigger-fire-stale:', harnessFrom: 'suffix', severity: 'major' },
