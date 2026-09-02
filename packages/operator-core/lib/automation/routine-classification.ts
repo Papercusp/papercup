@@ -570,6 +570,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'One bounded `git log` over the frozen candidate..staging range plus a report-only captureImprovement — no spawn/dispatch/wake. Filing a finding can lead a HUMAN or a later triage routine to act, but nothing this fire does bills a turn directly, matching worker-breaker-watch (which even broadcasts on coord) being none',
   },
+  'system:completion-claim-recheck': {
+    spend: 'none',
+    why: 'Re-evaluates already-declared completion claims against the working tree (fs read + TypeScript AST parse, no type resolution and no build), stamps each row and files findings via captureImprovement — no spawn/dispatch/wake. Matches dead-citation-sweep: a filed finding can lead a HUMAN or a later triage lane to act, but nothing this fire does bills a turn directly',
+  },
   'system:dead-citation-sweep': {
     spend: 'none',
     why: 'Doc/metadata citation-drift scan filing findings via captureImprovement — no spawn/dispatch/wake',
