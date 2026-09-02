@@ -8,12 +8,28 @@ import { describe, expect, it } from 'vitest';
 import {
   AUTO_AFFINITY_TTL_MS,
   CONTEXT_1M_STICKY_MIN_EST_TOKENS,
+  hasContext1mBeta,
   nativeSessionIdFromMetaUserId,
   shouldRestoreContext1m,
   supportsContext1m,
 } from './gateway';
+import { CLAUDE_CONTEXT_1M_BETA, withOAuthBeta } from './credential-store';
 
 const NATIVE = 'da701a71-7e45-4018-bb76-cca675de0cfd';
+
+describe('hasContext1mBeta — the served window is the HEADER, not the body marker', () => {
+  it('sees the CLI’s client-side [1m] resolution (bare model id + beta header)', () => {
+    expect(hasContext1mBeta(`oauth-2025-04-20, ${CLAUDE_CONTEXT_1M_BETA}`)).toBe(true);
+    expect(hasContext1mBeta(withOAuthBeta('interleaved-thinking-2025-05-14', true))).toBe(true);
+    expect(hasContext1mBeta(withOAuthBeta(CLAUDE_CONTEXT_1M_BETA, false))).toBe(true);
+  });
+  it('a header without the beta — the exact shape of a CLI that fell back to 200k — is false', () => {
+    expect(hasContext1mBeta('oauth-2025-04-20,interleaved-thinking-2025-05-14')).toBe(false);
+    expect(hasContext1mBeta(withOAuthBeta(undefined, false))).toBe(false);
+    expect(hasContext1mBeta(undefined)).toBe(false);
+    expect(hasContext1mBeta('')).toBe(false);
+  });
+});
 
 describe('nativeSessionIdFromMetaUserId', () => {
   it('reads the CC 2.1.x JSON-string form', () => {

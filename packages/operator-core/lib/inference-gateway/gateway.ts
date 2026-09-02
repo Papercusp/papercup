@@ -712,6 +712,17 @@ export function nativeSessionIdFromMetaUserId(metaUserId: unknown): string | nul
   return m && UUID.test(m[1]) ? m[1].toLowerCase() : null;
 }
 
+/** Does an `anthropic-beta` header value already carry the 1M-context beta? The Claude CLI resolves
+ *  `model[1m]` client-side into exactly this header, so it — not the body marker — is what says
+ *  whether the forwarded request is served at 1M. */
+export function hasContext1mBeta(betaHeader: string | null | undefined): boolean {
+  if (!betaHeader) return false;
+  return betaHeader
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .some((s) => s === CLAUDE_CONTEXT_1M_BETA || s.startsWith('context-1m'));
+}
+
 /** Models the gateway will RESTORE the 1M-context beta onto: the `[1m]`-alias targets (the CLI's own
  *  `opus[1m]`/`sonnet[1m]`/`fable[1m]` resolve to exactly these ids) plus any dated id of those families
  *  the caller itself was already served at 1M. Deliberately NOT haiku and NOT the sonnet-4.x last-resort
@@ -4314,7 +4325,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // it as-is is a certain "Prompt is too long" — the CLI's own silent 1M→200k fallback is how
       // da701a71 died at 248,703 tokens on 2026-09-02. Restore the beta; a 1M request the account
       // cannot serve right now is a 429 the CLI retries, which is strictly better than a dead session.
-      if (!context1m && url.startsWith('/v1/messages')) {
+      // The `[1m]` BODY marker is one of two ways a caller gets the 1M window: the Claude CLI resolves
+      // `model[1m]` CLIENT-SIDE into a bare model id + its own `anthropic-beta: context-1m-…` header
+      // (measured 2026-09-02: a live 289k-token fable session arrives as `claude-fable-5-1` with
+      // context1m=false and the beta in its header). The SERVED window is therefore the header's, so
+      // both the sticky rule and the recorded route read the effective header, never the marker alone.
+      const clientHas1m = hasContext1mBeta(
+        baseHeaders['anthropic-beta'] ?? (req.headers['anthropic-beta'] as string | undefined),
+      );
+      if (!context1m && !clientHas1m && url.startsWith('/v1/messages')) {
         const prior = lastRouteByOwner.get(affinityKey ?? wantOwner ?? '');
         if (shouldRestoreContext1m(prior, model, est.inTok, Date.now())) {
           context1m = true;
@@ -4334,6 +4353,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         baseHeaders['anthropic-beta'] ?? (req.headers['anthropic-beta'] as string | undefined),
         context1m,
       );
+      /** What the route record and the compaction watchdog mean by "served at 1M": the beta is in the
+       *  header that actually leaves this machine, whichever of the two paths put it there. */
+      const servedContext1m = hasContext1mBeta(baseHeaders['anthropic-beta']);
       if (!baseHeaders['anthropic-version']) baseHeaders['anthropic-version'] = ANTHROPIC_VERSION;
       baseHeaders['accept-encoding'] = 'identity';
 
@@ -5233,7 +5255,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
                     detail: outHeaders[PIN_YIELDED_HEADER],
                   });
                 }
-                recordRoute(affinityKey ?? wantOwner, metadata.accountId, model, { context1m, nativeSessionId });
+                recordRoute(affinityKey ?? wantOwner, metadata.accountId, model, {
+                  context1m: servedContext1m,
+                  nativeSessionId,
+                });
                 recordOwnerOutcome(
                   wantOwner,
                   status < 400 ? 'ok' : status === 429 ? 'upstream_429' : 'upstream_error',
@@ -5446,7 +5471,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // An absorb that gave up still routed and still owes its outcome
               // record; a downgrade-rung forward never recorded one.
               if (absorbGaveUp) {
-                recordRoute(affinityKey ?? wantOwner, active.accountId, model, { context1m, nativeSessionId });
+                recordRoute(affinityKey ?? wantOwner, active.accountId, model, {
+                  context1m: servedContext1m,
+                  nativeSessionId,
+                });
                 recordOwnerOutcome(
                   wantOwner,
                   taken.status < 400 ? 'ok' : taken.status === 429 ? 'upstream_429' : 'upstream_error',
