@@ -97,10 +97,25 @@ const remoteInitializerProtocolVersion = (): string => {
  * Executing it is what proves the verifier resolves a real version at build time.
  */
 const deriveVerifierProtocolVersion = (): string => {
-  const pipeline =
-    `grep -A1 'WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION *=' "$1" ` +
-    `| grep -oE "'papercusp-gcp-iap-initialization-v[0-9]+'" | head -1 | tr -d "'"`;
-  const result = spawnSync('bash', ['-c', pipeline, 'bash', REMOTE_INITIALIZER_SRC], {
+  // EXTRACT the verifier's pipeline from the script rather than restating it here. A
+  // hand-copied replica is what broke this test: the script was made quote-AGNOSTIC on
+  // 2026-09-01 (its own comment cites the build that failed when the TS formatter moved
+  // the constant to double quotes), while this copy kept demanding single quotes. The
+  // test then failed against a verifier that was correct — the exact inverse of the drift
+  // it exists to catch, and a false alarm is a worse failure here than silence, because
+  // it sends someone to "fix" a shipped script that already works.
+  const script = read(VERIFY_SCRIPT);
+  const match = script.match(/_ri_ver="\$\(([\s\S]*?)\)"\r?\n/);
+  if (!match?.[1]?.trim()) {
+    throw new Error(
+      `could not extract the _ri_ver derivation pipeline from ${VERIFY_SCRIPT} — ` +
+        'if the verifier renamed or restructured it, update this extractor rather than ' +
+        're-copying the pipeline, or the two ends can silently drift again',
+    );
+  }
+  // The pipeline reads "$_ri_src"; bind it to the real source file the same way the
+  // script does, then let the command substitution's body write to stdout as usual.
+  const result = spawnSync('bash', ['-c', `_ri_src="$1"\n${match[1]}`, 'bash', REMOTE_INITIALIZER_SRC], {
     encoding: 'utf8',
     timeout: 60_000,
     killSignal: 'SIGKILL',
