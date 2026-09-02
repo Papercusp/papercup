@@ -685,12 +685,25 @@ function injectAuditPath(): string {
  *  and legitimately often unlabelled, so they are counted but not itemised. */
 const TURN_CLASS_MODES = new Set(['turn', 'compact', 'reset', 'recycle', 'carry-respawn']);
 
-/** How often the heartbeat row below is written, in checked injects. */
-const INJECT_AUDIT_HEARTBEAT_EVERY = 500;
+/** How often the heartbeat row below is written, in checked injects.
+ *
+ *  `injectsChecked` is MODULE-LEVEL, so it restarts at 0 with every process. A
+ *  sender that is recycled more often than it performs 500 injects therefore never
+ *  emits a heartbeat at all — which reads as "the detector was never wired up"
+ *  rather than "this process was short-lived". The override exists so the interval
+ *  can be lowered (to 1, in a probe) and the instrument answered in minutes instead
+ *  of waited on for hours; a non-numeric or non-positive value keeps the default. */
+const INJECT_AUDIT_HEARTBEAT_DEFAULT = 500;
+
+function injectAuditHeartbeatEvery(): number {
+  const raw = Number(process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_HEARTBEAT_EVERY);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : INJECT_AUDIT_HEARTBEAT_DEFAULT;
+}
 
 let injectsChecked = 0;
 let injectsMismatched = 0;
 let injectsUnlabelled = 0;
+let injectsIndeterminate = 0;
 
 /**
  * The owner KEY a socket PATH carries, independent of what the caller asserted.
@@ -789,14 +802,38 @@ export function auditInjectOwnerBinding(
       // binding the host wrote before accusing anyone of a misroute — a detector
       // that cries wolf on a rebound socket is one people learn to ignore.
       const recorded = recordedOwnerIdForSock(sock);
-      if (recorded === null) return 'indeterminate';
+      if (recorded === null) {
+        // NOT an accusation — the verdict stays `indeterminate`, because an absence of
+        // evidence is not a misroute. But it is not NOTHING either: the two cheap
+        // witnesses DID disagree and we simply could not adjudicate it, which is a
+        // materially different event from a delivery that never looked suspicious.
+        // Leaving it silent applies the heartbeat's own lesson (below) everywhere
+        // except the one path that goes quiet exactly when it matters: a respawn
+        // storm is precisely when a host's discovery record is missing or mid-rewrite,
+        // and the WI-2140968 misroutes were MEASURED inside one. A detector whose
+        // blind spot coincides with the incident it was built for reports a zero that
+        // cannot be distinguished from an all-clear.
+        injectsIndeterminate += 1;
+        appendInjectAudit({
+          kind: 'inject-owner-indeterminate',
+          mode: msg.mode,
+          envelopeOwnerId: msg.ownerId,
+          sockOwnerId: sockOwner,
+          deliveryId: msg.deliveryId ?? null,
+          checked: injectsChecked,
+          indeterminate: injectsIndeterminate,
+          pid: process.pid,
+        });
+        return 'indeterminate';
+      }
       if (recorded === msg.ownerId) {
-        if (injectsChecked % INJECT_AUDIT_HEARTBEAT_EVERY === 0) {
+        if (injectsChecked % injectAuditHeartbeatEvery() === 0) {
           appendInjectAudit({
             kind: 'inject-audit-heartbeat',
             checked: injectsChecked,
             mismatched: injectsMismatched,
             unlabelled: injectsUnlabelled,
+            indeterminate: injectsIndeterminate,
             pid: process.pid,
           });
         }
@@ -845,12 +882,13 @@ export function auditInjectOwnerBinding(
     // heartbeat states the population actually searched, so a later reader can
     // tell "no mismatches in 40,000 checked injects" from "the instrument was
     // never wired up".
-    if (injectsChecked % INJECT_AUDIT_HEARTBEAT_EVERY === 0) {
+    if (injectsChecked % injectAuditHeartbeatEvery() === 0) {
       appendInjectAudit({
         kind: 'inject-audit-heartbeat',
         checked: injectsChecked,
         mismatched: injectsMismatched,
         unlabelled: injectsUnlabelled,
+        indeterminate: injectsIndeterminate,
         pid: process.pid,
       });
     }
@@ -866,8 +904,14 @@ export function _injectAuditCountersForTest(): {
   checked: number;
   mismatched: number;
   unlabelled: number;
+  indeterminate: number;
 } {
-  return { checked: injectsChecked, mismatched: injectsMismatched, unlabelled: injectsUnlabelled };
+  return {
+    checked: injectsChecked,
+    mismatched: injectsMismatched,
+    unlabelled: injectsUnlabelled,
+    indeterminate: injectsIndeterminate,
+  };
 }
 
 export function injectIntoHostWithConfirmation(

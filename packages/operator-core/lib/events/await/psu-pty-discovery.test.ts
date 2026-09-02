@@ -1108,13 +1108,41 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('reports indeterminate when no discovery record explains the disagreement', () => {
+  it('reports indeterminate when no discovery record explains the disagreement — and COUNTS it', () => {
     // Filenames disagree and there is no record binding this socket to anyone. That is
-    // an ABSENCE of evidence; calling it a misroute would be inventing one.
+    // an ABSENCE of evidence; calling it a misroute would be inventing one — so the
+    // verdict stays `indeterminate` and nobody is accused.
+    //
+    // But it is not NOTHING. The witnesses DID disagree; we merely could not adjudicate.
+    // Staying silent here is the heartbeat's own false-negative trap on the one path
+    // that goes quiet exactly when it matters: a respawn storm is when a discovery
+    // record is missing or mid-rewrite, and the WI-2140968 misroutes were measured
+    // inside one. So the row is written as a CENSUS entry, never as an accusation.
     const orphan = join(PSU_PTY_DIR, `${sanitizeKey(OWNER_B)}-orphan-${Date.now()}.sock`);
     expect(auditInjectOwnerBinding(orphan, { mode: 'turn', ownerId: OWNER_A })).toBe('indeterminate');
-    expect(rows()).toHaveLength(0);
+
+    // NOT accused: no mismatch row, no operator-facing warning.
+    expect(rows().filter((r) => r.kind === 'inject-owner-mismatch')).toHaveLength(0);
     expect(warn).not.toHaveBeenCalled();
+
+    // ...but no longer invisible.
+    const seen = rows().filter((r) => r.kind === 'inject-owner-indeterminate');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      mode: 'turn',
+      envelopeOwnerId: OWNER_A,
+      sockOwnerId: sanitizeKey(OWNER_B),
+    });
+  });
+
+  it('keeps the NO-WITNESS path silent — only an unadjudicable DISAGREEMENT is censused', () => {
+    // The discriminator that keeps the new census row honest. A path carrying no owner
+    // witness at all never observed a disagreement in the first place, so it must not
+    // inflate the indeterminate census; it returns before the counter even increments.
+    expect(auditInjectOwnerBinding('/tmp/not-a-socket', { mode: 'turn', ownerId: OWNER_A })).toBe(
+      'indeterminate',
+    );
+    expect(rows()).toHaveLength(0);
   });
 
   it('records an unlabelled TURN-class inject — the guard’s fail-open exemption', () => {
@@ -1140,6 +1168,45 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
       'indeterminate',
     );
     expect(rows()).toHaveLength(0);
+  });
+
+  // The heartbeat is the detector's positive control, but `injectsChecked` is
+  // module-level and restarts at 0 with every process. A sender recycled more often
+  // than it performs 500 injects therefore emits NO heartbeat ever — a silence that
+  // reads as "never wired up" rather than "short-lived". Measured on this box: the
+  // whole audit population was 9 short-lived pids reaching ~25 checks apiece, so the
+  // control was unreachable by construction. The override turns a falsifier you WAIT
+  // on into one you can PROBE.
+  it('honours a heartbeat-interval override, so the positive control is reachable in a probe', () => {
+    process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_HEARTBEAT_EVERY = '1';
+    try {
+      auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), {
+        mode: 'turn',
+        ownerId: OWNER_A,
+      });
+      const beats = rows().filter((r) => r.kind === 'inject-audit-heartbeat');
+      expect(beats.length).toBeGreaterThanOrEqual(1);
+      expect(beats[0]).toMatchObject({ pid: process.pid });
+      expect(typeof beats[0].checked).toBe('number');
+    } finally {
+      delete process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_HEARTBEAT_EVERY;
+    }
+  });
+
+  it('ignores a junk or non-positive heartbeat override rather than beating on every inject', () => {
+    for (const bad of ['0', '-5', 'banana', '']) {
+      process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_HEARTBEAT_EVERY = bad;
+      try {
+        auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), {
+          mode: 'turn',
+          ownerId: OWNER_A,
+        });
+      } finally {
+        delete process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_HEARTBEAT_EVERY;
+      }
+    }
+    // Default interval (500) is far above the handful of checks this test performed.
+    expect(rows().filter((r) => r.kind === 'inject-audit-heartbeat')).toHaveLength(0);
   });
 
   it('never throws, and never blocks a delivery, on a hostile audit path', () => {
