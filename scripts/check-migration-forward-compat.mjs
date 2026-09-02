@@ -620,15 +620,58 @@ export function addedColumnsFor(sqlText) {
  * that makes authors reach for the `-- FORWARD-COMPAT:` escape hatch to silence a lint they
  * (correctly) read as broken, which is how a REAL forward-compat break gets waved through.
  */
-export function alteredTablesFor(sqlText) {
-  const code = stripComments(sqlText);
-  const tables = new Set();
-  const alterTable = /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?((?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)(?:\s*\.\s*(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*))*)/gi;
-  for (const match of code.matchAll(alterTable)) {
-    const last = match[1].split('.').pop().trim();
-    tables.add(last.replace(/^"|"$/g, ''));
+const NAME_COMPONENT = /^(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_$]*))/;
+
+/**
+ * Resolve ONE `ALTER TABLE` target from the text following the statement header.
+ *
+ * Returns `{ table }` when the whole qualified name parsed, `{ unresolved }` when it did
+ * not. Walking component-by-component is the entire point: it distinguishes a name that
+ * ENDED (`harness_shared.adv_sessions`) from one CUT OFF at a dot (`harness_shared.` +
+ * something that is not an identifier). One regex cannot tell those apart — its capture
+ * just stops early and hands back a bare SCHEMA name wearing a table's clothes.
+ *
+ * The shape that matters is the standard dynamic-DDL idiom
+ * `EXECUTE format('ALTER TABLE harness_shared.%I ...', t)`: `%` cannot start an
+ * identifier, so the old single-regex capture yielded the token `harness_shared`
+ * (EI-22144711421464181).
+ */
+function parseAlterTarget(rest) {
+  let cursor = 0;
+  for (;;) {
+    const component = NAME_COMPONENT.exec(rest.slice(cursor));
+    if (!component) return { unresolved: rest.slice(0, 60).split('\n')[0].trim() };
+    const name = component[1] ?? component[2];
+    cursor += component[0].length;
+    const dot = /^\s*\.\s*/.exec(rest.slice(cursor));
+    if (!dot) return { table: name };
+    cursor += dot[0].length;
   }
-  return [...tables];
+}
+
+/**
+ * Extract what the ALTER TABLE statements target, split into the tables we RESOLVED and
+ * the targets we could NOT resolve.
+ *
+ * The split is the safety property. `tables` is only sound as an EXCLUSION filter when it
+ * is COMPLETE, and a dynamic target means it is not — so callers must consult `unresolved`
+ * rather than assuming a non-empty list describes every altered table.
+ */
+export function alterTargetsFor(sqlText) {
+  const code = stripComments(sqlText);
+  const alterTableHead = /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?/gi;
+  const tables = new Set();
+  const unresolved = [];
+  for (const head of code.matchAll(alterTableHead)) {
+    const target = parseAlterTarget(code.slice(head.index + head[0].length));
+    if (target.table !== undefined) tables.add(target.table);
+    else if (!unresolved.includes(target.unresolved)) unresolved.push(target.unresolved);
+  }
+  return { tables: [...tables], unresolved };
+}
+
+export function alteredTablesFor(sqlText) {
+  return alterTargetsFor(sqlText).tables;
 }
 
 function sourceFileExtension(file) {
@@ -731,18 +774,29 @@ function sourceFilesForRepo() {
  * migration. `sourceFiles` is injectable so unit tests can prove the detector on
  * small fixtures without writing into the shared checkout.
  *
+ * `unresolvedTargets` is non-empty when an ALTER TABLE target could not be parsed (a dynamic
+ * `%I`/`%s`). The table filter is SKIPPED in that case — see the reasoning at the call site —
+ * so the caller can explain why its result set is column-name-only and broad.
+ *
  * @param {string} sqlText
  * @param {Array<{file: string, text: string}>} sourceFiles
- * @returns {{ columns: string[], references: Array<{column: string, file: string, line: number}> }}
+ * @returns {{ columns: string[], references: Array<{column: string, file: string, line: number}>, unresolvedTargets: string[] }}
  */
 export function findDraftColumnReferences(sqlText, sourceFiles = []) {
   const columns = addedColumnsFor(sqlText);
-  const tables = alteredTablesFor(sqlText);
+  const { tables, unresolved } = alterTargetsFor(sqlText);
   // A file cannot be reading `<table>.<column>` if it never mentions `<table>`. Requiring both
   // is what makes the scan usable for a column whose name is also an ordinary programming word.
   // If no table could be parsed we fall back to the column-only match, so an SQL shape this
   // regex does not understand is still scanned exactly as strictly as it was before.
-  const tableTokens = tables.map((t) => new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(t)}(?![A-Za-z0-9_$])`, 'i'));
+  //
+  // A PARTIAL list gets that same fallback, for the same reason. Excluding a file because it
+  // mentions none of the tables is only sound when we know ALL of them; with an unresolved
+  // dynamic target we do not, and a partial list would silently exclude the very file that
+  // reads the dynamically-altered table. "I parsed 4 of 5 targets" is not "I know the targets"
+  // — so the honest states are FULLY RESOLVED (qualify) or NOT (don't), with no middle.
+  const qualifyingTables = unresolved.length > 0 ? [] : tables;
+  const tableTokens = qualifyingTables.map((t) => new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(t)}(?![A-Za-z0-9_$])`, 'i'));
   const references = [];
   for (const column of columns) {
     const token = new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(column)}(?![A-Za-z0-9_$])`, 'i');
@@ -759,7 +813,9 @@ export function findDraftColumnReferences(sqlText, sourceFiles = []) {
       });
     }
   }
-  return { columns, references };
+  // Reported so a caller can SAY why the scan was unqualified. An unexplained flood is what
+  // trains authors to reach for the ACK marker; a named cause tells them the actual remedy.
+  return { columns, references, unresolvedTargets: unresolved };
 }
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1142,8 +1198,17 @@ function main() {
       console.error('names a column from one of those files breaks every live operator until the');
       console.error('migration is armed and applied. Keep dependent code out of the draft, or arm/apply');
       console.error('the migration before shipping the code that reads it.\n');
-      for (const { file, columns, references } of draftOffenders) {
+      for (const { file, columns, references, unresolvedTargets } of draftOffenders) {
         console.error(`  ${file} adds: ${columns.join(', ')}`);
+        if (unresolvedTargets?.length) {
+          // Without this line the author sees a flood of files that plainly have nothing to do
+          // with the migration, concludes the lint is broken, and silences it with the ACK
+          // marker. The cause is specific and the remedy is cheap, so say both.
+          console.error(`      [unqualified] could not resolve the ALTER TABLE target: ${unresolvedTargets.join(' | ')}`);
+          console.error('      -> the table filter was SKIPPED, so the list below is column-name-only and broad.');
+          console.error('      -> spell the ALTER TABLE target out literally (a dynamic %I/%s target is unparseable)');
+          console.error('         so the scan can narrow to the tables you actually alter.');
+        }
         for (const ref of references) console.error(`      [add-column] ${ref.column} referenced by ${ref.file}:${ref.line}`);
       }
     }

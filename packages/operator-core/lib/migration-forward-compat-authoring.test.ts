@@ -28,6 +28,7 @@ import { describe, expect, it } from 'vitest';
 import {
   addedColumnsFor,
   alteredTablesFor,
+  alterTargetsFor,
   ACK_MARKER,
   ENFORCE_FROM,
   findDraftColumnReferences,

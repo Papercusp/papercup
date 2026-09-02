@@ -103,17 +103,17 @@ export function readForwardCompatSidecar(directory: string, artifactFile: string
  */
 export function addedColumnsFor(sqlText: any): string[];
 /**
- * Extract the table identifiers an ALTER TABLE statement targets, WITHOUT the schema
- * qualifier (`harness_shared.local_backends` -> `local_backends`), because source code
- * names the bare table far more often than the schema-qualified one.
+ * Extract what the ALTER TABLE statements target, split into the tables we RESOLVED and
+ * the targets we could NOT resolve.
  *
- * This exists to qualify the column scan below. A bare column-name match alone is far too
- * broad: measured on migration 843, the column `lifecycle` matched **357 source files**,
- * none of which had anything to do with `local_backends` — plugin lifecycle, release
- * lifecycle, work-item lifecycle. That flood is not a conservative guard, it is the thing
- * that makes authors reach for the `-- FORWARD-COMPAT:` escape hatch to silence a lint they
- * (correctly) read as broken, which is how a REAL forward-compat break gets waved through.
+ * The split is the safety property. `tables` is only sound as an EXCLUSION filter when it
+ * is COMPLETE, and a dynamic target means it is not — so callers must consult `unresolved`
+ * rather than assuming a non-empty list describes every altered table.
  */
+export function alterTargetsFor(sqlText: any): {
+    tables: any[];
+    unresolved: any[];
+};
 export function alteredTablesFor(sqlText: any): any[];
 /**
  * Read a path found by a directory scan after re-stat'ing it.
@@ -154,9 +154,13 @@ export function readScannedFiles(directory: string, files: string[], { allowMiss
  * migration. `sourceFiles` is injectable so unit tests can prove the detector on
  * small fixtures without writing into the shared checkout.
  *
+ * `unresolvedTargets` is non-empty when an ALTER TABLE target could not be parsed (a dynamic
+ * `%I`/`%s`). The table filter is SKIPPED in that case — see the reasoning at the call site —
+ * so the caller can explain why its result set is column-name-only and broad.
+ *
  * @param {string} sqlText
  * @param {Array<{file: string, text: string}>} sourceFiles
- * @returns {{ columns: string[], references: Array<{column: string, file: string, line: number}> }}
+ * @returns {{ columns: string[], references: Array<{column: string, file: string, line: number}>, unresolvedTargets: string[] }}
  */
 export function findDraftColumnReferences(sqlText: string, sourceFiles?: Array<{
     file: string;
@@ -168,6 +172,7 @@ export function findDraftColumnReferences(sqlText: string, sourceFiles?: Array<{
         file: string;
         line: number;
     }>;
+    unresolvedTargets: string[];
 };
 /**
  * Repo-relative form of the scanned directory, EXPORTED so the repo-wide invariant

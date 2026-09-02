@@ -3360,14 +3360,30 @@ export async function runMcpReconnectMacro({
  *  lead with `Loop wake #<fireNumber>`, so text-only keys treat every fire as a
  *  different source and let a queued backlog spend one turn per fire. The
  *  envelope's routineId is the stable identity we actually want to coalesce.
+ *
+ *  WI-2141436 hole #4: `routineId` alone has no owner component. In the normal
+ *  case this is safe — `makeTurnCoalescer()` is instantiated once per host
+ *  PROCESS and one process serves exactly one ownerId's control socket, so its
+ *  `pending` Map is already owner-scoped by construction. The residual gap is
+ *  a socket-identity collision one layer down (the EI-153 comment's own
+ *  "sanitizeKey collision at some OTHER layer") COMBINED with an unaddressed
+ *  arrival (msg.ownerId omitted — the same latent hole as #1-#3): that pair
+ *  can reach the coalescer without ever hitting the `msg.ownerId !== ownerId`
+ *  mismatch guard, because the guard is a no-op when ownerId is absent. Taking
+ *  `ownerId` here and folding it into the key is defense-in-depth for exactly
+ *  that combination — it costs nothing in the common case (every call site
+ *  passes the HOST's own ownerId, so same-host keys are unaffected) and
+ *  guarantees two different owners' pending turns can never fold into one
+ *  another even if their sockets ever did collide.
  *  Pure — exported for tests. */
-export function turnCoalesceKey(data, routineId) {
+export function turnCoalesceKey(data, routineId, ownerId) {
+  const ownerPrefix = String(ownerId ?? '').trim() ? `owner:${String(ownerId).trim()}|` : '';
   const loopId = String(routineId ?? '').trim();
-  if (loopId) return `loop-fire:${loopId}`;
+  if (loopId) return `${ownerPrefix}loop-fire:${loopId}`;
   const first = String(data ?? '')
     .split('\n')
     .find((l) => l.trim().length > 0);
-  return (first ?? '').trim().slice(0, 300);
+  return `${ownerPrefix}${(first ?? '').trim().slice(0, 300)}`;
 }
 
 /** Render the delivered turn text, annotating how many duplicates folded in.
@@ -4020,11 +4036,25 @@ export function fleetOscFromEnv(env = process.env) {
  * (idle-gated). Used by tooling/tests; the OPERATOR's wake-executor implements
  * its own connect (it's TS in operator-core) to the SAME contract. Resolves true
  * on a clean write, false on connect error.
+ *
+ * WI-2141436 hole #1: this had NO ownerId param at all — an envelope-less write
+ * with no addressed-recipient assertion, so the receiver's EI-153 misdelivery
+ * guard (decodeOwnerIdentity / the `msg.ownerId !== ownerId` check) silently
+ * no-ops for every call. Currently dead-code-shaped (no production caller), but
+ * it is an exported path, so it gets the same identity binding as every other
+ * writer: pass the TARGET session's ownerId and it rides in the envelope,
+ * exactly like injectKickoffAfterResume's `{ mode:'turn', data, ownerId }`.
+ * `ownerId` is optional only so an unaddressed legacy call still no-ops instead
+ * of throwing — always pass it from a real caller.
+ * @param {string} sock
+ * @param {string} text
+ * @param {string} [ownerId] the target session's coord ownerId (PAPERCUSP_SID) —
+ *   checked by the receiving host against its own identity before it acts.
  */
-export function injectTurn(sock, text) {
+export function injectTurn(sock, text, ownerId) {
   return new Promise((resolve) => {
     const c = net.connect(sock, () => {
-      c.write(encodeControl({ mode: 'turn', data: text }));
+      c.write(encodeControl({ mode: 'turn', data: text, ...(ownerId ? { ownerId } : {}) }));
       c.end();
     });
     c.on('error', () => resolve(false));
@@ -5280,7 +5310,7 @@ export function hostThroughPty(o) {
         // already claimed its slot is deliberately not resurrected.
         const pendingLoopKey =
           duplicateState === 'pending' && msg.mode === 'turn' && msg.routineId
-            ? turnCoalesceKey(msg.data, msg.routineId)
+            ? turnCoalesceKey(msg.data, msg.routineId, ownerId)
             : null;
         const pendingLoopMetadata =
           msg.routineId && msg.fireNumber != null
@@ -5415,7 +5445,7 @@ export function hostThroughPty(o) {
       // P-001a: a same-source turn already waiting at the gates absorbs this one —
       // newest text wins, the waiter delivers ONE annotated turn. Only mode:'turn'
       // (never reset/recycle/compact — lifecycle verbs are not duplicates of work).
-      const coalesceKey = msg.mode === 'turn' ? turnCoalesceKey(msg.data, msg.routineId) : null;
+      const coalesceKey = msg.mode === 'turn' ? turnCoalesceKey(msg.data, msg.routineId, ownerId) : null;
       const coalesceMetadata =
         msg.routineId && msg.fireNumber != null
           ? { routineId: msg.routineId, fireNumber: msg.fireNumber }
