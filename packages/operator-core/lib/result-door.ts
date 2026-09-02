@@ -744,6 +744,14 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           }
         | undefined
     )?.payloadProjection;
+    // EI-22167228731928620: an EXPLICIT payloadTier:'full' (or an equivalent
+    // transport-cap exemption) skipped payload-tier.ts's own tier shaper AND
+    // its hard-ceiling force-shape — `data` is the tool's true raw output.
+    // Mutually exclusive with `upstreamProjection` by construction (payload-tier.ts
+    // returns before ever setting `payloadProjection` on this path).
+    const explicitFullRequest = Boolean(
+      (result._meta as { explicitFullRequest?: unknown } | undefined)?.explicitFullRequest,
+    );
     let totalChars = 0;
     let textBytes = 0;
     // D-021 activates the old WI-36613 detector: non-text content is now a live
@@ -781,6 +789,31 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         result,
         opts,
         reason: aggregate?.exceeded ? 'aggregate-output-budget-exceeded' : 'non-text-result-budget-exceeded',
+        sourceBytes,
+        nonTextBytes: nonTextChars,
+        doorTokens,
+        aggregate,
+      });
+    }
+
+    // EI-22167228731928620: an explicit-full body that STILL overflows the
+    // transport door takes the same hard-overflow route as aggregate/non-text
+    // exhaustion, rather than falling into the generic bounded-payload
+    // reprojection below. That generic walk is field-blind (it does not know
+    // e.g. `summary` deserves the priority a tool's own trimmed shaper gives
+    // it), and the RAW body it would be walking here is LARGER than a
+    // 'trimmed' call's output precisely because payload-tier.ts's
+    // explicitFullRequest exemption skipped that shaper — so re-projecting it
+    // generically can leave LESS useful content inline than plain 'trimmed'
+    // would have: worse than the tier the caller explicitly opted out of.
+    // Spilling the untouched full body and pointing at it is honest about the
+    // size and strictly recoverable in full, which the generic reprojection
+    // is not.
+    if (explicitFullRequest && sourceBytes > budgetChars) {
+      return spillResultAsReferenceEnvelope({
+        result,
+        opts,
+        reason: 'explicit-full-request-overflow',
         sourceBytes,
         nonTextBytes: nonTextChars,
         doorTokens,
