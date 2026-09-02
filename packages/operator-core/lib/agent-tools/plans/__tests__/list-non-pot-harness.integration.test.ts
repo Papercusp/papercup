@@ -1,5 +1,5 @@
 /**
- * list-non-hive-harness.integration.test.ts — EI-7864 regression.
+ * list-non-pot-harness.integration.test.ts — EI-7864 regression.
  *
  * Root cause: `resolvePlanScope` (source.ts) throws TWO distinct messages for a
  * LIST read it refuses: "harness '…' is not registered" (WI-148) and "plans are

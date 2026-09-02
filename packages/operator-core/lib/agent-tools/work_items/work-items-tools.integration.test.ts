@@ -99,7 +99,7 @@ vi.mock('../../promote-issue', async () => {
 // harness → its 1:1 hive home via hive-federation.potHomeSlugForHarness (a PG read).
 // The throwaway DB has no hive infra, so stub the resolver: a known harness IS its own
 // hive home (D-009 hive==home harness 1:1); 'nope' (the unknown-harness fixture) → null.
-// This exercises the real resolveHiveScope gate logic, mocking only the PG leg — out of
+// This exercises the real resolvePotScope gate logic, mocking only the PG leg — out of
 // scope for the unified-surface contract, exactly like resolveProject/mintFixFeatureRow.
 vi.mock('../../hive-federation', async () => {
   const actual = await vi.importActual<typeof import('../../hive-federation')>('../../hive-federation');

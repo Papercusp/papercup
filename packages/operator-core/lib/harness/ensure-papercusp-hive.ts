@@ -54,7 +54,7 @@ interface CreateHiveLike {
 }
 
 /**
- * Injectable seams (the lib/ DI-for-tests pattern, e.g. _hive-scope.ts): the
+ * Injectable seams (the lib/ DI-for-tests pattern, e.g. _pot-scope.ts): the
  * production path defaults to the real impls; unit tests pass fakes so the helper
  * is exercised without PG / the keychain / the filesystem.
  */

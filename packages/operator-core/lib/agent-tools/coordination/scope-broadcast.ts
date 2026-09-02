@@ -19,7 +19,7 @@
 /**
  * Envelope field persisting the CONSCIOUS hive-wide claim (`allHive:true` on a
  * real `'*'` broadcast) — stamped by tools/send.ts so the H5b detector
- * (allhive-broadcast-sweep.ts, P-010/WI-4175) can sweep exactly the claimed
+ * (allpot-broadcast-sweep.ts, P-010/WI-4175) can sweep exactly the claimed
  * blasts post-hoc. Deliberately NOT stamped on a plain non-fleeted sender's
  * bare `'*'` (normal traffic — live data: hundreds/day) — the flag marks the
  * override, not the wildcard.

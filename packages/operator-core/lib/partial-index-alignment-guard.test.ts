@@ -11,7 +11,7 @@
  * table scan. Four instances measured on the live DB (EXPLAIN ANALYZE, BUFFERS):
  *
  *   reply-deadline-sweep       40,684 ->   721 buffers    (56x)
- *   allhive-broadcast-sweep  4,731,095 -> 3,341 buffers (1,416x)
+ *   allpot-broadcast-sweep   4,731,095 -> 3,341 buffers (1,416x)
  *   repliedMsgIdsBatch          40,717 ->   113 buffers   (360x)  111.6ms -> 2.4ms
  *   getTaskByBashJobId             197 ->     1 buffer    (197x)    4.93ms -> 0.042ms
  *
@@ -161,7 +161,7 @@ describe('discrimination: the vulnerable shape fails, the fixed shape passes', (
     ).toHaveLength(0);
   });
 
-  it('FLAGS the anti-join shape that cost 1,416x on allhive-broadcast-sweep', () => {
+  it('FLAGS the anti-join shape that cost 1,416x on allpot-broadcast-sweep', () => {
     expect(
       flag(`SELECT 1 FROM e1 WHERE NOT EXISTS (
               SELECT 1 FROM coord_event_log e2 WHERE e2.body->>'related_msg_id' = e1.msg_id)`),

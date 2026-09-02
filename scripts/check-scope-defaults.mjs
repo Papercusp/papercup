@@ -227,7 +227,7 @@ for (const [file, fhits] of [...byFileHits].sort((a, b) => a[0].localeCompare(b[
   for (const h of fhits) console.log(`    ${h.lineno}: ${h.content.slice(0, 110)}`);
 }
 console.log(
-  `\nEach: route the value through a fail-loud resolver (resolveHarnessScope / resolveHiveScope /\n` +
+  `\nEach: route the value through a fail-loud resolver (resolveHarnessScope / resolvePotScope /\n` +
     `resolvePlanScope) or REQUIRE it (throw on missing) — never silently default a workspace/harness.\n` +
     `If a site genuinely means a specific global/local scope, add an inline \`${ALLOW_MARKER}\` marker\n` +
     `comment (with the reason), or add an inherently-exempt file to FILE_ALLOW in this script.\n` +
