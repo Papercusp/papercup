@@ -126,6 +126,11 @@ import {
 } from '../goals/holder';
 import { sendMessage } from '../agent-tools/coordination/messages';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
+import {
+  assessGoalHolderLaunchCapacityForGoal,
+  formatCapacityUntil,
+  type GoalHolderLaunchCapacityVerdict,
+} from '../goals/holder-launch-capacity';
 
 /**
  * P-001: `holderCountsAsAlive` moved to `../goals/holder`, which is now the ONE
@@ -142,6 +147,21 @@ export const GOAL_HOLDER_RESPAWN_INTERVAL_MS = 60_000;
 /** P-003: durable, per-goal ceiling on unattended holder launches. */
 export const GOAL_HOLDER_RESPAWN_RATE_LIMIT = 6;
 export const GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS = 60 * 60_000;
+/**
+ * WI-2140573 finding 5: while the account(s) a holder launch would land on are
+ * measured unable to serve, recovery is DEFERRED — no re-kick, no damping
+ * restart, no rate-cap slot, no launch. The deferral is logged on entry and
+ * then at most once per this interval, so a days-long usage wall is one line
+ * every ten minutes rather than one per 60-second tick.
+ */
+export const GOAL_HOLDER_CAPACITY_DEFER_LOG_INTERVAL_MS = 10 * 60_000;
+/**
+ * A measured USAGE WALL escalates on the first deferred tick (it lasts until the
+ * provider window resets — hours to days — and only the owner can add
+ * capacity). A RATE PAUSE is bounded and usually clears in minutes, so it
+ * escalates only once a deferral episode has outlasted this budget.
+ */
+export const GOAL_HOLDER_CAPACITY_DEFER_ESCALATE_MS = 10 * 60_000;
 /**
  * WI-2140573 (measured 2026-09-01): a `lost` holder whose PROCESS is still up
  * (`holderIsRekickable`) is WOKEN with a retry brief before any launch is paid.
@@ -1430,7 +1450,23 @@ export interface GoalHolderRespawnSummary {
   gaveUp: number;
   /** WI-2140573: live-but-idle holders woken with a retry brief instead of relaunched. */
   rekicked: number;
+  /**
+   * WI-2140573 finding 5: lost holders whose recovery was DEFERRED this tick
+   * because every account the launch would draw on is measured unable to serve
+   * (usage-walled or rate-paused). Nothing was spent: no re-kick, no damping
+   * restart, no rate-cap slot, no launch.
+   */
+  deferredCapacity: number;
   skipped: boolean;
+}
+
+/** Process-local record of ONE goal's ongoing capacity deferral episode. */
+export interface GoalHolderCapacityDeferral {
+  sinceMs: number;
+  lastLoggedAtMs: number;
+  /** The verdict reason last logged; a change re-logs immediately. */
+  reason: string;
+  escalated: boolean;
 }
 
 /** Process-local re-kick ledger for ONE goal: attempts against the CURRENT elected holder. */
@@ -1477,6 +1513,22 @@ export interface GoalHolderRespawnDeps {
   ) => Promise<{ woken: number; staged: number }>;
   /** Re-kick ledger, keyed like `states`; a new elected holder starts a fresh budget. */
   rekickStates?: Map<string, GoalHolderRekickState>;
+  /**
+   * WI-2140573 finding 5: can a holder launched for this goal reach the model
+   * at all right now? Default folds the goal's holder-role launch profile and
+   * judges it against the live `accounts:status` rows. A `deferred` verdict
+   * skips the whole recovery path for this tick without spending anything; a
+   * thrown read is logged and treated as `unknown` (proceed), never as a wall.
+   */
+  assessLaunchCapacity?: (goal: GoalRowLike) => Promise<GoalHolderLaunchCapacityVerdict>;
+  /** Deduped owner escalation for a deferral episode (usage wall: at once; rate pause: after the budget). */
+  escalateCapacityDeferral?: (
+    goal: GoalRowLike,
+    verdict: Extract<GoalHolderLaunchCapacityVerdict, { kind: 'deferred' }>,
+    deferredForMs: number,
+  ) => Promise<void>;
+  /** Deferral episodes, keyed like `states`. */
+  capacityDeferrals?: Map<string, GoalHolderCapacityDeferral>;
   now: () => number;
   states: Map<string, FlapDampingState>;
 }
@@ -1728,6 +1780,59 @@ async function defaultEscalateHolderRespawnGiveUp(
 
 const goalHolderRespawnStates = new Map<string, FlapDampingState>();
 const goalHolderRekickStates = new Map<string, GoalHolderRekickState>();
+const goalHolderCapacityDeferrals = new Map<string, GoalHolderCapacityDeferral>();
+
+/**
+ * WI-2140573 finding 5: the owner-facing record of a capacity deferral. Deduped
+ * on the goal so a days-long wall is ONE escalation with a repeat count, not one
+ * per tick. It names the accounts, the reset, and the three ways out — and says
+ * plainly that recovery resumes on its own when capacity returns, so nobody
+ * "fixes" it by respawning into the same wall.
+ */
+async function defaultEscalateHolderCapacityDeferral(
+  goal: GoalRowLike,
+  verdict: Extract<GoalHolderLaunchCapacityVerdict, { kind: 'deferred' }>,
+  deferredForMs: number,
+): Promise<void> {
+  const now = Date.now();
+  const provider = verdict.target.provider ?? 'unknown';
+  const pinned = verdict.target.accountId ? `pinned account '${verdict.target.accountId}'` : `the '${provider}' pool`;
+  const wall = verdict.binding === 'usage-wall' ? 'USAGE-WALLED' : 'RATE-PAUSED';
+  await openEscalation(HOLDER_RESPAWNER_IDENTITY, {
+    severity: 'advisory',
+    summary:
+      `Goal '${goal.goalId}' has no live holder and recovery is DEFERRED: ${pinned} is ${wall} ` +
+      `until ${formatCapacityUntil(verdict.untilMs, now)}`,
+    body:
+      `The goal "${goal.title}" (${goal.goalId}, workspace ${goal.workspaceId}) opted into ` +
+      `holder.onLoss='respawn' and its holder is lost, but every account a replacement would ` +
+      `launch on (${verdict.accountIds.join(', ')} — ${pinned}, agent '${verdict.target.agent ?? 'unset'}') ` +
+      `is measured unable to serve: ${verdict.reason}\n\n` +
+      `A launch now would boot, send its kickoff, and die at the model layer before its first turn ` +
+      `(measured 2026-09-02: nine such holders in 3.5h, each an 11-line rollout with zero assistant ` +
+      `turns — "You've hit your usage limit"). So the respawner is NOT launching: no re-kick, no ` +
+      `damping restart, no hourly rate-cap slot, no launch, for as long as the wall holds ` +
+      `(deferred ${Math.round(deferredForMs / 60_000)} min so far). Recovery resumes AUTOMATICALLY ` +
+      `on the first tick that measures capacity back (${formatCapacityUntil(verdict.untilMs, now)}).\n\n` +
+      `Ways out, any one of them:\n` +
+      `  • add capacity on '${provider}' (a fresh subscription / credits) — accounts:register / accounts:status;\n` +
+      `  • re-point the holder: goals:update { id: '${goal.goalId}', launchSettings } with roles.goal.agent / ` +
+      `model / account on a provider that has headroom (the next tick launches onto it);\n` +
+      `  • wait for the window reset above — nothing else is needed.\n` +
+      `Do NOT respawn by hand into the same wall; it costs a launch and a rate-cap slot and produces nothing.`,
+    meta: {
+      dedupKind: 'goal-holder-respawn-capacity-deferred',
+      subjectSignature: `${goal.workspaceId}:${goal.goalId}:${verdict.binding}`,
+      goalId: goal.goalId,
+      goalWorkspaceId: goal.workspaceId,
+      provider,
+      accountIds: verdict.accountIds,
+      binding: verdict.binding,
+      untilMs: verdict.untilMs,
+      deferredForMs,
+    },
+  });
+}
 
 /**
  * WI-2140573 default re-kick: the retry brief a live-but-idle holder needs.
@@ -1827,6 +1932,9 @@ function holderRespawnDeps(
     escalateGiveUp: defaultEscalateHolderRespawnGiveUp,
     rekick: defaultRekickGoalHolder,
     rekickStates: goalHolderRekickStates,
+    assessLaunchCapacity: async (goal) => await assessGoalHolderLaunchCapacityForGoal(goal),
+    escalateCapacityDeferral: defaultEscalateHolderCapacityDeferral,
+    capacityDeferrals: goalHolderCapacityDeferrals,
     now: Date.now,
     states: goalHolderRespawnStates,
     ...overrides,
@@ -1854,10 +1962,12 @@ export async function runGoalHolderRespawnOnce(
     neutralizeFailed: 0,
     gaveUp: 0,
     rekicked: 0,
+    deferredCapacity: 0,
     skipped: false,
   };
   if (!(await deps.flagEnabled())) return { ...summary, skipped: true };
   const rekickStates = deps.rekickStates ?? new Map<string, GoalHolderRekickState>();
+  const capacityDeferrals = deps.capacityDeferrals ?? new Map<string, GoalHolderCapacityDeferral>();
 
   const { goals, holders } = await deps.readGoals();
   summary.scanned = goals.length;
@@ -1872,6 +1982,9 @@ export async function runGoalHolderRespawnOnce(
   }
   for (const key of rekickStates.keys()) {
     if (!eligibleKeys.has(key)) rekickStates.delete(key);
+  }
+  for (const key of capacityDeferrals.keys()) {
+    if (!eligibleKeys.has(key)) capacityDeferrals.delete(key);
   }
   if (eligible.length === 0) return summary;
 
@@ -1917,7 +2030,78 @@ export async function runGoalHolderRespawnOnce(
         const decision = decideFlapDamping({ healthy: true, state: previous, now: deps.now() });
         deps.states.set(key, decision.nextState);
       }
+      // A holder that is alive again is proof the account served: close any
+      // deferral episode without a "capacity back" line (it was never lost).
+      capacityDeferrals.delete(key);
       continue;
+    }
+
+    // WI-2140573 finding 5 (measured 2026-09-02): before ANY recovery is paid,
+    // ask whether a launched holder could reach the model at all. When every
+    // account the launch would draw on is measured unable to serve (a usage
+    // wall lasting days, or a rate pause), a re-kick wakes a session into the
+    // same wall, a launch mints a process that dies before its first turn, and
+    // both spend budget that later blocks a launch that COULD work. So DEFER:
+    // skip re-kick, damping, rate slot and launch for this tick, log on entry
+    // and every GOAL_HOLDER_CAPACITY_DEFER_LOG_INTERVAL_MS, escalate once per
+    // episode, and let the next tick that measures capacity back resume the
+    // ordinary path on its own. An unreadable or unmeasured verdict is
+    // `unknown` and proceeds — this guard only stops launches CERTAIN to die.
+    if (deps.assessLaunchCapacity) {
+      let capacity: GoalHolderLaunchCapacityVerdict | null = null;
+      try {
+        capacity = await deps.assessLaunchCapacity(goal);
+      } catch (error) {
+        console.warn(
+          `[goal-holder-respawner] launch-capacity read failed for ${goal.goalId} (proceeding as unknown): ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      const episode = capacityDeferrals.get(key);
+      if (capacity?.kind === 'deferred') {
+        const nowMs = deps.now();
+        const current: GoalHolderCapacityDeferral =
+          episode ?? { sinceMs: nowMs, lastLoggedAtMs: 0, reason: '', escalated: false };
+        capacityDeferrals.set(key, current);
+        const deferredForMs = nowMs - current.sinceMs;
+        if (
+          current.reason !== capacity.reason ||
+          nowMs - current.lastLoggedAtMs >= GOAL_HOLDER_CAPACITY_DEFER_LOG_INTERVAL_MS
+        ) {
+          current.reason = capacity.reason;
+          current.lastLoggedAtMs = nowMs;
+          console.warn(
+            `[goal-holder-respawner] recovery DEFERRED for ${goal.goalId}: ${capacity.binding} on ` +
+              `${capacity.accountIds.join(', ')} until ${formatCapacityUntil(capacity.untilMs, nowMs)} ` +
+              `(deferred ${Math.round(deferredForMs / 60_000)} min; no re-kick, no rate slot, no launch) — ` +
+              `${capacity.reason}`,
+          );
+        }
+        const escalateNow =
+          !current.escalated &&
+          (capacity.binding === 'usage-wall' || deferredForMs >= GOAL_HOLDER_CAPACITY_DEFER_ESCALATE_MS);
+        if (escalateNow && deps.escalateCapacityDeferral) {
+          try {
+            await deps.escalateCapacityDeferral(goal, capacity, deferredForMs);
+            current.escalated = true;
+          } catch (error) {
+            console.warn(
+              `[goal-holder-respawner] capacity-deferral escalation failed for ${goal.goalId} (will retry): ` +
+                `${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
+        summary.deferredCapacity += 1;
+        continue;
+      }
+      if (episode) {
+        capacityDeferrals.delete(key);
+        console.warn(
+          `[goal-holder-respawner] capacity back for ${goal.goalId} after ` +
+            `${Math.round((deps.now() - episode.sinceMs) / 60_000)} min deferred; ordinary recovery resumes` +
+            (capacity ? ` — ${capacity.reason}` : ''),
+        );
+      }
     }
 
     // WI-2140573 (measured 2026-09-01): a `lost` holder whose PROCESS is still
