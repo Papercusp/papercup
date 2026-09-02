@@ -77,8 +77,12 @@ const BACKFILL_TARGETS: ReadonlyArray<readonly [table: string, keyCol: string, s
   // marker is per-(workspace,harness), so on an install that ALREADY federated
   // features/issues the marker short-circuits and pre-existing plans are not
   // re-enqueued — only ongoing plan writes federate (via the capture trigger,
-  // migration 125). Fresh installs backfill plans here. (Clearing the marker forces
-  // a one-time re-backfill of all targets; idempotent but re-enqueues everything.)
+  // migration 125). Fresh installs backfill plans here. (Clearing the marker
+  // re-examines all targets; since WI-2141185 that enqueues only rows with no
+  // fed_ts — re-sending already-federated rows now requires `resyncFederated`.
+  // It previously re-enqueued EVERYTHING, which is EI-12727's corestore ratchet:
+  // each drained row is an append to an append-only log, so every forced cut grew
+  // the seed by one whole projection and never shrank.)
   ['harness_plans', 'plan_slug'],
   // shared-hive-federation-2026-06-08 (P-005): per-Hive settings federate as Hive
   // state (key == setting_key), scoped to the Hive home harness slug.
@@ -136,12 +140,42 @@ const DEFAULT_ENQUEUE_BAIL_CAP = 1000;
 export interface BackfillOptions {
   /**
    * Ignore the per-target `backfill_done:<table>` markers (and the legacy flat
-   * one) and enqueue the current local projection rows again for EVERY target.
-   * This is for explicit maintenance/release refreshes (for example cutting a
-   * complete installer seed after historical rows were missed by an older
-   * backfill). Runtime boot keeps the default marker-guarded behavior.
+   * one) and RE-EXAMINE every target. This is for explicit maintenance/release
+   * refreshes (for example cutting a complete installer seed after historical
+   * rows were missed by an older backfill). Runtime boot keeps the default
+   * marker-guarded behavior.
+   *
+   * WI-2141185: re-examining a target is NOT re-enqueueing it. Rows already
+   * federated are skipped regardless of this flag — see `resyncFederated`, which
+   * is the only way to re-send them. Before that split, `force` bypassed the
+   * marker while the enqueue SELECTs had no fed-state predicate, so the marker
+   * WAS the sole idempotence guard and `force` meant "re-enqueue the whole
+   * corpus". It also skips `markTargetDone` below, so nothing recorded the sweep
+   * and every subsequent forced run repeated it in full.
    */
   force?: boolean;
+  /**
+   * Re-enqueue rows that are ALREADY federated (fed_ts present), not just the
+   * ones this backfill exists to rescue. Default FALSE — and the default is
+   * load-bearing, so do not set this to make a seed "more current".
+   *
+   * WI-2141185: this backfill's job is rows that predate the capture trigger and
+   * so never fired it (see the plan_item_assignments note in BACKFILL_TARGETS).
+   * That condition is `fed_ts IS NULL`. Until this option existed the enqueue
+   * SELECTs never expressed it — they selected EVERY local row — and the only
+   * thing preventing a re-enqueue was the per-target `backfill_done` marker.
+   * `force` bypasses exactly that marker, so `force` silently meant "re-enqueue
+   * the entire corpus": the nightly release seed cut (cut-seed-cli, force:true +
+   * maxOpsPerAuthor:0) re-enqueued ~150k already-federated engineer_issues rows
+   * EVERY night, then blocked waiting for the outbox drain it had just flooded.
+   * Measured 2026-09-02: 153,797 in-scope rows, of which 0 were unfederated —
+   * i.e. the whole sweep was waste.
+   *
+   * A federated row is already in the own log, so re-sending it changes no
+   * content (LWW converges) and costs a full corpus re-drain. Keep this false
+   * unless you are deliberately re-anchoring federation state.
+   */
+  resyncFederated?: boolean;
   /**
    * Hard ceiling on rows enqueued, aligned with the Model B per-author ingest
    * cap (a peer won't read beyond it anyway). Default `DEFAULT_MAX_OPS_PER_AUTHOR`
@@ -201,6 +235,11 @@ export async function backfillLocalState(
     opts.maxOpsPerAuthor === undefined ? DEFAULT_MAX_OPS_PER_AUTHOR : opts.maxOpsPerAuthor;
   const bailCap =
     opts.maxEnqueueBeforeBail === undefined ? DEFAULT_ENQUEUE_BAIL_CAP : opts.maxEnqueueBeforeBail;
+  // WI-2141185: candidates are rows this backfill must RESCUE — ones that never
+  // fired the capture trigger, i.e. fed_ts IS NULL. Threaded into every count and
+  // every enqueue below so the two can never disagree about what a candidate is
+  // (a count that disagrees with its enqueue is how the bail cap guarded nothing).
+  const resyncFederated = opts.resyncFederated === true;
 
   // ── Per-target marker read + legacy-flat-marker migration ────────────────
   // (skipped entirely under `force` — every target is treated as unswept).
@@ -255,7 +294,8 @@ export async function backfillLocalState(
         FROM harness_shared.${pg(tableName)}
        WHERE workspace_id = ${workspaceId}
          AND ${pg(scopeCol)} = ${harnessSlug}
-         AND COALESCE(origin, 'local') = 'local'`;
+         AND COALESCE(origin, 'local') = 'local'
+         AND (${resyncFederated}::bool OR fed_ts IS NULL)`;
     candidates.push({ tableName, keyCol, scopeCol, total });
   }
 
@@ -281,13 +321,15 @@ export async function backfillLocalState(
             FROM harness_shared.engineer_issues c
            WHERE c.workspace_id = ${workspaceId}
              AND COALESCE(c.origin, 'local') = 'local'
-             AND (c.scope = ${'harness:' + harnessSlug} OR c.scope = 'operator')`
+             AND (c.scope = ${'harness:' + harnessSlug} OR c.scope = 'operator')
+             AND (${resyncFederated}::bool OR c.fed_ts IS NULL)`
       : await pg<{ total: number }[]>`
           SELECT count(*)::int AS total
             FROM harness_shared.engineer_issues c
            WHERE c.workspace_id = ${workspaceId}
              AND COALESCE(c.origin, 'local') = 'local'
-             AND c.scope = ${'harness:' + harnessSlug}`;
+             AND c.scope = ${'harness:' + harnessSlug}
+             AND (${resyncFederated}::bool OR c.fed_ts IS NULL)`;
     eiTotal = total;
   }
 
@@ -353,6 +395,7 @@ export async function backfillLocalState(
          WHERE c.workspace_id = ${workspaceId}
            AND c.${pg(scopeCol)} = ${harnessSlug}
            AND COALESCE(c.origin, 'local') = 'local'
+           AND (${resyncFederated}::bool OR c.fed_ts IS NULL)
          ORDER BY c.${pg(scopeCol)}, c.${pg(keyCol)}
          LIMIT ${take}
         RETURNING key`;
@@ -389,6 +432,7 @@ export async function backfillLocalState(
                WHERE c.workspace_id = ${workspaceId}
                  AND COALESCE(c.origin, 'local') = 'local'
                  AND (c.scope = ${'harness:' + harnessSlug} OR c.scope = 'operator')
+                 AND (${resyncFederated}::bool OR c.fed_ts IS NULL)
                ORDER BY c.issue_id
                LIMIT ${take}
               RETURNING key`
@@ -408,6 +452,7 @@ export async function backfillLocalState(
                WHERE c.workspace_id = ${workspaceId}
                  AND COALESCE(c.origin, 'local') = 'local'
                  AND c.scope = ${'harness:' + harnessSlug}
+                 AND (${resyncFederated}::bool OR c.fed_ts IS NULL)
                ORDER BY c.issue_id
                LIMIT ${take}
               RETURNING key`;
