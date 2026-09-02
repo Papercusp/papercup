@@ -294,6 +294,56 @@ describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
     expect(setWorkItemState).not.toHaveBeenCalled();
   });
 
+  it('EI-22178190387074148: never terminal-closes a linked item in state `blocked` — that state is the authority, not a phantom-todo', async () => {
+    // The reported repro: an unclaimed issue-family work-item carrying an open
+    // owner-decision question (state='blocked', no assignee, real implements
+    // edge) was silently closed when a sibling plan item was dropped.
+    stub({ id: 'WI-gated', state: 'blocked', lastProgressAt: null, assignee: null });
+    await edge({ plan: 'p1', item: 'P-010', srcRef: 'WI-gated' });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-010' });
+
+    expect(result.reconciled).toEqual([]);
+    expect(result.skippedGatedState).toEqual(['WI-gated']);
+    expect(result.skippedInFlight).toEqual([]);
+    expect(result.skippedUnprovenLink).toEqual([]);
+    expect(setWorkItemState).not.toHaveBeenCalled();
+  });
+
+  it('EI-22178190387074148: never terminal-closes a linked item in state `needs-human`', async () => {
+    stub({ id: 'WI-gated-2', state: 'needs-human', lastProgressAt: null, assignee: null });
+    await edge({ plan: 'p1', item: 'P-011', srcRef: 'WI-gated-2' });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-011' });
+
+    expect(result.reconciled).toEqual([]);
+    expect(result.skippedGatedState).toEqual(['WI-gated-2']);
+    expect(setWorkItemState).not.toHaveBeenCalled();
+  });
+
+  it('EI-22178190387074148: a `blocked` item that is ALSO actively claimed still never closes — the gated-state guard runs first', async () => {
+    // Ordering sanity: whichever guard trips, the item must never close. The
+    // gated-state check runs before the in-flight check (state is the more
+    // fundamental "don't touch" signal, independent of who — if anyone — holds
+    // it), so it lands in skippedGatedState here, not skippedInFlight. Pinning
+    // the bucket, not just "never closes", so a future reordering is a visible,
+    // deliberate test change rather than a silent behavior drift.
+    stub({
+      id: 'WI-gated-claimed',
+      state: 'blocked',
+      lastProgressAt: '2026-07-02T00:00:00Z',
+      assignee: 'su-live-holder',
+    });
+    await edge({ plan: 'p1', item: 'P-012', srcRef: 'WI-gated-claimed' });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-012' });
+
+    expect(result.reconciled).toEqual([]);
+    expect(result.skippedGatedState).toEqual(['WI-gated-claimed']);
+    expect(result.skippedInFlight).toEqual([]);
+    expect(setWorkItemState).not.toHaveBeenCalled();
+  });
+
   it('WI-6303: a STALE lastProgressAt with NO current assignee is reconciled, not skipped as in-flight', async () => {
     // Root cause: work-items-stale-claims.ts's dead/stalled-holder reaper,
     // fleet-monitors.ts's sweepOrphanedTakenBy, and pg-stores.ts's fleet:cancel

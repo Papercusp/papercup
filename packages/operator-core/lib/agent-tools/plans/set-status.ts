@@ -47,7 +47,9 @@ import {
   reconcileLinkedWorkItemsForPlanItem,
   resyncDependentPlanItemLanesNow,
   resyncPlanItemLaneNow,
+  type ReconcileLinkedWorkItemsResult,
 } from '../../plan-items/reconcile-linked-work-items';
+import { RECONCILER_SYSTEM_ACTOR } from '../../completion-audit';
 import { setWorkItemState } from '../../work-items';
 import { unassignItem } from '../../plan-items/assignments';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-names';
@@ -1572,6 +1574,12 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   // transition-gated, awaited, and fail-soft: the caller sees committed plan
   // state before we reconcile the item itself and any direct dependents whose
   // readiness changed on a terminality edge.
+  // EI-22178190387074148: captured so the caller-visible result can REPORT this
+  // cascade (which linked work-items it terminal-closed, and which it left open
+  // because their own state is the authority) instead of the mutation happening
+  // silently — the caller previously had no signal that a second, consequential
+  // write occurred and had to independently re-read the linked item to discover it.
+  let cascade: ReconcileLinkedWorkItemsResult | undefined;
   if (result.value.oldStatus !== it.status) {
     try {
       const terminalStatus = it.status === 'done' || it.status === 'dropped' ? it.status : null;
@@ -1582,7 +1590,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         // lane synchronizer created a deterministic stale-open window after every
         // plans:set-status →done/→dropped. Reuse the canonical reconciler so its
         // current-assignee and proof guards remain the single safety policy.
-        await reconcileLinkedWorkItemsForPlanItem(
+        cascade = await reconcileLinkedWorkItemsForPlanItem(
           { planSlug: it.slug, itemId: it.itemId, harnessSlug: harnessSlug ?? null },
           { knownTerminalStatus: terminalStatus },
         );
@@ -1674,6 +1682,10 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
                 .filter((wi) => {
                   const candidate = linkedById.get(wi.id);
                   if (!candidate || candidate.assignee || wi.assignee) return false;
+                  // EI-22178190387074148: mirrors the reconciler's gated-state
+                  // guard too — a `blocked`/`needs-human` linked item is left
+                  // open, not reconciled as residue.
+                  if (candidate.state === 'blocked' || candidate.state === 'needs-human') return false;
                   // This mirrors reconcileLinkedWorkItemsForPlanItem: feature
                   // rows are stamp-borne by design; issue rows need an explicit
                   // `implements` edge so a discovered bug is never buried.
@@ -1795,6 +1807,16 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     ...(assignmentReleased ? { assignmentReleased } : {}),
     ...(workItemSynced ? { workItemSynced } : {}),
     ...(memory ? { memory } : {}),
+    // EI-22178190387074148: report the terminal-reconcile cascade instead of
+    // leaving it silent — ids it actually closed (with the system actor that
+    // closed them, `RECONCILER_SYSTEM_ACTOR`), and ids it deliberately left open
+    // because their own state (`blocked`/`needs-human`) is the authority.
+    ...(cascade && cascade.reconciled.length > 0
+      ? { cascadeReconciled: cascade.reconciled, cascadeReconciledBy: RECONCILER_SYSTEM_ACTOR }
+      : {}),
+    ...(cascade && cascade.skippedGatedState.length > 0
+      ? { cascadeSkippedGatedState: cascade.skippedGatedState }
+      : {}),
     ...(residualWarning ? { residualWarning } : {}),
     ...(typeEvidenceWarning ? { typeEvidenceWarning } : {}),
     ...(noteTruncated

@@ -48,6 +48,7 @@ const laneSync = vi.hoisted(() => ({
     skippedInFlight: [],
     skippedAlreadyTerminal: [],
     skippedUnprovenLink: [],
+    skippedGatedState: [],
   })),
 }));
 vi.mock('../../plan-items/reconcile-linked-work-items', () => ({

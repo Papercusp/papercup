@@ -283,6 +283,7 @@ export async function reconcileLinkedWorkItemsForPlanItem(
     skippedInFlight: [],
     skippedAlreadyTerminal: [],
     skippedUnprovenLink: [],
+    skippedGatedState: [],
   };
   try {
     // Resolve the plan item's TERMINAL status (done vs dropped) — it both gates
@@ -341,6 +342,34 @@ export async function reconcileLinkedWorkItemsForPlanItem(
       // whether we trust the completion, was never lifted. Best-effort: a clear
       // failure here must never block the skip/flip logic that follows.
       await clearStaleLaneHold(wi, planLaneBlockerRef(item.planSlug, item.itemId));
+      const gatedByOwnState =
+        (wi.state === 'blocked' || wi.state === 'needs-human') &&
+        // EXCLUDE a block THIS sync mechanism itself imposed (mirroring a
+        // blocked/needs-human PLAN LANE onto the work-item — see the
+        // "Non-terminal plan-item lane sync" section below). clearStaleLaneHold
+        // just above already lifted its hold metadata now that the plan item is
+        // confirmed terminal, so that flavor of blocked/needs-human is stale
+        // residue, not an independent signal — it must still reconcile normally
+        // (WI-stale-hold / WI-active-held / WI-stamp-only below all cover this).
+        readWorkItemHeldOpenBy(wi.payload)?.by !== PLAN_LANE_SYNC_ACTOR;
+      if (gatedByOwnState) {
+        // EI-22178190387074148: `blocked`/`needs-human` is not "still being worked
+        // on" (that is the assignee check below) — it is the WORK-ITEM asserting
+        // an open question or external dependency, independent of whatever the
+        // plan item did. A sibling plan item reaching done/dropped says nothing
+        // about that question being resolved, so silently terminal-closing it here
+        // would resolve it by fiat and destroy the signal (the repro: an unclaimed
+        // `blocked` issue carrying an open owner-decision question, closed as a
+        // side effect of dropping the plan item that merely pointed at it).
+        //
+        // Biased the same way as the in-flight and unproven-link skips below: a
+        // surviving open item is recoverable (someone resolves the block, then
+        // closes it with that resolution recorded); a silent terminal close is
+        // not — nobody looks at it again, and it reads as an answered question
+        // that was never actually answered.
+        out.skippedGatedState.push(wi.id);
+        continue;
+      }
       if (wi.assignee) {
         // SOMEONE CURRENTLY HOLDS THIS ITEM — a sibling completed the plan item,
         // but this one is genuinely still being worked. Never clobber it.
