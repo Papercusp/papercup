@@ -71,10 +71,15 @@ describe('hosted-check-refs', () => {
     expect(rowsAreComplete(rows)).toBe(false);
   });
 
+  // The example name here is deliberately generic. WORKOS_WEBHOOK_SECRET_KEY_REF
+  // used to stand in for it and is NOT an optional reference — despite the
+  // suffix, the runtime never dereferences it (it is stored verbatim as receipt
+  // provenance), so the cut-over script reports it as a label and never passes
+  // it here. See WI-2141402 and doc-claims/hosted-cutover-gate-ref-set.test.ts.
   it('treats an absent OPTIONAL name as complete, but still resolves it when set', async () => {
     const absent = await checkReferences({
       required: [],
-      optional: ['WORKOS_WEBHOOK_SECRET_KEY_REF'],
+      optional: ['AN_OPTIONAL_SECRET_REF'],
       env: {},
       resolve: async () => RESOLVED_VALUE,
     });
@@ -83,8 +88,8 @@ describe('hosted-check-refs', () => {
 
     const setButBroken = await checkReferences({
       required: [],
-      optional: ['WORKOS_WEBHOOK_SECRET_KEY_REF'],
-      env: { WORKOS_WEBHOOK_SECRET_KEY_REF: 'integration:NOPE' },
+      optional: ['AN_OPTIONAL_SECRET_REF'],
+      env: { AN_OPTIONAL_SECRET_REF: 'integration:NOPE' },
       resolve: async (reference) => {
         throw new Error(`hosted_secret_ref_missing:${reference}`);
       },

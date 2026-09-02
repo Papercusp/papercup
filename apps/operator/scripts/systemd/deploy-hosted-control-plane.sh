@@ -58,8 +58,16 @@ REF_NAMES=(
   WORKOS_COOKIE_PASSWORD_REF
   WORKOS_WEBHOOK_SECRET_REF
 )
-# Dereferenced only when set (hosted-runtime.ts reads it conditionally).
-OPTIONAL_REF_NAMES=(
+# LABEL: optional, and despite the _REF suffix it is NOT a secret reference —
+# nothing dereferences it. createWorkOsWebhookRoute passes it straight to the
+# receipt store, which records it verbatim as provenance (workos-webhook-
+# intake.ts safeExternalRef -> webhook_event_receipts.signature_key_ref); the
+# secret that actually verifies a webhook is WORKOS_WEBHOOK_SECRET_REF above.
+# So a natural value for it (a WorkOS signing-key id) is not resolvable, and
+# resolving it here would fail a CORRECTLY configured deployment — the same
+# gate-vs-runtime mismatch as WI-2141402, in the false-RED direction. Reported
+# for the operator, never dereferenced.
+OPTIONAL_LABEL_NAMES=(
   WORKOS_WEBHOOK_SECRET_KEY_REF
 )
 REQUIRED_NAMES=("${LITERAL_NAMES[@]}" "${REF_NAMES[@]}")
@@ -85,6 +93,9 @@ Usage: deploy-hosted-control-plane.sh [--render-only|--check-env|--install-only]
                  present-but-dangling pointer fails. Exit 1 while any is unset
                  or unresolved, or if the reference check cannot run. Prints
                  names and failure codes only — never values.
+                 WORKOS_WEBHOOK_SECRET_KEY_REF is reported but NOT dereferenced
+                 and never gates: despite the suffix it is a signing-key label
+                 the runtime stores verbatim, not a secret reference.
   --install-only atomically install + verify + daemon-reload the unit. Does NOT
                  enable or start it.
 
@@ -179,9 +190,13 @@ check_env() {
       printf 'REFERENCE_CHECK\tUNAVAILABLE\toperator_root_unreadable\n'
       exit 1
     fi
-    npx tsx bin/hosted-check-refs.ts \
-      --required "${REF_NAMES[@]}" \
-      --optional "${OPTIONAL_REF_NAMES[@]}" || rc=1
+    npx tsx bin/hosted-check-refs.ts --required "${REF_NAMES[@]}" || rc=1
+
+    # Labels are reported, never dereferenced, and never gate the cut-over.
+    for name in "${OPTIONAL_LABEL_NAMES[@]}"; do
+      if [[ -n "${!name:-}" ]]; then printf '%s\tset\tlabel_not_dereferenced\n' "$name"
+      else printf '%s\tabsent-optional\n' "$name"; fi
+    done
     exit "$rc"
   )" || status=$?
   printf '%s\n' "$report"

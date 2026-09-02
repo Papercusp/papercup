@@ -33,7 +33,7 @@ function serviceRunner(currentUser = 'hosted_service', bootOrder?: string[]): Ho
 }
 
 describe('hosted runtime composition', () => {
-  it('probes the service role before resolving only the hosted cookie secret and pins the mounted surface', async () => {
+  it('probes the service role, then dereferences every runtime secret ref at boot, and pins the mounted surface', async () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const bootOrder: string[] = [];
     const resolveSecret = vi.fn(async (reference: string) => {
@@ -42,7 +42,9 @@ describe('hosted runtime composition', () => {
         return 'hosted-runtime-cookie-secret-that-is-more-than-32-bytes';
       }
       if (reference === configuration.workosWebhookSecretRef) return 'whsec_runtime_test';
-      throw new Error(`unexpected eager secret read: ${reference}`);
+      if (reference === configuration.workosApiKeyRef) return 'sk_test_runtime_api_key';
+      if (reference === configuration.workosCookiePasswordRef) return 'workos-cookie-password-over-32-bytes-long';
+      throw new Error(`unexpected secret read: ${reference}`);
     });
     const plane = await createHostedRuntime(configuration, {
       resolveSecret,
@@ -51,9 +53,19 @@ describe('hosted runtime composition', () => {
 
     expect(plane.mounted.map((route) => `${route.method} ${route.path}`)).toEqual(HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS);
     expect(plane.components.providerDelegationManager).toBeTypeOf('function');
-    expect(bootOrder.slice(0, 2)).toEqual(['service-role', `secret:${configuration.hostedSessionCookieSecretRef}`]);
-    expect(resolveSecret).toHaveBeenCalledTimes(1);
-    expect(resolveSecret).toHaveBeenCalledWith(configuration.hostedSessionCookieSecretRef);
+    // The service-role probe still precedes every secret read, and the boot
+    // preflight then dereferences each ref the runtime actually uses, in order.
+    expect(bootOrder.slice(0, 5)).toEqual([
+      'service-role',
+      `secret:${configuration.hostedSessionCookieSecretRef}`,
+      `secret:${configuration.workosApiKeyRef}`,
+      `secret:${configuration.workosCookiePasswordRef}`,
+      `secret:${configuration.workosWebhookSecretRef}`,
+    ]);
+    expect(resolveSecret).toHaveBeenCalledTimes(4);
+    // The optional signature key ref is a provenance LABEL, never a secret ref —
+    // dereferencing it would fail a correctly configured deployment (WI-2141402).
+    expect(resolveSecret).not.toHaveBeenCalledWith(configuration.workosWebhookSignatureKeyRef);
 
     expect((await plane.app.request('/api/health')).status).toBe(200);
     expect((await plane.app.request('/api/auth/login', { method: 'POST' })).status).toBe(404);
@@ -101,6 +113,52 @@ describe('hosted runtime composition', () => {
       }),
     ).rejects.toThrow('hosted_runtime_service_role_mismatch:harness_app');
     expect(resolveSecret).not.toHaveBeenCalled();
+  });
+
+  // WI-2141402 / D-046: `*_REF` names being SET never meant the referenced
+  // secrets existed. Before this, such a profile started clean and passed
+  // /api/health while failing every real request against app.papercusp.com.
+  it.each([
+    ['workosApiKeyRef', 'WORKOS_API_KEY_REF'],
+    ['workosCookiePasswordRef', 'WORKOS_COOKIE_PASSWORD_REF'],
+    ['workosWebhookSecretRef', 'WORKOS_WEBHOOK_SECRET_REF'],
+    ['hostedSessionCookieSecretRef', 'PAPERCUSP_HOSTED_SESSION_COOKIE_SECRET_REF'],
+  ] as const)('refuses to boot when %s is set but its referenced secret is absent', async (field, envName) => {
+    const absent = configuration[field];
+    const resolveSecret = vi.fn(async (reference: string) => {
+      if (reference === absent) {
+        throw new Error(`hosted_secret_ref_missing:${reference} (no value stored)`);
+      }
+      return 'resolved-hosted-secret-that-is-more-than-32-bytes';
+    });
+
+    await expect(
+      createHostedRuntime(configuration, { resolveSecret, runService: serviceRunner('hosted_service') }),
+    ).rejects.toThrow(`hosted_runtime_secret_ref_unresolved:${envName}`);
+  });
+
+  it('refuses a reference that resolves to an empty value, and never surfaces an unknown error message', async () => {
+    const empty = vi.fn(async (reference: string) =>
+      reference === configuration.workosApiKeyRef ? '   ' : 'resolved-hosted-secret-that-is-more-than-32-bytes',
+    );
+    await expect(
+      createHostedRuntime(configuration, { resolveSecret: empty, runService: serviceRunner('hosted_service') }),
+    ).rejects.toThrow('hosted_runtime_secret_ref_unresolved:WORKOS_API_KEY_REF');
+
+    // An unexpected failure (a DB error whose message can embed a connection
+    // string WITH its password) must collapse to a bare code, never be echoed.
+    const leaky = vi.fn(async (reference: string) => {
+      if (reference === configuration.workosCookiePasswordRef) {
+        throw new Error('connect ECONNREFUSED postgres://user:hunter2@127.0.0.1:5432/papercusp');
+      }
+      return 'resolved-hosted-secret-that-is-more-than-32-bytes';
+    });
+    await expect(
+      createHostedRuntime(configuration, { resolveSecret: leaky, runService: serviceRunner('hosted_service') }),
+    ).rejects.toThrow(/^hosted_runtime_secret_ref_unresolved:WORKOS_COOKIE_PASSWORD_REF — resolution_error$/);
+    await expect(
+      createHostedRuntime(configuration, { resolveSecret: leaky, runService: serviceRunner('hosted_service') }),
+    ).rejects.not.toThrow(/hunter2/);
   });
 
   it('reads only ref-bearing production configuration and refuses an incomplete profile', () => {

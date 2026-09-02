@@ -93,6 +93,78 @@ export interface HostedRuntimeConfiguration {
 
 export type HostedRuntimeSecretResolver = (reference: string) => Promise<string>;
 
+/**
+ * The configuration names this runtime actually DEREFERENCES, paired with the
+ * environment variable that carries each one, in boot-preflight order.
+ *
+ * `workosWebhookSignatureKeyRef` is deliberately ABSENT. It is never resolved:
+ * `createWorkOsWebhookRoute` hands it to the receipt store as an opaque
+ * provenance label (`workos-webhook-intake.ts` `safeExternalRef`), so it is a
+ * signing-key IDENTIFIER, not a secret reference. Dereferencing it — here or in
+ * a deployment gate — would fail a correctly configured deployment. See
+ * WI-2141402 / D-046.
+ */
+export const HOSTED_RUNTIME_RESOLVED_SECRET_REFS = [
+  { field: 'hostedSessionCookieSecretRef', env: 'PAPERCUSP_HOSTED_SESSION_COOKIE_SECRET_REF' },
+  { field: 'workosApiKeyRef', env: 'WORKOS_API_KEY_REF' },
+  { field: 'workosCookiePasswordRef', env: 'WORKOS_COOKIE_PASSWORD_REF' },
+  { field: 'workosWebhookSecretRef', env: 'WORKOS_WEBHOOK_SECRET_REF' },
+] as const satisfies readonly { field: keyof HostedRuntimeConfiguration; env: string }[];
+
+/**
+ * Turn a resolver failure into a fixed, value-safe message.
+ *
+ * The resolver's own errors name the REFERENCE and never the value, so their
+ * text is safe to surface. Anything else — a database connection failure in
+ * particular, whose message can embed a connection string WITH its password —
+ * collapses to a bare code. Never interpolate an unknown error message here.
+ * Same discipline as `apps/operator/bin/hosted-check-refs.ts`.
+ */
+function safeResolverFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  return /^(hosted_secret_ref_(missing|malformed):|egress: )/.test(message) ? message : 'resolution_error';
+}
+
+/**
+ * Boot-time reference preflight (unified-web-portal-2026-08-29, WI-2141402).
+ *
+ * Every reference above is otherwise dereferenced only at its point of use —
+ * the WorkOS API key and cookie password on a sign-in, the webhook secret on a
+ * webhook. So a hosted unit whose `*_REF` names were SET while the referenced
+ * secrets were ABSENT started clean and passed `/api/health` while failing
+ * every real request: a half-configured public profile that looks healthy to
+ * every check the cut-over runbook performs, which is exactly what D-037/D-044
+ * exist to prevent. `--check-env` is the gate for that (D-046), but it is a
+ * procedure an operator runs, and the store can change between gate and start.
+ * Resolving here makes a half-configured start a refusal to start instead.
+ *
+ * Resolved values are discarded rather than cached, so point-of-use resolution
+ * keeps picking up a rotated secret; only the cookie secret — which the session
+ * store needs at composition time anyway — is returned.
+ */
+async function preflightHostedSecretRefs(
+  configuration: HostedRuntimeConfiguration,
+  resolveSecret: HostedRuntimeSecretResolver,
+): Promise<{ sessionCookieSecret: string }> {
+  const resolved = new Map<string, string>();
+  for (const { field, env } of HOSTED_RUNTIME_RESOLVED_SECRET_REFS) {
+    const reference = configuration[field] as string;
+    try {
+      const value = await resolveSecret(reference);
+      if (typeof value !== 'string' || value.trim().length === 0) {
+        // Defensive: a resolver returning empty must not read as success.
+        throw new Error(`hosted_secret_ref_missing:${reference} (resolved to an empty value)`);
+      }
+      resolved.set(field, value);
+    } catch (error) {
+      throw new Error(`hosted_runtime_secret_ref_unresolved:${env} — ${safeResolverFailure(error)}`, {
+        cause: error,
+      });
+    }
+  }
+  return { sessionCookieSecret: resolved.get('hostedSessionCookieSecretRef') as string };
+}
+
 export interface HostedRuntimeDependencies {
   readonly resolveSecret?: HostedRuntimeSecretResolver;
   readonly runService?: HostedServiceContextRunner;
@@ -207,7 +279,9 @@ export async function createHostedRuntime(
   // never inherits operator-state-pg (EI-22091008218242870).
   const resolveSecret = dependencies.resolveSecret ?? resolveSecretRef;
   const runTenant = dependencies.runTenant ?? withTenantContext;
-  const sessionCookieSecret = await resolveSecret(configuration.hostedSessionCookieSecretRef);
+  // Fail fast on a half-configured profile rather than serving a healthy-looking
+  // one that fails on live traffic — see preflightHostedSecretRefs (WI-2141402).
+  const { sessionCookieSecret } = await preflightHostedSecretRefs(configuration, resolveSecret);
 
   const sessionStore = new HostedServiceSessionStore(runService);
   const membershipAuthority = new HostedRuntimeMembershipAuthority(runService, runTenant);
