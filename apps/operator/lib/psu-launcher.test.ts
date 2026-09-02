@@ -9429,6 +9429,57 @@ describe("WI-2141892 — Claude resume local-liveness evidence", () => {
     expect(outcome).toMatchObject({ claimed: false, reason: "http" });
   });
 
+  it("WI-2142217 — the 400-degrade is GENERIC over witness kind, not claude-shaped", async () => {
+    // The test above proves the fallback for `no-live-claude-process` only, and for a
+    // while that was the only kind there was. WI-2142101 added `no-live-omp-process`,
+    // and the mixed-version window is WIDEST for a newly-taught kind — the launcher runs
+    // from staging, the endpoint is the released green pin, so a brand-new kind is
+    // guaranteed to 400 until a deploy lands.
+    //
+    // The branch keys on `status === 400 && canonicalLocalLivenessEvidence`, never on the
+    // kind, so omp is carried correctly by construction. Nothing PINNED that, though, and
+    // the plausible future edit is narrowing the condition to the claude kind — it reads
+    // like a tightening. Under that edit the claude test above still passes while every
+    // omp resume returns an opaque HTTP 400: a silent, backend-specific regression with a
+    // fully green suite. This is the test that fails instead.
+    const bodies: any[] = [];
+    const notices: string[] = [];
+    const fetchImpl = async (_url: string, opts: any) => {
+      const body = JSON.parse(opts.body);
+      bodies.push(body);
+      if (body.localLivenessEvidence) {
+        return { ok: false, status: 400, json: async () => ({ error: "unknown kind" }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, acquired: true, status: "acquired" }),
+      };
+    };
+
+    const outcome = await reportSessionResumed(22128, {
+      fetchImpl,
+      token: "t",
+      resumeClaimKey: "claim-omp-rollout",
+      localLivenessEvidence: NO_LIVE_OMP_PROCESS_EVIDENCE,
+      onNotice: (m: string) => notices.push(m),
+    });
+
+    expect(outcome).toMatchObject({ claimed: true, status: "acquired" });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0].localLivenessEvidence).toEqual({
+      version: 1,
+      kind: "no-live-omp-process",
+    });
+    // Same contract as the claude path: the retry is the OLD request on the SAME key.
+    expect(bodies[1].localLivenessEvidence).toBeUndefined();
+    expect(bodies[1].resumeClaimKey).toBe("claim-omp-rollout");
+    // The notice must name the kind that was actually rejected, or an owner reading it
+    // goes looking at the wrong backend.
+    expect(notices.join("")).toContain("no-live-omp-process");
+    expect(notices.join("")).not.toContain("no-live-claude-process");
+  });
+
   it("WI-2142101 — mints the OMP witness off omp_thread_id, kept distinct from claude's", () => {
     // resumeArgsFor emits `omp -r <ompThreadId>`, so the id IS on the command
     // line exactly like claude's `--resume <uuid>`; the probe was never
