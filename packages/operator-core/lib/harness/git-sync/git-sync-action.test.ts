@@ -67,7 +67,7 @@ const releaseAllResourcesForOwnerMock = vi.fn(
 const heldResourcesByOwner = new Map<string, string[]>();
 const releaseTrace: string[] = [];
 const readResourceQueueMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>) => ({
-  holders: [],
+  holders: [] as Array<Record<string, unknown>>,
   draining: false,
   queue: [] as Array<Record<string, unknown>>,
 }));
@@ -1581,6 +1581,61 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(endedSessionOwnersMock).toHaveBeenCalledWith([endedAgentHolder.owner]);
     expect(releasedLockIds).not.toContain(endedAgentHolder.lock_id);
     expect(runGitSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('WI-2140647: proactively reclaims an orphaned self-owned SHARED git-sync barrier hold (no held_exclusive refusal needed)', async () => {
+    // Unlike the two tests above, this hold is never surfaced via a `held_exclusive`
+    // refusal — shared coalesces with shared, so tryAcquireResource would happily
+    // succeed forever with the stale lease still sitting there. The reclaim here is
+    // PROACTIVE: reclaimOrphanedSelfSharedHolds sweeps readResourceQueue's live
+    // holders unconditionally before every shared acquire (see its docstring).
+    const staleOwner = `system:git-sync:${process.pid}:stale-shared-run`;
+    const staleSharedHolder = {
+      owner: staleOwner,
+      owner_label: 'git-sync:papercup',
+      mode: 'shared' as const,
+      status: 'held' as const,
+      lock_id: 'stale-shared-lock-1',
+      reason: 'auto-commit libs/generic/rerank',
+      acquired_ts: new Date('2026-09-01T19:06:00.000Z'),
+      expires_ts: new Date('2026-09-01T19:16:00.000Z'),
+      fence_seq: 7,
+    };
+    // Only the barrier resource ('git-sync', the mode:'shared' request) carries the
+    // stale holder. clearQueuedGitSyncOwners also calls readResourceQueue for every
+    // resource (reading .queue, never .holders) — sharing this same conditional mock
+    // is safe: it reads .queue:[] for 'git-sync' too, so it sees nothing to purge.
+    readResourceQueueMock.mockImplementation(async (_tx, opts) => {
+      const resource = (opts as { resource: string }).resource;
+      return {
+        holders: resource === 'git-sync' ? [staleSharedHolder] : [],
+        draining: false,
+        queue: [],
+      };
+    });
+    tryReleaseResourceMock.mockResolvedValue({ ok: true, released: 1 });
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await action(ctx);
+      expect(error).toHaveBeenCalledWith(
+        `[git-sync] ORPHANED SELF SHARED-LEASE RECLAIMED — git-sync holder ${staleOwner} ` +
+          '(this process, but no fire here still holds it)',
+      );
+    } finally {
+      error.mockRestore();
+    }
+
+    // Released by the holder's OWN lock_id — never a bare owner/resource match.
+    expect(tryReleaseResourceMock.mock.calls[0]?.[1]).toMatchObject({
+      coordinationDomain: 'ws-42',
+      owner: staleOwner,
+      lockId: staleSharedHolder.lock_id,
+    });
+    // No retry needed: the sweep runs BEFORE the acquire, so the barrier is only
+    // ever requested once — unlike the exclusive-refusal path's acquire/reclaim/retry.
+    expect(runGitSyncMock).toHaveBeenCalledOnce();
+    expect(acquiredResources()).toEqual(['git-sync', 'git-sync:papercup', 'libs-papercusp-submodule']);
   });
 
   it('EI-20224276977835463: refreshes every held lease during a long run and stops refreshing before release', async () => {
