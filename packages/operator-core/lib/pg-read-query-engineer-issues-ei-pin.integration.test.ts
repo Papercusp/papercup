@@ -33,6 +33,7 @@
  *   view subtracts `_ei`      + no advisory  → FAIL (a real trap went unguarded)
  *   view projects full payload + an advisory → FAIL (the advisory is false)
  */
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
@@ -149,6 +150,140 @@ describe('SILENT_NULL_PATH_TRAPS agrees with the live engineer_issues view', () 
       'Postgres resolves payload->\'_ei\'->>\'severity\' on this view, yet the advisory ' +
         'still warns that it cannot. The hardcoded claim has drifted from the database.',
     ).toBeNull();
+  });
+});
+
+/**
+ * P-010. The advisory was only ONE carrier of the falsified claim.
+ *
+ * The same sentence — "on the engineer_issues VIEW the nested severity path is
+ * NULL for every row" — was ALSO hand-copied into surfaces that reach agents
+ * directly, and each drifted independently when migration 1096 landed:
+ *   - issues:list tool guidance, shipped into every agent's context;
+ *   - the scheduler's severity-accessor rationale;
+ *   - the CLAUDE.md prose corpus.
+ * Three copies of one fact, none derived from the view, all wrong for a month.
+ * Fixing the three without a guard just resets the clock until a fourth appears.
+ *
+ * The guard is deliberately NOT "this phrase may never appear": correcting the
+ * record REQUIRES narrating the old claim ("...was NULL for every row; migration
+ * 1096 stopped the subtraction"). So it demands that any surface still carrying
+ * the dead-path sentence also carry the retraction marker that dates it. A fresh
+ * copy of the claim, written by someone who does not know about 1096, has no such
+ * marker and fails here.
+ */
+const AGENT_FACING_SEVERITY_SURFACES = [
+  './agent-tools/issues/list.ts',
+  './scheduler/get-next.ts',
+  './doc-projection/claude-md-corpus.generated.md',
+] as const;
+
+/** A present-or-past assertion that the nested path resolves to nothing. */
+const DEAD_PATH_CLAIM = /NULL for (?:\*\*)?(?:every|EVERY)(?:\*\*)? row/;
+
+function readSurface(rel: string): string {
+  return readFileSync(new URL(rel, import.meta.url), 'utf8');
+}
+
+/** Does this body assert the dead path about `_ei` severity at all? */
+function claimsTheDeadPath(body: string): boolean {
+  return DEAD_PATH_CLAIM.test(body) && /_ei/.test(body) && /severity/i.test(body);
+}
+
+/**
+ * How close the retraction marker has to sit to the claim it dates.
+ *
+ * ⚠ Judged PER OCCURRENCE, not per file — and that distinction is not
+ * hypothetical. The first cut of this guard asked only whether `1096` appeared
+ * ANYWHERE in the file, and it passed `agent-tools/issues/list.ts` while a
+ * FOURTH stale copy of the claim sat in that same file's header comment: the
+ * corrected line further down carried the marker and immunised the whole file.
+ * A guard whose scope is wider than the claim it checks reports "clean" for the
+ * wrong reason, which is this plan's subject reproduced inside its own fix.
+ */
+const DATED_WINDOW = 400;
+
+/** Byte offsets of dead-path claims that carry no nearby retraction marker. */
+function staleClaimOffsets(body: string): number[] {
+  if (!claimsTheDeadPath(body)) return [];
+  const out: number[] = [];
+  for (const m of body.matchAll(new RegExp(DEAD_PATH_CLAIM.source, 'g'))) {
+    const at = m.index ?? 0;
+    const near = body.slice(Math.max(0, at - DATED_WINDOW), at + DATED_WINDOW);
+    if (!/1096/.test(near)) out.push(at);
+  }
+  return out;
+}
+
+/**
+ * STALE = asserts the dead path without dating it against the migration that
+ * falsified it. This is the whole predicate; the file scan and the controls
+ * below both go through it, so the controls genuinely exercise what runs.
+ */
+function isStaleSeverityClaim(body: string): boolean {
+  return staleClaimOffsets(body).length > 0;
+}
+
+describe('agent-facing severity guidance agrees with the live view (P-010)', () => {
+  it('carries no undated dead-path claim while the view resolves the path', async () => {
+    const subtracts = subtractsEi(await viewDefOf('harness_shared.engineer_issues'));
+    // Guard is meaningful only in the post-1096 world; the next test covers the other.
+    expect(subtracts).toBe(false);
+
+    const undated = AGENT_FACING_SEVERITY_SURFACES.filter((rel) =>
+      isStaleSeverityClaim(readSurface(rel)),
+    );
+
+    expect(
+      undated,
+      'These agent-facing surfaces still tell readers that ' +
+        "payload->'_ei'->>'severity' is NULL for every row on engineer_issues, but the " +
+        'live view no longer subtracts the `_ei` blob, so the path resolves. Either ' +
+        'correct the claim or date it against migration 1096.',
+    ).toEqual([]);
+  });
+
+  it('CONTROL: flags a freshly-written stale claim, and clears a dated one', () => {
+    // Proving falsifiability WITHOUT mutating the shared tree (a copy-out probe
+    // cannot reach these surfaces: the scan reads them by real repo path, and a
+    // git-sync sweep can commit an in-tree mutant even when nothing goes wrong).
+    // These two literals are what a fourth copy of the bug would look like, and
+    // what its correction looks like, so the predicate is exercised in both
+    // directions on every run rather than once by hand.
+    const freshlyStale =
+      "severity is a real column here. Do NOT reach for payload->'_ei'->>'severity' " +
+      'against this view — it is NULL for every row.';
+    const dated =
+      "payload->'_ei'->>'severity' was NULL for every row until migration 1096 " +
+      'restored the `_ei` blob; read the severity column.';
+
+    expect(isStaleSeverityClaim(freshlyStale), 'the exact sentence P-010 removed must be caught').toBe(true);
+    expect(isStaleSeverityClaim(dated), 'a correction that narrates the old claim must NOT be caught').toBe(false);
+
+    // REGRESSION CONTROL for the bug this guard had on its first cut: a file
+    // that dates ONE claim must not thereby immunise a second, undated one far
+    // away. This is the shape that let a fourth stale copy through.
+    const datedThenStaleElsewhere = `${dated}\n${'filler. '.repeat(120)}\n${freshlyStale}`;
+    expect(
+      isStaleSeverityClaim(datedThenStaleElsewhere),
+      'a dated claim elsewhere in the same file must not immunise an undated one',
+    ).toBe(true);
+  });
+
+  it('CALIBRATION: the phrase this guard keys on still occurs in the real surfaces', () => {
+    // Without this, the assertion above passes trivially the day someone rewords
+    // the sentence out of DEAD_PATH_CLAIM's reach: an empty `undated` list would
+    // then mean "the regex matches nothing", not "no surface is stale" — the
+    // zero-work false green this whole plan is about. At least one surface must
+    // still be matched, so the detector is demonstrably live.
+    const matched = AGENT_FACING_SEVERITY_SURFACES.filter((rel) =>
+      DEAD_PATH_CLAIM.test(readSurface(rel)),
+    );
+    expect(
+      matched.length,
+      'DEAD_PATH_CLAIM matched no surface at all, so the staleness check above is ' +
+        'vacuous. Re-point the pattern at however the dead-path claim is now worded.',
+    ).toBeGreaterThan(0);
   });
 });
 
