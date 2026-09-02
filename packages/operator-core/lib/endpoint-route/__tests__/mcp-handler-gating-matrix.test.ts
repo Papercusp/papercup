@@ -1024,12 +1024,29 @@ describe('tools:invoke inherits the nested target result-door exemption', () => 
       { format: 'json' },
     );
     expect(res.isError).not.toBe(true);
-    expect(res._meta?.resultDoor).toMatchObject({ truncated: true, structural: true });
+    // EI-22167228731928620 moved an OVERFLOWING explicit-full body off the generic
+    // bounded-payload reprojection and onto the hard-spill reference envelope: that
+    // generic walk is field-blind, and the raw body here is LARGER than a 'trimmed'
+    // call's precisely because the explicit-full exemption skipped the shaper, so
+    // reprojecting it could leave less inline than the tier the caller opted out of.
+    // The property THIS test guards is unchanged — the spilled bytes must be the
+    // TARGET's unshaped source, never its lossy shaper's output — but the spill path
+    // is now advertised on the door meta rather than in a body `_projection`. Pin the
+    // route by name too, so a silent re-route back to the field-blind walk fails here
+    // instead of quietly changing what an explicit-full caller can recover.
+    const door = res._meta?.resultDoor as
+      | { truncated?: boolean; structural?: boolean; reason?: string; spillFailed?: boolean; spillPath?: string }
+      | undefined;
+    expect(door).toMatchObject({
+      truncated: true,
+      structural: true,
+      reason: 'explicit-full-request-overflow',
+      spillFailed: false,
+    });
 
-    const body = JSON.parse((res.content[0] as { text: string }).text) as {
-      _projection: { cursor: { args: { file_path: string } } };
-    };
-    const spill = readFileSync(body._projection.cursor.args.file_path, 'utf8');
+    const spillPath = door?.spillPath;
+    expect(typeof spillPath).toBe('string');
+    const spill = readFileSync(spillPath as string, 'utf8');
     expect(spill).toContain(FULL_SOURCE_CHECKPOINT);
     expect(spill).not.toContain('SHAPED_CHECKPOINT_MARKER');
   });
