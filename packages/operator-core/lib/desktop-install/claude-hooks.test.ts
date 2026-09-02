@@ -135,6 +135,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // nudge (EI-20023819609804890) + frozen-candidate-edit nudge (WI-40081) +
     // registry-census-drift nudge (EI-19401978567233485) +
     // cli-entry nudge (EI-22085994981415983) +
+    // tsc-verdict-stale nudge (WI-2141194) +
     // ask-gate-mirror (in install order). The separate
     // coord-inbox entry is retired — merged into activity.
     expect(commandsFor(cfg, 'PostToolUse')).toEqual([
@@ -154,6 +155,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/posttooluse-frozen-candidate-edit-nudge.mjs`,
       `${DEST}/posttooluse-registry-census-drift-nudge.mjs`,
       `${DEST}/posttooluse-cli-entry-nudge.mjs`,
+      `${DEST}/posttooluse-tsc-verdict-stale-nudge.mjs`,
       `${DEST}/artifact-url-delivery-guard.mjs`,
       `${DEST}/ask-gate-mirror.sh`,
     ]);
