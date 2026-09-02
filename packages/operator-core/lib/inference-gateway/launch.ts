@@ -530,7 +530,7 @@ function makeOrgDisallowedDeactivator(
       const orphanSuffix = formatOrphanedClaimsSuffix(orphanedClaims);
       const summary = `Inference account '${accountId}' is org/subscription-DISABLED for Claude Code — removed from the pool`;
       const body =
-        `Account '${accountId}' returned ${consecutive} consecutive org/subscription-disqualified 403s ("not allowed for this organization" / "subscription disabled for claude code") — a PERMANENT Anthropic-side disable, NOT a throttle. The gateway's 6h pause only lived in memory + reset on every restart, so the dead account kept re-entering rotation and failing spawns. It has now been PERSISTENTLY removed from the pool. ` +
+        `Account '${accountId}' returned ${consecutive} consecutive org/subscription-disqualified 403s ("not allowed for this organization" / "subscription disabled for claude code") — a PERMANENT Anthropic-side disable, NOT a rate limit. The gateway's 6h pause only lived in memory + reset on every restart, so the dead account kept re-entering rotation and failing spawns. It has now been PERSISTENTLY removed from the pool. ` +
         `To restore it: re-enable OAuth API / Claude Code access in that account's Anthropic organization, then re-register it (accounts:register).` +
         atRiskSuffix +
         orphanSuffix;
