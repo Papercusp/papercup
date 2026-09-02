@@ -285,11 +285,29 @@ export const FACT_SUSPECTED_DEFAULT_TTL_SEC = 6 * 3600;
  * fact (once at workspace scope, once at harness scope after re-asserting
  * there). This is not a ranking defect (the ranking chose correctly among a
  * saturated 50) — it is the cap being sized for a much lower write-volume
- * regime than a 20+-agent fleet actually produces in a shared scope. Raising
- * it does not change the fold budget (`FACTS_FOLD_LIMIT`, unchanged at 12)
- * — it only lengthens how long a fact survives BEFORE eviction competition,
- * without inflating what gets injected into any one orient/context. */
-export const FACTS_PER_SCOPE_CAP = 200;
+ * regime than a 20+-agent fleet actually produces in a shared scope.
+ *
+ * EI-22176887065789447: raised 200 -> 500. The identical saturation pattern
+ * recurred at roughly 5x the fleet scale. Measured live 2026-09-02T19:12Z
+ * (querying `capPopulationPredicate()`'s own predicate, not a hand-rolled
+ * count): `harness:papercusp` sat AT 200/200 (0 headroom — every write there
+ * evicted an incumbent) and had cap-evicted 23 facts from 16 distinct
+ * authors in the preceding 24h; `workspace` sat at 195/200. This predates
+ * and is independent of the trigger below — chronic background saturation,
+ * not a one-off spike. It was surfaced by a compounding trigger: the
+ * standing-facts expiry audit's un-expire action (WI-2141854) restores a
+ * LAPSED fact to live, and a lapsed fact costs no seat while a restored one
+ * does — so one apply that un-expired ~480 facts evicted 27 workspace-scoped
+ * incumbents within the same minute, with no cost estimate or guard on that
+ * restore path (a separate, still-open hardening question — see
+ * EI-22176887065789447). Raising the cap here addresses the underlying
+ * capacity shortfall directly, not merely the audit's collateral batch.
+ *
+ * Raising it does not change the fold budget (`FACTS_FOLD_LIMIT`, unchanged
+ * at 12) — it only lengthens how long a fact survives BEFORE eviction
+ * competition, without inflating what gets injected into any one
+ * orient/context. */
+export const FACTS_PER_SCOPE_CAP = 500;
 /**
  * Volatile measurements are short-lived snapshots, not standing conclusions.
  * Keep a separate, deliberately smaller population so a burst of snapshots
