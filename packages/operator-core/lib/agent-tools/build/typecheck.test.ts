@@ -357,6 +357,76 @@ describe('dirs — the directory-attribution question `files` (suffix match) can
   });
 });
 
+/**
+ * EI-22142032090978471 — `npx tsc` with no local tsc binary runs the REGISTRY SQUATTER
+ * `tsc@2.0.4` instead: a package whose whole body prints a banner and exits 1.
+ *
+ * The `tsc_failed_to_run` branch already refused to call that clean (measured: it exits
+ * 1, never 0, including on a cold npx cache — the filed "EXITS 0" does not reproduce).
+ * What it got wrong was WHICH failure it was, sending the reader after the project
+ * operand or the tsconfig when both are fine and `node_modules` is the problem.
+ */
+describe('EI-22142032090978471 — the npx decoy package is named, not blamed on the tsconfig', () => {
+  let root: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'tsc-decoy-'));
+    writeFileSync(join(root, 'tsconfig.json'), '{}');
+  });
+
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  /** Captured verbatim 2026-09-02; ANSI written as `\x1b` per lint:no-control-bytes. */
+  const DECOY_BANNER = [
+    '',
+    '\x1b[41m\x1b[37m                This is not the tsc command you are looking for                \x1b[0m',
+    '',
+    'To get access to the TypeScript compiler, \x1b[34mtsc\x1b[0m, from the command line either:',
+    '- Use \x1b[1mnpm install typescript\x1b[0m to first add TypeScript to your project \x1b[1mbefore\x1b[0m using npx',
+  ].join('\n');
+
+  const runWithOutput = async (output: string, exitCode: number) => {
+    const { child } = fakeChild();
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        child.stdout?.emit('data', Buffer.from(`${output}\n`));
+        child.emit('close', exitCode);
+      });
+      return child;
+    });
+    try {
+      return await (
+        buildTypecheck as unknown as {
+          handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, unknown> }>;
+        }
+      ).handler({ project: '.' }, { projectDir: root });
+    } finally {
+      spawnMock.mockReset();
+    }
+  };
+
+  it('reports tsc_decoy_package_ran with the install remedy, not a tsconfig hunt', async () => {
+    const raw = await runWithOutput(DECOY_BANNER, 1);
+    expect(raw.data.ok).toBe(false);
+    expect(raw.data.error).toBe('tsc_decoy_package_ran');
+    expect(String(raw.data.message)).toContain('install:safe');
+    // It must actively clear the innocent suspects, or the reader still audits them.
+    expect(String(raw.data.message)).toMatch(/tsconfig/i);
+  });
+
+  it('CALIBRATION: an ordinary toolchain failure keeps the generic verdict', async () => {
+    // Without this, the test above passes just as well if every failure were relabelled
+    // as the decoy — which would be a strictly worse misattribution than the one fixed.
+    const raw = await runWithOutput('error: cannot find module ./nope', 2);
+    expect(raw.data.error).toBe('tsc_failed_to_run');
+  });
+
+  it('CALIBRATION: the banner fixture still carries real ANSI, not flattened text', () => {
+    expect(DECOY_BANNER).toContain(String.fromCharCode(27));
+  });
+});
+
 describe('suggestProjects — a refusal has to be actionable', () => {
   let root: string;
 

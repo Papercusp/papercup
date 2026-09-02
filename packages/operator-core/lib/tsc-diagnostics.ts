@@ -55,6 +55,31 @@ export interface TscFileCount {
  */
 export const NO_INPUT_CODES = new Set(['TS5057', 'TS5058', 'TS6053', 'TS18003']);
 
+/**
+ * NO COMPILER RAN AT ALL — the registry squatter `tsc@2.0.4` ran instead of the
+ * real compiler (EI-22142032090978471).
+ *
+ * `npx <tool>` does not fail when the tool is missing from `node_modules/.bin` — it
+ * downloads and runs whatever registry package carries that name. For `tsc` that is
+ * `tsc@2.0.4` ("A deprecated release of the TypeScript compiler"), whose entire body
+ * prints a banner and sets `process.exitCode = 1`. Measured 2026-09-02: it exits 1 in
+ * every invocation shape, including a cold npx cache, so it never produced a false
+ * green here — every caller's "nonzero exit with no diagnostics" guard already caught
+ * it. What they all got wrong was the CAUSE, sending the reader after the project
+ * operand or the tsconfig when the real condition is a missing/half-written
+ * `node_modules`.
+ *
+ * This lives beside {@link NO_INPUT_CODES} because it answers the same question those
+ * codes do — "did this run measure anything?" — one rung lower: those mean tsc ran and
+ * found no inputs; this means tsc never ran.
+ *
+ * Deliberately NOT keyed on the banner's other line ("To get access to the TypeScript
+ * compiler…"): that is ordinary English about TypeScript and could plausibly reach an
+ * output buffer from a diagnostic message or a path. The Star Wars joke below is
+ * emitted by nothing else, and a false positive here would mislabel a REAL failure.
+ */
+export const TSC_DECOY_BANNER = /This is not the tsc command you are looking for/;
+
 /** `path/to/file.ts(12,5): error TS2322: message` */
 const LOCATED = /^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s*(.*)$/;
 /** `error TS5057: message` — a global failure with no file attribution. */

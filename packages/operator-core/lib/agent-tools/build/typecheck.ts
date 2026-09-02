@@ -72,6 +72,7 @@ import {
   parseTscDiagnostics,
   summariseByFile,
   syntaxBrokenFiles,
+  TSC_DECOY_BANNER,
 } from '../../tsc-diagnostics';
 import type { TscDiagnostic, TscFileCount } from '../../tsc-diagnostics';
 import {
@@ -872,14 +873,23 @@ export default defineTool({
     // A run that produced no diagnostics AND did not exit 0 never really ran —
     // never let that read as "clean". Same guard the baseline gate applies.
     if (diagnostics.length === 0 && outcome.code !== 0) {
+      // EI-22142032090978471 — one toolchain failure is common enough, and mis-diagnosed
+      // expensively enough, to name: `npx` could not find a local tsc binary and ran the
+      // unrelated REGISTRY package called `tsc` instead, which only prints a banner. The
+      // generic message below is true but sends the reader after the project operand or
+      // the tsconfig; the actual condition is a missing/half-written node_modules.
+      const ranDecoy = TSC_DECOY_BANNER.test(outcome.output);
       return {
         data: {
           ok: false,
-          error: 'tsc_failed_to_run',
+          error: ranDecoy ? 'tsc_decoy_package_ran' : 'tsc_failed_to_run',
           project: relative(root, resolved),
           exitCode: outcome.code,
           durationMs,
-          message: 'tsc exited non-zero with no parseable diagnostics — a toolchain failure, NOT a clean run.',
+          message: ranDecoy
+            ? 'No TypeScript compiler ran: `npx tsc` found no local tsc binary and executed the unrelated registry package named `tsc`, which only prints a banner. ' +
+              'Your project and tsconfig are not implicated — `node_modules/.bin/tsc` is missing or half-written. Run `npm run install:safe`, then retry.'
+            : 'tsc exited non-zero with no parseable diagnostics — a toolchain failure, NOT a clean run.',
           output: outcome.output.slice(-2000),
         },
       };

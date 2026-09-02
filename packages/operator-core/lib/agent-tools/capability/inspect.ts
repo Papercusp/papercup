@@ -39,6 +39,7 @@ import {
 import { capabilityExecSandboxEnabled } from './exec-sandbox';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { TSC_HEAP_MB, tscHeapEnv } from '../tsc-heap';
+import { TSC_DECOY_BANNER } from '../../tsc-diagnostics';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   clampForegroundTimeoutMs,
@@ -486,6 +487,35 @@ export function deadTypecheckVerdict(run: {
   if (clean) return null;
 
   const out = run.output ?? '';
+
+  // EI-22142032090978471 — no compiler ran at all: `npx` resolved the REGISTRY
+  // squatter named `tsc` instead of the local binary.
+  //
+  // `npx <tool>` does not fail when the tool is missing from node_modules/.bin —
+  // it silently downloads and runs whatever package carries that name. For `tsc`
+  // that is `tsc@2.0.4` ("A deprecated release of the TypeScript compiler"),
+  // whose entire body prints a banner and sets `process.exitCode = 1`.
+  //
+  // The generic branch below already refuses to call this clean, which is why it
+  // was never a false green (measured 2026-09-02: exit 1 in every invocation
+  // shape, including a cold npx cache — the filed report's "EXITS 0" does not
+  // reproduce). What it got WRONG was the CAUSE: it sent the reader after "a bad
+  // --project operand, a missing tsconfig, or a crash", none of which is true and
+  // all of which are expensive to rule out. The condition is a missing/half-built
+  // `node_modules`, so name it and hand over the one-line repair.
+  if (TSC_DECOY_BANNER.test(out)) {
+    return {
+      reason: 'typecheck_ran_npx_decoy_package',
+      headline:
+        '🚨 THIS RUN MEASURED NOTHING — no TypeScript compiler ran. `npx tsc` could not find a local ' +
+        'tsc binary, so it downloaded and ran the unrelated registry package named `tsc`, which only prints a banner.',
+      advice:
+        'Your tsconfig and your code are not implicated — `node_modules/.bin/tsc` is missing or half-written ' +
+        '(commonly a peer running an install on the shared tree). Run `npm run install:safe`, then re-run this check. ' +
+        'Do not read anything about your types from this output.',
+    };
+  }
+
   const oom =
     /JavaScript heap out of memory|Ineffective mark-compacts near heap limit|FATAL ERROR:.*heap/i.test(out) ||
     // SIGABRT — how V8 terminates on heap exhaustion once it gives up.
