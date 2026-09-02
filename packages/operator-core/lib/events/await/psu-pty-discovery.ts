@@ -667,6 +667,157 @@ export interface InjectHostResult {
  * verdict. Prefer it wherever booking a durable delivery record; `injectIntoHost` remains the
  * boolean-returning wrapper for the ~100 call sites that only branch on success.
  */
+/** Append-only sender-side audit log. `.jsonl`, so `pruneDeadDiscoveryFiles`
+ *  (which globs `.json` and unlinks anything that fails to parse as a discovery
+ *  record) can never reap it.
+ *
+ *  Resolved per-write rather than at module load so a test can redirect it. That
+ *  is not a convenience: a test-authored `inject-owner-mismatch` row landing in
+ *  the real log would be indistinguishable from a genuine misroute to whoever
+ *  reads it next, which is precisely the confusion this whole instrument exists
+ *  to remove. */
+function injectAuditPath(): string {
+  return process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH || join(PSU_PTY_DIR, 'sender-inject-audit.jsonl');
+}
+
+/** Modes that write agent-visible TEXT into a session. A mis-addressed one of
+ *  these is the WI-2140968 failure; `raw`/`osc`/`mcp-reconnect` are control bytes
+ *  and legitimately often unlabelled, so they are counted but not itemised. */
+const TURN_CLASS_MODES = new Set(['turn', 'compact', 'reset', 'recycle', 'carry-respawn']);
+
+/** How often the heartbeat row below is written, in checked injects. */
+const INJECT_AUDIT_HEARTBEAT_EVERY = 500;
+
+let injectsChecked = 0;
+let injectsMismatched = 0;
+let injectsUnlabelled = 0;
+
+/**
+ * The owner a socket PATH belongs to, independent of what the caller asserted.
+ * psu-pty-host.mjs writes its socket as `<PSU_PTY_DIR>/<ownerId>.sock`, so the
+ * path is a second, caller-independent witness to the intended recipient.
+ * Returns null when the path is not that shape (a test double, an injected
+ * absolute path) — an indeterminate reading, never a mismatch.
+ */
+export function sockOwnerIdFromPath(sock: string): string | null {
+  if (typeof sock !== 'string' || sock.length === 0) return null;
+  const base = sock.slice(sock.lastIndexOf('/') + 1);
+  if (!base.endsWith('.sock')) return null;
+  const owner = base.slice(0, -'.sock'.length);
+  return owner.length > 0 ? owner : null;
+}
+
+function appendInjectAudit(row: Record<string, unknown>): void {
+  try {
+    appendFileSync(injectAuditPath(), `${JSON.stringify({ ts: new Date().toISOString(), ...row })}\n`);
+  } catch {
+    /* A diagnostic must never be able to fail a delivery. */
+  }
+}
+
+/**
+ * WI-2140968 — the SENDER-side half of the owner-binding check.
+ *
+ * The receiving host's EI-153 guard compares the envelope's `ownerId` to its OWN
+ * ownerId, so it catches a delivery ADDRESSED to someone else. It structurally
+ * cannot catch the inverse: a caller that resolved the WRONG socket and then
+ * labelled the envelope with THAT socket's owner. Both labels then agree, the
+ * guard passes silently, and another agent's text is written into this session's
+ * pty leaving no trace in any existing instrument — which is what the measured
+ * population looks like (9 cross-owner deliveries on 2026-09-01, ZERO
+ * `control-payload-rejected` rows in any recipient).
+ *
+ * The socket path witnesses the recipient independently of the caller's
+ * assertion, so the two can be cross-checked HERE — at the one chokepoint every
+ * sender funnels through, inside the operator process. That placement is the
+ * point: unlike the host-side detector it needs no host restart, so its coverage
+ * is total the moment it deploys. The host detector sat at 5 of 81 live hosts
+ * five hours after landing, because a host only adopts new code when it
+ * respawns, and 47 hosts were pinned on one version.
+ *
+ * DETECTOR ONLY — control flow is deliberately unchanged: a mismatch is recorded
+ * and the delivery still goes out exactly as before. REFUSING on mismatch is a
+ * separate, deliberately gated step (WI-2141435) and must not ride in on a
+ * diagnostic change.
+ */
+export function auditInjectOwnerBinding(
+  sock: string,
+  msg: { mode: string; ownerId?: string; deliveryId?: string },
+): 'match' | 'mismatch' | 'unlabelled' | 'indeterminate' {
+  try {
+    const sockOwner = sockOwnerIdFromPath(sock);
+    if (sockOwner == null) return 'indeterminate';
+
+    injectsChecked += 1;
+
+    if (msg.ownerId === undefined) {
+      injectsUnlabelled += 1;
+      // An unlabelled TURN-class inject is candidate (A): the guard's fail-open
+      // exemption means the host accepts it with no identity check at all.
+      if (TURN_CLASS_MODES.has(msg.mode)) {
+        appendInjectAudit({
+          kind: 'inject-owner-unlabelled',
+          mode: msg.mode,
+          sockOwnerId: sockOwner,
+          deliveryId: msg.deliveryId ?? null,
+          checked: injectsChecked,
+          pid: process.pid,
+        });
+      }
+      return 'unlabelled';
+    }
+
+    if (msg.ownerId !== sockOwner) {
+      injectsMismatched += 1;
+      appendInjectAudit({
+        kind: 'inject-owner-mismatch',
+        mode: msg.mode,
+        envelopeOwnerId: msg.ownerId,
+        sockOwnerId: sockOwner,
+        deliveryId: msg.deliveryId ?? null,
+        checked: injectsChecked,
+        pid: process.pid,
+      });
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[psu-pty] SENDER OWNER-BINDING MISMATCH: envelope ownerId=${msg.ownerId} but socket ` +
+          `belongs to ${sockOwner} (mode=${msg.mode}, deliveryId=${msg.deliveryId ?? 'none'}). ` +
+          `Delivery NOT blocked (detector only) — see WI-2140968.`,
+      );
+      return 'mismatch';
+    }
+
+    // POSITIVE CONTROL. A detector that writes only on a mismatch produces a zero
+    // indistinguishable from a detector that never ran — the exact false negative
+    // that cost this investigation three wake cycles, in its fourth costume. The
+    // heartbeat states the population actually searched, so a later reader can
+    // tell "no mismatches in 40,000 checked injects" from "the instrument was
+    // never wired up".
+    if (injectsChecked % INJECT_AUDIT_HEARTBEAT_EVERY === 0) {
+      appendInjectAudit({
+        kind: 'inject-audit-heartbeat',
+        checked: injectsChecked,
+        mismatched: injectsMismatched,
+        unlabelled: injectsUnlabelled,
+        pid: process.pid,
+      });
+    }
+    return 'match';
+  } catch {
+    /* Never let the detector affect the delivery. */
+    return 'indeterminate';
+  }
+}
+
+/** Test-only view of the counters behind the heartbeat row. */
+export function _injectAuditCountersForTest(): {
+  checked: number;
+  mismatched: number;
+  unlabelled: number;
+} {
+  return { checked: injectsChecked, mismatched: injectsMismatched, unlabelled: injectsUnlabelled };
+}
+
 export function injectIntoHostWithConfirmation(
   sock: string,
   msg: {
@@ -765,6 +916,10 @@ export function injectIntoHostWithConfirmation(
   const payload = JSON.stringify(envelope);
   if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES)
     return Promise.resolve({ ok: false, confirmation: 'oversize' as const });
+
+  // WI-2140968: cross-check the caller's asserted ownerId against the socket path's
+  // own witness. Detector only — never blocks the write (see auditInjectOwnerBinding).
+  auditInjectOwnerBinding(sock, msg);
 
   return new Promise<InjectHostResult>((resolve) => {
     let settled = false;
