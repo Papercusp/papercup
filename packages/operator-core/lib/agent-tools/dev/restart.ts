@@ -82,6 +82,7 @@ import { acquireWithContentionRetry } from '../locks/contention-retry';
 import { probeServiceStart } from './systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
 import { preflightRestartTarget } from './restart-preflight';
+import { checkBgHostQuiesce, isQuiesceSensitiveTarget, type QuiesceVerdict } from './bg-host-quiesce-guard';
 import { DESKTOP_DEV_RESOURCE, resolveDesktopDevListener, restartDesktopDev } from './desktop-dev-restart';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
@@ -529,6 +530,16 @@ export default defineTool({
       .describe(
         "Restart even though the target's tree is missing packages it needs to boot. Only when the restart IS the remedy — otherwise it crash-loops the host.",
       ),
+    /** WI-2140796: proceed even though bg-host is deliberately quiesced (systemd
+     *  masked + a marker at $XDG_RUNTIME_DIR/papercusp-seed-cut.quiesce, written by
+     *  cut-seed-quiesced.sh for a P-101 seed cut). Only pass once you have confirmed
+     *  with the holder named in the refusal that un-quiescing it now is safe. */
+    override_quiesce: z
+      .boolean()
+      .optional()
+      .describe(
+        'Restart bg-host even though it is quiesced (masked unit + seed-cut marker). Confirm with the holder first — this can un-quiesce an in-flight seed cut.',
+      ),
     /** Short free-text reason, recorded on the audit_log row when a real
      *  restart fires (either enablement route). Optional but encouraged when
      *  using `authorize` in place of the env gate. */
@@ -617,6 +628,11 @@ export default defineTool({
       // run is where the decision is actually made, so "this tree cannot boot" belongs HERE,
       // where it costs nothing, not only in the refusal afterwards.
       const bootPreview = await preflightRestartTarget(target);
+      // WI-2140796: same reasoning again — a quiesced bg-host is worth knowing about
+      // BEFORE the confirmed call, not only in its refusal.
+      const quiescePreview = isQuiesceSensitiveTarget(target)
+        ? await checkBgHostQuiesce(target, args.override_quiesce === true)
+        : null;
       return json({
         ok: true,
         dry_run: true,
@@ -629,6 +645,16 @@ export default defineTool({
           ...(bootPreview.missing.length ? { missing: bootPreview.missing } : {}),
           ...(bootPreview.reason ? { reason: bootPreview.reason } : {}),
         },
+        ...(quiescePreview
+          ? {
+              quiesce: {
+                checked: !quiescePreview.probeFailed,
+                would_block: quiescePreview.blocked,
+                quiesced: quiescePreview.quiesced,
+                ...(quiescePreview.marker ? { marker: quiescePreview.marker } : {}),
+              },
+            }
+          : {}),
         ...(isGateSensitiveTarget(target)
           ? { gate_collision: { kind: preview.kind, would_block: preview.blocked, ...preview.detail } }
           : {}),
