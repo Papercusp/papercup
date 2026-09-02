@@ -787,7 +787,11 @@ export type GateCandidateAssessment =
   | 'judging-current-path'
   | 'judging-without-current-path'
   | 'inferred-candidate';
-export type DeployedShaAssessment = 'executing' | 'restart-required' | 'process-unverified';
+export type DeployedShaAssessment =
+  | 'executing'
+  | 'restart-required'
+  | 'process-unverified'
+  | 'serving-not-probeable';
 export type MainBehindStagingAssessment = 'caught-up' | 'normal-buffer' | 'gate-stalled';
 
 export interface PipelineAssessments {
@@ -898,14 +902,44 @@ export function assessGateCandidate(input: {
   return input.judgingContainsPath ? 'judging-current-path' : 'judging-without-current-path';
 }
 
+/**
+ * WI-2141716. `servingStartedSinceCodeChange === null` is NOT one condition — it is two,
+ * and they take OPPOSITE actions:
+ *
+ *  • the probe RAN and failed / lacked an operand (`resolver-failed`, `insufficient-data`)
+ *    → retrying can genuinely turn this into an answer → `process-unverified`, whose
+ *      safeAction is "re-probe the serving runtime".
+ *  • no probe was ATTEMPTED because there is structurally no serving process to identify
+ *    (`not-applicable`) → the two reachable cases are a sha-only read, where
+ *    `evaluateServing` returns at its `if (!runtime)` branch with "No path was given
+ *    (sha-only probe)", and a `tauri-desktop`/no-unit path. Re-probing can NEVER answer
+ *    either → `serving-not-probeable`, whose lever is to ask a different QUESTION.
+ *
+ * Collapsing the second into the first is a retry-forever verdict: the caller is told to
+ * re-probe, the answer cannot change, and it re-probes again. Measured cost — ended session
+ * su-bf563dcb (2026-09-01) rode that loop for a day against `deploy.3070.sha` and filed ~10
+ * near-duplicate items restating "deployed=true has no runtime evidence" (EI-22086002727188952,
+ * EI-22084770820502553, EI-22082457721042350, EI-22080574287702981, EI-22079623943027181,
+ * EI-22078186418153630, EI-22078125171565738, EI-22074933047196116, EI-22024451685900594).
+ *
+ * `evaluateServing` already computes the distinction and records it on
+ * `serving.unknownReason.code`; this function's only job is to stop discarding it.
+ */
 export function assessDeployedSha(input: {
   deployedSha: string | null;
   servingStartedSinceCodeChange: boolean | null;
+  /**
+   * `serving.unknownReason?.code ?? null` — the reason the serving stage could not answer.
+   * Optional so existing callers keep today's behaviour; omitted/null is read as UNKNOWN
+   * and keeps the retry-shaped verdict rather than silently claiming the stronger one.
+   */
+  servingUnknownCode?: CellUnknown['code'] | null;
   verdictUnknownLegs: readonly string[];
 }): DeployedShaAssessment | null {
   if (input.deployedSha === null || input.verdictUnknownLegs.includes('deployedSha')) return null;
   if (input.servingStartedSinceCodeChange === true) return 'executing';
   if (input.servingStartedSinceCodeChange === false) return 'restart-required';
+  if (input.servingUnknownCode === 'not-applicable') return 'serving-not-probeable';
   return 'process-unverified';
 }
 
@@ -5593,6 +5627,7 @@ export async function gitPipelinePosition(
     deployedSha: assessDeployedSha({
       deployedSha,
       servingStartedSinceCodeChange: serving.startedSinceCodeChange,
+      servingUnknownCode: serving.unknownReason?.code ?? null,
       verdictUnknownLegs,
     }),
     mainBehindStaging: assessMainBehindStaging({
