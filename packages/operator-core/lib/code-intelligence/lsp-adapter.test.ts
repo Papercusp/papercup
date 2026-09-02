@@ -739,7 +739,7 @@ describe('readinessVerdict — only the server may certify; silence is never pro
   });
 });
 
-describe('prepareIntentReadiness — a quiet server is not re-timed by every query (WI-2142543)', () => {
+describe('prepareIntentReadiness — a quiet server is not re-timed by every query (WI-2142532)', () => {
   // WHY THIS ASSERTS ON THE COMPOSED PATH, not on readinessVerdict:
   //
   // readinessVerdict is PURE over the `idleForMs` it is handed. It was correct

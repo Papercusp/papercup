@@ -346,7 +346,7 @@ interface LspClient {
    * When `pendingProgress` last became — and has CONTINUOUSLY remained — empty;
    * `null` while the server is loading.
    *
-   * ⚠ THIS MUST LIVE ON THE CLIENT, NOT IN A QUERY'S STACK FRAME (WI-2142543).
+   * ⚠ THIS MUST LIVE ON THE CLIENT, NOT IN A QUERY'S STACK FRAME (WI-2142532).
    * The settle-window strategy asks "has the server been quiet for `settleMs`?"
    * A per-call variable can only answer that by re-measuring from zero, so a
    * server idle for ten minutes still costs a full settle window on EVERY
@@ -1003,7 +1003,7 @@ export function readinessVerdict(
  * queries, or every query re-measures it from zero and pays the settle window
  * again. Returns the effective idle-start so callers need no second read.
  *
- * Pinned module state may hold a pre-WI-2142543 client with no such field;
+ * Pinned module state may hold a pre-WI-2142532 client with no such field;
  * `undefined` (never installed) is treated as "idle as of now", which is the
  * honest reading when we have no earlier evidence, and matches exactly what the
  * old per-call variable did on its first iteration.
