@@ -614,7 +614,10 @@ describe('typecheck.ts model tracks the real build:typecheck (D-015)', () => {
       // command shape for that: `tsc -p X a.ts` is refused by tsc itself ("Cannot use --project
       // with source files"), and `tsc a.ts` IGNORES tsconfig entirely, so it runs under default
       // compilerOptions — a materially different check that stays correctly uncovered below.
-      ['project', 'files', 'maxErrors', 'timeoutMs', 'incremental', 'scopeToFiles'],
+      // `dirs` (build/typecheck.ts): a DIRECTORY filter over the reported errors, the sibling of
+      // the `files` filter — it narrows what is REPORTED, never what is compiled, so it does not
+      // touch the redirect-exclusion or project-operand reasoning in pairs/typecheck.ts.
+      ['project', 'files', 'dirs', 'maxErrors', 'timeoutMs', 'incremental', 'scopeToFiles'],
       'pairs/typecheck.ts excludes an stdout redirect BY PATTERN because the tool produces no artifact, and treats ' +
         'every compiler option except --incremental as unexpressible. A new arg may mean the pattern is wrongly narrow.',
     );
