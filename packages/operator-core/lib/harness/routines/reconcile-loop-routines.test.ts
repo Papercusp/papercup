@@ -2980,10 +2980,20 @@ describe('reconcileLoopRoutines — looksDeadOrStuck stays bounded to the fire, 
   const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
 
   /** Warm 60s loop, fired at T0, whose wake was NEVER delivered (e.g. dropped after retries) —
-   *  the exact shape measured live on EI-22171105225585428, where `last_wake_status` was NOT
-   *  'delivered' for the stalled fire, so `deliveredWakeWithoutLoopTurn` returns null and the
-   *  classic `looksDeadOrStuck` ladder is the ONLY gate. The session is alive and working on
-   *  something else entirely, so OWNER-WIDE presence keeps beating regardless of this loop. */
+   *  the exact shape measured live on EI-22171105225585428. `last_wake_status` is NOT
+   *  'delivered', so `deliveredWakeWithoutLoopTurn` returns null (deliveredWakeRetryAt stays
+   *  null) — but that alone is NOT enough to reach the `looksDeadOrStuck` ladder: `signal` is
+   *  computed FIRST via `completionSignal()`, whose OWN presence-quiescence fallback (module
+   *  header layer 2) shares the EXACT SAME `FALLBACK_QUIET_MS` staleness bar as this fix's
+   *  disjunct 2 — so once a post-fire beat goes stale, `completionSignal` intercepts it FIRST
+   *  and returns `via:'presence-quiescence'` before disjunct 2 is ever evaluated (verified: the
+   *  fixture below WITHOUT `turns_ingest_watermark` produces exactly that, not 'stuck-backstop').
+   *  The two stale-beat tests below therefore also pin `turns_ingest_watermark` behind the beat,
+   *  so `completionSignal`'s WI-6852 ingest-lag guard defers (returns null) instead — the one
+   *  legitimate way `signal` stays null with a genuinely stale, non-'delivered' post-fire beat,
+   *  which is exactly the shape that reaches disjunct 2 in production. The session is alive and
+   *  working on something else entirely, so OWNER-WIDE presence keeps beating regardless of
+   *  this loop. */
   const undeliveredRow = (over: Record<string, unknown> = {}) => ({
     id: 'rt-undelivered',
     target_owner_id: 'su-undelivered',
@@ -3039,6 +3049,13 @@ describe('reconcileLoopRoutines — looksDeadOrStuck stays bounded to the fire, 
     // 10min quick-retry threshold — silently short-circuiting the early `continue` gate on every
     // tick and starving the quick-retry leg below of ever being reached, even though the beat
     // itself had gone quiet (>60s stale) minutes ago.
+    //
+    // `turns_ingest_watermark` is pinned behind the beat so `completionSignal`'s own
+    // presence-quiescence fallback (which shares this fix's 60s bar) DEFERS instead of settling
+    // the fire itself — see the fixture doc comment above. Without it, this fixture settles via
+    // 'presence-quiescence' before disjunct 2 is ever reached, REGARDLESS of whether the fix
+    // under test is applied (verified empirically: the pre-fix bar produces the identical
+    // 'presence-quiescence' via here too) — i.e. it would silently test nothing.
     const beatAtMs = T0 + 4 * 60_000; // one isolated, unrelated beat 4min after the fire
     const nowMs = T0 + 1_000 + 10 * 60_000; // just past quickRetryParkMs(60s)=10min — beat is ~6min stale
     const recordFire = vi.fn(async () => {});
@@ -3058,17 +3075,26 @@ describe('reconcileLoopRoutines — looksDeadOrStuck stays bounded to the fire, 
       checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
     });
     expect(res.rearmed).toBe(1);
-    // DIAGNOSTIC PROBE (EI-22171105225585428) — temporary, replaced after diagnosis.
-    expect(res.loops[0].via).toBe('__PROBE__');
+    expect(res.loops[0]).toMatchObject({ id: 'rt-undelivered', via: 'stuck-backstop' });
   });
 
   it('past the full dwell, the classic stuck-backstop still fires even with a somewhat-recent stray beat', async () => {
     const nowMs = T0 + 1_000 + DWELL_MS + 60_000; // past the dwell measured from the FIRE
     const recordFire = vi.fn(async () => {});
     const res = await reconcile({
-      // beat is 2 minutes old — long stale by the new 60s bar, so this exercises the SAME path
-      // as before via disjunct 2, then falls through to the unchanged stuckParkElapsed dwell.
-      sql: fakeSql([undeliveredRow({ presence_last_active_at: pgString(nowMs - 2 * 60_000) })], []),
+      sql: fakeSql(
+        [
+          undeliveredRow({
+            // beat is 2 minutes old — long stale by the new 60s bar, so this exercises the SAME
+            // path as before via disjunct 2, then falls through to the unchanged stuckParkElapsed
+            // dwell. turns_ingest_watermark pinned behind it for the same reason as the test above
+            // (completionSignal's own presence-quiescence check would otherwise intercept first).
+            presence_last_active_at: pgString(nowMs - 2 * 60_000),
+            turns_ingest_watermark: pgString(T0),
+          }),
+        ],
+        [],
+      ),
       nowMs,
       recordFire,
       readFireState: NO_PRIOR_ERRORS,
