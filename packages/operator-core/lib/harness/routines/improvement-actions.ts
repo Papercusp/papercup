@@ -54,6 +54,7 @@ import { triageIdea } from '../improvements/triage';
 import { applyTriageDecision, selectUntriaged, type ApplyTriageInput, type ApplyTriageResult } from '../improvements/triage-core';
 import { runInvalidArgsMinerTick } from '../improvements/invalid-args-miner';
 import { runToolRejectionMinerTick } from '../improvements/tool-rejection-miner';
+import { runCorrectionDecayMinerTick } from '../improvements/correction-decay-miner';
 import { LEARNING_MODEL_SPEC } from '../../learning/model-policy';
 
 /** The claim identity the dispatch stamps on an in-flight item (close-loop D-001). */
@@ -319,6 +320,31 @@ registerSystemAction('improvement-tool-rejection-scorecard', async (ctx: SystemA
       (result.captured.length ? ` (${result.captured.join(', ')})` : '') +
       `, ${result.declined} duplicate(s) declined` +
       (result.skippedSelf ? `, ${result.skippedSelf} improvement-loop verb(s) skipped` : '') +
+      (result.failed ? `, ${result.failed} capture(s) FAILED` : ''),
+  );
+});
+
+// ── P-019: D-104's endgame — does an auto-correction ever decay? ─────────────
+// Reads the SHAPE AGENTS SENT out of `tool_invocations.args_json`, never the
+// rejection status: a re-encoding rule moves its own population from
+// `invalid-input` to `ok` the day it serves, so a status-keyed check would read
+// a clean decay to zero while caller behaviour is unchanged (D-109/D-113).
+// Folds each day into its own routine metadata, because the baseline is by
+// definition older than the ~14d raw retention. See correction-decay-miner.ts.
+registerSystemAction('improvement-correction-decay', async (ctx: SystemActionCtx) => {
+  const windowDays = intFromEnv('PAPERCUSP_CORRECTION_DECAY_WINDOW_DAYS', 14, { min: 1 });
+  const maxPerTick = intFromEnv('PAPERCUSP_CORRECTION_DECAY_MAX_PER_TICK', 3, { min: 0 });
+  const result = await runCorrectionDecayMinerTick(ctx.installSlug, ctx.workspaceId, {
+    windowDays,
+    maxPerTick,
+  });
+  console.log(
+    `[improvement-correction-decay] ${result.rulesSeen} rule(s) over ${result.daysSeen} day(s) ` +
+      `(live ${windowDays}d + snapshot) — ${result.rating}: ${result.evidence} ` +
+      `${result.notDecaying} not decaying, captured ${result.captured.length}` +
+      (result.captured.length ? ` (${result.captured.join(', ')})` : '') +
+      `, ${result.declined} duplicate(s) declined` +
+      (result.snapshotted ? '' : ', snapshot NOT written') +
       (result.failed ? `, ${result.failed} capture(s) FAILED` : ''),
   );
 });

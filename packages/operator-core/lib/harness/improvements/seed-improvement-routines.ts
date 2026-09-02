@@ -85,6 +85,20 @@ export const IMPROVEMENT_ROUTINES = [
     arm: 'safe',
     group: LEARNING_ROUTINE_GROUP,
   }, // weekly, Sun 04:30
+  // P-019 (coordination-spec-adoption-2026-08-03): D-104's endgame — has any
+  // auto-correction stopped decaying, i.e. become a permanent repair for a schema
+  // nobody intends to fix? Capture only (kind=change) ⇒ safe tier, like its two
+  // neighbours. DAILY rather than weekly, unlike them: this tick is also the only
+  // writer of the per-day snapshot the check's baseline depends on, and
+  // `tool_invocations` retains ~14 days — a weekly tick that misses two fires in a
+  // row would lose days permanently. 05:00 keeps it off both heavier scans above.
+  {
+    name: 'improvement-correction-decay',
+    target: 'system:improvement-correction-decay',
+    cron: '0 0 5 * * *',
+    arm: 'safe',
+    group: LEARNING_ROUTINE_GROUP,
+  }, // daily 05:00
   // knowledge-pack-loop-integrity-2026-07-19 P-006/P-008 (registered in
   // routines/knowledge-pack-actions.ts): the fleet-lessons last-mile delivery
   // pass (bounded, D-003-preserving — clashes always skip) and the

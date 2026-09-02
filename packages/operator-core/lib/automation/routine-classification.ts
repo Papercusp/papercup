@@ -552,6 +552,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'Per-verb schema-rejection rate over tool_invocations (SQL); files work items',
   },
+  'system:improvement-correction-decay': {
+    spend: 'none',
+    why: 'Per-rule auto-correction decay read from tool_invocations.args_json (SQL) plus a jsonb snapshot write to its own routine metadata; files work items via captureImprovement — no spawn/dispatch/wake',
+  },
   'system:claim-integrity-sweep': { spend: 'none', why: 'Checks claim invariants in SQL' },
   'system:claim-discipline-watch': { spend: 'none', why: 'Injects a nudge into an existing turn — never wakes' },
   'system:coord-invariant-monitor': { spend: 'none', why: 'Checks coord substrate invariants in SQL' },
