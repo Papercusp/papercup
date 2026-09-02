@@ -57,7 +57,12 @@ import {
   terminalPayloadMergeJson,
 } from './coord-lifecycle/records';
 import type { CompletionAttestation, StoredAssumptionDeclaration } from './coord-lifecycle/records';
-import { auditWhereSql, completionAuthorityPredicateSql, type WorkItemAudit } from './completion-audit';
+import {
+  auditWhereSql,
+  completionAuthorityPredicateSql,
+  derivedTerminalCompletionAuthority,
+  type WorkItemAudit,
+} from './completion-audit';
 import { dedupSignature } from './harness/improvements/digest';
 import type { PersistedCompletionEvidence } from './coord-lifecycle/records';
 import {
@@ -3074,6 +3079,21 @@ export async function setIssueState(
     !opts.skipCompletionGate &&
     !opts.completionAuthority &&
     !(opts.completionEvidence && Object.keys(opts.completionEvidence).length > 0);
+  // design-to-code-coverage-seam-2026-09-02 P-003: an AGENT close that satisfied the gate
+  // with a bare completionRef judged nothing, and a NULL terminal authority reads as a
+  // legacy pre-contract close that COUNTS toward burn-down (D-005). Judge it here, through
+  // the same single grader, so no close made under the contract can be filed as predating
+  // it. Returns null — today's behaviour, unchanged — for every case in its doc.
+  const effectiveCompletionAuthority =
+    opts.completionAuthority ??
+    derivedTerminalCompletionAuthority({
+      isTerminal,
+      by,
+      skipCompletionGate: opts.skipCompletionGate,
+      suppliedAuthority: opts.completionAuthority,
+      preserveExistingRecord: preserveExistingCompletionRecord,
+      evidence: opts.completionEvidence,
+    });
   // EI-19284963139619048: this UPDATE is the state-write half of EVERY issue-family
   // work_items:complete/set_state call — the highest-traffic write in the fleet's
   // completion path. It used to run on the raw, unbounded `getOrgPg()` admin pool
@@ -3206,12 +3226,17 @@ export async function setIssueState(
                                               ELSE ${completionRef ?? null} END,
                -- P-004: the authority judgement for THIS close. Left NULL when the caller
                -- supplied none — a legacy-shaped close (D-008), which is exactly right for
-               -- the skipCompletionGate system paths and for any writer not yet migrated.
+               -- the skipCompletionGate system paths.
+               -- design-to-code-coverage-seam-2026-09-02 P-003 closed the OTHER half of that
+               -- sentence ("any writer not yet migrated"): an AGENT close that satisfied the
+               -- gate with a bare ref is now judged by derivedTerminalCompletionAuthority
+               -- above, so it can no longer be filed as a pre-contract legacy close. SYSTEM
+               -- and transport-only identities still land NULL, deliberately.
                authority = CASE WHEN ${Boolean(opts.skipCompletionGate)}
-                                  THEN COALESCE(authority, ${opts.completionAuthority ?? null})
+                                  THEN COALESCE(authority, ${effectiveCompletionAuthority ?? null})
                                 WHEN ${preserveExistingCompletionRecord}
                                   THEN authority
-                                ELSE ${opts.completionAuthority ?? null} END,
+                                ELSE ${effectiveCompletionAuthority ?? null} END,
                -- EI-21238720089733298: a terminal issue is no longer eligible for any
                -- claim-hold semantics. Leaving "_claimHold" or either provenance family
                -- behind makes a completed row read like a live compatibility hold, even
