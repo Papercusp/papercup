@@ -676,6 +676,24 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "tools:find",
 ]);
 
+/**
+ * EI-21677017866028949 — the LOOKUP key is normalized (normalizeMcpName folds `[:_.-]+`
+ * to ':'), but the curated set above stores RAW verbs. Any entry containing an underscore
+ * therefore normalized to a key that was not in the set and could never match — silently
+ * unreachable, so 9 of 38 entries (work_items:get/list/claimable, dev:pg_query,
+ * dev:pipeline_position, dev:service_health, dev:listening_ports, dev:build_status,
+ * dev:rate_governor_status) classified 'keyed' instead of 'readonly' and were never
+ * replayed on a post-connect reset. `work_items:get` did not even match itself. The
+ * underscore-free entries (loop:status, events:status, coord:read, build:typecheck) worked,
+ * which is why the gap survived: every test in proxy.test.ts happens to name one of those.
+ *
+ * Normalize ONCE at module load and compare normalized-to-normalized. READ_ONLY_TOOLS stays
+ * the human-readable curated list (and the writer-exclusion guard keeps reading it directly).
+ */
+const READ_ONLY_TOOLS_LOOKUP: ReadonlySet<string> = new Set(
+  [...READ_ONLY_TOOLS].map(normalizeMcpName),
+);
+
 const READ_ONLY_TOOLS_INVOKE_NAME = normalizeMcpName("tools:invoke");
 
 function readOnlyToolName(m: unknown): string | null {
@@ -703,7 +721,7 @@ function readOnlyToolName(m: unknown): string | null {
 
 function isReadOnlyToolCall(m: unknown): boolean {
   const name = readOnlyToolName(m);
-  return name !== null && READ_ONLY_TOOLS.has(name);
+  return name !== null && READ_ONLY_TOOLS_LOOKUP.has(name);
 }
 /**
  * Classify a forward and, for a tools/call, inject a per-request `_meta.idempotencyKey`
