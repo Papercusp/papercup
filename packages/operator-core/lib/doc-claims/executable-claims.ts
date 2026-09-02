@@ -249,8 +249,25 @@ function siteOf(a: Atom): PrescriptionSite | null {
 /**
  * `npm run X` in every form this doc uses, including the two that relocate the
  * owning package (`npm --prefix d run X`, `npm run --workspace d X`).
+ *
+ * FLAGS BETWEEN `run` AND THE SCRIPT NAME ARE SKIPPED, and the script name may not
+ * BEGIN with `-`:
+ *   - The skip is the fix. `npm --prefix papercusp-desktop run --silent test` previously
+ *     bound `--silent` as the script (the old class `[A-Za-z0-9:_-]+` admits a leading
+ *     `-`), so the guard reported "names no such script" and held the green gate red on
+ *     candidate 43f55c09 — a FALSE POSITIVE against a line that is correct npm and is
+ *     itself documenting the sanctioned invocation for the one app-dir deliberately kept
+ *     out of the root workspaces (EI-22152426246970496).
+ *   - The leading-`-` ban is a BACKSTOP with a known, deliberate trade. It guarantees a
+ *     flag can never be mis-bound AS a script (the false-positive direction, which reds
+ *     the fleet). Its cost: a flag shape this skip does not anticipate makes the whole
+ *     mention fail to match, so it is silently DROPPED — the false-ABSENCE direction.
+ *     That is the lesser evil here (one unchecked claim vs a fleet-wide red), and the
+ *     flag class is kept wide enough to cover the forms npm actually accepts. If you
+ *     widen the doc's flag vocabulary, widen this class with it.
  */
-const NPM_RUN = /npm\s+(?:--prefix[= ](\S+)\s+)?run\s+(?:--workspace[= ](\S+)\s+)?([A-Za-z0-9:_-]+)/g;
+const NPM_RUN =
+  /npm\s+(?:--prefix[= ](\S+)\s+)?run\s+(?:--workspace[= ](\S+)\s+)?(?:--[A-Za-z][A-Za-z0-9-]*(?:=\S+)?\s+)*([A-Za-z0-9:_][A-Za-z0-9:_-]*)/g;
 const LEADING_CD = /^cd\s+([^\s&|;]+)\s*&&/;
 
 export function extractExecutableClaims(markdown: string): ExtractionResult {

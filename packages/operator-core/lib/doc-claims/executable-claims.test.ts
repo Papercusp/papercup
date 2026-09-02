@@ -225,6 +225,44 @@ describe('extractExecutableClaims — prescription detection', () => {
     expect(got.npmRun.find((n) => n.script === 'lint:tests')?.explicitDir).toBe('apps/operator');
     expect(got.npmRun.find((n) => n.script === 'dev')?.explicitDir).toBe('papercusp-desktop');
   });
+
+  it('skips flags between `run` and the script — a flag is never a script name', () => {
+    // Held the green gate red (#96) on candidate 43f55c09: the corpus documents
+    // `npm --prefix papercusp-desktop run --silent test` — correct npm, and itself the
+    // sanctioned invocation for the one app-dir that is deliberately NOT a root workspace
+    // (EI-22152426246970496). The old class `[A-Za-z0-9:_-]+` admits a leading `-`, so it
+    // bound `--silent` as the script and the guard reported "names no such script" against
+    // a true line. A guard whose false positives cost a fleet-wide red trains readers to
+    // silence it, which is the failure this whole file exists to prevent.
+    const got = extractExecutableClaims(
+      'The command field already handles it (`npm --prefix papercusp-desktop run --silent test`).\n',
+    );
+    expect(got.npmRun.map((n) => n.script)).toEqual(['test']);
+    expect(got.npmRun[0]!.explicitDir).toBe('papercusp-desktop');
+
+    // NEGATIVE CONTROL — the un-flagged form must parse identically, so the skip cannot
+    // quietly swallow a real script name along with the flags.
+    expect(
+      extractExecutableClaims('`npm --prefix papercusp-desktop run test`').npmRun.map(
+        (n) => n.script,
+      ),
+    ).toEqual(['test']);
+
+    // Flags npm actually accepts, including digits and `=value`, resolve to the SCRIPT.
+    expect(
+      extractExecutableClaims('`npm run --loglevel=warn --if-present build`').npmRun.map(
+        (n) => n.script,
+      ),
+    ).toEqual(['build']);
+
+    // THE BACKSTOP, pinned as a deliberate trade rather than left to chance: a flag can
+    // never be bound AS a script name (the false-positive direction that reds the fleet).
+    // The cost is that an unanticipated flag shape drops the mention entirely — recorded
+    // here so a later reader sees the trade instead of rediscovering it as a mystery.
+    const exotic = extractExecutableClaims('`npm run --2weird build`').npmRun.map((n) => n.script);
+    expect(exotic).not.toContain('--2weird');
+    expect(exotic).toEqual([]);
+  });
 });
 
 // ──────────────────────── live assertions over CLAUDE.md ────────────────────

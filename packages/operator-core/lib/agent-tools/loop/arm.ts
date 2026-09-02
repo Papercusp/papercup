@@ -276,7 +276,25 @@ export interface LoopOverwriteNote {
   priorArmedAt: string | null;
   priorKickoffExcerpt: string;
   intervalChanged: boolean;
+  /** EI-21542193720279374: true when this re-arm moves the loop's harness away
+   *  from `prior.harnessSlug`. A harness move silently orphans the
+   *  harness-scoped carry-note (arm.ts:688 already prevents an IMPLICIT move
+   *  for an active prior loop, but an EXPLICIT `harness` override on a re-arm
+   *  still moves it deliberately) — surfaced here for the same reason a goal
+   *  swap is: so the arming agent sees what it is about to detach, instead of
+   *  discovering it only when the next cold wake resets blind. */
+  harnessChanged: boolean;
   message: string;
+}
+
+/** True for a caller-usable harness slug — not null/empty and not the
+ *  wildcard/all-workspaces sentinel. Mirrors the identical check the arm
+ *  handler keeps closure-scoped (isConcreteHarness, ~line 522); duplicated
+ *  here at module scope only because this pure decision function must not
+ *  depend on handler-local state. */
+function isConcreteHarnessSlug(value?: string | null): value is string {
+  const trimmed = value?.trim().toLowerCase();
+  return Boolean(trimmed && trimmed !== '*' && trimmed !== 'all');
 }
 
 /**
@@ -289,42 +307,65 @@ export interface LoopOverwriteNote {
  * reading its own held work-items, never saw what it replaced.
  *
  * Given the prior active loop's facts and the incoming arm, decide whether the re-arm
- * MATERIALLY changes the loop's GOAL — the harmful case — and, if so, produce the
- * comparison to surface. Returns null (no warning — the loop still arms) when:
+ * MATERIALLY changes the loop's GOAL or HARNESS — either is harmful — and, if so,
+ * produce the comparison to surface. Returns null (no warning — the loop still arms)
+ * when:
  *   - there is no prior loop, or it is not active (a fresh start / re-arm over an ended
  *     loop is fine); OR
- *   - the newly-built kickoff equals the prior kickoff (an identical re-arm); OR
- *   - the new goal text already appears in the prior kickoff (the default template embeds
- *     `{goal}`, so an interval-only / carry / mode retune — the normal in-turn re-arm —
- *     keeps the goal and is NOT flagged).
- * Only a goal SWAP (new goal not represented in the prior kickoff) surfaces the note. Pure
- * + exported for unit tests, mirroring computeLoopStall.
+ *   - the harness is unchanged AND the newly-built kickoff equals the prior kickoff (an
+ *     identical re-arm); OR
+ *   - the harness is unchanged AND the new goal text already appears in the prior kickoff
+ *     (the default template embeds `{goal}`, so an interval-only / carry / mode retune —
+ *     the normal in-turn re-arm — keeps the goal and is NOT flagged).
+ * A goal SWAP or a HARNESS MOVE (new harness concrete and different from
+ * `prior.harnessSlug`, both resolved) surfaces the note — EI-21542193720279374: kickoff
+ * text never encodes harness, so a same-goal harness move used to pass the
+ * identical-kickoff / goal-preserved shortcuts above and skip the warning entirely, even
+ * though moving harness silently orphans the harness-scoped carry-note (arm.ts:688 only
+ * prevents an IMPLICIT move for an active prior loop; an explicit `harness` override on a
+ * re-arm still moves it deliberately, with no disclosure). Pure + exported for unit
+ * tests, mirroring computeLoopStall.
  */
 export function computeLoopOverwriteNote(
   prior: PriorLoopFacts | null,
-  next: { goal: string; intervalSec: number; kickoff: string },
+  next: { goal: string; intervalSec: number; kickoff: string; harnessSlug?: string | null },
 ): LoopOverwriteNote | null {
   if (!prior || !prior.active) return null;
+  const harnessChanged =
+    isConcreteHarnessSlug(prior.harnessSlug) &&
+    isConcreteHarnessSlug(next.harnessSlug) &&
+    prior.harnessSlug.trim().toLowerCase() !== next.harnessSlug.trim().toLowerCase();
   const priorKickoffNorm = normalizeLoopText(prior.kickoff);
-  // Identical re-arm (same built kickoff, incl. a re-armed custom wakePrompt): the same
-  // loop, unchanged — no warning.
-  if (priorKickoffNorm === normalizeLoopText(next.kickoff)) return null;
+  // Identical re-arm (same built kickoff, incl. a re-armed custom wakePrompt) AND no
+  // harness move: the same loop, unchanged — no warning. A harness move alone leaves
+  // kickoff text untouched, so it must be checked independently of this shortcut.
+  if (priorKickoffNorm === normalizeLoopText(next.kickoff) && !harnessChanged) return null;
   const nextGoal = normalizeLoopText(next.goal);
   // EI-20248422377293824: a custom wakePrompt (or a legacy kickoff shape) may
   // not render the mission text, so kickoff containment alone cannot recognize
   // a carry-only re-arm that preserved the structurally stored goal.
   const priorGoal = normalizeLoopText(prior.goal ?? '');
-  if (priorGoal.length > 0 && priorGoal === nextGoal) return null;
-  // Goal preserved (present verbatim in the prior kickoff)? Then only interval/carry/mode
-  // changed — a deliberate retune, not a goal swap. No warning.
-  if (nextGoal.length > 0 && priorKickoffNorm.includes(nextGoal)) return null;
+  const goalPreserved =
+    (priorGoal.length > 0 && priorGoal === nextGoal) ||
+    // Goal preserved (present verbatim in the prior kickoff)? Then only interval/carry/mode
+    // changed — a deliberate retune, not a goal swap.
+    (nextGoal.length > 0 && priorKickoffNorm.includes(nextGoal));
+  if (goalPreserved && !harnessChanged) return null;
   const intervalChanged = prior.intervalSec != null && prior.intervalSec !== next.intervalSec;
   const excerpt = prior.kickoff.trim().slice(0, 240);
+  const harnessClause = harnessChanged
+    ? ` — harness '${prior.harnessSlug}' → '${next.harnessSlug}': the existing carry-note is` +
+      ` scoped to the OLD harness and will NOT travel with it; a future cold wake resets` +
+      ` BLIND unless you re-checkpoint under the new scope`
+    : '';
+  const goalClause = goalPreserved ? '' : ` whose goal DIFFERS from the new one`;
   const message =
     `This re-arm OVERWRITES an already-ACTIVE loop (fired ${prior.fireCount}×` +
     `${prior.armedAt ? `, last armed ${prior.armedAt}` : ''})` +
     (intervalChanged ? ` — interval ${prior.intervalSec}s → ${next.intervalSec}s` : '') +
-    ` whose goal DIFFERS from the new one. If you did NOT intend to replace it (e.g. this` +
+    harnessClause +
+    goalClause +
+    `. If you did NOT intend to replace it (e.g. this` +
     ` turn came from a stale/replayed kickoff), do NOT proceed on the new goal — check` +
     ` loop:status, then loop:end + re-arm the correct loop. Prior kickoff: "${excerpt}` +
     `${prior.kickoff.length > 240 ? '…' : ''}"`;
@@ -336,6 +377,7 @@ export function computeLoopOverwriteNote(
     priorArmedAt: prior.armedAt,
     priorKickoffExcerpt: excerpt,
     intervalChanged,
+    harnessChanged,
     message,
   };
 }
