@@ -79,10 +79,17 @@ describe('the addressing is applied where a caller-supplied note cannot bypass i
   it('wraps the continueNote ?? defaultContinueNote expression, not just the default', () => {
     // The bypass is the case worth guarding: `continueNote` REPLACES the default
     // note entirely, so addressing applied inside defaultContinueNote would ship
-    // caller-authored continuations unaddressed. Assert the wrap encloses the
-    // whole `??` expression.
-    const wrapped = /addressContinuationToOwner\(\s*\(\s*args\.continueNote\s*\?\?\s*defaultContinueNote\(/;
-    expect(SOURCE).toMatch(wrapped);
+    // caller-authored continuations unaddressed. EI-22131227584499489 (the focus-
+    // integrity warning) introduced an intermediate `rawNote` binding between the
+    // `??` expression and the addressing call — the property under test now
+    // spans two source facts instead of one inline expression, so assert both:
+    // `rawNote` really IS the `continueNote ?? defaultContinueNote(...)` result,
+    // and it — not some other value — is what flows into the addressing wrap.
+    const rawNoteIsTheOrExpression =
+      /const\s+rawNote\s*=\s*\(\s*args\.continueNote\s*\?\?\s*defaultContinueNote\(/;
+    const addressingWrapsRawNote = /addressContinuationToOwner\(\s*[\s\S]{0,120}?rawNote/;
+    expect(SOURCE).toMatch(rawNoteIsTheOrExpression);
+    expect(SOURCE).toMatch(addressingWrapsRawNote);
   });
 
   it('addresses the note BEFORE tagTurnForInjection hashes it', () => {

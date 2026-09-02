@@ -74,6 +74,36 @@ const DEFAULT_FOCUS =
 const FALLBACK_EFFECTIVE_WINDOW_TOKENS = 200_000;
 
 /**
+ * EI-21225280634310458: the no-psu-host `cold-loop-settle` reply below is an
+ * EXPECTATION, not a confirmed cut — unlike the primary carry-respawn path
+ * (`injectIntoHost`), nothing on this branch verifies that the owning process
+ * will actually EXIT before the next loop wake fires. `getLoopStatus` here
+ * carries no wake-reachability signal (that lives only in `probeWakeReachability`,
+ * consulted by loop:status, not by this tool), so a persistent process that
+ * never exits between turns — the documented `resume`-channel dead zone in
+ * wake-reachability.ts — silently falls through to re-entering THIS SAME
+ * process (or parking inbox-only) instead of a fresh cold wake, while this
+ * reply told the caller the cut was as good as done. Root-caused 2026-08-23;
+ * a since-superseded checkpoint on this item cited an unrelated cross-harness
+ * item (a different pot's "D-021 source freeze") as the reason no fix landed —
+ * that citation does not resolve in this harness and never blocked this file.
+ *
+ * Durable fix, matching the honesty pattern the primary path already uses
+ * (EI-19326331501849713 — state the QUEUE, never the outcome): make the same
+ * self-diagnosing falsifier available here, so a caller that is still running
+ * in the same process on its next turn can tell the settle did not happen
+ * instead of trusting a claim this branch cannot actually verify.
+ */
+const COLD_LOOP_SETTLE_UNVERIFIED_CAVEAT =
+  ' This expectation is NOT verified from here: a cold-loop wake still has to win the same ' +
+  'delivery channel a carry-respawn would, and a process that never actually exits between ' +
+  'turns silently misses it (wakes then park inbox-only or re-inject into THIS SAME process ' +
+  'instead of a fresh one) — this branch has no visibility into which will happen. Falsifier: ' +
+  'if your very next turn is still running in this process at anywhere near your current ' +
+  'context, the fresh cold wake did NOT happen — flush state again immediately and escalate ' +
+  'or relaunch rather than trusting this note a second time.';
+
+/**
  * EI-18686525818431054: `injectIntoHost`'s DEFAULT client-side socket timeout
  * (2000ms) is sized for an ordinary wake `turn` — the psu-pty-host acks
  * 'accepted' immediately after early validation (payload/ownerId/coalesce
@@ -481,7 +511,9 @@ export default defineTool({
                 text: JSON.stringify({
                   ok: true,
                   respawn: 'cold-loop-settle',
-                  note: 'No psu-pty host is required: end this turn now. The armed cold loop will start the next wake in fresh context from the verified loop:checkpoint carry-note.',
+                  note:
+                    'No psu-pty host is required: end this turn now. The armed cold loop is expected to start the next wake in fresh context from the verified loop:checkpoint carry-note.' +
+                    COLD_LOOP_SETTLE_UNVERIFIED_CAVEAT,
                 }),
               },
             ],
@@ -525,7 +557,8 @@ export default defineTool({
                 carryNote: recovery.carryNote,
                 loop: recovery.loop,
                 note:
-                  'No live psu-pty host is available for an in-place carry-respawn. The active warm loop was retuned to cold with its mission, cadence, mode, and kickoff preserved, and its carry-note was written and verified through the cold-wake reader. End this turn; the next loop wake starts in fresh context from that note.',
+                  'No live psu-pty host is available for an in-place carry-respawn. The active warm loop was retuned to cold with its mission, cadence, mode, and kickoff preserved, and its carry-note was written and verified through the cold-wake reader. End this turn; the next loop wake is expected to start in fresh context from that note.' +
+                  COLD_LOOP_SETTLE_UNVERIFIED_CAVEAT,
               }),
             },
           ],

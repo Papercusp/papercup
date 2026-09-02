@@ -491,6 +491,29 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
+  it('cold-loop-settle is stated as an unverified expectation, not a confirmed cut (EI-21225280634310458)', async () => {
+    // This branch has no wake-reachability signal (getLoopStatus carries none), so it
+    // cannot actually confirm the process will exit before the next wake — the note
+    // must give the caller a falsifier instead of a bare success claim, matching the
+    // primary carry-respawn path's own "queued, not performed" honesty (EI-19326331501849713).
+    findLiveHost.mockReturnValue(null);
+    getLoopStatus.mockResolvedValue({
+      active: true,
+      carry: 'cold',
+      harnessSlug: 'papercusp',
+    });
+    getLoopCarryNoteWithMeta.mockResolvedValue({
+      note: '## Next action\ncontinue',
+      updatedAtMs: Date.now(),
+    });
+    const out = await call({ focus: 'x' });
+    const b = body(out);
+    expect(b).toMatchObject({ ok: true, respawn: 'cold-loop-settle' });
+    expect(b.note).toContain('is expected to start the next wake');
+    expect(b.note).toContain('NOT verified from here');
+    expect(b.note).toMatch(/still running in this process.*next turn|next turn.*still running in this process/);
+  });
+
   it('an active warm loop without a host is retuned and settled in one request', async () => {
     findLiveHost.mockReturnValue(null);
     getLoopStatus.mockResolvedValue({
