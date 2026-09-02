@@ -3073,6 +3073,78 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       ]);
     });
 
+    it('EI-22191579345441592: rejects a filesChanged entry that is a glob pattern with an annotation', () => {
+      // The reported shape (WI-42227): a glob describing a population of files, plus a
+      // trailing prose annotation, declared as one `filesChanged` entry — no downstream
+      // blob-containment audit can resolve it, and its emptiness reads as "absent".
+      const result = (
+        complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+      ).safeParse({
+        id: 'WI-1',
+        completion: {
+          summary: 'landed',
+          filesChanged: [
+            'packages/operator-core/lib/sync/hyperbee/projections/**/*.ts (writer contract sweep)',
+          ],
+        },
+      });
+
+      expect(result.success).toBe(false);
+      expect(JSON.stringify(result.error)).toContain('not a glob pattern');
+    });
+
+    it('EI-22191579345441592: rejects a bare glob entry with no whitespace or prose punctuation', () => {
+      // The whitespace+punctuation check above cannot see this shape at all: no space,
+      // no parens, no comma — just a glob metacharacter.
+      const result = (
+        complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+      ).safeParse({
+        id: 'WI-1',
+        completion: {
+          summary: 'landed',
+          filesChanged: ['packages/operator-core/lib/sync/hyperbee/**/*.test.ts'],
+        },
+      });
+
+      expect(result.success).toBe(false);
+      expect(JSON.stringify(result.error)).toContain('not a glob pattern');
+    });
+
+    it('EI-22191579345441592: rejects a brace-expansion glob entry', () => {
+      const result = (
+        complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+      ).safeParse({
+        id: 'WI-1',
+        completion: {
+          summary: 'landed',
+          filesChanged: ['packages/operator-core/lib/sync/hyperbee/**/*.{test,integration.test}.ts'],
+        },
+      });
+
+      expect(result.success).toBe(false);
+      expect(JSON.stringify(result.error)).toContain('not a glob pattern');
+    });
+
+    it('EI-22191579345441592: still accepts a bracketed Next.js dynamic-route path (not a glob)', () => {
+      // Regression guard: `[` / `]` are deliberately EXCLUDED from the glob detector
+      // because this repo has real, legitimate filesChanged paths built from bracketed
+      // dynamic-route segments (e.g. the WI-2142463 close named this exact path).
+      const result = (
+        complete.args as { safeParse: (value: unknown) => { success: boolean; data?: any } }
+      ).safeParse({
+        id: 'WI-2',
+        completion: {
+          summary: 'landed',
+          filesChanged: ['apps/web/app/api/zero-proxy/[...path]/route.ts'],
+        },
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data?.completion.filesChanged).toEqual([
+        'apps/web/app/api/zero-proxy/[...path]/route.ts',
+      ]);
+    });
+
     it('an array in a string-typed field is joined (the "tests: expected string, received array")', () => {
       const out = coerceCompletionShape({ summary: 's', tests: ['67 green', 'vitest'] }) as { tests: unknown };
       expect(out.tests).toBe('67 green; vitest');
