@@ -20,6 +20,7 @@ import {
   certifyCanaryAnswer,
   ensureOpen,
   healthForAnswer,
+  prepareIntentReadiness,
   readinessStrategyFor,
   readinessVerdict,
   resolveSymbolSearchScope,
@@ -735,5 +736,75 @@ describe('readinessVerdict — only the server may certify; silence is never pro
       o.quiescent !== false && o.idle && o.idleForMs >= settleMs;
     expect(oldSettleWindowWouldCertify(measuredAtFalseProof, 5_000)).toBe(true);
     expect(readinessVerdict(settleWindow(), measuredAtFalseProof)).not.toBe('certified');
+  });
+});
+
+describe('prepareIntentReadiness — a quiet server is not re-timed by every query (WI-2142543)', () => {
+  // WHY THIS ASSERTS ON THE COMPOSED PATH, not on readinessVerdict:
+  //
+  // readinessVerdict is PURE over the `idleForMs` it is handed. It was correct
+  // before this regression and correct after it, so all 20 of its tests stayed
+  // green while warm `definition` went from ~1ms to 5036ms. The mechanism was
+  // never the comparison — it was that `idleSince` lived in this function's
+  // STACK FRAME, so every call re-measured the idle window from zero and paid
+  // the full 5000ms settle even on a server idle for minutes.
+  //
+  // It hid behind the very bug the `answerable` verdict fixed: the settle window
+  // used to return 'certified' and CACHE the proof, so only the first query ever
+  // paid the window. That cache was doing double duty — a (false) correctness
+  // proof AND a (legitimate) performance memo. Removing the false proof removed
+  // the memo with it.
+  //
+  // MEASURED on the frozen corpus (definition-cross-package-bare-specifier),
+  // median of 5 warm queries: v2 2ms · v3 2ms · v5 1ms · v6 5036ms (max 5037ms).
+  // A fixed toll, not a distribution — the signature of a re-paid countdown.
+  const tsClient = (idleSince: number | null, pending: Array<string> = []) =>
+    ({
+      language: 'typescript' as const,
+      health: 'healthy' as const,
+      quiescent: null,
+      everSettled: true,
+      pendingProgress: new Set(pending),
+      idleSince,
+      certifiedReadiness: new Set(),
+      canaryReadiness: new Map(),
+      unprovenReadiness: new Set(),
+      progressGeneration: 0,
+    }) as unknown as Parameters<typeof prepareIntentReadiness>[0];
+
+  it('answers IMMEDIATELY when the server has been continuously idle past the window', async () => {
+    const client = tsClient(Date.now() - 60_000);
+    const startedAt = Date.now();
+
+    // A 250ms budget is far below the 5000ms settle window: if the window were
+    // re-measured from this call, this could only time out.
+    await expect(prepareIntentReadiness(client, 'definition', 250)).resolves.toBe('answerable');
+    expect(Date.now() - startedAt).toBeLessThan(250);
+  });
+
+  it('STILL waits out the window when the idle period only just began', async () => {
+    // Falsifiability control. Without it, the assertion above is equally
+    // satisfied by deleting the settle window altogether — which would restore
+    // the warm latency AND reopen the false-empty the window exists to prevent.
+    const client = tsClient(Date.now());
+    await expect(prepareIntentReadiness(client, 'definition', 250)).resolves.toBe('timeout');
+  });
+
+  it('does not RESET the idle observation it reads — the period survives the query', async () => {
+    // The regression stated as a property: a query is an OBSERVER of the idle
+    // period, never its origin. This is what a stack-frame variable cannot do.
+    const idleSince = Date.now() - 20;
+    const client = tsClient(idleSince);
+
+    await prepareIntentReadiness(client, 'definition', 100);
+
+    expect((client as unknown as { idleSince: number | null }).idleSince).toBe(idleSince);
+  });
+
+  it('treats a LOADING server as not idle regardless of any stale timestamp', async () => {
+    // Guards the direction that matters for correctness: a stale idleSince must
+    // never let an actively-indexing server answer.
+    const client = tsClient(Date.now() - 60_000, ['token-1']);
+    await expect(prepareIntentReadiness(client, 'definition', 250)).resolves.toBe('timeout');
   });
 });

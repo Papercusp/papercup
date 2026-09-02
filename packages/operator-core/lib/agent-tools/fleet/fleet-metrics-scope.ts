@@ -83,7 +83,7 @@ export interface FleetMetricScopeDeps {
   getFleet(workspaceId: string, fleetSlug: string): Promise<AgentFleetRecord | null>;
   resolveFleetClaimSpec(args: { spec: string; workspaceId?: string }): Promise<ResolvedFleetClaimSpec | null>;
   readClaimSpecRevisions(args: {
-    beeId: string;
+    cupId: string;
     workspaceId?: string;
     limit?: number;
   }): Promise<ClaimSpecRevisionWindow>;
@@ -213,7 +213,7 @@ async function resolveFleetMetricScopeUnsafe(
   const history =
     request.flowMode === 'at-event-spec'
       ? await deps.readClaimSpecRevisions({
-          beeId: fleetSpecBeeKey(resolved.fleetSlug),
+          cupId: fleetSpecBeeKey(resolved.fleetSlug),
           workspaceId: request.workspaceId,
           limit: historyLimit,
         })

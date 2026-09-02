@@ -533,6 +533,7 @@ function cleanProof(value: unknown, input: GcpImageFamilyCleanRoomRunInput): Gcp
     migrationId: input.fixture.bootstrapInput.migrationId,
     minimumNodeMajor: input.fixture.bootstrapInput.minimumNodeMajor,
     service: input.fixture.bootstrapInput.service,
+    workspaceAuthorizedKeys: input.fixture.bootstrapInput.workspaceAuthorizedKeys,
     ...(input.fixture.bootstrapInput.isolation ? { isolation: input.fixture.bootstrapInput.isolation } : {}),
     ...(input.fixture.bootstrapInput.entrypoints ? { entrypoints: input.fixture.bootstrapInput.entrypoints } : {}),
     ...(input.fixture.bootstrapInput.publicMetadata

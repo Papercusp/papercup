@@ -66,8 +66,8 @@ export default defineTool({
     const ident = resolveAgentIdentity(ctx);
     const workspaceId = resolveClaimSpecWorkspace(args.workspace ?? ident.workspaceId);
     const fleetSlug = args.fleet ? args.fleet.trim() : null;
-    const targetBeeId = fleetSlug ? fleetSpecBeeKey(fleetSlug) : (args.cupId as string);
-    const record = await getClaimSpecRecord({ cupId: targetBeeId, workspaceId });
+    const targetCupId = fleetSlug ? fleetSpecBeeKey(fleetSlug) : (args.cupId as string);
+    const record = await getClaimSpecRecord({ cupId: targetCupId, workspaceId });
 
     // EI-20304090779240149: a fleet read answers about the FLEET, and its envelope is
     // shaped exactly like the caller-scoped cupId read — so "source: fleet, rev 7" was
@@ -99,7 +99,7 @@ export default defineTool({
     // DEFAULT while the bytes worth recovering are its own. Reading the answering row
     // instead would return an empty window for the one situation the table was built for.
     const history = await readClaimSpecRevisions({
-      beeId: targetBeeId,
+      cupId: targetCupId,
       workspaceId,
       limit: args.history,
     });

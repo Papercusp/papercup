@@ -18,6 +18,7 @@ import {
   renderCompletionClaimRecheckBody,
   runCompletionClaimRecheckSweep,
   type CompletionClaimRecheckCandidate,
+  type CompletionClaimRecheckSweepDeps,
   type CompletionClaimRecheckSweepResult,
 } from '../../completion-claim-recheck-sweep';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../../coord-lifecycle/records';
@@ -145,16 +146,26 @@ async function productionFile(input: {
   return { filed: true };
 }
 
+/**
+ * The REAL dependency set, exported so a live probe can swap exactly ONE of them (usually
+ * `candidates`, to drive a controlled row through the genuine reader and the genuine stamp)
+ * instead of re-implementing the other two. A probe that hand-rolls its own stamp proves
+ * only that the copy works, which is the failure this whole feature exists to catch one
+ * level up.
+ */
+export function productionSweepDeps(ctx: SystemActionCtx): CompletionClaimRecheckSweepDeps {
+  return {
+    candidates: (limit) => productionCandidates(ctx.workspaceId, ctx.installSlug, limit),
+    reader: repoSourceReader(repoRoot()),
+    stamp: (input) => productionStamp(ctx.workspaceId, input),
+  };
+}
+
 export function makeCompletionClaimRecheckAction(
   overrides: Partial<CompletionClaimRecheckActionDeps> = {},
 ) {
   const deps: CompletionClaimRecheckActionDeps = {
-    run: (ctx) =>
-      runCompletionClaimRecheckSweep({
-        candidates: (limit) => productionCandidates(ctx.workspaceId, ctx.installSlug, limit),
-        reader: repoSourceReader(repoRoot()),
-        stamp: (input) => productionStamp(ctx.workspaceId, input),
-      }),
+    run: (ctx) => runCompletionClaimRecheckSweep(productionSweepDeps(ctx)),
     file: productionFile,
     log: (message) => console.log(`[${COMPLETION_CLAIM_RECHECK}] ${message}`),
     ...overrides,

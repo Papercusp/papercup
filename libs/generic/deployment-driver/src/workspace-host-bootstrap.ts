@@ -570,6 +570,7 @@ interface ValidatedBootstrapInput {
   serviceGroup: string;
   workspaceUser: string;
   workspaceGroup: string;
+  workspaceAuthorizedKeys: readonly string[];
 }
 
 function validateInput(
@@ -856,6 +857,19 @@ export function buildWorkspaceHostBootstrap(
     'install -d -o "$WORKSPACE_USER" -g "$WORKSPACE_GROUP" -m 0700 "/home/$WORKSPACE_USER"',
     'ln -sfn "$WORKSPACE_ROOT" "/home/$WORKSPACE_USER/workspaces"',
     'chown -h "$WORKSPACE_USER:$WORKSPACE_GROUP" "/home/$WORKSPACE_USER/workspaces"',
+    // Authorize the controller BEFORE the sshd hardening below takes effect. The config that
+    // follows sets `AuthenticationMethods publickey` and `AllowUsers $WORKSPACE_USER`, and the
+    // workspace account is `usermod --lock`ed, so once it is reloaded the ONLY way in is a key
+    // in this file. Writing it afterwards would leave a window in which the host is already
+    // hardened and not yet reachable; failing to write it at all bricks the host (D-238).
+    'install -d -o "$WORKSPACE_USER" -g "$WORKSPACE_GROUP" -m 0700 "/home/$WORKSPACE_USER/.ssh"',
+    'printf %s "$WORKSPACE_AUTHORIZED_KEYS_B64" | base64 -d > "/home/$WORKSPACE_USER/.ssh/authorized_keys"',
+    'chown "$WORKSPACE_USER:$WORKSPACE_GROUP" "/home/$WORKSPACE_USER/.ssh/authorized_keys"',
+    'chmod 0600 "/home/$WORKSPACE_USER/.ssh/authorized_keys"',
+    // Fail loudly here rather than at the next connection: an empty authorized_keys and a
+    // correctly-hardened sshd are indistinguishable from a healthy host until someone tries
+    // to reach it, which is exactly how this went undetected.
+    'test -s "/home/$WORKSPACE_USER/.ssh/authorized_keys" || die "workspace authorized_keys is empty; the host would be unreachable after sshd hardening"',
     "cat > /etc/ssh/sshd_config.d/60-papercusp-workspace.conf <<PAPERCUSP_SSH",
     "# Managed by Papercusp workspace-host bootstrap.",
     "PasswordAuthentication no",

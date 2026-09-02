@@ -1638,6 +1638,7 @@ describe('EI-15900 cross-key supersession — one current conclusion replaces it
   it('rolls sibling retirement back when the replacement insert fails', async () => {
     await assertFact({ ttlSec: 3600, ...base, key: 'still-valid', body: 'keep me on failed replacement' }, db.sql);
     const invalid = {
+      ttlSec: 3600,
       scope: 'owner',
       scopeRef,
       key: 'replacement-fails',
@@ -1843,13 +1844,13 @@ describe('P-008 (b) depends_on / kind / claim (migration 690)', () => {
 
   it('the store refuses an unknown kind as INVALID INPUT, not as a 500 from the CHECK', async () => {
     await expect(
-      assertFact({ ...base, body: 'x', kind: 'hunch' as never }, db.sql),
+      assertFact({ ttlSec: 3600, ...base, body: 'x', kind: 'hunch' as never }, db.sql),
     ).rejects.toThrow(/unknown kind/);
   });
 
   it('a version chain preserves each version OWN kind — a modality change is history, not a rewrite', async () => {
-    await assertFact({ ...base, body: 'one', kind: 'assumption' }, db.sql);
-    await assertFact({ ...base, body: 'two', kind: 'conclusion' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'one', kind: 'assumption' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'two', kind: 'conclusion' }, db.sql);
     const hist = await factVersions({ scope: 'owner', scopeRef: 'su-d', key: 'dep', workspaceId: WS }, db.sql);
     expect(hist.map((h) => h.kind)).toEqual(['conclusion', 'assumption']);
   });
@@ -1907,10 +1908,14 @@ describe('P-010 standing-fact recheck contract (migration 940)', () => {
   });
 
   it('the store refuses malformed pairs before SQL', async () => {
-    await expect(assertFact({ ...base, recheck: { probe: 'only one half' } as never }, db.sql)).rejects.toThrow(
+    await expect(
+      assertFact({ ttlSec: 3600, ...base, recheck: { probe: 'only one half' } as never }, db.sql),
+    ).rejects.toThrow(
       /exactly probe and falsifier/,
     );
-    await expect(assertFact({ ...base, recheck: { probe: 'x'.repeat(501), falsifier: 'no' } }, db.sql)).rejects.toThrow(
+    await expect(
+      assertFact({ ttlSec: 3600, ...base, recheck: { probe: 'x'.repeat(501), falsifier: 'no' } }, db.sql),
+    ).rejects.toThrow(
       /500-character cap/,
     );
   });
@@ -2070,15 +2075,15 @@ describe('confidence (evidence-strength tier, mig 671 / WI-6052)', () => {
   };
 
   it('confidence round-trips through assert → fold', async () => {
-    await assertFact({ ...base, key: 'conf-rt', confidence: 'verified' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'conf-rt', confidence: 'verified' }, db.sql);
     const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
     expect(f.confidence).toBe('verified');
   });
 
   it('each of the 3 tiers round-trips distinctly', async () => {
-    await assertFact({ ...base, key: 'conf-verified', confidence: 'verified' }, db.sql);
-    await assertFact({ ...base, key: 'conf-provisional', confidence: 'provisional' }, db.sql);
-    await assertFact({ ...base, key: 'conf-suspected', confidence: 'suspected' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'conf-verified', confidence: 'verified' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'conf-provisional', confidence: 'provisional' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'conf-suspected', confidence: 'suspected' }, db.sql);
     const facts = await foldFacts(SEL, { workspaceId: WS }, db.sql);
     const byKey = Object.fromEntries(facts.map((f) => [f.key, f.confidence]));
     expect(byKey['conf-verified']).toBe('verified');
@@ -2087,13 +2092,13 @@ describe('confidence (evidence-strength tier, mig 671 / WI-6052)', () => {
   });
 
   it('omitted confidence stays null (legacy/unset shape, unaffected by mig 671)', async () => {
-    await assertFact({ ...base, key: 'conf-unset' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'conf-unset' }, db.sql);
     const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
     expect(f.confidence).toBeNull();
   });
 
   it('a re-assert REPLACES confidence (omitting it clears — fresh assert wins, same semantics as audienceScope/sourceProvenance)', async () => {
-    await assertFact({ ...base, key: 'conf-swap', confidence: 'suspected' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'conf-swap', confidence: 'suspected' }, db.sql);
     await assertFact({ ttlSec: 3600, ...base, key: 'conf-swap', body: 'now unset' }, db.sql);
     const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
     expect(f.key).toBe('conf-swap');
@@ -2576,7 +2581,7 @@ describe('P-018 conventions — enforcement round-trip + cross-scope discovery',
 
   it('REFUSES an enforcement tier on a non-convention', async () => {
     await expect(
-      assertFact(conv({ kind: 'conclusion', enforcement: { tier: 'structural' } }), db.sql),
+      assertFact(conv({ kind: 'conclusion', ttlSec: 3600, enforcement: { tier: 'structural' } }), db.sql),
     ).rejects.toThrow(/only meaningful on kind:'convention'/);
   });
 
@@ -2611,8 +2616,8 @@ describe('P-018 conventions — enforcement round-trip + cross-scope discovery',
   });
 
   it('excludes non-conventions, retracted, and superseded versions', async () => {
-    await assertFact(conv({ key: 'a-conclusion', kind: 'conclusion' }), db.sql);
-    await assertFact(conv({ key: 'no-kind', kind: null }), db.sql);
+    await assertFact(conv({ key: 'a-conclusion', kind: 'conclusion', ttlSec: 3600 }), db.sql);
+    await assertFact(conv({ key: 'no-kind', kind: null, ttlSec: 3600 }), db.sql);
     await assertFact(conv({ key: 'gone' }), db.sql);
     await retractFact({ scope: 'workspace', key: 'gone', workspaceId: WS }, db.sql);
     // A corrected convention returns ONCE — the current version, not both.
@@ -2795,10 +2800,11 @@ describe('P-006 / D-001 — the version-chain producer the dispute detector cons
   });
 
   it('returns the chain CURRENT-FIRST, carrying createdBy / kind / settledBy', async () => {
-    await assertFact({ ...base, key: 'k', body: 'answer A' }, db.sql);
-    await assertFact({ ...base, createdBy: 'su-bob', key: 'k', body: 'answer B' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, key: 'k', body: 'answer A' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, createdBy: 'su-bob', key: 'k', body: 'answer B' }, db.sql);
     await assertFact(
       {
+        ttlSec: 3600,
         ...base,
         createdBy: 'su-carol',
         key: 'k',
@@ -2829,10 +2835,10 @@ describe('P-006 / D-001 — the version-chain producer the dispute detector cons
     // undecidable must still be READABLE — that history is what makes a later "wait, this was
     // already declared unknowable" recoverable at all.
     await assertFact(
-      { ...base, key: 'buried', body: 'cannot tell', kind: 'undecidable', settledBy: 'a primary read' },
+      { ttlSec: 3600, ...base, key: 'buried', body: 'cannot tell', kind: 'undecidable', settledBy: 'a primary read' },
       db.sql,
     );
-    await assertFact({ ...base, createdBy: 'su-bob', key: 'buried', body: 'it is X' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, createdBy: 'su-bob', key: 'buried', body: 'it is X' }, db.sql);
 
     const chain = await factVersions({ scope: 'owner', scopeRef: 'su-me', key: 'buried', workspaceId: WS }, db.sql);
     expect(chain[0]!.kind).not.toBe('undecidable');

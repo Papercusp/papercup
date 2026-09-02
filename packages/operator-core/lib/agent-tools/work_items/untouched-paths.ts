@@ -86,14 +86,36 @@ export const MAX_UNTOUCHED_PROBES = 12;
 /**
  * How far before the work window opens a commit still counts as this work.
  *
- * Reuses the value `LANDING_RACE_WINDOW_SEC` carries in `scripts/lib/tsc-baseline-gate.mjs`
- * — this repo's existing name for the interval in which a git-sync sweep may land either
- * side of a boundary. It is duplicated as a number rather than imported because that
- * module is an `.mjs` build-script helper whose import pulls a gate toolchain into a pure
- * resolver; the constant is asserted equal to it by this module's test, so the two cannot
- * drift silently.
+ * It absorbs TWO independent sources of error in "when did this work begin", and must
+ * cover the larger:
+ *
+ *   1. GIT-SYNC SWEEP LAG — bounded, and this repo already names it
+ *      `LANDING_RACE_WINDOW_SEC` (20 min) in `scripts/lib/tsc-baseline-gate.mjs`.
+ *   2. WORK THAT PREDATES ITS OWN WORK-ITEM — an agent fixes something and files or
+ *      claims the item afterwards, so the commit legitimately lands before `since`. This
+ *      one is not bounded by any mechanism, which is why the window is set by measurement
+ *      rather than by borrowing the sweep constant.
+ *
+ * MEASURED 2026-09-02 over 30 days of `committed` closes in the `papercusp` harness that
+ * declare `filesChanged` (24,403 declared paths across 7,181 closes), scoring the real
+ * predicate — tracked, clean working tree, last commit before item creation. The gap
+ * distribution decays through the race population (41 pairs under 20 min, 12 at 20-60 min,
+ * 14 at 1-2h, 5 at 2-4h, 1 at 4-6h) and then RISES again into a genuinely stale population
+ * (5 at 6-12h, 11 at 12-24h, 26 at 1-7d, 32 beyond). There is no empty band to cut at — an
+ * earlier 7-day sample appeared to show one, and that was an artifact of n=6.
+ *
+ * So the cut is chosen on cost, and the cost of generosity here is small: moving the grace
+ * from 20 minutes to 24 hours drops detections from 82 closes to 48 (1.14% -> 0.67% of
+ * sampled closes) while removing EVERY pair whose gap is short enough for the two
+ * mechanisms above to explain. That is the asymmetry D-016 states — a false accusation
+ * costs an honest agent's grade and teaches the fleet the signal is noise, a miss merely
+ * leaves today's behaviour — bought for 0.47 percentage points.
+ *
+ * A path last committed more than a DAY before its work-item existed is not a plausible
+ * in-flight edit. That is the claim this constant makes, and the measurement above is what
+ * it rests on.
  */
-export const UNTOUCHED_GRACE_SEC = 20 * 60;
+export const UNTOUCHED_GRACE_SEC = 24 * 60 * 60;
 
 /**
  * Epoch SECONDS of the path's last commit · `null` = git answered but knows nothing ·

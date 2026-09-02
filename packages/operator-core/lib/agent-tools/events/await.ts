@@ -150,6 +150,45 @@ export default defineTool({
     notWhen:
       'Ambient interest (use watch:create { targetKind:"topic", wake:false }), sub-minute waits inside one turn, or recurring schedules. Prefer sugar verbs for common waits: deploy:await, checkpoint:await, work-item:await, service:await-up, git-sync:await, plan-item:await, fleet:await-drained.',
     chaining: 'Recipe: `events:catalog` → `events:await { event }` (or sugar) → END YOUR TURN → wake carries payload → re-register for the NEXT occurrence (one-shot: a fired await is gone). Re-awaiting the same key retires your prior wait; `events:cancel` retracts, `events:status` inspects.',
+    // EI-21240881678776697: callers reach this tool holding a `policy` axis borrowed from
+    // another verb (the filed repro passed `policy: 'qualification'`). events:await has no
+    // policy axis at all — it is ALWAYS a one-shot wake — so the near-name guess a bare
+    // rejection produces is worse than useless: there is no declared key it could mean.
+    // The wake-vs-inject choice the caller is actually reaching for belongs to watch:create,
+    // which `notWhen` already names in prose — prose read at BROWSE time, never at the
+    // moment of failure. An authored redirect outranks and suppresses the guess
+    // (invalidInputCorrections) and reaches the caller exactly when they got it wrong.
+    // Zero prompt weight: argRedirects is excluded from the projected tool text and is paid
+    // only on the failure path, so this costs nothing against the tool-weight budget.
+    argRedirects: {
+      policy: {
+        tool: 'watch:create',
+        args: { targetKind: 'topic', wake: false },
+        note: 'events:await has NO policy axis — every await is a one-shot WAKE that costs a turn. The wake-vs-inject choice is a different verb: watch:create { wake:false } registers ambient interest that injects into your inbox cheaply instead of waking you. If you meant the DEADLINE behaviour rather than delivery, that is `on_timeout` ("wake" | "expire")',
+      },
+      // Retired delivery keys: events:await never took either, and both read as a delivery
+      // switch, so they route to the verb that actually has one rather than to a near-name.
+      wake: {
+        tool: 'watch:create',
+        args: { targetKind: 'topic', wake: false },
+        note: 'an await IS the wake — there is no `wake` toggle to pass. For the non-waking form (cheap inbox inject) use watch:create { wake:false }; for what happens at the DEADLINE use `on_timeout`',
+      },
+      once: {
+        tool: 'events:await',
+        args: { event: '<key>' },
+        note: 'every events:await is ALREADY one-shot — a fired await is gone and must be re-registered for the next occurrence. There is no `once` key; drop it. For a STANDING (repeating) subscription use watch:create instead',
+      },
+      // Exact synonyms of a declared key: the terse string form renders "pass it as `X`
+      // instead". This schema is snake_case while much of the catalog is camelCase, which
+      // is a systematic near-miss rather than a one-off typo.
+      afterGeneration: 'after_generation',
+      timeoutSec: 'timeout_sec',
+      onTimeout: 'on_timeout',
+      payloadFilter: 'payload_filter',
+      producerHealth: 'producer_health',
+      planRunId: 'plan_run_id',
+      progressLease: 'progress_lease',
+    },
     seeAlso: [
       'events:catalog (what CAN I wait on? — the awaitable-key registry; check before polling)',
       'deploy:await / work-item:await / … (named sugar for the common waits — build the key for you)',

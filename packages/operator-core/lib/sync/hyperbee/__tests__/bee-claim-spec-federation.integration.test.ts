@@ -106,11 +106,11 @@ describe('cup_claim_specs federation (real PG)', () => {
     await db?.cleanup();
   });
 
-  async function fetchRow(beeId: string) {
+  async function fetchRow(cupId: string) {
     const rows = await db.sql<
       { revision: number; updated_by: string | null; id_only: boolean; origin: string; author_pubkey: string | null }[]
     >`SELECT revision, updated_by, id_only, origin, author_pubkey FROM harness_shared.cup_claim_specs
-       WHERE workspace_id=${WS} AND bee_id=${beeId}`;
+       WHERE workspace_id=${WS} AND bee_id=${cupId}`;
     return rows[0] ?? null;
   }
 
@@ -155,9 +155,9 @@ describe('cup_claim_specs federation (real PG)', () => {
         workspaceId: WS, harnessSlug: HIVE, sql: db.sql, potHomeSlug: HIVE,
         resolveCommsTier: async () => ({ tier, githubUserId: 42 }),
       });
-      const beeId = `su-bee-drop-${tier}`;
-      await proj.writeToPg(row({ bee_id: beeId }), { authorPubkey: 'peerBelow', origin: 'remote' });
-      expect(await fetchRow(beeId)).toBeNull();
+      const cupId = `su-bee-drop-${tier}`;
+      await proj.writeToPg(row({ bee_id: cupId }), { authorPubkey: 'peerBelow', origin: 'remote' });
+      expect(await fetchRow(cupId)).toBeNull();
     },
   );
 
@@ -218,11 +218,11 @@ describe('cup_claim_specs federation (real PG)', () => {
     });
 
     it('re-versioning a bee OFF an id-pin back to the default flips id_only back to false', async () => {
-      const beeId = 'su-bee-unpin';
-      await proj().writeToPg(row({ bee_id: beeId, revision: 1, spec: spec({ view: { filter: { field: 'id', op: 'in', value: ['WI-9'] } } }) }), LOCAL_PROVENANCE);
-      expect((await fetchRow(beeId))?.id_only).toBe(true);
-      await proj().writeToPg(row({ bee_id: beeId, revision: 2, spec: spec({ view: { filter: null } }) }), LOCAL_PROVENANCE);
-      const r = await fetchRow(beeId);
+      const cupId = 'su-bee-unpin';
+      await proj().writeToPg(row({ bee_id: cupId, revision: 1, spec: spec({ view: { filter: { field: 'id', op: 'in', value: ['WI-9'] } } }) }), LOCAL_PROVENANCE);
+      expect((await fetchRow(cupId))?.id_only).toBe(true);
+      await proj().writeToPg(row({ bee_id: cupId, revision: 2, spec: spec({ view: { filter: null } }) }), LOCAL_PROVENANCE);
+      const r = await fetchRow(cupId);
       expect(r?.revision).toBe(2);
       expect(r?.id_only).toBe(false);
     });
@@ -232,28 +232,28 @@ describe('cup_claim_specs federation (real PG)', () => {
     const proj = () => buildBeeClaimSpecProjection({ workspaceId: WS, harnessSlug: HIVE, sql: db.sql });
 
     it('a strictly OLDER op never clobbers an already-applied NEWER op', async () => {
-      const beeId = 'su-bee-lww-1';
-      await proj().writeToPg(row({ bee_id: beeId, revision: 5, updated_by: 'newer' }), { authorPubkey: 'p', origin: 'remote', ts: 2000 });
-      await proj().writeToPg(row({ bee_id: beeId, revision: 1, updated_by: 'older' }), { authorPubkey: 'p', origin: 'remote', ts: 1000 });
-      const r = await fetchRow(beeId);
+      const cupId = 'su-bee-lww-1';
+      await proj().writeToPg(row({ bee_id: cupId, revision: 5, updated_by: 'newer' }), { authorPubkey: 'p', origin: 'remote', ts: 2000 });
+      await proj().writeToPg(row({ bee_id: cupId, revision: 1, updated_by: 'older' }), { authorPubkey: 'p', origin: 'remote', ts: 1000 });
+      const r = await fetchRow(cupId);
       expect(r?.revision).toBe(5);
       expect(r?.updated_by).toBe('newer');
     });
 
     it('a NEWER op after an older one applies normally (forward progress)', async () => {
-      const beeId = 'su-bee-lww-2';
-      await proj().writeToPg(row({ bee_id: beeId, revision: 1, updated_by: 'older' }), { authorPubkey: 'p', origin: 'remote', ts: 1000 });
-      await proj().writeToPg(row({ bee_id: beeId, revision: 2, updated_by: 'newer' }), { authorPubkey: 'p', origin: 'remote', ts: 2000 });
-      const r = await fetchRow(beeId);
+      const cupId = 'su-bee-lww-2';
+      await proj().writeToPg(row({ bee_id: cupId, revision: 1, updated_by: 'older' }), { authorPubkey: 'p', origin: 'remote', ts: 1000 });
+      await proj().writeToPg(row({ bee_id: cupId, revision: 2, updated_by: 'newer' }), { authorPubkey: 'p', origin: 'remote', ts: 2000 });
+      const r = await fetchRow(cupId);
       expect(r?.revision).toBe(2);
       expect(r?.updated_by).toBe('newer');
     });
 
     it('re-applying the SAME op (identical ts) is idempotent — exactly one row', async () => {
-      const beeId = 'su-bee-lww-idem';
-      await proj().writeToPg(row({ bee_id: beeId, revision: 3 }), { authorPubkey: 'p', origin: 'remote', ts: 5000 });
-      await proj().writeToPg(row({ bee_id: beeId, revision: 3 }), { authorPubkey: 'p', origin: 'remote', ts: 5000 });
-      expect(await db.sql`SELECT 1 FROM harness_shared.cup_claim_specs WHERE workspace_id=${WS} AND bee_id=${beeId}`).toHaveLength(1);
+      const cupId = 'su-bee-lww-idem';
+      await proj().writeToPg(row({ bee_id: cupId, revision: 3 }), { authorPubkey: 'p', origin: 'remote', ts: 5000 });
+      await proj().writeToPg(row({ bee_id: cupId, revision: 3 }), { authorPubkey: 'p', origin: 'remote', ts: 5000 });
+      expect(await db.sql`SELECT 1 FROM harness_shared.cup_claim_specs WHERE workspace_id=${WS} AND bee_id=${cupId}`).toHaveLength(1);
     });
   });
 
@@ -261,17 +261,17 @@ describe('cup_claim_specs federation (real PG)', () => {
     const proj = () => buildBeeClaimSpecProjection({ workspaceId: WS, harnessSlug: HIVE, sql: db.sql });
 
     it('removes the row', async () => {
-      const beeId = 'su-bee-del-1';
-      await proj().writeToPg(row({ bee_id: beeId }), { authorPubkey: 'p', origin: 'remote', ts: 1000 });
-      await proj().deleteFromPg(beeId, 2000);
-      expect(await fetchRow(beeId)).toBeNull();
+      const cupId = 'su-bee-del-1';
+      await proj().writeToPg(row({ bee_id: cupId }), { authorPubkey: 'p', origin: 'remote', ts: 1000 });
+      await proj().deleteFromPg(cupId, 2000);
+      expect(await fetchRow(cupId)).toBeNull();
     });
 
     it('an OLDER del never removes a row stamped with a NEWER fed_ts', async () => {
-      const beeId = 'su-bee-del-2';
-      await proj().writeToPg(row({ bee_id: beeId }), { authorPubkey: 'p', origin: 'remote', ts: 5000 });
-      await proj().deleteFromPg(beeId, 1000);
-      expect(await fetchRow(beeId)).not.toBeNull();
+      const cupId = 'su-bee-del-2';
+      await proj().writeToPg(row({ bee_id: cupId }), { authorPubkey: 'p', origin: 'remote', ts: 5000 });
+      await proj().deleteFromPg(cupId, 1000);
+      expect(await fetchRow(cupId)).not.toBeNull();
     });
 
     it('an empty key is a no-op', async () => {
@@ -288,10 +288,10 @@ describe('cup_claim_specs federation (real PG)', () => {
     async function clearOutbox() {
       await db.sql`DELETE FROM harness_shared.substrate_outbox WHERE table_name = 'cup_claim_specs'`;
     }
-    async function insertLocal(beeId: string, revision = 1, harnessSlug: string | null = HIVE) {
+    async function insertLocal(cupId: string, revision = 1, harnessSlug: string | null = HIVE) {
       await db.sql`
         INSERT INTO harness_shared.cup_claim_specs (workspace_id, bee_id, spec, revision, updated_by, harness_slug, origin)
-        VALUES (${WS}, ${beeId}, ${JSON.stringify(spec())}::text::jsonb, ${revision}, 'su-queen-1', ${harnessSlug}, 'local')
+        VALUES (${WS}, ${cupId}, ${JSON.stringify(spec())}::text::jsonb, ${revision}, 'su-queen-1', ${harnessSlug}, 'local')
       `;
     }
 

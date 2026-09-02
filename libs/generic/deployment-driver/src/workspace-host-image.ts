@@ -32,6 +32,22 @@ import type {
 export const WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION =
   "papercusp-workspace-host-image-acceptance-v1";
 
+/**
+ * The authorized key the CLEAN-ROOM fixture installs when a spec does not name one.
+ *
+ * It is a fixed literal on purpose. The gate compares `bootstrapScriptSha256` to prove the
+ * fixture is deterministic, so the script must not vary with environment-specific key material;
+ * substituting a real controller key here would make that check fail across environments for a
+ * reason that has nothing to do with the image.
+ *
+ * Its private half was generated and destroyed in the same command and was never recorded, so it
+ * authorizes nobody. That is the point: the clean-room VM still exercises the real
+ * authorized_keys rendering path — so a regression in it fails the gate — without granting access
+ * to anything. Production provisioning passes the controller's actual public key instead.
+ */
+export const WORKSPACE_HOST_CLEAN_ROOM_AUTHORIZED_KEY =
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIARur6lLxx+/iz7rmO8bWK0dgsvHlrS1hemegIRKbYma papercusp-workspace-host-clean-room-fixture (private key discarded at generation)";
+
 export const WORKSPACE_HOST_IMAGE_ACTIONS = [
   "install",
   "upgrade",
@@ -129,6 +145,13 @@ export interface WorkspaceHostCleanRoomInstallSpec {
   minimumNodeMajor: number;
   service: WorkspaceHostBootstrapService;
   isolation?: WorkspaceHostBootstrapIsolation;
+  /**
+   * Keys to authorize for the workspace account. Optional here — unlike on
+   * `WorkspaceHostBootstrapInput`, where it is required — because a clean-room VM is torn down
+   * and has no controller to admit. Omitted ⇒ `WORKSPACE_HOST_CLEAN_ROOM_AUTHORIZED_KEY`, which
+   * keeps the fixture script deterministic.
+   */
+  workspaceAuthorizedKeys?: readonly string[];
   entrypoints?: Partial<WorkspaceHostBootstrapEntrypoints>;
   publicMetadata?: Readonly<Record<string, unknown>>;
   currentArtifact?: WorkspaceHostImageArtifact;
@@ -580,6 +603,9 @@ function fixtureBootstrapInput(
     minimumNodeMajor: spec.minimumNodeMajor,
     service: spec.service,
     isolation: spec.isolation,
+    workspaceAuthorizedKeys: spec.workspaceAuthorizedKeys?.length
+      ? spec.workspaceAuthorizedKeys
+      : [WORKSPACE_HOST_CLEAN_ROOM_AUTHORIZED_KEY],
     entrypoints: spec.entrypoints,
     publicMetadata: {
       ...spec.publicMetadata,

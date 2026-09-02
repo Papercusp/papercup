@@ -58,6 +58,9 @@ function input(
     migrationId: 'schema-1042',
     minimumNodeMajor: 22,
     service: { name: 'papercusp-workspace', port: 3070 },
+    workspaceAuthorizedKeys: [
+      'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIARur6lLxx+/iz7rmO8bWK0dgsvHlrS1hemegIRKbYma controller',
+    ],
     publicMetadata: { channel: 'canary' },
     ...overrides,
   };
@@ -390,6 +393,116 @@ describe('buildWorkspaceHostBootstrap', () => {
   // below is well-formed HTTPS and passes every OTHER bootstrap check, so each one FAILS if the
   // shared addressing rule is not wired in. That is the point: these are the falsifiers for the
   // guard, not decoration around it.
+  // D-238. harden-os sets `AuthenticationMethods publickey` + `AllowUsers $WORKSPACE_USER` and
+  // locks the workspace account, so the authorized_keys this renders is the ONLY way back into
+  // the host. Provider metadata cannot substitute: the GCP provider sets enable-oslogin=TRUE and
+  // block-project-ssh-keys=TRUE, and the workspace account is a local user OS Login never answers
+  // for. A render that omits it produced a host that bootstrapped, attested "healthy", and was
+  // unreachable — measured on p046-canary-04.
+  describe('workspace authorized keys (D-238)', () => {
+    const KEY =
+      'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIARur6lLxx+/iz7rmO8bWK0dgsvHlrS1hemegIRKbYma controller';
+
+    it('installs the authorized key for the workspace account, base64-encoded', () => {
+      const script = buildWorkspaceHostBootstrap(input());
+      expect(script).toContain(
+        `WORKSPACE_AUTHORIZED_KEYS_B64='${Buffer.from(`${KEY}\n`, 'utf8').toString('base64')}'`,
+      );
+      expect(script).toContain(
+        'printf %s "$WORKSPACE_AUTHORIZED_KEYS_B64" | base64 -d > "/home/$WORKSPACE_USER/.ssh/authorized_keys"',
+      );
+      expect(script).toContain(
+        'install -d -o "$WORKSPACE_USER" -g "$WORKSPACE_GROUP" -m 0700 "/home/$WORKSPACE_USER/.ssh"',
+      );
+      expect(script).toContain(
+        'chmod 0600 "/home/$WORKSPACE_USER/.ssh/authorized_keys"',
+      );
+    });
+
+    // The ordering IS the correctness property, not a style preference: writing the key after the
+    // sshd reload leaves a window in which the host is hardened and not yet reachable.
+    it('installs the key BEFORE sshd hardening takes effect', () => {
+      const script = buildWorkspaceHostBootstrap(input());
+      const keyInstalled = script.indexOf(
+        '/home/$WORKSPACE_USER/.ssh/authorized_keys',
+      );
+      const hardened = script.indexOf('AllowUsers $WORKSPACE_USER');
+      const reloaded = script.indexOf('systemctl reload ssh');
+      expect(keyInstalled).toBeGreaterThan(-1);
+      expect(keyInstalled).toBeLessThan(hardened);
+      expect(hardened).toBeLessThan(reloaded);
+    });
+
+    it('fails the bootstrap rather than leaving an empty authorized_keys', () => {
+      const script = buildWorkspaceHostBootstrap(input());
+      expect(script).toContain(
+        'test -s "/home/$WORKSPACE_USER/.ssh/authorized_keys" || die',
+      );
+    });
+
+    it('refuses to render a host nobody can reach', () => {
+      expect(() =>
+        buildWorkspaceHostBootstrap(input({ workspaceAuthorizedKeys: [] })),
+      ).toThrow(/at least one OpenSSH public key/);
+      expect(() =>
+        buildWorkspaceHostBootstrap(
+          input({
+            workspaceAuthorizedKeys: undefined as unknown as readonly string[],
+          }),
+        ),
+      ).toThrow(/at least one OpenSSH public key/);
+    });
+
+    it('refuses malformed keys and authorized_keys option prefixes', () => {
+      for (const bad of [
+        'not-a-key',
+        'ssh-ed25519',
+        `command="/bin/false" ${KEY}`,
+        `${KEY}\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIARur6lLxx+/iz7rmO8bWK0dgsvHlrS1hemegIRKbYma smuggled`,
+      ]) {
+        expect(() =>
+          buildWorkspaceHostBootstrap(
+            input({ workspaceAuthorizedKeys: [bad] }),
+          ),
+        ).toThrow(/plain OpenSSH public key line/);
+      }
+    });
+
+    it('round-trips a comment containing shell metacharacters byte-for-byte', () => {
+      const awkward = `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIARur6lLxx+/iz7rmO8bWK0dgsvHlrS1hemegIRKbYma it's "me" $(whoami)`;
+      const script = buildWorkspaceHostBootstrap(
+        input({ workspaceAuthorizedKeys: [awkward] }),
+      );
+      const encoded = /WORKSPACE_AUTHORIZED_KEYS_B64='([^']+)'/.exec(script);
+      expect(encoded).not.toBeNull();
+      expect(
+        Buffer.from(encoded![1], 'base64').toString('utf8'),
+      ).toBe(`${awkward}\n`);
+    });
+
+    it('authorizes several distinct keys, one per line', () => {
+      const second =
+        'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq second';
+      const script = buildWorkspaceHostBootstrap(
+        input({ workspaceAuthorizedKeys: [KEY, second] }),
+      );
+      const encoded = /WORKSPACE_AUTHORIZED_KEYS_B64='([^']+)'/.exec(script);
+      expect(Buffer.from(encoded![1], 'base64').toString('utf8')).toBe(
+        `${KEY}\n${second}\n`,
+      );
+    });
+
+    // Refused, not silently deduped: a repeated key means the caller assembled the list wrong,
+    // and quietly accepting it hides that from whoever has to debug access later.
+    it('refuses a repeated key', () => {
+      expect(() =>
+        buildWorkspaceHostBootstrap(
+          input({ workspaceAuthorizedKeys: [KEY, KEY] }),
+        ),
+      ).toThrow(/must not repeat a key/);
+    });
+  });
+
   describe('release addressing (D-106)', () => {
     it('accepts the canonical digest-derived artifact URLs', () => {
       expect(() => buildWorkspaceHostBootstrap(input())).not.toThrow();

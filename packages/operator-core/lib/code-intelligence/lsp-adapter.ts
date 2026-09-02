@@ -343,6 +343,22 @@ interface LspClient {
    */
   pendingProgress: Set<string | number>;
   /**
+   * When `pendingProgress` last became — and has CONTINUOUSLY remained — empty;
+   * `null` while the server is loading.
+   *
+   * ⚠ THIS MUST LIVE ON THE CLIENT, NOT IN A QUERY'S STACK FRAME (WI-2142543).
+   * The settle-window strategy asks "has the server been quiet for `settleMs`?"
+   * A per-call variable can only answer that by re-measuring from zero, so a
+   * server idle for ten minutes still costs a full settle window on EVERY
+   * query. That is exactly what shipped with the `answerable` verdict: warm
+   * `definition` went from ~1ms to 5036ms (5000ms window + poll overhead),
+   * measured across five queries with a max of 5037ms — a fixed toll, not a
+   * distribution. It stayed invisible before that because the window minted a
+   * CACHED proof, so only the first query ever paid it; removing the false
+   * proof also removed the memo that was hiding the re-measurement.
+   */
+  idleSince: number | null;
+  /**
    * True once at least one progress cycle has completed.
    *
    * ⚠ "HAS SETTLED ONCE" IS STRICTLY WEAKER THAN "IS DONE" (WI-40224). A server
@@ -729,6 +745,8 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
     startedAt: Date.now(),
     coldStartMs: 0,
     pendingProgress: new Set(),
+    // The set starts empty, so the idle period starts now.
+    idleSince: Date.now(),
     everSettled: false,
     quiescent: null,
     certifiedReadiness: new Set(),
@@ -748,6 +766,8 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
   // instead of sleeping a magic number.
   connection.onRequest('window/workDoneProgress/create', (params: { token: string | number }) => {
     client.pendingProgress.add(params.token);
+    // The server is loading again: the idle period is broken, not merely unread.
+    markBusy(client);
     return null;
   });
   connection.onNotification(
@@ -757,6 +777,9 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
         const ended = client.pendingProgress.delete(params.token);
         if (client.pendingProgress.size === 0) {
           client.everSettled = true;
+          // Stamp the idle period from the PROGRESS BOUNDARY, not from whenever
+          // a later query happens to look.
+          markIdle(client);
           // A progress boundary is stronger evidence than an instantaneous
           // idle read. Keep this counter for canary answers too; older pinned
           // clients may not have the field, so initialize defensively.
@@ -972,6 +995,30 @@ export function readinessVerdict(
   return observation.idleForMs >= strategy.settleMs ? 'answerable' : 'wait';
 }
 
+/**
+ * Record that the pending-progress set is EMPTY, remembering WHEN it became so.
+ *
+ * Idempotent BY DESIGN: an already-idle client keeps its original timestamp.
+ * That is the whole fix — the idle period is CONTINUOUS and must survive across
+ * queries, or every query re-measures it from zero and pays the settle window
+ * again. Returns the effective idle-start so callers need no second read.
+ *
+ * Pinned module state may hold a pre-WI-2142543 client with no such field;
+ * `undefined` (never installed) is treated as "idle as of now", which is the
+ * honest reading when we have no earlier evidence, and matches exactly what the
+ * old per-call variable did on its first iteration.
+ */
+function markIdle(client: LspClient): number {
+  const compatible = client as LspClient & { idleSince?: number | null };
+  if (typeof compatible.idleSince !== 'number') compatible.idleSince = Date.now();
+  return compatible.idleSince;
+}
+
+/** Record that the server is loading again, breaking the idle period. */
+function markBusy(client: LspClient): void {
+  (client as LspClient & { idleSince?: number | null }).idleSince = null;
+}
+
 /** Pinned module state may contain a pre-WI-41090 client until host restart. */
 function readinessProofs(client: LspClient): Set<LspReadinessIntent> {
   const compatible = client as LspClient & {
@@ -1009,7 +1056,13 @@ function progressGeneration(client: LspClient): number {
  * `canary` means the query may run, but its result remains unproven until the
  * per-intent stable-readiness guard observes a complete answer transition.
  */
-async function prepareIntentReadiness(
+/**
+ * Exported for the falsifiability guard. `readinessVerdict` is a PURE function
+ * over an `idleForMs` it is handed, so it stayed green through a 5000×
+ * warm-latency regression whose whole mechanism was where that number comes
+ * from. The defect lives in THIS composition, so the guard must run THIS.
+ */
+export async function prepareIntentReadiness(
   client: LspClient,
   intent: LspReadinessIntent,
   timeoutMs = readyTimeoutFor(client.language),
@@ -1021,21 +1074,22 @@ async function prepareIntentReadiness(
   if (strategy.kind === 'canary-query') return 'canary';
 
   const deadline = Date.now() + timeoutMs;
-  let idleSince: number | null = null;
   for (;;) {
     if (client.health === 'unhealthy') return 'timeout';
     const idle = client.pendingProgress.size === 0;
-    // Track how long the pending set has been CONTINUOUSLY empty. A single
+    // How long the pending set has been CONTINUOUSLY empty. A single
     // instantaneous reading cannot tell the gap between two loading phases
-    // from the end of the last one; a sustained one can.
-    if (idle) idleSince ??= Date.now();
-    else idleSince = null;
+    // from the end of the last one; a sustained one can — and the sustained
+    // observation is kept ON THE CLIENT so a quiet server is not re-timed from
+    // scratch by every query (see `LspClient.idleSince`).
+    if (!idle) markBusy(client);
+    const idleForMs = idle ? Date.now() - markIdle(client) : 0;
 
     const verdict = readinessVerdict(strategy, {
       quiescent: client.quiescent,
       everSettled: client.everSettled,
       idle,
-      idleForMs: idleSince === null ? 0 : Date.now() - idleSince,
+      idleForMs,
     });
     if (verdict === 'certified') {
       proofs.add(intent);

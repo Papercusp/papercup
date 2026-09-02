@@ -92,7 +92,7 @@ export function claimSpecHistoryElsewhereHint(args: {
  * half of a single re-home.
  */
 export async function readClaimSpecRevisions(
-  args: { beeId: string; workspaceId?: string; limit?: number },
+  args: { cupId: string; workspaceId?: string; limit?: number },
   sqlOverride?: OrgSql,
 ): Promise<ClaimSpecRevisionWindow> {
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
@@ -104,7 +104,7 @@ export async function readClaimSpecRevisions(
   const rows = (await sql`
     SELECT revision, spec, cause, superseded_at, updated_by, harness_slug, id_only
       FROM harness_shared.cup_claim_spec_revisions
-     WHERE workspace_id = ${ws} AND bee_id = ${args.beeId}
+     WHERE workspace_id = ${ws} AND bee_id = ${args.cupId}
      ORDER BY superseded_at DESC, id DESC
      LIMIT ${limit + 1}`) as Array<{
     revision: number;
@@ -117,7 +117,7 @@ export async function readClaimSpecRevisions(
   }>;
   const more = rows.length > limit;
   return {
-    subject: args.beeId,
+    subject: args.cupId,
     revisions: rows.slice(0, limit).map((r) => ({
       revision: r.revision,
       spec: r.spec,

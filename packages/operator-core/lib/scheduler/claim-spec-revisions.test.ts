@@ -55,7 +55,7 @@ describe('readClaimSpecRevisions — bounding', () => {
     // The window lands flush on the last row: 3 rows exist, 3 requested. `returned === limit`
     // would infer more:true here and invent history that does not exist.
     const { sql } = fakeSql([row(8), row(7), row(6)]);
-    const w = await readClaimSpecRevisions({ beeId: 'fleet:f', limit: 3 }, sql);
+    const w = await readClaimSpecRevisions({ cupId: 'fleet:f', limit: 3 }, sql);
     expect(w.returned).toBe(3);
     expect(w.more).toBe(false);
     expect(w.revisions).toHaveLength(3);
@@ -63,7 +63,7 @@ describe('readClaimSpecRevisions — bounding', () => {
 
   it('fetches limit+1 and does not leak the probe row into the result', async () => {
     const { sql, calls } = fakeSql([row(8), row(7), row(6), row(5)]);
-    const w = await readClaimSpecRevisions({ beeId: 'fleet:f', limit: 3 }, sql);
+    const w = await readClaimSpecRevisions({ cupId: 'fleet:f', limit: 3 }, sql);
     expect(calls[0]!.values).toContain(4); // limit + 1
     expect(w.more).toBe(true);
     expect(w.returned).toBe(3);
@@ -72,11 +72,11 @@ describe('readClaimSpecRevisions — bounding', () => {
 
   it('clamps a caller limit to the module ceiling and to at least one', async () => {
     const big = fakeSql([]);
-    await readClaimSpecRevisions({ beeId: 'b', limit: 9999 }, big.sql);
+    await readClaimSpecRevisions({ cupId: 'b', limit: 9999 }, big.sql);
     expect(big.calls[0]!.values).toContain(CLAIM_SPEC_HISTORY_MAX + 1);
 
     const zero = fakeSql([]);
-    await readClaimSpecRevisions({ beeId: 'b', limit: 0 }, zero.sql);
+    await readClaimSpecRevisions({ cupId: 'b', limit: 0 }, zero.sql);
     expect(zero.calls[0]!.values).toContain(2); // clamped to 1, +1 probe
   });
 
@@ -85,13 +85,13 @@ describe('readClaimSpecRevisions — bounding', () => {
     // of a scope-change re-home share it exactly. Without the id tiebreak, "the version
     // before the last write" can resolve to the wrong half of one re-home.
     const { sql, calls } = fakeSql([]);
-    await readClaimSpecRevisions({ beeId: 'b' }, sql);
+    await readClaimSpecRevisions({ cupId: 'b' }, sql);
     expect(calls[0]!.text).toMatch(/ORDER BY\s+superseded_at DESC,\s*id DESC/);
   });
 
   it('scopes the read to the workspace partition and the addressed bee', async () => {
     const { sql, calls } = fakeSql([]);
-    await readClaimSpecRevisions({ beeId: 'fleet:f', workspaceId: 'ws-1' }, sql);
+    await readClaimSpecRevisions({ cupId: 'fleet:f', workspaceId: 'ws-1' }, sql);
     expect(calls[0]!.values).toContain('ws-1');
     expect(calls[0]!.values).toContain('fleet:f');
   });
@@ -102,7 +102,7 @@ describe('readClaimSpecRevisions — mapping', () => {
     const { sql } = fakeSql([
       row(6, { spec: { note: 'AUTHORED-LANE', not: ['p2p/*'] }, updated_by: 'the-author' }),
     ]);
-    const [r] = (await readClaimSpecRevisions({ beeId: 'fleet:f' }, sql)).revisions;
+    const [r] = (await readClaimSpecRevisions({ cupId: 'fleet:f' }, sql)).revisions;
     expect(r).toMatchObject({
       revision: 6,
       spec: { note: 'AUTHORED-LANE', not: ['p2p/*'] },
@@ -114,19 +114,19 @@ describe('readClaimSpecRevisions — mapping', () => {
 
   it('normalises a Date supersededAt to ISO so the field has one shape', async () => {
     const { sql } = fakeSql([row(6, { superseded_at: new Date('2026-07-26T12:00:00.000Z') })]);
-    const [r] = (await readClaimSpecRevisions({ beeId: 'b' }, sql)).revisions;
+    const [r] = (await readClaimSpecRevisions({ cupId: 'b' }, sql)).revisions;
     expect(r!.supersededAt).toBe('2026-07-26T12:00:00.000Z');
   });
 
   it('keeps `cause` to the two values the trigger can write', async () => {
     const { sql } = fakeSql([row(6, { cause: 'delete' }), row(5, { cause: 'update' })]);
-    const w = await readClaimSpecRevisions({ beeId: 'b' }, sql);
+    const w = await readClaimSpecRevisions({ cupId: 'b' }, sql);
     expect(w.revisions.map((r) => r.cause)).toEqual(['delete', 'update']);
   });
 
   it('names the subject so an empty window is only "no history" for THAT lane', async () => {
     const { sql } = fakeSql([]);
-    const w = await readClaimSpecRevisions({ beeId: 'su-cup-9' }, sql);
+    const w = await readClaimSpecRevisions({ cupId: 'su-cup-9' }, sql);
     expect(w).toMatchObject({ subject: 'su-cup-9', returned: 0, more: false, revisions: [] });
   });
 });

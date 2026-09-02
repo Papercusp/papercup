@@ -2751,7 +2751,7 @@ async function completeOne(
             .map((value) => (value ? Date.parse(String(value)) : NaN))
             .filter((ms) => Number.isFinite(ms))
             .reduce<number | undefined>((earliest, ms) => (earliest === undefined ? ms : Math.min(earliest, ms)), undefined),
-          { repoRoots: registeredRepoRoots ?? [detectPapercupRoot()] },
+          { repoRoots: registeredRepoRoots ?? [detectPapercupRoot()].filter((r): r is string => r !== null) },
         )
       : undefined;
 
