@@ -474,10 +474,19 @@ describe('P-004 — completion authority round-trips through both family views',
 
   it('reopening a LEGACY close leaves it null — a good-faith pre-contract close is never reclassified', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'legacy', harness: 'papercup', createdBy: 'agA' });
-    // A pre-P-004-shaped close: a ref, no authority. This is what all ~27k stored rows look like.
-    await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'closed the old way' });
+    // A legacy-shaped close: a ref, no authority. This is what all ~27k stored rows look like.
+    //
+    // design-to-code-coverage-seam-2026-09-02 P-003 narrowed WHO can still produce that shape.
+    // The closer must be a SYSTEM identity, because an AGENT ref-only close is now judged (see
+    // the two cases below) — a live agent path that could still write null would manufacture
+    // the legacy exemption on demand, which is exactly what the sibling case above forbids.
+    // A system sweep genuinely has no code evidence to grade, so its close stays null.
+    await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'watchdog-green-resolve',
+      completionRef: 'closed the old way',
+    });
     expect(await authorityOf(bug.id)).toBeNull();
-    await wi.setWorkItemState(bug.id, 'open', { by: 'agA' });
+    await wi.setWorkItemState(bug.id, 'open', { by: 'watchdog-green-resolve' });
     expect(await authorityOf(bug.id)).toBeNull();
   });
 
@@ -503,9 +512,43 @@ describe('P-004 — completion authority round-trips through both family views',
     expect(await getKeyFireLatch(latchKey)).toBeNull();
   });
 
-  it('a close with no authority supplied stays null — D-008, no writer invents a judgement', async () => {
+  // design-to-code-coverage-seam-2026-09-02 P-003 REVISED this pair. It used to be one case
+  // asserting that a ref-only close "stays null — D-008, no writer invents a judgement", which
+  // directly contradicted the reopen case above: that one refuses to write null precisely
+  // because "a live path that could write it would manufacture that exemption on demand" — and
+  // this WAS such a path. The contradiction had a measurable cost: 299 agent-identity closes a
+  // week (7d to 2026-09-02, papercusp-workspace) filed as pre-contract legacy work, of which
+  // 121 counted toward burn-down on no evidence at all. So the ref path is now judged too, and
+  // D-008's surviving half — no writer invents a judgement it has no standing to make — is
+  // what the SYSTEM case below pins.
+  it('an AGENT ref-only close is JUDGED, not filed as a legacy close', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'noauth', harness: 'papercup', createdBy: 'agA' });
     await wi.setWorkItemState(bug.id, 'resolved', { by: 'agA', completionRef: 'ref only' });
+    // `proposed`, not `committed`: the close declared no verification, so it is RECORDED and
+    // does not count toward burn-down. That is the honest reading of a ref with no evidence.
+    expect(await authorityOf(bug.id)).toBe('proposed');
+  });
+
+  it('the same close carrying real evidence is judged `committed`', async () => {
+    // The control: without this, a writer hard-wired to 'proposed' would satisfy the case above.
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'evidenced', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agA',
+      completionRef: 'ref plus evidence',
+      completionEvidence: { verifiedHow: 'unit', testsRun: 'vitest work-items-lifecycle', testResult: '319 passed' },
+    });
+    expect(await authorityOf(bug.id)).toBe('committed');
+  });
+
+  it('a SYSTEM ref-only close still stays null — nothing there is a code judgement to make', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'sysclose', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'structural-error-verifier',
+      completionRef: 'auto-resolved (EI-1747 structural-error verifier)',
+    });
+    // Note this identity carries no `system:` prefix and passes no skipCompletionGate — the
+    // exact shape that classified as an `agent` until P-003 registered it. Had it stayed
+    // misclassified, this close and ~400 more a week would be stamped `proposed`.
     expect(await authorityOf(bug.id)).toBeNull();
   });
 });

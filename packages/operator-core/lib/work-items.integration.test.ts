@@ -1404,11 +1404,15 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
       terminalTotal: 4,
       genuineCompletions: 2,
       dedupOrUnverified: 2,
-      // P-013: both genuine closes above came through the completionRef path, which stamps
-      // no authority — so the gate JUDGED none of them. This zero beside genuineCompletions:2
-      // is the whole point of the coverage metric: fully-evidenced work can still be entirely
-      // invisible to the judge.
-      gateJudged: 0,
+      // P-013 recorded a ZERO here, and the zero was the finding: both genuine closes came
+      // through the completionRef path, which stamped no authority, so the gate judged neither
+      // — fully-evidenced work entirely invisible to the judge.
+      //
+      // design-to-code-coverage-seam-2026-09-02 P-003 closed that blind spot: an AGENT close is
+      // judged whichever half of the gate it satisfied. The 2 here is the instrument starting to
+      // work, not the metric losing its edge — `gateJudged` still excludes both skipCompletionGate
+      // flips, and the case below pins that a SYSTEM ref close stays unjudged.
+      gateJudged: 2,
     });
   });
 
@@ -1426,8 +1430,17 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
       completionEvidence: { verifiedHow: 'unit', testsRun: 'vitest completion-audit', testResult: '49 passed' },
     });
 
+    // The unjudged half of the contrast. design-to-code-coverage-seam-2026-09-02 P-003 moved
+    // WHICH close this has to be: an AGENT ref-only close is now judged, so using one here
+    // would have made gateJudged == genuineCompletions and quietly destroyed the very
+    // distinction this case exists to prove. A SYSTEM sweep close is the honest remaining
+    // shape — it satisfies the gate with a ref and has no code evidence to grade.
     const refOnly = await wi.createWorkItem({ kind: 'feature', title: 'ref-only feat', harness, createdBy: 'agA' });
-    await wi.setWorkItemState(refOnly.id, 'passed', { harness, by: 'agA', completionRef: 'shipped in PR #9' });
+    await wi.setWorkItemState(refOnly.id, 'passed', {
+      harness,
+      by: 'structural-error-verifier',
+      completionRef: 'auto-resolved (EI-1747 structural-error verifier)',
+    });
 
     const stats = await wi.getCompletionIntegrityStats(harness);
     // Both are genuine completions; only one was judged.
@@ -1460,7 +1473,10 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
       terminalTotal: 1,
       genuineCompletions: 1,
       dedupOrUnverified: 0,
-      gateJudged: 0,
+      // 1, not 0, since P-003: this is an agent ref-only close, which the gate now judges.
+      // The subject here is harness SCOPING, and that is unchanged — the point of the case is
+      // that this row is counted here and nowhere else.
+      gateJudged: 1,
     });
   });
 });
