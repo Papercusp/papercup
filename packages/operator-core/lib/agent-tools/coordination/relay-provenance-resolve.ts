@@ -22,10 +22,22 @@
  *
  * Fail-soft BY CONTRACT except the tier-1 dangling id: an IO hiccup degrades
  * the stamp (unverified), never blocks the send.
+ *
+ * EI-22183379979946324: Tier 2/3 both resolve against the caller's "human
+ * turns" — but an owner decision made through Claude Code's AskUserQuestion
+ * dialog arrives as a `tool_result` block, not a plain-text turn, so the
+ * text-block-only extraction below used to drop it as "tool_result-only
+ * plumbing" and every relay of a dialog answer stamped `unverified` even
+ * though turn-provenance (classifyRecordedTurn / OWNER_DIALOG_TURN_MARKER)
+ * can prove it came from the owner. Mirrors turn-ref.ts's
+ * findClaudeOwnerDialogAnswer (EI-22171324436610992, the same asymmetry one
+ * layer over) — narrowly gated to Claude `type:'user'` rows, since Codex
+ * never emits this shape.
  */
 
 import { open } from 'node:fs/promises';
-import { classifyRecordedTurn } from '../../turn-provenance/turn-ref';
+import { classifyRecordedTurn, OWNER_DIALOG_TURN_MARKER } from '../../turn-provenance/turn-ref';
+import { blockPayloadText, CLAUDE_OWNER_DIALOG_RESULT_PREFIXES } from '../../transcript-wire';
 import type { AgentIdentity } from './identity';
 import { getMessageById } from './messages';
 import { resolveSelfSession } from '../../search/self-session';
@@ -56,14 +68,44 @@ interface HumanTurn {
   text: string;
 }
 
-/** NOT owner words: harness-synthetic entries (local-command echoes, caveats),
- *  machine surfaces (system-notification banners, compaction continuations),
- *  and — P-014 fix — MACHINE-INJECTED turns: every enrolled injector prefixes a
- *  durable ⟦turn-origin:…⟧ envelope, and before this check a wake-pump/loop-fire
- *  turn counted as a "human turn", so a Tier-2/3 relay could stamp an injected
- *  directive owner-verified. Shared classifier: turn-provenance/turn-ref.ts. */
-function isSyntheticTurn(text: string): boolean {
-  return classifyRecordedTurn(text).verdict !== 'owner-typed';
+/** OWNER speech, not just typed prose: `owner-typed` (a plain prompt) and
+ *  `owner-dialog` (an AskUserQuestion answer, EI-22183379979946324) are both
+ *  proven owner turns — see turn-ref.ts's OWNER_CANDIDATE_TURN_VERDICTS for
+ *  the same distinction drawn once, upstream (its third member,
+ *  `unenrolled-origin`, is an indexed/cross-session artifact that never
+ *  applies to this raw-transcript classifier). Everything else — harness-
+ *  synthetic entries (local-command echoes, caveats), machine surfaces
+ *  (system-notification banners, compaction continuations), and — P-014 fix —
+ *  MACHINE-INJECTED turns (every enrolled injector prefixes a durable
+ *  ⟦turn-origin:…⟧ envelope; before that check a wake-pump/loop-fire turn
+ *  counted as a "human turn", so a Tier-2/3 relay could stamp an injected
+ *  directive owner-verified) — is NOT owner words. Shared classifier:
+ *  turn-provenance/turn-ref.ts. */
+function isOwnerTurn(text: string): boolean {
+  const verdict = classifyRecordedTurn(text).verdict;
+  return verdict === 'owner-typed' || verdict === 'owner-dialog';
+}
+
+/**
+ * A Claude AskUserQuestion answer arrives as a `tool_result` block with no
+ * plain-text part — general tool results are NOT owner speech and must stay
+ * out of the relay-provenance scan, so this mirrors turn-ref.ts's
+ * findClaudeOwnerDialogAnswer exactly: only the two verified dialog-result
+ * lead-ins count, and the returned text carries the same durable
+ * OWNER_DIALOG_TURN_MARKER prefix so classifyRecordedTurn (above) recognizes
+ * it. Gated to the Claude `type:'user'` branch below — Codex never emits
+ * this shape.
+ */
+function findClaudeOwnerDialogAnswer(content: readonly unknown[]): string | null {
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue;
+    const part = block as { type?: string; content?: unknown };
+    if (part.type !== 'tool_result') continue;
+    const payload = blockPayloadText(part.content).trim();
+    if (!CLAUDE_OWNER_DIALOG_RESULT_PREFIXES.some((prefix) => payload.startsWith(prefix))) continue;
+    return `${OWNER_DIALOG_TURN_MARKER}\n${payload}`;
+  }
+  return null;
 }
 
 /**
@@ -101,9 +143,11 @@ function codexTimestamp(value: unknown): string {
   return '';
 }
 
-/** Parse the human (owner-typed) turns out of raw JSONL text, in file order.
- *  Skips tool_result-only user entries, isMeta rows, and synthetic turns.
- *  Supports Claude JSONL, Codex rollout JSONL, and Codex history.jsonl. */
+/** Parse the human (owner-typed OR owner-dialog) turns out of raw JSONL text,
+ *  in file order. Skips plain tool_result-only user entries (general tool
+ *  output, never owner speech), isMeta rows, and synthetic/machine-injected
+ *  turns. Supports Claude JSONL (including an AskUserQuestion dialog answer),
+ *  Codex rollout JSONL, and Codex history.jsonl. */
 export function parseHumanTurns(jsonl: string): HumanTurn[] {
   const out: HumanTurn[] = [];
   for (const line of jsonl.split('\n')) {
@@ -121,6 +165,11 @@ export function parseHumanTurns(jsonl: string): HumanTurn[] {
       // Claude-shaped session rows.
       const m = (o.message ?? {}) as Record<string, unknown>;
       text = readTextContent(m.content);
+      // No plain-text block — before writing this off as tool_result-only
+      // plumbing, check for a Claude owner-dialog answer (AskUserQuestion).
+      if (text == null && Array.isArray(m.content)) {
+        text = findClaudeOwnerDialogAnswer(m.content);
+      }
     } else if (o.type === 'response_item') {
       // Codex rollout rows. `event_msg` also mirrors UserMessage items, but
       // the response_item is the canonical single copy; consuming both would
@@ -134,7 +183,7 @@ export function parseHumanTurns(jsonl: string): HumanTurn[] {
     }
 
     if (text == null) continue; // tool_result-only / non-user plumbing
-    if (!text.trim() || isSyntheticTurn(text)) continue;
+    if (!text.trim() || !isOwnerTurn(text)) continue;
     out.push({ ts, text });
   }
   return out;
@@ -157,6 +206,17 @@ async function readTail(filePath: string, bytes: number): Promise<string> {
 /** Whitespace/case-normalize for the tier-3 verbatim containment check. */
 function normalize(s: string): string {
   return s.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/** Strip the internal OWNER_DIALOG_TURN_MARKER prefix before a turn's text
+ *  becomes a reader-facing quote — classification (isOwnerTurn, above) has
+ *  already run by this point, so the marker has done its job; a reader
+ *  scanning `renderRelayQuoteSuffix` should see the owner's actual words,
+ *  not the platform's internal tag. */
+function displayQuote(text: string): string {
+  return text.startsWith(OWNER_DIALOG_TURN_MARKER)
+    ? text.slice(OWNER_DIALOG_TURN_MARKER.length).replace(/^\n/, '')
+    : text;
 }
 
 async function readCallerHumanTurns(
@@ -213,7 +273,7 @@ export async function resolveRelayProvenance(
       return {
         stamp: {
           tier: 'owner-verified-turn',
-          quote: clampSnippet(last.text, RELAY_QUOTE_CHARS),
+          quote: clampSnippet(displayQuote(last.text), RELAY_QUOTE_CHARS),
           origin: 'owner',
           sessionId: read.sessionId,
           ...(last.ts ? { turnTs: last.ts } : {}),

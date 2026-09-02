@@ -29,6 +29,7 @@ import { parseHumanTurns, resolveRelayProvenance } from './relay-provenance-reso
 import { getMessageById } from './messages';
 import { resolveSelfSession } from '../../search/self-session';
 import type { AgentIdentity } from './identity';
+import { OWNER_DIALOG_TURN_MARKER } from '../../turn-provenance/turn-ref';
 
 vi.mock('./messages', () => ({ getMessageById: vi.fn() }));
 vi.mock('../../search/self-session', () => ({ resolveSelfSession: vi.fn() }));
@@ -244,6 +245,41 @@ describe('parseHumanTurns — owner-typed turns out of a session JSONL', () => {
     expect(turns.map((t) => t.text)).toEqual(['array-form turn']);
   });
 
+  // EI-22183379979946324: an owner decision made through Claude Code's
+  // AskUserQuestion dialog arrives as a `tool_result` block with no
+  // plain-text part. Before this fix it was indistinguishable from ordinary
+  // tool-result plumbing (the test above) and silently dropped, so a
+  // relayOf:'owner-turn' send answering a dialog stamped `unverified` even
+  // though the decision is real, platform-provable owner speech.
+  it('extracts a Claude AskUserQuestion dialog answer as an owner turn, marker-tagged for classification', () => {
+    const answer = 'The user answered: "Ship?"="yes". Read the answers carefully.';
+    const turns = parseHumanTurns(
+      row({
+        type: 'user',
+        timestamp: '2026-09-02T20:14:00.000Z',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: answer }] },
+      }),
+    );
+    expect(turns).toEqual([
+      { ts: '2026-09-02T20:14:00.000Z', text: `${OWNER_DIALOG_TURN_MARKER}\n${answer}` },
+    ]);
+  });
+
+  // Regression guard for the same change: an ordinary (non-dialog) tool_result
+  // -only line must still be dropped, never swept up by the new dialog check —
+  // duplicated here (mirroring the test above) so this file's own filter chain
+  // (readTextContent → findClaudeOwnerDialogAnswer → isOwnerTurn) is what's
+  // under test, not turn-ref.ts's parseUserTurns.
+  it('still drops an ordinary (non-dialog) tool_result-only line, not just a dialog one', () => {
+    const turns = parseHumanTurns(
+      row({
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_bash', content: 'command output' }] },
+      }),
+    );
+    expect(turns).toEqual([]);
+  });
+
   it('extracts Codex rollout response_item user turns and skips injected wakes', () => {
     const turns = parseHumanTurns(
       [
@@ -412,6 +448,36 @@ describe('resolveRelayProvenance — platform-verified tiers (mocked stores)', (
       turnTs: '2026-07-11T15:00:00.000Z',
     });
     expect(vi.mocked(resolveSelfSession)).toHaveBeenCalledWith('su-test-caller');
+  });
+
+  // EI-22183379979946324 recurrence guard: relaying a decision sourced from
+  // an AskUserQuestion answer must NOT stamp `unverified` — the exact
+  // incident shape (relaying Avi's WI-2142360 PII-containment decision):
+  // turn-provenance (turn_origin=owner-dialog) can prove the decision came
+  // from the owner, and Tier 2 must consult it instead of dropping the
+  // dialog-answer turn as tool_result-only plumbing.
+  it('Tier 2 hit: the caller’s current human turn is an AskUserQuestion dialog answer, not typed text', async () => {
+    const answer = 'The user answered: "Contain the PII exposure now"="yes".';
+    vi.mocked(resolveSelfSession).mockResolvedValue(
+      await session([
+        {
+          type: 'user',
+          timestamp: '2026-09-02T20:14:00.000Z',
+          message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: answer }] },
+        },
+      ]),
+    );
+    const r = await resolveRelayProvenance(IDENTITY, { relayOf: OWNER_TURN_SENTINEL });
+    // The core assertion: NOT `unverified` — a real owner authorization must
+    // not read as unattributable.
+    expect(r.stamp?.tier).not.toBe('unverified');
+    expect(r.stamp).toEqual({
+      tier: 'owner-verified-turn',
+      quote: answer, // marker prefix stripped — a reader sees the owner's words, not the internal tag
+      origin: 'owner',
+      sessionId: 'sess-1',
+      turnTs: '2026-09-02T20:14:00.000Z',
+    });
   });
 
   it('Tier 2 clamps the captured quote to the stamp budget', async () => {
