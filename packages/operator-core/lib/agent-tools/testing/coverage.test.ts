@@ -305,6 +305,8 @@ describe('the aggregates do not move with `limit` — behavioural, not by field 
     meets_l3: 0,
     meets_l4: 0,
     meets_floor: 200,
+    // Rungs are met here, so the apparatus reached this population (P-008).
+    evidenced: 500,
     // 500 surfaces, 0 waived: below_unwaived_lN = 500 - meets_lN.
     below_unwaived_l1: 300,
     below_unwaived_l2: 500,
@@ -391,6 +393,8 @@ describe('rungs are judged by their FLAG, never by depth >= N', () => {
           meets_l3: 30,
           meets_l4: 5,
           meets_floor: 40,
+          // Rungs are met here, so the apparatus reached this population (P-008).
+          evidenced: 100,
           // 100 surfaces, 0 waived: below_unwaived_lN = 100 - meets_lN.
           below_unwaived_l1: 60,
           below_unwaived_l2: 90,
@@ -421,6 +425,8 @@ describe('rungs are judged by their FLAG, never by depth >= N', () => {
         meets_l4: 5,
         // The SQL computes meets_floor with the requested rung's column; mirrored here.
         meets_floor: 30,
+        // Rungs are met here, so the apparatus reached this population (P-008).
+        evidenced: 100,
         // 100 surfaces, 0 waived: below_unwaived_lN = 100 - meets_lN. The floor is l3
         // here, so below_unwaived_floor tracks below_unwaived_l3, not l1.
         below_unwaived_l1: 60,

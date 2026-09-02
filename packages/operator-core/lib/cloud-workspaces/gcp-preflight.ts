@@ -397,7 +397,37 @@ export interface GcpWorkspaceHostAuthResolverDeps extends Pick<
   'exec' | 'readFile' | 'env' | 'homedir'
 > {
   acquireAdcAuth?: () => Promise<GcpResolvedAuth>;
+  /** Injectable delay for the bounded gcloud-exec retry below (EI-22191286944372582);
+   *  tests pass a no-op so the retry schedule costs nothing in CI. */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+/**
+ * Bounded backoff schedule for a MOMENTARY gcloud exec failure — e.g. several concurrent
+ * `gcloud compute start-iap-tunnel` processes contending for the shared config/credential
+ * DB (EI-22191286944372582's observed shape: the same two commands succeeded from a shell
+ * seconds later with no credential change). Short and few on purpose: a GENUINE credential
+ * problem (revoked grant, missing account) must still surface promptly, not be masked
+ * behind a long retry that only delays an unrecoverable failure.
+ */
+const GCLOUD_TOKEN_EXEC_RETRY_BACKOFF_MS = [250, 750] as const;
+
+/**
+ * The evidence a collapsed `catch {}` was erasing: which exit code the failing gcloud
+ * invocation returned and a bounded stderr excerpt, distinct from `err.message` (which for
+ * a promisified `execFile` failure is usually just "Command failed: gcloud ..." with the
+ * actually useful detail sitting in `.stderr`). Bounded to keep a runaway/binary stderr
+ * blob out of a thrown error; this is diagnostic evidence, not user-facing prose.
+ */
+function describeGcloudExecFailure(error: unknown): { code: unknown; stderrExcerpt: string } {
+  const err = error as { code?: unknown; stderr?: unknown; message?: unknown } | undefined;
+  const raw =
+    (typeof err?.stderr === 'string' && err.stderr.trim()) ||
+    (error instanceof Error ? error.message : String(error));
+  return { code: err?.code, stderrExcerpt: raw.length > 400 ? `${raw.slice(0, 400)}…` : raw };
+}
+
+const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Mint one short-lived token from the selected human gcloud account.
@@ -408,7 +438,7 @@ export interface GcpWorkspaceHostAuthResolverDeps extends Pick<
  * workspace-host key ban.
  */
 export async function acquireGcpGcloudActiveUserAuth(
-  deps: Pick<GcpWorkspaceHostAuthResolverDeps, 'exec'> = {},
+  deps: Pick<GcpWorkspaceHostAuthResolverDeps, 'exec' | 'sleep'> = {},
 ): Promise<GcpResolvedAuth> {
   const exec = deps.exec ?? defaultExec;
   let identity: string;
@@ -428,17 +458,39 @@ export async function acquireGcpGcloudActiveUserAuth(
     throw new Error('gcp_gcloud_active_user_service_account_forbidden');
   }
 
+  // EI-22191286944372582: a momentary exec failure here (observed cause: several concurrent
+  // `gcloud` processes contending for the shared config/credential DB) used to collapse
+  // straight to the terminal `..._token_unavailable` error and abandon an expensive, stateful
+  // live-cloud run — with the underlying exit code and stderr discarded, so the reader had
+  // nothing to distinguish "momentary contention" from "genuinely revoked credential" and went
+  // looking for a credential problem that never existed. Retry a BOUNDED, short number of times
+  // (both execs together, since either failing invalidates the pairing) before giving up, and
+  // when every attempt fails, preserve the exact taxonomy `.message` every downstream caller
+  // matches on (see gcp-api-client.ts's SAFE_CONNECTION_VALIDATION_PROBLEMS) while attaching the
+  // last attempt's exit code + a bounded stderr excerpt as `.cause` for whoever investigates next.
+  const sleep = deps.sleep ?? defaultSleep;
   let tokenOutput: string;
   let projectOutput: string;
-  try {
-    const [token, project] = await Promise.all([
-      exec('gcloud', ['auth', 'print-access-token', `--account=${identity}`, '--quiet']),
-      exec('gcloud', ['config', 'get-value', 'project', '--quiet']),
-    ]);
-    tokenOutput = token.stdout.trim();
-    projectOutput = project.stdout.trim();
-  } catch {
-    throw new Error('gcp_gcloud_active_user_token_unavailable');
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const [token, project] = await Promise.all([
+        exec('gcloud', ['auth', 'print-access-token', `--account=${identity}`, '--quiet']),
+        exec('gcloud', ['config', 'get-value', 'project', '--quiet']),
+      ]);
+      tokenOutput = token.stdout.trim();
+      projectOutput = project.stdout.trim();
+      break;
+    } catch (error) {
+      if (attempt >= GCLOUD_TOKEN_EXEC_RETRY_BACKOFF_MS.length) {
+        const { code, stderrExcerpt } = describeGcloudExecFailure(error);
+        throw new Error('gcp_gcloud_active_user_token_unavailable', {
+          cause: new Error(
+            `gcloud token/project exec failed after ${attempt + 1} attempt(s) (exit ${code ?? 'unknown'}): ${stderrExcerpt}`,
+          ),
+        });
+      }
+      await sleep(GCLOUD_TOKEN_EXEC_RETRY_BACKOFF_MS[attempt]!);
+    }
   }
   if (!tokenOutput) throw new Error('gcp_gcloud_active_user_token_empty');
   const projectId = projectOutput && projectOutput !== '(unset)' ? normalizeProjectId(projectOutput) : undefined;

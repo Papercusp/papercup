@@ -841,6 +841,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/check-full-replacement-mocks.mjs: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
   },
   {
+    path: "scripts/check-guidance-returns-schema.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/check-guidance-returns-schema.mjs: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
+  },
+  {
     path: "scripts/check-host-bundle-builds.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",

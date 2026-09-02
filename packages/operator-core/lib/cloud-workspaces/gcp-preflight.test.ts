@@ -156,6 +156,87 @@ describe('GCP workspace-host credential references', () => {
       'gcp_workspace_host_cloud_credential_ref_unsupported',
     );
   });
+
+  // EI-22191286944372582: a momentary exec failure (observed cause: concurrent gcloud
+  // processes contending for the shared config/credential DB) used to collapse straight to
+  // the terminal error with no retry and no cause, aborting an expensive live-cloud run.
+  describe('a momentary gcloud exec failure around the token/project pair (EI-22191286944372582)', () => {
+    const noopSleep = async () => {};
+
+    it('recovers on a bounded retry — invisible to the caller, no terminal error', async () => {
+      let tokenAttempts = 0;
+      const exec = vi.fn(async (_file: string, args: readonly string[]) => {
+        if (args[0] === 'auth' && args[1] === 'list') return { stdout: 'developer@example.com\n' };
+        if (args[0] === 'auth' && args[1] === 'print-access-token') {
+          tokenAttempts += 1;
+          if (tokenAttempts === 1) {
+            throw Object.assign(new Error('Command failed: gcloud auth print-access-token'), {
+              code: 1,
+              stderr: 'ERROR: (gcloud.auth.print-access-token) There was a problem refreshing your current auth tokens',
+            });
+          }
+          return { stdout: `${SECRET}\n` };
+        }
+        if (args[0] === 'config') return { stdout: `${PROJECT}\n` };
+        throw new Error(`unexpected exec ${args.join(' ')}`);
+      });
+
+      await expect(acquireGcpGcloudActiveUserAuth({ exec, sleep: noopSleep })).resolves.toEqual({
+        accessToken: SECRET,
+        identity: 'developer@example.com',
+        projectId: PROJECT,
+      });
+      // 1 (auth list) + 2 (failed attempt) + 2 (succeeding attempt) = 5.
+      expect(exec).toHaveBeenCalledTimes(5);
+    });
+
+    it('exhausts its bounded retries, still throws the exact taxonomy message, but attaches the cause the old collapsed catch erased', async () => {
+      const exec = vi.fn(async (_file: string, args: readonly string[]) => {
+        if (args[0] === 'auth' && args[1] === 'list') return { stdout: 'developer@example.com\n' };
+        throw Object.assign(new Error('Command failed: gcloud config get-value project'), {
+          code: 2,
+          stderr: 'ERROR: gcloud crashed (OSError): [Errno 26] Text file busy',
+        });
+      });
+
+      const sleep = vi.fn(noopSleep);
+      let caught: unknown;
+      try {
+        await acquireGcpGcloudActiveUserAuth({ exec, sleep });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(Error);
+      // The exact string every downstream caller matches on (gcp-api-client.ts's
+      // SAFE_CONNECTION_VALIDATION_PROBLEMS table) must survive unchanged.
+      expect((caught as Error).message).toBe('gcp_gcloud_active_user_token_unavailable');
+      expect((caught as Error).cause).toBeInstanceOf(Error);
+      expect(((caught as Error).cause as Error).message).toContain('exit 2');
+      expect(((caught as Error).cause as Error).message).toContain('Text file busy');
+      // Bounded: the default backoff schedule has 2 entries, so 3 total attempts, 2 sleeps.
+      expect(sleep).toHaveBeenCalledTimes(2);
+    });
+
+    it('bounds an oversized stderr excerpt rather than embedding it whole', async () => {
+      const hugeStderr = 'x'.repeat(2_000);
+      const exec = vi.fn(async (_file: string, args: readonly string[]) => {
+        if (args[0] === 'auth' && args[1] === 'list') return { stdout: 'developer@example.com\n' };
+        throw Object.assign(new Error('boom'), { code: 1, stderr: hugeStderr });
+      });
+
+      let caught: unknown;
+      try {
+        await acquireGcpGcloudActiveUserAuth({ exec, sleep: noopSleep });
+      } catch (error) {
+        caught = error;
+      }
+
+      const causeMessage = ((caught as Error).cause as Error).message;
+      expect(causeMessage.length).toBeLessThan(hugeStderr.length);
+      expect(causeMessage).toContain('…');
+    });
+  });
 });
 
 describe('GCP workspace-host preflight', () => {

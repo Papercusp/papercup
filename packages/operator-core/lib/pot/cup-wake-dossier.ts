@@ -285,8 +285,14 @@ export async function computeCupWakeDossier(input: ComputeCupWakeDossierInput): 
     { scope: 'harness', scopeRef: harness },
     { scope: 'work_item', scopeRef: workItemId },
   ];
+  // P-004 / D-006: render the fold WITH its per-selector census, so a truncated
+  // dossier says so instead of presenting the newest N as the whole corpus. The
+  // census rides the same statement as the rows, so this costs no extra query.
   const factsFoldP = import('../agent-facts/store')
-    .then(async (m) => m.renderFactsFold(await m.foldFacts(factSelectors, { workspaceId })))
+    .then(async (m) => {
+      const { facts, census } = await m.foldFactsWithCensus(factSelectors, { workspaceId });
+      return m.renderFactsFold(facts, Date.now(), census);
+    })
     .catch(() => '');
 
   // BACKGROUND RECALL (L1d, mug-memory-hybrid) — the cup translation of the Mug's

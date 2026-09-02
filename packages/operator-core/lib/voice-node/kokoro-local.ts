@@ -1,12 +1,14 @@
 /**
- * voice-node/kokoro-local — IN-PROCESS local TTS via the VENDORED kokoro port (./kokoro/kokoro-tts)
+ * voice-node/kokoro-local — IN-PROCESS local TTS via the `@papercusp/kokoro-tts` port
  * (voice-public-release-readiness-2026-07-12 P-009 hop 2/3, plan D-009, WI-4449).
  *
  * Public users get free, keyless, offline TTS with ZERO sidecar: Kokoro-82M runs on the repo's
  * existing @huggingface/transformers 4.2.0 + onnxruntime-node (native EP). The kokoro-js npm
  * package is deliberately NOT a dependency — it pins transformers 3.x, which npm-workspaces
- * `overrides` cannot dedupe (a 706MB duplicate onnxruntime stack; see ./kokoro/kokoro-tts.ts's
- * header and WI-4471) — so its ~200 lines of glue are vendored instead.
+ * `overrides` cannot dedupe (a 706MB duplicate onnxruntime stack; see @papercusp/kokoro-tts's
+ * header and WI-4471) — so its ~200 lines of glue were originally vendored in-tree, then
+ * extracted to `libs/generic/kokoro-tts` behind a `configureKokoroTts()` host seam (WI-4470)
+ * so the package itself carries zero transformers coupling.
  *
  * Measured live 2026-07-12 on this box (CPU q8, steady state over 4 synths): rtFactor 0.81–1.07,
  * i.e. roughly real-time — parity with the kokoro-js spike (0.71–1.03), so vendoring cost no
@@ -40,7 +42,7 @@ interface ProvisionMarker {
   provisionedAt: string;
 }
 
-/** Minimal structural type for the kokoro engine (the vendored ./kokoro/kokoro-tts, loaded
+/** Minimal structural type for the kokoro engine (`@papercusp/kokoro-tts`'s KokoroTts, loaded
  *  dynamically — keeping this file import-light means no onnxruntime native load at operator
  *  boot). */
 export interface KokoroEngineLike {
