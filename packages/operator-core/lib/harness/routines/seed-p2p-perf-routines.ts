@@ -26,19 +26,26 @@ const ROUTINES = [
   // Nightly 02:30 local — clear of the hourly green-checkpoint (:15) and the
   // daily GC jobs (03:00/04:00 UTC), so bench numbers aren't polluted by
   // concurrent suite runs on the shared box.
-  { name: 'p2p-perf-tier1', target: 'system:p2p-perf-tier1', cron: '0 30 2 * * *', activeDefault: true },
+  { name: 'p2p-perf-tier1', target: 'system:p2p-perf-tier1', cron: '0 30 2 * * *' },
   // Weekly, Sunday 03:30 local.
-  { name: 'p2p-perf-tier2', target: 'system:p2p-perf-tier2', cron: '0 30 3 * * 0', activeDefault: true },
+  { name: 'p2p-perf-tier2', target: 'system:p2p-perf-tier2', cron: '0 30 3 * * 0' },
 ] as const;
 
 async function main(): Promise<void> {
-  const forceActive = process.argv.includes('--active');
-  const forceInactive = process.argv.includes('--inactive');
+  // WI-2141683: both rows are always active by default (owner-ratified — see the file
+  // header). Standardized to the same single `const active = ...` idiom every other
+  // always-on bespoke seed script uses (e.g. seed-gc-dead-loops-routine.ts), so
+  // bespoke-active-seeds-check.test.ts's ACTIVE_BY_DEFAULT regex can classify this file
+  // automatically instead of needing a hand-maintained EXEMPT_SEED_SCRIPTS entry. Both rows
+  // share one flag rather than a per-row `activeDefault` — behavior-preserving today since
+  // both were already `activeDefault: true`. The previously-undocumented `--active` flag
+  // (redundant with the default; never referenced elsewhere in the repo) is dropped along
+  // with it.
+  const active = !process.argv.includes('--inactive');
   const ws = activeWorkspaceId();
   const { sql } = getOrgPg();
   const states: string[] = [];
   for (const r of ROUTINES) {
-    const active = forceActive ? true : forceInactive ? false : r.activeDefault;
     const id = `rt_${SLUG}_${r.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
     await sql`
       INSERT INTO harness_shared.routines
