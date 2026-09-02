@@ -267,11 +267,25 @@ export const FACT_PROVISIONAL_DEFAULT_TTL_SEC = 24 * 3600;
  *  still; it should be gone from the fold well before anyone could mistake it
  *  for settled fact. */
 export const FACT_SUSPECTED_DEFAULT_TTL_SEC = 6 * 3600;
-/** Per-(scope,ref) live-fact cap. Past this the LOWEST-RANKED incumbent is
- *  evicted (ranking: confidence, then remaining TTL FRACTION `DESC`,
- *  `updated_at DESC` only as tiebreak — see the ORDER BY around L1221). NOT
- *  oldest-updated, and NOT soonest-expiring: both were the pre-WI-7292 /
- *  pre-EI-19483432832662150 policies.
+/** Per-(scope,ref) live-fact CEILING. Past this an ORDINARY write is REFUSED —
+ *  no incumbent is destroyed to seat it (P-002 / D-003). The VOLATILE
+ *  partition still evicts by the ranking below; bounded snapshot churn is that
+ *  partition's declared purpose (see FACTS_VOLATILE_PER_SCOPE_CAP).
+ *
+ *  The eviction ranking (confidence, then remaining TTL FRACTION `DESC`,
+ *  `updated_at DESC` only as tiebreak — see the ORDER BY around L1221) is
+ *  therefore now VOLATILE-ONLY. It is retained, not deleted: it is still the
+ *  live policy for that partition, and its history below is the evidence for
+ *  why the ordinary partition stopped evicting at all.
+ *
+ *  ⚠ THE HISTORY BELOW IS WHY THE MECHANISM CHANGED, NOT JUST ITS SIZE. Both
+ *  prior raises answered the SAME symptom — the ranked population pinned at
+ *  EXACTLY cap continuously, so every assert by any agent destroyed an
+ *  incumbent. Each bought time; neither changed the outcome. A third raise
+ *  would have re-saturated too, because the cap was acting as the primary GC
+ *  on a store that already has a working one (every fact declares a lifetime,
+ *  and `sweepExpiredFacts` hard-deletes 30d past expiry). D-003 keeps a bound
+ *  and changes what happens AT it.
  *
  * EI-19931982603802383: raised 50 -> 200. Measured 2026-08-09 on the two
  * busiest scopes on this box (`workspace` global, `harness:papercusp`): the
@@ -303,19 +317,48 @@ export const FACT_SUSPECTED_DEFAULT_TTL_SEC = 6 * 3600;
  * EI-22176887065789447). Raising the cap here addresses the underlying
  * capacity shortfall directly, not merely the audit's collateral batch.
  *
- * Raising it does not change the fold budget (`FACTS_FOLD_LIMIT`, unchanged
- * at 12) — it only lengthens how long a fact survives BEFORE eviction
- * competition, without inflating what gets injected into any one
- * orient/context. */
-export const FACTS_PER_SCOPE_CAP = 500;
+ * P-002 / D-003: raised 500 -> 5000 AND converted from an eviction trigger to
+ * a refusal ceiling. Sizing, measured 2026-09-02T21:45Z against
+ * `capPopulationPredicate()`'s own predicate: UNCLIPPED demand — live plus
+ * already-evicted-but-still-unexpired rows, i.e. what the population would be
+ * had nothing been destroyed — is 362 for `harness:papercusp` (200 live + 162
+ * evicted-still-valid) and 269 for `workspace` (200 + 69). Every OTHER scope
+ * on the box is <= 49. Those two figures are LOWER BOUNDS: a row evicted and
+ * since expired is invisible to them.
+ *
+ * 5000 is therefore ~14x measured demand. That margin is the point of the
+ * number, not slack: at a refusal ceiling, hitting the bound must mean a
+ * genuine runaway writer rather than ordinary fleet traffic, because the cost
+ * is now paid by the writer (a refused assert) instead of silently by a
+ * stranger (a destroyed fact). Sized just above demand it would refuse honest
+ * writes; unbounded it would stop being a backstop at all.
+ *
+ * It does not change the fold budget (`FACTS_FOLD_LIMIT`, unchanged at 12) — a
+ * ceiling governs how many facts may EXIST in a scope, never how many are
+ * injected into any one orient/context. Nor does it change table growth
+ * materially: the whole table is ~37.5k rows / 44 MB, and time-bounded GC, not
+ * this ceiling, is what keeps it that way. */
+export const FACTS_PER_SCOPE_CAP = 5000;
 /**
  * Volatile measurements are short-lived snapshots, not standing conclusions.
  * Keep a separate, deliberately smaller population so a burst of snapshots
  * cannot evict ordinary facts, while still bounding snapshot-key churn within
- * each selector. One quarter of the ordinary cap leaves room for the normal
- * standing-fact corpus without making this a second unbounded store.
+ * each selector.
+ *
+ * ⚠ DELIBERATELY DECOUPLED from FACTS_PER_SCOPE_CAP (P-002). This was
+ * `cap / 4`, which was coherent while both numbers were eviction bounds of the
+ * same kind. They are now different MECHANISMS: the ordinary cap is a refusal
+ * ceiling sized far above demand, while this stays an eviction bound sized to
+ * real churn. Left derived, raising the ceiling 500 -> 5000 would have
+ * silently raised this churn bound 125 -> 1250 as a side effect of a change
+ * that has nothing to do with it. 125 preserves the value this partition
+ * already had.
+ *
+ * Measured 2026-09-02T21:45Z: the volatile partition holds ZERO rows in every
+ * scope on this box, so this bound is currently inert either way — which is
+ * exactly why it must not be allowed to drift silently.
  */
-export const FACTS_VOLATILE_PER_SCOPE_CAP = Math.max(1, Math.floor(FACTS_PER_SCOPE_CAP / 4));
+export const FACTS_VOLATILE_PER_SCOPE_CAP = 125;
 /** Fold budget: max facts per scope-selector in one fold read. */
 export const FACTS_FOLD_LIMIT = 12;
 
@@ -1742,25 +1785,45 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // callers can omit it; binding `undefined` in this diagnostic query would
   // mask the real `created_by` error before the INSERT gets a chance to report
   // it (EI-19952118814692217).
-  if (capPartition === 'ordinary' && input.createdBy != null) {
-    const protectedVictim = await findCrossAuthorVerifiedCapVictim(input, sql, cap, {
-      confidence,
-      ttlSec: ttl,
-    });
-    if (protectedVictim) {
-      // EI-21585375376448939: the refusal now only fires when this write would
-      // NOT outrank the row it displaces, so the remedy that actually works is
-      // the one to name first. "Coordinate with the fact owner" stays last: it
-      // is unreachable on a scope held by 130 authors, and leading with it is
-      // what made this refusal read as a dead end rather than a choice.
+  if (capPartition === 'ordinary' && !isFactCapExempt(input)) {
+    // P-002 / D-003: the ceiling REFUSES; it never evicts. The predicate is a
+    // population count, not a victim search, because there is no longer a
+    // victim to find — that is the entire change. `key <> incoming` is what
+    // keeps a RE-ASSERT of an existing key legal at the ceiling: it supersedes
+    // its own prior version, so it does not grow the population and must not
+    // be refused. A saturated scope therefore stays CORRECTABLE (existing
+    // facts can be revised or retracted) while being closed to NEW keys, which
+    // is the property that makes a refusal recoverable rather than a deadlock.
+    //
+    // Unlike the guard this replaces, the query binds no `createdBy`, so there
+    // is no diagnostic-vs-NOT NULL ordering hazard (EI-19952118814692217) and
+    // no reason to gate on it: a malformed direct caller still reaches the
+    // database's attributable NOT NULL path exactly as before.
+    const incumbents = await countCapPopulationExcludingKey(input, sql, 'ordinary');
+    if (incumbents >= cap) {
+      // EI-21585375376448939 kept its lesson through the rewrite: name the
+      // remedy that actually WORKS first, and never lead with "coordinate with
+      // the fact owner" — unreachable on a scope held by 130 authors, and what
+      // made the old refusal read as a dead end rather than a choice.
+      //
+      // What this message must NOT do is imply the writer was unlucky. At 14x
+      // measured demand, reaching the ceiling is evidence of a runaway writer,
+      // so the message says so and points at the diagnostic — otherwise the
+      // refusal gets worked around (narrower scope, new key) and the actual
+      // over-writer keeps going, undetected, exactly as it did when the cap
+      // silently ate strangers' facts instead of reporting anything at all.
       throw new InvalidInputError(
-        `facts:assert — REFUSED before write: the ordinary ${FACTS_PER_SCOPE_CAP}-fact cap would evict ` +
-          `another author's verified fact "${protectedVictim.key}" (owner ${protectedVictim.created_by}), ` +
-          `and this write does not outrank it (incoming confidence ${confidence ?? 'unset'}). ` +
-          'No fact was written. Raise this write above the victim by asserting it with ' +
-          "confidence:'verified' when the evidence genuinely supports that, narrow the scope " +
-          '(harness/owner/work_item instead of workspace), use a typed slot (dead-end/wall/guard-rail) ' +
-          'which takes no cap seat, inspect the cost with dryRun:true, or coordinate with the fact owner.',
+        `facts:assert — REFUSED before write: scope ${input.scope}${ref ? `:${ref}` : ''} is at its ` +
+          `${FACTS_PER_SCOPE_CAP}-fact ceiling (${incumbents} live facts, excluding this key). ` +
+          'NOTHING WAS WRITTEN AND NOTHING WAS DESTROYED — this ceiling refuses the incoming write ' +
+          "rather than evicting another author's fact to seat it (D-003). " +
+          `This ceiling is ~14x normal working demand, so reaching it usually means ONE writer is ` +
+          'over-writing rather than that the scope is legitimately full: find it with ' +
+          "`facts:list` on this scope grouped by author before working around this. " +
+          'Legitimate remedies: re-assert or retract facts you already own here (a re-assert of an ' +
+          'EXISTING key supersedes its own version and is never refused, so this scope is still ' +
+          'correctable), narrow the scope (harness/owner/work_item instead of workspace), or use a ' +
+          'typed slot (dead-end/wall/guard-rail) which takes no seat at all.',
       );
     }
   }
@@ -1986,9 +2049,32 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // need a COUNT on every assert, which is why that is not reported: a non-empty
   // `evicted` already implies at-cap (the sweep fires only past CAP-1).
   const writtenId = rows[0].id ?? null;
-  const evictedRows = await sql<
-    { key: string; confidence: string | null; expires_at: string; created_by: string; body: string | null }[]
-  >`
+  // P-002 / D-003: VOLATILE PARTITION ONLY. The ordinary partition refuses at
+  // its ceiling (see the pre-write guard above) and never reaches this sweep,
+  // so for an ordinary write `evictedRows` is empty by construction — which is
+  // what makes every downstream `evictedRows.length > 0` block (the eviction
+  // receipt, the survival ranking, the notify-evicted hop) ordinary-inert
+  // without needing its own partition test.
+  //
+  // Volatile keeps evicting deliberately, and is NOT an oversight to be
+  // "finished" later: bounded snapshot churn is this partition's stated
+  // purpose. A volatile row is a <=15-minute snapshot its author declared
+  // disposable, not a standing conclusion, so displacing one is categorically
+  // unlike destroying a stranger's verified fact — and refusing here instead
+  // would break exactly the live-fed writers the partition exists to absorb,
+  // at exactly the burst moment it exists for.
+  const evictedRows: {
+    key: string;
+    confidence: string | null;
+    expires_at: string;
+    created_by: string;
+    body: string | null;
+  }[] =
+    capPartition !== 'volatile'
+      ? []
+      : await sql<
+          { key: string; confidence: string | null; expires_at: string; created_by: string; body: string | null }[]
+        >`
     UPDATE harness_shared.agent_facts SET retracted_at = now(), evicted_at = now()
      WHERE source_hive IS NULL
        AND superseded_at IS NULL
@@ -2482,92 +2568,43 @@ function isFactCapExempt(input: Pick<AssertFactInput, 'key' | 'kind'>): boolean 
   );
 }
 
-/** Find the first protected victim an ordinary write would evict, without writing. */
-async function findCrossAuthorVerifiedCapVictim(
+/**
+ * How many live facts already occupy this (scope, ref) partition, EXCLUDING the
+ * incoming key. `>= cap` is exactly the condition under which seating a NEW key
+ * would breach the ceiling, so this is the whole refusal predicate.
+ *
+ * P-002 / D-003 replaced `findCrossAuthorVerifiedCapVictim` with this. That
+ * function answered "WHICH fact would I destroy, and am I allowed to?" — a
+ * question with no answer once destruction stops being on the table. Its
+ * history is worth carrying because it is the argument for this rewrite:
+ *
+ *  - It refused only when the victim was another author's `verified` fact.
+ *    Once a scope saturated with a 100%-verified population — measured 200/200
+ *    verified across 123-130 distinct authors on both `workspace` and
+ *    `harness:papercusp` — that discriminator was DEGENERATE, so a rail meant
+ *    to protect one fact became a scope-wide write lock (EI-21585375376448939).
+ *  - Narrowing it to "refuse only when the incoming write does not OUTRANK the
+ *    victim" fixed the write lock by permitting the destruction again. Both
+ *    settings were reachable only because a stranger's fact was the currency.
+ *
+ * Counting is also strictly cheaper than the victim search it replaces: one
+ * aggregate over the same predicate, versus an ORDER BY + OFFSET cap-1 over the
+ * whole partition plus a dynamic `import()` of the shared comparator.
+ */
+async function countCapPopulationExcludingKey(
   input: AssertFactInput,
   sql: Sql,
-  cap: number,
-  incoming: { confidence: FactConfidence | null; ttlSec: number },
-): Promise<{ key: string; confidence: string | null; created_by: string } | null> {
-  if (isFactCapExempt(input)) return null;
+  partition: FactCapPartition,
+): Promise<number> {
   const ws = input.workspaceId ?? activeWorkspaceId();
   const ref = input.scope === 'workspace' ? null : (input.scopeRef ?? '').trim();
   const key = input.key.trim();
-  const rows = await sql<
-    {
-      id: string | number | null;
-      key: string;
-      confidence: string | null;
-      created_by: string;
-      expires_at: string | Date;
-      created_at: string | Date;
-      updated_at: string | Date;
-    }[]
-  >`
-    SELECT doomed.id, doomed.key, doomed.confidence, doomed.created_by,
-           doomed.expires_at, doomed.created_at, doomed.updated_at
-      FROM (
-        SELECT id, key, confidence, created_by, expires_at, created_at, updated_at
-          FROM harness_shared.agent_facts
-         WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '', 'ordinary')}
-           AND key <> ${key}
-         ORDER BY CASE confidence
-                    WHEN 'verified'    THEN 0
-                    WHEN 'provisional' THEN 1
-                    WHEN 'suspected'  THEN 2
-                    ELSE 1
-                  END ASC,
-                  (EXTRACT(epoch FROM (expires_at - now()))
-                     / GREATEST(EXTRACT(epoch FROM (expires_at - created_at)), 1)) DESC,
-                  updated_at DESC
-         OFFSET ${Math.max(0, cap - 1)}
-      ) AS doomed
-     WHERE doomed.confidence = 'verified'
-       AND doomed.created_by <> ${input.createdBy}
-     LIMIT 1`;
-  const victim = rows[0];
-  if (!victim) return null;
-
-  // EI-21585375376448939: the guard must consult the SAME ranking it is
-  // protecting, not just the victim's confidence tier.
-  //
-  // The victim is selected at OFFSET cap-1 — i.e. it is the WORST-ranked row in
-  // the scope, the one the sweep chose precisely because it is closest to
-  // natural death. Refusing on `victim.confidence = 'verified' AND
-  // victim.created_by <> me` alone ignores whether the INCOMING fact is better
-  // than the row it displaces, and that is not a corner case here: once a scope
-  // saturates with a 100%-verified population (the steady state on this fleet —
-  // measured 200/200 verified across 123-130 distinct authors in both the
-  // `workspace` and `harness:papercusp` partitions), the confidence
-  // discriminator is DEGENERATE. Every ordinary assert by every author then
-  // matched, so a rail meant to protect one fact became a scope-wide WRITE
-  // LOCK, and its stated remedy ("coordinate with the fact owner") is not
-  // reachable across 130 authors.
-  //
-  // A fresh write always scores ~1.0 on key 2, so a `verified` incoming fact
-  // ranks FIRST of 200 while the victim ranks LAST — the store's own
-  // `survival.rank` reported exactly that (rank 1, nextVictim false) for a
-  // write this guard nonetheless refused. Destroying a better fact with a worse
-  // one is what the rail exists to stop; refusing a better fact to preserve the
-  // worst one is not that, it is the inverse.
-  //
-  // So: compare the incoming row against the victim with the SHARED comparator
-  // (never a re-derived copy of the ordering — see sweep-ranking.ts's header on
-  // why a drifting mirror is worse than no answer) and refuse ONLY when the
-  // incoming fact does not outrank the victim. `outranksForSweep` is STRICT, so
-  // a tie keeps the refusal: the SQL ordering is explicitly ambiguous on exact
-  // ties, and the protective reading is the safe one for a guard.
-  const { outranksForSweep } = await import('./sweep-ranking');
-  const nowMs = Date.now();
-  const incomingRow = {
-    id: null,
-    confidence: incoming.confidence,
-    expires_at: new Date(nowMs + Math.max(1, incoming.ttlSec) * 1000),
-    created_at: new Date(nowMs),
-    updated_at: new Date(nowMs),
-  };
-  if (outranksForSweep(incomingRow, victim, nowMs)) return null;
-  return victim;
+  const rows = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n
+      FROM harness_shared.agent_facts
+     WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '', partition)}
+       AND key <> ${key}`;
+  return Number(rows[0]?.n ?? 0);
 }
 
 /**
