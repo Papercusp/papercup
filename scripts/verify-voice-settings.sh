@@ -268,7 +268,12 @@ say "6. switching the STT engine persists across a full reload"
 # click as the fallback for a webview with no PointerEvent constructor (where the
 # ref stays "touch" and the click path is the live one). The two paths are
 # mutually exclusive BY CONSTRUCTION, so running both cannot double-select.
-"$TAT" eval --pid "$PID" '
+#
+# CAPTURE THE RETURN VALUE. This used to be `>/dev/null`, which threw away the
+# one word ("dispatched" / "no-alternative") that says which branch ran — and
+# `2>&1 || echo` means a CLI-level failure reports itself instead of aborting
+# the script through `set -e` before any of it is printed.
+STT_PICK="$("$TAT" eval --pid "$PID" '
   (() => {
     const trig = document.querySelector("button.h-select-trigger[aria-label=\"STT engine\"]");
     const before = (trig.textContent || "").trim();
@@ -302,7 +307,8 @@ say "6. switching the STT engine persists across a full reload"
     } catch (e) { window.__stt.pointerErr = String(e); }
     try { target.click(); } catch (e) { window.__stt.clickErr = String(e); }
     return "dispatched";
-  })()' >/dev/null
+  })()' 2>&1 || echo "pick-eval-command-failed")"
+printf 'STT PICK: %s\n' "$STT_PICK"
 
 # Assert the TRIGGER'S VALUE CHANGED — deliberately NOT that it equals the item's
 # text. The trigger renders RS.Value while the item renders ItemText PLUS an
@@ -316,12 +322,31 @@ say "6. switching the STT engine persists across a full reload"
 # the evidence is precisely the run that prints none. (Learned the expensive
 # way: two boots produced a bare red with no way to tell whether the picker
 # found no alternative or the click failed to take.)
-"$TAT" eval --pid "$PID" '
+# THREE ways this dump used to destroy its own evidence, all fixed here:
+#   1. `| tail -1` — `eval` PRETTY-PRINTS a JSON string result (commands/eval.js:
+#      `console.log(JSON.stringify(parsed, null, 2))`), so the output is
+#      MULTI-LINE and `tail -1` could only ever have printed the closing "}".
+#   2. `2>/dev/null` — swallowed the CLI's own error text, the single most
+#      useful line when the page-side eval is the thing that failed.
+#   3. `window.__stt.after` unguarded — if the picker eval above threw, __stt is
+#      undefined, THIS eval throws too, and under `set -euo pipefail` the script
+#      dies here with nothing printed. The instrument then fails in exactly the
+#      case it exists for, and its silence looks like the app's silence.
+# The JS try/catch means the page can no longer throw; `2>&1 || echo` means the
+# command can no longer abort the run. A diagnostic must not be able to fail.
+STT_DIAG="$("$TAT" eval --pid "$PID" '
   (() => {
-    const trig = document.querySelector("button.h-select-trigger[aria-label=\"STT engine\"]");
-    window.__stt.after = (trig.textContent || "").trim();
-    return JSON.stringify(window.__stt);
-  })()' 2>/dev/null | tail -1
+    try {
+      const trig = document.querySelector("button.h-select-trigger[aria-label=\"STT engine\"]");
+      if (!window.__stt) window.__stt = { note: "picker eval never ran or threw before assigning" };
+      window.__stt.sttWasDefined = window.__stt.note === undefined;
+      window.__stt.after = trig ? (trig.textContent || "").trim() : "(no trigger)";
+      return JSON.stringify(window.__stt);
+    } catch (e) {
+      return JSON.stringify({ diagError: String(e), sttType: typeof window.__stt });
+    }
+  })()' 2>&1 || echo '{"diagError":"diag eval command itself failed"}')"
+printf 'STT DIAG: %s\n' "$STT_DIAG"
 
 "$POLL" --require 'button.h-select-trigger[aria-label="STT engine"]' --eval '
   (() => {
