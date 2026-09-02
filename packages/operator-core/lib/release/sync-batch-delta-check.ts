@@ -279,23 +279,93 @@ export interface RadiusProbe {
   guards: string[];
 }
 
+/** One `AFFECTED_WS_CMD<TAB><workspace><TAB><command>` line: the EXACT runnable
+ *  invocation for one selected task. Kept as {workspace, command} rather than a
+ *  joined string because the command is the whole point — root CLAUDE.md's
+ *  standing warning is never to rebuild it from the workspace name (a standalone
+ *  submodule needs `npm --prefix`, not `--workspace`, and the `--workspace` form
+ *  exits 1 having measured ZERO tests). */
+export interface AffectedTaskCommand {
+  workspace: string;
+  command: string;
+}
+
+/** The `AFFECTED_DERIVATION source=… changedPaths=… workspaces=… guards=… tasks=…`
+ *  header. `source` is the field that says whether the radius came from an explicit
+ *  `--changed-paths` set or from a tree-sized git diff — the distinction that decides
+ *  whether a run is verifying YOUR edit or the whole fleet's. */
+export interface AffectedDerivation {
+  source: string;
+  counts: Record<string, number>;
+  raw: string;
+}
+
+/** `parseAffectedProbe`'s full result. It EXTENDS `RadiusProbe` additively rather
+ *  than widening that interface in place: the release lane consumes only
+ *  workspaces+guards, so making the new fields required there would strand its
+ *  callers and fixtures for data it never reads. Every existing consumer typed as
+ *  `RadiusProbe` keeps compiling unchanged. */
+export interface AffectedProbe extends RadiusProbe {
+  /** Selected TASKS. Note this is a different cardinality from `workspaces`: one
+   *  workspace routinely contributes several tasks (operator-core alone splits into
+   *  test:lane-pure + test:lane-stateful plus its lint guards), so a workspace count
+   *  materially understates what a run will actually execute. */
+  taskCommands: AffectedTaskCommand[];
+  /** null when the probe emitted no derivation header (older script, or a failed run). */
+  derivation: AffectedDerivation | null;
+}
+
 /** Parse `affected-tests.mjs --print-affected` output. It is an ENUMERATION query
- *  that emits no verdict marker, so absence of both line kinds means "zero
+ *  that emits no verdict marker, so absence of every line kind means "zero
  *  selected", which is a real (and common) answer. */
-export function parseAffectedProbe(stdout: string): RadiusProbe {
+export function parseAffectedProbe(stdout: string): AffectedProbe {
   const workspaces: string[] = [];
   const guards: string[] = [];
+  const taskCommands: AffectedTaskCommand[] = [];
+  let derivation: AffectedDerivation | null = null;
   for (const raw of stdout.split('\n')) {
     const line = raw.replace(/\r$/, '');
+    // AFFECTED_WS_CMD is tested BEFORE AFFECTED_WS on purpose: `AFFECTED_WS\t(.+)`
+    // does not match an `AFFECTED_WS_CMD\t…` line (the literal tab after `AFFECTED_WS`
+    // is absent), but relying on that is a one-character-away trap, and mis-ordering
+    // it would silently fold task commands into the workspace set — the same corruption
+    // green-checkpoint.ts calls out where it parses `AFFECTED_WS\t` into its own Set.
+    const cmd = /^AFFECTED_WS_CMD\t([^\t]+)\t(.+)$/.exec(line);
+    if (cmd?.[1] && cmd[2]) {
+      taskCommands.push({ workspace: cmd[1].trim(), command: cmd[2].trim() });
+      continue;
+    }
     const ws = /^AFFECTED_WS\t(.+)$/.exec(line);
     if (ws?.[1]) {
       workspaces.push(ws[1].trim());
       continue;
     }
     const guard = /^AFFECTED_GUARD\t([^\t]+)\t(.+)$/.exec(line);
-    if (guard?.[1] && guard[2]) guards.push(`${guard[1].trim()}:${guard[2].trim()}`);
+    if (guard?.[1] && guard[2]) {
+      guards.push(`${guard[1].trim()}:${guard[2].trim()}`);
+      continue;
+    }
+    if (line.startsWith('AFFECTED_DERIVATION ')) {
+      const counts: Record<string, number> = {};
+      let source = 'unknown';
+      for (const field of line.slice('AFFECTED_DERIVATION '.length).trim().split(/\s+/)) {
+        const eq = field.indexOf('=');
+        if (eq <= 0) continue;
+        const key = field.slice(0, eq);
+        const value = field.slice(eq + 1);
+        if (key === 'source') {
+          source = value;
+          continue;
+        }
+        // Only numeric fields become counts; `runStartHead=<sha>` is deliberately
+        // NOT coerced — Number('0a5de631…') is NaN, and a NaN in a counts map reads
+        // as a measurement that failed rather than a field that was never a count.
+        if (/^\d+$/.test(value)) counts[key] = Number(value);
+      }
+      derivation = { source, counts, raw: line.trim() };
+    }
   }
-  return { workspaces, guards };
+  return { workspaces, guards, taskCommands, derivation };
 }
 
 export type RadiusVerdict =

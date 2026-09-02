@@ -60,6 +60,7 @@ import {
   type SpawnRequest,
   type DistilledTestRun,
 } from '../../testing-run-store';
+import { deriveAffectedPlan } from './affected-plan';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
@@ -1496,8 +1497,17 @@ export default defineTool({
       .array(z.string().min(1))
       .min(1)
       .max(50)
+      .optional()
       .describe(
         'Test file paths (repo-root-relative, absolute, or relative to exactly one declared npm workspace). Each is routed to its owning workspace + Vitest config; ambiguous workspace-relative paths and paths matching zero tests fail the call rather than passing vacuously.',
+      ),
+    changedPaths: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(100)
+      .optional()
+      .describe(
+        'SOURCE paths you edited (not test files) — returns the `npm run test:affected` PLAN and runs NOTHING (`mode:"plan"`, no pass/fail counts). ~0.4s, no admission ticket, where the real sweep can queue for minutes and be SIGTERMed having measured zero files. Gives the affected workspaces, each exact runnable task command, and the attached guards, so you can pick: run specific test files via `files`, run one `taskCommands[].command` verbatim, or accept the queue. Mutually exclusive with `files`.',
       ),
     testNamePattern: z
       .string()
@@ -1527,6 +1537,44 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    // Exactly one selector. Both branches REFUSE rather than defaulting, because every
+    // default here is a silent wrong answer: picking `files` when both were sent would
+    // ignore a radius the caller asked to see, and treating neither as "run everything"
+    // is the zero/partial-match false-green this whole tool exists to refuse.
+    const wantsPlan = args.changedPaths !== undefined;
+    if (wantsPlan && args.files !== undefined) {
+      return {
+        data: {
+          ok: false,
+          error: 'mutually_exclusive_selectors',
+          detail:
+            'Pass `files` (run exact test files) OR `changedPaths` (derive the test:affected plan; runs nothing), never both.',
+        },
+      };
+    }
+    if (!wantsPlan && args.files === undefined) {
+      return {
+        data: {
+          ok: false,
+          error: 'no_selector',
+          detail:
+            'Pass `files` with the exact test files to run, or `changedPaths` with the SOURCE files you edited to see what verifying them would run.',
+        },
+      };
+    }
+    if (args.changedPaths !== undefined) {
+      // The plan path deliberately does NOT go through selectTestFileRoot: that resolver
+      // answers "which checkout owns these TEST files", and changedPaths are source files
+      // that need not have a test file anywhere. The agent's own workspace root is the
+      // tree it is editing, which is the tree whose radius it is asking about.
+      const plan = await deriveAffectedPlan({
+        changedPaths: args.changedPaths,
+        root: resolveAgentWorkspaceRoot(ctx),
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
+      });
+      return { data: plan };
+    }
+    const files = args.files as string[];
     // EI-1754, again: this tool must judge the tree the AGENT is editing, not the
     // one the operator happens to run from. `inferWorkspaceRoot()` walks up from
     // `process.cwd()`, and the :3070 operator runs FROM the release checkout
@@ -1538,7 +1586,7 @@ export default defineTool({
     // `resolveCapabilityBaseDir` is the same projectDir → PAPERCUSP_INTEGRATION_ROOT
     // → cwd resolver every capability tool (read/write/edit/bash/inspect) already
     // uses, so this tool now reads the same tree those tools write.
-    const rootSelection = selectTestFileRoot(args.files, resolveAgentWorkspaceRoot(ctx));
+    const rootSelection = selectTestFileRoot(files, resolveAgentWorkspaceRoot(ctx));
     // EI-18776865728050036 — same clamp as build:typecheck, for the same reason: this tool is
     // dispatched FOREGROUND over an MCP transport that hard-caps a call at ~55s (EI-6073), so a
     // suite slower than that had the call killed before the core's `error:'timeout'` branch could
@@ -1547,7 +1595,7 @@ export default defineTool({
     // here and not in runTestFilesCore (whose other callers budget for themselves).
     const timeoutMs = clampForegroundTimeoutMs(args.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const result = await runTestFilesCore({
-      files: args.files,
+      files,
       root: rootSelection.root,
       timeoutMs,
       signal: ctx.signal,
@@ -1562,7 +1610,7 @@ export default defineTool({
           hint:
             `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
             (result.detachedRunId ? detachedRunStatusHint(result.detachedRunId) : '') +
-            detachedTestTimeoutHint(args.files),
+            detachedTestTimeoutHint(files),
         },
       };
     }
