@@ -78,4 +78,21 @@ describe('KPIsPage', () => {
     expect(screen.getByText('Substrate KPIs')).toBeTruthy();
     expect(screen.getByText('120')).toBeTruthy();
   });
+
+  it('flags named metrics as partial/unavailable when the fetch succeeds but some aggregates fell back server-side', () => {
+    Object.assign(syncState, {
+      data: [kpis({ partial_failures: ['messages_24h', 'autoloop'] })],
+      error: null,
+    });
+    render(<KPIsPage />);
+    expect(screen.getByText(/partial data/i)).toBeTruthy();
+    expect(screen.getByText(/messages_24h, autoloop unavailable/i)).toBeTruthy();
+    // The blanket refresh-failed banner is a DIFFERENT signal and must not fire here.
+    expect(screen.queryByText(/showing stale data/i)).toBeNull();
+  });
+
+  it('shows no partial-data warning when partial_failures is absent or empty', () => {
+    render(<KPIsPage />);
+    expect(screen.queryByText(/partial data/i)).toBeNull();
+  });
 });

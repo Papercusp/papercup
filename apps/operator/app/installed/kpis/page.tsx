@@ -40,6 +40,12 @@ interface KPIs {
     }[];
   };
   system: { uptime_seconds: number };
+  /** WI-3885 iteration 7: names of metrics that failed to load THIS response
+   *  (each already falls back to a zero/empty default server-side) — lets the
+   *  UI flag exactly what's wrong instead of a silently-plausible-looking
+   *  zero, or requiring a full refresh failure before anything is shown.
+   *  Optional: older cached payloads / other callers may not carry it. */
+  partial_failures?: string[];
 }
 
 function AutoLoopGrid({ fires }: { fires: AutoLoopFire[] }) {
@@ -144,6 +150,7 @@ export default function KPIsPage() {
 
   const opEntries = Object.entries(data.audit.actions_24h_by_op).sort((a, b) => b[1] - a[1]);
   const opMax = opEntries.length > 0 ? opEntries[0][1] : 0;
+  const partialFailures = data.partial_failures ?? [];
 
   const elapsedSinceFetch = lastFetched ? Math.max(0, Math.floor((nowTick - lastFetched) / 1000)) : 0;
   const liveUptimeSeconds = data.system.uptime_seconds + elapsedSinceFetch;
@@ -160,6 +167,19 @@ export default function KPIsPage() {
               style={{ color: 'tomato', marginRight: 12 }}
             >
               ⚠ showing stale data — refresh failed
+            </span>
+          )}
+          {/* Distinct from the blanket refresh-failed banner above: the
+              overall fetch SUCCEEDED, but one or more named metrics inside it
+              fell back to a default because their own query failed server-
+              side — those specific numbers may be wrong/zero, the rest are fine. */}
+          {!error && partialFailures.length > 0 && (
+            <span
+              className="pc-kpi-partial-warning"
+              title={`These metrics failed to load and are showing a fallback value: ${partialFailures.join(', ')}`}
+              style={{ color: 'orange', marginRight: 12 }}
+            >
+              ⚠ partial data — {partialFailures.join(', ')} unavailable
             </span>
           )}
           {lastFetched && <>Updated {formatRel(new Date(lastFetched).toISOString())}</>}
