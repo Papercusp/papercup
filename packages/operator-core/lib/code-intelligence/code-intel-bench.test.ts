@@ -566,75 +566,71 @@ describe('cold-start budget grading (P-018: coldStartMsMax was a dead field)', (
  * never-converging TypeScript probes consumed the whole leg before rust was
  * reached.
  */
-describe('probeBudget — per-language reservation', () => {
-  const TWO = new Set(['.ts', '.rs']);
+describe('probeBudget — per-probe reservation', () => {
+  const FOUR = 4;
 
-  it('withholds a floor from the first language while another has not run', () => {
+  it('withholds a floor from the first probe while later ones have not run', () => {
     const b = probeBudget({
       legBudgetMs: 600_000,
       elapsedMs: 0,
-      language: '.ts',
-      legLanguages: TWO,
-      languagesStarted: new Set(),
+      probesAfterThis: 3,
+      legProbeCount: FOUR,
     });
-    // The regression control: the OLD implementation returned the whole
-    // 600_000 here, which is precisely what let TypeScript spend rust's share.
-    expect(b.remainingMs).toBe(300_000);
+    // The regression control: the ORIGINAL implementation returned the whole
+    // 600_000 here, which is precisely what let the first probes spend the
+    // whole leg.
+    expect(b.remainingMs).toBe(150_000);
     expect(b.remainingMs).not.toBe(600_000);
-    expect(b.reservedForOthersMs).toBe(300_000);
-    expect(b.unstartedOtherLanguages).toBe(1);
+    expect(b.reservedForOthersMs).toBe(450_000);
+    expect(b.perProbeFloorMs).toBe(150_000);
   });
 
-  it('still reaches the last language after the first has exhausted its share', () => {
-    // THE bug, stated as an assertion: TypeScript has burned 590s of a 600s leg.
-    // Rust must still be measurable — under the old code it got nothing at all.
+  it('still reaches the last probe after the earlier ones exhausted their share', () => {
+    // THE bug, stated as an assertion: the earlier probes have burned 590s of a
+    // 600s leg. The last probe must still be measurable — under the original
+    // code it got nothing at all.
     const b = probeBudget({
       legBudgetMs: 600_000,
       elapsedMs: 590_000,
-      language: '.rs',
-      legLanguages: TWO,
-      languagesStarted: new Set(['.ts']),
+      probesAfterThis: 0,
+      legProbeCount: FOUR,
     });
     expect(b.reservedForOthersMs).toBe(0);
     expect(b.remainingMs).toBeGreaterThan(0);
   });
 
   it('treats the floor as a reservation, not a cap', () => {
-    // TypeScript finished fast. Nothing is owed to anyone, so rust may use the
-    // ENTIRE remainder — well past its own 300_000 floor. A cap would have
-    // clamped this to 300_000 and thrown away real measuring time.
+    // Everything before finished fast. Nothing is owed to anyone, so this probe
+    // may use the ENTIRE remainder — well past its own 150_000 floor. A cap
+    // would have clamped this to 150_000 and thrown away real measuring time.
     const b = probeBudget({
       legBudgetMs: 600_000,
       elapsedMs: 10_000,
-      language: '.rs',
-      legLanguages: TWO,
-      languagesStarted: new Set(['.ts']),
+      probesAfterThis: 0,
+      legProbeCount: FOUR,
     });
     expect(b.remainingMs).toBe(590_000);
   });
 
-  it('withholds nothing on a single-language leg', () => {
+  it('withholds nothing on a single-probe leg', () => {
     const b = probeBudget({
       legBudgetMs: 600_000,
       elapsedMs: 0,
-      language: '.ts',
-      legLanguages: new Set(['.ts']),
-      languagesStarted: new Set(),
+      probesAfterThis: 0,
+      legProbeCount: 1,
     });
     expect(b.reservedForOthersMs).toBe(0);
     expect(b.remainingMs).toBe(600_000);
   });
 
-  it('scales the floor to the number of languages', () => {
-    const three = new Set(['.ts', '.rs', '.py']);
+  it('scales the floor to the number of probes', () => {
     const b = probeBudget({
       legBudgetMs: 600_000,
       elapsedMs: 0,
-      language: '.ts',
-      legLanguages: three,
-      languagesStarted: new Set(),
+      probesAfterThis: 2,
+      legProbeCount: 3,
     });
-    expect(b.unstartedOtherLanguages).toBe(2);
+    expect(b.perProbeFloorMs).toBe(200_000);
     expect(b.reservedForOthersMs).toBe(400_000);
     expect(b.remainingMs).toBe(200_000);
   });
@@ -643,9 +639,8 @@ describe('probeBudget — per-language reservation', () => {
     const b = probeBudget({
       legBudgetMs: 600_000,
       elapsedMs: 300_000,
-      language: '.ts',
-      legLanguages: TWO,
-      languagesStarted: new Set(),
+      probesAfterThis: 2,
+      legProbeCount: FOUR,
     });
     expect(b.remainingMs).toBeLessThanOrEqual(0);
     // reservedForOthersMs > 0 is what makes the caller report this as a spent
@@ -653,5 +648,86 @@ describe('probeBudget — per-language reservation', () => {
     // "exhausted" sends a reader to raise legBudgetMs, the one change that
     // cannot help.
     expect(b.reservedForOthersMs).toBeGreaterThan(0);
+  });
+});
+
+describe('probeBudget REGRESSION — reserving per LANGUAGE only moved the starvation', () => {
+  // The measured leg, twice, on 2026-09-02 (EI-22174876232438025):
+  //   v1 (no reservation)       — rust probe `attempts=0`, never measured.
+  //   v2 (per-LANGUAGE floor)   — rust measured (PASS, 15,635ms cold-to-correct)
+  //                               and the THIRD TypeScript probe took its place
+  //                               at `attempts=0`.
+  // Exactly one probe was lost either way, so this fixture replays that leg
+  // against both rules. The per-language rule is kept here as a deliberately
+  // wrong CONTROL: without it, a per-probe implementation that silently
+  // regressed would look identical to one that works.
+  const LEG_BUDGET_MS = 600_000;
+  const PROBE_DEADLINE_MS = 300_000;
+
+  /** The four probes in leg order; Infinity = polls to its deadline, never converges. */
+  const LEG = [
+    { caseId: 'definition-cross-package-bare-specifier', ext: '.ts', spendMs: 10_306 },
+    { caseId: 'references-through-barrel-reexport', ext: '.ts', spendMs: Infinity },
+    { caseId: 'shadowed-symbol-no-cross-contamination', ext: '.ts', spendMs: Infinity },
+    { caseId: 'rust-trait-implementations', ext: '.rs', spendMs: 15_635 },
+  ];
+
+  /** Replay the leg, returning the caseIds that never got a turn. */
+  const starvedUnder = (remainingFor: (i: number, elapsedMs: number) => number): string[] => {
+    const starved: string[] = [];
+    let elapsedMs = 0;
+    LEG.forEach((probe, i) => {
+      const remaining = remainingFor(i, elapsedMs);
+      if (remaining <= 0) {
+        starved.push(probe.caseId);
+        return;
+      }
+      elapsedMs += Math.min(probe.spendMs, PROBE_DEADLINE_MS, remaining);
+    });
+    return starved;
+  };
+
+  it('CONTROL: the per-language rule starves the third TypeScript probe', () => {
+    const languagesStarted = new Set<string>();
+    const legLanguages = new Set(LEG.map((p) => p.ext));
+    const perLanguageFloorMs = LEG_BUDGET_MS / legLanguages.size;
+
+    const starved = starvedUnder((i, elapsedMs) => {
+      const ext = LEG[i].ext;
+      const unstartedOthers = [...legLanguages].filter(
+        (l) => l !== ext && !languagesStarted.has(l),
+      ).length;
+      const remaining = LEG_BUDGET_MS - elapsedMs - unstartedOthers * perLanguageFloorMs;
+      if (remaining > 0) languagesStarted.add(ext);
+      return remaining;
+    });
+
+    // Not a hypothetical: this is what leg v2 actually reported.
+    expect(starved).toEqual(['shadowed-symbol-no-cross-contamination']);
+  });
+
+  it('every probe gets a turn under the per-probe reservation', () => {
+    const starved = starvedUnder(
+      (i, elapsedMs) =>
+        probeBudget({
+          legBudgetMs: LEG_BUDGET_MS,
+          elapsedMs,
+          probesAfterThis: LEG.length - 1 - i,
+          legProbeCount: LEG.length,
+        }).remainingMs,
+    );
+    expect(starved).toEqual([]);
+  });
+
+  it('leaves the last probe enough for a real rust cold start', () => {
+    // A floor is only worth having if it clears the cold start it must pay, and
+    // the floor SHRINKS as probes are added. rust-analyzer measured 15,635ms
+    // cold-to-correct in leg v2 (it must run `cargo metadata` and build proc
+    // macros first), so this fails once the probe set outgrows the leg budget —
+    // which is the moment to raise `legBudgetMs`, not to discover another
+    // `attempts=0`.
+    const MEASURED_RUST_COLD_START_MS = 15_635;
+    const floorMs = LEG_BUDGET_MS / LEG.length;
+    expect(floorMs).toBeGreaterThan(MEASURED_RUST_COLD_START_MS * 2);
   });
 });

@@ -681,37 +681,43 @@ export interface LspLegReport {
 }
 
 /**
- * How much of the leg budget one probe may spend, given which languages still
+ * How much of the leg budget one probe may spend, given how many probes still
  * have not had a turn.
  *
  * Extracted and exported so the reservation property is assertable without
  * standing up real language servers: the integration leg it governs takes ~600s,
  * which is far too slow to be the only thing proving a budget rule.
  *
- * The floor is a RESERVATION, not a cap — it is withheld only while a language
- * is still waiting, so the last language to run is never charged for it.
+ * The floor is a RESERVATION, not a cap — it is withheld only while a probe is
+ * still waiting, so the last probe to run is never charged for it.
+ *
+ * The unit is the PROBE, not the language, and that distinction is the whole
+ * lesson of this function. A first version reserved per LANGUAGE, which removed
+ * the language-level ordering bias and left the probe-level one untouched:
+ * measured back-to-back on 2026-09-02 against the same 4-probe leg, the
+ * per-language rule simply MOVED the starvation from the rust probe to the
+ * third TypeScript probe. Exactly one probe reported `attempts=0` either way.
+ * Reserve at the level of the thing that can actually be starved.
  */
 export function probeBudget(args: {
   readonly legBudgetMs: number;
   readonly elapsedMs: number;
-  readonly language: string;
-  readonly legLanguages: ReadonlySet<string>;
-  readonly languagesStarted: ReadonlySet<string>;
+  /** How many probes come AFTER this one in the leg — each is owed a floor. */
+  readonly probesAfterThis: number;
+  /** Total probes in the leg; sets the size of one probe's floor. */
+  readonly legProbeCount: number;
 }): {
   readonly remainingMs: number;
   readonly reservedForOthersMs: number;
-  readonly unstartedOtherLanguages: number;
+  readonly perProbeFloorMs: number;
 } {
-  const { legBudgetMs, elapsedMs, language, legLanguages, languagesStarted } = args;
-  const perLanguageFloorMs = legBudgetMs / Math.max(1, legLanguages.size);
-  const unstartedOtherLanguages = [...legLanguages].filter(
-    (lang) => lang !== language && !languagesStarted.has(lang),
-  ).length;
-  const reservedForOthersMs = unstartedOtherLanguages * perLanguageFloorMs;
+  const { legBudgetMs, elapsedMs, probesAfterThis, legProbeCount } = args;
+  const perProbeFloorMs = legBudgetMs / Math.max(1, legProbeCount);
+  const reservedForOthersMs = Math.max(0, probesAfterThis) * perProbeFloorMs;
   return {
     remainingMs: legBudgetMs - elapsedMs - reservedForOthersMs,
     reservedForOthersMs,
-    unstartedOtherLanguages,
+    perProbeFloorMs,
   };
 }
 
@@ -742,21 +748,29 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
   const languagesStarted = new Set<string>();
   const legStarted = Date.now();
 
-  // Every language in the probe set is entitled to a FLOOR of the leg budget.
+  // Every PROBE in the set is entitled to a FLOOR of the leg budget.
   //
-  // Without a floor the budget is first-come-first-served, and the last language
-  // is not merely unlucky — it is structurally unreachable. Two probes that never
-  // converge each poll for their full `deadlineMs`, and the integration leg runs
-  // 300_000ms x 2 against a 600_000ms budget, so the rust probe reported
-  // `attempts=0 (not attempted)` on every run. Raising `legBudgetMs` cannot fix
-  // that: it raises what the earlier probes are permitted to consume by exactly
-  // as much. Reserving per language is what makes a second backend measurable at
-  // all, and rust-analyzer is one of exactly two pinned backends
-  // (EI-22174876232438025).
+  // Without a floor the budget is first-come-first-served, and the last probe is
+  // not merely unlucky — it is structurally unreachable. A probe that never
+  // converges polls for its full `deadlineMs`, and the integration leg runs
+  // 300_000ms deadlines against a 600_000ms budget, so two such probes consume
+  // the entire leg and everything after them reports `attempts=0 (not
+  // attempted)`. Raising `legBudgetMs` cannot fix that: it raises what the
+  // earlier probes are permitted to consume by exactly as much.
+  //
+  // MEASURED TWICE, and the second measurement is why this reserves per probe
+  // rather than per language (EI-22174876232438025):
+  //   leg v1, per-probe budget only  — rust `attempts=0`, never measured at all.
+  //   leg v2, per-LANGUAGE floor     — rust measured (PASS, 15,635ms cold), and
+  //                                    the third TypeScript probe took its place
+  //                                    at `attempts=0`.
+  // The language floor fixed the level it was aimed at and left the level below
+  // it untouched. A budget that bounds an AGGREGATE converts "slow member" into
+  // "later members never ran" at whatever granularity it is applied, so the
+  // reservation has to sit on the atomic unit being measured.
   const probeLanguage = (file: string): string => file.slice(file.lastIndexOf('.'));
-  const legLanguages = new Set(probes.map((p) => probeLanguage(p.file)));
 
-  for (const probe of probes) {
+  for (const [probeIndex, probe] of probes.entries()) {
     const kase = corpusCase(probe.caseId);
     if (!kase) throw new Error(`bench probe references unknown corpus case '${probe.caseId}'`);
 
@@ -765,25 +779,25 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
     const serverWasCold = !languagesStarted.has(ext);
 
     // Bound this probe by whichever runs out first: its own deadline, or what is
-    // left of the leg AFTER honouring the floor still owed to languages that have
+    // left of the leg AFTER honouring the floor still owed to probes that have
     // not run yet.
     //
-    // The floor is a RESERVATION, not a cap. It is withheld only while a language
-    // is still waiting for its turn, so once every language has started, nothing
-    // is held back and a probe may use the entire remainder. That keeps the
-    // original property — a slow probe yields a partial report rather than a lost
-    // run — while removing the ordering bias that made the last language
-    // unreachable.
+    // The floor is a RESERVATION, not a cap. It is withheld only while a probe is
+    // still waiting for its turn, so the leg stays work-conserving: a probe that
+    // finishes early hands its unused share to the next one, and the final probe
+    // has nothing withheld from it at all. That keeps the original property — a
+    // slow probe yields a partial report rather than a lost run — while removing
+    // the ordering bias that made the last probe unreachable.
+    const probesAfterThis = probes.length - 1 - probeIndex;
     const {
       remainingMs: remaining,
       reservedForOthersMs: reservedForOthers,
-      unstartedOtherLanguages,
+      perProbeFloorMs,
     } = probeBudget({
       legBudgetMs,
       elapsedMs: Date.now() - legStarted,
-      language: ext,
-      legLanguages,
-      languagesStarted,
+      probesAfterThis,
+      legProbeCount: probes.length,
     });
     if (remaining <= 0) {
       measurements.push({
@@ -799,15 +813,15 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
         correct: false,
         trustworthyEmpty: true, // never queried, so it made no empty claim at all
         grade: { correct: false, missing: [], extra: [], reason: 'not attempted' },
-        // Name WHICH of the two causes fired. A probe cut short because a peer
-        // language still holds its reserved floor has NOT hit an exhausted
+        // Name WHICH of the two causes fired. A probe cut short because later
+        // probes still hold their reserved floor has NOT hit an exhausted
         // budget, and reporting it as one would send a reader to raise
         // `legBudgetMs` — the one change that cannot help.
         error:
           reservedForOthers > 0
-            ? `this probe's share of the ${legBudgetMs}ms leg budget is spent; ` +
-              `${Math.round(reservedForOthers)}ms remains reserved for ` +
-              `${unstartedOtherLanguages} language(s) that have not run yet`
+            ? `this probe's ${Math.round(perProbeFloorMs)}ms share of the ` +
+              `${legBudgetMs}ms leg budget is spent; ${Math.round(reservedForOthers)}ms ` +
+              `remains reserved for ${probesAfterThis} probe(s) that have not run yet`
             : `leg budget of ${legBudgetMs}ms exhausted before this probe ran`,
         returnedSites: [],
         emptyThenFilledMs: null,
