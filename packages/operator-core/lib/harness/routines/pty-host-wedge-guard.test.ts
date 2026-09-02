@@ -9,10 +9,15 @@ import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
   classifyComposerWedge,
+  classifyBusyGateWedge,
   sweepWedgedPtyHosts,
   DEFER_KIND,
+  BUSY_GATE_KIND,
   DEFAULT_MIN_CONSECUTIVE_DEFERS,
   DEFAULT_MIN_STREAK_SPAN_MS,
+  DEFAULT_MIN_BUSY_GATE_DEFERS,
+  DEFAULT_MIN_BUSY_STREAK_SPAN_MS,
+  DEFAULT_BUSY_GATE_MAX_QUIET_FRACTION,
   type PtyHostWedgeSweepDeps,
 } from './pty-host-wedge-guard';
 import type { PtyHostEvent, PsuPtyHost } from '../../events/await/psu-pty-discovery';
@@ -189,6 +194,245 @@ describe('threshold layering against the in-host breaker', () => {
   });
 });
 
+/**
+ * Tests for the SECOND wedge class (WI-2141553) — a busy-gate streak.
+ *
+ * The invariant under test is the discriminator: the run's longest observed quiet gap
+ * staying near zero. Two of these are false-POSITIVE controls rather than feature tests,
+ * because this class's dangerous error is naming a healthy agent that is simply working.
+ */
+const QUIET_CAP_MS = 1_500;
+
+/** A run of busy-gate defers ending at `endMs`, spaced `spacingMs` apart, oldest-first. */
+function busyDefers(
+  count: number,
+  opts: {
+    mode?: string;
+    observedMaxQuietMs?: number | null;
+    quietMs?: number | null;
+    endMs?: number;
+    spacingMs?: number;
+  } = {},
+): PtyHostEvent[] {
+  const {
+    mode = 'turn',
+    observedMaxQuietMs = 0,
+    quietMs = QUIET_CAP_MS,
+    endMs = NOW - 60_000,
+    spacingMs = 15 * 60_000,
+  } = opts;
+  const out: PtyHostEvent[] = [];
+  for (let i = count - 1; i >= 0; i--) {
+    out.push({
+      ts: new Date(endMs - i * spacingMs).toISOString(),
+      kind: BUSY_GATE_KIND,
+      mode,
+      capMs: 120_000,
+      observedMaxQuietMs,
+      quietMs,
+    });
+  }
+  return out;
+}
+
+function classifyBusy(
+  events: PtyHostEvent[],
+  over: Partial<Parameters<typeof classifyBusyGateWedge>[0]> = {},
+) {
+  return classifyBusyGateWedge({ events, startedAtMs: HOST_STARTED, now: NOW, ...over });
+}
+
+describe('classifyBusyGateWedge', () => {
+  it('names a host whose deliveries all expired against a pty that never fell silent', () => {
+    const v = classifyBusy(busyDefers(10));
+    expect(v.wedged).toBe(true);
+    expect(v.consecutiveDefers).toBe(10);
+    expect(v.observedMaxQuietMs).toBe(0);
+    expect(v.quietCapMs).toBe(QUIET_CAP_MS);
+    expect(v.modes).toEqual(['turn']);
+    expect(v.reason).toContain('never observed at its prompt');
+  });
+
+  // ⚠ THE NULL TRAP, and the single most important test in this block. Both quiet fields are
+  // nullable at the emitter. Reading a null as "near zero" would MANUFACTURE a wedge verdict
+  // out of missing data — on a detector that pages a human.
+  it('refuses to read a NULL observedMaxQuietMs as near-zero', () => {
+    const v = classifyBusy(busyDefers(20, { observedMaxQuietMs: null }));
+    expect(v.wedged).toBe(false);
+    expect(v.consecutiveDefers).toBe(0);
+    expect(v.reason).toContain('no usable');
+  });
+
+  it('refuses to judge a defer whose quietMs threshold is missing', () => {
+    const v = classifyBusy(busyDefers(20, { quietMs: null }));
+    expect(v.wedged).toBe(false);
+    expect(v.consecutiveDefers).toBe(0);
+  });
+
+  // The OTHER half of the emitter's documented pair: a gap approaching the cap means the
+  // threshold is merely too tight, which resolves on its own and has the OPPOSITE fix.
+  it('does not name a near-miss against a too-tight cap', () => {
+    const v = classifyBusy(busyDefers(20, { observedMaxQuietMs: QUIET_CAP_MS - 1 }));
+    expect(v.wedged).toBe(false);
+    expect(v.reason).toContain('near-miss');
+  });
+
+  it('treats a near-miss defer as a run BOUNDARY, keeping only the newer episode', () => {
+    const v = classifyBusy([
+      ...busyDefers(10, { endMs: NOW - 400 * 60_000 }),
+      ...busyDefers(1, { observedMaxQuietMs: QUIET_CAP_MS - 1, endMs: NOW - 380 * 60_000 }),
+      ...busyDefers(3, { endMs: NOW - 60_000 }),
+    ]);
+    expect(v.consecutiveDefers).toBe(3);
+    expect(v.wedged).toBe(false);
+  });
+
+  // ⚠ THE FALSE-POSITIVE CONTROL THIS CLASS EXISTS TO SURVIVE. A genuinely long turn emits
+  // continuously, so its longest quiet gap is ALSO ≈0 and it is indistinguishable from a
+  // wedge to the discriminator. Only the span floor separates them — and long turns are
+  // ordinary here: the green-checkpoint gate suite alone runs ~55 minutes.
+  it('never names a long but legitimate turn (a ~55m suite deferring every wake)', () => {
+    const v = classifyBusy(busyDefers(12, { spacingMs: 5 * 60_000 }));
+    expect(v.streakSpanMs).toBeLessThan(DEFAULT_MIN_BUSY_STREAK_SPAN_MS);
+    expect(v.wedged).toBe(false);
+    expect(v.reason).toContain('long legitimate turn');
+  });
+
+  it('counts a run exactly at the defer floor, and not one below it', () => {
+    expect(classifyBusy(busyDefers(DEFAULT_MIN_BUSY_GATE_DEFERS)).wedged).toBe(true);
+    const below = classifyBusy(busyDefers(DEFAULT_MIN_BUSY_GATE_DEFERS - 1));
+    // Isolates the DEFER floor: at 15m spacing this run still clears the span floor, so the
+    // count is the only thing that can be refusing it.
+    expect(below.streakSpanMs).toBeGreaterThanOrEqual(DEFAULT_MIN_BUSY_STREAK_SPAN_MS);
+    expect(below.wedged).toBe(false);
+  });
+
+  // carry-respawn already had durable coverage pre-WI-2141048 and owns its own re-arm
+  // lifecycle, so it is NEUTRAL here: not counted, and — the half that would truncate real
+  // streaks if it were wrong — not treated as clearing either.
+  it('steps over a carry-respawn defer without counting or breaking the run', () => {
+    const v = classifyBusy([
+      ...busyDefers(5, { endMs: NOW - 400 * 60_000 }),
+      ...busyDefers(1, { mode: 'carry-respawn', endMs: NOW - 380 * 60_000 }),
+      ...busyDefers(5, { endMs: NOW - 60_000 }),
+    ]);
+    expect(v.consecutiveDefers).toBe(10);
+    expect(v.modes).toEqual(['turn']);
+    expect(v.wedged).toBe(true);
+  });
+
+  it('counts reset and recycle deliveries alongside turn', () => {
+    const v = classifyBusy([
+      ...busyDefers(5, { mode: 'reset', endMs: NOW - 300 * 60_000 }),
+      ...busyDefers(5, { mode: 'recycle', endMs: NOW - 60_000 }),
+    ]);
+    expect(v.wedged).toBe(true);
+    expect(v.modes).toEqual(['recycle', 'reset']);
+  });
+
+  // THE DELIBERATE DIVERGENCE FROM THE COMPOSER CLASS. A composer phantom provably survives
+  // a respawn, so `respawned` is NOT clearing there. A busy-gate verdict describes the
+  // CHILD's output, and a respawn replaces that child — merging across one would repeat the
+  // unscoped-attribution error the host-lifetime rule exists to prevent.
+  it('ENDS the run at a respawn, unlike the composer class', () => {
+    const v = classifyBusy([
+      ...busyDefers(20, { endMs: NOW - 400 * 60_000 }),
+      ev('respawned', NOW - 380 * 60_000),
+      ...busyDefers(3, { endMs: NOW - 60_000 }),
+    ]);
+    expect(v.consecutiveDefers).toBe(3);
+    expect(v.wedged).toBe(false);
+  });
+
+  it('ignores defers from a PREVIOUS host incarnation', () => {
+    const v = classifyBusy([
+      ...busyDefers(30, { endMs: HOST_STARTED - 60_000 }),
+      ...busyDefers(2, { endMs: NOW - 60_000 }),
+    ]);
+    expect(v.consecutiveDefers).toBe(2);
+    expect(v.wedged).toBe(false);
+  });
+
+  it('steps over unrelated lifecycle events without breaking the run', () => {
+    const v = classifyBusy([
+      ...busyDefers(5, { endMs: NOW - 400 * 60_000 }),
+      ev('mcp-reconnect-started', NOW - 380 * 60_000),
+      ev('stale-fire-dropped', NOW - 370 * 60_000),
+      ...busyDefers(5, { endMs: NOW - 60_000 }),
+    ]);
+    expect(v.consecutiveDefers).toBe(10);
+    expect(v.wedged).toBe(true);
+  });
+
+  it('reports no wedge when the ledger holds no busy-gate defers at all', () => {
+    const v = classifyBusy(defers(20));
+    expect(v.wedged).toBe(false);
+    expect(v.reason).toContain('no busy-gate deferrals');
+  });
+
+  /**
+   * THE INERT-DETECTOR REGRESSION GUARD, and the reason this block exists at all.
+   *
+   * The quiet fraction shipped at 0.1 on a reading of the emitter's phrase "gaps ≈ 0ms".
+   * Measured against the live box (2026-09-02, 81 hosts, 9 emitting), EVERY observation sat
+   * between 188ms and 1322ms against a uniform 1500ms cap — so 0.1 (≤150ms) admitted
+   * NOTHING and the classifier could not fire on any input this box produces.
+   *
+   * That is the dangerous failure because it is SILENT: an inert detector reports zero
+   * wedged hosts forever, which is indistinguishable from a healthy fleet. These cases pin
+   * the real measured distribution so a future tightening has to fail here rather than in
+   * production silence.
+   */
+  describe('calibration against the measured live distribution', () => {
+    const CAP = 1500;
+    // The continuously-redrawing cluster measured on real hosts — a TUI repainting a few
+    // times a second. These MUST be admitted, or the detector is inert.
+    it.each([188, 275, 374, 504])('admits a redrawing-cluster observation of %dms', (obs) => {
+      const v = classifyBusy(busyDefers(10, { observedMaxQuietMs: obs, quietMs: CAP }));
+      expect(v.wedged).toBe(true);
+      expect(v.consecutiveDefers).toBe(10);
+    });
+
+    // The near-miss cluster: 85–88% of the cap, having very nearly settled. These must stay
+    // excluded — they resolve on their own and have the OPPOSITE fix.
+    it.each([1275, 1322])('still excludes a near-miss observation of %dms', (obs) => {
+      const v = classifyBusy(busyDefers(10, { observedMaxQuietMs: obs, quietMs: CAP }));
+      expect(v.wedged).toBe(false);
+      expect(v.reason).toContain('near-miss');
+    });
+
+    /**
+     * THE RECALL CONTROL — the one known POSITIVE, replayed.
+     *
+     * Precision was measurable (0 hits across 81 live hosts, 2026-09-02) because the box was
+     * full of healthy hosts. Recall was not: the population contained no wedged host, so
+     * nothing on that box could show the detector catches a real one. The only true positive
+     * available is the incident this class was built from — EI-22102038982840555, su-be3900dd,
+     * 2026-09-01 20:15–23:16Z: ~15 accepted-but-parked deliveries across ~2.5h, which ended
+     * only via an unrelated host-code-staleness respawn.
+     *
+     * Replaying its shape is what stops the thresholds being tuned into silence: the measured
+     * healthy population tops out at a 0-minute span, so the floors could drift a long way
+     * before precision complained, and this is the only case that would notice.
+     */
+    it('CATCHES the incident it was built from (~15 parked deliveries over ~2.5h)', () => {
+      const v = classifyBusy(
+        busyDefers(15, { observedMaxQuietMs: 300, quietMs: CAP, spacingMs: 11 * 60_000 }),
+      );
+      expect(v.wedged).toBe(true);
+      expect(v.consecutiveDefers).toBe(15);
+      expect(v.streakSpanMs).toBeGreaterThanOrEqual(DEFAULT_MIN_BUSY_STREAK_SPAN_MS);
+      expect(v.reason).toContain('never observed at its prompt');
+    });
+
+    it('keeps clear margin between the two measured clusters', () => {
+      const ceiling = CAP * DEFAULT_BUSY_GATE_MAX_QUIET_FRACTION;
+      expect(ceiling).toBeGreaterThan(504); // above the redrawing cluster's top
+      expect(ceiling).toBeLessThan(1275); //  below the near-miss cluster's floor
+    });
+  });
+});
+
 function host(over: Partial<PsuPtyHost> = {}): PsuPtyHost {
   return {
     ownerId: 'su-test',
@@ -290,5 +534,52 @@ describe('sweepWedgedPtyHosts', () => {
     });
     const res = await sweepWedgedPtyHosts({}, deps);
     expect(res.wedged).toHaveLength(1);
+  });
+
+  it('labels a composer hit with its wedge class', async () => {
+    const res = await sweepWedgedPtyHosts({}, sweepDeps());
+    expect(res.wedged[0].wedgeClass).toBe('composer');
+  });
+
+  it('finds a busy-gate wedge from the SAME ledger read', async () => {
+    const deps = sweepDeps({ readEvents: () => busyDefers(10) });
+    const res = await sweepWedgedPtyHosts({}, deps);
+    expect(res.wedged).toHaveLength(1);
+    expect(res.wedged[0].wedgeClass).toBe('busy-gate');
+    expect(deps.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  // The two classes are `oneShot`. Sharing a conditionKey would let whichever fired first
+  // silently swallow the other — reporting a solved problem while the second class stayed
+  // invisible, which is the failure mode this whole guard exists to prevent.
+  it('broadcasts each class under its OWN conditionKey', async () => {
+    const deps = sweepDeps({ readEvents: () => [...defers(12), ...busyDefers(10)] });
+    const res = await sweepWedgedPtyHosts({}, deps);
+    expect(res.wedged.map((w) => w.wedgeClass).sort()).toEqual(['busy-gate', 'composer']);
+
+    const keys = (deps.broadcast as unknown as { mock: { calls: Array<[{ conditionKey: string }]> } }).mock.calls
+      .map((c) => c[0].conditionKey)
+      .sort();
+    expect(keys).toEqual(['pty-host-busy-gate-wedge', 'pty-host-wedge']);
+  });
+
+  // A host named by both classes is TWO findings about ONE session. The page counts
+  // sessions, because "2 sessions cannot receive wakes" about one session is the kind of
+  // inflation nobody re-derives before acting on it.
+  it('pages by distinct OWNER when one host is wedged both ways', async () => {
+    const deps = sweepDeps({ readEvents: () => [...defers(12), ...busyDefers(10)] });
+    await sweepWedgedPtyHosts({}, deps);
+    const page = (deps.notify as unknown as { mock: { calls: Array<[{ title: string; data: Record<string, unknown> }]> } })
+      .mock.calls[0][0];
+    expect(page.title).toContain('1 agent session');
+    expect(page.data.owners).toEqual(['su-test']);
+    expect(page.data.byClass).toEqual({ composer: 1, 'busy-gate': 1 });
+  });
+
+  it('does not broadcast a busy-gate hit under dryRun, but still reports it', async () => {
+    const deps = sweepDeps({ readEvents: () => busyDefers(10) });
+    const res = await sweepWedgedPtyHosts({ dryRun: true }, deps);
+    expect(res.wedged).toHaveLength(1);
+    expect(deps.broadcast).not.toHaveBeenCalled();
   });
 });

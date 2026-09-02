@@ -7,8 +7,11 @@
  *
  * Config (routine `trigger_config`, all optional):
  *   - `dry_run` — report matches without broadcasting or paging.
- *   - `min_consecutive_defers`, `min_streak_span_ms`, `recovery_idle_ms` — threshold
- *     overrides, for tightening the guard from the routine row without a deploy.
+ *   - `min_consecutive_defers`, `min_streak_span_ms`, `recovery_idle_ms` — composer-class
+ *     threshold overrides, for tightening the guard from the routine row without a deploy.
+ *   - `busy_gate_min_defers`, `busy_gate_min_streak_span_ms`, `busy_gate_max_quiet_fraction`
+ *     — the same for the busy-gate class (WI-2141553), kept separate because the two
+ *     classes are calibrated against different things.
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { sweepWedgedPtyHosts } from './pty-host-wedge-guard';
@@ -22,6 +25,17 @@ registerSystemAction('sweep-wedged-pty-hosts', async (ctx: SystemActionCtx) => {
       : {}),
     ...(typeof cfg.min_streak_span_ms === 'number' ? { minStreakSpanMs: cfg.min_streak_span_ms } : {}),
     ...(typeof cfg.recovery_idle_ms === 'number' ? { recoveryIdleMs: cfg.recovery_idle_ms } : {}),
+    // Busy-gate class (WI-2141553) — separate dials on purpose; see the guard's options doc.
+    // These matter more than the composer ones right now: that class's span floor is
+    // reasoned rather than calibrated, so tightening it from the routine row is how it gets
+    // tuned against the live population without a deploy.
+    ...(typeof cfg.busy_gate_min_defers === 'number' ? { busyGateMinDefers: cfg.busy_gate_min_defers } : {}),
+    ...(typeof cfg.busy_gate_min_streak_span_ms === 'number'
+      ? { busyGateMinStreakSpanMs: cfg.busy_gate_min_streak_span_ms }
+      : {}),
+    ...(typeof cfg.busy_gate_max_quiet_fraction === 'number'
+      ? { busyGateMaxQuietFraction: cfg.busy_gate_max_quiet_fraction }
+      : {}),
   });
 
   if (result.wedged.length > 0) {
@@ -30,11 +44,17 @@ registerSystemAction('sweep-wedged-pty-hosts', async (ctx: SystemActionCtx) => {
     // emitting output and must not be touched — it is working, it just cannot be reached.
     const idle = result.wedged.filter((w) => w.recoverySafety === 'idle');
     const busy = result.wedged.filter((w) => w.recoverySafety !== 'idle');
+    // Counted by distinct OWNER, not by report: a host can be named by more than one wedge
+    // class, and a line that says "3 hosts" about 2 hosts is the kind of inflation nobody
+    // re-derives before acting on it.
+    const owners = new Set(result.wedged.map((w) => w.ownerId));
+    // The CLASS is named per host rather than summarised away, because the two mean
+    // different things to whoever reads this: `composer` is deferring against a staged line
+    // that never moves, `busy-gate` never reaches its prompt at all.
     console.warn(
-      `[sweep-wedged-pty-hosts] WAKE-DEAF ${result.wedged.length}/${result.checked} live pty-host(s) — ` +
-        `every wake deferred against a staged line that never moves. ${idle.length} idle (safe to ` +
-        `replace), ${busy.length} still emitting (do NOT trample): ` +
-        result.wedged.map((w) => `${w.ownerId}×${w.verdict.consecutiveDefers}`).join(', '),
+      `[sweep-wedged-pty-hosts] WAKE-DEAF ${owners.size}/${result.checked} live pty-host(s). ` +
+        `${idle.length} idle (safe to replace), ${busy.length} still emitting (do NOT trample): ` +
+        result.wedged.map((w) => `${w.ownerId}[${w.wedgeClass}]×${w.verdict.consecutiveDefers}`).join(', '),
     );
   }
 

@@ -38,12 +38,34 @@
  * firing here is itself EVIDENCE that the first-line fix did not run, which is the one
  * thing an external observer can establish and the host cannot report about itself.
  *
+ * ## Two wedge CLASSES, one sweep
+ * A host can be wake-deaf for two structurally different reasons, and each gets its own
+ * classifier over the same ledger read:
+ *
+ *   `composer`  — {@link classifyComposerWedge}. The gate believes a human staged an input
+ *                 line, so every wake is politely deferred. Discriminated by an unchanging
+ *                 `pendingLength`.
+ *   `busy-gate` — {@link classifyBusyGateWedge} (WI-2141553). The wake never reaches that
+ *                 gate: the agent is never observed AT ITS PROMPT inside the busy cap, so
+ *                 an accepted delivery is parked and no turn happens. Discriminated by the
+ *                 longest observed quiet gap staying near zero.
+ *
+ * They are NOT variants of one rule. They key on different event kinds, need different
+ * safety invariants, and — see {@link BUSY_GATE_STREAK_CLEARING_KINDS} — take OPPOSITE
+ * readings of a respawn, for reasons that are measured rather than assumed.
+ *
  * ## Scope (deliberate)
  * Phase 1 DETECTS and SURFACES. It does not kill or relaunch anything. The tempting next
  * step — teaching the wake-reachability oracle that a wedged host is not reachable — is
  * deliberately deferred: that verdict feeds loop-TERMINATION guards, so a false positive
  * there disarms live agents, and this detector's precision should be measured against the
  * live population before anything acts on it.
+ *
+ * That caution binds the `busy-gate` class HARDER than the composer one, because its
+ * dangerous false positive is ordinary: a genuinely long turn emits output continuously,
+ * so it presents to the discriminator exactly as a wedge does, and only the streak-span
+ * floor separates them. Measure that floor against the live population before this class is
+ * allowed to drive anything.
  */
 import {
   listLiveHosts,
@@ -127,17 +149,29 @@ function eventTimeMs(ev: PtyHostEvent): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
-export interface ComposerWedgeVerdict {
-  /** Does this host meet EVERY wedge criterion? */
+/**
+ * What EVERY wedge class must report, whatever mechanism wedged the host.
+ *
+ * Extracted (WI-2141553) when a second class arrived, so the sweep can sort, render and
+ * page over a mixed population without knowing which mechanism produced a verdict. Each
+ * class then adds only its own discriminator — the field its streak invariant is built on.
+ */
+export interface WedgeVerdictCommon {
+  /** Does this host meet EVERY wedge criterion for this class? */
   wedged: boolean;
   /** Length of the trailing consecutive-defer run, scoped to this host's own lifetime. */
   consecutiveDefers: number;
-  /** The one staged length shared by every defer in the run (the run ends at any change). */
-  pendingLength: number | null;
   /** Wall-clock span from the run's first defer to its last. */
   streakSpanMs: number;
   /** Age of the most recent defer, or null when there were none. */
   lastDeferAgeMs: number | null;
+  /** One honest line, always present — including for the not-wedged verdicts. */
+  reason: string;
+}
+
+export interface ComposerWedgeVerdict extends WedgeVerdictCommon {
+  /** The one staged length shared by every defer in the run (the run ends at any change). */
+  pendingLength: number | null;
   /**
    * Did these defers carry `pendingAgeMs`/`ownerQuietMs`?
    *
@@ -146,8 +180,6 @@ export interface ComposerWedgeVerdict {
    * population: the wedged group was 0/N on both fields; the healthy group was N/N.
    */
   emitsForensics: boolean;
-  /** One honest line, always present — including for the not-wedged verdicts. */
-  reason: string;
 }
 
 export interface ClassifyComposerWedgeInput {
@@ -289,6 +321,294 @@ export function classifyComposerWedge(input: ClassifyComposerWedgeInput): Compos
   };
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * WEDGE CLASS 2 — the busy-gate streak (WI-2141553)
+ *
+ * A DIFFERENT way to be wake-deaf, with a different mechanism and therefore its own
+ * classifier. Class 1 above is a composer phantom: the gate believes a human staged a
+ * line, so it politely defers. This one never reaches that gate — the delivery is dropped
+ * because the agent is never observed AT ITS PROMPT within the busy cap, so an accepted
+ * wake is parked and no turn happens. Measured shape (EI-22102038982840555, su-be3900dd,
+ * 2026-09-01 20:15–23:16Z): 15 accepted-but-parked deliveries over ~2.5h, ended not by the
+ * wake channel noticing but by an UNRELATED host-code-staleness respawn.
+ *
+ * Until WI-2141048 this was undiagnosable even after the fact — the row was emitted only
+ * for `carry-respawn`, so a turn/reset/recycle killed here left a stderr line and nothing
+ * durable. A census of 6,795 ledgers on 2026-09-02 found 11,544 carry-respawn rows and
+ * ZERO turn-mode siblings of any spelling. That fix is what makes this classifier possible
+ * at all; nothing here needs a further change to psu-pty-host.mjs.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** The host event kind recording a delivery dropped because the agent stayed mid-turn. */
+export const BUSY_GATE_KIND = 'busy-gate-expired';
+
+/**
+ * Delivery modes this classifier counts.
+ *
+ * `carry-respawn` is deliberately EXCLUDED — that path already had durable coverage before
+ * WI-2141048 and owns its own re-arm/supersede/drop lifecycle downstream of this row. A
+ * carry-respawn defer is therefore stepped over as NEUTRAL: not counted, and not treated as
+ * clearing, because it is evidence of the very same condition and ending a run on it would
+ * truncate real streaks.
+ *
+ * ⚠ This set is an ALLOW-list, and that is load-bearing: the live population carries at
+ * least one mode reaching this gate that reading `runGatedDelivery`'s `msg.mode ===` branches
+ * does NOT enumerate — `mcp-reconnect` (measured 2026-09-02, on 3 of the 9 emitting hosts).
+ * A DENY-list built from that source read would have silently counted it. Anything not named
+ * here is neutral, so a mode nobody has enumerated yet can never inflate a streak.
+ */
+export const BUSY_GATE_WEDGE_MODES: ReadonlySet<string> = new Set(['turn', 'reset', 'recycle']);
+
+/**
+ * Minimum consecutive busy-gate defers before this guard will name a host.
+ *
+ * Unlike {@link DEFAULT_MIN_CONSECUTIVE_DEFERS} this number is NOT anchored to an in-host
+ * breaker, because this class has none — nothing inside the host recovers a busy-gate
+ * streak, which is precisely why the incident ran 2.5h. It is set for repetition alone: one
+ * anomalous wake against one long turn must never be enough.
+ */
+export const DEFAULT_MIN_BUSY_GATE_DEFERS = 8;
+
+/**
+ * Minimum wall-clock span for a busy-gate streak — deliberately MUCH longer than the
+ * composer class's 10 minutes, and this is the single most important number here.
+ *
+ * The dangerous false positive for this class is A LONG, LEGITIMATE TURN. An agent that is
+ * genuinely working emits output continuously, so its longest quiet gap is also ≈0 and it
+ * looks exactly like a wedge to the discriminator below. Long turns are ordinary on this
+ * box: the green-checkpoint gate suite alone runs ~55 minutes, and an agent running it
+ * would defer every wake for that whole time while being perfectly healthy. 90 minutes
+ * clears that documented worst case with margin and still sits well inside the 2.5h
+ * incident this guard is built from.
+ *
+ * ⚠ This bound is REASONED from the longest legitimate turn documented on this box, not
+ * yet measured against the live host population. Calibrating it is the explicit
+ * precondition WI-2141553 sets before this class is ever allowed to drive an action.
+ */
+export const DEFAULT_MIN_BUSY_STREAK_SPAN_MS = 90 * 60_000;
+
+/**
+ * How close to zero the longest observed quiet gap must stay, as a fraction of the defer's
+ * OWN `quietMs` threshold.
+ *
+ * A fraction rather than an absolute millisecond count because the row carries the
+ * threshold it was judged against, so this self-calibrates to whatever a host was
+ * configured with instead of hard-coding a copy of it that could drift.
+ *
+ * ## Calibrated against the live population, after 0.1 proved INERT
+ *
+ * This started at 0.1 — a plausible reading of the emitter's phrase "gaps ≈ 0ms". Measured
+ * against the live box on 2026-09-02 (81 live hosts, 9 emitting `busy-gate-expired`), that
+ * value admitted NOTHING: every observation in the whole population sat between 188ms and
+ * 1322ms against a uniform 1500ms cap, so the lowest real reading was still ~25% above the
+ * 150ms ceiling 0.1 implied. The classifier broke its run on the FIRST row for every host
+ * and could not have fired on any input the box actually produces.
+ *
+ * That failure mode is worth naming, because its symptom is indistinguishable from success:
+ * an inert detector reports zero wedged hosts forever, which reads exactly like a healthy
+ * fleet. "Zero false positives" from a rule that can never fire is not evidence.
+ *
+ * The measured distribution is bimodal in the way the emitter describes, just shifted:
+ * continuously-redrawing hosts cluster at ~190–500ms (a TUI repainting a few times a
+ * second — never silent, but not silent at MILLISECOND granularity either), while genuine
+ * near-misses sit at ~1275–1322ms, i.e. 85–88% of the cap, having very nearly settled. 0.5
+ * separates those two clusters with wide margin on both sides.
+ *
+ * ⚠ What this calibration does NOT establish: the population contained ZERO wedged hosts,
+ * so this bound is fitted to the NEGATIVE class only. It is now known not to exclude
+ * everything; it is not known to admit a true wedge. That is the same gap
+ * {@link DEFAULT_MIN_BUSY_STREAK_SPAN_MS} carries, and the reason this class stays
+ * detect-only.
+ */
+export const DEFAULT_BUSY_GATE_MAX_QUIET_FRACTION = 0.5;
+
+/**
+ * Kinds that end a busy-gate streak — and note this set is NOT the composer class's.
+ *
+ * The two classes need OPPOSITE treatment of a respawn, which is worth stating because it
+ * looks like an inconsistency and is not. A composer phantom provably SURVIVES a respawn
+ * (measured on su-91ef0643: the same 11-char line keeps deferring across `respawned` +
+ * `respawn-carry-delivered`, twice, over four hours) because the host — and its composer
+ * model — outlive the agent. A busy-gate verdict is a statement about the CHILD's output,
+ * and a respawn replaces that child. Quiet observations either side of one therefore
+ * describe different processes, and merging them into a single streak would repeat exactly
+ * the unscoped-attribution error that the host-lifetime rule below exists to prevent — the
+ * same mistake one level down.
+ */
+const BUSY_GATE_STREAK_CLEARING_KINDS = new Set<string>(['respawned']);
+
+/** A finite number from an untyped ledger field, or null. */
+function finiteNumber(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+export interface BusyGateWedgeVerdict extends WedgeVerdictCommon {
+  /**
+   * The LARGEST quiet gap seen across the run, in ms.
+   *
+   * Near 0 is the wedge shape: the pty never fell silent even briefly, so the agent was
+   * never observed at its prompt. Compare against {@link quietCapMs} — a value approaching
+   * that cap is the opposite finding (a near-miss, where the threshold is merely too tight
+   * and the condition resolves on its own).
+   */
+  observedMaxQuietMs: number | null;
+  /** The `quietMs` threshold those observations were judged against, from the rows. */
+  quietCapMs: number | null;
+  /** Which delivery modes appeared in the run, sorted — turn/reset/recycle. */
+  modes: string[];
+}
+
+export interface ClassifyBusyGateWedgeInput {
+  /** The host's ledger tail, oldest-first (as {@link readHostEventTail} returns it). */
+  events: PtyHostEvent[];
+  /** Epoch ms this host process started. Events at or before it belong to a PREDECESSOR. */
+  startedAtMs: number;
+  now?: number;
+  minConsecutiveDefers?: number;
+  minStreakSpanMs?: number;
+  maxQuietFraction?: number;
+}
+
+/**
+ * Classify one host's ledger tail for a busy-gate streak. PURE — no I/O, injectable clock.
+ *
+ * The discriminator is the run's `observedMaxQuietMs` staying near zero, and it plays the
+ * same structural role `pendingLength` plays for the composer class: a per-row invariant
+ * that must hold across the WHOLE run, where any row breaking it is read as an episode
+ * BOUNDARY rather than as poisoning the run.
+ *
+ * What it separates, per the emitter's own comment (psu-pty-host.mjs), is a pty being
+ * redrawn continuously from a near-miss against a too-tight cap — "those two have OPPOSITE
+ * fixes". What it does NOT separate on its own is a wedged agent from a genuinely busy one,
+ * since both emit continuously; that job belongs to {@link DEFAULT_MIN_BUSY_STREAK_SPAN_MS},
+ * which is why that bound carries the calibration caveat and this one does not.
+ *
+ * ⚠ THE NULL TRAP. Both quiet fields are nullable at the emitter (`Number.isFinite(...) ?
+ * ... : null`). A null must never be read as "near zero" — that would manufacture a wedge
+ * verdict out of MISSING DATA, on a detector whose own module doc says its precision has to
+ * be measured before anything acts on it. An unmeasurable row ends the run instead.
+ */
+export function classifyBusyGateWedge(input: ClassifyBusyGateWedgeInput): BusyGateWedgeVerdict {
+  const {
+    events,
+    startedAtMs,
+    now = Date.now(),
+    minConsecutiveDefers = DEFAULT_MIN_BUSY_GATE_DEFERS,
+    minStreakSpanMs = DEFAULT_MIN_BUSY_STREAK_SPAN_MS,
+    maxQuietFraction = DEFAULT_BUSY_GATE_MAX_QUIET_FRACTION,
+  } = input;
+
+  const notWedged = (reason: string, over: Partial<BusyGateWedgeVerdict> = {}): BusyGateWedgeVerdict => ({
+    wedged: false,
+    consecutiveDefers: 0,
+    streakSpanMs: 0,
+    lastDeferAgeMs: null,
+    observedMaxQuietMs: null,
+    quietCapMs: null,
+    modes: [],
+    reason,
+    ...over,
+  });
+
+  const run: PtyHostEvent[] = [];
+  const modes = new Set<string>();
+  let observedMaxQuietMs = 0;
+  let quietCapMs: number | null = null;
+  let unmeasurable = false;
+  let nearMissBoundary = false;
+
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    const kind = typeof ev.kind === 'string' ? ev.kind : '';
+    const ts = eventTimeMs(ev);
+
+    // Same scoping rule as the composer walk: the ledger is per-OWNER and outlives any one
+    // host process, so anything at or before this host's start belongs to a predecessor,
+    // and a row with no readable ts cannot be proven to be ours.
+    if (ts == null) break;
+    if (ts <= startedAtMs) break;
+
+    if (BUSY_GATE_STREAK_CLEARING_KINDS.has(kind)) break;
+    if (kind !== BUSY_GATE_KIND) continue;
+
+    const mode = typeof ev.mode === 'string' ? ev.mode : null;
+    if (mode == null || !BUSY_GATE_WEDGE_MODES.has(mode)) continue; // carry-respawn: neutral
+
+    const observed = finiteNumber(ev.observedMaxQuietMs);
+    const cap = finiteNumber(ev.quietMs);
+    if (observed == null || cap == null || cap <= 0) {
+      // Cannot be judged, so it is not credited either way — see THE NULL TRAP above.
+      unmeasurable = true;
+      break;
+    }
+    if (observed > cap * maxQuietFraction) {
+      nearMissBoundary = true;
+      break; // the cap was merely too tight here — a different episode
+    }
+
+    if (quietCapMs == null) quietCapMs = cap;
+    if (observed > observedMaxQuietMs) observedMaxQuietMs = observed;
+    modes.add(mode);
+    run.push(ev);
+  }
+
+  if (run.length === 0) {
+    if (unmeasurable) {
+      return notWedged(
+        'the most recent busy-gate defer carried no usable observedMaxQuietMs/quietMs — refusing to ' +
+          'read missing data as a wedge',
+      );
+    }
+    if (nearMissBoundary) {
+      return notWedged(
+        'the most recent busy-gate defer observed a quiet gap near its own cap — a near-miss against a ' +
+          'too-tight threshold, which resolves on its own',
+      );
+    }
+    return notWedged('no busy-gate deferrals in this host’s own lifetime');
+  }
+
+  // run is newest-first; read the ends accordingly.
+  const newestTs = eventTimeMs(run[0]) ?? now;
+  const oldestTs = eventTimeMs(run[run.length - 1]) ?? newestTs;
+  const streakSpanMs = Math.max(0, newestTs - oldestTs);
+  const lastDeferAgeMs = Math.max(0, now - newestTs);
+
+  const base = {
+    consecutiveDefers: run.length,
+    streakSpanMs,
+    lastDeferAgeMs,
+    observedMaxQuietMs,
+    quietCapMs,
+    modes: [...modes].sort(),
+  };
+
+  if (run.length < minConsecutiveDefers) {
+    return notWedged(
+      `${run.length} consecutive busy-gate deferral(s) — below the ${minConsecutiveDefers} floor`,
+      base,
+    );
+  }
+  if (streakSpanMs < minStreakSpanMs) {
+    return notWedged(
+      `${run.length} consecutive busy-gate deferral(s) but only over ` +
+        `${Math.round(streakSpanMs / 60_000)}m — inside the ${Math.round(minStreakSpanMs / 60_000)}m ` +
+        'floor, where a long legitimate turn looks identical',
+      base,
+    );
+  }
+
+  return {
+    ...base,
+    wedged: true,
+    reason:
+      `${run.length} consecutive ${base.modes.join('/')} deliver(ies) dropped over ` +
+      `${Math.round(streakSpanMs / 60_000)}m because the agent was never observed at its prompt — the ` +
+      `longest quiet gap in the whole run was ${observedMaxQuietMs}ms against a ${quietCapMs}ms ` +
+      'threshold, i.e. the pty never fell silent even briefly',
+  };
+}
+
 export interface WedgedHostReport {
   ownerId: string;
   pid: number;
@@ -320,8 +640,19 @@ export interface WedgedHostReport {
    * are exactly the hosts no code fix can ever reach.
    */
   hostCodeVersion: string | null;
-  verdict: ComposerWedgeVerdict;
+  /**
+   * WHICH mechanism wedged this host.
+   *
+   * Carried rather than inferred from the verdict's shape because the two classes need
+   * different reading by whoever gets paged: a `composer` host is deferring against a
+   * staged line that never moves, a `busy-gate` host never reaches its prompt at all. A
+   * host can legitimately appear under BOTH, as two reports with the same ownerId.
+   */
+  wedgeClass: WedgeClass;
+  verdict: ComposerWedgeVerdict | BusyGateWedgeVerdict;
 }
+
+export type WedgeClass = 'composer' | 'busy-gate';
 
 export interface PtyHostWedgeSweepResult {
   /** Live hosts examined. */
@@ -355,9 +686,21 @@ export interface PtyHostWedgeSweepDeps {
 export interface PtyHostWedgeSweepOptions {
   dryRun?: boolean;
   dir?: string;
+  /** Composer-class thresholds. */
   minConsecutiveDefers?: number;
   minStreakSpanMs?: number;
   recoveryIdleMs?: number;
+  /**
+   * Busy-gate-class thresholds, kept SEPARATE from the composer ones rather than shared.
+   *
+   * The two classes are calibrated against different things — the composer floor is
+   * anchored to the in-host breaker, the busy-gate span to the longest legitimate turn —
+   * so one dial moving both would silently retune a class its operator was not thinking
+   * about.
+   */
+  busyGateMinDefers?: number;
+  busyGateMinStreakSpanMs?: number;
+  busyGateMaxQuietFraction?: number;
 }
 
 /**
@@ -379,6 +722,9 @@ export async function sweepWedgedPtyHosts(
     minConsecutiveDefers = DEFAULT_MIN_CONSECUTIVE_DEFERS,
     minStreakSpanMs = DEFAULT_MIN_STREAK_SPAN_MS,
     recoveryIdleMs = DEFAULT_RECOVERY_IDLE_MS,
+    busyGateMinDefers = DEFAULT_MIN_BUSY_GATE_DEFERS,
+    busyGateMinStreakSpanMs = DEFAULT_MIN_BUSY_STREAK_SPAN_MS,
+    busyGateMaxQuietFraction = DEFAULT_BUSY_GATE_MAX_QUIET_FRACTION,
   } = opts;
   const now = deps.now ?? Date.now();
   const listHosts = deps.listHosts ?? ((d?: string) => listLiveHosts(d ?? dir));
@@ -405,14 +751,28 @@ export async function sweepWedgedPtyHosts(
       continue;
     }
 
-    const verdict = classifyComposerWedge({
-      events,
-      startedAtMs,
-      now,
-      minConsecutiveDefers,
-      minStreakSpanMs,
-    });
-    if (!verdict.wedged) continue;
+    // TWO classifiers, ONE ledger read. Both walk the same `events` array already in hand,
+    // which is what keeps the sweep's cost at one bounded tail read per host however many
+    // wedge classes it learns to recognise.
+    const verdicts: Array<{ wedgeClass: WedgeClass; verdict: ComposerWedgeVerdict | BusyGateWedgeVerdict }> = [
+      {
+        wedgeClass: 'composer',
+        verdict: classifyComposerWedge({ events, startedAtMs, now, minConsecutiveDefers, minStreakSpanMs }),
+      },
+      {
+        wedgeClass: 'busy-gate',
+        verdict: classifyBusyGateWedge({
+          events,
+          startedAtMs,
+          now,
+          minConsecutiveDefers: busyGateMinDefers,
+          minStreakSpanMs: busyGateMinStreakSpanMs,
+          maxQuietFraction: busyGateMaxQuietFraction,
+        }),
+      },
+    ];
+    const hits = verdicts.filter((v) => v.verdict.wedged);
+    if (hits.length === 0) continue;
 
     const stamps = [host.lastActivityAt, host.lastOutputAt, host.lastInputAt].filter(
       (t): t is number => typeof t === 'number' && Number.isFinite(t) && t > 0,
@@ -421,68 +781,121 @@ export async function sweepWedgedPtyHosts(
     const recoverySafety: WedgedHostReport['recoverySafety'] =
       idleMs == null ? 'unknown' : idleMs >= recoveryIdleMs ? 'idle' : 'busy';
 
-    wedged.push({
-      ownerId: host.ownerId,
-      pid: host.pid,
-      startedAt: startedAtMs,
-      hostAgeMs: Math.max(0, now - startedAtMs),
-      idleMs,
-      recoverySafety,
-      hostCodeVersion: host.hostCodeVersion ?? null,
-      verdict,
-    });
+    for (const { wedgeClass, verdict } of hits) {
+      wedged.push({
+        ownerId: host.ownerId,
+        pid: host.pid,
+        startedAt: startedAtMs,
+        hostAgeMs: Math.max(0, now - startedAtMs),
+        idleMs,
+        recoverySafety,
+        hostCodeVersion: host.hostCodeVersion ?? null,
+        wedgeClass,
+        verdict,
+      });
+    }
   }
 
   wedged.sort((a, b) => b.verdict.consecutiveDefers - a.verdict.consecutiveDefers);
 
+  const distinctOwners = [...new Set(wedged.map((w) => w.ownerId))];
+
   if (wedged.length > 0 && !dryRun) {
-    const worst = wedged[0];
-    const summary =
-      `${wedged.length}/${hosts.length} live psu-pty host(s) are WAKE-DEAF — every wake to them is ` +
-      `being deferred against a staged input line that never moves (worst: ${worst.ownerId}, ` +
-      `${worst.verdict.consecutiveDefers} consecutive deferrals)`;
-    const body = [
-      'Each host below acked its wakes as `delivered` and then took no turn. That receipt is not a',
-      'bug at the call site: psu-pty-host acks BEFORE its delivery gate runs, so a deferral can only',
-      'ever be observed here, in the on-disk ledger.',
-      '',
-      ...wedged.map(
-        (w) =>
-          `- ${w.ownerId} (pid ${w.pid}, host up ${Math.round(w.hostAgeMs / 60_000)}m, ` +
-          `${w.recoverySafety}${w.idleMs == null ? '' : ` ${Math.round(w.idleMs / 60_000)}m`}): ${w.verdict.reason}`,
-      ),
-      '',
+    const renderHost = (w: WedgedHostReport) =>
+      `- ${w.ownerId} (pid ${w.pid}, host up ${Math.round(w.hostAgeMs / 60_000)}m, ` +
+      `${w.recoverySafety}${w.idleMs == null ? '' : ` ${Math.round(w.idleMs / 60_000)}m`}): ${w.verdict.reason}`;
+
+    const SAFETY_NOTE = [
       'A host marked `idle` can be replaced without destroying in-flight work; one marked `busy` is',
       'still emitting output and must NOT be trampled — it is working, it simply cannot be reached.',
-    ].join('\n');
+    ];
+
+    // ONE BROADCAST PER CLASS, under its OWN conditionKey. These are different faults with
+    // different remedies, and they are `oneShot` — sharing a key would let whichever fired
+    // first silently swallow the other, reporting a solved problem while the second class
+    // stayed invisible.
+    const classes: Array<{
+      wedgeClass: WedgeClass;
+      conditionKey: string;
+      headline: (n: number, worst: WedgedHostReport) => string;
+      preamble: string[];
+    }> = [
+      {
+        wedgeClass: 'composer',
+        conditionKey: 'pty-host-wedge',
+        headline: (n, worst) =>
+          `${n}/${hosts.length} live psu-pty host(s) are WAKE-DEAF — every wake to them is being ` +
+          `deferred against a staged input line that never moves (worst: ${worst.ownerId}, ` +
+          `${worst.verdict.consecutiveDefers} consecutive deferrals)`,
+        preamble: [
+          'Each host below acked its wakes as `delivered` and then took no turn. That receipt is not a',
+          'bug at the call site: psu-pty-host acks BEFORE its delivery gate runs, so a deferral can only',
+          'ever be observed here, in the on-disk ledger.',
+        ],
+      },
+      {
+        wedgeClass: 'busy-gate',
+        conditionKey: 'pty-host-busy-gate-wedge',
+        headline: (n, worst) =>
+          `${n}/${hosts.length} live psu-pty host(s) are dropping every wake at the BUSY GATE — the ` +
+          `agent is never observed at its prompt, so accepted deliveries are parked and no turn ` +
+          `happens (worst: ${worst.ownerId}, ${worst.verdict.consecutiveDefers} dropped deliveries)`,
+        preamble: [
+          'These hosts are NOT deferring against a staged line — they never reach that gate. The pty',
+          'never falls silent, so each delivery expires against the busy cap and is dropped.',
+          '',
+          '⚠ READ BEFORE ACTING: this class is DETECT-ONLY and its precision is NOT yet measured. A',
+          'genuinely long turn emits continuously too and looks identical to the discriminator; only',
+          'the streak-span floor separates them, and that floor is reasoned rather than calibrated.',
+          'Treat each host below as a candidate to CONFIRM, not as an established fault.',
+        ],
+      },
+    ];
 
     const broadcast = deps.broadcast ?? broadcastSevereEvent;
-    try {
-      await broadcast({
-        summary,
-        body,
-        conditionKey: 'pty-host-wedge',
-        oneShot: true,
-      });
-    } catch {
-      /* best-effort — a broadcast failure must never fail the sweep */
+    for (const cls of classes) {
+      const hits = wedged.filter((w) => w.wedgeClass === cls.wedgeClass);
+      if (hits.length === 0) continue;
+      const owners = new Set(hits.map((h) => h.ownerId));
+      try {
+        await broadcast({
+          summary: cls.headline(owners.size, hits[0]),
+          body: [...cls.preamble, '', ...hits.map(renderHost), '', ...SAFETY_NOTE].join('\n'),
+          conditionKey: cls.conditionKey,
+          oneShot: true,
+        });
+      } catch {
+        /* best-effort — a broadcast failure must never fail the sweep */
+      }
     }
 
     try {
       const notify = deps.notify ?? (await import('../../attention-notify')).notifyAttention;
+      // ONE page for the whole sweep even though the broadcasts split by class: the human
+      // decision ("go look at these sessions") is the same one either way, and two pages for
+      // one sweep is how a page stops being read.
+      //
       // `needs-human` rather than `intervention`: a BUSY wedged host must not be trampled
       // by an automated actuator, and even an idle one is being replaced only because a
       // human decided to — this page exists to put the decision in front of someone.
+      const byClass = classes
+        .map((c) => ({ c, n: new Set(wedged.filter((w) => w.wedgeClass === c.wedgeClass).map((w) => w.ownerId)).size }))
+        .filter((x) => x.n > 0);
       await notify({
         kind: 'needs-human',
-        title: `${wedged.length} agent session(s) cannot receive wakes`,
-        body: summary,
+        title: `${distinctOwners.length} agent session(s) cannot receive wakes`,
+        body:
+          `${distinctOwners.length}/${hosts.length} live psu-pty host(s) are wake-deaf — ` +
+          byClass.map((x) => `${x.n} ${x.c.wedgeClass}`).join(', '),
         importance: 'high',
         data: {
-          wedged: wedged.length,
+          wedged: distinctOwners.length,
           checked: hosts.length,
-          owners: wedged.map((w) => w.ownerId),
-          idleOwners: wedged.filter((w) => w.recoverySafety === 'idle').map((w) => w.ownerId),
+          owners: distinctOwners,
+          idleOwners: [
+            ...new Set(wedged.filter((w) => w.recoverySafety === 'idle').map((w) => w.ownerId)),
+          ],
+          byClass: Object.fromEntries(byClass.map((x) => [x.c.wedgeClass, x.n])),
         },
       });
     } catch {
