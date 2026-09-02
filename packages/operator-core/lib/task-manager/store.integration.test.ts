@@ -653,3 +653,88 @@ describe('markSpawned detail merge (D-014)', () => {
     expect(row!.detail).toEqual({ unconfinedReason: 'no-scope-support' });
   });
 });
+
+/**
+ * listTasks({ coordOwnerId }) — the "which row is ME" filter (P-023/WI-2141828).
+ *
+ * `launched_by` is whoever SPAWNED the task, which for a fleet member is its launcher,
+ * so it cannot answer that question. The fallback agents actually used was
+ * `pgrep -f <ownerId>`, which self-matches the caller's own command line.
+ *
+ * The failure this guards is the silent-wrong-answer kind, and it has TWO directions
+ * that a single happy-path assertion cannot separate:
+ *
+ *  - too WIDE — the predicate is dropped (a misplaced conditional, a `sql``` branch) and
+ *    the read returns the whole ledger. Every row it returns is real, so the result looks
+ *    entirely plausible; the caller concludes another owner's task is its own and kills it.
+ *  - too NARROW — the predicate never matches and the read returns []. `coordOwnerId` is
+ *    recorded only when the spawn supplied it, so an empty result is ALREADY a legitimate
+ *    outcome the tool documents. A filter broken this way is therefore indistinguishable
+ *    from the documented absence.
+ *
+ * So each test below carries both a positive control (a row that MUST come back) and a
+ * negative one (a row that must NOT), and the widening test asserts on the exact id set
+ * rather than a count — a count is satisfied by returning the wrong row.
+ */
+describe('listTasks coordOwnerId filter (P-023)', () => {
+  it('returns this owner’s rows and NO other owner’s — including rows carrying no owner id at all', async () => {
+    await insertAgentSessionTask({ taskId: 'mine-running', coordOwnerId: 'su-mine' });
+    await insertAgentSessionTask({ taskId: 'mine-pending', coordOwnerId: 'su-mine', state: 'pending' });
+    await insertAgentSessionTask({ taskId: 'theirs', coordOwnerId: 'su-theirs' });
+    // A row whose detail has no coordOwnerId key: `detail ->> 'coordOwnerId'` is NULL, and
+    // `NULL = 'su-mine'` is NULL, so SQL three-valued logic excludes it. Asserted because a
+    // hand-rolled rewrite to COALESCE(...,'') or an IS NOT DISTINCT FROM would include it.
+    await insertUnaccounted('no-owner-key');
+
+    const ids = (await store.listTasks({ coordOwnerId: 'su-mine' })).map((r) => r.taskId).sort();
+
+    expect(ids).toEqual(['mine-pending', 'mine-running']);
+  });
+
+  // FALSIFIABILITY CONTROL — permanent, per CLAUDE.md § "Proving a guard is falsifiable"
+  // (the tier for a module the test imports; a copy-out mutation cannot reach `./store`,
+  // and an in-tree mutation would dirty a tree git-sync sweeps).
+  //
+  // The risk this retires is fixtures that would pass whether or not the predicate exists.
+  // `listTasks({})` IS the predicate-dropped behaviour, run through the real function: if
+  // this returns the same set as the filtered read above, then that read proves nothing.
+  it('control: the unfiltered read over the SAME fixtures returns the other owner’s row too', async () => {
+    await insertAgentSessionTask({ taskId: 'mine-running', coordOwnerId: 'su-mine' });
+    await insertAgentSessionTask({ taskId: 'theirs', coordOwnerId: 'su-theirs' });
+
+    const unfiltered = (await store.listTasks({})).map((r) => r.taskId).sort();
+    const filtered = (await store.listTasks({ coordOwnerId: 'su-mine' })).map((r) => r.taskId).sort();
+
+    expect(unfiltered).toEqual(['mine-running', 'theirs']);
+    expect(filtered).not.toEqual(unfiltered);
+  });
+
+  it('an owner with no rows returns [] while the ledger is demonstrably non-empty', async () => {
+    // Calibration: without this control, a filter that matched nothing at all would pass
+    // the assertion below for the wrong reason.
+    await insertAgentSessionTask({ taskId: 'someone-else', coordOwnerId: 'su-theirs' });
+    expect(await store.listTasks({})).toHaveLength(1);
+
+    expect(await store.listTasks({ coordOwnerId: 'su-nobody' })).toEqual([]);
+  });
+
+  it('narrows rather than widens when combined with another filter', async () => {
+    await insertAgentSessionTask({ taskId: 'mine-agent', coordOwnerId: 'su-mine' });
+    await insertAgentSessionTask({ taskId: 'mine-bash', coordOwnerId: 'su-mine', taskClass: 'bash-job' });
+    await insertAgentSessionTask({ taskId: 'theirs-agent', coordOwnerId: 'su-theirs' });
+
+    const ids = (await store.listTasks({ coordOwnerId: 'su-mine', classes: ['agent-session'] })).map((r) => r.taskId);
+
+    expect(ids).toEqual(['mine-agent']);
+  });
+
+  it('still honours the default live-only window, so an ended row of mine is opt-in', async () => {
+    await insertAgentSessionTask({ taskId: 'mine-live', coordOwnerId: 'su-mine' });
+    await insertAgentSessionTask({ taskId: 'mine-ended', coordOwnerId: 'su-mine', state: 'exited' });
+
+    expect((await store.listTasks({ coordOwnerId: 'su-mine' })).map((r) => r.taskId)).toEqual(['mine-live']);
+    expect((await store.listTasks({ coordOwnerId: 'su-mine', includeEnded: true })).map((r) => r.taskId).sort()).toEqual(
+      ['mine-ended', 'mine-live'],
+    );
+  });
+});
