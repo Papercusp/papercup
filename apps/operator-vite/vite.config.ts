@@ -11,7 +11,7 @@ import { tanstackLazyRetryPlugin } from './tanstack-lazy-retry';
 import { createDevWatchIgnore } from './dev-watch-ignore';
 // P-006: the destination invariant as a POLICY (the prevention leg), kept in one
 // place so the dev server, the SPA host and the desktop cannot drift apart.
-import { cspReportOnlyHeaders } from '../../libs/generic/desktop-ipc/src/csp-policy';
+import { cspReportOnlyHeaders, crossOriginIsolationHeaders } from '../../libs/generic/desktop-ipc/src/csp-policy';
 
 // Operator SPA — Vite dev server. Takes over :3055 (was `next dev`).
 // The API + internal docs are served by the @hono/node-server host on
@@ -302,7 +302,12 @@ export default defineConfig({
     // Applied to every dev-server response rather than just the document. A CSP
     // on a .js/.css response is simply ignored by the browser, so the broader
     // application is harmless and avoids having to special-case the SPA shell.
-    headers: cspReportOnlyHeaders(),
+    //
+    // P-005 (WI-4498): cross-origin isolation headers too, applied to every
+    // response for the same "harmless off-document" reason — COOP/COEP are
+    // ignored by the browser on anything but the document response, and this
+    // dev server serves every asset same-origin (see crossOriginIsolationHeaders()).
+    headers: { ...cspReportOnlyHeaders(), ...crossOriginIsolationHeaders() },
     // CORS policy for /api belongs to the Hono host (:3070) — its middleware
     // allows `last-event-id` etc. and echoes the origin. Vite's own default
     // CORS middleware answers OPTIONS preflights BEFORE the proxy with a

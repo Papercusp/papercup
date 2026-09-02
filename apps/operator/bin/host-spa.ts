@@ -29,7 +29,7 @@ import { extname, join, resolve, sep } from 'node:path';
 // host is a Node process, and the barrel pulls in @tauri-apps/api and the
 // webview bootstrap, which have no business being loaded server-side.
 // csp-policy.ts imports nothing at all, so it is safe in any environment.
-import { cspReportOnlyHeaders } from '../../../libs/generic/desktop-ipc/src/csp-policy';
+import { cspReportOnlyHeaders, crossOriginIsolationHeaders } from '../../../libs/generic/desktop-ipc/src/csp-policy';
 import { describeMissingBundle } from '../lib/spa-build-status';
 import { hostedBrowserApiMarker } from "../lib/hosted-browser-api";
 export { hostedBrowserApiMarker };
@@ -264,6 +264,10 @@ async function serveIndexHtml(
       // the browser into a second egress sensor whose blind spots differ from
       // resource timing's.
       ...cspReportOnlyHeaders(),
+      // P-005 (WI-4498): cross-origin isolation, so onnxruntime-web's threaded
+      // wasm backend (the only backend it ships) can use SharedArrayBuffer.
+      // See crossOriginIsolationHeaders() for why this is safe unconditionally.
+      ...crossOriginIsolationHeaders(),
     },
   });
 }
