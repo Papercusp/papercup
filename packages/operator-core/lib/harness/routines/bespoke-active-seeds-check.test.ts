@@ -45,11 +45,48 @@ const ROUTINES_DIR = dirname(fileURLToPath(import.meta.url));
 const ACTIVE_BY_DEFAULT = /const\s+active\s*=\s*!process\.argv\.includes\(['"]--inactive['"]\);/;
 const INACTIVE_BY_DEFAULT = /const\s+active\s*=\s*process\.argv\.includes\(['"]--active['"]\);/;
 
+// EI-22136759189899545: the enumerator used to be `-routine\.ts` (singular) only, which
+// silently exempted every plural `-routines.ts` writer from every assertion in this file —
+// a seed script got full exemption from the silence guard by being named with an "s". Widened
+// to cover both spellings; the files below still can't be swept into the automated
+// ACTIVE_BY_DEFAULT/INACTIVE_BY_DEFAULT idiom check because each has its own reason its
+// executable doesn't (or shouldn't) express a single `const active = ...` line, so they are
+// EXEMPT — but the completeness test below still requires every seed-*.ts file to be either
+// pattern-matched-and-non-exempt or explicitly listed here, so a future exemption can't be
+// silent either.
+const EXEMPT_SEED_SCRIPTS: Record<string, string> = {
+  'seed-hive-release-routines.ts':
+    'covered by its own dedicated seed-hive-release-routines.test.ts (see the mirrors-comment ' +
+    'at the top of this file) — not this guard’s single-line active/inactive idiom',
+  'seed-in-process-sweep-routines.ts':
+    'writes state-mirror in-process rows that are "fired by nobody" (its own header comment); ' +
+    'active is hardcoded TRUE with no --inactive flag at all, and startInProcessSweepArmReconciler ' +
+    're-arms every row unconditionally on every host boot — self-arming, not the "manual seed ' +
+    'script nobody ran" bug class this guard exists to catch',
+  'seed-p2p-perf-routines.ts':
+    'uses a per-ROW `activeDefault` field (both p2p-perf-tier1 and p2p-perf-tier2 currently ' +
+    'true) rather than one `const active = ...` idiom line, so the automated regex can’t ' +
+    'classify it. Both routines DO default active and are NOT currently in BESPOKE_ACTIVE_SEEDS ' +
+    '— a real, separate gap, deliberately not folded into the EI-22136759189899545 fix and ' +
+    'tracked on its own follow-up work-item instead of guessed at here',
+  'seed-routine-announce.ts':
+    'a shared print helper for other seed scripts, not itself a seed writer — no main(), no ' +
+    'INSERT into harness_shared.routines',
+};
+
 function seedSources(): Array<{ file: string; source: string }> {
   return readdirSync(ROUTINES_DIR)
-    .filter((file) => /^seed-.*-routine\.ts$/.test(file))
+    .filter((file) => /^seed-.*-routines?\.ts$/.test(file) && !(file in EXEMPT_SEED_SCRIPTS))
     .sort()
     .map((file) => ({ file, source: readFileSync(resolve(ROUTINES_DIR, file), 'utf8') }));
+}
+
+/** The FULL population this guard is responsible for accounting for — every seed-*.ts
+ *  (non-test) file in the directory, regardless of naming convention. */
+function allSeedScripts(): string[] {
+  return readdirSync(ROUTINES_DIR)
+    .filter((file) => /^seed-.*\.ts$/.test(file) && !file.endsWith('.test.ts'))
+    .sort();
 }
 
 describe('checkBespokeActiveSeeds', () => {
@@ -298,12 +335,17 @@ describe('ALWAYS_ON_SYSTEM_ROUTINE_NAMES — derived from the registry, never ha
   it('registers every seed script whose executable writer defaults active', () => {
     const sources = seedSources();
     const activeSeedScripts = sources.filter(({ source }) => ACTIVE_BY_DEFAULT.test(source)).map(({ file }) => file);
-    const registeredSeedScripts = BESPOKE_ACTIVE_SEEDS.map(({ seedScript }) => seedScript).sort();
+    // Deduped: EI-22136759189899545 — a script may legitimately upsert several named
+    // routines in one run (seed-coord-invariant-routines.ts seeds 5, seed-oddsmith-cron-
+    // routines.ts seeds 3), so it appears once per NAME in BESPOKE_ACTIVE_SEEDS but only
+    // once per FILE in `sources` (readdirSync never lists a filename twice). Comparing the
+    // raw per-name array against the per-file array would never match for a multi-row script.
+    const registeredSeedScripts = [...new Set(BESPOKE_ACTIVE_SEEDS.map(({ seedScript }) => seedScript))].sort();
 
     expect(
       registeredSeedScripts,
       'Every seed script whose writer defaults active must be covered by the live missing/inactive-row guard. ' +
-        'Add the script and its routine row name to BESPOKE_ACTIVE_SEEDS in bespoke-active-seeds-check.ts.',
+        'Add the script and its routine row name(s) to BESPOKE_ACTIVE_SEEDS in bespoke-active-seeds-check.ts.',
     ).toEqual(activeSeedScripts);
   });
 
@@ -316,6 +358,27 @@ describe('ALWAYS_ON_SYSTEM_ROUTINE_NAMES — derived from the registry, never ha
       unclassified,
       "A bespoke seed must use one explicit default: `!process.argv.includes('--inactive')` for always-on, " +
         "or `process.argv.includes('--active')` for human-gated. This is the source of truth for the live guard.",
+    ).toEqual([]);
+  });
+
+  it('EI-22136759189899545: every seed-*.ts file is accounted for — idiom-checked or explicitly exempt', () => {
+    // The bug this pins: seedSources() previously matched `-routine.ts` (singular) only, so
+    // a `-routines.ts` writer never appeared in ANY assertion above and nothing failed —
+    // "a file the filter never saw" was silent. This scans the population seedSources()
+    // itself CANNOT see (readdirSync over `seed-*.ts`, no naming assumption at all) and
+    // requires every file to be either swept up by the pattern-matching seedSources() or
+    // named in EXEMPT_SEED_SCRIPTS with a reason. A differently-named seed writer added
+    // later — or one whose idiom seedSources() can't parse — fails HERE instead of
+    // vanishing.
+    const idiomChecked = new Set(seedSources().map((s) => s.file));
+    const unaccounted = allSeedScripts().filter(
+      (file) => !idiomChecked.has(file) && !(file in EXEMPT_SEED_SCRIPTS),
+    );
+    expect(
+      unaccounted,
+      'A seed-*.ts file that seedSources() does not see and EXEMPT_SEED_SCRIPTS does not explain. ' +
+        'Either widen the seedSources() filename pattern to match it, or add it to ' +
+        'EXEMPT_SEED_SCRIPTS (bespoke-active-seeds-check.test.ts) with a reason.',
     ).toEqual([]);
   });
 

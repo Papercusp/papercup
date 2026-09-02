@@ -64,17 +64,21 @@
 import type { Sql } from 'postgres';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { ODDSMITH_HARNESS_SLUG } from './oddsmith-cron-shared';
 
 export interface BespokeActiveSeed {
   /** `harness_shared.routines.name` this seed script upserts. */
   name: string;
-  /** Path (relative to this file's directory) to the seed script that arms it. */
+  /** Path (relative to this file's directory) to the seed script that arms it. Several
+   *  entries may legitimately share one `seedScript` when that script upserts more than
+   *  one named routine in a single run (see the coord-invariant / oddsmith blocks below). */
   seedScript: string;
   /**
    * Which harness receives the row. Most bespoke maintenance routines belong to the
-   * operator home; the canary seeders intentionally target their separate canary harness.
+   * operator home; the canary seeders intentionally target their separate canary harness;
+   * the oddsmith cron migrations target the fixed external `oddsmith` harness.
    */
-  scope?: 'operator-home' | 'hive-canary';
+  scope?: 'operator-home' | 'hive-canary' | 'oddsmith';
 }
 
 export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
@@ -185,6 +189,23 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
     name: 'work-item-durable-park-audit',
     seedScript: 'seed-work-item-durable-park-audit-routine.ts',
   },
+  // EI-22136759189899545: seedSources() in the test only ever matched `seed-*-routine.ts`
+  // (singular), so every PLURAL `seed-*-routines.ts` writer was structurally invisible to
+  // this whole registry — a seed script gets full exemption from the silence guard by
+  // being named with an "s". These five names all come from ONE seed script
+  // (seed-coord-invariant-routines.ts upserts all five rows in one run), which is why they
+  // share a single `seedScript` value below.
+  { name: 'coord-probe-canary', seedScript: 'seed-coord-invariant-routines.ts' },
+  { name: 'coord-invariant-monitor', seedScript: 'seed-coord-invariant-routines.ts' },
+  { name: 'claim-integrity-sweep', seedScript: 'seed-coord-invariant-routines.ts' },
+  { name: 'fleet-transition-sweep', seedScript: 'seed-coord-invariant-routines.ts' },
+  { name: 'presence-transition-sweep', seedScript: 'seed-coord-invariant-routines.ts' },
+  // EI-22136759189899545, same hole: seed-oddsmith-cron-routines.ts is also plural-named
+  // and upserts three rows in one run, targeting the fixed external `oddsmith` harness
+  // rather than the operator home.
+  { name: 'oddsmith-paper-cycle', seedScript: 'seed-oddsmith-cron-routines.ts', scope: 'oddsmith' },
+  { name: 'oddsmith-error-triage-ingest', seedScript: 'seed-oddsmith-cron-routines.ts', scope: 'oddsmith' },
+  { name: 'oddsmith-error-triage-autofix', seedScript: 'seed-oddsmith-cron-routines.ts', scope: 'oddsmith' },
 ];
 
 /**
@@ -466,8 +487,11 @@ export function isReaffirmed(reviewBy: string | null, now: number): boolean {
 
 /** Resolve the install slug used by a seed writer's default configuration. */
 function resolveInstallSlug(scope: BespokeActiveSeed['scope'], operatorHomeInstallSlug: string): string {
-  if (scope !== 'hive-canary') return operatorHomeInstallSlug;
-  return process.env.POT_CANARY_HARNESS ?? process.env.HIVE_CANARY_HARNESS ?? 'hive-canary';
+  if (scope === 'hive-canary') return process.env.POT_CANARY_HARNESS ?? process.env.HIVE_CANARY_HARNESS ?? 'hive-canary';
+  // Reuse the seed writer's own constant rather than re-deriving the env var name here —
+  // seed-oddsmith-cron-routines.ts and this check must never disagree about the target.
+  if (scope === 'oddsmith') return ODDSMITH_HARNESS_SLUG;
+  return operatorHomeInstallSlug;
 }
 
 /** Convenience for the CLI wrapper — resolves the operator-home scope the same way
