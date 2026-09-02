@@ -719,3 +719,90 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 });
+
+describe('scorecards:emit refuses an out-of-order independent grading (EI-22177729599840121)', () => {
+  // Previously this ordering was enforced ONLY at ship time
+  // (plan-acceptance-gate.ts's acceptance_rubric_vetted_after_grading /
+  // acceptance_rubric_unvetted) — an independent grader could spend a whole
+  // (often unrepeatable) grading pass before anyone discovered the rubric was
+  // never vetted. These are the recurrence guard: the ship gate must never be the
+  // FIRST place this ordering is enforced.
+  it('refuses a plain independent grading card when the rubric has NO vetting attestation on file', async () => {
+    // beforeEach default: listScorecards resolves []  →  no attestation at all.
+    const res = await emitScorecard(
+      { rubricRef: 'ar-some-plan', ratings: META_RATINGS } as never,
+      { createdBy: 'su-reviewer', ctxHarness: 'papercusp' },
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected refusal');
+    expect((res as { code?: string }).code).toBe('acceptance_rubric_unvetted');
+    expect(res.error).toContain('ar-some-plan');
+    expect(res.error).toMatch(/not been VETTED/i);
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses a plain independent grading card when the vetting attestation is STALE (older revision)', async () => {
+    getRubricPlanRevision.mockResolvedValue(9); // current revision moved past the vetted one
+    listScorecards.mockImplementation(async (query: { rubricRef?: string; subjectRef?: string }) => {
+      if (query.rubricRef === 'meta-acceptance-rubric' && query.subjectRef === 'ar-some-plan') {
+        return [
+          {
+            issueId: 'EI-vetting-old',
+            createdAt: '2026-08-29T01:00:00Z',
+            createdBy: 'su-author',
+            rubricRef: 'meta-acceptance-rubric',
+            ratings: META_RATINGS,
+            nKeys: 2,
+            missingKeys: [],
+            extraKeys: [],
+            rubricResolved: true,
+            synthesized: false,
+            score10: 10,
+            linkedItems: [],
+            vetting: { consultId: 'conv-vet-1', rubricRevision: 7, critiquePosts: 2, critics: ['su-reviewer2'] },
+          },
+        ] as never;
+      }
+      return [];
+    });
+    const res = await emitScorecard(
+      { rubricRef: 'ar-some-plan', ratings: META_RATINGS } as never,
+      { createdBy: 'su-reviewer', ctxHarness: 'papercusp' },
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected refusal');
+    expect((res as { code?: string }).code).toBe('acceptance_rubric_unvetted');
+    expect(res.error).toContain('revision');
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL (falsifiability): a valid current-revision attestation does NOT block the grading emit', async () => {
+    listScorecards.mockImplementation(async (query: { rubricRef?: string; subjectRef?: string }) => {
+      if (query.rubricRef === 'meta-acceptance-rubric' && query.subjectRef === 'ar-some-plan') {
+        return [
+          {
+            issueId: 'EI-vetting-current',
+            createdAt: '2026-08-29T01:00:00Z',
+            createdBy: 'su-author',
+            rubricRef: 'meta-acceptance-rubric',
+            ratings: META_RATINGS,
+            nKeys: 2,
+            missingKeys: [],
+            extraKeys: [],
+            rubricResolved: true,
+            synthesized: false,
+            score10: 10,
+            linkedItems: [],
+            vetting: { consultId: 'conv-vet-1', rubricRevision: 7, critiquePosts: 2, critics: ['su-reviewer2'] },
+          },
+        ] as never;
+      }
+      return [];
+    });
+    const res = await emitScorecard(
+      { rubricRef: 'ar-some-plan', ratings: META_RATINGS } as never,
+      { createdBy: 'su-reviewer', ctxHarness: 'papercusp' },
+    );
+    expect((res as { code?: string }).code).not.toBe('acceptance_rubric_unvetted');
+  });
+});
