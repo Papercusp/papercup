@@ -523,13 +523,37 @@ describe('cold-start budget grading (P-018: coldStartMsMax was a dead field)', (
     expect(v?.accounted).toBe(true);
   });
 
-  it('FAILS an over-budget language with no accounting entry', () => {
-    // The control that proves the guard can fail at all: same shape, a
-    // language nobody accounted for. If this ever grades `accounted`, the
-    // assertion in the integration test is decorative.
+  it('grades the measured typescript cold start as over budget but ACCOUNTED', () => {
+    // The second half of the real table, added in WI-2142287. Uses the DEFAULT
+    // accounting argument on purpose: with the control below injecting its own
+    // table, this is what still pins production behaviour to real data.
     const [v] = classifyColdStarts([
-      cold({ caseId: 'definition-cross-package-bare-specifier', timeToCorrectMs: 45_000 }),
+      cold({ caseId: 'definition-cross-package-bare-specifier', timeToCorrectMs: 10_665 }),
     ]);
+    expect(v?.language).toBe('typescript');
+    expect(v?.overBudget).toBe(true);
+    expect(v?.accounted).toBe(true);
+  });
+
+  it('FAILS an over-budget language with no accounting entry', () => {
+    // The control that proves the guard can fail at all. If this ever grades
+    // `accounted`, the assertion in the integration test is decorative.
+    //
+    // It INJECTS an empty accounting table rather than naming a language
+    // absent from the real one, because there is no longer such a language to
+    // name: `LspLanguage` is exactly 'typescript' | 'rust' and WI-2142287
+    // accounted the second of them. Written the old way, this control did not
+    // survive its own table being completed — it flipped to `accounted: true`
+    // and failed, and the tempting repair (assert the new truth) would have
+    // deleted the only proof that the unaccounted path can be reached at all.
+    //
+    // Injecting the data keeps the control about the GUARD's logic instead of
+    // about the table's current contents, so completing the table can never
+    // silently disarm it again.
+    const [v] = classifyColdStarts(
+      [cold({ caseId: 'definition-cross-package-bare-specifier', timeToCorrectMs: 45_000 })],
+      [],
+    );
     expect(v?.language).toBe('typescript');
     expect(v?.overBudget).toBe(true);
     expect(v?.accounted).toBe(false);
