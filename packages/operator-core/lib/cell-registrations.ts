@@ -982,9 +982,24 @@ export const DEPLOYED_SHA_CELL: CellSpec = {
       },
       'process-unverified': {
         meaning:
-          'A sha is deployed, but the serving process could not be probed — whether it is EXECUTING that sha is unestablished.',
+          'A sha is deployed, and the serving probe was ATTEMPTED but did not answer — whether it is EXECUTING that sha is unestablished.',
         safeAction:
           'Do not conclude the deploy is live. Re-probe the serving runtime before relying on the deployed behaviour.',
+      },
+      /**
+       * WI-2141716. Split out of `process-unverified`, because the two prescribe OPPOSITE
+       * actions and only one of them can ever succeed. `process-unverified` says a probe ran
+       * and failed, so retry is the lever. This code says NO probe was attempted and none can
+       * be: a bare `state:read { cell:'deploy.3070.sha' }` names no path, so there is no
+       * serving process to identify, and every re-read returns the same answer forever.
+       * Emitting the retry-shaped code here is a documented infinite-loop generator — it cost
+       * one agent session a full day and ~10 near-duplicate filings (see the work-item).
+       */
+      'serving-not-probeable': {
+        meaning:
+          'A sha is deployed, but this read identifies NO serving process to ask about — a sha-only read (no path) or a path compiled into the desktop binary. Nothing was probed, and re-reading cannot change that.',
+        safeAction:
+          'Do not re-probe — ask a different question. For a sha-only read, name a path (`as: "<repo-relative path>"`) so a serving process can be identified, or read the running process directly (`curl :3070/api/health` self-reports the sha it is executing). `serving.unknownReason` carries which case this is.',
       },
     },
     evidence: ['positions.deployed', 'verdictUnknown'],
