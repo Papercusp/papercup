@@ -357,6 +357,26 @@ mv -f "$SYSTEMD_ENV_RUNNER_TMP" "$OUTDIR/systemd-scope-env-runner.mjs"
 SYSTEMD_ENV_RUNNER_TMP=""
 echo "✓ bundled systemd scope environment runner beside the host entry"
 
+# pot-git's fetch transport (operator-core/lib/sync/pot-git/fetch-transport.ts)
+# resolves git's `ext::` connection helper as
+#   join(dirname(import.meta.url), 'git-ext-bridge.mjs')
+# — beside the BUNDLED entry once bundled, and git execs it as an external
+# `node <path> <sock>` command, so it must exist on disk as a runnable script.
+# Same publish discipline as the runner above. Measured 2026-09-02 (endgame
+# P-203): bg-host logged `Cannot find module …/dist-host/git-ext-bridge.mjs`
+# ×22 per 3 min and every ref-announce fetch from the VM peer died with
+# "git died without an exit status", so pot-git never converged with the pot.
+GIT_EXT_BRIDGE_SRC="../../packages/operator-core/lib/sync/pot-git/git-ext-bridge.mjs"
+if [[ ! -f "$GIT_EXT_BRIDGE_SRC" ]]; then
+  echo "ERROR: pot-git ext bridge not found at $GIT_EXT_BRIDGE_SRC"
+  exit 1
+fi
+GIT_EXT_BRIDGE_TMP="$OUTDIR/git-ext-bridge.mjs.new.$$"
+cp "$GIT_EXT_BRIDGE_SRC" "$GIT_EXT_BRIDGE_TMP"
+mv -f "$GIT_EXT_BRIDGE_TMP" "$OUTDIR/git-ext-bridge.mjs"
+GIT_EXT_BRIDGE_TMP=""
+echo "✓ bundled pot-git ext bridge beside the host entry"
+
 # @papercusp/harness is bundled into the host graph too. Its built-in blueprint
 # resolver derives the package root from import.meta.url, so a plain-node bundle
 # must carry the blueprint YAML/prompts beside the entry or an installed child
