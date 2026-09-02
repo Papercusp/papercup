@@ -190,6 +190,25 @@ describe('admitCheckpointMemory', () => {
     expect(a.reason).toBe('admitted-unmeasurable');
   });
 
+  it('FAILS OPEN when the commitment probe THROWS, not just when it reads empty', () => {
+    // Gate candidate 36318748: a throw out of the probe is not fail-open, it is fail-CRASH —
+    // the MOST restrictive outcome available, because it aborts the caller rather than merely
+    // refusing the run. It propagated out of release-actions.ts's admission call on the
+    // checkpoint host and red-pinned the gate. The contract is "unmeasurable ⇒ admit", and a
+    // throw is the strongest possible evidence that the commitment is unmeasurable.
+    const throwing = {
+      ...fakeProbe({}),
+      listPids: () => {
+        throw new TypeError('undefined is not iterable');
+      },
+    };
+    const a = admitCheckpointMemory({ requestG: 40, env: {}, probe: throwing });
+    expect(a.admit).toBe(true);
+    expect(a.reason).toBe('admitted-unmeasurable');
+    // The refusal must name what threw, or a fail-open is indistinguishable from a healthy read.
+    expect(a.detail).toContain('undefined is not iterable');
+  });
+
   it('never refuses a lone run, even when its own cap exceeds the whole budget', () => {
     // Over-refusal freezes `main` for every pot. A misconfigured budget must not be able to
     // stop the only run on the host.

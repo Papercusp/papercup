@@ -248,7 +248,34 @@ export function admitCheckpointMemory(opts: {
     };
   }
 
-  const commitment = measureCheckpointCommitment(probe);
+  // EI-22093xxx / gate candidate 36318748: the module note above promises this admission FAILS
+  // OPEN on an unmeasurable probe — "an unmeasurable probe must not be more restrictive than the
+  // unbounded status quo it replaces". A probe that THROWS was not honouring that: it is not
+  // fail-open, it is fail-CRASH, and it is the MOST restrictive outcome available because it
+  // aborts the caller instead of merely refusing the run. Observed on the checkpoint host as
+  // 'undefined is not iterable' propagating out of release-actions.ts's admission call and
+  // red-pinning the gate; every probe accessor (`/proc` readdir, cgroup reads, `totalmem`) is an
+  // unguarded host read, so a partial or restricted procfs can surface as a throw from several
+  // places. Catch here rather than guarding each accessor: the CONTRACT is "unmeasurable ⇒ admit",
+  // and a throw is the strongest possible evidence that the commitment is unmeasurable.
+  let commitment: CheckpointMemoryCommitment;
+  try {
+    commitment = measureCheckpointCommitment(probe);
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    return {
+      requestG,
+      committedG: 0,
+      budgetG,
+      scopes: 0,
+      unbounded: 0,
+      admit: true,
+      reason: 'admitted-unmeasurable',
+      detail:
+        `checkpoint-memory: commitment probe THREW (${why}) — FAILING OPEN, admitting ${requestG} GiB ` +
+        `(the unbounded status quo, not a bound)`,
+    };
+  }
   const base = {
     requestG,
     committedG: commitment.committedG,
