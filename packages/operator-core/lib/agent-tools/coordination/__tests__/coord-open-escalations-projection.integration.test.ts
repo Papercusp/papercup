@@ -48,6 +48,10 @@ const MIG_355 = readFileSync(
   join(repoRoot, 'libs/papercusp/libs/db/sql/355-coord-open-escalations-projection.sql'),
   'utf8',
 );
+const MIG_1094 = readFileSync(
+  join(repoRoot, 'libs/papercusp/libs/db/sql/1094-coord-open-escalations-trigger-update-fix.sql'),
+  'utf8',
+);
 
 let db: FreshPgDb;
 
@@ -73,6 +77,15 @@ async function openMsgIds(ws = 'default'): Promise<string[]> {
 beforeAll(async () => {
   db = await createFreshPgDb('coord-open-esc');
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
+  // The real ensureCoordEventLogTable (pg-log.ts) also creates this partial
+  // unique index; the EI-22091069492876324 regression test below needs it, as
+  // real coordLog.putEvent() writes rely on it for `ON CONFLICT (workspace_id,
+  // surface, msg_id) WHERE surface IN (...)` to resolve to an arbiter index.
+  await db.sql.unsafe(`
+    CREATE UNIQUE INDEX IF NOT EXISTS coord_event_log_event_uq
+      ON harness_shared.coord_event_log (workspace_id, surface, msg_id)
+      WHERE surface IN ('handoffs', 'escalations')
+  `);
   // .simple() runs ALL statements in the migration (the dollar-quoted function +
   // trigger + backfill) via the simple-query protocol; without it, unsafe() runs
   // only the first statement.
@@ -137,6 +150,66 @@ describe('coord_open_escalations projection trigger (migration 355)', () => {
     // Re-run the migration's backfill/prune (idempotent) — should land exactly {e1}.
     await db.sql.unsafe(MIG_355).simple();
     expect(await openMsgIds()).toEqual(['e1']);
+  });
+
+  // EI-22091069492876324: openEscalation()'s coalesce/refresh fallback path
+  // (findOpenDuplicate -> coordLog.putEvent) refreshes an EXISTING escalation's
+  // coord_event_log row via `INSERT ... ON CONFLICT (workspace_id, surface,
+  // msg_id) DO UPDATE`. Because the trigger this test's suite otherwise exercises
+  // was `AFTER INSERT ONLY`, Postgres never fires it for a row that resolved via
+  // the ON CONFLICT DO UPDATE arm -- so that refresh updated coord_event_log.body
+  // (repeatCount/lastSeenTs advancing) while coord_open_escalations stayed frozen
+  // at whatever it last held, PERMANENTLY (nothing else ever repairs it). This
+  // reproduces the pre-fix bug against migration 355 alone, then proves 1094
+  // (AFTER INSERT OR UPDATE + a real refresh instead of DO NOTHING) heals it.
+  it('a coalesce-refresh via ON CONFLICT DO UPDATE (coordLog.putEvent) is invisible to the projection under 355 alone, and self-heals once 1094 is applied (EI-22091069492876324)', async () => {
+    const upsertViaPutEventShape = async (repeatCount: number, summary: string) => {
+      // Mirrors PgCoordLog.putEvent's EXACT statement shape (pg-log.ts) for the
+      // 'escalations' surface -- the write path openEscalation's findOpenDuplicate
+      // fallback actually takes.
+      const body = { msg_id: 'e1', kind: 'escalation', summary, resolved: null, repeatCount };
+      await db.sql`
+        INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, workspace_id)
+        VALUES ('escalations', 'e1', ${db.sql.json(body)}, 'default')
+        ON CONFLICT (workspace_id, surface, msg_id) WHERE surface IN ('handoffs', 'escalations')
+        DO UPDATE SET body = EXCLUDED.body, ts = now()`;
+    };
+    const projectionBody = async (): Promise<{ repeatCount: number } | null> => {
+      const rows = await db.sql<{ body: { repeatCount: number } }[]>`
+        SELECT body FROM harness_shared.coord_open_escalations
+         WHERE workspace_id = 'default' AND msg_id = 'e1'`;
+      return rows[0]?.body ?? null;
+    };
+
+    // First write: a genuine INSERT (no prior 'e1' row) -- the trigger fires
+    // normally under 355 alone; this is not yet the bug.
+    await upsertViaPutEventShape(1, 'goal idle for <dur>');
+    expect((await projectionBody())?.repeatCount).toBe(1);
+
+    // Second write: 'e1' already exists, so this resolves via ON CONFLICT DO
+    // UPDATE -- under migration 355's AFTER-INSERT-ONLY trigger this must NOT
+    // reach the projection. Pinning this false is what makes the guard below
+    // falsifiable: without 1094, the final assertion cannot pass.
+    await upsertViaPutEventShape(2, 'goal idle for <dur>');
+    expect((await projectionBody())?.repeatCount).toBe(1); // frozen — reproduces the bug
+
+    // A further round of drift, exactly like the live incident (repeatCount
+    // climbing in coord_event_log while the projection sits stuck at 1).
+    await upsertViaPutEventShape(3, 'goal idle for <dur>');
+    expect((await projectionBody())?.repeatCount).toBe(1); // still frozen
+
+    // Apply the fix migration (idempotent CREATE OR REPLACE + trigger swap) on
+    // this SAME connection/schema -- no fresh DB needed.
+    await db.sql.unsafe(MIG_1094).simple();
+
+    // The one-shot repair backfill inside 1094 must have healed the ALREADY
+    // stale row immediately, without waiting for another write.
+    expect((await projectionBody())?.repeatCount).toBe(3);
+
+    // And the trigger must now fire on the SAME ON-CONFLICT-DO-UPDATE shape that
+    // was silently swallowed before.
+    await upsertViaPutEventShape(4, 'goal idle for <dur>');
+    expect((await projectionBody())?.repeatCount).toBe(4);
   });
 
   it('listEscalations(status=open) reads the projection instead of replaying the event log', async () => {
