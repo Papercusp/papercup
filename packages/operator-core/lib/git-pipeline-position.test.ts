@@ -2692,6 +2692,8 @@ describe('computeStages: position x health', () => {
       failingFileCount: 0,
       alreadyFixedCount: 0,
       stillBrokenCount: 0,
+      stillBrokenNeedsRunCount: 0,
+      changedBetweenRefs: null,
       postSuiteMeasured: null,
       scope: 'fixture scope sentence',
       unavailable: null,
@@ -2711,13 +2713,36 @@ describe('computeStages: position x health', () => {
         ...over,
       });
 
-    /** One file still broken at repairHead — real repair work remains. */
+    /**
+     * One file still broken at repairHead — real repair work remains, CONFIRMED:
+     * `stillBrokenNeedsRunCount: 0` means nothing else moved between the two refs, so
+     * there is nowhere a fix could be hiding and the strong wording is earned.
+     */
     const outstanding = (): GateCandidateFailures =>
       failures({
         distinctFailingFiles: [failingFile('lib/a.test.ts', true), failingFile('lib/b.test.ts', false)],
         failingFileCount: 2,
         alreadyFixedCount: 1,
         stillBrokenCount: 1,
+        stillBrokenNeedsRunCount: 0,
+        changedBetweenRefs: { count: 0, sample: [] },
+        assessment: 'repairs-outstanding',
+      });
+
+    /**
+     * The same counts, but the still-broken row is only PRESUMED so: other files moved
+     * between the refs, so the fix may ride a non-test carrier the test exercises. The
+     * brief must not tell an agent to go fix this one without running it first — that
+     * misreading cost three re-fixes of already-repaired files on 2026-09-02.
+     */
+    const outstandingUnconfirmed = (): GateCandidateFailures =>
+      failures({
+        distinctFailingFiles: [failingFile('lib/a.test.ts', true), failingFile('lib/b.test.ts', false)],
+        failingFileCount: 2,
+        alreadyFixedCount: 1,
+        stillBrokenCount: 1,
+        stillBrokenNeedsRunCount: 1,
+        changedBetweenRefs: { count: 1, sample: ['scripts/pc-heavy-jobs.mjs'] },
         assessment: 'repairs-outstanding',
       });
 
@@ -2762,7 +2787,23 @@ describe('computeStages: position x health', () => {
       const gate = stage(computeStages(redGate(outstanding())), 'gate');
       expect(gate.health).toBe('stalled');
       expect(gate.detail).toMatch(/RED \(7 consecutive\)/);
-      expect(gate.detail).toMatch(/1 of 2 failing file\(s\) are still broken at repairHead/);
+      expect(gate.detail).toMatch(/1 of 2 failing file\(s\) have an UNCHANGED blob at repairHead/);
+      expect(gate.detail).not.toMatch(/CONVERGING/);
+      // Nothing else moved, so this really is confirmed work — no hedge should appear.
+      expect(gate.detail).not.toMatch(/UNCONFIRMED/);
+    });
+
+    it('UNCONFIRMED: a still-broken row whose fix may ride a non-test file demands a run, not a re-fix', () => {
+      // The 2026-09-02 failure, at the surface that actually reaches agents. An unchanged
+      // TEST blob is not proof the file is unfixed — the repair commonly lands in the code
+      // UNDER test (a script it invokes, a helper, a whole-repo scanner), which this
+      // comparison cannot see. Asserting "still broken" there manufactures labour: all
+      // three files the cell named that day were already fixed and passed at repairHead.
+      const gate = stage(computeStages(redGate(outstandingUnconfirmed())), 'gate');
+      expect(gate.health).toBe('stalled');
+      expect(gate.detail).toMatch(/1 of those are UNCONFIRMED/);
+      expect(gate.detail).toMatch(/Run that ONE file at repairHead before treating it as work/);
+      // It must still not read as converging — hedging is not good news.
       expect(gate.detail).not.toMatch(/CONVERGING/);
     });
 

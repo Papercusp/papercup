@@ -721,7 +721,7 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
     path: 'gate.candidateFailures.stillBrokenCount',
   },
   shape:
-    '{ gate: { candidateFailures: { candidateSha, repairHeadSha, filesJudged, distinctFailingFiles: [{ path, attempts, status, fixInRepairHead, comparison, candidateBlob, repairHeadBlob, reading }], failingFileCount, alreadyFixedCount, stillBrokenCount, postSuiteMeasured, scope, unavailable, truncated } } }',
+    '{ gate: { candidateFailures: { candidateSha, repairHeadSha, filesJudged, distinctFailingFiles: [{ path, attempts, status, fixInRepairHead, comparison, candidateBlob, repairHeadBlob, reading }], failingFileCount, alreadyFixedCount, stillBrokenCount, stillBrokenNeedsRunCount, changedBetweenRefs: { count, sample }, postSuiteMeasured, scope, unavailable, truncated } } }',
 };
 
 /**

@@ -3344,7 +3344,15 @@ export function computeStages(
           : gateHealth === 'stalled'
             ? `Gate is RED (${g.consecutiveReds} consecutive) — main is held for everyone until it greens. The reds are yours to fix, not a queue to wait in.${
                 gateProgress === 'outstanding' && g.candidateFailures
-                  ? ` ${g.candidateFailures.stillBrokenCount} of ${g.candidateFailures.failingFileCount} failing file(s) are still broken at repairHead; the other ${g.candidateFailures.alreadyFixedCount} already carry their fix and are NOT yours to re-fix.`
+                  ? ` ${g.candidateFailures.stillBrokenCount} of ${g.candidateFailures.failingFileCount} failing file(s) have an UNCHANGED blob at repairHead; the other ${g.candidateFailures.alreadyFixedCount} already carry their fix and are NOT yours to re-fix.${
+                      // An unchanged TEST blob is not proof of an unfixed file — the repair
+                      // may sit in a non-test carrier the test exercises. Saying "still
+                      // broken" here sent agents to re-fix already-repaired files (measured
+                      // 2026-09-02: 3 of 3). Name the check instead of asserting the verdict.
+                      g.candidateFailures.stillBrokenNeedsRunCount > 0
+                        ? ` ⚠ ${g.candidateFailures.stillBrokenNeedsRunCount} of those are UNCONFIRMED — other files moved between the two refs, so a fix may be riding a non-test file. Run that ONE file at repairHead before treating it as work.`
+                        : ''
+                    }`
                   : ''
               }`
             : null;
