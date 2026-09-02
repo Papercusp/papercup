@@ -119,9 +119,30 @@ export async function resolveAcceptanceGraderEligibility(params: {
   rubric: GraderEligibilityRubric;
   callerId: string;
   workspaceId: string;
+  /**
+   * WI-2141007: WHICH question the caller is asking. Every rail below except
+   * `retired_acceptance_rubric` exists to protect the INDEPENDENCE of a grading
+   * — so applying them to an author-side verdict answers a question the caller
+   * did not ask.
+   *
+   * The reported symptom: a session in the dead author's lineage supplied
+   * `acceptance:{...}` (an AUTHOR verdict) and was refused
+   * `grader_in_implementer_lineage`, whose remedy text reads "recruit an
+   * unrelated live session" — advice for a problem that plan did not have,
+   * since its independent grading already existed and was recorded. Following
+   * it wastes a grader boot. Worse than the message: the refusal returns before
+   * seat succession is ever considered, so the party most likely to be the
+   * legitimate successor (the leader that launched the dead author, hence in its
+   * lineage) could never inherit the seat at all.
+   *
+   * Defaults to 'grading', so `scorecards:evaluate`'s pre-flight and every
+   * existing caller keep their exact behaviour.
+   */
+  intent?: 'grading' | 'acceptance';
   deps?: GraderEligibilityDeps;
 }): Promise<GraderEligibility> {
   const { rubric, callerId, workspaceId } = params;
+  const intent = params.intent ?? 'grading';
   const deps = params.deps ?? {};
   const sameAcceptanceAuthor = deps.sameAcceptanceAuthor ?? isAcceptanceAuthorIdentity;
   const lineageRelated = deps.lineageRelated ?? areAcceptanceLineageRelated;
@@ -146,6 +167,12 @@ export async function resolveAcceptanceGraderEligibility(params: {
   // must follow an independent grading) are about the CARD's shape, not about
   // eligibility, and stay with the writer.
   if (callerIsImplementer) return { implementer, callerIsImplementer: true, refusal: null };
+
+  // An AUTHOR-side verdict is not an offer of independent grading, so neither
+  // the lineage rail nor the sole-vetting-critic rail below can speak to it.
+  // The author-authority question is answered by the caller (`scorecards:emit`),
+  // which checks identity and then seat succession.
+  if (intent === 'acceptance') return { implementer, callerIsImplementer: false, refusal: null };
 
   const callerInImplementerLineage =
     implementer != null && (await lineageRelated(implementer, callerId, { workspaceId }));
