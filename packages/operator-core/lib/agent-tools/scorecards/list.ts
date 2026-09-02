@@ -29,7 +29,7 @@ export default defineTool({
     chaining:
       'scorecards:list { rubricRef: "pot-coordination-health", subjectRef: "EI-123", since } → inspect missingKeys for completeness / ratings for the latest standing → drill into a row via work_items:get { id: issueId }, or rubrics:get { rubricRef } for the criterion definitions.',
     returns:
-      'Rows carry ratings, synthesized, nKeys, missingKeys (completeness). `count` is the returned page size; `hasMore` and `truncatedByLimit` say when the page is capped.',
+      'Rows carry ratings, synthesized, nKeys, missingKeys (completeness). `ratings`, `gradedGeneration` and `generationFreshness` are nested OBJECTS on the row, never scalars (`generationFreshness` is present only when the row carries a `gradedGeneration`), so a flat/CSV projection over a row fails on them. `count` is the returned page size; `hasMore` and `truncatedByLimit` say when the page is capped.',
     seeAlso: [
       'scorecards:freshness (staleness / partial-emit summary)',
       'scorecards:evaluate (typed grading skeleton + evidence delta)',

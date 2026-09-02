@@ -298,6 +298,8 @@ export default defineTool({
     notWhen: 'Reading scorecard history only — scorecards:list. Filing the validated scorecard — scorecards:emit.',
     chaining:
       'scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots } → scorecards:emit with the canonical result.',
+    returns:
+      '`skeleton` is an ARRAY of criterion rows ({ key, title, instrumentKey, check, allowedRatings, rating:null, evidence:null, required }) — NOT an object keyed by criterion, so index it positionally or by `.key`. Beside it: `rubric` (summary incl. criteriaCount), `graderEligibility` (null unless the rubric is kind:acceptance), and `latest` — the newest ScorecardRow or null, whose `ratings`, `gradedGeneration` and `generationFreshness` are nested OBJECTS rather than scalars (`generationFreshness` is present only when the row carries a `gradedGeneration`), so a flat/CSV projection over a row fails on them. Passing `ratings` adds `canonicalRatings`, `evidenceFingerprint`, `instrumentContract`, `changed`, and `delta.changedCriteria`.',
     seeAlso: ['scorecards:emit', 'scorecards:list', 'rubrics:get'],
   },
   // EI-21228209276284649: this is a correctness payload, not a browseable list.
