@@ -26,9 +26,21 @@ long hold alive); `max_drain_sec` caps the wait, after which the requester gets
 `drain_timeout` and decides force-proceed or escalate.
 
 **Bounds the tools enforce:** the lease TTL defaults to **1200s** (20 min) and
-caps at **3600s**; `max_drain_sec` caps at **300s**. The blessed wrappers drain
-for their own defaults — `dev:restart` 120s, `db:migrate` 60s — both bumpable up
-to the 300s cap.
+caps at **3600s**.
+
+⚠ **`max_drain_sec` is ONE ARG NAME WITH TWO DIFFERENT CAPS — and the tool most
+callers reach for is the SMALLER one.** `locks:acquire_resource` caps
+`wait.max_drain_sec` at **45s** (`MAX_LOCK_WAIT_SEC` in
+`packages/operator-core/lib/agent-tools/locks/lock-config.ts`), and an over-cap
+value is **REJECTED** (`Too big expected <=45`), not clamped — unlike
+`locks:acquire`, whose `wait.max_sec` silently clamps to that same 45. The
+**300s** cap belongs only to the blessed wrappers `dev:restart` and `db:migrate`,
+which declare their own `MAX_DRAIN_SEC = 300` and drain for their own defaults —
+`dev:restart` 120s, `db:migrate` 60s — both bumpable up to that 300s cap.
+
+So a 120s drain copied from a `dev:restart` recipe into `locks:acquire_resource`
+fails every time. This doc previously stated the 300s figure as though it were
+the only cap, which is exactly how that happened (EI-21673430317554145).
 
 ```text
 B,C hold SHARED ───────────────┐ (working)

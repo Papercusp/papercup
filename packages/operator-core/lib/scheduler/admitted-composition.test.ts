@@ -22,6 +22,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  formatLowSeverityShare,
   summarizeAdmittedRows,
   DEGENERATE_MIN_POOL,
   DEGENERATE_LOW_SEVERITY_SHARE,
@@ -164,6 +165,56 @@ describe('summarizeAdmittedRows — composition of the admitted set (WI-6673)', 
       expect(summarizeAdmittedRows(rows).peakDay).toEqual({ day: '2026-07-30', count: 7 });
       // Same tallies, reversed input order → same verdict.
       expect(summarizeAdmittedRows([...rows].reverse()).peakDay).toEqual({ day: '2026-07-30', count: 7 });
+    });
+  });
+
+  /**
+   * EI-22184028605968917 — the PROSE layer of the same defect class this file guards.
+   * The structured buckets were right all along; the sentence rendered from them was not.
+   */
+  describe('formatLowSeverityShare — the warning must never overstate the share', () => {
+    it('REGRESSION: the measured lane (2363 of 2366) no longer prints "100%" while 3 major rows are in it', () => {
+      const comp = summarizeAdmittedRows([
+        row('change', 'minor', 2018),
+        row('change', 'nit', 345),
+        row('bug', 'major', 3),
+      ]);
+      // The shape that produced the bug: Math.round(0.9987 * 100) === 100.
+      expect(comp.total).toBe(2366);
+      expect(Math.round((comp.lowSeverityShare ?? 0) * 100)).toBe(100);
+
+      const rendered = formatLowSeverityShare(comp, 'row(s) in this lane');
+      expect(rendered).toBe('2363 of 2366 row(s) in this lane (99.8%) are nit/minor severity');
+      // The load-bearing assertion: the sentence cannot claim the non-low population is empty.
+      expect(rendered).not.toContain('100%');
+    });
+
+    it('prints 100% ONLY when the non-low population is actually empty — it is a claim of emptiness, not a rounded number', () => {
+      const allLow = summarizeAdmittedRows([row('change', 'nit', 40), row('change', 'minor', 60)]);
+      expect(formatLowSeverityShare(allLow)).toBe('100 of 100 row(s) (100%) are nit/minor severity');
+
+      // FALSIFIABILITY CONTROL: one single non-low row in a pool of 100,000 — a share that
+      // rounds, floors and displays as 100.0 at any sane precision — must still not print it.
+      const oneMajor = summarizeAdmittedRows([row('change', 'nit', 99_999), row('bug', 'critical', 1)]);
+      expect(formatLowSeverityShare(oneMajor)).not.toContain('100%');
+      expect(formatLowSeverityShare(oneMajor)).toBe('99999 of 100000 row(s) (99.9%) are nit/minor severity');
+    });
+
+    it('FLOORS rather than rounds, so "N%" is always safe to read as "at least N%"', () => {
+      // 2 of 3 = 66.66…% → 66.6, never 66.7.
+      const comp = summarizeAdmittedRows([row('change', 'nit', 2), row('bug', 'major', 1)]);
+      expect(formatLowSeverityShare(comp)).toBe('2 of 3 row(s) (66.6%) are nit/minor severity');
+    });
+
+    it('drops a pointless trailing .0 and reports an empty pool as 0 of 0 rather than a percentage of nothing', () => {
+      const half = summarizeAdmittedRows([row('change', 'minor', 5), row('bug', 'major', 5)]);
+      expect(formatLowSeverityShare(half)).toBe('5 of 10 row(s) (50%) are nit/minor severity');
+      expect(formatLowSeverityShare(summarizeAdmittedRows([]))).toBe('0 of 0 row(s) are nit/minor severity');
+    });
+
+    it('counts nit+minor only — an `unset` severity is unknown, never low, in the prose as in the buckets', () => {
+      const comp = summarizeAdmittedRows([row('change', 'nit', 30), row('change', 'unset', 70)]);
+      expect(formatLowSeverityShare(comp)).toBe('30 of 100 row(s) (30%) are nit/minor severity');
     });
   });
 });
