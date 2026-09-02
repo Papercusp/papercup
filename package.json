@@ -182,6 +182,8 @@
     "test:affected:integration": "AFFECTED_TASK_VERDICT_RESUME=1 PC_HEAVY_RETRY_PREEMPTIONS=3 PC_HEAVY_PREEMPT_AFTER_READY=1 PC_HEAVY_KEY_ENV=AFFECTED_BASE,AFFECTED_RETRY_FAILED bash scripts/pc-heavy.sh node scripts/affected-tests.mjs --integration",
     "test:all": "PC_HEAVY_KEY_ENV=AFFECTED_BASE,AFFECTED_RETRY_FAILED bash scripts/pc-heavy.sh node scripts/affected-tests.mjs --all",
     "test:all:integration": "PC_HEAVY_KEY_ENV=AFFECTED_BASE,AFFECTED_RETRY_FAILED bash scripts/pc-heavy.sh node scripts/affected-tests.mjs --all --integration",
+    "coverage:merge": "tsx scripts/merge-coverage.ts",
+    "gate:patch-coverage": "tsx scripts/patch-coverage.ts",
     "perf:desktop": "cd tools/perf-test/wdio && mkdir -p results && npm test 2>&1 | tee \"results/run-$(date -u +%Y%m%dT%H%M%SZ).log\"",
     "test:doctor": "node scripts/test-doctor.mjs",
     "doctor": "node scripts/test-doctor.mjs",

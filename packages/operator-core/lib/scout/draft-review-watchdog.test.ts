@@ -25,8 +25,10 @@ import {
   fireReviewWake,
   formatStaleDuration,
   readScoutDraftCandidates,
+  decisionStillSuppresses,
   type ScoutDraftCandidate,
 } from './draft-review-watchdog';
+import type { CitedWorkItemRefState } from '../agent-tools/plans/cited-work-item-refs';
 
 const HOUR = 3_600_000;
 const NOW = 100 * HOUR;
@@ -109,6 +111,131 @@ describe('readScoutDraftCandidates SQL projection', () => {
       hasNeedsHumanItem: true,
       hasRevisionHold: true,
     });
+    // WI-2142684: this decision has no title/body text (only `{id: 'D-001'}'),
+    // so it can never match CONDITIONAL_DISPOSITION_RE — the ref-resolution
+    // query must be skipped entirely. Regression guard for the common case.
+    expect((sql as unknown as { mock: { calls: unknown[][] } }).mock.calls.length).toBe(1);
+  });
+
+  // WI-2142684: the measured bug shape — a CONDITIONAL hold citing a ref that has
+  // since settled must LIFT (hasDecision:false), unlike the unconditional case above.
+  it('lifts a CONDITIONAL hold once its cited ref has settled (terminal)', async () => {
+    const calls: unknown[][] = [];
+    const sql = vi.fn((...args: unknown[]) => {
+      calls.push(args);
+      if (calls.length === 1) {
+        return Promise.resolve([
+          {
+            plan_slug: 'scout-conditional',
+            title: 'conditional draft',
+            updated_at_ms: NOW - 48 * HOUR,
+            items: [],
+            decisions: [
+              { id: 'D-001', title: '', body: 'retry activation audit after this decision revision or that repair backfills the plan (EI-1)', date: '2026-09-01' },
+            ],
+            content: '',
+          },
+        ]);
+      }
+      // second call: the batched ref-state resolution
+      return Promise.resolve([{ feature_id: 'EI-1', status: 'done' }]);
+    }) as unknown as Sql;
+
+    const got = await readScoutDraftCandidates(sql, 'ws-1', 'pot-1');
+    expect(got[0].reviewEvidence?.hasDecision).toBe(false);
+    expect(calls.length).toBe(2);
+  });
+
+  it('keeps a CONDITIONAL hold suppressing while its cited ref is still open', async () => {
+    const calls: unknown[][] = [];
+    const sql = vi.fn((...args: unknown[]) => {
+      calls.push(args);
+      if (calls.length === 1) {
+        return Promise.resolve([
+          {
+            plan_slug: 'scout-conditional-open',
+            title: 'conditional draft, open blocker',
+            updated_at_ms: NOW - 48 * HOUR,
+            items: [],
+            decisions: [
+              { id: 'D-001', title: '', body: 'retry once EI-2 resolves the flake', date: '2026-09-01' },
+            ],
+            content: '',
+          },
+        ]);
+      }
+      return Promise.resolve([{ feature_id: 'EI-2', status: 'open' }]);
+    }) as unknown as Sql;
+
+    const got = await readScoutDraftCandidates(sql, 'ws-1', 'pot-1');
+    expect(got[0].reviewEvidence?.hasDecision).toBe(true);
+  });
+});
+
+describe('decisionStillSuppresses (WI-2142684)', () => {
+  const terminalRef: ReadonlyMap<string, CitedWorkItemRefState> = new Map([
+    ['EI-1', { ref: 'EI-1', state: 'done', terminal: true }],
+  ]);
+  const openRef: ReadonlyMap<string, CitedWorkItemRefState> = new Map([
+    ['EI-2', { ref: 'EI-2', state: 'open', terminal: false }],
+  ]);
+  const absentRef: ReadonlyMap<string, CitedWorkItemRefState> = new Map([
+    ['EI-3', { ref: 'EI-3', state: null, terminal: false }],
+  ]);
+  const empty: ReadonlyMap<string, CitedWorkItemRefState> = new Map();
+
+  it('an unconditional decision (no conditional language) suppresses forever, ref or not', () => {
+    expect(
+      decisionStillSuppresses({ title: 'D-001', body: 'This plan is deprecated (EI-1).' }, terminalRef),
+    ).toBe(true);
+  });
+
+  it('a conditional decision whose cited ref has terminated LIFTS the suppression', () => {
+    expect(
+      decisionStillSuppresses(
+        { title: '', body: 'retry activation audit after this decision revision or that repair backfills the plan (EI-1)' },
+        terminalRef,
+      ),
+    ).toBe(false);
+  });
+
+  it('a conditional decision whose cited ref is still OPEN keeps suppressing', () => {
+    expect(
+      decisionStillSuppresses({ title: '', body: 'retry once EI-2 resolves the flake' }, openRef),
+    ).toBe(true);
+  });
+
+  it('a conditional decision whose cited ref is ABSENT (no matching row) LIFTS — nothing left to wait on', () => {
+    expect(
+      decisionStillSuppresses({ title: '', body: 'retry once EI-3 resolves the flake' }, absentRef),
+    ).toBe(false);
+  });
+
+  it('conditional language with NO cited ref keeps suppressing (nothing to check against)', () => {
+    expect(
+      decisionStillSuppresses({ title: '', body: 'retry once the flake resolves' }, empty),
+    ).toBe(true);
+  });
+
+  it('a decision citing a ref this evaluator never resolved fails toward suppress, not toward a spurious lift', () => {
+    expect(
+      decisionStillSuppresses({ title: '', body: 'retry once EI-999 resolves' }, empty),
+    ).toBe(true);
+  });
+
+  it('a malformed decision (non-object) suppresses — fail toward the prior, safe behavior', () => {
+    expect(decisionStillSuppresses(null, terminalRef)).toBe(true);
+    expect(decisionStillSuppresses('D-001', terminalRef)).toBe(true);
+  });
+
+  it('multiple cited refs: ANY still-open ref keeps the whole decision suppressing', () => {
+    const mixed: ReadonlyMap<string, CitedWorkItemRefState> = new Map([
+      ['EI-1', { ref: 'EI-1', state: 'done', terminal: true }],
+      ['EI-2', { ref: 'EI-2', state: 'open', terminal: false }],
+    ]);
+    expect(
+      decisionStillSuppresses({ title: '', body: 'retry once EI-1 resolves and EI-2 lands' }, mixed),
+    ).toBe(true);
   });
 });
 

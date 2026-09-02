@@ -411,7 +411,16 @@ export async function classifyDeadReleaseFixerSpawn(
   if (!spawnId) return null;
   try {
     const rows = (await sql.unsafe(
-      `SELECT sa.status, sa.error,
+      // `error_message` is the real column on harness_shared.spawned_agents. This read
+      // said `sa.error` for its whole life, which Postgres rejects with 42703 — and the
+      // fail-closed catch below turned that into `null`, i.e. "no evidence, burn the
+      // attempt". So P-005's refund could NEVER be granted in production: every
+      // unproductive infrastructure death (provider usage-wall, spawn failure, permission
+      // fault) burned a real attempt and marched the queue to hold-exhausted. The unit
+      // tests could not see it because a stubbed `sql` never validates a column name;
+      // fixer-liveness.integration.test.ts now runs this exact statement against the
+      // migrated schema.
+      `SELECT sa.status, sa.error_message AS error,
               EXISTS (
                 SELECT 1
                   FROM harness_shared.tool_invocations ti
