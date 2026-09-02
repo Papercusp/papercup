@@ -2973,3 +2973,99 @@ describe('reconcileLoopRoutines — a busy session no longer wedges its own loop
     expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-busy', 'loop-turn-journal', 'ok');
   });
 });
+
+describe('reconcileLoopRoutines — looksDeadOrStuck stays bounded to the fire, not the latest unrelated beat (EI-22171105225585428)', () => {
+  const T0 = 1_782_100_000_000;
+  const DWELL_MS = 30 * 60_000; // stuckParkMs(60s) = max(30min, 4×60s)
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  /** Warm 60s loop, fired at T0, whose wake was NEVER delivered (e.g. dropped after retries) —
+   *  the exact shape measured live on EI-22171105225585428, where `last_wake_status` was NOT
+   *  'delivered' for the stalled fire, so `deliveredWakeWithoutLoopTurn` returns null and the
+   *  classic `looksDeadOrStuck` ladder is the ONLY gate. The session is alive and working on
+   *  something else entirely, so OWNER-WIDE presence keeps beating regardless of this loop. */
+  const undeliveredRow = (over: Record<string, unknown> = {}) => ({
+    id: 'rt-undelivered',
+    target_owner_id: 'su-undelivered',
+    interval_sec: 60,
+    parked: true,
+    is_cron: false,
+    install_slug: 'papercusp',
+    name: 'loop-su-undelivered',
+    routine_workspace_id: 'ws-papercusp',
+    last_fired_at: pgString(T0),
+    fire_state_last_fired_at: pgString(T0 + 500),
+    fire_state_last_withheld_at: null,
+    last_wake_at: pgString(T0 + 1_000),
+    last_wake_status: 'dropped',
+    last_wake_channel: 'coord-inbox-wake',
+    last_loop_turn_at: null,
+    lifecycle_completed_at: null,
+    turn_journal_completed_at: null,
+    lifecycle_started_at: null,
+    carry: null,
+    armed_at: null,
+    note_updated_ts: null,
+    presence_last_active_at: null,
+    last_assistant_text_after_fire: null,
+    turns_ingest_watermark: null,
+    payload_template: null,
+    monitor_delta_at: null,
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('CONTROL — inside the dwell, a fresh unrelated beat still defers (unchanged)', async () => {
+    const nowMs = T0 + 1_000 + 600_000; // 10 min in — well inside the 30 min dwell
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql([undeliveredRow({ presence_last_active_at: pgString(nowMs - 5_000) })], []),
+      nowMs,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(0);
+    expect(res.loops).toEqual([]);
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it('past the dwell, a continuously-busy-on-OTHER-things session no longer wedges this loop forever', async () => {
+    // The bug: a stray presence beat unrelated to this loop, refreshed every few minutes,
+    // kept `nowMs - lastActiveMs` perpetually small — so `looksDeadOrStuck` stayed false
+    // no matter how long ago the fire itself was, and this loop was silently skipped
+    // (`continue`d) on every reconcile tick forever.
+    const nowMs = T0 + 1_000 + DWELL_MS + 60_000; // past the dwell measured from the FIRE
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      // presence beat 5s ago — unrelated activity, the exact shape that used to defer forever
+      sql: fakeSql([undeliveredRow({ presence_last_active_at: pgString(nowMs - 5_000) })], []),
+      nowMs,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-undelivered', via: 'stuck-backstop' });
+  });
+
+  it('a beat that never happens (lastActiveMs <= lastFiredMs) is still caught via quick-retry, well before the dwell (unchanged)', async () => {
+    // quickRetryParkMs(60s) = max(10min, 3×60s) = 10min: past that, before the 30min dwell,
+    // a genuinely-dead loop (no presence at all since the fire — the pre-existing first
+    // disjunct, untouched by this fix) is still caught by the WI-2714 quick-retry leg.
+    const nowMs = T0 + 1_000 + 11 * 60_000; // 11 min in — past quick-retry, inside the dwell
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql([undeliveredRow({ presence_last_active_at: pgString(T0 - 60_000) })], []),
+      nowMs,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-undelivered', via: 'stuck-backstop' });
+  });
+});
