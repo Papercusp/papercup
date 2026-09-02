@@ -514,6 +514,7 @@ import './sql-read-census-action';
 import './work-item-admission-promoter-action';
 import './work-item-admission-bulk-dedup-action';
 import './work-item-admission-delta-sweep-action';
+import './completion-claim-recheck-action';
 import './dead-citation-sweep-action';
 // WI-1741477: the caller for the durable-escalation orphan detector built in
 // EI-19339499404613652. Landed together with its TARGET_ROLE_SPEND entry, its seed script,

@@ -163,7 +163,7 @@ afterEach(async () => {
 describe('P-008 (c) cell version (fed_hlc, migration 693)', () => {
   it('a locally-asserted fact gets an HLC cell version, and the fold serves it', async () => {
     await assertFact(
-      { scope: 'harness', scopeRef: 'papercusp', key: 'cellv', body: 'b', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'harness', scopeRef: 'papercusp', key: 'cellv', body: 'b', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
     const folded = await foldFacts([{ scope: 'harness', scopeRef: 'papercusp' }], { workspaceId: WS }, db.sql);
@@ -175,7 +175,7 @@ describe('P-008 (c) cell version (fed_hlc, migration 693)', () => {
 
   it('a CORRECTION mints a STRICTLY GREATER version — this is what makes it a delta cursor', async () => {
     await assertFact(
-      { scope: 'harness', scopeRef: 'papercusp', key: 'moving', body: 'v1', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'harness', scopeRef: 'papercusp', key: 'moving', body: 'v1', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
     const first = (await foldFacts([{ scope: 'harness', scopeRef: 'papercusp' }], { workspaceId: WS }, db.sql)).find(
@@ -183,7 +183,7 @@ describe('P-008 (c) cell version (fed_hlc, migration 693)', () => {
     )!.cellVersion!;
 
     await assertFact(
-      { scope: 'harness', scopeRef: 'papercusp', key: 'moving', body: 'v2', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'harness', scopeRef: 'papercusp', key: 'moving', body: 'v2', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
     const second = (await foldFacts([{ scope: 'harness', scopeRef: 'papercusp' }], { workspaceId: WS }, db.sql)).find(
@@ -197,7 +197,7 @@ describe('P-008 (c) cell version (fed_hlc, migration 693)', () => {
 
   it('the delta reports that correction as changed against the pre-correction cursor', async () => {
     await assertFact(
-      { scope: 'harness', scopeRef: 'papercusp', key: 'watched', body: 'v1', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'harness', scopeRef: 'papercusp', key: 'watched', body: 'v1', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
     const before = await foldFacts([{ scope: 'harness', scopeRef: 'papercusp' }], { workspaceId: WS }, db.sql);
@@ -206,7 +206,7 @@ describe('P-008 (c) cell version (fed_hlc, migration 693)', () => {
     expect(boot.changed).toEqual([]);
 
     await assertFact(
-      { scope: 'harness', scopeRef: 'papercusp', key: 'watched', body: 'v2', createdBy: 'su-int', workspaceId: WS },
+      { ttlSec: 3600, scope: 'harness', scopeRef: 'papercusp', key: 'watched', body: 'v2', createdBy: 'su-int', workspaceId: WS },
       db.sql,
     );
     const after = await foldFacts([{ scope: 'harness', scopeRef: 'papercusp' }], { workspaceId: WS }, db.sql);
@@ -221,7 +221,7 @@ describe('P-008 (c) cell version (fed_hlc, migration 693)', () => {
 describe('assertFact against the REAL mig-461 identity index', () => {
   it('inserts (the arbiter matches the 5-column identity — the 461 regression)', async () => {
     const fact = await assertFact(
-      {
+      { ttlSec: 3600,
         scope: 'harness',
         scopeRef: 'papercusp',
         key: 'k1',
@@ -245,8 +245,8 @@ describe('assertFact against the REAL mig-461 identity index', () => {
       createdBy: 'su-int',
       workspaceId: WS,
     };
-    await assertFact({ ...base, body: 'first' }, db.sql);
-    const updated = await assertFact({ ...base, body: 'second' }, db.sql);
+    await assertFact({ ttlSec: 3600, ...base, body: 'first' }, db.sql);
+    const updated = await assertFact({ ttlSec: 3600, ...base, body: 'second' }, db.sql);
     expect(updated.body).toBe('second');
     const all = await db.sql`SELECT count(*)::int AS n FROM harness_shared.agent_facts WHERE key = 'k2'`;
     expect(all[0].n).toBe(2); // appended, not overwritten
@@ -257,7 +257,7 @@ describe('assertFact against the REAL mig-461 identity index', () => {
 
   it('F1-1: potHomeSlug stamps harness_slug and the wire shape validates on peers', async () => {
     await assertFact(
-      {
+      { ttlSec: 3600,
         scope: 'harness',
         scopeRef: 'member-a',
         key: 'shared-1',
