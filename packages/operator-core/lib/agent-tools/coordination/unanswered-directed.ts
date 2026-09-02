@@ -52,7 +52,11 @@
  *       with sendMessage's new write-time stamp so the two cannot drift;
  *   (c) the ACK-PING-PONG: a message that is itself a REPLY to something the
  *       RECIPIENT sent. An answer arriving was counted as a question landing,
- *       clearable only by acking the ack — forever (184 rows).
+ *       clearable only by acking the ack — forever (184 rows). EI-22192594388203470:
+ *       (c) itself over-fires when the reply carries an explicit expects:'action'/
+ *       'answer' — that is the sender's OWN declaration of a fresh ask, not an ack,
+ *       and now overrides the structural reply-chain heuristic (see the \`directed\`
+ *       CTE below for the incident this was filed from).
  * All three are excluded below. What remains is what the name promises: a
  * message from a real correspondent, still awaiting this recipient's reply.
  *
@@ -379,8 +383,22 @@ export async function fetchUnansweredDirected(
          -- WI-6875: reads the pre-materialized \`roster_authored\` above instead of re-scanning
          -- coord_event_log (75,422 rows, ~157ms) per candidate row. Predicate set unchanged:
          -- same author, same msg_id match, same absence of a time bound.
+         --
+         -- EI-22192594388203470: the ping-pong heuristic above is structural (does this message
+         -- REPLY to something the recipient sent?) and cannot tell an ack arriving from a NEW
+         -- decision request that happens to be threaded onto the recipient's own prior message —
+         -- e.g. B replies to A's directive with expects:'action', refusing it and asking A to pick
+         -- a different mechanism. That reply carries related_msg_id, so the structural rule alone
+         -- swallowed it as "answer arriving", and \`unanswered_only\` reported a confident 0 to A
+         -- while B sat genuinely blocked on a decision only A could make. An explicit expects:
+         -- 'action'/'answer' on the CANDIDATE message itself is the sender's OWN declaration that
+         -- this is a fresh ask, not an ack — it outranks the structural reply-chain heuristic, so
+         -- such a message is never swallowed here regardless of what it replies to. expects:'ack'
+         -- (or absent/'none', already filtered above) still ping-pongs as before.
          AND NOT (
            e.body ? 'related_msg_id'
+           AND (e.body->>'expects') IS DISTINCT FROM 'action'
+           AND (e.body->>'expects') IS DISTINCT FROM 'answer'
            AND EXISTS (
              SELECT 1 FROM roster_authored ra
               WHERE ra.workspace_id = e.workspace_id
@@ -612,6 +630,7 @@ export async function fetchOpenAsks(
         (extract(epoch FROM (e.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms,
         e.body ? 'related_msg_id'     AS has_related,
         e.body->>'related_msg_id'     AS related_msg_id,
+        e.body->>'expects'            AS expects,
         r                             AS recipient
         FROM harness_shared.coord_event_log e
         CROSS JOIN LATERAL jsonb_array_elements_text(e.body->'to') AS r
@@ -655,10 +674,17 @@ export async function fetchOpenAsks(
     ),
     -- WI-4537(c) mirrored: a message WE sent that is itself a reply to
     -- something the RECIPIENT sent is our answer arriving, not a fresh ask.
+    -- EI-22192594388203470 mirrored: an explicit expects:'action'/'answer' on OUR OWN
+    -- message overrides the structural reply-chain heuristic, same as the recipient-side
+    -- fix above — it is our own declaration that this is a fresh ask on them, not merely
+    -- our answer to something they sent. See fetchUnansweredDirected's \`directed\` CTE for
+    -- the full incident writeup; kept in lockstep on purpose.
     candidate AS (
       SELECT s.* FROM sent s
        WHERE NOT (
          s.has_related
+         AND s.expects IS DISTINCT FROM 'action'
+         AND s.expects IS DISTINCT FROM 'answer'
          AND EXISTS (
            SELECT 1 FROM replier_authored ra
             WHERE ra.workspace_id = s.workspace_id

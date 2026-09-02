@@ -17,7 +17,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import type { AgentIdentity } from './identity';
 import { sendMessage } from './messages';
-import { fetchUnansweredDirected } from './unanswered-directed';
+import { fetchUnansweredDirected, fetchOpenAsks } from './unanswered-directed';
 import { fetchDirectiveActuations } from './directive-effect';
 import { fetchDirectiveActuationSummaries } from './directive-effect-read';
 import { coordWorkspaceId } from './log';
@@ -253,6 +253,56 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
     expect(map.get(MEMBER.ownerId)?.count).toBe(1);
   });
 
+  it('WI-4537(c) baseline: an unthreaded ack-shaped reply to the recipient\'s own message ping-pongs and clears (no expects override)', async () => {
+    // Recipient (A=LEADER here, i.e. the one calling fetchUnansweredDirected) sent something
+    // first; MEMBER replies to it with a plain ack (no explicit expects, so it defaults through
+    // the same path as expects:'ack'). This is the ORIGINAL WI-4537(c) shape and must still
+    // ping-pong-clear — the EI-22192594388203470 fix only carves out explicit action/answer.
+    const leaderMsg = await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'FYI: gate went green' });
+    await sendMessage(MEMBER, {
+      to: [LEADER.ownerId],
+      summary: 'Ack — confirmed',
+      expectsReply: true,
+      related_msg_id: leaderMsg.msg_id,
+    });
+
+    const map = await fetchUnansweredDirected([LEADER.ownerId]);
+    expect(map.get(LEADER.ownerId)).toBeUndefined();
+  });
+
+  it('EI-22192594388203470: a reply carrying expects:"action" is NOT swallowed as ack-ping-pong — it is a fresh decision request', async () => {
+    // Repro from the filed bug: A (fleet leader) sends B a directive. B refuses it and asks for
+    // a different mechanism, replying with expects:'action' threaded onto A's message. Before
+    // the fix, WI-4537(c)'s structural "this is a reply to something A sent" test alone excluded
+    // it, so fetchUnansweredDirected([A]) reported a confident 0 while B sat genuinely blocked on
+    // a decision only A could make.
+    const directive = await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'widen the claim spec now' });
+    await sendMessage(MEMBER, {
+      to: [LEADER.ownerId],
+      summary: 'refused — mechanically unexecutable; widen the lane and I take it next get_next',
+      expectsReply: true,
+      related_msg_id: directive.msg_id,
+      extra: { expects: 'action' },
+    });
+
+    const map = await fetchUnansweredDirected([LEADER.ownerId]);
+    expect(map.get(LEADER.ownerId)?.count).toBe(1);
+  });
+
+  it('EI-22192594388203470: a reply carrying expects:"answer" is likewise NOT swallowed as ack-ping-pong', async () => {
+    const question = await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'closing this out — objections?' });
+    await sendMessage(MEMBER, {
+      to: [LEADER.ownerId],
+      summary: 'wait — which of the two candidates did you mean?',
+      expectsReply: true,
+      related_msg_id: question.msg_id,
+      extra: { expects: 'answer' },
+    });
+
+    const map = await fetchUnansweredDirected([LEADER.ownerId]);
+    expect(map.get(LEADER.ownerId)?.count).toBe(1);
+  });
+
   it('EI-21547691921890849: a satisfied expectEffect checkpoint clears the same directed action from unanswered_directed', async () => {
     await fx.admin`
       INSERT INTO harness_shared.work_items
@@ -338,5 +388,43 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
 
     const unanswered = await fetchUnansweredDirected([MEMBER.ownerId]);
     expect(unanswered.get(MEMBER.ownerId)?.count).toBe(1);
+  });
+});
+
+describe('fetchOpenAsks (sender-side mirror; WI-4537(c) mirrored exclusion, EI-22192594388203470)', () => {
+  it('a directed expectsReply message with no reply at all is a still-open ask', async () => {
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'please claim P-012', expectsReply: true });
+
+    const map = await fetchOpenAsks([LEADER.ownerId]);
+    expect(map.get(LEADER.ownerId)?.count).toBe(1);
+  });
+
+  it('baseline: our own plain ack-shaped reply to something the recipient sent does NOT count as a fresh ask on them (mirrored ping-pong)', async () => {
+    // MEMBER sent LEADER something first; LEADER's threaded reply back is LEADER's answer
+    // arriving, not a fresh ask LEADER is making of MEMBER — must not appear in fetchOpenAsks([LEADER]).
+    const memberMsg = await sendMessage(MEMBER, { to: [LEADER.ownerId], summary: 'FYI: done with P-009' });
+    await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: 'Ack — confirmed',
+      expectsReply: true,
+      related_msg_id: memberMsg.msg_id,
+    });
+
+    const map = await fetchOpenAsks([LEADER.ownerId]);
+    expect(map.get(LEADER.ownerId)).toBeUndefined();
+  });
+
+  it('EI-22192594388203470 mirrored: OUR OWN reply carrying expects:"action" still counts as a fresh ask, even though it is threaded onto something the recipient sent', async () => {
+    const memberMsg = await sendMessage(MEMBER, { to: [LEADER.ownerId], summary: 'proposal: widen the spec' });
+    await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: 'no — do X instead, confirm you will',
+      expectsReply: true,
+      related_msg_id: memberMsg.msg_id,
+      extra: { expects: 'action' },
+    });
+
+    const map = await fetchOpenAsks([LEADER.ownerId]);
+    expect(map.get(LEADER.ownerId)?.count).toBe(1);
   });
 });
