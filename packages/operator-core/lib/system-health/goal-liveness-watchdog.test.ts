@@ -2061,8 +2061,10 @@ describe('runGoalHolderRespawnOnce — defers recovery while the launch target i
       states: new Map(),
       now: () => now,
     });
+    // 5-minute ticks so the hold outlasts GOAL_HOLDER_CAPACITY_DEFER_LOG_INTERVAL_MS and the
+    // rate-limited "capacity NOT confirmed" line is observable (walled() lifts 5 days out).
     for (tick = 0; tick < readings.length; tick += 1) {
-      now += 60_000;
+      now += 5 * 60_000;
       expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ deferredCapacity: 1, rekicked: 0, attempted: 0 });
     }
     expect(launch).not.toHaveBeenCalled();
