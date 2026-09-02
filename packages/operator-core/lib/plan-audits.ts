@@ -63,7 +63,9 @@ import { selectUnambiguousEvidenceRoot } from './evidence-root-selection';
 import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
 import {
   ensureActivationAuditRepairFiling,
+  reconcileActivationAuditRepairFiling,
   type ActivationAuditRepairFiling,
+  type ActivationAuditRepairReconciliation,
 } from './agent-tools/plans/activation-audit-repair';
 
 // ── the record ────────────────────────────────────────────────────────────────
@@ -1431,7 +1433,18 @@ export function validateActivationAuditPlanTargets(
 }
 
 export type RecordCurrentActivationAuditResult =
-  | { ok: true; audit: PlanAudit; auditedPlanRevision: AuditedPlanRevision }
+  | {
+      ok: true;
+      audit: PlanAudit;
+      auditedPlanRevision: AuditedPlanRevision;
+      /**
+       * What this clean audit did to the plan's activation-repair filing. Present
+       * on every success so "nothing was open" (`closed: null`) is a stated
+       * reading rather than an absent field, and a failed close is visible to the
+       * caller instead of only to the log.
+       */
+      repairReconciliation?: ActivationAuditRepairReconciliation;
+    }
   | {
       ok: false;
       error: 'plan_busy' | 'plan_not_found' | 'activation_blocked' | 'plan_targets_invalid' | 'plan_revision_unavailable';
@@ -1651,7 +1664,7 @@ export async function recordCurrentActivationAudit(
 
   const lockKey = planAdvisoryLockKey(input.workspaceId, input.harnessSlug, input.planSlug);
   const { sql } = getOrgPg();
-  return sql.begin(async (tx) => {
+  const recorded = (await sql.begin(async (tx) => {
     const executor = tx as unknown as AuditSql;
     const lock = await executor<Array<{ ok: boolean }>>`
       SELECT pg_try_advisory_xact_lock(
@@ -1732,5 +1745,25 @@ export async function recordCurrentActivationAudit(
       input.workspaceId,
     );
     return { ok: true as const, audit, auditedPlanRevision };
+  })) as RecordCurrentActivationAuditResult;
+  if (!recorded.ok) return recorded;
+
+  // POST-COMMIT on purpose, and only on the clean path. This audit landing IS
+  // the event that clears the activation-repair condition, and it is the only
+  // place both entry points (the plans:audit MCP handler and this writer)
+  // provably converge — the handler reaches the store through here. Closing
+  // inside the transaction would settle a filing for an audit that could still
+  // roll back; sweeping for it later is what left 6 of 7 open filings stale.
+  const repairReconciliation = await reconcileActivationAuditRepairFiling({
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+    planSlug: input.planSlug,
+    auditSeq: recorded.audit.auditSeq,
   });
+  if (repairReconciliation.error) {
+    console.warn(
+      `[plan-audits] activation-repair reconciliation for '${input.planSlug}' failed (non-fatal): ${repairReconciliation.error}`,
+    );
+  }
+  return { ...recorded, repairReconciliation };
 }
