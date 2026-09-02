@@ -1301,9 +1301,42 @@ export function makeDeliveryDedup({ ttlMs, now }?: {
  * terminal display, not the agent's input line). `acquire()` resolves to a
  * `release` fn once the lock is free; the holder MUST call it (a `finally`). A
  * throwing/deferred critical section still releases via that finally, so one
- * inject's failure never wedges the queue. Pure factory; exported for tests. */
-export function makeInjectMutex(): {
-    /** Resolve to a release() fn once the lock is free (FIFO). Caller MUST call it. */
+ * inject's failure never wedges the queue.
+ *
+ * EI-22123519641932348: `await prev` alone has NO bound — every gate/verify
+ * step downstream of acquire() is independently time-capped (confirmed by
+ * reading each one: the idle/composer/busy gates, the submit verifier,
+ * recycleChild's kill+respawn+carry sequence), but if a holder's critical
+ * section fails to reach its `finally` release for a reason none of those
+ * caps cover, every later gated inject queues behind it silently and
+ * forever — this is the ONE unbounded wait in the whole gated-delivery
+ * pipeline, and matches a live incident: ~6h of TOTAL SILENCE in a host's
+ * event log (zero rows of any kind) spanning 4 stacked wake fires that all
+ * reported `delivered` yet started no turn. `acquire()` now races `prev`
+ * against a two-stage watchdog: past `warnMs` it fires `onStuck({phase:
+ * 'warn', waitedMs})` (loud, side-effect-free — see the wiring at this
+ * mutex's construction site for the durable host-event it becomes) while
+ * still waiting for `prev`; past `forceReleaseMs` it fires `onStuck({phase:
+ * 'force-release', waitedMs})` and lets this acquirer proceed AS IF the
+ * wedged holder had released. `prev` itself is never resolved by the
+ * watchdog — only THIS waiter stops awaiting it. If the original holder
+ * eventually does call its own release(), that resolves a promise nothing
+ * awaits any more (every later acquire() chains off THIS waiter's own tail,
+ * never off `prev`) — a harmless no-op, never a second wedge. Both windows
+ * default far above the slowest legitimate hold (a carry-respawn recycle,
+ * ~11min worst case — see the INJECT_MUTEX_WARN_MS doc comment) so a
+ * healthy, merely-slow delivery never trips either one. Pure factory
+ * (`now`/`onStuck` injected, matching this file's other gate factories);
+ * exported for tests. */
+export function makeInjectMutex({ now, warnMs, forceReleaseMs, onStuck, }?: {
+    now?: (() => number) | undefined;
+    warnMs?: number | undefined;
+    forceReleaseMs?: number | undefined;
+    onStuck?: (() => void) | undefined;
+}): {
+    /** Resolve to a release() fn once the lock is free (FIFO), or once the
+     *  watchdog force-releases a wedged holder (see the doc block above).
+     *  Caller MUST call the returned release(). */
     acquire(): Promise<undefined>;
 };
 export function makeStaleFireGuard(): {

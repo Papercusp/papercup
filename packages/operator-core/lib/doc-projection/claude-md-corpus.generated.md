@@ -2245,10 +2245,19 @@ so "green" can mean "nothing ran". To see what your change actually selects, ask
 node scripts/affected-tests.mjs --changed-paths scripts/lint-tsc.mjs,libs/flags/src/types.ts --print-affected
 ```
 
-The print-only probe emits `AFFECTED_WS\t<workspace>` for selected workspaces and
-`AFFECTED_GUARD\t<workspace>\t<script>` for repo-wide invariant guards attached by the
-same run. Guard lines may appear even when there are zero `AFFECTED_WS` lines; that is
+The print-only probe emits `AFFECTED_WS\t<workspace>` for selected workspaces,
+`AFFECTED_WS_CMD\t<workspace>\t<command>` per selected TASK, and
+`AFFECTED_GUARD\t<workspace>\t<script>\t<command>` for repo-wide invariant guards attached by
+the same run. Guard lines may appear even when there are zero `AFFECTED_WS` lines; that is
 the intended fail-safe behavior for root-level changes.
+
+⛔ **Run the emitted command; never rebuild one from the workspace name.** `npm run
+--workspace <name> test` is WRONG for a standalone package (a submodule like
+`papercusp-desktop`, deliberately not in root `workspaces`): npm answers `No workspaces
+found` and **exits 1 having measured ZERO tests** — indistinguishable from a failing suite.
+The command field already handles it (`npm --prefix papercusp-desktop run --silent test` vs
+`--workspace` for genuine workspaces, EI-22152426246970496). A workspace with no
+`AFFECTED_WS_CMD` line has no selected task: running anything for it measures nothing.
 
 ⚠ **The probe takes `--changed-paths`; the RUN takes it too — use it, or you measure one
 radius and run another.** A bare `npm run test:affected` derives its radius from git
@@ -2260,6 +2269,7 @@ so it sits ~1,500 commits back and a 3-file edit selected 71 workspaces / 90 tas
 where its radius came from, plus a stderr banner when an unscoped set is tree-sized. That
 wide scope is CORRECT for the green-checkpoint gate (it certifies the whole candidate) and
 wrong for you: `source=explicit` is what verifying your own edit looks like.
+
 
 A git-based probe cannot answer that question on this tree: git-sync sweeps the WHOLE
 tree, so no real commit is ever scoped to just your paths, and `changedFiles()` also

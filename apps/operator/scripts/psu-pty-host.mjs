@@ -3528,18 +3528,89 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
  * terminal display, not the agent's input line). `acquire()` resolves to a
  * `release` fn once the lock is free; the holder MUST call it (a `finally`). A
  * throwing/deferred critical section still releases via that finally, so one
- * inject's failure never wedges the queue. Pure factory; exported for tests. */
-export function makeInjectMutex() {
+ * inject's failure never wedges the queue.
+ *
+ * EI-22123519641932348: `await prev` alone has NO bound — every gate/verify
+ * step downstream of acquire() is independently time-capped (confirmed by
+ * reading each one: the idle/composer/busy gates, the submit verifier,
+ * recycleChild's kill+respawn+carry sequence), but if a holder's critical
+ * section fails to reach its `finally` release for a reason none of those
+ * caps cover, every later gated inject queues behind it silently and
+ * forever — this is the ONE unbounded wait in the whole gated-delivery
+ * pipeline, and matches a live incident: ~6h of TOTAL SILENCE in a host's
+ * event log (zero rows of any kind) spanning 4 stacked wake fires that all
+ * reported `delivered` yet started no turn. `acquire()` now races `prev`
+ * against a two-stage watchdog: past `warnMs` it fires `onStuck({phase:
+ * 'warn', waitedMs})` (loud, side-effect-free — see the wiring at this
+ * mutex's construction site for the durable host-event it becomes) while
+ * still waiting for `prev`; past `forceReleaseMs` it fires `onStuck({phase:
+ * 'force-release', waitedMs})` and lets this acquirer proceed AS IF the
+ * wedged holder had released. `prev` itself is never resolved by the
+ * watchdog — only THIS waiter stops awaiting it. If the original holder
+ * eventually does call its own release(), that resolves a promise nothing
+ * awaits any more (every later acquire() chains off THIS waiter's own tail,
+ * never off `prev`) — a harmless no-op, never a second wedge. Both windows
+ * default far above the slowest legitimate hold (a carry-respawn recycle,
+ * ~11min worst case — see the INJECT_MUTEX_WARN_MS doc comment) so a
+ * healthy, merely-slow delivery never trips either one. Pure factory
+ * (`now`/`onStuck` injected, matching this file's other gate factories);
+ * exported for tests. */
+export function makeInjectMutex({
+  now = Date.now,
+  warnMs = INJECT_MUTEX_WARN_MS,
+  forceReleaseMs = INJECT_MUTEX_FORCE_RELEASE_MS,
+  onStuck = () => {},
+} = {}) {
   let tail = Promise.resolve();
   return {
-    /** Resolve to a release() fn once the lock is free (FIFO). Caller MUST call it. */
+    /** Resolve to a release() fn once the lock is free (FIFO), or once the
+     *  watchdog force-releases a wedged holder (see the doc block above).
+     *  Caller MUST call the returned release(). */
     async acquire() {
       const prev = tail;
       let release;
       tail = new Promise((resolve) => {
         release = resolve;
       });
-      await prev; // block until the previous holder releases
+      const waitStartedAt = now();
+      await new Promise((resolveAcquire) => {
+        let settled = false;
+        let warnTimer = null;
+        let forceTimer = null;
+        const settle = () => {
+          if (settled) return;
+          settled = true;
+          if (warnTimer) clearTimeout(warnTimer);
+          if (forceTimer) clearTimeout(forceTimer);
+          resolveAcquire();
+        };
+        prev.then(settle); // the ordinary, unstuck path
+        const reportStuck = (phase) => {
+          try {
+            onStuck({ phase, waitedMs: now() - waitStartedAt });
+          } catch {
+            /* a diagnostic callback must never itself wedge the mutex */
+          }
+        };
+        // Finite, positive windows only — a disabled/misconfigured watchdog
+        // (0/NaN/Infinity) must never spend a real timer on it, and must
+        // never change ordinary (unstuck) behavior.
+        if (Number.isFinite(warnMs) && warnMs > 0) {
+          warnTimer = setTimeout(() => {
+            if (settled) return; // prev already resolved between tick and here
+            reportStuck('warn');
+          }, warnMs);
+          warnTimer.unref?.();
+        }
+        if (Number.isFinite(forceReleaseMs) && forceReleaseMs > 0) {
+          forceTimer = setTimeout(() => {
+            if (settled) return;
+            reportStuck('force-release');
+            settle(); // proceed as though the wedged holder had released
+          }, forceReleaseMs);
+          forceTimer.unref?.();
+        }
+      });
       return release; // caller releases → frees the next FIFO waiter
     },
   };
@@ -5009,7 +5080,32 @@ export function hostThroughPty(o) {
   // session:request-compaction `/compact` freed at the SAME clean boundary can't
   // both pass the at-prompt gate and interleave their bytes into one pty input
   // line (the "/compact swallowed as prose" race). See makeInjectMutex.
-  const injectMutex = makeInjectMutex();
+  //
+  // EI-22123519641932348: onStuck is this mutex's ONLY observability seam — a
+  // wedged holder previously left ZERO trace (the ~6h total-silence incident
+  // this closes). Durably record every stuck/force-release tick on THIS
+  // owner's event log (so a peer/watchdog reading it after the fact can see
+  // the session went dark and why) and echo it to stderr, matching every
+  // other loud-diagnostic write in this file.
+  const injectMutex = makeInjectMutex({
+    onStuck: ({ phase, waitedMs }) => {
+      appendHostEvent(ownerId, phase === 'force-release' ? 'inject-mutex-force-released' : 'inject-mutex-stuck', {
+        waitedMs,
+      });
+      try {
+        process.stderr.write(
+          phase === 'force-release'
+            ? `psu-pty-host: inject-mutex FORCE-RELEASED for ${ownerId} after ${waitedMs}ms — ` +
+                `a prior gated inject never reached its release; every gated inject since has been ` +
+                `queued behind it (EI-22123519641932348). Proceeding the next waiter now.\n`
+            : `psu-pty-host: inject-mutex looks STUCK for ${ownerId} (held ${waitedMs}ms with no ` +
+                `release yet, EI-22123519641932348) — every gated inject since is queuing behind it\n`,
+        );
+      } catch {
+        /* never let a diagnostic write break the host */
+      }
+    },
+  });
   // WI-5510: per-loop-instance last-delivered fire number — the delivery-side
   // half of the stale-fire guard (see makeStaleFireGuard's doc block). One
   // guard per host process is correct: this host serves exactly ONE ownerId
