@@ -71,6 +71,15 @@ alarm() {
   [ -x "$ALERT" ] && "$ALERT" "$*" || log "ALARM (no alert script): $*"
 }
 
+standdown() {
+  # The retraction half of alarm(). Deleting the marker only stands the alarm
+  # down for whoever LOOKS at the mirror; the fleet-wide coord:send that alarm()
+  # fired is still sitting in every inbox saying the backups are unprotected.
+  # Same best-effort contract as alarm(): a stand-down that fails must never
+  # turn a healthy run red.
+  [ -x "$ALERT" ] && "$ALERT" --resolved "$*" || log "STAND-DOWN (no alert script): $*"
+}
+
 # --- immutability helpers ---------------------------------------------------
 # chattr +i is verified at runtime, never assumed: it is a filesystem
 # capability, and claiming "immutable" on a filesystem that silently ignored
@@ -135,12 +144,35 @@ PY
 # ---------------------------------------------------------------------------
 # MODE: mirror
 # ---------------------------------------------------------------------------
+gcs_reachable() {
+  # Bounded retry on the reachability probe, because THIS TIMER IS DAILY: a
+  # single transient blip that reaches `die` costs a full ~24h of off-site
+  # coverage, not one run. That is not hypothetical — 2026-09-01T05:18Z failed
+  # here once with "cannot read gs://… (gcloud auth?)", and the off-GCP copy
+  # then sat 33h stale until the next attempt succeeded unattended (WI-2140790).
+  #
+  # Deliberately bounded, and deliberately still fatal after the bound: a real
+  # auth expiry fails all three attempts and raises the SAME alarm it always
+  # did. Retrying is only allowed to absorb a blip, never to convert a standing
+  # fault into silence — that is the EI-10733 failure (a backup rotting quietly
+  # for 30 days) this whole alarm exists to prevent.
+  local attempt
+  for attempt in 1 2 3; do
+    gcloud storage ls "$BUCKET/" >/dev/null 2>&1 && return 0
+    if [ "$attempt" -lt 3 ]; then
+      log "bucket probe failed (attempt $attempt/3) — retrying in 20s"
+      sleep 20
+    fi
+  done
+  return 1
+}
+
 do_mirror() {
   mkdir -p "$SNAPDIR" "$STAGE" "$QUAR" "$QMETA" || die "cannot create $ROOT"
   chmod 700 "$ROOT" 2>/dev/null || true
 
   command -v gcloud >/dev/null || die "gcloud not on PATH"
-  gcloud storage ls "$BUCKET/" >/dev/null 2>&1 || die "cannot read $BUCKET (gcloud auth?)"
+  gcs_reachable || die "cannot read $BUCKET after 3 attempts over ~40s (gcloud auth?)"
 
   local sealed=false; seal_supported && sealed=true
   $sealed || log "WARNING: chattr +i unavailable here — snapshots will be mirrored but NOT sealed"
@@ -492,6 +524,10 @@ PY
     if rm -f "$ROOT/ALERT-MIRROR-FAILING" 2>/dev/null \
       || sudo -n rm -f "$ROOT/ALERT-MIRROR-FAILING" 2>/dev/null; then
       log "cleared ALERT-MIRROR-FAILING (mirror recovered)"
+      # Guarded by the enclosing marker test on purpose: the stand-down fires
+      # ONLY on the transition out of an alarm we actually raised, never on an
+      # ordinary healthy run. A stand-down every 6 hours would be its own spam.
+      standdown "mirror healthy again as of $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     else
       # Never fail the health check over the marker -- a probe that dies while
       # cleaning up reports a fault that does not exist.
