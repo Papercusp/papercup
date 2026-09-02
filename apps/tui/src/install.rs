@@ -842,6 +842,17 @@ mod tests {
             operator_generation_contained(root_str, &older, &newer),
             Some(true)
         );
+        // PRODUCTION SHAPE: the operator identity endpoint exposes `git rev-parse
+        // --short HEAD`, so the sha that actually reaches this function is
+        // ABBREVIATED — never the 40-char form the assertion above uses. Pin that
+        // git resolves it identically. If it ever did not, every real doctor run
+        // would fall through to exit 128 -> None and silently restore the
+        // deterministic repair loop this function exists to break, while the
+        // full-sha assertions above stayed green (EI-22066271581968324).
+        assert_eq!(
+            operator_generation_contained(root_str, &older[..10], &newer),
+            Some(true)
+        );
         // The reverse is definitively false: the newer commit is not an ancestor
         // of the older one.
         assert_eq!(
