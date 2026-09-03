@@ -228,6 +228,42 @@ describe('RemoteBootedHarnessHandle (P-001)', () => {
     expect(typeof unsub).toBe('function');
     unsub();
   });
+
+  /**
+   * WI-2142873: this getter was a hardcoded `null` with a comment saying the
+   * boot advertisement did not carry the identity. It does now, and that null
+   * was load-bearing in the wrong direction — every git-sync hive leg holding a
+   * relocated handle fell through to the gh-login actor and signed the pot's
+   * ref-announces as a device that serves no topic, which no peer can dial.
+   */
+  it('reports the announce identity the sidecar returned at boot, not a hardcoded null', () => {
+    const { client } = makeClient();
+    const announceIdentity = {
+      devicePubkeyBase64: 'XPAsvso1-aviynw-tower',
+      githubUserId: 1567022,
+      githubLogin: 'aviynw',
+      keychainId: '1567022:tower',
+    };
+    const h = new RemoteBootedHarnessHandle({
+      workspaceId: 'ws',
+      harnessSlug: 'h-1',
+      storeId: 'store-1',
+      ownLogKey: KEY,
+      announceIdentity,
+      client,
+    });
+
+    expect(h.announceIdentity).toEqual(announceIdentity);
+    // Data, not IPC — the identity came back with the boot response.
+    expect(h.swarm).toBeNull();
+  });
+
+  it('still reports null against a sidecar that advertised no identity — absence is not invented', () => {
+    // A pre-WI-2142873 sidecar. The honest answer is null; `pickHiveGitActor`
+    // refuses on it rather than substituting a different device.
+    const { client } = makeClient();
+    expect(makeHandle(client).announceIdentity).toBeNull();
+  });
 });
 
 describe('openHiveGitDuplexViaExistingSidecar (EI-20438405483051865)', () => {
