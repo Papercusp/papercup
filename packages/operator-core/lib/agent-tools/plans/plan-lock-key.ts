@@ -1,3 +1,5 @@
+import type { Sql, TransactionSql } from 'postgres';
+
 /** Shared identity for the transaction-scoped advisory lock protecting one plan. */
 export const PLAN_ADVISORY_LOCK_NAMESPACE = 'harness_plans';
 
@@ -14,6 +16,12 @@ export const PLAN_LOCK_TIMEOUT_CODE = '55P03';
 
 /** Default acquisition budget for the plan advisory lock, in ms. */
 export const PLAN_ADVISORY_LOCK_BUDGET_MS = 5_000;
+
+/**
+ * Either client that takes this lock: `withPlanLock` runs inside `withWorkspace`'s `Sql`, and the
+ * dependency-admission wrapper accepts a `TransactionSql` (and test tagged-SQL shims).
+ */
+export type PlanAdvisoryLockSql = Sql | TransactionSql;
 
 /**
  * The one way to take a plan's advisory lock — a BOUNDED BLOCKING acquire (WI-2143102).
@@ -47,9 +55,7 @@ export const PLAN_ADVISORY_LOCK_BUDGET_MS = 5_000;
  * OUTSIDE the transaction (as `withPlanLock` does, converting it to `busy`).
  */
 export async function acquirePlanAdvisoryLock(
-  tx: {
-    (strings: TemplateStringsArray, ...values: unknown[]): PromiseLike<unknown>;
-  },
+  tx: PlanAdvisoryLockSql,
   lockKey: string,
   budgetMs: number = PLAN_ADVISORY_LOCK_BUDGET_MS,
 ): Promise<void> {
