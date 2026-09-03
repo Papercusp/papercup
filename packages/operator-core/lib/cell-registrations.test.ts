@@ -456,8 +456,13 @@ describe('P-007: the four verdict cells', () => {
     expect(GATE_VERDICT_CELL.unknownHoist).toBe('verdictUnknown');
 
     const rejections = validateCellSpec({ ...GATE_VERDICT_CELL, unknownHoist: undefined });
-    expect(rejections).toHaveLength(1);
-    expect(rejections[0]).toMatchObject({ axis: 2, rule: 'unknown-not-hoisted' });
+    // Two rejections, and the second is the P-012 invariant doing its job: the streak
+    // counter is PAIRED with `verdictUnknown` as its measured-ness flag, so removing the
+    // hoist also strands the pairing — a count would travel alone. Both name axis 2.
+    expect(rejections.map((r) => [r.axis, r.rule])).toEqual([
+      [2, 'unknown-not-hoisted'],
+      [2, 'measured-by-flag-not-hoisted'],
+    ]);
   });
 
   /** Every one of the four degrades into GOOD NEWS, so every one must hoist. */
