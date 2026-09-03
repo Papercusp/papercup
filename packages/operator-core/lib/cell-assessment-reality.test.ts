@@ -47,6 +47,7 @@ import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import type { CellSpec } from './cell-registry';
 import { BUILTIN_CELLS } from './cell-registrations';
 import { pathExists } from './state-plane-stamp';
+import { formatMeasurednessViolations, hoistedPaths, isCountOrList, measurednessViolations } from './cell-measuredness';
 import { CELL_UNKNOWN_CODES } from './cell-contract';
 import {
   gitPipelinePosition,
@@ -1764,4 +1765,93 @@ describe('P-004: the guards themselves are falsifiable', () => {
       'calibration: the SHIPPED codes must be collision-free',
     ).toEqual([]);
   });
+});
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════════
+ * main-green-status-visible-2026-09-03 P-012 — "MEASURED EMPTY" NEVER RENDERS AS
+ * "NOTHING FAILING", ENFORCED AGAINST THE LIVE PAYLOAD OF EVERY BUILT-IN CELL.
+ *
+ * The invariant (cell-measuredness.ts): a hoisted COUNT or LIST is never alone — it is
+ * paired, in the cell's `assessment.measuredBy`, with the same-payload path that says
+ * whether it was measured, and that flag is hoisted too. Which hoisted paths ARE counts
+ * or lists is read off the live payload's types, so a new cell that hoists a count with
+ * no pairing fails HERE, on the ordinary path, before a reader ever meets its zero.
+ *
+ * The controls that prove this guard can fail live in cell-measuredness.test.ts, against
+ * the defect-shaped payload (`0 / [] / none-failing`), so no live state can make them
+ * vacuous. This block is the sweep; that file is the falsifier.
+ * ═══════════════════════════════════════════════════════════════════════════════════
+ */
+describe('P-012: every hoisted count/list travels with its measured-ness flag', () => {
+  const PIPELINE_SUBJECT = 'packages/operator-core/lib/cell-registrations.ts';
+  const withPayload: ReadonlyArray<readonly [string, CellSpec, () => Promise<unknown>]> = [
+    ...PIPELINE_CELLS.map(
+      (c) =>
+        [c.cell, c, () => livePipelinePayload(c.callerRelativity.kind === 'parameter' ? PIPELINE_SUBJECT : undefined)] as const,
+    ),
+    ...COVERAGE_CELLS.map((c) => [c.cell, c, liveCoveragePayload] as const),
+    ...HOST_MEMORY_CELLS.map((c) => [c.cell, c, liveHostMemoryPayload] as const),
+    ...GOVERNOR_CELLS.map((c) => [c.cell, c, liveGovernorPayload] as const),
+  ];
+  const PAYLOADLESS = [...GOAL_CELLS, ...PORTFOLIO_CELLS, ...CAPACITY_CELLS, ...ROLE_LAUNCH_CELLS];
+
+  /**
+   * THE TRIPWIRE. A cell the sweep cannot obtain a payload for is checked structurally
+   * only, which is weaker — so the set of such cells is PINNED BY NAME. A new cell
+   * outside the live families lands here and must either join a live family or be added
+   * to this list deliberately, with its pairing declared by hand.
+   */
+  it('covers every built-in cell — live-payload families plus a pinned payload-less remainder', () => {
+    expect(withPayload.length + PAYLOADLESS.length).toBe(BUILTIN_CELLS.length);
+    expect(PAYLOADLESS.map((c) => c.cell).sort()).toEqual([
+      'agent.goal',
+      'agent.roleLaunch',
+      'capacity.verdict',
+      'goal.portfolioThroughput',
+    ]);
+  });
+
+  it.each(withPayload)(
+    '%s — no hoisted count or list is unpaired, and every flag is hoisted and flag-shaped (live payload)',
+    async (_id, spec, payload) => {
+      const v = measurednessViolations(spec, await payload());
+      expect(v, formatMeasurednessViolations(v)).toEqual([]);
+    },
+    20_000,
+  );
+
+  it.each(PAYLOADLESS.map((c) => [c.cell, c] as const))(
+    '%s — the pairing is structurally sound (payload-less: the type half is not decidable here)',
+    (_id, spec) => {
+      const v = measurednessViolations(spec, undefined);
+      expect(v, formatMeasurednessViolations(v)).toEqual([]);
+    },
+  );
+
+  /**
+   * NON-VACUITY (the P-009 lesson, again). A sweep whose classifier silently matched
+   * nothing would pass green having examined no count at all. The gate's streak counter
+   * and the coverage census are numbers on every read, so the live sweep must classify
+   * a non-trivial population — and the population is printed, so a shrinking one is
+   * visible rather than silently tolerated.
+   */
+  it('the live sweep actually classified counts and lists — the guard is not vacuously green', async () => {
+    let classified = 0;
+    const seen: string[] = [];
+    for (const [, spec, payload] of withPayload) {
+      const p = await payload();
+      for (const path of hoistedPaths(spec)) {
+        if (spec.unknownHoist === path) continue;
+        const r = pathExists(p, path);
+        if (r.exists && isCountOrList(path, r.value)) {
+          classified += 1;
+          seen.push(`${spec.cell}:${path}`);
+        }
+      }
+    }
+    expect(classified, `classified: ${seen.join(', ')}`).toBeGreaterThanOrEqual(8);
+    expect(seen).toContain('gate.greenCheckpoint.verdict:gate.consecutiveReds');
+    expect(seen).toContain('testing.coverage.floor:coverage.pct');
+  }, 60_000);
 });
