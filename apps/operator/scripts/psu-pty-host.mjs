@@ -573,6 +573,72 @@ export async function verifyNativeTurnStartWithRetry({
   };
 }
 
+/** WI-2140591: how long the host watches for the model to actually START the
+ *  kickoff turn, once the native marker has proven the prompt was accepted.
+ *
+ *  The marker proof establishes SUBMISSION, never EXECUTION — and the two come
+ *  apart exactly under load. Codex can accept the prompt, exhaust its sampling
+ *  retries (`codex_core::responses_retry: stream disconnected — retrying
+ *  sampling request 5/5, sampling_error="high demand"`) and then emit no
+ *  assistant turn at all. The marker is still in the transcript, so the host
+ *  printed "kickoff delivered" and returned, leaving a LIVE child idle forever:
+ *  seven consecutive fleet goal holders on 2026-09-01 (12:29–14:02Z) each
+ *  produced nothing but their boot `activity:report`.
+ *
+ *  Cadence deliberately mirrors the submit verifier (WI-2975): requiring an
+ *  ENTIRE budget of ZERO new output is a far stronger "nothing happened" signal
+ *  than a short quiet threshold, because a generating agent repaints its TUI
+ *  continuously (spinner / elapsed counter) and a merely slow one still repaints
+ *  while it retries. Set POLLS to 0 to disable the observation outright. */
+const KICKOFF_TURN_START_POLL_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS) || 5_000;
+const KICKOFF_TURN_START_POLLS = (() => {
+  // NOT `Number(...) || 6`: that maps an explicit 0 back to the default and
+  // silently removes the kill switch for a path every fleet launch runs.
+  const raw = Number(process.env.PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 6;
+})();
+
+/**
+ * Did the model actually begin the kickoff turn? Returns as soon as ANY new pty
+ * output appears after the baseline, otherwise reports a stall once the whole
+ * budget has elapsed with zero new bytes.
+ *
+ * Keyed on "new output since a baseline" rather than "output is quiet NOW",
+ * because a healthy short turn ALSO ends quiet — quiet alone would flag every
+ * fast kickoff. A turn that died at the sampling layer is distinguishable
+ * precisely because it produces nothing whatsoever after the prompt is accepted.
+ *
+ * Fails SAFE: a disabled or zero-length budget reports `started:true` with
+ * `observed:false`, so a caller never takes recovery action on an observation
+ * that never ran. Pure apart from the injected reader/wait.
+ */
+export async function observeKickoffModelTurnStart({
+  lastOutputAt = () => 0,
+  wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  pollMs = KICKOFF_TURN_START_POLL_MS,
+  polls = KICKOFF_TURN_START_POLLS,
+} = {}) {
+  const budgetMs = Math.max(0, pollMs) * Math.max(0, polls);
+  if (!(pollMs > 0) || !(polls > 0)) {
+    return { started: true, observed: false, polls: 0, budgetMs: 0, reason: 'observation-disabled' };
+  }
+  const baseline = Number(lastOutputAt()) || 0;
+  for (let poll = 0; poll < polls; poll += 1) {
+    await wait(pollMs);
+    if ((Number(lastOutputAt()) || 0) > baseline) {
+      return { started: true, observed: true, polls: poll + 1, budgetMs, reason: null };
+    }
+  }
+  return {
+    started: false,
+    observed: true,
+    polls,
+    budgetMs,
+    reason: 'no-model-output-after-kickoff',
+  };
+}
+
 /** A carry-respawn can bind transcript proof to a native session id only when
  * the backend actually mints one. Claude does; Codex deliberately starts a
  * fresh thread without exposing its id, so its unique turn-origin marker plus
@@ -5045,9 +5111,56 @@ export function hostThroughPty(o) {
           }
           return;
         }
+        // WI-2140591: the marker proves the prompt was ACCEPTED, not that the
+        // model ran. Watch for the turn to actually start before claiming
+        // delivery — a sampling-layer give-up leaves the marker in place, the
+        // child alive, and the session idle forever with nobody informed. The
+        // receipt above is already published, so the detached parent is never
+        // delayed by this observation.
+        const readLastOutputAt = () => activity.snapshot().lastOutputAt ?? 0;
+        let turnStart = await observeKickoffModelTurnStart({ lastOutputAt: readLastOutputAt });
+        let modelRetried = false;
+        if (turnStart.observed && !turnStart.started) {
+          modelRetried = true;
+          appendHostEvent(ownerId, 'launch-kickoff-model-turn-absent', {
+            budgetMs: turnStart.budgetMs,
+            polls: turnStart.polls,
+            reason: turnStart.reason,
+            retrying: true,
+          });
+          // Re-send the kickoff TEXT, not a bare CR: the prompt already
+          // submitted, so the composer is EMPTY and an Enter would be a no-op.
+          // Routed through injectTurnAtPrompt so it inherits the busy/composer
+          // gates — an UNGATED retype is the documented mid-turn wedge, and the
+          // one case this detector can be wrong about (a genuinely slow turn) is
+          // exactly the case those gates exist to defer. Never terminate on this
+          // path: the child is still usable and the first turn already persisted.
+          try {
+            await injectTurnAtPrompt({
+              text: launchKickoff,
+              label: 'launch kickoff (model-turn retry)',
+              requireInitialOutput: false,
+              terminateOnSubmitVerifyExhaustion: false,
+            });
+          } catch (error) {
+            appendHostEvent(ownerId, 'launch-kickoff-model-turn-retry-error', {
+              error: String(error?.message ?? error).slice(0, 200),
+            });
+          }
+          turnStart = await observeKickoffModelTurnStart({ lastOutputAt: readLastOutputAt });
+          appendHostEvent(ownerId, 'launch-kickoff-model-turn-retry-result', {
+            started: turnStart.started,
+            polls: turnStart.polls,
+          });
+        }
         try {
           process.stderr.write(
-            `psu: kickoff delivered — verified the exact provenance marker in the native transcript.\n`,
+            turnStart.started
+              ? `psu: kickoff delivered — verified the exact provenance marker in the native transcript` +
+                `${modelRetried ? ' (model turn started only after one in-session retry)' : ''}.\n`
+              : `psu: kickoff ACCEPTED BUT THE MODEL TURN NEVER STARTED — the provenance marker ` +
+                `persisted, then ${Math.round(turnStart.budgetMs / 1000)}s passed with no output ` +
+                `(retried once). The child is alive and idle; it is NOT working.\n`,
           );
         } catch {
           /* diagnostics are best-effort */

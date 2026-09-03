@@ -153,6 +153,38 @@ export function verifyNativeTurnStartWithRetry({ agent, env, text, sinceMs, home
     retried: boolean;
     reason: string | null;
 }>;
+/**
+ * Did the model actually begin the kickoff turn? Returns as soon as ANY new pty
+ * output appears after the baseline, otherwise reports a stall once the whole
+ * budget has elapsed with zero new bytes.
+ *
+ * Keyed on "new output since a baseline" rather than "output is quiet NOW",
+ * because a healthy short turn ALSO ends quiet — quiet alone would flag every
+ * fast kickoff. A turn that died at the sampling layer is distinguishable
+ * precisely because it produces nothing whatsoever after the prompt is accepted.
+ *
+ * Fails SAFE: a disabled or zero-length budget reports `started:true` with
+ * `observed:false`, so a caller never takes recovery action on an observation
+ * that never ran. Pure apart from the injected reader/wait.
+ */
+export function observeKickoffModelTurnStart({ lastOutputAt, wait, pollMs, polls, }?: {
+    lastOutputAt?: (() => number) | undefined;
+    wait?: ((ms: any) => Promise<any>) | undefined;
+    pollMs?: number | undefined;
+    polls?: number | undefined;
+}): Promise<{
+    started: boolean;
+    observed: boolean;
+    polls: number;
+    budgetMs: number;
+    reason: string;
+} | {
+    started: boolean;
+    observed: boolean;
+    polls: number;
+    budgetMs: number;
+    reason: null;
+}>;
 /** A carry-respawn can bind transcript proof to a native session id only when
  * the backend actually mints one. Claude does; Codex deliberately starts a
  * fresh thread without exposing its id, so its unique turn-origin marker plus
