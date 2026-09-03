@@ -25605,7 +25605,7 @@
           "POST"
         ]
       },
-      "description": "Manual deploy lever and diagnosis for a committed change that is not live on :3070. op:status reads gate/deploy state and recommends the next action; op:trigger expedites a green-but-stalled deploy (confirm:true); op:force is an audited escape for an un-green commit, gated on isOperatorConfigWriteRole (acknowledgeRedTests + reason). Actions fire detached; git-sync has its own run verb.",
+      "description": "Manual deploy lever and diagnosis for a committed change that is not live on :3070. op:status reads gate/deploy state and recommends the next action; op:gate-history reads the last N green-checkpoint ticks (candidate/status/failingTests/logPath per tick) instead of just the single most recent one; op:trigger expedites a green-but-stalled deploy (confirm:true); op:force is an audited escape for an un-green commit, gated on isOperatorConfigWriteRole (acknowledgeRedTests + reason). Actions fire detached; git-sync has its own run verb.",
       "capabilities": [
         "operator:write"
       ],
