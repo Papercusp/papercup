@@ -211,6 +211,18 @@ export interface ResourceBudget {
   readonly rssMbMax: number;
   /** Max long-lived child processes per workspace. */
   readonly childProcMax: number;
+  /**
+   * Max on-disk index footprint per backend, for the WHOLE index — not one
+   * file of it. Graded by {@link classifyIndexDisk}; breaches that are real,
+   * measured and accepted are recorded in {@link KNOWN_INDEX_DISK_EXCEEDANCES}
+   * rather than by raising this number.
+   *
+   * Backends whose index is in memory (the LSP adapter: tsserver holds the
+   * project graph in-process, which is why its failure mode is V8 old-space
+   * exhaustion — WI-2142693) have NO subject for this budget. They grade
+   * `not-measured`, never `within-budget`: an unmeasured subject that reports
+   * a pass is the defect this budget was already an instance of (WI-2142942).
+   */
   readonly indexDiskMbMax: number;
   /** Max tokens a single tool result may put into an agent's context. */
   readonly resultTokensMax: number;
@@ -224,6 +236,150 @@ export const DEFAULT_RESOURCE_BUDGET: Readonly<ResourceBudget> = Object.freeze({
   indexDiskMbMax: 2_048,
   resultTokensMax: 1_500,
 });
+
+/**
+ * Index-disk breaches that are MEASURED, ACCOUNTED, and BOUNDED.
+ *
+ * The exact analogue of `KNOWN_RSS_EXCEEDANCES` in `code-intel-bench.ts`, and
+ * for the same reason: `indexDiskMbMax` is a frozen P-002 contract and is NOT
+ * raised to fit the backend it is meant to judge — a budget edited to match
+ * its subject stops being a budget. Deleting it would be the same move in a
+ * politer costume: the honest answer to a failing check is "this is real,
+ * here is its size and why we accept it for now", never "assert less".
+ *
+ * What this buys, versus the dead field it replaces (WI-2142942): the breach
+ * becomes an input to backend selection instead of a silenced assertion, and
+ * it stays BOUNDED — growth past `observedCeilingMb` fails, so accepting
+ * today's footprint is not accepting unbounded growth.
+ */
+export interface KnownIndexDiskExceedance {
+  readonly backend: string;
+  readonly observedMb: number;
+  /** Fails if the index grows past this — the exceedance stays bounded. */
+  readonly observedCeilingMb: number;
+  readonly why: string;
+}
+
+export const KNOWN_INDEX_DISK_EXCEEDANCES: readonly KnownIndexDiskExceedance[] = Object.freeze([
+  Object.freeze({
+    backend: 'gitnexus',
+    observedMb: 6_558,
+    observedCeilingMb: 10_240,
+    why:
+      'MEASURED 2026-09-03 on this checkout: `.gitnexus/` totals 6558MB — 3.2x ' +
+      'the 2048MB budget. It decomposes as lbug 4946MB (the LadybugDB file), ' +
+      'parsedfile-cache 1132MB and parse-cache 475MB. gitnexus derives its ' +
+      'index from the whole tree and grows with it, so it CANNOT be bounded to ' +
+      '2048MB on this repo. Recorded as a selection input rather than hidden. ' +
+      'NOTE the instrument gap this exposes: `measureGitnexusDbUsage` stats the ' +
+      'lbug FILE alone, against a different quantity (the 16GiB mmap cliff), so ' +
+      'the 1607MB of parse caches is invisible to every pre-existing measurement.',
+  }),
+]);
+
+/** How an index-disk footprint graded against `indexDiskMbMax`. */
+export type IndexDiskVerdict =
+  | {
+      readonly backend: string;
+      readonly status: 'not-measured';
+      readonly budgetMb: number;
+      /** Why no verdict was reached. NEVER collapses to a pass. */
+      readonly reason: string;
+    }
+  | {
+      readonly backend: string;
+      readonly status: 'within-budget' | 'accepted-exceedance' | 'over-ceiling';
+      readonly budgetMb: number;
+      readonly measuredMb: number;
+      /** The bounded allowance that applied, or null when none is recorded. */
+      readonly acceptedCeilingMb: number | null;
+    };
+
+/**
+ * Grade one backend's on-disk index footprint against `indexDiskMbMax`.
+ *
+ * `indexDiskMbMax` was a DEAD budget field until WI-2142942 — declared in
+ * `ResourceBudget`, given a value, and compared in ZERO places, while every
+ * sibling budget was either graded or consumed. A budget nothing compares
+ * against cannot fail, so it reads as a standing guarantee: the contract
+ * advertised that this layer holds indexes to 2GiB while the selected backend
+ * sat at 3.2x that, and nothing anywhere said so. Same defect, and same fix,
+ * as `warmQueryMsMax` in WI-2142923.
+ *
+ * The two failure modes this is built to refuse, in order of how easily they
+ * slip through:
+ *
+ *   1. An UNMEASURED subject grading as a pass. A backend whose index is in
+ *      memory has no footprint to measure, and reporting "0MB, within budget"
+ *      for it would be strictly worse than the dead field — a false guarantee
+ *      with evidence attached. It grades `not-measured`, carrying the reason.
+ *   2. A TRUNCATED measurement grading as a pass. `dirSizeBytes` is bounded by
+ *      `maxEntries` and an optional wall-clock deadline, and returns a PARTIAL
+ *      total when it stops early. A partial total can only ever UNDER-count,
+ *      which turns a real breach into a clean-looking pass, so a truncated
+ *      walk is `not-measured` too — never graded.
+ *
+ * The budget and the exceedance set are both injectable so a control can prove
+ * the guard fails without depending on the production constants' values.
+ */
+export function classifyIndexDisk(
+  backend: string,
+  measuredMb: number | null,
+  opts: {
+    readonly truncated?: boolean;
+    readonly budgetMb?: number;
+    readonly exceedances?: readonly KnownIndexDiskExceedance[];
+  } = {},
+): IndexDiskVerdict {
+  const budgetMb = opts.budgetMb ?? DEFAULT_RESOURCE_BUDGET.indexDiskMbMax;
+  const exceedances = opts.exceedances ?? KNOWN_INDEX_DISK_EXCEEDANCES;
+
+  if (measuredMb === null) {
+    return {
+      backend,
+      status: 'not-measured',
+      budgetMb,
+      reason: `no on-disk index footprint was measured for '${backend}'`,
+    };
+  }
+  if (opts.truncated === true) {
+    return {
+      backend,
+      status: 'not-measured',
+      budgetMb,
+      reason:
+        `the directory walk for '${backend}' stopped early, so ${measuredMb}MB is a ` +
+        'partial total that can only under-count; refusing to grade it',
+    };
+  }
+
+  const allowance = exceedances.find((e) => e.backend === backend) ?? null;
+  if (measuredMb <= budgetMb) {
+    return {
+      backend,
+      status: 'within-budget',
+      budgetMb,
+      measuredMb,
+      acceptedCeilingMb: allowance?.observedCeilingMb ?? null,
+    };
+  }
+  if (allowance !== null && measuredMb <= allowance.observedCeilingMb) {
+    return {
+      backend,
+      status: 'accepted-exceedance',
+      budgetMb,
+      measuredMb,
+      acceptedCeilingMb: allowance.observedCeilingMb,
+    };
+  }
+  return {
+    backend,
+    status: 'over-ceiling',
+    budgetMb,
+    measuredMb,
+    acceptedCeilingMb: allowance?.observedCeilingMb ?? null,
+  };
+}
 
 /**
  * Read-only / lock invariants (plan corpus cases 10 and 13).

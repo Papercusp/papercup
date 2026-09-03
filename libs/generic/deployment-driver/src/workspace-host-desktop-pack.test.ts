@@ -21,6 +21,7 @@ import {
   type WorkspaceHostDesktopPackInput,
 } from './workspace-host-desktop-pack';
 import {
+  DEFAULT_WORKSPACE_HOST_AGENT_USER,
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_STATE_ROOT,
@@ -89,7 +90,7 @@ describe('P-012 — no credential bleed into sandboxes', () => {
       buildWorkspaceHostDesktopPackScript(
         input({ isolation: { desktopUser: DEFAULT_WORKSPACE_HOST_WORKSPACE_USER } }),
       ),
-    ).toThrow(/must not run as the workspace or service account/i);
+    ).toThrow(/must not run as the workspace, service, or agent account/i);
   });
 
   it('REFUSES to run desktops as the service account', () => {
@@ -97,7 +98,18 @@ describe('P-012 — no credential bleed into sandboxes', () => {
       buildWorkspaceHostDesktopPackScript(
         input({ isolation: { desktopUser: DEFAULT_WORKSPACE_HOST_SERVICE_USER } }),
       ),
-    ).toThrow(/must not run as the workspace or service account/i);
+    ).toThrow(/must not run as the workspace, service, or agent account/i);
+  });
+
+  it('REFUSES to run desktops as the AGENT account (D-248)', () => {
+    // The newest of the three, and the one a reader is most likely to leave out: since D-248
+    // the delivered Claude/Codex/OMP material lives in the agent account's home, not the
+    // workspace account's, so this is now the account whose compromise leaks model credentials.
+    expect(() =>
+      buildWorkspaceHostDesktopPackScript(
+        input({ isolation: { desktopUser: DEFAULT_WORKSPACE_HOST_AGENT_USER } }),
+      ),
+    ).toThrow(/must not run as the workspace, service, or agent account/i);
   });
 
   it('creates a nologin system account with a 0700 home', () => {
@@ -107,7 +119,7 @@ describe('P-012 — no credential bleed into sandboxes', () => {
     expect(script).toContain('--no-create-home');
   });
 
-  it('asserts the NEGATIVE: not in the workspace or service group, and cannot read the workspace home', () => {
+  it('asserts the NEGATIVE: not in the workspace, service or agent group, and cannot read EITHER protected home (D-248)', () => {
     const script = render();
     // Group membership...
     expect(script).toMatch(
@@ -116,9 +128,23 @@ describe('P-012 — no credential bleed into sandboxes', () => {
     expect(script).toMatch(
       /id -nG "\$DESKTOP_USER"[\s\S]{0,80}grep -qx "\$SERVICE_USER" && fail workspace-credential-isolation/,
     );
+    expect(script).toMatch(
+      /id -nG "\$DESKTOP_USER"[\s\S]{0,80}grep -qx "\$AGENT_USER" && fail workspace-credential-isolation/,
+    );
     // ...and, decisively, actual reachability, which is the claim that matters however
     // the groups happen to be arranged.
-    expect(script).toMatch(/runuser -u "\$DESKTOP_USER" -- test -r "\$WORKSPACE_HOME"/);
+    //
+    // BOTH homes. Until D-248 the agent credentials lived in the workspace account's home, so
+    // one reachability check covered them. The split moved them without touching this pack —
+    // the check kept passing over a home the credentials had left, which is the failure mode
+    // this assertion now exists to prevent: coverage that reads as coverage and is not.
+    expect(script).toMatch(
+      /for protected_user in "\$WORKSPACE_USER" "\$AGENT_USER"; do/,
+    );
+    expect(script).toMatch(
+      /runuser -u "\$DESKTOP_USER" -- test -r "\$protected_home"[\s\S]{0,60}fail workspace-credential-isolation/,
+    );
+    expect(script).toContain('AGENT_USER=');
   });
 
   it('asserts the POSITIVE mirror: the desktop user can actually WRITE its own root', () => {

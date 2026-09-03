@@ -29,6 +29,7 @@
  */
 import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harness';
 import {
+  DEFAULT_WORKSPACE_HOST_AGENT_USER,
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
@@ -177,6 +178,14 @@ export interface WorkspaceHostDesktopPackIsolation {
   workspaceUser?: string;
   /** The bootstrap's service account, which the desktop user must NOT share a group with. */
   serviceUser?: string;
+  /**
+   * The bootstrap's AGENT account (D-248), whose 0700 home holds the delivered Claude/Codex/OMP
+   * material. The desktop user must not be able to read it. Named separately from `workspaceUser`
+   * because those two homes were the SAME directory before D-248 split them — so a check written
+   * against the workspace home alone silently stopped covering the credentials on the day of the
+   * split, without changing behaviour or failing anything.
+   */
+  agentUser?: string;
 }
 
 export interface WorkspaceHostDesktopPackInput {
@@ -252,13 +261,24 @@ export function buildWorkspaceHostDesktopPackScript(
   const desktopGroup = input.isolation?.desktopGroup ?? DEFAULT_WORKSPACE_HOST_DESKTOP_GROUP;
   const workspaceUser = input.isolation?.workspaceUser ?? DEFAULT_WORKSPACE_HOST_WORKSPACE_USER;
   const serviceUser = input.isolation?.serviceUser ?? DEFAULT_WORKSPACE_HOST_SERVICE_USER;
+  // D-248 moved the agent credentials OUT of the workspace account's home and into their own
+  // identity. This pack's whole isolation claim was written when those were the same directory,
+  // so without naming the agent account here the reachability check below would keep proving the
+  // desktop user cannot read a home the credentials no longer live in — a guard still passing
+  // over an empty barn, which is worse than no guard because it reads as coverage.
+  const agentUser = input.isolation?.agentUser ?? DEFAULT_WORKSPACE_HOST_AGENT_USER;
 
-  if (desktopUser === workspaceUser || desktopUser === serviceUser) {
+  if (
+    desktopUser === workspaceUser ||
+    desktopUser === serviceUser ||
+    desktopUser === agentUser
+  ) {
     throw new Error(
       `Desktop pack refuses desktopUser=${desktopUser}: sandbox desktops must not run as the ` +
-        'workspace or service account. That account holds the customer checkout and its git and ' +
-        'agent credentials, so reusing it would make a sandbox escape a credential compromise — ' +
-        'which is the exact bleed this pack exists to prevent.',
+        'workspace, service, or agent account. Between them those accounts hold the customer ' +
+        'checkout, its git credentials, and the delivered agent credentials, so reusing one ' +
+        'would make a sandbox escape a credential compromise — which is the exact bleed this ' +
+        'pack exists to prevent.',
     );
   }
 
@@ -281,6 +301,7 @@ DESKTOP_USER=${shellQuote(desktopUser)}
 DESKTOP_GROUP=${shellQuote(desktopGroup)}
 WORKSPACE_USER=${shellQuote(workspaceUser)}
 SERVICE_USER=${shellQuote(serviceUser)}
+AGENT_USER=${shellQuote(agentUser)}
 DESKTOP_ROOT=${shellQuote(WORKSPACE_HOST_DESKTOP_ROOT)}
 KASM_URL=${shellQuote(artifact.debUrl)}
 KASM_SHA=${shellQuote(artifact.debSha256)}
@@ -370,14 +391,22 @@ runuser -u "$DESKTOP_USER" -- test -w "$DESKTOP_ROOT" || fail desktop-root-writa
 [ "$(getent passwd "$DESKTOP_USER" | cut -d: -f7)" = /usr/sbin/nologin ] || fail desktop-identity
 id -nG "$DESKTOP_USER" | tr ' ' '\\n' | grep -qx "$WORKSPACE_USER" && fail workspace-credential-isolation
 id -nG "$DESKTOP_USER" | tr ' ' '\\n' | grep -qx "$SERVICE_USER" && fail workspace-credential-isolation
+id -nG "$DESKTOP_USER" | tr ' ' '\\n' | grep -qx "$AGENT_USER" && fail workspace-credential-isolation
 # The decisive test is not group membership but reachability: prove the desktop user
-# cannot actually read the workspace home, whatever the groups happen to say.
-WORKSPACE_HOME="$(getent passwd "$WORKSPACE_USER" | cut -d: -f6 || true)"
-if [ -n "\${WORKSPACE_HOME:-}" ] && [ -d "$WORKSPACE_HOME" ]; then
-  if runuser -u "$DESKTOP_USER" -- test -r "$WORKSPACE_HOME" 2>/dev/null; then
+# cannot actually read either protected home, whatever the groups happen to say.
+#
+# BOTH homes, since D-248. The workspace home holds the customer checkout and its git
+# credentials; the AGENT home holds the delivered Claude/Codex/OMP material. They were one
+# directory when this check was written, so checking only the workspace home would now pass
+# while leaving the credentials this pack names in its own error message unguarded.
+for protected_user in "$WORKSPACE_USER" "$AGENT_USER"; do
+  protected_home="$(getent passwd "$protected_user" | cut -d: -f6 || true)"
+  [ -n "\${protected_home:-}" ] || continue
+  [ -d "$protected_home" ] || continue
+  if runuser -u "$DESKTOP_USER" -- test -r "$protected_home" 2>/dev/null; then
     fail workspace-credential-isolation
   fi
-fi
+done
 phase create-desktop-identity
 
 # ── attest-pack ─────────────────────────────────────────────────────────────────────

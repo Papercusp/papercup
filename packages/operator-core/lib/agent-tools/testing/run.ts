@@ -56,6 +56,7 @@ import {
   mergeDistilledRuns,
   parseFailureDetailsSidecar,
   TESTING_RUN_MAX_PAYLOAD_BYTES,
+  persistRunSnapshot,
   startRun,
   type SpawnRequest,
   type DistilledTestRun,
