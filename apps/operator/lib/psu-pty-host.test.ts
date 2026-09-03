@@ -47,6 +47,7 @@ import {
   quotaBannerPatternsForAgent,
   makeQuotaBlockDetector,
   verifyNativeTurnStartWithRetry,
+  observeKickoffModelTurnStart,
   carryTurnProofRequiresNativeId,
   signalNameFromCode,
   reapDetachedPtyScopeResidue,
@@ -4303,5 +4304,89 @@ describe('host handoff record (WI-38292 increment 2)', () => {
     writeHostHandoff(owner, orders);
     expect(nodeFs.statSync(handoffPathFor(owner)).mode & 0o777).toBe(0o600);
     readAsSuccessor(owner);
+  });
+});
+
+describe('observeKickoffModelTurnStart (WI-2140591 — a marker proves SUBMISSION, not EXECUTION)', () => {
+  /**
+   * Drives the helper with a scripted output timeline instead of real timers:
+   * `outputs` is the value `lastOutputAt()` returns at each successive poll.
+   */
+  const runWith = (outputs: number[], opts: Record<string, unknown> = {}) => {
+    // outputs[0] is the BASELINE read (before any wait); outputs[N] is what the
+    // Nth poll observes. `waits` doubles as the poll counter, so an early return
+    // is visible as a short budget rather than only as a `polls` value.
+    let poll = -1;
+    const waits: number[] = [];
+    return {
+      waits,
+      result: observeKickoffModelTurnStart({
+        lastOutputAt: () => outputs[poll + 1] ?? 0,
+        wait: async (ms: number) => { waits.push(ms); poll += 1; },
+        pollMs: 5_000,
+        polls: 6,
+        ...opts,
+      }),
+    };
+  };
+
+  it('reports the turn started as soon as new output appears, without burning the budget', async () => {
+    // baseline 1000; the second poll sees new bytes.
+    const run = runWith([1_000, 1_000, 2_500, 3_000, 4_000, 5_000, 6_000]);
+    await expect(run.result).resolves.toMatchObject({
+      started: true,
+      observed: true,
+      polls: 2,
+      reason: null,
+    });
+    // Stopped early: 2 waits, not the full 6.
+    expect(run.waits).toHaveLength(2);
+  });
+
+  it('reports a stall when the ENTIRE budget elapses with zero new output', async () => {
+    // The live failure: the marker persisted, then codex gave up at the sampling
+    // layer and the pty never produced another byte.
+    const run = runWith([1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000]);
+    await expect(run.result).resolves.toMatchObject({
+      started: false,
+      observed: true,
+      polls: 6,
+      budgetMs: 30_000,
+      reason: 'no-model-output-after-kickoff',
+    });
+    expect(run.waits).toEqual([5_000, 5_000, 5_000, 5_000, 5_000, 5_000]);
+  });
+
+  it('does NOT flag a healthy SHORT turn that produced output and then went quiet', async () => {
+    // The false positive a "is the output quiet NOW?" predicate would produce:
+    // the agent answered immediately and returned to an idle prompt. Keying on
+    // new-output-since-baseline is what makes this a pass.
+    const run = runWith([1_000, 4_000, 4_000, 4_000, 4_000, 4_000, 4_000]);
+    await expect(run.result).resolves.toMatchObject({ started: true, polls: 1 });
+  });
+
+  it('fails SAFE when the observation is disabled — never reports a stall it did not observe', async () => {
+    for (const disabled of [{ polls: 0 }, { pollMs: 0 }]) {
+      const run = runWith([1_000, 1_000], disabled);
+      await expect(run.result).resolves.toMatchObject({
+        started: true,
+        observed: false,
+        polls: 0,
+        budgetMs: 0,
+        reason: 'observation-disabled',
+      });
+      // Nothing was awaited, so a disabled budget costs no launch latency.
+      expect(run.waits).toHaveLength(0);
+    }
+  });
+
+  it('treats a missing/NaN output clock as no-output rather than crashing the launch path', async () => {
+    const result = await observeKickoffModelTurnStart({
+      lastOutputAt: () => undefined as unknown as number,
+      wait: async () => {},
+      pollMs: 1_000,
+      polls: 2,
+    });
+    expect(result).toMatchObject({ started: false, observed: true, polls: 2 });
   });
 });
