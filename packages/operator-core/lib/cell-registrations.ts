@@ -317,6 +317,8 @@ export const GATE_VERDICT_CELL: CellSpec = {
       },
     },
     evidence: ['gate.inconclusive', 'gate.verdictStale', 'gate.fireStale', 'verdictProvenance.mainBehindStaging'],
+    // P-012: the streak is a count; `verdictUnknown` names it when it was not measured.
+    measuredBy: { 'gate.consecutiveReds': VERDICT_HOIST },
   },
 
   /**
@@ -607,6 +609,8 @@ export const GATE_QUALIFICATION_CELL: CellSpec = {
       },
     },
     evidence: ['gate.qualification.phase', 'gate.qualification.lease', 'gate.qualification.blockers'],
+    // P-012: an empty blocker list is only "no blockers" when the qualification was read.
+    measuredBy: { 'gate.qualification.blockers': 'gate.qualification.unknown' },
   },
   nullable: true,
   unknownHoist: 'gate.qualification.unknown',
@@ -702,6 +706,17 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
       'gate.candidateFailures.nonTestLegsMeasured',
       'gate.candidateFailures.nonTestLegs.perLeg',
     ],
+    // P-012: THE ORIGINAL INSTANCE. `0 / none-failing` having judged zero files is what
+    // this plan was written against. The file counts are unmeasured exactly when
+    // `unavailable` names why; the per-leg list is unmeasured when `nonTestLegsMeasured`
+    // says `not-recorded` — two flags with their own semantics, both hoisted beside
+    // the counts they vouch for.
+    measuredBy: {
+      'gate.candidateFailures.stillBrokenCount': 'gate.candidateFailures.unavailable',
+      'gate.candidateFailures.distinctFailingFiles': 'gate.candidateFailures.unavailable',
+      'gate.candidateFailures.filesJudged': 'gate.candidateFailures.unavailable',
+      'gate.candidateFailures.nonTestLegs.perLeg': 'gate.candidateFailures.nonTestLegsMeasured',
+    },
   },
   nullable: true,
   unknownHoist: 'gate.candidateFailures.unavailable',
@@ -837,6 +852,13 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
       'gate.ownerBrief.attestations.staleLegs',
       'gate.ownerBrief.unknownLegs',
     ],
+    // P-012: `failingLegs: []` is vouched for by `whyNot.measured` (WI-2143266 / D-002);
+    // `staleLegs: []` only means "nothing stale" when the attestation verdict is
+    // knowable — `not-knowable` beside an empty list is the same false-clear.
+    measuredBy: {
+      'gate.ownerBrief.whyNot.failingLegs': 'gate.ownerBrief.whyNot.measured',
+      'gate.ownerBrief.attestations.staleLegs': 'gate.ownerBrief.attestations.verdict',
+    },
   },
   nullable: true,
   unknownHoist: 'gate.ownerBrief.unknownLegs',
@@ -938,6 +960,8 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
       'gate.ownership.duplicates',
       'gate.ownership.expiresAt',
     ],
+    // P-012: an empty duplicates list is "no competing claim" only on a measured read.
+    measuredBy: { 'gate.ownership.duplicates': VERDICT_HOIST },
   },
 
   /**
@@ -1213,6 +1237,9 @@ export const HOST_MEMORY_PRESSURE_CELL: CellSpec = {
       },
     },
     evidence: ['host.memFreePct', 'memory.stale', 'memory.unknown'],
+    // P-012: the free-memory percentage is a measurement; `memory.unknown` names it when
+    // the host snapshot did not arrive.
+    measuredBy: { 'host.memFreePct': 'memory.unknown' },
   },
 
   /** Missing/stale inputs that cannot establish a band yield `pressure:null`.
@@ -1364,6 +1391,9 @@ export const AGENT_GOAL_CELL: CellSpec = {
       },
     },
     evidence: ['goalAgreement', 'goalCompeting', 'goalUnknown'],
+    // P-012: an empty competing-claims list is only "nothing competes" when the claim
+    // sources were read; `goalUnknown` carries why they were not.
+    measuredBy: { goalCompeting: 'goalUnknown' },
   },
 
   /**
@@ -1627,6 +1657,17 @@ export const TESTING_COVERAGE_FLOOR_CELL: CellSpec = {
       'coverage.evidenced',
       'coverage.unobservable',
     ],
+    // P-012: every count here is a ratio over the census; `censusUnknown` names the
+    // reason when the census itself did not arrive, and a 0% or an empty gap queue
+    // beside a non-null censusUnknown is not a measurement anyone made.
+    measuredBy: {
+      'coverage.pct': 'censusUnknown',
+      'census.surfaces': 'censusUnknown',
+      'coverage.below': 'censusUnknown',
+      'coverage.belowUnwaived': 'censusUnknown',
+      'coverage.evidenced': 'censusUnknown',
+      'coverage.unobservable': 'censusUnknown',
+    },
   },
 
   /**
@@ -1842,6 +1883,14 @@ export const GOAL_PORTFOLIO_THROUGHPUT_CELL: CellSpec = {
       'portfolioThroughput.lastActTool',
       'portfolioThroughput.measuredOwnerIds',
     ],
+    // P-012: idle minutes, acts in window and the measured-owner list are all counts over
+    // the ledger; `unavailable` names why the ledger was not read. "Never read it as
+    // zero" (evidence-unavailable) is this pairing stated as a rule.
+    measuredBy: {
+      'portfolioThroughput.idleMinutes': 'portfolioThroughput.unavailable',
+      'portfolioThroughput.actsInWindow': 'portfolioThroughput.unavailable',
+      'portfolioThroughput.measuredOwnerIds': 'portfolioThroughput.unavailable',
+    },
   },
 
   /**
@@ -2237,6 +2286,14 @@ export const GATE_CONVERGENCE_CELL: CellSpec = {
       'gate.convergence.shrinkPerRound',
       'gate.convergence.ageMs',
     ],
+    // P-012: "a `shrinkTotal` of null is not 'not shrinking'" (no-cycle-recorded) — every
+    // count in this cell is vouched for by `unmeasured`, which is also its unknownHoist.
+    measuredBy: {
+      'gate.convergence.shrinkTotal': 'gate.convergence.unmeasured',
+      'gate.convergence.attempts': 'gate.convergence.unmeasured',
+      'gate.convergence.admissionRounds': 'gate.convergence.unmeasured',
+      'gate.convergence.shrinkPerRound': 'gate.convergence.unmeasured',
+    },
   },
   nullable: true,
   unknownHoist: 'gate.convergence.unmeasured',
@@ -2447,6 +2504,9 @@ export const GATE_RETRIAGE_CELL: CellSpec = {
       'gate.retriage.budgetLabel',
       'gate.retriage.summary',
     ],
+    // P-012: the abandoned-files list is null when no re-fire is in flight AND when the
+    // marker could not be read; `unmeasured` is what tells those apart.
+    measuredBy: { 'gate.retriage.abandonedFailingFiles': 'gate.retriage.unmeasured' },
   },
   nullable: true,
   unknownHoist: 'gate.retriage.unmeasured',

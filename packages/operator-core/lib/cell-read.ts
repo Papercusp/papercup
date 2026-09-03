@@ -304,6 +304,17 @@ export interface CellAssessmentEvidence {
   /** True ⇒ absent, but the payload declares ITSELF truncated, so the absence is
    *  UNATTRIBUTABLE. Mutually exclusive with `drifted`. */
   truncatedByDoor?: true;
+  /**
+   * main-green-status-visible-2026-09-03 P-012 — THE MEASURED-NESS FLAG, CARRIED WITH
+   * THE VALUE. Present exactly when the spec pairs this path in
+   * `assessment.measuredBy`, and resolved off the SAME payload. A count or a list never
+   * reaches a caller alone: `failingLegs: []` arrives as `[]` + `whyNot.measured =
+   * false`, and the caller who reads only the value still cannot miss that it was
+   * carried rather than measured. The flag keeps its own semantics (boolean, enum,
+   * reason-or-null); nothing here interprets it. `drifted` ⇒ the flag path did not
+   * arrive, which is registration drift on the PAIRING and is reported as such.
+   */
+  measuredBy?: { path: string; value: unknown; drifted?: true };
 }
 
 /**
@@ -403,7 +414,15 @@ function assessmentEvidenceNote(e: CellAssessmentEvidence): string {
   if (e.drifted) {
     return `${e.path} = ABSENT from the resolver result (registration drift, NOT a measured null)`;
   }
-  return `${e.path} = ${briefCellValue(e.value)}`;
+  // P-012: a paired count/list is never printed bare — its flag is printed in the same
+  // breath, so the prose surface cannot render "[]" as "nothing failing" either.
+  const flag =
+    e.measuredBy === undefined
+      ? ''
+      : e.measuredBy.drifted
+        ? ` (⚠ measured-ness flag ${e.measuredBy.path} ABSENT — pairing drift; do not read this value as measured)`
+        : ` (measured-ness: ${e.measuredBy.path} = ${briefCellValue(e.measuredBy.value, 80)})`;
+  return `${e.path} = ${briefCellValue(e.value)}${flag}`;
 }
 
 /**
@@ -1026,12 +1045,19 @@ function assessmentFrom(payload: unknown, spec: CellAssessmentSpec): CellAssessm
    * and dropping it on the failure path would withhold the payload precisely when the
    * reader has least else to go on.
    */
+  const pairs = spec.measuredBy ?? {};
   const evidence: CellAssessmentEvidence[] = spec.evidence.map((p) => {
     const r = pathExists(payload, p);
-    if (r.exists) return { path: p, value: r.value };
-    return door.truncated
-      ? { path: p, value: null, truncatedByDoor: true as const }
-      : { path: p, value: null, drifted: true as const };
+    const base: CellAssessmentEvidence = r.exists
+      ? { path: p, value: r.value }
+      : door.truncated
+        ? { path: p, value: null, truncatedByDoor: true as const }
+        : { path: p, value: null, drifted: true as const };
+    // P-012: the paired measured-ness flag rides WITH the value, off the same payload.
+    const flag = pairs[p];
+    if (flag === undefined) return base;
+    const f = pathExists(payload, flag);
+    return { ...base, measuredBy: f.exists ? { path: flag, value: f.value } : { path: flag, value: null, drifted: true as const } };
   });
 
   const unavailable = (unknown: CellUnknown): CellAssessmentRead => ({

@@ -52,6 +52,7 @@ export {
  * reject an assessment code that collides with the unknown vocabulary (D-008).
  */
 import { CELL_UNKNOWN_CODES } from './cell-contract';
+import { measurednessStructuralViolations } from './cell-measuredness';
 
 /**
  * D-038 axis 3 — caller-relativity is DECLARED, never inferred.
@@ -579,6 +580,11 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
   if (!spec.nullable && spec.unknownHoist) {
     reject(2, 'hoist-without-nullable', '`unknownHoist` declared but the verdict is not nullable — one of the two is wrong.');
   }
+  // main-green-status-visible-2026-09-03 P-012 — the measured-ness pairing is STRUCTURAL,
+  // so a malformed one is refused at registration rather than discovered by a reader.
+  // Whether a hoisted count LACKS a pairing needs the live payload and is the P-012 guard
+  // in cell-assessment-reality.test.ts; this is the half decidable from the spec alone.
+  for (const v of measurednessStructuralViolations(spec)) reject(2, `measured-by-${v.kind}`, v.detail);
   // EI-18773925664381842 — the branch that used to cost NOTHING. `nullable: false`
   // passed unconditionally, so the honest author (nullable + a hoist) did strictly
   // more work than one who declared totality they had not checked. Attesting is the
