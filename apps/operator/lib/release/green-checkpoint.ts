@@ -1706,10 +1706,14 @@ export function buildSelfWatchdogCheckpointResult(opts: {
  * fabricates a code-red verdict and increments the red streak. Keep generic
  * crashes loud/counting via `buildCrashCheckpointResult`; only exact signatures
  * receive the existing infra-inconclusive no-verdict classification. Dependency
- * generation reserves exit 75 for its three live-input drift refusals: an existing
+ * generation reserves exit 75 for its FOUR live-input drift refusals: an existing
  * generation changed while being pinned, node_modules changed while being copied,
- * or dependency inputs changed before an exact-ref selector could be published.
- * All three happen before any code suite runs. Classify that writer-owned exit-code
+ * dependency inputs changed before an exact-ref selector could be published, or
+ * the post-copy manifest could no longer be verified as reusable against the live
+ * tree (a node_modules directory the manifest recorded vanished during the
+ * tens-of-seconds after-copy scan — 2026-09-03, dependency-generation.sh's
+ * "lost the incremental-reuse contract" site, formerly a mis-classified exit 1).
+ * All four happen before any code suite runs. Classify that writer-owned exit-code
  * contract rather than its hand-maintained prose; the stale-selector wording added
  * a third site and otherwise fell back to an anonymous crash on candidate 208265f0.
  * Treating any of these as `not-green` leaves no inconclusive record and lets
