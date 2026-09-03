@@ -3058,14 +3058,40 @@ case "$_preempt_after_ready" in
       echo "[pc-heavy] REFUSED after-ready barrier: cannot create marker directory $_preempt_ready_dir" >&2
       exit 75
     fi
-    _preempt_ready_file="$(mktemp "$_preempt_ready_dir/ready.XXXXXX" 2>/dev/null || true)"
-    if [ -z "$_preempt_ready_file" ] || ! rm -f "$_preempt_ready_file" 2>/dev/null; then
+    # ALLOCATE THE NAME WITHOUT CREATING THE FILE (`mktemp -u`), and never make
+    # the allocation depend on a working `rm` (EI-22197976300039578).
+    #
+    # This used to be mktemp-then-`rm -f`: create a file to reserve the name,
+    # then delete it so the child's O_CREAT|O_EXCL publish would succeed. That
+    # trusted `rm`'s EXIT CODE as proof of deletion, which is not the same
+    # claim. Under `scripts/mutation-probe.sh --fake-destructive` — the tier-0
+    # safe mode this repo tells agents to prefer — `rm` is a PATH shim that
+    # logs its argv and `exit 0`s while deleting nothing. The reservation file
+    # then SURVIVED, so the child hit EEXIST on a zero-length marker whose
+    # mtime was microseconds old; the shared liveness rule resolves an
+    # unattributable-but-fresh marker to LIVE (correctly — it cannot know it is
+    # our own leftover), so the collision propagated as TEST_FILE_ROUTE_ERROR
+    # exit 75 with ZERO tests measured. Deterministic, not transient: each
+    # retry re-ran this same allocation and re-created the same condition, so
+    # the sanctioned safe tier was unusable for every pc-heavy-routed subject
+    # (EI-22197835728112932), and the abandoned reservation files accumulated
+    # in the marker dir for days with nothing able to attribute them.
+    #
+    # `-u` removes the dependency entirely: no file is created here, so there
+    # is nothing to delete and no shim to defeat. The reservation was never
+    # what made this safe anyway — the child's O_CREAT|O_EXCL publish is the
+    # atomic claim, and it still is. Two runs drawing the same name is a
+    # 62^6 coincidence that the exclusive create already resolves as genuine
+    # contention, exactly as it did during the (wider) old rm→publish window.
+    # The `-e` guard keeps the refusal honest for a name that is somehow
+    # already occupied.
+    _preempt_ready_file="$(mktemp -u "$_preempt_ready_dir/ready.XXXXXX" 2>/dev/null || true)"
+    if [ -z "$_preempt_ready_file" ] || [ -e "$_preempt_ready_file" ]; then
       echo "[pc-heavy] REFUSED after-ready barrier: cannot allocate a unique marker path" >&2
       exit 75
     fi
-    _preempt_finalization_file="$(mktemp "$_preempt_ready_dir/finalization.XXXXXX" 2>/dev/null || true)"
-    if [ -z "$_preempt_finalization_file" ] || ! rm -f "$_preempt_finalization_file" 2>/dev/null; then
-      rm -f "$_preempt_ready_file" 2>/dev/null || true
+    _preempt_finalization_file="$(mktemp -u "$_preempt_ready_dir/finalization.XXXXXX" 2>/dev/null || true)"
+    if [ -z "$_preempt_finalization_file" ] || [ -e "$_preempt_finalization_file" ]; then
       echo "[pc-heavy] REFUSED PSI finalization handoff: cannot allocate a unique marker path" >&2
       exit 75
     fi

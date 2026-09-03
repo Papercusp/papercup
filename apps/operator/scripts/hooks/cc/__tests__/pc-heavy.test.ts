@@ -843,6 +843,58 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   }, 15_000);
 
+  it('allocates the marker PATH without creating a file, so a PATH where `rm` deletes nothing cannot break the barrier (EI-22197976300039578)', () => {
+    // Reproduces `scripts/mutation-probe.sh --fake-destructive`, the tier-0 safe
+    // mode this repo tells agents to prefer: it prepends shims for rm/rmdir/
+    // unlink/shred/truncate/mkfs/dd that log their argv and `exit 0` while
+    // deleting NOTHING.
+    //
+    // The allocation used to be mktemp-then-`rm -f`, which trusted rm's EXIT
+    // CODE as proof of deletion. Under these shims the reservation file
+    // survived, so the child's O_CREAT|O_EXCL publish hit EEXIST on a
+    // zero-length marker microseconds old — which the shared liveness rule
+    // resolves to LIVE, correctly, since it cannot know the incumbent is our
+    // own leftover. That surfaced as TEST_FILE_ROUTE_ERROR exit 75 with ZERO
+    // tests measured, deterministically on every retry, making the sanctioned
+    // safe tier unusable for every pc-heavy-routed subject
+    // (EI-22197835728112932) and littering the marker dir for days.
+    const readyDir = join(dir, 'after-ready-noop-rm');
+    const fakeBin = join(dir, 'fake-bin');
+    mkdirSync(fakeBin, { recursive: true });
+    for (const tool of ['rm', 'rmdir', 'unlink']) {
+      const shim = join(fakeBin, tool);
+      writeFileSync(shim, '#!/usr/bin/env bash\nexit 0\n');
+      chmodSync(shim, 0o755);
+    }
+
+    const r = spawnSync(
+      'bash',
+      [PC_HEAVY, 'bash', '-c', 'printf %s "$PC_HEAVY_PREEMPT_READY_FILE"'],
+      {
+        env: baseEnv({
+          PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+          PC_HEAVY_COALESCE: '0',
+          PC_HEAVY_PREEMPT_AFTER_READY: '1',
+          PC_HEAVY_PREEMPT_READY_DIR: readyDir,
+        }),
+        cwd: dir,
+        encoding: 'utf8',
+      },
+    );
+
+    // The barrier must still be OFFERED — degrading to "no barrier" would hide
+    // the defect rather than fix it.
+    expect(r.status, `stderr:\n${r.stderr}`).toBe(0);
+    const allocated = r.stdout.trim();
+    expect(allocated).toMatch(/\/ready\.[A-Za-z0-9]{6}$/);
+
+    // The two assertions that fail against the mktemp-then-rm allocation: the
+    // reserved path must not exist (nothing for the exclusive publish to
+    // collide with), and reservation must leave no debris behind at all.
+    expect(existsSync(allocated)).toBe(false);
+    expect(readdirSync(readyDir)).toEqual([]);
+  });
+
   it('lets a marked run finish before an exclusive materializer and cleans the marker', async () => {
     const readyDir = join(dir, 'after-ready-after');
     const readyPublished = join(dir, 'after-ready-published');
@@ -2757,13 +2809,32 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
     expect(publishedMarkers(readyDir, 'finalization.')).toEqual(['finalization.gHiJkL']);
     expect(publishedMarkers(readyDir, 'ready.')).toEqual(['ready.mNoPqR']);
 
-    // The transient exists ONLY because pc-heavy reserves the unique NAME with `mktemp`
-    // (which creates the file) and then removes it. Pin that idiom: if it ever changes,
-    // this discrimination may no longer be load-bearing, and the next author should find
-    // out here rather than keep carrying nuance that has quietly become dead.
+    // THE PIN, RETARGETED (EI-22197976300039578). It used to read `mktemp
+    // "$_preempt_ready_dir/…"` and asked the next author to come here if that idiom ever
+    // changed, so that nuance which had quietly become dead could be retired. It changed,
+    // and this is that visit — but the nuance is NOT dead, so the test stays and only its
+    // pin moves.
+    //
+    // What changed: reserving the name by CREATING a file and then `rm -f`-ing it made the
+    // allocation depend on a working `rm`. Under `mutation-probe.sh --fake-destructive`
+    // (PATH shims that log and `exit 0`) the reservation survived, and the child's
+    // O_CREAT|O_EXCL publish hit EEXIST on it — TEST_FILE_ROUTE_ERROR exit 75 with ZERO
+    // tests measured. `mktemp -u` reserves the name without creating anything, so that
+    // ~2ms transient no longer exists at all.
+    //
+    // Why the discrimination is still load-bearing anyway: the transient was the most
+    // COMMON zero-byte marker, never the only one. publishPreemptMarker() still creates
+    // with O_CREAT|O_EXCL and writes the pid immediately after, so a publisher killed
+    // between those two syscalls still leaves a zero-length file with no pid recorded —
+    // exactly the shape a bare prefix glob would call "published" (preempt-markers.mjs
+    // reasons about the same window for EMPTY_MARKER_DEBRIS_MS). The first two assertions
+    // above are what protect that; they need no revision.
+    //
+    // Pinning `-u` is also strictly stronger than what it replaces: a revert to the
+    // create-then-remove idiom now fails HERE as well as in the allocation guard above.
     const source = readFileSync(PC_HEAVY, 'utf8');
-    expect(source).toContain('mktemp "$_preempt_ready_dir/finalization.XXXXXX"');
-    expect(source).toContain('mktemp "$_preempt_ready_dir/ready.XXXXXX"');
+    expect(source).toContain('mktemp -u "$_preempt_ready_dir/finalization.XXXXXX"');
+    expect(source).toContain('mktemp -u "$_preempt_ready_dir/ready.XXXXXX"');
   });
 });
 
