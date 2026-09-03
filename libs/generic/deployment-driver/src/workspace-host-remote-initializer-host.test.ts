@@ -554,9 +554,12 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
 
     const report = await host.probeAgentVerification();
 
+    // `omp` twice is correct, not a duplicate: its hosted-account probe failed, so the
+    // local-inference spec ran as the documented fallback — and it too fell back to the bare name.
     expect(invocations.map((invocation) => invocation.command)).toEqual([
       "claude",
       "codex",
+      "omp",
       "omp",
     ]);
     expect(report.allReady).toBe(false);
