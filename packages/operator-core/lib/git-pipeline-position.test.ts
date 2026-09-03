@@ -4949,11 +4949,12 @@ describe('changeInCandidate (P-004)', () => {
       });
 
       it('NOT contained when the gitlink was not bumped: the pin predates the fix, and the lever names the superproject bump', async () => {
-        const res = await run({ pin: 'oldpin00oldpin00', pinBlob: OLD, headBlob: FIXED, treeBlob: FIXED });
+        // A gitlink is a sha: the pin must be hex or the 160000 regex (correctly) rejects it.
+        const res = await run({ pin: '0ddb1c000ddb1c00', pinBlob: OLD, headBlob: FIXED, treeBlob: FIXED });
         expect(res.changeInCandidate.judgingContainsPath).toBe(false);
         // Committed inside the submodule, so the lever is NOT git-sync:run on the file.
         expect(res.changeInCandidate.missingReason).toBe('newer-commit');
-        expect(res.changeInCandidate.submodule?.judgingPin).toBe('oldpin00oldpin00');
+        expect(res.changeInCandidate.submodule?.judgingPin).toBe('0ddb1c000ddb1c00');
         expect(res.changeInCandidate.detail).toMatch(/SUPERPROJECT gitlink bump/);
         expect(res.changeInCandidate.detail).toMatch(/no hand-run/);
         expect(res.assessments.gateCandidate).toBe('judging-without-current-path');
