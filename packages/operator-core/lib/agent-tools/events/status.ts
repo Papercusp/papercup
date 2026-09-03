@@ -181,8 +181,8 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   args: z.object({
     meter: z.boolean().optional().describe('Include the wake meter (per-agent counts by status/channel, 24h; events:await is single-workspace by design, so this is fleet-wide, not scoped to your workspace).'),
-    await_id: z.number().int().positive().optional().describe('Filter the active await list to the id returned by events:await. Omit to inspect all of your active awaits.'),
-    event: z.string().min(1).max(200).optional().describe('Exact event key to inspect across declarations, waiter registrations, and wake outcomes.'),
+    await_id: z.number().int().positive().optional().describe('Filter the active await list to the id returned by events:await. Omit to inspect all of your active awaits. Mutually exclusive with `event`.'),
+    event: z.string().min(1).max(200).optional().describe('Exact event key to inspect across declarations, waiter registrations, and wake outcomes. Mutually exclusive with `await_id`.'),
     after_generation: z.number().int().nonnegative().optional().describe('Your cached declaration generation for `event`. The response says whether it is stale and how to resync.'),
   }),
   async handler(args, ctx) {

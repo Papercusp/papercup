@@ -507,3 +507,30 @@ describe('events:status projection', () => {
     });
   });
 });
+
+/**
+ * EI-22075989127611832 — `await_id` × `event` exclusivity is enforced in the HANDLER,
+ * so it was invisible to a caller reading the published arg schema: two plain optionals
+ * with no declared constraint. The filed report read that rejection as the tool refusing
+ * a documented argument, because the only way to discover the rule was to trip it.
+ *
+ * Pin the DECLARATION to the ENFORCEMENT so they cannot drift apart again: drop the
+ * handler guard and the second test fails; drop the description and the first does.
+ */
+describe('events:status — await_id/event exclusivity is declared, not only enforced', () => {
+  const shape = (status.args as unknown as {
+    shape: Record<string, { description?: string }>;
+  }).shape;
+
+  it('declares the mutual exclusion on both args, each naming its counterpart', () => {
+    expect(shape.await_id.description).toMatch(/mutually exclusive/i);
+    expect(shape.await_id.description).toContain('event');
+    expect(shape.event.description).toMatch(/mutually exclusive/i);
+    expect(shape.event.description).toContain('await_id');
+  });
+
+  it('still refuses the combination at the handler', async () => {
+    await expect(call({ await_id: 11, event: 'lock:grant:t1' }))
+      .rejects.toThrow(/mutually exclusive/i);
+  });
+});

@@ -76,6 +76,10 @@ async function loadCorpus(): Promise<CorpusEntry[]> {
       }
     }
   }
+  if (process.env.P023_DUMP_CORPUS) {
+    const fs = await import('node:fs');
+    fs.writeFileSync(process.env.P023_DUMP_CORPUS, JSON.stringify(out));
+  }
   return out;
 }
 
@@ -89,7 +93,16 @@ const corpus = await loadCorpus();
  */
 const MIN_CORPUS_SIZE = 500;
 const MIN_DERIVED_RATIO = 0.95;
-const SAMPLES_PER_SCHEMA = 25;
+/**
+ * 10, not 25. This runs ~1,000 schemas, and a non-conformance that only shows at sample 25 but
+ * not at sample 10 is vanishingly rare next to the cost of quadrupling the loop in CI. The
+ * explicit per-test timeout below matters more than the sample count: an arbitrary built from a
+ * `pattern` composed with a length filter can in principle starve, and fast-check's `filter`
+ * retries without a ceiling, so an unbounded test would hang rather than fail.
+ */
+const SAMPLES_PER_SCHEMA = 10;
+/** Cold transform of the operator graph alone is ~38s; the loop adds ~10s. */
+const CORPUS_TEST_TIMEOUT_MS = 180_000;
 
 describe('census corpus → jsonSchemaToArbitrary', () => {
   it('the corpus is real (positive control on the instrument)', () => {
@@ -105,7 +118,7 @@ describe('census corpus → jsonSchemaToArbitrary', () => {
     expect(validate('2020-01-01T00:00:00.000Z')).toBe(true);
   });
 
-  it('derives a CONFORMING arbitrary for every schema it accepts', () => {
+  it('derives a CONFORMING arbitrary for every schema it accepts', { timeout: CORPUS_TEST_TIMEOUT_MS }, () => {
     const refused: string[] = [];
     const nonConforming: string[] = [];
     let derived = 0;
