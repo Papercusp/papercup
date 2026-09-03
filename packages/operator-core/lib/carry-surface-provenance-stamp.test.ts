@@ -44,6 +44,51 @@ describe('stampCarrySurfaceProvenance / carryProvenanceFields', () => {
   });
 });
 
+describe('a supplied [turn:…] ref always surfaces, even when verification could not run (EI-22197373539314485)', () => {
+  // A resolvable-looking ref with no owner-authority language on its line —
+  // clean of the sync lint (a [turn:…] ref exempts its own line) and of the
+  // typed-slot lint, so the ONLY reason a stamp exists at all is the ref.
+  const text = 'See [turn:abcd1234@2026-08-01T00:00:00Z] for the detail.';
+
+  it('ownerId absent (verification leg skipped entirely) → refs[] still contains one checked:false miss, not an undefined stamp', async () => {
+    const stamp = await stampCarrySurfaceProvenance(text, null);
+    expect(stamp).toEqual({
+      refs: [
+        {
+          ref: '[turn:abcd1234@2026-08-01T00:00:00Z]',
+          found: false,
+          verdict: null,
+          origin: null,
+          snippet: null,
+          quote: null,
+          quoteMatch: null,
+          checked: false,
+        },
+      ],
+    });
+  });
+
+  it('carryProvenanceFields mirrors the same non-vanishing refs entry', async () => {
+    const fields = await carryProvenanceFields(text, null);
+    expect(fields.turnProvenance?.refs).toHaveLength(1);
+    expect(fields.turnProvenance?.refs?.[0]).toMatchObject({ found: false, checked: false });
+    expect(fields.turnProvenance?.writtenDuring).toBeUndefined();
+  });
+
+  it('a precomputed stamp with a degraded (empty) verified leg is backfilled the same way by the shared shaping — regression guard for the withBoundedTimeout fallback path', async () => {
+    // Simulates what `stampCarrySurfaceProvenance` produces when `ownerId` is
+    // present but the transcript IO degraded (timeout, or an uncaught
+    // rejection from either leg): `verified` comes back `[]` even though a
+    // real ref was supplied. Before EI-22197373539314485 this collapsed
+    // `stamp.refs` — and, with no lint/slotLint on the line, the WHOLE stamp —
+    // to `undefined`, so a supplied anchor read back as if nothing had been
+    // written at all.
+    const stamp = await stampCarrySurfaceProvenance(text, null);
+    expect(stamp?.refs).toBeDefined();
+    expect(stamp?.refs?.every((v) => v.checked === false && v.found === false)).toBe(true);
+  });
+});
+
 describe('current-vs-retained provenance split (EI-21165235642497045)', () => {
   const current = 'the owner said to run the focused suite';
   const retained = 'the owner said to retain the old checkpoint';

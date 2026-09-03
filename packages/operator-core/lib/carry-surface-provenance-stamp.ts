@@ -349,13 +349,44 @@ export async function stampCarrySurfaceProvenance(
     [verified, writtenDuring] = value;
   }
 
+  // EI-22197373539314485: a ref the writer actually supplied must ALWAYS
+  // surface an entry in the stamp — never silently vanish. `verified` can come
+  // back shorter than `refs` (empty, in practice) in two honest-failure cases
+  // that are NOT "no refs to report": `ownerId` was falsy so the whole IO leg
+  // was skipped, or `withBoundedTimeout` degraded (a timeout, or an uncaught
+  // rejection from either transcript read) and returned its `[[], null]`
+  // fallback. Before this backfill, either case collapsed `stamp.refs` to
+  // `undefined` — and when the write carried no lint/slotLint either, the
+  // ENTIRE stamp vanished, `writtenDuring` included, so a supplied
+  // `[turn:…]` anchor read back with NO turnProvenance block at all. That is
+  // worse than an honest miss: a reader sees nothing to distrust. Backfill any
+  // ref `verified` didn't return a verdict for with an unresolved,
+  // `checked:false` miss — the same "we couldn't check" shape
+  // `verifyTurnRefs` itself already uses for a genuinely-unresolvable ref — so
+  // `found:false` (checked) and "never checked" stay distinguishable, and
+  // `turnProvenance.refs[]` always has one entry per anchor the write carried.
+  const verifiedByRef = new Map(verified.map((v) => [v.ref, v] as const));
+  const completeRefs: TurnRefVerdict[] = refs.map(
+    (r) =>
+      verifiedByRef.get(r.raw) ?? {
+        ref: r.raw,
+        found: false,
+        verdict: null,
+        origin: null,
+        snippet: null,
+        quote: r.quote ?? null,
+        quoteMatch: null,
+        checked: false,
+      },
+  );
+
   const { lint: effectiveLint, ownerTagsAutoVerified } = applyOwnerTurnAutoVerify(lint, writtenDuring);
 
   const stamp: CarryProvenanceStamp = {};
-  const mergedLint = mergeQuoteMismatchesIntoLint(effectiveLint, verified);
+  const mergedLint = mergeQuoteMismatchesIntoLint(effectiveLint, completeRefs);
   if (mergedLint) stamp.lint = mergedLint;
   if (slotLint) stamp.slotLint = slotLint;
-  if (verified.length) stamp.refs = verified;
+  if (completeRefs.length) stamp.refs = completeRefs;
   if (writtenDuring) stamp.writtenDuring = writtenDuring;
   if (ownerTagsAutoVerified > 0) stamp.ownerTagsAutoVerified = ownerTagsAutoVerified;
   return Object.keys(stamp).length ? stamp : undefined;
