@@ -55,6 +55,56 @@ export interface GateOwnerBriefVintage {
   source: string;
 }
 
+/**
+ * main-green-status-visible-2026-09-03 P-010 — ONE LEG'S VINTAGE, ASSESSED.
+ *
+ * `vintageSpreadMs` answers "do these legs disagree about WHEN", and it was already here.
+ * What it structurally cannot answer is WHICH ONE IS OLD — and that is the question a
+ * reader has to answer before deciding which half of a mixed brief to believe. Measured
+ * live 2026-09-03: spread 7,040,975ms (~1h57m) with no way, short of a metadata dig into
+ * `gate_health`'s `readAttestation`/`failingTestsAttestation`/`inconclusiveAttestation`,
+ * to tell the fresh leg from the two-hour-old one.
+ */
+export interface GateOwnerBriefAttestation extends GateOwnerBriefVintage {
+  /** The brief path this stamps, so a reader can go from the attestation to the value. */
+  leg: string;
+  /** Is THIS leg past the staleness bound? `null` when the observation is unstamped. */
+  stale: boolean | null;
+}
+
+/** How coherent the composed answer is — a VERDICT, not a number to interpret. */
+export type GateOwnerBriefSpreadVerdict = 'not-knowable' | 'coherent' | 'mixed' | 'incoherent';
+
+export interface GateOwnerBriefAttestations {
+  /** One entry per STAMPED leg, newest first. An unstamped leg cannot attest to anything. */
+  legs: GateOwnerBriefAttestation[];
+  /** Identical to the brief's `vintageSpreadMs` BY CONSTRUCTION — that field reads this one. */
+  spreadMs: number | null;
+  verdict: GateOwnerBriefSpreadVerdict;
+  /** The stale legs, NAMED — the whole point of the item. Empty when every leg is fresh. */
+  staleLegs: string[];
+  /** The oldest stamped leg: the one that bounds how far this brief can be trusted. */
+  oldestLeg: string | null;
+  /** One line, ready to quote. */
+  summary: string;
+}
+
+/**
+ * A leg observed longer ago than ONE GATE INTERVAL predates the most recent tick, so it
+ * cannot be describing the run the brief's other legs describe. The green-checkpoint cron
+ * is hourly (`37 22 * * * *`), which is what sets this bound — not a taste judgement.
+ */
+export const GATE_OWNER_BRIEF_LEG_STALE_MS = 60 * 60_000;
+
+/**
+ * Spread bands. `incoherent` starts at one gate interval for the same reason as above: at
+ * that spread the legs straddle at least one tick, so they CANNOT all describe one run.
+ * `coherent` is deliberately tight — legs composed in the same read are seconds apart, so
+ * anything past a few minutes already means something was carried.
+ */
+export const GATE_OWNER_BRIEF_SPREAD_COHERENT_MS = 5 * 60_000;
+export const GATE_OWNER_BRIEF_SPREAD_INCOHERENT_MS = GATE_OWNER_BRIEF_LEG_STALE_MS;
+
 export interface GateOwnerBriefAssessment {
   code: GateOwnerBriefAnswer;
   meaning: string;
@@ -99,8 +149,20 @@ export interface GateOwnerBrief {
    * Worst-case spread (ms) between the newest and oldest stamped legs — the
    * conflicting-reports detector: a large spread means this answer mixes observations
    * from different moments, which is exactly how two honest reads diverge.
+   *
+   * P-010: now READ FROM `attestations.spreadMs` rather than computed a second time, so
+   * the number and the per-leg breakdown that explains it cannot drift apart.
    */
   vintageSpreadMs: number | null;
+  /**
+   * P-010 — per-leg measurement freshness, and the spread as a VERDICT.
+   *
+   * `vintageSpreadMs` above says the legs disagree about when; this says WHICH ONE IS OLD
+   * (`staleLegs`, `oldestLeg`) and whether the disagreement is large enough to matter
+   * (`verdict`). Always present — an empty `legs` with `verdict: 'not-knowable'` is the
+   * honest answer when nothing was stamped, never an absent field.
+   */
+  attestations: GateOwnerBriefAttestations;
   /** Legs that could not be read, named — so absence is never silent. */
   unknownLegs: Array<{ leg: string; why: string }>;
 }
@@ -268,12 +330,22 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
     },
   };
 
-  const stampedLegs = [
-    verdictVintage.observedAtMs,
-    ownershipVintage.observedAtMs,
-    ...(inp.repairQueue != null ? [remediationVintage.observedAtMs] : []),
-    ...(inp.inconclusive?.observedAtMs != null ? [inp.inconclusive.observedAtMs] : []),
-  ].filter((v): v is number => v != null);
+  // P-010. Composed from the SAME vintage objects the legs below carry, so an attestation
+  // and the value it stamps cannot disagree — the same one-derivation rule that governs the
+  // whole composer. `whyNot`'s own vintage falls back to the verdict's when the inconclusive
+  // record is unstamped, so only the stamped case earns a `whyNot` attestation; that is
+  // exactly the set `vintageSpreadMs` has always been computed over.
+  const attestations = composeAttestations(
+    [
+      { leg: 'mainGreen', vintage: verdictVintage },
+      { leg: 'ownership', vintage: ownershipVintage },
+      ...(inp.repairQueue != null ? [{ leg: 'remediation', vintage: remediationVintage }] : []),
+      ...(inp.inconclusive?.observedAtMs != null
+        ? [{ leg: 'whyNot', vintage: vintage(inp.inconclusive.observedAtMs, 'gate inconclusive record', inp.nowMs) }]
+        : []),
+    ],
+    inp.nowMs,
+  );
 
   return {
     answer,
@@ -317,7 +389,70 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
       atMs: inp.lastGreenAtMs ?? null,
       ageMs: inp.lastGreenAtMs != null ? Math.max(0, inp.nowMs - inp.lastGreenAtMs) : null,
     },
-    vintageSpreadMs: stampedLegs.length >= 2 ? Math.max(...stampedLegs) - Math.min(...stampedLegs) : null,
+    // P-010: read from the attestation roll-up rather than recomputed, so the headline
+    // number and the per-leg breakdown that explains it are one derivation.
+    vintageSpreadMs: attestations.spreadMs,
+    attestations,
     unknownLegs,
   };
+}
+
+/**
+ * PURE (P-010): turn the composed leg vintages into per-leg attestations plus an assessed
+ * spread. Split out so the bands are exercisable directly, and so the composer above reads
+ * as one statement rather than fifteen lines of arithmetic.
+ *
+ * ⚠ Only STAMPED legs enter. An unstamped observation cannot attest to its own freshness,
+ * and admitting one with `stale: null` would let a leg nobody can date silently widen or
+ * narrow the spread — the "measured empty renders as nothing failing" defect, one axis over.
+ */
+function composeAttestations(
+  legs: ReadonlyArray<{ leg: string; vintage: GateOwnerBriefVintage }>,
+  nowMs: number,
+): GateOwnerBriefAttestations {
+  const stamped = legs
+    .filter((l) => l.vintage.observedAtMs != null)
+    .map(({ leg, vintage: v }) => ({
+      leg,
+      observedAtMs: v.observedAtMs,
+      ageMs: v.ageMs,
+      source: v.source,
+      stale: v.ageMs != null ? v.ageMs > GATE_OWNER_BRIEF_LEG_STALE_MS : null,
+    }))
+    // Newest first: the reader's question is "how far back does this brief reach", and the
+    // answer is the tail of this list.
+    .sort((a, b) => (b.observedAtMs ?? 0) - (a.observedAtMs ?? 0));
+
+  const times = stamped.map((a) => a.observedAtMs).filter((v): v is number => v != null);
+  const spreadMs = times.length >= 2 ? Math.max(...times) - Math.min(...times) : null;
+  const staleLegs = stamped.filter((a) => a.stale === true).map((a) => a.leg);
+  const oldestLeg = stamped.length > 0 ? stamped[stamped.length - 1]!.leg : null;
+
+  // `not-knowable` is NOT `coherent`. Fewer than two stamped legs means there is nothing to
+  // compare, and reporting that as agreement is the same false-green shape as a zero
+  // computed over an empty measurement.
+  const verdict: GateOwnerBriefSpreadVerdict =
+    spreadMs === null
+      ? 'not-knowable'
+      : spreadMs >= GATE_OWNER_BRIEF_SPREAD_INCOHERENT_MS
+        ? 'incoherent'
+        : spreadMs >= GATE_OWNER_BRIEF_SPREAD_COHERENT_MS
+          ? 'mixed'
+          : 'coherent';
+
+  const mins = (ms: number) => `${Math.round(ms / 60_000)}m`;
+  const summary =
+    verdict === 'not-knowable'
+      ? `Freshness NOT KNOWABLE — ${stamped.length} stamped leg(s), so there is nothing to compare. This is not agreement.`
+      : verdict === 'coherent'
+        ? `Legs agree on when: spread ${mins(spreadMs!)}, every leg within one gate interval.`
+        : `⚠ This brief MIXES observations ${mins(spreadMs!)} apart` +
+          (verdict === 'incoherent'
+            ? ' — at least one gate interval, so the legs cannot all describe the same run. '
+            : '. ') +
+          (staleLegs.length > 0
+            ? `Stale leg(s): ${staleLegs.join(', ')}. Oldest is "${oldestLeg}" — do not quote it as current.`
+            : `Oldest is "${oldestLeg}"; no single leg is past the staleness bound, but they were not observed together.`);
+
+  return { legs: stamped, spreadMs, verdict, staleLegs, oldestLeg, summary };
 }

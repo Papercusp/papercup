@@ -807,6 +807,14 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
       'gate.ownerBrief.ownership.assessmentCode',
       'gate.ownerBrief.remediation.fixerAlive',
       'gate.ownerBrief.vintageSpreadMs',
+      // main-green-status-visible-2026-09-03 P-010: the spread alone says the legs
+      // disagree about WHEN but never WHICH ONE IS OLD, which is the question a reader
+      // must answer before deciding which half of a mixed brief to believe. `verdict`
+      // hoists the interpretation (coherent / mixed / incoherent / not-knowable) and
+      // `staleLegs` names the offenders, so a ~2h spread stops being a raw number the
+      // reader has to convert and judge for themselves.
+      'gate.ownerBrief.attestations.verdict',
+      'gate.ownerBrief.attestations.staleLegs',
       'gate.ownerBrief.unknownLegs',
     ],
   },
@@ -829,7 +837,7 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
     path: 'gate.ownerBrief.answer',
   },
   shape:
-    '{ gate: { ownerBrief: { answer, assessment: { code, meaning, safeAction }, mainGreen: { value, vintage }, whyNot: { failingLegs, measured, inconclusiveStatus, vintage } | null, ownership: { claimState, holder, workItem, assessmentCode, vintage }, remediation: { phase, attempts, fixerSpawnId, fixerAlive, zeroAttemptStalled, queueAgeMs, vintage } | null, lastGreen: { atMs, ageMs }, vintageSpreadMs, unknownLegs } } }',
+    '{ gate: { ownerBrief: { answer, assessment: { code, meaning, safeAction }, mainGreen: { value, vintage }, whyNot: { failingLegs, measured, inconclusiveStatus, vintage } | null, ownership: { claimState, holder, workItem, assessmentCode, vintage }, remediation: { phase, attempts, fixerSpawnId, fixerAlive, zeroAttemptStalled, queueAgeMs, vintage } | null, lastGreen: { atMs, ageMs }, vintageSpreadMs, attestations: { legs: [{ leg, observedAtMs, ageMs, source, stale }], spreadMs, verdict, staleLegs, oldestLeg, summary }, unknownLegs } } }',
 };
 
 /**
