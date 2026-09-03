@@ -791,6 +791,7 @@ export type RepairQueueReconciliation = {
     | 'no-queue'
     | 'queue-malformed'
     | 'queue-origin-mismatch'
+    | 'queue-origin-unknown'
     | 'queue-not-safe-unstarted'
     | 'exact-safe-unstarted'
     | 'cas-miss';
@@ -808,6 +809,12 @@ export type StoredQualificationMutation =
  * only for an explicitly distinct successor and only while the queue is still the exact,
  * unstarted row created by that predecessor. Any legacy, mismatched, dispatched, repaired,
  * or otherwise advanced queue stays authoritative and blocks the successor fail-closed.
+ *
+ * A queue with a NULL `qualificationAttemptId` (schema v3 permits this — see WI-41667) is
+ * judged the same way: null means the origin is unknown, not that it belongs to someone
+ * else, so it is never fail-closed purely for that reason. It is retired when it is
+ * otherwise exact/safe/unstarted, and blocked with the distinguishing `queue-origin-unknown`
+ * reason only when the phase/attempts/fixer checks say it genuinely isn't idle (WI-2142947).
  */
 export function assessTerminalRepairQueueReconciliation(
   current: CheckpointQualificationTransaction,
@@ -821,7 +828,14 @@ export function assessTerminalRepairQueueReconciliation(
   if (rawRepairQueue == null) return { status: 'none', reason: 'no-queue', ...base };
   const queue = parseFrozenCandidateRepairQueue(rawRepairQueue);
   if (!queue) return { status: 'blocked', reason: 'queue-malformed', ...base };
-  if (queue.qualificationAttemptId !== current.attemptId) {
+  // A NULL origin is an ABSENCE of provenance, not evidence of a competing owner: schema v3
+  // permits a queue created without a stamped `qualificationAttemptId` (see WI-41667), and such
+  // a queue is well-formed, not corrupt. Only a KNOWN, DIFFERENT attemptId is a genuine mismatch
+  // (someone else's queue) that must stay fail-closed forever. A null origin instead falls
+  // through to the same phase/attempts/fixer safety checks below, so it is judged on its actual
+  // state rather than being permanently blocked (WI-2142947).
+  const originUnknown = queue.qualificationAttemptId === null;
+  if (!originUnknown && queue.qualificationAttemptId !== current.attemptId) {
     return {
       status: 'blocked',
       reason: 'queue-origin-mismatch',
@@ -838,7 +852,10 @@ export function assessTerminalRepairQueueReconciliation(
   ) {
     return {
       status: 'blocked',
-      reason: 'queue-not-safe-unstarted',
+      // Origin-unknown-and-unsafe gets its own reason so the refusal is diagnosable as "we
+      // don't know whose queue this is, and it also isn't verifiably idle" rather than reading
+      // like a takeover race against a known owner.
+      reason: originUnknown ? 'queue-origin-unknown' : 'queue-not-safe-unstarted',
       candidate: queue.candidate,
       ...base,
     };

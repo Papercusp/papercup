@@ -43,7 +43,10 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: ['operator', 'papercup'],
   timeoutSec: 600,
-  idleTimeoutSec: 120,
+  // WI-2142938: was 120 — same idle-vs-chat:ask_choice mismatch as
+  // operator:converse (this tool shares that handler verbatim). See the
+  // comment on converse.ts's idleTimeoutSec for the full mechanism.
+  idleTimeoutSec: 600,
   replayBufferSize: 5000,
   modality: ['text', 'voice'],
   // Mirror the operator converse arg surface (the REAL converse ArgsSchema, so every

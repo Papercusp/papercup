@@ -278,10 +278,64 @@ describe('logical checkpoint qualification transaction', () => {
         }),
       ),
     ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
+  });
+
+  // WI-2142947: a NULL qualificationAttemptId (schema v3 permits this, WI-41667) is an
+  // ABSENCE of provenance, not evidence of a competing owner. It must not be treated as a
+  // permanent 'queue-origin-mismatch' fail-close; it falls through to the same
+  // phase/attempts/fixer safety checks as a known-matching origin.
+  it('judges a null-origin queue (unknown provenance) on its actual state instead of permanently fail-closing it', () => {
+    const terminal = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1', reason: 'not-green', green: false, nowMs: 400,
+    }).transaction;
+    const safeQueue = createFrozenCandidateQueue({
+      candidate: 'candidate-1',
+      qualificationAttemptId: 'attempt-1',
+      base: null,
+      worktreePath: '/repo/.papercusp/worktrees/candidate-1',
+      nowMs: 200,
+    });
+    const successor = {
+      attemptId: 'attempt-2',
+      requiredAncestorSha: 'successor-repair',
+      declaredPaths: ['fixed.ts'],
+      candidate: 'candidate-2',
+      nowMs: 500,
+    };
+
+    // Null-origin AND exact/safe/unstarted -> retired, same as a known-matching origin. This
+    // is the concrete case that used to permanently fail-close manual release:checkpoint-run.
     expect(
       assessTerminalRepairQueueReconciliation(terminal, successor, {
         ...safeQueue,
         qualificationAttemptId: undefined,
+      }),
+    ).toMatchObject({
+      status: 'retired',
+      reason: 'exact-safe-unstarted',
+      predecessorAttemptId: 'attempt-1',
+      successorAttemptId: 'attempt-2',
+      candidate: 'candidate-1',
+    });
+
+    // Null-origin but genuinely NOT idle (mid-repair) -> still blocked, but diagnosable as
+    // origin-unknown rather than reading like a takeover race against a known owner.
+    expect(
+      assessTerminalRepairQueueReconciliation(
+        terminal,
+        successor,
+        markFrozenCandidateVerificationRed(
+          { ...safeQueue, qualificationAttemptId: undefined },
+          { failingTests: ['broken.test.ts'], nowMs: 300 },
+        ),
+      ),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
+
+    // A KNOWN, DIFFERENT origin is still a genuine mismatch and stays fail-closed forever.
+    expect(
+      assessTerminalRepairQueueReconciliation(terminal, successor, {
+        ...safeQueue,
+        qualificationAttemptId: 'another-attempt',
       }),
     ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
   });

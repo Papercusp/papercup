@@ -39,7 +39,7 @@ export function auditFeatureChange(
       const { notifySyncInvalidate } = await import('./sync-sse');
       await notifySyncInvalidate('featureAudit.byHarness', { harnessSlug });
     } catch (e) {
-      console.warn('[harness] feature audit insert failed:', (e as Error)?.message);
+      console.warn('[harness] feature audit insert failed:', (e as Error)?.message, (e as Error)?.stack);
     }
   })();
 }

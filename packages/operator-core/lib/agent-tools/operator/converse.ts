@@ -183,7 +183,24 @@ export default defineTool({
   // the same handler under the sentinel name; both resolve this allowlist.
   agentRoles: ['operator', 'papercup'],
   timeoutSec: 600,
-  idleTimeoutSec: 120,
+  // WI-2142938: was 120. chat:ask_choice (available in this brain's own tool
+  // surface, ALL_AGENT_MCP_TOOLS) BLOCKS on ctx.askUser for up to its own
+  // 600s timeoutSec while a human decides whether to click a card — see
+  // agent-tools/chat/ask_choice.ts's EI-288 comment. While that nested call
+  // is pending, runAgentChat's underlying CLI subprocess streams NO
+  // delta/tool_call events (it is waiting on the tool's MCP result), so
+  // nothing resets dispatch-stack's idle watchdog (ctx-bindings' wrappedEmit
+  // only bumps lastEmitMs on emit). A 120s idle cap therefore aborted this
+  // handler's own exec (idleWatchdogStep) any time a user took >120s to
+  // answer an ask_choice card — the abort makes runAgentChat's loop `break`
+  // silently (ctx.signal.aborted, no throw), so the SSE stream just ends
+  // with nothing persisted, while the card itself stayed open/clickable
+  // (state-snapshot driven, decoupled from this turn — see ask_choice.ts's
+  // docstring). Root cause of the "assistant turn never persisted to
+  // operator_turns" defect. Match timeoutSec so the idle cap can never fire
+  // before the absolute one — a genuinely wedged subprocess is still caught
+  // by timeoutSec regardless.
+  idleTimeoutSec: 600,
   // Phase 4 T2.2 — opt into replay buffer. 5000 events is a
   // generous soft cap; eviction warn-logs let us tune down once
   // migration 066's event_count column has p99 data.
