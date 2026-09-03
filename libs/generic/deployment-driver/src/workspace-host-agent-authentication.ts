@@ -461,6 +461,59 @@ export interface WorkspaceHostAgentVerificationReport {
   >;
 }
 
+/**
+ * True when any code unit is a C0 control or DEL.
+ *
+ * A codepoint scan rather than a character-class regex on purpose: the class has to be written
+ * with the control characters themselves, and a raw control byte in source makes ripgrep treat the
+ * file as binary and skip it — so the one guard nobody can grep for is the guard about ungreppable
+ * bytes. This says the same thing in characters that survive a diff.
+ */
+function containsControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/**
+ * Point one probe spec at the vendor runtime path recorded for its agent (D-259 Defect 2).
+ *
+ * The default specs name each CLI by BARE NAME, which the probe resolves against its search path.
+ * On a real workspace host that path leads with the release bundle's own `bin/`, and the files
+ * there are launcher WRAPPERS named after the agent CLIs — they do not implement `auth status`, so
+ * a probe that found one measured the wrapper and reported a credential fault that no credential
+ * could fix. That is D-247, and it read as a probe bug across three sessions precisely because the
+ * probe looked correct: it ran the name it meant to run. Provisioning resolves each vendor binary
+ * after installing it and records the ABSOLUTE path; substituting that path here is what makes the
+ * probe exec the vendor CLI instead of whatever the search path happens to find first.
+ *
+ * A MISSING path is deliberately not an error. A host provisioned before those installs existed
+ * genuinely has no vendor runtime, and the honest outcome there is a probe that runs and FAILS —
+ * "this host cannot authenticate an agent" is the finding the canary exists to surface. Throwing
+ * instead would re-file that finding as an infrastructure error and hide it.
+ */
+export function applyWorkspaceHostAgentRuntimePath(
+  spec: WorkspaceHostAgentVerificationProbeSpec,
+  runtimePath: string | undefined,
+): WorkspaceHostAgentVerificationProbeSpec {
+  if (runtimePath === undefined) return spec;
+  // Control characters are rejected rather than escaped: the path is interpolated into the
+  // `env -i --` argv the probe launches with, so a value carrying a NUL or a newline is a
+  // truncated or split ARGUMENT, not a path that merely fails to exist.
+  if (
+    !runtimePath.startsWith("/") ||
+    runtimePath.length < 2 ||
+    containsControlCharacter(runtimePath)
+  ) {
+    throw new Error(
+      `agent '${spec.agent}' runtime path must be an absolute path free of control characters`,
+    );
+  }
+  return { ...spec, command: runtimePath };
+}
+
 export interface ProbeWorkspaceHostAgentsInput {
   readonly runner: WorkspaceHostAgentProbeRunner;
   readonly probes?: Partial<
@@ -474,6 +527,15 @@ export interface ProbeWorkspaceHostAgentsInput {
   readonly env?: Readonly<Record<string, string>>;
   /** Real Unix account shared by all three sequential probes. */
   readonly runAsUser?: string;
+  /**
+   * Absolute path of each agent's VENDOR runtime, as resolved on the host after install.
+   *
+   * When present for an agent it REPLACES that agent's probe `command` — every spec for that
+   * agent, so OMP's hosted-account and local-inference probes both exec the same binary. Absent
+   * entries fall back to the spec's own command; see `applyWorkspaceHostAgentRuntimePath` for why
+   * that fallback is a fallback and not a failure.
+   */
+  readonly runtimePaths?: Partial<Record<WorkspaceHostCanaryAgent, string>>;
 }
 
 /**
@@ -504,7 +566,12 @@ export async function probeWorkspaceHostAgents(
         );
       }
       agents[agent] = await probeWorkspaceHostAgentVerification({
-        spec,
+        // Applied AFTER the agent-mismatch check above, so a mis-declared spec is refused as a
+        // mis-declared spec rather than silently rewritten to point at another agent's binary.
+        spec: applyWorkspaceHostAgentRuntimePath(
+          spec,
+          input.runtimePaths?.[agent],
+        ),
         runner: input.runner,
         now,
         ...(input.env ? { env: input.env } : {}),
