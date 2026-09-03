@@ -10,10 +10,12 @@ import { COORD_ROLES } from '../roles';
 export default defineTool({
   name: 'coord:escalations',
   description:
-    "List escalations addressed to the human — newest-first, bounded at the storage layer (EI-1548: never loads the whole backlog into memory). Default page 50, max 500. Filter by status=open / status=resolved. ⚠ `total`/`count` is JUST this page's size, NOT the backlog size — a small maxRecords can make it look like ground truth (EI-16170). For status=open, use `trueOpenTotal` (an unbounded exact count) as the real backlog size, and page the WHOLE backlog with `offset` (0, then +maxRecords, …) until `truncated:false` (sum of pages == trueOpenTotal; EI-18712273081050373 — offset does REAL backward pagination for status=open, unlike a bare maxRecords bump which only widens the recency window and can miss old escalations). `truncated:true` means older escalations exist beyond the window. A `body` over 500 chars is truncated in list mode (`bodyTruncated:true` + `bodyLength`). Full detail + examples: /internal/docs/agent-insights/coord-escalations-pagination-semantics.",
+    "List escalations addressed to the human — newest-first, bounded at the storage layer (EI-1548: never loads the whole backlog into memory). Default page 50, max 500. Filter by status=open / status=resolved. ⚠ `total`/`count` is JUST this page's size, NOT the backlog size — a small maxRecords can make it look like ground truth (EI-16170). For status=open, use `trueOpenTotal` (an unbounded exact count) as the real backlog size, and page the WHOLE backlog with `offset` (0, then +maxRecords, …) until `truncated:false` (sum of pages == trueOpenTotal; EI-18712273081050373 — offset does REAL backward pagination for status=open, unlike a bare maxRecords bump which only widens the recency window and can miss old escalations). `truncated:true` means older escalations exist beyond the window. A `body` over 500 chars is truncated in list mode (`bodyTruncated:true` + `bodyLength`). EI-15377: `conditionKey`/`q` re-check one known escalation without dumping the whole backlog — see returns for match-completeness caveats. Full detail + examples: /internal/docs/agent-insights/coord-escalations-pagination-semantics.",
   guidance: {
     when: 'Showing the human inbox; diagnostics; checking your own past escalations.',
     notWhen: 'A specific msg_id you already have — there is no escalation read-by-id tool yet; coord:escalations + filter is enough at current volumes.',
+    returns:
+      'EI-15377: `conditionKey` is an exact match against the record subjectSignature (the dedup key a caller supplies as meta.subjectSignature when opening); `q` is a case-insensitive substring match over summary+body. For status=open the filter runs against the COMPLETE open set, so a miss proves absence. Otherwise it runs against a recency-bounded window and the result carries `filterWindowCaveat:true` — a miss there does NOT prove absence, only that no match fell inside the window scanned.',
   },
   capability: 'coord:read',
   requirePrincipal: false,
@@ -29,12 +31,24 @@ export default defineTool({
       .describe(
         'Page offset into the true open set (status=open only) — 0 for the first page, then +maxRecords each call, until truncated:false. No effect for status=resolved / unfiltered reads.',
       ),
+    conditionKey: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('EI-15377: exact match against the record subjectSignature. See returns for match-completeness caveats.'),
+    q: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('EI-15377: case-insensitive substring match over summary+body. See returns for match-completeness caveats.'),
   }),
   async handler(args) {
     const result = await listEscalationsPaginated({
       status: args.status,
       maxRecords: args.maxRecords,
       offset: args.offset,
+      conditionKey: args.conditionKey,
+      q: args.q,
     });
 
     return {
@@ -48,6 +62,7 @@ export default defineTool({
             trueOpenTotal: result.trueOpenTotal,
             truncated: result.truncated,
             offset: result.offset,
+            filterWindowCaveat: result.filterWindowCaveat,
             note: result.truncated
               ? result.offset !== undefined && result.trueOpenTotal !== undefined
                 ? `Page [${result.offset}, ${result.offset + result.escalations.length}) of the true open backlog (trueOpenTotal:${result.trueOpenTotal}). Pass offset:${result.offset + result.escalations.length} to page further — do NOT just raise maxRecords, it will not reach older rows.`

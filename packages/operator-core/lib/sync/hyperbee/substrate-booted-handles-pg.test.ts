@@ -42,6 +42,7 @@ vi.mock('../../operator-state-pg', () => ({
 import {
   startBootedHandlesPgPublisher,
   getPgBootedHandlesSnapshotFallback,
+  getPgBootedHarnessAnnounceIdentity,
   getPgRelocatedHarnessEndpoint,
 } from './substrate-booted-handles-pg';
 import { getManaged } from '@papercusp/scheduled-registry';
@@ -259,5 +260,111 @@ describe('getPgRelocatedHarnessEndpoint (cross-process dial discovery)', () => {
     await expect(
       getPgRelocatedHarnessEndpoint('ws1', 'relocated', { now: () => 1_500 }),
     ).resolves.toBeNull();
+  });
+});
+
+/**
+ * WI-2142873 — the cross-process half of "never sign as a device that does not
+ * serve the pot". The decision itself is pinned in
+ * harness/git-sync/hive-git-actor.test.ts; this pins the fact it decides on.
+ *
+ * The three states must stay DISTINCT. Collapsing "the owner says nothing is
+ * booted" into "we could not ask" is what let a git-sync routine in a separate
+ * process conclude that no swarm identity existed and sign 216 papercusp
+ * announcements as a device serving no topic.
+ */
+describe('getPgBootedHarnessAnnounceIdentity (WI-2142873 cross-process identity)', () => {
+  const identity = {
+    devicePubkeyBase64: 'XPAsvso1-aviynw-tower',
+    githubUserId: 1567022,
+    githubLogin: 'aviynw',
+    keychainId: '1567022:tower',
+  };
+
+  it('returns the serving identity for a booted handle, relocated or in-process', async () => {
+    H.state.row = {
+      handles: [
+        { workspaceId: 'ws1', harnessSlug: 'in-process', announceIdentity: identity },
+        { workspaceId: 'ws1', harnessSlug: 'relocated', announceIdentity: identity },
+      ],
+      sentAt: 1_000,
+      sidecar: {
+        socketPath: '/tmp/substrate-owner.sock',
+        handles: [{ workspaceId: 'ws1', harnessSlug: 'relocated', announceIdentity: identity }],
+      },
+    };
+
+    // Deliberately BOTH: scoping this reader to relocated handles would fix one
+    // process split and leave the other signing undialable announcements.
+    await expect(
+      getPgBootedHarnessAnnounceIdentity('ws1', 'relocated', { now: () => 1_500 }),
+    ).resolves.toEqual({ booted: true, identity, advertisedAt: 1_000 });
+    await expect(
+      getPgBootedHarnessAnnounceIdentity('ws1', 'in-process', { now: () => 1_500 }),
+    ).resolves.toEqual({ booted: true, identity, advertisedAt: 1_000 });
+  });
+
+  it('reports booted-with-NO-identity distinctly from not-booted — the caller must refuse on one and not the other', async () => {
+    H.state.row = {
+      handles: [
+        // A pre-WI-2142873 owner: it holds the handle but cannot say who it serves as.
+        { workspaceId: 'ws1', harnessSlug: 'legacy-owner' },
+      ],
+      sentAt: 1_000,
+    };
+
+    await expect(
+      getPgBootedHarnessAnnounceIdentity('ws1', 'legacy-owner', { now: () => 1_500 }),
+    ).resolves.toEqual({ booted: true, identity: null, advertisedAt: 1_000 });
+
+    // Absent from the list = the owner reports nothing serving this pot.
+    await expect(
+      getPgBootedHarnessAnnounceIdentity('ws1', 'not-booted-anywhere', { now: () => 1_500 }),
+    ).resolves.toEqual({ booted: false, identity: null, advertisedAt: 1_000 });
+  });
+
+  it('returns null (UNKNOWN) for a stale or missing row — never a confident not-booted', async () => {
+    H.state.row = {
+      handles: [{ workspaceId: 'ws1', harnessSlug: 'a', announceIdentity: identity }],
+      sentAt: 1_000,
+    };
+    // Stale beyond the trust window: we learned nothing, which is NOT the same
+    // as learning that nothing is booted.
+    await expect(
+      getPgBootedHarnessAnnounceIdentity('ws1', 'a', { now: () => 31_001, maxAgeMs: 30_000 }),
+    ).resolves.toBeNull();
+
+    H.state.row = null;
+    await expect(
+      getPgBootedHarnessAnnounceIdentity('ws1', 'a', { now: () => 1_500 }),
+    ).resolves.toBeNull();
+  });
+
+  it('treats an identity with no device pubkey as no identity', async () => {
+    H.state.row = {
+      handles: [
+        {
+          workspaceId: 'ws1',
+          harnessSlug: 'half',
+          announceIdentity: { devicePubkeyBase64: '', githubUserId: 7, keychainId: '7:box' },
+        },
+      ],
+      sentAt: 1_000,
+    };
+
+    await expect(
+      getPgBootedHarnessAnnounceIdentity('ws1', 'half', { now: () => 1_500 }),
+    ).resolves.toEqual({ booted: true, identity: null, advertisedAt: 1_000 });
+  });
+
+  it('scopes by workspace — another tenant’s handle is not this pot’s identity', async () => {
+    H.state.row = {
+      handles: [{ workspaceId: 'other-ws', harnessSlug: 'a', announceIdentity: identity }],
+      sentAt: 1_000,
+    };
+
+    await expect(
+      getPgBootedHarnessAnnounceIdentity('ws1', 'a', { now: () => 1_500 }),
+    ).resolves.toEqual({ booted: false, identity: null, advertisedAt: 1_000 });
   });
 });
