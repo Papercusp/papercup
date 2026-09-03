@@ -1315,8 +1315,21 @@ export function buildWorkspaceHostBootstrap(
     "X11Forwarding no",
     "PermitTunnel no",
     "PAPERCUSP_SSH",
+    // `sshd -t` stats the privilege-separation directory before it will validate anything, and
+    // /run/sshd is a systemd RuntimeDirectory that systemd DELETES whenever ssh.service stops.
+    // The apt step earlier in this same phase stops it whenever it UPGRADES openssh-server, so
+    // whether this line works depends on whether that boot happened to pull an openssh update —
+    // which is why it passed on p046-canary-07 and failed on p046-canary-08 six hours later
+    // ("3 upgraded", then `Missing privilege separation directory: /run/sshd` and exit 255,
+    // aborting bootstrap in phase:harden-os with the workspace already keyed but unhardened).
+    // Recreating it makes the config test depend on the CONFIG rather than on the runtime state
+    // of a unit this phase just restarted. Idempotent: the unit recreates it on the next start.
+    "install -d -m 0755 -o root -g root /run/sshd",
     "sshd -t",
-    "systemctl reload ssh 2>/dev/null || systemctl reload sshd",
+    // reload-or-restart, not reload: after that same upgrade ssh.service can be left STOPPED, and
+    // `systemctl reload` of a stopped unit FAILS — which under `set -euo pipefail` would abort
+    // here, one line past the trap above, for the same underlying reason.
+    "systemctl reload-or-restart ssh 2>/dev/null || systemctl reload-or-restart sshd",
     "ufw default deny incoming",
     "ufw default allow outgoing",
     "ufw allow 22/tcp",

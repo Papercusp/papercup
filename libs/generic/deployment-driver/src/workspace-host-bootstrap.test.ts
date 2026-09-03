@@ -860,10 +860,40 @@ describe('buildWorkspaceHostBootstrap', () => {
         '/home/$WORKSPACE_USER/.ssh/authorized_keys',
       );
       const hardened = script.indexOf('AllowUsers $WORKSPACE_USER');
-      const reloaded = script.indexOf('systemctl reload ssh');
+      const reloaded = script.indexOf('systemctl reload-or-restart ssh');
       expect(keyInstalled).toBeGreaterThan(-1);
       expect(keyInstalled).toBeLessThan(hardened);
       expect(hardened).toBeLessThan(reloaded);
+    });
+
+    // p046-canary-08: bootstrap aborted in phase:harden-os with
+    //   Missing privilege separation directory: /run/sshd   (sshd -t, exit 255)
+    // /run/sshd is ssh.service's systemd RuntimeDirectory, so systemd removes it whenever that
+    // unit stops — which the apt step in this SAME phase causes whenever it upgrades
+    // openssh-server. That made the step's success depend on whether the boot happened to pull an
+    // openssh update: canary-07 passed, canary-08 failed six hours later on "3 upgraded".
+    // Reproduced with a negative control (ubuntu:24.04 + openssh-server): with /run/sshd removed
+    // `sshd -t` prints that exact line and exits 255; after `mkdir -p /run/sshd` it exits 0.
+    it('creates the sshd privilege-separation directory BEFORE validating the config', () => {
+      const script = buildWorkspaceHostBootstrap(input());
+      const privsep = script.indexOf('install -d -m 0755 -o root -g root /run/sshd');
+      const validated = script.indexOf('sshd -t');
+      expect(privsep).toBeGreaterThan(-1);
+      expect(validated).toBeGreaterThan(-1);
+      // Ordering is the whole property: created after the test would not prevent the abort.
+      expect(privsep).toBeLessThan(validated);
+    });
+
+    // The line immediately after `sshd -t` had the same latent dependency: `systemctl reload` of
+    // a STOPPED unit fails, and an openssh upgrade can leave ssh.service stopped. Under
+    // `set -euo pipefail` that aborts the bootstrap one line past the trap fixed above.
+    it('applies the hardened config with reload-or-restart, so a stopped ssh.service is not fatal', () => {
+      const script = buildWorkspaceHostBootstrap(input());
+      expect(script).toContain(
+        'systemctl reload-or-restart ssh 2>/dev/null || systemctl reload-or-restart sshd',
+      );
+      // A bare `systemctl reload ssh` is precisely what regresses this.
+      expect(script).not.toMatch(/systemctl reload ssh\b/);
     });
 
     it('fails the bootstrap rather than leaving an empty authorized_keys', () => {
