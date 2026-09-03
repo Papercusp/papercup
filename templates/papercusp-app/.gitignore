@@ -5,6 +5,7 @@ out/
 build/
 *.tsbuildinfo
 coverage/
+coverage-*/
 .env
 .env.*
 *.log

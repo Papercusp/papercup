@@ -44,8 +44,13 @@ package-lock.json
 *.log
 
 # Vitest coverage output (published as CI artifacts, never committed — spec §1.13)
+# coverage-*/ variants (EI-22195215129102176): a non-default --coverage.reportsDirectory
+# (e.g. comparing two coverage configs) is otherwise NOT ignored, and git-sync sweeps it
+# into a commit within ~1 minute with git status reading clean afterwards.
 coverage/
+coverage-*/
 **/coverage/
+**/coverage-*/
 
 # Per-run test output (p2p-perf bench artifacts + report.md, Playwright, etc.).
 # Ephemeral, keyed by a timestamp/runId — NOT source. Committed baselines that
