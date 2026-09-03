@@ -245,6 +245,17 @@ export const GENERIC_USERS = new Set([
   // and neither can reach the release bundle's audit, which resolves THIS box's
   // identity at run time and never looks for a generic home path at all.
   "papercusp-workspace",
+  // The THIRD workspace-host identity (D-248, 2026-09-03) — the non-login account the bundled
+  // agent CLIs execute as, and the owner of the delivered agent credential home. Same class and
+  // same provenance as `papercusp-workspace` directly above: `workspace-host-bootstrap.ts`
+  // CREATES it (useradd/usermod/install -d) rather than consuming a home borrowed from a box, so
+  // `/home/papercusp-agent` is correct on every machine that runs the generated script.
+  //
+  // Listed alongside its sibling deliberately. The two accounts were ONE until D-248 split them,
+  // and the split is what keeps the customer's SSH login out of the runtime (D-043) — so a
+  // future reader finding one name here and not the other should suspect a half-reverted split,
+  // not an oversight in this list.
+  "papercusp-agent",
   "packer",
   // Stand-ins that name nobody: test fixtures and doc examples.
   "test",
