@@ -176,6 +176,9 @@ export default function KnowledgePackCandidates() {
         <Inbox size={13} aria-hidden /> Fleet lesson candidates
         {pending.length > 0 ? <span>{pending.length}</span> : null}
       </p>
+      <p className="pc-pack-candidates__sub">
+        Cross-hive recurring lessons staged by the recurrence-escalation sweep.
+      </p>
       {pending.length > 0 ? (
         <p className="pc-pack-candidates__sub">
           Auto-reviewed on a schedule and adopted into fleet-lessons unless

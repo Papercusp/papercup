@@ -117,6 +117,20 @@ describe("<KnowledgePackCandidates />", () => {
     expect(screen.getByText(/Auto-reviewed on a schedule/)).toBeTruthy();
   });
 
+  // WI-5416 (owner ask): the head reads as an unlabeled list without a
+  // provenance line — always shown once the block renders, not gated on
+  // pending.length like the "how it's reviewed" sub-line above it.
+  it("always states where candidates come from, even with nothing pending", () => {
+    candidates = [];
+    recentAdopted = [cand({ status: "adopted" })];
+    render(<KnowledgePackCandidates />);
+    expect(
+      screen.getByText(
+        "Cross-hive recurring lessons staged by the recurrence-escalation sweep.",
+      ),
+    ).toBeTruthy();
+  });
+
   it("shows the highest-priority candidates first and progressively discloses the rest", () => {
     candidates = Array.from({ length: 5 }, (_, i) =>
       cand({ id: `cand-${i + 1}`, title: `Candidate ${i + 1}` }),

@@ -7170,7 +7170,7 @@ function RetainedLedgerCard({
           {RETAIN_FEED_TABS.map((tab) => {
             const badge =
               tab === "all" ? null : fmtRetainCount(counts?.[tab] ?? null);
-            return (
+            const btn = (
               <button
                 key={tab}
                 type="button"
@@ -7182,6 +7182,21 @@ function RetainedLedgerCard({
                 {RETAIN_TAB_LABELS[tab]}
                 {badge ? <em>{badge}</em> : null}
               </button>
+            );
+            // WI-5416: "Memories" is the one tab whose provenance isn't
+            // self-evident from its label — rows come from two different
+            // origins (agents' own memory:remember calls during work, and
+            // knowledge-pack seeds), same explainer tier as the segment above
+            // ("Where these came from").
+            return tab === "memories" ? (
+              <Tooltip
+                key={tab}
+                label="Rows agents write with memory:remember while they work (organic, provenance-tagged), plus knowledge-pack seeds."
+              >
+                {btn}
+              </Tooltip>
+            ) : (
+              btn
             );
           })}
         </div>
