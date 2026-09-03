@@ -1712,6 +1712,7 @@ mirror with file primary". Helpers: `packages/operator-core/lib/operator-state-p
 | prose / full-text | exact keyword or phrase → `search:fulltext`; paraphrased concept → `search:semantic` | `ILIKE '%…%'` |
 | definition, references, type truth | `lsp:query` (compiler semantics) | `grep` for a declaration — cannot resolve shadowing or re-exports |
 | call chains, impact radius, topology | `gitnexus.context` / `gitnexus.impact` (dot, not colon) | `gitnexus.query` — UNRANKED NOISE, not empty: a wrong answer looks like a confident one (D-021) |
+| who CALLS this symbol (callers / callees) | `graph:query { op:'callers', name }` — a FIRST-CLASS op: returns call sites with `line1`, excludes the definition site, and reports index staleness | `gitnexus.impact { direction:'callers' }` — `callers` is NOT a valid direction (only `upstream`/`downstream`/`both`) and the plugin SILENTLY answers with callees, self-reporting `epistemic:"exact"`; measured byte-identical to a nonsense direction (WI-2142910). `graph:query` rejects the bad value instead of inverting the answer |
 
 ⚠ **If `gate.greenCheckpoint.candidateFailures` is unavailable to you, the ONLY query that answers it is scoped to one population — and the blob check is half the answer, not a footnote:**
 
