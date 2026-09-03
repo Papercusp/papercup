@@ -209,11 +209,32 @@ describe('live-federation gate: the base-.deb self-build hatch (WI-2143486)', ()
 
   describe('static — the gate looks where cargo actually writes', () => {
     it('THE BUG: CARGO_TARGET_ROOT is DERIVED from cargo, not guessed from one of its inputs', () => {
+      // The invariant is "the gate ASKS cargo", not "the gate spells it `cargo`". Pinning the bare
+      // literal made this fail on the legitimate refactor to a resolved cargo path (see the PATH
+      // test below), so accept either spelling and still fail if the metadata call is removed.
       expect(
-        /cargo metadata --no-deps --format-version 1/.test(gate),
+        /(?:cargo|"\$CARGO_BIN")\s+metadata\s+--no-deps\s+--format-version\s+1/.test(gate),
         'the gate must ask cargo for its effective target_directory; reading only CARGO_TARGET_DIR ' +
           'misses ~/.cargo/config.toml target-dir and silently blinds the base-.deb selector.',
       ).toBe(true);
+    });
+
+    it('THE BUG (WI-2141192, same class one file over): cargo is resolved for a unit with no ~/.cargo/bin on PATH', () => {
+      // rustup puts cargo in ~/.cargo/bin, which an interactive shell gets from the profile
+      // snippet and a systemd user unit does NOT. build-deb-repacked.sh already guards this;
+      // live-federation-gate.sh did not, so the derivation above ran with no cargo on PATH,
+      // returned empty, and silently fell through to the broken fallback it exists to replace.
+      // Verified 2026-09-03 under the real unit PATH: old form => empty, guarded form => /mnt/data/cargo-target.
+      expect(
+        /\$HOME\/\.cargo\/bin\/cargo/.test(gate),
+        'live-federation-gate.sh must fall back to $HOME/.cargo/bin/cargo when cargo is not on ' +
+          'PATH, or its cargo-metadata derivation is a silent no-op under systemd.',
+      ).toBe(true);
+      const guard = gate.indexOf('command -v cargo');
+      const derive = gate.search(/"\$CARGO_BIN"\s+metadata/);
+      expect(guard, 'the PATH guard must exist').toBeGreaterThan(-1);
+      expect(derive, 'the derivation must use the resolved binary').toBeGreaterThan(-1);
+      expect(guard, 'the guard must precede the derivation to have any effect').toBeLessThan(derive);
     });
 
     it('the historical expression survives only as a FALLBACK, never as the primary', () => {
