@@ -1784,6 +1784,104 @@ export function assessFrozenRepairConvergence(
   return record.converging ? 'converging' : 'not-converging';
 }
 
+/**
+ * P-006 / D-004 — WHAT `failingNow` COUNTS, AND WHAT IT MUST NEVER BE SUBTRACTED FROM.
+ *
+ * `convergence.failingNow` and `gate_health.repairTickLegs.failingSignatures` read as the
+ * same number and are not. They disagree on all three axes at once: SUBJECT (a set ADMITTED
+ * to the queue row vs what ONE tick measured), VINTAGE (this record's own stamp vs the tick's
+ * `atMs`), and HEAD (this record's `repairHead` vs the tick's own `head`). The measured
+ * instance was 1 vs 2 — nowhere near the 50-entry persistence bound (`MAX_PERSISTED_FAILURES`),
+ * so it was never truncation, and there is no undercount in `failingNow` to fix.
+ *
+ * D-004 rules out the two repairs that look reasonable and are not:
+ *  - RENAMING the persisted field — a label adjustment that hides the scope difference
+ *    instead of stating it, which P-006 forbids by name.
+ *  - STORING the scope — a new required field on `StoredFrozenRepairConvergence` would fail
+ *    `parseFrozenRepairConvergence` on every pre-existing row and silently drop the cell to
+ *    unmeasured. That is the same false-absence class this plan exists to end.
+ *
+ * So it is DERIVED here, at projection time, from fields the stored record already carries.
+ */
+export interface FrozenRepairConvergenceScope {
+  /** WHAT `failingNow` counts. A literal, so a reader can branch on it rather than parse prose. */
+  population: 'queue-admitted-failing-set' | 'nothing-counted';
+  /** The sha the admitted set describes — this record's `repairHead`, full length. */
+  subject: string | null;
+  /**
+   * The NEWEST instant `failingNow` can describe (this record's `observedAtMs`). The admission
+   * itself happened at or before it: the queue's own `updatedAtMs` is not carried in the stored
+   * record, so this is an upper BOUND on the admission, never the admission instant. Stating a
+   * bound as a bound is the point — a precise-looking timestamp derived from the wrong field
+   * would invite exactly the cross-population comparison this object exists to block.
+   */
+  admittedAtOrBeforeMs: number | null;
+  /** The OLDEST instant it can describe — when this cycle opened. */
+  admittedAtOrAfterMs: number | null;
+  /** Readings this count must never be differenced against, each with its reason. */
+  notComparableTo: readonly { reading: string; why: string }[];
+  /** The scope sentence. Rendered, not derived by the reader. */
+  summary: string;
+}
+
+/**
+ * The sibling readings a `failingNow` reader is most likely to subtract it from. Constant
+ * because the incomparability is STRUCTURAL — it holds for every record, including an
+ * unmeasured one, so it is published on the unmeasured branch too.
+ */
+const CONVERGENCE_NOT_COMPARABLE_TO: readonly { reading: string; why: string }[] = [
+  {
+    reading: 'gate_health.repairTickLegs.failingSignatures',
+    why:
+      'A DIFFERENT observation: what the most recent repair tick measured, carrying its own `atMs` ' +
+      'and its own `head`. It differs from failingNow in subject, vintage AND head at once, so a ' +
+      'gap between the two is not a shrink, a leak, or an undercount — it is two populations being ' +
+      'subtracted.',
+  },
+  {
+    reading: 'gate.greenCheckpoint.candidateFailures.stillBrokenCount',
+    why:
+      'Counts FILES still broken in the affected radius the gate judged for the candidate, decided ' +
+      'by blob containment. failingNow counts the admitted failing SIGNATURES on the queue row, and ' +
+      'those include non-test legs (e.g. "lint:tsc") that are not files at all.',
+  },
+];
+
+/**
+ * PURE: derive the scope object that must accompany `failingNow` wherever it is published.
+ *
+ * ⚠ Every field comes from the stored record; nothing here is measured, fetched, or stored.
+ */
+export function projectFrozenRepairConvergenceScope(
+  record: StoredFrozenRepairConvergence | null,
+): FrozenRepairConvergenceScope {
+  if (!record) {
+    return {
+      population: 'nothing-counted',
+      subject: null,
+      admittedAtOrBeforeMs: null,
+      admittedAtOrAfterMs: null,
+      notComparableTo: CONVERGENCE_NOT_COMPARABLE_TO,
+      summary:
+        'No readable convergence record, so failingNow counts NOTHING — it is null, not zero, and ' +
+        'not a measured "nothing is failing". Do not compare it with any other failing count.',
+    };
+  }
+  return {
+    population: 'queue-admitted-failing-set',
+    subject: record.repairHead,
+    admittedAtOrBeforeMs: record.observedAtMs,
+    admittedAtOrAfterMs: record.openedAtMs,
+    notComparableTo: CONVERGENCE_NOT_COMPARABLE_TO,
+    summary:
+      `failingNow counts the ${record.failingNow} signature(s) ADMITTED to this repair queue row for ` +
+      `repairHead ${record.repairHead.slice(0, 12)}, at or before ` +
+      `${new Date(record.observedAtMs).toISOString()}. It is an admitted set, not a fresh ` +
+      'measurement, and it is NOT comparable with gate_health.repairTickLegs.failingSignatures — ' +
+      'different subject, different vintage, different head. A difference between them is not a shrink.',
+  };
+}
+
 /** The celled projection: the record, its reading, and the vintage behind both. */
 export interface FrozenRepairConvergenceCellProjection {
   code: FrozenRepairConvergenceCode;
@@ -1806,6 +1904,12 @@ export interface FrozenRepairConvergenceCellProjection {
   repairHead: string | null;
   phase: FrozenCandidateRepairPhase | null;
   observedAtMs: number | null;
+  /**
+   * P-006 / D-004: what `failingNow` counts and when that population was admitted, published
+   * BESIDE it so a reader cannot difference it against a sibling failing count. Always
+   * present — the incomparability is structural, so the unmeasured branch carries it too.
+   */
+  scope: FrozenRepairConvergenceScope;
 }
 
 /**
@@ -1839,7 +1943,8 @@ export function projectFrozenRepairConvergenceCell(
       repairHead: null,
       phase: null,
       observedAtMs: null,
+      scope: projectFrozenRepairConvergenceScope(null),
     };
   }
-  return { code, unmeasured: false, ...record };
+  return { code, unmeasured: false, ...record, scope: projectFrozenRepairConvergenceScope(record) };
 }
