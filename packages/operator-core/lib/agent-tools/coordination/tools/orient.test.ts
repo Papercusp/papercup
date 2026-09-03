@@ -52,6 +52,24 @@ const foldFactsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => [])
 // module-scope call the foldFacts mock above cannot intercept) and would attempt a
 // live PG connect from a unit test.
 const foldNeverDropFactsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
+// P-004 / D-006 (facts-fold census): orient.ts's FULL fold now goes through
+// `foldFactsWithCensus`, which runs its own statement (fold + per-selector census in one
+// window-function query) rather than calling `foldFacts` — so the `foldFacts` mock above
+// is no longer on the full fold's path and, left real, this read would attempt a live PG
+// connect from a unit test (the PAPERCUSP_FORBID_REAL_PG rail then throws, orient's
+// fail-soft catch nulls the whole fold, and every facts assertion below reads `null`).
+// Delegate to `foldFactsMock` so the existing "folded with THESE selectors/audiences"
+// assertions keep observing the one IO read, and return an EMPTY census — the tests that
+// assert the truncation disclosure set `census` explicitly on this mock.
+const foldFactsWithCensusMock = vi.hoisted(() =>
+  vi.fn(async (...args: unknown[]): Promise<{ facts: unknown[]; census: unknown[] }> => ({
+    // `foldFactsMock` is declared argument-less (its cases only ever set return values), so
+    // forward the real call's arguments through a widened signature — the "folded with
+    // THESE selectors / audiences" assertions read them off `foldFactsMock.mock.calls`.
+    facts: await (foldFactsMock as unknown as (...a: unknown[]) => Promise<unknown[]>)(...args),
+    census: [],
+  })),
+);
 // WI-39420: the eviction-disclosure leg (EI-19485000346355077) is an IO read too —
 // unmocked, the real one attempts a live PG query from this unit test, throws, and
 // (before orient.ts grew the leg's own fail-soft catch) the enclosing catch nulled
@@ -69,6 +87,7 @@ const supersededVersionsForKeysMock = vi.hoisted(() => vi.fn(async (): Promise<u
 vi.mock('../../../agent-facts/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../agent-facts/store')>()),
   foldFacts: foldFactsMock,
+  foldFactsWithCensus: foldFactsWithCensusMock,
   foldNeverDropFacts: foldNeverDropFactsMock,
   listFactEvictionDisclosures: listFactEvictionDisclosuresMock,
   supersededVersionsForKeys: supersededVersionsForKeysMock,
@@ -213,6 +232,7 @@ beforeEach(() => {
   // across ~200 tests — so any assertion about WHETHER a fold ran (not just with what)
   // needs the log cleared per test, or it reads a predecessor's calls.
   foldFactsMock.mockClear();
+  foldFactsWithCensusMock.mockClear();
   foldNeverDropFactsMock.mockClear();
   listFactEvictionDisclosuresMock.mockClear();
   supersededVersionsForKeysMock.mockClear();

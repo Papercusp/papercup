@@ -645,7 +645,13 @@ describe('LEG E — every BUILT-IN cell agrees with the oracle on every surface'
     // registered `capacity.verdict` workspace-visible. "Are we at capacity" is asked by every
     // placement path in the fleet, so narrowing it would just push callers back onto the
     // per-surface reads this cell exists to replace.
-    ).toEqual({ workspace: 12, harness: 9 });
+    //
+    // harness 9 → 12: main-green-status-visible-2026-09-03 P-004 registered
+    // `gate.greenCheckpoint.convergence` + `.freezeDisposition` and P-009 registered
+    // `.retriage`, all under OPERATOR_PIPELINE_VISIBILITY like their gate siblings — the
+    // gate is a per-harness fact, so leg E's harness arm now walks three more cells.
+    // workspace 12 → 13: `agent.roleLaunch` (registered 2026-09-03) is workspace-visible.
+    ).toEqual({ workspace: 13, harness: 12 });
     // The census must also stay EXHAUSTIVE. The expectation above names kinds explicitly, so a
     // cell registered under a kind NOT named there would be invisible to it; summing the census
     // back to the registry size is what makes "these are all of them" an assertion rather than

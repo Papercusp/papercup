@@ -141,6 +141,19 @@ export const PIPELINE_GATE_PROJECTED_FIELDS = [
   // whose value is `null` (it skips only `undefined`), so the no-repair-queue case
   // reaches the caller as an explicit `null` rather than a missing key.
   'candidateFailures',
+  // main-green-status-visible-2026-09-03 P-004 (`convergence`, `freezeDisposition`) and
+  // P-009 (`retriage`): each is the payload of a registered state cell —
+  // `gate.greenCheckpoint.convergence` / `.freezeDisposition` / `.retriage` in
+  // `cell-registrations.ts` — whose `readVia.tool` is THIS door, so dropping any of them
+  // reproduces the WI-2140908 presentation exactly (readCell blames the resolver for a
+  // missing declared path). All three are bounded projections emitted UNCONDITIONALLY by
+  // their resolvers (null-leaved when unmeasured, never absent), which is what makes them
+  // safe to pick flat: `compactPipelineValue` clips their prose (`reason`, `summary`) to
+  // the door's text budget and caps `shrinkPerRound` / `abandonedFailingFiles` at
+  // `arrayLimit`, so none of them can carry the unbounded shape that blew this door before.
+  'convergence',
+  'freezeDisposition',
+  'retriage',
 ] as const;
 
 /** Projected by their own bounded helpers below, not by the flat pick. */
@@ -164,8 +177,14 @@ export const PIPELINE_GATE_FIELDS_NOT_PROJECTED = [
   // needs. ⚠ `failingTestsMeasured` is omitted WITH it deliberately: emitting the
   // "was this measured" qualifier without the list it qualifies invites reading an absent
   // list as "nothing is failing", which is the vacuous-green error this door must not create.
+  // `failingTestsProvenance` (P-005: measured | carried | not-measured | unknown) is the
+  // same qualifier with a finer vocabulary, and is omitted for the same reason — a bare
+  // `'measured'` beside no list reads as a measured all-clear. Its consumer through this
+  // resolver is `ownerBrief` (`gate-owner-brief.ts`), which carries the list's meaning with
+  // it; no cell in `cell-registrations.ts` declares a path on it.
   'failingTests',
   'failingTestsMeasured',
+  'failingTestsProvenance',
   // Checkpoint qualification state — a nested struct whose verdict is already implied by
   // `verdictStale` / `inconclusive` for this door's "where is my change" question.
   'qualification',
@@ -177,10 +196,14 @@ export const PIPELINE_GATE_FIELDS_NOT_PROJECTED = [
   //
   // The drift harm the pin test guards does NOT apply to it today: that harm is a state
   // CELL declaring a path this projection drops, and no cell in `cell-registrations.ts`
-  // reads `gate.freezeAndConverge`. Its documented readers are OTHER doors that project it
-  // from the snapshot directly — `gate_health.freezeAndConverge` and `release:deploy`
-  // status (`agent-tools/release/deploy.ts`) — so projecting it here would spend this
-  // door's budget on a second copy nobody reads through it.
+  // reads `gate.freezeAndConverge`. The cell that answers "is the freeze on, and if not
+  // why" — `gate.greenCheckpoint.freezeDisposition` (P-004) — reads the DERIVED
+  // `gate.freezeDisposition` projected above, which the resolver computes from this record
+  // (`projectFreezeDispositionCell`), so the raw record has no cell reader. Its documented
+  // readers are OTHER doors that project it from the snapshot directly —
+  // `gate_health.freezeAndConverge` and `release:deploy` status
+  // (`agent-tools/release/deploy.ts`) — so projecting it here would spend this door's
+  // budget on a second copy nobody reads through it.
   //
   // ⚠ FLIP THIS DECISION the moment a cell IS registered on `gate.freezeAndConverge`:
   // at that point `readCell` finds the declared path missing and blames the RESOLVER for

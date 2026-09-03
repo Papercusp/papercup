@@ -82,6 +82,12 @@ export interface BespokeActiveSeed {
 }
 
 export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
+  // Found missing by this registry's own guard test (gate red on the frozen candidate,
+  // WI-212675): design-to-code-coverage-seam-2026-09-02 P-020 landed the 6-hourly
+  // acceptance-drain sweep (the EXIT for plans held in `awaiting-acceptance`) as an
+  // active-by-default seed script without this row — the same "seed script the guard
+  // cannot see" omission the bulk-run-watchdog entry below records.
+  { name: 'acceptance-drain-sweep', seedScript: 'seed-acceptance-drain-sweep-routine.ts' },
   { name: 'acceptance-grading-sweep', seedScript: 'seed-acceptance-grading-sweep-routine.ts' },
   // EI-21921833535413808: the scheduled walled-account re-probe — landed defaulting ACTIVE
   // (a false wall silently loses real capacity, and the fix is a bounded, self-correcting

@@ -199,6 +199,29 @@ async function loopLaneRoutes(
     return {
       ...(await orig<typeof import('@papercusp/db-org')>()),
       ...actual,
+      // The route reads and writes agent_chats through `harnessQuery(slug, sql =>
+      // sql.unsafe(text, params))` — this double is the ONLY thing standing between the
+      // route and a live pool. Left real (the `...actual` spread above), harnessQuery hits
+      // the PAPERCUSP_FORBID_REAL_PG rail inside the route's own preflight catch and every
+      // case here reads 500 "failed to load chat: A UNIT test tried to open a REAL Postgres
+      // connection" (gate red on the frozen candidate, WI-212675). Same contract as the
+      // legacy double below: the chat SELECT answers `chatRow`, the cost aggregate answers
+      // a zero total, and every other statement (the transcript UPDATEs the assertions
+      // below read) lands on `updates` / `updateArgs`.
+      harnessQuery: async (
+        _slug: string,
+        fn: (sql: { unsafe: (text: string, params?: unknown[]) => Promise<unknown[]> }) => unknown,
+      ) =>
+        fn({
+          unsafe: async (text: string, params: unknown[] = []) => {
+            const q = text.trim();
+            if (/^SELECT \* FROM agent_chats/.test(q)) return [chatRow];
+            if (/^SELECT COALESCE\(SUM\(/.test(q)) return [{ total: 0 }];
+            updates.push(q);
+            updateArgs.push(params);
+            return [];
+          },
+        }),
       getLegacyClient: () => ({
         prepare: (sql: string) => ({
           get: async () => (/^SELECT \* FROM agent_chats/.test(sql.trim()) ? chatRow : { total: 0 }),
