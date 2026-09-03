@@ -22,6 +22,11 @@
 import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+// The parse/match helpers live in a plain module (browser-shim-aliases.ts) rather
+// than being exported from this test file: a `.test.ts` imported by another test
+// collects twice and can register 0 tests under a shared-fork lane (gate red
+// 761d0a85ac, WI-212675) — guarded tree-wide by no-test-file-imports.test.ts.
+import { aliasMatches, parseShimAliases, valueImports } from './browser-shim-aliases';
 
 const REPO_ROOT = resolve(__dirname, '../../../..');
 const VITE_CONFIG = resolve(__dirname, '../../vite.config.ts');
@@ -57,62 +62,6 @@ function* walk(dir: string): Generator<string> {
       yield abs;
     }
   }
-}
-
-/** An `alias` entry in vite.config that redirects a specifier at a browser shim. */
-export interface ShimAlias {
-  /** Source text of the `find:` — a quoted string or a regex literal. */
-  find: string;
-  /** Shim filename, e.g. `coordination-event-log-browser.ts`. */
-  shim: string;
-}
-
-/**
- * The shim aliases, parsed from vite.config's SOURCE rather than by importing it —
- * importing would instantiate every plugin (router codegen, react) for no benefit,
- * and the source is the thing a reviewer reads anyway.
- */
-export function parseShimAliases(configSource: string): ShimAlias[] {
-  const out: ShimAlias[] = [];
-  // { find: <string|regex>, replacement: resolve(import.meta.dirname, 'src/shims/<file>') }
-  const entry = /find:\s*([^,]+),[\s\S]{0,240}?shims\/([\w.-]+\.ts)/g;
-  for (const m of configSource.matchAll(entry)) {
-    out.push({ find: m[1]!.trim(), shim: m[2]! });
-  }
-  return out;
-}
-
-/** Does an import specifier resolve through this alias? Mirrors vite's alias matching. */
-export function aliasMatches(find: string, specifier: string): boolean {
-  if (find.startsWith('/')) {
-    const lastSlash = find.lastIndexOf('/');
-    const body = find.slice(1, lastSlash);
-    const flags = find.slice(lastSlash + 1).replace(/[gy]/g, '');
-    return new RegExp(body, flags).test(specifier);
-  }
-  const literal = find.slice(1, -1); // strip quotes
-  // vite's string alias is a PREFIX match ('@papercusp/x' also catches '@papercusp/x/y').
-  return specifier === literal || specifier.startsWith(literal + '/');
-}
-
-/**
- * Every VALUE binding imported from `specifier`-matching modules in `source`.
- * `import type { … }` and inline `{ type X }` are erased before the bundler links
- * them, so they are not a shim's problem — only values are.
- */
-export function valueImports(source: string, matches: (specifier: string) => boolean): string[] {
-  const names: string[] = [];
-  const re = /import\s+(type\s+)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g;
-  for (const m of source.matchAll(re)) {
-    if (m[1]) continue; // `import type { … }`
-    if (!matches(m[3]!)) continue;
-    for (const raw of m[2]!.split(',')) {
-      const spec = raw.trim();
-      if (!spec || /^type\s/.test(spec)) continue; // inline `{ type Foo }`
-      names.push((spec.split(/\s+as\s+/)[0] ?? '').trim());
-    }
-  }
-  return names.filter(Boolean);
 }
 
 describe('browser shims export what the SPA links against (EI-10539)', () => {
