@@ -137,25 +137,25 @@ describe('gateFailingTestsMeasurement (EI-21561093776434695)', () => {
         measured: false,
         inconclusive,
       }),
-    ).toEqual({ failingTests: [], measured: false });
+    ).toEqual({ failingTests: [], measured: false, provenance: 'not-measured' });
   });
 
   it('keeps a real measured empty verdict distinct from an abort', () => {
     expect(
       gateFailingTestsMeasurement({ failingTests: [], measured: true, inconclusive: null }),
-    ).toEqual({ failingTests: [], measured: true });
+    ).toEqual({ failingTests: [], measured: true, provenance: 'measured' });
   });
 
   it('derives compatibility-safe states for legacy blobs', () => {
     expect(
       gateFailingTestsMeasurement({ failingTests: [], measured: undefined, inconclusive: null }),
-    ).toEqual({ failingTests: [], measured: true });
+    ).toEqual({ failingTests: [], measured: true, provenance: 'measured' });
     expect(
       gateFailingTestsMeasurement({ failingTests: undefined, measured: undefined, inconclusive: null }),
-    ).toEqual({ failingTests: [], measured: null });
+    ).toEqual({ failingTests: [], measured: null, provenance: 'unknown' });
     expect(
       gateFailingTestsMeasurement({ failingTests: [], measured: undefined, inconclusive }),
-    ).toEqual({ failingTests: [], measured: false });
+    ).toEqual({ failingTests: [], measured: false, provenance: 'not-measured' });
   });
 
   it('WI-2143266: preserves an explicitly-measured, populated list during an open repair instead of erasing it', () => {
@@ -169,7 +169,34 @@ describe('gateFailingTestsMeasurement (EI-21561093776434695)', () => {
         measured: true,
         inconclusive: { ...inconclusive, status: 'repair-in-progress' },
       }),
-    ).toEqual({ failingTests: ['lint:design-primitives', 'lint:plane-integrity'], measured: true });
+    ).toEqual({
+      failingTests: ['lint:design-primitives', 'lint:plane-integrity'],
+      measured: true,
+      provenance: 'measured',
+    });
+  });
+
+  it('P-005: preserves an unstamped populated list during an inconclusive hold and labels it carried', () => {
+    const input = {
+      failingTests: ['lint:design-primitives', 'lint:plane-integrity'],
+      measured: undefined,
+      inconclusive: { ...inconclusive, status: 'repair-in-progress' },
+    };
+
+    expect(gateFailingTestsMeasurement(input)).toEqual({
+      failingTests: ['lint:design-primitives', 'lint:plane-integrity'],
+      measured: null,
+      provenance: 'carried',
+    });
+
+    // Permanent deliberately-wrong control: this is the pre-P-005 predicate. It
+    // proves the same fixture really would have been erased, rather than merely
+    // asserting the new output in isolation.
+    const preP005Blanking = input.inconclusive !== null
+      ? { failingTests: [] as string[], measured: false }
+      : { failingTests: input.failingTests, measured: true };
+    expect(preP005Blanking.failingTests).toEqual([]);
+    expect(gateFailingTestsMeasurement(input).failingTests).not.toEqual(preP005Blanking.failingTests);
   });
 });
 
