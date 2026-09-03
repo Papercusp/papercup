@@ -5,7 +5,7 @@
  * classifier is that a wedged session must not be reported as a settled one.
  */
 import { describe, expect, it } from 'vitest';
-import { classifySessionEnd, classifyWedgeText, isWedged } from './session-end-reason';
+import { classifySessionEnd, classifyWedgeText, isMachineModelErrorText, isWedged } from './session-end-reason';
 
 const NOW = Date.UTC(2026, 6, 13, 12, 0, 0);
 const minsAgo = (m: number) => NOW - m * 60_000;
@@ -159,5 +159,39 @@ describe('classifyWedgeText', () => {
     expect(classifyWedgeText(undefined)).toBeNull();
     expect(classifyWedgeText('   ')).toBeNull();
     expect(classifyWedgeText('all green; ending the turn.')).toBeNull();
+  });
+});
+
+describe('isMachineModelErrorText (EI-22102700164999066)', () => {
+  it('accepts MACHINE-emitted model-error signatures', () => {
+    expect(isMachineModelErrorText("API Error: Request rejected (429) · This request would exceed your account's rate limit.")).toBe(true);
+    expect(isMachineModelErrorText('API Error: 400 This model does not support effort level xhigh')).toBe(true);
+    expect(isMachineModelErrorText('{"type":"invalid_request_error"}')).toBe(true);
+  });
+
+  it('REJECTS prose that merely mentions rate limits / 429s — the collision this split exists for', () => {
+    expect(isMachineModelErrorText('discussed the rate limit fix')).toBe(false);
+    expect(isMachineModelErrorText('why 429 handling matters')).toBe(false);
+    expect(isMachineModelErrorText('the wake died on a rate limit with no escalation')).toBe(false);
+    // "API Error:" only counts ANCHORED at the start — quoting one mid-sentence is prose.
+    expect(isMachineModelErrorText('the turn ended with API Error: Request rejected (429)')).toBe(false);
+  });
+
+  it('returns false for empty/null/whitespace-only text', () => {
+    expect(isMachineModelErrorText(null)).toBe(false);
+    expect(isMachineModelErrorText(undefined)).toBe(false);
+    expect(isMachineModelErrorText('   ')).toBe(false);
+  });
+
+  it('leaves classifySessionEnd UNCHANGED — the split narrows only its blind callers', () => {
+    // The loose half still classifies for a session ALREADY KNOWN dead (session digests), which
+    // is why the fix narrows the caller rather than the shared pattern.
+    const loose = classifySessionEnd({
+      lastAssistantText: 'discussed the rate limit fix',
+      lastTsMs: 1_000,
+      nowMs: 1_000,
+      activeWithinMs: 0,
+    });
+    expect(loose.reason).toBe('model_error');
   });
 });

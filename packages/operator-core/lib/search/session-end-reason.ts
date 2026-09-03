@@ -62,12 +62,50 @@ interface Pattern {
  * disablement often *also* mentions limits, and the two demand opposite responses:
  * a usage limit resolves itself on reset; an auth wall never does.
  */
+/**
+ * `model_error` is the one reason whose signature mixes two very different precisions, so it
+ * is kept as two halves and re-joined below (never hand-copied into a second list, which is
+ * how the two would silently drift apart).
+ *
+ * MACHINE — anchored / structurally machine-emitted text an agent's own prose essentially
+ * never reproduces verbatim ("API Error:" only counts at the START of the turn text). Precise
+ * enough to scan BLIND against an opaque turn tail.
+ */
+const MODEL_ERROR_MACHINE_RE = /^\s*API Error:|does not support effort level|invalid_request_error|model .* not found/i;
+/**
+ * LOOSE — bare topic words that collide with ordinary dev conversation ("discussed the rate
+ * limit fix", "why 429 handling matters"). Safe ONLY for a session ALREADY KNOWN to be dead,
+ * where the question is *why* it died rather than *whether* it did. Never scan this blind.
+ */
+const MODEL_ERROR_LOOSE_RE = /rate.?limit(?:ed)?\b|\b429\b/i;
+
+/** The full `model_error` signature = MACHINE ∪ LOOSE, derived so the halves cannot drift. */
+const MODEL_ERROR_RE = new RegExp(`${MODEL_ERROR_MACHINE_RE.source}|${MODEL_ERROR_LOOSE_RE.source}`, 'i');
+
 const PATTERNS: readonly Pattern[] = [
   { reason: 'auth_wall', re: /organization has disabled|subscription access.*disabled|disabled Claude subscription|use an Anthropic API key instead|ask your admin to enable|\b402\b[^\n]{0,120}\binsufficient credits\b|\binsufficient credits\b[^\n]{0,120}\b402\b/i },
   { reason: 'usage_limit', re: /hit your (?:session|usage) limit|usage limit reached|limit(?:\s|·|,)*resets|quota exceeded/i },
   { reason: 'context_limit', re: /prompt is too long|context (?:window )?(?:exceeded|overflow|too long)|maximum context length/i },
-  { reason: 'model_error', re: /^\s*API Error:|does not support effort level|invalid_request_error|model .* not found|rate.?limit(?:ed)?\b|\b429\b/i },
+  { reason: 'model_error', re: MODEL_ERROR_RE },
 ];
+
+/**
+ * Does this text carry a MACHINE-emitted `model_error` signature (as opposed to merely
+ * *mentioning* rate limits / 429s)?
+ *
+ * EI-22102700164999066: `classifyWedgeText` below deliberately drops `model_error` entirely
+ * because its loose half is "far too loose to scan blind". But `classifyLoopLifecycleTurn`
+ * (reconcile-loop-routines.ts) also scans blind — over `last_assistant_text_after_fire` — and
+ * DOES honour `model_error`, so a loop turn that merely ENDED BY DISCUSSING a 429 was recorded
+ * as a dead wake: `recordFire('error')`, fire-gate backoff, and a spurious death escalation.
+ * Dropping `model_error` there instead would have re-opened the original bug, because a real
+ * `API Error: Request rejected (429) …` death is exactly what that leg must still catch — so
+ * the split lets a blind caller keep the precise half and leave the collision-prone half.
+ */
+export function isMachineModelErrorText(text: string | null | undefined): boolean {
+  const t = (text ?? '').trim();
+  return t.length > 0 && MODEL_ERROR_MACHINE_RE.test(t);
+}
 
 export interface ClassifySessionEndInput {
   /** The session's LAST assistant turn — where a provider error lands. */

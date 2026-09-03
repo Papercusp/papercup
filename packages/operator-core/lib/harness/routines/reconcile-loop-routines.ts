@@ -183,7 +183,7 @@ import {
 } from '../../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { SESSION_END_MARKER, SESSION_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
-import { classifySessionEnd, type SessionEndReason } from '../../search/session-end-reason';
+import { classifySessionEnd, isMachineModelErrorText, type SessionEndReason } from '../../search/session-end-reason';
 import { parseUsageReset, clampUsageRearmDelayMs } from '@papercusp/papercusp-shared/agent';
 import { recordLoopTransition } from './loop-transition-log';
 import { countAgentToolCallsInWindow as defaultCountAgentToolCallsInWindow } from './loop';
@@ -384,6 +384,15 @@ export function classifyLoopLifecycleTurn(
   if (!text || !text.trim()) return null;
   const cls = classifySessionEnd({ lastAssistantText: text, lastTsMs: nowMs, nowMs, activeWithinMs: 0 });
   if (!LOOP_LIFECYCLE_DEATH_REASONS.has(cls.reason)) return null;
+  // EI-22102700164999066: this scan is BLIND. `last_assistant_text_after_fire` is the turn's own
+  // prose, NOT a known-dead session's tail, so it carries the same precision requirement that
+  // makes `classifyWedgeText` drop `model_error` outright. Its loose half (`rate.?limit` / `429`)
+  // collides with ordinary dev conversation, so a loop turn that merely ENDED BY DISCUSSING a
+  // 429 was recorded as a dead wake — recordFire('error'), fire-gate backoff and a spurious
+  // death escalation against a perfectly healthy loop. Dropping the reason entirely would
+  // re-open the bug this leg exists for, so require only the MACHINE-emitted half: a real
+  // `API Error: Request rejected (429) …` death still matches it.
+  if (cls.reason === 'model_error' && !isMachineModelErrorText(text)) return null;
   let rearmDelayMs = intervalMs;
   if (cls.reason === 'usage_limit') {
     const reset = parseUsageReset(text, nowMs);

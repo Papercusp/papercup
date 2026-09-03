@@ -940,6 +940,31 @@ describe('classifyLoopLifecycleTurn — pure classifier (EI-13818)', () => {
     expect(classifyLoopLifecycleTurn('   ', 60_000, NOW)).toBeNull();
   });
 
+  // EI-22102700164999066. This leg scans BLIND over `last_assistant_text_after_fire`, so it
+  // carries both halves of one contract: a real provider 429 must still be caught (that is the
+  // death this leg exists for), while a turn that merely DISCUSSED one must not be. Before the
+  // fix the second case was recorded as a dead wake — recordFire('error'), fire-gate backoff and
+  // a spurious death escalation against a healthy loop.
+  it('catches a real machine-emitted 429 death (the incident text)', () => {
+    const text =
+      "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.";
+    const verdict = classifyLoopLifecycleTurn(text, 60_000, NOW);
+    expect(verdict?.reason).toBe('model_error');
+    // model_error is not reset-parseable, so it re-arms at the bare interval and leaves further
+    // backoff to the fire-gate circuit the 'error' verdict feeds.
+    expect(verdict?.rearmDelayMs).toBe(60_000);
+  });
+
+  it('does NOT treat a turn that merely DISCUSSES rate limits / 429s as a death', () => {
+    for (const benign of [
+      'discussed the rate limit fix and why 429 handling matters',
+      'Fixed the 429 backoff bug; the loop is rate limited only under load. Tests green.',
+      'Investigated EI-22102700164999066: the wake died on a rate limit with no escalation.',
+    ]) {
+      expect(classifyLoopLifecycleTurn(benign, 60_000, NOW)).toBeNull();
+    }
+  });
+
   it("classifies a usage_limit death and computes a reset-aware rearm delay (not the bare interval)", () => {
     const text = "You've hit your session limit · resets 5:40am (America/New_York)";
     const verdict = classifyLoopLifecycleTurn(text, 60_000, NOW);
