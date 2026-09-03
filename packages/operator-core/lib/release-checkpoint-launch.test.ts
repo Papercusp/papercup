@@ -115,14 +115,50 @@ describe('per-run checkpoint logs (re-fire must not destroy the evidence)', () =
     // ln first (so a reader polling the stable path lands on this run's file), then the
     // redirect binds to green-checkpoint only, and -n keeps ln from following the old link.
     expect(inner).toContain("ln -sfn '/tmp/cp-RUN.log' '/tmp/cp.log' &&");
-    expect(inner).toContain('> /tmp/cp-RUN.log 2>&1');
+    // WI-5377: the redirect now binds to the ANSI-stripping filter's output, not
+    // green-checkpoint.ts directly — see the dedicated describe block below.
+    expect(inner).toContain('> /tmp/cp-RUN.log');
     expect(inner.indexOf('ln -sfn')).toBeLessThan(inner.indexOf('green-checkpoint.ts'));
   });
 
   it('writes straight to the given path when no run log is supplied (back-compat)', () => {
     const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin').at(-1)!;
-    expect(inner).toContain('> /tmp/cp.log 2>&1');
+    expect(inner).toContain('> /tmp/cp.log');
     expect(inner).not.toContain('ln -sfn');
+  });
+});
+
+describe('WI-5377: ANSI escapes are stripped before the persisted log is written', () => {
+  it('pipes the detached run through an unbuffered sed ANSI-strip before the redirect', () => {
+    const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin').at(-1)!;
+    // green-checkpoint.ts's combined stdout+stderr feeds the filter, whose OWN stdout is
+    // what lands in the file — never a raw, unfiltered write straight from the CLI.
+    expect(inner).toContain("2>&1 | sed -u 's/\\x1b\\[[0-9;]*m//g' > /tmp/cp.log");
+    const csIdx = inner.indexOf('green-checkpoint.ts');
+    const sedIdx = inner.indexOf('sed -u');
+    const redirectIdx = inner.lastIndexOf('> /tmp/cp.log');
+    expect(csIdx).toBeGreaterThan(-1);
+    expect(sedIdx).toBeGreaterThan(csIdx); // filter comes after the CLI invocation
+    expect(redirectIdx).toBeGreaterThan(sedIdx); // the file redirect binds to the filter's output
+  });
+
+  it('the filter is the SGR (colour/style) escape pattern every existing hand-rolled reader already uses', () => {
+    // Pinned as a literal sed program, not re-derived: this ticket's own description
+    // cites every downstream reader as already re-implementing exactly this regex by
+    // hand, so a future edit that drifts from it would silently disagree with them.
+    // Cross-checked here against a real SGR sequence so the pin can't rot into a
+    // pattern that LOOKS right but no longer actually matches ANSI colour codes.
+    const sedProgram = "s/\\x1b\\[[0-9;]*m//g";
+    const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin').at(-1)!;
+    expect(inner).toContain(`sed -u '${sedProgram}'`);
+    const ansiRe = /\x1b\[[0-9;]*m/g;
+    expect('\x1b[31mred\x1b[0m'.replace(ansiRe, '')).toBe('red');
+    expect('plain text, no escapes'.replace(ansiRe, '')).toBe('plain text, no escapes');
+  });
+
+  it('applies through the per-run-log path too (the run log, not just the stable symlink target)', () => {
+    const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin', false, '/tmp/cp-RUN.log').at(-1)!;
+    expect(inner).toContain("2>&1 | sed -u 's/\\x1b\\[[0-9;]*m//g' > /tmp/cp-RUN.log");
   });
 });
 
@@ -150,7 +186,9 @@ describe('buildCheckpointSystemdArgv', () => {
     const inner = argv[argv.length - 1]!;
     expect(inner).toContain('apps/operator/lib/release/green-checkpoint.ts');
     expect(inner).toContain("PAPERCUSP_INTEGRATION_ROOT='/tree'");
-    expect(inner).toContain('> /tmp/cp.log 2>&1');
+    // WI-5377: the redirect binds to the ANSI-stripping filter's output — see the
+    // dedicated describe block for the filter itself.
+    expect(inner).toContain('> /tmp/cp.log');
   });
 
   it('EI-211596: transports one validated exact candidate into the detached CLI', () => {
