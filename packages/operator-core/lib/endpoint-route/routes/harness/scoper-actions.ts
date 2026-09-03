@@ -17,7 +17,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
-import { getLegacyClient } from '@papercusp/db-org';
+import { harnessQuery } from '@papercusp/db-org';
 import { resolveProject, harnessDir, parseFeatures } from '../../../harness-core';
 import { harnessPackageDir, orchestratorRunBin, tsxBin } from '../../../harness-paths';
 import { STATE_FILES_FOR_BACKUP } from '../../../harness-state-files';
@@ -26,8 +26,6 @@ import { recordUserAction } from '../../../user-actions';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { runGovernedOperation } from '../../../resource-governor/execution';
-
-const dbcFor = (slug: string) => getLegacyClient(slug);
 
 // ── POST /:slug/product-review ─────────────────────────────────────────
 
@@ -85,8 +83,9 @@ const replan = defineTool({
       const prior = await parseFeatures(project);
       if (prior.length > 0) {
         await writeFile(join(backupDir, 'features.pg.json'), JSON.stringify(prior, null, 2));
-        const dbc = dbcFor(project.slug);
-        await dbc.prepare('DELETE FROM harness_features WHERE harness_slug = ?').run(project.slug);
+        await harnessQuery(project.slug, (sql) => sql`
+          DELETE FROM harness_features WHERE harness_slug = ${project.slug}
+        `);
       }
     } catch (e: any) {
       console.warn('[replan] PG feature clear failed:', e?.message ?? e);
