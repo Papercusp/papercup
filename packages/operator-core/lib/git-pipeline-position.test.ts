@@ -3087,9 +3087,6 @@ describe('computeStages: position x health', () => {
             ageExpired: false,
             zeroAttemptStalled: false,
             zeroAttemptStallMs: 15 * 60_000,
-            escapesUsed: 0,
-            maxCandidateEscapes: 0,
-            escapeAvailable: false,
             fixerSpawnId: 'dead-fixer',
             fixerAlive: false,
             dispatchReservation: null,
@@ -5430,9 +5427,6 @@ describe('stage levers (P-005)', () => {
     ageExpired: false,
     zeroAttemptStalled: false,
     zeroAttemptStallMs: 15 * 60_000,
-    escapesUsed: 0,
-    maxCandidateEscapes: 0,
-    escapeAvailable: false,
     fixerSpawnId: 'dead-fixer',
     fixerAlive: false,
     dispatchReservation: null,
@@ -5567,7 +5561,7 @@ describe('stage levers (P-005)', () => {
    * as its `nextAction`. Deferring to it is still the right move — the veto must hand over the
    * mechanism's own instruction rather than inventing a competing one.
    */
-  it.each(['recut-at-tip', 'hold-exhausted'] as const)(
+  it.each(['hold-dispatch-infeasible', 'hold-exhausted'] as const)(
     'EI-22173032622074833: a TERMINAL decision (%s) defers to the queue-authored retire recipe',
     (decision) => {
       const retire =

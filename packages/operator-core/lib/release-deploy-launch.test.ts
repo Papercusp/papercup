@@ -136,9 +136,6 @@ describe('computeDeployStatus — decision tree', () => {
       decision: 'recover-dead-fixer',
       retireAllowed: true,
       retireRefusal: null,
-      escapesUsed: 0,
-      maxCandidateEscapes: 0,
-      escapeAvailable: false,
       // No shared-tree edit set is supplied here, so the collision probe is explicitly
       // UNMEASURED rather than a false all-clear. `collidingPaths` carries an explicit
       // `string[]` because the enclosing `as const` would otherwise infer `readonly []`,

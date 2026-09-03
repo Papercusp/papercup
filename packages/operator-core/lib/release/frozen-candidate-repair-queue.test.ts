@@ -856,24 +856,13 @@ describe('frozen-candidate repair queue', () => {
         nowMs: T0 + attempt * 10 + 2,
       });
     }
-    // P-008 (owner-ratified): the DEFAULT budget is now 1/day, so a first exhaustion with an
-    // empty window re-cuts at tip. The engine measures the rolling window and passes
-    // `priorEscapes`; a spent window reproduces the historical permanent hold below.
-    expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 100 })).toMatchObject({
-      kind: 'recut-at-tip',
-      reason: 'attempts-exhausted',
-      abandonedCandidate: C,
-      escapeOrdinal: 1,
-      remainingEscapes: 0,
-    });
-    const decision = decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 100, priorEscapes: 1 });
+    // D-005: exhaustion HOLDS — there is no budget, no window, no re-cut.
+    const decision = decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 100 });
     expect(decision).toEqual({
       kind: 'hold-exhausted',
       reason: 'attempts-exhausted',
       candidate: C,
       repairHead: '3'.repeat(40),
-      escapesUsed: 1,
-      maxCandidateEscapes: 1,
       gateDisposition: 'blocked',
       runSuite: false,
       recordVerdict: false,
@@ -891,15 +880,13 @@ describe('frozen-candidate repair queue', () => {
       fixerSpawnId: null,
     });
     expect(parseFrozenCandidateRepairQueue(queue)).toEqual(queue);
-    expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 102, priorEscapes: 1 })).toEqual(decision);
+    expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 102 })).toEqual(decision);
   });
 
   it('holds at the wall-clock boundary but never blocks an already-green head', () => {
     const expiresAt = T0 + DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS.maxAgeMs;
-    // P-008: a spent window (priorEscapes: 1) pins the historical hold — the wall-clock
-    // BOUNDARY is what this test owns, not the escape budget.
     expect(
-      decideFrozenCandidateRepairQueue(fresh(), { nowMs: expiresAt, priorEscapes: 1 }),
+      decideFrozenCandidateRepairQueue(fresh(), { nowMs: expiresAt }),
     ).toMatchObject({
       kind: 'hold-exhausted',
       reason: 'wall-clock-exhausted',
@@ -980,17 +967,25 @@ describe('frozen-candidate repair queue', () => {
 });
 
 /**
- * P-048 (green-main-fast-2026-08-25) — the bounded escape hatch out of a frozen candidate.
+ * D-005 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03) — an exhausted frozen
+ * candidate HOLDS. The P-048/P-008 escape hatch (`recut-at-tip`, `maxCandidateEscapes`,
+ * `priorEscapes`, the escape ledger) was deleted outright, not disabled: every automatic retire
+ * observed since 2026-08-19 was a re-cut in disguise.
  *
- * These tests are written against a specific hazard: all three exhaustion sites return the
- * SAME safe value by default, so a suite that only asserted "it holds" would pass just as
- * happily with the escape budget wired at one site and silently skipped at the other two.
- * Every default-branch assertion therefore pins the DISTINCT `reason` that identifies which
- * site produced it, and each has a positive control proving that same site can re-cut.
+ * These tests pin the property the deletion exists for, at every exhaustion site and under
+ * ANY limits: the decision never names a sha outside the frozen lineage, never asks the caller
+ * to re-cut, never records a verdict on the pin, and a persisted blocked row re-decides to the
+ * SAME hold every tick. Each site still pins its DISTINCT `reason`, so a regression that
+ * re-wired one site shows up as a changed reason rather than a vacuous "it holds".
  */
-describe('frozen-candidate escape hatch (P-048)', () => {
-  const WITH_BUDGET = { ...DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS, maxCandidateEscapes: 2 };
+describe('D-005 — an exhausted frozen candidate HOLDS; it never re-cuts (P-048 hatch deleted)', () => {
   const EXPIRES_AT = T0 + DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS.maxAgeMs;
+  const HOLD = {
+    kind: 'hold-exhausted',
+    gateDisposition: 'blocked',
+    runSuite: false,
+    recordVerdict: false,
+  } as const;
 
   /** Drive a queue to the attempt bound (three dispatch -> finish -> red cycles). */
   function attemptsExhausted(): FrozenCandidateRepairQueue {
@@ -1013,7 +1008,7 @@ describe('frozen-candidate escape hatch (P-048)', () => {
     return queue;
   }
 
-  /** A queue already PERSISTED as blocked — the steady state of the deadlock. */
+  /** A queue already PERSISTED as blocked — the steady state of the hold. */
   function persistedBlocked(): FrozenCandidateRepairQueue {
     return markFrozenRepairExhausted(fresh(), {
       reason: 'wall-clock-exhausted',
@@ -1021,190 +1016,84 @@ describe('frozen-candidate escape hatch (P-048)', () => {
     });
   }
 
-  it('P-008: DEFAULT limits budget ONE escape — every exhaustion site re-cuts on an empty window and holds on a spent one', () => {
-    // The permanent hold is now reachable only through a SPENT window (or the engine's
-    // fail-closed ledger read, which passes priorEscapes = MAX_SAFE_INTEGER). Each site must
-    // consult the SAME budget: a site that skipped it would keep re-cutting on the spent
-    // window below and fail this test.
+  /** The three exhaustion sites, each with the queue + observation that reaches it. */
+  const SITES = [
+    { site: 'persisted-blocked', queue: persistedBlocked, nowMs: T0 + 6, reason: 'wall-clock-exhausted', repairHead: C },
+    { site: 'wall-clock', queue: fresh, nowMs: EXPIRES_AT, reason: 'wall-clock-exhausted', repairHead: C },
+    { site: 'attempt-bound', queue: attemptsExhausted, nowMs: T0 + 100, reason: 'attempts-exhausted', repairHead: '3'.repeat(40) },
+  ] as const;
 
-    // Site 1 — persisted blocked. Reason must be the PERSISTED one, not a recomputed default.
-    expect(decideFrozenCandidateRepairQueue(persistedBlocked(), { nowMs: T0 + 6 })).toMatchObject({
-      kind: 'recut-at-tip',
-      reason: 'wall-clock-exhausted',
-      escapeOrdinal: 1,
-      remainingEscapes: 0,
-    });
-    expect(
-      decideFrozenCandidateRepairQueue(persistedBlocked(), { nowMs: T0 + 6, priorEscapes: 1 }),
-    ).toMatchObject({
-      kind: 'hold-exhausted',
-      reason: 'wall-clock-exhausted',
-      escapesUsed: 1,
-      maxCandidateEscapes: 1,
-    });
-
-    // Site 2 — wall clock.
-    expect(decideFrozenCandidateRepairQueue(fresh(), { nowMs: EXPIRES_AT })).toMatchObject({
-      kind: 'recut-at-tip',
-      reason: 'wall-clock-exhausted',
-    });
-    expect(
-      decideFrozenCandidateRepairQueue(fresh(), { nowMs: EXPIRES_AT, priorEscapes: 1 }),
-    ).toMatchObject({
-      kind: 'hold-exhausted',
-      reason: 'wall-clock-exhausted',
-      maxCandidateEscapes: 1,
-    });
-
-    // Site 3 — attempt bound. A DISTINCT reason, which is what proves this is a different site.
-    expect(decideFrozenCandidateRepairQueue(attemptsExhausted(), { nowMs: T0 + 100 })).toMatchObject({
-      kind: 'recut-at-tip',
-      reason: 'attempts-exhausted',
-    });
-    expect(
-      decideFrozenCandidateRepairQueue(attemptsExhausted(), { nowMs: T0 + 100, priorEscapes: 1 }),
-    ).toMatchObject({
-      kind: 'hold-exhausted',
-      reason: 'attempts-exhausted',
-      maxCandidateEscapes: 1,
+  it.each(SITES)('$site: holds with its own reason, on the frozen lineage, recording nothing', ({ queue, nowMs, reason, repairHead }) => {
+    expect(decideFrozenCandidateRepairQueue(queue(), { nowMs })).toEqual({
+      ...HOLD,
+      reason,
+      candidate: C,
+      repairHead,
     });
   });
 
-  it('POSITIVE CONTROL: with a budget, every one of those three sites re-cuts instead', () => {
-    // Same three inputs as the test above; only `limits` differs. If any site failed to consult
-    // the budget, that site would still return hold-exhausted here and this test would fail.
-    expect(decideFrozenCandidateRepairQueue(persistedBlocked(), { nowMs: T0 + 6 }, WITH_BUDGET)).toMatchObject({
-      kind: 'recut-at-tip',
-      reason: 'wall-clock-exhausted',
-    });
-
-    expect(decideFrozenCandidateRepairQueue(fresh(), { nowMs: EXPIRES_AT }, WITH_BUDGET)).toMatchObject({
-      kind: 'recut-at-tip',
-      reason: 'wall-clock-exhausted',
-    });
-
-    expect(decideFrozenCandidateRepairQueue(attemptsExhausted(), { nowMs: T0 + 100 }, WITH_BUDGET)).toMatchObject({
-      kind: 'recut-at-tip',
-      reason: 'attempts-exhausted',
-    });
-  });
-
-  it('abandons the pin without recording a verdict on it', () => {
-    const decision = decideFrozenCandidateRepairQueue(attemptsExhausted(), { nowMs: T0 + 100 }, WITH_BUDGET);
-    expect(decision).toEqual({
-      kind: 'recut-at-tip',
-      reason: 'attempts-exhausted',
-      abandonedCandidate: C,
-      repairHead: '3'.repeat(40),
-      escapeOrdinal: 1,
-      remainingEscapes: 1,
-      gateDisposition: 'recut',
-      // Load-bearing: an escape is NOT a judgement of the abandoned pin. Recording a verdict
-      // here would let "we gave up on this candidate" be read as "this candidate is red".
-      runSuite: false,
-      recordVerdict: false,
-    });
-  });
-
-  it('BOUND: the budget is spent by prior escapes, and then holds forever', () => {
-    const queue = attemptsExhausted();
-    // Escapes already used elsewhere in this gate's history, counted from durable gate health.
-    expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 100, priorEscapes: 1 }, WITH_BUDGET)).toMatchObject({
-      kind: 'recut-at-tip',
-      escapeOrdinal: 2,
-      remainingEscapes: 0,
-    });
-
-    // At the ceiling the hatch closes — this is what stops a genuine persistent red from
-    // being laundered into perpetual re-cutting.
-    expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 100, priorEscapes: 2 }, WITH_BUDGET)).toMatchObject({
-      kind: 'hold-exhausted',
-      reason: 'attempts-exhausted',
-      escapesUsed: 2,
-      maxCandidateEscapes: 2,
-    });
-
-    // ...and stays closed above the ceiling.
-    expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 100, priorEscapes: 9 }, WITH_BUDGET)).toMatchObject({
-      kind: 'hold-exhausted',
-      escapesUsed: 9,
-    });
-  });
-
-  it('distinguishes a DISABLED hatch from a SPENT one at the hold surface', () => {
-    const queue = attemptsExhausted();
-    // P-008 flipped the DEFAULT to 1, so "disabled" now requires saying so explicitly.
-    const DISABLED = { ...DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS, maxCandidateEscapes: 0 };
-    const disabled = decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 100 }, DISABLED);
-    const spent = decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 100, priorEscapes: 2 }, WITH_BUDGET);
-    // Both hold, but the pair (escapesUsed, maxCandidateEscapes) says WHY — without it the two
-    // causes are indistinguishable and an accidentally-disabled hatch reads as a real red.
-    expect(disabled).toMatchObject({ escapesUsed: 0, maxCandidateEscapes: 0 });
-    expect(spent).toMatchObject({ escapesUsed: 2, maxCandidateEscapes: 2 });
-  });
-
-  it('reads absent, negative, and fractional priorEscapes as zero', () => {
-    const queue = attemptsExhausted();
-    for (const priorEscapes of [undefined, -1, -99, 0.7]) {
-      expect(
-        decideFrozenCandidateRepairQueue(
-          queue,
-          { nowMs: T0 + 100, ...(priorEscapes === undefined ? {} : { priorEscapes }) },
-          WITH_BUDGET,
-        ),
-      ).toMatchObject({ kind: 'recut-at-tip', escapeOrdinal: 1, remainingEscapes: 1 });
+  it.each(SITES)('$site: holds under ANY limits — no limit object re-opens a re-cut', ({ queue, nowMs }) => {
+    const variants = [
+      DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
+      { maxAttempts: 1, maxAgeMs: 1 },
+      { maxAttempts: 99, maxAgeMs: 1 },
+      { ...DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS, maxFreeRetries: 0 },
+      // A stale caller still passing the deleted budget field: ignored, never honoured.
+      { ...DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS, maxCandidateEscapes: 5 } as unknown as typeof DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
+    ];
+    for (const limits of variants) {
+      const decision = decideFrozenCandidateRepairQueue(queue(), { nowMs }, limits);
+      expect(decision).toMatchObject(HOLD);
+      // The lineage invariant, spelled out: the only shas a hold may name are the pin and
+      // its own repairHead. A staging tip has no way in.
+      expect(decision).toMatchObject({ candidate: C });
+      expect([C, '3'.repeat(40)]).toContain((decision as { repairHead: string }).repairHead);
+      expect(JSON.stringify(decision)).not.toMatch(/recut|abandoned|escape/i);
     }
   });
 
-  it('rejects a ceiling that is negative or non-integer', () => {
-    for (const maxCandidateEscapes of [-1, 1.5, Number.NaN]) {
-      expect(() =>
-        decideFrozenCandidateRepairQueue(
-          fresh(),
-          { nowMs: T0 + 1 },
-          {
-            ...DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
-            maxCandidateEscapes,
-          },
-        ),
-      ).toThrow(/maxCandidateEscapes/);
-    }
+  it('the persisted blocked row re-decides to the SAME hold every tick — an idempotent steady state', () => {
+    const blocked = persistedBlocked();
+    const first = decideFrozenCandidateRepairQueue(blocked, { nowMs: T0 + 6 });
+    expect(decideFrozenCandidateRepairQueue(blocked, { nowMs: T0 + 6 + 60 * 60 * 1_000 })).toEqual(first);
+    expect(decideFrozenCandidateRepairQueue(blocked, { nowMs: T0 + 6 + 30 * 24 * 60 * 60 * 1_000 })).toEqual(first);
+    // Persisting the hold and re-reading it changes nothing either.
+    expect(parseFrozenCandidateRepairQueue(blocked)).toEqual(blocked);
   });
 
-  it('surfaces escape state on the diagnostic read model', () => {
-    const queue = attemptsExhausted();
-    // P-008: the DEFAULT now budgets one escape, so an empty window reads recut/available…
-    expect(diagnoseFrozenCandidateRepairQueue(queue, { nowMs: T0 + 100 })).toMatchObject({
-      decision: 'recut-at-tip',
-      escapesUsed: 0,
-      maxCandidateEscapes: 1,
-      escapeAvailable: true,
+  it('a dispatch-infeasible hold persists as blocked with its own reason and re-decides to hold-exhausted', () => {
+    // The engine turns `hold-dispatch-infeasible` into a blocked row via markFrozenRepairExhausted;
+    // the next tick must read that row back as a hold carrying the SAME reason — not as a fresh
+    // awaiting-fixer queue that would try (and fail) to dispatch again, and never as a re-cut.
+    const held = markFrozenRepairExhausted(fresh(), { reason: 'dispatch-infeasible', nowMs: T0 + 5 });
+    expect(held).toMatchObject({ phase: 'blocked', blockedReason: 'dispatch-infeasible', candidate: C, repairHead: C });
+    expect(parseFrozenCandidateRepairQueue(held)).toEqual(held);
+    expect(decideFrozenCandidateRepairQueue(held, { nowMs: T0 + 6, dispatchFeasible: false })).toEqual({
+      ...HOLD,
+      reason: 'dispatch-infeasible',
+      candidate: C,
+      repairHead: C,
     });
-    // …and a spent window reads hold/unavailable under the same defaults.
-    expect(diagnoseFrozenCandidateRepairQueue(queue, { nowMs: T0 + 100, priorEscapes: 1 })).toMatchObject({
-      decision: 'hold-exhausted',
-      escapesUsed: 1,
-      maxCandidateEscapes: 1,
-      escapeAvailable: false,
-    });
-    expect(diagnoseFrozenCandidateRepairQueue(queue, { nowMs: T0 + 100 }, WITH_BUDGET)).toMatchObject({
-      decision: 'recut-at-tip',
-      escapesUsed: 0,
-      maxCandidateEscapes: 2,
-      escapeAvailable: true,
-    });
-    expect(diagnoseFrozenCandidateRepairQueue(queue, { nowMs: T0 + 100, priorEscapes: 2 }, WITH_BUDGET)).toMatchObject({
-      decision: 'hold-exhausted',
-      escapeAvailable: false,
-    });
+  });
+
+  it('the diagnostic never advertises a re-cut: terminal holds get the owner-only retire recipe, recoverable queues get the lineage verb', () => {
+    const terminal = diagnoseFrozenCandidateRepairQueue(attemptsExhausted(), { nowMs: T0 + 100 });
+    expect(terminal).toMatchObject({ decision: 'hold-exhausted', retireAllowed: true });
+    expect(terminal?.nextAction).toContain("op: 'retire'");
+    expect(terminal?.nextAction).toContain('confirm: true');
+    expect(JSON.stringify(terminal)).not.toMatch(/recut|checkpoint-run|escape/i);
+
+    const recoverable = diagnoseFrozenCandidateRepairQueue(fresh(), { nowMs: T0 + 1 });
+    expect(recoverable?.decision).toBe('dispatch-fixer');
+    expect(recoverable?.nextAction).toContain('do NOT retire');
+    expect(JSON.stringify(recoverable)).not.toMatch(/recut|checkpoint-run|escape/i);
   });
 
   it('leaves the non-exhausted paths untouched', () => {
-    // A budget must not make a HEALTHY queue re-cut: only exhaustion reaches the hatch.
-    expect(decideFrozenCandidateRepairQueue(fresh(), { nowMs: T0 + 1 }, WITH_BUDGET)).toMatchObject({
+    expect(decideFrozenCandidateRepairQueue(fresh(), { nowMs: T0 + 1 })).toMatchObject({
       kind: 'dispatch-fixer',
     });
-    expect(decideFrozenCandidateRepairQueue(null, { nowMs: T0 + 1 }, WITH_BUDGET)).toEqual({
+    expect(decideFrozenCandidateRepairQueue(null, { nowMs: T0 + 1 })).toEqual({
       kind: 'run-normal-gate',
       runSuite: true,
       recordVerdict: true,
