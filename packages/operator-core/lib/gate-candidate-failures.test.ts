@@ -417,4 +417,119 @@ describe('readGateCandidateFailures', () => {
       expect(res.stillBrokenNeedsRunCount).toBe(0);
     });
   });
+
+  describe('nonTestLegs (WI-2143253)', () => {
+    it('is null when the caller has no repairTickLegs measurement', async () => {
+      const res = await readGateCandidateFailures({
+        candidateSha: CANDIDATE,
+        repairHeadSha: REPAIR_HEAD,
+        root: '/repo',
+        sql: fakeSql({ filesJudged: 1, failing: [] }),
+      });
+      expect(res.nonTestLegs).toBeNull();
+    });
+
+    it('names which non-test legs are failing, not just that something was measured', async () => {
+      const res = await readGateCandidateFailures({
+        candidateSha: CANDIDATE,
+        repairHeadSha: REPAIR_HEAD,
+        root: '/repo',
+        sql: fakeSql({ filesJudged: 1, failing: [] }),
+        repairTickLegs: {
+          head: REPAIR_HEAD.slice(0, 12),
+          atMs: 1_000,
+          ok: false,
+          failingSignatures: ['lint:design-primitives', 'lint:plane-integrity'],
+          legs: [
+            { id: 'lint:design-primitives', status: 'fail', durationMs: 420 },
+            { id: 'lint:plane-integrity', status: 'errored', durationMs: 10 },
+            { id: 'lint:tsc', status: 'pass', durationMs: 5000 },
+          ],
+        },
+      });
+      expect(res.nonTestLegs).not.toBeNull();
+      expect(res.nonTestLegs?.current).toBe(true);
+      expect(res.nonTestLegs?.all).toHaveLength(3);
+      expect(res.nonTestLegs?.failing.map((l) => l.id)).toEqual(['lint:design-primitives', 'lint:plane-integrity']);
+      expect(res.nonTestLegs?.reading).toMatch(/lint:design-primitives/);
+      expect(res.nonTestLegs?.reading).toMatch(/lint:plane-integrity/);
+    });
+
+    it('reports current:false and hedges the reading when the measurement predates repairHead', async () => {
+      const res = await readGateCandidateFailures({
+        candidateSha: CANDIDATE,
+        repairHeadSha: REPAIR_HEAD,
+        root: '/repo',
+        sql: fakeSql({ filesJudged: 1, failing: [] }),
+        // A measurement taken at an EARLIER repairHead the queue has since moved past —
+        // repairHeadSha does not start with this head.
+        repairTickLegs: {
+          head: 'ffffffffffff',
+          atMs: 1_000,
+          ok: false,
+          failingSignatures: ['lint:tsc'],
+          legs: [{ id: 'lint:tsc', status: 'fail', durationMs: 1 }],
+        },
+      });
+      expect(res.nonTestLegs?.current).toBe(false);
+      expect(res.nonTestLegs?.reading).toMatch(/STALE/);
+    });
+
+    it('says all legs passed when none are failing, distinct from "nothing was measured"', async () => {
+      const res = await readGateCandidateFailures({
+        candidateSha: CANDIDATE,
+        repairHeadSha: REPAIR_HEAD,
+        root: '/repo',
+        sql: fakeSql({ filesJudged: 1, failing: [] }),
+        repairTickLegs: {
+          head: REPAIR_HEAD.slice(0, 12),
+          atMs: 1_000,
+          ok: true,
+          failingSignatures: [],
+          legs: [{ id: 'lint:tsc', status: 'pass', durationMs: 1 }],
+        },
+      });
+      expect(res.nonTestLegs?.failing).toEqual([]);
+      expect(res.nonTestLegs?.reading).toMatch(/passed/i);
+    });
+
+    it('survives on the unavailable path — a test_runs failure must not also lose the leg measurement', async () => {
+      const res = await readGateCandidateFailures({
+        candidateSha: CANDIDATE,
+        repairHeadSha: REPAIR_HEAD,
+        root: '/repo',
+        sql: (() => {
+          throw new Error('connection refused');
+        }) as never,
+        repairTickLegs: {
+          head: REPAIR_HEAD.slice(0, 12),
+          atMs: 1_000,
+          ok: false,
+          failingSignatures: ['lint:tsc'],
+          legs: [{ id: 'lint:tsc', status: 'fail', durationMs: 1 }],
+        },
+      });
+      expect(res.assessment).toBe('unmeasured');
+      expect(res.nonTestLegs).not.toBeNull();
+      expect(res.nonTestLegs?.failing.map((l) => l.id)).toEqual(['lint:tsc']);
+    });
+
+    it('survives on the no-frozen-candidate path', async () => {
+      const res = await readGateCandidateFailures({
+        candidateSha: null,
+        repairHeadSha: null,
+        root: '/repo',
+        repairTickLegs: {
+          head: 'abc123def456',
+          atMs: 1_000,
+          ok: true,
+          failingSignatures: [],
+          legs: [],
+        },
+      });
+      expect(res.assessment).toBe('no-frozen-candidate');
+      // No live repairHead to compare against ⇒ currency is unknown, not false.
+      expect(res.nonTestLegs?.current).toBeNull();
+    });
+  });
 });

@@ -42,6 +42,7 @@ import {
 } from './release/frozen-candidate-repair-queue';
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
 import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
+import { parseRepairTickLegs, type StoredRepairTickLegs } from './release/repair-tick-legs-snapshot';
 import { readFreezeAndConverge, type FreezeAndConvergeGateHealth } from './release/freeze-disposition';
 import { pipelineName } from './release/pipeline-name';
 import {
@@ -364,6 +365,17 @@ export interface GitPipelineSnapshot {
      * its candidate".
      */
     inFlightCandidate?: StoredInFlightCandidate | null;
+    /**
+     * WI-2143253: the repair queue's own per-leg non-test measurement (lint / perf /
+     * desktop / delta) — `gate_health.repairTickLegs`, written by
+     * `augmentWithRepairTickLegs` on every awaiting-fixer hold tick (see
+     * `apps/operator/lib/release/green-checkpoint.ts`'s `RepairTickLegs` /
+     * `RepairTickLegRecord`). This was already being WRITTEN; nothing ever read it back
+     * into this snapshot, so `gate.candidateFailures` could only ever report a bare
+     * `postSuiteMeasured` tri-state boolean and could never NAME which leg was failing.
+     * `null` when no repair queue is open, or one is open but has had no hold tick yet.
+     */
+    repairTickLegs?: StoredRepairTickLegs | null;
     /**
      * EI-19325520469216548: how stale the JUDGED CANDIDATE was at verdict time, in ms — the
      * SAME `evaluateGateVerdictFreshness` measurement that already decides `verdictStale`'s
@@ -1174,6 +1186,11 @@ export async function gitPipelineSnapshot(
   // second query. Deliberately parsed even when `inFlightRetriage` is non-null — the consumer
   // decides precedence (a refire supersedes the original candidate), not this line.
   const inFlightCandidate = parseInFlightCandidate(gateHealth.inFlightCandidate);
+  // WI-2143253: the read-side half of the gap — `gate_health.repairTickLegs` was already
+  // written on every awaiting-fixer hold tick; nothing ever parsed it back out. Same
+  // "already in hand" property as its siblings above: a second key off `gateHealth`,
+  // never a second query.
+  const repairTickLegs = parseRepairTickLegs(gateHealth.repairTickLegs);
   /**
    * EI-19346660748445728 — Rule 5 input. `gate_health.candidateCommittedAt` is written by
    * `release-actions.ts` as an ISO STRING (`git show -s --format=%cI`), unlike its sibling
@@ -1446,6 +1463,7 @@ export async function gitPipelineSnapshot(
       ),
       inFlightRetriage,
       inFlightCandidate,
+      repairTickLegs,
       candidateAgeMs: gcCandidateAgeMs ?? null,
       commitsBehindTip: rawCommitsBehindTip,
       flakyWorkspaces: Object.entries(flakeHistory)

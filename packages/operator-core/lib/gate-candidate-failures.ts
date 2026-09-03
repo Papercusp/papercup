@@ -228,6 +228,11 @@ function unavailable(
   candidateSha: string | null,
   repairHeadSha: string | null,
   assessment: GateCandidateFailuresCode,
+  // WI-2143253: the leg measurement is independent of the test-files query this
+  // function fails without — a caller who has it should not lose it just because
+  // `test_runs` was unreadable, or there was no frozen candidate to judge test files
+  // against. `null` (the default) preserves the pre-existing "nothing to show" shape.
+  nonTestLegs: GateCandidateFailures['nonTestLegs'] = null,
 ): GateCandidateFailures {
   return {
     candidateSha,
@@ -244,11 +249,34 @@ function unavailable(
     stillBrokenNeedsRunCount: 0,
     changedBetweenRefs: null,
     postSuiteMeasured: null,
+    nonTestLegs,
     scope: SCOPE_SENTENCE,
     unavailable: reason,
     truncated: false,
     assessment,
   };
+}
+
+/**
+ * WI-2143253: turn a raw `StoredRepairTickLegs` (already parsed by the caller — this
+ * module does no I/O of its own for it) into the rendered `nonTestLegs` shape, hedged
+ * by currency against the live repairHead. Pure; returns `null` only when the caller
+ * had no measurement to give.
+ */
+function buildNonTestLegs(
+  snap: StoredRepairTickLegs | null | undefined,
+  repairHeadSha: string | null,
+): GateCandidateFailures['nonTestLegs'] {
+  if (!snap) return null;
+  const current = repairTickLegsCurrent(snap, repairHeadSha);
+  const failing = snap.legs.filter((l) => l.status !== 'pass');
+  const reading =
+    current === false
+      ? `STALE — measured at an earlier repairHead (${snap.head}); the queue has since moved past it. Not evidence about the current repairHead.`
+      : failing.length === 0
+        ? 'All measured non-test legs (lint/perf/desktop/delta) passed at this repairHead.'
+        : `${failing.length} non-test leg(s) failing at this repairHead: ${failing.map((l) => l.id).join(', ')}.`;
+  return { current, head: snap.head, atMs: snap.atMs, all: snap.legs, failing, reading };
 }
 
 /**
@@ -437,12 +465,16 @@ export async function readGateCandidateFailures(
 ): Promise<GateCandidateFailures> {
   const candidateSha = opts.candidateSha?.trim() || null;
   const repairHeadSha = opts.repairHeadSha?.trim() || null;
+  // WI-2143253: pure and cheap — compute once, thread through every return path
+  // (including the unavailable ones below) rather than only the success path.
+  const nonTestLegs = buildNonTestLegs(opts.repairTickLegs, repairHeadSha);
   if (!candidateSha) {
     return unavailable(
       'no frozen candidate — there is no sha to judge, so there is no failing-files answer. This is not "zero failures".',
       null,
       repairHeadSha,
       'no-frozen-candidate',
+      nonTestLegs,
     );
   }
 
@@ -491,6 +523,7 @@ export async function readGateCandidateFailures(
       candidateSha,
       repairHeadSha,
       'unmeasured',
+      nonTestLegs,
     );
   }
 
@@ -563,6 +596,7 @@ export async function readGateCandidateFailures(
         ? null
         : { count: moves.kind === 'none' ? 0 : moves.paths.length, sample: moves.kind === 'none' ? [] : moves.paths.slice(0, 10) },
     postSuiteMeasured: opts.postSuiteMeasured ?? null,
+    nonTestLegs,
     scope: SCOPE_SENTENCE,
     unavailable: null,
     truncated,

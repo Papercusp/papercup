@@ -5260,6 +5260,11 @@ export async function gitPipelinePosition(
         repairHeadSha: snap.gate.repairQueue.repairHead,
         root,
         submodulePaths: await submodulePaths(git, root),
+        // WI-2143253: already parsed by git-pipeline-stats (a second key off the same
+        // `gate_health` blob it loaded, never a second query) — thread it through so
+        // `gate.candidateFailures.nonTestLegs` can name which lint/perf/desktop/delta
+        // leg is failing, instead of the bare `postSuiteMeasured` tri-state boolean.
+        repairTickLegs: snap.gate.repairTickLegs ?? null,
       })
     : null;
   // WI-7035: `snap.gate.inFlightRetriage` is already loaded and freshness-checked by
