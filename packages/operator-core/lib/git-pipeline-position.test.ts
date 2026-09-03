@@ -2700,13 +2700,16 @@ describe('computeStages: position x health', () => {
       stillBrokenCount: 0,
       stillBrokenNeedsRunCount: 0,
       changedBetweenRefs: null,
-      postSuiteMeasured: null,
-      // WI-2143253 added `nonTestLegs` as a REQUIRED field beside `postSuiteMeasured`.
-      // `null` is the correct fixture value and the production default: it means no
-      // per-leg measurement exists yet for this repair queue, which is exactly the
-      // state these progress-term fixtures model. The three helpers below
-      // (converging / outstanding / outstandingUnconfirmed) all delegate here, so
-      // this one site is the whole fix.
+      // P-003 replaced the `postSuiteMeasured` tri-state with a two-value reading derived
+      // from whether a leg measurement exists at all. `not-recorded` is the fixture value
+      // that matches `nonTestLegs: null` below — and the pair is the point: no measurement
+      // recorded is NOT "no legs failing".
+      nonTestLegsMeasured: 'not-recorded',
+      // WI-2143253 added `nonTestLegs` as a REQUIRED field. `null` is the correct fixture
+      // value and the production default: it means no per-leg measurement exists yet for
+      // this repair queue, which is exactly the state these progress-term fixtures model.
+      // The three helpers below (converging / outstanding / outstandingUnconfirmed) all
+      // delegate here, so this one site is the whole fix.
       nonTestLegs: null,
       scope: 'fixture scope sentence',
       unavailable: null,
