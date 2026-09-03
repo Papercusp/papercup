@@ -255,6 +255,32 @@ export interface MetricSpec {
    * and no commit could have greened it.
    */
   eligibilityIsOccurrence?: boolean;
+
+  /**
+   * The THIRD quiet-window shape (WI-212675, measured 2026-09-03): eligibility is
+   * FLEET TRAFFIC on a named set of surfaces, not an input a producer stamps and not
+   * a defect occurrence.
+   *
+   * For such a metric `population` and `eligible` count DIFFERENT populations — every
+   * tool call vs. calls to the ten enriched surfaces — so `fillRate` conflates two
+   * unrelated facts: "a producer stopped stamping" and "the fleet stopped making these
+   * calls". The ratchet reads a zero fill rate as the former, which is right for a
+   * stamped input and wrong here: when every account in the provider pool is
+   * usage-walled, the fleet makes no enriched calls at all and nothing has died.
+   *
+   * Live proof it was needed: 2026-09-03 07:00–10:59Z, all 7 Claude accounts
+   * usage-walled. Workspace tool volume fell ~6,800/hr → ~380/hr and enriched calls
+   * hit EXACTLY zero for four consecutive hours, so `plane-token-cost` reported
+   * `regressed` and held `main` for the whole fleet. No commit caused it and no commit
+   * could have greened it — the same shape, and the same cost, as the
+   * `eligibilityIsOccurrence` case above.
+   *
+   * This does NOT weaken the ratchet: the verdict only becomes `window-unjudgeable`,
+   * which still goes through `sustainedlyUninterpretable`. A fleet back at its normal
+   * volume that STILL yields no comparable enriched call clears the WI-6562 evidence
+   * floor and reaches `regressed` exactly as before.
+   */
+  eligibilityIsTraffic?: boolean;
 }
 
 /** The counts a run supplies for one metric. All four are required — an omitted
@@ -416,6 +442,11 @@ export const METRIC_SPECS: Readonly<Record<PlaneMetricId, MetricSpec>> = Object.
     // never a "finding" however large it grows, and a reader who sees it listed
     // beside real defect counts will mis-rank the whole row.
     polarity: 'gauge',
+    // WI-212675: `eligible` here is calls to ENRICHED_SURFACES — fleet traffic, not a
+    // stamped input. A usage-walled fleet drives it to zero over a population that is
+    // still non-empty (background/system calls keep firing), which the ratchet would
+    // otherwise read as a dead producer. See MetricSpec.eligibilityIsTraffic.
+    eligibilityIsTraffic: true,
     vacuousPassWhen:
       'NONE of the plane’s enrichments are deployed yet, so this window is the PRE-enrichment baseline. Reading a low number as "the plane is cheap" is exactly backwards — the cost is the DELTA against this row once the enrichments are live, and there is no delta to read until then.',
   },

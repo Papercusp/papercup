@@ -240,7 +240,7 @@ export function judgeMetricRatchet(
    * input-eligibility reading — so an undeclared metric keeps the original
    * first-window teeth and only a metric that OPTS IN gets the occurrence reading.
    */
-  opts: { eligibilityIsOccurrence?: boolean } = {},
+  opts: { eligibilityIsOccurrence?: boolean; eligibilityIsTraffic?: boolean } = {},
 ): RatchetVerdict {
   if (windows.length === 0) return 'no-data';
   const latest = windows[windows.length - 1];
@@ -253,8 +253,11 @@ export function judgeMetricRatchet(
   // here: the input was present but nothing compared, and (for an occurrence-
   // eligibility metric) the scan ran and the defect simply did not occur.
   const isOccurrence = opts.eligibilityIsOccurrence ?? false;
+  const isTraffic = opts.eligibilityIsTraffic ?? false;
   const quiet =
-    producerWroteButNothingComparable(latest) || producerRanButNothingOccurred(latest, isOccurrence);
+    producerWroteButNothingComparable(latest) ||
+    producerRanButNothingOccurred(latest, isOccurrence) ||
+    producerRanButFleetWasStarved(latest, isTraffic);
   if (quiet && !sustainedlyUninterpretable(windows, isOccurrence)) return 'window-unjudgeable';
   return 'regressed';
 }
@@ -305,6 +308,35 @@ export function producerRanButNothingOccurred(
   eligibilityIsOccurrence: boolean,
 ): boolean {
   if (!eligibilityIsOccurrence) return false;
+  return !w.interpretable && w.zeroReason === 'nothing-eligible' && w.fillRate === 0;
+}
+
+/**
+ * The THIRD quiet-window shape: nothing was eligible because THE FLEET MADE NO SUCH
+ * CALLS (WI-212675).
+ *
+ * Same predicate as the occurrence case above and deliberately a separate function,
+ * because it answers a different question and is opted into by a different spec field
+ * — collapsing them would make the ratchet's own vocabulary say "a defect did not
+ * occur" about a metric that measures traffic.
+ *
+ * For a metric whose eligibility is traffic on a named surface set
+ * ({@link MetricSpec.eligibilityIsTraffic}), `population` and `eligible` count
+ * DIFFERENT populations, so `fillRate === 0` cannot mean "the producer stopped
+ * writing" — background and system calls keep the population non-empty while the
+ * agents that would call those surfaces are usage-walled. Measured live: four
+ * consecutive hours at exactly zero enriched calls while workspace volume ran at
+ * ~380/hr, judged `regressed`, holding `main` for the whole fleet.
+ *
+ * `fillRate === 0` — never `null` — is the corroboration, exactly as above: a null
+ * fill rate means the population itself was empty (`population-empty`), i.e. nothing
+ * was examined at all, which stays a producer signal.
+ */
+export function producerRanButFleetWasStarved(
+  w: MetricWindow,
+  eligibilityIsTraffic: boolean,
+): boolean {
+  if (!eligibilityIsTraffic) return false;
   return !w.interpretable && w.zeroReason === 'nothing-eligible' && w.fillRate === 0;
 }
 
@@ -480,7 +512,11 @@ export function ratchetPlaneSeries(args: {
     Partial<
       Record<
         PlaneMetricId,
-        { interpretableOnlyWith?: readonly PlaneMetricId[]; eligibilityIsOccurrence?: boolean }
+        {
+          interpretableOnlyWith?: readonly PlaneMetricId[];
+          eligibilityIsOccurrence?: boolean;
+          eligibilityIsTraffic?: boolean;
+        }
       >
     >
   >;
@@ -512,6 +548,7 @@ export function ratchetPlaneSeries(args: {
     const interpretableWindows = windows.filter((w) => w.interpretable && !isIncoherent(w));
     const verdict = judgeMetricRatchet(windows, {
       eligibilityIsOccurrence: specs[metric]?.eligibilityIsOccurrence ?? false,
+      eligibilityIsTraffic: specs[metric]?.eligibilityIsTraffic ?? false,
     });
     const knownGap = gaps[metric];
     rows.push({
