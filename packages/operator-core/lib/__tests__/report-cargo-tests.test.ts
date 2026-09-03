@@ -16,13 +16,14 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 import {
   assessCargoDiskAdmission,
+  cargoCoverageOutputPath,
   cargoRunExitCode,
   CARGO_CACHE_TAG,
   CARGO_DISK_REFUSAL_EXIT_CODE,
@@ -137,6 +138,58 @@ describe('cargo test result parsing', () => {
       'native_console::tests::ignored_case',
     ]);
     expect(results.map(({ outcome }) => outcome)).toEqual(['ok', 'ok', 'ignored']);
+    expect(REPORTER_SOURCE).toContain('const results = parseCargoTestResultLines(combined);');
+  });
+});
+
+describe('cargo coverage output placement (P-010, design-to-code-coverage-seam-2026-09-02)', () => {
+  const manifest = '/repo/papercusp-desktop/src-tauri/Cargo.toml';
+
+  // These assert the CONTRACT with scripts/merge-coverage.ts's discovery walk,
+  // not a literal string. That walker finds inputs by looking for a directory
+  // named `coverage` holding `lcov.info`, and derives the workspace the records
+  // are relative to as dirname(dirname(file)). Both halves must hold or the
+  // Rust records re-anchor against the wrong root — a silent mis-merge, not an
+  // error. Asserting the literal path would pass while the coupling rotted.
+  it('writes where merge-coverage looks: <crateDir>/coverage/lcov.info', () => {
+    const out = cargoCoverageOutputPath(manifest) as string;
+
+    expect(basename(out)).toBe('lcov.info');
+    expect(basename(dirname(out))).toBe('coverage');
+    // the workspace merge-coverage will attribute these records to
+    expect(dirname(dirname(out))).toBe('/repo/papercusp-desktop/src-tauri');
+  });
+
+  it('never nests the report under target/, which every tree-walker prunes', () => {
+    const out = cargoCoverageOutputPath(manifest) as string;
+
+    // cargo-llvm-cov's own default lands in target/. merge-coverage.ts and
+    // affected-tests.mjs both prune `target`, so a report written there is
+    // structurally invisible: the Rust leg contributes zero files and every
+    // command still exits 0 — a gate that goes green having measured nothing.
+    expect(out.split('/')).not.toContain('target');
+  });
+
+  it('creates the output directory BEFORE spawning Cargo, not after the suite', () => {
+    // Measured 2026-09-03: cargo-llvm-cov does not create --output-path's
+    // parent. It ran all 386 tests green and only then died with
+    // `failed to create file 'coverage/lcov.info': No such file or directory`,
+    // discarding a complete instrumented run. The mkdir must therefore precede
+    // the spawn, not follow the run.
+    const mkdirAt = REPORTER_SOURCE.indexOf('mkdirSync(dirname(coverage.outputPath)');
+    const spawnAt = REPORTER_SOURCE.indexOf('const child = spawn(resolveCargoBin()');
+
+    expect(mkdirAt).toBeGreaterThan(-1);
+    expect(spawnAt).toBeGreaterThan(-1);
+    expect(mkdirAt).toBeLessThan(spawnAt);
+  });
+
+  it('runs the same harness under llvm-cov, so the stdout parser still applies', () => {
+    // `cargo llvm-cov` wraps `cargo test` and passes its harness output
+    // through, which is what lets every parser and per-test ledger row below
+    // work unchanged. If this ever became a separate runner, the per-test rows
+    // would silently stop being recorded.
+    expect(REPORTER_SOURCE).toContain("'llvm-cov',");
     expect(REPORTER_SOURCE).toContain('const results = parseCargoTestResultLines(combined);');
   });
 });
