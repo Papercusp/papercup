@@ -225,6 +225,82 @@ describe('composeGateOwnerBrief', () => {
     expect(b.lastGreen.ageMs).toBe(60_000);
   });
 
+  /* ═══════════════════════════════════════════════════════════════════════════════
+   * main-green-status-visible-2026-09-03 P-010 — per-leg attestations.
+   *
+   * The spread was already reported; what it structurally cannot say is WHICH leg is old,
+   * which is the question a reader must answer before deciding which half of a mixed brief
+   * to believe. The deliberately-wrong control here is the two-hour spread: it must NOT
+   * read as `coherent`, and it must NAME the stale leg rather than leave a number to convert.
+   * ══════════════════════════════════════════════════════════════════════════════ */
+
+  it('names WHICH leg is stale, not merely that the legs disagree about when', () => {
+    const b = composeGateOwnerBrief({
+      ...base,
+      consecutiveReds: 3,
+      failingTests: ['lint:tsc'],
+      // The live 2026-09-03 shape: a ~2h-old verdict fused with a live ownership read.
+      verdictObservedAtMs: NOW - 7_040_975,
+      repairQueue: redQueue({ updatedAtMs: NOW - 60_000 }),
+    });
+    expect(b.attestations.verdict).toBe('incoherent');
+    expect(b.attestations.staleLegs).toEqual(['mainGreen']);
+    expect(b.attestations.oldestLeg).toBe('mainGreen');
+    // The stale leg is named in prose too — the reader should not have to convert ms.
+    expect(b.attestations.summary).toContain('mainGreen');
+    // Newest first, so the tail IS the oldest leg.
+    expect(b.attestations.legs[0]!.leg).toBe('ownership');
+    expect(b.attestations.legs.at(-1)!.leg).toBe('mainGreen');
+    expect(b.attestations.legs.at(-1)!.stale).toBe(true);
+  });
+
+  it('a brief whose legs were all observed together reads coherent with no stale legs', () => {
+    const b = composeGateOwnerBrief({
+      ...base,
+      consecutiveReds: 3,
+      failingTests: ['lint:tsc'],
+      verdictObservedAtMs: NOW - 30_000,
+      repairQueue: redQueue({ updatedAtMs: NOW - 45_000 }),
+    });
+    expect(b.attestations.verdict).toBe('coherent');
+    expect(b.attestations.staleLegs).toEqual([]);
+    expect(b.attestations.legs.every((l) => l.stale === false)).toBe(true);
+  });
+
+  /**
+   * THE CONTROL THAT MATTERS. Fewer than two stamped legs means there is nothing to
+   * compare, and `coherent` there would be a verdict of agreement computed over an empty
+   * comparison — the same false-green shape as a count over zero measurements. It must be
+   * `not-knowable`, and it must say so.
+   */
+  it('one stamped leg is NOT-KNOWABLE, never coherent — an empty comparison is not agreement', () => {
+    const b = composeGateOwnerBrief({ ...base, verdictObservedAtMs: null });
+    // ownership is stamped at `nowMs` by construction; the verdict leg is not.
+    expect(b.attestations.legs.map((l) => l.leg)).toEqual(['ownership']);
+    expect(b.attestations.spreadMs).toBeNull();
+    expect(b.attestations.verdict).toBe('not-knowable');
+    expect(b.attestations.summary).toContain('not agreement');
+  });
+
+  it('vintageSpreadMs and attestations.spreadMs are ONE derivation, so they cannot drift', () => {
+    for (const verdictObservedAtMs of [NOW - 30_000, NOW - 600_000, NOW - 7_040_975, null]) {
+      const b = composeGateOwnerBrief({
+        ...base,
+        consecutiveReds: 3,
+        verdictObservedAtMs,
+        repairQueue: redQueue({ updatedAtMs: NOW - 60_000 }),
+      });
+      expect(b.vintageSpreadMs).toBe(b.attestations.spreadMs);
+    }
+  });
+
+  it('an unstamped leg contributes no attestation — it cannot attest to its own freshness', () => {
+    const withQueue = composeGateOwnerBrief({ ...base, consecutiveReds: 3, repairQueue: redQueue() });
+    const withoutQueue = composeGateOwnerBrief({ ...base, consecutiveReds: 3, repairQueue: null });
+    expect(withQueue.attestations.legs.map((l) => l.leg)).toContain('remediation');
+    expect(withoutQueue.attestations.legs.map((l) => l.leg)).not.toContain('remediation');
+  });
+
   it('never claims measurement it does not have: carried failing legs read measured=false', () => {
     const b = composeGateOwnerBrief({
       ...base,
