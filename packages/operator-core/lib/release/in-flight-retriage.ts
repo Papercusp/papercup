@@ -392,3 +392,257 @@ export async function readRunnerCodeCommittedAtMs(
     return null;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * main-green-status-visible-2026-09-03 P-009 — THE RE-TRIAGE WINDOW AS A READ.
+ *
+ * ## The gap this closes (audit entry 21)
+ *
+ * CLAUDE.md gives this question its own 🚨 alarm block — firing a manual
+ * `release:checkpoint-run` inside the re-triage window "discards the rescue and costs a
+ * full suite" — and yet, until this cell, the only two ways to LEARN you were inside that
+ * window were:
+ *
+ *   1. attempt the destructive action and read its refusal, or
+ *   2. dig `retriageDetail` / `inFlightCandidate` / `verdictlessRefire` out of routine
+ *      metadata by hand.
+ *
+ * Both arrive AFTER the decision to act. A rule whose only enforcement is a refusal you
+ * must provoke is not readable in advance, which is exactly why an alarm block was needed
+ * for it in the first place. This projection puts the answer on the state plane so it
+ * arrives BEFORE the destructive action rather than as its refusal.
+ *
+ * ## Derivation — one path, no second reading
+ *
+ * Projected from the ALREADY-MAPPED `gate.checkpointRunInFlight` leg (rung 1 of the
+ * derived-truth ladder), never from a second query. That leg has already fused the live
+ * run-lock, the cached run reading and this module's own freshness-checked marker; a
+ * parallel read here could disagree with the value published one field away, which is the
+ * class of defect `judgingShaSource` was filed for.
+ *
+ * `failingFiles` is the single exception, and it is CARRIED, not re-read: the mapped leg
+ * genuinely does not project it, so the raw marker is passed alongside — and consulted
+ * ONLY once the mapped leg has established that a refire is in flight, so a stale or
+ * unattributed marker can never contribute a file list to a reading that says it is not.
+ *
+ * ## The tri-state is load-bearing, in the direction that costs a suite
+ *
+ * `inFlight: null` means BOTH liveness reads failed — never "no refire in flight". A
+ * reader that collapses unknown to false gets exactly the destructive green-light this
+ * cell exists to withhold, so `standDown` is TRUE on `not-measured`: unknown HOLDS you, it
+ * does not release you. The stand-down advice is cheap and correct either way (see
+ * {@link attributeRetriageToRun}); the claim that nothing is in flight is not.
+ * ══════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * The subset of `gate.checkpointRunInFlight` this projection reads, declared STRUCTURALLY
+ * rather than imported from `git-pipeline-position`. That module already imports this one;
+ * importing back would close the cycle, and the shape is small enough that restating it is
+ * cheaper than the seam. `mapCheckpointRunInFlight`'s return type is assignable to it.
+ */
+export interface RetriageRunReading {
+  active: boolean;
+  inRetriageWindow?: true;
+  fromCandidate?: string | null;
+  candidate?: string | null;
+  refireAttempt?: number;
+  maxRefires?: number;
+  totalRefires?: number;
+  absoluteCeiling?: number;
+  asOfAgeMs?: number | null;
+}
+
+/** Assessment codes for `gate.greenCheckpoint.retriage`. */
+export type RetriageCellCode =
+  | 'not-measured'
+  | 'no-run'
+  | 'no-refire'
+  | 'in-flight'
+  | 'in-flight-at-cap';
+
+/** The shape `gate.greenCheckpoint.retriage` publishes. */
+export interface RetriageCellProjection {
+  code: RetriageCellCode;
+  /** True when neither liveness read answered. Hoisted as the cell's unknown. */
+  unmeasured: boolean;
+  /**
+   * THE headline (audit entry 21): is an auto-refire / re-triage in flight RIGHT NOW?
+   * `null` = NOT MEASURED. Never read a null here as `false`.
+   */
+  inFlight: boolean | null;
+  /** Is a checkpoint run active at all? `null` = not measured. */
+  runActive: boolean | null;
+  /**
+   * Would firing `release:checkpoint-run` right now be destructive or futile?
+   * TRUE on `in-flight*` (it discards a live rescue) AND on `not-measured` (unknown holds
+   * you). FALSE only when the reading positively says there is nothing to discard.
+   */
+  standDown: boolean;
+  /** The candidate this refire MOVED OFF — a red you are still reasoning about may be its. */
+  fromCandidate: string | null;
+  /** The newer candidate being re-verified. */
+  refiringCandidate: string | null;
+  /**
+   * The files the ABANDONED red named. Surfaced so a reader does not go fix tests whose
+   * verdict this run has already discarded. `null` when no refire is in flight — a measured
+   * absence of the subject, not an empty list of files.
+   */
+  abandonedFailingFiles: string[] | null;
+  /** `describeRefireBudget().label` — names EVERY known bound, never the charged counter alone. */
+  budgetLabel: string | null;
+  /** No further refire is possible: the NEXT red STICKS. `null` when unknown. */
+  atCap: boolean | null;
+  refireAttempt: number | null;
+  maxRefires: number | null;
+  totalRefires: number | null;
+  absoluteCeiling: number | null;
+  /** When the marker was written, and how old that is. Null when there is no marker. */
+  observedAtMs: number | null;
+  ageMs: number | null;
+  /** How stale the underlying cached run reading is, in ms. Null when it carried no stamp. */
+  asOfAgeMs: number | null;
+  /** One line, ready to quote. Leads with STAND DOWN when it applies. */
+  summary: string;
+}
+
+/**
+ * PURE: the assessment code for a run reading. Split out so the truth table in
+ * `cell-assessment-reality.test.ts` exercises the same function the projection does.
+ */
+export function assessRetriage(run: RetriageRunReading | null | undefined): RetriageCellCode {
+  if (run == null) return 'not-measured';
+  if (run.active !== true) return 'no-run';
+  if (run.inRetriageWindow !== true) return 'no-refire';
+  // Budget is only knowable once both charged counters are present. A marker carrying
+  // neither degrades to plain `in-flight` — STAND DOWN either way, which is the only part
+  // of this reading a caller must not get wrong.
+  if (typeof run.refireAttempt !== 'number' || typeof run.maxRefires !== 'number') return 'in-flight';
+  const { atCap } = describeRefireBudget({
+    refireAttempt: run.refireAttempt,
+    maxRefires: run.maxRefires,
+    ...(typeof run.totalRefires === 'number' ? { totalRefires: run.totalRefires } : {}),
+    ...(typeof run.absoluteCeiling === 'number' ? { absoluteCeiling: run.absoluteCeiling } : {}),
+  });
+  return atCap ? 'in-flight-at-cap' : 'in-flight';
+}
+
+/**
+ * PURE: project the re-triage reading into the shape `gate.greenCheckpoint.retriage` publishes.
+ *
+ * Emitted UNCONDITIONALLY — an unmeasured reading yields `code: 'not-measured'` with null
+ * fields, never a bare `null` in place of the object, for the same two reasons as
+ * `projectFreezeDispositionCell`: the cell contract requires the declared assessment path
+ * to exist in every live payload, and "I could not measure it" is itself an answer a reader
+ * must be able to branch on.
+ */
+export function projectRetriageCell(
+  run: RetriageRunReading | null | undefined,
+  marker: StoredInFlightRetriage | null | undefined,
+  nowMs: number = Date.now(),
+): RetriageCellProjection {
+  const code = assessRetriage(run);
+  const inFlight = code === 'in-flight' || code === 'in-flight-at-cap';
+  if (code === 'not-measured') {
+    return {
+      code,
+      unmeasured: true,
+      inFlight: null,
+      runActive: null,
+      // Unknown HOLDS you. See the module note above: collapsing this to false is the
+      // destructive green-light this cell exists to withhold.
+      standDown: true,
+      fromCandidate: null,
+      refiringCandidate: null,
+      abandonedFailingFiles: null,
+      budgetLabel: null,
+      atCap: null,
+      refireAttempt: null,
+      maxRefires: null,
+      totalRefires: null,
+      absoluteCeiling: null,
+      observedAtMs: null,
+      ageMs: null,
+      asOfAgeMs: null,
+      summary:
+        'Re-triage status NOT MEASURED — neither the run lock nor the cached run reading answered. ' +
+        'This is NOT "no refire in flight". Do not fire release:checkpoint-run on this reading.',
+    };
+  }
+  const r = run!;
+  const asOfAgeMs = typeof r.asOfAgeMs === 'number' ? r.asOfAgeMs : null;
+  if (!inFlight) {
+    return {
+      code,
+      unmeasured: false,
+      inFlight: false,
+      runActive: r.active === true,
+      standDown: false,
+      fromCandidate: null,
+      refiringCandidate: null,
+      abandonedFailingFiles: null,
+      budgetLabel: null,
+      atCap: null,
+      refireAttempt: null,
+      maxRefires: null,
+      totalRefires: null,
+      absoluteCeiling: null,
+      observedAtMs: null,
+      ageMs: null,
+      asOfAgeMs,
+      summary:
+        code === 'no-run'
+          ? 'No checkpoint run is active, so no auto-refire can be in flight. Nothing to stand down for.'
+          : 'A checkpoint run is active but NO auto-refire is in flight — no rescue to discard. ' +
+            'A manual release:checkpoint-run would still collide with the running one (already_running).',
+    };
+  }
+  // In flight. The mapped leg is authoritative for every field it carries; the raw marker
+  // contributes only what that leg does not project, and only now that in-flight is settled.
+  const refireAttempt = typeof r.refireAttempt === 'number' ? r.refireAttempt : null;
+  const maxRefires = typeof r.maxRefires === 'number' ? r.maxRefires : null;
+  const totalRefires = typeof r.totalRefires === 'number' ? r.totalRefires : null;
+  const absoluteCeiling = typeof r.absoluteCeiling === 'number' ? r.absoluteCeiling : null;
+  const budget =
+    refireAttempt !== null && maxRefires !== null
+      ? describeRefireBudget({
+          refireAttempt,
+          maxRefires,
+          ...(totalRefires !== null ? { totalRefires } : {}),
+          ...(absoluteCeiling !== null ? { absoluteCeiling } : {}),
+        })
+      : null;
+  const observedAtMs = typeof marker?.observedAtMs === 'number' ? marker.observedAtMs : null;
+  const fromCandidate = r.fromCandidate ?? null;
+  const refiringCandidate = r.candidate ?? null;
+  const files = marker?.failingFiles ?? [];
+  return {
+    code,
+    unmeasured: false,
+    inFlight: true,
+    runActive: true,
+    standDown: true,
+    fromCandidate,
+    refiringCandidate,
+    abandonedFailingFiles: files,
+    budgetLabel: budget?.label ?? null,
+    atCap: budget ? budget.atCap : null,
+    refireAttempt,
+    maxRefires,
+    totalRefires,
+    absoluteCeiling,
+    observedAtMs,
+    ageMs: observedAtMs === null ? null : Math.max(0, nowMs - observedAtMs),
+    asOfAgeMs,
+    summary:
+      `🚨 AUTO-REFIRE IN FLIGHT — STAND DOWN. This run has moved off ${fromCandidate ?? 'an earlier candidate'} ` +
+      `and is re-verifying ${refiringCandidate ?? 'a newer candidate'}` +
+      (budget ? ` (${budget.label})` : '') +
+      '. Firing release:checkpoint-run now DISCARDS the rescue and costs a full suite. ' +
+      (files.length > 0
+        ? `The abandoned red named ${files.join(', ')} — do NOT go fix those on its account. `
+        : '') +
+      (code === 'in-flight-at-cap'
+        ? 'Budget is SPENT: the next red sticks, and a human lever starts to matter.'
+        : 'Wait for it to land a verdict.'),
+  };
+}
