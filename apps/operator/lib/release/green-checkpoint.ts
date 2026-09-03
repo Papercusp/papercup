@@ -136,7 +136,10 @@ import {
   type FrozenCandidateFossilAbandonment,
   type FrozenCandidateRepairQueue,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
-import type { FreezeAndConvergeDisposition } from "@papercusp/operator-core/lib/release/freeze-disposition";
+import type {
+  FreezeAndConvergeDisposition,
+  TickFreezeObservation,
+} from "@papercusp/operator-core/lib/release/freeze-disposition";
 import {
   describeIntegrationRoot,
   databaseEvidence,
@@ -1047,6 +1050,21 @@ export interface CheckpointDeps {
    */
   recordFreezeDisposition?(
     disposition: FreezeAndConvergeDisposition,
+  ): Promise<void>;
+  /**
+   * P-008: the per-tick BACKSTOP for the dep above. `converging` and `none` are recorded by
+   * no branch, and the stored record is shallow-merged and never cleared, so without this a
+   * tick that converges or clears leaves the previous `held`/`retired` record standing and a
+   * reader inside the freshness window takes it for current state.
+   *
+   * Called ONCE from the terminal handler with what that handler already holds. The
+   * implementation writes only when `recordFreezeDisposition` did not already fire this
+   * tick, so a branch-recorded disposition — which carries the measured sentence a
+   * projection cannot reconstruct — always wins. ABSENT ⇒ nothing is recorded, keeping
+   * every stub byte-identical. Best-effort by contract: never throws, never fails a tick.
+   */
+  recordDerivedFreezeDisposition?(
+    observation: TickFreezeObservation,
   ): Promise<void>;
   routeFrozenRepairToAgents?(input: {
     pipeline: string;
@@ -12407,6 +12425,22 @@ export async function runGreenCheckpoint(
       ? { fossilAbandonment: innerOpts.fossilAbandonment }
       : {}),
   };
+  // P-008: leave exactly ONE freeze disposition describing THIS tick, from the one place
+  // every return site and every caller already funnels through. `converging` and `none` are
+  // recorded by no branch, and the stored record is shallow-merged and never cleared — so
+  // without this a tick that converges or clears leaves the previous `held`/`retired` record
+  // standing, and a reader inside the freshness window takes it for current state.
+  //
+  // Deliberately HERE and not in the CLI terminal handler: the routine path and the
+  // in-flight-retriage recursion both call this function, and a backstop wired at the
+  // entrypoint would miss both. The implementation no-ops when a branch already recorded a
+  // disposition, so the recursion's own (inner, final) record wins over the outer frame's.
+  await deps.recordDerivedFreezeDisposition?.({
+    flagEnabled: (await deps.freezeAndConvergeEnabled?.().catch(() => true)) ?? true,
+    repairQueue: finalResult.repairQueue ?? null,
+    summary: finalResult.summary ?? null,
+    green: finalResult.green ?? null,
+  });
   // P-009: an `awaiting-fixer` hold tick renders no suite verdict for hours — keep the
   // cheap non-test legs MEASURED at repairHead so gate_health/failingTests stays fresh
   // and the hold's ledger row names the failing legs. Additive + fail-safe (see helper).
@@ -15109,6 +15143,11 @@ export function realCheckpointDeps(
     );
   };
   const repairTarget = gateVerdictTargetFromEnv();
+  // P-008: did ANY branch record a disposition on this tick? The terminal handler writes a
+  // derived one only when this is still false, so a branch-recorded disposition (which
+  // carries the measured sentence a projection cannot reconstruct) always wins. One
+  // checkpoint process is one tick, so a closure variable is the whole lifetime needed.
+  let freezeDispositionRecordedThisTick = false;
   // P-006: shared salvage path — the `commitRepairWorktreeProgress` dep (dispatch path,
   // pre-converge) and `cleanupFrozenRepairWorktree` (pre-deletion) both route here so the
   // two sites can never disagree. Fail-soft by contract: any failure is logged, never thrown.
@@ -15330,6 +15369,52 @@ export function realCheckpointDeps(
           `${(policy.freeInodesPctMin * 100).toFixed(2)}% inodes`,
       };
     },
+    // P-008: the owner-visible off switch had a DECLARED dep and a documented contract
+    // ("the production wiring must fail-safe to TRUE"), a flag key in libs/flags, and a
+    // disposition branch that renders `off` — but no implementation here, so every
+    // production tick took the `?? true` fallback and the flag was inert. The `off`
+    // disposition CLAUDE.md tells agents to read was therefore unreachable: a documented
+    // state no run could ever produce. Fail-safe to true on any read error, per that
+    // contract — an unreadable flag store must never resume the re-cut-at-tip treadmill
+    // D-007 exists to prevent.
+    async freezeAndConvergeEnabled(): Promise<boolean> {
+      try {
+        const { getFlag } = await import("@papercusp/flags/server");
+        const { FLAGS } = await import("@papercusp/flags");
+        return await getFlag(
+          FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT,
+          "system:green-checkpoint",
+        );
+      } catch (e) {
+        log(
+          `freeze-and-converge flag read failed (fail-safe ON): ${e instanceof Error ? e.message : e}`,
+        );
+        return true;
+      }
+    },
+    // P-008: the per-tick backstop. Called once from the terminal handler; writes a DERIVED
+    // disposition only when no branch recorded one, so `converging` and `none` — which no
+    // branch records at all — stop being represented by whatever `held`/`retired` record
+    // the shallow merge left behind. Non-throwing like the writer it delegates to:
+    // observability must never fail a gate tick.
+    async recordDerivedFreezeDisposition(
+      observation: TickFreezeObservation,
+    ): Promise<void> {
+      if (!repairTarget || freezeDispositionRecordedThisTick) return;
+      try {
+        const { deriveTickFreezeDisposition } =
+          await import("@papercusp/operator-core/lib/release/freeze-disposition");
+        const { writeFreezeAndConvergeDisposition } =
+          await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+        const derived = deriveTickFreezeDisposition(observation);
+        await writeFreezeAndConvergeDisposition(repairTarget, derived);
+        freezeDispositionRecordedThisTick = true;
+      } catch (e) {
+        log(
+          `derived freeze-disposition write skipped (non-fatal): ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    },
     ...(repairTarget
       ? {
           async readFrozenRepairQueue() {
@@ -15355,6 +15440,7 @@ export function realCheckpointDeps(
             const { writeFreezeAndConvergeDisposition } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
             await writeFreezeAndConvergeDisposition(repairTarget, disposition);
+            freezeDispositionRecordedThisTick = true;
           },
           async reserveFrozenRepairFixer(
             queue: FrozenCandidateRepairQueue,
@@ -18412,25 +18498,25 @@ if (require.main === module) {
       process.once("SIGINT", handleTermSignal);
       process.once("uncaughtException", handleFatalProcessError);
       process.once("unhandledRejection", handleFatalProcessError);
-      runGreenCheckpoint(
+      // P-008: hoisted so the terminal handler can reach the SAME deps instance the run
+      // used — the per-tick "did a branch already record a disposition" state lives in its
+      // closure, so a second `realCheckpointDeps(...)` would answer about a different tick.
+      const checkpointDeps = realCheckpointDeps(
         cfg,
-        realCheckpointDeps(
-          cfg,
-          undefined,
-          runId,
-          undefined,
-          watchdog.progress,
-          undefined,
-          prewarmedDependencyGeneration,
-        ),
-        {
-          candidate: candidateArg,
-          candidateHint: prewarmedDependencyGeneration.candidate,
-          candidateSource,
-          ...(diagnostic ? { diagnostic } : {}),
-          noPush: process.argv.includes("--no-push"),
-        },
-      )
+        undefined,
+        runId,
+        undefined,
+        watchdog.progress,
+        undefined,
+        prewarmedDependencyGeneration,
+      );
+      runGreenCheckpoint(cfg, checkpointDeps, {
+        candidate: candidateArg,
+        candidateHint: prewarmedDependencyGeneration.candidate,
+        candidateSource,
+        ...(diagnostic ? { diagnostic } : {}),
+        noPush: process.argv.includes("--no-push"),
+      })
         .then(async (r) => {
           // Claim the terminal race before recording/emitting. If a managed signal already owns
           // it, its awaited finalizer is responsible for the only marker and process exit.

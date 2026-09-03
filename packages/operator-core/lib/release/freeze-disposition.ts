@@ -111,6 +111,81 @@ export function buildFreezeAndConvergeGateHealth(
 }
 
 /**
+ * What a tick looked like from OUTSIDE the freeze decision tree — the minimum a terminal
+ * handler already holds. Structural on purpose: this module must not import
+ * `CheckpointResult` from `apps/operator`, and the backstop must keep working when a new
+ * result field is added.
+ */
+export interface TickFreezeObservation {
+  /** FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT as the run actually read it. */
+  flagEnabled: boolean;
+  /** The frozen repair queue the tick ended holding, when there was one. */
+  repairQueue?: { candidate?: string | null } | null;
+  /** The run's own one-line summary — the honest reason when no branch recorded a richer one. */
+  summary?: string | null;
+  /** Did the tick reach a green verdict? */
+  green?: boolean | null;
+}
+
+/**
+ * PURE: derive the disposition a tick would have recorded if no branch recorded one.
+ *
+ * WHY A BACKSTOP EXISTS (P-008, measured 2026-09-03)
+ * --------------------------------------------------
+ * The four explicit `recordFreezeDisposition` call sites cover `retired` (x2), `held` and
+ * `off`. `converging` and `none` are recorded NOWHERE — and because the stored record is
+ * SHALLOW-MERGED and never cleared, the last `held` stands unchanged while the freeze
+ * converges or clears. A reader inside the freshness window then sees `state: 'held'`,
+ * with the hold's reason and candidate, for a candidate that is no longer frozen: a stale
+ * disposition presented as current, which is the exact false-green class the record was
+ * added to end, one level up.
+ *
+ * Enumerating branches does not fix that — it is hand-maintained metadata about control
+ * flow, and the NEXT branch added misses it again in the same silent way. So the tick's
+ * terminal handler derives a disposition from what it already holds and writes it only if
+ * nothing else did. Every tick then leaves exactly one record describing THAT tick.
+ *
+ * A branch-recorded disposition always wins: it carries the measured sentence (a capacity
+ * wall, a retirement rationale) that this projection cannot reconstruct.
+ */
+export function deriveTickFreezeDisposition(
+  observation: TickFreezeObservation,
+): FreezeAndConvergeDisposition {
+  const candidate = observation.repairQueue?.candidate ?? null;
+  if (!observation.flagEnabled) {
+    return {
+      enabled: false,
+      state: 'off',
+      reason:
+        'FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT is OFF (owner-set): this tick did not ' +
+        'freeze anything, and the next tick re-cuts at tip',
+      candidate,
+    };
+  }
+  if (candidate) {
+    return {
+      enabled: true,
+      state: 'converging',
+      reason:
+        observation.summary?.trim() ||
+        `frozen candidate ${candidate.slice(0, 12)} is live and being repaired; the tick ` +
+          `ended without a branch-recorded disposition`,
+      candidate,
+    };
+  }
+  return {
+    enabled: true,
+    state: 'none',
+    reason:
+      observation.green === true
+        ? 'freeze-and-converge is on and had nothing to do: the gate went green, so no candidate is frozen'
+        : observation.summary?.trim() ||
+          'freeze-and-converge is on and no candidate is frozen this tick',
+    candidate: null,
+  };
+}
+
+/**
  * PURE: the one-line answer to "is the freeze currently on, and if not why not" — the
  * literal question P-004 exists to make a read.
  *
