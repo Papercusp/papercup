@@ -51,6 +51,15 @@ coverage/
 coverage-*/
 **/coverage/
 **/coverage-*/
+# ...but `coverage-census/` is SOURCE, not coverage output (2026-09-02). The
+# **/coverage-*/ pattern above silently swallowed every NEW file added to
+# packages/operator-core/lib/coverage-census/ — invisible to `git status`, never
+# staged, never swept by git-sync. Its 24 pre-existing files survived only because
+# gitignore does not affect already-TRACKED files, so the directory looked healthy
+# while being closed to additions. Two files written for WI-2142121 stranded on
+# disk for ~15min before this was caught; the work-item's completion could not
+# settle past `proposed` because its filesChanged were missing-from-commit.
+!**/coverage-census/
 
 # Per-run test output (p2p-perf bench artifacts + report.md, Playwright, etc.).
 # Ephemeral, keyed by a timestamp/runId — NOT source. Committed baselines that
