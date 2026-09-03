@@ -21,7 +21,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { getLegacyClient, getFeatureLineage, formatLineageForPrompt } from '@papercusp/db-org';
+import { harnessQuery, getFeatureLineage, formatLineageForPrompt } from '@papercusp/db-org';
 
 import { promptsDir } from '../prompt-assembly';
 
@@ -100,10 +100,13 @@ async function renderKickoffBody(ctx: KickoffCtx): Promise<string | null> {
  */
 async function renderFeatureBody(ctx: FeatureKickoffCtx): Promise<string | null> {
   try {
-    const c = getLegacyClient(ctx.harnessSlug);
-    const feature = (await c
-      .prepare('SELECT feature_id, title, summary, status FROM harness_features WHERE harness_slug = ? AND feature_id = ? LIMIT 1')
-      .get(ctx.harnessSlug, ctx.featureId)) as
+    const feature = (await harnessQuery(ctx.harnessSlug, async (sql) => {
+      const rows = await sql.unsafe(
+        'SELECT feature_id, title, summary, status FROM harness_features WHERE harness_slug = $1 AND feature_id = $2 LIMIT 1',
+        [ctx.harnessSlug, ctx.featureId],
+      );
+      return rows[0];
+    })) as unknown as
       | { feature_id: string; title?: string; summary?: string; status?: string }
       | undefined;
     if (!feature) return null;

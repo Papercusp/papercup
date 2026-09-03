@@ -20,7 +20,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { getLegacyClient } from '@papercusp/db-org';
+import { harnessQuery } from '@papercusp/db-org';
 import {
   HARNESS_SHARED_CONFIG_REL_PATH,
   isHarnessSharedConfig,
@@ -572,11 +572,10 @@ export async function parseFeatures(
   opts: ParseFeaturesOptions = {},
 ): Promise<any[]> {
   try {
-    const c = getLegacyClient(project.slug);
     const columns = opts.projection === 'stream' ? STREAM_FEATURE_SELECT_COLUMNS : '*';
-    const rows = await c.prepare(`
-      SELECT ${columns} FROM harness_features WHERE harness_slug = ? ORDER BY feature_id
-    `).all(project.slug) as any[];
+    const rows = await harnessQuery(project.slug, (sql) => sql.unsafe(`
+      SELECT ${columns} FROM harness_features WHERE harness_slug = $1 ORDER BY feature_id
+    `, [project.slug])) as any[];
     return rows.map(rowToFeature);
   } catch {
     return [];
