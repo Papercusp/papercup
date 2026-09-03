@@ -36,8 +36,10 @@ import { isAbsolute, join } from "node:path";
 import {
   NodeWorkspaceHostAgentProbeRunner,
   probeWorkspaceHostAgents,
+  WORKSPACE_HOST_CANARY_AGENTS,
   type WorkspaceHostAgentVerificationReport,
   type WorkspaceHostAgentProbeRunner,
+  type WorkspaceHostCanaryAgent,
 } from "./workspace-host-agent-authentication";
 import {
   WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS,
@@ -66,6 +68,8 @@ import {
   DEFAULT_WORKSPACE_HOST_AGENT_USER,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_DATA_ROOT,
+  WORKSPACE_HOST_RUNTIME_ROOT,
+  WORKSPACE_HOST_STATE_ROOT,
 } from "./workspace-host-bootstrap";
 import type {
   WorkspaceHostCloneRepositoryInput,
@@ -92,9 +96,22 @@ export const WORKSPACE_HOST_DEFAULT_WORKSPACE_HOME = `/home/${DEFAULT_WORKSPACE_
  */
 export const WORKSPACE_HOST_DEFAULT_AGENT_HOME = `/home/${DEFAULT_WORKSPACE_HOST_AGENT_USER}`;
 
+/**
+ * The release bundle's own `bin/` — the directory holding the psu LAUNCHER WRAPPERS named
+ * `claude`, `codex` and `omp`.
+ *
+ * Named rather than spelled inline because two different rules point at it and they must not
+ * drift apart: it leads the probe search path below (the wrappers are what a bare name finds), and
+ * an attested vendor runtime path inside it is refused outright (D-259 Defect 2) — a resolve that
+ * landed here found a wrapper, which is the D-247 confusion arriving through a different door.
+ */
+export const WORKSPACE_HOST_RELEASE_BIN_DIR = `${WORKSPACE_HOST_RUNTIME_ROOT}/current/bin`;
+
+/** Where bootstrap writes the attestation this adapter reads its vendor runtime paths from. */
+export const WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_FILE = `${WORKSPACE_HOST_STATE_ROOT}/bootstrap-attestation.json`;
+
 /** Exact PATH passed to agent probes; no controller process environment is inherited. */
-export const WORKSPACE_HOST_DEFAULT_AGENT_PROBE_PATH =
-  "/opt/papercusp/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+export const WORKSPACE_HOST_DEFAULT_AGENT_PROBE_PATH = `${WORKSPACE_HOST_RELEASE_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`;
 
 /** Default bundled CLI used for pair/import. `sidecar/bin` is on the runtime PATH. */
 export const WORKSPACE_HOST_DEFAULT_WORKSPACE_COMMAND = "papercup";
@@ -312,6 +329,12 @@ export interface ProductionWorkspaceHostOptions {
   readonly agentUser?: string;
   readonly agentGroup?: string;
   readonly agentProbePath?: string;
+  /**
+   * Attestation this adapter reads the vendor runtime paths out of (D-259 Defect 2).
+   *
+   * Overridable so a test can point at a fixture; production always uses the real host path.
+   */
+  readonly agentRuntimeAttestationPath?: string;
 }
 
 interface WorkspaceHostGitCredentialBinding {
@@ -650,6 +673,7 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
   private readonly agentUser: string;
   private readonly agentGroup: string;
   private readonly agentProbePath: string;
+  private readonly agentRuntimeAttestationPath: string;
 
   constructor(options: ProductionWorkspaceHostOptions = {}) {
     this.system = options.system ?? new NodeWorkspaceHostSystem();
@@ -706,6 +730,9 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
         "agentProbePath must be an absolute, newline-free search path",
       );
     }
+    this.agentRuntimeAttestationPath =
+      options.agentRuntimeAttestationPath ??
+      WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_FILE;
     this.gitCredentialBindings =
       options.gitCredentialBindings ??
       new WorkspaceHostGitCredentialBindingRegistry(
@@ -904,6 +931,12 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
     return await probeWorkspaceHostAgents({
       runner: this.agentProbeRunner,
       now: this.now,
+      // D-259 Defect 2. Without this the probe execs a BARE NAME against `agentProbePath`, whose
+      // first entry is the release bin — so it measured a psu wrapper, which does not implement
+      // `auth status`, and reported a credential fault on a host whose credentials were fine.
+      // The vendor path is read from the attestation rather than recomputed here because the
+      // resolve that produced it ran ON this host, as the agent identity, after the install.
+      runtimePaths: await this.readAttestedAgentRuntimePaths(),
       // The AGENT identity, not the SSH login (D-248). This line is the one that decides which
       // account has to be able to read `$RUNTIME_ROOT`: whoever the probes run as is the account
       // the bootstrap must grant runtime read to, and D-043 rules that it cannot be the workspace
@@ -918,6 +951,86 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
       },
       runAsUser: this.agentUser,
     });
+  }
+
+  /**
+   * Read the vendor runtime paths bootstrap recorded in its attestation (D-259 Defect 2).
+   *
+   * ABSENCE IS NOT AN ERROR, in three distinct shapes, and each one is a real host: no attestation
+   * file (this adapter running somewhere that never bootstrapped), no `agentRuntimes` key (a host
+   * provisioned before the vendor installs existed), or a key missing one agent (a partial
+   * install). All three fall back to the probe's own command and therefore FAIL the probe, which
+   * is the honest verdict — those hosts genuinely cannot authenticate that agent.
+   *
+   * MALFORMED IS an error, and the difference matters. Unreadable JSON, a non-object
+   * `agentRuntimes`, or a non-absolute path means the attestation says something we cannot act on;
+   * treating that as "no path recorded" would silently downgrade it to the fallback above and
+   * report a probe failure whose real cause was a corrupt attestation nobody looked at.
+   */
+  private async readAttestedAgentRuntimePaths(): Promise<
+    Partial<Record<WorkspaceHostCanaryAgent, string>>
+  > {
+    const bytes = await this.system.readFileIfPresent(
+      this.agentRuntimeAttestationPath,
+    );
+    if (!bytes) return {};
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(bytes.toString("utf8"));
+    } catch {
+      throw new WorkspaceHostOperationError(
+        "readAttestedAgentRuntimePaths",
+        1,
+        `bootstrap attestation at ${this.agentRuntimeAttestationPath} is not valid JSON`,
+      );
+    }
+    const runtime = (parsed as { runtime?: unknown } | null)?.runtime;
+    const attested =
+      runtime && typeof runtime === "object"
+        ? (runtime as { agentRuntimes?: unknown }).agentRuntimes
+        : undefined;
+    if (attested === undefined) return {};
+    if (
+      typeof attested !== "object" ||
+      attested === null ||
+      Array.isArray(attested)
+    ) {
+      throw new WorkspaceHostOperationError(
+        "readAttestedAgentRuntimePaths",
+        1,
+        "bootstrap attestation runtime.agentRuntimes is not an object",
+      );
+    }
+    const record = attested as Record<string, unknown>;
+    const paths: Partial<Record<WorkspaceHostCanaryAgent, string>> = {};
+    for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
+      const value = record[agent];
+      if (value === undefined) continue;
+      if (typeof value !== "string" || !isAbsolute(value)) {
+        throw new WorkspaceHostOperationError(
+          "readAttestedAgentRuntimePaths",
+          1,
+          `attested runtime path for '${agent}' is not an absolute path`,
+        );
+      }
+      // The release bin holds the psu wrappers. A resolve that landed there did NOT find a vendor
+      // CLI, so probing it would reproduce D-247 exactly — a green-looking probe measuring the
+      // wrong binary. Bootstrap's resolve already excludes this directory from its search path;
+      // this refuses the same thing at the point of USE, where a hand-edited or future-regressed
+      // attestation would otherwise arrive unchallenged.
+      if (
+        value === WORKSPACE_HOST_RELEASE_BIN_DIR ||
+        value.startsWith(`${WORKSPACE_HOST_RELEASE_BIN_DIR}/`)
+      ) {
+        throw new WorkspaceHostOperationError(
+          "readAttestedAgentRuntimePaths",
+          1,
+          `attested runtime path for '${agent}' is inside ${WORKSPACE_HOST_RELEASE_BIN_DIR}, which holds launcher wrappers rather than vendor CLIs (D-259)`,
+        );
+      }
+      paths[agent] = value;
+    }
+    return paths;
   }
 
   async describeClonedRepository(input?: {

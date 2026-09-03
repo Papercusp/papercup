@@ -432,6 +432,7 @@ export {
   DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES,
   NodeWorkspaceHostAgentProbeRunner,
   workspaceHostAgentSubjectDigest,
+  applyWorkspaceHostAgentRuntimePath,
   probeWorkspaceHostAgentVerification,
   probeWorkspaceHostAgents,
 } from "./workspace-host-agent-authentication";
@@ -488,6 +489,9 @@ export {
   WORKSPACE_HOST_DEFAULT_WORKSPACE_ROOT,
   WORKSPACE_HOST_DEFAULT_WORKSPACE_COMMAND,
   WORKSPACE_HOST_DEFAULT_COMMAND_TIMEOUT_MS,
+  WORKSPACE_HOST_DEFAULT_AGENT_PROBE_PATH,
+  WORKSPACE_HOST_RELEASE_BIN_DIR,
+  WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_FILE,
   WORKSPACE_HOST_CREDENTIAL_MATERIAL_ROOT,
   WorkspaceHostOperationError,
   NodeWorkspaceHostSystem,

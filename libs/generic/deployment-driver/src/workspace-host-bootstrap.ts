@@ -937,7 +937,12 @@ function assignment(name: string, value: string): string {
  * Each already-resolved argv runs under `runuser`, and is then followed by a RESOLVE that must
  * succeed. The resolve is the whole point: an install that exits 0 while leaving nothing on disk
  * is precisely the unbacked boolean this work exists to remove, so the attestation's
- * `agentRuntimesVerifiedByBootstrap` is only ever true downstream of a resolve that passed.
+ * `agentRuntimesInstalledByBootstrap` is only ever true downstream of a resolve that passed.
+ *
+ * ⛔ That is `Installed`, NOT `Verified`. `agentRuntimesVerifiedByBootstrap` stays a hardcoded
+ * `false` and D-252's validator still refuses anything else. A passing resolve proves the binary
+ * is PRESENT and EXECUTABLE; it proves nothing about whether anyone has authenticated it, and the
+ * two claims collapsing into one is how the wrappers came to be mistaken for working agent CLIs.
  *
  * PATH is set explicitly and DELIBERATELY EXCLUDES the release's own `bin/`. That directory holds
  * the psu wrappers named `claude`/`codex`/`omp`; leaving it on PATH would let the resolve find a
