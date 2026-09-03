@@ -59,6 +59,11 @@
 
 import { execFile } from 'node:child_process';
 import { getOrgPg } from '@papercusp/db-org';
+import {
+  repairTickLegsCurrent,
+  type RepairTickLegSnapshot,
+  type StoredRepairTickLegs,
+} from './release/repair-tick-legs-snapshot';
 
 /** Hard cap on rendered failing files — the result is read in-prompt. */
 const MAX_FAILING_FILES = 60;
@@ -120,8 +125,42 @@ export interface GateCandidateFailures {
    * Whether the gate's non-test legs (lint / perf / desktop / delta) were measured.
    * `null` = not recorded in the readable gate-health snapshot, which is NOT the same
    * as `false`. A passing affected-tests suite is never by itself a green gate.
+   *
+   * ⚠ This field's OWN persistence gap is WI-2142763's territory (the main verdict
+   * computation's `postSuiteMeasured`/`postSuiteLegs` are computed but never written to
+   * `gate_health`, and threading them here is that ticket's deferred "half 2" —
+   * deliberately NOT done by this change, to avoid colliding with that live-gate-adjacent
+   * plan). It stays exactly as before: `opts.postSuiteMeasured ?? null`, i.e. always
+   * `null` in production today. See `nonTestLegs` below for a DIFFERENT, ALREADY-
+   * persisted per-leg measurement this change newly surfaces.
    */
   postSuiteMeasured: boolean | null;
+  /**
+   * WI-2143253: the NAMED non-test legs (lint / perf / desktop / delta), read back from
+   * the repair queue's own per-leg measurement (`gate_health.repairTickLegs`, written on
+   * every awaiting-fixer hold tick — see `./release/repair-tick-legs-snapshot.ts`). This
+   * is a DIFFERENT, ALREADY-persisted measurement from `postSuiteMeasured` above: where
+   * that field only ever says whether SOMETHING non-test was measured, this names WHICH
+   * legs and whether each passed. `null` when no such measurement exists yet for this
+   * repair queue (a fresh queue with no hold tick yet, or no repair queue open at all).
+   */
+  nonTestLegs: {
+    /**
+     * Is this measurement for the LIVE repairHead, or an earlier one the queue has
+     * since moved past? `null` when currency could not be judged (no live repairHead
+     * to compare against) — see `repairTickLegsCurrent`.
+     */
+    current: boolean | null;
+    /** The (short) repairHead this measurement was actually taken at. */
+    head: string;
+    atMs: number;
+    /** Every measured leg, pass and fail alike. Bounded to 32 by the writer. */
+    all: RepairTickLegSnapshot[];
+    /** The subset that did not pass. */
+    failing: RepairTickLegSnapshot[];
+    /** Plain-language reading, hedged by `current`. */
+    reading: string;
+  } | null;
   /** The scope sentence. Rendered, not derived by the reader. */
   scope: string;
   /** Set when the answer could not be computed; the other fields are then not evidence. */
@@ -166,6 +205,14 @@ export interface ReadGateCandidateFailuresOpts {
   /** Submodule prefixes (from `submodulePaths()`), so a gitlink move is not misread. */
   submodulePaths?: readonly string[];
   postSuiteMeasured?: boolean | null;
+  /**
+   * WI-2143253: the repair queue's own already-parsed per-leg measurement
+   * (`gate_health.repairTickLegs`, via `parseRepairTickLegs` in
+   * `git-pipeline-stats.ts`) — pass it straight through; this module does not fetch it.
+   * `null`/omitted when the caller has no such measurement (no repair queue open, or
+   * one open with no hold tick yet).
+   */
+  repairTickLegs?: StoredRepairTickLegs | null;
   git?: GitRunner;
   sql?: ReturnType<typeof getOrgPg>['sql'];
 }
