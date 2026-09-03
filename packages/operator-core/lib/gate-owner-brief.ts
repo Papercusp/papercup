@@ -35,6 +35,7 @@
  */
 
 import type { CellOwnership } from './coord/gate-ownership';
+import type { GateFailingTestsProvenance } from './git-pipeline-stats';
 
 /** The closed answer vocabulary — mirrored by the cell registration's assessment codes. */
 export type GateOwnerBriefAnswer =
@@ -285,6 +286,12 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
   if (inp.repairQueue != null && inp.repairQueue.fixerAlive === null) {
     unknownLegs.push({ leg: 'remediation.fixerAlive', why: 'fixer-spawn liveness was unmeasurable on this read' });
   }
+  if (inp.mainBehindStaging == null) {
+    unknownLegs.push({
+      leg: 'mainBehindStaging',
+      why: 'whether staging is ahead of the last green pin was unmeasurable on this read',
+    });
+  }
 
   // `assessment` is the ownership oracle's closed string union (GateOwnershipAssessment).
   const ownershipCode = inp.ownership?.assessment ?? null;
@@ -310,6 +317,13 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
   // `true` splits it — `null` (unmeasurable) must not manufacture a promotion claim in
   // either direction, so it stays `green` and is named in `unknownLegs` below instead.
   const greenAnswer: GateOwnerBriefAnswer = inp.mainBehindStaging === true ? 'green-not-promoted' : 'green';
+  const failingTestsProvenance: GateFailingTestsProvenance =
+    inp.failingTestsProvenance ??
+    (inp.failingTestsMeasured === true
+      ? 'measured'
+      : inp.failingTestsMeasured === false
+        ? 'not-measured'
+        : 'unknown');
 
   let answer: GateOwnerBriefAnswer;
   if (inp.fireStale) {
@@ -338,8 +352,16 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
 
   const ASSESSMENTS: Record<GateOwnerBriefAnswer, Omit<GateOwnerBriefAssessment, 'code'>> = {
     green: {
-      meaning: 'The gate is green about what it last judged. Check mainBehindStaging separately for the ordinary promotion buffer.',
-      safeAction: 'Proceed; nothing on the gate needs an owner decision.',
+      meaning:
+        'The gate is green about what it last judged and no staging buffer was measured. If unknownLegs names mainBehindStaging, the promotion reading is withheld rather than guessed.',
+      safeAction:
+        'Proceed. If mainBehindStaging is named in unknownLegs, re-read the instrument before claiming staging is fully promoted.',
+    },
+    'green-not-promoted': {
+      meaning:
+        'The gate is green about its last judged pin, but staging contains newer commits that have not yet reached that green pin. This is a promotion buffer, not a red verdict.',
+      safeAction:
+        'The green-checkpoint is the single lever: let or trigger its next verdict after checking gate.greenCheckpoint.retriage; do not fast-forward main directly.',
     },
     'red-owned-remediating': {
       meaning: 'The gate is red, a LIVE session owns the incident, and remediation shows signs of life.',
@@ -362,6 +384,12 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
       meaning: 'The gate is red and NO live session owns the incident — the every-agent-waits / 37-agent-pileup shape.',
       safeAction:
         'Read gate.greenCheckpoint.ownership and claim the incident (or wake whoever should) — an unowned red is everyone\'s blocker and no one\'s work.',
+    },
+    'no-verdict': {
+      meaning:
+        'The latest gate attempt rendered no verdict: an inconclusive hold stopped judgment, so zero new reds is NOT evidence of green.',
+      safeAction:
+        'Clear the condition named by whyNot.inconclusiveStatus, then run the gate again; do not chase carried failingLegs as though this attempt measured them.',
     },
     'not-judging': {
       meaning: 'The gate has not fired within its interval — nothing is being judged, so red/green counters describe the past.',
@@ -394,15 +422,16 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
     answer,
     assessment: { code: answer, ...ASSESSMENTS[answer] },
     mainGreen: {
-      value: reds === null ? null : green || !red,
+      value: reds === null || noVerdict ? null : green || !red,
       vintage: verdictVintage,
     },
     whyNot:
-      answer === 'green'
+      answer === 'green' || answer === 'green-not-promoted'
         ? null
         : {
             failingLegs: inp.failingTests ?? [],
             measured: inp.failingTestsMeasured ?? null,
+            provenance: failingTestsProvenance,
             inconclusiveStatus: inp.inconclusive?.status ?? null,
             vintage:
               inp.inconclusive?.observedAtMs != null
