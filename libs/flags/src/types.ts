@@ -2001,6 +2001,16 @@ export const FLAGS = {
   // because the tree moves between audit and ship. Bypassable per-ship with an explicit
   // reasoned `force` (D-003). Default ON; OFF restores the pre-audit shipping path.
   PLAN_CODE_AUDIT_GATE: "papercusp-plan-code-audit-gate",
+  // design-to-code-coverage-seam-2026-09-02 P-020 / D-032 — the EXIT for the gate
+  // above. Entry into `awaiting-acceptance` is automated (plan-drain rule + sweep)
+  // and exit was not, so the state accumulated monotonically: measured 187 plans,
+  // 86.1% of which had never had `plans:audit` run once, oldest 2026-06-04. The
+  // refusal was only ever visible to someone who explicitly attempted a ship. This
+  // sweep files ONE claimable work item per held plan, naming the gate's actual
+  // first blocker and quoting its own repair instruction — the same queue-not-wall
+  // pairing SPEC_TRIAD_REQUIRED already has. Default ON; OFF stops the filing and
+  // restores the silent backlog (it changes no gate verdict, only who is told).
+  ACCEPTANCE_DRAIN_SWEEP: "papercusp-acceptance-drain-sweep",
   // plan-completion-audit-and-acceptance-verdict-2026-08-13 P-009 — the cheap floor under
   // the audit: 'shipped' refuses while an item is still todo/wip/blocked/needs-human.
   // `dropped` passes, because that is a recorded decision (D-002). Deliberately a SEPARATE

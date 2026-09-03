@@ -642,6 +642,17 @@ import './task-reconcile-action';
 // cover `dropped` plan items too. Seeded ACTIVE (seed-plan-item-orphan-reconcile-routine.ts)
 // — pure data reconciliation, no owner-authority surface (mirrors gc-plan-runs).
 import './plan-item-orphan-reconcile-action';
+// P-020 of design-to-code-coverage-seam-2026-09-02: `system:acceptance-drain-sweep`
+// — the EXIT for the acceptance gate, and the direct complement of the plan-drain
+// sweep registered just below. That one pushes plans INTO `awaiting-acceptance`
+// when their items drain; nothing pulled them out, and the ship refusal was
+// visible only to whoever explicitly attempted a ship. Measured: 187 plans held,
+// 86.1% never once audited, oldest 2026-06-04 (D-032). This 6-hour tick files ONE
+// claimable work item per held plan, naming the gate's real first blocker and
+// quoting its own repair text — the queue-not-wall pairing spec-triad already has.
+// Bounded (cap per tick), idempotent (condition-keyed), never throws, never ships
+// a plan itself. Seeded ACTIVE (seed-acceptance-drain-sweep-routine.ts).
+import './acceptance-drain-sweep-action';
 // P-005 of deterministic-plan-state-derivation-2026-08-31: `system:plan-drain-sweep`
 // — the same rule-for-immediacy + sweep-for-backstop pairing one level UP, on the
 // PLAN's own lifecycle status. P-004's `plan-drain:terminality-changed` reaction
