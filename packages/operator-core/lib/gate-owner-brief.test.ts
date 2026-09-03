@@ -44,6 +44,8 @@ const base: GateOwnerBriefInput = {
   consecutiveReds: 0,
   failingTests: [],
   failingTestsMeasured: true,
+  failingTestsProvenance: 'measured',
+  mainBehindStaging: false,
   lastGreenAtMs: NOW - 60_000,
   verdictObservedAtMs: NOW - 30_000,
   fireStale: false,
@@ -71,6 +73,22 @@ describe('composeGateOwnerBrief', () => {
     expect(b.assessment.code).toBe('green');
     expect(b.mainGreen.value).toBe(true);
     expect(b.whyNot).toBeNull();
+  });
+
+  it('P-005: distinguishes a green verdict with an unpromoted staging buffer in the headline itself', () => {
+    const b = composeGateOwnerBrief({ ...base, mainBehindStaging: true });
+    expect(b.answer).toBe('green-not-promoted');
+    expect(b.assessment.code).toBe('green-not-promoted');
+    expect(b.assessment.safeAction).toMatch(/green-checkpoint/i);
+    expect(b.assessment.safeAction).toMatch(/do not fast-forward main directly/i);
+    expect(b.mainGreen.value).toBe(true);
+    expect(b.whyNot).toBeNull();
+  });
+
+  it('P-005: a missing promotion measurement is named instead of guessed', () => {
+    const b = composeGateOwnerBrief({ ...base, mainBehindStaging: null });
+    expect(b.answer).toBe('green');
+    expect(b.unknownLegs.map((l) => l.leg)).toContain('mainBehindStaging');
   });
 
   it('not-judging outranks everything else when the gate is not firing', () => {
@@ -199,14 +217,20 @@ describe('composeGateOwnerBrief', () => {
     });
   });
 
-  it('an inconclusive record makes the answer a red-family one even at zero reds', () => {
+  it('P-005: an inconclusive attempt at zero reds is no-verdict, never a manufactured red or green', () => {
     const b = composeGateOwnerBrief({
       ...base,
       consecutiveReds: 0,
+      failingTestsMeasured: false,
+      failingTestsProvenance: 'not-measured',
       inconclusive: { status: 'repair-in-progress', detail: 'fixer dispatched', observedAtMs: NOW - 5_000 },
     });
-    expect(b.answer).toBe('red-owned-remediating');
+    expect(b.answer).toBe('no-verdict');
+    expect(b.answer).not.toBe('red-owned-remediating');
+    expect(b.mainGreen.value).toBeNull();
     expect(b.whyNot?.inconclusiveStatus).toBe('repair-in-progress');
+    expect(b.whyNot?.provenance).toBe('not-measured');
+    expect(b.assessment.safeAction).toMatch(/clear the condition/i);
   });
 
   it('stamps every leg with a vintage and reports the spread between them', () => {
@@ -301,13 +325,31 @@ describe('composeGateOwnerBrief', () => {
     expect(withoutQueue.attestations.legs.map((l) => l.leg)).not.toContain('remediation');
   });
 
-  it('never claims measurement it does not have: carried failing legs read measured=false', () => {
+  it('never claims measurement it does not have: an explicit not-measured list stays labelled', () => {
     const b = composeGateOwnerBrief({
       ...base,
       consecutiveReds: 5,
       failingTests: ['lint:tsc'],
       failingTestsMeasured: false,
+      failingTestsProvenance: 'not-measured',
     });
     expect(b.whyNot?.measured).toBe(false);
+    expect(b.whyNot?.provenance).toBe('not-measured');
+  });
+
+  it('P-005: a carried list remains visible with provenance rather than reading as a fresh measurement', () => {
+    const b = composeGateOwnerBrief({
+      ...base,
+      consecutiveReds: 5,
+      failingTests: ['lint:tsc'],
+      failingTestsMeasured: null,
+      failingTestsProvenance: 'carried',
+      inconclusive: { status: 'repair-in-progress', detail: 'fixer dispatched', observedAtMs: NOW - 5_000 },
+    });
+    expect(b.whyNot).toMatchObject({
+      failingLegs: ['lint:tsc'],
+      measured: null,
+      provenance: 'carried',
+    });
   });
 });

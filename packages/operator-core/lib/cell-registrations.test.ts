@@ -555,6 +555,19 @@ describe('P-007: the four verdict cells', () => {
     expect(assessment!.codes['gate-stalled'].meaning).toContain('gate is not firing');
   });
 
+  it('P-005 keeps the whole owner answer in one cell, including promotion and measurement provenance', () => {
+    const assessment = GATE_OWNER_BRIEF_CELL.assessment;
+    expect(assessment).not.toBeNull();
+    expect(Object.keys(assessment!.codes)).toEqual(
+      expect.arrayContaining(['green', 'green-not-promoted', 'no-verdict', 'red-owned-stalled']),
+    );
+    expect(assessment!.codes['green-not-promoted'].safeAction).toContain('green-checkpoint');
+    expect(assessment!.codes['no-verdict'].meaning).toContain('zero new reds is NOT evidence of green');
+    expect(assessment!.evidence).toContain('gate.ownerBrief.whyNot.measured');
+    expect(assessment!.evidence).toContain('gate.ownerBrief.whyNot.provenance');
+    expect(assessment!.evidence).toContain('verdictProvenance.mainBehindStaging');
+  });
+
   /** Axis 4 admits no fixture-only registration, and every one of these carries a
    *  verbatim live read rather than a promise that one happened. The date is the
    *  CELL'S OWN exercise date (the original four: 2026-07-27; ownerBrief: 2026-08-31)
