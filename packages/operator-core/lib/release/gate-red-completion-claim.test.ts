@@ -4,7 +4,7 @@ import {
   looksLikeGateRedFixClaim,
 } from './gate-red-completion-claim';
 import type { FrozenRepairEditMarker } from './frozen-repair-edit-marker';
-import type { PathContainment } from './converge-repair-head';
+import type { PathContainment } from './judged-sha-containment';
 
 const marker: FrozenRepairEditMarker = {
   candidate: 'c'.repeat(40),
@@ -67,7 +67,7 @@ describe('gateRedCompletionClaimWarning (P-006)', () => {
     expect(w?.uncontainedPaths).toEqual(['a/failing.test.ts', 'b/failing.test.ts']);
     expect(w?.judgedSha).toBe(marker.repairHead);
     expect(w?.detail).toContain('GATE CANNOT SEE');
-    expect(w?.detail).toContain("op:'converge'");
+    expect(w?.detail).toContain("op:'admit'");
   });
 
   it('is SILENT when the judged sha carries every named failing path', () => {

@@ -1535,11 +1535,13 @@ export function roleLaunchArgs(
   } = {},
 ) {
   if (backend === "claude") {
-    // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE, default-off):
-    // mirror suLaunchArgs — when armed, the role prompt REPLACES the Claude coding base
-    // (--system-prompt-file + --exclude-dynamic-system-prompt-sections) so an interactive
-    // role session runs on OUR base too (coherent with the fleet + su/brain paths). Flag-off
-    // ⇒ --append-system-prompt-file, byte-identical to today.
+    // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE — its DEFAULT is
+    // FLAG_DEFAULTS in libs/flags/src/types.ts, ON since 2026-06-18; never restate it here,
+    // the restated "default-off" drifted — identities-v1 D-018): mirror suLaunchArgs — when
+    // armed, the role prompt REPLACES the Claude coding base (--system-prompt-file +
+    // --exclude-dynamic-system-prompt-sections) so an interactive role session runs on OUR
+    // base too (coherent with the fleet + su/brain paths). Flag-off ⇒
+    // --append-system-prompt-file (D-018 retires this branch once P-003 renders the stack).
     const systemPromptArgs = replaceClaudeBase
       ? [
           "--system-prompt-file",
@@ -1675,10 +1677,13 @@ export function suLaunchArgs(
   } = {},
 ) {
   if (backend === "claude") {
-    // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE, default-off):
-    // when armed, the playbook REPLACES the Claude coding base (--system-prompt-file +
+    // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE — its DEFAULT is
+    // FLAG_DEFAULTS in libs/flags/src/types.ts, ON since 2026-06-18; never restate it here,
+    // the restated "default-off" drifted — identities-v1 D-018): when armed, the playbook
+    // REPLACES the Claude coding base (--system-prompt-file +
     // --exclude-dynamic-system-prompt-sections to drop the residual env block) instead of
-    // appending to it. Flag-off ⇒ --append-system-prompt-file, byte-identical to today.
+    // appending to it. Flag-off ⇒ --append-system-prompt-file (D-018 retires this branch
+    // once P-003 renders the stack).
     const systemPromptArgs = replaceClaudeBase
       ? [
           "--system-prompt-file",

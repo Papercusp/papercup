@@ -110,7 +110,14 @@ export interface AdmissionSuccess {
   tree: string;
   /** The proved diff-tree name set — identical to `entry.paths`. */
   diff: string[];
+  /** Allowlisted paths whose source entry already equalled repairHead's — identical to `entry.unchanged`. */
+  unchanged: string[];
   lineageRef: string;
+  /**
+   * false on a dry run: the commit was built and PROVED but the lineage ref was not moved,
+   * so `entry` describes what a confirmed call would record and must not be persisted.
+   */
+  published: boolean;
   entry: FrozenRepairAdmission;
 }
 
@@ -206,6 +213,13 @@ export interface AdmitPathsInput {
   reason?: string;
   nowMs: number;
   git?: AdmissionGitRunner;
+  /**
+   * Build and PROVE the admission commit but do not publish it: the lineage ref is left where
+   * it is and the returned `entry` is a preview. The unreferenced commit is ordinary garbage
+   * for git to collect. A dry run still refuses everything a real run refuses — including a
+   * lineage ref that has moved — so its verdict is exactly the verdict confirm would get.
+   */
+  dryRun?: boolean;
 }
 
 /**
@@ -398,6 +412,22 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
           `onto its current repairHead`,
       };
     }
+    const blobs: Record<string, string | null> = {};
+    for (const path of allowlist) blobs[path] = atSource.get(path)!.sha;
+    const entry: FrozenRepairAdmission = {
+      atMs: input.nowMs,
+      actor: input.actor.trim(),
+      source: { ref: input.source.ref, sha: sourceSha },
+      fromRepairHead: repairHeadSha,
+      toRepairHead: commit,
+      paths: proof.admitted,
+      unchanged: proof.unchanged,
+      blobs,
+      ...(input.reason ? { reason: input.reason } : {}),
+    };
+    if (input.dryRun === true) {
+      return { ok: true, commit, tree, diff: proof.admitted, unchanged: proof.unchanged, lineageRef, published: false, entry };
+    }
     const ur = run([
       'update-ref',
       '-m',
@@ -414,21 +444,39 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
       };
     }
 
-    const blobs: Record<string, string | null> = {};
-    for (const path of allowlist) blobs[path] = atSource.get(path)!.sha;
-    const entry: FrozenRepairAdmission = {
-      atMs: input.nowMs,
-      actor: input.actor.trim(),
-      source: { ref: input.source.ref, sha: sourceSha },
-      fromRepairHead: repairHeadSha,
-      toRepairHead: commit,
-      paths: proof.admitted,
-      unchanged: proof.unchanged,
-      blobs,
-      ...(input.reason ? { reason: input.reason } : {}),
-    };
-    return { ok: true, commit, tree, diff: proof.admitted, lineageRef, entry };
+    return { ok: true, commit, tree, diff: proof.admitted, unchanged: proof.unchanged, lineageRef, published: true, entry };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+/**
+ * Un-publish an admission whose queue-row write failed AFTER the lineage ref moved. The ref
+ * and the row are two stores; this is the compensating step that keeps them in agreement, and
+ * it is exact: a compare-and-swap from the published commit back to the head it was built on,
+ * so it can never retract anything but the admission it is handed. Returns false when the ref
+ * is no longer at the published commit (a later admission already built on it), in which case
+ * nothing is touched and the caller must report the disagreement rather than hide it.
+ */
+export function retractAdmission(input: {
+  root: string;
+  candidate: string;
+  published: string;
+  previousRepairHead: string;
+  git?: AdmissionGitRunner;
+}): boolean {
+  const git = input.git ?? realAdmissionGit;
+  const lineageRef = frozenLineageRef(input.candidate);
+  const r = git(
+    [
+      'update-ref',
+      '-m',
+      `retract admission ${input.published.slice(0, 12)} (queue row write failed)`,
+      lineageRef,
+      input.previousRepairHead,
+      input.published,
+    ],
+    { cwd: input.root },
+  );
+  return r.status === 0;
 }

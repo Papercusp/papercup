@@ -142,8 +142,8 @@ export function buildFrozenRepairConvergenceBroadcast(
     `\n⚠ FIX ON THE FROZEN LINEAGE, NOT AT TIP. A fix committed to staging tip is NOT in ` +
     `${shortSha(input.candidate)}, so this gate re-reds on the same file and the fix reads as ` +
     `not having worked. Admit it to the queue instead:\n\n` +
-    `    release:repair-queue { op: 'converge', paths: [ <the files you fixed> ] }\n\n` +
-    `That fast-forwards \`repairHead\` and the queue re-tests THAT sha. Confirm containment ` +
+    `    release:repair-queue { op: 'admit', paths: [ <the files you fixed> ] }\n\n` +
+    `That replays exactly those paths onto \`repairHead\` and the queue re-tests THAT sha. Confirm containment ` +
     `afterwards with \`dev:pipeline_position { path }\` or ` +
     `\`state:read { cell: 'gate.greenCheckpoint.candidate', as: '<path>' }\` — ancestry is not ` +
     `containment.\n\n` +

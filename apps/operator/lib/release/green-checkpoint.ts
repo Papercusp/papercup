@@ -9095,7 +9095,7 @@ async function runGreenCheckpointInner(
         frozenRepairHeadAwaitsVerification(repairQueue)
       ) {
         // WI-212675: the fixer was dispatched at a CONVERGED head the suite has never judged
-        // (a peer's fix reached repairHead via `release:repair-queue converge`, not via this
+        // (a peer's fix reached repairHead via `release:repair-queue admit`, not via this
         // worktree) and correctly changed nothing. "Nothing left to change" is a completion,
         // not a death — verify the head it was dispatched at. A red there appends the
         // convergence round that routes the NEXT no-op fixer onto the dead path below, so a
@@ -9496,7 +9496,7 @@ async function runGreenCheckpointInner(
         // between the converged repairHead and the tip is re-admitted, and a red among them opens
         // a NEW queue further downstream (observed 2026-09-03T18:23Z: d165d753 → 761d0a85, 62
         // commits past the frozen candidate, on a 13-file + cargo/seed signature). When
-        // `release:repair-queue converge` fast-forwarded the repairHead onto the judged lineage it
+        // `release:repair-queue admit` (pre-D-004: converge) advanced the repairHead onto the judged lineage it
         // is a STAGING commit (an ancestor of the tip) descending from the frozen candidate, so the
         // full suite can decide THAT sha and a green promotes exactly the converged fixes. An
         // ISOLATED worktree repair (not on staging) still yields to the tip — main may only
@@ -10739,7 +10739,7 @@ async function runGreenCheckpointInner(
         repairQueue?.phase === "ready-to-test"
       ) {
         // WI-2141375: `repairQueue` was read once before this (possibly hour-long) suite
-        // started — a peer's `release:repair-queue{op:'converge'}` can advance the
+        // started — a peer's `release:repair-queue{op:'admit'}` can advance the
         // PERSISTED row's repairHead in the meantime without touching phase (convergence
         // only ever fast-forwards repairHead while it stays an ancestor of staging; see
         // `shouldConvergeRepairHead`'s doc-comment). Writing the red transition from that

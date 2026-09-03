@@ -1348,7 +1348,7 @@ export function diagnoseFrozenCandidateRepairQueue(
     ? null
     : retirementIsTheDecision
       ? `release:repair-queue { op: 'retire', expectedCandidate: '${queue.candidate}', expectedRepairHead: '${queue.repairHead}', expectedUpdatedAtMs: ${queue.updatedAtMs}, reason: '<why this exact non-live queue is terminal>', confirm: true }`
-      : `decision '${decision.kind}': this queue is still recoverable — do NOT retire it. Land your fix on the judged lineage with release:repair-queue { op: 'converge', paths: ['<your changed path>'] }.`;
+      : `decision '${decision.kind}': this queue is still recoverable — do NOT retire it. Land your fix on the judged lineage with release:repair-queue { op: 'admit', paths: ['<your changed path>'] } (path-exact; never the tip).`;
   return {
     ...identity,
     candidate: queue.candidate,
@@ -1540,11 +1540,11 @@ export function markFrozenRepairAdmitted(
  * WI-212675 — a fixer that CHANGED NOTHING at a head the suite has NEVER JUDGED is reporting
  * "nothing left to change", not "I failed".
  *
- * A fix reaches the judged lineage two ways. The dispatched fixer commits it in the repair
- * worktree — `finalizeFrozenRepairWorktree` returns the new head and the queue moves to
- * ready-to-verify. Or a peer lands it on staging and `release:repair-queue { op:'converge' }`
- * fast-forwards the movable `repairHead` onto that tip WITHOUT touching the phase. On the
- * converge route the next fixer is dispatched at a head where every named red already passes,
+ * A fix reaches the judged lineage through admission: an agent lands it on staging and
+ * `release:repair-queue { op:'admit', paths }` replays exactly those paths onto the movable
+ * `repairHead` (`markFrozenRepairAdmitted` moves the phase to ready-to-verify). Before D-004
+ * the same verb fast-forwarded `repairHead` to the tip WITHOUT touching the phase, and on that
+ * route the next fixer was dispatched at a head where every named red already passes,
  * correctly changes nothing, and exits — and the recover-dead-fixer branch read that as a
  * death: attempt spent, replacement dispatched, suite never run. Measured 2026-09-03 17:23Z on
  * frozen candidate d165d753: repairHead 46dd13e4 had all 13 named reds passing and the queue

@@ -36,7 +36,7 @@ export const GATE_CLAIM_CARRY_NOTE =
   'under judgment, so "the gate is green" / "fixed N gate reds" can be locally true and globally ' +
   'false — and the successor inherits it as fact. Before this text carries forward, verify ' +
   'containment against the JUDGED sha (not the tip) with ' +
-  "release:repair-queue { op:'converge', paths:[...] }, and write the containment verdict into " +
+  "release:repair-queue { op:'admit', paths:[...] }, and write the containment verdict into " +
   'the claim itself. If the claim is about work already proven contained, state the judged sha ' +
   'in the note so the successor can tell an observation from an inference.';
 

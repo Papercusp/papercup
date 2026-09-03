@@ -50,7 +50,7 @@ describe('gateClaimCarryLint (P-007)', () => {
 
   it('names the judged sha and the sanctioned command in its note', () => {
     const lint = gateClaimCarryLint('the gate is green', { marker });
-    expect(lint?.note).toContain("op:'converge'");
+    expect(lint?.note).toContain("op:'admit'");
     expect(lint?.note).toContain('judged sha');
   });
 });

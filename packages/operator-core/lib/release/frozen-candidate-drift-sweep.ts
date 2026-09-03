@@ -127,7 +127,7 @@ export function detectFrozenCandidateDrift(input: {
       : '',
     '',
     `REMEDY (not a reprimand — these fixes are usually correct, just unreachable): route each one onto ` +
-      `the judged lineage with release:repair-queue { op:'converge', paths:[...] }, which reports whether ` +
+      `the judged lineage with release:repair-queue { op:'admit', paths:[...] }, which reports whether ` +
       `the judged sha now carries them. Do NOT re-cut a fresh candidate (D-002) and do NOT retire the ` +
       `queue to make the gate move.`,
   ]

@@ -26,7 +26,7 @@ registerSystemAction('frozen-candidate-drift-sweep', async () => {
       import('../../release/frozen-repair-edit-marker'),
       import('../../release/frozen-candidate-drift-sweep'),
       import('../../release-deploy-launch'),
-      import('../../release/converge-repair-head'),
+      import('../../release/judged-sha-containment'),
     ]);
 
   const marker = readFrozenRepairMarker();

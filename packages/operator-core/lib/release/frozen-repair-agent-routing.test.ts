@@ -96,7 +96,7 @@ describe('buildFrozenRepairConvergenceBroadcast', () => {
     expect(ev.body).toContain('lib/a.test.ts');
     expect(ev.body).toContain('lib/b.test.ts');
     // 3. The EXACT call that admits a fix to it.
-    expect(ev.body).toContain("release:repair-queue { op: 'converge'");
+    expect(ev.body).toContain("release:repair-queue { op: 'admit'");
     // …and the repair worktree, so nobody reconstructs the path by hand.
     expect(ev.body).toContain(
       '/repo/.papercusp/worktrees/green-candidate-papercusp-aaaaaaaaaaaa',

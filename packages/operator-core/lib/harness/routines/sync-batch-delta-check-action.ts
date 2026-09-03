@@ -48,7 +48,7 @@ registerSystemAction(
         import('../../release/sync-batch-delta-check'),
         import('../../release/sync-batch-delta-check-deps'),
         import('../../release-deploy-launch'),
-        import('../../release/converge-repair-head'),
+        import('../../release/judged-sha-containment'),
       ]);
     const deps = buildSyncBatchDeltaDeps({
       installSlug: ctx.installSlug || home,

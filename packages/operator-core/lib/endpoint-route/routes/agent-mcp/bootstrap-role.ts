@@ -581,10 +581,12 @@ const post = defineTool({
       process.stderr.write(`[bootstrap-role] saved-prompts materialize failed (non-fatal): ${e?.message}\n`);
     }
 
-    // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE, default-off):
-    // resolve server-side + thread via envelopeEnv (same env the fleet + su paths read) so an
-    // interactive role session's prompt REPLACES the Claude base when armed (coherent with
-    // suLaunchArgs). Fail-soft ⇒ off (the launcher uses --append, byte-identical to today).
+    // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE — its DEFAULT is
+    // FLAG_DEFAULTS in libs/flags/src/types.ts, ON since 2026-06-18; never restate it here, the
+    // restated "default-off" drifted — identities-v1 D-018): resolve server-side + thread via
+    // envelopeEnv (same env the fleet + su paths read) so an interactive role session's prompt
+    // REPLACES the Claude base when armed (coherent with suLaunchArgs). Fail-soft ⇒ off (the
+    // launcher uses --append). D-018 retires the append branch once P-003 renders the stack.
     let replaceClaudeBase = false;
     try {
       replaceClaudeBase = await getFlag(FLAGS.REPLACE_CLAUDE_BASE, workspace);

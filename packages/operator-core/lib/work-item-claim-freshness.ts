@@ -170,6 +170,33 @@ export function assessClaimFreshness(
       // lane; the caller is told the axis was blind via `reasons` instead.
       reasons.push(`source generation unmeasured (${signal.reason})`);
     }
+  } else if (
+    // RECURRENCE GUARD for the defect itself, not just this instance of it.
+    //
+    // The original bug lived in the CALLER — `scheduler:get_next` fed `build.sha` to
+    // BOTH `headSha` and `runtimeSha` — so a scorer-side fix alone leaves the class
+    // armed: any future caller can re-collapse the inputs and the scorer would again
+    // report two independent confirmations of what is really one fact.
+    //
+    // Detect it from the VALUES, which is possible without knowing the caller's
+    // intent: when the observed pair are the same sha AND the current pair are the
+    // same sha, `sourceMatch` and `runtimeMatch` are computed from identical inputs
+    // and cannot disagree by construction. There is one generation axis present, not
+    // two, so scoring both double-counts a single piece of evidence. Score it ONCE,
+    // as the runtime axis below, and report the source axis as what it is: unmeasured.
+    //
+    // This is deliberately NOT triggered when the two sides genuinely differ — a
+    // caller that supplies a real source HEAD distinct from the runtime sha keeps
+    // both independent axes.
+    envelope.observedSourceSha != null &&
+    envelope.observedSourceSha === envelope.observedRuntimeSha &&
+    current.headSha != null &&
+    current.headSha === current.runtimeSha
+  ) {
+    reasons.push(
+      'source generation unmeasured (source and runtime identity are the same value on both sides — ' +
+        'the two axes were fed one input and cannot disagree)',
+    );
   } else {
     const sourceMatch = shaMatches(envelope.observedSourceSha, current.headSha);
     if (sourceMatch === true) score += 0.25;

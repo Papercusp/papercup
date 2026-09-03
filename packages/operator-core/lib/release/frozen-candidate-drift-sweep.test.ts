@@ -20,7 +20,7 @@ describe('detectFrozenCandidateDrift (P-008) — the attestation leg', () => {
     expect(f?.paths.map((p) => p.path)).toEqual(['a/failing.test.ts']);
     expect(f?.agents).toEqual(['su-123']);
     expect(f?.title).toContain('frozen-candidate drift');
-    expect(f?.body).toContain("op:'converge'");
+    expect(f?.body).toContain("op:'admit'");
   });
 
   it('is SILENT when no failing path drifted — the outcome this plan wants', () => {

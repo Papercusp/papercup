@@ -1,4 +1,13 @@
-/** Guarded operator read/retire surface for the one persisted frozen repair queue. */
+/**
+ * Guarded operator read/admit/retire surface for the one persisted frozen repair queue.
+ *
+ * `admit` (P-002 of frozen-candidate-stays-frozen-through-all-fixes-2026-09-03, D-004/D-010) is
+ * THE door through which a fix reaches a frozen candidate's judged lineage: exactly the named
+ * paths, taken from the integration branch, replayed onto the queue's `repairHead` by
+ * `admitPathsOntoRepairHead`. Nothing here fast-forwards, merges, or reads the tip as a whole —
+ * the pre-D-004 `converge` (fast-forward repairHead to the staging tip) is gone, and `converge`
+ * is now only an alias for `admit` so a stale runbook still lands on the right door.
+ */
 import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
@@ -9,15 +18,15 @@ import {
   retireFrozenCandidateRepairQueue,
   writeFrozenCandidateRepairQueue,
 } from '../../harness/routines/release-actions';
+import { integrationRoot } from '../../release-deploy-launch';
 import { releaseFixerSpawnAlive } from '../../release/fixer-liveness';
 import {
   diagnoseFrozenCandidateRepairQueue,
+  markFrozenRepairAdmitted,
   type FrozenCandidateRepairQueue,
 } from '../../release/frozen-candidate-repair-queue';
-import {
-  assessConvergeRepairHead,
-  containmentForPaths,
-} from '../../release/converge-repair-head';
+import { containmentForPaths, integrationBranch } from '../../release/judged-sha-containment';
+import { admitPathsOntoRepairHead, retractAdmission } from '../../release/repair-head-admission';
 import { readIdentity } from '../locks/identity';
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
@@ -197,32 +206,41 @@ export default defineTool({
   name: 'release:repair-queue',
   profile: 'engineer',
   description:
-    'Inspect, converge, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. get returns phase/age/fixer/reservation/decision diagnostics plus callerAuthorization: a signed release-fixer is delegated only when its spawn id exactly equals repairQueue.fixerSpawnId. converge is THE sanctioned route for landing a gate-red fix on the judged lineage: it fast-forwards the movable repairHead to the staging tip while that is still safe, never touches the immutable candidate, and with paths reports whether the judged sha carries your fix. retire is dry-run unless confirm:true and clears only the exact candidate+head+updatedAt queue via full-row JSONB CAS.',
+    'Inspect, admit onto, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. admit{paths} is THE door for landing a gate-red fix on the judged lineage: it replays EXACTLY the named paths from the integration branch onto repairHead as one proved commit (diff-tree == allowlist, or refused); never touches the immutable candidate, never reads the tip as a whole; dry-run unless confirm:true. converge is an alias of admit. retire: dry-run unless confirm:true, exact-identity JSONB CAS.',
   capability: 'operator:write',
   effectForCall: (args) =>
-    args.op === 'get' || (args.op === 'converge' && args.confirm !== true) ? 'read' : 'write',
+    args.op === 'get' || ((args.op === 'admit' || args.op === 'converge') && args.confirm !== true)
+      ? 'read'
+      : 'write',
   requirePrincipal: false,
-  // The release-fixer's runbook uses the read/dry-run and confirmed converge
+  // The release-fixer's runbook uses the read/dry-run and confirmed admit
   // paths; its existing operator:write cap keeps the write branch guarded.
   agentRoles: [...SU_ROLES, 'release-fixer'],
   rolesQuota: { operator: { perRun: 20 } },
   guidance: {
     when:
-      'You fixed a gate red and need it on the judged sha — call converge{paths}. Or a release read reports repair-in-progress, a fossil/blocked queue, or a definitely-dead fixer.',
+      'You fixed a gate red on staging (git-sync committed it) and need it on the judged sha — admit{paths} naming exactly the files you changed. Or a release read reports repair-in-progress, a fossil/blocked queue, or a definitely-dead fixer.',
     notWhen:
-      'Do not pass harness or workspace: this tool is workspace-global and derives the operator-home target internally. Never retire a live/unknown fixer, an active dispatch reservation, ready-to-verify work, or merely to make the gate move. Never re-cut a fresh candidate for a phantom red. Does not launch a checkpoint or deploy.',
+      'Do not pass harness or workspace: workspace-global, target derived internally. admit is path-exact — never name paths you did not fix to "catch up" to the tip. Never retire a live/unknown fixer, an active dispatch reservation, ready-to-verify work, or merely to make the gate move. Never re-cut a fresh candidate for a phantom red. Does not launch a checkpoint or deploy.',
     chaining:
-      'Landing a fix: converge{paths} → read verdict + containment → re-call confirm:true if it says would-converge. Retiring: get → verify exact identity + retireAllowed → retire with those fields and confirm:true.',
+      'Landing a fix: admit{paths} (dry run) → verdict would-admit + proof → re-call confirm:true → admitted, phase ready-to-verify; the gate re-verifies at the new repairHead next tick. Retiring: get → verify exact identity + retireAllowed → retire with those fields and confirm:true.',
     returns:
-      "converge verdicts: no-frozen-queue (nothing frozen — an ordinary staging commit is already the judged lineage) | already-converged (repairHead is the staging tip; your fix is on the judged sha) | would-converge (dry run; re-call with confirm:true to fast-forward) | converged (repairHead moved; check persisted) | diverged-merge-required (a repair fixer has committed, so fast-forward would discard it — merge staging into the worktree named in nextAction) | ancestry-unverifiable (the git probe failed; fails closed to today's behaviour, never a guess). containment[] reports, per requested path, whether the judged sha carries staging's current content — equal blobs prove that PATH is current, NOT that the candidate is, so a submodule-backed subject still needs a gitlink diff. retire: dry-run unless confirm:true; refuses a live/unknown fixer and an active dispatch reservation; a CAS miss returns casMiss with the post-write diagnostic under current.",
+      "get: phase/age/fixer/reservation/decision diagnostics plus callerAuthorization (a signed release-fixer is delegated only when its spawn id exactly equals repairQueue.fixerSpawnId). admit verdicts: no-frozen-queue (nothing frozen — an ordinary staging commit is already the judged lineage) | already-admitted (every named path already has its staging content on repairHead; idempotent) | would-admit (dry run: the commit was built and PROVED but not published — proof.diff is the exact diff-tree name set, proof.unchanged the allowlisted paths with no change, proof.blobs the source blob per path) | admitted (repairHead moved to movedRepairHead.to; persisted, phase ready-to-verify) | refused with reason: paths_required | invalid-paths | stray-paths (the built commit touched paths outside your allowlist — never published) | lineage-ref-moved (a concurrent admission won; re-read and admit onto the current repairHead) | source-unresolvable / repair-head-unresolvable / git-failed | persist_failed (the lineage ref was rolled back so ref and row still agree). containment[] reports, per requested path, whether the judged sha carries staging's current content — equal blobs prove that PATH is current, NOT that the candidate is. retire: refuses a live/unknown fixer and an active dispatch reservation; a CAS miss returns casMiss with the post-write diagnostic under current.",
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
   },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('get') }),
     z.object({
+      op: z.literal('admit'),
+      /** Repo-relative paths your fix touched — the admission allowlist. REQUIRED: an admission is by explicit path. */
+      paths: z.array(z.string().min(1)).min(1).max(50),
+      reason: z.string().min(8).max(2000).optional(),
+      confirm: z.boolean().optional(),
+    }),
+    z.object({
+      /** Alias of admit, kept so a stale runbook lands on the same door. Identical semantics. */
       op: z.literal('converge'),
-      /** Repo-relative paths your fix touched; each is reported as contained or not. */
-      paths: z.array(z.string().min(1)).max(50).optional(),
+      paths: z.array(z.string().min(1)).min(1).max(50),
       reason: z.string().min(8).max(2000).optional(),
       confirm: z.boolean().optional(),
     }),
@@ -238,23 +256,28 @@ export default defineTool({
   result: z
     .object({
       ok: z.boolean().optional(),
-      op: z.enum(['get', 'converge', 'retire']).optional(),
+      op: z.enum(['get', 'admit', 'retire']).optional(),
       target: z.unknown().optional(),
       repairQueue: z.unknown().nullable().optional(),
       callerAuthorization: z.unknown().optional(),
       verdict: z.string().optional(),
-      converged: z.boolean().optional(),
+      admitted: z.boolean().optional(),
       dryRun: z.boolean().optional(),
       judgedSha: z.string().nullable().optional(),
-      stagingTip: z.string().nullable().optional(),
+      source: z.unknown().optional(),
       nextAction: z.unknown().nullable().optional(),
       containment: z.unknown().nullable().optional(),
+      proof: z.unknown().optional(),
+      admission: z.unknown().optional(),
+      lineageRef: z.string().optional(),
       wouldMoveRepairHead: z.unknown().optional(),
       movedRepairHead: z.unknown().optional(),
       persisted: z.boolean().optional(),
       auditRecorded: z.boolean().optional(),
       note: z.string().optional(),
       reason: z.string().optional(),
+      detail: z.string().optional(),
+      stray: z.array(z.string()).optional(),
       retired: z.boolean().optional(),
       // WI-1105109: the post-retire procedure statement. Declared rather than left to
       // .passthrough() so it is part of the contract a test can pin.
@@ -282,26 +305,47 @@ export default defineTool({
         callerAuthorization,
       });
     }
-    if (args.op === 'converge') {
-      const assessment = assessConvergeRepairHead(inspected.queue);
-      const containment =
-        args.paths?.length && assessment.judgedSha
-          ? containmentForPaths(args.paths, assessment.judgedSha, assessment.root, undefined, assessment.branch)
-          : null;
+    if (args.op === 'admit' || args.op === 'converge') {
+      const root = integrationRoot();
+      const branch = integrationBranch();
+      const queue = inspected.queue;
+      const paths = Array.isArray(args.paths) ? args.paths.filter((p) => typeof p === 'string' && p.trim()) : [];
       const base = {
-        op: 'converge' as const,
+        op: 'admit' as const,
         target: inspected.target,
-        verdict: assessment.verdict,
-        judgedSha: assessment.judgedSha,
-        stagingTip: assessment.stagingTip,
-        nextAction: assessment.nextAction,
-        containment,
+        source: { ref: branch, root },
         repairQueue: inspected.diagnostic,
         callerAuthorization,
       };
-      // Only 'would-converge' is a state change; every other verdict is a read.
-      if (assessment.verdict !== 'would-converge' || !assessment.newRepairHead || !inspected.queue) {
-        return json({ ok: true, converged: false, ...base });
+      if (!queue) {
+        return json({
+          ok: true,
+          admitted: false,
+          verdict: 'no-frozen-queue',
+          judgedSha: null,
+          containment: null,
+          nextAction:
+            'No frozen repair queue. Fix on staging as normal — git-sync commits it and the next ' +
+            'candidate is cut from that tip. Do not fire release:checkpoint-run.',
+          ...base,
+        });
+      }
+      const containmentAt = (judgedSha: string) =>
+        paths.length ? containmentForPaths(paths, judgedSha, root, undefined, branch) : null;
+      if (paths.length === 0) {
+        return json({
+          ok: false,
+          admitted: false,
+          refused: true,
+          verdict: 'refused',
+          reason: 'paths_required',
+          detail:
+            'admit is by explicit path allowlist: name exactly the repo-relative files your fix changed. ' +
+            'Nothing is ever admitted by tip, branch or "everything since the candidate".',
+          judgedSha: queue.repairHead,
+          containment: null,
+          ...base,
+        });
       }
       // EI-22208176411693669: assessFrozenRepairFixerAuthorization above already routes
       // an isSuperuser caller to 'not-applicable' (never 'authorized-delegate') because
@@ -309,7 +353,7 @@ export default defineTool({
       // cosmetic ?role= catalog hint. Without this clause a superuser caller whose ?role=
       // was forwarded as 'release-fixer' would still fail every disjunct here (role!=='su',
       // not an OPERATOR_CONFIG_WRITE_ROLE, authorized!==true) and be wrongly thrown out of
-      // convergence — even though dispatch capability on that transport is already
+      // admission — even though dispatch capability on that transport is already
       // unconditional (isSuperuser bypasses role gates platform-wide, per
       // tool-projection.ts). Mirror that bypass here explicitly.
       if (
@@ -319,49 +363,151 @@ export default defineTool({
         callerAuthorization.authorized !== true
       ) {
         throw new Error(
-          'release:repair-queue converge requires operator, architect, mug, su, or the exact signed release-fixer delegated by this queue',
+          'release:repair-queue admit requires operator, architect, mug, su, or the exact signed release-fixer delegated by this queue',
         );
       }
-      if (args.confirm !== true) {
+      const identity = readIdentity(ctx);
+      const dryRun = args.confirm !== true;
+      const outcome = admitPathsOntoRepairHead({
+        root,
+        candidate: queue.candidate,
+        repairHead: queue.repairHead,
+        paths,
+        source: { ref: branch },
+        actor: identity.ownerId,
+        reason: args.reason,
+        nowMs: Date.now(),
+        dryRun,
+      });
+      if (!outcome.ok) {
+        if (outcome.code === 'nothing-to-admit') {
+          return json({
+            ok: true,
+            admitted: false,
+            dryRun,
+            verdict: 'already-admitted',
+            detail: outcome.detail,
+            judgedSha: queue.repairHead,
+            containment: containmentAt(queue.repairHead),
+            ...base,
+          });
+        }
         return json({
-          ok: true,
-          converged: false,
-          dryRun: true,
+          ok: false,
+          admitted: false,
+          refused: true,
+          dryRun,
+          verdict: 'refused',
+          reason: outcome.code,
+          detail: outcome.detail,
+          ...(outcome.stray ? { stray: outcome.stray } : {}),
+          ...(outcome.paths ? { invalidPaths: outcome.paths } : {}),
+          ...(outcome.step ? { step: outcome.step } : {}),
+          judgedSha: queue.repairHead,
+          containment: containmentAt(queue.repairHead),
           ...base,
-          wouldMoveRepairHead: { from: inspected.queue.repairHead, to: assessment.newRepairHead },
-          note:
-            'Pass confirm:true to fast-forward repairHead to the staging tip. The immutable ' +
-            'candidate is never touched. Every commit absorbed is already committed on staging.',
         });
       }
-      const converged = { ...inspected.queue, repairHead: assessment.newRepairHead };
+      const proof = { diff: outcome.diff, unchanged: outcome.unchanged, blobs: outcome.entry.blobs, tree: outcome.tree };
+      if (dryRun) {
+        return json({
+          ok: true,
+          admitted: false,
+          dryRun: true,
+          verdict: 'would-admit',
+          judgedSha: queue.repairHead,
+          wouldMoveRepairHead: { from: queue.repairHead, to: outcome.commit },
+          lineageRef: outcome.lineageRef,
+          proof,
+          containment: containmentAt(queue.repairHead),
+          note:
+            `Pass confirm:true to publish admission ${outcome.commit.slice(0, 12)} onto ${outcome.lineageRef} ` +
+            'and advance repairHead to it (phase ready-to-verify). The immutable candidate is never touched; ' +
+            'the commit carries exactly proof.diff and nothing else from the tip.',
+          ...base,
+        });
+      }
+      // Published: the lineage ref now points at the admission. The queue row is the second
+      // store; if it cannot be written, retract the ref so the two never disagree.
+      let next: FrozenCandidateRepairQueue;
+      try {
+        next = markFrozenRepairAdmitted(queue, outcome.entry);
+      } catch (err) {
+        const retracted = retractAdmission({
+          root,
+          candidate: queue.candidate,
+          published: outcome.commit,
+          previousRepairHead: queue.repairHead,
+        });
+        return json({
+          ok: false,
+          admitted: false,
+          refused: true,
+          verdict: 'refused',
+          reason: 'lineage-ref-moved',
+          detail: `${(err as Error).message}${retracted ? ' (lineage ref retracted)' : ' (lineage ref could NOT be retracted — it is at the unrecorded admission; re-read the queue)'}`,
+          judgedSha: queue.repairHead,
+          containment: containmentAt(queue.repairHead),
+          ...base,
+        });
+      }
       let persisted = true;
       try {
-        await writeFrozenCandidateRepairQueue(inspected.target, converged);
+        await writeFrozenCandidateRepairQueue(inspected.target, next);
       } catch {
         persisted = false;
       }
-      const identity = readIdentity(ctx);
+      let retracted: boolean | null = null;
+      if (!persisted) {
+        retracted = retractAdmission({
+          root,
+          candidate: queue.candidate,
+          published: outcome.commit,
+          previousRepairHead: queue.repairHead,
+        });
+      }
       const auditRecorded = await recordAudit(identity.ownerId, {
-        op: 'converge',
+        op: 'admit',
         reason: args.reason ?? null,
-        from: inspected.queue.repairHead,
-        to: assessment.newRepairHead,
+        candidate: queue.candidate,
+        from: queue.repairHead,
+        to: outcome.commit,
+        source: outcome.entry.source,
+        paths: outcome.entry.paths,
+        unchanged: outcome.entry.unchanged,
         persisted,
+        ...(retracted === null ? {} : { retracted }),
       });
+      const judgedSha = persisted ? outcome.commit : queue.repairHead;
       return json({
         ok: persisted,
-        converged: persisted,
-        ...base,
-        verdict: persisted ? ('converged' as const) : assessment.verdict,
-        movedRepairHead: { from: inspected.queue.repairHead, to: assessment.newRepairHead },
+        admitted: persisted,
+        dryRun: false,
+        verdict: persisted ? 'admitted' : 'refused',
+        judgedSha,
+        movedRepairHead: { from: queue.repairHead, to: outcome.commit },
+        lineageRef: outcome.lineageRef,
+        proof,
+        admission: outcome.entry,
+        containment: containmentAt(judgedSha),
         persisted,
         auditRecorded,
+        ...base,
+        repairQueue: persisted
+          ? diagnoseFrozenCandidateRepairQueue(next, { nowMs: Date.now(), fixerAlive: inspected.fixerAlive })
+          : inspected.diagnostic,
         ...(persisted
-          ? {}
+          ? {
+              nextAction:
+                `repairHead is ${outcome.commit.slice(0, 12)} (phase ${next.phase}); the gate re-verifies at that head on its next tick. ` +
+                'Do NOT fire release:checkpoint-run and do NOT retire.',
+            }
           : {
+              refused: true,
               reason: 'persist_failed',
-              note: 'repairHead was NOT durably moved; re-run before relying on the judged sha.',
+              note: retracted
+                ? 'The queue row could not be written, so the lineage ref was retracted to the previous repairHead; nothing moved. Re-run.'
+                : 'The queue row could not be written AND the lineage ref could not be retracted: the ref is at the admission but the row is not. Re-read the queue before relying on the judged sha.',
             }),
       });
     }
@@ -482,7 +628,7 @@ export default defineTool({
       // so the answer has to travel on the RESULT the caller is holding when they
       // choose their next move.
       nextStep: result.retired
-        ? 'The next scheduled green-checkpoint run RE-FREEZES a candidate on its own — retiring does not stall the gate, so nothing needs firing to restart it. Do NOT call release:checkpoint-run to make the gate move: it always cuts a FRESH candidate at the current tip, which is the pre-D-001 re-cut-at-tip treadmill D-007 diagnosed (each cut re-admits the whole sweep and imports breakage faster than fixes land). To land a fix on the judged lineage, use release:repair-queue { op: "converge" }.'
+        ? 'The next scheduled green-checkpoint run RE-FREEZES a candidate on its own — retiring does not stall the gate, so nothing needs firing to restart it. Do NOT call release:checkpoint-run to make the gate move: it always cuts a FRESH candidate at the current tip, which is the pre-D-001 re-cut-at-tip treadmill D-007 diagnosed (each cut re-admits the whole sweep and imports breakage faster than fixes land). To land a fix on the judged lineage, use release:repair-queue { op: "admit", paths: [...] }.'
         : undefined,
     });
   },

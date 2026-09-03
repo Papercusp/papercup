@@ -118,7 +118,7 @@ export function frozenRepairEditWarning(
     `   So the gate will keep failing on this exact file no matter how correct your fix is, ` +
     `and a "fixed the gate red" claim off this edit would be false.\n` +
     `   Put it on the judged lineage with ONE call:\n` +
-    `     release:repair-queue { op:'converge', paths:['${normalized}'] }\n` +
+    `     release:repair-queue { op:'admit', paths:['${normalized}'] }\n` +
     `   It reports whether the judged sha now carries your fix. Do NOT fire ` +
     `release:checkpoint-run and do NOT retire the queue to "make the gate move".`
   );

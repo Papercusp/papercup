@@ -582,7 +582,7 @@ describe('frozen-candidate repair queue', () => {
     expect(diagnostic?.nextAction).not.toContain(`expectedUpdatedAtMs: ${dead.updatedAtMs}`);
     expect(diagnostic?.nextAction).not.toContain("op: 'retire'");
     expect(diagnostic?.nextAction).toContain('recover-dead-fixer');
-    expect(diagnostic?.nextAction).toContain("op: 'converge'");
+    expect(diagnostic?.nextAction).toContain("op: 'admit'");
 
     expect(
       diagnoseFrozenCandidateRepairQueue(dead, {

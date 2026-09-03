@@ -18,6 +18,7 @@ import {
   normalizeAdmissionPath,
   proveAdmissionDiff,
   realAdmissionGit,
+  retractAdmission,
   validateAdmissionPaths,
   type AdmissionGitRunner,
 } from './repair-head-admission';
@@ -295,5 +296,80 @@ describe('admitPathsOntoRepairHead — real git (P-001)', () => {
     const clean = admit(root, candidate, candidate, ['lib/a.ts']);
     expect(clean.ok).toBe(true);
     if (clean.ok) expect(nameDiff(root, candidate, clean.commit)).toEqual(['lib/a.ts']);
+  });
+});
+
+describe('dryRun — the exact verdict confirm would get, without publishing (P-002)', () => {
+  it('builds and PROVES the commit, leaves the lineage ref untouched, and a confirmed run then publishes the same tree', () => {
+    const { root, candidate } = repo();
+    sweep(root, { 'lib/a.ts': 'export const a = 2;\n', 'lib/b.ts': 'export const b = 2;\n' }, 'fix a and b');
+    const dry = admit(root, candidate, candidate, ['lib/a.ts'], { dryRun: true });
+    expect(dry.ok).toBe(true);
+    if (!dry.ok) return;
+    expect(dry.published).toBe(false);
+    expect(dry.diff).toEqual(['lib/a.ts']);
+    expect(dry.unchanged).toEqual([]);
+    // The commit exists as an unreferenced object with the right parent and the proved diff,
+    // but nothing points at it: the judged lineage did not move.
+    expect(git(root, ['rev-parse', `${dry.commit}^`])).toBe(candidate);
+    expect(nameDiff(root, candidate, dry.commit)).toEqual(['lib/a.ts']);
+    expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
+    // b.ts was NOT carried along (path-exact, never the tip).
+    expect(blobAt(root, dry.commit, 'lib/b.ts')).toBe(blobAt(root, candidate, 'lib/b.ts'));
+
+    const real = admit(root, candidate, candidate, ['lib/a.ts']);
+    expect(real.ok).toBe(true);
+    if (!real.ok) return;
+    expect(real.published).toBe(true);
+    expect(real.tree).toBe(dry.tree);
+    expect(refAt(root, frozenLineageRef(candidate))).toBe(real.commit);
+  });
+
+  it('a dry run refuses a moved lineage ref exactly as a real run would (it is not a weaker check)', () => {
+    const { root, candidate } = repo();
+    sweep(root, { 'lib/a.ts': 'a2\n' }, 'fix a');
+    const first = admit(root, candidate, candidate, ['lib/a.ts']);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    sweep(root, { 'lib/b.ts': 'b2\n' }, 'fix b');
+    // Built onto the ORIGINAL candidate while the lineage is already at `first`.
+    const stale = admit(root, candidate, candidate, ['lib/b.ts'], { dryRun: true });
+    expect(stale).toMatchObject({ ok: false, code: 'lineage-ref-moved' });
+    // Positive control: the same dry run onto the current head is fine.
+    const fresh = admit(root, candidate, first.commit, ['lib/b.ts'], { dryRun: true });
+    expect(fresh.ok).toBe(true);
+    if (fresh.ok) expect(fresh.published).toBe(false);
+    expect(refAt(root, frozenLineageRef(candidate))).toBe(first.commit);
+  });
+});
+
+describe('retractAdmission — the compensating step when the queue-row write fails after the ref moved', () => {
+  it('moves the lineage ref back to the previous head by exact compare-and-swap', () => {
+    const { root, candidate } = repo();
+    sweep(root, { 'lib/a.ts': 'a2\n' }, 'fix a');
+    const first = admit(root, candidate, candidate, ['lib/a.ts']);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(refAt(root, frozenLineageRef(candidate))).toBe(first.commit);
+    expect(retractAdmission({ root, candidate, published: first.commit, previousRepairHead: candidate })).toBe(true);
+    expect(refAt(root, frozenLineageRef(candidate))).toBe(candidate);
+    // After retraction the same admission can be re-published onto the same head (idempotent recovery).
+    const again = admit(root, candidate, candidate, ['lib/a.ts']);
+    expect(again.ok).toBe(true);
+    if (again.ok) expect(refAt(root, frozenLineageRef(candidate))).toBe(again.commit);
+  });
+
+  it('refuses (and touches nothing) once a later admission has built on the one being retracted', () => {
+    const { root, candidate } = repo();
+    sweep(root, { 'lib/a.ts': 'a2\n' }, 'fix a');
+    const first = admit(root, candidate, candidate, ['lib/a.ts']);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    sweep(root, { 'lib/b.ts': 'b2\n' }, 'fix b');
+    const second = admit(root, candidate, first.commit, ['lib/b.ts']);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(retractAdmission({ root, candidate, published: first.commit, previousRepairHead: candidate })).toBe(false);
+    expect(refAt(root, frozenLineageRef(candidate))).toBe(second.commit);
   });
 });

@@ -105,7 +105,7 @@ describe('P-005: the message names the CONSEQUENCE and the one command', () => {
   });
 
   it('names the sanctioned command', () => {
-    expect(msg).toContain("op:'converge'");
+    expect(msg).toContain("op:'admit'");
   });
 
   it('does NOT lean on the prose that already failed', () => {

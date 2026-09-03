@@ -19,7 +19,7 @@
  * failing path is often exactly right; asserting the gate can see it is the error. Silence
  * whenever it cannot judge — no marker, no declared paths, no containment probe.
  */
-import { containmentForPaths, integrationBranch, type PathContainment } from './converge-repair-head';
+import { containmentForPaths, integrationBranch, type PathContainment } from './judged-sha-containment';
 import { integrationRoot } from '../release-deploy-launch';
 import {
   normalizeRepoPath,
@@ -118,7 +118,7 @@ export function gateRedCompletionClaimWarning(
         `by the sha under judgment (${marker.repairHead.slice(0, 12)}, frozen candidate ` +
         `${marker.candidate.slice(0, 12)}): ${uncontainedPaths.join(', ')}. ` +
         `The fix is real but it landed ABOVE the judged sha, so the gate will keep reporting these red. ` +
-        `Put it on the judged lineage with release:repair-queue { op:'converge', paths:[...] }, then ` +
+        `Put it on the judged lineage with release:repair-queue { op:'admit', paths:[...] }, then ` +
         `re-state the claim with the containment verdict as its evidence.`,
     };
   } catch {
