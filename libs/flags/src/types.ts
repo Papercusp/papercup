@@ -3461,12 +3461,36 @@ export const DARK_FLAGS: ReadonlyMap<
 ]);
 
 // Only these cases are subject to the anti-parking-lot size budget. Safety
-// kill-switches (owner-authority/cutover) remain governed by DARK_FLAGS_REVIEW_BY.
+// kill-switches (owner-authority/cutover) are NOT rationed by it — they are
+// reviewed on their own ADVISORY clock, DARK_FLAGS_OWNER_REVIEW_BY below.
 export const DARK_FLAGS_PARKING_CASES: ReadonlySet<DarkCase> =
   new Set<DarkCase>(["parked", "incomplete"]);
+// The exact complement of DARK_FLAGS_PARKING_CASES — every DarkCase is in exactly one of
+// these two sets (production-defaults.test.ts pins that partition at runtime, belt-and-
+// suspenders over the 4-value DarkCase union the type system already exhausts).
+export const DARK_FLAGS_OWNER_CASES: ReadonlySet<DarkCase> =
+  new Set<DarkCase>(["owner-authority", "cutover"]);
 export const DARK_FLAGS_PARKING_COUNT = [...DARK_FLAGS.values()].filter(
   (entry) => DARK_FLAGS_PARKING_CASES.has(entry.case),
 ).length;
+
+/**
+ * Which review clock governs one DarkCase (EI-19941703547241191). `"parking"` is the
+ * HARD-GATING clock (DARK_FLAGS_PARKING_REVIEW_BY) — production-defaults.test.ts reds
+ * the shared fleet gate when it lapses, because parked/incomplete is the genuinely
+ * agent-actionable, parking-lot-abuse population the watermark also polices. `"owner"`
+ * is the ADVISORY clock (DARK_FLAGS_OWNER_REVIEW_BY) — owner-authority/cutover entries
+ * are never agent-graduatable BY DEFINITION, so lapsing surfaces owner attention (via
+ * darkFlagRatificationToAttention) instead of red-pinning CI for a backlog no agent may
+ * clear. Throws on an unrecognized case rather than silently defaulting a lane — a
+ * DarkCase outside both sets is malformed evidence and must fail loud, not resolve to
+ * whichever clock happens to be checked first.
+ */
+export function darkFlagReviewLane(c: DarkCase): "parking" | "owner" {
+  if (DARK_FLAGS_PARKING_CASES.has(c)) return "parking";
+  if (DARK_FLAGS_OWNER_CASES.has(c)) return "owner";
+  throw new Error(`darkFlagReviewLane: unrecognized DarkCase "${c}" — not in either review lane`);
+}
 
 // ── The dark allowlist's HYGIENE BOUNDS (re-review + parking budget) ──────────
 // Promoted here from production-defaults.test.ts (enforce-system-on-generic-work-
@@ -3488,13 +3512,25 @@ export const DARK_FLAGS_PARKING_COUNT = [...DARK_FLAGS.values()].filter(
 //     reported only for visibility. Fold its CRITICAL output into your review
 //     notes below — don't just re-read the prose.
 //
-//   DARK_FLAGS_REVIEW_BY    — the date the allowlist must be RE-REVIEWED by. Past it,
-//                             walk every dark flag: flip what's ready (remove it from
-//                             DARK_FLAGS), THEN push this date out with a fresh look —
-//                             the bump is the LAST step, never the only one.
+//   DARK_FLAGS_PARKING_REVIEW_BY — the date the parked+incomplete subset must be
+//                             RE-REVIEWED by. Past it, production-defaults.test.ts REDS
+//                             the shared fleet gate: walk every parked/incomplete dark
+//                             flag, flip what's ready (remove it from DARK_FLAGS), THEN
+//                             push this date out with a fresh look — the bump is the
+//                             LAST step, never the only one. This is the hard-gating
+//                             clock, deliberately scoped to the population an agent can
+//                             actually act on (EI-19941703547241191).
+//   DARK_FLAGS_OWNER_REVIEW_BY — the ADVISORY re-review date for owner-authority+cutover
+//                             entries. Lapsing it never fails a test — those 18+ entries
+//                             are not agent-graduatable BY DEFINITION, so gating CI on
+//                             them just trains "bump the date" for a backlog no agent
+//                             may clear. It instead feeds the existing owner-attention
+//                             path (darkFlagRatificationToAttention, wired per-flag in
+//                             agent-tools/plans/attention.ts) so a stale owner review
+//                             surfaces to the one audience who can act on it.
 //   DARK_FLAGS_HIGH_WATERMARK — the post-sweep size ceiling for parked+incomplete
 //                             cases only. owner-authority/cutover cases are not
-//                             rationed; they are reviewed by DARK_FLAGS_REVIEW_BY.
+//                             rationed; they are reviewed by DARK_FLAGS_OWNER_REVIEW_BY.
 //
 // 2026-07-04 review (EI-7280, pushed the date out — the review is the point, not the
 // bump): walked every non-owner-authority dark flag against its stated graduation
@@ -3607,7 +3643,7 @@ export const DARK_FLAGS_PARKING_COUNT = [...DARK_FLAGS.values()].filter(
 // (the elapsed-date symptom itself was filed independently by a peer as EI-19933138951557204).
 // ─── LIVE-STATE ADDENDUM (WI-37354, same day) — the 2026-08-09 review above is a TEXT read
 // of case+reason and is right about the *prose*, but `npm run audit:dark-flags` (added by this
-// fix — see the pointer above DARK_FLAGS_REVIEW_BY) shows the PROSE and the RUNTIME disagree for
+// fix — see the pointer above DARK_FLAGS_PARKING_REVIEW_BY) shows the PROSE and the RUNTIME disagree for
 // one entry in papercusp-workspace right now: CODEX_GATEWAY_OAUTH_PROXY resolves `enabled: true`
 // live (PG override, harness_shared.operator_flag_overrides — set by WI-3596's `flags:set`),
 // while its case is 'incomplete' and its own reason says "Dark until [an owner-attended] canary
@@ -3647,7 +3683,59 @@ export const DARK_FLAGS_PARKING_COUNT = [...DARK_FLAGS.values()].filter(
 // `npm run test:file -- libs/flags/src/production-defaults.test.ts` passed 10/10.
 // The review was completed before the deadline was advanced; no flag membership
 // or watermark changed. Next review is 2026-09-03.
-export const DARK_FLAGS_REVIEW_BY = "2026-09-03";
+// ─── REVIEW 2026-09-03 (WI-2142963) — the date above elapsed and red-pinned the
+// shared gate, EXACTLY the recurring pattern EI-19941703547241191 diagnosed (18 of the
+// 34 current entries — owner-authority + cutover — are not agent-graduatable BY
+// DEFINITION, so six straight reviews on the single combined clock could only ever
+// conclude "zero candidates" for them). Fixing THAT root cause is this review's main
+// act, per the agent-review-round-1 revision request on that EI: split the ONE clock
+// into DARK_FLAGS_PARKING_REVIEW_BY (hard-gates CI, scoped to parked+incomplete — the
+// population the watermark already treats as agent-actionable) and
+// DARK_FLAGS_OWNER_REVIEW_BY (advisory, surfaced via the EXISTING attention path rather
+// than a new channel — darkFlagRatificationToAttention now receives `reviewBy`, which
+// its call site in agent-tools/plans/attention.ts previously never passed). No
+// membership-hash auto-extension: both dates stay explicit, walked by a human/agent,
+// because a flag's readiness can change with no change to DARK_FLAGS itself.
+//
+// SCOPE: all 34 entries, re-derived at current HEAD (not inherited from the stale
+// 2026-08-20/08-27 counts): parked 8 · incomplete 5 · owner-authority 18 · cutover 3.
+// Parking subset (hard-gated) = 13, unchanged from and still AT DARK_FLAGS_HIGH_WATERMARK.
+//
+// PARKING LANE (13, walked against each stated graduation condition):
+//   parked(8)     — CLOUDFLARE_PUBLISH/HARNESS_PHASES/DESIGN/TESTING remain explicit V1
+//                   scope cuts with no owner ship signal; THE_HIVE/CONVERSATIONS_RAIL_TAB
+//                   still await the owner's "part of the standard release" sentence;
+//                   TEMPLATES_MARKETPLACE/RUBRICS_MARKETPLACE still await the v2 Cupboard
+//                   marketplace merge (v1 local-store-only ships unchanged).
+//   incomplete(5) — EXTERNAL_BENCH stays PERMANENTLY dark (blueprint retired, awaiting
+//                   nothing); ONBOARDING_PREVIEW_FEATURES' backing features (telemetry
+//                   consent, mobile pairing, auto-update channel) have no shipped-status
+//                   evidence in the tree (grepped for it — none found); CAPABILITY_EXEC_
+//                   SANDBOX's live-host bwrap validation has not been re-run (no new
+//                   evidence found); SUBSTRATE_LOG_SNAPSHOT's P-008 two-machine
+//                   convergence proof has not run (no plan evidence found);
+//                   SUBSTRATE_SIDECAR remains unbuilt/crash-looping with no driving plan.
+// VERDICT: zero parking-lane graduation candidates this round either — consistent with
+// every review since 2026-07-04. `npm run audit:dark-flags` re-run: still reports the
+// same 3 CRITICAL live-true incomplete overrides (EXTERNAL_BENCH/CAPABILITY_EXEC_
+// SANDBOX/SUBSTRATE_SIDECAR), all via a `generic-test` workspace override — NOT
+// papercusp-workspace — pre-existing test-fixture state, not a new live-defaults breach;
+// left as-is (flagged here for the next reviewer rather than silently reconciled).
+//
+// OWNER LANE (18 owner-authority + 3 cutover) — now genuinely ADVISORY, not a CI gate:
+// re-walked on the merits and none is agent-ratifiable BY DEFINITION (each requires a
+// personal owner sign-off, a destructive-action review, or an attended multi-machine
+// verify this session cannot perform). No behavior changed for this lane. This review
+// does not itemize all 21 again — see the 2026-08-09/08-20 blocks above for the
+// per-flag reasoning, unchanged on the merits — because the whole point of today's fix
+// is that this lane's staleness no longer needs to be resolved synchronously against a
+// shared-gate deadline to be honest: it now surfaces to the owner continuously via
+// attention instead.
+//
+// `npm run test:file -- libs/flags/src/production-defaults.test.ts` passed after the
+// split (see the test file for the new/updated assertions this review added).
+export const DARK_FLAGS_PARKING_REVIEW_BY = "2026-09-17";
+export const DARK_FLAGS_OWNER_REVIEW_BY = "2026-10-01";
 // 2026-07-12 (WI-4238, su-00a91): 25 → 26 for papercusp-queen-full-autonomy.
 //
 // WHY THIS GUARD KEEPS GETTING RAISED (22→24→25→26, every time for this same bug class,
@@ -3713,7 +3801,7 @@ export const DARK_FLAGS_REVIEW_BY = "2026-09-03";
 //
 // Expected to graduate on the same sentence the task manager did ("remove that flag,
 // we'll make it part of our standard release"). If it is still here at the
-// DARK_FLAGS_REVIEW_BY date, that is the signal to chase.
+// DARK_FLAGS_PARKING_REVIEW_BY date, that is the signal to chase.
 //
 // 2026-08-27 (WI-272118) — 14→13, CODEX_GATEWAY_OAUTH_PROXY GRADUATED after the
 // owner-directed production ChatGPT canary satisfied the dark entry's exact gate.
