@@ -5,7 +5,7 @@
  * row-shape stays consistent across surfaces.
  */
 
-import { withWorkspaceLegacy, getLegacyClient } from '@papercusp/db-org';
+import { withWorkspaceLegacy, harnessQuery } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 
 export interface ProjectRow {
@@ -82,10 +82,10 @@ const EMPTY_COUNTS: FeatureCounts = {
 
 export async function projectFeatureCounts(slug: string, projectId: string): Promise<FeatureCounts> {
   try {
-    const db = getLegacyClient(slug);
-    const rows = (await db.prepare(
-      `SELECT status, COUNT(*)::bigint AS n FROM harness_features WHERE project_id = ? GROUP BY status`,
-    ).all(projectId)) as Array<{ status: string; n: number | bigint }>;
+    const rows = (await harnessQuery(slug, (sql) => sql.unsafe(
+      `SELECT status, COUNT(*)::bigint AS n FROM harness_features WHERE project_id = $1 GROUP BY status`,
+      [projectId],
+    ))) as Array<{ status: string; n: number | bigint }>;
     const counts: FeatureCounts = { ...EMPTY_COUNTS };
     for (const r of rows) {
       const n = typeof r.n === 'bigint' ? Number(r.n) : r.n;
