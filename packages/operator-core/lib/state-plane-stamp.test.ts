@@ -345,6 +345,19 @@ describe('stampStatePlane — the REAL built-in cells stamp a REAL-shaped payloa
           vintageSpreadMs: null,
           unknownLegs: [],
         },
+        // P-004 (convergence + freezeDisposition) and P-009 (retriage) registered three
+        // more pipeline cells and did not extend this fixture, so it fell behind the
+        // registry: this census went from 9-of-9 green at 11:27Z to 9-of-11 and then
+        // 9-of-12 red, WITHOUT any edit to the file. Adding a member to a registry obliges
+        // EVERY census over that registry, and this is the third one.
+        //
+        // Each subject is carried with NULL leaves on purpose, matching the rest of the
+        // fixture: the point is that the path is PRESENT and stampable, not that it has a
+        // value. A cell whose path the payload does not carry is silently unstamped, which
+        // is precisely the drift this test exists to catch.
+        convergence: { code: null, shrinkTotal: null },
+        freezeDisposition: { code: null, state: null },
+        retriage: { code: null, inFlight: null },
       },
       changeInCandidate: { judgingSha: null },
       // The pair is ONE reading in two polarities, so they must stay consistent

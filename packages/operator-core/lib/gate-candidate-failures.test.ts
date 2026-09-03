@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readGateCandidateFailures } from './gate-candidate-failures';
+import type { FrozenRepairLegState } from './release/repair-leg-lifecycle';
 
 const CANDIDATE = 'adbf27530285830455f8d8df32a45752cfaff332';
 const REPAIR_HEAD = 'e7bffeac00000000000000000000000000000000';
@@ -549,7 +550,7 @@ describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', 
   };
 
   /** A cycle that still has `lint:plane-ratchet` failing — which THIS tick did not measure. */
-  const queueLegs = [
+  const queueLegs: FrozenRepairLegState[] = [
     {
       id: 'lint:plane-ratchet',
       state: 'failing' as const,
@@ -574,7 +575,7 @@ describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', 
     },
   ];
 
-  async function read(opts: { queueLegs?: typeof queueLegs } = {}) {
+  async function read(opts: { queueLegs?: readonly FrozenRepairLegState[] } = {}) {
     return readGateCandidateFailures({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
@@ -625,11 +626,11 @@ describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', 
   });
 
   it('LOAD-BEARING: "did its fix land" is answered with a HEAD, never a bare boolean', async () => {
-    const fixed = [
+    const fixed: FrozenRepairLegState[] = [
       {
         ...queueLegs[0]!,
         id: 'lint:tsc',
-        state: 'fixed' as const,
+        state: 'fixed',
         resolvedHead: REPAIR_HEAD.slice(0, 12),
         resolvedAtMs: 1_800_000_000_000,
       },
