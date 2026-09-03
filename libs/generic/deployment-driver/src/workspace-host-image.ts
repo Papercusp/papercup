@@ -809,6 +809,10 @@ export function workspaceHostCleanRoomFixtureAttestation(
       psu: true,
       pui: true,
       agentLaunchers: { claude: true, codex: true, omp: true },
+      // A clean-room image is validated before any host provisioning runs, so no vendor agent
+      // runtime has been installed at this point (D-259). False is the accurate reading, not a
+      // placeholder — the fixture must not claim a capability the image does not carry.
+      agentRuntimesInstalledByBootstrap: false,
       agentRuntimesVerifiedByBootstrap: false,
     },
     service: {
