@@ -7,6 +7,7 @@ import {
   NodeWorkspaceHostAgentProbeRunner,
   WORKSPACE_HOST_OMP_LOCAL_INFERENCE_MARKER,
   WORKSPACE_HOST_CANARY_AGENTS,
+  applyWorkspaceHostAgentRuntimePath,
   buildWorkspaceHostAgentProbeProcess,
   probeWorkspaceHostAgentVerification,
   probeWorkspaceHostAgents,
@@ -349,5 +350,107 @@ describe("workspace-host agent verification probes", () => {
     expect(workspaceHostAgentSubjectDigest("a@b.c")).not.toBe(
       workspaceHostAgentSubjectDigest("d@e.f"),
     );
+  });
+});
+
+describe("attested vendor runtime paths (D-259 Defect 2)", () => {
+  const VENDOR = {
+    claude: "/home/papercusp-agent/.local/bin/claude",
+    codex: "/home/papercusp-agent/.papercusp/runtime/node_modules/.bin/codex",
+    omp: "/home/papercusp-agent/.local/bin/omp",
+  } satisfies Record<WorkspaceHostCanaryAgent, string>;
+
+  it("execs the attested vendor path instead of the bare name the search path would resolve", async () => {
+    // The script is keyed by COMMAND and deliberately holds NO entry for the bare names. A probe
+    // that still shelled `claude` therefore rejects, rather than quietly passing against a fixture
+    // that answered to both spellings — which is the shape that let this defect hide.
+    const runner = new ScriptedRunner({
+      [VENDOR.claude]: AUTHENTICATED.claude,
+      [VENDOR.codex]: AUTHENTICATED.codex,
+      [VENDOR.omp]: AUTHENTICATED.omp,
+    });
+
+    const report = await probeWorkspaceHostAgents({
+      runner,
+      now: NOW,
+      runtimePaths: VENDOR,
+    });
+
+    expect(report.allReady).toBe(true);
+    const commands = runner.invocations.map((invocation) => invocation.command);
+    expect(commands).toEqual([VENDOR.claude, VENDOR.codex, VENDOR.omp]);
+    for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
+      expect(commands).not.toContain(agent);
+    }
+  });
+
+  it("substitutes the path into EVERY spec for an agent, not just the first", () => {
+    // omp is the only agent with a fallback spec. Were the override applied per-agent-once rather
+    // than per-spec, the hosted probe would exec the vendor binary while the local-inference
+    // fallback dropped back to the wrapper — green on the happy path, wrong on the path that
+    // actually runs when no hosted account answers.
+    const specs = DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.omp;
+    expect(specs.length).toBeGreaterThan(1);
+    for (const spec of specs) {
+      expect(applyWorkspaceHostAgentRuntimePath(spec, VENDOR.omp).command).toBe(
+        VENDOR.omp,
+      );
+    }
+  });
+
+  it("changes only the command, leaving the proof rules that make evidence falsifiable intact", () => {
+    const spec = DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0];
+    const resolved = applyWorkspaceHostAgentRuntimePath(spec, VENDOR.claude);
+    expect(resolved).toEqual({ ...spec, command: VENDOR.claude });
+    expect(resolved.proofPattern).toBe(spec.proofPattern);
+    expect(resolved.verificationKind).toBe(spec.verificationKind);
+    expect(resolved.endpoint).toBe(spec.endpoint);
+  });
+
+  it("falls back to the spec's own command when an agent has no attested path, and still FAILS honestly", async () => {
+    // A host provisioned before the vendor installs existed has no attested path for codex. The
+    // required behaviour is a probe that RUNS AND FAILS, not a throw: a throw would re-file "this
+    // host cannot authenticate codex" — the canary's whole finding — as an infrastructure error.
+    const runner = new ScriptedRunner({
+      [VENDOR.claude]: AUTHENTICATED.claude,
+      codex: { exitCode: 127, stdout: "" },
+      [VENDOR.omp]: AUTHENTICATED.omp,
+    });
+
+    const report = await probeWorkspaceHostAgents({
+      runner,
+      now: NOW,
+      runtimePaths: { claude: VENDOR.claude, omp: VENDOR.omp },
+    });
+
+    expect(runner.invocations.map((invocation) => invocation.command)).toEqual([
+      VENDOR.claude,
+      "codex",
+      VENDOR.omp,
+    ]);
+    expect(report.agents.codex.ready).toBe(false);
+    expect(report.agents.codex.failure).toBe("non-zero-exit");
+    expect(report.allReady).toBe(false);
+  });
+
+  it("refuses a relative path, an empty path, or one carrying a control character", () => {
+    const spec = DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0];
+    for (const bad of [
+      "claude",
+      "",
+      "/",
+      "./bin/claude",
+      `/usr/bin/claude${String.fromCharCode(0)}/etc/passwd`,
+      `/usr/bin/claude${String.fromCharCode(10)}/usr/bin/whoami`,
+    ]) {
+      expect(() => applyWorkspaceHostAgentRuntimePath(spec, bad)).toThrow(
+        /absolute path free of control characters/,
+      );
+    }
+  });
+
+  it("leaves the spec untouched when no path is attested for that agent", () => {
+    const spec = DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0];
+    expect(applyWorkspaceHostAgentRuntimePath(spec, undefined)).toBe(spec);
   });
 });
