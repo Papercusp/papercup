@@ -88,6 +88,44 @@ export PGAPPNAME="$HOST_BACKUP_APPLICATION_NAME"
 TIMEOUT_SEC="${PC_BACKUP_TIMEOUT_SEC:-2700}"
 JOBS="${PC_BACKUP_JOBS:-4}"
 
+# ── DISK HEADROOM ───────────────────────────────────────────────────────────
+# Until 2026-09-03 this script never looked at free space AT ALL, and the shape
+# of a -Fd dump makes that specifically dangerous: "$out.tmp" is written
+# ALONGSIDE the existing "$out" and only swapped at the very end (see the atomic
+# swap below), so a run transiently needs ~2x one database's dump on disk — and
+# it needs it on a volume this script shares with everything else.
+#
+# MEASURED FAILURE (2026-09-03, WI-2143109): /mnt/data was already 97% full when
+# the hourly timer fired. papercusp.tmp reached 85 GB, free space fell 590 GB/h,
+# and the volume was ~20 minutes from ZERO. Filling it does not merely fail the
+# backup: /mnt/data carries the Windows VM image and Postgres' own backup tree,
+# and the owner's two VMs were already stalling on 25 ms NVMe write latency with
+# a 160-deep queue. The observable symptom reported by a human was "why is the
+# VM so laggy", followed by a CLOCK_WATCHDOG_TIMEOUT BSOD in the guest — i.e.
+# this script's missing precondition surfaced as someone else's crash.
+#
+# So: refuse to start without headroom, refuse a database whose own last dump
+# would not fit, and abort mid-flight rather than consume the last of the disk.
+# Loud failure is the point — a skipped backup is recoverable, a full volume is
+# an outage. All three are overridable for a deliberate one-off restore test.
+#
+# ⚠ Do NOT "fix" a headroom refusal by lowering these. The refusal means the
+# volume is too full for a backup to be safe; the repair is to reclaim space.
+PC_BACKUP_MIN_FREE_GB="${PC_BACKUP_MIN_FREE_GB:-120}"   # hard floor: never go below this
+PC_BACKUP_SPACE_SAFETY="${PC_BACKUP_SPACE_SAFETY:-140}" # % of last dump size to require free
+PC_BACKUP_WATCH_SEC="${PC_BACKUP_WATCH_SEC:-15}"        # mid-flight free-space poll interval
+
+# Free GiB on the volume that actually holds the dumps. Reads $PGOUT rather than
+# a hardcoded path so an overridden PAPERCUSP_HOST_PG_DUMP_DIR is measured on
+# ITS OWN filesystem — a guard that measures the wrong volume is worse than no
+# guard, because it reports headroom that does not exist where we are writing.
+fs_avail_gb() {
+  local kb
+  kb=$(df --output=avail -k "$PGOUT" 2>/dev/null | tail -1 | tr -d '[:space:]')
+  [ -n "$kb" ] || { echo 0; return; }   # unreadable df ⇒ report 0 ⇒ fail closed
+  echo $(( kb / 1048576 ))
+}
+
 # Databases that are NOT real state: per-test, scratch, repro, e2e, gym fixtures.
 # Deny-list (not an allow-list) so a genuinely new production DB is picked up
 # automatically instead of being silently skipped.
@@ -106,6 +144,56 @@ fi
 
 renice 19 -p $$ >/dev/null 2>&1 || true
 ionice -c3 -p $$ >/dev/null 2>&1 || true
+
+# ── pre-flight headroom gate ────────────────────────────────────────────────
+# Before anything is written. Deliberately exits NON-ZERO and does NOT touch
+# STATUS.json: healthcheck.sh asserts dump-content freshness from that file, so
+# leaving it stale is what makes a refused backup visible as an aging dump
+# rather than a fresh-looking success. Writing a "skipped" receipt here would
+# hide exactly the condition an operator needs to see.
+PC_FREE_GB=$(fs_avail_gb)
+if [ "$PC_FREE_GB" -lt "$PC_BACKUP_MIN_FREE_GB" ]; then
+  log "REFUSED: only ${PC_FREE_GB} GiB free on $(df --output=target "$PGOUT" 2>/dev/null | tail -1) — below the ${PC_BACKUP_MIN_FREE_GB} GiB floor."
+  log "REFUSED: not dumping. A -Fd dump writes a full second copy before its atomic swap, so starting here risks filling the volume."
+  log "REFUSED: reclaim space (this volume also carries VM images and the offsite staging tree); do NOT just lower PC_BACKUP_MIN_FREE_GB."
+  exit 1
+fi
+log "headroom ok: ${PC_FREE_GB} GiB free (floor ${PC_BACKUP_MIN_FREE_GB} GiB)"
+
+# ── mid-flight headroom watchdog ────────────────────────────────────────────
+# The pre-flight gate can pass and the dump can STILL eat the volume: the
+# database may have grown since its last dump, and the estimate below is only an
+# estimate. So poll while the dump runs and abort it if free space reaches the
+# floor. Aborting costs one backup cycle; not aborting costs the whole box.
+#
+# Kills BOTH ways on purpose, matching this script's own doctrine above: the
+# client process (so `timeout`'s child stops writing) AND the backend via
+# reap_own_stragglers (because a table lock is held by the BACKEND — killing the
+# client alone proves nothing). Never a name/pattern kill: we hold the real PID.
+run_bounded_watched() {
+  local secs="$1"; shift
+  local rc=0 dump_pid watch_pid
+  "$@" &
+  dump_pid=$!
+  (
+    while kill -0 "$dump_pid" 2>/dev/null; do
+      sleep "$PC_BACKUP_WATCH_SEC"
+      now=$(fs_avail_gb)
+      if [ "$now" -lt "$PC_BACKUP_MIN_FREE_GB" ]; then
+        log "ABORTING DUMP: free space fell to ${now} GiB (floor ${PC_BACKUP_MIN_FREE_GB} GiB) while dumping — killing this dump to protect the volume"
+        kill -TERM "$dump_pid" 2>/dev/null
+        sleep 5
+        kill -KILL "$dump_pid" 2>/dev/null
+        reap_own_stragglers
+        return 0
+      fi
+    done
+  ) &
+  watch_pid=$!
+  wait "$dump_pid"; rc=$?
+  kill "$watch_pid" 2>/dev/null; wait "$watch_pid" 2>/dev/null
+  return "$rc"
+}
 
 # ── orphan sweep ────────────────────────────────────────────────────────────
 # Reap by PROVENANCE, not age. Anything named pg_dump* is BY DEFINITION not us
@@ -202,8 +290,33 @@ rm_tmp() {
 for db in $DBS; do
   out="$PGOUT/$db"
   rm_tmp "$out.tmp"
+
+  # Per-database precondition. The previous successful dump of THIS database is
+  # the only honest size estimate available before dumping it, and it is a
+  # LOWER bound (the db only grows between runs) — hence the safety multiplier.
+  # Requiring need + floor, not just need, is the point: finishing a dump with
+  # 2 GiB left is not a success, it is the same outage one cycle later.
+  #
+  # A database with no previous dump (first run, or last run failed) has no
+  # estimate, so it is gated on the floor alone — the pre-flight check above.
+  # That is deliberate: refusing a brand-new database forever because it has
+  # never been dumped would be a guard that prevents its own precondition.
+  prev_gb=0
+  if [ -d "$out" ]; then
+    prev_kb=$(du -sk "$out" 2>/dev/null | cut -f1)
+    [ -n "$prev_kb" ] && prev_gb=$(( prev_kb / 1048576 ))
+  fi
+  need_gb=$(( prev_gb * PC_BACKUP_SPACE_SAFETY / 100 ))
+  avail_gb=$(fs_avail_gb)
+  if [ "$prev_gb" -gt 0 ] && [ "$avail_gb" -lt $(( need_gb + PC_BACKUP_MIN_FREE_GB )) ]; then
+    FAILED+=("$db")
+    log "$db SKIPPED — needs ~${need_gb} GiB (last dump ${prev_gb} GiB x ${PC_BACKUP_SPACE_SAFETY}%) plus the ${PC_BACKUP_MIN_FREE_GB} GiB floor, but only ${avail_gb} GiB free; previous dump left intact"
+    continue
+  fi
+
   dumperr=$(mktemp -t "pcbackup-$db-XXXXXX.err")
-  if run_bounded "$TIMEOUT_SEC" sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
+  if run_bounded_watched "$TIMEOUT_SEC" timeout --kill-after=20s "$TIMEOUT_SEC" \
+        sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
         pg_dump -h /var/run/postgresql -Fd -j "$JOBS" --compress=none -f "$out.tmp" "$db" 2>"$dumperr"; then
 
     # pg_dump chmods its -Fd output to 0700 postgres:postgres. Left that way the
