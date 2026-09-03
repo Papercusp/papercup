@@ -92,6 +92,7 @@ function attestation(
       pui: true,
       agentLaunchers: { claude: true, codex: true, omp: true },
       agentRuntimesVerifiedByBootstrap: false,
+      agentRuntimesInstalledByBootstrap: false,
     },
     service: {
       name: 'papercusp-workspace',
@@ -126,6 +127,127 @@ function attestation(
     ...overrides,
   };
 }
+
+/**
+ * D-259 fixtures. Byte-sized stand-ins for the real vendor install argvs — what is under test is
+ * how the bootstrap RUNS and VERIFIES them, never what the vendor scripts themselves do.
+ */
+const AGENT_RUNTIME_INSTALLS = [
+  { agent: 'claude', command: 'bash', args: ['-c', 'echo install-claude'] },
+  { agent: 'codex', command: 'bash', args: ['-c', 'echo install-codex'] },
+  { agent: 'omp', command: 'bash', args: ['-c', 'echo install-omp'] },
+] as const;
+
+describe('buildWorkspaceHostBootstrap agent runtime installs (D-259)', () => {
+  it('installs nothing and attests the negative when no installs are configured', () => {
+    const script = buildWorkspaceHostBootstrap(input());
+    expect(script).not.toContain('AGENT_RUNTIME_PATH');
+    expect(script).toContain('agentRuntimesInstalledByBootstrap:false');
+    expect(script).not.toContain('agentRuntimes:{');
+  });
+
+  it('runs each install as the AGENT identity and dies if the runtime does not resolve', () => {
+    const script = buildWorkspaceHostBootstrap(
+      input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+    );
+    for (const { agent } of AGENT_RUNTIME_INSTALLS) {
+      // Installed as the agent identity, in the agent's own home. Every argv element is
+      // individually quoted, so a vendor install script containing spaces or shell
+      // metacharacters cannot word-split into extra arguments.
+      expect(script).toContain(
+        `runuser -u "$AGENT_USER" -- env HOME="$AGENT_HOME" PATH="$AGENT_RUNTIME_PATH" 'bash' '-c' 'echo install-${agent}' || die 'agent runtime install failed: ${agent}'`,
+      );
+      // ...and then RESOLVED, with a die on absence. An install that exits 0 while leaving
+      // nothing on disk is the unbacked boolean this whole item exists to remove.
+      expect(script).toContain(
+        `[[ -n "$AGENT_RUNTIME_${agent.toUpperCase()}" ]] || die 'agent runtime did not resolve after install: ${agent}'`,
+      );
+    }
+    const syntax = spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' });
+    expect(syntax.status, syntax.stderr).toBe(0);
+  });
+
+  /**
+   * THE REGRESSION THIS FILE MOST NEEDS. `$RELEASE_DIR/bin` holds the psu WRAPPERS named
+   * `claude`/`codex`/`omp`. If it were on the resolve PATH, `command -v claude` would find a
+   * wrapper and report success on a host with no vendor runtime at all — which is exactly the
+   * confusion that made D-247 read as a probe bug for three sessions.
+   */
+  it('resolves against dirs the installers write to, never the release bin holding the psu wrappers', () => {
+    const script = buildWorkspaceHostBootstrap(
+      input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+    );
+    const pathLine = script
+      .split('\n')
+      .find((line) => line.startsWith('AGENT_RUNTIME_PATH='));
+    expect(pathLine).toBeDefined();
+    expect(pathLine).toContain('$AGENT_HOME/.local/bin');
+    expect(pathLine).toContain('$AGENT_HOME/.papercusp/runtime/node_modules/.bin');
+    expect(pathLine).not.toContain('RELEASE_DIR');
+    expect(pathLine).not.toContain('RUNTIME_ROOT');
+  });
+
+  /**
+   * INSTALLED is strictly narrower than VERIFIED. The bootstrap can prove the runtime is present
+   * and executable; it cannot prove it is authenticated. D-252's validator refuses the optimistic
+   * lie, and that refusal must survive this feature.
+   */
+  it('never upgrades the installed claim into the authenticated one', () => {
+    const script = buildWorkspaceHostBootstrap(
+      input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+    );
+    expect(script).toContain('agentRuntimesVerifiedByBootstrap:false');
+    expect(script).toContain('agentRuntimesInstalledByBootstrap:true');
+    expect(script).not.toContain('agentRuntimesVerifiedByBootstrap:true');
+    expect(
+      validateWorkspaceHostBootstrapAttestation(
+        attestation({
+          runtime: {
+            nodeMajor: 22,
+            minimumNodeMajor: 22,
+            psu: true,
+            pui: true,
+            agentLaunchers: { claude: true, codex: true, omp: true },
+            // the lie D-252 exists to refuse, now alongside a true installed flag
+            agentRuntimesVerifiedByBootstrap: true as unknown as false,
+            agentRuntimesInstalledByBootstrap: true,
+          },
+        }),
+        input(),
+      ).ok,
+    ).toBe(false);
+  });
+
+  it('records each resolved runtime path so the probe can exec the vendor bin, not the wrapper', () => {
+    const script = buildWorkspaceHostBootstrap(
+      input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+    );
+    expect(script).toContain(
+      'agentRuntimes:{claude:$agentRuntimeClaude,codex:$agentRuntimeCodex,omp:$agentRuntimeOmp}',
+    );
+    expect(script).toContain('--arg agentRuntimeClaude "$AGENT_RUNTIME_CLAUDE"');
+  });
+
+  it('refuses a duplicate or malformed install at render time, not on a host', () => {
+    expect(() =>
+      buildWorkspaceHostBootstrap(
+        input({
+          agentRuntimeInstalls: [
+            { agent: 'claude', command: 'bash', args: [] },
+            { agent: 'claude', command: 'bash', args: [] },
+          ],
+        }),
+      ),
+    ).toThrow(/duplicate entry for 'claude'/);
+    expect(() =>
+      buildWorkspaceHostBootstrap(
+        input({
+          agentRuntimeInstalls: [{ agent: 'claude', command: '  ', args: [] }],
+        }),
+      ),
+    ).toThrow(/command must be a non-empty string/);
+  });
+});
 
 describe('buildWorkspaceHostBootstrap', () => {
   it('emits one deterministic, ordered, signed and loopback-only host contract', () => {

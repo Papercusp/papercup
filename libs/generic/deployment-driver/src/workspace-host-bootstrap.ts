@@ -700,6 +700,7 @@ interface ValidatedBootstrapInput {
   agentUser: string;
   agentGroup: string;
   workspaceAuthorizedKeys: readonly string[];
+  agentRuntimeInstalls: readonly WorkspaceHostAgentRuntimeInstall[];
 }
 
 function validateInput(
@@ -857,7 +858,8 @@ function normalizedAgentRuntimeInstalls(
   const seen = new Set<string>();
   for (const install of installs) {
     requireCondition(
-      isRecord(install) &&
+      typeof install === 'object' &&
+        install !== null &&
         (install.agent === 'claude' ||
           install.agent === 'codex' ||
           install.agent === 'omp'),
@@ -868,8 +870,10 @@ function normalizedAgentRuntimeInstalls(
       'bootstrap.agentRuntimeInstalls[].command must be a non-empty string',
     );
     requireCondition(
+      // `Array.isArray` widens a readonly string[] to any[], so annotate the callback parameter
+      // rather than letting it land as an implicit any under noImplicitAny.
       Array.isArray(install.args) &&
-        install.args.every((arg) => typeof arg === 'string'),
+        install.args.every((arg: unknown) => typeof arg === 'string'),
       'bootstrap.agentRuntimeInstalls[].args must be an array of strings',
     );
     requireCondition(
