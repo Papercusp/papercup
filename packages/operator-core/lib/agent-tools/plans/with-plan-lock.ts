@@ -34,7 +34,11 @@ import {
   type PlanCandidateDependencyDiagnostic,
 } from './plan-candidate-dependencies';
 import { writePlanIndexRows } from './plan-index-rows';
-import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from './plan-lock-key';
+import {
+  PLAN_LOCK_TIMEOUT_CODE,
+  acquirePlanAdvisoryLock,
+  planAdvisoryLockKey,
+} from './plan-lock-key';
 import {
   conversationAuditRequiredValue,
   entersActivationPlanStatus,
@@ -254,11 +258,6 @@ export interface AppliedResult<T> {
 
 export type WithPlanLockResult<T> = AppliedResult<T> | BusyError;
 
-/** PG error raised when a query is canceled by lock_timeout. */
-const LOCK_TIMEOUT_CODE = '55P03';
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
 /**
  * Acquire a PG advisory lock on the plan, read its current body, run the
  * mutator, upsert the result with a bumped version, release (on commit).
@@ -299,40 +298,19 @@ export async function withPlanLock<T>(
   const budgetMs = (opts.ttlSec ?? 5) * 1000;
 
   return withWorkspace(workspaceId, async (tx) => {
-    // Serialize same-plan writers via a transaction-scoped advisory lock,
-    // acquired non-blocking with a bounded retry so genuine contention reports
-    // busy instead of hanging. The two-int4 form keys on a fixed namespace +
-    // the plan key hash.
-    let acquired = false;
-    const deadline = Date.now() + budgetMs;
-    for (;;) {
-      const r = await tx<{ ok: boolean }[]>`
-        SELECT pg_try_advisory_xact_lock(hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}), hashtext(${lockKey})) AS ok
-      `;
-      if (r[0]?.ok) {
-        acquired = true;
-        break;
-      }
-      if (Date.now() >= deadline) break;
-      await sleep(50);
-    }
-    if (!acquired) {
-      return {
-        kind: 'busy',
-        busy: [
-          {
-            path: filePath,
-            owner: 'unknown',
-            owner_label: null,
-            intent: 'another plans write is in progress',
-            // The advisory lock releases at the holder's COMMIT — there
-            // is no knowable holder expiry (audit P-045). Callers retry;
-            // they must not schedule around a fabricated timestamp.
-            expires_ts: null,
-          },
-        ],
-      } satisfies BusyError;
-    }
+    // Serialize same-plan writers via a transaction-scoped advisory lock, taken through the ONE
+    // shared acquire (WI-2143102). This used to poll `pg_try_advisory_xact_lock` every 50ms
+    // against the same budget, which never joins the lock's wait queue — and the other writer of
+    // this same key (withPlanDependencyAdmissionTransaction) blocks on it. PG grants a released
+    // lock to the head of that queue atomically, so a poller could not win while any blocking
+    // waiter was queued, however long its budget: starvation by construction, measured as ~1h of
+    // total contention on one plan that committed nothing. Joining the queue with a bound fixes
+    // both halves, and drops ~20 wasted round trips per second per contending caller.
+    //
+    // On timeout the acquire throws PG 55P03, which aborts the transaction; the `.catch` on this
+    // promise — OUTSIDE the transaction, so the rollback has already happened — turns it into the
+    // same `busy` result this path returned before.
+    await acquirePlanAdvisoryLock(tx, lockKey, budgetMs);
 
     const rows = await tx<
       {
@@ -754,9 +732,11 @@ export async function withPlanLock<T>(
     }
     return result;
   }).catch((err: unknown) => {
-    // A lock_timeout (if a future caller sets one) surfaces as busy rather
-    // than a hard error; everything else propagates.
-    if ((err as { code?: string })?.code === LOCK_TIMEOUT_CODE) {
+    // A lock_timeout surfaces as busy rather than a hard error; everything else propagates.
+    // Since WI-2143102 this is the LIVE contention path, not a hypothetical one: the acquire is a
+    // bounded blocking wait, so exhausting the budget arrives here as PG 55P03 with the
+    // transaction already rolled back.
+    if ((err as { code?: string })?.code === PLAN_LOCK_TIMEOUT_CODE) {
       return {
         kind: 'busy',
         busy: [

@@ -17,7 +17,7 @@ import {
   validatePlanCandidateDependencyTransition,
   type PlanCandidateDependencyVerdict,
 } from './plan-candidate-dependencies';
-import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from './plan-lock-key';
+import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './plan-lock-key';
 
 export type PlanDependencyAdmissionSql = Sql | TransactionSql;
 
@@ -52,12 +52,13 @@ export async function withPlanDependencyAdmissionTransaction<T>(
 ): Promise<PlanDependencyAdmissionTransactionResult<T>> {
   const run = async (tx: PlanDependencyAdmissionSql): Promise<PlanDependencyAdmissionTransactionResult<T>> => {
     const lockKey = planAdvisoryLockKey(args.workspaceId, args.harnessSlug, args.planSlug);
-    await tx`
-      SELECT pg_advisory_xact_lock(
-        hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}),
-        hashtext(${lockKey})
-      )
-    `;
+    // WI-2143102: this wait is now BOUNDED. It was a bare `pg_advisory_xact_lock`, and
+    // `withWorkspace` sets no `lock_timeout`, so a waiter here held one org-app pool connection
+    // for as long as the convoy lasted — measured at 18–21 backends queued on a single plan's key
+    // with the oldest waiter at 59 minutes. Exhausting the budget now aborts this transaction with
+    // PG 55P03 instead, which releases the connection and fails the write fast; the same
+    // fail-fast-over-wedge trade the issues-engineer and work-items txns already make.
+    await acquirePlanAdvisoryLock(tx, lockKey);
 
     // to_jsonb keeps this compatible with historical-schema integration fixtures
     // that intentionally predate op_status while reading the real column in
