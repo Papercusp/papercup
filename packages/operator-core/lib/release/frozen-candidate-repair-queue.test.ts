@@ -13,6 +13,7 @@ import {
   decideFrozenConvergenceCycleEntry,
   detectFrozenRepairSharedTreeCollision,
   diagnoseFrozenCandidateRepairQueue,
+  frozenRepairHeadAwaitsVerification,
   markFrozenCandidateVerificationRed,
   markFrozenRepairExhausted,
   markFrozenRepairFixerDead,
@@ -1311,6 +1312,91 @@ describe('P-009 — shared-tree collision detector (REPORT-ONLY)', () => {
     for (const field of ['decision', 'retireAllowed', 'retireRefusal', 'nextAction'] as const) {
       expect(colliding![field]).toEqual(clean![field]);
     }
+  });
+});
+
+describe('WI-212675 — a no-op fixer at a never-verified converged head means "verify", not "dead"', () => {
+  /** An awaiting-fixer queue whose repairHead was fast-forwarded by converge (phase untouched). */
+  function convergedAwaitingFixer(
+    overrides: Partial<FrozenCandidateRepairQueue> = {},
+  ): FrozenCandidateRepairQueue {
+    return {
+      ...fresh(),
+      phase: 'awaiting-fixer',
+      attempts: 1,
+      fixerSpawnId: 'spawn-1',
+      repairHead: C1,
+      ...overrides,
+    };
+  }
+
+  /**
+   * PERMANENT deliberately-wrong control: the obvious "has the head moved?" reading. It is
+   * wrong in exactly the way that would re-run a red head for free — it cannot tell a head
+   * that CONVERGED from one that was already VERIFIED RED. Kept so the real predicate has
+   * something to differ from; the comparison test below fails if they ever agree everywhere.
+   */
+  function naiveHeadMoved(queue: FrozenCandidateRepairQueue): boolean {
+    return queue.repairHead !== queue.candidate;
+  }
+
+  it('CALIBRATION: at the frozen candidate itself there is nothing to verify (round 1 seeds it red)', () => {
+    const queue = { ...fresh(), phase: 'awaiting-fixer' as const, attempts: 1, fixerSpawnId: 'spawn-1' };
+    expect(queue.repairHead).toBe(C);
+    expect(frozenRepairHeadAwaitsVerification(queue)).toBe(false);
+    expect(naiveHeadMoved(queue)).toBe(false);
+  });
+
+  it('a converged head with no round recorded at it AWAITS verification', () => {
+    const queue = convergedAwaitingFixer();
+    expect(queue.convergenceRounds?.map((r) => r.head)).toEqual([C]);
+    expect(frozenRepairHeadAwaitsVerification(queue)).toBe(true);
+  });
+
+  it('LOAD-BEARING: a head already verified RED does not re-enter verification — the naive control says it does', () => {
+    // verify → red → dispatch → no-op fixer: the no-op must read as a failed attempt here,
+    // or every tick would spend a full suite on a head the suite already judged.
+    const red = markFrozenRepairVerificationRed(
+      { ...convergedAwaitingFixer(), phase: 'ready-to-verify' },
+      { repairHead: C1, failingTests: ['lib/a.test.ts'], nowMs: T0 + 1_000 },
+    );
+    const redispatched = { ...red, fixerSpawnId: 'spawn-2', attempts: 2 };
+    expect(redispatched.phase).toBe('awaiting-fixer');
+    expect(redispatched.convergenceRounds?.map((r) => r.head)).toEqual([C, C1]);
+    expect(frozenRepairHeadAwaitsVerification(redispatched)).toBe(false);
+    expect(naiveHeadMoved(redispatched)).toBe(true);
+  });
+
+  it('a SECOND converge past a red-verified head awaits verification again — each head costs one suite', () => {
+    const red = markFrozenRepairVerificationRed(
+      { ...convergedAwaitingFixer(), phase: 'ready-to-verify' },
+      { repairHead: C1, failingTests: ['lib/a.test.ts'], nowMs: T0 + 1_000 },
+    );
+    const convergedAgain = { ...red, repairHead: C2, fixerSpawnId: 'spawn-2', attempts: 2 };
+    expect(frozenRepairHeadAwaitsVerification(convergedAgain)).toBe(true);
+  });
+
+  it('legacy queue with NO rounds: a moved head errs toward one verification, the candidate never does', () => {
+    const { convergenceRounds: _rounds, ...legacy } = convergedAwaitingFixer();
+    expect(legacy.convergenceRounds).toBeUndefined();
+    expect(frozenRepairHeadAwaitsVerification(legacy)).toBe(true);
+    expect(frozenRepairHeadAwaitsVerification({ ...legacy, repairHead: C })).toBe(false);
+  });
+
+  it('the completion marker accepts the converged head unchanged and lands in ready-to-verify', () => {
+    const queue = convergedAwaitingFixer();
+    const finished = markFrozenRepairFixerFinished(queue, {
+      spawnId: 'spawn-1',
+      repairHead: queue.repairHead,
+      nowMs: T0 + 2_000,
+    });
+    expect(finished).toMatchObject({ phase: 'ready-to-verify', repairHead: C1, fixerSpawnId: 'spawn-1' });
+    expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(finished)))).not.toBeNull();
+    expect(decideFrozenCandidateRepairQueue(finished, { nowMs: T0 + 3_000 })).toMatchObject({
+      kind: 'verify-repair',
+      candidate: C1,
+      originalCandidate: C,
+    });
   });
 });
 

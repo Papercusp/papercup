@@ -122,6 +122,7 @@ import {
   decideFrozenCandidateRepairQueue,
   decideFrozenRepairDispatchInfeasible,
   decideFrozenConvergenceCycleEntry,
+  frozenRepairHeadAwaitsVerification,
   markFrozenCandidateVerificationRed,
   markFrozenRepairExhausted,
   markFrozenRepairFixerDead,
@@ -9082,6 +9083,30 @@ async function runGreenCheckpointInner(
         repairQueue = markFrozenRepairFixerFinished(repairQueue, {
           spawnId: deadSpawnId,
           repairHead: finishedHead,
+          nowMs: Date.now(),
+        });
+      } else if (
+        !finalizeFailed &&
+        frozenRepairHeadAwaitsVerification(repairQueue)
+      ) {
+        // WI-212675: the fixer was dispatched at a CONVERGED head the suite has never judged
+        // (a peer's fix reached repairHead via `release:repair-queue converge`, not via this
+        // worktree) and correctly changed nothing. "Nothing left to change" is a completion,
+        // not a death — verify the head it was dispatched at. A red there appends the
+        // convergence round that routes the NEXT no-op fixer onto the dead path below, so a
+        // red head can never re-enter the suite for free. The attempt stays spent: the fixer
+        // did inspect the tree, and a refund would need the dead-marker's phase, which
+        // ready-to-verify cannot carry.
+        deps.log(
+          `FROZEN_REPAIR_CONVERGED_HEAD_READY_TO_VERIFY: fixer ${deadSpawnId} changed nothing at ` +
+            `repairHead ${repairQueue.repairHead.slice(0, 8)}, which converged past frozen candidate ` +
+            `${repairQueue.candidate.slice(0, 8)} and has never been verified — reading "no edits" ` +
+            `as "nothing left to fix here" and running the repair verification at that head instead ` +
+            `of spending another dispatch on it.`,
+        );
+        repairQueue = markFrozenRepairFixerFinished(repairQueue, {
+          spawnId: deadSpawnId,
+          repairHead: repairQueue.repairHead,
           nowMs: Date.now(),
         });
       } else {

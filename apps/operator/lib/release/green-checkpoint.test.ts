@@ -839,6 +839,132 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(calls).not.toContain("runGreen");
   });
 
+  it("WI-212675: a dead fixer that changed nothing at a CONVERGED, never-verified head moves the queue to ready-to-verify and runs the suite there instead of re-dispatching", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    // A peer's fix reached the judged lineage via `release:repair-queue converge`: repairHead
+    // moved forward, phase did not. The fixer dispatched at this head finds nothing to change.
+    const converged = await commit("b", "fixed on staging", "peer fix converged");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "awaiting-fixer",
+      candidate: frozen,
+      base: ready,
+      repairHead: converged,
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "no-op-fixer",
+      failingTests: ["lib/broken.test.ts"],
+      convergenceRounds: [
+        { round: 1, head: frozen, failingCount: 1, atMs: now - 1_000 },
+      ],
+    };
+    const writes: FrozenCandidateRepairQueue[] = [];
+    const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
+    const logs: string[] = [];
+    deps.log = (line) => logs.push(line);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      if (next) writes.push(next);
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.finalizeFrozenRepairWorktree = async () => null;
+    deps.stagingContainsFrozenRepair = async () => true;
+    deps.prepareFrozenRepairWorktree = async () => {};
+    let dispatches = 0;
+    deps.dispatchFrozenRepairFixer = async () => {
+      dispatches += 1;
+      return { spawnId: "should-not-launch", runId: "should-not-run" };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    // The recover write is a COMPLETION at the converged head, not a death.
+    expect(writes[0]).toMatchObject({
+      phase: "ready-to-verify",
+      repairHead: converged,
+      fixerSpawnId: "no-op-fixer",
+      attempts: 1,
+    });
+    expect(
+      logs.some((l) => l.startsWith("FROZEN_REPAIR_CONVERGED_HEAD_READY_TO_VERIFY")),
+    ).toBe(true);
+    // The suite ran at the converged head in the same tick; no replacement fixer was launched
+    // ahead of it.
+    expect(calls).toContain("runGreen");
+    expect(calls).toContain(`setup:${converged.slice(0, 7)}`);
+    expect(dispatches).toBe(0);
+    expect(result.candidate).toBe(converged);
+    // The red at the converged head appended its round, so the NEXT no-op fixer at this head
+    // takes the dead path (see the control below) rather than re-entering the suite.
+    expect(queue?.convergenceRounds?.map((r) => r.head)).toEqual([frozen, converged]);
+  });
+
+  it("WI-212675 CONTROL: a dead fixer that changed nothing at a head ALREADY verified red stays on the dead path and re-dispatches", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const converged = await commit("b", "still broken", "peer change converged");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "awaiting-fixer",
+      candidate: frozen,
+      base: ready,
+      repairHead: converged,
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "no-op-fixer",
+      failingTests: ["lib/broken.test.ts"],
+      // The converged head was ALREADY verified red (round 2). A no-op fixer here is a failed
+      // attempt, and reading it as "verify" would spend a full suite every tick.
+      convergenceRounds: [
+        { round: 1, head: frozen, failingCount: 1, atMs: now - 1_000 },
+        { round: 2, head: converged, failingCount: 1, atMs: now - 800 },
+      ],
+    };
+    const writes: FrozenCandidateRepairQueue[] = [];
+    const { deps, calls } = stubDeps(true);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      if (next) writes.push(next);
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.finalizeFrozenRepairWorktree = async () => null;
+    deps.prepareFrozenRepairWorktree = async () => {};
+    deps.dispatchFrozenRepairFixer = async () => ({
+      spawnId: "replacement-fixer",
+      runId: "replacement-run",
+    });
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(writes[0]).toMatchObject({
+      phase: "awaiting-fixer",
+      fixerSpawnId: null,
+      attempts: 1,
+      repairHead: converged,
+    });
+    expect(result).toMatchObject({
+      green: null,
+      reason: "repair-in-progress",
+      repairQueue: {
+        fixerSpawnId: "replacement-fixer",
+        attempts: 2,
+        repairHead: converged,
+      },
+    });
+    expect(calls).not.toContain("runGreen");
+  });
+
   it("holds an active dispatch reservation without spending another suite or launching a fixer", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
