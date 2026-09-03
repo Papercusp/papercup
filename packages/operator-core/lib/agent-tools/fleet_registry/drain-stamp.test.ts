@@ -13,11 +13,22 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
   fleetSpecBeeKey: (slug: string) => `fleet:${slug}`,
   resolveClaimSpecWorkspace: (ws: string | null) => ws ?? 'default',
 }));
-vi.mock('../../scheduler/get-next', () => ({ aggregateIssueClaimExclusions: vi.fn() }));
+// EI-22180177490969530: the SQL-composing oracle stays mocked, but the PURE registry
+// projection is passed through from the real module so the fixture below derives its
+// per-floor zero baseline from ISSUE_CLAIM_FLOORS instead of hand-restating every bucket.
+vi.mock('../../scheduler/get-next', async () => {
+  const actual = await vi.importActual<typeof import('../../scheduler/get-next')>(
+    '../../scheduler/get-next',
+  );
+  return {
+    aggregateIssueClaimExclusions: vi.fn(),
+    mapIssueClaimExclusionCounts: actual.mapIssueClaimExclusionCounts,
+  };
+});
 
 import { buildFleetDrainStamp } from './drain-stamp';
 import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
-import { aggregateIssueClaimExclusions } from '../../scheduler/get-next';
+import { aggregateIssueClaimExclusions, mapIssueClaimExclusionCounts } from '../../scheduler/get-next';
 
 const recM = vi.mocked(getClaimSpecRecord);
 const aggM = vi.mocked(aggregateIssueClaimExclusions);
@@ -37,20 +48,7 @@ function breakdown(
       belowFloor: false,
     },
     excluded: {
-      taken: 0,
-      claimHold: 0,
-      needsOwnerAction: 0,
-      agentReview: 0,
-      observationLane: 0,
-      externalBlocker: 0,
-      planLaneReserved: 0,
-      federationDetector: 0,
-      loopNoise: 0,
-      alreadyCompleted: 0,
-      crossMachineRig: 0,
-      blockedDep: 0,
-      cooldown: 0,
-      remoteOrigin: 0,
+      ...mapIssueClaimExclusionCounts(undefined),
       ...over,
     },
     queueControl: {

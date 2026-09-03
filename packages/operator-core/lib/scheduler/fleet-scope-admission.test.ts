@@ -75,10 +75,18 @@ vi.mock('../work-items', () => ({
   // this mock can never silently drift from the real ISSUE_FAMILY_KINDS.
   ISSUE_FAMILY_KINDS: ['bug', 'change', 'task'],
 }));
-vi.mock('./get-next', () => ({
-  compileFilter: admissionMocks.compileFilter,
-  aggregateIssueClaimExclusions: admissionMocks.aggregateIssueClaimExclusions,
-}));
+// EI-22180177490969530: the two SQL-composing seams stay mocked (see above), but the PURE
+// registry projection is passed through from the real module so this file's fixtures can be
+// DERIVED from ISSUE_CLAIM_FLOORS instead of hand-restating every bucket name. Hand-listed
+// fixtures are the same drift one level up: adding a floor stranded six copies here at once.
+vi.mock('./get-next', async () => {
+  const actual = await vi.importActual<typeof import('./get-next')>('./get-next');
+  return {
+    compileFilter: admissionMocks.compileFilter,
+    aggregateIssueClaimExclusions: admissionMocks.aggregateIssueClaimExclusions,
+    mapIssueClaimExclusionCounts: actual.mapIssueClaimExclusionCounts,
+  };
+});
 vi.mock('../pg-read-query', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../pg-read-query')>()),
   boundedPgReadTxn: (...args: unknown[]) => admissionMocks.boundedPgReadTxn(...args),
@@ -117,6 +125,12 @@ import {
   type FleetScopeAdmission,
   type FleetScopeContext,
 } from './fleet-scope-admission';
+/** A VALUE import, deliberately: the vi.mock factory above passes the real
+ *  `mapIssueClaimExclusionCounts` through, so every `excluded` fixture below derives its
+ *  per-floor zero baseline from ISSUE_CLAIM_FLOORS. Same reasoning as ZERO_QUEUE_CONTROL,
+ *  one rung better — nothing here restates a bucket name, so adding a floor cannot strand
+ *  these fixtures at all (EI-22180177490969530). */
+import { mapIssueClaimExclusionCounts } from './get-next';
 
 describe('fleetLeaderUnavailableRefusal (EI-21079515303301272)', () => {
   it('is a recoverable pre-claim block, not a drained-lane verdict', () => {
@@ -867,20 +881,11 @@ describe('fleet scope assignment admission (P-016)', () => {
       affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
       queueControl: ZERO_QUEUE_CONTROL,
       excluded: {
-        taken: 0,
+        ...mapIssueClaimExclusionCounts(undefined),
         claimHold: 33,
         needsOwnerAction: 80,
-        agentReview: 0,
         observationLane: 21,
-        externalBlocker: 0,
-        planLaneReserved: 0,
         federationDetector: 169,
-        loopNoise: 0,
-        alreadyCompleted: 0,
-        crossMachineRig: 0,
-        blockedDep: 0,
-        cooldown: 0,
-        remoteOrigin: 0,
       },
     };
 
@@ -1023,20 +1028,8 @@ describe('fleet scope assignment admission (P-016)', () => {
         affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
         queueControl: ZERO_QUEUE_CONTROL,
         excluded: {
-          taken: 0,
-          claimHold: 0,
-          needsOwnerAction: 0,
-          agentReview: 0,
-          observationLane: 0,
+          ...mapIssueClaimExclusionCounts(undefined),
           externalBlocker: 2,
-          planLaneReserved: 0,
-          federationDetector: 0,
-          loopNoise: 0,
-          alreadyCompleted: 0,
-          crossMachineRig: 0,
-          blockedDep: 0,
-          cooldown: 0,
-          remoteOrigin: 0,
         },
       };
       const miss = fleetScopedMiss(issueScope, [], { issueBreakdown: externalBlockerOnlyBreakdown });
@@ -1116,20 +1109,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
       queueControl: ZERO_QUEUE_CONTROL,
       excluded: {
-        taken: 0,
-        claimHold: 0,
-        needsOwnerAction: 0,
-        agentReview: 0,
-        observationLane: 0,
-        externalBlocker: 0,
-        planLaneReserved: 0,
-        federationDetector: 0,
-        loopNoise: 0,
-        alreadyCompleted: 0,
-        crossMachineRig: 0,
-        blockedDep: 0,
-        cooldown: 0,
-        remoteOrigin: 0,
+        ...mapIssueClaimExclusionCounts(undefined),
       },
     };
 
@@ -1378,20 +1358,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
       queueControl: ZERO_QUEUE_CONTROL,
       excluded: {
-        taken: 0,
-        claimHold: 0,
-        needsOwnerAction: 0,
-        agentReview: 0,
-        observationLane: 0,
-        externalBlocker: 0,
-        planLaneReserved: 0,
-        federationDetector: 0,
-        loopNoise: 0,
-        alreadyCompleted: 0,
-        crossMachineRig: 0,
-        blockedDep: 0,
-        cooldown: 0,
-        remoteOrigin: 0,
+        ...mapIssueClaimExclusionCounts(undefined),
       },
     };
 
@@ -1497,20 +1464,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
       queueControl: ZERO_QUEUE_CONTROL,
       excluded: {
-        taken: 0,
-        claimHold: 0,
-        needsOwnerAction: 0,
-        agentReview: 0,
-        observationLane: 0,
-        externalBlocker: 0,
-        planLaneReserved: 0,
-        federationDetector: 0,
-        loopNoise: 0,
-        alreadyCompleted: 0,
-        crossMachineRig: 0,
-        blockedDep: 0,
-        cooldown: 0,
-        remoteOrigin: 0,
+        ...mapIssueClaimExclusionCounts(undefined),
       },
     };
 
@@ -1625,20 +1579,10 @@ describe('fleet scope assignment admission (P-016)', () => {
       affinityCoverage: { denominator: 19, nonEmptyPaths: 19, floor: 0.5, belowFloor: false },
       queueControl: ZERO_QUEUE_CONTROL,
       excluded: {
-        taken: 0,
+        ...mapIssueClaimExclusionCounts(undefined),
         claimHold: 1,
         needsOwnerAction: 1,
-        agentReview: 0,
-        observationLane: 0,
-        externalBlocker: 0,
-        planLaneReserved: 0,
-        federationDetector: 0,
-        loopNoise: 0,
-        alreadyCompleted: 0,
-        crossMachineRig: 0,
-        blockedDep: 0,
         cooldown: 1,
-        remoteOrigin: 0,
       },
     };
 

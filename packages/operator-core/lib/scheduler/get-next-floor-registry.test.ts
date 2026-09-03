@@ -147,10 +147,14 @@ describe('the registry itself is well-formed', () => {
   it('exactly one floor is self-guarded, and it is the taken floor', () => {
     // Every other bucket is measured over the UNTAKEN subset; ok_untaken must not re-guard
     // on itself or its own bucket would always be 0 — a floor reporting silence again.
-    const selfGuarded = ISSUE_CLAIM_FLOORS.filter((f) => f.selfGuarded);
+    // Read through the declared interface: `as const` narrows each entry to a literal type
+    // that simply has no `selfGuarded` property unless it was written, which is a fact about
+    // the literal, not about the contract being asserted here.
+    const floors: readonly IssueClaimFloorSpec[] = ISSUE_CLAIM_FLOORS;
+    const selfGuarded = floors.filter((f) => f.selfGuarded);
 
     expect(selfGuarded.map((f) => f.ok)).toEqual(['ok_untaken']);
-    for (const f of ISSUE_CLAIM_FLOORS) {
+    for (const f of floors) {
       expect(issueClaimFloorBucketGuard(f)).toBe(f.selfGuarded ? '' : 'ok_untaken AND ');
     }
   });
