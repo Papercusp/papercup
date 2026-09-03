@@ -17,7 +17,6 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import {
-  getLegacyClient,
   harnessQuery,
   slugToSchemaName,
   getFeatureLineage,
@@ -192,12 +191,11 @@ const getAudit = defineTool({
       }
     } catch { /* fall through to per-harness */ }
     try {
-      const dbc = getLegacyClient(project.slug);
-      const rows = await dbc.prepare(`
+      const rows = await harnessQuery(project.slug, (sql) => sql`
         SELECT * FROM feature_audit
-        WHERE harness_slug = ? AND feature_id = ?
+        WHERE harness_slug = ${project.slug} AND feature_id = ${id}
         ORDER BY ts DESC LIMIT 200
-      `).all(project.slug, id) as any[];
+      `) as any[];
       return Response.json({
         slug: project.slug, feature_id: id, count: rows.length,
         audit: rows.map((r) => ({

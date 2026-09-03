@@ -16,7 +16,7 @@
  */
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getLegacyClient } from '@papercusp/db-org';
+import { harnessQuery } from '@papercusp/db-org';
 import { resolvePhasedProject, harnessDir, safeRead } from '../../../harness-core';
 import { phasePhaseLabel } from '../../../harness-phases';
 import { loadIssuesOrSeed, saveIssues } from '../../../harness-issues';
@@ -201,33 +201,34 @@ const promote = defineTool({
 
     if (target === 'feature') {
       // PG-canonical: F-IDEA-### entry in harness_features (same shape as
-      // the issue-promote path).
-      const dbc = getLegacyClient(project.slug);
-      const ideaRows = await dbc.prepare(`
-        SELECT feature_id FROM harness_features
-         WHERE harness_slug = ? AND feature_id LIKE 'F-IDEA-%'
-      `).all(project.slug) as Array<{ feature_id: string }>;
-      const existingIdeaIds = ideaRows
-        .map((r) => Number(r.feature_id.slice(7)))
-        .filter((n) => Number.isFinite(n));
-      const n = (existingIdeaIds.length ? Math.max(...existingIdeaIds) : 0) + 1;
-      const id = `F-IDEA-${String(n).padStart(3, '0')}`;
+      // the issue-promote path). SELECT (next idea id) + INSERT are related
+      // (id computed then used), so one transaction avoids a TOCTOU gap
+      // between the two round-trips.
       const [firstLine, ...rest] = content.trim().split('\n');
       const title = firstLine.trim().slice(0, 200);
       const notes = rest.join('\n').trim() || null;
       const ts = Date.now();
-      await dbc.prepare(`
-        INSERT INTO harness_features
-          (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata,
-           kind, project_id, expected_cost_cents, tags, needs_human_review,
-           ts, created_ts, updated_ts)
-        VALUES (?, ?, ?, NULL, 'todo', 0, NULL, ?, ?, NULL, NULL, NULL, NULL, false, ?, ?, ?)
-      `).run(
-        project.slug, id, title,
-        notes,
-        JSON.stringify({ source: 'brainstorm' }),
-        ts, ts, ts,
-      );
+      const id = await harnessQuery(project.slug, (sql) => sql.begin(async (tx) => {
+        const ideaRows = await tx`
+          SELECT feature_id FROM harness_features
+           WHERE harness_slug = ${project.slug} AND feature_id LIKE 'F-IDEA-%'
+        ` as Array<{ feature_id: string }>;
+        const existingIdeaIds = ideaRows
+          .map((r) => Number(r.feature_id.slice(7)))
+          .filter((n) => Number.isFinite(n));
+        const n = (existingIdeaIds.length ? Math.max(...existingIdeaIds) : 0) + 1;
+        const newId = `F-IDEA-${String(n).padStart(3, '0')}`;
+        await tx`
+          INSERT INTO harness_features
+            (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata,
+             kind, project_id, expected_cost_cents, tags, needs_human_review,
+             ts, created_ts, updated_ts)
+          VALUES (${project.slug}, ${newId}, ${title}, NULL, 'todo', 0, NULL, ${notes},
+            ${JSON.stringify({ source: 'brainstorm' })}::text::jsonb,
+            NULL, NULL, NULL, NULL, false, ${ts}, ${ts}, ${ts})
+        `;
+        return newId;
+      }));
       auditFeatureChange(
         project.slug, id, '__created', null,
         { id, title, source: 'brainstorm' },
