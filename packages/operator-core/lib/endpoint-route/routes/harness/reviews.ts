@@ -18,7 +18,7 @@
 import { existsSync } from 'node:fs';
 import { writeFile, appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getOrgPg, getLegacyClient } from '@papercusp/db-org';
+import { getOrgPg, harnessQuery } from '@papercusp/db-org';
 import { resolvePhasedProject, harnessDir } from '../../../harness-core';
 import { phasePhaseLabel } from '../../../harness-phases';
 import type { ProjectEntry } from '../../../harness-registry';
@@ -130,11 +130,10 @@ const resolveReview = defineTool({
     // Unblock the feature in PG so the orchestrator can pick it up again.
     if (review.featureId) {
       try {
-        const dbc = getLegacyClient(project.slug);
-        await dbc.prepare(
-          `UPDATE harness_features SET status = 'todo', updated_ts = ?
-            WHERE harness_slug = ? AND feature_id = ? AND status = 'blocked'`,
-        ).run(Date.now(), project.slug, review.featureId);
+        await harnessQuery(project.slug, (sql) => sql`
+          UPDATE harness_features SET status = 'todo', updated_ts = ${Date.now()}
+            WHERE harness_slug = ${project.slug} AND feature_id = ${review.featureId} AND status = 'blocked'
+        `);
       } catch {}
     }
 

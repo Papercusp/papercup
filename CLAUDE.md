@@ -73,16 +73,25 @@ operator sidecar, migrations, and the webview. There is no "just the webapp" mod
 > operator UI only renders correctly inside Tauri, so never point `verdict` or a
 > browser at `:3055`/`:3070`.)
 
-- **Never open `:3055` or `:3070` in a browser** (verdict / playwright / chrome /
-  `xdg-open`). They are the desktop's *internal content source* — a browser view
-  is the **retired** webapp and gives a broken/misleading result. A `PreToolUse`
-  hook blocks the navigation.
+- **Never open `:3055`, `:3070`, or `:3170` in a browser** (verdict / playwright /
+  chrome / `xdg-open`). They are the desktop's *internal content source* — a
+  browser view is the **retired** webapp and gives a broken/misleading result,
+  and navigating verdict there has wedged the shared verdict daemon outright
+  (no Tauri IPC bridge, so the SPA never settles — `goto` never returns, and
+  every later command in the same session times out too, until `stop`+restart).
+  A `PreToolUse` hook (guard-operator-desktop.mjs) blocks a `Skill`-shaped
+  navigation call, but that hook's matcher does not cover verdict's real
+  invocation path (a plain Bash command, per SKILL.md's
+  `allowed-tools: Bash(verdict*)`) — so verdict-cli itself also refuses
+  client-side, before ever contacting its daemon, for all three ports
+  (EI-22200064677663549; the patch lives in `patches/verdict-cli+0.1.1.patch`).
 - **Never start `apps/operator` as a standalone Next server** (`next dev` /
   `next start`) — retired. (The root `bin/dev`/`bin/prod` launchers are NOT the
   forbidden thing — they boot the Vite `:3055` + Hono `:3070` stack and invoke
   no Next.)
 - A `curl http://127.0.0.1:3070/...` for a quick **API** check (not a UI check)
   is fine while the desktop is running.
+
 
 The `:3055`/`:3070` layer **is the desktop's content layer**, not a separable
 webapp — what's retired is the *act of running/browsing it standalone*. Detail +

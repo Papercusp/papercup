@@ -3849,7 +3849,10 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
     const warning = payload.claimSpecApplied.warning as string;
 
     expect(warning).toContain('⚠ DEGENERATE LANE');
-    expect(warning).toContain('99%'); // 0.987 rounded
+    // formatLowSeverityShare FLOORS to one decimal rather than rounding, deliberately
+    // (EI-22184028605968917: rounding could print "100%" while a major-severity row is
+    // still in the lane) — so 0.987 renders as "98.7%", never "99%".
+    expect(warning).toContain('98.7%');
     expect(warning).toContain('OBSERVATION FIREHOSE');
     expect(warning).toContain('a large count is not a workload');
     expect(warning).toContain('2026-07-31'); // the burst day
@@ -3874,10 +3877,10 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
     const res = await launch();
     const warning = parseHandlerPayload(res).claimSpecApplied.warning as string;
 
-    expect(warning).toContain('99% of the 1252 claimable row(s)');
+    expect(warning).toContain('1236 of 1252 claimable row(s) (98.7%)');
     // The pre-floor number is still shown, but explicitly labelled as the other population.
     expect(warning).toContain('of 3000 matched before claim floors');
-    expect(warning).not.toContain('99% of the 3000');
+    expect(warning).not.toContain('of 3000 claimable row(s)');
   });
 
   it('omits the pre-floor aside when nothing was filtered out — no confusing "(of N matched)" when N is the same number', async () => {
@@ -3890,7 +3893,7 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
     aggregateAdmittedCompositionMock.mockResolvedValue(DEGENERATE);
     const res = await launch();
     const warning = parseHandlerPayload(res).claimSpecApplied.warning as string;
-    expect(warning).toContain('99% of the 1252 claimable row(s)');
+    expect(warning).toContain('1236 of 1252 claimable row(s) (98.7%)');
     expect(warning).not.toContain('matched before claim floors');
   });
 

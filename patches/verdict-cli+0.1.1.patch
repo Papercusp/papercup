@@ -1,5 +1,5 @@
 diff --git a/node_modules/verdict-cli/bin/browse.mjs b/node_modules/verdict-cli/bin/browse.mjs
-index a3392d2..357f029 100755
+index a3392d2..035b660 100755
 --- a/node_modules/verdict-cli/bin/browse.mjs
 +++ b/node_modules/verdict-cli/bin/browse.mjs
 @@ -20,7 +20,9 @@ const SERVER_SCRIPT = resolve(__dirname, '..', 'src', 'server.mjs');
@@ -82,7 +82,49 @@ index a3392d2..357f029 100755
  }
  
  function output(text) {
-@@ -176,7 +208,11 @@ if (command === 'sessions') {
+@@ -81,6 +113,41 @@ function outputError(msg) {
+   else { console.error(`Error: ${msg}`); process.exit(1); }
+ }
+ 
++// EI-22200064677663549: the papercusp operator UI (:3055/:3070/:3170) is the
++// Tauri DESKTOP app's internal content source and never resolves in a plain
++// browser (no Tauri IPC bridge, so the SPA never reaches a settled state) —
++// navigating verdict there has wedged the shared daemon: `goto` never
++// returns, and every later command in the SAME session times out too, until
++// `stop`+restart. Papercusp's own PreToolUse guard (guard-operator-desktop.mjs)
++// cannot see this: verdict runs as a plain Bash CLI (SKILL.md declares
++// `allowed-tools: Bash(verdict*)`), not through a tool call that hook's
++// matcher covers. Refuse HERE, client-side, before ever contacting the
++// daemon — the only place that can stop the wedge regardless of how verdict
++// was invoked (goto / goto-auth / newtab / a chain entry).
++const OPERATOR_UI_PORT_RE = /(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(?:3055|3070|3170)\b/i;
++function refuseOperatorUiTarget(url) {
++  if (typeof url !== 'string' || !OPERATOR_UI_PORT_RE.test(url)) return;
++  outputError(
++    `refusing to navigate to "${url}" — :3055/:3070/:3170 are the Papercusp operator UI's own ` +
++    `dev ports (the Tauri DESKTOP app's internal content source), which never resolve in a plain ` +
++    `browser and have wedged this daemon before (no Tauri IPC bridge, so the SPA never settles). ` +
++    `Run/test the app via the desktop shell instead: cd papercusp-desktop && npm run dev. ` +
++    `See CLAUDE.md -> "Running / testing this app".`,
++  );
++}
++if (command === 'goto' || command === 'goto-auth' || command === 'newtab') refuseOperatorUiTarget(args[0]);
++if (command === 'chain') {
++  let steps;
++  try { steps = JSON.parse(args[0] ?? '[]'); } catch { steps = null; }
++  if (Array.isArray(steps)) {
++    for (const step of steps) {
++      if (!Array.isArray(step)) continue;
++      const [stepCmd, stepUrl] = step;
++      if (stepCmd === 'goto' || stepCmd === 'goto-auth' || stepCmd === 'newtab') refuseOperatorUiTarget(stepUrl);
++    }
++  }
++}
++
+ if (!command) {
+   console.log(`Verdict — Token-efficient browser verification for AI coding agents
+ 
+@@ -176,7 +243,11 @@ if (command === 'sessions') {
          body: JSON.stringify({ command: 'stop', args: [] })
        });
        output(`Session "${target}" stopped.`);
@@ -95,7 +137,7 @@ index a3392d2..357f029 100755
      process.exit(0);
    } else {
      outputError(`Unknown sessions subcommand: ${sub}. Use: sessions list, sessions stop <name>`);
-@@ -193,9 +229,21 @@ if (!state || !isAlive(state.pid)) {
+@@ -193,9 +264,21 @@ if (!state || !isAlive(state.pid)) {
  try {
    output(await send(state, command, args));
  } catch (e) {
