@@ -2041,25 +2041,30 @@ export const CAPACITY_VERDICT_CELL: CellSpec = {
  * a role resolved to. Establishing it took hand-writing a tsx probe against an
  * internal test seam; with this cell it is one read.
  *
- * ── WHY THE HEADLINE IS A VERDICT AND NOT THE MODEL ────────────────────────────
+ * ── WHY THE HEADLINE IS `conflicts` AND NOT THE MODEL ──────────────────────────
  *
  * The obvious headline is the model spec, and it is the wrong one. A spec is a
  * STRING a reader must adjudicate — is `claude-opus-5:xhigh` beside backend
  * `codex` right or catastrophic? — and adjudicating it is precisely the step that
- * did not happen. `verdict` is the adjudication: `conflicted` says a configured
- * backend is being overruled by the model, which is the shape of the incident.
- * The per-role `{ model, backend, source, why }` rows are on the payload for the
- * reader who then needs the specifics.
+ * did not happen. `conflicts` is the adjudicated measurement: the roles whose
+ * configured backend the resolved model overrules, i.e. the roles about to launch
+ * somewhere the owner did not choose. It is a LIST, so an ordinary threshold
+ * subscription (`gt 0`) expresses "tell me when a role starts launching wrong",
+ * and the per-role `{ model, backend, source, why }` rows sit on the payload for
+ * the reader who then needs specifics.
  *
- * `conflicted` outranks `undetermined` deliberately: a contradiction is a launch
- * that will run somewhere the owner did not choose, while an undetermined backend
- * merely inherits the host's agent command — the pre-existing default.
+ * `verdict` is the ASSESSMENT of that measurement, not a re-projection of it: it
+ * folds in the second failure mode (`undetermined` — no backend could be
+ * determined at all), which a conflict count cannot express. `conflicted`
+ * outranks `undetermined` deliberately: a contradiction is a launch that will run
+ * somewhere the owner did not choose, while an undetermined backend merely
+ * inherits the host's agent command — the pre-existing default.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 export const ROLE_LAUNCH_CELL: CellSpec = {
   cell: 'agent.roleLaunch',
   registeredOn: '2026-09-03',
   owner: 'role-model-one-answer-2026-09-03',
-  headline: 'verdict',
+  headline: 'conflicts',
 
   assessment: {
     path: 'verdict',
@@ -2082,19 +2087,21 @@ export const ROLE_LAUNCH_CELL: CellSpec = {
           'Read `backendUndetermined`. Inheriting is the pre-existing default and is often fine; set roleBackends[role] when the host command is not the CLI that model needs.',
       },
     },
-    evidence: ['conflicts', 'backendUndetermined'],
+    evidence: ['roles', 'backendUndetermined'],
   },
 
   /**
-   * Axis 2. FALSE. The resolver is a pure function over config that returns one of
-   * three enum values on every path: a role with no configuration at all resolves
-   * `source: 'committed-default'` and still yields `consistent`. There is no read
-   * that can fail into a default — an unreadable agent-config makes the TOOL fail,
-   * which surfaces as `resolver-failed`, not as a silently-`consistent` verdict.
+   * Axis 2. FALSE. `conflicts` is a materialised array on every path — a role with
+   * no configuration at all resolves `source: 'committed-default'` and contributes
+   * no row, giving `[]`. There is no read that can fail into an empty list:
+   * `readAgentConfig` either returns a config or throws, and a throw surfaces as
+   * `resolver-failed`, never as a silently-empty conflict set. The distinction
+   * matters here more than usual — an empty list is exactly the reading an owner
+   * treats as "all clear", so it must not double as "could not measure".
    */
   nullable: false,
   whyTotal:
-    'roleLaunchVerdict() is total over the resolved rows and the resolver has no I/O that can degrade: readAgentConfig either returns a config or throws (→ resolver-failed), and every role — configured or not — resolves to one of the three codes.',
+    'resolveRoleLaunch() is pure and total over the roles enumerated from config, and the only I/O — readAgentConfig — either returns a config or throws (→ resolver-failed). There is no branch that yields [] from a failed read, so an empty `conflicts` is always a measured all-clear.',
 
   callerRelativity: { kind: 'global' },
 
@@ -2111,17 +2118,11 @@ export const ROLE_LAUNCH_CELL: CellSpec = {
 
   visibility: { kind: 'workspace' },
   federation: { kind: 'local' },
-  changeSignal: { kind: 'poll', tool: 'config:role-launch', path: 'verdict' },
-
-  /**
-   * The verdict IS the material path: it moves only when a role's resolution
-   * genuinely changes coherence. The per-role model strings move on every menu
-   * edit, so headlining one would wake a subscriber for cosmetic churn.
-   */
-  materiality: {
-    path: 'verdict',
-    why: 'a launch is either coherent or it is not; the model/backend strings churn on ordinary menu edits, while coherence changes only when a role starts (or stops) launching somewhere the owner did not choose.',
-  },
+  // No `materiality`: every change to `conflicts` IS material — the set only moves
+  // when a role starts or stops launching somewhere the owner did not choose. This
+  // is precisely why the headline is the conflict list and not a model string,
+  // which churns on every ordinary menu edit and would wake a subscriber for nothing.
+  changeSignal: { kind: 'poll', tool: 'config:role-launch', path: 'conflicts' },
 
   shape:
     '{ verdict: "consistent"|"conflicted"|"undetermined", population: "configured"|"requested", populationNote, roles: [{ role, model, backend, source, backendSource, spawnModel, why, conflict }], conflicts: string[], backendUndetermined: string[] }',

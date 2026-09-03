@@ -110,7 +110,20 @@ describe('resolveRoleLaunch — explicit per-role model wins', () => {
     expect(r.spawnModel).toBeNull();
     expect(r.source).toBe('committed-default');
     expect(r.model).toBe('opus:xhigh');
-    expect(r.backend).toBe('claude-code');
+    // AND the backend is NOT pinned from that committed default: the host's own
+    // AGENT_CMD outranks a code-level floor. Pinning it here would silently overrule
+    // an operator running `AGENT_CMD='omp -p'` for every role with a committed spec.
+    expect(r.backend).toBeNull();
+    expect(r.backendSource).toBe('inherit');
+  });
+
+  it('but a Codex-only COMMITTED default still forces codex — nothing else can run it', () => {
+    // The single exception (WI-4640, kettle 2026-07-16): a claude binary handed
+    // `--model gpt-5.6-luna` dies at launch, near-silently.
+    const r = resolveRoleLaunch('codex-floored-role', { cfg: {} });
+    expect(r.backend).toBeNull(); // no committed default at all for this made-up role
+    const forced = resolveRoleLaunch('x', { cfg: { models: { x: 'gpt-5.6-luna:high' } } });
+    expect(forced.backend).toBe('codex');
   });
 
   it('reports no model at all for a role with no committed default', () => {
@@ -158,8 +171,12 @@ describe('resolveRoleLaunch — roleBackends is the FALLBACK, not a competitor',
 });
 
 describe('roleLaunchVerdict', () => {
+  // A coherent baseline: an explicit per-role model, whose backend rides in with it.
   const row = (over: Partial<ReturnType<typeof resolveRoleLaunch>>) =>
-    ({ ...resolveRoleLaunch('mug', { cfg: {} }), ...over }) as ReturnType<typeof resolveRoleLaunch>;
+    ({
+      ...resolveRoleLaunch('mug', { cfg: { models: { mug: 'claude-opus-5:xhigh' } } }),
+      ...over,
+    }) as ReturnType<typeof resolveRoleLaunch>;
 
   it('is consistent when every role resolves coherently', () => {
     expect(roleLaunchVerdict([row({})])).toBe('consistent');

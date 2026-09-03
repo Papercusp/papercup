@@ -349,13 +349,21 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       tiers: [{ name: 'deep', spec: 'gpt-5.6-sol:xhigh', backend: 'codex' }],
       tierCeilings: {},
     } as unknown as Awaited<ReturnType<typeof readAgentConfig>>;
-    // Called twice per fire: once by the spawnModel block, once by the spawnBackend block.
-    readAgentConfig.mockResolvedValueOnce(cfgWithRoleModel).mockResolvedValueOnce(cfgWithRoleModel);
+    // ⚠ EXACTLY ONE queued value. Model and backend now resolve in ONE block through
+    // resolveRoleLaunch (P-001), so a fire reads config exactly once; queueing a
+    // second would leave a spare that `mockClear` does NOT drain, silently steering
+    // the NEXT test's config. That leak is what made this whole describe go red when
+    // the two blocks were unified — the tests were pinning the read COUNT, not the
+    // behaviour.
+    readAgentConfig.mockResolvedValueOnce(cfgWithRoleModel);
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];
     setLaunchBlueprintFire((input) => { fired.push(input); });
     const target = await fireLaunchBlueprint('coding', { ...opts, kickoff: 'go' });
     expect(target.role).toBe('mug');
     expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('claude-opus-5:xhigh');
+    // P-003: the backend rides with that model — one read answers both halves.
+    expect((fired[0]!.bodyExtra as { spawnBackend?: string }).spawnBackend).toBe('claude-code');
+    expect(readAgentConfig).toHaveBeenCalledTimes(1);
   });
 
   it('P-002: a caller-set spawnModel still WINS over an explicit per-role models[role]', async () => {
@@ -365,8 +373,8 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       tiers: [] as unknown[],
       tierCeilings: {},
     } as unknown as Awaited<ReturnType<typeof readAgentConfig>>;
-    // EXACTLY ONE queued value: a caller-set spawnModel short-circuits the spawnModel
-    // block, so only the spawnBackend block reads config. Queueing two would leak the
+    // EXACTLY ONE queued value: one unified resolution block = one config read per
+    // fire, whether or not the caller pinned a field. Queueing two would leak the
     // spare `mockResolvedValueOnce` into the NEXT test (mockClear does not drain the
     // once-queue), which is precisely how this pair first failed.
     readAgentConfig.mockResolvedValueOnce(cfgWithRoleModel);
@@ -389,22 +397,26 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('opus:max');
   });
 
-  // WI-2142846: fireLaunchBlueprint's role-BACKEND resolution — same shape/precedence
-  // as the spawnModel block just above, added because the release-fixer's per-role
-  // `roleBackends['release-fixer']` override was silently invisible to the actual
-  // dispatch (it was honoured only by green-checkpoint.ts's PREFLIGHT capacity check,
-  // which does its own separate live readAgentConfig() read).
+  // WI-2142846: fireLaunchBlueprint's role-BACKEND resolution, added because the
+  // release-fixer's per-role `roleBackends['release-fixer']` override was silently
+  // invisible to the actual dispatch (it was honoured only by green-checkpoint.ts's
+  // PREFLIGHT capacity check, which does its own separate live readAgentConfig()).
+  //
+  // Since P-001 this shares ONE resolution with the model (fleet/role-launch.ts), and
+  // P-003 narrowed the rule: `roleBackends[role]` is the FALLBACK for when no per-role
+  // model carries a backend of its own. Every role in this describe has no committed
+  // default model, so `roleBackends` is what answers — which is why these cases read
+  // the same as before the unification.
   describe('WI-2142846: role-backend resolution (bodyExtra.spawnBackend)', () => {
     it('resolves the configured roleBackends override for the firing role at launch', async () => {
-      // readAgentConfig is called TWICE per fireLaunchBlueprint when no caller-set
-      // spawnModel/spawnBackend already short-circuits either block: once by the
-      // (pre-existing) spawnModel resolution above, once by this new block — queue
-      // the same value for both calls so the SECOND (this block's own) call sees it.
+      // ONE queued value — model and backend resolve together in one read (P-001).
+      // release-fixer carries no committed default model, so nothing rides a backend
+      // in with it and `roleBackends` is the answer, exactly as P-003 specifies.
       const cfgWithBackend = {
         models: {}, tiers: [], tierCeilings: {},
         roleBackends: { 'release-fixer': 'claude-code' },
       } as unknown as Awaited<ReturnType<typeof readAgentConfig>>;
-      readAgentConfig.mockResolvedValueOnce(cfgWithBackend).mockResolvedValueOnce(cfgWithBackend);
+      readAgentConfig.mockResolvedValueOnce(cfgWithBackend);
       const fired: Array<Parameters<LaunchFireFn>[0]> = [];
       setLaunchBlueprintFire((input) => { fired.push(input); });
       const target = await fireLaunchBlueprint('release-fix', { ...opts, kickoff: 'gate red' });
@@ -433,9 +445,8 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     });
 
     it('fails soft (no throw, no spawnBackend) when the config read rejects', async () => {
-      // Both readAgentConfig calls (spawnModel's, then this block's) must reject for
-      // this to genuinely exercise THIS block's own catch — see the queueing note above.
-      readAgentConfig.mockRejectedValueOnce(new Error('pg unreachable')).mockRejectedValueOnce(new Error('pg unreachable'));
+      // ONE read, so ONE rejection exercises the unified block's catch.
+      readAgentConfig.mockRejectedValueOnce(new Error('pg unreachable'));
       const fired: Array<Parameters<LaunchFireFn>[0]> = [];
       setLaunchBlueprintFire((input) => { fired.push(input); });
       const target = await fireLaunchBlueprint('release-fix', { ...opts, kickoff: 'gate red' });
@@ -448,7 +459,7 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
         models: {}, tiers: [], tierCeilings: {},
         roleBackends: { 'doc-steward': 'codex' }, // release-fixer has no entry
       } as unknown as Awaited<ReturnType<typeof readAgentConfig>>;
-      readAgentConfig.mockResolvedValueOnce(cfgWithOtherRole).mockResolvedValueOnce(cfgWithOtherRole);
+      readAgentConfig.mockResolvedValueOnce(cfgWithOtherRole);
       const fired: Array<Parameters<LaunchFireFn>[0]> = [];
       setLaunchBlueprintFire((input) => { fired.push(input); });
       await fireLaunchBlueprint('release-fix', { ...opts, kickoff: 'gate red' });

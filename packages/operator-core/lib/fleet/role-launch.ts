@@ -183,24 +183,34 @@ export function resolveRoleLaunch(
     backendSource = 'tier-row';
     backendWhy = `backend '${backend}' declared by tier row '${tierRow.name}'`;
   } else if (source !== 'committed-default' && fromModel) {
-    // An explicitly-chosen model answers the backend question itself.
+    // A CHOSEN model answers the backend question itself. "Chosen" is the load-bearing
+    // word: an owner typing `models[role]`, or a tier menu resolving one, is a statement
+    // about how this role should run. A COMMITTED DEFAULT is not — it is the code-level
+    // floor, and the host's own agent command outranks it (see below).
     backend = fromModel.backend;
     backendSource = fromModel.evidence;
     backendWhy = `backend '${backend}' rides with model '${model}' (${fromModel.evidence})`;
-  } else if (configuredBackend && !isForcedCodex(fromModel)) {
-    // No model was chosen for this role, so the configured backend is the answer.
-    // The one exception is a Codex-only committed default: honouring a claude/omp
-    // preference against it is a guaranteed launch failure (WI-4640, kettle 2026-07-16).
+  } else if (isForcedCodex(fromModel)) {
+    // The ONE case where a committed default overrules configuration: a Codex-only
+    // spec handed to the claude/omp binary is fatal at launch and near-silent in the
+    // logs (WI-4640 — kettle@papercusp, 2026-07-16, hard-downed by exactly this).
+    backend = 'codex';
+    backendSource = fromModel!.evidence;
+    backendWhy = `backend 'codex' forced by Codex-only model '${model}' — no other CLI can run it`;
+  } else if (configuredBackend) {
+    // No model was CHOSEN for this role, so the configured backend is the answer.
     backend = configuredBackend;
     backendSource = 'role-backends';
     backendWhy = `backend '${backend}' from roleBackends['${role}'] (no per-role model to carry one)`;
-  } else if (fromModel) {
-    backend = fromModel.backend;
-    backendSource = fromModel.evidence;
-    backendWhy = `backend '${backend}' rides with committed default '${model}' (${fromModel.evidence})`;
   } else {
+    // Deliberately NOT derived from the committed default. `inferBackendFromModelSpec`
+    // has always kept Claude/OMP aliases inheriting the host's configured command, and
+    // that is the behaviour a host which exports AGENT_CMD depends on: pinning a
+    // backend here would silently overrule an operator's `AGENT_CMD='omp -p'` for every
+    // role that merely has a committed floor. Only a CHOICE (above) or a Codex-only
+    // spec (which nothing else can run) may pin it.
     backendWhy = model
-      ? `no backend determined for '${model}' — inheriting the host's agent command`
+      ? `no chosen model and no roleBackends['${role}'] — inheriting the host's agent command (committed default '${model}' does not pin a CLI)`
       : `no model and no backend configured — inheriting the host's agent command`;
   }
 

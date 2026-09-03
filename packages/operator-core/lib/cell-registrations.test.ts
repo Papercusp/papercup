@@ -153,6 +153,9 @@ describe('P-007: the four verdict cells', () => {
     expect(listCellsUnchecked().map((c) => c.cell)).toEqual([
       // P-016. The first cell here that is about an AGENT rather than the tree.
       'agent.goal',
+      // role-model-one-answer-2026-09-03 P-004: "what will each role launch as?",
+      // headlined by the roles whose configured backend the model overrules.
+      'agent.roleLaunch',
       // capacity-signal-clarity-and-fleet-capacity-repair-2026-09-01 P-004: the ONE canonical
       // "are we at capacity", whose `binding` names WHICH TERM holds the lane back.
       'capacity.verdict',
