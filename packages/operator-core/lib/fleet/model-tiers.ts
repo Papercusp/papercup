@@ -246,9 +246,24 @@ export function downgradeOpusTierForBudget(opts: {
 /**
  * The EFFECTIVE tier config for a spawn: the owner's 👑-tab SESSION override
  * (queen-steering-panel D-006) takes precedence over the workspace agent-config
- * default, per field. A null / empty override leaves that field on the workspace
  * default (precedence: session override > workspace default > committed default,
  * the last via `resolveTierSpec`'s DEFAULT_MODEL_TIERS fallback). Pure.
+ *
+ * The two fields compose DIFFERENTLY, on purpose:
+ *
+ *   - `tiers` is a MENU whose ORDER is the strength ranking the floor/ceiling
+ *     clamp reads. Two menus cannot be merged into one coherent ranking, so a
+ *     session menu REPLACES the workspace menu wholesale. That is the correct
+ *     semantics for an ordered list, not an oversight.
+ *
+ *   - `tierCeilings` is a per-ROLE map, and is merged PER KEY (P-006 of
+ *     role-model-one-answer-2026-09-03). It used to be a whole-object replace,
+ *     which silently discarded every workspace ceiling the moment a session
+ *     override named ONE role: an owner capping `bee` for a session also erased
+ *     the standing cap on every other role, raising them instead of lowering
+ *     one. Same silent-write class as the main bug this plan exists for — a
+ *     correctly-stored setting dropped on the floor with no surface saying so.
+ *     A session entry still wins for the roles it names.
  */
 export function effectiveTierConfig(
   workspace: { tiers?: readonly ModelTier[]; tierCeilings?: Record<string, string> } | null | undefined,
@@ -257,9 +272,14 @@ export function effectiveTierConfig(
   const sessionTiers = session?.modelTiers && session.modelTiers.length > 0 ? session.modelTiers : undefined;
   const sessionCeilings =
     session?.tierCeilings && Object.keys(session.tierCeilings).length > 0 ? session.tierCeilings : undefined;
+  const workspaceCeilings =
+    workspace?.tierCeilings && Object.keys(workspace.tierCeilings).length > 0 ? workspace.tierCeilings : undefined;
   return {
     tiers: sessionTiers ?? workspace?.tiers,
-    tierCeilings: sessionCeilings ?? workspace?.tierCeilings,
+    tierCeilings:
+      sessionCeilings && workspaceCeilings
+        ? { ...workspaceCeilings, ...sessionCeilings }
+        : (sessionCeilings ?? workspaceCeilings),
   };
 }
 

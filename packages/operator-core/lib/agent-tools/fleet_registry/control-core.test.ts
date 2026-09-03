@@ -593,6 +593,9 @@ describe('applyFleetControl', () => {
           blockedDep: 0,
           cooldown: 0,
           remoteOrigin: 0,
+          admissionPending: 0,
+          stopTheLine: 0,
+          watchdogRecovery: 0,
         },
         queueControl: {
           activeClaims: 0,
