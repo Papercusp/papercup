@@ -1420,7 +1420,19 @@ export interface PipelinePosition {
      * recorded), never "not converging". ⚠ `null` on the whole record means NOT MEASURED —
      * check `observedAtMs` before treating a value as current.
      */
-    convergence?: GitPipelineSnapshot['gate']['convergence'];
+    convergence?: FrozenRepairConvergenceCellProjection;
+    /**
+     * main-green-status-visible-2026-09-03 P-004 — the CELLED reading of `freezeAndConverge`.
+     *
+     * Same record, one derivation. It exists because the stored `state` union cannot express
+     * the two readings that matter most to a caller: `not-measured` (no readable record —
+     * which a `state`-only reader must default, and both plausible defaults are wrong and
+     * calm-sounding) and `stale` (a record past its freshness window, e.g. a `retired` left
+     * behind hours ago and read as current).
+     *
+     * ⚠ ALWAYS an object — `code: 'not-measured'` is the unmeasured answer, never `null`.
+     */
+    freezeDisposition?: FreezeDispositionCellProjection;
     /**
      * WI-1702869 — HOW MANY TEST FILES FAIL ON THE FROZEN CANDIDATE, and for each, whether
      * its fix is ALREADY contained in `repairHead`. The one number gate triage needs and the

@@ -21,6 +21,9 @@ import {
   ompModelRows,
 } from './su-model-menu.mjs';
 import { CLOUD_MODEL_MENU, MODEL_EFFORT_LEVELS } from './agent-config-constants';
+// The REAL policy list, not a copy: a rename of the retired id must keep this
+// suite meaningful rather than leave it guarding a string nothing denies.
+import { CODEX_DENIED_MODEL_IDS } from './model-context-budget.mjs';
 
 /** psu's own alias rows carry `name` as `<alias> — <label>`; the parity suite in
  *  apps/operator/lib/psu-launcher.test.ts pins that shape, so deriving the
@@ -163,6 +166,36 @@ describe('codexModelRows — the registry that made gpt-5.5 reachable without ty
   it('matches skipIds case-insensitively rather than trusting the registry\'s casing', () => {
     const rows = codexModelRows(MODELS, { sourceAgent: 'codex', skipIds: ['GPT-5.6-SOL'] });
     expect(rows.map((r) => r.value.model)).toEqual(['gpt-5.5']);
+  });
+
+  // WI-2140343 — the picker is where a RETIRED model becomes typeable again.
+  // `deniedIds` existed in codexModelRows and psu-launcher already passed
+  // CODEX_DENIED_MODEL_IDS, but NOTHING asserted either: deleting the filter
+  // here, or the launcher's `codexDeniedIds:` line, put gpt-5.3-codex-spark
+  // back on the menu with every other test still green. The registry is not a
+  // policy source — the installed Codex cache advertises models the ChatGPT
+  // subscription cannot serve, which is the Spark incident itself.
+  const SPARK = { id: 'gpt-5.3-codex-spark', label: 'Spark', efforts: ['low'], contextWindow: 272_000 };
+
+  it('DROPS a denied model, so a retired id cannot be picked out of the registry', () => {
+    const rows = codexModelRows([...MODELS, SPARK], { sourceAgent: 'codex', deniedIds: CODEX_DENIED_MODEL_IDS });
+    expect(rows.map((r) => r.value.model)).toEqual(['gpt-5.6-sol', 'gpt-5.5']);
+  });
+
+  it('matches deniedIds case-insensitively rather than trusting the registry\'s casing', () => {
+    const rows = codexModelRows([{ ...SPARK, id: 'GPT-5.3-Codex-Spark' }], {
+      sourceAgent: 'codex',
+      deniedIds: CODEX_DENIED_MODEL_IDS,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  // CONTROL — proves the two assertions above are made by the FILTER, not by a
+  // fixture that never contained Spark. Without this, both would still pass if
+  // `deniedIds` were ignored entirely.
+  it('still offers the denied model when no deny list is passed', () => {
+    const rows = codexModelRows([...MODELS, SPARK], { sourceAgent: 'codex' });
+    expect(rows.map((r) => r.value.model)).toContain('gpt-5.3-codex-spark');
   });
 });
 
