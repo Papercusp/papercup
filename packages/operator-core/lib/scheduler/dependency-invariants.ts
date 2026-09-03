@@ -646,6 +646,26 @@ export const DEPENDENCY_POLICY_RULES: readonly DependencyPolicyRule[] = [
     provenance: ['dependency-graph-admission-and-health-2026-08-26#D-005'],
   },
   {
+    // EI-22089706217678704. `gate-foundation-inversion` above catches a gate whose edge points the
+    // WRONG WAY. Nothing caught the strictly worse shape: a gate with NO prerequisite edge at all.
+    // A mis-directed gate is at least gated; an edgeless one is CLAIMABLE, so promotion mints it
+    // unblocked and the scheduler serves it to a drain member who can only park it again. Measured
+    // on the reporting incident: two such items were claimed and parked back-to-back inside 11
+    // minutes, each costing a member turn and a leader wake, and nothing advanced.
+    code: 'gate-without-dependency',
+    classification: 'advisory',
+    action: 'alert',
+    confidence: 'high',
+    suppression: 'structured-rationale',
+    summary:
+      'A release or acceptance gate item has no prerequisite edges while foundational build work is still open.',
+    evidence: ['exact-nodes', 'lifecycle-state'],
+    suggestedAction:
+      'Encode the prerequisites with plans:set-item-blocked-by, or record why the gate is deliberately independent.',
+    invariantIds: ['INV-20'],
+    provenance: ['dependency-graph-admission-and-health-2026-08-26#D-005'],
+  },
+  {
     code: 'transitive-redundancy',
     classification: 'advisory',
     action: 'alert',

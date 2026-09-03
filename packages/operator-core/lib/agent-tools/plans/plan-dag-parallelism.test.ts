@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PlanItem } from '@papercusp/plan-parser';
 import { projectBoundedPayload } from '@papercusp/tooldef';
-import { analyzePlanDagParallelism } from './plan-dag-parallelism';
+import { analyzePlanDagParallelism, RELEASE_GATE_RE } from './plan-dag-parallelism';
 
 const item = (args: {
   id: string;
@@ -81,6 +81,11 @@ describe('analyzePlanDagParallelism', () => {
     expect(result.findings.map((finding) => finding.code)).toEqual([
       'phase-inversion',
       'gate-foundation-inversion',
+      // P-003 is a release gate carrying no prerequisites of its own while P-001/P-002 build work
+      // is still open — a true positive of gate-without-dependency, and a different defect from the
+      // inversion above: that one says the edge points the wrong way, this one says the gate is
+      // claimable right now.
+      'gate-without-dependency',
     ]);
     expect(result.findings[0]).toMatchObject({
       classification: 'advisory',
@@ -167,5 +172,79 @@ describe('analyzePlanDagParallelism', () => {
     expect(Array.isArray(bounded.criticalPathItemIds)).toBe(true);
     expect((bounded.criticalPathItemIds as unknown[]).length).toBeLessThan(result.criticalPathItemIds.length);
     expect(projected._projection.omittedCount).toBeGreaterThan(0);
+  });
+});
+
+// EI-22089706217678704. Reconstructed from the reporting incident: plan
+// silent-intake-central-resolution-2026-09-01 carried a ship gate (P-011) and a test gate (P-010)
+// with `blockedBy: []` while build items were unfinished, so promotion minted both unblocked and a
+// drain member claimed-then-parked them back-to-back. The negative controls matter as much as the
+// positives here: the edgeless-item population is large (measured 340 across the active plans) and
+// only 83 of those are this shape, so a rule that fires on "no edges" alone would be noise.
+describe('analyzePlanDagParallelism — gate-without-dependency', () => {
+  const codes = (items: PlanItem[]): string[] =>
+    analyzePlanDagParallelism(items)
+      .findings.filter((f) => f.code === 'gate-without-dependency')
+      .map((f) => f.nodes[0]);
+
+  it('flags an edgeless SHIP gate while foundational build work is open', () => {
+    expect(
+      codes([
+        item({ id: 'P-001', text: 'Implement the resolver backend' }),
+        item({ id: 'P-011', text: 'Post-implementation acceptance: audit, rubric, grading, then ship' }),
+      ]),
+    ).toEqual(['P-011']);
+  });
+
+  it('flags the TEST gate that RELEASE_GATE_RE alone misses (the half the incident lost)', () => {
+    // "Tests across every changed seam … as the final act" contains no release vocabulary at all.
+    const text = 'Tests across every changed seam as the final act';
+    expect(RELEASE_GATE_RE.test(text)).toBe(false); // control: why the release regex is not enough
+    expect(
+      codes([
+        item({ id: 'P-001', text: 'Implement the admission routing core' }),
+        item({ id: 'P-010', text }),
+      ]),
+    ).toEqual(['P-010']);
+  });
+
+  it('does NOT flag once the prerequisites are encoded (the repaired state)', () => {
+    expect(
+      codes([
+        item({ id: 'P-001', text: 'Implement the resolver backend' }),
+        item({ id: 'P-011', blockedBy: ['P-001'], text: 'Post-implementation acceptance, then ship' }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('does NOT flag a gate whose foundational work is already terminal', () => {
+    expect(
+      codes([
+        item({ id: 'P-001', status: 'done', text: 'Implement the resolver backend' }),
+        item({ id: 'P-011', text: 'Post-implementation acceptance, then ship' }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('does NOT flag ordinary edgeless build items — the large parallel population', () => {
+    expect(
+      codes([
+        item({ id: 'P-001', text: 'Implement the resolver backend' }),
+        item({ id: 'P-002', text: 'Add the storage adapter' }),
+        item({ id: 'P-003', text: 'Wire the frontend provider' }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('is suppressed by a structured rationale on the gate item', () => {
+    const gate: PlanItem = {
+      ...item({ id: 'P-011', text: 'Post-implementation acceptance, then ship' }),
+      decisionRefs: ['D-007'],
+    };
+    const found = analyzePlanDagParallelism([
+      item({ id: 'P-001', text: 'Implement the resolver backend' }),
+      gate,
+    ]).findings.find((f) => f.code === 'gate-without-dependency');
+    expect(found?.suppressedBy).toEqual({ kind: 'structured-rationale', refs: ['D-007'] });
   });
 });

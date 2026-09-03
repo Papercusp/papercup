@@ -186,6 +186,7 @@ describe('dependency policy registry — one classification contract for every s
       'promoted-graph-extra-edge',
       'phase-inversion',
       'gate-foundation-inversion',
+      'gate-without-dependency',
       'transitive-redundancy',
       'narrow-or-deep-topology',
       'high-degree-node',

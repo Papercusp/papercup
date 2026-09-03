@@ -10,10 +10,26 @@ import {
 
 const TERMINAL_STATUSES = new Set<ItemStatus>(['done', 'dropped']);
 
-const RELEASE_GATE_RE =
+// Exported so a test can use the REAL vocabulary as a negative control instead of hand-copying it
+// (a copied vocabulary drifts from the code that owns it, silently, and only under load).
+export const RELEASE_GATE_RE =
   /\b(?:alpha|beta|distribution|general availability|go[- ]?live|launch|publish|release|rollout|ship(?:ping)?|production)\b/i;
 const FOUNDATION_BUILD_RE =
   /\b(?:adapter|api|backend|build|core|database|foundation(?:al)?|frontend|implement(?:ation)?|infrastructure|provider|provision|scaffold|schema|storage)\b/i;
+// EI-22089706217678704: the platform's mandatory post-implementation phase (code-truth audit →
+// acceptance rubric → independent grading → ship) is a GATE too, but it is not a *release* gate and
+// RELEASE_GATE_RE does not recognise it — measured on the reporting incident, that regex matched
+// the plan's ship item and missed its sibling test item entirely. Kept deliberately narrow: these
+// are whole-phase names, not the bare word "test", which appears in most ordinary build items.
+// Measured over the 172 active plans: this vocabulary adds 9 findings on top of RELEASE_GATE_RE's
+// 74, where keying on /\btests?\b/ instead would have flagged 49 mostly-ordinary items.
+const VERIFICATION_GATE_RE =
+  /\b(?:acceptance|post-implementation|final act|rubric|sign[- ]?off|code-truth|independent grading|every changed seam)\b/i;
+
+function isGateItem(item: PlanItem): boolean {
+  const text = itemSearchText(item);
+  return RELEASE_GATE_RE.test(text) || VERIFICATION_GATE_RE.test(text);
+}
 
 // Keep the semantic summaries below the generic result door's lean 300-char
 // string cap. Ordinary plans still show their complete path; pathological DAGs
@@ -300,6 +316,32 @@ export function analyzePlanDagParallelism(planItems: readonly PlanItem[]): PlanD
     findings.push(edgeFinding('gate-foundation-inversion', subject, dependency, {
       phases: { subject: inversion.itemPhase, dependency: inversion.blockerPhase },
       titles: { subject: subject.text, dependency: dependency.text },
+    }));
+  }
+  // EI-22089706217678704: a gate item carrying NO prerequisite edges at all, while foundational
+  // work in the same plan is still open. The inversion check above needs an edge to inspect, so
+  // this shape — the one that actually reaches the scheduler as claimable work — was invisible to
+  // it. Requiring OTHER open foundation work is what keeps this off deliberately-parallel items:
+  // an edgeless gate in a plan whose build work is already done is simply the next thing to do.
+  for (const item of nonTerminalItems) {
+    if (item.blockedBy.length > 0) continue;
+    const subject = byId.get(item.id);
+    if (!subject || !isGateItem(subject)) continue;
+    const openFoundation = nonTerminalItems.filter(
+      (candidate) =>
+        candidate.id !== item.id && FOUNDATION_BUILD_RE.test(itemSearchText(byId.get(candidate.id) ?? subject)),
+    );
+    if (openFoundation.length === 0) continue;
+    const refs = rationaleFor(subject);
+    findings.push(finding('gate-without-dependency', {
+      nodes: [subject.id, ...openFoundation.map((candidate) => candidate.id)],
+      edges: [],
+      evidence: {
+        lifecycle: { subject: subject.storedStatus },
+        titles: { subject: subject.text },
+        ungatedBy: openFoundation.map((candidate) => candidate.id),
+      },
+      ...(refs.length ? { suppressedBy: { kind: 'structured-rationale', refs } } : {}),
     }));
   }
   if (nonTerminalItems.length >= 3 && readyItems.length <= 1 && criticalPath.depth >= 3) {
