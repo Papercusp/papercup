@@ -5,6 +5,7 @@ import {
   WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
   workspaceHostReleaseAddressingErrors,
 } from './workspace-host-build-manifest';
+import { WORKSPACE_HOST_OMP_LOCAL_MODEL } from "./workspace-host-agent-authentication";
 import { WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV } from "./workspace-host-credential-delivery";
 import { WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV } from "./workspace-host-remote-initializer";
 import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harness';
@@ -150,6 +151,33 @@ export const WORKSPACE_HOST_AGENT_NODE_VERSION = '24.18.1';
 export const WORKSPACE_HOST_AGENT_NODE_SHA256: Readonly<Record<'x64' | 'arm64', string>> = {
   x64: '9f5eb6ac21845a66c493c91a253b1da32fd684e89e9b7202d4936982336be4ca',
   arm64: 'df224555a083b918e46260cc969838501b9f9a87140c1195e5b9597b56d5dae2',
+};
+
+/**
+ * The pinned local-inference runtime (D-266).
+ *
+ * OMP is credential-free BY CONTRACT — the agent-home bundle sets `files.omp: null` because
+ * inventing an auth file would turn absence of credentials into fabricated authentication state
+ * (D-245) — and that contract's other half says it "must prove readiness by local inference".
+ * Nothing implemented that half, so `omp` could not pass on any host this bootstrap built and the
+ * canary sat at 5/6. This installs the half that was missing.
+ *
+ * WHY THE GPU BUNDLES ARE EXCLUDED. The upstream tarball is ~1.4 GiB, of which MEASURED 2.0 GiB
+ * on disk is `cuda_v12` + `cuda_v13` + `vulkan`. A workspace host is a CPU-only e2-standard-2, so
+ * every byte of that is dead weight on the boot disk. Extracting without them yields a MEASURED
+ * 68 MiB install that serves the model in 1.26s — verified end to end on 2026-09-03 by extracting
+ * this exact pinned artifact, serving it, pulling the model and generating.
+ *
+ * Bumping the version REQUIRES replacing these digests from the release's own `sha256sum.txt`
+ * (or the GitHub release API's asset `digest`), exactly as the Node pin above does. The digest is
+ * the trust boundary: this is a root install, and pinning it is what makes a swapped upstream
+ * artifact fail the comparison instead of executing. `curl | sh` — the vendor's own documented
+ * install path — is deliberately NOT used here for that reason.
+ */
+export const WORKSPACE_HOST_OLLAMA_VERSION = '0.33.3';
+export const WORKSPACE_HOST_OLLAMA_SHA256: Readonly<Record<'x64' | 'arm64', string>> = {
+  x64: 'c13cea8f3389db4145f8a6cb88d1747242a48639d7c13e3bda7c1ebdc6eebb2f',
+  arm64: '4425a112af999ae6572c1ce211fbabeaca7bab23ed5860972acdfc0cc2358420',
 };
 
 export interface WorkspaceHostNativeDependencyProvider {
@@ -1082,6 +1110,104 @@ function agentRuntimeInstallLines(
 }
 
 /**
+ * Install the local-inference runtime OMP proves its readiness against (D-266).
+ *
+ * Gated on OMP actually being installed: a host that runs no OMP has nothing to prove by local
+ * inference, and ~450 MiB of runtime plus model is not worth staging on it.
+ *
+ * The model name is IMPORTED from the probe's own module rather than restated here. These are two
+ * halves of one fact — the installer must place exactly what the probe asks for — and a second
+ * copy of a model tag is precisely the kind that drifts silently, leaving a host that pulled one
+ * model failing a probe that requested another.
+ *
+ * ORDERING, PER D-264: this phase's own apt step and this unit's own start are service mutations,
+ * so nothing after them may ASSUME service state. The readiness poll below is not defensive
+ * padding — `systemctl enable --now` returns once systemd has forked the unit, not once the HTTP
+ * API is accepting connections, and the pull that follows talks to that API. Without the poll the
+ * pull races the daemon and fails on a host where nothing is actually wrong.
+ */
+function localInferenceRuntimeInstallLines(
+  installs: readonly WorkspaceHostAgentRuntimeInstall[],
+): string[] {
+  if (!installs.some((install) => install.agent === 'omp')) return [];
+  const version = WORKSPACE_HOST_OLLAMA_VERSION;
+  const model = WORKSPACE_HOST_OMP_LOCAL_MODEL;
+  const endpoint = 'http://127.0.0.1:11434';
+  return [
+    '',
+    '# D-266: OMP is credential-free BY CONTRACT (D-245 — inventing an auth file would fabricate',
+    '# authentication state), and the other half of that contract is that it proves readiness by',
+    '# LOCAL INFERENCE. Nothing implemented this half, so `omp` could not pass on any host this',
+    '# bootstrap built and the canary sat at 5/6 with a failure that read as a credential fault.',
+    `echo "==> installing local-inference runtime (ollama v${version})" >&2`,
+    'case "$(uname -m)" in',
+    `  x86_64) OLLAMA_ARCH=amd64; OLLAMA_SUM=${WORKSPACE_HOST_OLLAMA_SHA256.x64};;`,
+    `  aarch64) OLLAMA_ARCH=arm64; OLLAMA_SUM=${WORKSPACE_HOST_OLLAMA_SHA256.arm64};;`,
+    // Fail closed and NAME the architecture, exactly as the Node runtime install does: a silent
+    // skip here would hand the OMP probe a missing runtime and report it as a credential fault.
+    '  *) die "unsupported architecture for the local-inference runtime: $(uname -m)";;',
+    'esac',
+    // The upstream artifact is zstd-compressed and stock Ubuntu 24.04 ships no unzstd.
+    'command -v unzstd >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zstd >/dev/null || die "zstd install failed (needed to unpack the local-inference runtime)"',
+    `if [[ "$(/usr/local/bin/ollama --version 2>/dev/null | tr -d '\\r')" != "ollama version is ${version}" ]]; then`,
+    '  OLLAMA_TMP="$WORK_DIR/ollama.tar.zst"',
+    `  curl -fsSL --retry 3 --proto "=https" --tlsv1.2 -o "$OLLAMA_TMP" "https://github.com/ollama/ollama/releases/download/v${version}/ollama-linux-$OLLAMA_ARCH.tar.zst" || die "local-inference runtime download failed"`,
+    // The pin is the trust boundary — this is a ROOT install. Verified BEFORE extraction, which
+    // is also why the artifact is downloaded to disk rather than streamed through tar: a stream
+    // would have to extract the bytes in order to hash them.
+    '  printf "%s  %s\\n" "$OLLAMA_SUM" "$OLLAMA_TMP" | sha256sum -c - >/dev/null || die "local-inference runtime digest mismatch"',
+    // MEASURED 2026-09-03: cuda_v12 (1.2G) + cuda_v13 (828M) + vulkan (47M) are 2.0G of a 2.1G
+    // install and are dead weight on a CPU-only host. Excluding them yields a 68M install that
+    // still serves the model — verified by extracting this pinned artifact and generating.
+    '  tar --use-compress-program=unzstd -xf "$OLLAMA_TMP" -C /usr/local --exclude="lib/ollama/cuda_v*" --exclude="lib/ollama/vulkan" --exclude="lib/ollama/rocm*" || die "local-inference runtime extract failed"',
+    '  rm -f "$OLLAMA_TMP"',
+    'fi',
+    '[[ -x /usr/local/bin/ollama ]] || die "local-inference runtime did not resolve after install"',
+    'getent group ollama >/dev/null || groupadd --system ollama || die "could not create the ollama group"',
+    'getent passwd ollama >/dev/null || useradd --system --gid ollama --home-dir /usr/share/ollama --create-home --shell /usr/sbin/nologin ollama || die "could not create the ollama account"',
+    'cat > /etc/systemd/system/ollama.service <<PAPERCUSP_OLLAMA',
+    '[Unit]',
+    'Description=Papercusp local-inference runtime',
+    'After=network-online.target',
+    '',
+    '[Service]',
+    'Type=simple',
+    'ExecStart=/usr/local/bin/ollama serve',
+    'User=ollama',
+    'Group=ollama',
+    'Restart=always',
+    'RestartSec=3',
+    // Loopback ONLY. The probe reaches this over 127.0.0.1 and nothing else may: an inference
+    // endpoint bound to a routable address is an unauthenticated model server on the internet.
+    'Environment=OLLAMA_HOST=127.0.0.1:11434',
+    'Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+    '',
+    '[Install]',
+    'WantedBy=multi-user.target',
+    'PAPERCUSP_OLLAMA',
+    'systemctl daemon-reload || die "could not reload systemd after writing the ollama unit"',
+    'systemctl enable --now ollama || die "could not start the local-inference runtime"',
+    // D-264: `enable --now` returns when systemd has forked the unit, NOT when its API accepts
+    // connections. The pull below talks to that API, so it must wait for the socket, not the unit.
+    'OLLAMA_READY=0',
+    'for _ in $(seq 1 60); do',
+    `  if curl -fsS ${endpoint}/api/version >/dev/null 2>&1; then OLLAMA_READY=1; break; fi`,
+    '  sleep 1',
+    'done',
+    '[[ "$OLLAMA_READY" == "1" ]] || die "local-inference runtime did not become ready within 60s"',
+    `echo "==> pulling local-inference model ${model}" >&2`,
+    `timeout 900 /usr/local/bin/ollama pull ${shellQuote(model)} || die ${shellQuote(
+      `local-inference model pull failed: ${model}`,
+    )}`,
+    // Assert the model is actually resolvable rather than trusting the pull's exit status — this
+    // is the one fact the OMP probe depends on, and it is cheap to state positively.
+    `/usr/local/bin/ollama show ${shellQuote(model)} >/dev/null 2>&1 || die ${shellQuote(
+      `local-inference model did not resolve after pull: ${model}`,
+    )}`,
+  ];
+}
+
+/**
  * Emit a deterministic, replay-safe root bootstrap for install, upgrade, or
  * rollback. The release bundle supplies Node, embedded Postgres tooling and psu, plus the psu
  * WRAPPERS named after the agent CLIs; the vendor agent runtimes themselves are installed at
@@ -1407,6 +1533,7 @@ export function buildWorkspaceHostBootstrap(
     'NODE_MAJOR="${NODE_MAJOR%%.*}"',
     '[[ "$NODE_MAJOR" =~ ^[0-9]+$ && "$NODE_MAJOR" -ge "$MINIMUM_NODE_MAJOR" ]] || die "bundled Node runtime is below the required floor"',
     ...agentRuntimeInstallLines(agentRuntimeInstalls),
+    ...localInferenceRuntimeInstallLines(agentRuntimeInstalls),
     "",
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[4]}'`,
     '"$RELEASE_DIR/$MIGRATE_ENTRYPOINT" --database-root "$STATE_ROOT/embedded-pg" --migration-id "$MIGRATION_ID"',

@@ -6,6 +6,7 @@ import {
   DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES,
   NodeWorkspaceHostAgentProbeRunner,
   WORKSPACE_HOST_OMP_LOCAL_INFERENCE_MARKER,
+  WORKSPACE_HOST_CODEX_LIVE_INFERENCE_MARKER,
   WORKSPACE_HOST_CANARY_AGENTS,
   applyWorkspaceHostAgentRuntimePath,
   buildWorkspaceHostAgentProbeProcess,
@@ -398,6 +399,62 @@ describe("attested vendor runtime paths (D-259 Defect 2)", () => {
     }
   });
 
+  /**
+   * D-265. `codex login status` is not a credential check: MEASURED 2026-09-03, it printed
+   * `Logged in using ChatGPT` and exited 0 against an auth.json whose id_token was 30 days
+   * expired and whose access and refresh tokens were both garbage. So codex readiness rests on
+   * the live-inference probe, and the ONE property that makes that probe honest is its anchoring.
+   *
+   * codex ECHOES THE PROMPT, and the prompt necessarily contains the marker. So the marker is
+   * present in the output of a FAILING run too — measured, once, in the `Reply with exactly …`
+   * line of a run that died on `401 Unauthorized`. An unanchored pattern matches that echo and
+   * reports every credential failure as ready, which is the precise inversion this file exists to
+   * prevent. These are the positive and negative captures, reduced to their shapes.
+   */
+  it("does not accept codex's own prompt echo as proof of live inference", () => {
+    const live = DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.codex.find(
+      (spec) => spec.verificationKind === "live-inference",
+    );
+    expect(live).toBeDefined();
+    const marker = WORKSPACE_HOST_CODEX_LIVE_INFERENCE_MARKER;
+
+    // The failing shape: the prompt echo, and the 401 that ended the run. No line is JUST the
+    // marker, so a correctly anchored pattern finds nothing to capture.
+    const failing = [
+      "user",
+      `Reply with exactly ${marker} and nothing else.`,
+      "ERROR: Your access token could not be refreshed. Please log out and sign in again.",
+    ].join("\n");
+    expect(live?.proofPattern.test(failing)).toBe(false);
+
+    // The passing shape: the same echo, PLUS the model's answer alone on its own line.
+    const passing = [
+      "user",
+      `Reply with exactly ${marker} and nothing else.`,
+      "codex",
+      marker,
+    ].join("\n");
+    expect(live?.proofPattern.exec(passing)?.[1]).toBe(marker);
+  });
+
+  /**
+   * Ordering is behavioural, not cosmetic: the probe loop breaks on the first READY spec, so the
+   * account probe running first is what keeps the stronger "we know WHO this is" evidence for a
+   * codex that can produce it, with live inference as the fallback rather than the default.
+   */
+  it("keeps codex's account probe first and its live-inference probe as the fallback", () => {
+    const specs = DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.codex;
+    expect(specs.map((spec) => spec.verificationKind)).toEqual([
+      "authenticated-account",
+      "live-inference",
+    ]);
+    // No `-c` override in the argv: a model-specific value goes stale under the probe and fails
+    // it for a non-credential reason (measured: HTTP 400 on `model_reasoning_effort=minimal`).
+    expect(specs[1]?.args).not.toContain("-c");
+    // A readiness probe must not need write access to the host it is judging.
+    expect(specs[1]?.args).toContain("read-only");
+  });
+
   it("changes only the command, leaving the proof rules that make evidence falsifiable intact", () => {
     const spec = DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0];
     const resolved = applyWorkspaceHostAgentRuntimePath(spec, VENDOR.claude);
@@ -423,8 +480,12 @@ describe("attested vendor runtime paths (D-259 Defect 2)", () => {
       runtimePaths: { claude: VENDOR.claude, omp: VENDOR.omp },
     });
 
+    // codex appears TWICE: the account probe and the D-265 live-inference probe are two specs
+    // for one agent, and the loop breaks only on a READY one — so an unattested codex falls back
+    // to the bare name for both, and both fail. That is the honest outcome being asserted here.
     expect(runner.invocations.map((invocation) => invocation.command)).toEqual([
       VENDOR.claude,
+      "codex",
       "codex",
       VENDOR.omp,
     ]);
