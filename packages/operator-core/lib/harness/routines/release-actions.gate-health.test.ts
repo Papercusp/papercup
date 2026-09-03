@@ -141,6 +141,7 @@ vi.mock('../../events/await/engine', async (importOriginal) => ({
 import {
   trackGateStall,
   mergeGateHealthMonotonic,
+  carryForeignGateHealthKeys,
   measureCandidateStaleness,
   gateRedStreakBroadcast,
   resolveIntegrationRoot,
@@ -1979,5 +1980,85 @@ describe('P-009: an awaiting-fixer hold tick with a cheap-legs measurement stays
     expect(write).toBeDefined();
     expect(write!.query).toContain(`'false'::jsonb`);
     expect(write!.query).not.toContain('repairTickLegs');
+  });
+});
+
+/**
+ * C4 of EI-22270968007901491 (main-green-status-visible-2026-09-03): `trackGateStall`'s final
+ * write REPLACED the whole `gate_health` key, so every key owned by another writer that was not
+ * hand-carried through `next` (EI-7472 did that for ONE key, `watchdogAlerted`) was dropped by
+ * the next real verdict. Measured live 2026-09-03: `freezeAndConverge` — written by the tick's
+ * own disposition writer at 19:23Z — was absent from the papercusp row after the 19:25Z verdict,
+ * so the freeze-disposition cell read "no record" while a candidate was frozen.
+ *
+ * The fix inverts the rule: unmentioned keys are FOREIGN and carried; a clear is explicit.
+ */
+describe('trackGateStall carries keys it does not own (C4, EI-22270968007901491)', () => {
+  const freezeAndConverge = { enabled: true, state: 'held', reason: 'red on 761d0a85', candidate: '761d0a85ac12', observedAtMs: 1 };
+
+  it('⭐ preserves freezeAndConverge (and inFlightCandidate) across a RED verdict', async () => {
+    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now(), freezeAndConverge, inFlightCandidate: { sha: 'abc', atMs: 2 } };
+    await trackGateStall(ctx, 'not-green', 'c'.repeat(40), ['a.test.ts']);
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(written!.freezeAndConverge).toEqual(freezeAndConverge);
+    expect(written!.inFlightCandidate).toEqual({ sha: 'abc', atMs: 2 });
+    // Sanity: a real red tick, not a reset.
+    expect(written!.consecutiveReds).toBe(1);
+  });
+
+  it('⭐ preserves freezeAndConverge across a GREEN verdict too — a green is not a reason to forget the freeze record', async () => {
+    seededGh = { consecutiveReds: 3, stallAlerted: false, lastGreenAt: Date.now() - 60_000, freezeAndConverge };
+    await trackGateStall(ctx, 'advanced');
+    const written = lastGateHealthWrite();
+    expect(written!.freezeAndConverge).toEqual(freezeAndConverge);
+    expect(written!.consecutiveReds).toBe(0);
+  });
+
+  it('a real verdict clears the hold tick\'s repairTickLegs EXPLICITLY (never by omission)', async () => {
+    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now(), repairTickLegs: { head: 'd'.repeat(12), atMs: 3, legs: [] } };
+    await trackGateStall(ctx, 'not-green', 'c'.repeat(40), ['a.test.ts']);
+    const written = lastGateHealthWrite();
+    // The key is PRESENT and null — a merge write clears only what is stated.
+    expect('repairTickLegs' in written!).toBe(true);
+    expect(written!.repairTickLegs).toBeNull();
+  });
+
+  it('⭐ the SQL merges against the row\'s LIVE gate_health, so a peer write between SELECT and UPDATE survives', async () => {
+    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
+    await trackGateStall(ctx, 'not-green', 'c'.repeat(40), ['a.test.ts']);
+    const final = [...calls].reverse().find((c) => /UPDATE\s+harness_shared\.routines/i.test(c.query) && typeof c.params[1] === 'string');
+    expect(final).toBeDefined();
+    // The whole-key replace was `'{gate_health}', CASE … END`; the merge wraps the CASE.
+    expect(final!.query).toMatch(/COALESCE\(metadata->'gate_health', '\{\}'::jsonb\) \|\| \(CASE/);
+    expect(final!.query).not.toMatch(/'\{gate_health\}',\s*CASE/);
+  });
+
+  describe('carryForeignGateHealthKeys (pure)', () => {
+    it('carries a key `next` never mentions, and lets `next` win on every key it does', () => {
+      const out = carryForeignGateHealthKeys(
+        { freezeAndConverge, watchdogAlerted: true, consecutiveReds: 7 },
+        { consecutiveReds: 8, watchdogAlerted: false },
+      );
+      expect(out).toEqual({ freezeAndConverge, consecutiveReds: 8, watchdogAlerted: false });
+    });
+
+    it('an explicit null in `next` is a CLEAR, not an omission — the foreign value does not resurrect', () => {
+      const out = carryForeignGateHealthKeys({ repairTickLegs: { head: 'x' }, freezeAndConverge }, { repairTickLegs: null });
+      expect(out).toEqual({ freezeAndConverge, repairTickLegs: null });
+    });
+
+    it('a null / absent previous row carries nothing and does not throw', () => {
+      expect(carryForeignGateHealthKeys(null, { a: 1 })).toEqual({ a: 1 });
+      expect(carryForeignGateHealthKeys(undefined, { a: 1 })).toEqual({ a: 1 });
+    });
+
+    it('CONTROL: a replace (the pre-C4 behaviour) would have dropped the foreign key', () => {
+      const previous = { freezeAndConverge, consecutiveReds: 7 };
+      const next = { consecutiveReds: 8 };
+      const replaced = { ...next };
+      expect('freezeAndConverge' in replaced).toBe(false);
+      expect('freezeAndConverge' in carryForeignGateHealthKeys(previous, next)).toBe(true);
+    });
   });
 });
