@@ -30,6 +30,16 @@
   `workspace_id, harness_slug`) holds **0 rows** on this box (positive control: `harness_plans`
   1,791). The plan's Design names it as "the per-harness projection"; today the blueprint layer is
   file-only. → **P-001** decides populate-or-drop before anything reads it.
+  **Correction (P-001 / WI-2143731, 2026-09-03T23:20Z, su-27188c44):** the phrase "before anything
+  reads it" (and S20's "nothing reads it today") was WRONG — the table has four live readers and a
+  lazy projector: `getEffectiveBlueprint` (`packages/operator-core/lib/blueprint/project-to-pg.ts`)
+  is called from `dbos/orchestrator-loop.ts:540` (`resolveHarnessDispatchGate`),
+  `blueprint/blueprint-run-action.ts:245` and `harness/routines/gym-actions.ts:110`;
+  `harness/improvements/watchdog.ts:3461` reads it as `blueprint_wired`;
+  `blueprint/commit-reproject-real.ts` writes it. It is empty because this repo has no
+  `.papercusp/blueprint.yaml` (S21) and the lazy path fires only from those callers with errors
+  swallowed. Ruled **POPULATE** (D-017); 9 of 10 sibling harness blueprints load cleanly,
+  `brood-box-alpha` fails `cannot resolve extended blueprint "pot"` (filed separately).
 - **F4 — thirteen facts are declared twice** (§3). Five are the schema pairs the plan anticipated;
   eight are prose pairs the first sweep missed — including the whole su base text (blueprint vs
   legacy file) and the mode prose (policy module vs registry vs base). → **P-033 / P-021 / P-023**.
@@ -108,7 +118,7 @@ constants, prompt dirs, out-of-repo mirrors); Phase 3 moves it onto a slot · **
 | S17 | capability envelopes | `capability-envelope/policy.ts` `ROLE_ENVELOPES` 13,654 B + `blueprint-envelopes.ts` 2,811 B (`fleet.workerRoles`) | dispatch seat | CORRECTLY-SEPARATE | authority as code; the M3 grants seam | P-005 · P-016 · P-033 (D2) |
 | S18 | mode guards | `capability-envelope/audit-mode-guard.ts` 9,749 B · `agent-tools/locks/goal-mode-edit-guard.ts` 4,670 B | dispatch / lock path | CORRECTLY-SEPARATE | enforcement, R3 | — |
 | S19 | additive-override guard | `packages/operator-core/lib/hive-override-additive-guard.ts` 3,593 B (WARN) | S5 | CORRECTLY-SEPARATE | lint; generalized to the composed stack with a structural BLOCK tier | P-003 |
-| S20 | blueprint projection | `harness_shared.blueprints` (PK `workspace_id, harness_slug`) · **0 rows** (F3) | nothing reads it today | CORRECTLY-SEPARATE (projection) | empty; populate-or-drop before it is depended on | P-001 |
+| S20 | blueprint projection | `harness_shared.blueprints` (PK `workspace_id, harness_slug`) · **0 rows** (F3) | `getEffectiveBlueprint` from `dbos/orchestrator-loop.ts:540`, `blueprint/blueprint-run-action.ts:245`, `harness/routines/gym-actions.ts:110`; `watchdog.ts:3461` `blueprint_wired` — **corrected by P-001: NOT unread** (the first draft said "nothing reads it today") | CORRECTLY-SEPARATE (projection) | empty because the lazy projector fires only from those callers for a harness with `.papercusp/blueprint.yaml` (this repo has none — S21) and swallows errors; ruled POPULATE (D-017) | P-001 ✓ (ruled) · P-024 (this repo's yaml) |
 | S21 | this repo's blueprint | `.papercusp/blueprint.yaml` | — | **ABSENT** | P-024 creates it (domain overlay, lexicon, `fleet.workerRoles`) | P-024 |
 | S22 | render-fidelity tests | `llm-testing/targets/su.ts`, `llm-testing/__tests__/su-system-framing.test.ts`, `psu-prompt-isolation.test.ts`, `desktop-install/persona-tier.test.ts`, `desktop-install/__tests__/papercusp-files.test.ts`, **`desktop-install/su-render-baseline.test.ts`** (this item) | CI | CORRECTLY-SEPARATE | the P-035 gate's instruments | P-035 |
 
