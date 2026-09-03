@@ -16,7 +16,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { basename, dirname, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -35,10 +35,12 @@ import {
   DEFAULT_CARGO_DISK_POLICY,
   DEFAULT_CARGO_RECLAIM_POLICY,
   ensureCargoCacheTag,
+  findStaleBuildScriptOutputs,
   formatCargoDiskRefusal,
   formatCargoResultLine,
   diskProbePathFor,
   parseCargoTestResultLines,
+  pruneStaleBuildScriptOutputs,
   reclaimInactiveCargoArtifacts,
   resolveCargoBin,
   resolveCargoTargetDir,
@@ -467,6 +469,109 @@ describe('isolated Cargo target cleanup (EI-21048920599909117)', () => {
     expect(admissionAt).toBeGreaterThan(-1);
     expect(tagAt).toBeGreaterThan(admissionAt);
     expect(spawnAt).toBeGreaterThan(tagAt);
+  });
+});
+
+describe('stale build-script outputs after a MOVED target dir (WI-212675, gate run 7f876d2d)', () => {
+  // The real shape: ~/.cargo-target was moved to /mnt/data/cargo-target; cargo replayed
+  // tauri's cached `…PERMISSION_FILES_PATH=/home/…/.cargo-target/…/out/…` to
+  // papercusp-desktop's build.rs, which panicked on the vanished path (exit 101, 0 results).
+  const setup = () => {
+    const targetDir = mkdtempSync(resolve(tmpdir(), 'cargo-target-moved-'));
+    const oldTarget = mkdtempSync(resolve(tmpdir(), 'cargo-target-old-'));
+    rmSync(oldTarget, { recursive: true, force: true }); // the OLD address no longer exists
+    const liveSibling = mkdtempSync(resolve(tmpdir(), 'cargo-target-sibling-'));
+    const siblingOut = join(liveSibling, 'debug', 'build', 'ring-fedcba9876543210', 'out');
+    mkdirSync(siblingOut, { recursive: true });
+    writeFileSync(join(siblingOut, 'table.rs'), '', 'utf8'); // the referenced file really exists
+    const build = join(targetDir, 'debug', 'build');
+    const write = (crate: string, lines: string[]) => {
+      mkdirSync(join(build, crate), { recursive: true });
+      writeFileSync(join(build, crate, 'output'), `${lines.join('\n')}\n`, 'utf8');
+    };
+    const stalePath = `${oldTarget}/debug/build/tauri-0123456789abcdef/out/tauri-core-path-permission-files`;
+    write('tauri-0123456789abcdef', [
+      `cargo:core:path__CORE_PLUGIN___PERMISSION_FILES_PATH=${stalePath}`,
+      'cargo:rerun-if-changed=build.rs',
+    ]);
+    // Controls, each ignored for a DIFFERENT reason:
+    write('ring-fedcba9876543210', [
+      // (b) inside THIS target dir — the normal, healthy case.
+      `cargo:rustc-env=RING_CORE_PREFIX=${targetDir}/debug/build/ring-fedcba9876543210/out/ring_core.h`,
+      // (a) an absolute path with NO build segment — a deleted source is cargo's own business.
+      `cargo:rerun-if-changed=${oldTarget}/src/gone.c`,
+    ]);
+    write('mime-abcdef0123456789', [
+      // (c) a LIVE sibling target dir — exists, so not stale.
+      `cargo:rustc-env=MIME_TABLE=${siblingOut}/table.rs`,
+    ]);
+    const cleanup = () => {
+      for (const d of [targetDir, liveSibling]) rmSync(d, { recursive: true, force: true });
+    };
+    return { targetDir, build, stalePath, cleanup };
+  };
+
+  it('names exactly the build dir whose replayed metadata points into a vanished target dir', () => {
+    const { targetDir, build, stalePath, cleanup } = setup();
+    try {
+      const stale = findStaleBuildScriptOutputs(targetDir);
+      expect(stale).toHaveLength(1);
+      expect(stale[0]).toMatchObject({
+        dir: join(build, 'tauri-0123456789abcdef'),
+        profile: 'debug',
+        crate: 'tauri-0123456789abcdef',
+        staleRefs: [stalePath],
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('prunes only that dir, and afterwards reports nothing stale', () => {
+    const { targetDir, build, cleanup } = setup();
+    try {
+      const dry = pruneStaleBuildScriptOutputs(targetDir, { dryRun: true, pathIsLive: () => false });
+      expect(dry).toMatchObject({ found: 1, dryRun: true, skipped: [] });
+      expect(dry.pruned.map((p) => p.crate)).toEqual(['tauri-0123456789abcdef']);
+      expect(existsSync(join(build, 'tauri-0123456789abcdef'))).toBe(true); // dry run removed nothing
+
+      const real = pruneStaleBuildScriptOutputs(targetDir, { pathIsLive: () => false });
+      expect(real).toMatchObject({ found: 1, dryRun: false, skipped: [] });
+      expect(real.pruned).toHaveLength(1);
+      expect(existsSync(join(build, 'tauri-0123456789abcdef'))).toBe(false);
+      expect(existsSync(join(build, 'ring-fedcba9876543210', 'output'))).toBe(true);
+      expect(existsSync(join(build, 'mime-abcdef0123456789', 'output'))).toBe(true);
+      expect(findStaleBuildScriptOutputs(targetDir)).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('skips wholesale while another process holds the target dir — never deletes under a live build', () => {
+    const { targetDir, build, cleanup } = setup();
+    try {
+      const held = pruneStaleBuildScriptOutputs(targetDir, { pathIsLive: () => true });
+      expect(held.found).toBe(1);
+      expect(held.pruned).toEqual([]);
+      expect(held.skipped).toEqual([
+        { path: join(build, 'tauri-0123456789abcdef'), reason: 'target dir in use by another process' },
+      ]);
+      expect(existsSync(join(build, 'tauri-0123456789abcdef', 'output'))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('the runner prunes before spawning cargo and reports it on the [report-cargo-tests] channel', () => {
+    // Pinned to source, like the sibling disk-admission guards: the call must sit AFTER the
+    // target dir is resolved and BEFORE the cargo child is spawned.
+    const resolveAt = REPORTER_SOURCE.indexOf('const cargoTargetDir = resolveCargoTargetDir(manifestAbs);');
+    const pruneAt = REPORTER_SOURCE.indexOf('pruneStaleBuildScriptOutputs(cargoTargetDir)');
+    const spawnAt = REPORTER_SOURCE.indexOf('return new Promise((resolvePromise) => {', pruneAt);
+    expect(resolveAt).toBeGreaterThan(-1);
+    expect(pruneAt).toBeGreaterThan(resolveAt);
+    expect(spawnAt).toBeGreaterThan(pruneAt);
+    expect(REPORTER_SOURCE).toContain('[report-cargo-tests] stale build-script outputs (moved target dir)');
   });
 });
 
