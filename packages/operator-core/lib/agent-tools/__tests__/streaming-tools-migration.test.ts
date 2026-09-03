@@ -157,16 +157,70 @@ describe('Streaming tools — common framework integration', () => {
     vi.doMock('../../agent-chat-stream', () => ({
       runAgentChat: () => mockAgentChat([]),
     }));
+    vi.doMock('../oracle/prompts', () => ({
+      composeOraclePrompt: async () => ({ promptText: 'PROMPT', tutorialIsFinalStep: false }),
+      buildOracleMcpConfig: async () => ({ mcpServers: {} }),
+      oracleToolEventFilter: () => null,
+      ORACLE_ALLOWED_TOOLS: [],
+    }));
     const { architectChat, brainstormChat } = await import('../architect/chat');
     const { default: converse } = await import('../operator/converse');
+    const { default: sentinelConverse } = await import('../operator/sentinel-converse');
+    const { default: oracleChat } = await import('../oracle/chat');
 
     for (const [name, tool] of [
       ['architect:chat', architectChat],
       ['brainstorm:chat', brainstormChat],
       ['operator:converse', converse],
+      ['papercup:converse', sentinelConverse],
+      ['oracle:chat', oracleChat],
     ] as const) {
       expect(tool.idleTimeoutSec, `${name} has idleTimeoutSec`).toBeGreaterThan(0);
       expect(tool.timeoutSec, `${name} has timeoutSec`).toBeGreaterThan(0);
+    }
+  });
+
+  it('idleTimeoutSec never fires before timeoutSec on a tool exposing chat:ask_choice (WI-2142938 regression guard)', async () => {
+    // chat:ask_choice BLOCKS on ctx.askUser for up to its own 600s timeoutSec
+    // while a human decides whether to click a card (ask_choice.ts's EI-288
+    // comment). While that nested MCP call is pending, runAgentChat's
+    // underlying CLI subprocess streams NO delta/tool_call events, so nothing
+    // resets dispatch-stack.ts's idle watchdog (idleWatchdogStep). If a
+    // tool's idleTimeoutSec < timeoutSec, the idle cap fires FIRST on any
+    // human wait longer than idleTimeoutSec: exec.abort() aborts silently
+    // (ctx.signal.aborted, no throw), the SSE stream ends with nothing
+    // persisted, and the ask_choice card is left open/clickable (it's driven
+    // by an independent state-snapshot channel, decoupled from turn
+    // persistence) — exactly WI-2142938's "click succeeded, zero DB row"
+    // symptom. Every tool that exposes chat:ask_choice to its model MUST
+    // therefore set idleTimeoutSec >= timeoutSec so the idle cap can never
+    // bind before the absolute one.
+    vi.doMock('../../agent-chat-stream', () => ({
+      runAgentChat: () => mockAgentChat([]),
+    }));
+    vi.doMock('../oracle/prompts', () => ({
+      composeOraclePrompt: async () => ({ promptText: 'PROMPT', tutorialIsFinalStep: false }),
+      buildOracleMcpConfig: async () => ({ mcpServers: {} }),
+      oracleToolEventFilter: () => null,
+      ORACLE_ALLOWED_TOOLS: ['mcp__agentmcp__chat:ask_choice'],
+    }));
+    const { default: converse } = await import('../operator/converse');
+    const { default: sentinelConverse } = await import('../operator/sentinel-converse');
+    const { default: oracleChat } = await import('../oracle/chat');
+
+    // architect:chat/brainstorm:chat are deliberately excluded: they call
+    // runAgentChat with no mcpConfig/allowedTools at all, so they expose NO
+    // MCP tools (including chat:ask_choice) — see the WI-2142938 comment on
+    // architect/chat.ts's tool defs.
+    for (const [name, tool] of [
+      ['operator:converse', converse],
+      ['papercup:converse', sentinelConverse],
+      ['oracle:chat', oracleChat],
+    ] as const) {
+      expect(
+        tool.idleTimeoutSec,
+        `${name}: idleTimeoutSec (${tool.idleTimeoutSec}) must be >= timeoutSec (${tool.timeoutSec}) — chat:ask_choice can block for up to timeoutSec while a human decides`,
+      ).toBeGreaterThanOrEqual(tool.timeoutSec!);
     }
   });
 });

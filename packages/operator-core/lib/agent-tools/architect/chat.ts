@@ -185,6 +185,16 @@ export const architectChat = defineTool({
   requirePrincipal: false,
   agentRoles: ['operator'],
   timeoutSec: 600,
+  // WI-2142938: checked, NOT vulnerable to the idle-vs-chat:ask_choice
+  // mismatch fixed on operator:converse/papercup:converse/oracle:chat.
+  // streamPrompt() above calls runAgentChat with no `mcpConfig` and no
+  // `allowedTools` — per RunAgentChatOptions' own doc comments, that means
+  // the spawned subprocess gets NO MCP tools at all (mcpConfig undefined ⇒
+  // "spawn without MCP"; allowedTools is "required when mcpConfig is set").
+  // With no MCP surface, the model can't reach chat:ask_choice (or any
+  // other MCP tool) from architect:chat/brainstorm:chat, so this handler's
+  // exec can never block on ctx.askUser the way converse/oracle's did.
+  // 120s idle / 600s absolute stays correct as-is.
   idleTimeoutSec: 120,
   // Phase 4 T2.2 — opt into replay buffer. 5000 events is a
   // generous soft cap; eviction warn-logs let us tune down once

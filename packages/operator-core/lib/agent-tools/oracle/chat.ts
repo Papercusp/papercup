@@ -145,7 +145,19 @@ export const oracleChat = defineTool({
   events: EVENTS,
   agentRoles: ['operator'],
   timeoutSec: 600,
-  idleTimeoutSec: 120,
+  // WI-2142938: was 120. chat:ask_choice (in ORACLE_ALLOWED_TOOLS, above)
+  // BLOCKS on ctx.askUser for up to its own 600s timeoutSec while a human
+  // decides whether to click a card — see agent-tools/chat/ask_choice.ts's
+  // EI-288 comment. While that nested MCP call is pending, runAgentChat's
+  // underlying CLI subprocess streams NO delta/tool_call events (it is
+  // waiting on the tool's result), so nothing resets dispatch-stack's idle
+  // watchdog. A 120s idle cap therefore aborted this handler's own exec any
+  // time a user took >120s to answer an ask_choice card — same root cause as
+  // operator:converse's fix (see its idleTimeoutSec comment for the full
+  // mechanism). Match timeoutSec so the idle cap can never fire before the
+  // absolute one; a genuinely wedged subprocess is still caught by
+  // timeoutSec regardless.
+  idleTimeoutSec: 600,
   // Phase 4 T2.2 — same replay budget as architect:chat / operator:scan.
   replayBufferSize: 5000,
   capability: 'harness:read',
