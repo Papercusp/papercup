@@ -333,7 +333,7 @@ describe('stampStatePlane — the REAL built-in cells stamp a REAL-shaped payloa
           distinctFailingFiles: [],
           filesJudged: 0,
           scope: null,
-          postSuiteMeasured: null,
+          nonTestLegsMeasured: 'not-recorded',
         },
         ownerBrief: {
           answer: null,
