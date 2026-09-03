@@ -23,7 +23,7 @@ import {
   safeRead,
   parseFeatures,
 } from '../../../harness-core';
-import { getLegacyClient } from '@papercusp/db-org';
+import { harnessQuery } from '@papercusp/db-org';
 import { papercuspPath } from '../../../papercusp-root';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { readEffectiveHarnessConfig } from '../../../harness-effective-config';
@@ -227,7 +227,6 @@ const confirmPromotion = defineTool({
               execFileSync('git', ['-C', toPath, 'reset', '--hard', 'ORIG_HEAD'], { encoding: 'utf8' });
             } catch { /* observable in dest worktree git status */ }
             try {
-              const dbcSlug = getLegacyClient(project.slug);
               const fid = `F-INFRA-FIX-PROMOTION-${Math.floor(Date.now() / 1000)}`;
               const tail = (() => {
                 try {
@@ -235,19 +234,21 @@ const confirmPromotion = defineTool({
                   return (log ?? '').split('\n').slice(-30).join('\n').slice(0, 2000);
                 } catch { return '(see action-runs log)'; }
               })();
-              await dbcSlug.prepare(`
+              const summary = `The destination worktree's build script failed during promotion (runId=${meta.runId}, exit=${meta.exitCode ?? '?'}, dur=${meta.durationMs ?? 0}ms). Last log lines:\n\n\`\`\`\n${tail}\n\`\`\`\n\nThe merge has been reverted. Fix the build on the ${from} branch (or update the build script accordingly) and re-attempt promotion.`;
+              const nowTs = Date.now();
+              await harnessQuery(project.slug, (sql) => sql`
                 INSERT INTO harness_features (harness_slug, feature_id, title, summary, status, attempts, kind, metadata, ts, created_ts, updated_ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              `).run(
-                project.slug, fid,
-                `Fix broken build before re-promoting ${from} → ${to}`,
-                `The destination worktree's build script failed during promotion (runId=${meta.runId}, exit=${meta.exitCode ?? '?'}, dur=${meta.durationMs ?? 0}ms). Last log lines:\n\n\`\`\`\n${tail}\n\`\`\`\n\nThe merge has been reverted. Fix the build on the ${from} branch (or update the build script accordingly) and re-attempt promotion.`,
-                'todo',
-                0,
-                'infra',
-                JSON.stringify({ proposed_by: 'promotion-smoke-build', smoke_run_id: meta.runId, blocked_promotion: id }),
-                Date.now(), Date.now(), Date.now(),
-              );
+                VALUES (
+                  ${project.slug}, ${fid},
+                  ${`Fix broken build before re-promoting ${from} → ${to}`},
+                  ${summary},
+                  'todo',
+                  0,
+                  'infra',
+                  ${JSON.stringify({ proposed_by: 'promotion-smoke-build', smoke_run_id: meta.runId, blocked_promotion: id })}::text::jsonb,
+                  ${nowTs}, ${nowTs}, ${nowTs}
+                )
+              `);
             } catch { /* feature creation best-effort */ }
 
             return Response.json({
