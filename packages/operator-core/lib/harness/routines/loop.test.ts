@@ -1819,6 +1819,77 @@ describe('countAgentToolCallsInWindow (EI-19984789589075138 — the cold-wake un
     expect(warnSpy).toHaveBeenCalledTimes(1);
     warnSpy.mockRestore();
   });
+
+  // WI-2143038: pins the actual su-54215254 regression — the fix (loop.ts scope split +
+  // reconcile-loop-routines.ts's opt-in) is exercised elsewhere only via mocks that assert
+  // *composition* (evidenceScope was passed) or the *default* scope's ledger-only query.
+  // Nothing before this seeded a real agent_activity row and asserted the union actually
+  // rescues the count — the exact gap su-0c710c57 flagged as "the obvious next step" in
+  // their fix-landed comment on this item.
+  describe("'fire-productivity' scope (WI-2143038) — the native-Bash rescue leg", () => {
+    it('counts a native call recorded ONLY in agent_activity when the MCP ledger is empty — the false-disarm this item reports', async () => {
+      // Reproduces the su-54215254 disarm: tool_invocations (MCP-only) is empty for the
+      // fire's window, but agent_activity (the per-CLI hook ledger) has one real
+      // agent-authored pre-hook row from a native Bash call. The union must surface it.
+      // NOTE: agentToolInvocationPredicate(sql) makes its OWN preliminary fragment-building
+      // call through this same fake `sql` before either real query runs (see throwingSql's
+      // comment above) — it matches neither table name, so it must fall through to a benign
+      // default rather than the two branches below, or it is misread as an unexpected query.
+      const sql = transactionalSql((strings: TemplateStringsArray) => {
+        const rendered = strings.join(' ');
+        if (rendered.includes('harness_shared.agent_activity')) return [{ n: 1 }];
+        if (rendered.includes('harness_shared.tool_invocations')) return [{ n: 0 }];
+        return []; // the predicate-fragment call — its value is embedded, not read as a count
+      });
+
+      const out = await countAgentToolCallsInWindow('su-x', 0, 1000, {
+        sql: sql as any,
+        evidenceScope: 'fire-productivity',
+      });
+
+      expect(out).toBe(1);
+    });
+
+    it('takes the larger of the two ledgers rather than only the native one', async () => {
+      const sql = transactionalSql((strings: TemplateStringsArray) => {
+        const rendered = strings.join(' ');
+        if (rendered.includes('harness_shared.agent_activity')) return [{ n: 1 }];
+        if (rendered.includes('harness_shared.tool_invocations')) return [{ n: 5 }];
+        return []; // the predicate-fragment call, see note above
+      });
+
+      const out = await countAgentToolCallsInWindow('su-x', 0, 1000, {
+        sql: sql as any,
+        evidenceScope: 'fire-productivity',
+      });
+
+      expect(out).toBe(5);
+    });
+
+    it('the default (post-note-work) scope never queries agent_activity at all', async () => {
+      const seen: string[] = [];
+      const sql = transactionalSql((strings: TemplateStringsArray) => {
+        seen.push(strings.join(' '));
+        return [{ n: 0 }];
+      });
+
+      const out = await countAgentToolCallsInWindow('su-x', 0, 1000, { sql: sql as any });
+
+      expect(out).toBe(0);
+      expect(seen.some((s) => s.includes('harness_shared.agent_activity'))).toBe(false);
+    });
+
+    it('still returns null on a fire-productivity query failure — evidence-unavailable must not become a false zero either', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const out = await countAgentToolCallsInWindow('su-x', 0, 1000, {
+        sql: throwingSql() as any,
+        evidenceScope: 'fire-productivity',
+      });
+      expect(out).toBeNull();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
+    });
+  });
 });
 
 describe('loop constants / naming', () => {
