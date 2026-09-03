@@ -136,6 +136,58 @@ export function isConfirmedHostIoWait(activity: MainThreadActivity): boolean {
   );
 }
 
+/**
+ * Wait channels for a thread parked in an event-loop poll (epoll/poll/select).
+ *
+ * This is where an IDLE loop sits — and also where a loop suspended by a
+ * SYNCHRONOUS child-process call sits, because `execSync`/`spawnSync` run a
+ * NESTED libuv loop whose `epoll_wait` blocks the outer one.
+ */
+const LOOP_POLL_WCHAN_RE = /^(?:ep_poll|do_epoll_wait|do_sys_poll|do_select|poll_schedule_timeout)$/i;
+
+/**
+ * Is the main thread parked in an event-loop poll while its heartbeat is dead?
+ *
+ * ## Why this predicate exists (measured, WI-2143536)
+ *
+ * `papercusp-bg-host` was SIGKILLed 12 times in 37 minutes, every kill
+ * reporting `mainThreadCpuMsDuringStall: 0, mainThreadWchan: ep_poll,
+ * mainThreadState: S`. Two separate investigations read that as a HEALTHY IDLE
+ * host and concluded the WEDGED verdict was false. Both were wrong, and the
+ * "obvious" fix they each reached for — letting this evidence veto the kill —
+ * would have converted a self-restarting host into a permanently dead one.
+ *
+ * The signature was reproduced exactly by a 6-second `execSync`: wchan
+ * `ep_poll`, state `S`, utime/stime frozen, and ZERO fires of a 500 ms
+ * `setInterval` for the whole call. So this reading does not mean "idle" — it
+ * means the loop is suspended inside a nested libuv loop, i.e. blocked on a
+ * synchronous subprocess (or another sync native binding).
+ *
+ * ## Why "heartbeat is dead" is a REQUIRED input and not inferred here
+ *
+ * An idle loop and a `spawnSync`-blocked loop are INDISTINGUISHABLE in
+ * `/proc` — identical state, wchan and CPU. The only thing that separates them
+ * is that an idle loop still runs its timers. This predicate is therefore only
+ * meaningful where the caller has already established staleness, which is why
+ * it takes no `/proc` reading alone as sufficient.
+ *
+ * ⛔ REPORT-ONLY. Unlike `isConfirmedHostIoWait`, this must NEVER suppress a
+ * kill. SIGKILL cannot relieve a block-device wait (hence that suppressor), but
+ * a host stuck behind a runaway synchronous subprocess genuinely has stopped
+ * doing its scheduled work, and restarting it is the correct remedy. This
+ * exists to NAME the blocking mode so the next occurrence is diagnosable
+ * instead of restarting the investigation from scratch.
+ */
+export function isLikelySyncSubprocessBlock(activity: MainThreadActivity): boolean {
+  const wchan = activity.wchan?.trim();
+  return (
+    activity.state === 'S' &&
+    activity.cpuMs === 0 &&
+    activity.cores === 0 &&
+    Boolean(wchan && LOOP_POLL_WCHAN_RE.test(wchan))
+  );
+}
+
 const UNKNOWN: ThreadCpuVerdict = {
   kind: 'unknown',
   cpuMs: null,

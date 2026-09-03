@@ -3,6 +3,7 @@ import {
   parseProcStat,
   classifyThreadCpu,
   isConfirmedHostIoWait,
+  isLikelySyncSubprocessBlock,
   USER_HZ,
 } from './proc-thread-cpu';
 

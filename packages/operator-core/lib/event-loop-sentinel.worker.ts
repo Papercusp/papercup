@@ -54,6 +54,7 @@ import { writeSync, readFileSync } from 'node:fs';
 import {
   classifyThreadCpu,
   isConfirmedHostIoWait,
+  isLikelySyncSubprocessBlock,
   parseProcStat,
   type MainThreadActivity,
 } from './proc-thread-cpu.ts';
@@ -170,6 +171,44 @@ function readMainThreadWchan(): string | null {
   }
 }
 
+/**
+ * Name the main thread's live children, for the synchronous-subprocess case.
+ *
+ * When the loop is suspended inside `execSync`/`spawnSync` there IS a child,
+ * and it is THE culprit — so naming it turns an otherwise unattributable
+ * "WEDGED" into the actual offending command. This is the piece that was
+ * missing: `wchan: ep_poll` alone reads as "idle" and sent two investigations
+ * back to the start (WI-2143536).
+ *
+ * Per-THREAD children (`/task/<pid>/children`), matching the per-thread stat
+ * read above: a process-wide list would include every worker's children and
+ * name innocent bystanders. Bounded and best-effort — a diagnostic must never
+ * take down the sentinel.
+ */
+function readMainThreadChildren(limit = 4): string[] {
+  try {
+    const raw = readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').trim();
+    if (!raw) return [];
+    return raw
+      .split(/\s+/)
+      .slice(0, limit)
+      .map((childPid) => {
+        try {
+          const cmd = readFileSync(`/proc/${childPid}/cmdline`, 'utf8')
+            .replace(/\0+$/, '')
+            .split('\0')
+            .join(' ')
+            .trim();
+          return `${cmd.slice(0, 120) || 'unknown'} (pid ${childPid})`;
+        } catch {
+          return `gone (pid ${childPid})`;
+        }
+      });
+  } catch {
+    return []; // not Linux, or no children — absent, never a claim of "none".
+  }
+}
+
 /** CPU + scheduler state of the main thread at the last observation it was HEALTHY. */
 let healthyCpu: { ticks: number; atMs: number } | null = null;
 
@@ -198,13 +237,22 @@ function mainThreadActivity(): MainThreadActivitySnapshot {
   if (verdict.cores != null) out.mainThreadCores = Number(verdict.cores.toFixed(2));
   if (verdict.suspectWrongSubject) out.suspectWrongSubject = true;
   if (wchan) out.mainThreadWchan = wchan;
-  return {
+  const activity: MainThreadActivity = {
     state: now?.state ?? null,
     cpuMs: verdict.cpuMs,
     cores: verdict.cores,
     wchan,
-    fields: out,
   };
+  // Complete the PARKED branch. `parked` + `ep_poll` is where an idle loop also
+  // sits, so the bare label reads as "healthy" — but the caller only asks once
+  // the heartbeat is already stale, and an idle loop still runs its timers.
+  // Report the mode and name the children; never suppress the kill.
+  if (isLikelySyncSubprocessBlock(activity)) {
+    out.mainThreadBlockMode = 'sync-subprocess-suspected';
+    const children = readMainThreadChildren();
+    if (children.length) out.mainThreadLiveChildren = children.join(' | ');
+  }
+  return { ...activity, fields: out };
 }
 
 let state: LoopSentinelState = initialLoopSentinelState(
