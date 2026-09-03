@@ -109,6 +109,7 @@ export const goalSpend = stub('goalSpend');
 export const GoalSpend = stub('GoalSpend');
 export const goalsForPot = stub('goalsForPot');
 export const harnessQuery = stub('harnessQuery');
+export const harnessTransaction = stub('harnessTransaction');
 export const HOSTED_SERVICE_ROLE = stub('HOSTED_SERVICE_ROLE');
 export const isParkedNextFire = stub('isParkedNextFire');
 export const linkPot = stub('linkPot');

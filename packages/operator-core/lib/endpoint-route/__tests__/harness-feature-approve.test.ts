@@ -19,6 +19,12 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   getLegacyClient: vi.fn(),
   withWorkspaceLegacy: vi.fn(),
   getOrgPg: vi.fn(() => ({ db: {}, sql: vi.fn(async () => []) })),
+  // approveHumanReview (WI-5381: migrated off getLegacyClient) reads/writes via
+  // harnessQuery/harnessTransaction — both must be mocked explicitly, or the REAL
+  // implementation runs here (spread from `orig()`) and tries to reach live Postgres,
+  // which this unit test environment has none of. See mockHarnessQuerySequence below.
+  harnessQuery: vi.fn(),
+  harnessTransaction: vi.fn(),
 }));
 vi.mock('../../harness-core', () => ({
   resolveProject: vi.fn(),
@@ -50,7 +56,7 @@ import type { RouteDefinition } from '../define-route';
 import type { ZodTypeAny } from 'zod';
 import harnessFeatures from '../routes/harness/features';
 import { resolveProject } from '../../harness-core';
-import { getLegacyClient } from '@papercusp/db-org';
+import { harnessQuery, harnessTransaction } from '@papercusp/db-org';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -65,13 +71,33 @@ const mockFeature = {
   attempts: 0,
 };
 
-function makeMockDb(feature: any) {
-  const stmt = { get: vi.fn(async () => feature), run: vi.fn(async () => {}) };
-  const tx = { prepare: vi.fn(() => stmt) };
-  return {
-    prepare: vi.fn(() => stmt),
-    transaction: vi.fn(async (fn: (tx: any) => Promise<void>) => { await fn(tx); }),
-  };
+// harnessQuery's callback receives a postgres.js-shaped `sql` TAGGED TEMPLATE
+// function (`sql\`SELECT ...\``), not a sqlite-style `.prepare().get()` handle — this
+// fake tag ignores the query text/params and always resolves with `rows`, matching
+// how the real driver's tag call returns a Promise<row[]>.
+function fakeSqlTag(rows: any[]) {
+  return (async (_strings: TemplateStringsArray, ..._values: unknown[]) => rows) as any;
+}
+
+// Queues one row-set per harnessQuery() call, in order (approveHumanReview calls it
+// twice: once for existingRows, once for updatedRows after the transaction). The last
+// entry repeats for any further call.
+function mockHarnessQuerySequence(...rowSets: any[][]) {
+  let call = 0;
+  vi.mocked(harnessQuery).mockImplementation(async (_slug: string, cb: any) => {
+    const rows = rowSets[Math.min(call, rowSets.length - 1)];
+    call += 1;
+    return cb(fakeSqlTag(rows));
+  });
+}
+
+// harnessTransaction just needs to invoke its callback with a tag function whose
+// INSERT/UPDATE calls resolve to an empty row-set — the handler never reads the
+// transaction's own return value.
+function mockHarnessTransaction() {
+  vi.mocked(harnessTransaction).mockImplementation(async (_slug: string, fn: any) =>
+    fn(fakeSqlTag([])),
+  );
 }
 
 function makeApp(): Hono {
@@ -95,7 +121,7 @@ afterEach(() => vi.resetAllMocks());
 describe('POST /harness/:slug/features/:id/approve-human', () => {
   it('returns 404 when project is not found', async () => {
     vi.mocked(resolveProject).mockResolvedValue(null as any);
-    vi.mocked(getLegacyClient).mockReturnValue(makeMockDb(mockFeature) as any);
+    // harnessQuery is never reached (the route returns before it) — no mock needed.
     const app = makeApp();
     const res = await post(app, 'unknown', 'F-001');
     expect(res.status).toBe(404);
@@ -105,7 +131,7 @@ describe('POST /harness/:slug/features/:id/approve-human', () => {
 
   it('returns 404 when feature is not found', async () => {
     vi.mocked(resolveProject).mockResolvedValue(mockProject as any);
-    vi.mocked(getLegacyClient).mockReturnValue(makeMockDb(null) as any);
+    mockHarnessQuerySequence([]); // existingRows: no matching row
     const app = makeApp();
     const res = await post(app, 'sheets', 'F-MISSING');
     expect(res.status).toBe(404);
@@ -115,9 +141,7 @@ describe('POST /harness/:slug/features/:id/approve-human', () => {
 
   it('returns 400 when feature does not need review', async () => {
     vi.mocked(resolveProject).mockResolvedValue(mockProject as any);
-    vi.mocked(getLegacyClient).mockReturnValue(
-      makeMockDb({ ...mockFeature, needs_human_review: 0 }) as any,
-    );
+    mockHarnessQuerySequence([{ ...mockFeature, needs_human_review: 0 }]);
     const app = makeApp();
     const res = await post(app, 'sheets', 'F-001');
     expect(res.status).toBe(400);
@@ -127,7 +151,8 @@ describe('POST /harness/:slug/features/:id/approve-human', () => {
 
   it('returns ok:true on successful approval', async () => {
     vi.mocked(resolveProject).mockResolvedValue(mockProject as any);
-    vi.mocked(getLegacyClient).mockReturnValue(makeMockDb(mockFeature) as any);
+    mockHarnessQuerySequence([mockFeature], [{ ...mockFeature, needs_human_review: 0 }]);
+    mockHarnessTransaction();
     const app = makeApp();
     const res = await post(app, 'sheets', 'F-001');
     expect(res.status).toBe(200);
@@ -138,7 +163,8 @@ describe('POST /harness/:slug/features/:id/approve-human', () => {
 
   it('uses x-actor header as the approvedBy value', async () => {
     vi.mocked(resolveProject).mockResolvedValue(mockProject as any);
-    vi.mocked(getLegacyClient).mockReturnValue(makeMockDb(mockFeature) as any);
+    mockHarnessQuerySequence([mockFeature], [{ ...mockFeature, needs_human_review: 0 }]);
+    mockHarnessTransaction();
     const app = makeApp();
     const res = await post(app, 'sheets', 'F-001', {}, { 'x-actor': 'avi' });
     const body = await res.json();
