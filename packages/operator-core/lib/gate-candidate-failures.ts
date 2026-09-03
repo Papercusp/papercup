@@ -217,6 +217,16 @@ export interface GateCandidateFailures {
       admittedRound: number | null;
       reading: string;
     }[];
+    /**
+     * main-green-status-visible-2026-09-03 P-007 — the legs that are RED by this module's
+     * own rule, by id, so the assessment below and every reader of it use ONE derivation
+     * (`outstandingLegIds`). A leg is outstanding when this tick measured it as anything
+     * but `pass`, or when this tick did not measure it and the cycle still has it
+     * `failing` (not looking is not a pass). When the measurement is STALE (`current ===
+     * false`) only the cycle's lifecycle counts — a pass at a head the queue has moved past
+     * is not evidence about the current one.
+     */
+    outstanding: readonly string[];
     /** The leg shrink reading for this cycle. Carries its own scope sentence (D-004). */
     shrink: RepairLegShrinkSummary;
   } | null;
@@ -241,7 +251,16 @@ export type GateCandidateFailuresCode =
   | 'unmeasured'
   | 'none-failing'
   | 'all-fixes-contained'
-  | 'repairs-outstanding';
+  | 'repairs-outstanding'
+  /**
+   * main-green-status-visible-2026-09-03 P-007: no TEST FILE is still broken, but a
+   * non-test leg (lint / perf / desktop / delta) is red and its fix has not landed. Before
+   * this code existed the shape rendered as `none-failing` — the assessment counted only
+   * test files, so a gate wedged on a lint leg read as "nothing failing" on the one cell
+   * whose job is to say what is failing. That is the all-clear-while-red the plan's
+   * invariant forbids.
+   */
+  | 'non-test-leg-failing';
 
 type GitRunner = (cwd: string, args: string[]) => Promise<string | null>;
 
@@ -342,6 +361,7 @@ function buildNonTestLegs(
       : failing.length === 0
         ? 'All measured non-test legs (lint/perf/desktop/delta) passed at this repairHead.'
         : `${failing.length} non-test leg(s) failing at this repairHead: ${failing.map((l) => l.id).join(', ')}.`;
+  const perLeg = buildPerLeg(snap, queueLegs);
   return {
     current,
     head: snap.head,
@@ -349,9 +369,33 @@ function buildNonTestLegs(
     all: snap.legs,
     failing,
     reading,
-    perLeg: buildPerLeg(snap, queueLegs),
+    perLeg,
+    outstanding: outstandingLegIds(perLeg, current),
     shrink: summarizeRepairLegs(queueLegs ?? undefined),
   };
+}
+
+/**
+ * P-007 — WHICH legs are red, by ONE rule, so the assessment and the per-leg readings
+ * cannot disagree about it. Exported so the rule is testable on its own.
+ *
+ * - measured at the CURRENT head (or currency unknown): red iff this tick's result is not
+ *   `pass`; a leg this tick did not run is red iff the cycle still has it `failing`
+ *   (not measuring it is not a pass — D-005 rule 4).
+ * - measured at a STALE head (`current === false`): this tick's result is not evidence
+ *   about the current head in either direction, so only the cycle's lifecycle counts.
+ * - a `fixed` leg is red again only on a fresh non-pass measurement (a regression); a
+ *   `never-admitted` leg is red only when this tick actually measured it red.
+ */
+export function outstandingLegIds(
+  perLeg: ReadonlyArray<{ id: string; measuredNow: RepairLegStatus | 'not-measured'; lifecycle: 'failing' | 'fixed' | 'never-admitted' }>,
+  current: boolean | null,
+): string[] {
+  return perLeg
+    .filter((l) =>
+      current === false || l.measuredNow === 'not-measured' ? l.lifecycle === 'failing' : l.measuredNow !== 'pass',
+    )
+    .map((l) => l.id);
 }
 
 /**
@@ -734,16 +778,44 @@ export async function readGateCandidateFailures(
     // siblings are already fixed. `all-fixes-contained` is reserved for the case where
     // there is nothing left to do — claiming it while real work remains would be the
     // reassuring-degradation failure this cell was filed to end.
-    assessment:
-      files.length === 0
-        ? 'none-failing'
-        : stillBrokenCount > 0
-          ? 'repairs-outstanding'
-          : alreadyFixedCount === files.length
-            ? 'all-fixes-contained'
-            : // Every remaining file measured `null`: rows exist but nothing could be
-              // compared. That is an unmeasured state wearing a green coat, so it is
-              // reported as unmeasured rather than as either verdict.
-              'unmeasured',
+    //
+    // P-007: the NON-TEST LEGS are part of "what is failing on this candidate", so they
+    // enter the verdict at the same rank as a still-broken file — a red lint leg with zero
+    // failing test files used to read `none-failing`, which is the all-clear-while-red the
+    // plan's invariant forbids. `none-failing` now means no file AND no measured leg is
+    // red; `nonTestLegsMeasured: 'not-recorded'` still rides beside it to say the legs
+    // were never looked at (P-012's measured-ness pairing), which is not the same claim.
+    assessment: assessCandidateFailures({
+      fileCount: files.length,
+      stillBrokenCount,
+      alreadyFixedCount,
+      outstandingLegs: nonTestLegs?.outstanding.length ?? 0,
+      fixedLegs: nonTestLegs ? nonTestLegs.perLeg.filter((l) => l.lifecycle === 'fixed' && !nonTestLegs.outstanding.includes(l.id)).length : 0,
+    }),
   };
+}
+
+/**
+ * P-007 — the verdict rule, pure and exported so it can be falsified without a database.
+ * First match wins; the order IS the content (see the comment at the call site).
+ */
+export function assessCandidateFailures(c: {
+  fileCount: number;
+  stillBrokenCount: number;
+  alreadyFixedCount: number;
+  outstandingLegs: number;
+  fixedLegs: number;
+}): GateCandidateFailuresCode {
+  // A genuinely unrepaired test file is real work, whatever else is true.
+  if (c.stillBrokenCount > 0) return 'repairs-outstanding';
+  // A red non-test leg with no landed fix is real work too — and it is the one the file
+  // counts cannot see, so it must be named before any file-count reading can say "done".
+  if (c.outstandingLegs > 0) return 'non-test-leg-failing';
+  // Rows exist but some could not be compared: an unmeasured state wearing a green coat,
+  // reported as unmeasured rather than as either verdict.
+  if (c.fileCount > 0 && c.alreadyFixedCount !== c.fileCount) return 'unmeasured';
+  // Everything that was red — files, legs, or both — has a fix at repairHead awaiting
+  // re-verification. This is freeze-and-converge working as designed.
+  if (c.fileCount > 0 || c.fixedLegs > 0) return 'all-fixes-contained';
+  return 'none-failing';
 }
