@@ -682,7 +682,7 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
       },
       'all-fixes-contained': {
         meaning:
-          'Every file failing on the frozen candidate already differs at repairHead — the fixes landed after the cut and are awaiting re-verification.',
+          'Everything that was red on the frozen candidate — every failing file, and every non-test leg the cycle admitted — already has a fix at repairHead (a differing blob, or a leg whose own re-run passed at `fixedAtHead`), awaiting re-verification.',
         safeAction:
           'Do NOT go fix these files again; they are already repaired. Let the queue re-test repairHead. This is what a WORKING freeze-and-converge looks like from the inside.',
       },
@@ -711,6 +711,7 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
       'gate.candidateFailures.scope',
       'gate.candidateFailures.nonTestLegsMeasured',
       'gate.candidateFailures.nonTestLegs.perLeg',
+      'gate.candidateFailures.nonTestLegs.outstanding',
     ],
     // P-012: THE ORIGINAL INSTANCE. `0 / none-failing` having judged zero files is what
     // this plan was written against. The file counts are unmeasured exactly when
