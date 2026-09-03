@@ -129,6 +129,26 @@ export interface CellAssessmentSpec {
    * about what the value is not.
    */
   evidence: readonly string[];
+  /**
+   * main-green-status-visible-2026-09-03 P-012 — THE MEASURED-NESS PAIRING.
+   *
+   * "Measured empty" must never render as "nothing failing". For every hoisted path
+   * (the headline, an evidence path, the unknownHoist) whose value is a COUNT or a
+   * LIST, name the SAME-PAYLOAD path that says whether it was measured. Key = the
+   * count/list path; value = its flag path. The flag path MUST itself be hoisted, so
+   * the pair travels together through every surface that carries the value.
+   *
+   * The flag keeps its own semantics — a boolean `measured`, a `provenance` enum, an
+   * `unavailable` reason, a `nonTestLegsMeasured` state are all legal — and the
+   * generic reader carries it beside the value without interpreting it. What is
+   * enforced (cell-measuredness.ts, guarded against the LIVE payload in
+   * cell-assessment-reality.test.ts) is that no count or list is ever hoisted alone,
+   * that every flag is hoisted, and that a flag is never itself a count.
+   *
+   * Omit only when the cell hoists no counts or lists; the guard decides that from the
+   * payload's types, not from this field's absence.
+   */
+  measuredBy?: Readonly<Record<string, string>>;
 }
 
 /** D-038 axis 4 — no cell may be registered on FIXTURE evidence alone. A fixture
