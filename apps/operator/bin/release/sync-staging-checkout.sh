@@ -169,6 +169,29 @@ restart_result_is_accepted() {
   '
 }
 
+# True when a dev:restart refusal is a TRANSIENT git-sync coordination refusal
+# (EI-22102474093310851). dev:restart derives these reasons with a stable prefix —
+# `git_sync_collision_${kind}` and `git_sync_barrier_${reason}` (agent-tools/dev/
+# restart.ts) — so match the PREFIX the code owns, never a hand-copied list of
+# suffixes: the suffix vocabulary is a `.replace(/-/g,'_')` of an open enum and
+# would drift silently the moment a new kind is added.
+restart_refusal_is_transient_git_sync() {
+  node -e '
+    let body = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { body += chunk; });
+    process.stdin.on("end", () => {
+      try {
+        const result = JSON.parse(body);
+        const reason = typeof result?.reason === "string" ? result.reason : "";
+        process.exit(/^git_sync_(collision|barrier)_/.test(reason) ? 0 : 1);
+      } catch {
+        process.exit(1);
+      }
+    });
+  '
+}
+
 # Seconds since the commit the staging checkout is CURRENTLY serving. Bounds
 # the deferral: we only ever defer while the served code is still reasonably
 # fresh. An unresolvable sha reports a huge age ⇒ forces the restart.
@@ -286,11 +309,21 @@ if [ -n "$seconds_since_start" ] && [ "$seconds_since_start" -lt "$RECENT_RESTAR
   exit 0
 fi
 
-log "requesting coordinated restart of $UNIT via dev:restart"
+# EI-22102474093310851: WAIT for the git-sync barrier instead of one-shotting it.
+# dev:restart's own guidance: "git-sync fires hold the barrier only ~5-10s, so a
+# short drain usually succeeds where a one-shot attempt always fails" — and a
+# one-shot is exactly what this call used to be, which is why 13 of this timer's
+# runs in 24h died on git_sync_barrier_/git_sync_collision_ refusals (ZERO of them
+# a build error, despite the filed title). Bounded well under both the tool's
+# GIT_SYNC_RESTART_BARRIER_DRAIN_SEC=120 ceiling and this timer's ~300s tick, and
+# the flock single-flight above means an overrun skips rather than stacking.
+GIT_SYNC_DRAIN_SEC="${PAPERCUSP_STAGING_SYNC_GIT_SYNC_DRAIN_SEC:-60}"
+
+log "requesting coordinated restart of $UNIT via dev:restart (git_sync_drain_sec=${GIT_SYNC_DRAIN_SEC})"
 restart_result="$({
   cd "$INTEGRATION_ROOT"
   "$PTOOL_BIN" dev:restart --json - <<JSON
-{"target":"staging","confirm":true,"authorize":true,"reason":"staging-sync advanced ${current:0:8} to ${target:0:8}"}
+{"target":"staging","confirm":true,"authorize":true,"git_sync_drain_sec":${GIT_SYNC_DRAIN_SEC},"reason":"staging-sync advanced ${current:0:8} to ${target:0:8}"}
 JSON
 } 2>&1)" || {
   log "FATAL: coordinated dev:restart call failed: ${restart_result:0:500}"
@@ -302,6 +335,27 @@ JSON
 # success: another recent restart already cycled the same service and the
 # cooldown prevents a redundant outage.
 if ! printf '%s' "$restart_result" | restart_result_is_accepted; then
+  # EI-22102474093310851: a git-sync coordination refusal that OUTLASTS the drain
+  # above is still transient — git-sync runs continuously on this tree, so the very
+  # next 5-minute tick usually gets through. The checkout is ALREADY fast-forwarded
+  # at this point; only the restart is outstanding. Treat it the way this script
+  # already treats its other transient blocks (the flock skip, the recent-restart
+  # grace, the live-client deferral): log and exit 0 instead of failing the unit.
+  #
+  # BOUNDED, so this can never hide a genuinely stuck barrier: it defers only while
+  # the build :3170 is SERVING is younger than MAX_STALE_SEC — the same ceiling and
+  # the same current_commit_age_sec() the live-client deferral uses. Past it the
+  # refusal is FATAL again and the unit fails loudly, which is the whole point: a
+  # persistent barrier means :3170 is silently serving stale code and somebody must
+  # look. An unresolvable sha reports a huge age, so it escalates rather than defers.
+  if printf '%s' "$restart_result" | restart_refusal_is_transient_git_sync; then
+    age="$(current_commit_age_sec "$current")"
+    if [ "$age" -lt "$MAX_STALE_SEC" ] 2>/dev/null; then
+      log "deferring restart — dev:restart refused on a transient git-sync barrier/collision that outlasted the ${GIT_SYNC_DRAIN_SEC}s drain, and the served build is only ${age}s old (< ${MAX_STALE_SEC}s ceiling). The checkout is already fast-forwarded to ${target:0:8}; the next tick will restart. Refusal: ${restart_result:0:300}"
+      exit 0
+    fi
+    log "staleness ceiling reached (${age}s ≥ ${MAX_STALE_SEC}s) with dev:restart STILL refused on a git-sync barrier/collision — escalating instead of deferring again"
+  fi
   log "FATAL: coordinated dev:restart was refused or returned an invalid result: ${restart_result:0:500}"
   exit 1
 fi

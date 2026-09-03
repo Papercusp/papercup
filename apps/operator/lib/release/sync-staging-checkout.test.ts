@@ -431,3 +431,85 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
     expect(ptoolGateIdx).toBeLessThan(buildIdx);
   });
 });
+
+/**
+ * EI-22102474093310851 — a transient git-sync refusal must not fail the unit.
+ *
+ * THE BUG: the dev:restart call was a ONE-SHOT, and any refusal was FATAL exit 1.
+ * dev:restart's own guidance says the opposite is needed: "git-sync fires hold the
+ * barrier only ~5-10s, so a short drain usually succeeds where a one-shot attempt
+ * always fails." Measured over 24h on 2026-09-03: 13 unit failures, 9 on
+ * `git_sync_barrier_draining` and 4 on `git_sync_collision_operation_in_flight_unknown`
+ * — and ZERO build/tsc errors, despite the filed title naming the tsc step.
+ *
+ * The fix has two halves and BOTH are load-bearing:
+ *   1. pass `git_sync_drain_sec` so the call WAITS for the barrier;
+ *   2. if a git-sync refusal outlasts even that, DEFER (exit 0) rather than fail —
+ *      but bounded by the same MAX_STALE_SEC ceiling the live-client deferral uses,
+ *      so a genuinely stuck barrier still goes loud instead of silently leaving
+ *      :3170 on stale code forever.
+ */
+describe('sync-staging-checkout.sh — transient git-sync refusals defer, they do not fail (EI-22102474093310851)', () => {
+  const script = readFileSync(SCRIPT_PATH, 'utf8');
+
+  /** Run the REAL predicate over a dev:restart result payload. */
+  function isTransient(result: unknown): boolean {
+    const r = runFn(['restart_refusal_is_transient_git_sync'], 'restart_refusal_is_transient_git_sync', {
+      input: JSON.stringify(result),
+    });
+    if (r.status !== 0 && r.status !== 1) {
+      throw new Error(`predicate exited ${r.status}: ${r.stderr}`);
+    }
+    return r.status === 0;
+  }
+
+  it('classifies the two REAL refusals measured in the journal as transient', () => {
+    // Verbatim shapes from papercup-staging-sync.service, 2026-09-03.
+    expect(isTransient({ ok: false, target: 'staging', reason: 'git_sync_barrier_draining', restarted: false })).toBe(true);
+    expect(
+      isTransient({
+        ok: false,
+        target: 'staging',
+        reason: 'git_sync_collision_operation_in_flight_unknown',
+        restarted: false,
+        git_sync_collision: { kind: 'operation-in-flight-unknown', unknownResources: ['git-sync:papercusp'] },
+      }),
+    ).toBe(true);
+  });
+
+  it('matches the PREFIX dev:restart owns, so a future collision kind cannot drift past it', () => {
+    // restart.ts derives these as `git_sync_collision_${kind.replace(/-/g,'_')}` and
+    // `git_sync_barrier_${reason.replace(/-/g,'_')}` over an OPEN enum. A predicate
+    // enumerating today's suffixes would silently start failing the unit the day a
+    // new kind lands; matching the code-owned prefix is what prevents that.
+    expect(isTransient({ ok: false, reason: 'git_sync_collision_some_future_kind_nobody_has_written_yet' })).toBe(true);
+    expect(isTransient({ ok: false, reason: 'git_sync_barrier_some_future_reason' })).toBe(true);
+  });
+
+  it('does NOT swallow a refusal that is not a git-sync coordination refusal', () => {
+    expect(isTransient({ ok: false, reason: 'gate_collision' })).toBe(false);
+    expect(isTransient({ ok: false, reason: 'not_authorized' })).toBe(false);
+    expect(isTransient({ ok: false })).toBe(false);
+    // a reason that merely CONTAINS the token, rather than being prefixed by it
+    expect(isTransient({ ok: false, reason: 'unrelated_git_sync_collision_thing' })).toBe(false);
+    expect(isTransient('not json at all')).toBe(false);
+  });
+
+  it('the shipped script WAITS for the barrier instead of one-shotting the restart', () => {
+    expect(script).toContain('"git_sync_drain_sec":${GIT_SYNC_DRAIN_SEC}');
+    expect(script).toMatch(/GIT_SYNC_DRAIN_SEC="\$\{PAPERCUSP_STAGING_SYNC_GIT_SYNC_DRAIN_SEC:-\d+\}"/);
+  });
+
+  it('the deferral is BOUNDED — a stuck barrier still goes FATAL rather than hiding stale code', () => {
+    const branchIdx = script.indexOf('restart_refusal_is_transient_git_sync; then');
+    const ceilingIdx = script.indexOf('staleness ceiling reached', branchIdx);
+    const fatalIdx = script.indexOf('FATAL: coordinated dev:restart was refused', branchIdx);
+    expect(branchIdx).toBeGreaterThan(-1);
+    // the transient branch consults the SAME age ceiling the live-client deferral uses…
+    expect(script.slice(branchIdx, fatalIdx)).toContain('current_commit_age_sec');
+    expect(script.slice(branchIdx, fatalIdx)).toContain('MAX_STALE_SEC');
+    // …and the FATAL exit is still reachable past it, not replaced by the deferral.
+    expect(ceilingIdx).toBeGreaterThan(branchIdx);
+    expect(fatalIdx).toBeGreaterThan(ceilingIdx);
+  });
+});
