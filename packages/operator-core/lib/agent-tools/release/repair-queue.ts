@@ -303,9 +303,19 @@ export default defineTool({
       if (assessment.verdict !== 'would-converge' || !assessment.newRepairHead || !inspected.queue) {
         return json({ ok: true, converged: false, ...base });
       }
+      // EI-22208176411693669: assessFrozenRepairFixerAuthorization above already routes
+      // an isSuperuser caller to 'not-applicable' (never 'authorized-delegate') because
+      // the SU-bearer transport carries no verified per-spawn signature regardless of its
+      // cosmetic ?role= catalog hint. Without this clause a superuser caller whose ?role=
+      // was forwarded as 'release-fixer' would still fail every disjunct here (role!=='su',
+      // not an OPERATOR_CONFIG_WRITE_ROLE, authorized!==true) and be wrongly thrown out of
+      // convergence — even though dispatch capability on that transport is already
+      // unconditional (isSuperuser bypasses role gates platform-wide, per
+      // tool-projection.ts). Mirror that bypass here explicitly.
       if (
         ctx.role !== 'su' &&
         !isOperatorConfigWriteRole(ctx.role) &&
+        ctx.isSuperuser !== true &&
         callerAuthorization.authorized !== true
       ) {
         throw new Error(

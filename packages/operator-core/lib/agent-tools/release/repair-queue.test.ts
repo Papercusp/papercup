@@ -16,14 +16,21 @@ const queue = {
 const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   retire: vi.fn(),
+  write: vi.fn(),
   alive: vi.fn(),
   audit: vi.fn(),
+  assessConverge: vi.fn(),
 }));
 vi.mock('../../harness/routines/release-actions', () => ({
   readFrozenCandidateRepairQueue: mocks.read,
   retireFrozenCandidateRepairQueue: mocks.retire,
+  writeFrozenCandidateRepairQueue: mocks.write,
 }));
 vi.mock('../../release/fixer-liveness', () => ({ releaseFixerSpawnAlive: mocks.alive }));
+vi.mock('../../release/converge-repair-head', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../release/converge-repair-head')>()),
+  assessConvergeRepairHead: mocks.assessConverge,
+}));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-1' }));
 vi.mock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
 vi.mock('../locks/identity', () => ({ readIdentity: async () => ({ ownerId: 'su-test' }) }));
@@ -118,6 +125,64 @@ describe('release:repair-queue', () => {
       authorized: true,
       callerSpawnId: 'fixer-1',
     });
+  });
+
+  // EI-22208176411693669: assessFrozenRepairFixerAuthorization correctly labels the
+  // SU-bearer transport 'not-applicable' (never 'authorized-delegate') because that
+  // transport carries no verified per-spawn signature regardless of its cosmetic
+  // ?role= catalog hint. But the converge write-gate is a SEPARATE `if` a few lines
+  // below callerAuthorization, and before this fix it independently required
+  // role==='su' OR an OPERATOR_CONFIG_WRITE_ROLE OR authorized===true — none of which
+  // a superuser caller whose ?role= was forwarded as 'release-fixer' satisfied — so it
+  // was thrown out of convergence even though dispatch on that transport is already
+  // unconditional. This pins that the write-gate itself, not just the label, bypasses.
+  it('EI-22208176411693669: an isSuperuser caller may converge even when its cosmetic role hint is release-fixer', async () => {
+    mocks.assessConverge.mockReturnValue({
+      verdict: 'would-converge',
+      newRepairHead: 'd'.repeat(40),
+      judgedSha: 'd'.repeat(40),
+      nextAction: null,
+    });
+    mocks.write.mockResolvedValue(undefined);
+    const result = body(
+      await tool.handler(
+        { op: 'converge', confirm: true } as never,
+        {
+          role: 'release-fixer',
+          isSuperuser: true,
+          spawnId: 'fixer-1',
+          sigVerifiedSpawn: false,
+        } as never,
+      ),
+    );
+    expect(result).toMatchObject({ ok: true, converged: true, persisted: true });
+    expect(result.callerAuthorization).toMatchObject({ status: 'not-applicable', authorized: null });
+    expect(mocks.write).toHaveBeenCalled();
+  });
+
+  // Control for the test above: a non-superuser release-fixer that is NOT the
+  // queue-delegated fixer must still be refused. This is what proves the fix bypasses
+  // on isSuperuser specifically, rather than having widened the gate for every
+  // release-fixer-labelled caller.
+  it('control: a non-superuser caller with an unverified or mismatched release-fixer identity is still refused convergence', async () => {
+    mocks.assessConverge.mockReturnValue({
+      verdict: 'would-converge',
+      newRepairHead: 'd'.repeat(40),
+      judgedSha: 'd'.repeat(40),
+      nextAction: null,
+    });
+    await expect(
+      tool.handler(
+        { op: 'converge', confirm: true } as never,
+        {
+          role: 'release-fixer',
+          isSuperuser: false,
+          spawnId: 'fixer-2',
+          sigVerifiedSpawn: true,
+        } as never,
+      ),
+    ).rejects.toThrow(/requires operator, architect, mug, su/);
+    expect(mocks.write).not.toHaveBeenCalled();
   });
 
   it('refuses retirement while the fixer is live', async () => {
