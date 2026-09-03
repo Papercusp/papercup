@@ -3513,7 +3513,10 @@ describe('WI-4494: the routine defers to a run that already recorded (no double-
     for (const args of calls) {
       expect(args).toMatchObject({
         source: 'green-checkpoint',
-        summary: `[pipeline:${EXPECTED_PIPELINE}] green-checkpoint: abc123de not green — main held`,
+        // EI-22240267519750098: the ref inside the claim is pipeline-qualified, so a
+        // foreign pot's red on the GLOBAL key cannot read as the awaiter's own gate.
+        // Written literally, not via `pipelineRef`, to stay an independent restatement.
+        summary: `[pipeline:${EXPECTED_PIPELINE}] green-checkpoint: abc123de not green — ${EXPECTED_PIPELINE}:main held`,
         cancelSiblingKeysFor: ['release:green', `release:green:${EXPECTED_PIPELINE}`],
         payload: {
           sha: 'abc123def456789',
