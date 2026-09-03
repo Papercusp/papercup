@@ -10,6 +10,8 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_CHECKS,
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_PHASES,
+  WORKSPACE_HOST_AGENT_NODE_SHA256,
+  WORKSPACE_HOST_AGENT_NODE_VERSION,
   WORKSPACE_HOST_DATA_ROOT,
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT,
   WORKSPACE_HOST_PRIVILEGED_CONDUIT_SUDOERS,
@@ -185,6 +187,78 @@ describe('buildWorkspaceHostBootstrap agent runtime installs (D-259)', () => {
     expect(pathLine).toContain('$AGENT_HOME/.papercusp/runtime/node_modules/.bin');
     expect(pathLine).not.toContain('RELEASE_DIR');
     expect(pathLine).not.toContain('RUNTIME_ROOT');
+  });
+
+  /**
+   * D-263. The codex install argv is the DESKTOP onboarding script and it shells `npm`, which this
+   * host has nowhere: not in the apt contract, and not in the bundle (a bare `node`, no npm). That
+   * killed bootstrap before the initialize entrypoint was installed, surfacing as every canary
+   * failing `0/6` with `exit 127 ... papercusp-workspace-host-initialize: No such file or directory`
+   * — an error naming the wrong artifact entirely. These assertions pin the repair.
+   */
+  it('installs a pinned Node into the agent home BEFORE any vendor install that needs npm', () => {
+    const script = buildWorkspaceHostBootstrap(
+      input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+    );
+    // Runs as the AGENT identity, in the agent's own home — not as root, and not into the
+    // root-owned release tree the agent only holds rX on.
+    expect(script).toContain(
+      `runuser -u "$AGENT_USER" -- env HOME="$AGENT_HOME" PATH="$AGENT_RUNTIME_PATH" /bin/bash -c '`,
+    );
+    expect(script).toContain(
+      `|| die 'agent Node runtime install failed (v${WORKSPACE_HOST_AGENT_NODE_VERSION})'`,
+    );
+    // ORDERING IS THE WHOLE POINT: npm has to exist before codex's installer runs, so a node
+    // install emitted after the loop would reproduce the original failure exactly.
+    const nodeAt = script.indexOf('installing agent Node runtime');
+    const codexAt = script.indexOf("'echo install-codex'");
+    expect(nodeAt).toBeGreaterThan(-1);
+    expect(codexAt).toBeGreaterThan(-1);
+    expect(nodeAt).toBeLessThan(codexAt);
+  });
+
+  it('pins the Node tarball by version AND checksum, and verifies npm survived the extract', () => {
+    const script = buildWorkspaceHostBootstrap(
+      input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+    );
+    expect(script).toContain(
+      `https://nodejs.org/dist/v${WORKSPACE_HOST_AGENT_NODE_VERSION}/$dir.tar.gz`,
+    );
+    // The digest is the trust boundary — a swapped upstream tarball must fail rather than execute.
+    expect(script).toContain(WORKSPACE_HOST_AGENT_NODE_SHA256.x64);
+    expect(script).toContain(WORKSPACE_HOST_AGENT_NODE_SHA256.arm64);
+    expect(script).toContain('sha256sum -c -');
+    // .tar.gz, never .tar.xz: the apt contract deliberately ships no xz-utils.
+    expect(script).not.toContain('.tar.xz');
+    expect(WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES).not.toContain('xz-utils');
+    // npm is a symlink into lib/, so asserting only `node` would pass on an extract that leaves
+    // npm dangling — the failure would then land inside the codex install and read as codex's bug.
+    expect(script).toContain('"$target/bin/npm" --version >/dev/null');
+  });
+
+  /**
+   * The repair must not buy npm by putting the release's `bin/` on the resolve PATH — that
+   * directory holds the psu wrappers, and this is the D-247 hole the sibling test above guards.
+   */
+  it('obtains node without widening the resolve surface onto the release wrappers', () => {
+    const script = buildWorkspaceHostBootstrap(
+      input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+    );
+    const pathLine = script
+      .split('\n')
+      .find((line) => line.startsWith('AGENT_RUNTIME_PATH='));
+    // The install lands in $AGENT_HOME/.local, which the PATH ALREADY carried — so the fix adds
+    // no entry at all, and the wrapper directory stays excluded.
+    expect(pathLine).toContain('$AGENT_HOME/.local/bin');
+    expect(pathLine).not.toContain('RELEASE_DIR');
+    expect(pathLine).not.toContain('RUNTIME_ROOT');
+    expect(script).toContain('target="$HOME/.local"');
+  });
+
+  it('fetches no Node when no agent runtimes are configured', () => {
+    const script = buildWorkspaceHostBootstrap(input());
+    expect(script).not.toContain('nodejs.org');
+    expect(script).not.toContain('installing agent Node runtime');
   });
 
   /**

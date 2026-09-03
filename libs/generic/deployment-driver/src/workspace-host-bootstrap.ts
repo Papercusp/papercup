@@ -122,7 +122,7 @@ export type WorkspaceHostBootstrapAptPackage =
   (typeof WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES)[number];
 
 /**
- * Node runtime installed into the AGENT identity's OWN home, for the vendor agent CLIs (D-264).
+ * Node runtime installed into the AGENT identity's OWN home, for the vendor agent CLIs (D-263).
  *
  * ⚠ This is the SECOND Node on the host and that is deliberate — do not "simplify" it away by
  * pointing the agent at the bundled one. The release bundle's Node lives at
@@ -987,7 +987,7 @@ function assignment(name: string, value: string): string {
  */
 /**
  * Install Node (and therefore npm) into the agent identity's own `~/.local`, BEFORE any vendor
- * agent install runs (D-264).
+ * agent install runs (D-263).
  *
  * WHY THIS EXISTS — the failure it removes was expensive to read, so it is worth stating plainly.
  * The codex install argv is the DESKTOP onboarding script, reused verbatim by this host
@@ -1036,7 +1036,7 @@ function agentNodeRuntimeInstallLines(): string[] {
   ].join("\n");
   return [
     "",
-    `# D-264: the vendor agent CLIs need npm to install and node to run; the host has neither`,
+    `# D-263: the vendor agent CLIs need npm to install and node to run; the host has neither`,
     `# (apt ships none, and the bundle's Node is a bare binary in the wrapper dir PATH excludes).`,
     `echo "==> installing agent Node runtime v${version}" >&2`,
     `runuser -u "$AGENT_USER" -- env HOME="$AGENT_HOME" PATH="$AGENT_RUNTIME_PATH" /bin/bash -c ${shellQuote(
