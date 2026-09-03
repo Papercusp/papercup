@@ -3067,6 +3067,27 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: () => true,
   },
   {
+    // EI-22201289307647151 — the same D-034 shape as lint:no-tracked-node-modules just
+    // above, one boundary over: a superproject .gitignore rule does not reach inside a
+    // submodule, so 22 of 38 coverage-capable submodules had no local `coverage/` ignore
+    // rule (one of them, libs/papercusp, already had 10 raw V8 coverage JSON files
+    // TRACKED from an earlier accidental sweep). `--coverage` is opt-in today, so the
+    // first tree-wide run to use it would sweep a generated report into every one of
+    // those repos via git-sync — same class as EI-22195215129102176 (74 files /
+    // +54,104 lines swept), just multiplied across every affected submodule at once.
+    workspace: "@papercusp/operator-core",
+    script: "lint:submodule-coverage-ignore",
+    // Deliberately NO hostSuiteRatchet, for the same reason as lint:no-tracked-node-
+    // modules directly above: submodule-coverage-ignore-guard.test.ts exercises the
+    // PREDICATE against injected maps, never the real tree, so it cannot re-run this
+    // invariant in-suite.
+    // Deliberately EVERY changed path. Nothing about ADDING a submodule, or a submodule
+    // gaining its first package.json/Cargo.toml, needs to touch a file this run would
+    // otherwise select — narrowing by extension would reproduce the exact blind spot
+    // that let 22 repos arrive here with no local rule.
+    appliesTo: () => true,
+  },
+  {
     // EI-7667 — the D-034 shape again, and the reason this guard exists at all.
     // lint:no-unthreaded-apply SCANS packages/ libs/ apps/ for production call sites of
     // the hyperbee op-apply seam that fail to thread `ownLogKeyHex`, but its enforcement
