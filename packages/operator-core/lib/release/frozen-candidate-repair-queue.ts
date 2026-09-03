@@ -1496,6 +1496,41 @@ export function markFrozenRepairFixerFinished(
   };
 }
 
+/**
+ * WI-212675 — a fixer that CHANGED NOTHING at a head the suite has NEVER JUDGED is reporting
+ * "nothing left to change", not "I failed".
+ *
+ * A fix reaches the judged lineage two ways. The dispatched fixer commits it in the repair
+ * worktree — `finalizeFrozenRepairWorktree` returns the new head and the queue moves to
+ * ready-to-verify. Or a peer lands it on staging and `release:repair-queue { op:'converge' }`
+ * fast-forwards the movable `repairHead` onto that tip WITHOUT touching the phase. On the
+ * converge route the next fixer is dispatched at a head where every named red already passes,
+ * correctly changes nothing, and exits — and the recover-dead-fixer branch read that as a
+ * death: attempt spent, replacement dispatched, suite never run. Measured 2026-09-03 17:23Z on
+ * frozen candidate d165d753: repairHead 46dd13e4 had all 13 named reds passing and the queue
+ * re-dispatched instead of verifying. Same false-silence class as P-012 ("measured empty"
+ * rendered as "nothing happened").
+ *
+ * The predicate that separates the two readings is whether `repairHead` has ever been
+ * VERIFIED RED. Every red appends a `convergenceRounds` entry at the head it judged — the
+ * opening red seeds round 1 at the candidate itself — so a repairHead absent from every round
+ * is one the suite has never been run against. A no-op fixer THERE means the converged head
+ * is ready to verify. A no-op fixer at a head already verified red is the ordinary failed
+ * attempt and must stay on the dead-fixer path: that is what stops a red verification from
+ * re-entering the suite for free (verify → red → dispatch → no-op → verify … would burn a
+ * full suite every tick).
+ *
+ * A legacy queue with no rounds recorded falls back to `repairHead !== candidate`: the
+ * candidate is red by construction, and a moved head with no round errs toward spending ONE
+ * suite on it rather than never verifying it — the smaller failure, and self-limiting, since
+ * its red appends the round that routes the next no-op fixer onto the dead path.
+ */
+export function frozenRepairHeadAwaitsVerification(queue: FrozenCandidateRepairQueue): boolean {
+  if (queue.repairHead === queue.candidate) return false;
+  const rounds = queue.convergenceRounds ?? [];
+  return !rounds.some((round) => round.head === queue.repairHead);
+}
+
 /** A red verification retries FORWARD from the head that was just tested; it never retreats to
  * a historical prefix and never adopts the moving staging tip. */
 export function markFrozenRepairVerificationRed(
