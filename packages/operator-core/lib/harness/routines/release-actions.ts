@@ -2629,6 +2629,39 @@ export function mergeGateHealthMonotonic(
 }
 
 /**
+ * C4 of EI-22270968007901491 (main-green-status-visible-2026-09-03): `gate_health` is ONE blob
+ * with MANY writers, and `trackGateStall` is the only one that used to REPLACE the whole key.
+ * Every other writer merges (`gate-health-merge.ts`, `writeFreezeAndConvergeDisposition`, the
+ * hold-tick leaf writes), so a key they own survived until the next real verdict — which then
+ * dropped it. Measured live 2026-09-03: `freezeAndConverge` (written 19:23Z by the tick's
+ * disposition writer) and `repairTickLegs` were both gone from the papercusp row after the
+ * 19:25Z verdict write, so the freeze-disposition cell read "no record" while the freeze was
+ * held, and the per-leg cell lost its measurement.
+ *
+ * The EI-7472 answer — hand-carry `watchdogAlerted` through every `next` — does not scale:
+ * each new cross-writer key has to know to add itself here, and `freezeAndConverge` is the
+ * proof that they do not. So the rule is inverted: a key this writer's `next` does NOT MENTION
+ * belongs to someone else and is carried through verbatim. A key this writer wants CLEARED must
+ * say so with an explicit `null` (the convention `inconclusive: null` / `repairTickLegs: null`
+ * already follow), because clear-by-omission is exactly the behaviour that clobbered peers.
+ *
+ * Pure and exported so it is falsifiable without a database. The final SQL write applies the
+ * same rule against the row's LIVE value (`COALESCE(metadata->'gate_health','{}') || next`), so
+ * a peer's merge landing between this function's SELECT and its UPDATE survives too.
+ */
+export function carryForeignGateHealthKeys(
+  previous: Record<string, unknown> | null | undefined,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!previous || typeof previous !== 'object') return { ...next };
+  const carried: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(previous)) {
+    if (!(key in next)) carried[key] = value;
+  }
+  return { ...carried, ...next };
+}
+
+/**
  * EI-19321275470651356: the log line `trackGateStall` emits for a `'noop'` tick.
  *
  * `'noop'` covers two conditions whose correct operator response is OPPOSITE, so they
@@ -3094,8 +3127,9 @@ export async function trackGateStall(
           //     froze the candidate, and this tick re-measured only the legs;
           //   · record provenance under gate_health.repairTickLegs (head + atMs + result)
           //     so a reader can see WHEN and AGAINST WHAT the leg half was refreshed.
-          // The next REAL verdict still replaces the whole gate_health key, clearing all of
-          // this exactly like `inconclusive` itself. Fresh failing ids are all in the
+          // The next REAL verdict clears all of this EXPLICITLY (`inconclusive: null`,
+          // `repairTickLegs: null` in every verdict branch) — the final write MERGES since C4
+          // of EI-22270968007901491, so nothing is cleared by omission. Fresh failing ids are all in the
           // measured set, so the filter+append cannot duplicate an entry.
           const measuredIds = tickLegs.legs.map((leg) => leg.id);
           await sql.unsafe(
@@ -3386,11 +3420,12 @@ export async function trackGateStall(
         `${orchestratorStdoutTag()} release pin moved ${gh.lastFrom} → ${fromPin} outside this routine (status '${status}') — main is advancing; resetting the stall streak`,
       );
     }
-    // EI-7472: the final metadata write below REPLACES the whole `gate_health`
-    // key (jsonb `||` is a shallow top-level merge). `watchdogAlerted` is owned by
-    // the separate green-stall-watchdog sweep — carry it through every `next` here
-    // or this whole-object replace silently drops it. On recovery (green) clear it,
-    // matching the watchdog's own recovery-clear (green-stall-watchdog.ts).
+    // EI-7472: `watchdogAlerted` is owned by the separate green-stall-watchdog sweep — it is
+    // carried through every `next` here explicitly. (Until C4 of EI-22270968007901491 the
+    // final write REPLACED the whole `gate_health` key, so omitting it dropped it; the write
+    // now merges and carries unmentioned keys — see carryForeignGateHealthKeys — but the
+    // explicit carry stays because on recovery (green) this writer CLEARS it, matching the
+    // watchdog's own recovery-clear in green-stall-watchdog.ts.)
     // EI-7505: clear the failing-test list on recovery — a stale list from the
     // last red streak must not linger in gate_health once the gate is green again.
     // WI-4489: stamp WHEN this verdict was observed and WHAT it judged. Without it the blob is a
@@ -3453,6 +3488,9 @@ export async function trackGateStall(
           candidateCommittedAt: staleness.candidateCommittedAt,
           commitsBehindTip: staleness.commitsBehindTip,
           inconclusive: null,
+          // C4: a real verdict supersedes the hold tick's per-leg snapshot (P-009). Stated
+          // outright now that the write MERGES — clear-by-omission no longer exists.
+          repairTickLegs: null,
           // EI-21462211894072863: a real verdict ENDS a no-verdict streak — that is what
           // "consecutive" means. Stated outright rather than left to the whole-key replace,
           // matching the `inconclusive: null` convention directly above (a later change to a
@@ -3490,6 +3528,8 @@ export async function trackGateStall(
           candidateCommittedAt: staleness.candidateCommittedAt,
           commitsBehindTip: staleness.commitsBehindTip,
           inconclusive: null,
+          // C4: see the green arm — a real verdict supersedes the hold tick's leg snapshot.
+          repairTickLegs: null,
           // EI-21462211894072863: see the green arm — a verdict of EITHER colour ends the streak.
           consecutiveNoVerdict: 0,
           noVerdictAlerted: false,
@@ -3940,6 +3980,9 @@ export async function trackGateStall(
       // EI-19405864032365760: a real verdict supersedes any recorded preflight abort — see the
       // reset branch above for why this is explicit rather than left to the whole-key replace.
       inconclusive: null,
+      // C4: a real verdict supersedes the hold tick's per-leg snapshot (P-009) — explicit,
+      // because the final write now MERGES and no key is cleared by omission any more.
+      repairTickLegs: null,
       // EI-21462211894072863: a RED is still a verdict — the gate ran and judged code — so it ends
       // a no-verdict streak just as a green does. Only a tick that produced NO verdict extends one.
       consecutiveNoVerdict: 0,
@@ -3950,13 +3993,17 @@ export async function trackGateStall(
   // information-preserving guard against the CURRENT row value inside SQL. The latter is
   // necessary because two checkpoint observations can SELECT concurrently and the older,
   // less-informative snapshot can otherwise land after the completed run's populated verdict.
-  next = mergeGateHealthMonotonic(gh, next);
+  // C4 (EI-22270968007901491): carry every key this writer does not own (freezeAndConverge,
+  // inFlightCandidate, the fixer-succession marks, …) — see carryForeignGateHealthKeys. The
+  // SQL below repeats the rule against the row's live value so a concurrent peer merge
+  // between the SELECT above and this UPDATE cannot be clobbered either.
+  next = carryForeignGateHealthKeys(gh as Record<string, unknown> | null, mergeGateHealthMonotonic(gh, next));
   await sql.unsafe(
     `UPDATE harness_shared.routines
         SET metadata = jsonb_set(
           COALESCE(metadata, '{}'::jsonb),
           '{gate_health}',
-          CASE
+          COALESCE(metadata->'gate_health', '{}'::jsonb) || (CASE
             WHEN jsonb_array_length(
               CASE WHEN jsonb_typeof(metadata->'gate_health'->'failingTests') = 'array'
                 THEN metadata->'gate_health'->'failingTests' ELSE '[]'::jsonb END
@@ -3989,7 +4036,7 @@ export async function trackGateStall(
             -- mergeGateHealthMonotonic has already set the flag false there.
             -- (No backticks in this comment: it lives inside a tagged template literal.)
             ELSE $2::jsonb->'gate_health'
-          END,
+          END),
           true
         ), updated_at = now()
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
