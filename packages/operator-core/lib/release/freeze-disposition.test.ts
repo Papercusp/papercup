@@ -2,11 +2,78 @@ import { describe, expect, it } from 'vitest';
 import {
   FREEZE_DISPOSITION_FRESH_MS,
   buildFreezeAndConvergeGateHealth,
+  deriveTickFreezeDisposition,
   readFreezeAndConverge,
   summarizeFreezeAndConverge,
 } from './freeze-disposition';
 
 const T0 = Date.parse('2026-09-02T16:00:00.000Z');
+
+describe('deriveTickFreezeDisposition — P-008 per-tick backstop', () => {
+  // The defect this exists for, stated as a test: the four explicit recordFreezeDisposition
+  // call sites cover `retired` x2, `held` and `off`. `converging` and `none` are recorded
+  // NOWHERE, and the stored record is shallow-merged and never cleared — so a tick that
+  // converges or clears leaves the previous hold standing and a reader inside the freshness
+  // window takes it for current state.
+  it('derives `converging` for a tick that still holds a frozen queue', () => {
+    const d = deriveTickFreezeDisposition({
+      flagEnabled: true,
+      repairQueue: { candidate: 'abc123def456789' },
+      summary: 'frozen repair fixer sp-1 dispatched for abc123de (attempt 2); no suite run',
+      green: null,
+    });
+    expect(d.state).toBe('converging');
+    expect(d.enabled).toBe(true);
+    expect(d.candidate).toBe('abc123def456789');
+    // The run's own sentence is preferred over a generic one — a reason that says nothing
+    // sends the reader back to the logs this record exists to replace.
+    expect(d.reason).toContain('dispatched for abc123de');
+  });
+
+  it('derives `none` — NOT `off` — for a green tick with nothing frozen', () => {
+    // `off` and `none` are the conflation the whole record exists to prevent: an
+    // owner-suppressed mechanism and a gate with nothing to freeze are different facts.
+    const d = deriveTickFreezeDisposition({
+      flagEnabled: true,
+      repairQueue: null,
+      summary: 'all legs green',
+      green: true,
+    });
+    expect(d.state).toBe('none');
+    expect(d.enabled).toBe(true);
+    expect(d.candidate).toBeNull();
+    expect(d.reason).toContain('went green');
+  });
+
+  it('derives `off` whenever the owner flag is off, whatever else the tick did', () => {
+    const d = deriveTickFreezeDisposition({
+      flagEnabled: false,
+      repairQueue: { candidate: 'abc123def456789' },
+      summary: 'not-green',
+      green: false,
+    });
+    expect(d.state).toBe('off');
+    expect(d.enabled).toBe(false);
+    expect(d.reason).toContain('RELEASE_FREEZE_AND_CONVERGE_DEFAULT');
+  });
+
+  it('never emits a blank reason, so `readFreezeAndConverge` can never reject its own output', () => {
+    // readFreezeAndConverge fails CLOSED on an empty reason. A derived disposition that
+    // tripped that guard would write a record no reader accepts — absent state that LOOKS
+    // written, which is strictly worse than not writing at all.
+    for (const observation of [
+      { flagEnabled: true, repairQueue: null, summary: '', green: false },
+      { flagEnabled: true, repairQueue: null, summary: '   ', green: null },
+      { flagEnabled: true, repairQueue: { candidate: 'deadbeefcafe' }, summary: '  ' },
+      { flagEnabled: false, repairQueue: null },
+    ]) {
+      const derived = deriveTickFreezeDisposition(observation);
+      expect(derived.reason.trim()).not.toBe('');
+      const stored = buildFreezeAndConvergeGateHealth(derived, T0);
+      expect(readFreezeAndConverge(stored)).not.toBeNull();
+    }
+  });
+});
 
 describe('buildFreezeAndConvergeGateHealth', () => {
   it('writes every optional field EXPLICITLY as null, so a shallow merge cannot strand stale bounds', () => {
