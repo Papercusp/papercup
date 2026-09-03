@@ -53,6 +53,7 @@ import { boundedPgReadTxn } from '../../pg-read-query';
 // (measured: loop.test.ts, EI-19986796515232861). loop.ts is a core routines module reached
 // from many lightweight import graphs — keep this import light.
 import {
+  AUTOMATIC_TOOL_NAMES,
   CARRY_NOTE_BOOKKEEPING_TOOL_NAMES,
   agentToolInvocationPredicate,
 } from '../../agent-tools/sessions/automatic-tool-names';
@@ -2167,13 +2168,36 @@ export async function getLoopStatus(ownerId: string, opts: { sql?: Sql } = {}): 
  * and never read it as zero, or a transient query error would silently suppress a real
  * warning (the existing, safe default). Best-effort only: never let this delay or drop a
  * cold-wake delivery.
+ *
+ * WI-2143038 — the two callers ask DIFFERENT questions, and the difference is load-bearing:
+ *
+ *  'post-note-work' (default, the original caller): "did any work happen AFTER the carry
+ *    note was written?" Its window opens at the note's `updated_at`, so the loop:checkpoint
+ *    that wrote the note lands inside it and would count ITSELF — hence the bookkeeping
+ *    exclusion documented above. MCP-ledger evidence is the right (and only) instrument,
+ *    because the question is about a specific write ordering.
+ *
+ *  'fire-productivity' (WI-41228's R4 zero-tool escalation): "did this fire's turn do
+ *    ANYTHING?" Its window opens at the FIRE, not the note, so the checkpoint cannot count
+ *    itself and excluding it is simply wrong — writing a carry-note IS agent work, and for a
+ *    disciplined watcher it is often the only MCP call of the wake. This scope therefore
+ *    keeps the bookkeeping calls AND unions in the native-tool ledger.
+ *
+ * Reusing 'post-note-work' for the R4 question is what disarmed a healthy hourly wall-watcher
+ * on 2026-09-02 (owner su-54215254): its wakes were a native Bash probe plus a loop:checkpoint
+ * — invisible and excluded respectively — so it scored a structural 0 three times running and
+ * was paused with pausedNextFireAt=infinity while doing exactly its job.
  */
+export type AgentToolEvidenceScope = 'post-note-work' | 'fire-productivity';
+
 export async function countAgentToolCallsInWindow(
   ownerId: string,
   sinceMs: number,
   untilMs: number,
-  opts: { sql?: Sql } = {},
+  opts: { sql?: Sql; evidenceScope?: AgentToolEvidenceScope } = {},
 ): Promise<number | null> {
+  const evidenceScope = opts.evidenceScope ?? 'post-note-work';
+  const fireProductivity = evidenceScope === 'fire-productivity';
   try {
     const sql = opts.sql ?? getOrgPg().sql;
     const agentToolPredicate = agentToolInvocationPredicate(sql);
@@ -2185,12 +2209,45 @@ export async function countAgentToolCallsInWindow(
            WHERE coord_owner_id = ${ownerId}
              AND invoked_at > ${new Date(sinceMs).toISOString()}::timestamptz
              AND invoked_at <= ${new Date(untilMs).toISOString()}::timestamptz
-             AND tool_name <> ALL(${sql.array([...CARRY_NOTE_BOOKKEEPING_TOOL_NAMES])}::text[])
+             AND (${fireProductivity}
+                  OR tool_name <> ALL(${sql.array([...CARRY_NOTE_BOOKKEEPING_TOOL_NAMES])}::text[]))
              AND ${agentToolPredicate}
         `,
       { client: opts.sql },
     );
-    return row ? Number(row.n) : 0;
+    const ledgerCount = row ? Number(row.n) : 0;
+    if (!fireProductivity) return ledgerCount;
+
+    // WI-2143038 second leg. harness_shared.tool_invocations records MCP calls ONLY — a
+    // native Claude Code Bash/Read/Grep/Edit produces no row there at all (measured over 24h:
+    // 54,009 native calls vs 35,479 MCP). A loop whose whole job is a shell probe therefore
+    // scores 0 on the ledger while working perfectly. harness_shared.agent_activity is the
+    // per-CLI hook ledger that DOES record native calls, and (measured on the su-54215254
+    // disarm window) carries none of the hook-driven activity:report / coord:glance traffic
+    // that floods tool_invocations — so it reads agent-authored work directly. Count `pre`
+    // rows only: each call writes a pre/post pair.
+    const automaticCanonical = [...AUTOMATIC_TOOL_NAMES];
+    // Forward-map the canonical names to the CLI's `mcp__<server>__<verb>` tail form
+    // (`coord:glance` → `coord_glance`). Forward is unambiguous; reversing is not, because
+    // a canonical name like `work_items:checkpoint` already contains an underscore.
+    const automaticCliTails = automaticCanonical.map((n) => n.replace(':', '_'));
+    const [nativeRow] = await boundedPgReadTxn<Array<{ n: number }>>(
+      async (tx) =>
+        await tx<Array<{ n: number }>>`
+          SELECT count(*)::int AS n
+            FROM harness_shared.agent_activity
+           WHERE kind = 'tool'
+             AND phase = 'pre'
+             AND owner_id = ${ownerId}
+             AND workspace_id IN (${activeWorkspaceId()}, '*')
+             AND created_at > ${new Date(sinceMs).toISOString()}::timestamptz
+             AND created_at <= ${new Date(untilMs).toISOString()}::timestamptz
+             AND tool_name <> ALL(${sql.array(automaticCanonical)}::text[])
+             AND split_part(tool_name, '__', 3) <> ALL(${sql.array(automaticCliTails)}::text[])
+        `,
+      { client: opts.sql },
+    );
+    return Math.max(ledgerCount, nativeRow ? Number(nativeRow.n) : 0);
   } catch (e) {
     console.warn('[loop] countAgentToolCallsInWindow failed (evidence unavailable):', e as Error);
     return null;
