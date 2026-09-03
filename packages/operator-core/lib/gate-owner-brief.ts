@@ -39,10 +39,25 @@ import type { CellOwnership } from './coord/gate-ownership';
 /** The closed answer vocabulary — mirrored by the cell registration's assessment codes. */
 export type GateOwnerBriefAnswer =
   | 'green'
+  /**
+   * P-005: green about what it JUDGED, but `main` has not fast-forwarded to it. Split out
+   * of `green` because the two need different actions and the old `green` said so only in
+   * prose — its safeAction told the reader to go read `git.mainBehindStaging` themselves,
+   * which is precisely the second read this cell exists to remove.
+   */
+  | 'green-not-promoted'
   | 'red-owned-remediating'
   | 'red-owned-stalled'
   | 'red-owned-unconfirmed'
   | 'red-unowned'
+  /**
+   * P-005: the gate rendered NO verdict — a hold (`inconclusive`) is open and nothing was
+   * judged red. Split out of the `red-*` family, which it used to fall into via
+   * `red = reds > 0 || inconclusive != null`: a gate that never got to judge was reported
+   * as a red someone owned, which is a manufactured failure rather than an absent one.
+   * Distinct from `not-judging`, where the producer is not firing at all.
+   */
+  | 'no-verdict'
   | 'not-judging'
   | 'unknown';
 
@@ -122,6 +137,13 @@ export interface GateOwnerBrief {
     failingLegs: string[];
     /** True only when a real verdict measured `failingLegs`; false/null = carried or unstamped. */
     measured: boolean | null;
+    /**
+     * P-005 / D-002: WHICH of the four measurement states `failingLegs` is in. `measured`
+     * alone cannot say — `carried` and `unknown` are both `null` on it — so a reader could
+     * only tell them apart by inspecting the list's emptiness, which is the exact
+     * inference-from-silence this plan exists to end.
+     */
+    provenance: GateFailingTestsProvenance;
     inconclusiveStatus: string | null;
     vintage: GateOwnerBriefVintage;
   } | null;
@@ -173,6 +195,15 @@ export interface GateOwnerBriefInput {
   consecutiveReds: number | null | undefined;
   failingTests: string[] | null | undefined;
   failingTestsMeasured: boolean | null | undefined;
+  /** P-005: {@link GateFailingTestsProvenance} for the list above; absent on old fixtures. */
+  failingTestsProvenance?: GateFailingTestsProvenance | null | undefined;
+  /**
+   * P-005: has `main` fast-forwarded to the green pin? `true` = a promotion buffer exists,
+   * which splits `green` into `green-not-promoted`. `null` = UNMEASURABLE, which never
+   * flips the headline (an unknown promotion state is not a reason to call a green gate
+   * un-promoted) but is named in `unknownLegs` rather than passing silently as `false`.
+   */
+  mainBehindStaging?: boolean | null | undefined;
   lastGreenAtMs: number | null | undefined;
   verdictObservedAtMs: number | null | undefined;
   fireStale: boolean | null | undefined;
@@ -270,16 +301,28 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
   const red = (reds ?? 0) > 0 || inp.inconclusive != null;
   const green = reds === 0 && !inp.verdictStale && inp.inconclusive == null;
 
+  // P-005: `red` above is true whenever a hold is open, EVEN AT ZERO REDS — so a gate that
+  // never rendered a verdict used to be answered as a red with an owner. Nothing was judged
+  // red here; the gate was prevented from judging. Separate the two.
+  const noVerdict = reds === 0 && inp.inconclusive != null;
+
+  // P-005: the green family splits on whether `main` actually moved. Only a POSITIVE
+  // `true` splits it — `null` (unmeasurable) must not manufacture a promotion claim in
+  // either direction, so it stays `green` and is named in `unknownLegs` below instead.
+  const greenAnswer: GateOwnerBriefAnswer = inp.mainBehindStaging === true ? 'green-not-promoted' : 'green';
+
   let answer: GateOwnerBriefAnswer;
   if (inp.fireStale) {
     answer = 'not-judging';
   } else if (reds === null) {
     answer = 'unknown';
   } else if (green) {
-    answer = 'green';
+    answer = greenAnswer;
+  } else if (noVerdict) {
+    answer = 'no-verdict';
   } else if (!red) {
     // reds === 0 but the verdict is stale: judged state is green, subject may have moved.
-    answer = 'green';
+    answer = greenAnswer;
   } else if (!ownedLive && !ownedUnconfirmed) {
     answer = 'red-unowned';
   } else if (ownedUnconfirmed && remediationStalled) {

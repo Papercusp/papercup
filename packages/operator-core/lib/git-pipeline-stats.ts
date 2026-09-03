@@ -310,6 +310,10 @@ export interface GitPipelineSnapshot {
      * `false` means the latest checkpoint ended before rendering one; `null` is a legacy or
      * malformed blob whose measurement state cannot be established. */
     failingTestsMeasured?: boolean | null;
+    /** P-005 / D-002: WHICH of the four measurement states the sibling `failingTests` is in —
+     * the axis `failingTestsMeasured` cannot express, because `carried` and `unknown` are both
+     * `null` on it. See {@link GateFailingTestsProvenance}. Optional for old fixtures/snapshots. */
+    failingTestsProvenance?: GateFailingTestsProvenance;
     /** EI-18832825158594027: true when `failingTests` was INHERITED from an earlier observation
      * of the same candidate (the monotonic fold in `mergeGateHealthMonotonic`) rather than
      * observed by the tick that produced this verdict. A reader must not treat those names as a
@@ -681,6 +685,31 @@ function strArr(v: unknown): string[] {
 }
 
 /**
+ * HOW the `failingTests` list beside a gate verdict came to be what it is.
+ *
+ * main-green-status-visible-2026-09-03 P-005 / D-002. The reader's question is never
+ * only "what is the list" — it is "may I believe it". A bare `[]` is indistinguishable
+ * from "nothing is failing", and a bare list is indistinguishable from a fresh
+ * measurement. `measured: boolean | null` cannot separate the four real states either,
+ * because two of them are both `null`. This names which one you are holding.
+ *
+ * - `measured`     — a verdict measured this list on this reading. `[]` here really is
+ *                    an all-clear.
+ * - `carried`      — a real, NON-EMPTY list survives from an earlier reading while a
+ *                    hold (`inconclusive`) is open, so its freshness is unproven. It is
+ *                    reported WITH that caveat rather than erased.
+ * - `not-measured` — nothing was measured and nothing is carried. `[]` here is a
+ *                    positive statement of ignorance, never an all-clear.
+ * - `unknown`      — there was nothing to go on at all.
+ *
+ * ⚠ Distinct from the sibling `failingTestsCarriedForward`, which marks a DIFFERENT
+ * carrying: the monotonic fold inheriting names across ticks of the same candidate
+ * (EI-18832825158594027). That one keeps `measured: true` — the names were measured,
+ * just not by this tick. This one is about a hold suppressing the measurement entirely.
+ */
+export type GateFailingTestsProvenance = 'measured' | 'carried' | 'not-measured' | 'unknown';
+
+/**
  * Preserve the distinction between an empty measured verdict and a checkpoint that never
  * produced a verdict. Older writers did not stamp the boolean, so the recorded inconclusive
  * marker is accepted as negative proof and an actual array as positive proof. Everything else
@@ -690,7 +719,7 @@ export function gateFailingTestsMeasurement(input: {
   failingTests: unknown;
   measured: unknown;
   inconclusive: GitPipelineSnapshot['gate']['inconclusive'];
-}): { failingTests: string[]; measured: boolean | null } {
+}): { failingTests: string[]; measured: boolean | null; provenance: GateFailingTestsProvenance } {
   const rawFailingTests = input.failingTests;
   const hasArray = Array.isArray(rawFailingTests);
   const failingTests = hasArray
@@ -704,12 +733,35 @@ export function gateFailingTestsMeasurement(input: {
   // an agent needing to know which legs are red DURING an open repair, and the erased
   // list used to answer that question with a false "nothing failing".
   if (input.measured === true) {
-    return hasArray ? { failingTests, measured: true } : { failingTests: [], measured: null };
+    return hasArray
+      ? { failingTests, measured: true, provenance: 'measured' }
+      : { failingTests: [], measured: null, provenance: 'unknown' };
   }
-  if (input.measured === false || input.inconclusive !== null) {
-    return { failingTests: [], measured: false };
+  // An explicit `measured: false` is the WRITER'S OWN assertion that it rendered no
+  // verdict, so names sitting beside it are INHERITED from an earlier blob rather than
+  // evidence about now. Suppressing them is deliberate (EI-21561093776434695) and is NOT
+  // the erasure D-002 names — there is no live measurement here to preserve, and sending
+  // a fixer at a historical red is the failure that suppression exists to prevent.
+  if (input.measured === false) {
+    return { failingTests: [], measured: false, provenance: 'not-measured' };
   }
-  return hasArray ? { failingTests, measured: true } : { failingTests: [], measured: null };
+  if (input.inconclusive !== null) {
+    // P-005 / D-002, the RESIDUAL half of the blanking. An UNSTAMPED writer that still
+    // recorded a populated list, with a hold open, used to be flattened to
+    // `{ [], measured: false }` — which renders as "nothing failing" during exactly the
+    // window in which an agent needs the names. The list now SURVIVES, labelled: the
+    // ruling is that a measured-but-possibly-stale list must be marked, not replaced.
+    // `measured` stays NULL because we genuinely cannot claim this tick measured it —
+    // `true` would overclaim and `false` is the false-green this whole plan exists to end.
+    if (failingTests.length > 0) {
+      return { failingTests, measured: null, provenance: 'carried' };
+    }
+    // Nothing to carry: the inconclusive marker stands as negative proof, as before.
+    return { failingTests: [], measured: false, provenance: 'not-measured' };
+  }
+  return hasArray
+    ? { failingTests, measured: true, provenance: 'measured' }
+    : { failingTests: [], measured: null, provenance: 'unknown' };
 }
 function skippedPathArr(v: unknown): GitSyncSkippedPath[] {
   if (!Array.isArray(v)) return [];
@@ -1472,6 +1524,11 @@ export async function gitPipelineSnapshot(
       failingTests: effectiveGate.failingTests,
       failingTestsMeasured:
         gcVerdictStaleReasonCode === 'pin-advance' ? true : failingTestsMeasurement.measured,
+      // P-005: the same override, on the provenance axis. A PROVEN pin-advance wiped
+      // `failingTests` to `[]` above because the streak is genuinely reset — so that empty
+      // list is a real all-clear (`measured`), not the ignorance `not-measured` would claim.
+      failingTestsProvenance:
+        gcVerdictStaleReasonCode === 'pin-advance' ? 'measured' : failingTestsMeasurement.provenance,
       // EI-18832825158594027: forward the writer's inherited-list marker. A proven pin-advance
       // has already wiped `failingTests` to `[]` above, so there is nothing inherited left to
       // label — report false rather than letting a stale true ride a now-empty list.
