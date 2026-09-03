@@ -49,6 +49,7 @@ import { BUILTIN_CELLS } from './cell-registrations';
 import { pathExists } from './state-plane-stamp';
 import { formatMeasurednessViolations, hoistedPaths, isCountOrList, measurednessViolations } from './cell-measuredness';
 import { CELL_UNKNOWN_CODES } from './cell-contract';
+import { assessCandidateFailures } from './gate-candidate-failures';
 import {
   gitPipelinePosition,
   assessPipelinePosition,
@@ -581,6 +582,12 @@ const CONTROLS: Record<string, readonly Control[]> = {
     { label: 'all candidate fixes already contained', expect: 'all-fixes-contained' },
     { label: 'at least one repair remains outstanding', expect: 'repairs-outstanding' },
     { label: 'no failing files in the judged radius', expect: 'none-failing' },
+    // main-green-status-visible-2026-09-03 P-007: `assessCandidateFailures` is the exported
+    // pure rule, so this row is computed rather than quoted.
+    {
+      label: 'no test file broken but a non-test leg is red with no landed fix',
+      expect: assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, outstandingLegs: 1, fixedLegs: 0 }),
+    },
   ],
   'gate.greenCheckpoint.ownerBrief': [
     { label: 'green gate', expect: OWNER_BRIEF() },
@@ -959,6 +966,8 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     'all-fixes-contained',
     'repairs-outstanding',
     'none-failing',
+    // P-007: the leg-red code, computed by the exported rule above.
+    'non-test-leg-failing',
   ],
   'gate.greenCheckpoint.ownerBrief': [
     'green',

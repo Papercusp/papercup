@@ -353,3 +353,66 @@ describe('composeGateOwnerBrief', () => {
     });
   });
 });
+
+/**
+ * main-green-status-visible-2026-09-03 P-007 — the brief must never read all-clear while a
+ * NON-TEST leg is red. `failingTests` names test files only, so a gate red on a lint leg
+ * alone composed `whyNot.failingLegs: []` beside a red answer: a red explained by nothing,
+ * which a reader rounds to "nothing is actually failing".
+ */
+describe('P-007 — a red non-test leg never reads all-clear on the owner brief', () => {
+  const redLeg = { measured: 'measured' as const, outstanding: ['lint:tsc'] };
+
+  it('THE FALSIFIER: red gate, ZERO failing test files, one red lint leg — the leg is NAMED and the answer is red', () => {
+    const b = composeGateOwnerBrief({
+      ...base,
+      consecutiveReds: 3,
+      failingTests: [],
+      failingTestsMeasured: true,
+      repairQueue: redQueue(),
+      nonTestLegs: redLeg,
+    });
+    expect(b.answer).toBe('red-owned-remediating');
+    expect(b.mainGreen.value).toBe(false);
+    expect(b.whyNot).toMatchObject({
+      failingLegs: [],
+      failingNonTestLegs: ['lint:tsc'],
+      nonTestLegsMeasured: 'measured',
+    });
+  });
+
+  it('CONTROL: the same red with NO leg reading carries an empty list beside a null flag — never an unlabelled []', () => {
+    const b = composeGateOwnerBrief({ ...base, consecutiveReds: 3, failingTests: [], repairQueue: redQueue() });
+    expect(b.whyNot).toMatchObject({ failingNonTestLegs: [], nonTestLegsMeasured: null });
+    const notRecorded = composeGateOwnerBrief({
+      ...base,
+      consecutiveReds: 3,
+      failingTests: [],
+      repairQueue: redQueue(),
+      nonTestLegs: { measured: 'not-recorded', outstanding: [] },
+    });
+    expect(notRecorded.whyNot).toMatchObject({ failingNonTestLegs: [], nonTestLegsMeasured: 'not-recorded' });
+  });
+
+  it('a zero-red counter CONTRADICTED by a red leg answers unknown — never green — and names the contradiction', () => {
+    const b = composeGateOwnerBrief({ ...base, nonTestLegs: redLeg });
+    expect(b.answer).toBe('unknown');
+    expect(b.mainGreen.value).toBeNull();
+    expect(b.unknownLegs.map((l) => l.leg)).toContain('verdict');
+    expect(b.unknownLegs.find((l) => l.leg === 'verdict')!.why).toMatch(/lint:tsc/);
+    expect(b.whyNot?.failingNonTestLegs).toEqual(['lint:tsc']);
+    // The deliberately wrong reading — the counter's half of the contradiction.
+    expect(b.answer).not.toBe('green');
+  });
+
+  it('CALIBRATION: measured legs with nothing outstanding leave the green answer untouched', () => {
+    const b = composeGateOwnerBrief({ ...base, nonTestLegs: { measured: 'measured', outstanding: [] } });
+    expect(b.answer).toBe('green');
+    expect(b.whyNot).toBeNull();
+  });
+
+  it('fireStale still outranks the leg contradiction (a producer that is not firing is the first fact)', () => {
+    const b = composeGateOwnerBrief({ ...base, fireStale: true, nonTestLegs: redLeg });
+    expect(b.answer).toBe('not-judging');
+  });
+});

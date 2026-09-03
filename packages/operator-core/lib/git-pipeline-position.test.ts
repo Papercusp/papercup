@@ -2840,6 +2840,20 @@ describe('computeStages: position x health', () => {
       expect(stage(computeStages(redGate(cf)), 'gate').health).toBe('stalled');
     });
 
+    it('P-007: a red NON-TEST leg is OUTSTANDING work, and the stalled detail names the LEG rather than "0 of 0 files"', () => {
+      const cf = failures({
+        assessment: 'non-test-leg-failing',
+        nonTestLegsMeasured: 'measured',
+        nonTestLegs: { outstanding: ['lint:tsc'] } as unknown as GateCandidateFailures['nonTestLegs'],
+      });
+      expect(gateCandidateProgress(cf)).toBe('outstanding');
+      const gate = stage(computeStages(redGate(cf)), 'gate');
+      expect(gate.health).toBe('stalled');
+      expect(gate.detail).toMatch(/non-test leg\(s\) lint:tsc are RED/);
+      expect(gate.detail).not.toMatch(/0 of 0 failing file/);
+      expect(gate.detail).not.toMatch(/CONVERGING/);
+    });
+
     it('pause and fireStale still OUTRANK a converging candidate', () => {
       const paused = redGate(converging());
       expect(

@@ -3081,6 +3081,11 @@ export function gateCandidateProgress(cf: GateCandidateFailures | null | undefin
     case 'repairs-outstanding':
       // At least one failing file is still broken at repairHead: real work remains.
       return 'outstanding';
+    case 'non-test-leg-failing':
+      // P-007: a red lint/perf/desktop/delta leg with no landed fix is real work too — the
+      // one kind the file counts cannot see, which is exactly why it must not fall through
+      // to `unknown` (where it would leave a wedged gate reading neutral).
+      return 'outstanding';
     case 'all-fixes-contained':
       // Every failing file's fix is already in repairHead, awaiting re-verification. This is
       // freeze-and-converge working as designed — the next run re-tests that sha.
@@ -3649,7 +3654,13 @@ export function computeStages(
           : gateHealth === 'stalled'
             ? `Gate is RED (${g.consecutiveReds} consecutive) — main is held for everyone until it greens. The reds are yours to fix, not a queue to wait in.${
                 gateProgress === 'outstanding' && g.candidateFailures
-                  ? ` ${g.candidateFailures.stillBrokenCount} of ${g.candidateFailures.failingFileCount} failing file(s) have an UNCHANGED blob at repairHead; the other ${g.candidateFailures.alreadyFixedCount} already carry their fix and are NOT yours to re-fix.${
+                  ? g.candidateFailures.assessment === 'non-test-leg-failing'
+                    ? // P-007: the file counts are all zero here BY CONSTRUCTION, so rendering them
+                      // ("0 of 0 failing files…") would explain a red with nothing. Name the leg.
+                      ` No failing TEST file is still broken, but non-test leg(s) ${
+                        g.candidateFailures.nonTestLegs?.outstanding.join(', ') || '(unnamed)'
+                      } are RED at repairHead with no landed fix — repair THAT LEG so it passes on top of the frozen candidate (a path match is not evidence about a leg, D-005).`
+                    : ` ${g.candidateFailures.stillBrokenCount} of ${g.candidateFailures.failingFileCount} failing file(s) have an UNCHANGED blob at repairHead; the other ${g.candidateFailures.alreadyFixedCount} already carry their fix and are NOT yours to re-fix.${
                       // An unchanged TEST blob is not proof of an unfixed file — the repair
                       // may sit in a non-test carrier the test exercises. Saying "still
                       // broken" here sent agents to re-fix already-repaired files (measured
@@ -5474,6 +5485,16 @@ export async function gitPipelinePosition(
     inconclusive: gate.inconclusive,
     repairQueue: gate.repairQueue ?? null,
     ownership: gateOwnership,
+    // P-007: the NAMED non-test legs, from the same candidateFailures value this literal
+    // already carries — so the brief can never read all-clear while a lint/perf/desktop/
+    // delta leg is red, and its whyNot names the leg instead of an empty test list.
+    nonTestLegs:
+      candidateFailures == null
+        ? null
+        : {
+            measured: candidateFailures.nonTestLegsMeasured,
+            outstanding: candidateFailures.nonTestLegs?.outstanding ?? [],
+          },
   });
   // EI-18793581783459047: surfaced as a NOTE (not folded into the tight one-line
   // `summary`, which is already densely tuned) so a caller about to launch a heavy

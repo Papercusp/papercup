@@ -723,6 +723,7 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
       'gate.candidateFailures.distinctFailingFiles': 'gate.candidateFailures.unavailable',
       'gate.candidateFailures.filesJudged': 'gate.candidateFailures.unavailable',
       'gate.candidateFailures.nonTestLegs.perLeg': 'gate.candidateFailures.nonTestLegsMeasured',
+      'gate.candidateFailures.nonTestLegs.outstanding': 'gate.candidateFailures.nonTestLegsMeasured',
     },
   },
   nullable: true,
@@ -744,7 +745,7 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
     path: 'gate.candidateFailures.stillBrokenCount',
   },
   shape:
-    '{ gate: { candidateFailures: { candidateSha, repairHeadSha, filesJudged, distinctFailingFiles: [{ path, attempts, status, fixInRepairHead, comparison, candidateBlob, repairHeadBlob, reading }], failingFileCount, alreadyFixedCount, stillBrokenCount, stillBrokenNeedsRunCount, changedBetweenRefs: { count, sample }, nonTestLegsMeasured, nonTestLegs: { current, head, atMs, all: [{ id, status, durationMs }], failing: [...], reading, perLeg: [{ id, measuredNow, lifecycle, fixedAtHead, admittedRound, reading }], shrink: { measured, admittedLegs, fixedLegs, failingLegs, failingLegIds, fixedLegIds, shrinkTotal, regressedLegs, lastMeasuredAtMs, scope } } | null, scope, unavailable, truncated } } }',
+    '{ gate: { candidateFailures: { candidateSha, repairHeadSha, filesJudged, distinctFailingFiles: [{ path, attempts, status, fixInRepairHead, comparison, candidateBlob, repairHeadBlob, reading }], failingFileCount, alreadyFixedCount, stillBrokenCount, stillBrokenNeedsRunCount, changedBetweenRefs: { count, sample }, nonTestLegsMeasured, nonTestLegs: { current, head, atMs, all: [{ id, status, durationMs }], failing: [...], reading, perLeg: [{ id, measuredNow, lifecycle, fixedAtHead, admittedRound, reading }], outstanding: [id], shrink: { measured, admittedLegs, fixedLegs, failingLegs, failingLegIds, fixedLegIds, shrinkTotal, regressedLegs, lastMeasuredAtMs, scope } } | null, scope, unavailable, truncated } } }',
 };
 
 /**
@@ -843,6 +844,12 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
       // P-005: measured:null still covers two opposite states. The named provenance
       // separates a carried list from a wholly unknown one without inference from []/length.
       'gate.ownerBrief.whyNot.provenance',
+      // main-green-status-visible-2026-09-03 P-007: the NON-TEST legs, named. `failingLegs`
+      // is test files only, so a gate red on a lint leg alone hoisted `failingLegs: []`
+      // beside a red answer — a red explained by nothing. Paired below with its own
+      // measured-ness flag, so an empty list is never read as "no legs failing".
+      'gate.ownerBrief.whyNot.failingNonTestLegs',
+      'gate.ownerBrief.whyNot.nonTestLegsMeasured',
       // P-005: makes `green` versus `green-not-promoted` independently checkable in the
       // SAME cell read; the answer must not send callers to a second state read.
       'verdictProvenance.mainBehindStaging',
@@ -864,6 +871,7 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
     // knowable — `not-knowable` beside an empty list is the same false-clear.
     measuredBy: {
       'gate.ownerBrief.whyNot.failingLegs': 'gate.ownerBrief.whyNot.measured',
+      'gate.ownerBrief.whyNot.failingNonTestLegs': 'gate.ownerBrief.whyNot.nonTestLegsMeasured',
       'gate.ownerBrief.attestations.staleLegs': 'gate.ownerBrief.attestations.verdict',
     },
   },
@@ -886,7 +894,7 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
     path: 'gate.ownerBrief.answer',
   },
   shape:
-    '{ gate: { ownerBrief: { answer, assessment: { code, meaning, safeAction }, mainGreen: { value, vintage }, whyNot: { failingLegs, measured, inconclusiveStatus, vintage } | null, ownership: { claimState, holder, workItem, assessmentCode, vintage }, remediation: { phase, attempts, fixerSpawnId, fixerAlive, zeroAttemptStalled, queueAgeMs, vintage } | null, lastGreen: { atMs, ageMs }, vintageSpreadMs, attestations: { legs: [{ leg, observedAtMs, ageMs, source, stale }], spreadMs, verdict, staleLegs, oldestLeg, summary }, unknownLegs } } }',
+    '{ gate: { ownerBrief: { answer, assessment: { code, meaning, safeAction }, mainGreen: { value, vintage }, whyNot: { failingLegs, measured, provenance, failingNonTestLegs, nonTestLegsMeasured, inconclusiveStatus, vintage } | null, ownership: { claimState, holder, workItem, assessmentCode, vintage }, remediation: { phase, attempts, fixerSpawnId, fixerAlive, zeroAttemptStalled, queueAgeMs, vintage } | null, lastGreen: { atMs, ageMs }, vintageSpreadMs, attestations: { legs: [{ leg, observedAtMs, ageMs, source, stale }], spreadMs, verdict, staleLegs, oldestLeg, summary }, unknownLegs } } }',
 };
 
 /**
@@ -2409,6 +2417,13 @@ export const GATE_FREEZE_DISPOSITION_CELL: CellSpec = {
       'gate.freezeDisposition.observedAtMs',
       'gate.freezeDisposition.stale',
     ],
+    // main-green-status-visible-2026-09-03 P-007: caught by the per-cell drift test
+    // (main-green-status-visible-cell-drift.test.ts) on the UNMEASURED projection — `stale`
+    // is null there, and a null at that leaf with no pairing is indistinguishable from a
+    // measured "not stale" (P-012). `unmeasured` is the flag that says why it is null.
+    measuredBy: {
+      'gate.freezeDisposition.stale': 'gate.freezeDisposition.unmeasured',
+    },
   },
   nullable: true,
   unknownHoist: 'gate.freezeDisposition.unmeasured',

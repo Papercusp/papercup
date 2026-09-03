@@ -57,7 +57,8 @@ const MEASURED_EMPTY = {
       filesJudged: 0,
       scope: 'affected radius',
       nonTestLegsMeasured: 'not-recorded',
-      nonTestLegs: { perLeg: [] },
+      // P-007 added `outstanding` beside `perLeg`; both are paired with nonTestLegsMeasured.
+      nonTestLegs: { perLeg: [], outstanding: [] },
       unavailable: 'test_runs unreachable',
       assessment: 'unmeasured',
     },
@@ -132,12 +133,14 @@ describe('P-012: the guard is falsifiable — deliberately broken pairings again
 
   it('names EVERY unpaired count and list when the pairing is removed — the defect, by path', () => {
     const v = measurednessViolations(brokenPairing(undefined), MEASURED_EMPTY);
-    expect(v.map((x) => x.kind)).toEqual(['unpaired-count-or-list', 'unpaired-count-or-list', 'unpaired-count-or-list', 'unpaired-count-or-list']);
+    expect(v.map((x) => x.kind)).toEqual(['unpaired-count-or-list', 'unpaired-count-or-list', 'unpaired-count-or-list', 'unpaired-count-or-list', 'unpaired-count-or-list']);
     expect(v.map((x) => x.path)).toEqual([
       'gate.candidateFailures.stillBrokenCount',
       'gate.candidateFailures.distinctFailingFiles',
       'gate.candidateFailures.filesJudged',
       'gate.candidateFailures.nonTestLegs.perLeg',
+      // P-007: the outstanding-leg list is a list like perLeg, paired with the same flag.
+      'gate.candidateFailures.nonTestLegs.outstanding',
     ]);
     // The message says what to do, not just that it is wrong.
     expect(v[0]!.detail).toContain('assessment.measuredBy["gate.candidateFailures.stillBrokenCount"]');
@@ -152,6 +155,7 @@ describe('P-012: the guard is falsifiable — deliberately broken pairings again
       'gate.candidateFailures.distinctFailingFiles',
       'gate.candidateFailures.filesJudged',
       'gate.candidateFailures.nonTestLegs.perLeg',
+      'gate.candidateFailures.nonTestLegs.outstanding',
     ]);
   });
 
@@ -198,7 +202,12 @@ describe('P-012: the guard is falsifiable — deliberately broken pairings again
     const payload = { gate: { candidateFailures: { ...MEASURED_EMPTY.gate.candidateFailures, nonTestLegsMeasured: undefined } } };
     delete (payload.gate.candidateFailures as Record<string, unknown>).nonTestLegsMeasured;
     const v = measurednessViolations(CF, payload);
-    expect(v.map((x) => [x.kind, x.path])).toEqual([['flag-absent', 'gate.candidateFailures.nonTestLegsMeasured']]);
+    // Reported PER PAIR: both `perLeg` and (P-007) `outstanding` vouch through this one flag,
+    // so each names it — a reader fixing one subject is told the other is affected too.
+    expect(v.map((x) => [x.kind, x.path])).toEqual([
+      ['flag-absent', 'gate.candidateFailures.nonTestLegsMeasured'],
+      ['flag-absent', 'gate.candidateFailures.nonTestLegsMeasured'],
+    ]);
   });
 
   it('refuses a dangling pair, a self-pair and a hoist-as-subject — with or without a payload', () => {

@@ -6,7 +6,7 @@
  * with the misreading named rather than with a bare assertion diff.
  */
 import { describe, it, expect } from 'vitest';
-import { readGateCandidateFailures } from './gate-candidate-failures';
+import { assessCandidateFailures, outstandingLegIds, readGateCandidateFailures } from './gate-candidate-failures';
 import type { FrozenRepairLegState } from './release/repair-leg-lifecycle';
 
 const CANDIDATE = 'adbf27530285830455f8d8df32a45752cfaff332';
@@ -660,5 +660,179 @@ describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', 
     const noLifecycle = await read();
     expect(noLifecycle.nonTestLegs!.shrink.measured).toBe(false);
     expect(noLifecycle.nonTestLegs!.shrink.shrinkTotal).toBeNull();
+  });
+});
+
+/**
+ * main-green-status-visible-2026-09-03 P-007 — THE FALSIFIER THAT MATTERS MOST.
+ *
+ * Before this block the verdict was `files.length === 0 ? 'none-failing' : …`: it counted
+ * TEST FILES only, so a gate wedged on a red lint/perf/desktop/delta leg with zero failing
+ * test files read `none-failing` on the one cell whose job is to say what is failing. That
+ * is "measured empty renders as nothing failing" (P-012) one leg over. The deliberately
+ * wrong control is kept in this file so the property, not just today's code, is what is
+ * being tested.
+ */
+describe('P-007 — a red non-test leg is NEVER none-failing on any reading of this cell', () => {
+  const SHORT = REPAIR_HEAD.slice(0, 12);
+  const tick = (legs: Array<{ id: string; status: 'pass' | 'fail' | 'errored' }>, head = SHORT) => ({
+    head,
+    atMs: 1_800_000_000_000,
+    ok: legs.every((l) => l.status === 'pass'),
+    failingSignatures: legs.filter((l) => l.status !== 'pass').map((l) => l.id),
+    legs: legs.map((l) => ({ ...l, durationMs: 10 })),
+  });
+  const lifecycle = (id: string, state: 'failing' | 'fixed'): FrozenRepairLegState => ({
+    id,
+    state,
+    admittedRound: 1,
+    admittedHead: SHORT,
+    admittedAtMs: 1_799_999_000_000,
+    lastMeasuredHead: SHORT,
+    lastMeasuredAtMs: 1_799_999_500_000,
+    lastMeasuredRound: 1,
+    failingRounds: state === 'failing' ? 1 : 0,
+    ...(state === 'fixed' ? { resolvedHead: SHORT, resolvedAtMs: 1_800_000_000_000 } : {}),
+  });
+  const read = (opts: {
+    repairTickLegs?: ReturnType<typeof tick>;
+    queueLegs?: readonly FrozenRepairLegState[];
+    failing?: Row[];
+    git?: Record<string, string | null>;
+  }) =>
+    readGateCandidateFailures({
+      candidateSha: CANDIDATE,
+      repairHeadSha: REPAIR_HEAD,
+      root: '/repo',
+      sql: fakeSql({ filesJudged: 223, failing: opts.failing ?? [] }),
+      git: fakeGit(opts.git ?? {}),
+      ...(opts.repairTickLegs ? { repairTickLegs: opts.repairTickLegs } : {}),
+      ...(opts.queueLegs ? { queueLegs: opts.queueLegs } : {}),
+    });
+
+  /** The pre-P-007 rule, verbatim in shape — kept as the control that must NOT be what ships. */
+  const preP007Rule = (fileCount: number, stillBroken: number, alreadyFixed: number) =>
+    fileCount === 0 ? 'none-failing' : stillBroken > 0 ? 'repairs-outstanding' : alreadyFixed === fileCount ? 'all-fixes-contained' : 'unmeasured';
+
+  it('THE FALSIFIER: zero failing test files + a red lint leg is non-test-leg-failing, and the leg is NAMED', async () => {
+    const res = await read({ repairTickLegs: tick([{ id: 'lint:tsc', status: 'fail' }]) });
+    expect(res.stillBrokenCount).toBe(0);
+    expect(res.nonTestLegsMeasured).toBe('measured');
+    expect(res.nonTestLegs!.outstanding).toEqual(['lint:tsc']);
+    expect(res.assessment).toBe('non-test-leg-failing');
+    expect(res.assessment).not.toBe('none-failing');
+    // The control reproduces the defect on the same inputs — so this test discriminates.
+    expect(preP007Rule(0, 0, 0)).toBe('none-failing');
+  });
+
+  it('CALIBRATION: every leg passing with zero failing files IS none-failing', async () => {
+    const res = await read({ repairTickLegs: tick([{ id: 'lint:tsc', status: 'pass' }, { id: 'perf', status: 'pass' }]) });
+    expect(res.nonTestLegs!.outstanding).toEqual([]);
+    expect(res.assessment).toBe('none-failing');
+  });
+
+  it('an errored leg is red, not "not a fail"', async () => {
+    const res = await read({ repairTickLegs: tick([{ id: 'desktop', status: 'errored' }]) });
+    expect(res.assessment).toBe('non-test-leg-failing');
+    expect(res.nonTestLegs!.outstanding).toEqual(['desktop']);
+  });
+
+  it('NOT MEASURING a leg the cycle has FAILING is not a pass — it stays outstanding', async () => {
+    const res = await read({
+      repairTickLegs: tick([{ id: 'lint:tsc', status: 'pass' }]),
+      queueLegs: [lifecycle('lint:plane-ratchet', 'failing')],
+    });
+    expect(res.nonTestLegs!.outstanding).toEqual(['lint:plane-ratchet']);
+    expect(res.assessment).toBe('non-test-leg-failing');
+  });
+
+  it('a leg whose own re-run PASSED reads all-fixes-contained — never none-failing, never outstanding', async () => {
+    const res = await read({
+      repairTickLegs: tick([{ id: 'lint:tsc', status: 'pass' }]),
+      queueLegs: [lifecycle('lint:tsc', 'fixed')],
+    });
+    expect(res.nonTestLegs!.outstanding).toEqual([]);
+    // "Nothing failing" would erase the fact that something WAS red and is awaiting
+    // re-verification; the converging code is the honest one.
+    expect(res.assessment).toBe('all-fixes-contained');
+  });
+
+  it('a fixed leg measured RED again is a regression — outstanding, not "already fixed"', async () => {
+    const res = await read({
+      repairTickLegs: tick([{ id: 'lint:tsc', status: 'fail' }]),
+      queueLegs: [lifecycle('lint:tsc', 'fixed')],
+    });
+    expect(res.nonTestLegs!.outstanding).toEqual(['lint:tsc']);
+    expect(res.assessment).toBe('non-test-leg-failing');
+  });
+
+  it('a STALE tick (measured at an earlier repairHead) is not evidence either way — only the lifecycle counts', async () => {
+    const stalePass = await read({
+      repairTickLegs: tick([{ id: 'lint:tsc', status: 'pass' }], '0123456789ab'),
+      queueLegs: [lifecycle('lint:tsc', 'failing')],
+    });
+    expect(stalePass.nonTestLegs!.current).toBe(false);
+    expect(stalePass.nonTestLegs!.outstanding).toEqual(['lint:tsc']);
+    expect(stalePass.assessment).toBe('non-test-leg-failing');
+
+    const staleFail = await read({
+      repairTickLegs: tick([{ id: 'lint:tsc', status: 'fail' }], '0123456789ab'),
+      queueLegs: [lifecycle('lint:tsc', 'fixed')],
+    });
+    expect(staleFail.nonTestLegs!.outstanding).toEqual([]);
+    expect(staleFail.assessment).toBe('all-fixes-contained');
+  });
+
+  it('a red leg OUTRANKS "every file already fixed" — all-fixes-contained is reserved for nothing left to do', async () => {
+    const p = 'lib/a.test.ts';
+    const res = await read({
+      failing: [{ file_path: p, status: 'fail', attempts: 1 }],
+      git: { [revParse(CANDIDATE, p)]: 'blob-old', [revParse(REPAIR_HEAD, p)]: 'blob-new' },
+      repairTickLegs: tick([{ id: 'lint:tsc', status: 'fail' }]),
+    });
+    expect(res.alreadyFixedCount).toBe(1);
+    expect(res.stillBrokenCount).toBe(0);
+    expect(res.assessment).toBe('non-test-leg-failing');
+    // …and the control would have called it converging.
+    expect(preP007Rule(1, 0, 1)).toBe('all-fixes-contained');
+  });
+
+  it('a still-broken FILE still outranks the leg — but the leg stays named beside it', async () => {
+    const p = 'lib/a.test.ts';
+    const res = await read({
+      failing: [{ file_path: p, status: 'fail', attempts: 1 }],
+      git: { [revParse(CANDIDATE, p)]: 'blob-same', [revParse(REPAIR_HEAD, p)]: 'blob-same' },
+      repairTickLegs: tick([{ id: 'lint:tsc', status: 'fail' }]),
+    });
+    expect(res.assessment).toBe('repairs-outstanding');
+    expect(res.nonTestLegs!.outstanding).toEqual(['lint:tsc']);
+  });
+
+  it('no leg measurement at all leaves the file-only verdict alone (the P-012 flag says the legs were not looked at)', async () => {
+    const res = await read({});
+    expect(res.nonTestLegsMeasured).toBe('not-recorded');
+    expect(res.nonTestLegs).toBeNull();
+    expect(res.assessment).toBe('none-failing');
+  });
+
+  describe('the pure rules, so a future reorder of the branches fails HERE with the case named', () => {
+    it('assessCandidateFailures — first match, in this order', () => {
+      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 1, alreadyFixedCount: 1, outstandingLegs: 1, fixedLegs: 0 })).toBe('repairs-outstanding');
+      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, outstandingLegs: 1, fixedLegs: 0 })).toBe('non-test-leg-failing');
+      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 2, outstandingLegs: 1, fixedLegs: 0 })).toBe('non-test-leg-failing');
+      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 1, outstandingLegs: 0, fixedLegs: 0 })).toBe('unmeasured');
+      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 2, outstandingLegs: 0, fixedLegs: 0 })).toBe('all-fixes-contained');
+      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, outstandingLegs: 0, fixedLegs: 1 })).toBe('all-fixes-contained');
+      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, outstandingLegs: 0, fixedLegs: 0 })).toBe('none-failing');
+    });
+
+    it('outstandingLegIds — the one rule the assessment and the readings share', () => {
+      const row = (id: string, measuredNow: 'pass' | 'fail' | 'errored' | 'not-measured', lifecycle: 'failing' | 'fixed' | 'never-admitted') => ({ id, measuredNow, lifecycle });
+      // current head (true or unknown): this tick's result decides when it exists
+      expect(outstandingLegIds([row('a', 'fail', 'never-admitted'), row('b', 'pass', 'failing'), row('c', 'not-measured', 'failing'), row('d', 'not-measured', 'never-admitted'), row('e', 'errored', 'fixed')], true)).toEqual(['a', 'c', 'e']);
+      expect(outstandingLegIds([row('a', 'fail', 'never-admitted')], null)).toEqual(['a']);
+      // stale head: only the lifecycle
+      expect(outstandingLegIds([row('a', 'fail', 'fixed'), row('b', 'pass', 'failing'), row('c', 'fail', 'never-admitted')], false)).toEqual(['b']);
+    });
   });
 });

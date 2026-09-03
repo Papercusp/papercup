@@ -145,6 +145,16 @@ export interface GateOwnerBrief {
      * inference-from-silence this plan exists to end.
      */
     provenance: GateFailingTestsProvenance;
+    /**
+     * P-007: the NON-TEST legs (lint / perf / desktop / delta) that are red with no landed
+     * fix, by id. `failingLegs` above names TEST FILES only, so a gate red on a lint leg
+     * alone used to compose `failingLegs: []` beside a red answer — a red explained by
+     * nothing, which reads as "nothing is actually failing". Paired with
+     * `nonTestLegsMeasured` (P-012): `not-recorded` means no leg was looked at, and an
+     * empty list beside it is NOT "no legs failing".
+     */
+    failingNonTestLegs: string[];
+    nonTestLegsMeasured: 'measured' | 'not-recorded' | null;
     inconclusiveStatus: string | null;
     vintage: GateOwnerBriefVintage;
   } | null;
@@ -223,6 +233,19 @@ export interface GateOwnerBriefInput {
     | null
     | undefined;
   ownership: Pick<CellOwnership, 'claimState' | 'takenBy' | 'workItem' | 'assessment'> | null | undefined;
+  /**
+   * main-green-status-visible-2026-09-03 P-007: the NAMED non-test legs (lint / perf /
+   * desktop / delta), from `gate.candidateFailures.nonTestLegs` — `outstanding` is the
+   * ids that are red with no landed fix, by that module's one rule. `measured` is the
+   * P-012 measured-ness flag: `not-recorded` means no leg was looked at, which is NOT an
+   * empty outstanding list. Absent on old fixtures / when no repair queue is open.
+   *
+   * Why the brief needs it: `failingTests` names TEST FILES, so a gate red on a lint leg
+   * alone composed a whyNot with `failingLegs: []` — a red answer explained by nothing,
+   * which a reader rounds to "nothing is actually failing". The brief must never read
+   * all-clear while a leg is red, and must name the leg.
+   */
+  nonTestLegs?: { measured: 'measured' | 'not-recorded'; outstanding: readonly string[] } | null | undefined;
 }
 
 const vintage = (observedAtMs: number | null | undefined, source: string, nowMs: number): GateOwnerBriefVintage => ({
@@ -305,8 +328,21 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
     (inp.repairQueue.fixerAlive === false || inp.repairQueue.zeroAttemptStalled) &&
     inp.repairQueue.fixerAlive !== true;
 
+  // P-007: a red non-test leg is a red, full stop. If the verdict counter says zero reds
+  // while a leg is measured red, the two legs of this brief CONTRADICT each other — and
+  // the safe reading of a contradiction is `unknown`, never the green half of it. Named
+  // in `unknownLegs` so the reader sees which instrument to distrust.
+  const outstandingNonTestLegs = inp.nonTestLegs?.outstanding ?? [];
+  const legContradictsGreen = reds === 0 && outstandingNonTestLegs.length > 0;
+  if (legContradictsGreen) {
+    unknownLegs.push({
+      leg: 'verdict',
+      why: `consecutiveReds is 0 but non-test leg(s) ${outstandingNonTestLegs.join(', ')} are measured red — the legs disagree, so no green is reported off the counter`,
+    });
+  }
+
   const red = (reds ?? 0) > 0 || inp.inconclusive != null;
-  const green = reds === 0 && !inp.verdictStale && inp.inconclusive == null;
+  const green = reds === 0 && !inp.verdictStale && inp.inconclusive == null && !legContradictsGreen;
 
   // P-005: `red` above is true whenever a hold is open, EVEN AT ZERO REDS — so a gate that
   // never rendered a verdict used to be answered as a red with an owner. Nothing was judged
@@ -328,7 +364,7 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
   let answer: GateOwnerBriefAnswer;
   if (inp.fireStale) {
     answer = 'not-judging';
-  } else if (reds === null) {
+  } else if (reds === null || legContradictsGreen) {
     answer = 'unknown';
   } else if (green) {
     answer = greenAnswer;
@@ -422,7 +458,8 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
     answer,
     assessment: { code: answer, ...ASSESSMENTS[answer] },
     mainGreen: {
-      value: reds === null || noVerdict ? null : green || !red,
+      // P-007: a counter contradicted by a red leg answers `null`, never the counter's half.
+      value: reds === null || noVerdict || legContradictsGreen ? null : green || !red,
       vintage: verdictVintage,
     },
     whyNot:
@@ -432,6 +469,10 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
             failingLegs: inp.failingTests ?? [],
             measured: inp.failingTestsMeasured ?? null,
             provenance: failingTestsProvenance,
+            // P-007: the non-test legs, NAMED, beside the test files — so an empty
+            // `failingLegs` next to a red answer is explained rather than read as "nothing".
+            failingNonTestLegs: [...outstandingNonTestLegs],
+            nonTestLegsMeasured: inp.nonTestLegs?.measured ?? null,
             inconclusiveStatus: inp.inconclusive?.status ?? null,
             vintage:
               inp.inconclusive?.observedAtMs != null
