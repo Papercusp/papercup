@@ -19,7 +19,7 @@
       "default": "./src/seam.tsx"
     },
     "./surfaces": {
-      "types": "./src/surfaces/index.tsx",
+      "types": "./src/surfaces/surfaces.d.ts",
       "import": "./src/surfaces/index.tsx",
       "default": "./src/surfaces/index.tsx"
     },
