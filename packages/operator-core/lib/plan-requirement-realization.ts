@@ -59,14 +59,21 @@ import {
   type PlanItemStatus,
 } from './plan-audits';
 
-/** Dispositions that ASSERT the plan absorbed the requirement, and so owe evidence. */
-const REALIZING_DISPOSITIONS: ReadonlySet<ActivationAuditMapping['disposition']> = new Set([
+/**
+ * Dispositions that ASSERT the plan absorbed the requirement, and so owe evidence.
+ *
+ * Exported (P-019) so the draft-clause deriver selects the SAME population this judge
+ * grades. A second copy of either predicate would be a second definition of "realizing",
+ * free to drift from this one — and the drift would be silent, since each copy is
+ * individually correct.
+ */
+export const REALIZING_DISPOSITIONS: ReadonlySet<ActivationAuditMapping['disposition']> = new Set([
   'covered',
   'repaired',
 ]);
 
 /** A plan-item target. `D-NNN` and `section:<heading>` are deliberately not this. */
-const PLAN_ITEM_TARGET = /^P-\d{3,}$/;
+export const PLAN_ITEM_TARGET = /^P-\d{3,}$/;
 
 export type UnrealizedReason = 'no-item-audit' | 'no-verifying-citation' | 'target-not-in-plan';
 
