@@ -235,6 +235,27 @@ async function loadHarnessSlugs(): Promise<string[]> {
 }
 
 /**
+ * Workspaces (tool-arg-referential-integrity-2026-07-19 P-004, remaining slice).
+ *
+ * `entityRef('workspace')` was already converted onto 8 arg sites (cupboard
+ * install/publish/*.ts) back when P-001/P-002 landed, but no resolver was ever
+ * registered for the kind — per the "unregistered kind is SKIPPED, not
+ * rejected" contract, that left every one of those 8 sites completely
+ * unenforced despite carrying the marker. This closes that gap.
+ *
+ * Small + cross-tenant by construction (there are ~9 workspaces on this host,
+ * 2026-09-03) — well under the publish cap, so unlike pot/harness it is safe to
+ * both enforce AND publish as a `tools/list` enum.
+ */
+async function loadWorkspaces(): Promise<string[]> {
+  const s = await sql();
+  const rows = await s<{ workspace_id: string }[]>`
+    SELECT DISTINCT workspace_id FROM harness_shared.harness_registry WHERE workspace_id IS NOT NULL
+  `;
+  return rows.map((r) => r.workspace_id);
+}
+
+/**
  * Agent roles. Unlike pots/harnesses this is a CODE-DEFINED vocabulary, not a
  * table — so it is small, static (it changes only when the binary does), and
  * therefore the one kind here worth publishing into `tools/list`.
@@ -285,6 +306,9 @@ export function registerPapercuspEntityResolvers(
   setEntityResolver('pot', makeSetResolver('pot', loadPots));
   setEntityResolver('harness', makeSetResolver('harness', loadHarnessSlugs));
   setEntityResolver('role', makeRoleResolver());
+  // The 8 `entityRef('workspace')` sites converted alongside P-001/P-002 had no
+  // resolver until now — see the loadWorkspaces() doc comment above.
+  setEntityResolver('workspace', makeSetResolver('workspace', loadWorkspaces));
 
   // Registered even though they are over-cap today: the cap is enforced inside
   // the overlay, so these publish nothing now and start publishing on their own
@@ -295,6 +319,9 @@ export function registerPapercuspEntityResolvers(
     maxValues: 80,
     openPattern: NAMESPACED_ROLE.source,
   });
+  // Workspaces (~9, 2026-09-03) are genuinely small — safe to publish, unlike
+  // pot/harness/fleet.
+  setEntityEnum('workspace', entityEnum ?? loadWorkspaces);
 }
 
 registerPapercuspEntityResolvers();
