@@ -1118,36 +1118,6 @@ export interface CheckpointDeps {
   ): Promise<string | null>;
   frozenRepairFixerAlive?(spawnId: string): Promise<boolean | null>;
   /**
-   * P-008: recorded escapes within the rolling window (see FROZEN_REPAIR_ESCAPE_WINDOW_MS in
-   * frozen-candidate-escape-ledger.ts). The engine FAILS CLOSED when this dep is absent or
-   * throws: the budget reads as spent, so a broken ledger can only reproduce the pre-P-008
-   * hold-exhausted behaviour, never an unbounded recut loop.
-   */
-  readRecentFrozenCandidateEscapes?(): Promise<number>;
-  /** P-008: durably record a taken escape BEFORE the exhausted pin is abandoned. */
-  recordFrozenCandidateEscape?(entry: {
-    atMs: number;
-    abandonedCandidate: string;
-    repairHead: string;
-    reason: string;
-    ordinal: number;
-  }): Promise<void>;
-  /**
-   * WI-2141736 Layer 3: durably record a frozen candidate retired for measured
-   * dispatch-infeasibility (no fixer could be dispatched at all — distinct from the P-008
-   * escape budget above). Best-effort by design: absent or throwing must never block the
-   * retirement itself — a lost observability write is not a functional regression, so the
-   * caller only logs a warning and continues.
-   */
-  recordFrozenCandidateRetirement?(entry: {
-    atMs: number;
-    abandonedCandidate: string;
-    repairHead: string;
-    reason: string;
-    attempts: number;
-    ageMs: number;
-  }): Promise<void>;
-  /**
    * P-005: classify a DEAD fixer for attempt-refund purposes (infrastructure death with
    * zero tool invocations = free retry). Absent or null result = no refund (fail-closed).
    */
@@ -7239,6 +7209,34 @@ export function frozenRepairCapacityHoldSummary(
   );
 }
 
+/**
+ * D-005 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the ONE escalation body
+ * for a held frozen candidate, whatever exhausted it. It has to be actionable from the
+ * escalation alone: the gate will not move on its own, the fix path is an ADMISSION onto the
+ * frozen lineage (never a re-cut at tip), and retire is owner-only with the exact identity
+ * `op:'get'` prints — a retire is what re-opens the treadmill, so it is spelled out as the
+ * exception, not the recipe.
+ */
+export function frozenRepairHoldEscalationBody(
+  queue: Pick<FrozenCandidateRepairQueue, "candidate" | "repairHead" | "attempts" | "failingTests">,
+  reason: string,
+): string {
+  const failing =
+    queue.failingTests.length > 0
+      ? ` Failing: ${queue.failingTests.slice(0, 8).join(", ")}${queue.failingTests.length > 8 ? ` (+${queue.failingTests.length - 8} more)` : ""}.`
+      : "";
+  return (
+    `Frozen repair queue for candidate ${queue.candidate} is HELD (${reason}; ` +
+    `attempts=${queue.attempts}) at repairHead ${queue.repairHead}. The gate keeps judging this ` +
+    `lineage and will NOT re-cut at the staging tip.${failing} To move it: land the fix on staging, ` +
+    `then admit exactly those paths onto the frozen lineage with ` +
+    `release:repair-queue { op: 'admit', paths: ['<changed path>', ...], confirm: true } — the queue ` +
+    `returns to verification at the admitted head. Retire is OWNER-ONLY and re-opens the ` +
+    `treadmill: release:repair-queue { op: 'retire', confirm: true } with the exact identity ` +
+    `release:repair-queue { op: 'get' } prints.`
+  );
+}
+
 /** P-012 failure signature for the release-fixer dedup, folding the SPA-build break in:
  *  a green run has none; otherwise the extracted suite failures, plus the sentinel
  *  `@papercusp/operator-vite` when the build (not the suite) is what failed — so a broken
@@ -9048,17 +9046,9 @@ async function runGreenCheckpointInner(
           .frozenRepairFixerAlive?.(repairQueue.fixerSpawnId)
           .catch(() => null)
       : undefined;
-    // P-008: arm the bounded recut hatch by telling the policy how many recorded escapes the
-    // rolling window already holds. FAIL CLOSED: an unwired dep or a failed read counts as
-    // "budget spent", so a broken ledger can only ever produce the pre-P-008 behaviour
-    // (hold-exhausted), never an unbounded recut loop.
-    const priorEscapes =
-      (await deps.readRecentFrozenCandidateEscapes?.().catch(() => null)) ??
-      Number.MAX_SAFE_INTEGER;
     let decision = decideFrozenCandidateRepairQueue(repairQueue, {
       nowMs: Date.now(),
       fixerAlive,
-      priorEscapes,
     });
 
     if (decision.kind === "recover-dead-fixer") {
@@ -9157,35 +9147,32 @@ async function runGreenCheckpointInner(
       await deps.writeFrozenRepairQueue?.(repairQueue);
       decision = decideFrozenCandidateRepairQueue(repairQueue, {
         nowMs: Date.now(),
-        priorEscapes,
       });
     }
 
-    if (decision.kind === "hold-exhausted") {
+    if (
+      decision.kind === "hold-exhausted" ||
+      decision.kind === "hold-dispatch-infeasible"
+    ) {
+      // D-005 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): exhaustion HOLDS.
+      // The row, the candidate and the repairHead all stay; the gate escalates ONCE on the
+      // open→blocked transition; and the only thing that moves the queue again is an
+      // admission through the one door (P-001 admitPathsOntoRepairHead via
+      // `release:repair-queue { op:'admit', paths }`), which lands the fix on the frozen
+      // lineage and returns the queue to verification. The P-048/P-008 recut-at-tip escape
+      // and the dispatch-infeasible retire were both deleted here: every automatic retire
+      // observed since 2026-08-19 was a re-cut in disguise, and a re-cut is exactly the
+      // treadmill the freeze exists to stop. Retire stays OWNER-ONLY.
       if (repairQueue.phase !== "blocked") {
         repairQueue = markFrozenRepairExhausted(repairQueue, {
           reason: decision.reason,
           nowMs: Date.now(),
         });
         await deps.writeFrozenRepairQueue?.(repairQueue);
-        // P-008: exhaustion AUTO-ESCALATES to the streak owner instead of waiting to be
-        // noticed — the 264h streak's worst hours were exhausted pins nobody was paged for
-        // (D-001). The body names the recorded recut option so the owner can act from the
-        // escalation alone. Fired once, on the open→blocked transition, not every tick; the
-        // standard escalate lifecycle clears it when the gate goes green.
         await deps
           .escalate?.(
             `frozen candidate ${repairQueue.candidate.slice(0, 8)} exhausted automated repair (${decision.reason})`,
-            `Frozen repair queue for candidate ${repairQueue.candidate} is exhausted ` +
-              `(${decision.reason}; attempts=${repairQueue.attempts}) and its recut budget is ` +
-              `${
-                decision.maxCandidateEscapes === 0
-                  ? "disabled (maxCandidateEscapes=0)"
-                  : `spent (${decision.escapesUsed}/${decision.maxCandidateEscapes} in the rolling day)`
-              }. The gate holds this pin until a human acts. Recorded recut option: verify with ` +
-              `release:repair-queue { op: 'get' }, then retire with the exact identity it prints — ` +
-              `the next fire re-cuts at the then-current staging tip. Escape ledger: ` +
-              `gate_health.candidateEscapes on the green-checkpoint routine row.`,
+            frozenRepairHoldEscalationBody(repairQueue, decision.reason),
           )
           .catch((e) =>
             deps.log(
@@ -9194,37 +9181,25 @@ async function runGreenCheckpointInner(
           );
       }
       /**
-       * WI-42207 — DO NOT release the pin here. This was tried and reverted; the design is
-       * deliberate and `green-checkpoint.test.ts` guards it ("persists automation exhaustion as
-       * blocked and never selects a newer staging tip", including a `cleanupFrozenRepairWorktree`
-       * stub that throws with "an exhausted queue must remain durable").
-       *
-       * The tension is real and worth naming rather than silently resolving: WI-42148 calls this
-       * state "a deadlock, not a flake" because an exhausted pin is IMMUTABLE — no fix landed on
-       * staging can change its verdict — so retaining it means `main` cannot advance again without
-       * a human. WI-39944 wants the blocked queue retained precisely BECAUSE it is a dead end: it
-       * is the durable record of which candidate exhausted repair, and dropping it invites a
-       * re-cut / re-fail / re-exhaust churn loop that masks a genuinely persistent red.
-       *
-       * Both are right about their own concern, and reconciling them is a design decision with an
-       * owner, not something to settle from inside this branch. P-008
-       * (gate-verdict-liveness-and-repair-reliability-2026-08-31) later SUPPLIED that owner
-       * decision as a bounded, recorded escape: `decideExhaustedPin` may answer `recut-at-tip`
-       * within the recorded rolling-day budget (see the recut branch below and
-       * frozen-candidate-escape-ledger.ts). THIS branch is now the budget-spent / disabled /
-       * unrecordable terminal hold, and its retention contract is unchanged — which is exactly
-       * WI-39944's durable-record concern, preserved for the case the budget exists to bound.
-       * What closes the SAFETY gap without
-       * touching either contract is the age-based release earlier in this function: an exhausted
-       * pin still fossilizes, and is then released on evidence of staleness rather than on the
-       * exhaustion state itself. That bounds this from "frozen until a human intervenes" to
-       * "bounded by CANDIDATE_FOSSIL_AGE_MS", while the blocked record stays durable as designed.
+       * WI-42207 — DO NOT release the pin here. `green-checkpoint.test.ts` guards it ("persists
+       * automation exhaustion as blocked and never selects a newer staging tip"). The blocked
+       * row is the durable record of which candidate exhausted repair (WI-39944), and it is
+       * also the thing an admission un-blocks — dropping it would silently re-cut. What bounds
+       * "frozen until someone acts" is the age-based fossil release earlier in this function,
+       * which keys on staleness of the pin, never on the exhaustion state itself.
        */
       const summary =
         `frozen candidate ${repairQueue.candidate.slice(0, 8)} exhausted automated repair ` +
         `(${decision.reason}) at ${repairQueue.repairHead.slice(0, 8)}; retaining it as queue head ` +
-        `and refusing to select a newer staging tip`;
+        `and refusing to select a newer staging tip — admit a fix with ` +
+        `release:repair-queue { op: 'admit', paths: [...] } to resume verification`;
       deps.log(summary);
+      await deps.recordFreezeDisposition?.({
+        enabled: true,
+        state: "held",
+        reason: summary,
+        candidate: repairQueue.candidate,
+      });
       return withFossilAbandonment({
         advanced: false,
         candidate: repairQueue.repairHead,
@@ -9234,94 +9209,6 @@ async function runGreenCheckpointInner(
         summary,
         repairQueue,
       });
-    } else if (
-      decision.kind === "recut-at-tip" &&
-      decision.reason !== "dispatch-infeasible"
-      // ^ the union's OTHER recut-at-tip variant (FrozenRepairDispatchInfeasibleDecision) is
-      // budget-independent and handled inside the dispatch-fixer capacityHold path; only the
-      // exhausted-pin escape (decideExhaustedPin) carries escapeOrdinal/remainingEscapes.
-    ) {
-      // P-008 (owner-ratified via plan gate-verdict-liveness-and-repair-reliability-2026-08-31):
-      // the BOUNDED escape hatch for an exhausted pin — this resolves the WI-42148/WI-39944
-      // tension the hold-exhausted branch documents, with the owner decision it asked for.
-      // Record the escape FIRST: a crash between the record and the retire burns budget but
-      // retains the queue, so the next tick re-decides with the spent budget and can only
-      // hold, never double-recut. An unrecordable escape fails CLOSED into the terminal hold —
-      // budget accounting must never be skippable.
-      const escapeEntry = {
-        atMs: Date.now(),
-        abandonedCandidate: decision.abandonedCandidate,
-        repairHead: decision.repairHead,
-        reason: decision.reason,
-        ordinal: decision.escapeOrdinal,
-      };
-      let escapeRecorded = false;
-      try {
-        await deps.recordFrozenCandidateEscape?.(escapeEntry);
-        escapeRecorded = true;
-      } catch (e) {
-        deps.log(
-          `warn: frozen-repair escape record failed; HOLDING the exhausted pin instead of ` +
-            `re-cutting (an unrecorded escape would make the daily bound unenforceable): ` +
-            `${e instanceof Error ? e.message : e}`,
-        );
-      }
-      if (!escapeRecorded) {
-        if (repairQueue.phase !== "blocked") {
-          repairQueue = markFrozenRepairExhausted(repairQueue, {
-            reason: decision.reason,
-            nowMs: Date.now(),
-          });
-          await deps.writeFrozenRepairQueue?.(repairQueue);
-        }
-        const summary =
-          `frozen candidate ${repairQueue.candidate.slice(0, 8)} exhausted automated repair ` +
-          `(${decision.reason}) and its escape could not be recorded; retaining it as queue head ` +
-          `and refusing to select a newer staging tip`;
-        deps.log(summary);
-        return withFossilAbandonment({
-          advanced: false,
-          candidate: repairQueue.repairHead,
-          from: lastReady,
-          green: null,
-          reason: "repair-in-progress",
-          summary,
-          repairQueue,
-        });
-      }
-      await deps
-        .escalate?.(
-          `frozen candidate ${decision.abandonedCandidate.slice(0, 8)} exhausted repair; recorded recut ${decision.escapeOrdinal} taken`,
-          `Frozen repair queue for candidate ${decision.abandonedCandidate} exhausted automated ` +
-            `repair (${decision.reason}) at repairHead ${decision.repairHead}. The recorded recut ` +
-            `option was taken automatically: escape ${decision.escapeOrdinal} of the rolling-day ` +
-            `budget (remaining after this one: ${decision.remainingEscapes}); the gate re-cuts at ` +
-            `the current staging tip this run. If the same tests red again on the fresh candidate ` +
-            `and it exhausts, the budget is spent and the gate will hold for a human — that bound ` +
-            `is what stops a genuine persistent red being laundered into perpetual re-cutting. ` +
-            `Escape ledger: gate_health.candidateEscapes.`,
-        )
-        .catch((e) =>
-          deps.log(
-            `warn: frozen-repair recut escalation failed: ${e instanceof Error ? e.message : e}`,
-          ),
-        );
-      const abandonedQueue = repairQueue;
-      await deps.writeFrozenRepairQueue?.(null);
-      await deps
-        .cleanupFrozenRepairWorktree?.(abandonedQueue)
-        .catch((e) =>
-          deps.log(
-            `warn: recut-at-tip repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
-          ),
-        );
-      repairQueue = null;
-      candidate = await revParse(cfg.integrationRoot, cfg.integrationBranch);
-      deps.log(
-        `FROZEN_CANDIDATE_ESCAPE: abandoned exhausted candidate ` +
-          `${escapeEntry.abandonedCandidate.slice(0, 8)} (${escapeEntry.reason}) after recording ` +
-          `escape ${escapeEntry.ordinal}; re-cutting at current staging tip ${candidate.slice(0, 8)}`,
-      );
     } else if (decision.kind === "test-candidate") {
       candidate = await revParse(cfg.integrationRoot, decision.candidate);
       initialCandidateVerification = true;
@@ -9349,10 +9236,9 @@ async function runGreenCheckpointInner(
           // WI-2141347: the repairHead already converged past the frozen candidate (an
           // ancestor of staging — already vetted, never unpushed fixer content), so it is
           // a structurally sound candidate to test even though no fixer can be dispatched.
-          // Abandon this queue's own bookkeeping (same as the recut-at-tip path below) but
-          // test the CONVERGED repairHead instead of falling all the way back to whatever
-          // staging tip is current — that would discard the convergence untested and
-          // re-admit the full last-green radius for nothing.
+          // Abandon this queue's own bookkeeping but test the CONVERGED repairHead — a sha on
+          // the frozen lineage, never the staging tip (D-005: the resolver reads the tip only
+          // when NO queue row exists).
           const abandonedQueue = repairQueue;
           const testedRepairHead = dispatchInfeasible.candidate;
           await deps.writeFrozenRepairQueue?.(null);
@@ -9462,54 +9348,50 @@ async function runGreenCheckpointInner(
             repairQueue,
           });
         } else if (dispatchInfeasible) {
-          const abandonedQueue = repairQueue;
-          await deps.writeFrozenRepairQueue?.(null);
+          // D-005: the wall outlasted the convergence hold and no fixer can be dispatched.
+          // This used to RETIRE the queue and fall through to `revParse(integrationBranch)` —
+          // the one place the resolver read the moving tip while a queue row existed, and the
+          // branch that fired 20 times in one day with 0 resumes (2026-09-02). Now it BLOCKS
+          // the queue with the same row/candidate/repairHead, escalates once, and holds:
+          // agents and humans converge onto the frozen lineage through admission.
+          repairQueue = markFrozenRepairExhausted(repairQueue, {
+            reason: dispatchInfeasible.reason,
+            nowMs: Date.now(),
+          });
+          await deps.writeFrozenRepairQueue?.(repairQueue);
           await deps
-            .cleanupFrozenRepairWorktree?.(abandonedQueue)
+            .escalate?.(
+              `frozen candidate ${repairQueue.candidate.slice(0, 8)} held: no fixer dispatchable (${dispatchInfeasible.reason})`,
+              frozenRepairHoldEscalationBody(repairQueue, dispatchInfeasible.reason) +
+                ` Measured wall: ${dispatch.capacityHold.summary}`,
+            )
             .catch((e) =>
               deps.log(
-                `warn: dispatch-infeasible repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
+                `warn: frozen-repair dispatch-infeasible escalation failed: ${e instanceof Error ? e.message : e}`,
               ),
             );
-          // WI-2141736 Layer 3: durably record this retirement so "was freeze-and-converge
-          // just dissolved, and why" is a queryable field
-          // (gate_health.frozenCandidateRetirements) instead of log-archaeology — this
-          // fall-through path goes on to run the checkpoint against the new candidate, so
-          // this tick's own verdict/summary never carries the retirement. Best-effort: a
-          // lost record must never block the retirement itself.
-          await deps
-            .recordFrozenCandidateRetirement?.({
-              atMs: Date.now(),
-              abandonedCandidate: dispatchInfeasible.abandonedCandidate,
-              repairHead: dispatchInfeasible.repairHead,
-              reason: dispatchInfeasible.reason,
-              attempts: dispatchInfeasible.attempts,
-              ageMs: dispatchInfeasible.ageMs,
-            })
-            .catch((e) =>
-              deps.log(
-                `warn: frozen-repair retirement record failed (retirement proceeds regardless): ${e instanceof Error ? e.message : e}`,
-              ),
-            );
-          repairQueue = null;
-          candidate = await revParse(
-            cfg.integrationRoot,
-            cfg.integrationBranch,
-          );
-          deps.log(
-            `frozen candidate ${dispatchInfeasible.abandonedCandidate.slice(0, 8)} ` +
-              `retired after measured provider-capacity infeasibility (attempts=0); ` +
-              `falling through to current staging candidate ${candidate.slice(0, 8)}`,
-          );
-          // P-004: THE disposition the original outage hid. This branch fired 20 times in one
-          // day with 0 resumes, and the only evidence was the line above, in a per-run log.
+          const summary =
+            `frozen candidate ${repairQueue.candidate.slice(0, 8)} held after measured ` +
+            `provider-capacity infeasibility (attempts=0, ${dispatchInfeasible.ageMs}ms open) at ` +
+            `${repairQueue.repairHead.slice(0, 8)}; retaining it as queue head and refusing to ` +
+            `select a newer staging tip — admit a fix with ` +
+            `release:repair-queue { op: 'admit', paths: [...] } to resume verification`;
+          deps.log(summary);
           await deps.recordFreezeDisposition?.({
             enabled: true,
-            state: "retired",
-            reason:
-              `retired after measured provider-capacity infeasibility (attempts=0); the gate ` +
-              `re-cut at the current staging tip ${candidate.slice(0, 12)}`,
-            candidate: dispatchInfeasible.abandonedCandidate,
+            state: "held",
+            reason: summary,
+            candidate: repairQueue.candidate,
+            capacityRetryAtMs: dispatch.capacityHold.retryAtMs ?? null,
+          });
+          return withFossilAbandonment({
+            advanced: false,
+            candidate: repairQueue.repairHead,
+            from: lastReady,
+            green: null,
+            reason: "repair-in-progress",
+            summary,
+            repairQueue,
           });
         } else {
           // A walled provider says nothing about a candidate whose repair has already started:
@@ -15915,24 +15797,6 @@ export function realCheckpointDeps(
             const { releaseFixerSpawnAlive } =
               await import("@papercusp/operator-core/lib/release/fixer-liveness");
             return releaseFixerSpawnAlive(getOrgPg().sql, spawnId);
-          },
-          async readRecentFrozenCandidateEscapes() {
-            const { readRecentFrozenCandidateEscapes } = await import(
-              "@papercusp/operator-core/lib/release/frozen-candidate-escape-ledger"
-            );
-            return readRecentFrozenCandidateEscapes(repairTarget);
-          },
-          async recordFrozenCandidateEscape(entry) {
-            const { recordFrozenCandidateEscape } = await import(
-              "@papercusp/operator-core/lib/release/frozen-candidate-escape-ledger"
-            );
-            await recordFrozenCandidateEscape(repairTarget, entry);
-          },
-          async recordFrozenCandidateRetirement(entry) {
-            const { recordFrozenCandidateRetirement } = await import(
-              "@papercusp/operator-core/lib/release/frozen-candidate-retirement-ledger"
-            );
-            await recordFrozenCandidateRetirement(repairTarget, entry);
           },
           async classifyDeadFrozenRepairFixer(spawnId: string) {
             const { getOrgPg } = await import("@papercusp/db-org");
