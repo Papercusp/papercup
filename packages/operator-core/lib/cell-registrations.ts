@@ -799,6 +799,11 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
     evidence: [
       'gate.ownerBrief.mainGreen.value',
       'gate.ownerBrief.whyNot.failingLegs',
+      // WI-2143266: `failingLegs: []` alone is indistinguishable from "nothing is
+      // failing" — hoist the adjacent `measured` flag so a reader can tell a
+      // labelled-unmeasured/carried-empty list apart from a confident empty
+      // measurement (the false-green class this cell exists to prevent).
+      'gate.ownerBrief.whyNot.measured',
       'gate.ownerBrief.ownership.assessmentCode',
       'gate.ownerBrief.remediation.fixerAlive',
       'gate.ownerBrief.vintageSpreadMs',

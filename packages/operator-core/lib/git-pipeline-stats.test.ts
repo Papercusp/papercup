@@ -157,6 +157,20 @@ describe('gateFailingTestsMeasurement (EI-21561093776434695)', () => {
       gateFailingTestsMeasurement({ failingTests: [], measured: undefined, inconclusive }),
     ).toEqual({ failingTests: [], measured: false });
   });
+
+  it('WI-2143266: preserves an explicitly-measured, populated list during an open repair instead of erasing it', () => {
+    // Live 2026-09-03 reading: gate_health carried failingTestsMeasured:true with two
+    // named legs while inconclusive.status was 'repair-in-progress' (non-null) — the
+    // whole duration of a frozen repair. The old code discarded the list here, so the
+    // reader-facing owner brief reported "nothing failing" on a gate that was red.
+    expect(
+      gateFailingTestsMeasurement({
+        failingTests: ['lint:design-primitives', 'lint:plane-integrity'],
+        measured: true,
+        inconclusive: { ...inconclusive, status: 'repair-in-progress' },
+      }),
+    ).toEqual({ failingTests: ['lint:design-primitives', 'lint:plane-integrity'], measured: true });
+  });
 });
 
 describe('isGitSyncConflictCurrent', () => {

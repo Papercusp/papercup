@@ -673,11 +673,18 @@ export function gateFailingTestsMeasurement(input: {
   const failingTests = hasArray
     ? rawFailingTests.filter((x: unknown): x is string => typeof x === 'string')
     : [];
-  if (input.measured === false || input.inconclusive !== null) {
-    return { failingTests: [], measured: false };
-  }
+  // WI-2143266: an EXPLICIT `measured:true` backed by a real array is the strongest
+  // positive proof this function sees, and it must be checked BEFORE the inconclusive
+  // fallback below — an open repair (a non-null `inconclusive`) does not retroactively
+  // un-measure a verdict the writer already stamped and populated. Checking this first
+  // preserves the list instead of erasing it: the failure mode this fixes is precisely
+  // an agent needing to know which legs are red DURING an open repair, and the erased
+  // list used to answer that question with a false "nothing failing".
   if (input.measured === true) {
     return hasArray ? { failingTests, measured: true } : { failingTests: [], measured: null };
+  }
+  if (input.measured === false || input.inconclusive !== null) {
+    return { failingTests: [], measured: false };
   }
   return hasArray ? { failingTests, measured: true } : { failingTests: [], measured: null };
 }
