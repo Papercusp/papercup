@@ -1,0 +1,335 @@
+{
+  "schemaVersion": 1,
+  "plan": "identities-v1-2026-08-30",
+  "item": "P-018",
+  "generatedAt": "2026-09-03T22:53:43.435Z",
+  "inputs": {
+    "base": {
+      "path": "su.base.md",
+      "bytes": 75371,
+      "sha256": "ebd03474b957f705a343d7fcc5bf11a43587717c869250402e8a722a9a7a2ce2"
+    },
+    "overlay": {
+      "path": "papercusp-su.claude.md",
+      "bytes": 7716,
+      "sha256": "9a6031a3c54a3a4f88d6a1c05b40681181495fc8270c287d907d92c4fb7761bb"
+    },
+    "projectGuide": {
+      "path": "project-guide.md",
+      "bytes": 445,
+      "sha256": "540351f22f282469a9dcb2fa2199e3466f85e59cef0f5b06374113453904f3a0"
+    }
+  },
+  "markers": {
+    "present": [
+      "CLIENT-TOOLING-OVERLAY",
+      "WIRE-SCHEMAS",
+      "COORD-LEGEND",
+      "AUTO-MODE",
+      "RESULT-DOOR"
+    ],
+    "absent": [
+      "WORKSPACE-MAP",
+      "PROMOTION-MODEL",
+      "COMPACTION",
+      "SHARED-BASE-NOTES",
+      "PROJECT-GUIDE"
+    ]
+  },
+  "tiers": {
+    "full": {
+      "totalBytes": 136083,
+      "sha256": "3b8bc92aab13569dad39706bb700da30b737bc8edadaef27e4fc948c48f7696d",
+      "sections": [
+        {
+          "heading": "(preamble)",
+          "origin": "base",
+          "bytes": 573,
+          "sha256": "b3aa7e0c1403c01cb86353cfd4af2f37dedf325e33005c759ca782ce9ac4a3cc"
+        },
+        {
+          "heading": "## Who you are",
+          "origin": "base",
+          "bytes": 8691,
+          "sha256": "6870fd35ed177b519ccb7815f7dafaea86990d4944e398b4e02567162274927a"
+        },
+        {
+          "heading": "## Working in a shared environment — coordination is enforced",
+          "origin": "base",
+          "bytes": 7561,
+          "sha256": "b2963fac70b56f113d78e786113354a96d3aefee331f89f59b7c09f8a2f40a6d"
+        },
+        {
+          "heading": "## Working as a fleet MEMBER — the member operating loop",
+          "origin": "base",
+          "bytes": 4475,
+          "sha256": "c05d0988c381b9451fcff14c9303cd7eb0444c22a32eecdd595ca7d1d8885c6e"
+        },
+        {
+          "heading": "## Git — a background routine owns commit + push",
+          "origin": "base",
+          "bytes": 1277,
+          "sha256": "20fc8037c754c75407d53789aac544437bdbd1d0b01bc79c9451e2e9c6dabd8c"
+        },
+        {
+          "heading": "## Engineering discipline",
+          "origin": "base",
+          "bytes": 14485,
+          "sha256": "515d41687eeeeb901284942f211059042b98fefda6cb94c81be40273988f2a85"
+        },
+        {
+          "heading": "## Anti-babysitting rule — monitoring is not work by default",
+          "origin": "base",
+          "bytes": 4937,
+          "sha256": "906cffb091ede19edd7e042dd87d8d73b88f453e00646a04d05e4832bd029cd6"
+        },
+        {
+          "heading": "## Default posture (AUTO mode OFF) — plan, then confirm before you execute",
+          "origin": "base",
+          "bytes": 22033,
+          "sha256": "db9d5e5a89230ce8e39e74c316ab7b349d0e3a33eeef4b768cccce810ebe2c7a"
+        },
+        {
+          "heading": "## Delivery discipline — a dialog ECLIPSES same-turn text; rendered ≠ delivered",
+          "origin": "base",
+          "bytes": 6042,
+          "sha256": "4d405b8f96cd969629e7f144b9c7b131157e8ea1932298a896aa52a70a79ea2a"
+        },
+        {
+          "heading": "## AUTO mode — the owner's switch for \"act, don't ask\"",
+          "origin": "generated",
+          "bytes": 12812,
+          "sha256": "135d121559f12e0c6ab325206c6cdb93a1122ddb112a7f687e6db7bbc3ae3dc8"
+        },
+        {
+          "heading": "## IDEATE mode — the owner's switch for \"invent net-new, don't just patch\"",
+          "origin": "generated",
+          "bytes": 7581,
+          "sha256": "3079018da833cab37e35d1df7cfb51a6cacc5a19df57296f93ea175a56c90d5a"
+        },
+        {
+          "heading": "## DRAIN mode — the owner's switch for \"drain the work queue to terminal\"",
+          "origin": "generated",
+          "bytes": 4530,
+          "sha256": "37549a38e483a08a93270ea56e6418fd237e2a62f47193a0f8992a317fc0841d"
+        },
+        {
+          "heading": "## AUDIT mode — the owner's switch for \"step back and audit the whole picture\"",
+          "origin": "generated",
+          "bytes": 3503,
+          "sha256": "e04e80d44046cdcabab66b222f731863b100e807163452adf6b922c2683d2750"
+        },
+        {
+          "heading": "## Registering work is a SEPARATE discipline from asking approval — AUTO waives the ask, NOT the register",
+          "origin": "base",
+          "bytes": 2326,
+          "sha256": "3b02ee50d94fb99d160acb0eb16c51c697015209076acb86eb2c472a6ff38093"
+        },
+        {
+          "heading": "## Tool results are capped — reduce BEFORE you call, not after",
+          "origin": "generated",
+          "bytes": 2849,
+          "sha256": "12a4d742e89838996c49da09f1ad14a1afc8f5a1eb3e2b03ee10ffc59b24869a"
+        },
+        {
+          "heading": "## Tools, docs, memory",
+          "origin": "base",
+          "bytes": 2333,
+          "sha256": "1c8172d705bc67b9fd16fa20b4f8cc3dcb8b95f9310fe2f0671239c55cbc1058"
+        },
+        {
+          "heading": "## Coordination: subscribe → ask → file",
+          "origin": "base",
+          "bytes": 8111,
+          "sha256": "62fe41d56cf17181795304fa1bd73eb942b7057b90b3406879cc0c150726f426"
+        },
+        {
+          "heading": "## Coordination glyph legend",
+          "origin": "base",
+          "bytes": 29,
+          "sha256": "57fc73f066871b9d864db32ae69ea638c595cc22ba165f7dc579d48af68dc56f"
+        },
+        {
+          "heading": "## Coord injection protocol",
+          "origin": "generated",
+          "bytes": 2278,
+          "sha256": "5282dc2a9afdd86889c215d61d70bf8ebf0c965f432746ec06884cf97bdd0cef"
+        },
+        {
+          "heading": "## Wire schemas",
+          "origin": "base",
+          "bytes": 16,
+          "sha256": "229bf09375d32bbc0a968a4b1a5f03f67936ef3c0a3a3e38c7de07730ec38b2d"
+        },
+        {
+          "heading": "## The deploy pipeline is ASYNC — don't babysit your OWN change, but a RED gate is EVERYONE's job to FIX (no owner-ask)",
+          "origin": "generated",
+          "bytes": 8226,
+          "sha256": "a68e80d51dbe5f920d9c6a3f925821a751fda93ca2537fc005a5d54e72923a94"
+        },
+        {
+          "heading": "## Waiting on something? Arm a self-wake LOOP — never sleep on an event that may never fire; if the blocker isn't progressing, OWN getting it unblocked",
+          "origin": "generated",
+          "bytes": 3669,
+          "sha256": "a8716cf704e3e4fde16ff16ae1eba9d03a96c71a305814ab68c765028cee158f"
+        },
+        {
+          "heading": "## You can WAKE a peer — a parked agent sleeps until something re-invokes it; handing work off is not enough",
+          "origin": "generated",
+          "bytes": 2017,
+          "sha256": "368015936cdc3eed678480889ff586aac3b2d52f5c7f50c44068642ae1d15d23"
+        },
+        {
+          "heading": "## Coupling — opt IN to a peer's state, and opt back OUT when you no longer need it",
+          "origin": "generated",
+          "bytes": 1922,
+          "sha256": "2faec54f3ea6f5bf687ff48a10f1f71ba4d2952c7dcf582cda47c453c76f5a7f"
+        },
+        {
+          "heading": "## Read the value; say what you want back",
+          "origin": "generated",
+          "bytes": 3783,
+          "sha256": "815275e068ef6f66d93a4f28f9481070dfd6e38d65e1465682f6f17d40bd05e6"
+        }
+      ]
+    },
+    "fleet": {
+      "totalBytes": 109915,
+      "sha256": "2cb85bee54396527ed60888ae9ff36f8f59b4210e92055756e9c9f31595b11ae",
+      "sections": [
+        {
+          "heading": "(preamble)",
+          "origin": "base",
+          "bytes": 573,
+          "sha256": "b3aa7e0c1403c01cb86353cfd4af2f37dedf325e33005c759ca782ce9ac4a3cc"
+        },
+        {
+          "heading": "## Who you are",
+          "origin": "base",
+          "bytes": 8691,
+          "sha256": "6870fd35ed177b519ccb7815f7dafaea86990d4944e398b4e02567162274927a"
+        },
+        {
+          "heading": "## Working in a shared environment — coordination is enforced",
+          "origin": "base",
+          "bytes": 7561,
+          "sha256": "b2963fac70b56f113d78e786113354a96d3aefee331f89f59b7c09f8a2f40a6d"
+        },
+        {
+          "heading": "## Working as a fleet MEMBER — the member operating loop",
+          "origin": "base",
+          "bytes": 4475,
+          "sha256": "c05d0988c381b9451fcff14c9303cd7eb0444c22a32eecdd595ca7d1d8885c6e"
+        },
+        {
+          "heading": "## Git — a background routine owns commit + push",
+          "origin": "base",
+          "bytes": 1277,
+          "sha256": "20fc8037c754c75407d53789aac544437bdbd1d0b01bc79c9451e2e9c6dabd8c"
+        },
+        {
+          "heading": "## Engineering discipline",
+          "origin": "base",
+          "bytes": 14485,
+          "sha256": "515d41687eeeeb901284942f211059042b98fefda6cb94c81be40273988f2a85"
+        },
+        {
+          "heading": "## Anti-babysitting rule — monitoring is not work by default",
+          "origin": "base",
+          "bytes": 4937,
+          "sha256": "906cffb091ede19edd7e042dd87d8d73b88f453e00646a04d05e4832bd029cd6"
+        },
+        {
+          "heading": "## Default posture (AUTO mode OFF) — plan, then confirm before you execute",
+          "origin": "base",
+          "bytes": 22033,
+          "sha256": "db9d5e5a89230ce8e39e74c316ab7b349d0e3a33eeef4b768cccce810ebe2c7a"
+        },
+        {
+          "heading": "## Delivery discipline — a dialog ECLIPSES same-turn text; rendered ≠ delivered",
+          "origin": "base",
+          "bytes": 6042,
+          "sha256": "4d405b8f96cd969629e7f144b9c7b131157e8ea1932298a896aa52a70a79ea2a"
+        },
+        {
+          "heading": "## AUTO mode — you are in it",
+          "origin": "generated",
+          "bytes": 2261,
+          "sha256": "e65b43fcc9c48f417f4b81749a89bd88bd61c9bb786254e07a00755203be1e6f"
+        },
+        {
+          "heading": "## Registering work is a SEPARATE discipline from asking approval — AUTO waives the ask, NOT the register",
+          "origin": "base",
+          "bytes": 2326,
+          "sha256": "3b02ee50d94fb99d160acb0eb16c51c697015209076acb86eb2c472a6ff38093"
+        },
+        {
+          "heading": "## Tool results are capped — reduce BEFORE you call, not after",
+          "origin": "generated",
+          "bytes": 2849,
+          "sha256": "12a4d742e89838996c49da09f1ad14a1afc8f5a1eb3e2b03ee10ffc59b24869a"
+        },
+        {
+          "heading": "## Tools, docs, memory",
+          "origin": "base",
+          "bytes": 2333,
+          "sha256": "1c8172d705bc67b9fd16fa20b4f8cc3dcb8b95f9310fe2f0671239c55cbc1058"
+        },
+        {
+          "heading": "## Coordination: subscribe → ask → file",
+          "origin": "base",
+          "bytes": 8111,
+          "sha256": "62fe41d56cf17181795304fa1bd73eb942b7057b90b3406879cc0c150726f426"
+        },
+        {
+          "heading": "## Coordination glyph legend",
+          "origin": "base",
+          "bytes": 29,
+          "sha256": "57fc73f066871b9d864db32ae69ea638c595cc22ba165f7dc579d48af68dc56f"
+        },
+        {
+          "heading": "## Coord injection protocol",
+          "origin": "generated",
+          "bytes": 2278,
+          "sha256": "5282dc2a9afdd86889c215d61d70bf8ebf0c965f432746ec06884cf97bdd0cef"
+        },
+        {
+          "heading": "## Wire schemas",
+          "origin": "base",
+          "bytes": 16,
+          "sha256": "229bf09375d32bbc0a968a4b1a5f03f67936ef3c0a3a3e38c7de07730ec38b2d"
+        },
+        {
+          "heading": "## The deploy pipeline is ASYNC — don't babysit your OWN change, but a RED gate is EVERYONE's job to FIX (no owner-ask)",
+          "origin": "generated",
+          "bytes": 8226,
+          "sha256": "a68e80d51dbe5f920d9c6a3f925821a751fda93ca2537fc005a5d54e72923a94"
+        },
+        {
+          "heading": "## Waiting on something? Arm a self-wake LOOP — never sleep on an event that may never fire; if the blocker isn't progressing, OWN getting it unblocked",
+          "origin": "generated",
+          "bytes": 3669,
+          "sha256": "a8716cf704e3e4fde16ff16ae1eba9d03a96c71a305814ab68c765028cee158f"
+        },
+        {
+          "heading": "## You can WAKE a peer — a parked agent sleeps until something re-invokes it; handing work off is not enough",
+          "origin": "generated",
+          "bytes": 2017,
+          "sha256": "368015936cdc3eed678480889ff586aac3b2d52f5c7f50c44068642ae1d15d23"
+        },
+        {
+          "heading": "## Coupling — opt IN to a peer's state, and opt back OUT when you no longer need it",
+          "origin": "generated",
+          "bytes": 1922,
+          "sha256": "2faec54f3ea6f5bf687ff48a10f1f71ba4d2952c7dcf582cda47c453c76f5a7f"
+        },
+        {
+          "heading": "## Read the value; say what you want back",
+          "origin": "generated",
+          "bytes": 3783,
+          "sha256": "815275e068ef6f66d93a4f28f9481070dfd6e38d65e1465682f6f17d40bd05e6"
+        }
+      ]
+    }
+  }
+}
