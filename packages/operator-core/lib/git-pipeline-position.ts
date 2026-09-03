@@ -3084,7 +3084,7 @@ export function gateCandidateProgress(cf: GateCandidateFailures | null | undefin
       return 'converging';
     // 'none-failing' is NOT convergence. Zero failing TEST files while reds are counted means
     // the red is not in the leg this cell measures — the lint/perf/desktop/delta legs and the
-    // main fast-forward are separate and unmeasured here (see `scope`/`postSuiteMeasured`).
+    // main fast-forward are separate (see `scope` / `nonTestLegsMeasured` / `nonTestLegs.perLeg`).
     // Calling that "converging" would hand a green-ish reading to a gate wedged on a leg this
     // function cannot see. 'unmeasured' and 'no-frozen-candidate' are absent subjects outright.
     case 'none-failing':
@@ -3633,7 +3633,15 @@ export function computeStages(
                     )} → repairHead ${g.candidateFailures.repairHeadSha.slice(0, 12)}, not read from the cached gate snapshot.)`
                   : ''
               } ⚠ Scope: that covers the gate's affected-test leg on this candidate only; the lint/perf/desktop/delta legs and the main fast-forward are separate and are ${
-                g.candidateFailures?.postSuiteMeasured === true ? 'measured' : 'NOT reported measured'
+                g.candidateFailures?.nonTestLegsMeasured === 'measured'
+                  ? `measured — ${
+                      g.candidateFailures.nonTestLegs?.shrink.failingLegs ?? 0
+                    } leg(s) still failing${
+                      g.candidateFailures.nonTestLegs?.shrink.failingLegIds.length
+                        ? `: ${g.candidateFailures.nonTestLegs.shrink.failingLegIds.join(', ')}`
+                        : ''
+                    }`
+                  : 'NOT recorded — no leg measurement exists for this cycle, which is not the same as "no legs failing"'
               } here.`
           : gateHealth === 'stalled'
             ? `Gate is RED (${g.consecutiveReds} consecutive) — main is held for everyone until it greens. The reds are yours to fix, not a queue to wait in.${
@@ -5324,6 +5332,10 @@ export async function gitPipelinePosition(
         // `gate.candidateFailures.nonTestLegs` can name which lint/perf/desktop/delta
         // leg is failing, instead of the bare `postSuiteMeasured` tri-state boolean.
         repairTickLegs: snap.gate.repairTickLegs ?? null,
+        // P-003: the cycle's per-leg LIFECYCLE, distinct from the tick measurement above.
+        // One tick says what it just ran; only the lifecycle says whether a leg's own
+        // re-run has since passed — which is the half "did its fix land" needs.
+        queueLegs: snap.gate.repairQueue.legs ?? null,
       })
     : null;
   // WI-7035: `snap.gate.inFlightRetriage` is already loaded and freshness-checked by

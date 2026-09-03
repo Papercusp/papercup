@@ -517,6 +517,12 @@ export interface FrozenRepairQueueDiagnostic {
    * candidate. A status surface may still expose `candidate` for compatibility,
    * but must not imply that `repairHead` advanced the frozen pin.
    */
+  /**
+   * P-002/P-003 — the cycle's per-leg lifecycle, carried through so a diagnostic reader can
+   * name WHICH non-test leg is failing and whether its own re-run has passed. Optional and
+   * additive: absent means no leg measurement was recorded, never "no legs are failing".
+   */
+  legs?: readonly FrozenRepairLegState[];
   verdictProvenance?: {
     frozenCandidate: string;
     repairHead: string;
@@ -1345,6 +1351,9 @@ export function diagnoseFrozenCandidateRepairQueue(
   return {
     ...identity,
     candidate: queue.candidate,
+    // P-002/P-003: carried onto the diagnostic so a reader holding it can answer "which
+    // non-test leg, and did its fix land" without re-parsing the raw queue blob.
+    ...(queue.legs && queue.legs.length > 0 ? { legs: queue.legs } : {}),
     attempts: queue.attempts,
     openedAtMs: queue.openedAtMs,
     updatedAtMs: queue.updatedAtMs,

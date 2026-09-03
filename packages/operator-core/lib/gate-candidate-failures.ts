@@ -53,8 +53,17 @@
  * `distinctFailingFiles: []` as "repairHead is green" has made the mirror-image of the
  * original error — over-claiming green off a narrow probe instead of over-claiming red
  * off a wide one. Every result therefore carries `scope` as a rendered sentence, and
- * `postSuiteMeasured` says whether the non-test legs (lint / perf / desktop / delta)
+ * `nonTestLegsMeasured` says whether the non-test legs (lint / perf / desktop / delta)
  * were measured at all. A passing affected-tests suite is NOT a green gate.
+ *
+ * ── P-003: THE LEGS ARE NAMED NOW ───────────────────────────────────────────────
+ * `postSuiteMeasured` — one tri-state boolean standing for four unrelated legs, and never
+ * actually supplied by the one caller — is GONE. `nonTestLegs.perLeg` answers the question
+ * that was really being asked ("WHICH lint leg is red, and did its fix land?") with one row
+ * per leg: this tick's own result, the cycle's lifecycle state for it, and the head at which
+ * that leg's own re-run last passed. `nonTestLegs.shrink` is the leg-population shrink
+ * reading, carrying its own scope sentence so it is never differenced against the test-file
+ * counts beside it (D-004).
  */
 
 import { execFile } from 'node:child_process';
@@ -64,6 +73,12 @@ import {
   type RepairTickLegSnapshot,
   type StoredRepairTickLegs,
 } from './release/repair-tick-legs-snapshot';
+import {
+  summarizeRepairLegs,
+  type FrozenRepairLegState,
+  type RepairLegShrinkSummary,
+  type RepairLegStatus,
+} from './release/repair-leg-lifecycle';
 
 /** Hard cap on rendered failing files — the result is read in-prompt. */
 const MAX_FAILING_FILES = 60;
@@ -134,7 +149,22 @@ export interface GateCandidateFailures {
    * `null` in production today. See `nonTestLegs` below for a DIFFERENT, ALREADY-
    * persisted per-leg measurement this change newly surfaces.
    */
-  postSuiteMeasured: boolean | null;
+  /**
+   * P-003 — REPLACES the `postSuiteMeasured` tri-state.
+   *
+   * That field was a collapse in two directions at once: one boolean stood for four
+   * unrelated legs, AND it was never supplied. It was computed in green-checkpoint.ts,
+   * consumed only for a prose note in a log file, never persisted, and the only caller of
+   * this function never passed it — so `opts.postSuiteMeasured ?? null` resolved `null`
+   * forever while looking like a measurement that had come back empty. (Diagnosed twice
+   * independently: audit question #15 and WI-2142763.)
+   *
+   * This says only what is actually known, from data this module really holds: whether a
+   * leg measurement was recorded at all. There is deliberately no third "ran and failed to
+   * report" state to fabricate — `not-recorded` is the honest reading of an absence, and
+   * WHICH legs and how they are doing is `nonTestLegs` below, by name.
+   */
+  nonTestLegsMeasured: 'measured' | 'not-recorded';
   /**
    * WI-2143253: the NAMED non-test legs (lint / perf / desktop / delta), read back from
    * the repair queue's own per-leg measurement (`gate_health.repairTickLegs`, written on
@@ -160,6 +190,35 @@ export interface GateCandidateFailures {
     failing: RepairTickLegSnapshot[];
     /** Plain-language reading, hedged by `current`. */
     reading: string;
+    /**
+     * P-003 — the NAMED per-leg surface. One row per leg this cycle knows about, joining
+     * THIS tick's measurement to the queue's own lifecycle for that leg (P-002/D-005).
+     *
+     * The union of both sources is deliberate, and each side answers something the other
+     * cannot. A leg the queue admitted but this tick did not run appears with
+     * `measuredNow: 'not-measured'` and `lifecycle: 'failing'` — because not looking is not
+     * a pass. A leg this tick measured that the queue never admitted appears with
+     * `lifecycle: 'never-admitted'`, which is the honest reading of a leg with no cycle
+     * history rather than a silent omission.
+     */
+    perLeg: readonly {
+      id: string;
+      /** This tick's own result, or `not-measured` when this tick did not run the leg. */
+      measuredNow: RepairLegStatus | 'not-measured';
+      /** The queue's lifecycle state for this leg. */
+      lifecycle: 'failing' | 'fixed' | 'never-admitted';
+      /**
+       * The head at which THIS LEG's own re-run last passed — the only evidence that its
+       * fix landed. Null while it is failing, and null for a leg the queue never admitted.
+       * Deliberately a HEAD and not a boolean: "did the fix land" is a claim about a
+       * specific sha, and a bare `true` invites it to be read as true of the current one.
+       */
+      fixedAtHead: string | null;
+      admittedRound: number | null;
+      reading: string;
+    }[];
+    /** The leg shrink reading for this cycle. Carries its own scope sentence (D-004). */
+    shrink: RepairLegShrinkSummary;
   } | null;
   /** The scope sentence. Rendered, not derived by the reader. */
   scope: string;
@@ -204,7 +263,13 @@ export interface ReadGateCandidateFailuresOpts {
   root: string;
   /** Submodule prefixes (from `submodulePaths()`), so a gitlink move is not misread. */
   submodulePaths?: readonly string[];
-  postSuiteMeasured?: boolean | null;
+  /**
+   * P-003: the repair queue's own per-leg LIFECYCLE (P-002 `queue.legs`) — pass it straight
+   * through; this module does not fetch it. Distinct from `repairTickLegs` below: that is
+   * ONE tick's measurement, this is what the cycle has accumulated across ticks, and only
+   * the latter can say whether a leg's fix has landed.
+   */
+  queueLegs?: readonly FrozenRepairLegState[] | null;
   /**
    * WI-2143253: the repair queue's own already-parsed per-leg measurement
    * (`gate_health.repairTickLegs`, via `parseRepairTickLegs` in
@@ -221,7 +286,7 @@ const SCOPE_SENTENCE =
   'filesJudged is the AFFECTED RADIUS the gate selected for this candidate — NOT the full suite ' +
   '(~6,700 files). An empty failing list means "nothing failed in the judged radius", NOT ' +
   '"repairHead is green"; the post-suite legs (lint/perf/desktop/delta) and the main fast-forward ' +
-  'are separate and are reported by postSuiteMeasured.';
+  'are separate and are reported by nonTestLegsMeasured + nonTestLegs.perLeg, BY NAME.';
 
 function unavailable(
   reason: string,
@@ -248,7 +313,7 @@ function unavailable(
     stillBrokenCount: 0,
     stillBrokenNeedsRunCount: 0,
     changedBetweenRefs: null,
-    postSuiteMeasured: null,
+    nonTestLegsMeasured: nonTestLegs ? 'measured' : 'not-recorded',
     nonTestLegs,
     scope: SCOPE_SENTENCE,
     unavailable: reason,
@@ -266,6 +331,7 @@ function unavailable(
 function buildNonTestLegs(
   snap: StoredRepairTickLegs | null | undefined,
   repairHeadSha: string | null,
+  queueLegs?: readonly FrozenRepairLegState[] | null,
 ): GateCandidateFailures['nonTestLegs'] {
   if (!snap) return null;
   const current = repairTickLegsCurrent(snap, repairHeadSha);
@@ -276,7 +342,70 @@ function buildNonTestLegs(
       : failing.length === 0
         ? 'All measured non-test legs (lint/perf/desktop/delta) passed at this repairHead.'
         : `${failing.length} non-test leg(s) failing at this repairHead: ${failing.map((l) => l.id).join(', ')}.`;
-  return { current, head: snap.head, atMs: snap.atMs, all: snap.legs, failing, reading };
+  return {
+    current,
+    head: snap.head,
+    atMs: snap.atMs,
+    all: snap.legs,
+    failing,
+    reading,
+    perLeg: buildPerLeg(snap, queueLegs),
+    shrink: summarizeRepairLegs(queueLegs ?? undefined),
+  };
+}
+
+/**
+ * P-003 — one row per leg, over the UNION of this tick's measurement and the cycle's
+ * lifecycle.
+ *
+ * The union is the content. Intersecting instead would drop a leg the queue is still
+ * tracking simply because this tick did not run it, which renders "we did not look" as
+ * "it is not on the list" — the same false absence D-005 rule 4 exists to stop.
+ */
+function buildPerLeg(
+  snap: StoredRepairTickLegs,
+  queueLegs?: readonly FrozenRepairLegState[] | null,
+): NonNullable<GateCandidateFailures['nonTestLegs']>['perLeg'] {
+  const measured = new Map(snap.legs.map((leg) => [leg.id, leg.status]));
+  const lifecycles = new Map((queueLegs ?? []).map((leg) => [leg.id, leg]));
+  const ids = [...new Set([...measured.keys(), ...lifecycles.keys()])].sort();
+  return ids.map((id) => {
+    const measuredNow: RepairLegStatus | 'not-measured' = measured.get(id) ?? 'not-measured';
+    const state = lifecycles.get(id);
+    const lifecycle = state ? state.state : ('never-admitted' as const);
+    const fixedAtHead = state?.state === 'fixed' ? (state.resolvedHead ?? null) : null;
+    return {
+      id,
+      measuredNow,
+      lifecycle,
+      fixedAtHead,
+      admittedRound: state?.admittedRound ?? null,
+      reading: perLegReading(id, measuredNow, lifecycle, fixedAtHead),
+    };
+  });
+}
+
+function perLegReading(
+  id: string,
+  measuredNow: RepairLegStatus | 'not-measured',
+  lifecycle: 'failing' | 'fixed' | 'never-admitted',
+  fixedAtHead: string | null,
+): string {
+  if (measuredNow === 'not-measured') {
+    return lifecycle === 'failing'
+      ? `${id} was NOT measured by this tick and the cycle still has it FAILING. Not measuring it is not a pass — this is outstanding work.`
+      : lifecycle === 'fixed'
+        ? `${id} was not measured by this tick; its own re-run last passed at ${fixedAtHead ?? 'an unrecorded head'}.`
+        : `${id} was not measured by this tick and the cycle never admitted it — nothing is known about it here.`;
+  }
+  if (measuredNow === 'pass') {
+    return lifecycle === 'never-admitted'
+      ? `${id} passed at this tick and was never admitted to this cycle — it is not repair work.`
+      : `${id} PASSED at this tick${fixedAtHead ? ` (fix observed at ${fixedAtHead})` : ''}. Do NOT go fix it.`;
+  }
+  return lifecycle === 'never-admitted'
+    ? `${id} is ${measuredNow} at this tick but the cycle has no lifecycle for it yet — it has not been admitted, so no shrink is being tracked for it.`
+    : `${id} is ${measuredNow} and the cycle has it FAILING. Repair it by making THAT LEG pass — a path match is not evidence about a leg (D-005).`;
 }
 
 /**
@@ -467,7 +596,7 @@ export async function readGateCandidateFailures(
   const repairHeadSha = opts.repairHeadSha?.trim() || null;
   // WI-2143253: pure and cheap — compute once, thread through every return path
   // (including the unavailable ones below) rather than only the success path.
-  const nonTestLegs = buildNonTestLegs(opts.repairTickLegs, repairHeadSha);
+  const nonTestLegs = buildNonTestLegs(opts.repairTickLegs, repairHeadSha, opts.queueLegs);
   if (!candidateSha) {
     return unavailable(
       'no frozen candidate — there is no sha to judge, so there is no failing-files answer. This is not "zero failures".',
@@ -595,7 +724,7 @@ export async function readGateCandidateFailures(
       moves.kind === 'unknown'
         ? null
         : { count: moves.kind === 'none' ? 0 : moves.paths.length, sample: moves.kind === 'none' ? [] : moves.paths.slice(0, 10) },
-    postSuiteMeasured: opts.postSuiteMeasured ?? null,
+    nonTestLegsMeasured: nonTestLegs ? 'measured' : 'not-recorded',
     nonTestLegs,
     scope: SCOPE_SENTENCE,
     unavailable: null,
