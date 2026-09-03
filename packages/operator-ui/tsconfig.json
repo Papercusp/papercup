@@ -20,5 +20,23 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["node"]
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "//exclude": [
+    "`src/surfaces/index.tsx` is a lazy() TABLE naming ~465 operator modules by",
+    "relative path (../../../../apps/operator/...). Compiling it here pulls those",
+    "trees into THIS program under THIS tsconfig, which is exactly the failure",
+    "`src/surfaces/surfaces.d.ts` was written to prevent — it just reappears on the",
+    "PRODUCER side, because `exports['./surfaces'].types` only redirects CONSUMERS.",
+    "Measured 2026-09-03: 578 errors (309 apps/operator, 159 apps/operator-vite,",
+    "102 operator-core) and ZERO in this package's own src/. It red-pinned the",
+    "shared green-checkpoint gate on lint:tsc:workspaces as the only failing",
+    "package of 80.",
+    "",
+    "Excluding it loses nothing: no file in src/ imports ./surfaces (index.ts does",
+    "not re-export it), it is the ONLY file here reaching outside the package, and",
+    "the components are already typechecked where they live by lint:tsc's operator",
+    "legs and operator-vite's own tsc. The public contract stays surfaces.d.ts,",
+    "whose key-union drift guard still fails at the call site."
+  ],
+  "exclude": ["src/surfaces/index.tsx"]
 }
