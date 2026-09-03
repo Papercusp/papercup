@@ -564,7 +564,17 @@ async function resolveRowScopeCgroup(
   if (!row.scopeUnit) return stored;
   if (stored && isManagedScopeCgroupPath(stored, row.scopeUnit)) return stored;
   const resolved = await scopeCgroupPath(row.scopeUnit, d);
-  return resolved.ok ? resolved.cgroupPath : null;
+  if (resolved.ok) return resolved.cgroupPath;
+  // A COLLECTED transient scope is POSITIVELY empty: systemd no longer knows the
+  // unit, so there is no cgroup and therefore nothing alive in it.
+  if (resolved.error === 'already_gone') return null;
+  // Anything else means we FAILED TO RESOLVE — which is not the same as "empty",
+  // and must never be rendered as one. An unreachable/erroring `systemctl` turned
+  // into `null` here would report `verified empty` for a scope nobody looked at:
+  // the instrument-failure-reads-as-clean class this subsystem exists to refuse.
+  // Fall back to the stored path — the pre-fix behaviour, which can only ever
+  // OVER-report survivors, never invent a clean kill.
+  return stored;
 }
 
 async function countScopeProcesses(row: TaskRow, d: ReturnType<typeof deps>): Promise<number> {

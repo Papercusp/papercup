@@ -214,6 +214,113 @@ describe('killTask — confined path', () => {
     expect(store.closed).toHaveLength(0);
   });
 
+  it('EI-22074929140199832: verifies the SCOPE, not the stored cgroup_path — a mismatched path never becomes a phantom survivor', async () => {
+    // The measured production shape: `task_ledger.cgroup_path` holds the OPERATOR'S
+    // own cgroup rather than this task's scope (522 of 726 confined rows started in
+    // 24h did not end in their own scope_unit). Walking it answers a question about
+    // the operator, and it is permanently non-empty — so a scope that is completely
+    // dead reported "15 process(es) remained" and got a pointless SIGKILL.
+    const operatorCgroup = '/user.slice/user-1000.slice/user@1000.service/app.slice/papercusp-dev-api.service';
+    const trueScopeCgroup = '/papercusp.slice/papercusp-bash.slice/pc-mismatch.scope';
+    row({ taskId: 'mismatch', scopeUnit: 'pc-mismatch.scope', cgroupPath: operatorCgroup });
+
+    const reads: string[] = [];
+    const fs = {
+      // The operator's own cgroup is BUSY; the task's real scope is EMPTY (dead).
+      readFile: (path: string) => {
+        reads.push(path);
+        return path.startsWith(`/sys/fs/cgroup${operatorCgroup}`) ? '101\n102\n103\n' : '';
+      },
+      readDir: () => [],
+      isDir: () => true,
+    };
+    const signals: string[] = [];
+    let resolvedScope = 0;
+    const out = await killTask('mismatch', {
+      escalateAfterMs: 1,
+      sleep: async () => {},
+      fs,
+      execFileAsync: (async (_f: string, args: string[]) => {
+        if (args[1] === 'show') {
+          resolvedScope++;
+          expect(args).toContain('pc-mismatch.scope');
+          return { stdout: `${trueScopeCgroup}\n`, stderr: '' };
+        }
+        signals.push(args[2]!);
+        return { stdout: '', stderr: '' };
+      }) as never,
+    });
+
+    // It asked systemd for the scope's real cgroup instead of trusting the row.
+    expect(resolvedScope).toBeGreaterThan(0);
+    // The dead scope reads as dead: no phantom survivors, no residue breakdown.
+    expect(out).toMatchObject({ ok: true, taskId: 'mismatch' });
+    expect((out as { detail: string }).detail).toMatch(/verified empty/);
+    expect((out as { detail: string }).detail).not.toMatch(/remained during the verification window/);
+    // ...and therefore no pointless escalation: SIGTERM already worked.
+    expect(signals).toEqual(['--signal=SIGTERM']);
+    // CONTROL — the bug was not that the operator cgroup is empty in this fixture.
+    // It is populated, and the OLD code (which walked `row.cgroupPath`) would have
+    // read these three pids as survivors of a scope that holds nothing.
+    expect(fs.readFile(`/sys/fs/cgroup${operatorCgroup}/cgroup.procs`)).toBe('101\n102\n103\n');
+    expect(reads.some((p) => p.startsWith(`/sys/fs/cgroup${trueScopeCgroup}`))).toBe(true);
+  });
+
+  it('EI-22074929140199832: an UNRESOLVABLE scope never reads as "verified empty" — a failed instrument is not a clean kill', async () => {
+    // The dangerous direction of the same fix. Resolving through systemd introduces
+    // a call that can FAIL, and a failure rendered as `null` would walk no cgroup at
+    // all and report the kill verified. That is worse than the bug being fixed: it
+    // invents a clean verdict. A resolution failure must fall back, not fabricate.
+    const operatorCgroup = '/user.slice/user-1000.slice/user@1000.service/app.slice/papercusp-dev-api.service';
+    row({ taskId: 'unresolvable', scopeUnit: 'pc-unresolvable.scope', cgroupPath: operatorCgroup });
+    const out = await killTask('unresolvable', {
+      sleep: async () => {},
+      // The stored (mismatched) cgroup still holds processes.
+      fs: { readFile: () => '777\n', readDir: () => [], isDir: () => true },
+      execFileAsync: (async (_f: string, args: string[]) => {
+        if (args[1] === 'show') throw new Error('systemctl unreachable');
+        return { stdout: '', stderr: '' };
+      }) as never,
+    });
+    expect((out as { detail?: string }).detail ?? '').not.toMatch(/verified empty/);
+    expect(out).toMatchObject({ ok: false, error: 'incomplete' });
+  });
+
+  it('EI-22074929140199832: a COLLECTED transient scope is positively empty, not unknown', async () => {
+    // systemd exits 0 with an empty ControlGroup for a unit it has already
+    // collected. No cgroup means no processes — this one really is empty, and must
+    // not be dragged back to the stored path's phantom survivors.
+    const operatorCgroup = '/user.slice/user-1000.slice/user@1000.service/app.slice/papercusp-dev-api.service';
+    row({ taskId: 'collected', scopeUnit: 'pc-collected.scope', cgroupPath: operatorCgroup });
+    const out = await killTask('collected', {
+      sleep: async () => {},
+      fs: { readFile: () => '888\n', readDir: () => [], isDir: () => true },
+      execFileAsync: (async (_f: string, args: string[]) => ({
+        stdout: args[1] === 'show' ? '\n' : '',
+        stderr: '',
+      })) as never,
+    });
+    expect(out).toMatchObject({ ok: true, taskId: 'collected' });
+    expect((out as { detail: string }).detail).toMatch(/verified empty/);
+  });
+
+  it('EI-22074929140199832: a stored cgroup_path that DOES belong to the scope is still trusted (no extra systemd round-trip)', async () => {
+    // The 204-of-726 good case must not regress into an unnecessary `systemctl show`
+    // on every probe — the stored path is authoritative exactly when it validates.
+    row({ taskId: 'matching' });
+    let shows = 0;
+    const out = await killTask('matching', {
+      sleep: async () => {},
+      fs: { readFile: () => '', readDir: () => [], isDir: () => true },
+      execFileAsync: (async (_f: string, args: string[]) => {
+        if (args[1] === 'show') shows++;
+        return { stdout: '', stderr: '' };
+      }) as never,
+    });
+    expect(out).toMatchObject({ ok: true, taskId: 'matching' });
+    expect(shows).toBe(0);
+  });
+
   it('EI-19478780721557822 recurrence guard: never reports ok:true while the subtree survives, and leaves the row LIVE for a retry', async () => {
     // No escalateAfterMs at all — the plain SIGTERM path. Before this fix, the
     // code returned ok:true immediately after `systemctl kill` exited 0, with
