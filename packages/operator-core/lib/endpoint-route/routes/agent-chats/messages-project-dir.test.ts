@@ -58,13 +58,19 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
       { begin: vi.fn() },
     ),
   }),
-  getLegacyClient: () => ({
-    prepare: (sql: string) => {
-      prepareLog.push(sql);
-      return {
-        get: async () => {
-          if (sql.includes('FROM agent_chats WHERE id')) {
-            return {
+  // WI-5383: the route now reads/writes agent_chats via harnessQuery(slug,
+  // (sql) => sql.unsafe(text, params)) instead of getLegacyClient().prepare().
+  // Route on the SQL text the same way the old prepare() mock did.
+  harnessQuery: async (
+    _slug: string,
+    fn: (sql: { unsafe: (text: string, params?: unknown[]) => Promise<unknown[]> }) => unknown,
+  ) =>
+    fn({
+      unsafe: async (sql: string) => {
+        prepareLog.push(sql);
+        if (sql.includes('FROM agent_chats WHERE id')) {
+          return [
+            {
               id: 'chat-1',
               role: 'worker',
               feature_id: 'F-TEST-1',
@@ -76,15 +82,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
               created_at: Date.now(),
               updated_at: Date.now(),
               archived_at: null,
-            };
-          }
-          if (sql.includes('SUM(total_cost_usd_cents)')) return { total: 0 };
-          return undefined;
-        },
-        run: async () => ({}),
-      };
-    },
-  }),
+            },
+          ];
+        }
+        if (sql.includes('SUM(total_cost_usd_cents)')) return [{ total: 0 }];
+        return [];
+      },
+    }),
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../harness-registry', async (orig) => ({

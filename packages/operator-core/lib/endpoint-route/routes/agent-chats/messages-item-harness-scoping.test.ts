@@ -83,30 +83,36 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
       { begin: vi.fn() },
     ),
   }),
-  getLegacyClient: () => ({
-    prepare: (sql: string) => ({
-      get: async () => {
+  // WI-5383: the route now reads/writes agent_chats via harnessQuery(slug,
+  // (sql) => sql.unsafe(text, params)) instead of getLegacyClient().prepare().
+  // Route on the SQL text the same way the old prepare() mock did.
+  harnessQuery: async (
+    _slug: string,
+    fn: (sql: { unsafe: (text: string, params?: unknown[]) => Promise<unknown[]> }) => unknown,
+  ) =>
+    fn({
+      unsafe: async (sql: string) => {
         if (sql.includes('FROM agent_chats WHERE id')) {
-          return {
-            id: 'chat-1',
-            role: 'worker',
-            feature_id: 'WI-CROSS-1',
-            title: 'cross-harness chat',
-            transcript: '[]',
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            total_cost_usd_cents: 0,
-            created_at: Date.now(),
-            updated_at: Date.now(),
-            archived_at: null,
-          };
+          return [
+            {
+              id: 'chat-1',
+              role: 'worker',
+              feature_id: 'WI-CROSS-1',
+              title: 'cross-harness chat',
+              transcript: '[]',
+              total_input_tokens: 0,
+              total_output_tokens: 0,
+              total_cost_usd_cents: 0,
+              created_at: Date.now(),
+              updated_at: Date.now(),
+              archived_at: null,
+            },
+          ];
         }
-        if (sql.includes('SUM(total_cost_usd_cents)')) return { total: 0 };
-        return undefined;
+        if (sql.includes('SUM(total_cost_usd_cents)')) return [{ total: 0 }];
+        return [];
       },
-      run: async () => ({}),
     }),
-  }),
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../harness-registry', () => ({ loadHarnessRegistry: loadHarnessRegistryMock }));
