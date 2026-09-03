@@ -532,7 +532,7 @@ describe('stale build-script outputs after a MOVED target dir (WI-212675, gate r
     try {
       const dry = pruneStaleBuildScriptOutputs(targetDir, { dryRun: true, pathIsLive: () => false });
       expect(dry).toMatchObject({ found: 1, dryRun: true, skipped: [] });
-      expect(dry.pruned.map((p) => p.crate)).toEqual(['tauri-0123456789abcdef']);
+      expect(dry.pruned.map((p: { crate: string }) => p.crate)).toEqual(['tauri-0123456789abcdef']);
       expect(existsSync(join(build, 'tauri-0123456789abcdef'))).toBe(true); // dry run removed nothing
 
       const real = pruneStaleBuildScriptOutputs(targetDir, { pathIsLive: () => false });
