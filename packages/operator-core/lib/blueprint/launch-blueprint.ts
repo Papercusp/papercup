@@ -795,7 +795,19 @@ export async function fireLaunchBlueprint(
         readAgentConfig().catch(() => null),
         getOwnerSteering(input.workspaceId, input.installSlug).catch(() => null),
       ]);
-      const spec = resolveRoleOwnModelSpec(target.role, effectiveTierConfig(cfg, steering));
+      // P-002 (role-model-one-answer-2026-09-03): an EXPLICIT per-role model is THE
+      // ANSWER — the tier menu's family/floor/ceiling math gets no vote over it.
+      // Specific beats general, and `models[role]` is the most specific thing an owner
+      // can say about a role. Before this, `models[role]` was never consulted on the
+      // launch path at all: only the tier menu was, so a correctly-set per-role model
+      // was silently inert. Measured cost of that gap — nine consecutive release-fixers
+      // (2026-09-03 00:32Z→01:27Z) spawned on codex/gpt-5.6-sol and died instantly on a
+      // usage wall, while BOTH models['release-fixer']='claude-opus-5:xhigh' and
+      // roleBackends['release-fixer']='claude-code' were already set correctly. The
+      // backend is derived from the model spec downstream, so losing the model here
+      // silently lost the backend too, and the spawn body shipped self-contradictory.
+      const explicitRoleModel = cfg?.models?.[target.role]?.trim();
+      const spec = explicitRoleModel || resolveRoleOwnModelSpec(target.role, effectiveTierConfig(cfg, steering));
       if (spec) fireInput = { ...fireInput, bodyExtra: { ...fireInput.bodyExtra, spawnModel: spec } };
     } catch {
       /* fail-soft: leave the role on its committed default if tier config is unreadable */
