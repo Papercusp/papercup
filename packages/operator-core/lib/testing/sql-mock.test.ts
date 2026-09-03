@@ -93,3 +93,70 @@ describe('createBranchedSqlMock', () => {
     await expect(branches.handler('SELECT 1')).resolves.toEqual([{ ok: true }]);
   });
 });
+
+/**
+ * EI-22238479367433132 — the capture must say whether it is FAITHFUL.
+ *
+ * An interpolated `sql` fragment carries SQL TEXT, not a value, so rendering it
+ * as `$n` DELETES that text while leaving something that still looks like an
+ * ordinary parameterised query. Downstream that produced a tolerated
+ * `untypeable` verdict, i.e. green over SQL nothing had parsed.
+ *
+ * These are the UNIT-tier two-sided controls: the live adopter proving it on the
+ * real production query is
+ * `scheduler/active-claims-sql-validity.integration.test.ts`, but that suite
+ * needs Postgres, so without these a detector regression would only surface in
+ * the integration tier.
+ */
+describe('createBranchedSqlMock — composed-query capture', () => {
+  it('marks a nested fragment, because the fragment is a value this mock itself produced', async () => {
+    const branches = createBranchedSqlMock(
+      [{ label: 'catch-all', match: () => true, respond: () => [] }],
+      { onUnmatched: 'empty' },
+    );
+
+    // Exactly how production composes: the inner `sql` call goes through this
+    // same mock, and its return value is interpolated into the outer template.
+    const fragment = branches.handler(['status = ', ''], 'done');
+    await branches.handler(['SELECT 1 FROM t WHERE harness_slug = ', ' AND ', ''], 'h', fragment);
+
+    const outer = branches.capturedQueries.at(-1)!;
+    expect(outer.composed).toBe(true);
+    expect(outer.fragmentArgs).toBe(1);
+    // The scalar still renders as a placeholder and the fragment does not:
+    // a detector that marked everything would fail the first assertion here.
+    expect(outer.sql).toBe('SELECT 1 FROM t WHERE harness_slug = $1 AND /* sql-fragment: text not captured */');
+    expect(branches.capturedForValidation.at(-1)).toMatchObject({ composed: true });
+  });
+
+  it('leaves a scalar-only query unmarked — including an object bind, which no shape heuristic could tell from a fragment', async () => {
+    const branches = createBranchedSqlMock([
+      { label: 'catch-all', match: () => true, respond: () => [] },
+    ]);
+
+    // `{ severity: 'high' }` is a jsonb bind: a plain object, exactly what a
+    // structural "is this a fragment?" guess would misfire on. Identity in the
+    // produced-value set is why this stays a bind.
+    await branches.handler(['SELECT 1 FROM t WHERE payload = ', ' AND at > ', ''], { severity: 'high' }, new Date(0));
+
+    const q = branches.capturedQueries.at(-1)!;
+    expect(q.composed).toBe(false);
+    expect(q.fragmentArgs).toBe(0);
+    expect(q.sql).toBe('SELECT 1 FROM t WHERE payload = $1 AND at > $2');
+    expect(q.sql).not.toContain('sql-fragment');
+  });
+
+  it('resetHits clears the rich capture too, so composed-ness cannot leak across tests', async () => {
+    const branches = createBranchedSqlMock(
+      [{ label: 'catch-all', match: () => true, respond: () => [] }],
+      { onUnmatched: 'empty' },
+    );
+    const fragment = branches.handler(['TRUE']);
+    await branches.handler(['SELECT 1 WHERE ', ''], fragment);
+    expect(branches.capturedQueries).toHaveLength(2);
+
+    branches.resetHits();
+    expect(branches.capturedQueries).toHaveLength(0);
+    expect(branches.capturedForValidation).toHaveLength(0);
+  });
+});

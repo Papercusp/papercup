@@ -496,17 +496,85 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
   });
 
   it('records WHEN a regressed metric last worked, so the window is findable', () => {
+    // WI-212675: the subject here is the first/last-interpretable BOOKKEEPING, and the
+    // metric is only a placeholder for "one that regressed". It used to be
+    // `plane-token-cost`, which is now declared `eligibilityIsTraffic` and therefore
+    // reads a zero-eligible window as STARVED rather than dead — a correct verdict that
+    // made it the wrong placeholder. `closed-work-basis-moved` is a stamped-input
+    // metric, so the original first-window teeth this test asserts still apply to it.
     const report = ratchetPlaneSeries({
       series: [
         windowOf('2026-07-27T13:18:00Z', {}),
         windowOf('2026-07-27T14:34:00Z', {}),
-        windowOf('2026-07-27T15:04:00Z', { 'plane-token-cost': w(false, { measuredAt: '2026-07-27T15:04:00Z' }) }),
+        windowOf('2026-07-27T15:04:00Z', {
+          'closed-work-basis-moved': w(false, { measuredAt: '2026-07-27T15:04:00Z' }),
+        }),
       ],
     });
-    const row = report.rows.find((r) => r.metric === 'plane-token-cost');
+    const row = report.rows.find((r) => r.metric === 'closed-work-basis-moved');
     expect(row?.verdict).toBe('regressed');
     expect(row?.lastInterpretableAt).toBe('2026-07-27T14:34:00Z');
     expect(row?.firstInterpretableAt).toBe('2026-07-27T13:18:00Z');
+  });
+
+  /**
+   * WI-212675 — the STARVED-window shape, measured live on 2026-09-03.
+   *
+   * All 7 Claude accounts in the provider pool hit their usage wall at ~07:00Z.
+   * Workspace tool volume fell from ~6,800/hr to ~380/hr and calls to the ten
+   * ENRICHED_SURFACES hit EXACTLY zero for four consecutive hours. `plane-token-cost`
+   * measures bytes per enriched call, so its `eligible` went to 0 over a population
+   * that was still non-empty — `nothing-eligible` with `fillRate: 0`, which the ratchet
+   * read as a dead producer. It reported `regressed` and held `main` for the whole
+   * fleet, on a condition no commit caused and no commit could green.
+   */
+  describe('a traffic-eligible metric starved by a usage-walled fleet', () => {
+    it('is window-unjudgeable, not regressed — nothing died, the fleet just stopped calling', () => {
+      const report = ratchetPlaneSeries({
+        series: [
+          windowOf('2026-09-03T05:50:00Z', {}),
+          windowOf('2026-09-03T06:50:00Z', {}),
+          windowOf('2026-09-03T07:50:00Z', {
+            'plane-token-cost': w(false, { measuredAt: '2026-09-03T07:50:00Z' }),
+          }),
+        ],
+      });
+      const row = report.rows.find((r) => r.metric === 'plane-token-cost');
+      expect(row?.verdict).toBe('window-unjudgeable');
+      expect(report.failures.map((f) => f.metric)).not.toContain('plane-token-cost');
+    });
+
+    it('STILL reaches regressed once the run is sustained — the teeth are unchanged', () => {
+      // The exemption is only ever "one starved window is not evidence". A run long
+      // enough to clear the WI-6562 evidence floor is still a regression, which is what
+      // stops this from being a way to green the gate by declaring a flag.
+      const starved = (at: string) => windowOf(at, { 'plane-token-cost': w(false, { measuredAt: at }) });
+      const report = ratchetPlaneSeries({
+        series: [
+          windowOf('2026-09-03T05:50:00Z', {}),
+          starved('2026-09-03T07:50:00Z'),
+          starved('2026-09-03T08:50:00Z'),
+          starved('2026-09-03T09:50:00Z'),
+        ],
+      });
+      expect(report.rows.find((r) => r.metric === 'plane-token-cost')?.verdict).toBe('regressed');
+    });
+
+    it('does not hand the exemption to a metric that did not declare it', () => {
+      // The opt-in is the whole safety property: a stamped-input metric with the exact
+      // same window shape must keep its first-window teeth.
+      const report = ratchetPlaneSeries({
+        series: [
+          windowOf('2026-09-03T05:50:00Z', {}),
+          windowOf('2026-09-03T07:50:00Z', {
+            'acted-on-stale-declared-basis': w(false, { measuredAt: '2026-09-03T07:50:00Z' }),
+          }),
+        ],
+      });
+      expect(report.rows.find((r) => r.metric === 'acted-on-stale-declared-basis')?.verdict).toBe(
+        'regressed',
+      );
+    });
   });
 
   /**
