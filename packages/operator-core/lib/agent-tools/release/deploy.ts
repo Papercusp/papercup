@@ -40,6 +40,7 @@ import { readDeployStatus, launchDetachedDeploy, integrationRoot, type DeploySta
 import { currentDiagnosticVintage } from '../../diagnostic-vintage';
 import { fireGitSyncNow } from '../../harness/git-sync/git-sync-action';
 import { operatorHomeHarnessSlug, canonicalHarnessSlug } from '../../harness/operator-home-harness';
+import { recentPipelineEvents } from '../../harness/git-sync/pipeline-events';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
 import { statePlaneForDoor } from '../state-plane-door';
 
@@ -117,7 +118,7 @@ const harnessAssertion = z
   );
 
 /** Refuse a harness assertion naming anything but the one pipeline this tool can report. */
-function harnessAssertionRefusal(op: 'status' | 'trigger' | 'force', asserted: string | undefined, stamp: ReleaseSubjectStamp) {
+function harnessAssertionRefusal(op: 'status' | 'trigger' | 'force' | 'gate-history', asserted: string | undefined, stamp: ReleaseSubjectStamp) {
   const raw = asserted?.trim();
   if (!raw) return null;
   const want = canonicalHarnessSlug(raw);
@@ -275,7 +276,7 @@ export default defineTool({
   name: 'release:deploy',
   profile: 'engineer',
   description:
-    'Manual deploy lever and diagnosis for a committed change that is not live on :3070. op:status reads gate/deploy state and recommends the next action; op:trigger expedites a green-but-stalled deploy (confirm:true); op:force is an audited escape for an un-green commit, gated on isOperatorConfigWriteRole (acknowledgeRedTests + reason). Actions fire detached; git-sync has its own run verb.',
+    'Manual deploy lever and diagnosis for a committed change that is not live on :3070. op:status reads gate/deploy state and recommends the next action; op:gate-history reads the last N green-checkpoint ticks (candidate/status/failingTests/logPath per tick) instead of just the single most recent one; op:trigger expedites a green-but-stalled deploy (confirm:true); op:force is an audited escape for an un-green commit, gated on isOperatorConfigWriteRole (acknowledgeRedTests + reason). Actions fire detached; git-sync has its own run verb.',
   guidance: {
     when:
       'A committed, gate-clean change isn\'t live on :3070 — {op:status} to see why. GREEN-but-stalled → {op:trigger,confirm:true} (safe; only ships the green pin). Gate RED on UNRELATED tests → FIX the reds first (even out of lane).',
@@ -293,7 +294,7 @@ export default defineTool({
   capability: 'operator:write',
   // The status branch only reads pipeline state; trigger/force remain writes. Keep the
   // static effect as `write` so unknown or malformed calls stay behind the dry-run gate.
-  effectForCall: (args) => (args.op === 'status' ? 'read' : 'write'),
+  effectForCall: (args) => (args.op === 'status' || args.op === 'gate-history' ? 'read' : 'write'),
   requirePrincipal: false,
   // EI-18761103623054929: the default dispatch-stack tool timeout is 60s (dispatch-stack.ts:
   // `exec.timeoutSec = exec.tool.timeoutSec ?? 60`) — too short for THIS tool specifically.
@@ -329,6 +330,17 @@ export default defineTool({
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('status'), harness: harnessAssertion }),
     z.object({
+      op: z.literal('gate-history'),
+      harness: harnessAssertion,
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe('How many recent green-checkpoint ticks to return, newest first. Default 6.'),
+    }),
+    z.object({
       op: z.literal('trigger'),
       harness: harnessAssertion,
       confirm: z.boolean().optional().describe('false/absent ⇒ DRY RUN (preview what would deploy). true ⇒ fire the detached green deploy.'),
@@ -356,6 +368,35 @@ export default defineTool({
     const stamp = releaseSubjectStamp(ctx as { harnessSlug?: string | null });
     const wrongHarness = harnessAssertionRefusal(args.op, args.harness, stamp);
     if (wrongHarness) return wrongHarness;
+    // ── gate-history: read-only, independent of deploy status ──
+    // WI-5377: op:status's `gate.lastVerdict` (EI-10902) answers "what did the LAST tick
+    // decide?" — this answers "what did the last N ticks decide?", the small history read
+    // that item's own follow-up deferred. Reuses the SAME append-only source
+    // (harness_shared.pipeline_events, mig 177) and the SAME per-tick shape `lastVerdict`
+    // already exposes, just plural and with `failingTests` threaded per-tick (lastVerdict
+    // deliberately omits it — that field is the ROLLING gate_health.failingTests, a
+    // different, CURRENT-only source). Placed before readStatusBounded/readIdentity
+    // deliberately: this read needs neither, so a slow/degraded deploy-status read must
+    // never fail a call that only wants gate history.
+    if (args.op === 'gate-history') {
+      const limit = args.limit ?? 6;
+      const rows = await recentPipelineEvents(stamp.subject.harness, limit, undefined, {
+        kinds: ['green_checkpoint'],
+      });
+      const ticks = rows.map((r) => ({
+        tickAtMs: r.createdAtMs,
+        candidate: typeof r.detail?.candidate === 'string' ? r.detail.candidate : null,
+        from: typeof r.detail?.from === 'string' ? r.detail.from : null,
+        status: r.status,
+        failingTests: Array.isArray(r.detail?.failingTests)
+          ? r.detail.failingTests.filter((t): t is string => typeof t === 'string')
+          : [],
+        logPath: typeof r.detail?.logPath === 'string' ? r.detail.logPath : null,
+      }));
+      const payload = { ok: true, op: 'gate-history' as const, ...stamp, limit, ticks };
+      const plane = statePlaneForDoor(payload, 'release:deploy', args, ctx);
+      return json({ ...payload, ...(plane ? { plane } : {}) });
+    }
     const identity = readIdentity(ctx);
     // ── status: read-only, always allowed ──
     // EI-20262656218311418: readDeployStatus fans out to PG/systemd and can outlive the MCP

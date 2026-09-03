@@ -52,12 +52,20 @@ vi.mock('../../harness/operator-home-harness', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../harness/operator-home-harness')>()),
   operatorHomeHarnessSlug: () => 'test-home',
 }));
+// WI-5377: op:gate-history's own I/O — independent of readDeployStatus, so it needs its
+// own mock rather than reusing statusM.
+vi.mock('../../harness/git-sync/pipeline-events', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness/git-sync/pipeline-events')>()),
+  recentPipelineEvents: vi.fn(),
+}));
 
 import { readDeployStatus, launchDetachedDeploy } from '../../release-deploy-launch';
 import { fireGitSyncNow } from '../../harness/git-sync/git-sync-action';
+import { recentPipelineEvents } from '../../harness/git-sync/pipeline-events';
 const statusM = vi.mocked(readDeployStatus);
 const launchM = vi.mocked(launchDetachedDeploy);
 const fireGitSyncM = vi.mocked(fireGitSyncNow);
+const recentPipelineEventsM = vi.mocked(recentPipelineEvents);
 const deployModule = await import('./deploy');
 const tool = deployModule.default;
 const RELEASE_STATUS_READ_TIMEOUT_MS = deployModule.RELEASE_STATUS_READ_TIMEOUT_MS;
@@ -247,6 +255,89 @@ describe('release:deploy — status', () => {
     });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('exceeded 20000ms'));
     expect(launchM).not.toHaveBeenCalled();
+  });
+});
+
+describe('release:deploy — gate-history (WI-5377)', () => {
+  it('reads the last N green_checkpoint ticks and maps each to the lastVerdict shape, plus per-tick failingTests', async () => {
+    recentPipelineEventsM.mockResolvedValue([
+      {
+        id: '3',
+        kind: 'green_checkpoint',
+        status: 'advanced',
+        detail: { candidate: 'cand3', from: 'from3', failingTests: [], logPath: '/tmp/run3.log' },
+        createdAtMs: 300,
+      },
+      {
+        id: '2',
+        kind: 'green_checkpoint',
+        status: 'not-green',
+        detail: { candidate: 'cand2', from: 'from2', failingTests: ['pkg/a.test.ts', 'pkg/b.test.ts'], logPath: '/tmp/run2.log' },
+        createdAtMs: 200,
+      },
+      {
+        id: '1',
+        kind: 'green_checkpoint',
+        status: 'advanced',
+        detail: { candidate: 'cand1', from: null, failingTests: [], logPath: '/tmp/run1.log' },
+        createdAtMs: 100,
+      },
+    ]);
+    const b = body(await tool.handler({ op: 'gate-history' } as never, { role: 'cup' } as never));
+    expect(b).toMatchObject({ ok: true, op: 'gate-history', limit: 6 });
+    expect(b.ticks).toEqual([
+      { tickAtMs: 300, candidate: 'cand3', from: 'from3', status: 'advanced', failingTests: [], logPath: '/tmp/run3.log' },
+      { tickAtMs: 200, candidate: 'cand2', from: 'from2', status: 'not-green', failingTests: ['pkg/a.test.ts', 'pkg/b.test.ts'], logPath: '/tmp/run2.log' },
+      { tickAtMs: 100, candidate: 'cand1', from: null, status: 'advanced', failingTests: [], logPath: '/tmp/run1.log' },
+    ]);
+    // The default limit (6) and a kind filter scoped to green_checkpoint ONLY — an
+    // unfiltered read would let interleaved git_sync/deploy rows crowd out real ticks.
+    expect(recentPipelineEventsM).toHaveBeenCalledWith('test-home', 6, undefined, { kinds: ['green_checkpoint'] });
+  });
+
+  it('forwards a caller-supplied limit instead of the default', async () => {
+    recentPipelineEventsM.mockResolvedValue([]);
+    await tool.handler({ op: 'gate-history', limit: 20 } as never, { role: 'cup' } as never);
+    expect(recentPipelineEventsM).toHaveBeenCalledWith('test-home', 20, undefined, { kinds: ['green_checkpoint'] });
+  });
+
+  it('returns an empty ticks array (not an error) when no green_checkpoint tick has ever been recorded', async () => {
+    recentPipelineEventsM.mockResolvedValue([]);
+    const b = body(await tool.handler({ op: 'gate-history' } as never, { role: 'cup' } as never));
+    expect(b).toMatchObject({ ok: true, op: 'gate-history', ticks: [] });
+  });
+
+  it('tolerates a malformed detail blob per-tick (missing/wrong-typed fields never throw)', async () => {
+    // Fed newest-first, matching recentPipelineEvents' own real contract (ORDER BY
+    // created_at DESC) — the handler trusts that ordering rather than re-sorting.
+    recentPipelineEventsM.mockResolvedValue([
+      { id: '2', kind: 'green_checkpoint', status: 'error', detail: { failingTests: 'not-an-array', candidate: 42 }, createdAtMs: 200 },
+      { id: '1', kind: 'green_checkpoint', status: 'error', detail: {}, createdAtMs: 100 },
+    ]);
+    const b = body(await tool.handler({ op: 'gate-history' } as never, { role: 'cup' } as never));
+    expect(b.ticks).toEqual([
+      { tickAtMs: 200, candidate: null, from: null, status: 'error', failingTests: [], logPath: null },
+      { tickAtMs: 100, candidate: null, from: null, status: 'error', failingTests: [], logPath: null },
+    ]);
+  });
+
+  it('never calls readDeployStatus — gate-history is independent of deploy status', async () => {
+    recentPipelineEventsM.mockResolvedValue([]);
+    await tool.handler({ op: 'gate-history' } as never, { role: 'cup' } as never);
+    expect(statusM).not.toHaveBeenCalled();
+  });
+
+  it('is classified as a read effect, like status (never gated behind the write/dry-run path)', () => {
+    expect(tool.effectForCall!({ op: 'gate-history' } as never)).toBe('read');
+  });
+
+  it('REFUSES a harness assertion naming another harness — without reading pipeline events at all', async () => {
+    const b = body(
+      await tool.handler({ op: 'gate-history', harness: 'sidestage' } as never, { role: 'cup' } as never),
+    );
+    expect(b).toMatchObject({ ok: false, op: 'gate-history', refused: true });
+    expect(b.reason).toContain('harness_not_reportable');
+    expect(recentPipelineEventsM).not.toHaveBeenCalled();
   });
 });
 
