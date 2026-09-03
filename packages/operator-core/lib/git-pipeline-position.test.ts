@@ -111,6 +111,7 @@ const NO_CANDIDATE: ChangeInCandidate = {
   judgingContainsPath: null,
   nextCandidateSha: null,
   nextContainsPath: null,
+  submodule: null,
   missingReason: null,
   // EI-18797292094433710: no caller-supplied marker, so there is nothing to be
   // contained — null is "not measured", distinct from a measured absence.
@@ -4390,6 +4391,7 @@ describe('changeInCandidate (P-004)', () => {
         changeInCandidate: contained({
           nextCandidateSha: 'cand1234567890',
           nextContainsPath: false,
+          submodule: null,
           missingReason: 'newer-commit',
           detail: 'a fire now would judge older code',
         }),
@@ -4836,22 +4838,172 @@ describe('changeInCandidate (P-004)', () => {
       });
     });
 
-    it('does NOT claim containment across a submodule boundary — the gate judges the PIN', async () => {
-      // The superproject stores a gitlink, not submodule content, so a blob comparison
-      // there compares nothing. Reporting `true` would be the same absence-reads-as-
-      // evidence trap EI-18715870370005934 already cost a false "abort the run".
-      const git = fakeGit({
-        submodules: ['libs/generic/thing'],
-        pathCommit: 'abc1234567',
-        contains: { HEAD: ['abc1234567'] },
+    /**
+     * P-011 (main-green-status-visible-2026-09-03, audit entry 5): a path inside a
+     * SUBMODULE is measured THROUGH THE GITLINK, not skipped.
+     *
+     * Before this item the block above was guarded `!submodule` and a submodule path
+     * came back `not-applicable` with a prose pointer at the five-command hand recipe in
+     * CLAUDE.md (~37 submodules here; every DB migration lives in one). The superproject
+     * stores only a gitlink, so `rev-parse <cand>:<sub>/<rel>` is ABSENT there — which is
+     * exactly why the old `false` would have been a lie and the old `null` was the honest
+     * fallback. The classifier now resolves the pin the candidate carries and compares
+     * INSIDE the submodule, so the cell answers the question the recipe answered by hand.
+     */
+    describe('a path inside a SUBMODULE is measured through the gitlink (P-011)', () => {
+      const SUB = 'libs/papercusp';
+      const REL = 'libs/db/sql/727-thing.sql';
+      const FILE = `${SUB}/${REL}`;
+      const FIXED = 'f'.repeat(40);
+      const OLD = '0'.repeat(40);
+
+      /**
+       * Superproject + nested store, modelled the way real git behaves at the boundary:
+       * a `<cand>:<sub>/<rel>` read FAILS from the root (the root holds a gitlink), while
+       * `hash-object` on the same path succeeds from the root (bytes on disk hash fine —
+       * the trap). Reads routed with an accumulated `-C <sub>` — or issued with the
+       * submodule's own gitDir — land in the nested store.
+       */
+      function submoduleGit(o: {
+        /** the gitlink each candidate carries; null = absent (the candidate predates the sub); 'unreadable' = the read fails */
+        pin: string | null | 'unreadable';
+        pinBlob?: string;
+        headBlob?: string;
+        treeBlob?: string;
+        /** the pinned commit's CONTENT for the file — what a marker is counted in */
+        pinContent?: string;
+      }): GitRunner {
+        const nested = async (args: string[]): Promise<string | null> => {
+          if (args[0] === 'rev-parse' && args[1] === '--verify') {
+            if (args[2].endsWith('^{commit}')) return 'c'.repeat(40);
+            if (o.pin && o.pin !== 'unreadable' && args[2] === `${o.pin}:${REL}`) return o.pinBlob ?? null;
+            if (args[2] === `HEAD:${REL}`) return o.headBlob ?? null;
+            return null;
+          }
+          if (args[0] === 'hash-object') return o.treeBlob ?? null;
+          if (args[0] === 'ls-tree') return o.pinBlob ? `100644 blob deadbeef\t${REL}` : '';
+          if (args[0] === 'show') return o.pinContent ?? null;
+          if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
+          if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
+          if (args[0] === 'rev-list') return '0';
+          if (args[0] === 'status') return '';
+          return null;
+        };
+        return async (repo, args) => {
+          if (args[0] === '-C') return nested(args.slice(2)); // gitReadInSubdir
+          if (repo !== '/repo') return nested(args); // gitDir = <root>/<sub>
+          if (args[0] === 'config') return `submodule.x.path ${SUB}`;
+          if (args[0] === 'status') return '';
+          if (args[0] === 'ls-tree') {
+            if (o.pin === 'unreadable') return null;
+            return o.pin ? `160000 commit ${o.pin}\t${SUB}` : '';
+          }
+          if (args[0] === 'rev-parse' && args[1] === '--verify') {
+            if (args[2].endsWith('^{commit}')) return 'c'.repeat(40);
+            return null; // `<cand>:<sub>/<rel>` — the root holds a gitlink, never the blob
+          }
+          if (args[0] === 'hash-object') return FIXED; // succeeds on disk from the root: the trap
+          if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
+          if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
+          if (args[0] === 'rev-list') return '0';
+          return null;
+        };
+      }
+
+      const run = (o: Parameters<typeof submoduleGit>[0], marker?: string) =>
+        gitPipelinePosition(
+          { path: FILE, ...(marker ? { marker } : {}) },
+          {
+            git: submoduleGit(o),
+            loadDeploy: async () => deploy(),
+            loadSnapshot: async () => snap(),
+            resolveGateCandidates: async () => ({
+              judgingSha: 'cand1',
+              judgingShaSource: 'in-flight-candidate',
+              nextCandidateSha: 'cand1',
+            }),
+          },
+        );
+
+      it('CONTAINED when the superproject blob is ABSENT but the pinned submodule commit carries the fix', async () => {
+        const res = await run({ pin: 'e0ebb3c6e0ebb3c6', pinBlob: FIXED, headBlob: FIXED, treeBlob: FIXED });
+        expect(res.submodule).toBe(SUB);
+        expect(res.changeInCandidate.judgingSha).toBe('cand1');
+        // The regression guard proper: the old code said null here and pointed at the recipe.
+        expect(res.changeInCandidate.judgingContainsPath).toBe(true);
+        expect(res.changeInCandidate.nextContainsPath).toBe(true);
+        expect(res.changeInCandidate.missingReason).toBeNull();
+        // The PIN the hand recipe made agents compute is surfaced, per candidate.
+        expect(res.changeInCandidate.submodule).toEqual({
+          path: SUB,
+          relPath: REL,
+          judgingPin: 'e0ebb3c6e0ebb3c6',
+          nextPin: 'e0ebb3c6e0ebb3c6',
+        });
+        expect(res.changeInCandidate.detail).toMatch(/DOES carry this file's current content/);
+        expect(res.changeInCandidate.detail).toMatch(/resolved through submodule 'libs\/papercusp'/);
+        expect(res.assessments.gateCandidate).toBe('judging-current-path');
+        // Neither the old blanket not-applicable hoist nor a containment hoist fires.
+        expect(res.verdictUnknown.map((v) => v.leg)).not.toContain('changeInCandidate.judgingSha');
+        expect(res.verdictUnknown.map((v) => v.leg)).not.toContain('changeInCandidate.judgingContainsPath');
       });
-      const res = await gitPipelinePosition(
-        { path: 'libs/generic/thing/src/x.ts' },
-        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
-      );
-      expect(res.changeInCandidate.judgingContainsPath).toBeNull();
-      expect(res.changeInCandidate.nextContainsPath).toBeNull();
-      expect(res.changeInCandidate.detail).toMatch(/gitlink/);
+
+      it('NOT contained when the gitlink was not bumped: the pin predates the fix, and the lever names the superproject bump', async () => {
+        const res = await run({ pin: 'oldpin00oldpin00', pinBlob: OLD, headBlob: FIXED, treeBlob: FIXED });
+        expect(res.changeInCandidate.judgingContainsPath).toBe(false);
+        // Committed inside the submodule, so the lever is NOT git-sync:run on the file.
+        expect(res.changeInCandidate.missingReason).toBe('newer-commit');
+        expect(res.changeInCandidate.submodule?.judgingPin).toBe('oldpin00oldpin00');
+        expect(res.changeInCandidate.detail).toMatch(/SUPERPROJECT gitlink bump/);
+        expect(res.changeInCandidate.detail).toMatch(/no hand-run/);
+        expect(res.assessments.gateCandidate).toBe('judging-without-current-path');
+        expect(res.notes.join(' ')).toMatch(/CANDIDATE DOES NOT CONTAIN THIS FILE/);
+      });
+
+      it('a candidate that PREDATES the submodule (no gitlink) is a definitive miss with a null pin', async () => {
+        const res = await run({ pin: null, headBlob: FIXED, treeBlob: FIXED });
+        expect(res.changeInCandidate.judgingContainsPath).toBe(false);
+        expect(res.changeInCandidate.submodule?.judgingPin).toBeNull();
+        expect(res.verdictUnknown.map((v) => v.leg)).not.toContain('changeInCandidate.judgingContainsPath');
+      });
+
+      it('an UNREADABLE gitlink is hoisted as resolver-failed on the containment leg — never not-applicable, never a verdict', async () => {
+        const res = await run({ pin: 'unreadable', headBlob: FIXED, treeBlob: FIXED });
+        expect(res.changeInCandidate.judgingContainsPath).toBeNull();
+        expect(res.changeInCandidate.nextContainsPath).toBeNull();
+        expect(res.changeInCandidate.submodule).toEqual({ path: SUB, relPath: REL, judgingPin: null, nextPin: null });
+        const leg = res.verdictUnknown.find((v) => v.leg === 'changeInCandidate.judgingContainsPath');
+        expect(leg?.unknown.code).toBe('resolver-failed');
+        expect(leg?.unknown.detail).toMatch(/gitlink/);
+        // The old blanket hoist is gone: this is a measurement that FAILED, not a question
+        // that does not apply — `assessGateCandidate` must not read it as an answer.
+        expect(res.verdictUnknown.map((v) => v.leg)).not.toContain('changeInCandidate.judgingSha');
+        expect(res.assessments.gateCandidate).toBeNull();
+      });
+
+      it('a MARKER is counted inside the pinned submodule commit, not against the superproject gitlink', async () => {
+        // Blob identity says "newer-commit" (peer edits after the pin), but the marker
+        // settles it: the pinned commit's content DOES carry the change.
+        const res = await run(
+          { pin: 'e0ebb3c6e0ebb3c6', pinBlob: OLD, headBlob: FIXED, treeBlob: FIXED, pinContent: 'x MY_SUB_MARK y' },
+          'MY_SUB_MARK',
+        );
+        expect(res.changeInCandidate.markerJudging?.sha).toBe('cand1');
+        expect(res.changeInCandidate.markerJudging?.present).toBe(true);
+        expect(res.changeInCandidate.markerJudging?.count).toBe(1);
+        expect(res.changeInCandidate.detail).toMatch(/DOES carry your change/);
+        expect(res.notes.join(' ')).not.toMatch(/CANDIDATE DOES NOT CONTAIN THIS FILE/);
+      });
+
+      it('a marker ABSENT from the pinned commit is a definitive miss, with pathPresent from the nested store', async () => {
+        const res = await run(
+          { pin: 'e0ebb3c6e0ebb3c6', pinBlob: OLD, headBlob: FIXED, treeBlob: FIXED, pinContent: 'nothing here' },
+          'MY_SUB_MARK',
+        );
+        expect(res.changeInCandidate.markerJudging?.present).toBe(false);
+        expect(res.changeInCandidate.markerJudging?.pathPresent).toBe(true);
+        expect(res.changeInCandidate.detail).toMatch(/does NOT carry your change/);
+      });
     });
 
     it('a failing candidate resolver degrades to UNKNOWN, never to a false all-clear', async () => {
@@ -5634,6 +5786,7 @@ describe('stage levers (P-005)', () => {
         judgingSha: null,
         nextCandidateSha: 'nextcand123456',
         nextContainsPath: false,
+        submodule: null,
         missingReason: 'newer-commit',
       },
     });

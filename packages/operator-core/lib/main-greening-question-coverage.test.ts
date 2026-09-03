@@ -135,12 +135,17 @@ const QUESTIONS: readonly Entry[] = [
     id: 5,
     cluster: 'A. Where my change is',
     question: 'Same question for a path inside a SUBMODULE',
-    // PARTIAL: dev:pipeline_position is submodule-aware, but CLAUDE.md still carries a
-    // 5-command gitlink recipe plus three documented false-negative traps. ~37 submodules
-    // here, and EVERY db migration lives in one.
+    // Was PARTIAL at audit time: dev:pipeline_position was submodule-aware for HISTORY,
+    // but containment for a submodule path came back `not-applicable`, and CLAUDE.md
+    // carried a 5-command gitlink recipe plus three documented false-negative traps.
+    // ~37 submodules here, and EVERY db migration lives in one. P-011 closed it: the
+    // containment leg resolves the gitlink each candidate pins and compares INSIDE the
+    // submodule, and `changeInCandidate.submodule` surfaces the pins (see the P-011
+    // describe block in git-pipeline-position.test.ts — contained / not-bumped /
+    // unreadable-gitlink / marker-inside-the-pin).
     binding: { cell: 'gate.greenCheckpoint.candidate', path: 'changeInCandidate.submodule' },
     owedBy: 'P-011',
-    status: 'partial',
+    status: 'answered',
   },
 
   // ── B. Which sha ───────────────────────────────────────────────────────────

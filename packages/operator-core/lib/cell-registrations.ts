@@ -449,11 +449,18 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
   /**
    * TRUE. Note which hoist this uses and why it is NOT `changeInCandidate.missingReason`,
    * which is the field that looks built for the job: `missingReason` answers "a
-   * containment verdict came back FALSE — which lever fixes it", and is null in both
-   * cases where the headline is genuinely UNMEASURABLE (a sha-only probe; a submodule
-   * path, where the gate sees only a gitlink). Those two arrive as `not-applicable` in
-   * the shared hoist — FINAL answers with no lever, which must not read as "no run in
-   * flight" and send a caller off to wait for a verdict that will never mention them.
+   * containment verdict came back FALSE — which lever fixes it", and is null where the
+   * headline is genuinely UNMEASURABLE (a sha-only probe). That arrives as
+   * `not-applicable` in the shared hoist — a FINAL answer with no lever, which must not
+   * read as "no run in flight" and send a caller off to wait for a verdict that will
+   * never mention it.
+   *
+   * P-011 (main-green-status-visible-2026-09-03): a path inside a SUBMODULE used to be
+   * the second `not-applicable` case ("the gate sees only a gitlink"). It is now MEASURED
+   * — the resolver reads the gitlink each candidate pins and compares blobs inside the
+   * submodule — and `changeInCandidate.submodule` carries the pins, so `as:'<a path
+   * inside a submodule>'` answers containment directly instead of pointing at a hand
+   * recipe. An unreadable gitlink hoists `resolver-failed` on the containment leg.
    */
   nullable: true,
   unknownHoist: VERDICT_HOIST,
@@ -562,7 +569,8 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
   ],
 
   shape:
-    '{ changeInCandidate: { judgingSha, judgingContainsPath, nextCandidateSha, nextContainsPath, missingReason, detail }, ' +
+    '{ changeInCandidate: { judgingSha, judgingContainsPath, nextCandidateSha, nextContainsPath, missingReason, ' +
+    'submodule: { path, relPath, judgingPin, nextPin } | null, detail }, ' +
     'gate: { ownership: { eventKey, workItem, claimState, takenBy, takenAt, expiresAt, duplicates[] } }, verdictUnknown[] }',
 };
 

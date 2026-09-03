@@ -240,11 +240,10 @@ async function classifySubmodulePath(
  * rule above reads as a DEFINITIVE negative, i.e. a confident "your change is NOT in the
  * candidate". That is the precise misread `marker` was added to kill, inverted.
  *
- * It is currently UNREACHABLE: `dev:pipeline_position` computes marker containment only
- * inside `if (relPath && !submodule)`. That guard is load-bearing — do NOT remove it to
- * "let submodule paths use markers" without first resolving the gitlink here (as
- * `classifySubmodulePath` does) and reading inside the submodule. Removing it alone
- * silently converts an honest "unknown" into a confident wrong answer.
+ * So `dev:pipeline_position` never calls this directly for a superproject-relative path:
+ * it goes through `markerAtCandidateForPath` below, which resolves the gitlink first (as
+ * `classifySubmodulePath` does) and counts the marker INSIDE the pinned submodule
+ * commit. Call this one only with a path that is a real blob in `git`'s own tree.
  */
 export interface MarkerContainment {
   marker: string;
@@ -312,6 +311,60 @@ export async function markerAtCommit(
   }
   const count = countLiteral(blob, marker);
   return { ...base, present: count > 0, count, pathPresent: true, unknownReason: null };
+}
+
+/**
+ * P-011 (main-green-status-visible-2026-09-03): `markerAtCommit` for a SUPERPROJECT-relative
+ * path that may live inside a submodule. The plain path is delegated unchanged; a submodule
+ * path resolves the gitlink `candidateSha` carries for its submodule and counts the marker
+ * in THAT commit's version of the file, read inside the submodule's own object store — the
+ * same route `classifySubmodulePath` takes for blob identity, so the two verdicts the cell
+ * reports are about the same object.
+ *
+ * Three-valued exactly like the gitlink read: an ABSENT gitlink (the candidate predates the
+ * submodule) is a definitive "no such file" (`pathPresent:false`), an UNREADABLE one is
+ * `unknown`, never a verdict. `sha` on the result stays the SUPERPROJECT candidate — the
+ * commit the caller asked about; the pin is the route to its content, not the subject.
+ */
+export async function markerAtCandidateForPath(
+  git: GitRead,
+  candidateSha: string,
+  path: string,
+  marker: string,
+  opts: { submodules?: string[] } = {},
+): Promise<MarkerContainment> {
+  if (!marker) return markerAtCommit(git, candidateSha, path, marker);
+  const submodules = opts.submodules ?? (await submodulePrefixes(git));
+  const sub = submodules.find((s) => path === s || path.startsWith(s + '/')) ?? null;
+  if (!sub) return markerAtCommit(git, candidateSha, path, marker);
+  const base = { marker, sha: candidateSha };
+  const unknown = (code: Parameters<typeof cellUnknown>[0], detail: string): MarkerContainment => ({
+    ...base,
+    present: null,
+    count: null,
+    pathPresent: null,
+    unknownReason: cellUnknown(code, detail),
+  });
+  const rel = path.slice(sub.length).replace(/^\//, '');
+  if (!rel) {
+    return unknown(
+      'not-applicable',
+      `'${path}' is the submodule directory itself (a gitlink), not a file inside it — marker containment does not apply.`,
+    );
+  }
+  const link = await submoduleGitlinkAt(git, candidateSha, sub);
+  if (link.state === 'unreadable') {
+    return unknown(
+      'resolver-failed',
+      `Could not read the gitlink for submodule '${sub}' at ${candidateSha.slice(0, 12)} — marker containment is UNKNOWN, not missing.`,
+    );
+  }
+  if (link.state === 'absent') {
+    // The candidate predates the submodule entirely: it has no version of this file.
+    return { ...base, present: false, count: 0, pathPresent: false, unknownReason: null };
+  }
+  const inner = await markerAtCommit(gitReadInSubdir(git, sub), link.pin, rel, marker);
+  return { ...inner, sha: candidateSha };
 }
 
 /**

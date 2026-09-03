@@ -134,6 +134,7 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       judgingContainsPath: null,
       nextCandidateSha: null,
       nextContainsPath: null,
+      submodule: null,
       missingReason: null,
       // EI-18797292094433710 added marker containment on the same three-valued
       // principle as the fields above: no marker was supplied by these fixtures,

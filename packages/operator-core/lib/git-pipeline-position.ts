@@ -45,6 +45,7 @@ import { probeServiceStart, resolveServiceStartMs } from './agent-tools/dev/syst
 import { RESTART_TARGET_UNITS } from './agent-tools/dev/restart-target-units';
 import {
   classifyPathsAgainstCandidate,
+  markerAtCandidateForPath,
   gitReadForRepo,
   markerAtCommit,
   type MarkerContainment,
@@ -2508,6 +2509,17 @@ export interface ChangeInCandidate {
   /** When a verdict is false: which lever fixes it (uncommitted / newer-commit / absent). */
   missingReason: MissingReason | null;
   /**
+   * P-011 (main-green-status-visible-2026-09-03) — set when the path lives inside a
+   * SUBMODULE: which one, the path relative to it, and the submodule commit each candidate
+   * PINS (its gitlink). The verdicts above were computed INSIDE that submodule against the
+   * pinned commit — the superproject stores only the gitlink, so a superproject blob read
+   * is ABSENT for every submodule path and used to leave this cell `not-applicable`, i.e.
+   * the five-command hand recipe in CLAUDE.md. A `false` with `missingReason:'newer-commit'`
+   * here means the SUPERPROJECT gitlink bump is what the candidate lacks. A null pin = the
+   * gitlink could not be read, or the candidate predates the submodule.
+   */
+  submodule: { path: string; relPath: string; judgingPin: string | null; nextPin: string | null } | null;
+  /**
    * EI-18797292094433710 — containment of a caller-supplied MARKER, when one was given.
    *
    * `judgingContainsPath` compares the file's CURRENT content, so it answers "does the
@@ -2524,13 +2536,15 @@ export interface ChangeInCandidate {
   detail: string | null;
 }
 
-/** Nothing measurable — a sha-only probe, a submodule path, or an unresolved candidate. */
+/** Nothing measurable — a sha-only probe, or an unresolved candidate. (A submodule path IS
+ *  measured since P-011: the classifier resolves the gitlink and compares inside the sub.) */
 const NO_CHANGE_IN_CANDIDATE: ChangeInCandidate = {
   judgingSha: null,
   judgingContainsPath: null,
   nextCandidateSha: null,
   nextContainsPath: null,
   missingReason: null,
+  submodule: null,
   markerJudging: null,
   markerNext: null,
   detail: null,
@@ -2698,11 +2712,14 @@ export function evaluateChangeInCandidate(args: {
   next: PathContainment | null;
   markerJudging?: MarkerContainment | null;
   markerNext?: MarkerContainment | null;
+  /** P-011: the submodule the path lives in, when it does — carried through verbatim. */
+  submodule?: ChangeInCandidate['submodule'];
 }): ChangeInCandidate {
   const { relPath, candidates, judging, next } = args;
   if (!relPath) return NO_CHANGE_IN_CANDIDATE;
   const markerJudging = args.markerJudging ?? null;
   const markerNext = args.markerNext ?? null;
+  const submodule = args.submodule ?? null;
   const inferredJudgingContainment =
     candidates.judgingShaSource === 'run-probe' && candidates.judgingSha !== null;
   const judgingContainmentRefusal = inferredJudgingContainment ? inferredJudgingContainmentRefusal() : null;
@@ -2718,10 +2735,20 @@ export function evaluateChangeInCandidate(args: {
     nextCandidateSha: candidates.nextCandidateSha,
     nextContainsPath: next ? next.inCandidate : null,
     missingReason: judging?.reason ?? next?.reason ?? null,
+    submodule,
     markerJudging,
     markerNext,
     detail: judgingContainmentRefusal ? describeRefusal(judgingContainmentRefusal) : null,
   };
+  // P-011: for a submodule path every verdict below was computed against the submodule
+  // commit the candidate PINS, so say so — and name the hop that actually moves it.
+  const viaSubmodule = (pin: string | null): string =>
+    submodule
+      ? ` (resolved through submodule '${submodule.path}': the candidate pins submodule commit ${pin ? pin.slice(0, 12) : '<unreadable>'}, and the comparison was made inside it)`
+      : '';
+  const submoduleBumpClause = submodule
+    ? ` This path is inside submodule '${submodule.path}', so what the candidate lacks is the SUPERPROJECT gitlink bump — git-sync's superproject commit — not the submodule commit itself; no hand-run \`git -C ${submodule.path} rev-parse\` recipe is needed to establish that.`
+    : '';
 
   // The source itself is the uncertainty. Do not let a marker or a path comparison derived
   // from this inferred candidate reintroduce the verdict-shaped answer we just withheld.
@@ -2831,7 +2858,8 @@ export function evaluateChangeInCandidate(args: {
           'It IS committed, but the file has been committed AGAIN since the candidate was cut (the quiet-cut steps the candidate back ~4 min). ' +
           'This does NOT by itself mean YOUR change is missing — a peer commit to the same file reads identically. ' +
           'SETTLE IT IN ONE CALL instead of guessing: re-call with `marker` set to a distinctive string from your own change ' +
-          '(a new function name, an error message, an id you added) and this verdict becomes definitive either way.'
+          '(a new function name, an error message, an id you added) and this verdict becomes definitive either way.' +
+          submoduleBumpClause
         );
       default:
         return '';
@@ -2863,14 +2891,14 @@ export function evaluateChangeInCandidate(args: {
     return {
       ...base,
       detail:
-        `The gate's judged candidate (${base.judgingSha?.slice(0, 12)}) does NOT contain this file's current content. ` +
+        `The gate's judged candidate (${base.judgingSha?.slice(0, 12)}) does NOT contain this file's current content${viaSubmodule(submodule?.judgingPin ?? null)}. ` +
         `A RED from that run is NOT evidence your change failed — it is testing code without it. ${lever(base.missingReason)}`,
     };
   }
   if (base.judgingContainsPath === true) {
     return {
       ...base,
-      detail: `The gate's judged candidate (${base.judgingSha?.slice(0, 12)}) DOES carry this file's current content, so its verdict is a real verdict on your change.`,
+      detail: `The gate's judged candidate (${base.judgingSha?.slice(0, 12)}) DOES carry this file's current content${viaSubmodule(submodule?.judgingPin ?? null)}, so its verdict is a real verdict on your change.`,
     };
   }
   if (base.nextContainsPath === false) {
@@ -4869,10 +4897,13 @@ export async function gitPipelinePosition(
   const checkpointRunLockLivePromise = (deps.readCheckpointRunLock ?? realReadCheckpointRunLock)(root);
   const gateOwnershipPromise = (deps.readGateOwnership ?? readGateOwnership)();
 
-  // Resolve a submodule, if the path is inside one.
+  // Resolve a submodule, if the path is inside one. `superRelPath` keeps the path the
+  // caller actually asked about (superproject-relative); `relPath` is rewritten to the
+  // submodule-relative form for the nested-repo history reads below.
   let submodule: string | null = null;
   let gitDir = root;
-  let relPath = inp.path ? inp.path.replace(/^\.?\//, '') : null;
+  const superRelPath = inp.path ? inp.path.replace(/^\.?\//, '') : null;
+  let relPath = superRelPath;
   // EI-18797292094433710: an all-whitespace marker would match everywhere and read as a
   // confident positive, so it is treated as "not supplied" rather than trusted.
   const marker = inp.marker?.trim() ? inp.marker : null;
@@ -4890,12 +4921,12 @@ export async function gitPipelinePosition(
   }
 
   // Candidate discovery is independent of target-sha and position containment.
-  // Avoid the systemd-backed probe for sha-only, missing-path, and submodule reads,
-  // exactly as before, but overlap it with the remaining path work when applicable.
-  const gateCandidatesPromise =
-    relPath && !submodule
-      ? (deps.resolveGateCandidates ?? realResolveGateCandidates)(root)
-      : null;
+  // Avoid the systemd-backed probe for sha-only and missing-path reads, but overlap it
+  // with the remaining path work when applicable. P-011: a SUBMODULE path needs the
+  // candidates too — its containment is now measured through the gitlink each
+  // candidate pins, so skipping the probe here would leave the cell with no sha to
+  // resolve that gitlink against.
+  const gateCandidatesPromise = relPath ? (deps.resolveGateCandidates ?? realResolveGateCandidates)(root) : null;
 
   // Dirty (uncommitted) check for a path.
   let dirtyUncommitted = false;
@@ -5878,13 +5909,21 @@ export async function gitPipelinePosition(
     }
   }
 
-  // P-004: is the commit the gate judges even this file's code? Scoped to a
-  // SUPERPROJECT path: the gate judges the superproject, which stores only a gitlink
-  // for a submodule, so a blob comparison across that boundary compares nothing (the
-  // same absence-reads-as-evidence trap resolveSubmodulePin exists for). Saying
-  // "unknown" there is the honest answer; a false `true` would be the dangerous one.
+  // P-004: is the commit the gate judges even this file's code?
+  //
+  // P-011 (main-green-status-visible-2026-09-03): this used to be scoped to a
+  // SUPERPROJECT path — the gate judges the superproject, which stores only a gitlink
+  // for a submodule, so a superproject blob read across that boundary compares nothing
+  // (the absence-reads-as-evidence trap resolveSubmodulePin exists for), and a submodule
+  // path was answered `not-applicable`. That left ~37 submodules — every DB migration
+  // among them — to a five-command hand recipe in CLAUDE.md. The classifier below is
+  // gitlink-aware (`classifySubmodulePath`: resolve the pin the candidate carries, then
+  // compare blobs INSIDE the submodule), so a submodule path is now measured the same
+  // way, keyed on the SUPERPROJECT-relative path the caller asked about, and the pins
+  // themselves are surfaced as `changeInCandidate.submodule` so a false verdict names
+  // the hop that actually moves it (the superproject gitlink bump).
   let changeInCandidate: ChangeInCandidate = NO_CHANGE_IN_CANDIDATE;
-  if (relPath && !submodule) {
+  if (relPath && superRelPath) {
     /**
      * WI-36259 — reconcile the probe against the marker BEFORE anything downstream reads
      * `judgingSha`. Placement is load-bearing: `shas` on the very next line drives the blob
@@ -5896,12 +5935,32 @@ export async function gitPipelinePosition(
     const candidates = reconcileGateCandidates(await gateCandidatesPromise!, checkpointRunInFlight);
     const shas = [candidates.judgingSha, candidates.nextCandidateSha].filter((s): s is string => !!s);
     const gitRead = gitReadForRepo(git, root);
+    // P-011: the submodule was already resolved once above from `.gitmodules`; hand the
+    // classifier that answer instead of letting it re-discover the list per sha. An empty
+    // list is the explicit "plain superproject path" form.
+    const containmentOpts = { submodules: submodule ? [submodule] : [] };
     const byShaEntries = await Promise.all(
       [...new Set(shas)].map(
-        async (sha) => [sha, (await classifyPathsAgainstCandidate(gitRead, sha, [relPath]))[0]] as const,
+        async (sha) =>
+          [sha, (await classifyPathsAgainstCandidate(gitRead, sha, [superRelPath], 'HEAD', containmentOpts))[0]] as const,
       ),
     );
     const bySha = new Map(byShaEntries);
+    // P-011: the gitlink each candidate carries for the submodule — the `PIN` the hand
+    // recipe made agents compute themselves. null = unreadable, or no gitlink there.
+    let submoduleField: ChangeInCandidate['submodule'] = null;
+    if (submodule) {
+      const sub = submodule; // `let` narrowing does not survive into the closure below
+      const pinFor = async (sha: string | null): Promise<string | null> =>
+        sha ? ((await readSubmodulePin(git, root, sha, sub))?.sha ?? null) : null;
+      const [judgingPin, nextPin] = await Promise.all([
+        pinFor(candidates.judgingSha),
+        candidates.nextCandidateSha === candidates.judgingSha
+          ? pinFor(candidates.judgingSha)
+          : pinFor(candidates.nextCandidateSha),
+      ]);
+      submoduleField = { path: submodule, relPath, judgingPin, nextPin };
+    }
     // EI-18797292094433710: only paid for when the caller actually named a marker —
     // this is the hot path CLAUDE.md points agents at for "is my edit live".
     // The binding this uses is the GUARDED one at the top of the function, deliberately:
@@ -5915,19 +5974,42 @@ export async function gitPipelinePosition(
     // make impossible.
     const markerBySha = new Map<string, MarkerContainment>();
     if (marker) {
+      // P-011: `markerAtCandidateForPath` resolves the gitlink for a submodule path and
+      // counts inside the pinned submodule commit; a plain path goes straight through to
+      // `markerAtCommit`. Never call `markerAtCommit` on a superproject-relative
+      // submodule path — its '' from `ls-tree` reads as a DEFINITIVE "not in the candidate".
       const markerEntries = await Promise.all(
-        [...new Set(shas)].map(async (sha) => [sha, await markerAtCommit(gitRead, sha, relPath, marker)] as const),
+        [...new Set(shas)].map(
+          async (sha) =>
+            [sha, await markerAtCandidateForPath(gitRead, sha, superRelPath, marker, containmentOpts)] as const,
+        ),
       );
       for (const [sha, m] of markerEntries) markerBySha.set(sha, m);
     }
+    const judgingClassification = candidates.judgingSha ? (bySha.get(candidates.judgingSha) ?? null) : null;
     changeInCandidate = evaluateChangeInCandidate({
-      relPath,
+      relPath: superRelPath,
       candidates,
-      judging: candidates.judgingSha ? (bySha.get(candidates.judgingSha) ?? null) : null,
+      judging: judgingClassification,
       next: candidates.nextCandidateSha ? (bySha.get(candidates.nextCandidateSha) ?? null) : null,
       markerJudging: candidates.judgingSha ? (markerBySha.get(candidates.judgingSha) ?? null) : null,
       markerNext: candidates.nextCandidateSha ? (markerBySha.get(candidates.nextCandidateSha) ?? null) : null,
+      submodule: submoduleField,
     });
+    // P-011: a submodule path whose containment could NOT be measured (gitlink unreadable,
+    // submodule not checked out) is hoisted on the containment leg with the classifier's
+    // OWN enumerated reason — `resolver-failed`, retry-or-escalate — never the final
+    // `not-applicable` this branch used to emit for every submodule path.
+    if (
+      submodule &&
+      judgingClassification &&
+      judgingClassification.inCandidate === null &&
+      judgingClassification.unknownReason &&
+      changeInCandidate.judgingContainsPath === null &&
+      changeInCandidate.judgingShaSource !== 'run-probe'
+    ) {
+      verdictUnknown.push({ leg: 'changeInCandidate.judgingContainsPath', unknown: judgingClassification.unknownReason });
+    }
     // EI-18797292094433710: suppressed when a marker proved the judged commit carries the
     // change — the file not being byte-identical is then a peer's edit, not a miss, and
     // shouting "DOES NOT CONTAIN" at that is the false alarm that cost the outage.
@@ -5940,13 +6022,6 @@ export async function gitPipelinePosition(
     ) {
       notes.push(`CANDIDATE DOES NOT CONTAIN THIS FILE: ${changeInCandidate.detail}`);
     }
-  } else if (relPath && submodule) {
-    changeInCandidate = {
-      ...NO_CHANGE_IN_CANDIDATE,
-      detail:
-        'Containment is not measured for a submodule path: the gate judges the SUPERPROJECT, which stores only a gitlink for this submodule. ' +
-        'Whether your change is in the judged build depends on the PIN the superproject candidate carries — check that the superproject has committed the bumped gitlink.',
-    };
   }
 
   // P-004: a run-probe candidate is an inferred checkout-head read, so the path comparison
@@ -5965,27 +6040,34 @@ export async function gitPipelinePosition(
 
   /**
    * P-007 leg 4 — `changeInCandidate.judgingSha`, the headline of the
-   * `gate.greenCheckpoint.candidate` cell. It goes `null` THREE ways, and only one of
+   * `gate.greenCheckpoint.candidate` cell. It goes `null` TWO ways, and only one of
    * them is an answer:
    *   · no gate run is in flight — a MEASURED absence and a final answer. Not hoisted:
    *     "nothing is judging right now" is exactly what the caller asked. (`missingReason`
    *     is legitimately null here too; that is not an unexplained absence.)
    *   · a sha-only probe — there is no path to compare, so the question does not apply.
-   *   · a submodule path — the gate judges the SUPERPROJECT, which stores only a gitlink,
-   *     so a blob comparison across that boundary compares nothing.
    *
-   * The last two are `not-applicable`: FINAL, no lever, do not retry. They must not read
-   * as "no run in flight", which invites the caller to wait for a verdict that will never
+   * The second is `not-applicable`: FINAL, no lever, do not retry. It must not read as
+   * "no run in flight", which invites the caller to wait for a verdict that will never
    * be about their code.
+   *
+   * A SUBMODULE path used to be a third `not-applicable` way here ("the gate judges the
+   * superproject, which stores only a gitlink"). P-011 (main-green-status-visible-
+   * 2026-09-03) removed it: the containment leg now resolves that gitlink and measures
+   * inside the submodule, so a submodule path either gets a real verdict or — when the
+   * gitlink cannot be read — a `resolver-failed` hoist on
+   * `changeInCandidate.judgingContainsPath` with the classifier's own reason (see the
+   * containment block above). Reinstating a blanket `not-applicable` here would re-hide
+   * the ~37 submodules behind the hand recipe this item retired.
    *
    * ⚠ WHY `missingReason` DOES NOT COVER THIS, though it looks like the obvious hoist.
    * It answers a DIFFERENT question: when a containment verdict came back FALSE, which
-   * lever fixes it (uncommitted / newer-commit / absent). It is null in both cases above
-   * — nothing was compared, so no lever applies — and the submodule branch carries its
-   * reason as FREE-TEXT `detail` instead. That is the very mistake cell-contract.ts was
-   * written about: three surfaces independently reported the reason as prose, which a
-   * human can read and a program cannot branch on. This is a fourth instance of it, in
-   * the same file. The prose stays (it is genuinely useful); the branchable code is here.
+   * lever fixes it (uncommitted / newer-commit / absent). It is null in the case above
+   * — nothing was compared, so no lever applies. Reporting the reason as FREE-TEXT
+   * `detail` instead is the very mistake cell-contract.ts was written about: three
+   * surfaces independently reported the reason as prose, which a human can read and a
+   * program cannot branch on. The prose stays (it is genuinely useful); the branchable
+   * code is here.
    */
   if (!relPath) {
     verdictUnknown.push({
@@ -5993,14 +6075,6 @@ export async function gitPipelinePosition(
       unknown: cellUnknown(
         'not-applicable',
         'this was a sha-only probe, so there is no path whose presence in the judged candidate could be checked — not "no run is in flight"',
-      ),
-    });
-  } else if (submodule) {
-    verdictUnknown.push({
-      leg: 'changeInCandidate.judgingSha',
-      unknown: cellUnknown(
-        'not-applicable',
-        `the gate judges the superproject, which stores only a gitlink for submodule '${submodule}', so candidate containment is not measurable for this path — check the committed gitlink pin instead`,
       ),
     });
   }
