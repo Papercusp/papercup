@@ -1780,6 +1780,12 @@ export function assessFrozenRepairConvergence(
 /** The celled projection: the record, its reading, and the vintage behind both. */
 export interface FrozenRepairConvergenceCellProjection {
   code: FrozenRepairConvergenceCode;
+  /**
+   * Axis-2 HOIST: true when there is no readable convergence record. Result-level and
+   * boolean because the alternative reading of an all-null record — "nothing is failing,
+   * so nothing had to converge" — is the precise false all-clear this cell exists to stop.
+   */
+  unmeasured: boolean;
   openedAtMs: number | null;
   ageMs: number | null;
   attempts: number | null;
@@ -1812,6 +1818,7 @@ export function projectFrozenRepairConvergenceCell(
   if (!record) {
     return {
       code,
+      unmeasured: true,
       openedAtMs: null,
       ageMs: null,
       attempts: null,
@@ -1827,5 +1834,5 @@ export function projectFrozenRepairConvergenceCell(
       observedAtMs: null,
     };
   }
-  return { code, ...record };
+  return { code, unmeasured: false, ...record };
 }

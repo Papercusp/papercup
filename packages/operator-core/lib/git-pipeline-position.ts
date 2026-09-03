@@ -65,8 +65,14 @@ import { projectCheckpointQualificationState } from './release/checkpoint-qualif
 // P-004: the two pure projections behind `gate.greenCheckpoint.freezeDisposition` and
 // `gate.greenCheckpoint.convergence`. Both are rung-1 DERIVE over records this resolver
 // already loads — no second I/O path that could disagree with the first.
-import { projectFreezeDispositionCell } from './release/freeze-disposition';
-import { projectFrozenRepairConvergenceCell } from './release/frozen-candidate-repair-queue';
+import {
+  projectFreezeDispositionCell,
+  type FreezeDispositionCellProjection,
+} from './release/freeze-disposition';
+import {
+  projectFrozenRepairConvergenceCell,
+  type FrozenRepairConvergenceCellProjection,
+} from './release/frozen-candidate-repair-queue';
 
 const pexec = promisify(execFile);
 

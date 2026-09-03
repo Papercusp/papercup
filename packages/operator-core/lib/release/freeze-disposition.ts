@@ -295,6 +295,13 @@ export function assessFreezeDisposition(
 /** The celled projection: the record, its vintage, and the branchable reading. */
 export interface FreezeDispositionCellProjection {
   code: FreezeDispositionCode;
+  /**
+   * Axis-2 HOIST: true when there is no readable disposition at all. Result-level and
+   * boolean so a caller who reads nothing else still cannot mistake "the gate never told
+   * us" for "the freeze is fine" — every other field is null in that case, and a null
+   * `state` is exactly what a hurried reader renders as "nothing frozen, all is well".
+   */
+  unmeasured: boolean;
   /** The stored state, or null when there is no readable record. NEVER defaulted. */
   state: FreezeAndConvergeState | null;
   /** Why it is in that state — the sentence that used to exist only in a per-run log. */
@@ -333,6 +340,7 @@ export function projectFreezeDispositionCell(
   if (!record) {
     return {
       code,
+      unmeasured: true,
       state: null,
       reason: null,
       enabled: null,
@@ -348,6 +356,7 @@ export function projectFreezeDispositionCell(
   const ageMs = Math.max(0, nowMs - record.observedAtMs);
   return {
     code,
+    unmeasured: false,
     state: record.state,
     reason: record.reason,
     enabled: record.enabled,
