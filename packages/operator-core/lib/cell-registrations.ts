@@ -753,7 +753,7 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
     path: 'gate.candidateFailures.stillBrokenCount',
   },
   shape:
-    '{ gate: { candidateFailures: { candidateSha, repairHeadSha, filesJudged, distinctFailingFiles: [{ path, attempts, status, fixInRepairHead, comparison, candidateBlob, repairHeadBlob, reading }], failingFileCount, alreadyFixedCount, stillBrokenCount, stillBrokenNeedsRunCount, changedBetweenRefs: { count, sample }, nonTestLegsMeasured, nonTestLegs: { current, head, atMs, all: [{ id, status, durationMs }], failing: [...], reading, perLeg: [{ id, measuredNow, lifecycle, fixedAtHead, admittedRound, reading }], outstanding: [id], shrink: { measured, admittedLegs, fixedLegs, failingLegs, failingLegIds, fixedLegIds, shrinkTotal, regressedLegs, lastMeasuredAtMs, scope } } | null, scope, unavailable, truncated } } }',
+    '{ gate: { candidateFailures: { candidateSha, repairHeadSha, filesJudged, distinctFailingFiles: [{ path, attempts, status, fixInRepairHead, comparison, candidateBlob, repairHeadBlob, reading }], failingFileCount, alreadyFixedCount, stillBrokenCount, stillBrokenNeedsRunCount, changedBetweenRefs: { count, sample }, nonTestLegsMeasured, nonTestLegs: { current, head, atMs, all: [{ id, status, durationMs }], failing: [...], reading, perLeg: [{ id, measuredNow, lifecycle, fixedAtHead, admittedRound, reading }], outstanding: [id], shrink: { measured, admittedLegs, fixedLegs, failingLegs, failingLegIds, fixedLegIds, shrinkTotal, regressedLegs, lastMeasuredAtMs, scope } }, scope, unavailable, truncated } } }',
 };
 
 /**

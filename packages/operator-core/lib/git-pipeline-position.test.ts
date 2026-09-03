@@ -58,6 +58,7 @@ import {
   type SweepExposure,
 } from './git-pipeline-position';
 import type { GateCandidateFailures, GateCandidateFailingFile } from './gate-candidate-failures';
+import { unmeasuredNonTestLegs } from './gate-candidate-failures';
 import type { MarkerContainment } from './candidate-contains';
 import type { DevDeployState } from './dev-deploy-state';
 import type { DeployInFlight } from './release-deploy-launch';
@@ -2703,15 +2704,17 @@ describe('computeStages: position x health', () => {
       changedBetweenRefs: null,
       // P-003 replaced the `postSuiteMeasured` tri-state with a two-value reading derived
       // from whether a leg measurement exists at all. `not-recorded` is the fixture value
-      // that matches `nonTestLegs: null` below — and the pair is the point: no measurement
-      // recorded is NOT "no legs failing".
+      // that matches the UNMEASURED `nonTestLegs` below — and the pair is the point: no
+      // measurement recorded is NOT "no legs failing".
       nonTestLegsMeasured: 'not-recorded',
-      // WI-2143253 added `nonTestLegs` as a REQUIRED field. `null` is the correct fixture
-      // value and the production default: it means no per-leg measurement exists yet for
-      // this repair queue, which is exactly the state these progress-term fixtures model.
-      // The three helpers below (converging / outstanding / outstandingUnconfirmed) all
-      // delegate here, so this one site is the whole fix.
-      nonTestLegs: null,
+      // WI-2143253 added `nonTestLegs` as a REQUIRED field; C2 of EI-22270968007901491 made
+      // it NEVER null (a null subtree dropped the cell's declared evidence paths and the
+      // assessment downgraded to `unavailable`). `unmeasuredNonTestLegs()` IS the production
+      // default: no per-leg measurement exists yet for this repair queue, which is exactly
+      // the state these progress-term fixtures model. The three helpers below (converging /
+      // outstanding / outstandingUnconfirmed) all delegate here, so this one site is the
+      // whole fix.
+      nonTestLegs: unmeasuredNonTestLegs(),
       scope: 'fixture scope sentence',
       unavailable: null,
       truncated: false,
