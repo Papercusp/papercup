@@ -148,3 +148,79 @@ describe('isConfirmedHostIoWait', () => {
     expect(isConfirmedHostIoWait(activity)).toBe(false);
   });
 });
+
+describe('isLikelySyncSubprocessBlock', () => {
+  /**
+   * The exact field values the sentinel printed on the 2026-09-03 12:41:29
+   * papercusp-bg-host kill. CALIBRATION CASE: if this ever stops being true the
+   * suite below is passing vacuously, because every other case here is a
+   * negative and negatives alone cannot tell a working predicate from one that
+   * always returns false.
+   */
+  const MEASURED_BG_HOST_KILL = {
+    state: 'S',
+    cpuMs: 0,
+    cores: 0,
+    wchan: 'ep_poll',
+  } as const;
+
+  it('recognises the measured bg-host signature that twice read as "healthy idle"', () => {
+    expect(isLikelySyncSubprocessBlock(MEASURED_BG_HOST_KILL)).toBe(true);
+  });
+
+  it.each(['ep_poll', 'do_epoll_wait', 'do_sys_poll', 'do_select', 'poll_schedule_timeout'])(
+    'recognises loop-poll wait channel %s',
+    (wchan) => {
+      expect(isLikelySyncSubprocessBlock({ state: 'S', cpuMs: 0, cores: 0, wchan })).toBe(true);
+    },
+  );
+
+  it.each([
+    // Burning CPU: a synchronous JS loop / GC, not a subprocess wait.
+    { state: 'S', cpuMs: 4200, cores: 0.9, wchan: 'ep_poll' },
+    // D-state block I/O: the OTHER predicate's domain, and the only one that
+    // may suppress a kill. These two must never both claim the same sample.
+    { state: 'D', cpuMs: 0, cores: 0, wchan: 'io_schedule' },
+    // Runnable — not parked at all.
+    { state: 'R', cpuMs: 0, cores: 0, wchan: 'ep_poll' },
+    // Parked, but not in a loop poll: futex waits are a different failure.
+    { state: 'S', cpuMs: 0, cores: 0, wchan: 'futex_wait_queue_me' },
+    // Unreadable wchan is UNKNOWN, never a positive claim.
+    { state: 'S', cpuMs: 0, cores: 0, wchan: null },
+    // Unmeasured CPU must not be treated as zero.
+    { state: 'S', cpuMs: null, cores: null, wchan: 'ep_poll' },
+  ])('requires all sync-subprocess discriminator fields (%o)', (activity) => {
+    expect(isLikelySyncSubprocessBlock(activity)).toBe(false);
+  });
+
+  it('never claims the same sample as the host-I/O-wait suppressor', () => {
+    const samples = [
+      MEASURED_BG_HOST_KILL,
+      { state: 'D', cpuMs: 0, cores: 0, wchan: 'io_schedule' },
+      { state: 'D', cpuMs: 0, cores: 0, wchan: 'ep_poll' },
+      { state: 'S', cpuMs: 0, cores: 0, wchan: 'io_schedule' },
+    ];
+    for (const s of samples) {
+      expect(isLikelySyncSubprocessBlock(s) && isConfirmedHostIoWait(s)).toBe(false);
+    }
+  });
+
+  /**
+   * FALSIFIABILITY CONTROL. The tempting reading of the incident was "0 CPU
+   * means the host is idle" — a predicate keyed on cpuMs alone. Run it beside
+   * the shipped one to prove the `state`/`wchan` discriminators are
+   * load-bearing rather than decoration: the naive one cannot tell a
+   * block-I/O stall from a synchronous-subprocess block, which is exactly the
+   * conflation that would misroute the next investigation.
+   */
+  it('is stricter than a naive cpu-only predicate (discriminators are load-bearing)', () => {
+    const naiveCpuOnly = (a: { cpuMs: number | null }) => a.cpuMs === 0;
+    const hostIoWait = { state: 'D', cpuMs: 0, cores: 0, wchan: 'io_schedule' };
+
+    // The naive predicate cannot separate them; the shipped one does.
+    expect(naiveCpuOnly(hostIoWait)).toBe(true);
+    expect(naiveCpuOnly(MEASURED_BG_HOST_KILL)).toBe(true);
+    expect(isLikelySyncSubprocessBlock(hostIoWait)).toBe(false);
+    expect(isLikelySyncSubprocessBlock(MEASURED_BG_HOST_KILL)).toBe(true);
+  });
+});
