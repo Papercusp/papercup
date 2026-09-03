@@ -1216,11 +1216,40 @@ export function defaultCompactionLimitForWindow(window: number, opts?: { fleetMe
  * `opus`/`sonnet` still derives 158k (the un-normalized 200k-window hazard above).
  */
 export function defaultCompactionLimitForSpec(spec?: string | null, opts?: { fleetMember?: boolean }): number {
-  if (spec == null || spec.trim() === '' || spec.includes('[1m]')) {
+  if (derivesFrom1mWindow(spec)) {
     return defaultCompactionLimitForWindow(MODEL_WINDOW_1M, opts);
   }
   return defaultCompactionLimitForWindow(modelWindowForSpec(spec), opts);
 }
+
+/** Whether a spec derives its compaction limit from the 1M window: the `[1m]`
+ * marker, or an absent/blank spec (which {@link defaultCompactionLimitForSpec}
+ * treats as 1M rather than guessing a narrower one).
+ *
+ * Extracted so {@link supersededDerivedCompactionLimits} tests the SAME condition
+ * the derivation uses instead of restating it — a second copy of this predicate is
+ * exactly the drift that stranded the sessions EI-22241751831038573 documents. */
+export function derivesFrom1mWindow(spec?: string | null): boolean {
+  return spec == null || spec.trim() === '' || spec.includes('[1m]');
+}
+
+/** Fleet-member 1M-window role caps this platform has PREVIOUSLY derived, so the
+ * watchdog's upward heal can still recognise a live session seeded under an older
+ * policy as carrying a DERIVED value rather than a deliberate override.
+ *
+ * Why this list has to exist (EI-22241751831038573, measured 2026-09-03): the heal
+ * raises a stored limit only when it equals the current derived seed or one of
+ * these. Raising the cap therefore strands every already-live session at the old
+ * number — it no longer equals the new default, so it reads as an override, and the
+ * lower-only branch cannot reach it because the stale value sits BELOW the correct
+ * one. Fifteen consecutive carry-respawns of one fleet member were traced to exactly
+ * this: pinned at 200_000 against a true 1M window while the cap had moved to
+ * 250_000, so every successor crossed the line within ~8 minutes and was cut again.
+ *
+ * History: 300_000 (2026-07-03) → 200_000 (owner directive 2026-07-19) → current
+ * {@link COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP}. APPEND the outgoing value
+ * here whenever that cap changes; the current value is filtered out automatically. */
+export const SUPERSEDED_1M_FLEET_MEMBER_CAPS: readonly number[] = [300_000, 200_000];
 
 /** Backend-aware twin of `defaultCompactionLimitForSpec` for a tier row. */
 export function defaultCompactionLimitForTier(
@@ -1260,12 +1289,26 @@ export function supersededDerivedCompactionLimits(spec?: string | null, opts?: {
   // branch: `[1m]` is a Claude-only marker and no codex spec carries it, so every
   // codex spec fell to the conservative MODEL_WINDOW_DEFAULT. A spec that is
   // extended TODAY therefore derived that fabricated-window value yesterday.
-  if (!isCodexExtendedWindowSpec(spec)) return [];
-  const superseded = defaultCompactionLimitForWindow(MODEL_WINDOW_DEFAULT, opts);
-  // Guard against a future policy that makes these equal: a value that is still
-  // the CURRENT derivation is not superseded, and returning it here would be a
-  // no-op at best and confusing at worst.
-  return superseded === defaultCompactionLimitForSpec(spec, opts) ? [] : [superseded];
+  const out: number[] = [];
+
+  if (isCodexExtendedWindowSpec(spec)) {
+    out.push(defaultCompactionLimitForWindow(MODEL_WINDOW_DEFAULT, opts));
+  }
+
+  // The Claude counterpart (EI-22241751831038573). The codex branch above was the
+  // FIRST instance of this failure and its fix was scoped to codex, which left the
+  // identical hole open for `[1m]` Claude fleet members — the population the
+  // 200_000 → 250_000 cap raise then stranded. `[1m]` is a Claude-only marker, so
+  // these two branches address disjoint specs.
+  if (opts?.fleetMember && derivesFrom1mWindow(spec)) {
+    out.push(...SUPERSEDED_1M_FLEET_MEMBER_CAPS);
+  }
+
+  // Guard against a policy that makes these equal: a value that is still the
+  // CURRENT derivation is not superseded, and returning it here would be a no-op
+  // at best and confusing at worst.
+  const current = defaultCompactionLimitForSpec(spec, opts);
+  return [...new Set(out)].filter((limit) => limit !== current);
 }
 
 /**
