@@ -20,6 +20,12 @@ const getBudget = defineTool({
   async handler(_req, ctx) {
     const projectId = ctx.params.id as string;
     try {
+      // Cross-harness admin read: keyed by workspace project id (`:id`, not
+      // `:slug` — see the file header), and `projects`/`all_features` are not
+      // scoped to one harness. harnessQuery/withHarnessSchema are inherently
+      // per-harness-schema-scoped and have no equivalent for a shape like this,
+      // so this stays on the no-slug admin client (getOrgPg()). Decision + why:
+      // WI-5384, mirroring D-005's per-harness getHarnessPg rationale.
       const dbc = getLegacyClient();
       const project = await dbc.prepare('SELECT id, name, budget_cents FROM projects WHERE id = ?').get(projectId) as any;
       if (!project) return Response.json({ error: 'project not found' }, { status: 404 });
@@ -58,6 +64,9 @@ const getStats = defineTool({
   async handler(_req, ctx) {
     const projectId = ctx.params.id as string;
     try {
+      // Cross-harness admin read: this handler's own GROUP BY harness_slug
+      // rollup below is definitionally cross-harness — see the getBudget
+      // comment above for the full rationale (WI-5384).
       const dbc = getLegacyClient();
       const project = await dbc.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any;
       if (!project) return Response.json({ error: 'project not found' }, { status: 404 });

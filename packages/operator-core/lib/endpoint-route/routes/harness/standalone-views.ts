@@ -72,6 +72,12 @@ const getNeedsHumanReview = defineTool({
   auth: 'public',
   async handler() {
     try {
+      // Cross-harness admin read: a dashboard over every harness's
+      // needs-human-review features, with no harness_slug filter at all —
+      // harnessQuery/withHarnessSchema are inherently per-harness-schema-scoped
+      // and have no equivalent for this shape, so this stays on the no-slug
+      // admin client (getOrgPg()). Decision + why: WI-5384, mirroring D-005's
+      // per-harness getHarnessPg rationale.
       const dbc = getLegacyClient();
       const rows = await dbc.prepare(`
         SELECT f.*, p.name as project_name, p.budget_cents as project_budget_cents

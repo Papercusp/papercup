@@ -771,7 +771,10 @@ const createFeature = defineTool({
       const project_row = projectRows[0] as any;
       if (project_row && project_row.budget_cents !== null) {
         // Cross-harness admin read (all_features has no single harness scope) — stays
-        // on the no-slug admin client (WI-5384 territory, out of scope for this item).
+        // on the no-slug admin client (getOrgPg()); harnessQuery/withHarnessSchema
+        // are inherently per-harness-schema-scoped and have no equivalent for
+        // this shape. Decision + why: WI-5384, mirroring D-005's per-harness
+        // getHarnessPg rationale.
         const adminC = getLegacyClient();
         const committed = Number(((await adminC.prepare(`
           SELECT COALESCE(SUM(expected_cost_cents), 0) as total
