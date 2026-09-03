@@ -337,6 +337,7 @@ export async function buildCurationSignalLanes(opts: {
         windowMs: 7 * DAY_MS,
         byTrigger: [],
         triggerAttributionAvailable: false,
+        attributedCostShare: 0,
         byRoleClass: [],
       } as CoordTokenBreakdown,
     ),

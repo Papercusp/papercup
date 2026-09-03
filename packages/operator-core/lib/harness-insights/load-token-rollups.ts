@@ -31,6 +31,11 @@ const num = (v: string | number | null | undefined): number => {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Minimum share of windowed SPEND that must carry a real `turn_trigger` before the
+ *  by-trigger lens is reported as answerable (EI-22102999569306181). A majority, because the
+ *  lens's whole claim is "here is where the money went" — a minority slice cannot support it. */
+const TRIGGER_ATTRIBUTION_MIN_SHARE = 0.5;
+
 /** The cache-inclusive token sum — the one expression every $ query reuses (matches load-tokens.ts). */
 const TOKENS_EXPR = `COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
                      + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0)`;
@@ -101,7 +106,20 @@ export interface CoordTokenBreakdown {
   windowMs: number;
   /** $ by turn-trigger — populated once `turn_trigger` lands on live rows (deploy-gated). */
   byTrigger: CoordTriggerRow[];
+  /**
+   * Does this lens actually answer "which trigger is spending the money"?
+   *
+   * EI-22102999569306181: this was `byTrigger.some(r => r.trigger !== 'unattributed')` — an
+   * EXISTENCE check standing in for a COVERAGE one. `turn_trigger` is stamped only from a
+   * spawn-time env var (PAPERCUSP_TURN_TRIGGER), so a wake INJECTED into a live psu session
+   * creates no process and can never receive one: measured 2026-09-03, 1856 of 1870 anthropic
+   * samples were `unattributed` while 14 cron rows from two fixer roles flipped this true. The
+   * lens then claimed attribution was available over a 99.3%-unattributed population.
+   */
   triggerAttributionAvailable: boolean;
+  /** Share (0..1) of windowed SPEND carrying a real `turn_trigger`. Read this before quoting
+   *  any byTrigger figure: it is what makes a thin slice legible as thin rather than typical. */
+  attributedCostShare: number;
   /** $ by role-class — the interactive-vs-fleet split, queryable on existing data NOW. */
   byRoleClass: CoordRoleClassRow[];
 }
@@ -129,6 +147,7 @@ export async function loadCoordTokenBreakdown(opts: LoadCoordTokenOpts): Promise
   //     degrades to empty + triggerAttributionAvailable:false until it populates.
   let byTrigger: CoordTriggerRow[] = [];
   let triggerAttributionAvailable = false;
+  let attributedCostShare = 0;
   try {
     const rows = await runQuery<{ trigger: string | null; tokens: string | number; cost_usd: string | number; runs: string | number }>(
       `SELECT COALESCE(NULLIF(turn_trigger, ''), 'unattributed') AS trigger,
@@ -147,11 +166,17 @@ export async function loadCoordTokenBreakdown(opts: LoadCoordTokenOpts): Promise
       costUsd: num(r.cost_usd),
       runs: num(r.runs),
     }));
-    // "Available" only once at least one row is actually attributed (not all-unattributed).
-    triggerAttributionAvailable = byTrigger.some((r) => r.trigger !== 'unattributed');
+    // EI-22102999569306181: "available" is a COVERAGE question, not an existence one. A
+    // single attributed row out of thousands does not make the lens answerable, so weight by
+    // SPEND (the quantity the lens reports) and require a majority of it to carry a trigger.
+    const totalCost = byTrigger.reduce((a, r) => a + r.costUsd, 0);
+    const attributedCost = byTrigger.reduce((a, r) => (r.trigger === 'unattributed' ? a : a + r.costUsd), 0);
+    attributedCostShare = totalCost > 0 ? attributedCost / totalCost : 0;
+    triggerAttributionAvailable = attributedCostShare >= TRIGGER_ATTRIBUTION_MIN_SHARE;
   } catch {
     byTrigger = [];
     triggerAttributionAvailable = false;
+    attributedCostShare = 0;
   }
 
   // (b) by role-class — interactive vs fleet — works on existing data.
@@ -178,7 +203,7 @@ export async function loadCoordTokenBreakdown(opts: LoadCoordTokenOpts): Promise
     byRoleClass = [];
   }
 
-  return { windowMs, byTrigger, triggerAttributionAvailable, byRoleClass };
+  return { windowMs, byTrigger, triggerAttributionAvailable, attributedCostShare, byRoleClass };
 }
 
 // ── 3. Coord-poll volume (the quantified poll cost — ≈0 LLM tokens) ──────────────

@@ -84,6 +84,31 @@ describe('loadCoordTokenBreakdown', () => {
     });
     expect(out.triggerAttributionAvailable).toBe(true);
     expect(out.byTrigger.find((r) => r.trigger === 'coord-wake')?.costUsd).toBe(8);
+    expect(out.attributedCostShare).toBe(1);
+  });
+
+  // EI-22102999569306181 recurrence guard. The PRODUCTION shape, measured 2026-09-03:
+  // 1856 of 1870 anthropic samples carry no turn_trigger (a wake injected into a live psu
+  // session creates no process, so the spawn-time PAPERCUSP_TURN_TRIGGER env var can never
+  // reach it), while a handful of cron rows from two fixer roles DO. The old `.some(r =>
+  // r.trigger !== 'unattributed')` existence check flipped AVAILABLE on that handful and the
+  // lens then claimed to answer "where did the money go" over a 99.3%-unattributed window.
+  it('does NOT report attribution available when a tiny attributed slice hides a mostly-unattributed window', async () => {
+    const out = await loadCoordTokenBreakdown({
+      workspace_id: 'ws',
+      runQuery: makeRunQuery([
+        { match: /turn_trigger/, rows: [
+          { trigger: 'unattributed', tokens: '1856000', cost_usd: '6169', runs: '1856' },
+          { trigger: 'cron', tokens: '14000', cost_usd: '14', runs: '14' },
+        ] },
+        { match: /role = 'interactive'/, rows: [] },
+      ]),
+    });
+    expect(out.triggerAttributionAvailable).toBe(false);
+    expect(out.attributedCostShare).toBeCloseTo(14 / 6183, 4);
+    // The rows themselves are still returned — the flag governs whether they are ANSWERABLE,
+    // it does not hide the data.
+    expect(out.byTrigger).toHaveLength(2);
   });
 
   it('role-class query degrades to [] but trigger section still resolves (independent defensiveness)', async () => {
