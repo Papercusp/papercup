@@ -2,7 +2,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import type { ReactNode } from 'react';
 
 const H = vi.hoisted(() => ({
   accounts: [] as unknown[],
@@ -31,11 +30,12 @@ vi.mock('nuqs', () => ({
   useQueryState: () => [H.expanded, H.setExpanded],
 }));
 
-vi.mock('@tanstack/react-router', () => ({
-  Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a>,
-}));
-
-vi.mock('../adv/use-account-override', () => ({
+// The panel moved to @papercusp/operator-ui (WI-2143109) and no longer imports a
+// router or a toast library directly — it reads both from the host seam, whose
+// DEFAULTS (a plain <a>, console toasts) are exactly what this suite wants. So
+// there is nothing to mock here; the assertions below still exercise the real
+// component, just through the path the portal also takes.
+vi.mock('@papercusp/operator-ui/accounts/use-account-override', () => ({
   useAccountOverride: () => ({
     overrideBusy: H.overrideBusy,
     forced: H.forced,

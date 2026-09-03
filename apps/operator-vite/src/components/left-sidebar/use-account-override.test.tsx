@@ -8,15 +8,24 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { configureOperatorUi } from '@papercusp/operator-ui';
 
-vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+// The hook moved to @papercusp/operator-ui (WI-2143109) and now raises toasts
+// through the host seam instead of importing sonner. The rollback test below
+// deliberately drives the FAILURE path, and the seam's unconfigured default
+// toast writes to console.error — which vitest-fail-on-console (correctly)
+// treats as a failing test. So install a silent toast, exactly as a real host
+// installs its own. Its apiFetch default still calls global `fetch`, so the
+// fetch stubs below reach the hook unchanged.
+configureOperatorUi({ toast: { success: vi.fn(), error: vi.fn() } });
+
 const { syncRows, invalidateSpy } = vi.hoisted(() => ({ syncRows: [] as unknown[], invalidateSpy: vi.fn() }));
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ data: syncRows, loading: false, fetching: false, error: null, invalidate: invalidateSpy }),
 }));
 
-import { useAccountOverride } from './use-account-override';
+import { useAccountOverride } from '@papercusp/operator-ui/accounts/use-account-override';
 
 function Harness() {
   const { forced, toggleForce } = useAccountOverride();

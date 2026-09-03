@@ -1,0 +1,24 @@
+{
+  "//": [
+    "Browser-only code — but `types: [node]` is required, not incidental: the",
+    "compile pulls in @papercusp/sync's SOURCE (a file: link, not a built .d.ts,",
+    "so skipLibCheck cannot skip it) and that reads process.env at module scope.",
+    "Without node types this fails on the dependency, never on anything here."
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "esModuleInterop": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["src/**/*"]
+}

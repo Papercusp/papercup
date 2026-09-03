@@ -7,6 +7,9 @@ import './buffer-polyfill';
 // Inject Papercup's grid palette before any grid renders (grid-core went
 // brand-agnostic; see grid-colors.ts).
 import './grid-colors';
+// Install this app's Link/toast/apiFetch into the panels that were extracted to
+// @papercusp/operator-ui so the portal could mount them too (WI-2143109).
+import './operator-ui-entry';
 import './query-health-gate';
 import './lazy-reload-gate';
 import { StrictMode } from 'react';

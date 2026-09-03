@@ -28,6 +28,7 @@
     "@papercusp/lexicon": "file:../../libs/generic/lexicon",
     "@papercusp/module-singleton": "file:../../libs/generic/module-singleton",
     "@papercusp/operator-core": "file:../../packages/operator-core",
+    "@papercusp/operator-ui": "file:../../packages/operator-ui",
     "@papercusp/p2p-voice": "file:../../libs/generic/p2p-voice",
     "@papercusp/sse": "file:../../libs/generic/sse",
     "@papercusp/sync": "file:../../libs/generic/sync",
