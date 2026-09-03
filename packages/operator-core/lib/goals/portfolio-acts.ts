@@ -345,7 +345,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  */
 export function argsCarryConditionalKey(
   args: unknown,
-  act: Pick<PortfolioConditionalAct, 'argKey' | 'batchKey'>,
+  act: Pick<PortfolioKeyPresentAct, 'argKey' | 'batchKey'>,
 ): boolean {
   if (!isRecord(args)) return false;
   if (Object.prototype.hasOwnProperty.call(args, act.argKey)) return true;
