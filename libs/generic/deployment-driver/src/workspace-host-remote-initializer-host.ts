@@ -293,6 +293,14 @@ export interface ProductionWorkspaceHostOptions {
   readonly workspaceHome?: string;
   readonly workspaceUser?: string;
   readonly workspaceGroup?: string;
+  /**
+   * The THIRD identity (D-248) — the account the bundled agent CLIs execute as, and the owner of
+   * the delivered agent credential home. Deliberately NOT `workspaceUser`: that account is the
+   * customer's SSH login on a BYOC host, and D-043 forbids it reading the runtime at all.
+   */
+  readonly agentHome?: string;
+  readonly agentUser?: string;
+  readonly agentGroup?: string;
   readonly agentProbePath?: string;
 }
 
@@ -628,6 +636,9 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
   private readonly workspaceHome: string;
   private readonly workspaceUser: string;
   private readonly workspaceGroup: string;
+  private readonly agentHome: string;
+  private readonly agentUser: string;
+  private readonly agentGroup: string;
   private readonly agentProbePath: string;
 
   constructor(options: ProductionWorkspaceHostOptions = {}) {
@@ -651,6 +662,28 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
       options.workspaceGroup ?? this.workspaceUser,
       "workspaceGroup",
     );
+    this.agentUser = requireWorkspaceAccount(
+      options.agentUser ?? DEFAULT_WORKSPACE_HOST_AGENT_USER,
+      "agentUser",
+    );
+    this.agentGroup = requireWorkspaceAccount(
+      options.agentGroup ?? this.agentUser,
+      "agentGroup",
+    );
+    this.agentHome = requireExplicitWorkspaceHostHome(
+      options.agentHome ?? `/home/${this.agentUser}`,
+    );
+    // Refuse the collapse rather than silently accept it. A caller that passes the SSH account
+    // here has recreated the exact shape D-248 removed — agent credentials in the customer's own
+    // home, and a runtime the customer's login must read — and every downstream check would
+    // still pass, because each one is individually satisfiable by that shape.
+    if (this.agentUser === this.workspaceUser) {
+      throw new WorkspaceHostOperationError(
+        "agentUser",
+        1,
+        "agentUser must differ from workspaceUser: the agent identity exists so the SSH login is not the account that reads the runtime (D-043, D-248)",
+      );
+    }
     this.agentProbePath =
       options.agentProbePath ?? WORKSPACE_HOST_DEFAULT_AGENT_PROBE_PATH;
     if (
@@ -861,13 +894,19 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
     return await probeWorkspaceHostAgents({
       runner: this.agentProbeRunner,
       now: this.now,
+      // The AGENT identity, not the SSH login (D-248). This line is the one that decides which
+      // account has to be able to read `$RUNTIME_ROOT`: whoever the probes run as is the account
+      // the bootstrap must grant runtime read to, and D-043 rules that it cannot be the workspace
+      // user. HOME travels with it — the delivered Claude/Codex material lives under the agent's
+      // 0700 home, so a probe with the SSH user's HOME would look for credentials that are not
+      // there and fail identically to a genuine credential fault.
       env: {
-        HOME: this.workspaceHome,
-        USER: this.workspaceUser,
-        LOGNAME: this.workspaceUser,
+        HOME: this.agentHome,
+        USER: this.agentUser,
+        LOGNAME: this.agentUser,
         PATH: this.agentProbePath,
       },
-      runAsUser: this.workspaceUser,
+      runAsUser: this.agentUser,
     });
   }
 
@@ -1159,9 +1198,9 @@ export function createProductionWorkspaceHostCredentialMaterializers(
     new WorkspaceHostAgentHomeConsumer({
       filesystem: system,
       materialRoot,
-      workspaceHome: WORKSPACE_HOST_DEFAULT_WORKSPACE_HOME,
-      workspaceUser: DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
-      workspaceGroup: DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+      agentHome: WORKSPACE_HOST_DEFAULT_AGENT_HOME,
+      agentUser: DEFAULT_WORKSPACE_HOST_AGENT_USER,
+      agentGroup: DEFAULT_WORKSPACE_HOST_AGENT_USER,
     });
   // Enumerated explicitly rather than mapped over WORKSPACE_HOST_CREDENTIAL_FAMILIES: adding a
   // family should be a decision that lands here deliberately, not one that silently acquires a
@@ -1222,15 +1261,21 @@ export function createProductionWorkspaceHostRemoteInitializerDeps(
     options.workspaceUser ?? DEFAULT_WORKSPACE_HOST_WORKSPACE_USER;
   const workspaceGroup = options.workspaceGroup ?? workspaceUser;
   const workspaceHome = options.workspaceHome ?? `/home/${workspaceUser}`;
+  const agentUser = options.agentUser ?? DEFAULT_WORKSPACE_HOST_AGENT_USER;
+  const agentGroup = options.agentGroup ?? agentUser;
+  const agentHome = options.agentHome ?? `/home/${agentUser}`;
   const gitCredentialBindings =
     options.gitCredentialBindings ??
     new WorkspaceHostGitCredentialBindingRegistry(system, materialRoot);
+  // The delivered Claude/Codex/OMP material lands in the AGENT identity's 0700 home, not the SSH
+  // login's. This wiring is the whole of the credential half of D-248: everything downstream
+  // (ownership, the probe's HOME, what the customer can read over SSH) follows from these three.
   const agentHomeConsumer = new WorkspaceHostAgentHomeConsumer({
     filesystem: system,
     materialRoot,
-    workspaceHome,
-    workspaceUser,
-    workspaceGroup,
+    agentHome,
+    agentUser,
+    agentGroup,
   });
   return {
     host: new ProductionWorkspaceHostRemoteInitializerHost({
@@ -1240,6 +1285,9 @@ export function createProductionWorkspaceHostRemoteInitializerDeps(
       workspaceHome,
       workspaceUser,
       workspaceGroup,
+      agentHome,
+      agentUser,
+      agentGroup,
       gitCredentialBindings,
     }),
     credentials: new WorkspaceHostCredentialResolver(
