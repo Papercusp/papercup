@@ -1503,3 +1503,59 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
     }, 30_000);
   });
 });
+
+// EI-22091522428797790. WI-2140796 gave `dev:restart` a declaration/refusal/force contract for a
+// deliberate seed-cut quiesce; this watchdog was the third named party and did not honour it.
+describe('seed-cut quiesce awareness', () => {
+  let seedCutQuiesce: (
+    readFile?: (p: string, enc: string) => string,
+    env?: Record<string, string | undefined>,
+  ) => string | null;
+  let markerBasename: string;
+
+  beforeAll(async () => {
+    const mod = await import('../bghost-watchdog.mjs');
+    seedCutQuiesce = (mod as { seedCutQuiesce: typeof seedCutQuiesce }).seedCutQuiesce;
+    markerBasename = (mod as { QUIESCE_MARKER_BASENAME: string }).QUIESCE_MARKER_BASENAME;
+  });
+
+  const missing = () => {
+    throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+  };
+
+  it('reports no quiesce when the marker is absent — the normal state', () => {
+    expect(seedCutQuiesce(missing, { XDG_RUNTIME_DIR: '/run/user/1000' })).toBeNull();
+  });
+
+  it('reports the declared reason when a cut has written the marker', () => {
+    const reason = seedCutQuiesce(() => 'pid=123 reason=p101-seed-cut since=2026-09-03T18:00:00Z', {
+      XDG_RUNTIME_DIR: '/run/user/1000',
+    });
+    expect(reason).toContain('p101-seed-cut');
+  });
+
+  it('fails soft toward STAYING ALIVE: an unreadable marker never invents a quiesce', () => {
+    // The opposite direction would let a filesystem fault silently disable freeze recovery, which is
+    // strictly worse than the window this guard closes.
+    expect(
+      seedCutQuiesce(() => {
+        throw new Error('EACCES');
+      }, { XDG_RUNTIME_DIR: '/run/user/1000' }),
+    ).toBeNull();
+  });
+
+  it('pins the marker name against the TypeScript guard so the two copies cannot drift apart', async () => {
+    // This script is plain node (no TS loader), so the basename is necessarily duplicated rather
+    // than imported. That duplication is only safe while something fails when one side moves.
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, resolve } = await import('node:path');
+    const guard = resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      '../../../../packages/operator-core/lib/agent-tools/dev/bg-host-quiesce-guard.ts',
+    );
+    const guardSrc = readFileSync(guard, 'utf8');
+    expect(markerBasename).toBe('papercusp-seed-cut.quiesce'); // control: the pin is reading a real value
+    expect(guardSrc).toContain(markerBasename);
+  });
+});

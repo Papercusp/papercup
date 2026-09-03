@@ -581,6 +581,29 @@ export function procTreeCpuTicks(rootPid, deps = {}) {
 }
 
 /** The unit's MainPID, or null if systemd cannot tell us (never active, read fault, or 0). */
+/** The basename of the marker `cut-seed-quiesced.sh` writes at `$XDG_RUNTIME_DIR/`. MIRRORED from
+ *  `packages/operator-core/lib/agent-tools/dev/bg-host-quiesce-guard.ts` — this script is plain
+ *  node (no TS loader), so the string cannot be imported from the guard. The two are pinned
+ *  together by `bghost-watchdog-quiesce-contract.test.ts`, which fails if either side changes it
+ *  alone; do not edit one without the other. */
+export const QUIESCE_MARKER_BASENAME = 'papercusp-seed-cut.quiesce';
+
+/** A DELIBERATE quiesce declared by a seed cut, or null when none is declared (EI-22091522428797790).
+ *  Returns a short reason string for the log. Fail-soft in the direction that keeps the watchdog
+ *  ALIVE: an absent marker is the normal state and an unreadable one is indistinguishable from it,
+ *  so both mean "no quiesce" — this must never invent a reason to stop guarding the ticker. */
+export function seedCutQuiesce(readFile = readFileSync, env = process.env) {
+  const runtimeDir = env.XDG_RUNTIME_DIR || (typeof process.getuid === 'function' ? `/run/user/${process.getuid()}` : '');
+  if (!runtimeDir) return null;
+  try {
+    const raw = String(readFile(join(runtimeDir, QUIESCE_MARKER_BASENAME), 'utf8')).trim();
+    if (!raw) return 'marker present, empty';
+    return raw.replace(/\s+/g, ' ').slice(0, 200);
+  } catch {
+    return null;
+  }
+}
+
 async function unitMainPid() {
   const r = await sh('systemctl', ['--user', 'show', UNIT, '-p', 'MainPID', '--value']);
   if (r.err) return null;
