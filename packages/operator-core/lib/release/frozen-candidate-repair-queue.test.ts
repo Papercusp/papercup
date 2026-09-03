@@ -1378,7 +1378,7 @@ describe('WI-212675 — a no-op fixer at a never-verified converged head means "
 
   it('legacy queue with NO rounds: a moved head errs toward one verification, the candidate never does', () => {
     const { convergenceRounds: _rounds, ...legacy } = convergedAwaitingFixer();
-    expect(legacy.convergenceRounds).toBeUndefined();
+    expect(Object.hasOwn(legacy, 'convergenceRounds')).toBe(false);
     expect(frozenRepairHeadAwaitsVerification(legacy)).toBe(true);
     expect(frozenRepairHeadAwaitsVerification({ ...legacy, repairHead: C })).toBe(false);
   });

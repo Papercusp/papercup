@@ -876,10 +876,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     deps.finalizeFrozenRepairWorktree = async () => null;
     deps.stagingContainsFrozenRepair = async () => true;
     deps.prepareFrozenRepairWorktree = async () => {};
-    let dispatches = 0;
     deps.dispatchFrozenRepairFixer = async () => {
-      dispatches += 1;
-      return { spawnId: "should-not-launch", runId: "should-not-run" };
+      calls.push("dispatch");
+      return { spawnId: "post-verification-fixer", runId: "post-verification-run" };
     };
 
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
@@ -894,15 +893,18 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(
       logs.some((l) => l.startsWith("FROZEN_REPAIR_CONVERGED_HEAD_READY_TO_VERIFY")),
     ).toBe(true);
-    // The suite ran at the converged head in the same tick; no replacement fixer was launched
-    // ahead of it.
+    // The suite ran at the converged head in the same tick, and any replacement fixer was
+    // launched only AFTER that verification went red — never ahead of it (the pre-fix
+    // behaviour was dispatch-with-no-suite).
     expect(calls).toContain("runGreen");
     expect(calls).toContain(`setup:${converged.slice(0, 7)}`);
-    expect(dispatches).toBe(0);
+    const dispatchAt = calls.indexOf("dispatch");
+    expect(dispatchAt === -1 || dispatchAt > calls.indexOf("runGreen")).toBe(true);
     expect(result.candidate).toBe(converged);
     // The red at the converged head appended its round, so the NEXT no-op fixer at this head
     // takes the dead path (see the control below) rather than re-entering the suite.
     expect(queue?.convergenceRounds?.map((r) => r.head)).toEqual([frozen, converged]);
+    expect(queue?.repairHead).toBe(converged);
   });
 
   it("WI-212675 CONTROL: a dead fixer that changed nothing at a head ALREADY verified red stays on the dead path and re-dispatches", async () => {
