@@ -171,19 +171,34 @@ export interface GateCandidateFailures {
    * every awaiting-fixer hold tick — see `./release/repair-tick-legs-snapshot.ts`). This
    * is a DIFFERENT, ALREADY-persisted measurement from `postSuiteMeasured` above: where
    * that field only ever says whether SOMETHING non-test was measured, this names WHICH
-   * legs and whether each passed. `null` when no such measurement exists yet for this
-   * repair queue (a fresh queue with no hold tick yet, or no repair queue open at all).
+   * legs and whether each passed.
+   *
+   * NEVER `null` (D-003 §2 of main-green-status-visible-2026-09-03: code plus null FIELDS,
+   * never a bare null subtree). When no repair-tick measurement exists yet for this repair
+   * queue (a fresh queue with no hold tick yet, no repair queue open at all, or the
+   * snapshot cleared by a real verdict) `head`/`atMs`/`current` are null, `all`/`failing`
+   * are empty, `reading` says NOT MEASURED — and `perLeg` still lists every leg the cycle
+   * admitted, from the queue's own lifecycle, so a queue-admitted FAILING leg is outstanding
+   * even though nothing measured it this tick (not looking is not a pass, D-005 §4).
+   *
+   * Why the shape is load-bearing: `nonTestLegs.perLeg` and `nonTestLegs.outstanding` are
+   * DECLARED evidence paths of the `gate.greenCheckpoint.candidateFailures` cell
+   * (cell-registrations.ts). While this subtree was `null` those paths vanished from the
+   * live payload and `assessmentFrom` downgraded the whole cell to `unavailable` — the
+   * silent all-clear the plan forbids, and exactly what the independent grader measured
+   * (card EI-22270968007901491, criterion C2: cell-assessment-reality 222/223).
    */
   nonTestLegs: {
     /**
      * Is this measurement for the LIVE repairHead, or an earlier one the queue has
      * since moved past? `null` when currency could not be judged (no live repairHead
-     * to compare against) — see `repairTickLegsCurrent`.
+     * to compare against, or no measurement at all) — see `repairTickLegsCurrent`.
      */
     current: boolean | null;
-    /** The (short) repairHead this measurement was actually taken at. */
-    head: string;
-    atMs: number;
+    /** The (short) repairHead this measurement was actually taken at; null when unmeasured. */
+    head: string | null;
+    /** When the measurement was taken; null when unmeasured. */
+    atMs: number | null;
     /** Every measured leg, pass and fail alike. Bounded to 32 by the writer. */
     all: RepairTickLegSnapshot[];
     /** The subset that did not pass. */
@@ -229,7 +244,7 @@ export interface GateCandidateFailures {
     outstanding: readonly string[];
     /** The leg shrink reading for this cycle. Carries its own scope sentence (D-004). */
     shrink: RepairLegShrinkSummary;
-  } | null;
+  };
   /** The scope sentence. Rendered, not derived by the reader. */
   scope: string;
   /** Set when the answer could not be computed; the other fields are then not evidence. */
@@ -315,8 +330,10 @@ function unavailable(
   // WI-2143253: the leg measurement is independent of the test-files query this
   // function fails without — a caller who has it should not lose it just because
   // `test_runs` was unreadable, or there was no frozen candidate to judge test files
-  // against. `null` (the default) preserves the pre-existing "nothing to show" shape.
-  nonTestLegs: GateCandidateFailures['nonTestLegs'] = null,
+  // against. Both are REQUIRED: there is no "nothing to show" default any more, because
+  // a null subtree is what made the cell's declared evidence paths vanish (C2).
+  nonTestLegs: GateCandidateFailures['nonTestLegs'],
+  nonTestLegsMeasured: GateCandidateFailures['nonTestLegsMeasured'],
 ): GateCandidateFailures {
   return {
     candidateSha,
@@ -332,7 +349,7 @@ function unavailable(
     stillBrokenCount: 0,
     stillBrokenNeedsRunCount: 0,
     changedBetweenRefs: null,
-    nonTestLegsMeasured: nonTestLegs ? 'measured' : 'not-recorded',
+    nonTestLegsMeasured,
     nonTestLegs,
     scope: SCOPE_SENTENCE,
     unavailable: reason,
@@ -342,17 +359,52 @@ function unavailable(
 }
 
 /**
+ * The `nonTestLegs` shape when NO repair-tick measurement exists (C2 of
+ * EI-22270968007901491). Not a bare null: the per-leg list is still built from the queue's
+ * own lifecycle so a queue-admitted failing leg stays outstanding, and `reading` states the
+ * absence in words. Exported so fixtures model the production default instead of a `null`
+ * the type no longer admits.
+ */
+export function unmeasuredNonTestLegs(
+  queueLegs?: readonly FrozenRepairLegState[] | null,
+): GateCandidateFailures['nonTestLegs'] {
+  const perLeg = buildPerLeg(null, queueLegs);
+  const outstanding = outstandingLegIds(perLeg, null);
+  const admitted = perLeg.length;
+  const reading =
+    admitted === 0
+      ? 'NOT MEASURED — no repair-tick leg snapshot exists for this queue (no hold tick has run yet, no repair queue is open, or a real verdict cleared it), and the cycle has admitted no leg. This is not "no legs failing".'
+      : `NOT MEASURED — no repair-tick leg snapshot exists for this queue; the ${admitted} leg(s) listed come from the cycle's own lifecycle alone` +
+        (outstanding.length > 0
+          ? `, and ${outstanding.length} of them (${outstanding.join(', ')}) are still FAILING there. Not measuring a leg is not a pass.`
+          : '. Not measuring a leg is not a pass.');
+  return {
+    current: null,
+    head: null,
+    atMs: null,
+    all: [],
+    failing: [],
+    reading,
+    perLeg,
+    outstanding,
+    shrink: summarizeRepairLegs(queueLegs ?? undefined),
+  };
+}
+
+/**
  * WI-2143253: turn a raw `StoredRepairTickLegs` (already parsed by the caller — this
  * module does no I/O of its own for it) into the rendered `nonTestLegs` shape, hedged
- * by currency against the live repairHead. Pure; returns `null` only when the caller
- * had no measurement to give.
+ * by currency against the live repairHead. Pure; NEVER null — when the caller had no
+ * measurement to give it returns {@link unmeasuredNonTestLegs}, so the cell's declared
+ * evidence paths (`nonTestLegs.perLeg` / `.outstanding`) always arrive and the
+ * measured-ness flag beside them (`nonTestLegsMeasured`) is what says they are unmeasured.
  */
 function buildNonTestLegs(
   snap: StoredRepairTickLegs | null | undefined,
   repairHeadSha: string | null,
   queueLegs?: readonly FrozenRepairLegState[] | null,
 ): GateCandidateFailures['nonTestLegs'] {
-  if (!snap) return null;
+  if (!snap) return unmeasuredNonTestLegs(queueLegs);
   const current = repairTickLegsCurrent(snap, repairHeadSha);
   const failing = snap.legs.filter((l) => l.status !== 'pass');
   const reading =
@@ -407,10 +459,12 @@ export function outstandingLegIds(
  * "it is not on the list" — the same false absence D-005 rule 4 exists to stop.
  */
 function buildPerLeg(
-  snap: StoredRepairTickLegs,
+  snap: StoredRepairTickLegs | null,
   queueLegs?: readonly FrozenRepairLegState[] | null,
-): NonNullable<GateCandidateFailures['nonTestLegs']>['perLeg'] {
-  const measured = new Map(snap.legs.map((leg) => [leg.id, leg.status]));
+): GateCandidateFailures['nonTestLegs']['perLeg'] {
+  // No snapshot ⇒ nothing was measured this tick: every row is `not-measured`, and only
+  // the cycle's lifecycle speaks (a `failing` leg stays outstanding — D-005 rule 4).
+  const measured = new Map((snap?.legs ?? []).map((leg) => [leg.id, leg.status]));
   const lifecycles = new Map((queueLegs ?? []).map((leg) => [leg.id, leg]));
   const ids = [...new Set([...measured.keys(), ...lifecycles.keys()])].sort();
   return ids.map((id) => {
@@ -640,6 +694,12 @@ export async function readGateCandidateFailures(
   const repairHeadSha = opts.repairHeadSha?.trim() || null;
   // WI-2143253: pure and cheap — compute once, thread through every return path
   // (including the unavailable ones below) rather than only the success path.
+  // P-012 / C2: measured-ness is derived from whether a SNAPSHOT exists, never from the
+  // truthiness of `nonTestLegs` — that object is always present now, so its truthiness
+  // would read every unmeasured queue as 'measured'.
+  const nonTestLegsMeasured: GateCandidateFailures['nonTestLegsMeasured'] = opts.repairTickLegs
+    ? 'measured'
+    : 'not-recorded';
   const nonTestLegs = buildNonTestLegs(opts.repairTickLegs, repairHeadSha, opts.queueLegs);
   if (!candidateSha) {
     return unavailable(
@@ -648,6 +708,7 @@ export async function readGateCandidateFailures(
       repairHeadSha,
       'no-frozen-candidate',
       nonTestLegs,
+      nonTestLegsMeasured,
     );
   }
 
@@ -697,6 +758,7 @@ export async function readGateCandidateFailures(
       repairHeadSha,
       'unmeasured',
       nonTestLegs,
+      nonTestLegsMeasured,
     );
   }
 
@@ -768,7 +830,7 @@ export async function readGateCandidateFailures(
       moves.kind === 'unknown'
         ? null
         : { count: moves.kind === 'none' ? 0 : moves.paths.length, sample: moves.kind === 'none' ? [] : moves.paths.slice(0, 10) },
-    nonTestLegsMeasured: nonTestLegs ? 'measured' : 'not-recorded',
+    nonTestLegsMeasured,
     nonTestLegs,
     scope: SCOPE_SENTENCE,
     unavailable: null,
@@ -789,8 +851,8 @@ export async function readGateCandidateFailures(
       fileCount: files.length,
       stillBrokenCount,
       alreadyFixedCount,
-      outstandingLegs: nonTestLegs?.outstanding.length ?? 0,
-      fixedLegs: nonTestLegs ? nonTestLegs.perLeg.filter((l) => l.lifecycle === 'fixed' && !nonTestLegs.outstanding.includes(l.id)).length : 0,
+      outstandingLegs: nonTestLegs.outstanding.length,
+      fixedLegs: nonTestLegs.perLeg.filter((l) => l.lifecycle === 'fixed' && !nonTestLegs.outstanding.includes(l.id)).length,
     }),
   };
 }
