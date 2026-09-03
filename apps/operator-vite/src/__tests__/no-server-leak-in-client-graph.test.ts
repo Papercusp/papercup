@@ -38,7 +38,10 @@ import {
   statSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { aliasMatches, parseShimAliases } from "./browser-shims.test";
+// Helpers live in a plain module, never in a `.test.ts` — a test file imported by
+// another test file collects twice and can register 0 tests under a shared-fork
+// lane (gate red 761d0a85ac; guarded by no-test-file-imports.test.ts).
+import { aliasMatches, parseShimAliases } from "./browser-shim-aliases";
 
 const OPERATOR_VITE = resolve(__dirname, "../.."); // apps/operator-vite
 const REPO_ROOT = resolve(OPERATOR_VITE, "../..");
