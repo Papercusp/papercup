@@ -384,17 +384,20 @@ export default defineTool({
       did: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
-        .optional()
+        .nullish()
+        .transform((v) => v ?? undefined)
         .describe('What this wake accomplished (concrete progress).'),
       left: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
-        .optional()
+        .nullish()
+        .transform((v) => v ?? undefined)
         .describe('What remains, in order.'),
       insight: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
-        .optional()
+        .nullish()
+        .transform((v) => v ?? undefined)
         // observation-and-recall-surface-honesty-2026-08-16 P-001: this field is the
         // turn-end reflection path — checkpoint-harvest's boundInsight() takes its FIRST
         // LINE verbatim as the filed observation's title, which is the only thing
@@ -404,22 +407,26 @@ export default defineTool({
       next: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
-        .optional()
+        .nullish()
+        .transform((v) => v ?? undefined)
         .describe('The single concrete next action for the next wake.'),
       keyInsight: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
-        .optional()
+        .nullish()
+        .transform((v) => v ?? undefined)
         .describe('Compatibility alias for `insight`; explicit `insight` wins when both are supplied.'),
       nextAction: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
-        .optional()
+        .nullish()
+        .transform((v) => v ?? undefined)
         .describe('Compatibility alias for `next`; explicit `next` wins when both are supplied.'),
       goal: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
-        .optional()
+        .nullish()
+        .transform((v) => v ?? undefined)
         .describe(
           'Compatibility alias for `next`, for callers mirroring loop:arm { goal }. Explicit `next` wins when both are supplied.',
         ),
@@ -428,12 +435,21 @@ export default defineTool({
       // It is compatibility metadata only: loop scope remains keyed by the
       // authoritative ownerId + harness pair, so accepting it must not redirect
       // or otherwise alter the carry-note write.
+      //
+      // EI-21719647580242620: `.nullish()`, not `.optional()`, and the same applies to
+      // every optional carry-content field above. The whole point of these fields is to
+      // tolerate a payload SHARED with loop:arm — and an explicit `null` is exactly the
+      // shape a shared payload takes for a slot that has no value, so `.optional()`
+      // refused the case the field exists to serve. Nothing downstream needed changing:
+      // every consumer already coalesces (`args.x ?? …`, `args.workItem?.trim()`,
+      // `detectCarryNoteRescueSignals(string | null | undefined)`), so null and omitted
+      // were always the same value to the handler. Only the schema disagreed.
       workItem: z
         .string()
         .max(120)
-        .optional()
+        .nullish()
         .describe(
-          'Compatibility metadata for an associated work-item id; accepted but does not change loop scope (ownerId remains authoritative). Also the anchor `learned` writes from.',
+          'Compatibility metadata for an associated work-item id; accepted but does not change loop scope (ownerId remains authoritative). Also the anchor `learned` writes from. Explicit null is treated as omission.',
         ),
       /**
        * P-017 (effort-scoped-continuity-2026-09-02, D-003/D-007/D-009).
@@ -453,7 +469,7 @@ export default defineTool({
       learned: z
         .string()
         .max(4000)
-        .optional()
+        .nullish()
         .describe(
           'a durable lesson to post on the effort thread in this same call — the part of this private loop note ' +
             'a future agent needs. Requires `workItem` as the anchor; use learnedLevel to attach it at that ' +

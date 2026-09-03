@@ -570,6 +570,40 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(setLoopCarryNote).not.toHaveBeenCalled();
   });
 
+  it('EI-21719647580242620: an explicit null on an optional carry field is omission, not a refusal', async () => {
+    // These fields exist to tolerate a payload SHARED with loop:arm (see the workItem and
+    // goal describes), and `null` is exactly the shape a shared payload takes for a slot
+    // with no value — so `.optional()` refused the case the fields were added to serve.
+    expect(() =>
+      parse({
+        did: 'progress',
+        left: null,
+        insight: null,
+        next: null,
+        keyInsight: null,
+        nextAction: null,
+        goal: null,
+        workItem: null,
+        learned: null,
+      }),
+    ).not.toThrow();
+
+    // EQUIVALENCE, not mere acceptance: every consumer already coalesces (`args.x ?? …`,
+    // `args.workItem?.trim()`), so an explicit null must render the SAME note as omitting
+    // the key. Asserting only that it parses would not catch a null that reached the
+    // renderer as the literal string "null" or cleared a field it should have left alone.
+    await call({ did: 'same', left: null, insight: null, next: null, workItem: null });
+    const renderedWithNulls = setLoopCarryNote.mock.calls[0]?.[1];
+    setLoopCarryNote.mockClear();
+    await call({ did: 'same' });
+    expect(renderedWithNulls).toBe(setLoopCarryNote.mock.calls[0]?.[1]);
+
+    // CONTROL: the fields OUTSIDE this class must still refuse null. Without this the
+    // assertions above would pass just as well against a schema that stopped validating.
+    expect(() => parse({ did: 'progress', learnedLevel: null })).toThrow();
+    expect(() => parse({ did: 'progress', walls: null })).toThrow();
+  });
+
   it('accepts a current read-only executable probe and refuses schema drift before the store runs', () => {
     const probe = {
       kind: 'tool' as const,
