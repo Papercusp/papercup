@@ -285,7 +285,7 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
         detail: `state is ${row.state} — reapTerminalResidue only supports a confined (cgroup) scope; this row is unconfined, so its pid cannot be safely re-verified`,
       };
     }
-    if (countScopeProcesses(row, d) === 0) {
+    if ((await countScopeProcesses(row, d)) === 0) {
       return {
         ok: false,
         taskId,
@@ -325,7 +325,7 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
     let escalated = false;
     if (opts.escalateAfterMs && opts.escalateAfterMs > 0) {
       await d.sleep(opts.escalateAfterMs);
-      if (countScopeProcesses(row, d) > 0) {
+      if ((await countScopeProcesses(row, d)) > 0) {
         escalated = true;
         notifyTaskKillRequested(taskId, 'SIGKILL');
         await systemctl(['kill', '--signal=SIGKILL', row.scopeUnit], d);
@@ -528,8 +528,47 @@ function countCgroupProcesses(cgroupPath: string | null, d: ReturnType<typeof de
   return collectCgroupPids(cgroupPath, d).size;
 }
 
-function countScopeProcesses(row: TaskRow, d: ReturnType<typeof deps>): number {
-  return countCgroupProcesses(row.cgroupPath ?? null, d);
+/**
+ * The cgroup to VERIFY a task's scope against — never the stored path on trust.
+ *
+ * 🚨 EI-22074929140199832. `task_ledger.cgroup_path` is written at enrolment and is
+ * frequently NOT this task's scope: measured 2026-09-03, 522 of 726 confined rows
+ * started in 24h stored a path that does not end in their own `scope_unit`, and a
+ * `capability:bash` background task stored the OPERATOR'S OWN cgroup
+ * (`/user.slice/…/app.slice/papercusp-dev-api.service`). Walking that answers a
+ * question about the operator, not about the payload — and it is permanently
+ * non-empty, so the scope can never be observed empty.
+ *
+ * Every consequence points the same way, toward a false SURVIVOR:
+ *  - the escalation probe always sees >0, so a kill SIGKILLs after a SIGTERM that
+ *    already worked;
+ *  - the reply reports a fabricated survivor count with a residue breakdown of the
+ *    operator's own processes (measured: a 3-process scope, fully dead, its unit
+ *    `inactive/dead`, reported as "15 process(es) remained … 13 sleeping, 2 running");
+ *  - the un-escalated branch returns `ok:false, error:'incomplete'` — a false FAILURE
+ *    on a complete kill, telling the caller to retry;
+ *  - `reapTerminalResidue` sees phantom residue in an empty scope.
+ * That is how this item was filed: its author read a phantom count as survivors and
+ * built a process-escape theory on it.
+ *
+ * So resolve the scope the way the scopeUnit-mode path already does — ask systemd,
+ * and require `isManagedScopeCgroupPath` — and accept the stored path ONLY when it
+ * validates against this row's own unit. `null` means "no cgroup to walk", which is
+ * the honest reading of a collected transient scope: no cgroup, no processes.
+ */
+async function resolveRowScopeCgroup(
+  row: TaskRow,
+  d: ReturnType<typeof deps>,
+): Promise<string | null> {
+  const stored = row.cgroupPath ?? null;
+  if (!row.scopeUnit) return stored;
+  if (stored && isManagedScopeCgroupPath(stored, row.scopeUnit)) return stored;
+  const resolved = await scopeCgroupPath(row.scopeUnit, d);
+  return resolved.ok ? resolved.cgroupPath : null;
+}
+
+async function countScopeProcesses(row: TaskRow, d: ReturnType<typeof deps>): Promise<number> {
+  return countCgroupProcesses(await resolveRowScopeCgroup(row, d), d);
 }
 
 /** Human label for a `/proc/<pid>/stat` state letter (`man proc`, `/proc/pid/stat`).
@@ -627,7 +666,8 @@ async function waitForScopeEmpty(
   row: TaskRow,
   d: ReturnType<typeof deps>,
 ): Promise<{ empty: boolean; survivors: number; residue?: ResidueBreakdown }> {
-  return waitForCgroupEmpty(row.cgroupPath ?? '', d);
+  // Scope-validated, not the stored path — see `resolveRowScopeCgroup`.
+  return waitForCgroupEmpty((await resolveRowScopeCgroup(row, d)) ?? '', d);
 }
 
 /**
