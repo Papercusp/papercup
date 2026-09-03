@@ -535,3 +535,129 @@ describe('readGateCandidateFailures', () => {
     });
   });
 });
+
+describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', () => {
+  const legsSnap = {
+    head: REPAIR_HEAD.slice(0, 12),
+    atMs: 1_800_000_000_000,
+    ok: false,
+    failingSignatures: ['lint:design-primitives'],
+    legs: [
+      { id: 'lint:design-primitives', status: 'fail' as const, durationMs: 120 },
+      { id: 'lint:tsc', status: 'pass' as const, durationMs: 90 },
+    ],
+  };
+
+  /** A cycle that still has `lint:plane-ratchet` failing — which THIS tick did not measure. */
+  const queueLegs = [
+    {
+      id: 'lint:plane-ratchet',
+      state: 'failing' as const,
+      admittedRound: 1,
+      admittedHead: REPAIR_HEAD.slice(0, 12),
+      admittedAtMs: 1_799_999_000_000,
+      lastMeasuredHead: REPAIR_HEAD.slice(0, 12),
+      lastMeasuredAtMs: 1_799_999_000_000,
+      lastMeasuredRound: 1,
+      failingRounds: 1,
+    },
+    {
+      id: 'lint:design-primitives',
+      state: 'failing' as const,
+      admittedRound: 1,
+      admittedHead: REPAIR_HEAD.slice(0, 12),
+      admittedAtMs: 1_799_999_000_000,
+      lastMeasuredHead: REPAIR_HEAD.slice(0, 12),
+      lastMeasuredAtMs: 1_800_000_000_000,
+      lastMeasuredRound: 1,
+      failingRounds: 1,
+    },
+  ];
+
+  async function read(opts: { queueLegs?: typeof queueLegs } = {}) {
+    return readGateCandidateFailures({
+      candidateSha: CANDIDATE,
+      repairHeadSha: REPAIR_HEAD,
+      root: '/repo',
+      sql: fakeSql({ filesJudged: 223, failing: [] }),
+      git: fakeGit({}),
+      repairTickLegs: legsSnap,
+      ...(opts.queueLegs ? { queueLegs: opts.queueLegs } : {}),
+    });
+  }
+
+  it('CALIBRATION: a leg measurement makes the answer "measured" and names the failing leg', async () => {
+    const res = await read();
+    expect(res.nonTestLegsMeasured).toBe('measured');
+    expect(res.nonTestLegs?.failing.map((l) => l.id)).toEqual(['lint:design-primitives']);
+  });
+
+  it('LOAD-BEARING: no leg measurement reads as NOT-RECORDED, never as "no legs failing"', async () => {
+    const res = await readGateCandidateFailures({
+      candidateSha: CANDIDATE,
+      repairHeadSha: REPAIR_HEAD,
+      root: '/repo',
+      sql: fakeSql({ filesJudged: 223, failing: [] }),
+      git: fakeGit({}),
+    });
+    // The old `postSuiteMeasured: null` was indistinguishable from "measured, came back
+    // empty" — and it resolved null forever, because no caller ever supplied it.
+    expect(res.nonTestLegsMeasured).toBe('not-recorded');
+    expect(res.nonTestLegs).toBeNull();
+    // ...and the scope sentence must still refuse the green reading.
+    expect(res.scope).toMatch(/BY NAME/);
+  });
+
+  it('LOAD-BEARING: a leg the tick did NOT measure is still NAMED, not dropped', async () => {
+    // The union is the whole point. Intersecting would silently drop lint:plane-ratchet
+    // because this tick did not run it — rendering "we did not look" as "not on the list".
+    const res = await read({ queueLegs });
+    const ids = res.nonTestLegs!.perLeg.map((l) => l.id);
+    expect(ids).toContain('lint:plane-ratchet');
+    const ratchet = res.nonTestLegs!.perLeg.find((l) => l.id === 'lint:plane-ratchet')!;
+    expect(ratchet.measuredNow).toBe('not-measured');
+    expect(ratchet.lifecycle).toBe('failing');
+    expect(ratchet.reading).toMatch(/not a pass/i);
+
+    // The control: an intersection-shaped answer loses it entirely.
+    const intersected = legsSnap.legs.filter((l) => queueLegs.some((q) => q.id === l.id)).map((l) => l.id);
+    expect(intersected).not.toContain('lint:plane-ratchet');
+  });
+
+  it('LOAD-BEARING: "did its fix land" is answered with a HEAD, never a bare boolean', async () => {
+    const fixed = [
+      {
+        ...queueLegs[0]!,
+        id: 'lint:tsc',
+        state: 'fixed' as const,
+        resolvedHead: REPAIR_HEAD.slice(0, 12),
+        resolvedAtMs: 1_800_000_000_000,
+      },
+    ];
+    const res = await read({ queueLegs: fixed });
+    const tsc = res.nonTestLegs!.perLeg.find((l) => l.id === 'lint:tsc')!;
+    expect(tsc.lifecycle).toBe('fixed');
+    // A bare `true` invites "the fix is in the CURRENT head". The sha is the claim.
+    expect(tsc.fixedAtHead).toBe(REPAIR_HEAD.slice(0, 12));
+    expect(tsc.reading).toMatch(/Do NOT go fix it/);
+  });
+
+  it('a leg measured but never admitted reads as never-admitted, not as repair work', async () => {
+    const res = await read();
+    const tsc = res.nonTestLegs!.perLeg.find((l) => l.id === 'lint:tsc')!;
+    expect(tsc.lifecycle).toBe('never-admitted');
+    expect(tsc.admittedRound).toBeNull();
+    expect(tsc.fixedAtHead).toBeNull();
+  });
+
+  it('the leg shrink reading carries its own scope, so it is never differenced against file counts', async () => {
+    const res = await read({ queueLegs });
+    expect(res.nonTestLegs!.shrink.measured).toBe(true);
+    expect(res.nonTestLegs!.shrink.failingLegIds).toEqual(['lint:design-primitives', 'lint:plane-ratchet']);
+    expect(res.nonTestLegs!.shrink.scope).toMatch(/do not subtract them/i);
+    // Unmeasured legs: null shrink, never a reassuring zero.
+    const noLifecycle = await read();
+    expect(noLifecycle.nonTestLegs!.shrink.measured).toBe(false);
+    expect(noLifecycle.nonTestLegs!.shrink.shrinkTotal).toBeNull();
+  });
+});
