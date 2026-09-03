@@ -839,6 +839,35 @@ describe("OMP ox-alpha Responses compatibility guard (EI-21439300345381616)", ()
   });
 });
 
+describe("Codex retired-model deny wiring (WI-2140343 — the Spark fall-through)", () => {
+  const launcherSource = () =>
+    readFileSync(join(__dirname, "..", "scripts", "psu-launcher.mjs"), "utf8");
+
+  it("hands the real deny list to the resume model picker", () => {
+    const body = launcherSource().slice(
+      launcherSource().indexOf("async function chooseResumeTarget("),
+    );
+    // The picker is the boundary where a RETIRED id becomes typeable again.
+    // codexModelRows filters `deniedIds` but DEFAULTS IT TO [] — so the filter
+    // only exists if this call site actually passes the policy list. Dropping
+    // this one line put gpt-5.3-codex-spark back on the menu with the whole
+    // suite still green.
+    expect(body).toContain("codexDeniedIds: CODEX_DENIED_MODEL_IDS");
+  });
+
+  it("takes that list from the policy module, not a local literal that can drift", () => {
+    expect(launcherSource()).toMatch(
+      /import\s*\{[^}]*CODEX_DENIED_MODEL_IDS[^}]*\}\s*from\s*["'][^"']*model-context-budget\.mjs["']/,
+    );
+  });
+
+  it("builds the codex model menu in exactly ONE place, so no second picker is unguarded", () => {
+    // A guarded call site proves nothing if a later fresh-launch picker builds
+    // its own rows without the deny list. Pin the count instead of the line.
+    expect(launcherSource().match(/buildResumeModelRows\(\{/g) ?? []).toHaveLength(1);
+  });
+});
+
 describe("scriptedOmpSetupEnv (headless OMP kickoff reaches the composer)", () => {
   it("skips first-run setup for scripted OMP sessions", () => {
     expect(
