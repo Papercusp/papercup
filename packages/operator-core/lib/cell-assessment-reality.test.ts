@@ -575,6 +575,29 @@ const CONTROLS: Record<string, readonly Control[]> = {
       label: 'unmeasured checkpointRunInFlight is unknown, not a measured no-active-run',
       expect: assessGateCandidate({ judgingSha: null, verdictUnknownLegs: [] }),
     },
+    // main-green-status-visible-2026-09-03 P-011 follow-up (grader card EI-22277841040474660
+    // C5): between runs a FROZEN repair queue is the authoritative judged sha, so the
+    // per-path containment verdict gets its own two codes instead of 'no-active-run'.
+    {
+      label: 'frozen repair queue between runs, candidate contains this path',
+      expect: assessGateCandidate({
+        judgingSha: 'abc',
+        judgingShaSource: 'repair-queue',
+        judgingContainsPath: true,
+        verdictUnknownLegs: [],
+        checkpointRunInFlight: { active: false },
+      }),
+    },
+    {
+      label: 'frozen repair queue between runs, candidate does NOT contain this path',
+      expect: assessGateCandidate({
+        judgingSha: 'abc',
+        judgingShaSource: 'repair-queue',
+        judgingContainsPath: false,
+        verdictUnknownLegs: [],
+        checkpointRunInFlight: { active: false },
+      }),
+    },
   ],
   'gate.greenCheckpoint.candidateFailures': [
     { label: 'no frozen candidate', expect: 'no-frozen-candidate' },
@@ -954,6 +977,9 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     null,
     // EI-21862849770458561: the unmeasured-checkpointRunInFlight control appended above.
     null,
+    // P-011 follow-up: the two frozen-repair-queue controls appended above.
+    'frozen-candidate-contains-path',
+    'frozen-candidate-without-path',
   ],
   // Index-aligned to the CONTROLS rows above. `readGateCandidateFailures` computes its
   // assessment inline (it is one branch of an async, git+PG-reading resolver rather than a
