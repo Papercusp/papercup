@@ -59,6 +59,31 @@
 
 import { reassembleSql } from './sql-prepare-validation';
 
+/** One call this mock received, as the validator needs to see it. */
+export interface CapturedQuery {
+  /**
+   * The call reassembled into `$1..$n` parameterised SQL. Where an
+   * interpolation was a FRAGMENT rather than a scalar bind, the placeholder is
+   * a visible marker instead — see {@link CapturedQuery.composed}.
+   */
+  readonly sql: string;
+  /**
+   * At least one interpolation was an `sql` fragment, so {@link
+   * CapturedQuery.sql} is NOT the statement production would issue: the
+   * fragment's own SQL text is missing from it.
+   *
+   * This flag is why the validator can refuse to judge the statement. Before it
+   * existed, a composed query reassembled to something like `... NOT IN $3 ...`,
+   * which looked like an ordinary parameterised query, so it was PREPAREd, so
+   * Postgres raised 42P18, so it was classified `untypeable` — a tolerated
+   * non-finding. The guard reported green over SQL it had never parsed
+   * (EI-22238479367433132).
+   */
+  readonly composed: boolean;
+  /** How many of this call's interpolations were fragments. 0 ⇒ not composed. */
+  readonly fragmentArgs: number;
+}
+
 export interface SqlMockBranch {
   /** Short human label — surfaces in both failure modes' error messages. */
   label: string;
@@ -96,8 +121,24 @@ export interface BranchedSqlMock {
    * `validateManyByPrepare` from `./sql-prepare-validation` to have Postgres
    * parse and plan it without executing it. Captured BEFORE branch matching, so
    * a query no branch covers is still available for validation.
+   *
+   * ⚠ Text only — it cannot tell you whether the text is FAITHFUL. Prefer
+   * {@link BranchedSqlMock.capturedForValidation}, which carries the
+   * composed-query flag with it.
    */
   readonly capturedSql: readonly string[];
+  /** Same calls as {@link capturedSql}, each with its faithfulness flag. */
+  readonly capturedQueries: readonly CapturedQuery[];
+  /**
+   * {@link capturedQueries} in the exact shape `validateManyByPrepare` takes,
+   * labelled by call order.
+   *
+   * Use THIS rather than mapping `capturedSql` yourself: the `composed` flag is
+   * what stops a fragment-composed statement being PREPAREd and coming back
+   * `untypeable` — a tolerated non-finding that silently counts as coverage
+   * (EI-22238479367433132). A caller that drops the flag re-opens that hole.
+   */
+  readonly capturedForValidation: readonly { sql: string; label: string; composed: boolean }[];
 }
 
 export interface CreateBranchedSqlMockOptions {
@@ -116,6 +157,28 @@ function queryTextOf(strings: unknown): string {
   return Array.isArray(strings) ? strings.join(' ') : String(strings ?? '');
 }
 
+/**
+ * Recognise an interpolated `sql` FRAGMENT — `sql\`a AND b\``, `sql([...])`, or
+ * anything else built by calling the tag rather than passing a value.
+ *
+ * The primary test needs no knowledge of postgres-lib internals, because under
+ * a mock there is a better signal available: a nested fragment is built by
+ * calling THIS MOCK, so the value interpolated into the outer call is an object
+ * this mock itself returned. `produced` is that record, and identity in it is
+ * exact — no shape guessing, no false positives on a jsonb bind (which is a
+ * plain object and would defeat any structural heuristic).
+ *
+ * The `strings` check is a secondary, best-effort arm for a fragment built with
+ * a REAL postgres instance and then passed into a mocked query. It cannot be
+ * exact, so it is deliberately narrow: a genuine postgres `Query` carries its
+ * own template array, and no scalar bind shape in this repo does.
+ */
+function isFragmentValue(value: unknown, produced: WeakSet<object>): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  if (produced.has(value as object)) return true;
+  return Array.isArray((value as { strings?: unknown }).strings);
+}
+
 export function createBranchedSqlMock(
   branches: SqlMockBranch[],
   options: CreateBranchedSqlMockOptions = {},
@@ -125,15 +188,29 @@ export function createBranchedSqlMock(
   }
   const onUnmatched = options.onUnmatched ?? 'throw';
   const hit = new Set<string>();
-  const captured: string[] = [];
+  const captured: CapturedQuery[] = [];
+  /**
+   * Every promise this mock has handed back. A nested `sql` fragment is built
+   * by calling this mock, so its return value reappearing as an interpolated
+   * arg of a LATER call is exact proof that arg is a fragment, not a bind.
+   */
+  const produced = new WeakSet<object>();
 
-  const handler = async (...args: unknown[]): Promise<unknown[]> => {
+  const dispatch = async (args: unknown[]): Promise<unknown[]> => {
     const queryText = queryTextOf(args[0]);
     // Capture FIRST, so a query that matches no branch (and is about to throw)
     // is still available for PREPARE-validation. See `capturedSql`.
-    captured.push(
-      Array.isArray(args[0]) ? reassembleSql(args[0] as readonly string[]) : queryText,
-    );
+    const interpolations = args.slice(1);
+    const fragmentArgs = interpolations.filter((v) => isFragmentValue(v, produced)).length;
+    captured.push({
+      sql: Array.isArray(args[0])
+        ? reassembleSql(args[0] as readonly string[], {
+            isFragment: (i) => isFragmentValue(interpolations[i], produced),
+          })
+        : queryText,
+      composed: fragmentArgs > 0,
+      fragmentArgs,
+    });
     const branch = branches.find((b) => b.match(queryText, args));
     if (!branch) {
       if (onUnmatched === 'empty') return [];
@@ -150,6 +227,19 @@ export function createBranchedSqlMock(
     }
     hit.add(branch.label);
     return await branch.respond(queryText, args);
+  };
+
+  /**
+   * Deliberately NOT an `async` function: we need a reference to the promise
+   * itself in order to record it in `produced`, and an async function body
+   * cannot see its own promise. `dispatch` still runs synchronously up to its
+   * first `await`, so capture and branch selection happen exactly when they did
+   * before, and a no-branch-matched error still surfaces as a rejection.
+   */
+  const handler = (...args: unknown[]): Promise<unknown[]> => {
+    const promise = dispatch(args);
+    produced.add(promise);
+    return promise;
   };
 
   return {
@@ -173,7 +263,17 @@ export function createBranchedSqlMock(
       return branches.every((b) => hit.has(b.label));
     },
     get capturedSql(): readonly string[] {
+      return captured.map((c) => c.sql);
+    },
+    get capturedQueries(): readonly CapturedQuery[] {
       return captured;
+    },
+    get capturedForValidation(): readonly { sql: string; label: string; composed: boolean }[] {
+      return captured.map((c, i) => ({
+        sql: c.sql,
+        label: c.composed ? `q${i} (composed)` : `q${i}`,
+        composed: c.composed,
+      }));
     },
   };
 }
