@@ -974,7 +974,23 @@ export default defineTool({
     // already clamped to LIMITS.CONTENT, so a naive append could overflow it, and
     // clamping afterwards would silently truncate the hint off the END — losing
     // exactly the line this exists to add, on the longest (most detailed) reports.
-    const stalenessHints = [stalenessHint, pathStalenessHint].filter((hint): hint is string => Boolean(hint));
+    // WI-2143658: this report matches a class already adjudicated as external
+    // with no papercusp fix surface. Say so IN THE BODY — the row is still
+    // filed (non-claimable), and whoever reads it next needs the citation, not
+    // a fresh investigation. Without this line the filed row looks identical to
+    // an undiagnosed defect, which is how the same class got investigated and
+    // closed four separate times.
+    const knownExternalHint = normalizedToolFailure?.knownExternal
+      ? `⚠ KNOWN EXTERNAL CLASS — no papercusp fix surface. This report matches \`${normalizedToolFailure.knownExternal.id}\`, ` +
+        `already adjudicated in /internal/docs/${normalizedToolFailure.knownExternal.docSlug}. ` +
+        `${normalizedToolFailure.knownExternal.note} ` +
+        `Filed non-claimable on purpose: do NOT re-investigate from scratch, and do not promote it by re-attesting reproduction — ` +
+        `cite the doc. If it becomes RELIABLY reproducible (not merely intermittent) or starts blocking work at a meaningful rate, ` +
+        `that is new evidence worth escalating upstream, and the invocation-ledger watchdog can still promote this row on sustained repetition.`
+      : null;
+    const stalenessHints = [stalenessHint, pathStalenessHint, knownExternalHint].filter((hint): hint is string =>
+      Boolean(hint),
+    );
     const stalenessHintText = stalenessHints.join('\n\n');
     const bodyWithStaleness = stalenessHintText
       ? [clampText(captureText.body, Math.max(0, LIMITS.CONTENT - stalenessHintText.length - 2)), stalenessHintText]
@@ -1034,6 +1050,24 @@ export default defineTool({
           lastSeenAt: new Date().toISOString(),
           report: args.toolFailure,
           ...(normalizedToolFailure.direct ? { directEvidence: true } : {}),
+          // Recorded so a later audit can count every suppressed duplicate by
+          // class id, and so the suppression is visible on the row itself
+          // rather than being an invisible server-side decision.
+          ...(normalizedToolFailure.knownExternal
+            ? {
+                knownExternal: {
+                  id: normalizedToolFailure.knownExternal.id,
+                  docSlug: normalizedToolFailure.knownExternal.docSlug,
+                  // The reporter DID attest direct evidence; we declined to act
+                  // on it. Keep that fact — it is the audit trail for the
+                  // suppression, and the signal that would justify escalating.
+                  attestedDirect:
+                    args.toolFailure?.reproduced === true ||
+                    args.toolFailure?.clearServerMismatch === true ||
+                    args.toolFailure?.hardInternal === true,
+                },
+              }
+            : {}),
         }
       : undefined;
     try {

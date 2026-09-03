@@ -303,6 +303,107 @@ export interface SuspectedToolFailure {
   hardInternal?: boolean;
 }
 
+/**
+ * A tool-failure class that is DOCUMENTED, EXTERNAL, and has no papercusp fix
+ * surface — the report is real, but nothing in this repository can act on it.
+ *
+ * Why this table exists (WI-2143658). The probation intake's identity is
+ * `<tool>:<class>:<first 6 words of the reporter's message>`, and for an AGENT
+ * report that message is free prose. So one such class fragments across many
+ * identities instead of coalescing onto a single row: measured 2026-09-03, the
+ * Codex `exec_command` parallel-launch race alone had produced 272 rows
+ * carrying 138 DISTINCT identities, at 5-17 claimable filings/day for three
+ * weeks — every one a duplicate of an investigation already closed four times.
+ *
+ * A match does NOT discard the report. It only denies the direct-evidence
+ * bypass (`reproduced` / `clearServerMismatch` / `hardInternal`), so the row
+ * lands in ordinary non-claimable probation carrying its doc citation instead
+ * of minting a claimable bug. Two properties follow, and both are deliberate:
+ *   • signal is preserved — the observation lane still records every report; and
+ *   • the invocation-ledger watchdog can still PROMOTE the row on genuine
+ *     sustained repetition, which is exactly the escalation condition the doc
+ *     itself names ("if it becomes reliably reproducible, escalate upstream").
+ * So this suppresses the duplicate-filing flood WITHOUT suppressing the
+ * evidence that would justify escalating.
+ *
+ * ⚠ Match CONSERVATIVELY and fail OPEN. A miss costs one duplicate row (todays
+ * behaviour); a false match hides a real papercusp defect inside a row triage
+ * has been told to ignore, which is far more expensive. Prefer a pattern that
+ * under-matches. In particular `exclude` exists to keep a genuinely DIFFERENT
+ * class out even when its prose looks similar.
+ *
+ * Patterns follow this module's dual-engine convention (see the header): plain
+ * POSIX-ERE-and-JS-compatible syntax only, so a rule stays portable if it is
+ * ever pushed down into the SQL CASE.
+ */
+export interface KnownExternalToolFailureClass {
+  /** Stable id, recorded on the row so a later audit can find every match. */
+  id: string;
+  /** The agent-insights doc that already adjudicated this class. */
+  docSlug: string;
+  /** Tool names this applies to (exact, lowercased). */
+  toolNames: readonly string[];
+  /** Message MUST match this for the class to apply. */
+  match: string;
+  /** Message must NOT match this — the discriminator against nearby classes. */
+  exclude?: string;
+  /** One line for the triager reading the filed row. */
+  note: string;
+}
+
+export const KNOWN_EXTERNAL_TOOL_FAILURE_CLASSES: readonly KnownExternalToolFailureClass[] = [
+  {
+    id: 'codex-exec-command-parallel-launch-race',
+    docSlug: 'agent-insights/codex-exec-command-parallel-launch-race',
+    // Codex-NATIVE tools. `exec_command` bypasses the papercusp managed command
+    // family entirely, so no code here implements the failing spawner.
+    toolNames: ['exec_command', 'functions.exec', 'functions.exec_command'],
+    // The distinctive invariant across every reported spelling of this class is
+    // the "unified exec/shell/process" phrase naming Codex's own spawner. The
+    // cosmetic error-code spellings (CreateProcess, CreateProcess_ENOENT,
+    // CREATE_PROCESS_NO_SUCH_FILE) vary per Codex build, so they are NOT
+    // required — requiring them would under-match reports that omit the code.
+    match: 'unified[ _-]?(exec|shell|process)',
+    // The SEPARATE, already-fixed mistyped-workdir class reports the same
+    // "No such file or directory" with the same error codes, but its fix is
+    // "use the correct path", not "retry sequentially" — the doc is explicit
+    // that the two must not be conflated. Any mention of a workdir/path problem
+    // therefore drops the match back to normal handling.
+    exclude: 'workdir|working directory|misspell|mistyped|typo|nonexistent (path|directory)',
+    note:
+      'Codex CLI client-side process-spawn race under concurrent launch. No papercusp code implements this spawner; ' +
+      'independently investigated and closed 4x. Retry the SAME call sequentially instead of in a parallel batch.',
+  },
+];
+
+function matchesPattern(pattern: string, value: string): boolean {
+  try {
+    return new RegExp(pattern, 'i').test(value);
+  } catch {
+    // A malformed pattern must never break a filing: fail OPEN (no match).
+    return false;
+  }
+}
+
+/**
+ * Return the documented external class this report matches, or null. Null is
+ * the safe default and is returned for anything uncertain.
+ */
+export function matchKnownExternalToolFailure(
+  input: Pick<SuspectedToolFailure, 'toolName' | 'message'>,
+): KnownExternalToolFailureClass | null {
+  const tool = (input.toolName ?? '').trim().toLowerCase();
+  const message = input.message ?? '';
+  if (!tool || !message) return null;
+  for (const klass of KNOWN_EXTERNAL_TOOL_FAILURE_CLASSES) {
+    if (!klass.toolNames.includes(tool)) continue;
+    if (!matchesPattern(klass.match, message)) continue;
+    if (klass.exclude && matchesPattern(klass.exclude, message)) continue;
+    return klass;
+  }
+  return null;
+}
+
 export interface NormalizedToolFailure {
   class: ToolErrorClass;
   /** Exact key emitted by the repeated-tool-error watchdog. */
@@ -311,6 +412,11 @@ export interface NormalizedToolFailure {
   correlationFingerprint: string;
   messageFingerprint: string | null;
   direct: boolean;
+  /**
+   * Set when the report matches a documented external class with no papercusp
+   * fix surface. When set, `direct` is forced false — see the table above.
+   */
+  knownExternal: KnownExternalToolFailureClass | null;
 }
 
 function correlationSegment(value: string | null | undefined, fallback: string): string {
@@ -331,6 +437,13 @@ function correlationSegment(value: string | null | undefined, fallback: string):
  * independent-agent leg. A caller must explicitly attest reproduction or a
  * clear server/internal mismatch to bypass probation; an unknown one-off never
  * becomes claimable merely because the classifier's safe fallback is structural.
+ *
+ * WI-2143658: that bypass is denied for a DOCUMENTED EXTERNAL class. An honest
+ * reporter attesting `reproduced: true` about a known Codex-side race is
+ * telling the truth — it did recur — but the attestation was minting a
+ * claimable duplicate of an investigation already closed four times. The report
+ * still lands (non-claimable probation, doc citation attached) and the
+ * invocation watchdog can still promote it on sustained repetition.
  */
 export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): NormalizedToolFailure {
   const klass = classifyToolError(input.errorCode, input.status, input.message);
@@ -344,11 +457,17 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
     correlationSegment(input.runtimeVersion, 'runtime-unknown'),
     correlationSegment(messageFingerprint, 'message-unknown'),
   ].join('|');
+  const knownExternal = matchKnownExternalToolFailure(input);
+  const attested =
+    input.reproduced === true || input.clearServerMismatch === true || input.hardInternal === true;
   return {
     class: klass,
     watchdogKey: `repeated-tool-error:${signalKey}`,
     correlationFingerprint,
     messageFingerprint,
-    direct: input.reproduced === true || input.clearServerMismatch === true || input.hardInternal === true,
+    // A documented external class never bypasses probation, however the
+    // reporter attested it — the attestation is honest, the row is a duplicate.
+    direct: attested && !knownExternal,
+    knownExternal,
   };
 }
