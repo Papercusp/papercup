@@ -1,19 +1,13 @@
-import { createFileRoute } from '@tanstack/react-router';
-import AdminShell from '../../components/admin/AdminShell';
-import PlansClient from '@/app/admin/plans/PlansClient';
-import '@/app/admin/plans/plans.css';
+import { createFileRoute, lazyRouteComponent } from '@tanstack/react-router';
 
 /**
  * /admin/plans — the markdown-canonical plan browser/editor. Translated
  * from `apps/operator/app/admin/plans/page.tsx`.
  *
- * Thin wrapper, like `admin/features.tsx`: `PlansClient` and its whole
- * subtree (rail, detail, vditor editor, decorations, dialogs) carry no
- * `next/*` imports — they use `nuqs` (operator-vite already mounts
- * `NuqsAdapter` from `nuqs/adapters/tanstack-router` in `__root.tsx`),
- * React, and the shared `MarkdownEditor` / `Modal`. So it's reused
- * directly via the `@/` alias rather than needing a Vite-flavored copy
- * the way `TestingClient` did (that one used `next/dynamic`).
+ * The page body (`AdminShell` + `PlansClient`) and its `plans.css` import
+ * live in `AdminPlansPageContent`, reached only through this route's
+ * `lazyRouteComponent` dynamic-import boundary (WI-5502 item 2 — see that
+ * file's comment).
  *
  * The data layer is unaffected by the framework move: PlansClient
  * fetches the `/api/admin/plans/*` route handlers, which are
@@ -24,13 +18,5 @@ import '@/app/admin/plans/plans.css';
  * tab would 404 in the Vite build.
  */
 export const Route = createFileRoute('/admin/plans')({
-  component: AdminPlansPage,
+  component: lazyRouteComponent(() => import('../../components/route-content/AdminPlansPageContent')),
 });
-
-function AdminPlansPage() {
-  return (
-    <AdminShell title="Plans">
-      <PlansClient />
-    </AdminShell>
-  );
-}
