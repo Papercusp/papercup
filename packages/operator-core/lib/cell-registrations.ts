@@ -692,14 +692,15 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
         meaning:
           'No file failed in the radius the gate judged for this candidate. ⚠ THE RADIUS IS NOT THE SUITE — see `scope`.',
         safeAction:
-          'Do NOT report "the gate is green". Check `postSuiteMeasured` and the main fast-forward; a passing affected-tests leg is not a green gate.',
+          'Do NOT report "the gate is green". Check `nonTestLegs.perLeg` (WHICH leg, by name) and the main fast-forward; a passing affected-tests leg is not a green gate. `nonTestLegsMeasured: "not-recorded"` means no leg measurement exists — it is NOT "no legs failing".',
       },
     },
     evidence: [
       'gate.candidateFailures.distinctFailingFiles',
       'gate.candidateFailures.filesJudged',
       'gate.candidateFailures.scope',
-      'gate.candidateFailures.postSuiteMeasured',
+      'gate.candidateFailures.nonTestLegsMeasured',
+      'gate.candidateFailures.nonTestLegs.perLeg',
     ],
   },
   nullable: true,
@@ -721,7 +722,7 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
     path: 'gate.candidateFailures.stillBrokenCount',
   },
   shape:
-    '{ gate: { candidateFailures: { candidateSha, repairHeadSha, filesJudged, distinctFailingFiles: [{ path, attempts, status, fixInRepairHead, comparison, candidateBlob, repairHeadBlob, reading }], failingFileCount, alreadyFixedCount, stillBrokenCount, stillBrokenNeedsRunCount, changedBetweenRefs: { count, sample }, postSuiteMeasured, nonTestLegs: { current, head, atMs, all: [{ id, status, durationMs }], failing: [...], reading } | null, scope, unavailable, truncated } } }',
+    '{ gate: { candidateFailures: { candidateSha, repairHeadSha, filesJudged, distinctFailingFiles: [{ path, attempts, status, fixInRepairHead, comparison, candidateBlob, repairHeadBlob, reading }], failingFileCount, alreadyFixedCount, stillBrokenCount, stillBrokenNeedsRunCount, changedBetweenRefs: { count, sample }, nonTestLegsMeasured, nonTestLegs: { current, head, atMs, all: [{ id, status, durationMs }], failing: [...], reading, perLeg: [{ id, measuredNow, lifecycle, fixedAtHead, admittedRound, reading }], shrink: { measured, admittedLegs, fixedLegs, failingLegs, failingLegIds, fixedLegIds, shrinkTotal, regressedLegs, lastMeasuredAtMs, scope } } | null, scope, unavailable, truncated } } }',
 };
 
 /**
