@@ -101,7 +101,10 @@ describe('selfHealTerminalOwnerOriginIfStranded', () => {
 
   it('no-ops without touching the database when the policy refuses', async () => {
     const sql = vi.fn(async () => [] as { feature_id: string }[]);
-    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+    vi.doMock('@papercusp/db-org', async (orig) => ({
+      ...(await orig<typeof import('@papercusp/db-org')>()),
+      getOrgPg: () => ({ sql }),
+    }));
     vi.resetModules();
     const { selfHealTerminalOwnerOriginIfStranded: heal } = await import(
       './work-items-terminal-owner-origin-heal'
@@ -134,7 +137,10 @@ describe('selfHealTerminalOwnerOriginIfStranded', () => {
       expect(values).toContain(CALLER);
       return [{ feature_id: 'EI-1' }];
     });
-    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+    vi.doMock('@papercusp/db-org', async (orig) => ({
+      ...(await orig<typeof import('@papercusp/db-org')>()),
+      getOrgPg: () => ({ sql }),
+    }));
     vi.resetModules();
     const { selfHealTerminalOwnerOriginIfStranded: heal } = await import(
       './work-items-terminal-owner-origin-heal'
@@ -152,7 +158,10 @@ describe('selfHealTerminalOwnerOriginIfStranded', () => {
 
   it('reports false when the scoped UPDATE matches no row (e.g. terminal_owner changed underneath it)', async () => {
     const sql = vi.fn(async () => [] as { feature_id: string }[]);
-    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+    vi.doMock('@papercusp/db-org', async (orig) => ({
+      ...(await orig<typeof import('@papercusp/db-org')>()),
+      getOrgPg: () => ({ sql }),
+    }));
     vi.resetModules();
     const { selfHealTerminalOwnerOriginIfStranded: heal } = await import(
       './work-items-terminal-owner-origin-heal'
