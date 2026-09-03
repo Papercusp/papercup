@@ -314,6 +314,52 @@ describe('buildWorkspaceHostBootstrap agent runtime installs (D-259)', () => {
   });
 
   /**
+   * canary-12 (2026-09-03). The script sets `umask 027`, and tar creates a parent directory it
+   * was not given an explicit entry for using that umask — so `/usr/local/lib/ollama` came out
+   * `drwxr-x--- root root` and the `ollama` SERVICE ACCOUNT could not traverse its own runtime.
+   * The server started fine (it could exec the 0755 binary) and then reported `llama-server
+   * binary not found` for a path that existed, which is what a directory the process cannot
+   * traverse looks like from inside.
+   *
+   * The guard is ordering plus reach: the normalization must run AFTER the extraction that
+   * creates the tree, and OUTSIDE the install `if`, so a host already carrying a 0750 tree
+   * self-heals instead of staying broken because its version matched. Root's own `[[ -x ]]`
+   * assertion cannot catch this — root bypasses directory permission bits — which is exactly
+   * why the check has to live in the rendered script rather than in that assertion.
+   */
+  it('makes the ollama runtime tree traversable by the non-root service account', () => {
+    const script = buildWorkspaceHostBootstrap(
+      input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+    );
+    const lines = script.split('\n');
+
+    const normalizeAt = lines.findIndex((line) =>
+      /^chmod -R a\+rX \/usr\/local\/lib\/ollama\b/.test(line),
+    );
+    // Calibration: an unanchored or re-worded normalization would leave this at -1 and make
+    // every ordering assertion below pass vacuously against a script that never chmods.
+    expect(normalizeAt).toBeGreaterThanOrEqual(0);
+
+    const extractAt = lines.findIndex((line) =>
+      /tar --use-compress-program=unzstd .*-C \/usr\/local\b/.test(line),
+    );
+    expect(extractAt).toBeGreaterThanOrEqual(0);
+    // It must normalize what the extraction produced, not a tree that does not exist yet.
+    expect(normalizeAt).toBeGreaterThan(extractAt);
+
+    // ...and it must sit OUTSIDE the install block, or a version-matching host with a bad tree
+    // never reaches it. The `fi` closing that block falls between the two.
+    const closingFi = lines.findIndex(
+      (line, index) => index > extractAt && line === 'fi',
+    );
+    expect(closingFi).toBeGreaterThan(extractAt);
+    expect(normalizeAt).toBeGreaterThan(closingFi);
+
+    // `a+rX` (capital X) is load-bearing: `a+rx` would mark every extracted data file executable.
+    expect(script).not.toMatch(/chmod -R a\+rx \/usr\/local\/lib\/ollama/);
+  });
+
+  /**
    * D-264's rule, applied one service later: when a phase MUTATES a service, nothing after it may
    * assume that service's runtime state. `systemctl enable --now` returns once systemd has forked
    * the unit, not once its HTTP API accepts connections — and the pull talks to that API.

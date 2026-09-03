@@ -1224,6 +1224,27 @@ function localInferenceRuntimeInstallLines(
     '  tar --use-compress-program=unzstd -xf "$OLLAMA_TMP" -C /usr/local --exclude="lib/ollama/cuda_v*" --exclude="lib/ollama/vulkan" --exclude="lib/ollama/rocm*" || die "local-inference runtime extract failed"',
     '  rm -f "$OLLAMA_TMP"',
     'fi',
+    // MEASURED on canary-12 (2026-09-03): this script runs under `umask 027` (set in the preamble,
+    // so it is in force for the extraction above). tar as root preserves the mode RECORDED for
+    // each entry, but a parent directory it has to CREATE implicitly is made with the umask —
+    // so `/usr/local/lib/ollama` landed `drwxr-x--- root root` while `/usr/local/bin/ollama`
+    // kept its archived 0755. The server therefore STARTED (it could exec the binary) and then
+    // could not traverse its own runtime dir, reporting `llama-server binary not found` for a
+    // path that was right there.
+    //
+    // Two things made that expensive to see, and both are why this is a normalization rather
+    // than a one-line chmod on the happy path. The bootstrap's own `[[ -x ]]` assertion below
+    // runs as ROOT, which bypasses directory permission bits, so it passes on exactly the tree
+    // that is broken for the service. And reproducing the extraction locally under the default
+    // umask 022 yields 0755, so the artifact looks innocent — the fault is in the umask this
+    // script sets, not in what was downloaded.
+    //
+    // Deliberately OUTSIDE the install `if`, for the same reason the version guard checks the
+    // runner: a host that already carries a 0750 tree must self-heal on its next boot rather
+    // than stay broken because the version happened to match. `a+rX` is the safe form — it adds
+    // execute for directories and for files that already have it, so it cannot make a data file
+    // executable.
+    'chmod -R a+rX /usr/local/lib/ollama || die "could not normalize local-inference runtime permissions"',
     '[[ -x /usr/local/bin/ollama ]] || die "local-inference runtime did not resolve after install"',
     // MEASURED on canary-10 (2026-09-03): ollama starts, serves /api/version 200 and registers a
     // CPU inference device even when the llama-server RUNNER is missing — so the runtime looks
