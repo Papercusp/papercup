@@ -22,8 +22,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { parseAsString, useQueryState } from 'nuqs';
-import { Link } from '@tanstack/react-router';
-import { toast } from 'sonner';
 import {
   RotateCcw,
   ChevronDown,
@@ -36,7 +34,8 @@ import {
   KeyRound,
 } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
-import { useAccountOverride } from '../adv/use-account-override';
+import { useAccountOverride } from './use-account-override';
+import { operatorUi } from '../seam';
 
 // Full pool-account row — mirrors AccountStatusRow (operator-core account-pool-store).
 // Sync rows are untyped on the client by convention, so we restate the shape.
@@ -90,7 +89,7 @@ function secondaryUsageLabel(provider: AccountProvider): string {
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 async function postJson(path: string, body: Record<string, unknown>): Promise<{ ok: boolean; j: { ok?: boolean; error?: string } }> {
-  const res = await fetch(path, {
+  const res = await operatorUi().apiFetch(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
@@ -182,6 +181,10 @@ function useNow(enabled: boolean, intervalMs = 1000): number {
 }
 
 export default function AccountsTab({ active }: { active: boolean }) {
+  // Read at render, not at module scope: the host installs the seam at boot, and a
+  // module-scope destructure would capture the DEFAULTS of whichever module record
+  // evaluated first.
+  const { Link } = operatorUi();
   const now = useNow(active);
   const { data: accounts, loading } = useSyncQuery<PoolAccount>({ queryName: 'accounts.pool', enabled: active });
   const {
@@ -216,6 +219,7 @@ export default function AccountsTab({ active }: { active: boolean }) {
   }, [accounts, excluded.size, forced.size, now]);
 
   const resetRate = useCallback(async (id: string) => {
+    const { toast } = operatorUi();
     setResetBusyId(id);
     try {
       const { ok, j } = await postJson('/api/admin/deploy-accounts/reset-rate', { id });

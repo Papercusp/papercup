@@ -9,8 +9,8 @@
  * Accounts tab next to Queen (the Queen-adjacent owner-steering lever, P-005).
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
+import { operatorUi } from '../seam';
 
 export interface AccountOverride {
   forcedAccounts: string[];
@@ -58,10 +58,11 @@ export function useAccountOverride() {
       optimistic?: AccountOverride,
     ) => {
       const prev = override;
+      const { apiFetch, toast } = operatorUi();
       if (optimistic) setOverride(optimistic); // instant — don't wait on the round-trip
       setOverrideBusy(true);
       try {
-        const res = await fetch('/api/admin/deploy-accounts/session-override', {
+        const res = await apiFetch('/api/admin/deploy-accounts/session-override', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(patch),
