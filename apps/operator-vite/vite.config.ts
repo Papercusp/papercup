@@ -52,6 +52,24 @@ const finalOutDir = process.env.PAPERCUSP_VITE_FINAL_OUT_DIR;
 // target the staging operator (:3170) — see the proxy block below.
 const apiTarget = process.env.PAPERCUSP_API_TARGET ?? 'http://127.0.0.1:3070';
 
+// WI-5502 item 2: Vite/rolldown's default `build.modulePreload` behavior walks
+// each entry's full STATIC-import dependency graph to decide what to preload
+// for the initial `index.html`, and it can hoist a chunk into that eager list
+// even when the ONLY path that reaches it in the running app is a runtime
+// dynamic import() — e.g. a `React.lazy` pane behind a closed-by-default UI
+// state, or a route nobody has navigated to yet. Confirmed against a fresh
+// operator-vite dist build (2026-09-03): these named route/panel chunks are
+// genuinely lazy at the source level (TanStack Router's autoCodeSplitting /
+// explicit React.lazy) yet still shipped as
+// `<link rel="modulepreload"|"stylesheet">` on EVERY first paint regardless
+// of route or panel state — 10 chunks, none on the always-rendered chrome's
+// critical path. (Ruled out as an alternative cause: `main.tsx`'s
+// `defaultPreload: 'intent'` is a DIFFERENT, runtime-only TanStack Router
+// hover-preload mechanism — it cannot produce a build-time HTML preload link.
+// Full investigation: WI-5502 thread.)
+const EAGER_ROUTE_CHUNK_PRELOAD_EXCLUDE_RE =
+  /(?:^|\/)(?:InboxPane|PlansPane|PlanDetail|WorkItemDiscussion|triggers|review-report|plan-cleanup-report|inbox-bulk(?:-report)?|BulkResolverStrip|SessionsRosterView)-[^/]+\.(?:js|css)$/;
+
 const noViteClientPlugin: Plugin = {
   name: 'papercusp-no-vite-client',
   configureServer(server) {
@@ -233,6 +251,26 @@ export default defineConfig({
     // transform) — this also keeps JS and CSS minification on the same
     // toolchain, avoiding a second one for no benefit.
     cssMinify: 'esbuild',
+    // WI-5502 item 2: strip the named lazy route/panel chunks (see
+    // EAGER_ROUTE_CHUNK_PRELOAD_EXCLUDE_RE above) out of the INITIAL
+    // index.html preload list only. `hostType` distinguishes the two call
+    // sites Vite uses this hook for: 'html' is the entry's eager
+    // <link rel="modulepreload"|"stylesheet"> list injected into index.html
+    // (what this fix targets); 'js' is the runtime modulePreload-polyfill's
+    // per-dynamic-import dependency map, fired only when the app actually
+    // import()s one of these chunks (route navigation / opening a lazy
+    // panel) — left untouched, so on-demand loading and correctness are
+    // unaffected. This must be verified with a real dist build + a live
+    // network waterfall (see the WI-5502 thread for the verification
+    // recipe) before being trusted, not assumed from the Vite docs alone —
+    // this file already documents three other Vite-8/rolldown default-
+    // behavior divergences from classic Rollup.
+    modulePreload: {
+      resolveDependencies: (_filename, deps, { hostType }) => {
+        if (hostType !== 'html') return deps;
+        return deps.filter((dep) => !EAGER_ROUTE_CHUNK_PRELOAD_EXCLUDE_RE.test(dep));
+      },
+    },
     rollupOptions: {
       output: {
         // P-046 / D-178: content hashes MUST NOT use the base64url alphabet.
