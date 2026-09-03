@@ -52,7 +52,12 @@ export interface FrozenRepairFixerAuthorization {
  */
 export function assessFrozenRepairFixerAuthorization(
   queue: FrozenCandidateRepairQueue | null,
-  caller: { role?: string | null; spawnId?: string | null; sigVerifiedSpawn?: boolean | null },
+  caller: {
+    role?: string | null;
+    spawnId?: string | null;
+    sigVerifiedSpawn?: boolean | null;
+    isSuperuser?: boolean | null;
+  },
 ): FrozenRepairFixerAuthorization {
   const callerSpawnId = typeof caller.spawnId === 'string' && caller.spawnId.trim()
     ? caller.spawnId.trim()
@@ -70,6 +75,27 @@ export function assessFrozenRepairFixerAuthorization(
     safeAction,
   });
 
+  // EI-22208176411693669: the superuser-bearer transport (`?superuser=1` + loopback
+  // bearer, _mcp-handler.ts's SU-bearer branch) never carries a verified per-spawn
+  // signature — sigVerifiedSpawn is unconditionally absent/false there — and its
+  // `?role=` query param is DELIBERATELY only a `tools/list` catalog-narrowing hint
+  // (token-usage-reduction P-011), never a security identity assertion; dispatch
+  // capability on that branch is already unconditional (isSuperuser bypasses role
+  // gates platform-wide). So this caller can never legitimately reach
+  // 'authorized-delegate' through the signed-spawn check no matter which role its
+  // catalog was narrowed to — including 'release-fixer', which previously slipped
+  // past the check below and landed on the fail-closed 'unsigned-caller' verdict
+  // even when the caller genuinely was the queue's own delegated fixer. Route it to
+  // 'not-applicable' like any other non-release-fixer-role caller: the buildReleaseFixerKickoff
+  // brief already documents the fallback (compare fixerSpawnId to PAPERCUSP_SPAWN_ID
+  // directly), and the converge write-gate independently authorizes this transport tier.
+  if (caller.isSuperuser === true) {
+    return result(
+      'not-applicable',
+      null,
+      'This caller reached the queue over the superuser-bearer transport, which carries no verified per-spawn signature regardless of its ?role= catalog hint — the signed-delegate check does not apply here. Compare repairQueue.fixerSpawnId directly against your own PAPERCUSP_SPAWN_ID to confirm you remain the delegated fixer; converge is independently authorized for this transport tier.',
+    );
+  }
   if (caller.role !== 'release-fixer') {
     return result(
       'not-applicable',
@@ -245,6 +271,7 @@ export default defineTool({
       role: ctx.role,
       spawnId: ctx.spawnId,
       sigVerifiedSpawn: ctx.sigVerifiedSpawn,
+      isSuperuser: ctx.isSuperuser,
     });
     if (args.op === 'get') {
       return json({

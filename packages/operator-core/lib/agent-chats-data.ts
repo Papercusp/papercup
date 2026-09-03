@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { getLegacyClient } from '@papercusp/db-org';
+import { harnessQuery } from '@papercusp/db-org';
 import { getKnownRoles } from './known-roles';
 import { activeWorkspaceId } from './workspace-registry';
 
@@ -152,10 +152,6 @@ export type Result<T> =
 
 const FEATURE_ID_RE = /^[A-Z][A-Z0-9_-]*[A-Z0-9]$/i;
 
-function dbForSlug(slug: string) {
-  return getLegacyClient(slug);
-}
-
 export function isValidChatRole(role: string): boolean {
   return getKnownRoles().includes(role);
 }
@@ -233,14 +229,11 @@ export async function readFeatureLockState(
   featureId: string,
 ): Promise<FeatureLockState | null> {
   try {
-    const db = dbForSlug(slug);
-    const row = (await db
-      .prepare(
-        'SELECT taken_by, taken_at, expires_at FROM harness_features WHERE harness_slug = ? AND feature_id = ? LIMIT 1',
-      )
-      .get(slug, featureId)) as
-      | { taken_by: string | null; taken_at: string | null; expires_at: string | null }
-      | undefined;
+    const rows = (await harnessQuery(slug, (sql) => sql.unsafe(
+      'SELECT taken_by, taken_at, expires_at FROM harness_features WHERE harness_slug = $1 AND feature_id = $2 LIMIT 1',
+      [slug, featureId],
+    ))) as Array<{ taken_by: string | null; taken_at: string | null; expires_at: string | null }>;
+    const row = rows[0];
     if (!row) return null;
     return {
       taken_by: row.taken_by,
@@ -280,7 +273,6 @@ export interface ListChatsInput {
 
 export async function listChats(input: ListChatsInput): Promise<Result<{ chats: ChatSummary[] }>> {
   try {
-    const db = dbForSlug(input.slug);
     const limit = Math.min(
       LIST_CHATS_MAX_LIMIT,
       Math.max(1, Math.trunc(input.limit ?? LIST_CHATS_DEFAULT_LIMIT)),
@@ -295,10 +287,10 @@ export async function listChats(input: ListChatsInput): Promise<Result<{ chats: 
     // "loading chat…" spinner, reproduced even with a correct create path.
     // Scoping here keeps the list consistent with the agentChats.* resolvers.
     const ws = activeWorkspaceId();
-    const sql = input.includeArchived
-      ? `SELECT ${LIST_CHATS_COLUMNS} FROM agent_chats WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?`
-      : `SELECT ${LIST_CHATS_COLUMNS} FROM agent_chats WHERE workspace_id = ? AND archived_at IS NULL ORDER BY updated_at DESC LIMIT ? OFFSET ?`;
-    const rows = (await db.prepare(sql).all(ws, limit, offset)) as Array<Record<string, unknown>>;
+    const sqlText = input.includeArchived
+      ? `SELECT ${LIST_CHATS_COLUMNS} FROM agent_chats WHERE workspace_id = $1 ORDER BY updated_at DESC LIMIT $2 OFFSET $3`
+      : `SELECT ${LIST_CHATS_COLUMNS} FROM agent_chats WHERE workspace_id = $1 AND archived_at IS NULL ORDER BY updated_at DESC LIMIT $2 OFFSET $3`;
+    const rows = (await harnessQuery(input.slug, (sql) => sql.unsafe(sqlText, [ws, limit, offset]))) as Array<Record<string, unknown>>;
     return { ok: true, data: { chats: rows.map(rowToChatSummary) } };
   } catch (e) {
     return { ok: false, status: 500, error: `failed to list chats: ${(e as Error).message}` };
@@ -314,10 +306,11 @@ export async function getChat(
   input: GetChatInput,
 ): Promise<Result<ChatRow & { feature_lock: FeatureLockState | null }>> {
   try {
-    const db = dbForSlug(input.slug);
-    const row = (await db
-      .prepare('SELECT * FROM agent_chats WHERE id = ?')
-      .get(input.chatId)) as Record<string, unknown> | undefined;
+    const rows = (await harnessQuery(input.slug, (sql) => sql.unsafe(
+      'SELECT * FROM agent_chats WHERE id = $1',
+      [input.chatId],
+    ))) as Array<Record<string, unknown>>;
+    const row = rows[0];
     if (!row) return { ok: false, status: 404, error: 'chat not found' };
     const chat = rowToChat(row);
     const featureLock = chat.feature_id
@@ -362,7 +355,6 @@ export async function createChat(
   const suRuntimeClass: PuiSessionRuntimeClass = 'su-session';
 
   try {
-    const db = dbForSlug(input.slug);
     // Stamp the LIVE workspace explicitly (WI-5125). The per-harness agent_chats
     // view used to carry `ALTER COLUMN workspace_id SET DEFAULT 'default'`, so
     // omitting the column here silently filed every chat under 'default' — while
@@ -371,24 +363,20 @@ export async function createChat(
     // forever. Migration 616 drops that literal default; this is the other half:
     // the workspace is only known in-process (the live registry / request ALS),
     // so the writer must pass it. Same pattern as harness_features' writers.
-    await db
-      .prepare(
+    // Both statements share ONE harnessQuery() call so they run against the
+    // same connection / per-tx search_path under PgBouncer, matching the
+    // original single-`db`-client behavior.
+    const row = (await harnessQuery(input.slug, async (sql) => {
+      await sql.unsafe(
         `INSERT INTO agent_chats (id, workspace_id, role, feature_id, title, transcript, su_runtime_class)
-         VALUES (?, ?, ?, ?, ?, ?::jsonb, ?)`,
-      )
-      .run(
-        id,
-        activeWorkspaceId(),
-        input.role,
-        input.feature_id ?? null,
-        title,
-        '[]',
-        suRuntimeClass,
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+        [id, activeWorkspaceId(), input.role, input.feature_id ?? null, title, '[]', suRuntimeClass],
       );
-    const row = (await db.prepare('SELECT * FROM agent_chats WHERE id = ?').get(id)) as Record<
-      string,
-      unknown
-    >;
+      const rows = (await sql.unsafe('SELECT * FROM agent_chats WHERE id = $1', [id])) as Array<
+        Record<string, unknown>
+      >;
+      return rows[0];
+    })) as Record<string, unknown>;
     const featureLock = input.feature_id
       ? await readFeatureLockState(input.slug, input.feature_id)
       : null;
@@ -406,7 +394,6 @@ export interface ArchiveChatInput {
 
 export async function archiveChat(input: ArchiveChatInput): Promise<Result<{ ok: true }>> {
   try {
-    const db = dbForSlug(input.slug);
     // NB: archive does NOT touch any feature lock. Feature locks live in
     // harness_features.taken_by (acquired/released by the work-item /
     // orchestrator claim path), not on the chat — getChat/createChat only
@@ -417,9 +404,10 @@ export async function archiveChat(input: ArchiveChatInput): Promise<Result<{ ok:
     // removed in the experts-rip-out refactor and the orphaned SELECT — a
     // wasted round-trip — is removed here too.)
     const nowMs = Date.now();
-    await db
-      .prepare('UPDATE agent_chats SET archived_at = ?, updated_at = ? WHERE id = ?')
-      .run(nowMs, nowMs, input.chatId);
+    await harnessQuery(input.slug, (sql) => sql.unsafe(
+      'UPDATE agent_chats SET archived_at = $1, updated_at = $2 WHERE id = $3',
+      [nowMs, nowMs, input.chatId],
+    ));
     return { ok: true, data: { ok: true } };
   } catch (e) {
     return { ok: false, status: 500, error: `failed to archive chat: ${(e as Error).message}` };
@@ -455,7 +443,6 @@ export async function appendExternalChatTurn(
     return { ok: false, status: 400, error: 'role must be user or assistant' };
   }
   try {
-    const db = dbForSlug(input.slug);
     const ts = input.ts && Number.isFinite(Date.parse(input.ts))
       ? new Date(input.ts).toISOString()
       : new Date().toISOString();
@@ -466,25 +453,33 @@ export async function appendExternalChatTurn(
       source: input.source,
       source_id: sourceId,
     };
-    const updated = (await db.prepare(
-      `UPDATE agent_chats
-          SET transcript = COALESCE(transcript, '[]'::jsonb) || ?::jsonb,
-              updated_at = ?
-        WHERE workspace_id = ? AND id = ?
-          AND NOT EXISTS (
-            SELECT 1 FROM jsonb_array_elements(COALESCE(transcript, '[]'::jsonb)) AS turn
-             WHERE turn->>'source_id' = ?
-          )
-        RETURNING id`,
-    ).get(JSON.stringify([turn]), Date.now(), activeWorkspaceId(), input.chatId, sourceId)) as
-      | { id?: string }
-      | undefined;
-    if (updated?.id) return { ok: true, data: { appended: true } };
+    // Both statements share ONE harnessQuery() call so they run against the
+    // same connection / per-tx search_path under PgBouncer, matching the
+    // original single-`db`-client behavior.
+    const result = await harnessQuery(input.slug, async (sql) => {
+      const updatedRows = (await sql.unsafe(
+        `UPDATE agent_chats
+            SET transcript = COALESCE(transcript, '[]'::jsonb) || $1::jsonb,
+                updated_at = $2
+          WHERE workspace_id = $3 AND id = $4
+            AND NOT EXISTS (
+              SELECT 1 FROM jsonb_array_elements(COALESCE(transcript, '[]'::jsonb)) AS turn
+               WHERE turn->>'source_id' = $5
+            )
+          RETURNING id`,
+        [JSON.stringify([turn]), Date.now(), activeWorkspaceId(), input.chatId, sourceId],
+      )) as Array<{ id?: string }>;
+      if (updatedRows[0]?.id) return { appended: true as const, exists: true };
 
-    const existing = (await db.prepare(
-      'SELECT id FROM agent_chats WHERE workspace_id = ? AND id = ? LIMIT 1',
-    ).get(activeWorkspaceId(), input.chatId)) as { id?: string } | undefined;
-    if (!existing?.id) return { ok: false, status: 404, error: 'chat not found' };
+      const existingRows = (await sql.unsafe(
+        'SELECT id FROM agent_chats WHERE workspace_id = $1 AND id = $2 LIMIT 1',
+        [activeWorkspaceId(), input.chatId],
+      )) as Array<{ id?: string }>;
+      return { appended: false as const, exists: !!existingRows[0]?.id };
+    });
+
+    if (result.appended) return { ok: true, data: { appended: true } };
+    if (!result.exists) return { ok: false, status: 404, error: 'chat not found' };
     return { ok: true, data: { appended: false } };
   } catch (e) {
     return { ok: false, status: 500, error: `failed to append external turn: ${(e as Error).message}` };
