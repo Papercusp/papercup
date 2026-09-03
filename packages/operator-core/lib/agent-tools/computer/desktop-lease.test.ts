@@ -12,6 +12,7 @@ import {
   releaseAllHiveDesktops,
   __setProvisionerForTests,
   __resetProvisioner,
+  leaseCapabilities,
 } from './desktop-lease';
 import type { SandboxDesktop } from './desktop-provisioner';
 import { NO_GL_STRATEGY } from '../../desktop/gl-strategy';
@@ -118,5 +119,53 @@ describe('per-hive desktop lease', () => {
     expect(d1.released()).toBe(1);
     expect(d2.released()).toBe(1);
     expect(leasedHiveDesktops()).toEqual([]);
+  });
+});
+
+/**
+ * EI-22074168424155872 — the capabilities the lease MIRRORS into the registry.
+ *
+ * These run against the pure derivation rather than the mirror, because the mirror
+ * swallows every failure by design ("inventory only"): a wrong capability there is
+ * silent, is served to other processes as a measurement, and is discovered — if at
+ * all — as a confusing refusal from `computer:observe` in a different process hours
+ * later. Six separate agents triaging that refusal each named "the provisioner's
+ * recorded startA11yBus outcome" as the decisive evidence and none could obtain it,
+ * because `a11y` was declared on DesktopCapabilities and never written.
+ */
+describe('leaseCapabilities (registry mirror)', () => {
+  it('reports gl from the LADDER VERDICT, not from the presence of its result object', () => {
+    const desktop = fakeDesktop(120);
+
+    // The control that pins the bug: `gl` is always a GlStrategy object — the
+    // negative verdict is the frozen NO_GL_STRATEGY — so object-truthiness is
+    // `true` here and cannot express "this desktop has no GL" at all.
+    expect(Boolean(desktop.gl)).toBe(true);
+    expect(desktop.gl.tier).toBe('none');
+    expect(leaseCapabilities(desktop).gl).toBe(false);
+  });
+
+  it('reports gl true for both tiers the ladder can positively conclude', () => {
+    for (const tier of ['hardware', 'software'] as const) {
+      const desktop = { ...fakeDesktop(121), gl: { ...NO_GL_STRATEGY, id: 'native' as const, tier } };
+      expect(leaseCapabilities(desktop).gl).toBe(true);
+    }
+  });
+
+  it('records a11y false for a screenshot-only desktop — a legal state, not an error', () => {
+    expect(leaseCapabilities(fakeDesktop(122)).a11y).toBe(false);
+  });
+
+  it('records a11y true when the provisioner brought a bus up', () => {
+    const desktop = {
+      ...fakeDesktop(123),
+      a11y: {
+        sessionBus: 'unix:path=/tmp/dbus-fake',
+        a11yBus: 'unix:path=/run/user/1000/at-spi/bus_123',
+        env: {},
+        release: () => {},
+      },
+    };
+    expect(leaseCapabilities(desktop).a11y).toBe(true);
   });
 });
