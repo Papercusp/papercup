@@ -108,11 +108,33 @@ file_ei() { # <title> <body> — best-effort curl-MCP; loud echo + journald/log 
 # df) → second line's 5th field (Linux) / same column layout on macOS is
 # `Capacity` as an explicit "NN%" — parse defensively via awk on the last
 # numeric-looking %-suffixed field instead of a fixed column index.
+# WATCH EVERY VOLUME THAT CAN WEDGE THIS BOX, NOT JUST ONE (2026-09-03).
+# This probe measured a single path ($HOME/.papercusp, on /) and nothing else.
+# The dump/VM volume was therefore INVISIBLE to it, and on 2026-09-03 /mnt/data
+# sat at 97% while the hourly pg_dump wrote an 85 GB uncompressed copy into it —
+# ~20 minutes from filling. The only signal that reached a human was the owner
+# asking why his Windows VM felt laggy (25 ms NVMe writes, 160-deep queue),
+# followed by a CLOCK_WATCHDOG_TIMEOUT BSOD in the guest. A one-path disk probe
+# on a box with two hot volumes is a detector that reports "healthy" about the
+# volume it is not looking at.
+#
+# Measure them all and alarm on the FULLEST: the alert has to name the volume
+# that is actually about to wedge, and one marker per host is correct precisely
+# because the operator action ("free space now") is the same either way.
+# DISK_PATH stays honoured verbatim for any caller that sets it.
+DISK_PATHS="${DISK_PATHS:-$DISK_PATH /mnt/data}"
 DISK_PCT=""
-if [ -e "$DISK_PATH" ]; then
-  DF_LINE="$(df -Pk "$DISK_PATH" 2>/dev/null | tail -n1)"
-  DISK_PCT="$(printf '%s' "$DF_LINE" | awk '{for(i=1;i<=NF;i++) if ($i ~ /^[0-9]+%$/) print $i}' | tr -d '%' | tail -n1)"
-fi
+DF_LINE=""
+for _dp in $DISK_PATHS; do
+  [ -e "$_dp" ] || continue
+  _line="$(df -Pk "$_dp" 2>/dev/null | tail -n1)"
+  _pct="$(printf '%s' "$_line" | awk '{for(i=1;i<=NF;i++) if ($i ~ /^[0-9]+%$/) print $i}' | tr -d '%' | tail -n1)"
+  [ -n "$_pct" ] || continue
+  log "disk usage at $_dp: ${_pct}%"
+  if [ -z "$DISK_PCT" ] || [ "$_pct" -gt "$DISK_PCT" ] 2>/dev/null; then
+    DISK_PCT="$_pct"; DF_LINE="$_line"; DISK_PATH="$_dp"
+  fi
+done
 if [ -z "$DISK_PCT" ]; then
   log "SKIP disk-usage probe: could not resolve usage% for '$DISK_PATH' (path missing or df output unparseable)."
 else
