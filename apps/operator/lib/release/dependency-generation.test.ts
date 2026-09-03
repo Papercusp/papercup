@@ -1705,8 +1705,8 @@ describe('dependency-generation publish-lock waiter', () => {
       DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC: '1',
     });
     expect(result.stdout).toContain('FAILED rc=73');
-    expect(result.stderr).toContain(
-      'FATAL: timed out waiting for the short dependency-generation publish lock after 1s',
+    expect(result.stderr).toMatch(
+      /FATAL: timed out waiting for the short dependency-generation publish lock after \d+s of 1s/,
     );
     expect(result.stderr).toMatch(/holder host=\S+ pid=\d+ held=\d+s/);
   }, NATIVE_SHELL_TIMEOUT_MS);
@@ -1727,11 +1727,13 @@ describe('dependency-generation publish-lock waiter', () => {
     // the waiter must STILL be waiting after 30s rather than having returned 73 —
     // and its progress heartbeat must name the resolved default, so this asserts the
     // magnitude behaviourally instead of regex-matching the constant in the source.
-    const result = publishLockScenario('live-holder', {}, 33_000);
+    // 38s, not 33s: the heartbeat lands at 30s and each loop iteration also scans
+    // the generation store, so a loaded box can push it out by a second or two.
+    const result = publishLockScenario('live-holder', {}, 38_000);
     expect(result.stdout).not.toContain('FAILED');
     expect(result.signal).toBe('SIGTERM');
-    expect(result.stderr).toContain(
-      'still waiting for the dependency-generation publish lock after 30s of 900s',
+    expect(result.stderr).toMatch(
+      /still waiting for the dependency-generation publish lock after 3\ds of 900s/,
     );
   }, NATIVE_SHELL_TIMEOUT_MS);
 });

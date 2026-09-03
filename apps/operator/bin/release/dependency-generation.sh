@@ -871,23 +871,30 @@ dependency_generation_publish_lock_holder() {
 # green-checkpoint recorded `inconclusive: error` and never ran a suite at all.
 # Wait long enough to outlast a legitimate hold, log progress so a long wait is
 # not mistaken for a hang, and name the holder if it really does time out.
+# The budget is WALL-CLOCK, not an attempt count: each iteration also runs
+# cleanup_abandoned (a directory scan), so attempts*0.1s understates real elapsed
+# time by an amount that grows with the size of the generation store. Counting
+# attempts made both the budget and every message it printed a lie.
 dependency_generation_acquire_publish_lock() {
-  local generation_root="$1" lock attempts=0 max_attempts timeout_sec
+  local generation_root="$1" lock timeout_sec started now waited next_notice
   timeout_sec="${DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC:-900}"
   case "$timeout_sec" in
     ''|*[!0-9]*) timeout_sec=900 ;;
   esac
-  max_attempts=$((timeout_sec * 10))
   lock="$generation_root/.publish-lock"
+  started="$(date +%s)"
+  next_notice=30
   while ! mkdir "$lock" 2>/dev/null; do
     dependency_generation_cleanup_abandoned "$generation_root"
-    attempts=$((attempts + 1))
-    if [ "$attempts" -ge "$max_attempts" ]; then
-      dependency_generation_log "FATAL: timed out waiting for the short dependency-generation publish lock after ${timeout_sec}s (holder $(dependency_generation_publish_lock_holder "$lock"))"
+    now="$(date +%s)"
+    waited=$((now - started))
+    if [ "$waited" -ge "$timeout_sec" ]; then
+      dependency_generation_log "FATAL: timed out waiting for the short dependency-generation publish lock after ${waited}s of ${timeout_sec}s (holder $(dependency_generation_publish_lock_holder "$lock"))"
       return 73
     fi
-    if [ $((attempts % 300)) -eq 0 ]; then
-      dependency_generation_log "still waiting for the dependency-generation publish lock after $((attempts / 10))s of ${timeout_sec}s (holder $(dependency_generation_publish_lock_holder "$lock"))"
+    if [ "$waited" -ge "$next_notice" ]; then
+      dependency_generation_log "still waiting for the dependency-generation publish lock after ${waited}s of ${timeout_sec}s (holder $(dependency_generation_publish_lock_holder "$lock"))"
+      next_notice=$((waited + 30))
     fi
     sleep 0.1
   done
