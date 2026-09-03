@@ -230,23 +230,28 @@ const QUESTIONS: readonly Entry[] = [
     id: 15,
     cluster: 'D. Why is it red',
     question: 'Did the non-test legs even RUN?',
-    // BROKEN. `postSuiteMeasured` is computed in green-checkpoint.ts, consumed only for a
-    // prose note in a log file, and never persisted — so it resolves `null` forever.
-    // Independently diagnosed by a peer in WI-2142763: two agents reached this separately,
-    // which is corroboration rather than an echo.
-    binding: { cell: 'gate.greenCheckpoint.candidateFailures', path: 'postSuiteMeasured' },
-    owedBy: 'P-003',
-    status: 'broken',
+    // ANSWERED by P-003. `postSuiteMeasured` was broken twice over — one tri-state boolean
+    // for four unrelated legs, AND never actually supplied (computed in green-checkpoint.ts,
+    // consumed only for a prose note in a log file, never persisted, so it resolved `null`
+    // forever while looking like a measurement that came back empty). Independently
+    // diagnosed by a peer in WI-2142763: two agents reached it separately, which is
+    // corroboration rather than an echo. It is now DELETED, and this binds to a two-value
+    // reading derived from data the resolver really holds — with no fabricable third state.
+    binding: { cell: 'gate.greenCheckpoint.candidateFailures', path: 'nonTestLegsMeasured' },
+    owedBy: 'answered-today',
+    status: 'answered',
   },
   {
     id: 16,
     cluster: 'D. Why is it red',
     question: 'WHICH non-test leg, by name?',
-    // ABSENT: `lint:` appears 0x in cell-registrations.ts. The names exist only in
-    // gate_health.repairTickLegs.failingSignatures, which is not a cell.
-    binding: { cell: 'gate.greenCheckpoint.candidateFailures', path: 'nonTestLegs.failing' },
-    owedBy: 'P-003',
-    status: 'absent',
+    // ANSWERED by P-003, over the P-002 lifecycle. `nonTestLegs.perLeg` is one row per leg
+    // across the UNION of this tick's measurement and the cycle's lifecycle, so a leg the
+    // tick did not run is still named (with `measuredNow: 'not-measured'`) instead of
+    // silently vanishing from the list — not looking is not a pass (D-005 rule 4).
+    binding: { cell: 'gate.greenCheckpoint.candidateFailures', path: 'nonTestLegs.perLeg' },
+    owedBy: 'answered-today',
+    status: 'answered',
   },
 
   // ── E. Convergence / repair — nothing is on the plane ───────────────────────
