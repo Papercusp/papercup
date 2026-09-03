@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 
 const GIB = 1024 ** 3;
 const AFFECTED_CARGO_WORKSPACE = '@papercusp/desktop';
@@ -80,6 +80,29 @@ export const CARGO_CACHE_TAG = [
  * stale contents is repaired in place. Symlinks and other non-regular entries
  * are rejected rather than followed into an unrelated path.
  */
+/**
+ * Where a crate's `cargo llvm-cov --lcov` report must be written for the JS
+ * coverage chain to see it (P-010, plan design-to-code-coverage-seam-2026-09-02).
+ *
+ * This is NOT a free choice, which is why it is a named function rather than a
+ * string literal at the call site. `scripts/merge-coverage.ts` finds inputs by
+ * walking for a directory literally named `coverage` containing `lcov.info`,
+ * and derives the workspace those records are relative to as
+ * `dirname(dirname(file))`. Two consequences fix this path:
+ *
+ *   1. The report must sit at `<crateDir>/coverage/lcov.info` — one level under
+ *      the crate — or the records re-anchor against the wrong workspace root.
+ *   2. It must NOT sit under `target/`. That walker prunes `target` (as does
+ *      affected-tests.mjs), so cargo-llvm-cov's own default output location is
+ *      structurally invisible to the merge: the Rust leg would contribute zero
+ *      files while every command still exits 0. A coverage gate fed by an
+ *      absent producer goes green having measured nothing — the exact failure
+ *      plan decision D-028 exists to prevent.
+ */
+export function cargoCoverageOutputPath(manifestAbs) {
+  return resolve(dirname(manifestAbs), 'coverage', 'lcov.info');
+}
+
 export function ensureCargoCacheTag(targetDir) {
   if (typeof targetDir !== 'string' || targetDir.length === 0) return null;
 

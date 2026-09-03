@@ -1779,9 +1779,22 @@ export function buildCheckpointSystemdArgv(
   // the stable path during startup follows it to the file this run is about to fill.
   const target = runLogPath ?? logPath;
   const link = runLogPath ? `ln -sfn '${runLogPath}' '${logPath}' && ` : '';
+  // WI-5377: this run is always detached (systemd-run, no interactive TTY ever reads it
+  // live — it goes straight to a file), so stripping ANSI here can never lose the
+  // "keep colour for an interactive TTY" case; that case belongs to a foreground/manual
+  // invocation of green-checkpoint.ts, which never goes through this builder. Strip at
+  // the ONE write site instead of leaving every downstream reader (this repo has several)
+  // to keep re-implementing the same `sed 's/\x1b\[[0-9;]*m//g'` filter by hand.
+  // `sed -u` (unbuffered — flush per line rather than in fixed-size blocks) matters here
+  // specifically because a filtered write is a two-process pipeline instead of one process
+  // writing a file directly: on a SIGKILL/OOM (the whole cgroup dies together, same
+  // failure this file's EI-210996 terminal-marker comment above already guards against),
+  // an unbuffered sed loses at most its already-in-flight line, matching the original
+  // single-process write's own loss window — a block-buffered sed could instead lose a
+  // whole buffered chunk of otherwise-successfully-produced output.
   const inner =
     `${link}${gateEnv}PAPERCUSP_INTEGRATION_ROOT='${root}' '${tsxBin(root)}' ` +
-    `apps/operator/lib/release/green-checkpoint.ts${candidateArg} > ${target} 2>&1`;
+    `apps/operator/lib/release/green-checkpoint.ts${candidateArg} 2>&1 | sed -u 's/\\x1b\\[[0-9;]*m//g' > ${target}`;
   // EI-210996: the checkpoint process cannot publish its own verdict after SIGKILL/OOM.
   // ExecStopPost belongs to systemd, so it still appends the manager-provided terminal
   // tuple to this run's immutable log. The transient property is passed over D-Bus, so

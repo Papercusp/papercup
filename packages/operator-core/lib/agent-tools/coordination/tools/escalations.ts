@@ -42,6 +42,18 @@ export default defineTool({
       .optional()
       .describe('EI-15377: case-insensitive substring match over summary+body. See returns for match-completeness caveats.'),
   }),
+  result: z
+    .object({
+      escalations: z.array(z.unknown()),
+      count: z.number(),
+      total: z.number().optional(),
+      trueOpenTotal: z.number().optional(),
+      truncated: z.boolean().optional(),
+      offset: z.number().optional(),
+      filterWindowCaveat: z.boolean().optional(),
+      note: z.string().optional(),
+    })
+    .passthrough(),
   async handler(args) {
     const result = await listEscalationsPaginated({
       status: args.status,

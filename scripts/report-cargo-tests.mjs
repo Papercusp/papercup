@@ -35,12 +35,13 @@
 import { spawn } from 'node:child_process';
 import { resolve, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { statfsSync } from 'node:fs';
+import { mkdirSync, statfsSync } from 'node:fs';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 import { readReservedBytes } from './lib/disk-reservations.mjs';
 import {
   assessCargoDiskAdmission,
+  cargoCoverageOutputPath,
   cargoRunExitCode,
   CARGO_DISK_REFUSAL_EXIT_CODE,
   ensureCargoCacheTag,
@@ -90,11 +91,15 @@ function captureReporterSaturationSnapshot() {
 }
 
 function parseArgs(argv) {
-  const out = { manifestPath: null, cargoArgs: [] };
+  const out = { manifestPath: null, cargoArgs: [], coverage: false, coverageOutput: null };
   let i = 0;
   for (; i < argv.length; i++) {
     if (argv[i] === '--manifest-path') {
       out.manifestPath = argv[++i];
+    } else if (argv[i] === '--coverage') {
+      out.coverage = true;
+    } else if (argv[i] === '--coverage-output') {
+      out.coverageOutput = argv[++i];
     } else if (argv[i] === '--') {
       out.cargoArgs = argv.slice(i + 1);
       break;
@@ -103,7 +108,7 @@ function parseArgs(argv) {
   return out;
 }
 
-function runCargoTest(manifestAbs, extraArgs) {
+function runCargoTest(manifestAbs, extraArgs, coverage = null) {
   const startedAt = new Date();
   const diskPolicy = cargoDiskPolicyFromEnv();
   const readDiskAdmission = () => {
@@ -216,7 +221,41 @@ function runCargoTest(manifestAbs, extraArgs) {
   }
 
   return new Promise((resolvePromise) => {
-    const args = ['test', '--manifest-path', manifestAbs, '--no-fail-fast', '--', '--test-threads=4', ...extraArgs];
+    // P-010: `cargo llvm-cov` WRAPS `cargo test` — it runs the same harness and
+    // passes the same `test <name> ... ok|FAILED|ignored` lines through stdout,
+    // so every parser below (and the per-test ledger rows) works unchanged. The
+    // only difference is the subcommand and the report flags.
+    //
+    // `--output-path` does NOT create its parent directory: cargo-llvm-cov runs
+    // the whole suite and only then fails with `failed to create file ...
+    // (os error 2)`, throwing away a completed instrumented run. Measured
+    // 2026-09-03: 386/386 tests passed, then the report write lost all of it.
+    // mkdir first so a green suite can never be discarded at the last step.
+    const args = coverage
+      ? [
+          'llvm-cov',
+          '--manifest-path', manifestAbs,
+          '--no-fail-fast',
+          '--lcov',
+          '--output-path', coverage.outputPath,
+          '--', '--test-threads=4', ...extraArgs,
+        ]
+      : ['test', '--manifest-path', manifestAbs, '--no-fail-fast', '--', '--test-threads=4', ...extraArgs];
+    if (coverage) {
+      try {
+        mkdirSync(dirname(coverage.outputPath), { recursive: true });
+      } catch (err) {
+        resolvePromise({
+          code: 1,
+          stdout: '',
+          stderr: `[report-cargo-tests] REFUSED before spawning Cargo: could not create the coverage output directory ${dirname(coverage.outputPath)}: ${err.message}`,
+          startedAt,
+          finishedAt: new Date(),
+          diskAdmission,
+        });
+        return;
+      }
+    }
     const child = spawn(resolveCargoBin(), args, { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
@@ -277,17 +316,24 @@ async function insertRows(sql, rows) {
 }
 
 async function main() {
-  const { manifestPath, cargoArgs } = parseArgs(process.argv.slice(2));
+  const { manifestPath, cargoArgs, coverage: coverageRequested, coverageOutput } = parseArgs(process.argv.slice(2));
   if (!manifestPath) {
-    console.error('usage: report-cargo-tests.mjs --manifest-path <path/to/Cargo.toml> [-- <cargo test args>]');
+    console.error('usage: report-cargo-tests.mjs --manifest-path <path/to/Cargo.toml> [--coverage [--coverage-output <lcov>]] [-- <cargo test args>]');
     process.exit(2);
   }
   const manifestAbs = resolve(REPO_ROOT, manifestPath);
   const crateDir = relative(REPO_ROOT, dirname(manifestAbs)).split(sep).join('/');
+  const coverage = coverageRequested
+    ? { outputPath: coverageOutput ? resolve(REPO_ROOT, coverageOutput) : cargoCoverageOutputPath(manifestAbs) }
+    : null;
 
   ensureLoopLagMonitor();
-  console.log(`[report-cargo-tests] running: cargo test --manifest-path ${manifestPath} --no-fail-fast`);
-  const { code, stdout, stderr, startedAt, finishedAt, diskAdmission } = await runCargoTest(manifestAbs, cargoArgs);
+  console.log(
+    coverage
+      ? `[report-cargo-tests] running: cargo llvm-cov --manifest-path ${manifestPath} --no-fail-fast --lcov --output-path ${relative(REPO_ROOT, coverage.outputPath).split(sep).join('/')}`
+      : `[report-cargo-tests] running: cargo test --manifest-path ${manifestPath} --no-fail-fast`,
+  );
+  const { code, stdout, stderr, startedAt, finishedAt, diskAdmission } = await runCargoTest(manifestAbs, cargoArgs, coverage);
   const combined = `${stdout}\n${stderr}`;
   process.stdout.write(stdout);
   if (stderr) process.stderr.write(stderr.endsWith('\n') ? stderr : `${stderr}\n`);

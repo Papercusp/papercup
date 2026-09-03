@@ -15,7 +15,7 @@ vi.mock('../../testing-run-store', async (orig) => ({
 }));
 
 import { getRunAsync, type RunSnapshot } from '../../testing-run-store';
-import { detachedTestTimeoutHint } from './run';
+import { detachedRecoveryHint, detachedTestTimeoutHint } from './run';
 
 const getRunMock = vi.mocked(getRunAsync);
 const tool = (await import('./run-status')).default;
@@ -66,5 +66,39 @@ describe('testing:run-status handler', () => {
     expect(detachedTestTimeoutHint(['packages/operator-core/lib/example.integration.test.ts'])).toContain(
       'testing:run-status { runId }',
     );
+  });
+});
+
+/**
+ * The advertised detachedRunId is only pollable across an operator restart if its
+ * durable snapshot actually landed. startRun's own write is fire-and-forget,
+ * bounded at 1s and swallows failures, so the promise we print must track the
+ * persist result rather than the mere existence of an id.
+ */
+describe('detachedRecoveryHint durability gate', () => {
+  const runId = 'run-42';
+
+  it('promises the poll surface when the durable snapshot landed', () => {
+    const hint = detachedRecoveryHint({ runId, durable: true });
+
+    expect(hint).toContain(runId);
+    expect(hint).toContain(`poll it with testing:run-status { runId: '${runId}' }`);
+  });
+
+  it('withdraws the poll promise when the durable snapshot did not land', () => {
+    const hint = detachedRecoveryHint({ runId, durable: false });
+
+    // The id is still surfaced — it stays readable from this process's map.
+    expect(hint).toContain(runId);
+    // But we must not tell the caller the poll will answer, and must not let an
+    // unknown_run be read as a pass.
+    expect(hint).not.toContain(`poll it with testing:run-status { runId: '${runId}' }`);
+    expect(hint).toContain('unknown_run');
+    expect(hint).toContain('NOT evidence the tests passed');
+  });
+
+  it('emits nothing when no detached recovery was started', () => {
+    expect(detachedRecoveryHint({ runId: undefined, durable: true })).toBe('');
+    expect(detachedRecoveryHint({ runId: undefined, durable: false })).toBe('');
   });
 });

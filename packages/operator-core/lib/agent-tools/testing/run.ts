@@ -98,6 +98,30 @@ function detachedRunStatusHint(runId: string): string {
 }
 
 /**
+ * A detached run whose durable snapshot did not land is readable ONLY from this
+ * process's in-memory map, and only until it restarts — which is routine here.
+ * Say so plainly rather than promising a poll that can answer `unknown_run`,
+ * because the caller must never read that as "the tests passed".
+ */
+function detachedRunUndurableHint(runId: string): string {
+  return (
+    `started detached recovery run ${runId}, but its durable snapshot could NOT be written, so ` +
+    `testing:run-status { runId: '${runId}' } may answer unknown_run — which is NOT evidence the tests passed. ` +
+    'Prefer the detached fallback below. '
+  );
+}
+
+/**
+ * Compose the recovery sentence for a timed-out foreground run. Exported so the
+ * durability gate is guarded directly: the promise we make about
+ * testing:run-status must track whether the snapshot actually persisted.
+ */
+export function detachedRecoveryHint(opts: { runId?: string | undefined; durable: boolean }): string {
+  if (!opts.runId) return '';
+  return opts.durable ? detachedRunStatusHint(opts.runId) : detachedRunUndurableHint(opts.runId);
+}
+
+/**
  * Choose the timeout recovery that can actually run the timed-out file.
  *
  * `capability:inspect check:"test"` intentionally launches the package's default
@@ -693,6 +717,8 @@ export type TestFilesCoreResult =
       files?: number;
       routerOutput?: string;
       detachedRunId?: string;
+      /** Whether the detached run's durable snapshot landed before we advertised its id. */
+      detachedDurable?: boolean;
       status?: 'not-measured';
       reason?: RouterNotMeasuredReason;
       requested?: number;
@@ -1316,15 +1342,26 @@ export async function runTestFilesCore(opts: {
       // checkouts have no scripts/test-files.mjs route, so they retain the
       // existing explicit recovery hint until that route can be represented as
       // one store run.
-      const detachedRunId = hasRouter
+      const detachedSnapshot = hasRouter
         ? startRun(
             buildDetachedTestRunRequest({
               root,
               files: pathResolution.files,
               ...(opts.testNamePattern !== undefined ? { testNamePattern: opts.testNamePattern } : {}),
             }),
-          ).runId
+          )
         : undefined;
+      // startRun registers the run in THIS process's in-memory map and writes its
+      // durable row fire-and-forget. That write is bounded at 1s and swallows its
+      // failures, so under the very saturation that produced this timeout the run
+      // can have no durable row at all — and because the row is only re-written at
+      // finish, an operator restart during the run (routine here) then makes the id
+      // we are about to advertise permanently unpollable. Await one bounded persist
+      // so the advertised id is durable, and when it does not land, stop promising
+      // testing:run-status will answer. The upsert is idempotent and reads the live
+      // snapshot, so re-writing what startRun already queued is safe.
+      const detachedDurable = detachedSnapshot ? await persistRunSnapshot(detachedSnapshot) : false;
+      const detachedRunId = detachedSnapshot?.runId;
       return {
         ok: false,
         runId,
@@ -1332,10 +1369,10 @@ export async function runTestFilesCore(opts: {
         error: 'timeout',
         timeoutMs,
         hint: `hit the ${(timeoutMs / 1000).toFixed(0)}s budget. ` +
-          (detachedRunId ? detachedRunStatusHint(detachedRunId) : '') +
+          detachedRecoveryHint({ runId: detachedRunId, durable: detachedDurable }) +
           detachedTestTimeoutHint(opts.files),
         routerOutput: outcome.output.slice(-2000),
-        ...(detachedRunId ? { detachedRunId } : {}),
+        ...(detachedRunId ? { detachedRunId, detachedDurable } : {}),
       };
     }
     // A typed router refusal is still exit 2, but its strict marker distinguishes
@@ -1610,7 +1647,10 @@ export default defineTool({
           ...surfacedResult,
           hint:
             `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
-            (result.detachedRunId ? detachedRunStatusHint(result.detachedRunId) : '') +
+            detachedRecoveryHint({
+              runId: result.detachedRunId,
+              durable: result.detachedDurable === true,
+            }) +
             detachedTestTimeoutHint(files),
         },
       };
