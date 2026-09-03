@@ -11270,7 +11270,7 @@
           "POST"
         ]
       },
-      "description": "Read one bee's coordination mail by ownerId: its INBOX (messages addressed to it, or broadcast) and its OUTBOX (messages it sent). The observer view behind the bee-dossier dock pane — distinct from coord:inbox, which reads YOUR own inbox. Read-only; no heartbeat. Each side reads a bounded newest-first window: `exhausted:false` means older mail exists beyond it, so treat that side's `total` as a floor, not a census.",
+      "description": "Read one cup's coordination mail by ownerId: its INBOX (messages addressed to it, or broadcast) and its OUTBOX (messages it sent). The observer view behind the bee-dossier dock pane — distinct from coord:inbox, which reads YOUR own inbox. Read-only; no heartbeat. Each side reads a bounded newest-first window: `exhausted:false` means older mail exists beyond it, so treat that side's `total` as a floor, not a census.",
       "capabilities": [
         "coord:read"
       ],
@@ -11345,7 +11345,7 @@
           "POST"
         ]
       },
-      "description": "Signal one OR many running BEES to gracefully wind down (checkpoint, release locks/claims, return work-list, exit). Pass `bee_id` for one or `bee_ids` for several. Distinct from fleet:cancel (hard kill). The bee can cooperate or request deferral (propose/dispose); the fleet leader waits bounded time before reclaiming the slot. Returns immediately; the drain is async. OWNER-DIRECTED sessions (su/sentinel/planner) are auto-REFUSED per target: not bees, no reclaimable slot, don't count against maxBees. Returns { ok, results:[{ ok, bee_id, msg_id, … | error }], counts } — correlate by bee_id, not position; one failure (or a refusal) never fails the rest.",
+      "description": "Signal one OR many running CUPS to gracefully wind down (checkpoint, release locks/claims, return work-list, exit). Pass `bee_id` for one or `bee_ids` for several. Distinct from fleet:cancel (hard kill). The cup can cooperate or request deferral (propose/dispose); the fleet leader waits bounded time before reclaiming the slot. Returns immediately; the drain is async. OWNER-DIRECTED sessions (su/sentinel/planner) are auto-REFUSED per target: not cups, no reclaimable slot, don't count against maxBees. Returns { ok, results:[{ ok, bee_id, msg_id, … | error }], counts } — correlate by bee_id, not position; one failure (or a refusal) never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -11370,7 +11370,7 @@
       ],
       "guidance": {
         "when": "You (the fleet leader) want to reclaim member slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each cup a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.",
-        "notWhen": "The bee is running a high-priority task (let it finish). Immediate slot reclaim is critical, or the bee is unresponsive (use fleet:cancel). NEVER to reclaim an owner-directed session (su engineer, sentinel/operator, planner): not part of the maxBees population — the tool refuses them, but don't target them (pausing the pot operator ≠ drain your fleet-leader peers).",
+        "notWhen": "The cup is running a high-priority task (let it finish). Immediate slot reclaim is critical, or the cup is unresponsive (use fleet:cancel). NEVER to reclaim an owner-directed session (su engineer, sentinel/operator, planner): not part of the maxBees population — the tool refuses them, but don't target them (pausing the pot operator ≠ drain your fleet-leader peers).",
         "chaining": "fleet:drain { bee_id | bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → capability:launch-agent for a fresh ad-hoc agent (or fleet:launch-on-plan for a plan-bound member)."
       }
     },
@@ -11518,7 +11518,7 @@
           "POST"
         ]
       },
-      "description": "KILL an agent — desktop OR headless — through one verb. Interactive psu member: graceful SIGTERM (→SIGKILL) to its session, and close_terminal (default true) ALSO closes its terminal window (windows never close on their own — the tab drops to a shell after the agent exits). Managed headless psu member: the same session termination with kind:headless + terminal:none and no window ancestry. Headless nursery cup/bee: delegates to the transitive cancel path (claims + locks released). `terminal_pids` closes ORPHANED windows whose agent already exited. Self-kill refused; reason required; every kill audited.",
+      "description": "KILL an agent — desktop OR headless — through one verb. Interactive psu member: graceful SIGTERM (→SIGKILL) to its session, and close_terminal (default true) ALSO closes its terminal window (windows never close on their own — the tab drops to a shell after the agent exits). Managed headless psu member: the same session termination with kind:headless + terminal:none and no window ancestry. Headless nursery cup: delegates to the transitive cancel path (claims + locks released). `terminal_pids` closes ORPHANED windows whose agent already exited. Self-kill refused; reason required; every kill audited.",
       "capabilities": [
         "work_items:write"
       ],
@@ -11543,7 +11543,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Winding down a fleet member for real (not just ending its turn — that is turn:interrupt), removing a dead member's stale window, or stopping a headless cup. \"Close that agent's terminal\" / \"kill that bee\" both land here.",
+        "when": "Winding down a fleet member for real (not just ending its turn — that is turn:interrupt), removing a dead member's stale window, or stopping a headless cup. \"Close that agent's terminal\" / \"kill that cup\" both land here.",
         "notWhen": "To END A TURN but keep the agent alive — turn:interrupt. To cancel a whole nursery subtree by spawn id with full bulk semantics — fleet:cancel (fleet:kill delegates to the same machinery for a single headless target).",
         "chaining": "coord:presence / fleet:assignments (find the ownerId) → fleet:kill { owner, reason } . Stale windows: fleet:kill { terminal_pids:[…], reason }."
       }
@@ -11748,7 +11748,7 @@
           "POST"
         ]
       },
-      "description": "Place a whole batch of ready work onto the fleet in ONE wake: ranks each task↔bee by affinity (explicit-intent > file-overlap > recent-activity > queue-similarity), then warm-injects onto warm bees / fresh-spawns into free slots / queues the overflow — up to the fleet ceiling. The Mug's serial placement loop, collapsed to one call. Pass `tasks` (your importance-ranked frontier) or a `harness` to pull its open backlog; `dry_run` returns the plan without acting.",
+      "description": "Place a whole batch of ready work onto the fleet in ONE wake: ranks each task↔cup by affinity (explicit-intent > file-overlap > recent-activity > queue-similarity), then warm-injects onto warm cups / fresh-spawns into free slots / queues the overflow — up to the fleet ceiling. The Mug's serial placement loop, collapsed to one call. Pass `tasks` (your importance-ranked frontier) or a `harness` to pull its open backlog; `dry_run` returns the plan without acting.",
       "capabilities": [
         "work_items:write"
       ],
@@ -11771,7 +11771,7 @@
       "guidance": {
         "when": "You (the Mug) have surveyed + ranked the ready frontier and want to place several tasks at once instead of placing one task per turn. Pass the ranked work-item ids as `tasks` (importance order) — the tool fans them across free slots + warm cups by affinity in one turn.",
         "notWhen": "Placing a SINGLE task (just coord:send), or you have not yet surveyed the frontier (work_items:list + fleet:assignments first). Not a survey tool — it acts. Use dry_run:true to preview the plan.",
-        "chaining": "work_items:list (the frontier) + fleet:assignments (bee load) → fleet:place_batch { tasks } → fleet:tree to watch the fresh spawns; an await_event in the result means re-run for the deferred tail on a freed slot."
+        "chaining": "work_items:list (the frontier) + fleet:assignments (cup load) → fleet:place_batch { tasks } → fleet:tree to watch the fresh spawns; an await_event in the result means re-run for the deferred tail on a freed slot."
       }
     },
     {
@@ -11997,7 +11997,7 @@
           "POST"
         ]
       },
-      "description": "Get or set the ephemeral \"selected bee\" for the bee-dossier dock pane. With no args, RETURNS the currently selected bee (the bee pane polls this). With `select`, PUBLISHES the selection (the swarm/Fleet pane calls this when its cursor moves). In-memory, per-workspace, non-durable — a transport between the two pui dock processes, never persisted.",
+      "description": "Get or set the ephemeral \"selected cup\" for the bee-dossier dock pane. With no args, RETURNS the currently selected cup (the bee pane polls this). With `select`, PUBLISHES the selection (the swarm/Fleet pane calls this when its cursor moves). In-memory, per-workspace, non-durable — a transport between the two pui dock processes, never persisted.",
       "capabilities": [
         "work_items:read"
       ],

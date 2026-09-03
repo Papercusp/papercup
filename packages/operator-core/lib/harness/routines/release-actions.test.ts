@@ -2178,6 +2178,82 @@ describe('green-checkpoint child env — subject-hive DSN isolation (EI-20709645
 });
 
 /**
+ * EI-17065 — a gate that stops being ROUTABLE must not orphan its
+ * green-checkpoint-stall / green-checkpoint-watchdog escalation forever.
+ * `trackGateStall` (the only OTHER code that clears GATE_STALL_PHASE) fires only from a
+ * real green VERDICT, and a `routing.skip` tick returns before that ever runs — so an
+ * escalation open at disable-time could never self-clear on its own. Distinct from
+ * EI-8396's dead-install guard in `collectEscalationSignals` (watchdog.ts), which only
+ * suppresses the WATCHDOG COLLECTOR when the routine ROW itself is missing/inactive:
+ * here the routine is active and firing on schedule, it simply never reaches
+ * `trackGateStall` because `resolveCheckpointRouting` returns `skip` first.
+ */
+describe('green-checkpoint routing skip — EI-17065 escalation auto-clear', () => {
+  afterEach(() => {
+    routingPatch = null;
+  });
+
+  it('clears BOTH green-checkpoint escalation phases when the gate is not routable (gate_disabled)', async () => {
+    routingPatch = { skip: { reason: 'gate_disabled' } };
+
+    await getSystemAction('green-checkpoint')!(ctx);
+
+    // never reaches the suite — that's the whole point of `skip`.
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(appendPipelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws-42',
+        installSlug: 'my-harness',
+        kind: 'green_checkpoint',
+        status: 'skipped-disabled',
+        detail: { reason: 'gate_disabled' },
+      }),
+    );
+    expect(fakeSql.unsafe).toHaveBeenCalledWith(
+      expect.stringContaining('harness_escalations'),
+      [
+        'ws-42',
+        'my-harness',
+        expect.any(Number),
+        expect.stringContaining('gate_disabled'),
+        ['green-checkpoint-stall', 'green-checkpoint-watchdog'],
+      ],
+    );
+  });
+
+  it('fans out to every skip reason — not_found / no_blueprint / no_repo also mean "no verdict is ever coming"', async () => {
+    routingPatch = { skip: { reason: 'not_found' } };
+
+    await getSystemAction('green-checkpoint')!(ctx);
+
+    expect(fakeSql.unsafe).toHaveBeenCalledWith(
+      expect.stringContaining('harness_escalations'),
+      expect.arrayContaining(['ws-42', 'my-harness', ['green-checkpoint-stall', 'green-checkpoint-watchdog']]),
+    );
+  });
+
+  it('is best-effort — a DB failure on the clear warns but never throws or blocks the tick', async () => {
+    routingPatch = { skip: { reason: 'no_repo' } };
+    fakeSql.unsafe.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await expect(getSystemAction('green-checkpoint')!(ctx)).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('skipped-disabled escalation clear failed'),
+      );
+      // the pipeline event still records — the best-effort clear failing must not
+      // swallow the (unrelated) skip bookkeeping that already happened first.
+      expect(appendPipelineEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'skipped-disabled' }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+/**
  * WI-4494 — THE RUN THAT PRODUCES A VERDICT IS THE RUN THAT RECORDS IT.
  *
  * Before this, `gate_health` + the pipeline event were written ONLY by the routine that parsed the

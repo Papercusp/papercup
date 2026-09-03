@@ -245,6 +245,46 @@ export function prettyText(text: any): string;
 export function resultToText(result: any, { raw }?: {
     raw?: boolean;
 }): any;
+/**
+ * Map a `papercusp://scratch/<workspace>/<tool>/<runId>/<basename>` URI to its
+ * file on disk, or '' when it doesn't match the scheme or would resolve
+ * outside the scratch root. Deliberately minimal (prefix + traversal check
+ * only, not the full class-based validator in scratch-uri.ts): ptool is a
+ * TRUSTED client reading a URI its OWN operator just generated over an
+ * authenticated bearer, not a server accepting untrusted input.
+ */
+export function scratchUriToPath(uri: any, env?: NodeJS.ProcessEnv): string;
+/**
+ * Unwrap a parsed `ptool --json` reply down to the tool's own result, when it
+ * is actually an OUTPUT ENVELOPE (`schemaVersion: papercusp.output-envelope/v1`)
+ * rather than the result itself — the shape a large tool result renders as
+ * past a size threshold: a bounded MCP-style `content[]` whose parts are
+ * either inline text or, once spilled, `{ kind:'reference', uri, preview }`.
+ *
+ * WHY THIS EXISTS (EI-22212780570913684, 2026-09-03): a caller that does
+ * `JSON.parse(stdout)` then reads `.ok` off the result reads an envelope as a
+ * REFUSAL — it has no `.ok` at all — even when the wrapped call SUCCEEDED. A
+ * portal build read a granted `locks:acquire` this way, aborted believing it
+ * had been refused a lock it was actually holding, and orphaned that lock for
+ * its full hour-long TTL because the unwind never reached the release call.
+ * The size threshold makes it intermittent (the same command works all
+ * afternoon, then fails once a reply grows by a few hundred bytes) — the
+ * worst possible property for a lock path. Fixing it here, once, at the
+ * client every `ptool --json` caller shares, fixes it for every caller
+ * instead of requiring each one to patch around it independently (portal's
+ * own `scripts/ptool-envelope.mjs` was the first such patch, and the direct
+ * source for this port).
+ *
+ * A no-op on a plain result (returns the SAME reference — callers can detect
+ * "nothing changed" via `!==`). Returns the envelope UNCHANGED when nothing
+ * inside it parses: an unreadable reply must stay unreadable, never become a
+ * fabricated success. `readSpill`/`fileExists` are injectable for tests.
+ */
+export function unwrapOutputEnvelope(parsed: any, { readSpill, fileExists, env }?: {
+    readSpill?: typeof readSpilledPayload | undefined;
+    fileExists?: typeof existsSync | undefined;
+    env?: NodeJS.ProcessEnv | undefined;
+}): Promise<any>;
 /** Resolve the bearer-token files in precedence order. Pure and injectable for
  * tests: an explicit CLI path wins over the environment. When an isolated
  * `PAPERCUSP_HOME` is configured, its token is preferred, but the normal
@@ -495,10 +535,14 @@ export function stdoutDeliveryError(): Error | null;
  * WI-39692: the @param types are LOAD-BEARING — ptool.d.mts is generated from
  * this JSDoc, and without them tsc infers the options shape from the defaults
  * alone (dropping `raw` entirely, which strands every typed caller).
+ * Async since EI-22212780570913684: a `raw` result that parses as an output
+ * envelope is unwrapped (possibly reading a spill file off disk) before it is
+ * ever handed to a `.ok`-checking caller — see {@link unwrapOutputEnvelope}.
  * @param {unknown} result
- * @param {{ raw?: boolean, deliveryProbe?: () => (Error | null) }} [options]
+ * @param {{ raw?: boolean, deliveryProbe?: () => (Error | null), env?: NodeJS.ProcessEnv }} [options]
+ * @returns {Promise<number>}
  */
-export function printResult(result: unknown, { raw, deliveryProbe }?: unknown): 0 | 1;
+export function printResult(result: unknown, { raw, deliveryProbe, env }?: unknown): Promise<number>;
 /**
  * A result-door truncation only tells ptool that the operator's reply is not
  * machine-readable. The tool call may already have executed, which is
@@ -554,3 +598,12 @@ export type ToolCatalogEntry = {
         readOnlyHint?: boolean;
     };
 };
+/**
+ * Read the payload back out of one spill file. Line-oriented: a magic line, a
+ * manifest line, then the JSON payload — parsed from the LAST non-empty line
+ * rather than by a fixed index, since the manifest is allowed to grow and
+ * indexing would break silently the first time it did.
+ */
+declare function readSpilledPayload(path: any): Promise<any>;
+import { existsSync } from 'node:fs';
+export {};

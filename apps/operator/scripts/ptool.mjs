@@ -62,9 +62,10 @@
  * unshaped-payload escape hatch.
  */
 import { randomUUID } from 'node:crypto';
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { PSU_REQUEST_TIMEOUT_MS } from '../lib/mcp-proxy/budgets.mjs';
 import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase } from './operator-discovery.mjs';
@@ -733,6 +734,131 @@ export function resultToText(result, { raw = false } = {}) {
   }
 
   return contentText;
+}
+
+const SCRATCH_URI_PREFIX = 'papercusp://scratch/';
+
+/**
+ * Filesystem root for scratch spill files, mirroring
+ * packages/operator-core/lib/scratch-uri.ts's `scratchRoot()` (the operator's
+ * own resolver): `PAPERCUSP_SCRATCH_ROOT` override, else `~/.papercusp/scratch`.
+ * ptool.mjs is plain JS (no ts-node loader in its runtime), so it cannot import
+ * that TS module directly — this mirrors its resolution logic instead of
+ * re-deriving it independently, so the two never drift apart on which root a
+ * spill actually landed under.
+ */
+function scratchRootDir(env = process.env) {
+  const override = typeof env.PAPERCUSP_SCRATCH_ROOT === 'string' ? env.PAPERCUSP_SCRATCH_ROOT.trim() : '';
+  if (override) return override;
+  return join(homedir(), '.papercusp', 'scratch');
+}
+
+/**
+ * Map a `papercusp://scratch/<workspace>/<tool>/<runId>/<basename>` URI to its
+ * file on disk, or '' when it doesn't match the scheme or would resolve
+ * outside the scratch root. Deliberately minimal (prefix + traversal check
+ * only, not the full class-based validator in scratch-uri.ts): ptool is a
+ * TRUSTED client reading a URI its OWN operator just generated over an
+ * authenticated bearer, not a server accepting untrusted input.
+ */
+export function scratchUriToPath(uri, env = process.env) {
+  if (typeof uri !== 'string' || !uri.startsWith(SCRATCH_URI_PREFIX)) return '';
+  const rest = uri.slice(SCRATCH_URI_PREFIX.length);
+  if (!rest || rest.includes('\0') || /(^|\/)\.\.(\/|$)/.test(rest)) return '';
+  const root = scratchRootDir(env);
+  const candidate = resolve(root, rest);
+  if (candidate !== root && !candidate.startsWith(root + sep)) return '';
+  return candidate;
+}
+
+/** Parse `text` as a JSON OBJECT (not array/scalar/null) — the shape both a
+ *  plain tool result and an output envelope share. Prose parts are expected
+ *  to fail this and are the normal case, not an error. */
+function tryParseJsonObject(text) {
+  if (typeof text !== 'string') return null;
+  const t = text.trim();
+  if (!t.startsWith('{')) return null;
+  try {
+    const value = JSON.parse(t);
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the payload back out of one spill file. Line-oriented: a magic line, a
+ * manifest line, then the JSON payload — parsed from the LAST non-empty line
+ * rather than by a fixed index, since the manifest is allowed to grow and
+ * indexing would break silently the first time it did.
+ */
+async function readSpilledPayload(path) {
+  const text = await readFile(path, 'utf8');
+  const lines = text.split('\n').filter((line) => line.trim() !== '');
+  if (lines.length === 0) throw new Error(`empty spill file: ${path}`);
+  return JSON.parse(lines[lines.length - 1]);
+}
+
+/**
+ * Unwrap a parsed `ptool --json` reply down to the tool's own result, when it
+ * is actually an OUTPUT ENVELOPE (`schemaVersion: papercusp.output-envelope/v1`)
+ * rather than the result itself — the shape a large tool result renders as
+ * past a size threshold: a bounded MCP-style `content[]` whose parts are
+ * either inline text or, once spilled, `{ kind:'reference', uri, preview }`.
+ *
+ * WHY THIS EXISTS (EI-22212780570913684, 2026-09-03): a caller that does
+ * `JSON.parse(stdout)` then reads `.ok` off the result reads an envelope as a
+ * REFUSAL — it has no `.ok` at all — even when the wrapped call SUCCEEDED. A
+ * portal build read a granted `locks:acquire` this way, aborted believing it
+ * had been refused a lock it was actually holding, and orphaned that lock for
+ * its full hour-long TTL because the unwind never reached the release call.
+ * The size threshold makes it intermittent (the same command works all
+ * afternoon, then fails once a reply grows by a few hundred bytes) — the
+ * worst possible property for a lock path. Fixing it here, once, at the
+ * client every `ptool --json` caller shares, fixes it for every caller
+ * instead of requiring each one to patch around it independently (portal's
+ * own `scripts/ptool-envelope.mjs` was the first such patch, and the direct
+ * source for this port).
+ *
+ * A no-op on a plain result (returns the SAME reference — callers can detect
+ * "nothing changed" via `!==`). Returns the envelope UNCHANGED when nothing
+ * inside it parses: an unreadable reply must stay unreadable, never become a
+ * fabricated success. `readSpill`/`fileExists` are injectable for tests.
+ */
+export async function unwrapOutputEnvelope(parsed, { readSpill = readSpilledPayload, fileExists = existsSync, env = process.env } = {}) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return parsed;
+  if (!Array.isArray(parsed.content)) return parsed;
+  // Already result-shaped (carries `ok`) — prefer it outright. Also protects a
+  // genuine tool result that happens to carry its own `content` array.
+  if (Object.prototype.hasOwnProperty.call(parsed, 'ok')) return parsed;
+
+  for (const part of parsed.content) {
+    const inline = tryParseJsonObject(part?.text);
+    if (inline) return inline;
+
+    if (part?.kind === 'reference' || part?.type === 'reference') {
+      const path = scratchUriToPath(part.uri, env);
+      if (!path || !fileExists(path)) continue;
+      // The spilled payload is itself an envelope: one of its content parts
+      // is the tool's JSON and the rest is advisory prose ("See also: ..."),
+      // which is why this scans for a parseable object instead of trusting
+      // position (the payload is not always content[0]).
+      let spilled;
+      try {
+        spilled = await readSpill(path);
+      } catch {
+        continue;
+      }
+      for (const spilledPart of spilled?.content ?? []) {
+        const candidate = tryParseJsonObject(spilledPart?.text);
+        if (candidate) return candidate;
+      }
+      // A reference we could read but could not parse falls through to the
+      // next part rather than returning early — if none parses, the caller
+      // still gets the envelope back and reports it verbatim (never fabricated).
+    }
+  }
+  return parsed;
 }
 
 /**
@@ -2102,11 +2228,22 @@ export function stdoutDeliveryError() {
  * WI-39692: the @param types are LOAD-BEARING — ptool.d.mts is generated from
  * this JSDoc, and without them tsc infers the options shape from the defaults
  * alone (dropping `raw` entirely, which strands every typed caller).
+ * Async since EI-22212780570913684: a `raw` result that parses as an output
+ * envelope is unwrapped (possibly reading a spill file off disk) before it is
+ * ever handed to a `.ok`-checking caller — see {@link unwrapOutputEnvelope}.
  * @param {unknown} result
- * @param {{ raw?: boolean, deliveryProbe?: () => (Error | null) }} [options]
+ * @param {{ raw?: boolean, deliveryProbe?: () => (Error | null), env?: NodeJS.ProcessEnv }} [options]
+ * @returns {Promise<number>}
  */
-export function printResult(result, { raw, deliveryProbe = stdoutDeliveryError } = {}) {
-  const text = resultToText(result, { raw });
+export async function printResult(result, { raw, deliveryProbe = stdoutDeliveryError, env = process.env } = {}) {
+  let text = resultToText(result, { raw });
+  if (raw) {
+    const parsed = tryParseJsonObject(text);
+    if (parsed) {
+      const unwrapped = await unwrapOutputEnvelope(parsed, { env });
+      if (unwrapped !== parsed) text = JSON.stringify(unwrapped);
+    }
+  }
   if (!text.trim()) {
     console.error('ptool: operator returned an empty MCP result; no content or structuredContent was received');
     return 1;
@@ -2371,7 +2508,7 @@ async function main() {
       process.exitCode = 1;
       return;
     }
-    const code = printResult(result, { raw: shouldPrintRawResult(inputKind, args.raw) });
+    const code = await printResult(result, { raw: shouldPrintRawResult(inputKind, args.raw) });
     if (code !== 0) process.exitCode = code;
   } finally {
     await client.close().catch(() => {});

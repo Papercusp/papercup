@@ -47,8 +47,10 @@ import {
   resultToText,
   retryWaitMsWithJitter,
   sanitizeJsonText,
+  scratchUriToPath,
   shouldPrintRawResult,
   timeoutForTool,
+  unwrapOutputEnvelope,
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- plain .mjs launcher script, no type declarations.
 } from './ptool.mjs';
@@ -716,14 +718,14 @@ describe('ptool keyed result recovery without concurrent replay', () => {
 });
 
 describe('ptool result formatting', () => {
-  it('prints structuredContent when the MCP response has no content blocks', () => {
+  it('prints structuredContent when the MCP response has no content blocks', async () => {
     expect(resultToText({ structuredContent: { ok: true, value: 7 } }))
       .toBe('{"ok":true,"value":7}');
 
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      expect(printResult({ structuredContent: { ok: true } }, { raw: true })).toBe(0);
+      expect(await printResult({ structuredContent: { ok: true } }, { raw: true })).toBe(0);
       expect(log).toHaveBeenCalledWith('{"ok":true}');
       expect(error).not.toHaveBeenCalled();
     } finally {
@@ -739,7 +741,7 @@ describe('ptool result formatting', () => {
     })).toBe('{"items":[{"id":"P-001"}]}');
   });
 
-  it('fails loudly instead of emitting a result-door-truncated JSON prefix', () => {
+  it('fails loudly instead of emitting a result-door-truncated JSON prefix', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
@@ -749,7 +751,7 @@ describe('ptool result formatting', () => {
           text: '{"items":[{"id":"P-001"},\n[result-door: this result exceeded the token budget and was truncated.',
         }],
       };
-      expect(printResult(result, { raw: true })).toBe(1);
+      expect(await printResult(result, { raw: true })).toBe(1);
       expect(log).not.toHaveBeenCalled();
       expect(error).toHaveBeenCalledWith(PTOOL_TRUNCATED_RESULT_MESSAGE);
       expect(PTOOL_TRUNCATED_RESULT_MESSAGE).toContain('may have executed');
@@ -762,7 +764,7 @@ describe('ptool result formatting', () => {
     }
   });
 
-  it('keeps appended advisory content off raw stdout so jq can parse the payload', () => {
+  it('keeps appended advisory content off raw stdout so jq can parse the payload', async () => {
     const result = {
       content: [
         { type: 'text', text: '{"ok":true,"value":7}' },
@@ -778,7 +780,7 @@ describe('ptool result formatting', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      expect(printResult(result, { raw: true })).toBe(0);
+      expect(await printResult(result, { raw: true })).toBe(0);
       expect(log).toHaveBeenCalledWith('{"ok":true,"value":7}');
       expect(error).not.toHaveBeenCalled();
     } finally {
@@ -787,11 +789,11 @@ describe('ptool result formatting', () => {
     }
   });
 
-  it('fails loudly instead of exiting zero with blank stdout for an empty response', () => {
+  it('fails loudly instead of exiting zero with blank stdout for an empty response', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      expect(printResult({ content: [] }, { raw: true })).toBe(1);
+      expect(await printResult({ content: [] }, { raw: true })).toBe(1);
       expect(log).not.toHaveBeenCalled();
       expect(error).toHaveBeenCalledWith(
         'ptool: operator returned an empty MCP result; no content or structuredContent was received',
@@ -802,7 +804,7 @@ describe('ptool result formatting', () => {
     }
   });
 
-  it('escapes raw controls inside JSON text for jq-safe raw output', () => {
+  it('escapes raw controls inside JSON text for jq-safe raw output', async () => {
     const nul = String.fromCharCode(0);
     const raw = `{"message":"before${nul}after\nline"}`;
     const repaired = sanitizeJsonText(raw);
@@ -814,9 +816,9 @@ describe('ptool result formatting', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      expect(printResult({ content: [{ type: 'text', text: raw }] }, { raw: true })).toBe(0);
+      expect(await printResult({ content: [{ type: 'text', text: raw }] }, { raw: true })).toBe(0);
       expect(log).toHaveBeenCalledWith(repaired);
-      expect(printResult({ content: [{ type: 'text', text: raw }] }, { raw: false })).toBe(0);
+      expect(await printResult({ content: [{ type: 'text', text: raw }] }, { raw: false })).toBe(0);
       expect(log).toHaveBeenLastCalledWith(JSON.stringify(JSON.parse(repaired), null, 2));
       expect(error).not.toHaveBeenCalled();
     } finally {
@@ -836,6 +838,114 @@ describe('ptool result formatting', () => {
   });
 });
 
+describe('ptool --json output-envelope unwrap (EI-22212780570913684)', () => {
+  it('is a no-op on a plain result (same reference)', async () => {
+    const result = { ok: true, value: 7 };
+    expect(await unwrapOutputEnvelope(result)).toBe(result);
+  });
+
+  it('is a no-op on a result that happens to carry its own content array + ok', async () => {
+    const result = { ok: true, content: [{ type: 'text', text: 'hi' }] };
+    expect(await unwrapOutputEnvelope(result)).toBe(result);
+  });
+
+  it('unwraps an INLINE envelope (no spill) to the real tool result', async () => {
+    const envelope = {
+      schemaVersion: 'papercusp.output-envelope/v1',
+      summary: '',
+      content: [
+        { type: 'text', text: '{"ok":true,"lock_id":"94ed8996-abc"}' },
+        { type: 'text', text: 'See also: locks:release' },
+      ],
+    };
+    expect(await unwrapOutputEnvelope(envelope)).toEqual({ ok: true, lock_id: '94ed8996-abc' });
+  });
+
+  it('unwraps a SPILLED envelope by reading the referenced file, scanning for the parseable part (never trusting position)', async () => {
+    const envelope = {
+      schemaVersion: 'papercusp.output-envelope/v1',
+      summary: '',
+      content: [{
+        kind: 'reference',
+        uri: 'papercusp://scratch/papercusp-workspace/locks:acquire/5084d585-0000-4000-8000-000000000000/result-door-123.spill',
+        preview: '{"ok":true,"lock_id":"94ed8996-...',
+      }],
+    };
+    // NOT index 0 — proves the unwrap scans instead of trusting position, same
+    // as the "See also:" advisory text landing before the payload in practice.
+    const spilledPayload = {
+      content: [
+        { type: 'text', text: 'See also: locks:release' },
+        { type: 'text', text: '{"ok":true,"lock_id":"94ed8996-full-id"}' },
+      ],
+    };
+    const readSpill = vi.fn().mockResolvedValue(spilledPayload);
+    const fileExists = vi.fn().mockReturnValue(true);
+    expect(await unwrapOutputEnvelope(envelope, { readSpill, fileExists })).toEqual({
+      ok: true,
+      lock_id: '94ed8996-full-id',
+    });
+    expect(readSpill).toHaveBeenCalledWith(
+      expect.stringContaining('locks:acquire/5084d585-0000-4000-8000-000000000000/result-door-123.spill'),
+    );
+  });
+
+  it('returns the envelope UNCHANGED — never a fabricated success — when the reference cannot be read or parsed', async () => {
+    const missing = {
+      schemaVersion: 'papercusp.output-envelope/v1',
+      content: [{ kind: 'reference', uri: 'papercusp://scratch/ws/tool/00000000-0000-4000-8000-000000000000/gone.spill' }],
+    };
+    expect(await unwrapOutputEnvelope(missing, { fileExists: () => false })).toBe(missing);
+
+    const unreadable = {
+      schemaVersion: 'papercusp.output-envelope/v1',
+      content: [{ kind: 'reference', uri: 'papercusp://scratch/ws/tool/00000000-0000-4000-8000-000000000000/bad.spill' }],
+    };
+    expect(
+      await unwrapOutputEnvelope(unreadable, {
+        fileExists: () => true,
+        readSpill: vi.fn().mockRejectedValue(new Error('disk error')),
+      }),
+    ).toBe(unreadable);
+  });
+
+  it('scratchUriToPath rejects a non-matching scheme and any traversal attempt', () => {
+    expect(scratchUriToPath('not-a-scratch-uri')).toBe('');
+    expect(scratchUriToPath('papercusp://scratch/../../etc/passwd')).toBe('');
+    expect(scratchUriToPath('papercusp://scratch/ws/tool/run/../../../etc/passwd')).toBe('');
+    expect(scratchUriToPath('papercusp://scratch/')).toBe('');
+  });
+
+  it('scratchUriToPath maps a valid URI under the resolved (overridable) scratch root', () => {
+    const env = { PAPERCUSP_SCRATCH_ROOT: '/tmp/fake-scratch-root' };
+    expect(scratchUriToPath('papercusp://scratch/ws/tool:verb/run-id/file.spill', env)).toBe(
+      '/tmp/fake-scratch-root/ws/tool:verb/run-id/file.spill',
+    );
+  });
+
+  it('printResult (raw mode) prints the UNWRAPPED result, not the envelope — the exact EI-22212780570913684 shape', async () => {
+    const grantedLockEnvelope = {
+      schemaVersion: 'papercusp.output-envelope/v1',
+      summary: '',
+      content: [{ type: 'text', text: '{"ok":true,"lock_id":"94ed8996-abc"}' }],
+    };
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const code = await printResult(
+        { content: [{ type: 'text', text: JSON.stringify(grantedLockEnvelope) }] },
+        { raw: true },
+      );
+      expect(code).toBe(0);
+      expect(log).toHaveBeenCalledWith('{"ok":true,"lock_id":"94ed8996-abc"}');
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
+});
+
 describe('ptool scripted JSON output', () => {
   it('uses the raw JSON extractor for every explicit JSON input, without requiring --raw', () => {
     expect(shouldPrintRawResult('inline', false)).toBe(true);
@@ -851,11 +961,11 @@ describe('stdout delivery failure (EI-21250765620092599)', () => {
   // stdout dies, later writes are dropped silently and the process exits 0 — the
   // "completed successfully but emitted no JSON or text" wake-harness shape.
   // printResult must convert a detected delivery failure into stderr + exit 1.
-  it('fails loudly when stdout delivery errored after the write (swallowed EPIPE)', () => {
+  it('fails loudly when stdout delivery errored after the write (swallowed EPIPE)', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      const code = printResult(
+      const code = await printResult(
         { structuredContent: { ok: true } },
         { raw: true, deliveryProbe: () => Object.assign(new Error('broken pipe'), { code: 'EPIPE' }) },
       );
@@ -869,11 +979,11 @@ describe('stdout delivery failure (EI-21250765620092599)', () => {
     }
   });
 
-  it('reports success with no stderr on a healthy stream, and the live probe is quiet', () => {
+  it('reports success with no stderr on a healthy stream, and the live probe is quiet', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      expect(printResult({ structuredContent: { ok: true } }, { raw: true })).toBe(0);
+      expect(await printResult({ structuredContent: { ok: true } }, { raw: true })).toBe(0);
       expect(error).not.toHaveBeenCalled();
     } finally {
       log.mockRestore();
