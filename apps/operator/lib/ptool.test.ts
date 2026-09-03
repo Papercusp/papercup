@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { once } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -1255,5 +1256,87 @@ describe('ptool prettyText / resultToText', () => {
       }],
     };
     expect(resultToText(result, { raw: true })).toContain('[result-door:');
+  });
+});
+
+describe('ptool shed classification stays in parity with the mcp-proxy 429 vocabulary', () => {
+  const proxySource = readFileSync(
+    fileURLToPath(new URL('./mcp-proxy/proxy.ts', import.meta.url)),
+    'utf8',
+  );
+
+  /**
+   * DERIVED, never hand-listed. ptool cannot import the proxy (it is a plain
+   * .mjs script that talks to :3170 directly), so its two shed predicates each
+   * carry a regex copy of the proxy's error vocabulary — and a copy drifts.
+   * EI-22085013885475039 is that drift: the proxy shed coord:send with a typed
+   * pre-forward 429 the caller did not recognise, so an honest, retryable
+   * backpressure refusal surfaced as an unclassified failure.
+   *
+   * Rather than add a third hand-maintained list, recover the live vocabulary
+   * from the proxy itself: every `res.writeHead(429` is followed within a few
+   * lines by the `error: "mcp_proxy_…"` it emits. A newly added shed code then
+   * fails this guard instead of silently stranding a ptool caller.
+   */
+  function derive429ShedCodes(source: string): string[] {
+    const codes = new Set<string>();
+    let last429 = Number.NEGATIVE_INFINITY;
+    source.split('\n').forEach((line, index) => {
+      if (/res\.writeHead\(429/.test(line)) last429 = index;
+      const match = /error: "(mcp_proxy_[a-z_]+)"/.exec(line);
+      if (match && index - last429 <= 12) codes.add(match[1]);
+    });
+    return [...codes].sort();
+  }
+
+  const shedCodes = derive429ShedCodes(proxySource);
+
+  const asProxyError = (code: string, status = 429) => Object.assign(
+    new Error(
+      `Streamable HTTP error: Error POSTing to endpoint: {"error":"${code}","retryAfterSec":2}`,
+    ),
+    { code: status },
+  );
+
+  it('recovers the proxy vocabulary from source instead of trusting a written list', () => {
+    // Calibration: without this, an extraction that silently matched nothing
+    // would make every assertion below pass vacuously.
+    expect(shedCodes.length).toBeGreaterThanOrEqual(7);
+    expect(shedCodes).toContain('mcp_proxy_coord_send_queue_dwell');
+    expect(shedCodes).toContain('mcp_proxy_handshake_queue_dwell');
+  });
+
+  it('treats every typed proxy 429 as a pre-dispatch tool-call refusal', () => {
+    for (const code of shedCodes) {
+      expect(
+        isLoopPressureShed(asProxyError(code)),
+        `${code} is shed before forwarding, so the tool never ran`,
+      ).toBe(true);
+    }
+  });
+
+  it('treats every handshake-path 429 as a retryable connect failure', () => {
+    // A first connect only reaches the handshake bulkhead and the global
+    // admission ceiling; the per-tool class FIFOs cannot refuse it.
+    const connectPath = shedCodes.filter(
+      (code) => code.includes('handshake') || code === 'mcp_proxy_overloaded',
+    );
+    expect(connectPath.length).toBeGreaterThanOrEqual(3);
+    for (const code of connectPath) {
+      expect(
+        isRetryableLocalHttpConnectFailure(asProxyError(code)),
+        `${code} sheds the handshake before forwarding, so the connect must retry`,
+      ).toBe(true);
+    }
+  });
+
+  it('does not widen either predicate to untyped or non-429 refusals', () => {
+    const providerLimit = asProxyError('provider_rate_limit');
+    expect(isLoopPressureShed(providerLimit)).toBe(false);
+    expect(isRetryableLocalHttpConnectFailure(providerLimit)).toBe(false);
+
+    const wrongStatus = asProxyError('mcp_proxy_handshake_queue_dwell', 500);
+    expect(isLoopPressureShed(wrongStatus)).toBe(false);
+    expect(isRetryableLocalHttpConnectFailure(wrongStatus)).toBe(false);
   });
 });

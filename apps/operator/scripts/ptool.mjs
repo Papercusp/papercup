@@ -1646,7 +1646,19 @@ export function isRetryableLocalHttpConnectFailure(error) {
     // dispatched a tool yet, so retrying this local, proxy-generated refusal is
     // safe and lets the reconnect herd drain instead of surfacing a terminal
     // "could not reach operator" error to ptool callers.
-    if (status === 429 && /mcp_proxy_(?:handshake_)?overloaded/i.test(detail)) return true;
+    //
+    // The bulkhead sheds a handshake in TWO ways and both are pre-forward: at
+    // admission when the queue is already full (`mcp_proxy_handshake_overloaded`)
+    // and after a queued handshake ages out of its dwell budget
+    // (`mcp_proxy_handshake_queue_dwell`). The dwell shed is the one that fires
+    // under a sustained reconnect herd, so omitting it surfaced a terminal
+    // "could not reach operator" at exactly the moment retrying was correct.
+    // Parity with the proxy's full 429 vocabulary is asserted by the derived
+    // guard in ptool.test.ts — add a shed code there, not only here.
+    if (
+      status === 429 &&
+      /\bmcp_proxy_(?:overloaded|handshake_overloaded|handshake_queue_(?:full|dwell))\b/i.test(detail)
+    ) return true;
     current = current.cause;
   }
   return false;
