@@ -1825,9 +1825,18 @@ export async function reconcileLoopRoutines(
         via !== 'claim-dispatch-gap' &&
         via !== 'delivered-wake-no-loop-turn'
       ) {
-        const evidenceUntilMs = via === 'stuck-backstop' ? nowMs : completedAt;
+        // WI-2143038: the window runs to NOW, not to `completedAt`. `completedAt` is a
+        // turn-SETTLED signal that can land before (or early in) the woken agent's actual
+        // work — measured on the su-54215254 disarm: an agent-origin loop:status sat at
+        // fire+81s and was still scored 0. Widening is fail-open by construction (a longer
+        // window can only find MORE evidence), and any agent-authored call in the interval
+        // refutes R4's premise directly: this session is not merely consuming wakes.
+        const evidenceUntilMs = nowMs;
         const toolCalls = await runWithWorkspace(row.routine_workspace_id, () =>
-          countAgentToolCallsInWindow(row.target_owner_id, lastFiredMs, evidenceUntilMs, { sql: db }),
+          countAgentToolCallsInWindow(row.target_owner_id, lastFiredMs, evidenceUntilMs, {
+            sql: db,
+            evidenceScope: 'fire-productivity',
+          }),
         ).catch((e) => {
           console.warn(
             `[loop-reconcile] zero-tool evidence read failed for '${row.id}' — leaving the existing re-arm path intact: ${e instanceof Error ? e.message : e}`,

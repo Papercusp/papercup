@@ -1400,7 +1400,17 @@ describe('reconcileLoopRoutines — bounded consecutive zero-tool escalation (WI
       zeroToolThreshold: 3,
     });
 
-    expect(countAgentToolCallsInWindow).toHaveBeenCalledWith('su-zero-tool', T0, T0 + 5_000, expect.anything());
+    // WI-2143038: the evidence window runs to NOW (T0 + 10_000), not to the turn-settled
+    // `completedAt` (T0 + 5_000) which could close before the woken agent's work landed —
+    // and it asks the 'fire-productivity' question, which counts native tool calls and does
+    // NOT exclude the carry-note writers. Both are load-bearing: with the old contract a
+    // watcher whose wake is a Bash probe plus a loop:checkpoint scored a structural zero.
+    expect(countAgentToolCallsInWindow).toHaveBeenCalledWith(
+      'su-zero-tool',
+      T0,
+      T0 + 10_000,
+      expect.objectContaining({ evidenceScope: 'fire-productivity' }),
+    );
     expect(recordZeroToolFireObservation).toHaveBeenCalledTimes(1);
     expect(autoPauseLoopRoutine).toHaveBeenCalledWith(
       expect.anything(),
