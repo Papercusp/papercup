@@ -126,6 +126,7 @@ import {
   resetOrchestratorLog,
   renderOrchestratorTranscript,
   pipelineName,
+  pipelineRef,
   pipelineTag,
   formatGateLineageLine,
   computeGateLineage,
@@ -12153,7 +12154,11 @@ describe("P-004/D-002 — the gate-verdict WAKE BANNER is attributable to its pi
     await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
     const pipeline = pipelineName(repo);
-    const expected = `[pipeline:${pipeline}] ready advanced to ${c2.slice(0, 8)} (green, deployable)`;
+    // EI-22240267519750098: the REF inside the sentence is pipeline-qualified too
+    // (`<pipeline>:ready`, not a bare `ready` the reader resolves against their own
+    // checkout). Written out literally rather than through `pipelineRef` so this stays
+    // an independent restatement of the wire format, not a tautology.
+    const expected = `[pipeline:${pipeline}] ${pipeline}:ready advanced to ${c2.slice(0, 8)} (green, deployable)`;
     expect(summaries["release:green"]).toBe(expected);
     expect(summaries[`release:green:${pipeline}`]).toBe(expected);
     // The whole point: the banner alone must identify the pipeline, with no payload read.
@@ -12168,7 +12173,7 @@ describe("P-004/D-002 — the gate-verdict WAKE BANNER is attributable to its pi
     await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
     const pipeline = pipelineName(repo);
-    const expected = `[pipeline:${pipeline}] green-checkpoint: ${c2.slice(0, 8)} not green — ready held`;
+    const expected = `[pipeline:${pipeline}] green-checkpoint: ${c2.slice(0, 8)} not green — ${pipeline}:ready held`;
     expect(summaries["green-checkpoint:red"]).toBe(expected);
     expect(summaries[`green-checkpoint:red:${pipeline}`]).toBe(expected);
   });
@@ -12228,6 +12233,145 @@ describe("EI-21949138739080608 — the pipeline tag must READ as an identifier",
     vi.doUnmock(
       "@papercusp/operator-core/lib/agent-tools/coordination/messages",
     );
+  });
+});
+
+describe("EI-22240267519750098 — the CLAIM carries the pipeline, not just the prefix", () => {
+  // FOURTH filed instance of one class, and the first whose fix is not "label one more
+  // surface". EI-15925 prefixed the broadcast; P-004/D-002 prefixed the event banners;
+  // EI-21949138739080608 made the prefix self-describing. Coverage is complete on every
+  // emit site — and on 2026-09-03 an su blocked on a papercusp deploy still read
+  //   [pipeline:email] 🟩 green-checkpoint: `main` advanced to ad49e48a (green, deployable)
+  // as their OWN gate greening.
+  //
+  // So the property under test is not "a tag exists" and not "the tag is legible" (the
+  // three suites above cover those) but: with the routing prefix REMOVED, is the sentence
+  // still attributable? Readers parse the claim, and the claim's subject was `main` — a
+  // ref name every reader resolves against their own checkout.
+
+  const stripTag = (summary: string, pipeline: string): string =>
+    summary.startsWith(pipelineTag(pipeline))
+      ? summary.slice(pipelineTag(pipeline).length).trim()
+      : summary;
+
+  // A ref a reader resolves against their OWN tree: `ready` NOT already qualified by a
+  // `<pipeline>:`. The `[^:\w-]` guard is what distinguishes `email:ready` from `` `ready` ``.
+  const bareRef = (ref: string): RegExp =>
+    new RegExp(`(^|[^:\\w-])${ref}\\b`);
+
+  const captureDelivered = (
+    green: boolean,
+  ): {
+    deps: CheckpointDeps;
+    events: Record<string, string>;
+    broadcasts: string[];
+  } => {
+    const events: Record<string, string> = {};
+    const broadcasts: string[] = [];
+    return {
+      events,
+      broadcasts,
+      deps: {
+        setupTree: async () => {},
+        runGreen: async () => ({
+          green,
+          summary: green ? "all pass" : "3 failed",
+        }),
+        advance: (candidate) => advanceReady(repo, candidate, "ready"),
+        push: async () => {},
+        // The real `broadcast` applies the tag; this stub does not, so what is captured
+        // here is the bare HEADLINE — exactly the sentence a reader parses.
+        broadcast: async (summary: string) => {
+          broadcasts.push(summary);
+        },
+        escalate: async () => {},
+        clearEscalation: async () => {},
+        emitEvent: async ({ key, summary }) => {
+          events[key] = summary;
+        },
+        log: () => {},
+      },
+    };
+  };
+
+  it("⭐ qualifies the ref in the GREEN headline and wake banner — a foreign green is not readable as your own", async () => {
+    const c1 = await commit("a", "1", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    const c2 = await commit("a", "2", "c2");
+    const { deps, events, broadcasts } = captureDelivered(true);
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    const pipeline = pipelineName(repo);
+    // CALIBRATION — the instrument below assumes the pipeline name does not itself
+    // contain the ref; say so out loud rather than letting a collision read as a pass.
+    expect(pipeline).not.toContain("ready");
+
+    const headline = broadcasts.find((b) => b.includes("(green, deployable)"));
+    expect(headline).toBeDefined();
+    const banner = stripTag(events["release:green"]!, pipeline);
+
+    for (const claim of [headline!, banner]) {
+      // The ref names its pipeline INSIDE the sentence...
+      expect(claim).toContain(`${pipeline}:ready`);
+      // ...and nothing in the claim is still a bare ref. Removing the qualified ref must
+      // leave none behind — this is the assertion the pre-fix rendering fails.
+      expect(claim.split(`${pipeline}:ready`).join("«ref»")).not.toMatch(
+        bareRef("ready"),
+      );
+    }
+  });
+
+  it("qualifies the ref in the RED headline and wake banner too", async () => {
+    const c1 = await commit("a", "1", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    const c2 = await commit("a", "2", "c2");
+    expect(c2).toBeTruthy();
+    const { deps, events, broadcasts } = captureDelivered(false);
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    const pipeline = pipelineName(repo);
+    expect(pipeline).not.toContain("ready");
+
+    const headline = broadcasts.find((b) => b.includes("not green"));
+    expect(headline).toBeDefined();
+    const banner = stripTag(events["green-checkpoint:red"]!, pipeline);
+
+    for (const claim of [headline!, banner]) {
+      expect(claim).toContain(`${pipeline}:ready`);
+      expect(claim.split(`${pipeline}:ready`).join("«ref»")).not.toMatch(
+        bareRef("ready"),
+      );
+    }
+  });
+
+  it("⭐ CONTROL — the weaker predicate the three prior fixes relied on cannot see this defect", () => {
+    // Permanent deliberately-wrong control: no production code is mutated to prove the
+    // guard falsifiable. Both strings are the real renderings, before and after.
+    const pipeline = "email";
+    const preFix = `${pipelineTag(pipeline)} 🟩 green-checkpoint: \`main\` advanced to ad49e48a (green, deployable)`;
+    const postFix = `${pipelineTag(pipeline)} 🟩 green-checkpoint: \`${pipelineRef(pipeline, "main")}\` advanced to ad49e48a (green, deployable)`;
+
+    // "Is the pipeline named anywhere?" — the question every prior fix answered — passes
+    // on the EXACT string that caused the incident. That is why three fixes did not hold.
+    expect(preFix).toContain(pipeline);
+    expect(postFix).toContain(pipeline);
+
+    // "Is the CLAIM attributable once the routing prefix is gone?" separates them.
+    expect(stripTag(preFix, pipeline)).toMatch(bareRef("main"));
+    expect(stripTag(postFix, pipeline)).not.toMatch(bareRef("main"));
+  });
+
+  it("keeps neighbouring pipelines' refs distinguishable, and never emits a bare ref", () => {
+    expect(pipelineRef("email", "main")).toBe("email:main");
+    expect(pipelineRef("email", "main")).not.toBe("main");
+    // The papercusp/papercup hazard, at ref level.
+    expect(pipelineRef("papercusp", "main")).not.toBe(
+      pipelineRef("papercup", "main"),
+    );
+    for (const p of ["email", "papercusp", "oddsmith", "hello-world-3-pot"]) {
+      expect(pipelineRef(p, "main")).not.toMatch(bareRef("main"));
+      expect(pipelineRef(p, "main")).toContain(p);
+    }
   });
 });
 

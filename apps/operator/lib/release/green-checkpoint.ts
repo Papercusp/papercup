@@ -57,6 +57,7 @@ import {
   type SelectionBaseInput,
   type SelectionBaseResult,
 } from "./selection-base";
+import { pipelineRef } from "@papercusp/operator-core/lib/release/pipeline-name";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
 import { CANDIDATE_FOSSIL_AGE_MS } from "@papercusp/operator-core/lib/release/gate-verdict-freshness";
 import { parseTscDiagnostics } from "@papercusp/operator-core/lib/tsc-diagnostics";
@@ -1616,6 +1617,20 @@ export function pipelineName(integrationRoot: string): string {
 export function pipelineTag(pipeline: string): string {
   return `[pipeline:${pipeline}]`;
 }
+
+/**
+ * EI-22240267519750098 — `pipelineRef` qualifies the release REF inside the sentence
+ * (`email:main`, not a bare `main`), because a bracketed PREFIX reads as routing metadata
+ * while the sentence after it is an unqualified claim, and readers parse the claim.
+ *
+ * Imported, NOT redefined here. `pipelineTag`/`pipelineName` above are local copies of the
+ * same-named helpers in that module — a duplication that predates this fix and is exactly
+ * how a "one helper so the emit sites cannot drift" claim stops being true across files.
+ * The fourth recurrence was found on a SEVENTH emit site living in another package
+ * (`release-actions.ts`'s legacy red-verdict fallback), invisible to a per-file audit of
+ * this one. One definition, both packages.
+ */
+export { pipelineRef };
 
 /**
  * EI-18850448565330905 — build the crash verdict the CLI entrypoint emits when
@@ -7909,15 +7924,15 @@ async function tryLongestGreenPrefix(
   );
   await deps
     .broadcast(
-      `🟧 green-checkpoint: PARTIAL advance — \`${cfg.releaseRef}\` → ${prefixTip.slice(0, 8)} (longest GREEN prefix), tip ${candidate.slice(0, 8)} still red`,
+      `🟧 green-checkpoint: PARTIAL advance — \`${pipelineRef(pipelineName(cfg.integrationRoot), cfg.releaseRef)}\` → ${prefixTip.slice(0, 8)} (longest GREEN prefix), tip ${candidate.slice(0, 8)} still red`,
       `Was ${adv.from?.slice(0, 8) ?? "unset"}. One unrelated red no longer hostages the clean prefix — it is now deployable. The red tip's failing tests still need a fix (release-fixer dispatched).`,
     )
     .catch(() => {});
   // The prefix is a real green advance — wake any agent awaiting "the next green".
   // EI-10800: AWAITED through the deps.emitEvent seam (was a fire-and-forget `void import`).
   {
-    const prefixSummary = `${cfg.releaseRef} advanced to ${prefixTip!.slice(0, 8)} (longest green prefix; tip ${candidate.slice(0, 8)} held red)`;
     const pipeline = pipelineName(cfg.integrationRoot);
+    const prefixSummary = `${pipelineRef(pipeline, cfg.releaseRef)} advanced to ${prefixTip!.slice(0, 8)} (longest green prefix; tip ${candidate.slice(0, 8)} held red)`;
     // WI-4957: `runId` on the payload (this run's identity) + `pipeline` (was previously
     // only used to build cancelSiblingKeysFor below, never carried on the payload itself —
     // a checkpoint:await bound to `pipeline` still lineage-checks via the pipeline-SCOPED
@@ -8783,7 +8798,7 @@ async function runGreenCheckpointInner(
     if (diagnosticOnly) return;
     await stampJudgedRed(result.candidate);
     const pipeline = pipelineName(cfg.integrationRoot);
-    const redSummary = `${pipelineTag(pipeline)} green-checkpoint: ${result.candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
+    const redSummary = `${pipelineTag(pipeline)} green-checkpoint: ${result.candidate.slice(0, 8)} not green — ${pipelineRef(pipeline, cfg.releaseRef)} held`;
     const payload = {
       sha: result.candidate,
       from: result.from ?? null,
@@ -11241,7 +11256,7 @@ async function runGreenCheckpointInner(
     }
     await deps
       .broadcast(
-        `🟥 green-checkpoint: ${candidate.slice(0, 8)} not green — \`${cfg.releaseRef}\` held at ${lastReady?.slice(0, 8) ?? "unset"}`,
+        `🟥 green-checkpoint: ${candidate.slice(0, 8)} not green — \`${pipelineRef(pipelineName(cfg.integrationRoot), cfg.releaseRef)}\` held at ${lastReady?.slice(0, 8) ?? "unset"}`,
         // WI-9613: the held-gate broadcast/escalation carries the same canonical cause
         // line as the log, so an agent woken by the red does not have to open the log
         // to learn which leg held it.
@@ -11269,7 +11284,7 @@ async function runGreenCheckpointInner(
       // emitted here fires from every co-hosted pipeline (30 awaits / 12 agents on
       // record), so a pipeline-blind "not green — main held" reads as the awaiter's OWN
       // gate being red — the same false reading as the green case, in the other direction.
-      const redSummary = `${pipelineTag(pipeline)} green-checkpoint: ${candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
+      const redSummary = `${pipelineTag(pipeline)} green-checkpoint: ${candidate.slice(0, 8)} not green — ${pipelineRef(pipeline, cfg.releaseRef)} held`;
       // WI-4957: carry the FULL failing-test signature + an exact log reference on the
       // event payload itself — a consumer previously had only the de-noised `summary`
       // tail, which is unreliable for anything more precise than "something failed".
@@ -12230,7 +12245,7 @@ async function runGreenCheckpointInner(
       // "green (N passed on retry)" — never an unqualified pass — because the headline is
       // what most readers act on, and a retry-absorbed green read as clean is precisely how
       // a flaky-but-real failure ships.
-      `🟩 green-checkpoint: \`${cfg.releaseRef}\` advanced to ${candidate.slice(0, 8)} (green, deployable)${flakeSuspects?.length ? " [load-flake absorbed]" : ""}${
+      `🟩 green-checkpoint: \`${pipelineRef(pipelineName(cfg.integrationRoot), cfg.releaseRef)}\` advanced to ${candidate.slice(0, 8)} (green, deployable)${flakeSuspects?.length ? " [load-flake absorbed]" : ""}${
         cleanGreen === false
           ? ` [${(retriedTests ?? []).filter((t) => t.outcome === "passed-on-rerun").length} passed on retry — NOT a clean green]`
           : ""
@@ -12259,7 +12274,7 @@ async function runGreenCheckpointInner(
     // `release:green` key emitted just below fires from every one of the ~13 co-hosted
     // pipelines, so it is the widest carrier, not the glob. Same `[pipeline]` prefix
     // convention as broadcast, deliberately.
-    const greenSummary = `${pipelineTag(pipeline)} ${cfg.releaseRef} advanced to ${candidate.slice(0, 8)} (green, deployable)`;
+    const greenSummary = `${pipelineTag(pipeline)} ${pipelineRef(pipeline, cfg.releaseRef)} advanced to ${candidate.slice(0, 8)} (green, deployable)`;
     // WI-4957: runId (this run's identity) rides the payload alongside sha/from/pipeline.
     const payload = {
       sha: candidate,

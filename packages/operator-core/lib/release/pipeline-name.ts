@@ -69,6 +69,35 @@ export function pipelineTag(pipeline: string): string {
 }
 
 /**
+ * EI-22240267519750098 — qualify the release REF itself, inside the sentence:
+ * `email:main`, not a bare `main`.
+ *
+ * The FOURTH filed instance of one class, and the first whose fix is not "put the label on
+ * one more surface". EI-15925 prefixed the broadcast; P-004/D-002 prefixed the event
+ * wake-banners; the tag above was reworked so the prefix READS as an identifier. Coverage
+ * became complete — and on 2026-09-03 an su blocked on a papercusp deploy still read
+ *   [pipeline:email] 🟩 green-checkpoint: `main` advanced to ad49e48a (green, deployable)
+ * as their own gate greening.
+ *
+ * Coverage was therefore never the defect. A bracketed PREFIX reads as routing metadata — a
+ * delivery channel, a log facility — while the sentence after it is a complete, confident,
+ * unqualified claim, and readers parse the CLAIM. Worse, its subject `main` is a ref name
+ * every reader resolves against their OWN checkout, so the sentence is true of a foreign pot
+ * in words that are false of the reader's. A qualifier only works where the reader's
+ * attention already is: attribution has to sit INSIDE the noun phrase being acted on.
+ *
+ * Display-only, exactly like {@link pipelineTag}: nothing parses this. Machine-readable
+ * identity still rides `payload.pipeline` and the `:<pipeline>` event-key segment.
+ *
+ * Deliberately NOT applied to a real remote-ref path (`origin/${releaseRef}` in the
+ * push-failure broadcast) — `origin/email:main` would name a ref that does not exist. Only
+ * bare refs a reader resolves locally get qualified.
+ */
+export function pipelineRef(pipeline: string, ref: string): string {
+  return `${pipeline}:${ref}`;
+}
+
+/**
  * The pipeline THIS process belongs to, resolved from the same env var the release plumbing
  * uses (`PAPERCUSP_INTEGRATION_ROOT`, else the operator's conventional `../..`).
  *
