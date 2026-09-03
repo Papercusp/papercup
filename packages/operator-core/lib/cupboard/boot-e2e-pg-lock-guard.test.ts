@@ -32,7 +32,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
-import { listBootChecks } from './boot-check-timeout-coherence.test';
+// From the non-test module, never from the sibling TEST file: under the gate's pure lane
+// (isolate:false) a test file imported by another test file loads once per fork, so the
+// second file collects 0 tests and fails "No test suite found" (WI-212675, 2026-09-03).
+import { listBootChecks } from './boot-check-timeout-coherence';
 
 const ROOT = (() => {
   let dir = dirname(fileURLToPath(import.meta.url));

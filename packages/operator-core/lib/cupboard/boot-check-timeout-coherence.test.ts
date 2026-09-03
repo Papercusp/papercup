@@ -24,85 +24,18 @@
  * template-bundle-integrity.test.ts exists to cover. This file runs in
  * operator-core, which IS test-discovered, and makes assertions ABOUT the
  * templates tree.
+ *
+ * The helpers live in `./boot-check-timeout-coherence.ts`, NOT here: a sibling
+ * guard imports them, and under the gate's pure lane (`isolate: false`, shared
+ * module registry) importing a TEST file from another test file makes the
+ * second load return the cached module with its `describe` never re-run — 0
+ * tests collected, "No test suite found", gate red (WI-212675, 2026-09-03).
  */
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, relative } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-
-/** Repo root: walk up from this file until the root package.json (the one with `workspaces`). */
-function repoRoot(): string {
-  let dir = dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 10; i++) {
-    const pkg = join(dir, 'package.json');
-    if (existsSync(pkg)) {
-      try {
-        const parsed = JSON.parse(readFileSync(pkg, 'utf8')) as { workspaces?: unknown };
-        if (Array.isArray(parsed.workspaces)) return dir;
-      } catch {
-        /* keep walking */
-      }
-    }
-    const up = dirname(dir);
-    if (up === dir) break;
-    dir = up;
-  }
-  throw new Error('boot-check-timeout-coherence: could not locate the monorepo root');
-}
-
-const ROOT = repoRoot();
-const TEMPLATES_DIR = join(ROOT, 'templates');
-const BOOT_CHECK = 'boot-e2e.test.ts';
-
-/**
- * The vitest per-test option object, e.g. `{ timeout: 780_000 }`. A bare number
- * here is the OUTER budget, hand-maintained beside the inner one.
- */
-const LITERAL_TEST_TIMEOUT = /\{\s*timeout:\s*[\d_]+\s*\}/;
-
-/**
- * A `timeout:` passed to spawn/spawnSync options with a bare number — the INNER
- * budget. Matched on the option rather than the call so a reformatted call still
- * trips it.
- */
-const LITERAL_SPAWN_TIMEOUT = /encoding:\s*"utf8",\s*timeout:\s*[\d_]+/;
-
-/** Every `templates/<ref>/checks/boot-e2e.test.ts` present in a templates tree. */
-export function listBootChecks(templatesDir: string): string[] {
-  if (!existsSync(templatesDir)) return [];
-  return readdirSync(templatesDir)
-    .filter((e) => statSync(join(templatesDir, e)).isDirectory())
-    .map((ref) => join(templatesDir, ref, 'checks', BOOT_CHECK))
-    .filter((p) => existsSync(p))
-    .sort();
-}
-
-/**
- * Boot checks whose build/test budgets are hardcoded numeric literals rather
- * than derived from the named per-leg budgets. Returns one human-readable
- * violation per offending file, `[]` when the tree is clean.
- */
-export function findHardcodedBootTimeouts(templatesDir: string): string[] {
-  const violations: string[] = [];
-  for (const file of listBootChecks(templatesDir)) {
-    const src = readFileSync(file, 'utf8');
-    const rel = relative(templatesDir, file);
-    if (LITERAL_TEST_TIMEOUT.test(src)) {
-      violations.push(
-        `${rel}: the vitest test timeout is a bare literal — derive it from the per-leg budgets ` +
-          `(spawnTestTimeoutMs) so it cannot drift below the build budget it must contain.`,
-      );
-    }
-    if (LITERAL_SPAWN_TIMEOUT.test(src)) {
-      violations.push(
-        `${rel}: the buildCommand spawn timeout is a bare literal — read it from ` +
-          `boot.buildTimeoutMs so a slow-building app can raise it via config.`,
-      );
-    }
-  }
-  return violations;
-}
+import { BOOT_CHECK, TEMPLATES_DIR, findHardcodedBootTimeouts, listBootChecks } from './boot-check-timeout-coherence';
 
 describe('boot-check-timeout-coherence', () => {
   it('every boot-e2e check derives its budgets instead of hardcoding them', () => {
