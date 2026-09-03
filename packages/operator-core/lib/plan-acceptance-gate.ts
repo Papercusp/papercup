@@ -54,7 +54,11 @@ import {
   resolveCitation,
   UNFINISHED_ITEM_STATUSES,
 } from './plan-audits';
-import { describeUnrealized, judgeRequirementRealization } from './plan-requirement-realization';
+import {
+  describeUnrealized,
+  judgeRequirementRealization,
+  type ExemptMapping,
+} from './plan-requirement-realization';
 import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
 import { citationDeploymentForPaths, type CitationDeployment } from './deployment-position';
 
@@ -109,6 +113,21 @@ export interface PlanAcceptanceGateVerdict {
    * that re-opens a settled gate.
    */
   skipped?: 'flag-off' | 'rubric-template-plan' | 'template-instance' | 'already-shipped';
+  /**
+   * P-015 / D-035: realizing requirement mappings judged by NOTHING — every target they
+   * named is a `D-NNN` or `section:…`, which has no completion-audit counterpart. Present
+   * on a SATISFIED verdict, because it is deliberately NOT a refusal: a requirement whose
+   * honest home is a decision or a section is a legitimate and common outcome, and P-015's
+   * proposed refusal was rejected (D-035) after it was measured to block this very plan
+   * over turns like "explain this more?".
+   *
+   * It is reported because the alternative is worse than either: `judgeRequirementRealization`
+   * already computed this exemption and the gate silently DISCARDED it, so the module's own
+   * stated guarantee — "surfaced so a vacuous pass is never mistaken for a verified one" —
+   * was not delivered to anyone. Omitted entirely when there are none, so its presence always
+   * means there is something to look at.
+   */
+  requirementExemptions?: ExemptMapping[];
   /** Why the gate refused (satisfied:false). */
   code?: PlanAcceptanceGateCode;
   /** Teaching message for the refusal — the authoring/grading nudge (P-004). */
@@ -404,6 +423,9 @@ export async function evaluatePlanAcceptanceGate(
   // audit is authored BEFORE the rubric (D-004): refusing on a missing rubric while
   // the plan still has unbuilt items would send the agent to the wrong repair.
   const forcedChecks: PlanAcceptanceGateCode[] = [];
+  // D-035: collected in the nested code-truth block below and read at the final return,
+  // so it is declared at function scope alongside forcedChecks for the same reason.
+  let requirementExemptions: ExemptMapping[] = [];
   /**
    * EI-22181490624100467 — repo-relative paths of the code/test citations the
    * code-truth audit actually rests on, collected as they are re-resolved below so
@@ -646,6 +668,10 @@ export async function evaluatePlanAcceptanceGate(
           mappings: activationMappings,
           itemAudits: effectiveAudits,
         });
+        // D-035: capture the exemption BEFORE the refusal branch. These mappings are not
+        // violations and must never gate — but they were previously computed and dropped,
+        // so nothing ever saw the population that passed by not being judged at all.
+        requirementExemptions = realization.exemptMappings;
         if (!realization.ok) {
           if (force) {
             forcedChecks.push('requirement_unrealized');
@@ -1079,6 +1105,7 @@ export async function evaluatePlanAcceptanceGate(
     rubricId: rubric.rubricId,
     ...(vettedUnderWaiver ? { vettedUnderWaiver } : {}),
     ...(specCoverage ? { specCoverage } : {}),
+    ...(requirementExemptions.length > 0 ? { requirementExemptions } : {}),
     gradedBy: independent.createdBy ?? null,
     gradedVia: independentVia,
     ...(unknownRatedCriteria.length > 0 ? { unknownRatedCriteria } : {}),

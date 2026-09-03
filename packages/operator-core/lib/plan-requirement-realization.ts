@@ -54,6 +54,20 @@ export interface UnrealizedRequirement {
   reason: UnrealizedReason;
 }
 
+/**
+ * A realizing mapping that named NO `P-NNN` target at all — every destination it gave
+ * is a `D-NNN` or `section:<heading>`, which has no completion-audit counterpart by
+ * construction. So the mapping asserts the plan absorbed a requirement, and nothing
+ * judged that claim.
+ */
+export interface ExemptMapping {
+  mappingId: string;
+  requirement: string;
+  disposition: ActivationAuditMapping['disposition'];
+  /** The non-item destinations it named instead. */
+  planTargets: string[];
+}
+
 export interface RequirementRealizationVerdict {
   ok: boolean;
   /** `P-NNN` targets actually judged. */
@@ -63,6 +77,23 @@ export interface RequirementRealizationVerdict {
    * counterpart. Surfaced so a vacuous pass is never mistaken for a verified one.
    */
   skippedTargets: string[];
+  /**
+   * P-015 / D-035: the realizing mappings judged by NOTHING — those whose targets are
+   * ALL non-item. This is the mapping-level view `skippedTargets` cannot give, and the
+   * difference is not cosmetic: measured 2026-09-03, 4,090 of 9,912 realizing targets
+   * (41.3%) are non-item, but only 366 of 2,493 realizing MAPPINGS (14.7%) carry no
+   * `P-NNN` at all. The other ~3,724 non-item targets sit beside a `P-NNN` on the same
+   * mapping and ARE judged through it, so the target-level number overstates the
+   * unjudged population by ~11x.
+   *
+   * ⚠ NOT a violation, deliberately. P-015 proposed refusing these; D-035 rejected that
+   * after measuring what they are — conversational requirements ("explain this more?",
+   * "write all these insights into a plan now") whose honest home IS a decision or a
+   * section. No plan item could implement them, and inventing one to satisfy a floor
+   * would be fabricated traceability. They are REPORTED so the exemption is visible,
+   * which is the guarantee this module already claimed and the gate was dropping.
+   */
+  exemptMappings: ExemptMapping[];
   /** Mappings dispositioned covered/repaired whose evidence is missing. */
   unrealized: UnrealizedRequirement[];
 }
@@ -82,17 +113,26 @@ export function judgeRequirementRealization(
 
   const unrealized: UnrealizedRequirement[] = [];
   const skippedTargets: string[] = [];
+  const exemptMappings: ExemptMapping[] = [];
   let checkedTargets = 0;
 
   for (const mapping of input.mappings) {
     if (!REALIZING_DISPOSITIONS.has(mapping.disposition)) continue;
 
+    // Per-mapping accounting (D-035): a mapping is EXEMPT only when it named no
+    // judgeable target at all. Counted here rather than derived from `skippedTargets`
+    // afterwards, because that list is flat across mappings and cannot answer it.
+    let judgeableTargets = 0;
+    const nonItemTargets: string[] = [];
+
     for (const target of mapping.planTargets) {
       const trimmed = target.trim();
       if (!PLAN_ITEM_TARGET.test(trimmed)) {
         skippedTargets.push(trimmed);
+        nonItemTargets.push(trimmed);
         continue;
       }
+      judgeableTargets += 1;
       checkedTargets += 1;
 
       const audit = auditByItem.get(trimmed);
@@ -120,14 +160,32 @@ export function judgeRequirementRealization(
         });
       }
     }
+
+    if (judgeableTargets === 0) {
+      exemptMappings.push({
+        mappingId: mapping.id,
+        requirement: mapping.requirement,
+        disposition: mapping.disposition,
+        planTargets: nonItemTargets,
+      });
+    }
   }
 
   return {
     ok: unrealized.length === 0,
     checkedTargets,
     skippedTargets,
+    exemptMappings,
     unrealized,
   };
+}
+
+/** One-line-per-entry rendering for the gate's (non-blocking) exemption report. */
+export function describeExemptMapping(entry: ExemptMapping): string {
+  const requirement =
+    entry.requirement.length > 80 ? `${entry.requirement.slice(0, 77)}...` : entry.requirement;
+  const targets = entry.planTargets.length > 0 ? entry.planTargets.join(', ') : '(no targets)';
+  return `${entry.mappingId} (${entry.disposition}) → ${targets}: "${requirement}"`;
 }
 
 /** One-line-per-entry rendering for the gate's refusal message. */

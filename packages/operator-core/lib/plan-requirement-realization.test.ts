@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import {
   judgeRequirementRealization,
   describeUnrealized,
+  describeExemptMapping,
   type RequirementRealizationInput,
 } from './plan-requirement-realization';
 import type { ActivationAuditMapping, AuditCitation, EffectiveItemAudit } from './plan-audits';
@@ -166,6 +167,85 @@ describe('judgeRequirementRealization', () => {
         itemAudits: [],
       });
       expect(describeUnrealized(v.unrealized[0]!).length).toBeLessThan(200);
+    });
+  });
+
+  /**
+   * P-015 / D-035. P-015 asked to REFUSE these mappings; that was rejected after
+   * measuring what they are — conversational requirements ("explain this more?") whose
+   * honest home is a decision or a section, on 366 of 2,493 realizing mappings including
+   * 10 on this plan's own audit. So the contract under test is deliberately two-sided:
+   * they must be REPORTED, and they must NOT gate.
+   */
+  describe('exemptMappings — reported, never a violation', () => {
+    it('reports a realizing mapping whose targets are ALL non-item', () => {
+      const v = judge({
+        mappings: [mapping({ planTargets: ['D-011', 'section:Now'] })],
+        itemAudits: [],
+      });
+      expect(v.exemptMappings).toHaveLength(1);
+      expect(v.exemptMappings[0]?.mappingId).toBe('M-001');
+      expect(v.exemptMappings[0]?.planTargets).toEqual(['D-011', 'section:Now']);
+    });
+
+    it('STILL PASSES on such a mapping — this is the half P-015 would have broken', () => {
+      const v = judge({
+        mappings: [mapping({ planTargets: ['D-011', 'section:Now'] })],
+        itemAudits: [],
+      });
+      expect(v.ok).toBe(true);
+      expect(v.unrealized).toHaveLength(0);
+      expect(v.checkedTargets).toBe(0);
+    });
+
+    it('does NOT report a mapping that carries a P-NNN beside its non-item targets', () => {
+      // The distinction that makes the mapping-level count honest: measured fleet-wide,
+      // 41.3% of realizing TARGETS are non-item but only 14.7% of realizing MAPPINGS have
+      // no P-NNN at all, because most non-item targets sit beside one and ARE judged.
+      const v = judge({
+        mappings: [mapping({ planTargets: ['D-011', 'P-001', 'section:Now'] })],
+        itemAudits: [itemAudit('P-001', [CODE])],
+      });
+      expect(v.ok).toBe(true);
+      expect(v.exemptMappings).toHaveLength(0);
+      expect(v.checkedTargets).toBe(1);
+      expect(v.skippedTargets).toEqual(['D-011', 'section:Now']);
+    });
+
+    it('ignores non-realizing dispositions — rejected/open claim nothing to be exempt from', () => {
+      const v = judge({
+        mappings: [
+          mapping({ id: 'M-002', disposition: 'rejected', planTargets: ['D-011'] }),
+          mapping({ id: 'M-003', disposition: 'open', planTargets: ['section:Now'] }),
+        ],
+        itemAudits: [],
+      });
+      expect(v.exemptMappings).toHaveLength(0);
+    });
+
+    it('separates an exempt mapping from an unrealized one in the same audit', () => {
+      const v = judge({
+        mappings: [
+          mapping({ id: 'M-001', planTargets: ['D-011'] }),
+          mapping({ id: 'M-002', planTargets: ['P-002'] }),
+        ],
+        itemAudits: [itemAudit('P-002', [DOC])],
+      });
+      expect(v.exemptMappings.map((e) => e.mappingId)).toEqual(['M-001']);
+      expect(v.unrealized.map((u) => u.mappingId)).toEqual(['M-002']);
+      expect(v.ok).toBe(false); // driven by M-002 alone, never by the exemption
+    });
+
+    it('describeExemptMapping names the mapping, disposition and where it terminated', () => {
+      const v = judge({
+        mappings: [mapping({ planTargets: ['D-011', 'section:Now'] })],
+        itemAudits: [],
+      });
+      const line = describeExemptMapping(v.exemptMappings[0]!);
+      expect(line).toContain('M-001');
+      expect(line).toContain('covered');
+      expect(line).toContain('D-011');
+      expect(line).toContain('section:Now');
     });
   });
 });
