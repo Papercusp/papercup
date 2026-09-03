@@ -163,10 +163,31 @@ export interface CoverageCompletenessVerdict {
 }
 
 /** `coverage.all` — instrument every included file, not only the loaded ones. */
-const COVERAGE_ALL = /^\s*all:\s*true\s*,?\s*$/;
+const COVERAGE_ALL = /(?:^|[{,\s])all:\s*true\b/;
 
 /** `coverage.include` — the population `all` applies to. */
-const COVERAGE_INCLUDE = /^\s*include:\s*\[/;
+const COVERAGE_INCLUDE = /(?:^|[{,\s])include:\s*\[/;
+
+/**
+ * Drop TypeScript comments LINE-WISE, leaving code lines byte-intact.
+ *
+ * `stripComments` (used by judgeCoverageWiring above) scans for `/*`, which every
+ * glob in this config contains: `'**\/bin/**'` carries a literal `/` followed by `*`
+ * at index 7, so a character-scanning stripper treats the rest of the file as a
+ * block comment and the exclude list vanishes. That reads as "the excludes were
+ * removed" — a false violation, in the direction that fails a correct config.
+ *
+ * Line-oriented is sufficient here because every setting this judge reads sits on
+ * its own line, and it is the same trade `stripYamlComments` makes for quoted globs.
+ */
+function stripTsLineComments(source: string): string[] {
+  return source.split('\n').map((line) => {
+    const trimmed = line.trimStart();
+    // A full-line `//`, or a `*` / `/*` continuation line inside a block comment.
+    if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return '';
+    return line;
+  });
+}
 
 /**
  * Build/tooling/story/example code, which `all: true` makes visible for the first
@@ -185,7 +206,7 @@ export function judgeCoverageCompleteness(configSource: string): CoverageComplet
   // Comment-stripped on purpose: prose ABOUT `all: true` must not satisfy a check
   // that the setting is present — that is the same each-end-documents-the-other
   // trap judgeCoverageWiring above exists to catch, one level down.
-  const configLines = stripComments(configSource);
+  const configLines = stripTsLineComments(configSource);
   const allEnabled = configLines.some((line) => COVERAGE_ALL.test(line));
   const includePresent = configLines.some((line) => COVERAGE_INCLUDE.test(line));
   const body = configLines.join('\n');
