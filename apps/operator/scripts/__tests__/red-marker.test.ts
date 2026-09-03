@@ -12,6 +12,10 @@ const SCRIPTS = resolve(__dirname, '..');
 const LIB = process.env.RED_MARKER_LIB || join(SCRIPTS, 'lib', 'red-marker.sh');
 const DISK = join(SCRIPTS, 'papercup-fedplane-disk-health-check.sh');
 const DHT = join(SCRIPTS, 'papercup-dht-liveness-check.sh');
+// Overridable for the same reason as LIB: falsifiability is proven against a COPY
+// outside the tree (mutation-probe tier 2), never by mutating this shared checkout.
+const BACKUP = process.env.BACKUP_HEALTH_SCRIPT || join(SCRIPTS, 'papercup-backup-health-check.sh');
+const KEYPERM = join(SCRIPTS, 'papercup-fedplane-key-permission-check.sh');
 
 /**
  * Run red_dedup_check against a throwaway marker.
@@ -41,7 +45,7 @@ const fresh = () => `${Math.floor(Date.now() / 1000)}`;
 
 describe('red-marker.sh — state-aware RED dedup (EI-22240553542994017)', () => {
   it('every touched script passes bash syntax validation', () => {
-    for (const file of [LIB, DISK, DHT]) {
+    for (const file of [LIB, DISK, DHT, BACKUP, KEYPERM]) {
       const result = spawnSync('bash', ['-n', file], { encoding: 'utf8' });
       expect(`${file}: ${result.status} ${result.stderr ?? ''}`).toBe(`${file}: 0 `);
     }
@@ -130,5 +134,59 @@ describe('red-marker.sh — state-aware RED dedup (EI-22240553542994017)', () =>
       expect(`${file}: ${/echo\s+"\$\(now_s\)"\s*>\s*"\$RED_MARKER"/.test(src)}`).toBe(`${file}: false`);
       expect(`${file}: ${src.includes('red_marker_write "$RED_MARKER"')}`).toBe(`${file}: true`);
     }
+  });
+
+  // ── papercup-backup-health-check.sh (WI-2143605) ────────────────────────────
+  // It funnels every marker write through its own mark_red (which keeps the
+  // EI-10746 dry-run guard) rather than calling red_marker_write at each site, so
+  // the literal above does not cover it and it needs its own guards.
+  describe('papercup-backup-health-check.sh is wired to the state-aware gate', () => {
+    const src = () => readFileSync(BACKUP, 'utf8');
+    /**
+     * Comment lines stripped.
+     *
+     * These scripts DOCUMENT the bug they guard against, quoting the offending
+     * snippet verbatim — this file's own relapse-guard comment does it too. A
+     * naive source-text search therefore matches the explanation and reports a
+     * relapse that does not exist, which is a guard that fails closed on its own
+     * documentation and pressures the next author to delete the comment. Assert
+     * about CODE.
+     */
+    const code = () =>
+      src()
+        .split('\n')
+        .filter((l) => !/^\s*#/.test(l))
+        .join('\n');
+
+    it('has NO age-only dedup site left', () => {
+      // The defect: `[ "$(age_h "$M")" -lt "$BACKUP_RED_REFILE_H" ]` suppresses on
+      // the marker's AGE while logging "RED already tracked", which asserts the
+      // condition is OWNED. All nine sites now route through red_gate →
+      // red_dedup_check, which additionally checks the tracked item's STATE.
+      const ageOnly = code().match(/age_h "\$(?:red_marker|RED_MARKER)"\)" -lt "\$BACKUP_RED_REFILE_H"/g);
+      expect(ageOnly).toBe(null);
+    });
+
+    it('routes every RED site through the shared gate', () => {
+      expect(src().match(/if red_gate "/g)?.length ?? 0).toBeGreaterThanOrEqual(9);
+      expect(src()).toContain('red_dedup_check "$marker" "$BACKUP_RED_REFILE_H"');
+    });
+
+    it('records the filed item id into the marker, and still refuses to write one on a dry-run', () => {
+      // Both halves matter and they pull against each other: the id is what makes
+      // the next tick state-aware, while the BACKUP_NO_FILE guard is what stops a
+      // dry-run disarming the next real red for 12h (EI-10746 — that guard was
+      // written, documented, and then bypassed by every call site).
+      expect(src()).toContain('red_marker_write "$1" "$LAST_FILED_EI_ID"');
+      expect(src()).toMatch(/mark_red\(\) \{ \[ "\$BACKUP_NO_FILE" = 1 \] && return 0;/);
+      expect(/echo\s+"\$\(now_s\)"\s*>\s*"\$(?:RED_)?MARKER"/.test(code())).toBe(false);
+    });
+
+    it('reads marker ages through the shared reader, so a two-field marker cannot break it', () => {
+      // red_marker_write now emits "<epoch> <item-id>". The old local age_h was
+      // `cat` piped into arithmetic, which on a two-field marker is a syntax error
+      // — every age would read as garbage and dedup would silently misbehave.
+      expect(src()).toContain('age_h() { red_marker_age_h "$1"; }');
+    });
   });
 });
