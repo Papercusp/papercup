@@ -124,6 +124,33 @@ export default defineTool({
       goalId: goal.id,
       holders,
     });
+    /**
+     * WHO holds this goal — hoisted so BOTH branches return the identical value
+     * (EI-22084485266424071).
+     *
+     * `holderLiveness` was already on the summary branch while `holders` was
+     * gated behind detail='full', so the default read answered "held" and could
+     * not say BY WHOM. A liveness verdict with no identity beside it is not a
+     * weaker answer, it is an unusable one: the reader's next question is always
+     * "held by whom, and are they actually working?", and the only remaining
+     * source was `metadata.agentOwnerId` — a stale hand-written field that
+     * pointed at a session recorded five days earlier, which is exactly how the
+     * filing mistook a live goal for an abandoned one.
+     *
+     * The same argument the portfolioThroughput block above spells out applies
+     * verbatim: `state:subscribe` dispatches its resolver with only `{ id }`, so
+     * `detail` takes its 'summary' default on every poll and anything gated
+     * behind 'full' is absent from the one call path that matters.
+     *
+     * Hoisted rather than copied because the defect was two independently
+     * maintained response literals drifting apart. One value consumed twice
+     * cannot drift; a second copy can, and did.
+     */
+    const holderIdentities = holders.holders.map((h) => ({
+      ownerId: h.ownerId,
+      live: h.live,
+      sessionState: h.sessionState,
+    }));
     if (args.detail === 'summary') {
       return {
         data: {
@@ -133,6 +160,7 @@ export default defineTool({
           rawStatus: goal.status,
           deactivated: activity.deactivated,
           holderLiveness: holders.liveness,
+          holders: holderIdentities,
           pause,
           actionable: readiness.actionable,
           premiseInvalidated: readiness.premiseInvalidated,
@@ -164,11 +192,7 @@ export default defineTool({
         holderLiveness: holders.liveness,
         /** Why `deactivated` is what it is — the policy the fold actually used. */
         holderPolicy: activity.policy,
-        holders: holders.holders.map((h) => ({
-          ownerId: h.ownerId,
-          live: h.live,
-          sessionState: h.sessionState,
-        })),
+        holders: holderIdentities,
         children,
         history,
         pause,

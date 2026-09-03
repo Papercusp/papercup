@@ -38,13 +38,21 @@ let historyQueries = 0;
  */
 let holderLivenessFixture: 'held' | 'unheld' | 'lost' | 'unknown' = 'unheld';
 
+/**
+ * WHO the holders are, independent of the liveness VERDICT above
+ * (EI-22084485266424071). Defaults to none so every pre-existing fixture keeps
+ * its old shape; the identity cases below set it, which is what lets a test
+ * distinguish "held by nobody we can name" from "held by su-X".
+ */
+let holdersFixture: Array<{ ownerId: string; live: boolean; sessionState: string }> = [];
+
 vi.mock('@papercusp/operator-core/lib/goals/holder', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/operator-core/lib/goals/holder')>()),
   resolveGoalHolders: async (_sql: unknown, opts: { workspaceId: string; goalId: string }) => ({
     goalId: opts.goalId,
     workspaceId: opts.workspaceId,
-    holders: [],
-    live: [],
+    holders: holdersFixture,
+    live: holdersFixture.filter((h) => h.live),
     liveness: holderLivenessFixture,
   }),
 }));
@@ -125,6 +133,7 @@ beforeEach(() => {
   queriesBuilt = 0;
   wherePredicates.length = 0;
   holderLivenessFixture = 'unheld';
+  holdersFixture = [];
   historyRows = [];
   historyQueries = 0;
 });
@@ -214,6 +223,11 @@ describe('goals:get — summary skips the children query (Gap 11)', () => {
       rawStatus: 'active',
       deactivated: true,
       holderLiveness: 'unheld',
+      // EI-22084485266424071: holder IDENTITY rides with the liveness verdict on
+      // BOTH branches. Empty here because this fixture has no holder — stated,
+      // not omitted, so a caller can tell "nobody holds it" from "this build
+      // does not report holders".
+      holders: [],
       pause: null,
       actionable: true,
       premiseInvalidated: false,
@@ -259,6 +273,8 @@ describe('goals:get — the deliberate-pause record is READ BACK (P-005)', () =>
       rawStatus: 'paused',
       deactivated: false,
       holderLiveness: 'unheld',
+      // EI-22084485266424071 — see the note on the Gap 11 summary assertion.
+      holders: [],
       pause: {
         reason: 'owner holding the spend',
         by: 'su-abc',
@@ -438,5 +454,65 @@ describe('goals:get — registration smoke (Gap 15)', () => {
     const t = lookupByMcpName('goals:get')!;
     expect(t).toBeDefined();
     expect(t.capabilities).toContain('goals:read');
+  });
+});
+
+/**
+ * EI-22084485266424071 — "who holds this goal RIGHT NOW" must be answerable
+ * from the DEFAULT read.
+ *
+ * `holderLiveness` shipped on the summary branch while `holders` was gated
+ * behind detail='full', so `goals:get { id }` answered 'held' and could not say
+ * by whom. That is not a smaller answer, it is an unusable one — and the only
+ * remaining identity source, `metadata.agentOwnerId`, is a stale hand-written
+ * field, which is precisely how the filing read a live goal as abandoned.
+ *
+ * Summary is the load-bearing branch: `state:subscribe` dispatches with only
+ * `{ id }`, so `detail` always takes its default there.
+ */
+describe('goals:get — holder IDENTITY is on the summary branch (EI-22084485266424071)', () => {
+  const dataOf = (res: unknown) => (res as { data: Record<string, unknown> }).data;
+  const HOLDER = { ownerId: 'su-live-1', live: true, sessionState: 'live' };
+
+  it('a HELD goal names its holder on the DEFAULT (summary) read', async () => {
+    holderLivenessFixture = 'held';
+    holdersFixture = [HOLDER];
+    fixtureQueue = [[GOAL_ROW()]];
+    // No `detail` at all — the exact shape state:subscribe dispatches.
+    const res = await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never);
+    expect(dataOf(res)).toMatchObject({ holderLiveness: 'held', holders: [HOLDER] });
+  });
+
+  it('summary and full return the IDENTICAL holders value — the two branches cannot drift', async () => {
+    // The defect was two independently maintained response literals. Pinning
+    // them to each other is what makes a future divergence fail here rather
+    // than in a caller months later.
+    holderLivenessFixture = 'held';
+    holdersFixture = [HOLDER, { ownerId: 'su-dead-2', live: false, sessionState: 'ended' }];
+
+    fixtureQueue = [[GOAL_ROW()]];
+    const summary = dataOf(await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never));
+    // `full` also reads children; give it a row queue that satisfies both.
+    fixtureQueue = [[GOAL_ROW()], []];
+    const full = dataOf(await tool.handler({ id: 'g-1', detail: 'full' } as never, CTX() as never));
+
+    expect(summary.holders).toEqual(full.holders);
+    expect(summary.holderLiveness).toEqual(full.holderLiveness);
+    // and it is the real projection, not two matching empties
+    expect(summary.holders).toEqual([
+      { ownerId: 'su-live-1', live: true, sessionState: 'live' },
+      { ownerId: 'su-dead-2', live: false, sessionState: 'ended' },
+    ]);
+  });
+
+  it('an UNHELD goal reports holders:[] — absence is stated, never omitted', async () => {
+    // The null-vs-missing rule the portfolioThroughput block states: a caller
+    // must be able to tell "nobody holds it" from "this build does not report
+    // holders", and an omitted key cannot express the difference.
+    holderLivenessFixture = 'unheld';
+    fixtureQueue = [[GOAL_ROW()]];
+    const res = await tool.handler({ id: 'g-1', detail: 'summary' } as never, CTX() as never);
+    expect(dataOf(res)).toMatchObject({ holderLiveness: 'unheld', holders: [] });
+    expect(Object.keys(dataOf(res))).toContain('holders');
   });
 });
