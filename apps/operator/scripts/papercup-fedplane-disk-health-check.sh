@@ -52,6 +52,17 @@
 set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
+# State-aware RED dedup (EI-22240553542994017). Sourced, not optional: without it
+# this probe would silently fall back to age-only suppression, which is the defect.
+RED_MARKER_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/red-marker.sh"
+if [ -r "$RED_MARKER_LIB" ]; then
+  # shellcheck source=lib/red-marker.sh
+  . "$RED_MARKER_LIB"
+else
+  echo "[fedplane-disk-health] FATAL: missing $RED_MARKER_LIB — refusing to run with age-only dedup." >&2
+  exit 2
+fi
+
 DISK_PATH="${DISK_PATH:-$HOME/.papercusp}"
 DISK_WARN_PCT="${DISK_WARN_PCT:-90}"
 CRASH_LOOP_WINDOW_S="${CRASH_LOOP_WINDOW_S:-300}"
@@ -78,10 +89,19 @@ done
 
 log() { echo "[fedplane-disk-health $(date +%H:%M:%S 2>/dev/null || true)] $*" >&2; }
 now_s() { date +%s 2>/dev/null || echo 0; }
-age_h() { local f="$1"; [ -f "$f" ] || { echo 999999; return; }; echo $(( ( $(now_s) - $(cat "$f" 2>/dev/null || echo 0) ) / 3600 )); }
+# Delegates to the shared reader, which takes FIELD 1 of the marker. A bare `cat`
+# here would break on the "<epoch> <item-id>" marker format (arithmetic on a
+# non-numeric second field), so every marker age goes through one implementation.
+age_h() { red_marker_age_h "$1"; }
 jstr() { printf '%s' "$1" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
 
+# Set by file_ei to the work-item id the filing resolved to (empty when it did not
+# confirm one). Recorded into the RED marker so the NEXT tick can ask whether that
+# item is still open instead of trusting the marker's age — EI-22240553542994017.
+LAST_FILED_EI_ID=""
+
 file_ei() { # <title> <body> — best-effort curl-MCP; loud echo + journald/log are the fallback
+  LAST_FILED_EI_ID=""
   [ "$DISK_NO_FILE" = 1 ] && { log "DISK_NO_FILE=1 — would have filed: $1"; return 0; }
   local resp
   local -a auth_hdr=()
@@ -97,7 +117,11 @@ file_ei() { # <title> <body> — best-effort curl-MCP; loud echo + journald/log 
   local id_match
   id_match="$(printf '%s' "$resp" | grep -oaE '\\?"id\\?":\\?"WI-[0-9]+' | head -1)"
   if [ -n "$id_match" ]; then
-    log "EI filed OK → $(printf '%s' "$id_match" | grep -oaE 'WI-[0-9]+')"
+    # On a duplicate_identity refusal the response carries the OPEN twin this filing
+    # folded onto, so this id is the item that actually tracks the RED either way —
+    # which is precisely the one the next tick needs to state-check.
+    LAST_FILED_EI_ID="$(printf '%s' "$id_match" | grep -oaE 'WI-[0-9]+')"
+    log "EI filed OK → $LAST_FILED_EI_ID"
   else
     log "EI filing DID NOT CONFIRM (no WI id in response) — resp head: ${resp:0:200}"
   fi
