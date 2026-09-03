@@ -79,6 +79,7 @@ import {
   projectFrozenRepairConvergenceCell,
   type FrozenRepairConvergenceCellProjection,
 } from './release/frozen-candidate-repair-queue';
+import { isAuthoritativeJudgingShaSource, type JudgingShaSource } from './judging-sha-source';
 
 const pexec = promisify(execFile);
 
@@ -807,32 +808,13 @@ export type GateCandidateAssessment =
   | 'frozen-candidate-without-path'
   | 'inferred-candidate';
 
-/**
- * Where `changeInCandidate.judgingSha` came from, and which of those readings a caller may
- * ACT on. ONE list, exported, so the cell registration's `headlineSource.authoritative`
- * derives from it instead of restating it by hand (derived-truth ladder rung 1): the
- * registration used to list only `'retriage-marker'` while the resolver already trusted
- * `'in-flight-candidate'` too, so the door reported `source.authoritative:false` for a
- * reading the code itself treated as an observation.
- *
- *  - `'retriage-marker'` / `'in-flight-candidate'` — the run's OWN published markers.
- *  - `'repair-queue'` — main-green-status-visible-2026-09-03 P-011 follow-up (grader card
- *    EI-22277841040474660, C5 leg 3): the frozen repair queue's candidate. Under
- *    freeze-and-converge (default ON, D-007) every later run RESUMES that exact sha, and the
- *    recorded red was computed on it, so between runs — and during a CRON run, whose probe
- *    degrades to a checkout-head inference — the persisted queue row is a better answer to
- *    "which sha did the gate judge" than any probe. Before this the cell answered
- *    `no-active-run` (with a safe action that named a re-cut at tip) for the entire
- *    between-runs life of a frozen queue, which is most of its life.
- *  - `'run-probe'` — an inference; never authoritative.
- */
-export const AUTHORITATIVE_JUDGING_SHA_SOURCES = ['retriage-marker', 'in-flight-candidate', 'repair-queue'] as const;
-export type JudgingShaSource = (typeof AUTHORITATIVE_JUDGING_SHA_SOURCES)[number] | 'run-probe';
-export function isAuthoritativeJudgingShaSource(
-  source: JudgingShaSource | null | undefined,
-): source is (typeof AUTHORITATIVE_JUDGING_SHA_SOURCES)[number] {
-  return !!source && (AUTHORITATIVE_JUDGING_SHA_SOURCES as readonly string[]).includes(source);
-}
+// The judged-sha provenance vocabulary lives in a leaf module so the cell registration can
+// derive `headlineSource.authoritative` from it without importing this (git/systemd/pg) file.
+export {
+  AUTHORITATIVE_JUDGING_SHA_SOURCES,
+  isAuthoritativeJudgingShaSource,
+  type JudgingShaSource,
+} from './judging-sha-source';
 export type DeployedShaAssessment =
   | 'executing'
   | 'restart-required'
@@ -2707,6 +2689,16 @@ export function reconcileGateCandidates(
     | { candidate: string | null; candidateSource?: 'retriage-marker' | 'in-flight-candidate' | 'run-probe' }
     | null
     | undefined,
+  /**
+   * main-green-status-visible-2026-09-03 P-011 follow-up: the frozen repair queue, when one
+   * is live. Precedence is marker > repair-queue > run-probe. The queue outranks the probe
+   * because under freeze-and-converge a live run RESUMES the frozen candidate by
+   * construction, while the probe on a CRON run is the checkout's HEAD — an inference the
+   * refusal below already declines to answer containment from. It ranks BELOW the run's own
+   * markers because those are observations of THIS run, and a re-fire can legitimately move
+   * the run onto a newer candidate before the queue row learns of it.
+   */
+  repairQueue?: FrozenQueueForReconcile | null,
 ): GateCandidates {
   /**
    * `candidateSource: 'retriage-marker'` is only ever set when the marker was present AND
@@ -2728,6 +2720,15 @@ export function reconcileGateCandidates(
   const markerSha = markerSource ? inFlight!.candidate : null;
   if (markerSha && markerSource) {
     return { ...candidates, judgingSha: markerSha, judgingShaSource: markerSource };
+  }
+  /**
+   * No marker, but a frozen repair queue: its candidate is the sha the recorded verdict was
+   * computed on and the sha the next run resumes, so it is the judged subject whether or
+   * not a run happens to be alive at the instant of the read.
+   */
+  const frozen = frozenQueueCandidate(repairQueue);
+  if (frozen) {
+    return { ...candidates, judgingSha: frozen, judgingShaSource: 'repair-queue' };
   }
   /**
    * No marker. The probe's answer stands — but it is only ATTRIBUTED when it actually named
@@ -5989,7 +5990,11 @@ export async function gitPipelinePosition(
      * after would leave the headline correct and its own falsifier measuring the abandoned
      * candidate — a worse state than before, because the two would look corroborating.
      */
-    const candidates = reconcileGateCandidates(await gateCandidatesPromise!, checkpointRunInFlight);
+    const candidates = reconcileGateCandidates(
+      await gateCandidatesPromise!,
+      checkpointRunInFlight,
+      snap.gate?.repairQueue ?? null,
+    );
     const shas = [candidates.judgingSha, candidates.nextCandidateSha].filter((s): s is string => !!s);
     const gitRead = gitReadForRepo(git, root);
     // P-011: the submodule was already resolved once above from `.gitmodules`; hand the

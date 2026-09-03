@@ -37,6 +37,7 @@
 
 import { registerCell, type CellSpec } from './cell-registry';
 import { AGENT_GOAL_CELL_ID } from './agent-goal-ref';
+import { AUTHORITATIVE_JUDGING_SHA_SOURCES } from './judging-sha-source';
 
 /* ═══════════════════════════════════════════════════════════════════════════════
  * cell-assessment-schema-and-falsifier-removal-2026-08-21 P-004/P-006 — EVERY CELL
@@ -414,9 +415,25 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
     path: 'assessments.gateCandidate',
     codes: {
       'no-active-run': {
-        meaning: 'No gate run is in flight — a measured absence, not a failed read.',
+        meaning: 'No gate run is in flight and no candidate is frozen — a measured absence, not a failed read.',
         safeAction:
-          'Nothing to wait on. If you need a verdict now, fire release:checkpoint-run — but check for an in-flight re-triage first, which that verb now refuses on by itself.',
+          'Nothing to wait on. If you need a verdict now, fire release:checkpoint-run — but read gate.greenCheckpoint.freezeDisposition first: while a candidate is frozen (converging/held) the lever is release:repair-queue converge, never a re-cut at tip, and the verb also refuses on an in-flight re-triage by itself.',
+      },
+      // main-green-status-visible-2026-09-03 P-011 follow-up: the between-runs life of a
+      // frozen repair queue, which used to read `no-active-run` and steer at a re-cut. The
+      // judged sha is the queue's candidate (`judgingShaSource: 'repair-queue'`), so the
+      // per-path containment verdict — including a submodule path — is real here.
+      'frozen-candidate-contains-path': {
+        meaning:
+          'No run is in flight, but a repair queue is frozen: its candidate — the sha the recorded verdict was computed on and the sha the next run resumes — CONTAINS the path you asked about.',
+        safeAction:
+          'Treat the frozen candidate\'s red as being about YOUR change and own it: fix on the shared tree so the fix lands on the queue (release:repair-queue { op:\'converge\', paths:[<path>] } dry-run, then confirm:true). Do NOT fire release:checkpoint-run — that cuts a fresh candidate at tip and restarts the treadmill.',
+      },
+      'frozen-candidate-without-path': {
+        meaning:
+          'No run is in flight, but a repair queue is frozen: its candidate does NOT contain your path, so the recorded red is not a verdict on your change.',
+        safeAction:
+          'Do not fix the queue\'s failures as though they were yours. To get your change judged, converge it onto the queue (release:repair-queue { op:\'converge\', paths:[<path>] } — the dry-run reports whether repairHead already carries it; confirm:true only if not). Never cut a fresh candidate at tip while a queue is frozen.',
       },
       'candidate-not-yet-published': {
         meaning:
@@ -503,8 +520,11 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
    */
   headlineSource: {
     path: 'changeInCandidate.judgingShaSource',
-    authoritative: ['retriage-marker'],
-    why: "'retriage-marker' is the run's OWN published inFlightRetriage marker — an authoritative observation of what it is judging. Anything else is a probe: on a MANUAL run its /tmp unit log, but on a CRON run it degrades to the checkpoint checkout's live HEAD, which is an INFERENCE that can change between two reads and is only right while that checkout stays pinned. Do not fire a manual re-run off a non-authoritative reading.",
+    // Derived from the resolver's own list (judging-sha-source.ts), never hand-maintained:
+    // this entry once named only 'retriage-marker' while the resolver already trusted
+    // 'in-flight-candidate', so the door called an observation non-authoritative.
+    authoritative: [...AUTHORITATIVE_JUDGING_SHA_SOURCES],
+    why: "'retriage-marker' and 'in-flight-candidate' are the run's OWN published markers — observations of what it is judging. 'repair-queue' is the frozen repair queue's candidate: under freeze-and-converge the recorded verdict was computed on it and the next run resumes it, so it is the judged sha between runs too (P-011 follow-up). Anything else is a probe: on a MANUAL run its /tmp unit log, but on a CRON run it degrades to the checkpoint checkout's live HEAD, which is an INFERENCE that can change between two reads and is only right while that checkout stays pinned. Do not fire a manual re-run off a non-authoritative reading.",
   },
 
   /**
