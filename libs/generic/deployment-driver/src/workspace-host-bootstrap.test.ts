@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
+  DEFAULT_WORKSPACE_HOST_AGENT_USER,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX,
   WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES,
@@ -104,13 +105,19 @@ function attestation(
     isolation: {
       workspaceUser: DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
       workspaceGroup: DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+      agentUser: DEFAULT_WORKSPACE_HOST_AGENT_USER,
+      agentGroup: DEFAULT_WORKSPACE_HOST_AGENT_USER,
       runtimeRoot: WORKSPACE_HOST_RUNTIME_ROOT,
       stateRoot: WORKSPACE_HOST_STATE_ROOT,
       workspaceRoot: WORKSPACE_HOST_DATA_ROOT,
-      runtimeReadableByWorkspaceUser: true,
+      runtimeReadableByWorkspaceUser: false,
       runtimeWritableByWorkspaceUser: false,
+      runtimeReadableByAgentUser: true,
+      runtimeWritableByAgentUser: false,
+      agentHomeReadableBySshUser: false,
       workspaceWritableByService: true,
       workspaceWritableBySshUser: true,
+      workspaceWritableByAgentUser: true,
       sudo: false,
       serviceGroupMember: false,
       operatorIngress: 'ssh-local-forward',
@@ -226,18 +233,25 @@ describe('buildWorkspaceHostBootstrap', () => {
    * that quietly serves nothing, which is why all five are pinned rather than just the one
    * that failed loudly.
    */
-  it('lets the workspace account execute the agents it holds credentials for, without granting write or the service group (D-246)', () => {
+  it('runs the agents as a THIRD identity, so the runtime is readable by whoever executes it and never by the SSH login (D-043, D-246, D-248)', () => {
     const script = buildWorkspaceHostBootstrap(input());
 
-    // The defect: the account that receives Claude/Codex/OMP credentials could not traverse
-    // /opt/papercusp, so all three probes died with `env: 'claude': Permission denied` (exit 126)
-    // six steps into a live canary. The grant is a named-user ACL on the runtime root AND across
-    // the extracted release — the agent CLIs are wrappers that re-exec the bundled node and read
-    // scripts/psu.mjs, so the entrypoints alone are not enough.
+    // The defect D-246 measured: the account that receives Claude/Codex/OMP credentials could not
+    // traverse /opt/papercusp, so all three probes died with `env: 'claude': Permission denied`
+    // (exit 126) six steps into a live canary. The grant is a named-user ACL on the runtime root
+    // AND across the extracted release — the agent CLIs are wrappers that re-exec the bundled
+    // node and read scripts/psu.mjs, so the entrypoints alone are not enough.
+    //
+    // The identity D-248 corrects: it is $AGENT_USER, not $WORKSPACE_USER. Both halves are
+    // asserted here BECAUSE EITHER ONE ALONE IS SATISFIABLE BY A BROKEN HOST — a host with only
+    // the grant is D-246's violation of the D-043 owner ruling, and a host with only the ban has
+    // no runnable agents. That is exactly how the first fix passed every test it ran.
     expect(script).toContain(
-      'setfacl -m "u:$WORKSPACE_USER:r-x" "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"',
+      'setfacl -m "u:$AGENT_USER:r-x" "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"',
     );
-    expect(script).toContain('setfacl -R -m "u:$WORKSPACE_USER:rX" "$RELEASE_DIR"');
+    expect(script).toContain('setfacl -R -m "u:$AGENT_USER:rX" "$RELEASE_DIR"');
+    expect(script).not.toContain('setfacl -m "u:$WORKSPACE_USER:r-x" "$RUNTIME_ROOT"');
+    expect(script).not.toContain('setfacl -R -m "u:$WORKSPACE_USER:rX" "$RELEASE_DIR"');
 
     // Ordering guard. NOT because the current sequence would otherwise break: measured over this
     // exact chmod set, the resulting mask is `r-x` either way, since `g-w`/`g+rx`/`g+r` are all
@@ -245,73 +259,162 @@ describe('buildWorkspaceHostBootstrap', () => {
     // so changing any of them to an assigning form (`chmod g=r`) with the ACL applied first would
     // clamp execute away — a failure invisible until an agent CLI refuses to run on a real host.
     expect(script.indexOf('find "$RELEASE_DIR" -type f -exec chmod g+r {} +')).toBeLessThan(
-      script.indexOf('setfacl -R -m "u:$WORKSPACE_USER:rX" "$RELEASE_DIR"'),
+      script.indexOf('setfacl -R -m "u:$AGENT_USER:rX" "$RELEASE_DIR"'),
     );
 
-    // The recurrence guard: prove executability as the workspace user at bootstrap time, which
-    // is where this should have failed instead of inside a live canary.
+    // The recurrence guard for D-246: prove executability at bootstrap time, which is where this
+    // should have failed instead of inside a live canary — now as the agent identity.
     expect(script).toContain(
-      'for agent_entrypoint in "$CLAUDE_ENTRYPOINT" "$CODEX_ENTRYPOINT" "$OMP_ENTRYPOINT"; do',
-    );
-    expect(script).toContain(
-      'die "workspace SSH user cannot execute agent entrypoint: $agent_entrypoint"',
+      '  runuser -u "$AGENT_USER" -- test -x "$RUNTIME_ROOT/current/$agent_entrypoint" || die "agent identity cannot execute agent entrypoint: $agent_entrypoint"',
     );
 
-    // Confinement is unchanged. Read access to a signed release the account must execute is not
-    // the boundary; these are.
+    // The recurrence guard for D-248: the assertion D-246 deleted is back. This is the mechanical
+    // enforcement of the D-043 sentence, and deleting it is how a widened grant ships unnoticed.
+    expect(script).toContain(
+      'runuser -u "$WORKSPACE_USER" -- test ! -r "$RUNTIME_ROOT/current/$OPERATOR_ENTRYPOINT" || die "workspace SSH user can read the Papercusp runtime"',
+    );
+    expect(script).toContain(
+      '  runuser -u "$WORKSPACE_USER" -- test ! -x "$RUNTIME_ROOT/current/$agent_entrypoint" || die "workspace SSH user can execute agent entrypoint: $agent_entrypoint"',
+    );
+
+    // The credential half. On a BYOC host the SSH account is the CUSTOMER's access path, and
+    // before D-248 it OWNED the delivered agent credentials at 0600 in its own home.
+    expect(script).toContain(
+      'install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0700 "$AGENT_HOME"',
+    );
+    expect(script).toContain(
+      'runuser -u "$WORKSPACE_USER" -- test ! -r "$AGENT_HOME" || die "workspace SSH user can read the agent credential home"',
+    );
+
+    // The agent identity is confined in every direction the SSH account is, and is non-login.
+    expect(script).toContain('die "agent identity can write the Papercusp runtime"');
+    expect(script).toContain('die "agent identity can read the runtime state root"');
+    expect(script).toContain('die "agent identity belongs to the runtime service group"');
+    expect(script).toContain('die "agent identity belongs to sudo"');
+    expect(script).toContain('die "agent identity has a login shell"');
+    expect(script).toContain(
+      'usermod --lock --gid "$AGENT_GROUP" --groups "" --home "$AGENT_HOME" --shell /usr/sbin/nologin "$AGENT_USER"',
+    );
+
+    // Confinement of the SSH account is unchanged.
     expect(script).toContain('die "workspace SSH user can write the Papercusp runtime"');
     expect(script).toContain('die "workspace SSH user can read the runtime state root"');
     expect(script).toContain('die "runtime release tree must not be world-readable"');
     expect(script).toContain(
       'die "workspace SSH user belongs to the runtime service group"',
     );
+    expect(script).toContain('die "workspace SSH user belongs to the agent group"');
     expect(script).toContain('die "workspace SSH user belongs to sudo"');
     expect(script).toContain('usermod --lock --gid "$WORKSPACE_GROUP" --groups ""');
 
-    // The inverted assertion must not come back: it REQUIRED the agents to be unrunnable, and
-    // passed on every host for exactly that reason.
-    expect(script).not.toContain('die "workspace SSH user can read the Papercusp runtime"');
+    // All three identities write the scoped workspace root — otherwise the customer cannot edit
+    // over SSH what the agent wrote, which is the product.
+    expect(script).toContain(
+      'setfacl -d -m "u:$SERVICE_USER:rwx,u:$WORKSPACE_USER:rwx,u:$AGENT_USER:rwx,m::rwx,o::---" "$WORKSPACE_ROOT"',
+    );
+    expect(script).toContain('die "agent identity cannot write the scoped workspace root"');
+    expect(script).toContain('die "workspace SSH user cannot write the scoped workspace root"');
   });
 
-  it('attests the runtime as workspace-readable but never workspace-writable (D-246)', () => {
+  it('refuses to collapse the agent identity onto either existing account (D-248)', () => {
+    // Each collapse is individually plausible and individually catastrophic: onto the SSH login
+    // it re-grants the customer runtime read (D-043) and hands them the platform's agent
+    // credentials; onto the service account it gives the agent runtime $STATE_ROOT, which holds
+    // embedded PG and every delivered credential. Neither is caught downstream — every later
+    // check passes on both shapes — so the refusal has to be here.
+    expect(() =>
+      buildWorkspaceHostBootstrap(
+        input({ isolation: { agentUser: DEFAULT_WORKSPACE_HOST_WORKSPACE_USER } }),
+      ),
+    ).toThrow(/agent identity must differ/);
+    expect(() =>
+      buildWorkspaceHostBootstrap(
+        input({ isolation: { agentUser: DEFAULT_WORKSPACE_HOST_SERVICE_USER } }),
+      ),
+    ).toThrow(/agent identity must differ/);
+    expect(() =>
+      buildWorkspaceHostBootstrap(
+        input({
+          isolation: {
+            agentUser: 'pc-agent',
+            agentGroup: DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+          },
+        }),
+      ),
+    ).toThrow(/agent group must differ/);
+  });
+
+  it('attests the runtime as agent-readable and NEVER workspace-readable (D-043, D-248)', () => {
     const script = buildWorkspaceHostBootstrap(input());
     expect(script).toContain(
-      'runtimeReadableByWorkspaceUser:true,runtimeWritableByWorkspaceUser:false',
+      'runtimeReadableByWorkspaceUser:false,runtimeWritableByWorkspaceUser:false,runtimeReadableByAgentUser:true,runtimeWritableByAgentUser:false,agentHomeReadableBySshUser:false',
     );
 
-    // The validator must reject a host attesting the pre-D-246 shape: an attestation claiming
-    // the runtime is unreadable now describes a host whose agents cannot run.
-    const stale = validateWorkspaceHostBootstrapAttestation(
+    // Three separate refusals, because the three failure shapes are different hosts. The
+    // validator is what a caller who never saw the host runs, so each has to be legible there.
+    const readable = validateWorkspaceHostBootstrapAttestation(
       attestation({
         isolation: {
           ...attestation().isolation,
-          runtimeReadableByWorkspaceUser: false as true,
+          runtimeReadableByWorkspaceUser: true as false,
         },
       }),
       input(),
     );
-    expect(stale.ok).toBe(false);
-    expect(stale.errors).toContain(
-      'workspace SSH user cannot read the runtime it must execute agents from',
+    expect(readable.ok).toBe(false);
+    expect(readable.errors).toContain(
+      'workspace SSH user can read the Papercusp runtime (D-043)',
+    );
+
+    const unrunnable = validateWorkspaceHostBootstrapAttestation(
+      attestation({
+        isolation: {
+          ...attestation().isolation,
+          runtimeReadableByAgentUser: false as true,
+        },
+      }),
+      input(),
+    );
+    expect(unrunnable.ok).toBe(false);
+    expect(unrunnable.errors).toContain(
+      'agent identity cannot read the runtime it must execute agents from',
+    );
+
+    const exposed = validateWorkspaceHostBootstrapAttestation(
+      attestation({
+        isolation: {
+          ...attestation().isolation,
+          agentHomeReadableBySshUser: true as false,
+        },
+      }),
+      input(),
+    );
+    expect(exposed.ok).toBe(false);
+    expect(exposed.errors).toContain(
+      'workspace SSH user can read the delivered agent credential home',
     );
 
     const writable = validateWorkspaceHostBootstrapAttestation(
       attestation({
         isolation: {
           ...attestation().isolation,
-          runtimeWritableByWorkspaceUser: true as false,
+          runtimeWritableByAgentUser: true as false,
         },
       }),
       input(),
     );
     expect(writable.ok).toBe(false);
-    expect(writable.errors).toContain('workspace SSH user can write the runtime');
+    expect(writable.errors).toContain('an unprivileged identity can write the runtime');
 
-    // A correctly-attesting host must not trip either check.
+    // A correctly-attesting host must not trip any of them.
     expect(
       validateWorkspaceHostBootstrapAttestation(attestation(), input()).errors,
     ).not.toEqual(
-      expect.arrayContaining([expect.stringMatching(/runtime it must execute|can write the runtime/)]),
+      expect.arrayContaining([
+        expect.stringMatching(
+          /read the Papercusp runtime|must execute agents from|credential home|can write the runtime/,
+        ),
+      ]),
     );
   });
 
@@ -771,9 +874,14 @@ describe('workspace-host bootstrap attestation', () => {
       },
       isolation: {
         ...attestation().isolation,
-        // Post-D-246 the violating shape is INVERTED: unreadable means the agents cannot run.
-        runtimeReadableByWorkspaceUser: false as true,
-        runtimeWritableByWorkspaceUser: true as false,
+        // Post-D-248 there are TWO violating read shapes and they point opposite ways: the SSH
+        // login reading the runtime is D-043's violation, and the agent identity NOT reading it
+        // is a host with no runnable agents. Drift both at once so the validator has to name
+        // them separately rather than collapsing to one message.
+        runtimeReadableByWorkspaceUser: true as false,
+        runtimeReadableByAgentUser: false as true,
+        runtimeWritableByAgentUser: true as false,
+        agentHomeReadableBySshUser: true as false,
         sudo: true as false,
       },
       checks: WORKSPACE_HOST_BOOTSTRAP_CHECKS.slice(1).map((name) => ({
@@ -790,8 +898,10 @@ describe('workspace-host bootstrap attestation', () => {
         'Node runtime is below the requested floor',
         'service user mismatch',
         'operator must bind to loopback',
-        'workspace SSH user cannot read the runtime it must execute agents from',
-        'workspace SSH user can write the runtime',
+        'workspace SSH user can read the Papercusp runtime (D-043)',
+        'agent identity cannot read the runtime it must execute agents from',
+        'workspace SSH user can read the delivered agent credential home',
+        'an unprivileged identity can write the runtime',
         'workspace SSH user has privileged runtime membership',
         "required bootstrap check 'ubuntu-24.04' did not pass",
       ]),

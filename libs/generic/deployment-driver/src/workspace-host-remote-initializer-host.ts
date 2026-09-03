@@ -63,6 +63,7 @@ import {
   type WorkspaceHostAgentHomeFilesystem,
 } from "./workspace-host-agent-home";
 import {
+  DEFAULT_WORKSPACE_HOST_AGENT_USER,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_DATA_ROOT,
 } from "./workspace-host-bootstrap";
@@ -81,6 +82,15 @@ export const WORKSPACE_HOST_DEFAULT_WORKSPACE_ROOT = WORKSPACE_HOST_DATA_ROOT;
 
 /** Default native home used by the dedicated workspace SSH identity. */
 export const WORKSPACE_HOST_DEFAULT_WORKSPACE_HOME = `/home/${DEFAULT_WORKSPACE_HOST_WORKSPACE_USER}`;
+
+/**
+ * Default native home of the AGENT identity — where delivered Claude/Codex/OMP material lives.
+ *
+ * A separate constant from the workspace home on purpose: the two were the same path until
+ * D-248, which is exactly why the credential exposure was invisible. Keep them distinct even if
+ * a future caller wants to override one.
+ */
+export const WORKSPACE_HOST_DEFAULT_AGENT_HOME = `/home/${DEFAULT_WORKSPACE_HOST_AGENT_USER}`;
 
 /** Exact PATH passed to agent probes; no controller process environment is inherited. */
 export const WORKSPACE_HOST_DEFAULT_AGENT_PROBE_PATH =
