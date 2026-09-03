@@ -3,17 +3,25 @@
  * 'feedback', otherwise gated on the known-roles registry) and rowToChat (the
  * PG-row → ChatRow mapping with transcript JSON-parse vs passthrough, bigint→
  * Number token/cost coercion, bigint epoch-ms → ISO timestamp coercion
- * (migration 116), null defaults). known-roles is mocked.
+ * (migration 116), null defaults).
  *
  * Plus listChats LIMIT/OFFSET bounding + column projection (F-C1): the query
  * is always bounded — default 100, clamped to 1..100, offset for paging — AND
  * projects only the needed columns (NO `SELECT *`, no `transcript` jsonb body;
  * just `jsonb_array_length(...) AS turn_count`) so the forever-growing
  * agent_chats table can't be SELECT *'d in full and a 100-row page doesn't drag
- * every transcript body over the wire. db-org is mocked to capture the SQL +
- * bound args; rowToChatSummary maps the projected row.
+ * every transcript body over the wire.
+ *
+ * WI-5383: this module was migrated off getLegacyClient(slug).prepare(...) onto
+ * harnessQuery(slug, (sql) => sql.unsafe(text, params)). db-org is mocked at the
+ * harnessQuery seam (spreading the real module for every other export); the
+ * fake `sql` handle exposes only `.unsafe`, which is all this file's functions
+ * call. Every prepared statement is captured via `unsafe.mock.calls`, read
+ * through the `calls()` helper below, so a test can assert exactly which
+ * statements ran (and which DIDN'T) — same intent as the old `calls[]` log,
+ * now sourced from the mock's own call history instead of a hand-rolled one.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./known-roles', () => ({
   getKnownRoles: () => ['worker', 'scoper', 'validator', 'orchestrator'],
@@ -26,41 +34,15 @@ vi.mock('./known-roles', () => ({
 const TEST_WS = 'papercusp-workspace';
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => TEST_WS }));
 
-// Capture the SQL + bound args that the data layer hands to the legacy client.
-// The same fake client backs listChats (.all), getChat/createChat (.get +
-// .run) and archiveChat (.run) — every prepare() records its SQL + bound
-// args so a test can assert exactly which statements ran (and which DIDN'T).
-// WI-5217: real (...args: unknown[]) rest-param signature so `.mock.calls[N]` is a
-// real (non-empty) tuple — the call sites below used to spread `args as []`, which
-// forced the mock's inferred call-arg tuple to `[]` (no real args, even though the
-// runtime spread still passed the real bound args through the type erasure).
-const allMock = vi.fn(async (..._args: unknown[]) => [] as Array<Record<string, unknown>>);
-const getMock = vi.fn(async (..._args: unknown[]) => undefined as Record<string, unknown> | undefined);
-const runMock = vi.fn(async (..._args: unknown[]) => undefined);
-let lastSql = '';
-/** Every (sql, boundArgs) pair prepared+executed, in order. */
-const calls: Array<{ sql: string; args: unknown[] }> = [];
-vi.mock('@papercusp/db-org', async (orig) => ({
-  ...(await orig<typeof import('@papercusp/db-org')>()),
-  getLegacyClient: () => ({
-    prepare: (sql: string) => {
-      lastSql = sql;
-      return {
-        all: (...args: unknown[]) => {
-          calls.push({ sql, args });
-          return allMock(...args);
-        },
-        get: (...args: unknown[]) => {
-          calls.push({ sql, args });
-          return getMock(...args);
-        },
-        run: (...args: unknown[]) => {
-          calls.push({ sql, args });
-          return runMock(...args);
-        },
-      };
-    },
-  }),
+// harnessQuery's callback receives a postgres.js-shaped `sql` handle; every
+// function in this file calls only `.unsafe(text, params)` on it, so a fake
+// exposing just that method is enough to observe what was sent — same fake
+// shape as dev-data-session-detail.test.ts / harness-core-parse-features.test.ts.
+const unsafe = vi.fn();
+const dbMocks = vi.hoisted(() => ({ harnessQuery: vi.fn() }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  harnessQuery: dbMocks.harnessQuery,
 }));
 
 import {
@@ -75,6 +57,23 @@ import {
   LIST_CHATS_DEFAULT_LIMIT,
   toPuiSessionRuntimeClass,
 } from './agent-chats-data';
+
+/** Every (sql, boundArgs) pair `.unsafe()` was invoked with, in order. */
+function calls(): Array<{ sql: string; args: unknown[] }> {
+  return unsafe.mock.calls.map((call: unknown[]) => ({
+    sql: String(call[0]),
+    args: (call[1] as unknown[] | undefined) ?? [],
+  }));
+}
+
+beforeEach(() => {
+  unsafe.mockReset();
+  unsafe.mockResolvedValue([]);
+  dbMocks.harnessQuery.mockReset();
+  dbMocks.harnessQuery.mockImplementation(async (_slug: string, fn: (sql: { unsafe: typeof unsafe }) => unknown) =>
+    fn({ unsafe }),
+  );
+});
 
 describe('isValidChatRole', () => {
   it('accepts a known role', () => {
@@ -167,33 +166,30 @@ describe('rowToChatSummary', () => {
 });
 
 describe('listChats — bounded query (F-C1)', () => {
-  afterEach(() => {
-    allMock.mockClear();
-    allMock.mockResolvedValue([]);
-  });
-
   it('always applies a LIMIT + OFFSET (default 100, offset 0)', async () => {
     const r = await listChats({ slug: 'foo' });
     expect(r.ok).toBe(true);
-    expect(lastSql).toContain('LIMIT ? OFFSET ?');
-    expect(lastSql).toContain('archived_at IS NULL'); // active-only by default
-    expect(allMock).toHaveBeenCalledWith(TEST_WS, LIST_CHATS_DEFAULT_LIMIT, 0);
+    const [sql, args] = unsafe.mock.calls[0]!;
+    expect(sql).toContain('LIMIT $2 OFFSET $3');
+    expect(sql).toContain('archived_at IS NULL'); // active-only by default
+    expect(args).toEqual([TEST_WS, LIST_CHATS_DEFAULT_LIMIT, 0]);
   });
 
   it('projects columns (no SELECT *, no transcript body — turn_count instead)', async () => {
     await listChats({ slug: 'foo' });
-    expect(lastSql).not.toContain('SELECT *');
+    const [sql] = unsafe.mock.calls[0]!;
+    expect(sql).not.toContain('SELECT *');
     // the heavy jsonb body is replaced by its length
-    expect(lastSql).toContain('jsonb_array_length');
-    expect(lastSql).toContain('AS turn_count');
+    expect(sql).toContain('jsonb_array_length');
+    expect(sql).toContain('AS turn_count');
     // `transcript` is referenced exactly ONCE — inside the length expression,
     // never selected as a bare body column.
-    expect((lastSql.match(/transcript/g) ?? []).length).toBe(1);
-    expect(lastSql).toContain('COALESCE(transcript');
+    expect((String(sql).match(/transcript/g) ?? []).length).toBe(1);
+    expect(sql).toContain('COALESCE(transcript');
   });
 
   it('maps projected rows via rowToChatSummary (turn_count, no transcript field)', async () => {
-    allMock.mockResolvedValueOnce([
+    unsafe.mockResolvedValueOnce([
       {
         id: 'c1',
         role: 'worker',
@@ -219,32 +215,33 @@ describe('listChats — bounded query (F-C1)', () => {
 
   it('clamps limit above 100 down to 100', async () => {
     await listChats({ slug: 'foo', limit: 5000 });
-    expect(allMock).toHaveBeenCalledWith(TEST_WS, 100, 0);
+    expect(unsafe.mock.calls[0]?.[1]).toEqual([TEST_WS, 100, 0]);
   });
 
   it('clamps limit at/below 0 up to 1', async () => {
     await listChats({ slug: 'foo', limit: 0 });
-    expect(allMock).toHaveBeenCalledWith(TEST_WS, 1, 0);
-    allMock.mockClear();
+    expect(unsafe.mock.calls[0]?.[1]).toEqual([TEST_WS, 1, 0]);
+    unsafe.mockClear();
     await listChats({ slug: 'foo', limit: -10 });
-    expect(allMock).toHaveBeenCalledWith(TEST_WS, 1, 0);
+    expect(unsafe.mock.calls[0]?.[1]).toEqual([TEST_WS, 1, 0]);
   });
 
   it('threads a custom limit + offset (keyset paging)', async () => {
     await listChats({ slug: 'foo', limit: 25, offset: 50 });
-    expect(allMock).toHaveBeenCalledWith(TEST_WS, 25, 50);
+    expect(unsafe.mock.calls[0]?.[1]).toEqual([TEST_WS, 25, 50]);
   });
 
   it('floors a negative offset to 0 and truncates fractional values', async () => {
     await listChats({ slug: 'foo', limit: 10.9, offset: -3 });
-    expect(allMock).toHaveBeenCalledWith(TEST_WS, 10, 0);
+    expect(unsafe.mock.calls[0]?.[1]).toEqual([TEST_WS, 10, 0]);
   });
 
   it('includeArchived drops the archived_at filter but stays bounded', async () => {
     await listChats({ slug: 'foo', includeArchived: true, limit: 30 });
-    expect(lastSql).toContain('LIMIT ? OFFSET ?');
-    expect(lastSql).not.toContain('archived_at IS NULL');
-    expect(allMock).toHaveBeenCalledWith(TEST_WS, 30, 0);
+    const [sql, args] = unsafe.mock.calls[0]!;
+    expect(sql).toContain('LIMIT $2 OFFSET $3');
+    expect(sql).not.toContain('archived_at IS NULL');
+    expect(args).toEqual([TEST_WS, 30, 0]);
   });
 
   // WI-5125 — the list MUST be workspace-scoped, archived or not.
@@ -260,25 +257,16 @@ describe('listChats — bounded query (F-C1)', () => {
     ['includeArchived', { slug: 'foo', includeArchived: true }],
   ])('scopes the list to the active workspace (%s) (WI-5125)', async (_label, args) => {
     await listChats(args);
-    expect(lastSql).toContain('workspace_id = ?');
-    expect(allMock.mock.calls[0]?.[0]).toBe(TEST_WS);
+    const [sql, sqlArgs] = unsafe.mock.calls[0]!;
+    expect(sql).toContain('workspace_id = $1');
+    expect((sqlArgs as unknown[])[0]).toBe(TEST_WS);
   });
 });
 
-// ── write/read paths against the fake legacy client ────────────────────────
-// These exercise the SQL each fn issues + the result envelope. The shared
-// `calls[]` log lets us assert exactly which statements ran — crucial for AC2,
-// where the dead `pre` SELECT must NOT run.
-
-beforeEach(() => {
-  calls.length = 0;
-  allMock.mockReset();
-  allMock.mockResolvedValue([]);
-  getMock.mockReset();
-  getMock.mockResolvedValue(undefined);
-  runMock.mockReset();
-  runMock.mockResolvedValue(undefined);
-});
+// ── write/read paths against the fake harnessQuery/sql.unsafe ──────────────
+// These exercise the SQL each fn issues + the result envelope. `calls()` lets
+// us assert exactly which statements ran — crucial for AC2, where the dead
+// `pre` SELECT must NOT run.
 
 const ROW = (over: Record<string, unknown> = {}) => ({
   id: 'c1',
@@ -297,32 +285,32 @@ const ROW = (over: Record<string, unknown> = {}) => ({
 
 describe('getChat', () => {
   it('404s when the row is absent', async () => {
-    getMock.mockResolvedValueOnce(undefined);
+    unsafe.mockResolvedValueOnce([]);
     const r = await getChat({ slug: 'foo', chatId: 'missing' });
     expect(r).toEqual({ ok: false, status: 404, error: 'chat not found' });
     // only the chat SELECT ran — no feature-lock probe for a missing chat
-    expect(calls).toHaveLength(1);
-    expect(calls[0].sql).toContain('SELECT * FROM agent_chats WHERE id = ?');
-    expect(calls[0].args).toEqual(['missing']);
+    expect(calls()).toHaveLength(1);
+    expect(calls()[0].sql).toContain('SELECT * FROM agent_chats WHERE id = $1');
+    expect(calls()[0].args).toEqual(['missing']);
   });
 
   it('returns the mapped chat with feature_lock=null when no feature_id', async () => {
-    getMock.mockResolvedValueOnce(ROW({ feature_id: null }));
+    unsafe.mockResolvedValueOnce([ROW({ feature_id: null })]);
     const r = await getChat({ slug: 'foo', chatId: 'c1' });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.data.id).toBe('c1');
     expect(r.data.feature_lock).toBeNull();
     // no harness_features probe when feature_id is null
-    expect(calls.some((c) => /harness_features/.test(c.sql))).toBe(false);
+    expect(calls().some((c) => /harness_features/.test(c.sql))).toBe(false);
   });
 
   it('reads feature-lock state when the chat carries a feature_id', async () => {
-    getMock
-      // 1st .get → the chat row (feature-locked)
-      .mockResolvedValueOnce(ROW({ feature_id: 'F-7' }))
-      // 2nd .get → readFeatureLockState's harness_features row
-      .mockResolvedValueOnce({ taken_by: 'worker-3', taken_at: 't', expires_at: null });
+    unsafe
+      // 1st .unsafe → the chat row (feature-locked)
+      .mockResolvedValueOnce([ROW({ feature_id: 'F-7' })])
+      // 2nd .unsafe → readFeatureLockState's harness_features row
+      .mockResolvedValueOnce([{ taken_by: 'worker-3', taken_at: 't', expires_at: null }]);
     const r = await getChat({ slug: 'foo', chatId: 'c1' });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -333,13 +321,13 @@ describe('getChat', () => {
       active: true,
     });
     // the lock probe queried harness_features by (slug, feature_id)
-    const probe = calls.find((c) => /harness_features/.test(c.sql));
+    const probe = calls().find((c) => /harness_features/.test(c.sql));
     expect(probe).toBeDefined();
     expect(probe?.args).toEqual(['foo', 'F-7']);
   });
 
   it('wraps a thrown error as a 500 envelope', async () => {
-    getMock.mockRejectedValueOnce(new Error('pg exploded'));
+    unsafe.mockRejectedValueOnce(new Error('pg exploded'));
     const r = await getChat({ slug: 'foo', chatId: 'c1' });
     expect(r).toEqual({ ok: false, status: 500, error: 'failed to load chat: pg exploded' });
   });
@@ -352,7 +340,7 @@ describe('createChat', () => {
     if (r.ok) return;
     expect(r.status).toBe(400);
     expect(r.error).toMatch(/role must be one of/);
-    expect(calls).toHaveLength(0); // never reached the db
+    expect(calls()).toHaveLength(0); // never reached the db
   });
 
   it('rejects a malformed feature_id before touching the db', async () => {
@@ -361,28 +349,31 @@ describe('createChat', () => {
     if (r.ok) return;
     expect(r.status).toBe(400);
     expect(r.error).toMatch(/invalid feature_id/);
-    expect(calls).toHaveLength(0);
+    expect(calls()).toHaveLength(0);
   });
 
   it('inserts then re-selects the row; defaults title to role when no feature', async () => {
-    getMock.mockResolvedValueOnce(ROW({ role: 'worker', title: 'worker', feature_id: null }));
+    unsafe
+      .mockResolvedValueOnce([]) // the INSERT (return value unused)
+      .mockResolvedValueOnce([ROW({ role: 'worker', title: 'worker', feature_id: null })]); // the re-SELECT
     const r = await createChat({ slug: 'foo', role: 'worker' });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.data.feature_lock).toBeNull();
     // one INSERT + one SELECT, no harness_features probe
-    const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
+    const insert = calls().find((c) => /INSERT INTO agent_chats/.test(c.sql));
     expect(insert).toBeDefined();
     // INSERT bound args:
     // (id, workspace_id, role, feature_id, title, transcript, su_runtime_class)
     expect(insert?.args.slice(1)).toEqual([TEST_WS, 'worker', null, 'worker', '[]', 'su-session']);
-    expect(calls.some((c) => /harness_features/.test(c.sql))).toBe(false);
+    expect(calls().some((c) => /harness_features/.test(c.sql))).toBe(false);
   });
 
   it('derives "role · feature" title and probes the feature lock when feature_id given', async () => {
-    getMock
-      .mockResolvedValueOnce(ROW({ role: 'worker', feature_id: 'F-9', title: 'worker · F-9' }))
-      .mockResolvedValueOnce({ taken_by: null, taken_at: null, expires_at: null });
+    unsafe
+      .mockResolvedValueOnce([]) // the INSERT
+      .mockResolvedValueOnce([ROW({ role: 'worker', feature_id: 'F-9', title: 'worker · F-9' })]) // the re-SELECT
+      .mockResolvedValueOnce([{ taken_by: null, taken_at: null, expires_at: null }]); // readFeatureLockState
     const r = await createChat({ slug: 'foo', role: 'worker', feature_id: 'F-9' });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -392,7 +383,7 @@ describe('createChat', () => {
       expires_at: null,
       active: false, // taken_by null → not active
     });
-    const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
+    const insert = calls().find((c) => /INSERT INTO agent_chats/.test(c.sql));
     expect(insert?.args.slice(1)).toEqual([
       TEST_WS,
       'worker',
@@ -402,13 +393,13 @@ describe('createChat', () => {
       // P-011: the dispatch policy this conversation is born under.
       'su-session',
     ]);
-    expect(calls.some((c) => /harness_features/.test(c.sql))).toBe(true);
+    expect(calls().some((c) => /harness_features/.test(c.sql))).toBe(true);
   });
 
   it('honors an explicit title over the derived default', async () => {
-    getMock.mockResolvedValueOnce(ROW({ role: 'scoper', title: 'Custom' }));
+    unsafe.mockResolvedValueOnce([]).mockResolvedValueOnce([ROW({ role: 'scoper', title: 'Custom' })]);
     await createChat({ slug: 'foo', role: 'scoper', title: 'Custom' });
-    const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
+    const insert = calls().find((c) => /INSERT INTO agent_chats/.test(c.sql));
     // (id, workspace_id, role, feature_id, title, …) — title is arg 4.
     expect(insert?.args[4]).toBe('Custom');
   });
@@ -422,16 +413,16 @@ describe('createChat', () => {
   // ACTIVE workspace → zero rows → an eternal spinner. The column must be
   // stamped EXPLICITLY from the live registry; the view default cannot know it.
   it('stamps the ACTIVE workspace on the insert — never the view default (WI-5125)', async () => {
-    getMock.mockResolvedValueOnce(ROW({ role: 'worker', title: 'worker', feature_id: null }));
+    unsafe.mockResolvedValueOnce([]).mockResolvedValueOnce([ROW({ role: 'worker', title: 'worker', feature_id: null })]);
     await createChat({ slug: 'foo', role: 'worker' });
-    const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
+    const insert = calls().find((c) => /INSERT INTO agent_chats/.test(c.sql));
     expect(insert?.sql).toMatch(/workspace_id/);
     expect(insert?.args[1]).toBe(TEST_WS);
     expect(insert?.args[1]).not.toBe('default');
   });
 
   it('wraps an insert failure as a 500 envelope', async () => {
-    runMock.mockRejectedValueOnce(new Error('unique violation'));
+    unsafe.mockRejectedValueOnce(new Error('unique violation'));
     const r = await createChat({ slug: 'foo', role: 'worker' });
     expect(r).toEqual({ ok: false, status: 500, error: 'failed to create chat: unique violation' });
   });
@@ -449,9 +440,9 @@ describe('PUI session runtime class (P-011)', () => {
   const CLASS_ARG = 6; // (id, workspace_id, role, feature_id, title, transcript, su_runtime_class)
 
   it('always stamps a newly created chat as su-session', async () => {
-    getMock.mockResolvedValueOnce(ROW({ role: 'worker', title: 'worker', feature_id: null }));
+    unsafe.mockResolvedValueOnce([]).mockResolvedValueOnce([ROW({ role: 'worker', title: 'worker', feature_id: null })]);
     await createChat({ slug: 'foo', role: 'worker' });
-    const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
+    const insert = calls().find((c) => /INSERT INTO agent_chats/.test(c.sql));
     expect(insert?.sql).toMatch(/su_runtime_class/);
     expect(insert?.args[CLASS_ARG]).toBe('su-session');
   });
@@ -485,7 +476,7 @@ describe('PUI session runtime class (P-011)', () => {
     // through the real query rather than the private column constant, so it
     // cannot pass on a projection the list does not actually issue.
     await listChats({ slug: 'foo' });
-    const select = calls.find((c) => /FROM agent_chats/.test(c.sql));
+    const select = calls().find((c) => /FROM agent_chats/.test(c.sql));
     expect(select?.sql).toMatch(/su_runtime_class/);
   });
 });
@@ -497,19 +488,19 @@ describe('archiveChat (AC2 — orphaned `pre` SELECT removed)', () => {
     // exactly one statement: the UPDATE. The dead `SELECT role, feature_id`
     // (orphaned by the experts-rip-out refactor) must NOT run — this test
     // FAILS against the old code, which prepared+ran that extra SELECT.
-    expect(calls).toHaveLength(1);
-    expect(calls[0].sql).toMatch(/UPDATE agent_chats SET archived_at = \?, updated_at = \? WHERE id = \?/);
+    expect(calls()).toHaveLength(1);
+    expect(calls()[0].sql).toMatch(/UPDATE agent_chats SET archived_at = \$1, updated_at = \$2 WHERE id = \$3/);
     // and nobody SELECTed role/feature_id as a side-channel
-    expect(calls.some((c) => /SELECT role, feature_id/.test(c.sql))).toBe(false);
+    expect(calls().some((c) => /SELECT role, feature_id/.test(c.sql))).toBe(false);
     // archiving never touches a feature lock
-    expect(calls.some((c) => /harness_features/.test(c.sql))).toBe(false);
+    expect(calls().some((c) => /harness_features/.test(c.sql))).toBe(false);
   });
 
   it('sets archived_at and updated_at to the same epoch-ms, keyed by chatId', async () => {
     const before = Date.now();
     await archiveChat({ slug: 'foo', chatId: 'c1' });
     const after = Date.now();
-    const [archivedAt, updatedAt, id] = calls[0].args as [number, number, string];
+    const [archivedAt, updatedAt, id] = calls()[0].args as [number, number, string];
     expect(archivedAt).toBe(updatedAt); // single now() snapshot
     expect(archivedAt).toBeGreaterThanOrEqual(before);
     expect(archivedAt).toBeLessThanOrEqual(after);
@@ -517,7 +508,7 @@ describe('archiveChat (AC2 — orphaned `pre` SELECT removed)', () => {
   });
 
   it('wraps an update failure as a 500 envelope', async () => {
-    runMock.mockRejectedValueOnce(new Error('deadlock'));
+    unsafe.mockRejectedValueOnce(new Error('deadlock'));
     const r = await archiveChat({ slug: 'foo', chatId: 'c1' });
     expect(r).toEqual({ ok: false, status: 500, error: 'failed to archive chat: deadlock' });
   });
@@ -525,34 +516,36 @@ describe('archiveChat (AC2 — orphaned `pre` SELECT removed)', () => {
 
 describe('appendExternalChatTurn (P-010)', () => {
   it('appends a server-originated turn with source metadata and active workspace scope', async () => {
-    getMock.mockResolvedValueOnce({ id: 'c1' });
+    unsafe.mockResolvedValueOnce([{ id: 'c1' }]); // UPDATE ... RETURNING id: matched
     const result = await appendExternalChatTurn({
       slug: 'portal', chatId: 'c1', role: 'user', content: 'spoken hello',
       sourceId: 'room-1:0', source: 'phone-livekit', ts: '2026-08-31T18:00:00.000Z',
     });
     expect(result).toEqual({ ok: true, data: { appended: true } });
-    expect(calls[0]?.sql).toContain("source_id");
-    expect(calls[0]?.sql).toContain('workspace_id = ?');
-    expect(calls[0]?.args[2]).toBe(TEST_WS);
-    expect(JSON.parse(String(calls[0]?.args[0]))).toEqual([expect.objectContaining({
+    expect(calls()).toHaveLength(1); // matched — no fallback SELECT needed
+    expect(calls()[0]?.sql).toContain('source_id');
+    expect(calls()[0]?.sql).toContain('workspace_id = $3');
+    expect(calls()[0]?.args[2]).toBe(TEST_WS);
+    expect(JSON.parse(String(calls()[0]?.args[0]))).toEqual([expect.objectContaining({
       role: 'user', content: 'spoken hello', source: 'phone-livekit', source_id: 'room-1:0',
     })]);
   });
 
   it('returns appended=false for a duplicate source id without another write', async () => {
-    getMock.mockResolvedValueOnce(undefined); // UPDATE ... RETURNING: duplicate/no row
-    getMock.mockResolvedValueOnce({ id: 'c1' });
+    unsafe
+      .mockResolvedValueOnce([]) // UPDATE ... RETURNING: duplicate/no row matched
+      .mockResolvedValueOnce([{ id: 'c1' }]); // fallback existence-check SELECT
     const result = await appendExternalChatTurn({
       slug: 'portal', chatId: 'c1', role: 'assistant', content: 'spoken reply',
       sourceId: 'room-1:0', source: 'phone-livekit',
     });
     expect(result).toEqual({ ok: true, data: { appended: false } });
-    expect(calls).toHaveLength(2);
-    expect(calls[1]?.sql).toContain('SELECT id FROM agent_chats');
+    expect(calls()).toHaveLength(2);
+    expect(calls()[1]?.sql).toContain('SELECT id FROM agent_chats');
   });
 
   it('reports a missing chat distinctly from an idempotent duplicate', async () => {
-    getMock.mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined);
+    unsafe.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
     const result = await appendExternalChatTurn({
       slug: 'portal', chatId: 'missing', role: 'user', content: 'spoken',
       sourceId: 'room-1:1', source: 'phone-livekit',

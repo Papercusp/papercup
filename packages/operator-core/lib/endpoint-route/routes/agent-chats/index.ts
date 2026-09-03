@@ -15,7 +15,7 @@
 import { join } from 'node:path';
 import { sseResponse } from '@papercusp/sse';
 import { dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';
-import { getLegacyClient } from '@papercusp/db-org';
+import { harnessQuery } from '@papercusp/db-org';
 import { assembleRolePrompt as assembleHarnessRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { assembleRolePrompt as assembleOperatorRolePrompt } from '../../../prompt-assembly';
 import { getPromptOverride } from '../../../harness-prompt-overrides';
@@ -83,10 +83,6 @@ function withTimeoutBudget<T>(p: Promise<T>, budgetMs: number): Promise<T | null
     p.catch(() => null),
     new Promise<null>((resolve) => setTimeout(() => resolve(null), budgetMs).unref?.()),
   ]);
-}
-
-function dbForSlug(slug: string) {
-  return getLegacyClient(slug);
 }
 
 /**
@@ -177,13 +173,13 @@ async function readChatLockPolicy(slug: string): Promise<boolean> {
 /** Sum of cents across all non-archived chats in this harness. */
 async function aggregateChatCostCents(slug: string): Promise<number> {
   try {
-    const db = dbForSlug(slug);
-    const row = (await db
-      .prepare(
+    const rows = (await harnessQuery(slug, (sql) =>
+      sql.unsafe(
         'SELECT COALESCE(SUM(total_cost_usd_cents), 0)::bigint AS total FROM agent_chats WHERE archived_at IS NULL',
-      )
-      .get()) as { total: number | bigint };
-    return typeof row.total === 'bigint' ? Number(row.total) : (row.total ?? 0);
+      ),
+    )) as Array<{ total: number | bigint }>;
+    const total = rows[0]?.total ?? 0;
+    return typeof total === 'bigint' ? Number(total) : total;
   } catch {
     return 0;
   }
@@ -374,8 +370,10 @@ const messagesRoute = defineTool({
     const preflight: Preflight = await (async (): Promise<Preflight> => {
       let chat: ChatRow;
       try {
-        const db = dbForSlug(slug);
-        const row = (await db.prepare('SELECT * FROM agent_chats WHERE id = ?').get(chatId)) as any;
+        const rows = (await harnessQuery(slug, (sql) =>
+          sql.unsafe('SELECT * FROM agent_chats WHERE id = $1', [chatId]),
+        )) as any[];
+        const row = rows[0];
         if (!row) return Response.json({ error: 'chat not found' }, { status: 404 });
         chat = rowToChat(row);
         if (chat.archived_at) return Response.json({ error: 'chat is archived' }, { status: 410 });
@@ -451,10 +449,13 @@ const messagesRoute = defineTool({
       const baseTranscript = resumesPendingUser ? chat.transcript : [...chat.transcript, userTurn];
       if (!resumesPendingUser) {
         try {
-          const db = dbForSlug(slug);
-          await db
-            .prepare(`UPDATE agent_chats SET transcript = ?::jsonb, updated_at = ? WHERE id = ?`)
-            .run(JSON.stringify(baseTranscript), Date.now(), chatId);
+          await harnessQuery(slug, (sql) =>
+            sql.unsafe(`UPDATE agent_chats SET transcript = $1::jsonb, updated_at = $2 WHERE id = $3`, [
+              JSON.stringify(baseTranscript),
+              Date.now(),
+              chatId,
+            ]),
+          );
         } catch (e) {
           return Response.json({ error: `failed to persist user turn: ${(e as Error).message}` }, { status: 500 });
         }
@@ -795,10 +796,13 @@ const messagesRoute = defineTool({
               error: true,
             };
             try {
-              const db = dbForSlug(slug);
-              await db
-                .prepare(`UPDATE agent_chats SET transcript = ?::jsonb, updated_at = ? WHERE id = ?`)
-                .run(JSON.stringify([...baseTranscript, failureTurn]), Date.now(), chatId);
+              await harnessQuery(slug, (sql) =>
+                sql.unsafe(`UPDATE agent_chats SET transcript = $1::jsonb, updated_at = $2 WHERE id = $3`, [
+                  JSON.stringify([...baseTranscript, failureTurn]),
+                  Date.now(),
+                  chatId,
+                ]),
+              );
             } catch {
               /* best-effort — still emit the terminal error below */
             }
@@ -820,25 +824,25 @@ const messagesRoute = defineTool({
             ...(result.servedAccount ? { account_served: result.servedAccount } : {}),
           };
           try {
-            const db = dbForSlug(slug);
-            await db
-              .prepare(
+            await harnessQuery(slug, (sql) =>
+              sql.unsafe(
                 `UPDATE agent_chats
-                 SET transcript = ?::jsonb,
-                     total_input_tokens = total_input_tokens + ?,
-                     total_output_tokens = total_output_tokens + ?,
-                     total_cost_usd_cents = total_cost_usd_cents + ?,
-                     updated_at = ?
-               WHERE id = ?`,
-              )
-              .run(
-                JSON.stringify([...baseTranscript, assistantTurn]),
-                result.tokensIn,
-                result.tokensOut,
-                assistantTurn.cost_cents ?? 0,
-                Date.now(),
-                chatId,
-              );
+                 SET transcript = $1::jsonb,
+                     total_input_tokens = total_input_tokens + $2,
+                     total_output_tokens = total_output_tokens + $3,
+                     total_cost_usd_cents = total_cost_usd_cents + $4,
+                     updated_at = $5
+               WHERE id = $6`,
+                [
+                  JSON.stringify([...baseTranscript, assistantTurn]),
+                  result.tokensIn,
+                  result.tokensOut,
+                  assistantTurn.cost_cents ?? 0,
+                  Date.now(),
+                  chatId,
+                ],
+              ),
+            );
           } catch (e) {
             sink.event('error', {
               type: 'error',
@@ -1030,10 +1034,13 @@ const messagesRoute = defineTool({
             error: true,
           };
           try {
-            const db = dbForSlug(slug);
-            await db
-              .prepare(`UPDATE agent_chats SET transcript = ?::jsonb, updated_at = ? WHERE id = ?`)
-              .run(JSON.stringify([...baseTranscript, failureTurn]), Date.now(), chatId);
+            await harnessQuery(slug, (sql) =>
+              sql.unsafe(`UPDATE agent_chats SET transcript = $1::jsonb, updated_at = $2 WHERE id = $3`, [
+                JSON.stringify([...baseTranscript, failureTurn]),
+                Date.now(),
+                chatId,
+              ]),
+            );
           } catch {
             /* best-effort — still emit the error event */
           }
@@ -1054,25 +1061,25 @@ const messagesRoute = defineTool({
         const finalTranscript = [...baseTranscript, finalAssistantTurn];
 
         try {
-          const db = dbForSlug(slug);
-          await db
-            .prepare(
+          await harnessQuery(slug, (sql) =>
+            sql.unsafe(
               `UPDATE agent_chats
-               SET transcript = ?::jsonb,
-                   total_input_tokens = total_input_tokens + ?,
-                   total_output_tokens = total_output_tokens + ?,
-                   total_cost_usd_cents = total_cost_usd_cents + ?,
-                   updated_at = ?
-             WHERE id = ?`,
-            )
-            .run(
-              JSON.stringify(finalTranscript),
-              tokensIn,
-              tokensOut,
-              finalAssistantTurn.cost_cents ?? 0,
-              Date.now(),
-              chatId,
-            );
+               SET transcript = $1::jsonb,
+                   total_input_tokens = total_input_tokens + $2,
+                   total_output_tokens = total_output_tokens + $3,
+                   total_cost_usd_cents = total_cost_usd_cents + $4,
+                   updated_at = $5
+             WHERE id = $6`,
+              [
+                JSON.stringify(finalTranscript),
+                tokensIn,
+                tokensOut,
+                finalAssistantTurn.cost_cents ?? 0,
+                Date.now(),
+                chatId,
+              ],
+            ),
+          );
         } catch (e) {
           sink.event('error', { message: `failed to persist assistant turn: ${(e as Error).message}` });
           sink.close();
