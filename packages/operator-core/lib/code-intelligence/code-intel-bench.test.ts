@@ -29,6 +29,8 @@ import {
   MCP_LANGUAGE_SERVER_TOOL_SURFACE,
   auditToolSurface,
   classifyColdStarts,
+  classifyWarmQueries,
+  formatLegReport,
   classifyDivergence,
   gradeSites,
   probeLanguage,
@@ -578,6 +580,113 @@ describe('cold-start budget grading (P-018: coldStartMsMax was a dead field)', (
     expect(classifyColdStarts([cold({ serverWasCold: false })])).toEqual([]);
     expect(classifyColdStarts([cold({ timeToCorrectMs: null })])).toEqual([]);
     expect(classifyColdStarts([cold({ notAttempted: true })])).toEqual([]);
+  });
+
+  // ---- warm-query budget (WI-2142923) ------------------------------------
+
+  it('grades the REAL tail breach that passed: median under budget, tail 3.3x over', () => {
+    // Bakeoff v10, /tmp/p018-bakeoff-v10.log, head 84b8981d1b, 2026-09-02T23:35Z:
+    //   PASS shadowed-symbol-no-cross-contamination ... warm=1ms (median of 5, max=4988ms)
+    // The median passed, nothing graded the tail, and the case reported PASS.
+    // This is that run, replayed against the grader that now exists.
+    const [v] = classifyWarmQueries([
+      cold({
+        caseId: 'shadowed-symbol-no-cross-contamination',
+        warmQueryMs: 1,
+        warmQuerySamplesMs: [1, 1, 4988, 1, 2],
+        warmQueryMaxMs: 4988,
+      }),
+    ]);
+    expect(v?.medianOverBudget).toBe(false);
+    expect(v?.tailOverBudget).toBe(true);
+    expect(v?.maxMs).toBeGreaterThan(DEFAULT_RESOURCE_BUDGET.warmQueryMsMax);
+    // The samples travel WITH the verdict. The breach that prompted this
+    // grader was undiagnosable precisely because they did not.
+    expect(v?.samplesMs).toEqual([1, 1, 4988, 1, 2]);
+  });
+
+  it('grades a steady state that misses the budget as a MEDIAN breach', () => {
+    const [v] = classifyWarmQueries([
+      cold({
+        warmQueryMs: 2_000,
+        warmQuerySamplesMs: [1_900, 2_000, 2_100],
+        warmQueryMaxMs: 2_100,
+      }),
+    ]);
+    expect(v?.medianOverBudget).toBe(true);
+    // max >= median by construction, so a median breach is always also a tail
+    // breach. Pinned so the two flags cannot drift into contradicting arithmetic.
+    expect(v?.tailOverBudget).toBe(true);
+  });
+
+  it('does not flag a probe whose tail meets the budget', () => {
+    // The clean cross-package definition from the same bakeoff run (max=2ms).
+    const [v] = classifyWarmQueries([
+      cold({
+        caseId: 'definition-cross-package-bare-specifier',
+        warmQueryMs: 1,
+        warmQuerySamplesMs: [1, 2, 1],
+        warmQueryMaxMs: 2,
+      }),
+    ]);
+    expect(v?.medianOverBudget).toBe(false);
+    expect(v?.tailOverBudget).toBe(false);
+  });
+
+  it('CONTROL: the guard can fail — a clean sample set breaches a tighter budget', () => {
+    // Proves the grader is falsifiable INDEPENDENTLY of the production
+    // constant's current value. Without this, every assertion above would
+    // still pass if `warmQueryMsMax` were raised to infinity — which is
+    // exactly the state WI-2142923 found the budget in: declared, printed,
+    // and compared to nothing.
+    const clean = cold({ warmQueryMs: 1, warmQuerySamplesMs: [1, 2, 1], warmQueryMaxMs: 2 });
+    expect(classifyWarmQueries([clean])[0]?.tailOverBudget).toBe(false);
+    expect(classifyWarmQueries([clean], 1)[0]?.tailOverBudget).toBe(true);
+  });
+
+  it('ignores probes with no warm samples', () => {
+    // Samples are only collected after an answer grades correct, so a probe
+    // without them is a CORRECTNESS failure reported elsewhere. Grading it
+    // here would report the same defect twice — the second time as a latency
+    // pass it never earned.
+    expect(
+      classifyWarmQueries([
+        cold({ warmQueryMs: null, warmQuerySamplesMs: [], warmQueryMaxMs: null }),
+      ]),
+    ).toEqual([]);
+    expect(classifyWarmQueries([cold({ notAttempted: true })])).toEqual([]);
+  });
+
+  it('surfaces a tail breach in the leg report WITHOUT downgrading the PASS verdict', () => {
+    // The half that makes the grading VISIBLE. A budget graded into a value
+    // nobody prints is the same dead field in a new place.
+    const out = formatLegReport({
+      backend: 'lsp-adapter',
+      measurements: [
+        cold({
+          caseId: 'shadowed-symbol-no-cross-contamination',
+          warmQueryMs: 1,
+          warmQuerySamplesMs: [1, 1, 4988, 1, 2],
+          warmQueryMaxMs: 4988,
+        }),
+      ],
+      resources: {
+        childProcCount: 1,
+        totalRssMb: 100,
+        maxClientRssMb: 100,
+        withinChildProcBudget: true,
+        withinRssBudget: true,
+        overBudgetClients: [],
+        perClient: [],
+      },
+      declinedIntents: [],
+    });
+    expect(out).toContain('WARM-TAIL=EXCEEDED');
+    expect(out).toContain('samples=[1, 1, 4988, 1, 2]');
+    // A slow CORRECT answer is not a wrong answer. The row stays PASS, and the
+    // latency finding is reported beside it rather than disguised as one.
+    expect(out).toContain('PASS');
+    expect(out).not.toContain('FAIL');
   });
 
   it('keeps every accounting entry bounded and explained', () => {

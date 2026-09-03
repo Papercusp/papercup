@@ -706,6 +706,78 @@ export function classifyColdStarts(
   return out;
 }
 
+/** One probe's warm-query latency graded against `warmQueryMsMax`. */
+export interface WarmQueryVerdict {
+  readonly caseId: string;
+  /** MEDIAN warm latency — the steady state the routing policy budgets. */
+  readonly medianMs: number;
+  /** The SLOWEST warm sample — what an agent actually waits through. */
+  readonly maxMs: number;
+  /**
+   * Every sample, in order. Carried onto the verdict so a breach is
+   * DIAGNOSABLE rather than reduced to two order statistics: the breach that
+   * prompted this grader printed `max=4988ms`, which sits just under the
+   * 5000ms `settleMs` window, and nothing in the log could confirm or refute
+   * that reading because the samples were never emitted (WI-2142923).
+   */
+  readonly samplesMs: readonly number[];
+  /** The steady state itself misses the budget. */
+  readonly medianOverBudget: boolean;
+  /**
+   * The tail misses the budget. `max >= median`, so this is IMPLIED by
+   * `medianOverBudget`; the case this grader exists for is this true while
+   * that is false.
+   */
+  readonly tailOverBudget: boolean;
+}
+
+/**
+ * Grade every warm-query sample set against `warmQueryMsMax`.
+ *
+ * `warmQueryMsMax` was a DEAD budget field until WI-2142923 — declared in
+ * `ResourceBudget`, printed in the leg report, and compared to nothing in
+ * executable code, while its sibling budgets (`coldStartMsMax`,
+ * `rssMbMax`, `childProcMax`) were all graded. A budget nothing grades cannot
+ * fail, so a warm-latency regression had no way to surface: bakeoff v10 passed
+ * `shadowed-symbol-no-cross-contamination` with one of five warm samples at
+ * 4988ms, 3.3x the 1500ms budget, because the MEDIAN (1ms) was the only number
+ * anything looked at.
+ *
+ * Grades the median and the tail SEPARATELY, which is the whole point.
+ * `BenchMeasurement.warmQueryMaxMs` already stated the contract in prose —
+ * "a median that meets the budget while the tail does not is a finding, not a
+ * pass" — and this is that sentence made executable.
+ *
+ * Probes with no warm samples are skipped rather than graded 0ms. Samples are
+ * only collected after an answer grades correct, so an ungraded probe is a
+ * CORRECTNESS failure reported elsewhere; folding it in here would misreport
+ * it a second time as a latency breach. Same exclusion, and same reason, as
+ * `classifyColdStarts`.
+ *
+ * The budget is injectable so a control can prove the guard fails without
+ * depending on the production constant's current value.
+ */
+export function classifyWarmQueries(
+  measurements: readonly BenchMeasurement[],
+  budgetMs: number = DEFAULT_RESOURCE_BUDGET.warmQueryMsMax,
+): readonly WarmQueryVerdict[] {
+  const out: WarmQueryVerdict[] = [];
+  for (const m of measurements) {
+    if (m.notAttempted) continue;
+    if (m.warmQueryMs === null || m.warmQueryMaxMs === null) continue;
+    if (m.warmQuerySamplesMs.length === 0) continue;
+    out.push({
+      caseId: m.caseId,
+      medianMs: m.warmQueryMs,
+      maxMs: m.warmQueryMaxMs,
+      samplesMs: m.warmQuerySamplesMs,
+      medianOverBudget: m.warmQueryMs > budgetMs,
+      tailOverBudget: m.warmQueryMaxMs > budgetMs,
+    });
+  }
+  return out;
+}
+
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -1319,8 +1391,31 @@ export function emptyAnswerBanner(
   return null;
 }
 
+/**
+ * The warm-latency banner for one row, or null when the probe met the budget.
+ *
+ * Labels the two breaches differently on purpose. WARM-BUDGET is the steady
+ * state itself missing the budget; WARM-TAIL is the case this grading exists
+ * for — a median that passes while the tail an agent actually waits through
+ * does not.
+ *
+ * Neither downgrades the row's PASS/FAIL verdict, which stays a statement about
+ * CORRECTNESS. A slow correct answer and a wrong answer are different findings,
+ * and a reader must not have to guess which one a red row is.
+ */
+function warmBudgetBanner(v: WarmQueryVerdict | undefined): string | null {
+  if (v === undefined || !v.tailOverBudget) return null;
+  return (
+    `${v.medianOverBudget ? 'WARM-BUDGET' : 'WARM-TAIL'}=EXCEEDED ` +
+    `median=${v.medianMs}ms max=${v.maxMs}ms ` +
+    `budget=${DEFAULT_RESOURCE_BUDGET.warmQueryMsMax}ms ` +
+    `samples=[${v.samplesMs.join(', ')}]`
+  );
+}
+
 /** Render a leg report as a compact table for a Decision body. */
 export function formatLegReport(report: LspLegReport): string {
+  const warmVerdicts = new Map(classifyWarmQueries(report.measurements).map((v) => [v.caseId, v]));
   const rows = report.measurements.map((m) => {
     const divergence = m.correct ? null : classifyDivergence(m);
     const verdict = m.notAttempted
@@ -1340,6 +1435,7 @@ export function formatLegReport(report: LspLegReport): string {
         (m.warmQueryMaxMs !== null && m.warmQuerySamplesMs.length > 1
           ? ` (median of ${m.warmQuerySamplesMs.length}, max=${m.warmQueryMaxMs}ms)`
           : ''),
+      warmBudgetBanner(warmVerdicts.get(m.caseId)) ?? '',
       `attempts=${m.attempts}`,
       emptyAnswerBanner(m) ?? '',
       // WHY the poll stopped, and what the answer claimed while it ran. Printed
