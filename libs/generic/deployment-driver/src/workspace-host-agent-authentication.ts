@@ -35,16 +35,36 @@ import { createHash } from "node:crypto";
 
 import { assertWorkspaceHostSecretIsolation } from "./workspace-host-test-harness";
 
+// v3 (D-265): codex gained a `live-inference` probe. The bump is deliberate and load-bearing —
+// the controller compares this against the report the HOST produced out of its release bundle, so
+// bumping it is what turns "this host is still running the old codex probe" into a loud contract
+// mismatch instead of a silent 5/6 that reads as a credential fault. That misreading cost a
+// canary and most of a session before it was traced to the bundle rather than the credentials.
 export const WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION =
-  "papercusp-workspace-host-agent-verification-v2";
+  "papercusp-workspace-host-agent-verification-v3";
 
 export const WORKSPACE_HOST_CANARY_AGENTS = ["claude", "codex", "omp"] as const;
 export type WorkspaceHostCanaryAgent =
   (typeof WORKSPACE_HOST_CANARY_AGENTS)[number];
 
+/**
+ * `authenticated-account` proves WHO the credential belongs to by making the CLI name a subject.
+ * The two inference kinds prove the credential WORKS by making the agent do work and return a
+ * marker, and exist because naming a subject is not always possible or not always meaningful:
+ *
+ * - `local-inference` reaches a model on the host itself (OMP against ollama). There is no remote
+ *   account to name, so the work IS the evidence.
+ * - `live-inference` reaches the agent's REMOTE endpoint. It exists because a status subcommand
+ *   can report a session it never validated: MEASURED 2026-09-03, `codex login status` printed
+ *   `Logged in using ChatGPT` and exited 0 against an auth.json whose id_token was 30 days
+ *   expired and whose access and refresh tokens were both garbage. A probe reading that line
+ *   would return ready:true for a host that cannot authenticate at all, which is the unbacked
+ *   boolean this module exists to prevent (D-265).
+ */
 export type WorkspaceHostAgentVerificationKind =
   | "authenticated-account"
-  | "local-inference";
+  | "local-inference"
+  | "live-inference";
 
 /**
  * How a probe's extracted subject may be published.
@@ -96,6 +116,7 @@ const SUBJECT_PATTERN =
 export const WORKSPACE_HOST_OMP_LOCAL_MODEL = "qwen2.5-coder:0.5b";
 export const WORKSPACE_HOST_OMP_LOCAL_INFERENCE_MARKER =
   "P046_OMP_LOCAL_INFERENCE_OK";
+export const WORKSPACE_HOST_CODEX_LIVE_INFERENCE_MARKER = "P046_CODEX_LIVE_OK";
 
 export const DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES: Readonly<
   Record<
@@ -126,6 +147,45 @@ export const DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES: Readonly<
       endpoint: "https://api.openai.com",
       proofPattern: SUBJECT_PATTERN,
       subjectDisclosure: "digest",
+    },
+    // D-265. Ordered SECOND so a codex that does name an account still proves the stronger
+    // account-subject property; the probe loop breaks on the first ready spec, so this runs only
+    // when the account probe did not match. It has to exist because, under ChatGPT OAuth,
+    // `codex login status` prints exactly `Logged in using ChatGPT` — no account, no email, and
+    // no `--json` to ask for one — so SUBJECT_PATTERN cannot match and codex could never pass.
+    //
+    // Widening SUBJECT_PATTERN to accept that line was REJECTED: it would digest a PROVIDER name
+    // as though it were an account subject, and — measured — that line is printed for a 30-day
+    // expired token with garbage access and refresh tokens too, so it proves nothing about
+    // whether the delivered credential authenticates.
+    {
+      agent: "codex",
+      verificationKind: "live-inference",
+      command: "codex",
+      // No `-c` override in this argv. A model-specific value goes stale under the probe and
+      // fails it for a NON-credential reason: `-c model_reasoning_effort="minimal"` was measured
+      // returning HTTP 400 `Unsupported value: 'minimal' is not supported with the 'gpt-5.6-sol'
+      // model`, which is a false RED. `--sandbox read-only` is not such a value — a readiness
+      // probe must not need write access, and it measured cheaper (15,883 vs 16,267 tokens).
+      args: [
+        "exec",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        `Reply with exactly ${WORKSPACE_HOST_CODEX_LIVE_INFERENCE_MARKER} and nothing else.`,
+      ],
+      endpoint: "https://api.openai.com",
+      // MULTILINE-ANCHORED, and the anchoring is load-bearing rather than tidy: codex echoes the
+      // prompt, so the marker appears in the output of a FAILING run too (measured: once, in the
+      // `Reply with exactly …` line). An unanchored pattern would match that echo and report
+      // every credential failure as ready. Measured both ways against real captures — positive
+      // exit 0 with 3 occurrences MATCHES; negative exit 1 with 1 occurrence does NOT.
+      proofPattern: new RegExp(
+        `^\\s*(${WORKSPACE_HOST_CODEX_LIVE_INFERENCE_MARKER})\\s*$`,
+        "m",
+      ),
+      subjectDisclosure: "digest",
+      timeoutMs: 180_000,
     },
   ],
   omp: [
