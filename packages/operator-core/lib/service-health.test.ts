@@ -1522,3 +1522,201 @@ describe('probeEmbedSidecar — functional POST /embed liveness (EI-212719700902
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// probeJournalCanary — EI-15810 (EI-2434 follow-up): journald stdout-capture
+// liveness canary. Cross-tick design (write THIS tick's nonce, check the PRIOR
+// tick's nonce) — see the doc comment on probeJournalCanary in service-health.ts
+// for why: by the time a nonce is checked it is already a full tick old, so this
+// probe adds zero blocking delay to probeAll(), unlike a probe that sleeps
+// in-place before checking its own just-written canary. Every test below injects
+// resolveUnit/exec/writeCanary so nothing here touches a real filesystem,
+// subprocess, or systemd host, and nothing waits out a real tick interval.
+// ---------------------------------------------------------------------------
+import {
+  probeJournalCanary,
+  resolveOwnServiceUnit,
+  parseOwnServiceUnitFromCgroup,
+  __resetJournalCanaryStateForTests,
+  JOURNAL_CANARY_DOWN_CONFIRM_TICKS,
+} from './service-health';
+
+describe('parseOwnServiceUnitFromCgroup — pure cgroup-path parsing (EI-15810)', () => {
+  it('extracts a .service unit from a unified (v2) cgroup line', () => {
+    const body = '0::/user.slice/user-1000.slice/user@1000.service/app.slice/papercusp-dev-api.service\n';
+    expect(parseOwnServiceUnitFromCgroup(body)).toBe('papercusp-dev-api.service');
+  });
+
+  it('returns null for a .scope (not a systemd service unit — an agent terminal, a dev shell)', () => {
+    const body = '0::/user.slice/user-1000.slice/user@1000.service/papercusp.slice/papercusp-agent.slice/pc-abc123-drain-canary.scope\n';
+    expect(parseOwnServiceUnitFromCgroup(body)).toBeNull();
+  });
+
+  it('handles a multi-line cgroup v1 body, taking the first .service segment found', () => {
+    const body = [
+      '12:pids:/user.slice/user-1000.slice/user@1000.service/app.slice/papercusp-bg-host.service',
+      '1:name=systemd:/user.slice/user-1000.slice/user@1000.service/app.slice/papercusp-bg-host.service',
+      '',
+    ].join('\n');
+    expect(parseOwnServiceUnitFromCgroup(body)).toBe('papercusp-bg-host.service');
+  });
+
+  it('returns null for an empty/garbage body', () => {
+    expect(parseOwnServiceUnitFromCgroup('')).toBeNull();
+    expect(parseOwnServiceUnitFromCgroup('garbage\nno slashes here')).toBeNull();
+  });
+});
+
+describe('resolveOwnServiceUnit — platform guard (EI-15810)', () => {
+  it('returns null on a non-Linux platform without touching the filesystem', async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    try {
+      expect(await resolveOwnServiceUnit()).toBeNull();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    }
+  });
+});
+
+describe('probeJournalCanary (EI-15810 — EI-2434 follow-up: journald stdout-capture liveness)', () => {
+  const UNIT = 'papercusp-dev-api.service';
+
+  beforeEach(() => {
+    __resetJournalCanaryStateForTests();
+  });
+
+  it('not running under a systemd .service unit → present:false, never a fabricated verdict', async () => {
+    const res = await probeJournalCanary({ resolveUnit: async () => null });
+    expect(res.up).toBe(true);
+    expect(res.present).toBe(false);
+    expect(res.note).toMatch(/not running under a systemd/);
+  });
+
+  it('first tick since process start → present:false (nothing to check yet), but WRITES a canary', async () => {
+    const written: string[] = [];
+    let execCallCount = 0;
+    const res = await probeJournalCanary({
+      resolveUnit: async () => UNIT,
+      writeCanary: (line) => written.push(line),
+      exec: async () => {
+        execCallCount++;
+        return { stdout: '' };
+      },
+    });
+    expect(execCallCount, 'nothing to check on the very first tick').toBe(0);
+    expect(res.up).toBe(true);
+    expect(res.present).toBe(false);
+    expect(res.note).toMatch(/first tick/);
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatch(/^\[journal-canary\] svchealth-/);
+  });
+
+  it('second tick: prior canary landed → up:true, checking the PRIOR nonce (not the just-written one)', async () => {
+    const execCalls: string[][] = [];
+    const deps = {
+      resolveUnit: async () => UNIT,
+      writeCanary: () => {},
+      exec: async (args: string[]) => {
+        execCalls.push(args);
+        return { stdout: 'matched line' };
+      },
+    };
+    const first = await probeJournalCanary(deps);
+    expect(first.present).toBe(false); // nothing to check yet
+
+    const second = await probeJournalCanary(deps);
+    expect(second.up).toBe(true);
+    expect(second.present).not.toBe(false);
+    expect(second.note).toMatch(/stdout capture healthy/);
+
+    // Exactly one exec call so far — the second tick checking tick 1's nonce.
+    expect(execCalls).toHaveLength(1);
+    expect(execCalls[0]).toEqual(
+      expect.arrayContaining([
+        '--user', '-u', UNIT, '-g', expect.stringMatching(/^svchealth-/), '--since', expect.stringMatching(/^@\d+$/),
+      ]),
+    );
+  });
+
+  it('second tick: prior canary MISSING (journalctl exit 1, empty stderr = --grep matched nothing) → real DOWN, with an explicit "not the unit" disclaimer', async () => {
+    const noMatchError = Object.assign(new Error('Command failed'), { code: 1, stderr: '' });
+    const deps = {
+      resolveUnit: async () => UNIT,
+      writeCanary: () => {},
+      exec: async () => {
+        throw noMatchError;
+      },
+    };
+    const first = await probeJournalCanary(deps);
+    expect(first.present).toBe(false);
+
+    const second = await probeJournalCanary(deps);
+    expect(second.up).toBe(false);
+    expect(second.present).not.toBe(false);
+    expect(second.note).toMatch(/did NOT land in the journal/);
+    expect(second.note).toMatch(/EI-2434/);
+    expect(second.note).toMatch(/NOT a claim/); // explicit "this is not the unit being down" disclaimer
+  });
+
+  it('a genuine read failure (not a --grep miss) → present:false, liveness unknown, never a fabricated DOWN', async () => {
+    const timeoutError = Object.assign(new Error('killed'), { killed: true, signal: 'SIGTERM' });
+    const deps = {
+      resolveUnit: async () => UNIT,
+      writeCanary: () => {},
+      exec: async () => {
+        throw timeoutError;
+      },
+    };
+    await probeJournalCanary(deps); // first tick — writes, nothing to check
+    const second = await probeJournalCanary(deps);
+    expect(second.up).toBe(true); // fail-soft, not a fabricated down
+    expect(second.present).toBe(false);
+    expect(second.note).toMatch(/liveness unknown/);
+  });
+
+  it('writes a fresh, distinct canary every tick, even right after a confirmed miss (never goes permanently blind)', async () => {
+    const written: string[] = [];
+    const noMatchError = Object.assign(new Error('Command failed'), { code: 1, stderr: '' });
+    const deps = {
+      resolveUnit: async () => UNIT,
+      writeCanary: (line: string) => written.push(line),
+      exec: async () => {
+        throw noMatchError;
+      },
+    };
+    await probeJournalCanary(deps);
+    await probeJournalCanary(deps);
+    await probeJournalCanary(deps);
+    expect(written).toHaveLength(3);
+    expect(new Set(written).size).toBe(3); // each nonce distinct
+  });
+
+  it('a resolved unit changing mid-process resyncs rather than checking the wrong unit\'s journal (defensive)', async () => {
+    let call = 0;
+    const execCalls: string[][] = [];
+    const deps = {
+      resolveUnit: async () => (call++ === 0 ? 'unit-a.service' : 'unit-b.service'),
+      writeCanary: () => {},
+      exec: async (args: string[]) => {
+        execCalls.push(args);
+        return { stdout: 'x' };
+      },
+    };
+    const first = await probeJournalCanary(deps);
+    expect(first.present).toBe(false);
+    const second = await probeJournalCanary(deps);
+    expect(second.present).toBe(false);
+    expect(second.note).toMatch(/unit changed/);
+    expect(execCalls).toHaveLength(0); // never checked tick 1's nonce against unit-b's journal
+  });
+
+  it('is damped like every other single-signal portless probe (JOURNAL_CANARY_DOWN_CONFIRM_TICKS = 2)', () => {
+    expect(JOURNAL_CANARY_DOWN_CONFIRM_TICKS).toBe(2);
+    const down: ProbeResult[] = [{ name: 'journal-canary', up: false, status: null, latencyMs: 1 }];
+    const first = applyDownConfirmDebounce(down, {});
+    expect(first.results[0].up, 'first bad tick is not yet a confirmed down').toBe(true);
+    const second = applyDownConfirmDebounce(down, first.nextStreaks);
+    expect(second.results[0].up, 'second consecutive bad tick IS the real down').toBe(false);
+  });
+});

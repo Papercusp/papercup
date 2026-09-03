@@ -1555,9 +1555,18 @@ export const JOURNAL_CANARY_SINCE_CUSHION_MS = 2_000;
  * unit-testable without touching the filesystem.
  */
 export function parseOwnServiceUnitFromCgroup(cgroupBody: string): string | null {
-  for (const line of cgroupBody.split('\n')) {
-    const match = line.match(/\/([^/\s]+\.service)(?:\/|$)/);
-    if (match) return match[1];
+  for (const rawLine of cgroupBody.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    // The LAST path segment, not the first `.service` match: the cgroup path is
+    // hierarchical and its EARLIER segments include systemd's own containers (e.g.
+    // `user@1000.service`, the per-user systemd instance every --user unit runs
+    // inside) — those are not the app unit. Only the deepest/innermost segment names
+    // the actual unit this process belongs to; a `.scope` there (an ad-hoc process,
+    // not a systemd-managed unit) correctly yields no match.
+    const segments = line.split('/').filter(Boolean);
+    const last = segments[segments.length - 1];
+    if (last && last.endsWith('.service')) return last;
   }
   return null;
 }
