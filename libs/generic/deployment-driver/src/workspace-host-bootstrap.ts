@@ -1197,7 +1197,11 @@ function localInferenceRuntimeInstallLines(
     'esac',
     // The upstream artifact is zstd-compressed and stock Ubuntu 24.04 ships no unzstd.
     'command -v unzstd >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zstd >/dev/null || die "zstd install failed (needed to unpack the local-inference runtime)"',
-    `if [[ "$(/usr/local/bin/ollama --version 2>/dev/null | tr -d '\\r')" != "ollama version is ${version}" ]]; then`,
+    // The guard is BOTH halves deliberately. Matching only the CLI version made the install
+    // non-idempotent in the one direction that matters: a host carrying /usr/local/bin/ollama at
+    // the right version but an absent or half-extracted lib/ollama skips extraction entirely and
+    // boots a runtime that cannot serve. Requiring the runner too makes a broken tree self-heal.
+    `if [[ "$(/usr/local/bin/ollama --version 2>/dev/null | tr -d '\\r')" != "ollama version is ${version}" || ! -x /usr/local/lib/ollama/llama-server ]]; then`,
     '  OLLAMA_TMP="$WORK_DIR/ollama.tar.zst"',
     `  curl -fsSL --retry 3 --proto "=https" --tlsv1.2 -o "$OLLAMA_TMP" "https://github.com/ollama/ollama/releases/download/v${version}/ollama-linux-$OLLAMA_ARCH.tar.zst" || die "local-inference runtime download failed"`,
     // The pin is the trust boundary — this is a ROOT install. Verified BEFORE extraction, which
@@ -1211,6 +1215,17 @@ function localInferenceRuntimeInstallLines(
     '  rm -f "$OLLAMA_TMP"',
     'fi',
     '[[ -x /usr/local/bin/ollama ]] || die "local-inference runtime did not resolve after install"',
+    // MEASURED on canary-10 (2026-09-03): ollama starts, serves /api/version 200 and registers a
+    // CPU inference device even when the llama-server RUNNER is missing — so the runtime looks
+    // healthy and the FIRST symptom is an opaque `ollama pull` failure 26ms later with nothing on
+    // stderr. That cost a whole VM to learn nothing. Assert the runner positively, and NAME what
+    // is actually on disk, so the next failure diagnoses itself from the serial console.
+    'if [[ ! -x /usr/local/lib/ollama/llama-server ]]; then',
+    '  echo "[workspace-host-bootstrap] ERROR: local-inference runner missing at /usr/local/lib/ollama/llama-server" >&2',
+    '  echo "[workspace-host-bootstrap] /usr/local/lib/ollama actually contains:" >&2',
+    '  ls -la /usr/local/lib/ollama >&2 2>&1 || echo "  (directory absent)" >&2',
+    '  die "local-inference runner (llama-server) missing after install"',
+    'fi',
     'getent group ollama >/dev/null || groupadd --system ollama || die "could not create the ollama group"',
     'getent passwd ollama >/dev/null || useradd --system --gid ollama --home-dir /usr/share/ollama --create-home --shell /usr/sbin/nologin ollama || die "could not create the ollama account"',
     'cat > /etc/systemd/system/ollama.service <<PAPERCUSP_OLLAMA',
@@ -1244,9 +1259,14 @@ function localInferenceRuntimeInstallLines(
     'done',
     '[[ "$OLLAMA_READY" == "1" ]] || die "local-inference runtime did not become ready within 60s"',
     `echo "==> pulling local-inference model ${model}" >&2`,
-    `timeout 900 /usr/local/bin/ollama pull ${shellQuote(model)} || die ${shellQuote(
-      `local-inference model pull failed: ${model}`,
-    )}`,
+    // NEVER swallow the runtime's own diagnosis. canary-10 failed on this exact line in 26ms with
+    // an empty console, which made a real failure undiagnosable without SSH to a host whose OS
+    // Login was itself broken. Capture the CLI's output and echo it before dying.
+    `if ! timeout 900 /usr/local/bin/ollama pull ${shellQuote(model)} > "$WORK_DIR/ollama-pull.log" 2>&1; then`,
+    '  echo "[workspace-host-bootstrap] ERROR: local-inference model pull failed; ollama reported:" >&2',
+    '  tail -40 "$WORK_DIR/ollama-pull.log" >&2 2>/dev/null || echo "  (no output captured)" >&2',
+    `  die ${shellQuote(`local-inference model pull failed: ${model}`)}`,
+    'fi',
     // Assert the model is actually resolvable rather than trusting the pull's exit status — this
     // is the one fact the OMP probe depends on, and it is cheap to state positively.
     `/usr/local/bin/ollama show ${shellQuote(model)} >/dev/null 2>&1 || die ${shellQuote(
