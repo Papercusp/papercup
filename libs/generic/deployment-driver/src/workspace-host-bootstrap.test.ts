@@ -12,6 +12,7 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_PHASES,
   WORKSPACE_HOST_AGENT_NODE_SHA256,
   WORKSPACE_HOST_AGENT_NODE_VERSION,
+  WORKSPACE_HOST_OLLAMA_SHA256,
   WORKSPACE_HOST_DATA_ROOT,
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT,
   WORKSPACE_HOST_PRIVILEGED_CONDUIT_SUDOERS,
@@ -29,6 +30,10 @@ import {
   type WorkspaceHostBootstrapAttestation,
   type WorkspaceHostBootstrapInput,
 } from "./workspace-host-bootstrap";
+// Imported from the PROBE's own module, not restated: the assertions below check that the
+// installer stages exactly what the probe asks for, which only means something if both sides
+// read the same constant.
+import { WORKSPACE_HOST_OMP_LOCAL_MODEL } from './workspace-host-agent-authentication';
 import { deriveWorkspaceHostCanonicalArtifactUrls } from './workspace-host-build-manifest';
 import { WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV } from './workspace-host-remote-initializer';
 import { WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV } from './workspace-host-credential-delivery';
@@ -234,6 +239,66 @@ describe('buildWorkspaceHostBootstrap agent runtime installs (D-259)', () => {
     // npm is a symlink into lib/, so asserting only `node` would pass on an extract that leaves
     // npm dangling — the failure would then land inside the codex install and read as codex's bug.
     expect(script).toContain('"$target/bin/npm" --version >/dev/null');
+  });
+
+  /**
+   * D-266. OMP is credential-free by contract (D-245), and the OTHER half of that contract is
+   * that it proves readiness by LOCAL INFERENCE. Nothing implemented that half, so `omp` could
+   * never pass and canary-09 stopped at 5/6 with a failure that read as a credential fault.
+   */
+  it('installs the pinned local-inference runtime and the exact model the OMP probe requests', () => {
+    const script = buildWorkspaceHostBootstrap(
+      input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+    );
+    // The pin is the trust boundary for a ROOT install, exactly as the Node runtime pin is.
+    expect(script).toContain(WORKSPACE_HOST_OLLAMA_SHA256.x64);
+    expect(script).toContain(WORKSPACE_HOST_OLLAMA_SHA256.arm64);
+    expect(script).toContain(
+      '|| die "local-inference runtime digest mismatch"',
+    );
+    // The GPU bundles are 2.0G of a 2.1G install and are dead weight on a CPU-only host.
+    expect(script).toContain('--exclude="lib/ollama/cuda_v*"');
+    expect(script).toContain('--exclude="lib/ollama/vulkan"');
+    // THE MODEL IS ONE FACT, NOT TWO. The installer pulls whatever the probe asks for, so this
+    // asserts the shared constant reaches the script rather than re-typing the tag — a second
+    // copy is what silently leaves a host pulling one model and failing a probe wanting another.
+    expect(script).toContain(`ollama pull '${WORKSPACE_HOST_OMP_LOCAL_MODEL}'`);
+    expect(script).toContain(
+      `ollama show '${WORKSPACE_HOST_OMP_LOCAL_MODEL}'`,
+    );
+  });
+
+  /**
+   * D-264's rule, applied one service later: when a phase MUTATES a service, nothing after it may
+   * assume that service's runtime state. `systemctl enable --now` returns once systemd has forked
+   * the unit, not once its HTTP API accepts connections — and the pull talks to that API.
+   */
+  it('waits for the local-inference API to answer before pulling, and binds it to loopback', () => {
+    const script = buildWorkspaceHostBootstrap(
+      input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+    );
+    const readyAt = script.indexOf('OLLAMA_READY=1');
+    const pullAt = script.indexOf('ollama pull');
+    expect(readyAt).toBeGreaterThan(-1);
+    expect(pullAt).toBeGreaterThan(readyAt);
+    expect(script).toContain(
+      '|| die "local-inference runtime did not become ready within 60s"',
+    );
+    // An inference endpoint on a routable address is an unauthenticated model server exposed to
+    // the network. The probe reaches it over loopback and nothing else may.
+    expect(script).toContain('Environment=OLLAMA_HOST=127.0.0.1:11434');
+  });
+
+  it('stages no local-inference runtime on a host that does not install OMP', () => {
+    const script = buildWorkspaceHostBootstrap(
+      input({
+        agentRuntimeInstalls: AGENT_RUNTIME_INSTALLS.filter(
+          (install) => install.agent !== 'omp',
+        ).map((install) => ({ ...install, args: [...install.args] })),
+      }),
+    );
+    // ~450 MiB of runtime plus model is not worth staging on a host with nothing to prove by it.
+    expect(script).not.toContain('ollama');
   });
 
   /**
