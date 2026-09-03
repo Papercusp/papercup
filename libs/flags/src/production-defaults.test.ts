@@ -22,8 +22,11 @@ import {
   DARK_FLAGS,
   DARK_FLAGS_PARKING_CASES,
   DARK_FLAGS_PARKING_COUNT,
+  DARK_FLAGS_OWNER_CASES,
   DARK_FLAGS_HIGH_WATERMARK,
-  DARK_FLAGS_REVIEW_BY,
+  DARK_FLAGS_PARKING_REVIEW_BY,
+  DARK_FLAGS_OWNER_REVIEW_BY,
+  darkFlagReviewLane,
   FLAGS,
   FLAG_DEFAULTS,
   type DarkCase,
@@ -467,22 +470,65 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     }
   });
 
-  it("the dark allowlist is not past its review-by date (no silent lingering)", () => {
-    // The default-on policy only "sticks" if a dark flag can't sit forever. Past
-    // DARK_FLAGS_REVIEW_BY this fails — the team re-reviews EVERY dark flag, flips
-    // the ones now ready, and ONLY THEN pushes the date out for what must stay dark.
-    const reviewBy = Date.parse(DARK_FLAGS_REVIEW_BY);
+  it("the PARKING (parked+incomplete) dark subset is not past its review-by date (no silent lingering) — HARD GATE", () => {
+    // EI-19941703547241191: this used to be ONE date gating ALL 4 DarkCase populations,
+    // so a red here could be caused entirely by owner-authority/cutover entries an agent
+    // is not permitted to graduate — training "just bump the date" for a backlog no
+    // agent could ever clear. Scoped to the agent-actionable parked/incomplete subset
+    // only; DARK_FLAGS_OWNER_REVIEW_BY (below) governs the rest, advisory-only.
+    const reviewBy = Date.parse(DARK_FLAGS_PARKING_REVIEW_BY);
     expect(
       Number.isNaN(reviewBy),
-      "DARK_FLAGS_REVIEW_BY must be a valid ISO date",
+      "DARK_FLAGS_PARKING_REVIEW_BY must be a valid ISO date",
     ).toBe(false);
     expect(
       Date.now() <= reviewBy,
-      `The DARK_FLAGS allowlist is past its review-by (${DARK_FLAGS_REVIEW_BY}). ` +
-        `Walk every dark flag in libs/flags/src/types.ts: flip the ones now ready to default-ON ` +
-        `(remove them from DARK_FLAGS), then push DARK_FLAGS_REVIEW_BY out with a fresh look. ` +
-        `Don't just bump the date — the review is the point.`,
+      `The DARK_FLAGS parked/incomplete subset is past its review-by (${DARK_FLAGS_PARKING_REVIEW_BY}). ` +
+        `Walk every parked/incomplete dark flag in libs/flags/src/types.ts: flip the ones now ready to ` +
+        `default-ON (remove them from DARK_FLAGS), then push DARK_FLAGS_PARKING_REVIEW_BY out with a fresh ` +
+        `look. Don't just bump the date — the review is the point.`,
     ).toBe(true);
+  });
+
+  it("the OWNER (owner-authority+cutover) dark subset has a valid review-by date, but its expiry is ADVISORY ONLY — never gates this suite", () => {
+    // The mirror image of the hard gate above: owner-authority/cutover entries are not
+    // agent-graduatable BY DEFINITION, so their staleness must fail LOUD if the date
+    // itself is malformed (a broken constant is always a bug), but must NEVER fail this
+    // suite merely for being past due — that population surfaces via the existing
+    // owner-attention path instead (darkFlagRatificationToAttention, wired with
+    // reviewBy in agent-tools/plans/attention.ts). Deliberately no `Date.now()`
+    // comparison against this suite's pass/fail below — that absence IS the guarantee
+    // "owner expiry does not red" describes; if a future edit adds one, it reintroduces
+    // exactly the bug this split fixed.
+    const reviewBy = Date.parse(DARK_FLAGS_OWNER_REVIEW_BY);
+    expect(
+      Number.isNaN(reviewBy),
+      "DARK_FLAGS_OWNER_REVIEW_BY must be a valid ISO date (malformed evidence must fail loud even though it is advisory)",
+    ).toBe(false);
+  });
+
+  it("every DARK_FLAGS entry belongs to EXACTLY ONE review lane (parking XOR owner, no gaps)", () => {
+    // Belt-and-suspenders over the 4-value DarkCase union the type system already
+    // exhausts (darkFlagReviewLane throws on anything outside the two known sets) —
+    // pins that the runtime partition used by the two review-by clocks above never
+    // silently drifts from DARK_FLAGS_PARKING_CASES / DARK_FLAGS_OWNER_CASES.
+    let parkingLaneCount = 0;
+    let ownerLaneCount = 0;
+    for (const [key, entry] of DARK_FLAGS) {
+      const lane = darkFlagReviewLane(entry.case);
+      expect(["parking", "owner"]).toContain(lane);
+      if (lane === "parking") {
+        expect(DARK_FLAGS_PARKING_CASES.has(entry.case), `${key}: parking lane must match DARK_FLAGS_PARKING_CASES`).toBe(true);
+        parkingLaneCount++;
+      } else {
+        expect(DARK_FLAGS_OWNER_CASES.has(entry.case), `${key}: owner lane must match DARK_FLAGS_OWNER_CASES`).toBe(true);
+        ownerLaneCount++;
+      }
+    }
+    expect(parkingLaneCount).toBe(DARK_FLAGS_PARKING_COUNT);
+    expect(ownerLaneCount).toBe(DARK_FLAGS.size - DARK_FLAGS_PARKING_COUNT);
+    // Malformed case fails loud rather than silently picking a lane.
+    expect(() => darkFlagReviewLane("not-a-real-case" as DarkCase)).toThrow();
   });
 
   it("the dark allowlist only ever SHRINKS — agents may not reconstruct it (owner mandate 2026-06-23)", () => {
