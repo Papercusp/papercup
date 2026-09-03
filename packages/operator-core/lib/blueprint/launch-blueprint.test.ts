@@ -337,10 +337,15 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
   // which does its own separate live readAgentConfig() read).
   describe('WI-2142846: role-backend resolution (bodyExtra.spawnBackend)', () => {
     it('resolves the configured roleBackends override for the firing role at launch', async () => {
-      readAgentConfig.mockResolvedValueOnce({
+      // readAgentConfig is called TWICE per fireLaunchBlueprint when no caller-set
+      // spawnModel/spawnBackend already short-circuits either block: once by the
+      // (pre-existing) spawnModel resolution above, once by this new block — queue
+      // the same value for both calls so the SECOND (this block's own) call sees it.
+      const cfgWithBackend = {
         models: {}, tiers: [], tierCeilings: {},
         roleBackends: { 'release-fixer': 'claude-code' },
-      } as unknown as Awaited<ReturnType<typeof readAgentConfig>>);
+      } as unknown as Awaited<ReturnType<typeof readAgentConfig>>;
+      readAgentConfig.mockResolvedValueOnce(cfgWithBackend).mockResolvedValueOnce(cfgWithBackend);
       const fired: Array<Parameters<LaunchFireFn>[0]> = [];
       setLaunchBlueprintFire((input) => { fired.push(input); });
       const target = await fireLaunchBlueprint('release-fix', { ...opts, kickoff: 'gate red' });
@@ -369,7 +374,9 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     });
 
     it('fails soft (no throw, no spawnBackend) when the config read rejects', async () => {
-      readAgentConfig.mockRejectedValueOnce(new Error('pg unreachable'));
+      // Both readAgentConfig calls (spawnModel's, then this block's) must reject for
+      // this to genuinely exercise THIS block's own catch — see the queueing note above.
+      readAgentConfig.mockRejectedValueOnce(new Error('pg unreachable')).mockRejectedValueOnce(new Error('pg unreachable'));
       const fired: Array<Parameters<LaunchFireFn>[0]> = [];
       setLaunchBlueprintFire((input) => { fired.push(input); });
       const target = await fireLaunchBlueprint('release-fix', { ...opts, kickoff: 'gate red' });
@@ -378,10 +385,11 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     });
 
     it('does not resolve a backend for an unrelated role even when SOME roleBackends entries exist', async () => {
-      readAgentConfig.mockResolvedValueOnce({
+      const cfgWithOtherRole = {
         models: {}, tiers: [], tierCeilings: {},
         roleBackends: { 'doc-steward': 'codex' }, // release-fixer has no entry
-      } as unknown as Awaited<ReturnType<typeof readAgentConfig>>);
+      } as unknown as Awaited<ReturnType<typeof readAgentConfig>>;
+      readAgentConfig.mockResolvedValueOnce(cfgWithOtherRole).mockResolvedValueOnce(cfgWithOtherRole);
       const fired: Array<Parameters<LaunchFireFn>[0]> = [];
       setLaunchBlueprintFire((input) => { fired.push(input); });
       await fireLaunchBlueprint('release-fix', { ...opts, kickoff: 'gate red' });

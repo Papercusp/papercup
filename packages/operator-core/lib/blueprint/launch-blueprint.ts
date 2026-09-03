@@ -823,9 +823,6 @@ export async function fireLaunchBlueprint(
   // readAgentConfig() read for exactly this reason — this fire-time resolution
   // gives the actual dispatch the same freshness instead of trusting the stale
   // env-var mirror, for every launch-blueprint-fired role, not just this one.
-  if (process.env.WI2142846_DEBUG) {
-    throw new Error(`[DEBUG] fireInput.bodyExtra before spawnBackend block = ${JSON.stringify(fireInput.bodyExtra)}`);
-  }
   if (fireInput.bodyExtra?.spawnBackend == null) {
     try {
       const { readAgentConfig } = await import('../agent-config');
