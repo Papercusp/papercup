@@ -1732,3 +1732,100 @@ export function parseFrozenRepairConvergence(raw: unknown): StoredFrozenRepairCo
     observedAtMs,
   };
 }
+
+/**
+ * The branchable reading of a convergence record — main-green-status-visible-2026-09-03 P-004.
+ *
+ * ⚠ THE WHOLE POINT IS THAT "NOT CONVERGING" AND "NOT YET KNOWABLE" ARE DIFFERENT ANSWERS.
+ * `converging` is tri-state precisely because a cycle with fewer than two recorded rounds
+ * has no trend to report; rendering that as "not converging" calls a healthy new freeze a
+ * treadmill, which is how a working mechanism gets switched off.
+ *
+ * `no-attempts` is the code this session's incident earned. A queue can sit at
+ * `attempts: 0` for hours — every tick withheld by a provider wall or a dispatch
+ * reservation — while `consecutiveReds` climbs and the failing list stays frozen at its
+ * last real measurement. From outside, that is indistinguishable from a genuine regression,
+ * and the natural (wrong) response is to go hunting for the commit that broke it. It is a
+ * DISPATCH fact, not a code fact, so it gets its own code rather than being folded into
+ * `not-yet-knowable`.
+ */
+export type FrozenRepairConvergenceCode =
+  /** No readable convergence record. NEVER "healthy" and never "stuck". */
+  | 'not-measured'
+  /** A cycle is open but no fixer has ever run — nothing has been MEASURED to converge. */
+  | 'no-attempts'
+  /** Fewer than two recorded rounds: there is no trend yet. Not a verdict of failure. */
+  | 'not-yet-knowable'
+  /** Every round is <= the one before AND the set actually shrank. */
+  | 'converging'
+  /** Rounds recorded, but the failing set is not shrinking. This is the treadmill. */
+  | 'not-converging';
+
+/**
+ * PURE: what should a reader conclude about this repair cycle?
+ *
+ * Order matters and is deliberate: an unmeasured record outranks everything, then the
+ * dispatch fact (`no-attempts`) outranks the trend, because a trend computed over zero
+ * fixer runs describes nothing that happened.
+ */
+export function assessFrozenRepairConvergence(
+  record: StoredFrozenRepairConvergence | null,
+): FrozenRepairConvergenceCode {
+  if (!record) return 'not-measured';
+  if (record.attempts === 0) return 'no-attempts';
+  if (record.converging === null) return 'not-yet-knowable';
+  return record.converging ? 'converging' : 'not-converging';
+}
+
+/** The celled projection: the record, its reading, and the vintage behind both. */
+export interface FrozenRepairConvergenceCellProjection {
+  code: FrozenRepairConvergenceCode;
+  openedAtMs: number | null;
+  ageMs: number | null;
+  attempts: number | null;
+  admissionRounds: number | null;
+  failingFirst: number | null;
+  failingNow: number | null;
+  shrinkTotal: number | null;
+  shrinkPerRound: readonly { round: number; failingCount: number; delta: number | null }[];
+  converging: boolean | null;
+  candidate: string | null;
+  repairHead: string | null;
+  phase: FrozenCandidateRepairPhase | null;
+  observedAtMs: number | null;
+}
+
+/**
+ * PURE: project the stored convergence record into the shape
+ * `gate.greenCheckpoint.convergence` publishes.
+ *
+ * Emitted UNCONDITIONALLY, for the same two reasons as the freeze disposition's projection:
+ * the cell contract requires the declared assessment path to be present in every live
+ * payload, and "not measured" is an answer a reader must be able to branch on rather than
+ * infer from an absence. Every field is null rather than zero — a `shrinkTotal: 0` invented
+ * for an unmeasured cycle is a claim that it is not shrinking.
+ */
+export function projectFrozenRepairConvergenceCell(
+  record: StoredFrozenRepairConvergence | null,
+): FrozenRepairConvergenceCellProjection {
+  const code = assessFrozenRepairConvergence(record);
+  if (!record) {
+    return {
+      code,
+      openedAtMs: null,
+      ageMs: null,
+      attempts: null,
+      admissionRounds: null,
+      failingFirst: null,
+      failingNow: null,
+      shrinkTotal: null,
+      shrinkPerRound: [],
+      converging: null,
+      candidate: null,
+      repairHead: null,
+      phase: null,
+      observedAtMs: null,
+    };
+  }
+  return { code, ...record };
+}
