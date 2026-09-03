@@ -554,10 +554,13 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
 
     const report = await host.probeAgentVerification();
 
-    // `omp` twice is correct, not a duplicate: its hosted-account probe failed, so the
-    // local-inference spec ran as the documented fallback — and it too fell back to the bare name.
+    // `codex` and `omp` twice each are correct, not duplicates: for both agents the
+    // account probe failed, so the second spec ran as the documented fallback — codex's
+    // live-inference probe (D-265) and omp's local-inference probe — and both fell back to the
+    // bare name because this host has no attestation.
     expect(invocations.map((invocation) => invocation.command)).toEqual([
       "claude",
+      "codex",
       "codex",
       "omp",
       "omp",
