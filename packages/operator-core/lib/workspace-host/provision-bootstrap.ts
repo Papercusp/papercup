@@ -31,13 +31,16 @@
 import { isAbsolute } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import {
+  DEFAULT_WORKSPACE_HOST_AGENT_USER,
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   buildWorkspaceHostBootstrap,
   validateWorkspaceHostImageArtifact,
+  type WorkspaceHostAgentRuntimeInstall,
   type WorkspaceHostBootstrapRelease,
   type WorkspaceHostBootstrapService,
   type WorkspaceHostImageArtifact,
 } from '@papercusp/deployment-driver';
+import { buildFrameworkInstallSpec } from '../endpoint-route/routes/desktop/setup-pty-commands';
 import {
   resolveWorkspaceHostInitializationControllerProfile,
   type WorkspaceHostInitializationControllerProfile,
@@ -239,6 +242,30 @@ export function renderWorkspaceHostProvisionBootstrap(
     minimumNodeMajor: profile.minimumNodeMajor,
     service: profile.service,
     workspaceAuthorizedKeys: profile.workspaceAuthorizedKeys,
+    agentRuntimeInstalls: workspaceHostAgentRuntimeInstalls(),
+  });
+}
+
+/** Where the bootstrap creates the agent identity's home (`/home/<agentUser>`). */
+const WORKSPACE_HOST_AGENT_HOME = `/home/${DEFAULT_WORKSPACE_HOST_AGENT_USER}`;
+
+/**
+ * The vendor agent runtimes to install on a provisioned host (D-259).
+ *
+ * Evaluated HERE, at render time, from the ONE existing spec table the desktop onboarding uses —
+ * deliberately not re-derived, and deliberately not fetched over HTTP from
+ * `/api/desktop/setup-pty-commands`. That endpoint only maps this same pure builder, and the
+ * operator it is served by is not running during `install-runtime`, so a fetch could not succeed
+ * at the point the bootstrap needs the answer.
+ *
+ * `cwd` and `env` from the spec are intentionally dropped: the Linux scripts address their targets
+ * through `~` rather than relative paths, and the bootstrap runs each argv under an explicit
+ * `HOME=$AGENT_HOME`, which is what makes them land in the agent identity's own home.
+ */
+function workspaceHostAgentRuntimeInstalls(): WorkspaceHostAgentRuntimeInstall[] {
+  return (['claude', 'codex', 'omp'] as const).map((agent) => {
+    const spec = buildFrameworkInstallSpec(agent, 'linux', WORKSPACE_HOST_AGENT_HOME);
+    return { agent, command: spec.command, args: spec.args };
   });
 }
 
