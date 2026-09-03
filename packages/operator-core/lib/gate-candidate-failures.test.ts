@@ -217,7 +217,9 @@ describe('readGateCandidateFailures', () => {
     // An empty failing list must not be readable as "the gate is green".
     expect(res.scope).toMatch(/AFFECTED RADIUS/);
     expect(res.scope).toMatch(/NOT "repairHead is green"|NOT\s+"repairHead is green"/);
-    expect(res.postSuiteMeasured).toBeNull();
+    // P-003: with no leg measurement threaded in, the honest reading is `not-recorded` —
+    // never a `null` that a caller can read as "measured, nothing there".
+    expect(res.nonTestLegsMeasured).toBe('not-recorded');
   });
 
   it('scopes the census to ONE population: ci, clean tree, this candidate', async () => {
