@@ -188,7 +188,7 @@ function RoleLaunchCell({ row }: { row: RoleLaunchRow | undefined }) {
       </div>
       <div style={{ color: "var(--fg-mute)" }}>via {SOURCE_LABEL[row.source]}</div>
       {row.conflict && (
-        <div style={{ color: "var(--danger, #c00)", marginTop: 2 }}>
+        <div style={{ color: "var(--bad, #c00)", marginTop: 2 }}>
           ⚠ backend <code style={{ fontSize: 11 }}>{row.conflict.configured}</code>{" "}
           is ignored — the model decides the CLI.
         </div>
