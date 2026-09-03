@@ -2254,70 +2254,18 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     return { ready, frozen, movingTip, deps, calls, writes, queue: () => queue };
   };
 
-  it("P-008: an exhausted pin with budget takes ONE recorded recut at tip — record BEFORE abandon — escalates, and re-enters the gate", async () => {
+  it("D-005: an exhausted pin HOLDS — blocked row kept, no worktree abandonment, no suite, the moving tip is never read", async () => {
+    // The P-048/P-008 recut hatch used to fire here: record an escape, write:null, clean the
+    // worktree, and re-enter the gate at `movingTip`. Every one of those is now a regression.
     const { frozen, movingTip, deps, calls, writes } = await exhaustedPinFixture();
-    const recorded: Array<{ abandonedCandidate: string; reason: string; ordinal: number }> = [];
-    deps.readRecentFrozenCandidateEscapes = async () => 0;
-    deps.recordFrozenCandidateEscape = async (entry) => {
-      recorded.push(entry);
-      calls.push("recordEscape");
-    };
-    deps.cleanupFrozenRepairWorktree = async () => {
-      calls.push("cleanupWorktree");
-    };
-
-    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
-
-    expect(recorded).toHaveLength(1);
-    expect(recorded[0]).toMatchObject({
-      abandonedCandidate: frozen,
-      reason: "attempts-exhausted",
-      ordinal: 1,
-    });
-    // Budget accounting is crash-safe only if the record lands BEFORE the pin is abandoned:
-    // a crash between the two burns budget but keeps the queue, so the next tick can only
-    // hold, never double-recut. Reversing this order makes an unrecorded recut possible.
-    expect(calls.indexOf("recordEscape")).toBeGreaterThanOrEqual(0);
-    expect(calls.indexOf("recordEscape")).toBeLessThan(calls.indexOf("write:null"));
-    expect(writes[writes.length - 1]).toBeNull();
-    expect(calls).toContain("escalate");
-    expect(calls).toContain("cleanupWorktree");
-    // The gate re-entered on the CURRENT staging tip, not the abandoned pin.
-    expect(calls).toContain("runGreen");
-    expect(result).toMatchObject({ advanced: true, candidate: movingTip });
-  });
-
-  it("P-008: a failed escape-ledger READ fails CLOSED into the terminal hold (never an unbounded recut)", async () => {
-    const { frozen, deps, calls } = await exhaustedPinFixture();
-    deps.readRecentFrozenCandidateEscapes = async () => {
-      throw new Error("ledger unreadable");
-    };
-    deps.recordFrozenCandidateEscape = async () => {
-      throw new Error("a recut must not be attempted when the budget cannot be read");
-    };
     deps.cleanupFrozenRepairWorktree = async () => {
       throw new Error("an exhausted queue must remain durable");
     };
-
-    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
-
-    expect(result).toMatchObject({
-      advanced: false,
-      candidate: frozen,
-      reason: "repair-in-progress",
-      repairQueue: { phase: "blocked", blockedReason: "attempts-exhausted" },
-    });
-    expect(calls).not.toContain("runGreen");
-  });
-
-  it("P-008: a failed escape RECORD fails CLOSED into the terminal hold — budget accounting is never skippable", async () => {
-    const { frozen, deps, calls } = await exhaustedPinFixture();
-    deps.readRecentFrozenCandidateEscapes = async () => 0;
-    deps.recordFrozenCandidateEscape = async () => {
-      throw new Error("ledger write refused");
-    };
-    deps.cleanupFrozenRepairWorktree = async () => {
-      throw new Error("an unrecorded escape must not abandon the queue");
+    const dispositions: Parameters<
+      NonNullable<Parameters<typeof runGreenCheckpoint>[1]["recordFreezeDisposition"]>
+    >[0][] = [];
+    deps.recordFreezeDisposition = async (d) => {
+      dispositions.push(d);
     };
 
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
@@ -2326,18 +2274,28 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       advanced: false,
       candidate: frozen,
       reason: "repair-in-progress",
-      repairQueue: { phase: "blocked", blockedReason: "attempts-exhausted" },
+      repairQueue: {
+        phase: "blocked",
+        blockedReason: "attempts-exhausted",
+        candidate: frozen,
+        repairHead: frozen,
+      },
     });
+    expect(result.candidate).not.toBe(movingTip);
+    expect(writes[writes.length - 1]).toMatchObject({ phase: "blocked" });
     expect(calls).not.toContain("write:null");
     expect(calls).not.toContain("runGreen");
+    expect(calls.filter((c) => c === "escalate")).toHaveLength(1);
+    // The way OUT is named on the summary and recorded as queryable state: an admission
+    // onto the frozen lineage, never a re-cut.
+    expect(result.summary).toContain("op: 'admit'");
+    expect(result.summary).not.toMatch(/re-?cut/i);
+    expect(dispositions).toHaveLength(1);
+    expect(dispositions[0]).toMatchObject({ enabled: true, state: "held", candidate: frozen });
   });
 
-  it("P-008: a spent budget holds AND auto-escalates exactly once, on the open→blocked transition", async () => {
-    const { deps, calls } = await exhaustedPinFixture();
-    deps.readRecentFrozenCandidateEscapes = async () => 5; // spent under any sane max
-    deps.recordFrozenCandidateEscape = async () => {
-      throw new Error("a spent budget must not record another escape");
-    };
+  it("D-005: the hold auto-escalates exactly once, on the open→blocked transition — a resumed tick re-reads the blocked row silently", async () => {
+    const { frozen, deps, calls } = await exhaustedPinFixture();
     deps.cleanupFrozenRepairWorktree = async () => {
       throw new Error("an exhausted queue must remain durable");
     };
@@ -2346,9 +2304,15 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const escalationsAfterFirst = calls.filter((c) => c === "escalate").length;
     expect(escalationsAfterFirst).toBe(1);
 
-    // The resumed tick re-reads the already-blocked queue: no second page for the same hold.
-    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    const resumed = await runGreenCheckpoint(cfg(), deps, { noPush: true });
     expect(calls.filter((c) => c === "escalate").length).toBe(escalationsAfterFirst);
+    expect(calls).not.toContain("runGreen");
+    expect(calls).not.toContain("write:null");
+    expect(resumed).toMatchObject({
+      advanced: false,
+      candidate: frozen,
+      repairQueue: { phase: "blocked", candidate: frozen },
+    });
   });
 });
 
@@ -13488,7 +13452,11 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     expect(queue?.attempts).toBe(1);
   });
 
-  it("retires an unassigned zero-attempt queue and falls through to the current staging tip", async () => {
+  it("D-005: BLOCKS (dispatch-infeasible) a stalled zero-attempt queue on a short wall — escalates once, never falls through to the staging tip", async () => {
+    // This branch used to RETIRE the queue and `revParse(integrationBranch)` — the one place
+    // the resolver read the moving tip while a queue row existed, and the branch that fired
+    // 20 times in one day with 0 resumes (2026-09-02). `movingTip` exists precisely so a
+    // regression here has somewhere to go: the result must never name it.
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "2", "frozen candidate");
@@ -13501,111 +13469,73 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     };
     const { deps, calls } = stubDeps(true);
     const cleaned: string[] = [];
-    const retired: Array<{
-      abandonedCandidate: string;
-      repairHead: string;
-      reason: string;
-      attempts: number;
-    }> = [];
     deps.readFrozenRepairQueue = async () => queue;
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
+      calls.push(next === null ? "write:null" : `write:${next.phase}`);
     };
     deps.cleanupFrozenRepairWorktree = async (oldQueue) => {
       cleaned.push(oldQueue.candidate);
     };
     deps.prepareFrozenRepairWorktree = async () => {
-      throw new Error(
-        "dispatch-infeasible queue must not prepare a fixer worktree",
-      );
+      throw new Error("dispatch-infeasible queue must not prepare a fixer worktree");
     };
     deps.dispatchFrozenRepairFixer = async () => {
       throw new Error("dispatch-infeasible queue must not launch a fixer");
     };
+    const dispositions: Parameters<
+      NonNullable<Parameters<typeof runGreenCheckpoint>[1]["recordFreezeDisposition"]>
+    >[0][] = [];
+    deps.recordFreezeDisposition = async (d) => {
+      dispositions.push(d);
+    };
+    const retryAtMs = Date.now() + 1_000;
     deps.checkFixerProviderCapacity = async () => ({
       ok: false,
       summary: "all codex accounts are usage-walled",
-      // WI-2141736: a SHORT wall, deliberately — retiring is only the correct answer when
-      // waiting could not help for long. A wall that OUTLASTS the zero-attempt stall window
-      // now HOLDS the freeze instead (agent/human convergence becomes the repair path); that
-      // branch is covered by frozen-candidate-repair-queue.test.ts. Before this distinction
-      // existed, a six-day wall retired every queue after 15 minutes — 20 retirements and 0
-      // resumes in one day, with freeze-and-converge silently off fleet-wide.
-      retryAtMs: Date.now() + 1_000,
+      // A SHORT wall past the stall window: waiting would buy nothing, and under D-005 the
+      // answer to "waiting buys nothing" is a BLOCK for admission, never a re-cut.
+      retryAtMs,
     });
-    // WI-2141736 Layer 3: this retirement must be durably recorded — otherwise "was
-    // freeze-and-converge just dissolved, and why" is log-archaeology again.
-    deps.recordFrozenCandidateRetirement = async (entry) => {
-      retired.push(entry);
-      calls.push("recordRetirement");
-    };
-
-    // Move the integration branch after the frozen queue was opened: the retired queue must
-    // not keep this run pinned to `frozen`.
-    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
-
-    expect(calls).toContain("runGreen");
-    expect(cleaned).toEqual([frozen, movingTip]);
-    expect(queue).toBeNull();
-    expect(result).toMatchObject({
-      advanced: true,
-      candidate: movingTip,
-      green: true,
-      reason: "advanced",
-    });
-    expect(retired).toHaveLength(1);
-    expect(retired[0]).toMatchObject({
-      abandonedCandidate: frozen,
-      reason: "dispatch-infeasible",
-      attempts: 0,
-    });
-    // Recorded before the fall-through candidate is even resolved, so the write never depends
-    // on the rest of this tick succeeding.
-    expect(calls.indexOf("recordRetirement")).toBeGreaterThanOrEqual(0);
-    expect(calls.indexOf("recordRetirement")).toBeLessThan(
-      calls.indexOf("runGreen"),
-    );
-  });
-
-  it("WI-2141736 Layer 3: a failed retirement RECORD is best-effort — the retirement itself proceeds regardless", async () => {
-    // Falsifiability control for the retirement-record assertion above: unlike the P-008
-    // escape ledger (which fails CLOSED — an unrecorded escape must not spend budget), a lost
-    // retirement record is purely an observability gap, never a functional one. This must
-    // NOT reproduce the escape ledger's fail-closed behavior.
-    const ready = await commit("a", "1", "ready");
-    await git(repo, ["branch", "ready", ready]);
-    const frozen = await commit("b", "2", "frozen candidate");
-    const movingTip = await commit("c", "3", "current staging tip");
-    let queue: FrozenCandidateRepairQueue | null = {
-      ...unassignedQueue(frozen, ready),
-      attempts: 0,
-      openedAtMs: Date.now() - 16 * 60 * 1_000,
-      updatedAtMs: Date.now() - 15 * 60 * 1_000,
-    };
-    const { deps, calls } = stubDeps(true);
-    deps.readFrozenRepairQueue = async () => queue;
-    deps.writeFrozenRepairQueue = async (next) => {
-      queue = next;
-    };
-    deps.cleanupFrozenRepairWorktree = async () => {};
-    deps.checkFixerProviderCapacity = async () => ({
-      ok: false,
-      summary: "all codex accounts are usage-walled",
-      retryAtMs: Date.now() + 1_000,
-    });
-    deps.recordFrozenCandidateRetirement = async () => {
-      throw new Error("ledger write refused");
-    };
 
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
-    expect(queue).toBeNull();
-    expect(calls).toContain("runGreen");
+    expect(calls).not.toContain("runGreen");
+    expect(calls).not.toContain("write:null");
+    expect(cleaned).toEqual([]);
+    expect(queue).toMatchObject({
+      phase: "blocked",
+      blockedReason: "dispatch-infeasible",
+      candidate: frozen,
+      repairHead: frozen,
+      attempts: 0,
+    });
     expect(result).toMatchObject({
-      advanced: true,
-      candidate: movingTip,
-      green: true,
-      reason: "advanced",
+      advanced: false,
+      candidate: frozen,
+      green: null,
+      reason: "repair-in-progress",
+    });
+    expect(result.candidate).not.toBe(movingTip);
+    expect(result.summary).toContain("held");
+    expect(result.summary).toContain("op: 'admit'");
+    expect(calls.filter((c) => c === "escalate")).toHaveLength(1);
+    expect(dispositions).toHaveLength(1);
+    expect(dispositions[0]).toMatchObject({
+      enabled: true,
+      state: "held",
+      candidate: frozen,
+      capacityRetryAtMs: retryAtMs,
+    });
+
+    // The resumed tick re-reads the blocked row: same hold, no second page, still no suite.
+    const resumed = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(calls.filter((c) => c === "escalate")).toHaveLength(1);
+    expect(calls).not.toContain("runGreen");
+    expect(resumed).toMatchObject({
+      advanced: false,
+      candidate: frozen,
+      repairQueue: { phase: "blocked", blockedReason: "dispatch-infeasible" },
     });
   });
 
@@ -13764,11 +13694,11 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     expect(dispositions[0]?.holdUntilMs).toBeGreaterThan(Date.now());
   });
 
-  it("WI-2141736 P-002: the convergence hold is BOUNDED — a queue nobody converged is retired once the hold window elapses", async () => {
-    // The other half of the falsifier: holding must not become pinning-forever. Same long
-    // wall as the test above; the ONLY difference is the queue's age, now past
-    // FROZEN_REPAIR_CONVERGENCE_HOLD_MS (4h). Without this bound, a walled provider plus a
-    // red nobody fixes would freeze the gate on one candidate indefinitely.
+  it("WI-2141736 P-002 / D-005: once the convergence hold elapses the queue BLOCKS (dispatch-infeasible) — the inconclusive wait ends, the freeze does not", async () => {
+    // The other half of the falsifier: the inconclusive "held for convergence" state is
+    // bounded by FROZEN_REPAIR_CONVERGENCE_HOLD_MS. Past it this used to retire and re-cut
+    // at `movingTip`; under D-005 the bound moves the queue to a BLOCKED hold that only an
+    // admission (or an owner retire) can move — the candidate itself stays frozen.
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "2", "frozen candidate");
@@ -13797,10 +13727,6 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     deps.dispatchFrozenRepairFixer = async () => {
       throw new Error("a hold-expired queue must not launch a fixer");
     };
-    let routedCount = 0;
-    deps.routeFrozenRepairToAgents = async () => {
-      routedCount += 1;
-    };
     const dispositions: Parameters<
       NonNullable<
         Parameters<typeof runGreenCheckpoint>[1]["recordFreezeDisposition"]
@@ -13817,28 +13743,30 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
 
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
-    expect(calls).toContain("runGreen");
-    // P-003 negative control: the candidate this alarm would name no longer exists once the
-    // queue is retired, so nothing is routed on the retire path.
-    expect(routedCount).toBe(0);
-    // P-004: but the RETIRE itself must be recorded — it is the disposition that clears the
-    // queue and therefore the one no `repairQueue` reader can ever see. This branch fired 20
-    // times in one day leaving no evidence outside the per-run logs.
+    expect(calls).not.toContain("runGreen");
+    expect(cleaned).toEqual([]);
+    expect(queue).toMatchObject({
+      phase: "blocked",
+      blockedReason: "dispatch-infeasible",
+      candidate: frozen,
+      repairHead: frozen,
+    });
+    expect(calls.filter((c) => c === "escalate")).toHaveLength(1);
     expect(dispositions).toHaveLength(1);
     expect(dispositions[0]).toMatchObject({
       enabled: true,
-      state: "retired",
+      state: "held",
       candidate: frozen,
+      capacityRetryAtMs: RESET_AT,
     });
     expect(dispositions[0]?.reason).toContain("provider-capacity infeasibility");
-    expect(cleaned).toEqual([frozen, movingTip]);
-    expect(queue).toBeNull();
     expect(result).toMatchObject({
-      advanced: true,
-      candidate: movingTip,
-      green: true,
-      reason: "advanced",
+      advanced: false,
+      candidate: frozen,
+      green: null,
+      reason: "repair-in-progress",
     });
+    expect(result.candidate).not.toBe(movingTip);
   });
 
   it("dispatches rather than freezing when the capacity probe itself throws", async () => {
