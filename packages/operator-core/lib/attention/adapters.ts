@@ -988,7 +988,7 @@ export interface DarkFlagRatificationInput {
   /** The FLAGS key (libs/flags/src/types.ts) carried on KNOWN_DARK_FLAGS. */
   flagKey: string;
   justification?: string | null;
-  /** The allowlist's DARK_FLAGS_REVIEW_BY expiry, when present. */
+  /** The allowlist's DARK_FLAGS_OWNER_REVIEW_BY (advisory) expiry, when present. */
   reviewBy?: string | null;
 }
 

@@ -697,13 +697,14 @@ export default defineTool({
           //     PostHog round-trip (bounding this leg's cost).
           (async () => {
             try {
-              const { DARK_FLAGS } = await import('@papercusp/flags');
+              const { DARK_FLAGS, DARK_FLAGS_OWNER_REVIEW_BY } = await import('@papercusp/flags');
               for (const [key, entry] of DARK_FLAGS) {
                 if (entry.case !== 'owner-authority' && entry.case !== 'cutover') continue;
                 items.push(
                   darkFlagRatificationToAttention({
                     flagKey: key,
                     justification: entry.reason,
+                    reviewBy: DARK_FLAGS_OWNER_REVIEW_BY,
                   }),
                 );
               }

@@ -179,12 +179,12 @@ export function detectDarkFlagAge(input: DarkFlagAgeInput): DarkFlagAgeFinding[]
 export async function collectDarkFlagAgeSignals(
   now: number = Date.now(),
 ): Promise<{ signals: DarkFlagAgeFinding[]; note?: string }> {
-  const { DARK_FLAGS_PARKING_COUNT, DARK_FLAGS_HIGH_WATERMARK, DARK_FLAGS_REVIEW_BY } =
+  const { DARK_FLAGS_PARKING_COUNT, DARK_FLAGS_HIGH_WATERMARK, DARK_FLAGS_PARKING_REVIEW_BY } =
     await import('@papercusp/flags');
   const signals = detectDarkFlagAge({
     darkCount: DARK_FLAGS_PARKING_COUNT,
     watermark: DARK_FLAGS_HIGH_WATERMARK,
-    reviewBy: DARK_FLAGS_REVIEW_BY,
+    reviewBy: DARK_FLAGS_PARKING_REVIEW_BY,
     now,
   });
   return { signals };

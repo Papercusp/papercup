@@ -716,6 +716,35 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
     expect(noReason.body).toContain('KNOWN_DARK_FLAGS allowlist');
   });
 
+  it('dark-flag-ratification: owner review-by (DARK_FLAGS_OWNER_REVIEW_BY, advisory) surfaces in status without throwing', () => {
+    expect(() =>
+      darkFlagRatificationToAttention({
+        flagKey: 'papercusp-cutover-thing',
+        justification: 'staged cutover, owner must flip when ready.',
+        reviewBy: '2026-10-01',
+      }),
+    ).not.toThrow();
+    const withReviewBy = darkFlagRatificationToAttention({
+      flagKey: 'papercusp-cutover-thing',
+      reviewBy: '2026-10-01',
+    });
+    expect(withReviewBy.status).toBe('awaiting-ratification (review by 2026-10-01)');
+  });
+
+  it('dark-flag-ratification: id is derived from flagKey alone — repeat calls for the same flag never duplicate', () => {
+    const first = darkFlagRatificationToAttention({
+      flagKey: 'papercusp-dup-flag',
+      justification: 'first pass',
+    });
+    const second = darkFlagRatificationToAttention({
+      flagKey: 'papercusp-dup-flag',
+      justification: 'second pass, different text',
+      reviewBy: '2026-10-01',
+    });
+    expect(second.id).toBe(first.id);
+    expect(first.id).toBe('dark-flag-ratification:papercusp-dup-flag');
+  });
+
   it('blocked-session: a Decision; title/body use the mirrored question when present', () => {
     const withQuestion = blockedSessionToAttention({
       sessionId: 'sess-1',
