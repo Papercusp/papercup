@@ -165,55 +165,53 @@ describe('coverage-wiring doc claim', () => {
     const COMPLETE_CONFIG = `
       coverage: {
         provider: 'v8',
-        all: true,
         include: ['**/*.{ts,tsx}'],
         exclude: [${TOOLING_EXCLUDES.map((g) => `'${g}'`).join(', ')}],
       },
     `;
 
     describe('fixture controls (the detector must be able to FAIL)', () => {
-      it('catches a config that dropped `all: true` — the silent regression', () => {
+      it('catches a config that dropped `coverage.include` — the silent regression', () => {
         const verdict = judgeCoverageCompleteness(`
           coverage: {
             provider: 'v8',
-            include: ['**/*.{ts,tsx}'],
+            exclude: [${TOOLING_EXCLUDES.map((g) => `'${g}'`).join(', ')}],
           },
-        `);
-        expect(verdict.ok).toBe(false);
-        expect(verdict.allEnabled).toBe(false);
-        expect(verdict.violations.join('\n')).toMatch(/undetermined/);
-      });
-
-      it('is not satisfied by a COMMENT that merely mentions `all: true`', () => {
-        // The each-end-documents-the-other trap, one level down: the shipped config
-        // explains `all: true` at length in prose, and that prose must not stand in
-        // for the setting. This is the control that makes comment-stripping load-bearing.
-        const verdict = judgeCoverageCompleteness(`
-          // WHY: 'all: true' instruments every included file, so a changed file
-          // with no test is reported at 0 hits instead of going unjudged.
-          coverage: {
-            provider: 'v8',
-            include: ['**/*.{ts,tsx}'],
-          },
-        `);
-        expect(verdict.allEnabled).toBe(false);
-        expect(verdict.ok).toBe(false);
-      });
-
-      it('catches `all: true` with no include glob', () => {
-        const verdict = judgeCoverageCompleteness(`
-          coverage: { provider: 'v8', all: true },
         `);
         expect(verdict.ok).toBe(false);
         expect(verdict.includePresent).toBe(false);
-        expect(verdict.violations.join('\n')).toMatch(/include/);
+        expect(verdict.violations.join('\n')).toMatch(/undetermined/);
       });
 
-      it('catches tooling excludes dropped once `all` is on', () => {
+      it('is not satisfied by a COMMENT that merely mentions the include', () => {
+        // The each-end-documents-the-other trap, one level down: the shipped config
+        // explains the include at length in prose, and that prose must not stand in
+        // for the setting. This is the control that makes comment-stripping load-bearing.
+        const verdict = judgeCoverageCompleteness(`
+          // WHY: include: ['**/*.{ts,tsx}'] instruments every matching file, so a
+          // changed file with no test is reported at 0 hits instead of going unjudged.
+          coverage: {
+            provider: 'v8',
+            exclude: [${TOOLING_EXCLUDES.map((g) => `'${g}'`).join(', ')}],
+          },
+        `);
+        expect(verdict.includePresent).toBe(false);
+        expect(verdict.ok).toBe(false);
+      });
+
+      it('does not let a glob containing `/*` swallow the exclude list', () => {
+        // Regression control. A character-scanning comment stripper reads the `/`+`*`
+        // inside '**/bin/**' as a block-comment opener and eats the rest of the file,
+        // which reports every exclude as MISSING — a false violation that fails a
+        // correct config. That is why this judge strips comments line-wise.
+        const verdict = judgeCoverageCompleteness(COMPLETE_CONFIG);
+        expect(verdict.missingToolingExcludes).toEqual([]);
+      });
+
+      it('catches tooling excludes dropped once the include is set', () => {
         const verdict = judgeCoverageCompleteness(`
           coverage: {
             provider: 'v8',
-            all: true,
             include: ['**/*.{ts,tsx}'],
             exclude: ['**/bin/**'],
           },
@@ -236,11 +234,23 @@ describe('coverage-wiring doc claim', () => {
 
         expect(verdict.violations).toEqual([]);
         expect(verdict.ok).toBe(true);
-        // Calibration: assert the two settings positively, so a future refactor that
-        // makes the judge vacuous (e.g. always-empty violations) fails here too.
-        expect(verdict.allEnabled).toBe(true);
+        // Calibration: assert the settings positively, so a future refactor that makes
+        // the judge vacuous (e.g. always-empty violations) fails here too.
         expect(verdict.includePresent).toBe(true);
         expect(verdict.missingToolingExcludes).toEqual([]);
+      });
+
+      it('never re-adds `coverage.all`, which Vitest 4 removed', () => {
+        // The first draft of WI-2142887 set `all: true` beside the include. It
+        // type-errors (TS2769) and does nothing at runtime — the 263-file result was
+        // identical with and without it. Left in, it reads to the next author as the
+        // setting that carries the behaviour, so pin its absence rather than trusting
+        // the comment that explains it.
+        const configSource = readFileSync(CONFIG, 'utf8');
+        const settingLines = configSource
+          .split('\n')
+          .filter((line) => !line.trimStart().startsWith('//'));
+        expect(settingLines.some((line) => /(?:^|[{,\s])all:\s*true\b/.test(line))).toBe(false);
       });
     });
   });
