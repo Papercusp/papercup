@@ -230,7 +230,9 @@ export function workspaceHostAgentHomePaths(
 
 /**
  * Refuse an inferred, relative, or non-canonical home before a root-owned consumer writes into it.
- * The caller supplies the workspace user's home explicitly; it is never recovered from HOME.
+ * The caller supplies the target home explicitly; it is never recovered from the ambient HOME —
+ * which matters more since D-248, because the root consumer now writes into the AGENT identity's
+ * home and the process running it is root, whose own HOME is `/root`.
  */
 export function requireExplicitWorkspaceHostHome(home: string): string {
   if (
@@ -372,9 +374,18 @@ export function parseWorkspaceHostAgentHomeState(
 export interface WorkspaceHostAgentHomeConsumerOptions {
   readonly filesystem: WorkspaceHostAgentHomeFilesystem;
   readonly materialRoot: string;
-  readonly workspaceHome: string;
-  readonly workspaceUser?: string;
-  readonly workspaceGroup?: string;
+  /**
+   * Home of the identity that RUNS the agents — `papercusp-agent`, not the SSH login (D-248).
+   *
+   * These three were named `workspaceHome`/`workspaceUser`/`workspaceGroup` while the SSH
+   * account was the agent-running identity. That naming is what made the conflation invisible:
+   * the delivered Claude/Codex material landed in the customer's own login home, owned 0600 by
+   * the customer, and nothing in the type read as wrong. Named for what they are, a future
+   * caller passing the SSH account here has to type the mismatch out.
+   */
+  readonly agentHome: string;
+  readonly agentUser?: string;
+  readonly agentGroup?: string;
 }
 
 export interface WorkspaceHostAgentHomeConsumerEvidence {
@@ -405,26 +416,24 @@ function compareBytes(left: Buffer, right: Buffer): boolean {
 export class WorkspaceHostAgentHomeConsumer {
   private readonly filesystem: WorkspaceHostAgentHomeFilesystem;
   private readonly materialRoot: string;
-  private readonly workspaceHome: string;
-  private readonly workspaceUser?: string;
-  private readonly workspaceGroup?: string;
+  private readonly agentHome: string;
+  private readonly agentUser?: string;
+  private readonly agentGroup?: string;
 
   constructor(options: WorkspaceHostAgentHomeConsumerOptions) {
     this.filesystem = options.filesystem;
     this.materialRoot = options.materialRoot;
-    this.workspaceHome = requireExplicitWorkspaceHostHome(
-      options.workspaceHome,
-    );
+    this.agentHome = requireExplicitWorkspaceHostHome(options.agentHome);
     if (
-      (options.workspaceUser && !options.workspaceGroup) ||
-      (!options.workspaceUser && options.workspaceGroup)
+      (options.agentUser && !options.agentGroup) ||
+      (!options.agentUser && options.agentGroup)
     ) {
       throw new WorkspaceHostAgentHomeBundleError(
-        "workspaceUser and workspaceGroup must be supplied together",
+        "agentUser and agentGroup must be supplied together",
       );
     }
-    this.workspaceUser = options.workspaceUser;
-    this.workspaceGroup = options.workspaceGroup;
+    this.agentUser = options.agentUser;
+    this.agentGroup = options.agentGroup;
   }
 
   private async readState(): Promise<WorkspaceHostAgentHomeState | null> {
@@ -433,9 +442,9 @@ export class WorkspaceHostAgentHomeConsumer {
     );
     if (raw === null) return null;
     const state = parseWorkspaceHostAgentHomeState(raw);
-    if (state.home !== this.workspaceHome) {
+    if (state.home !== this.agentHome) {
       throw new WorkspaceHostAgentHomeStateError(
-        "active agent-home state names a different workspace home",
+        "active agent-home state names a different agent home",
         { family: state.family, generation: state.generation },
       );
     }
@@ -444,14 +453,14 @@ export class WorkspaceHostAgentHomeConsumer {
 
   private async own(path: string): Promise<void> {
     if (
-      this.workspaceUser &&
-      this.workspaceGroup &&
+      this.agentUser &&
+      this.agentGroup &&
       this.filesystem.setOwnership
     ) {
       await this.filesystem.setOwnership(
         path,
-        this.workspaceUser,
-        this.workspaceGroup,
+        this.agentUser,
+        this.agentGroup,
       );
     }
   }
@@ -473,15 +482,15 @@ export class WorkspaceHostAgentHomeConsumer {
    * order with the home last, so the steady state remains a normal user-owned 0700 native home.
    */
   private async secureHomeLayout(): Promise<readonly string[]> {
-    const directories = workspaceHostAgentHomeDirectories(this.workspaceHome);
+    const directories = workspaceHostAgentHomeDirectories(this.agentHome);
     const secured: string[] = [];
     try {
       for (const directory of directories) {
         await this.filesystem.ensureDirectory(directory);
         await this.requireRealDirectory(directory);
         if (
-          this.workspaceUser &&
-          this.workspaceGroup &&
+          this.agentUser &&
+          this.agentGroup &&
           this.filesystem.setOwnership
         ) {
           await this.filesystem.setOwnership(directory, "root", "root");
@@ -551,7 +560,7 @@ export class WorkspaceHostAgentHomeConsumer {
     if (
       current &&
       current.generation === generation &&
-      (current.family !== family || current.home !== this.workspaceHome)
+      (current.family !== family || current.home !== this.agentHome)
     ) {
       throw new WorkspaceHostAgentHomeStateError(
         `agent-home generation ${generation} is already active for another family or home`,
@@ -562,7 +571,7 @@ export class WorkspaceHostAgentHomeConsumer {
     const securedDirectories = await this.secureHomeLayout();
     const installedFiles: string[] = [];
     try {
-      const paths = workspaceHostAgentHomePaths(this.workspaceHome);
+      const paths = workspaceHostAgentHomePaths(this.agentHome);
       for (const label of Object.keys(paths) as WorkspaceHostAgentHomeFile[]) {
         const existing = await this.filesystem.readFileIfPresent(paths[label]);
         const bytes = bundle.files[label];
@@ -603,13 +612,13 @@ export class WorkspaceHostAgentHomeConsumer {
         encodeWorkspaceHostAgentHomeState(
           family,
           generation,
-          this.workspaceHome,
+          this.agentHome,
         ),
       );
     } finally {
       await this.restoreHomeLayout(securedDirectories, installedFiles);
     }
-    return { family, generation, present: true, home: this.workspaceHome };
+    return { family, generation, present: true, home: this.agentHome };
   }
 
   private async removeNativeFile(
@@ -657,7 +666,7 @@ export class WorkspaceHostAgentHomeConsumer {
           !current ||
           current.family !== family ||
           current.generation !== generation ||
-          current.home !== this.workspaceHome
+          current.home !== this.agentHome
         ) {
           throw new WorkspaceHostAgentHomeStateError(
             `agent-home generation ${generation} is not the active installed generation`,
@@ -666,7 +675,7 @@ export class WorkspaceHostAgentHomeConsumer {
         }
         const securedDirectories = await this.secureHomeLayout();
         try {
-          const paths = workspaceHostAgentHomePaths(this.workspaceHome);
+          const paths = workspaceHostAgentHomePaths(this.agentHome);
           for (const label of Object.keys(
             paths,
           ) as WorkspaceHostAgentHomeFile[]) {
@@ -706,7 +715,7 @@ export class WorkspaceHostAgentHomeConsumer {
         } finally {
           await this.restoreHomeLayout(securedDirectories);
         }
-        return { family, generation, present: true, home: this.workspaceHome };
+        return { family, generation, present: true, home: this.agentHome };
       },
       options.lockHeld === true,
     );
@@ -723,9 +732,9 @@ export class WorkspaceHostAgentHomeConsumer {
         const current = await this.readState();
         // A malformed/tampered state that names another canonical home is never a reason for a
         // root consumer to remove files there. Fail closed instead of treating it as a stale no-op.
-        if (current && current.home !== this.workspaceHome) {
+        if (current && current.home !== this.agentHome) {
           throw new WorkspaceHostAgentHomeStateError(
-            "active agent-home state names a different workspace home",
+            "active agent-home state names a different agent home",
             { family: current.family, generation: current.generation },
           );
         }
@@ -739,12 +748,12 @@ export class WorkspaceHostAgentHomeConsumer {
             family,
             generation,
             present: false,
-            home: this.workspaceHome,
+            home: this.agentHome,
           };
         }
         const securedDirectories = await this.secureHomeLayout();
         try {
-          const paths = workspaceHostAgentHomePaths(this.workspaceHome);
+          const paths = workspaceHostAgentHomePaths(this.agentHome);
           for (const path of Object.values(paths)) {
             await this.removeNativeFile(path, family, generation);
           }
@@ -756,7 +765,7 @@ export class WorkspaceHostAgentHomeConsumer {
         } finally {
           await this.restoreHomeLayout(securedDirectories);
         }
-        return { family, generation, present: false, home: this.workspaceHome };
+        return { family, generation, present: false, home: this.agentHome };
       },
       options.lockHeld === true,
     );
@@ -777,7 +786,7 @@ export class WorkspaceHostAgentHomeConsumer {
             { family, generation },
           );
         }
-        return { family, generation, present: false, home: this.workspaceHome };
+        return { family, generation, present: false, home: this.agentHome };
       },
       options.lockHeld === true,
     );

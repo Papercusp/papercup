@@ -6,6 +6,7 @@ import {
   verifyWorkspaceHostReleaseProvenance,
 } from "./workspace-host-build-manifest";
 import {
+  DEFAULT_WORKSPACE_HOST_AGENT_USER,
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_BOOTSTRAP_CHECKS,
@@ -783,6 +784,10 @@ export function workspaceHostCleanRoomFixtureAttestation(
     DEFAULT_WORKSPACE_HOST_WORKSPACE_USER;
   const workspaceGroup =
     fixture.bootstrapInput.isolation?.workspaceGroup ?? workspaceUser;
+  const agentUser =
+    fixture.bootstrapInput.isolation?.agentUser ??
+    DEFAULT_WORKSPACE_HOST_AGENT_USER;
+  const agentGroup = fixture.bootstrapInput.isolation?.agentGroup ?? agentUser;
   return {
     contractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
     hostId: fixture.bootstrapInput.hostId,
@@ -818,13 +823,19 @@ export function workspaceHostCleanRoomFixtureAttestation(
     isolation: {
       workspaceUser,
       workspaceGroup,
+      agentUser,
+      agentGroup,
       runtimeRoot: WORKSPACE_HOST_RUNTIME_ROOT,
       stateRoot: WORKSPACE_HOST_STATE_ROOT,
       workspaceRoot: WORKSPACE_HOST_DATA_ROOT,
-      runtimeReadableByWorkspaceUser: true,
+      runtimeReadableByWorkspaceUser: false,
       runtimeWritableByWorkspaceUser: false,
+      runtimeReadableByAgentUser: true,
+      runtimeWritableByAgentUser: false,
+      agentHomeReadableBySshUser: false,
       workspaceWritableByService: true,
       workspaceWritableBySshUser: true,
+      workspaceWritableByAgentUser: true,
       sudo: false,
       serviceGroupMember: false,
       operatorIngress: "ssh-local-forward",

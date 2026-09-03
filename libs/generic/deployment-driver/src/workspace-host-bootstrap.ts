@@ -25,6 +25,13 @@ export const WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX =
   'PAPERCUSP_WORKSPACE_HOST_ATTESTATION=';
 export const DEFAULT_WORKSPACE_HOST_SERVICE_USER = 'papercusp';
 export const DEFAULT_WORKSPACE_HOST_WORKSPACE_USER = 'papercusp-workspace';
+/**
+ * The THIRD identity (D-248). Runs the bundled agent CLIs: reads the signed runtime, owns the
+ * delivered agent credential homes, writes the scoped workspace root — and is NOT the SSH
+ * account, which is what lets D-043's "keep runtime files non-readable to the workspace user"
+ * hold exactly as written while the agents remain runnable.
+ */
+export const DEFAULT_WORKSPACE_HOST_AGENT_USER = 'papercusp-agent';
 export const WORKSPACE_HOST_RUNTIME_ROOT = '/opt/papercusp';
 export const WORKSPACE_HOST_STATE_ROOT = '/var/lib/papercusp';
 export const WORKSPACE_HOST_DATA_ROOT = '/srv/papercusp/workspaces';
@@ -357,12 +364,27 @@ export interface WorkspaceHostBootstrapService {
   group?: string;
 }
 
-/** Distinct interactive identity; it never shares the runtime service group. */
+/**
+ * Three identities, each with exactly one job, none of them sharing another's group.
+ *
+ * - `service`  — runs the operator; owns `$STATE_ROOT` (embedded PG, delivered material).
+ * - `workspace` — the SSH login account; workspace/data ONLY, zero runtime read (D-043).
+ * - `agent`    — runs the bundled agent CLIs; reads the signed runtime, owns the agent
+ *   credential homes, writes the scoped workspace root. Non-login (D-248).
+ */
 export interface WorkspaceHostBootstrapIsolation {
   /** SSH login account that can access customer workspace/data only. */
   workspaceUser?: string;
   /** Primary group for the SSH account; must differ from the service group. */
   workspaceGroup?: string;
+  /**
+   * Non-login account the bundled agent CLIs execute as. Must differ from BOTH other
+   * identities: sharing the service identity would hand it the credential/state root, and
+   * sharing the SSH identity is the exact contradiction D-248 exists to remove.
+   */
+  agentUser?: string;
+  /** Primary group for the agent account; must differ from the service and SSH groups. */
+  agentGroup?: string;
 }
 
 export interface WorkspaceHostBootstrapInput {
@@ -439,18 +461,30 @@ export interface WorkspaceHostBootstrapAttestation {
   isolation: {
     workspaceUser: string;
     workspaceGroup: string;
+    /** The third identity (D-248): non-login, runs the bundled agent CLIs. */
+    agentUser: string;
+    agentGroup: string;
     runtimeRoot: typeof WORKSPACE_HOST_RUNTIME_ROOT;
     stateRoot: typeof WORKSPACE_HOST_STATE_ROOT;
     workspaceRoot: typeof WORKSPACE_HOST_DATA_ROOT;
-    // TRUE since D-246, and deliberately so: the workspace account executes the bundled agent
-    // CLIs, so it must read the runtime. This was attested `false` while the agents were in fact
-    // unrunnable — the attestation was accurate about the permission and wrong about the product.
-    // The confinement that actually does the work is the WRITE property below, which is what the
-    // old read assertion was standing in for.
-    runtimeReadableByWorkspaceUser: true;
+    // FALSE, and back to false deliberately. D-246 flipped this to `true` because the SSH account
+    // was then the agent-running identity, which made the runtime read unavoidable — and that
+    // violated the D-043 owner ruling. D-248 splits the identity instead, so the property D-043
+    // names holds as written AND the agents run. Read the pair below together: the read moved to
+    // the agent identity, it did not disappear.
+    runtimeReadableByWorkspaceUser: false;
     runtimeWritableByWorkspaceUser: false;
+    runtimeReadableByAgentUser: true;
+    runtimeWritableByAgentUser: false;
+    /**
+     * The customer's SSH login cannot read the delivered agent credential home. On a BYOC host
+     * that account is the customer's access path, so this is the property that decides whether
+     * platform agent credentials are exposed to them — not a mode bit, an asserted negative.
+     */
+    agentHomeReadableBySshUser: false;
     workspaceWritableByService: true;
     workspaceWritableBySshUser: true;
+    workspaceWritableByAgentUser: true;
     sudo: false;
     serviceGroupMember: false;
     operatorIngress: 'ssh-local-forward';
@@ -576,6 +610,8 @@ interface ValidatedBootstrapInput {
   serviceGroup: string;
   workspaceUser: string;
   workspaceGroup: string;
+  agentUser: string;
+  agentGroup: string;
   workspaceAuthorizedKeys: readonly string[];
 }
 
@@ -643,6 +679,9 @@ function validateInput(
   const workspaceUser =
     input.isolation?.workspaceUser ?? DEFAULT_WORKSPACE_HOST_WORKSPACE_USER;
   const workspaceGroup = input.isolation?.workspaceGroup ?? workspaceUser;
+  const agentUser =
+    input.isolation?.agentUser ?? DEFAULT_WORKSPACE_HOST_AGENT_USER;
+  const agentGroup = input.isolation?.agentGroup ?? agentUser;
   requireCondition(
     SAFE_LINUX_NAME.test(serviceUser) && serviceUser !== 'root',
     'service.user must be a safe Linux name',
@@ -660,12 +699,32 @@ function validateInput(
     'isolation.workspaceGroup must be a safe non-root Linux name',
   );
   requireCondition(
+    SAFE_LINUX_NAME.test(agentUser) && agentUser !== 'root',
+    'isolation.agentUser must be a safe non-root Linux name',
+  );
+  requireCondition(
+    SAFE_LINUX_NAME.test(agentGroup) && agentGroup !== 'root',
+    'isolation.agentGroup must be a safe non-root Linux name',
+  );
+  requireCondition(
     workspaceUser !== serviceUser,
     'workspace SSH user must differ from the runtime service user',
   );
   requireCondition(
     workspaceGroup !== serviceGroup,
     'workspace SSH group must differ from the runtime service group',
+  );
+  // The whole point of the third identity is that it is a THIRD one. Collapsing it onto either
+  // existing account silently restores the contradiction D-248 diagnoses — onto the SSH account
+  // it re-grants runtime read to the customer's login (D-043), and onto the service account it
+  // hands the agent runtime $STATE_ROOT, which holds embedded PG and every delivered credential.
+  requireCondition(
+    agentUser !== workspaceUser && agentUser !== serviceUser,
+    'agent identity must differ from both the workspace SSH user and the runtime service user',
+  );
+  requireCondition(
+    agentGroup !== workspaceGroup && agentGroup !== serviceGroup,
+    'agent group must differ from both the workspace SSH group and the runtime service group',
   );
   assertWorkspaceHostSecretIsolation(
     input.publicMetadata ?? {},
@@ -681,6 +740,8 @@ function validateInput(
     serviceGroup,
     workspaceUser,
     workspaceGroup,
+    agentUser,
+    agentGroup,
     workspaceAuthorizedKeys: normalizedAuthorizedKeys(
       input.workspaceAuthorizedKeys,
     ),
@@ -743,6 +804,8 @@ export function buildWorkspaceHostBootstrap(
     serviceGroup,
     workspaceUser,
     workspaceGroup,
+    agentUser,
+    agentGroup,
     workspaceAuthorizedKeys,
   } = validateInput(input);
   const digest = input.release.bundleSha256.toLowerCase();
@@ -782,6 +845,9 @@ export function buildWorkspaceHostBootstrap(
       base64(`${workspaceAuthorizedKeys.join("\n")}\n`),
     ),
     assignment("WORKSPACE_GROUP", workspaceGroup),
+    assignment("AGENT_USER", agentUser),
+    assignment("AGENT_GROUP", agentGroup),
+    assignment("AGENT_HOME", `/home/${agentUser}`),
     assignment("RUNTIME_ROOT", WORKSPACE_HOST_RUNTIME_ROOT),
     assignment("STATE_ROOT", WORKSPACE_HOST_STATE_ROOT),
     assignment("WORKSPACE_ROOT", WORKSPACE_HOST_DATA_ROOT),
@@ -852,10 +918,24 @@ export function buildWorkspaceHostBootstrap(
     'id -u "$WORKSPACE_USER" >/dev/null 2>&1 || useradd --gid "$WORKSPACE_GROUP" --home-dir "/home/$WORKSPACE_USER" --create-home --shell /bin/bash "$WORKSPACE_USER"',
     'usermod --lock --gid "$WORKSPACE_GROUP" --groups "" --home "/home/$WORKSPACE_USER" --shell /bin/bash "$WORKSPACE_USER"',
     'if id -nG "$WORKSPACE_USER" | tr " " "\\n" | grep -Fx "$SERVICE_GROUP" >/dev/null; then die "workspace SSH user must not belong to the runtime service group"; fi',
+    // The THIRD identity (D-248). It exists so that exactly one account both reads the signed
+    // runtime and holds the agent credentials, and that account is NOT the customer's SSH login.
+    // `--shell /usr/sbin/nologin` + `usermod --lock` because nothing ever logs in as it: the
+    // privileged conduits invoke it via `runuser`, so it needs no password, no shell and no key.
+    'getent group "$AGENT_GROUP" >/dev/null || groupadd --system "$AGENT_GROUP"',
+    'id -u "$AGENT_USER" >/dev/null 2>&1 || useradd --system --gid "$AGENT_GROUP" --home-dir "$AGENT_HOME" --create-home --shell /usr/sbin/nologin "$AGENT_USER"',
+    'usermod --lock --gid "$AGENT_GROUP" --groups "" --home "$AGENT_HOME" --shell /usr/sbin/nologin "$AGENT_USER"',
+    // Two memberships, refused for two different reasons. $SERVICE_GROUP would hand the agent
+    // runtime $STATE_ROOT — embedded PG and every delivered credential. $WORKSPACE_GROUP would
+    // let the SSH account reach the agent's 0700 credential home through the group bits, which
+    // is the leak the third identity is for.
+    'if id -nG "$AGENT_USER" | tr " " "\\n" | grep -Fx "$SERVICE_GROUP" >/dev/null; then die "agent identity must not belong to the runtime service group"; fi',
+    'if id -nG "$AGENT_USER" | tr " " "\\n" | grep -Fx "$WORKSPACE_GROUP" >/dev/null; then die "agent identity must not belong to the workspace SSH group"; fi',
+    'if id -nG "$WORKSPACE_USER" | tr " " "\\n" | grep -Fx "$AGENT_GROUP" >/dev/null; then die "workspace SSH user must not belong to the agent group"; fi',
     'install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0750 "$STATE_ROOT" "$STATE_ROOT/embedded-pg"',
     'install -d -o root -g "$SERVICE_GROUP" -m 0750 "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases" /etc/papercusp',
-    // The workspace account must TRAVERSE the runtime root, because it is the account that runs
-    // the bundled agent CLIs: `bind-credential` delivers Claude/Codex/OMP material into its 0700
+    // The AGENT identity must TRAVERSE the runtime root, because it is the account that runs the
+    // bundled agent CLIs: `bind-credential` delivers Claude/Codex/OMP material into its 0700
     // home, and the agent probes execute `$RUNTIME_ROOT/current/bin/{claude,codex,omp}` as this
     // very user. Shipping the runtime root as 0750 root:$SERVICE_GROUP while the account is
     // created with `--groups ""` made those two facts contradictory, and every agent failed
@@ -863,19 +943,33 @@ export function buildWorkspaceHostBootstrap(
     // canary — read as three independent credential faults, which is what made it expensive
     // (D-246, measured on p046-canary-05).
     //
-    // A NAMED-USER ACL, not group membership and not a world-readable tree: `:848` below asserts
-    // this account is NOT in $SERVICE_GROUP and the verify phase re-asserts it, because that
-    // group also gates $STATE_ROOT (embedded PG, delivered credentials) and /etc/papercusp.
+    // The grant is aimed at $AGENT_USER, NOT $WORKSPACE_USER. D-246 originally pointed it at the
+    // SSH account because that account was the agent-running identity, and that violated the
+    // D-043 owner ruling ("keep runtime files root-owned/non-readable to the workspace user").
+    // Splitting the identity is what lets both hold: the runtime is readable by whoever executes
+    // it, and the customer's login is not that identity. The verify phase asserts BOTH halves.
+    //
+    // A NAMED-USER ACL, not group membership and not a world-readable tree: the checks above
+    // assert this account is NOT in $SERVICE_GROUP and the verify phase re-asserts it, because
+    // that group also gates $STATE_ROOT (embedded PG, delivered credentials) and /etc/papercusp.
     // Traverse-and-read is the entire grant; root stays sole owner and sole writer, so the
     // immutability the 0750 was reaching for is carried by ownership, not by the read bits.
-    'setfacl -m "u:$WORKSPACE_USER:r-x" "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"',
+    'setfacl -m "u:$AGENT_USER:r-x" "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"',
     "install -d -o root -g root -m 0711 /srv/papercusp",
     'install -d -o root -g root -m 0770 "$WORKSPACE_ROOT"',
     'setfacl --remove-all "$WORKSPACE_ROOT"',
     'setfacl --remove-default "$WORKSPACE_ROOT"',
-    'setfacl -m "u:$SERVICE_USER:rwx,u:$WORKSPACE_USER:rwx,m::rwx,o::---" "$WORKSPACE_ROOT"',
-    'setfacl -d -m "u:$SERVICE_USER:rwx,u:$WORKSPACE_USER:rwx,m::rwx,o::---" "$WORKSPACE_ROOT"',
+    // All three identities write the scoped workspace root, and the DEFAULT ACL is what makes
+    // that survive: a file the agent creates inherits the SSH user's rwx entry (and vice versa),
+    // so the customer can edit what the agent wrote over SSH without either side chown-ing.
+    'setfacl -m "u:$SERVICE_USER:rwx,u:$WORKSPACE_USER:rwx,u:$AGENT_USER:rwx,m::rwx,o::---" "$WORKSPACE_ROOT"',
+    'setfacl -d -m "u:$SERVICE_USER:rwx,u:$WORKSPACE_USER:rwx,u:$AGENT_USER:rwx,m::rwx,o::---" "$WORKSPACE_ROOT"',
     'install -d -o "$WORKSPACE_USER" -g "$WORKSPACE_GROUP" -m 0700 "/home/$WORKSPACE_USER"',
+    // 0700 and owned by an account whose group the SSH user is not in. This is the directory
+    // `bind-credential` writes Claude/Codex/OMP material into; on the pre-D-248 shape it was the
+    // SSH account's own home, so on a BYOC host the customer's login owned and could read the
+    // platform's agent credentials (observed on p046-canary-05).
+    'install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0700 "$AGENT_HOME"',
     'ln -sfn "$WORKSPACE_ROOT" "/home/$WORKSPACE_USER/workspaces"',
     'chown -h "$WORKSPACE_USER:$WORKSPACE_GROUP" "/home/$WORKSPACE_USER/workspaces"',
     // Authorize the controller BEFORE the sshd hardening below takes effect. The config that
@@ -955,7 +1049,8 @@ export function buildWorkspaceHostBootstrap(
     'chmod -R g-w,o-rwx "$RELEASE_DIR"',
     'find "$RELEASE_DIR" -type d -exec chmod g+rx {} +',
     'find "$RELEASE_DIR" -type f -exec chmod g+r {} +',
-    // Extend the runtime-root grant across the extracted release (D-246). Ordered after the chmod
+    // Extend the runtime-root grant across the extracted release (D-246, retargeted from the SSH
+    // account to the agent identity by D-248). Ordered after the chmod
     // pass deliberately: on a file that carries an ACL, chmod's group bits address the ACL MASK
     // rather than the group entry, so a mask-narrowing chmod landing after this line would clamp
     // the grant away. MEASURED (2026-09-02, /tmp probe over this exact sequence): with the three
@@ -969,7 +1064,7 @@ export function buildWorkspaceHostBootstrap(
     // files executable. The agent CLIs are thin wrappers that re-exec `$BIN/node` and read
     // `$ROOT/scripts/psu.mjs`, so the grant has to span the tree rather than the three
     // entrypoints; the group already has exactly this access, and root stays the only writer.
-    'setfacl -R -m "u:$WORKSPACE_USER:rX" "$RELEASE_DIR"',
+    'setfacl -R -m "u:$AGENT_USER:rX" "$RELEASE_DIR"',
     'for entrypoint in "$INSTALL_ENTRYPOINT" "$ROLLBACK_ENTRYPOINT" "$NODE_ENTRYPOINT" "$MIGRATE_ENTRYPOINT" "$OPERATOR_ENTRYPOINT" "$HEALTH_ENTRYPOINT" "$PSU_ENTRYPOINT" "$PUI_ENTRYPOINT" "$CLAUDE_ENTRYPOINT" "$CODEX_ENTRYPOINT" "$OMP_ENTRYPOINT" "$REMOTE_INITIALIZER_ENTRYPOINT" "$CREDENTIAL_DELIVERY_ENTRYPOINT"; do',
     '  [[ -x "$RELEASE_DIR/$entrypoint" ]] || die "missing executable release entrypoint: $entrypoint"',
     "done",
@@ -1167,30 +1262,51 @@ export function buildWorkspaceHostBootstrap(
     '[[ "$(systemctl show "$SERVICE_NAME.service" --property Group --value)" == "$SERVICE_GROUP" ]] || die "workspace service is not running under the dedicated service group"',
     '[[ "$(stat -c %U "$RUNTIME_ROOT")" == "root" ]] || die "runtime root must be owned by root"',
     '[[ -z "$(find "$RUNTIME_ROOT/releases" -xdev \\( -type f -o -type d \\) -perm -0004 -print -quit)" ]] || die "runtime release tree must not be world-readable"',
-    // This assertion used to read `test ! -r … || die "workspace SSH user can read the Papercusp
-    // runtime"` — it REQUIRED the workspace account to be locked out of the runtime tree. That is
-    // the codified half of the contradiction D-246 diagnoses: the same account is the one that
-    // runs the bundled agents, so the property this asserted is one the product cannot hold. It
-    // passed on every host precisely because the agents were unrunnable, and the cost surfaced
-    // six steps into a live canary as three identical `Permission denied` readiness failures.
+    // The two halves of D-248, asserted together because either one alone is satisfiable by the
+    // broken shape. D-043 (owner ruling) requires the SSH account to be locked out of the runtime
+    // tree; D-246 measured that the account running the agents must read it. Both are true, and
+    // the resolution is that they are not the same account.
     //
-    // Inverted into the property that is actually wanted, and that the old assertion would have
-    // caught had it been written this way from the start: the workspace account must be able to
-    // EXECUTE each agent CLI it holds credentials for. Confinement is unchanged and still
-    // asserted around this line — root remains sole writer, the release tree is still not
-    // world-readable (the check above), the state and credential roots stay closed, the account
-    // is still outside $SERVICE_GROUP and sudo, and the only privilege seam is the two pinned
-    // conduits. Read access to a signed release the account must execute anyway was never the
-    // boundary doing that work.
+    // HALF ONE — the SSH account still cannot read the runtime. This is the assertion D-246
+    // deleted and D-248 restores verbatim in intent: it is the mechanical enforcement of D-043's
+    // "keep runtime files root-owned/non-readable to the workspace user". Deleting it is how a
+    // widened grant ships unnoticed, so it is the first line here rather than the last.
+    'runuser -u "$WORKSPACE_USER" -- test ! -r "$RUNTIME_ROOT/current/$OPERATOR_ENTRYPOINT" || die "workspace SSH user can read the Papercusp runtime"',
     'for agent_entrypoint in "$CLAUDE_ENTRYPOINT" "$CODEX_ENTRYPOINT" "$OMP_ENTRYPOINT"; do',
-    '  runuser -u "$WORKSPACE_USER" -- test -x "$RUNTIME_ROOT/current/$agent_entrypoint" || die "workspace SSH user cannot execute agent entrypoint: $agent_entrypoint"',
+    '  runuser -u "$WORKSPACE_USER" -- test ! -x "$RUNTIME_ROOT/current/$agent_entrypoint" || die "workspace SSH user can execute agent entrypoint: $agent_entrypoint"',
+    "done",
+    // HALF TWO — the agent identity CAN execute every agent CLI it holds credentials for. This is
+    // the property whose absence cost six steps of a live canary and read as three independent
+    // credential faults; it passed as `not readable` on every prior host precisely because the
+    // agents were unrunnable, which is why it is asserted positively here.
+    'for agent_entrypoint in "$CLAUDE_ENTRYPOINT" "$CODEX_ENTRYPOINT" "$OMP_ENTRYPOINT"; do',
+    '  runuser -u "$AGENT_USER" -- test -x "$RUNTIME_ROOT/current/$agent_entrypoint" || die "agent identity cannot execute agent entrypoint: $agent_entrypoint"',
     "done",
     'runuser -u "$WORKSPACE_USER" -- test ! -r "$STATE_ROOT" || die "workspace SSH user can read the runtime state root"',
     'runuser -u "$WORKSPACE_USER" -- test ! -w "$RUNTIME_ROOT/current" || die "workspace SSH user can write the Papercusp runtime"',
     'runuser -u "$WORKSPACE_USER" -- test -w "$WORKSPACE_ROOT" || die "workspace SSH user cannot write the scoped workspace root"',
+    // The credential home is the reason the third identity is worth its cost. On a BYOC host the
+    // SSH account is the CUSTOMER's access path; before D-248 it owned the delivered Claude/Codex
+    // material at 0600 in its own home. Assert the negative directly rather than inferring it
+    // from the 0700 mode, because a later group change would defeat the mode silently.
+    'runuser -u "$WORKSPACE_USER" -- test ! -r "$AGENT_HOME" || die "workspace SSH user can read the agent credential home"',
+    // The agent identity is confined in every direction the SSH account is: it reads the signed
+    // runtime and writes the workspace, and nothing else. Runtime WRITE is the property the old
+    // read assertion was actually standing in for, and it is asserted for both accounts.
+    'runuser -u "$AGENT_USER" -- test ! -r "$STATE_ROOT" || die "agent identity can read the runtime state root"',
+    'runuser -u "$AGENT_USER" -- test ! -w "$RUNTIME_ROOT/current" || die "agent identity can write the Papercusp runtime"',
+    'runuser -u "$AGENT_USER" -- test -w "$WORKSPACE_ROOT" || die "agent identity cannot write the scoped workspace root"',
     'runuser -u "$SERVICE_USER" -- test -w "$WORKSPACE_ROOT" || die "runtime service cannot write the scoped workspace root"',
     'if id -nG "$WORKSPACE_USER" | tr " " "\\n" | grep -Fx "$SERVICE_GROUP" >/dev/null; then die "workspace SSH user belongs to the runtime service group"; fi',
+    'if id -nG "$WORKSPACE_USER" | tr " " "\\n" | grep -Fx "$AGENT_GROUP" >/dev/null; then die "workspace SSH user belongs to the agent group"; fi',
     'if id -nG "$WORKSPACE_USER" | tr " " "\\n" | grep -Fx sudo >/dev/null; then die "workspace SSH user belongs to sudo"; fi',
+    'if id -nG "$AGENT_USER" | tr " " "\\n" | grep -Fx "$SERVICE_GROUP" >/dev/null; then die "agent identity belongs to the runtime service group"; fi',
+    'if id -nG "$AGENT_USER" | tr " " "\\n" | grep -Fx "$WORKSPACE_GROUP" >/dev/null; then die "agent identity belongs to the workspace SSH group"; fi',
+    'if id -nG "$AGENT_USER" | tr " " "\\n" | grep -Fx sudo >/dev/null; then die "agent identity belongs to sudo"; fi',
+    // Non-login, and asserted rather than assumed: `useradd --shell` is a creation-time argument,
+    // so on an UPGRADE over a host whose account predates this contract the shell is whatever it
+    // already was. The `usermod` above re-applies it; this proves the re-application landed.
+    '[[ "$(getent passwd "$AGENT_USER" | cut -d: -f7)" == /usr/sbin/nologin ]] || die "agent identity has a login shell"',
     '[[ "$(stat -c %U:%G:%a "$REMOTE_INITIALIZER_CONDUIT")" == root:root:755 ]] || die "initializer conduit ownership or mode is unsafe"',
     '[[ "$(stat -c %U:%G:%a "$CREDENTIAL_DELIVERY_CONDUIT")" == root:root:755 ]] || die "credential delivery conduit ownership or mode is unsafe"',
     '[[ "$(stat -c %U:%G:%a "$PRIVILEGED_CONDUIT_SUDOERS")" == root:root:440 ]] || die "conduit sudoers ownership or mode is unsafe"',
@@ -1213,8 +1329,8 @@ export function buildWorkspaceHostBootstrap(
     'OBSERVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
     `CHECKS_JSON=${shellQuote(checksJson)}`,
     'ATTESTATION_PATH="$STATE_ROOT/bootstrap-attestation.json"',
-    'jq -n --arg contractVersion "$CONTRACT_VERSION" --arg hostId "$HOST_ID" --arg action "$BOOTSTRAP_ACTION" --arg ubuntuVersion "$VERSION_ID" --arg observedAt "$OBSERVED_AT" --arg releaseVersion "$RELEASE_VERSION" --arg source "$BUNDLE_URL" --arg bundleSha256 "$BUNDLE_SHA256" --arg signingKeySha256 "$SIGNING_KEY_SHA256" --arg migrationId "$MIGRATION_ID" --arg serviceName "$SERVICE_NAME" --arg serviceUser "$SERVICE_USER" --arg serviceGroup "$SERVICE_GROUP" --arg workspaceUser "$WORKSPACE_USER" --arg workspaceGroup "$WORKSPACE_GROUP" --arg runtimeRoot "$RUNTIME_ROOT" --arg stateRoot "$STATE_ROOT" --arg workspaceRoot "$WORKSPACE_ROOT" --argjson nodeMajor "$NODE_MAJOR" --argjson minimumNodeMajor "$MINIMUM_NODE_MAJOR" --argjson servicePort "$SERVICE_PORT" --argjson checks "$CHECKS_JSON" \\',
-    '  \'{contractVersion:$contractVersion,hostId:$hostId,action:$action,ubuntuVersion:$ubuntuVersion,observedAt:$observedAt,status:"healthy",release:{version:$releaseVersion,source:$source,bundleSha256:$bundleSha256,signingKeySha256:$signingKeySha256,signatureVerified:true},migration:{id:$migrationId,applied:true},runtime:{nodeMajor:$nodeMajor,minimumNodeMajor:$minimumNodeMajor,psu:true,pui:true,claude:true,codex:true,omp:true},service:{name:$serviceName,user:$serviceUser,group:$serviceGroup,bindHost:"127.0.0.1",port:$servicePort,active:true},isolation:{workspaceUser:$workspaceUser,workspaceGroup:$workspaceGroup,runtimeRoot:$runtimeRoot,stateRoot:$stateRoot,workspaceRoot:$workspaceRoot,runtimeReadableByWorkspaceUser:true,runtimeWritableByWorkspaceUser:false,workspaceWritableByService:true,workspaceWritableBySshUser:true,sudo:false,serviceGroupMember:false,operatorIngress:"ssh-local-forward",updateMode:"signed-atomic-release-swap"},checks:$checks}\' > "$ATTESTATION_PATH"',
+    'jq -n --arg contractVersion "$CONTRACT_VERSION" --arg hostId "$HOST_ID" --arg action "$BOOTSTRAP_ACTION" --arg ubuntuVersion "$VERSION_ID" --arg observedAt "$OBSERVED_AT" --arg releaseVersion "$RELEASE_VERSION" --arg source "$BUNDLE_URL" --arg bundleSha256 "$BUNDLE_SHA256" --arg signingKeySha256 "$SIGNING_KEY_SHA256" --arg migrationId "$MIGRATION_ID" --arg serviceName "$SERVICE_NAME" --arg serviceUser "$SERVICE_USER" --arg serviceGroup "$SERVICE_GROUP" --arg workspaceUser "$WORKSPACE_USER" --arg workspaceGroup "$WORKSPACE_GROUP" --arg agentUser "$AGENT_USER" --arg agentGroup "$AGENT_GROUP" --arg runtimeRoot "$RUNTIME_ROOT" --arg stateRoot "$STATE_ROOT" --arg workspaceRoot "$WORKSPACE_ROOT" --argjson nodeMajor "$NODE_MAJOR" --argjson minimumNodeMajor "$MINIMUM_NODE_MAJOR" --argjson servicePort "$SERVICE_PORT" --argjson checks "$CHECKS_JSON" \\',
+    '  \'{contractVersion:$contractVersion,hostId:$hostId,action:$action,ubuntuVersion:$ubuntuVersion,observedAt:$observedAt,status:"healthy",release:{version:$releaseVersion,source:$source,bundleSha256:$bundleSha256,signingKeySha256:$signingKeySha256,signatureVerified:true},migration:{id:$migrationId,applied:true},runtime:{nodeMajor:$nodeMajor,minimumNodeMajor:$minimumNodeMajor,psu:true,pui:true,claude:true,codex:true,omp:true},service:{name:$serviceName,user:$serviceUser,group:$serviceGroup,bindHost:"127.0.0.1",port:$servicePort,active:true},isolation:{workspaceUser:$workspaceUser,workspaceGroup:$workspaceGroup,agentUser:$agentUser,agentGroup:$agentGroup,runtimeRoot:$runtimeRoot,stateRoot:$stateRoot,workspaceRoot:$workspaceRoot,runtimeReadableByWorkspaceUser:false,runtimeWritableByWorkspaceUser:false,runtimeReadableByAgentUser:true,runtimeWritableByAgentUser:false,agentHomeReadableBySshUser:false,workspaceWritableByService:true,workspaceWritableBySshUser:true,workspaceWritableByAgentUser:true,sudo:false,serviceGroupMember:false,operatorIngress:"ssh-local-forward",updateMode:"signed-atomic-release-swap"},checks:$checks}\' > "$ATTESTATION_PATH"',
     'chown "$SERVICE_USER:$SERVICE_GROUP" "$ATTESTATION_PATH"',
     'chmod 0640 "$ATTESTATION_PATH"',
     `printf '${WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX}%s\\n' "$(base64 --wrap=0 < \"$ATTESTATION_PATH\")"`,
@@ -1430,18 +1546,45 @@ export function validateWorkspaceHostBootstrapAttestation(
   );
   addMismatch(
     errors,
-    candidate.isolation.runtimeReadableByWorkspaceUser === true,
-    'workspace SSH user cannot read the runtime it must execute agents from',
+    candidate.isolation.agentUser === validated.agentUser,
+    'agent identity mismatch',
   );
   addMismatch(
     errors,
-    candidate.isolation.runtimeWritableByWorkspaceUser === false,
-    'workspace SSH user can write the runtime',
+    candidate.isolation.agentGroup === validated.agentGroup,
+    'agent group mismatch',
+  );
+  // Asserted here and not only on the host, because this validator is what a caller who never
+  // saw the host runs. Each of the three is independently satisfiable by the broken shape: a
+  // host with only the first has no runnable agents, one with only the second is D-246's
+  // violation of D-043, and one with only the third can hand the customer's login the platform's
+  // agent credentials. Naming them separately is what makes the failure legible.
+  addMismatch(
+    errors,
+    candidate.isolation.runtimeReadableByWorkspaceUser === false,
+    'workspace SSH user can read the Papercusp runtime (D-043)',
+  );
+  addMismatch(
+    errors,
+    candidate.isolation.runtimeReadableByAgentUser === true,
+    'agent identity cannot read the runtime it must execute agents from',
+  );
+  addMismatch(
+    errors,
+    candidate.isolation.agentHomeReadableBySshUser === false,
+    'workspace SSH user can read the delivered agent credential home',
+  );
+  addMismatch(
+    errors,
+    candidate.isolation.runtimeWritableByWorkspaceUser === false &&
+      candidate.isolation.runtimeWritableByAgentUser === false,
+    'an unprivileged identity can write the runtime',
   );
   addMismatch(
     errors,
     candidate.isolation.workspaceWritableByService === true &&
-      candidate.isolation.workspaceWritableBySshUser === true,
+      candidate.isolation.workspaceWritableBySshUser === true &&
+      candidate.isolation.workspaceWritableByAgentUser === true,
     'scoped workspace ACL verification failed',
   );
   addMismatch(
