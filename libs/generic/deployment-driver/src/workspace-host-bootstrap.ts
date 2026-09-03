@@ -387,6 +387,32 @@ export interface WorkspaceHostBootstrapIsolation {
   agentGroup?: string;
 }
 
+/**
+ * One vendor agent runtime to install on the host, as an already-resolved argv.
+ *
+ * WHY THIS EXISTS (D-259). The release bundle ships psu WRAPPERS named `claude`, `codex` and
+ * `omp` — 539 bytes each, re-execing `scripts/psu.mjs --agent=<basename>` — NOT the vendor CLIs.
+ * psu does not bundle a backend either: it RESOLVES one from well-known dirs and aborts the
+ * launch when it finds none. So a host with no vendor runtime cannot start ANY agent, and
+ * P-046's all-three-agent canary is unmeetable. This closes that gap.
+ *
+ * THE SPECS ARE NOT REBUILT HERE. The caller evaluates the ONE existing spec table
+ * (`buildFrameworkInstallSpec`, which is pure) at render time and passes the concrete result, so
+ * this generic lib stays domain-free and the install commands can never drift from the ones the
+ * desktop onboarding uses.
+ *
+ * A NEW BUNDLED ENTRYPOINT WAS REJECTED DELIBERATELY: it would require a fresh bundle and image,
+ * which D-237 forbids. The bootstrap is rendered per-provision, so an inlined argv reaches a
+ * fresh host with no rebake — the same property that carried the D-246 ACL fix to canary-06.
+ */
+export interface WorkspaceHostAgentRuntimeInstall {
+  /** Which backend this installs; also the bare name the post-install resolve probes for. */
+  agent: 'claude' | 'codex' | 'omp';
+  /** Executable to run. Never a shell string — argv is passed through without re-splitting. */
+  command: string;
+  args: readonly string[];
+}
+
 export interface WorkspaceHostBootstrapInput {
   contractVersion: typeof WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION;
   action: 'install' | 'upgrade' | 'rollback';
@@ -414,6 +440,22 @@ export interface WorkspaceHostBootstrapInput {
    */
   workspaceAuthorizedKeys: readonly string[];
   entrypoints?: Partial<WorkspaceHostBootstrapEntrypoints>;
+  /**
+   * Vendor agent runtimes to install as the AGENT identity during `install-runtime` (D-259).
+   *
+   * Omitted or empty means no install is attempted, and the attestation then continues to declare
+   * `agentRuntimesVerifiedByBootstrap: false` — which is the HONEST reading for such a host, and
+   * exactly what every host built before this field reported. Supplying installs is what lets the
+   * bootstrap make that claim true, because each one is followed by a resolve that must succeed.
+   *
+   * ⚠ SUPPLY-CHAIN NOTE, deliberately surfaced rather than buried: the vendor install scripts
+   * these argvs run fetch code over the network (the Claude installer is a `curl … | bash`), which
+   * is a weaker trust posture than the digest+minisign verification this bootstrap applies to its
+   * OWN bundle. It is not a NEW trust relationship — it is the same vendor and the same script the
+   * desktop onboarding already runs — but it is a real asymmetry, and vendoring the runtimes into
+   * the signed bundle is the stronger long-term answer once an image rebake is permitted again.
+   */
+  agentRuntimeInstalls?: readonly WorkspaceHostAgentRuntimeInstall[];
   /** Persistable labels only. Secret-shaped keys and private-key values are rejected. */
   publicMetadata?: Readonly<Record<string, unknown>>;
 }
@@ -472,6 +514,28 @@ export interface WorkspaceHostBootstrapAttestation {
      * real authenticated surface and scores "exit 0 but unparseable" as a FAILURE.
      */
     agentRuntimesVerifiedByBootstrap: false;
+    /**
+     * Whether this bootstrap INSTALLED the vendor agent runtimes and resolved each one (D-259).
+     *
+     * Strictly narrower than the field above, and deliberately a separate one. `install-runtime`
+     * runs each configured install as the agent identity and then RESOLVES the binary, dying if it
+     * is absent — so a true here is backed by a resolve that passed. It still says nothing about
+     * authentication, which is why the `Verified` field remains a hardcoded false: conflating the
+     * two is how the launcher wrappers came to be mistaken for working agent CLIs in the first
+     * place (D-247).
+     *
+     * False on any host provisioned without `agentRuntimeInstalls` — including every host built
+     * before D-259, which genuinely had no vendor runtime at all.
+     */
+    agentRuntimesInstalledByBootstrap: boolean;
+    /**
+     * Absolute path of each installed vendor runtime, as resolved ON the host after install.
+     *
+     * Present only alongside `agentRuntimesInstalledByBootstrap: true`. This is what lets the
+     * readiness probe exec the VENDOR binary directly instead of shelling `bin/<agent>`, which is
+     * the psu wrapper and swallows the probe's arguments (D-259 Defect 2).
+     */
+    agentRuntimes?: Partial<Record<'claude' | 'codex' | 'omp', string>>;
   };
   service: {
     name: string;
@@ -768,7 +832,57 @@ function validateInput(
     workspaceAuthorizedKeys: normalizedAuthorizedKeys(
       input.workspaceAuthorizedKeys,
     ),
+    agentRuntimeInstalls: normalizedAgentRuntimeInstalls(
+      input.agentRuntimeInstalls,
+    ),
   };
+}
+
+/**
+ * Validate the D-259 agent-runtime installs.
+ *
+ * Absent is legal and means "this host installs no vendor runtime" — the attestation then says so
+ * rather than claiming otherwise. What is NOT legal is a malformed or duplicated entry: each is
+ * rendered into a root bootstrap as an argv run under `runuser`, so a blank command or a repeated
+ * agent is a render-time error, never something to discover on a host.
+ */
+function normalizedAgentRuntimeInstalls(
+  installs: readonly WorkspaceHostAgentRuntimeInstall[] | undefined,
+): readonly WorkspaceHostAgentRuntimeInstall[] {
+  if (installs === undefined) return [];
+  requireCondition(
+    Array.isArray(installs),
+    'bootstrap.agentRuntimeInstalls must be an array when provided',
+  );
+  const seen = new Set<string>();
+  for (const install of installs) {
+    requireCondition(
+      isRecord(install) &&
+        (install.agent === 'claude' ||
+          install.agent === 'codex' ||
+          install.agent === 'omp'),
+      "bootstrap.agentRuntimeInstalls[].agent must be 'claude', 'codex' or 'omp'",
+    );
+    requireCondition(
+      typeof install.command === 'string' && install.command.trim().length > 0,
+      'bootstrap.agentRuntimeInstalls[].command must be a non-empty string',
+    );
+    requireCondition(
+      Array.isArray(install.args) &&
+        install.args.every((arg) => typeof arg === 'string'),
+      'bootstrap.agentRuntimeInstalls[].args must be an array of strings',
+    );
+    requireCondition(
+      !seen.has(install.agent),
+      `bootstrap.agentRuntimeInstalls has a duplicate entry for '${install.agent}'`,
+    );
+    seen.add(install.agent);
+  }
+  return installs.map((install) => ({
+    agent: install.agent,
+    command: install.command,
+    args: [...install.args],
+  }));
 }
 
 /**
@@ -814,9 +928,62 @@ function assignment(name: string, value: string): string {
 }
 
 /**
+ * Install the vendor agent runtimes as the AGENT identity (D-259).
+ *
+ * Each already-resolved argv runs under `runuser`, and is then followed by a RESOLVE that must
+ * succeed. The resolve is the whole point: an install that exits 0 while leaving nothing on disk
+ * is precisely the unbacked boolean this work exists to remove, so the attestation's
+ * `agentRuntimesVerifiedByBootstrap` is only ever true downstream of a resolve that passed.
+ *
+ * PATH is set explicitly and DELIBERATELY EXCLUDES the release's own `bin/`. That directory holds
+ * the psu wrappers named `claude`/`codex`/`omp`; leaving it on PATH would let the resolve find a
+ * WRAPPER and report success while no vendor runtime existed — the exact confusion that made
+ * D-247 read as a probe bug across three sessions. The dirs included are where these installers
+ * actually land: `~/.local/bin` (the Claude installer and the omp download) and
+ * `~/.papercusp/runtime/node_modules/.bin` (the codex `npm install --prefix` target).
+ *
+ * The resolved absolute path is captured per agent so the canary's readiness probe can exec the
+ * VENDOR binary directly instead of shelling the wrapper.
+ */
+function agentRuntimeInstallLines(
+  installs: readonly WorkspaceHostAgentRuntimeInstall[],
+): string[] {
+  if (installs.length === 0) return [];
+  const lines: string[] = [
+    "",
+    "# D-259: the release bundle ships psu WRAPPERS named claude/codex/omp, not the vendor CLIs,",
+    "# and psu resolves a real backend from well-known dirs. Without these installs psu aborts",
+    "# every agent launch, so the host cannot run an agent at all.",
+    'AGENT_RUNTIME_PATH="$AGENT_HOME/.local/bin:$AGENT_HOME/.papercusp/runtime/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"',
+  ];
+  for (const install of installs) {
+    const argv = [install.command, ...install.args].map(shellQuote).join(" ");
+    lines.push(
+      `runuser -u "$AGENT_USER" -- env HOME="$AGENT_HOME" PATH="$AGENT_RUNTIME_PATH" ${argv} || die ${shellQuote(
+        `agent runtime install failed: ${install.agent}`,
+      )}`,
+    );
+  }
+  for (const install of installs) {
+    const varName = `AGENT_RUNTIME_${install.agent.toUpperCase()}`;
+    lines.push(
+      `${varName}="$(runuser -u "$AGENT_USER" -- env HOME="$AGENT_HOME" PATH="$AGENT_RUNTIME_PATH" /bin/bash -c ${shellQuote(
+        `command -v ${install.agent}`,
+      )} || true)"`,
+      `[[ -n "$${varName}" ]] || die ${shellQuote(
+        `agent runtime did not resolve after install: ${install.agent}`,
+      )}`,
+    );
+  }
+  return lines;
+}
+
+/**
  * Emit a deterministic, replay-safe root bootstrap for install, upgrade, or
- * rollback. The release bundle supplies Node, embedded Postgres tooling, psu,
- * and agent CLIs; apt installs only host security/verification prerequisites.
+ * rollback. The release bundle supplies Node, embedded Postgres tooling and psu, plus the psu
+ * WRAPPERS named after the agent CLIs; the vendor agent runtimes themselves are installed at
+ * provision time from `input.agentRuntimeInstalls` (D-259). apt installs only host
+ * security/verification prerequisites.
  */
 export function buildWorkspaceHostBootstrap(
   input: WorkspaceHostBootstrapInput,
@@ -830,12 +997,34 @@ export function buildWorkspaceHostBootstrap(
     agentUser,
     agentGroup,
     workspaceAuthorizedKeys,
+    agentRuntimeInstalls,
   } = validateInput(input);
   const digest = input.release.bundleSha256.toLowerCase();
   const signingKeyDigest = input.release.signingKeySha256.toLowerCase();
   const checksJson = JSON.stringify(
     WORKSPACE_HOST_BOOTSTRAP_CHECKS.map((name) => ({ name, ok: true })),
   );
+  // D-259: INSTALLED is a strictly narrower claim than VERIFIED, and they must not be conflated.
+  // This render installs the vendor runtimes and RESOLVES each one (the resolve `die`s otherwise,
+  // so reaching the attestation is the proof) — that establishes they are present and executable.
+  // It establishes NOTHING about whether they are authenticated, which is why
+  // `agentRuntimesVerifiedByBootstrap` stays hardcoded false and D-252's validator assertion that
+  // refuses the optimistic lie is left exactly as it was. The authority for the authenticated
+  // claim remains the readiness probe in workspace-host-agent-authentication.ts.
+  const agentRuntimesInstalled = agentRuntimeInstalls.length > 0;
+  const jqName = (agent: string): string =>
+    `agentRuntime${agent[0].toUpperCase()}${agent.slice(1)}`;
+  const agentRuntimeJqArgs = agentRuntimeInstalls
+    .map(
+      (install) =>
+        `--arg ${jqName(install.agent)} "$AGENT_RUNTIME_${install.agent.toUpperCase()}" `,
+    )
+    .join("");
+  const agentRuntimeJqFields = agentRuntimeInstalls.length
+    ? `,agentRuntimes:{${agentRuntimeInstalls
+        .map((install) => `${install.agent}:$${jqName(install.agent)}`)
+        .join(",")}}`
+    : "";
 
   const lines = [
     "#!/usr/bin/env bash",
@@ -1101,6 +1290,7 @@ export function buildWorkspaceHostBootstrap(
     'NODE_MAJOR="${NODE_VERSION#v}"',
     'NODE_MAJOR="${NODE_MAJOR%%.*}"',
     '[[ "$NODE_MAJOR" =~ ^[0-9]+$ && "$NODE_MAJOR" -ge "$MINIMUM_NODE_MAJOR" ]] || die "bundled Node runtime is below the required floor"',
+    ...agentRuntimeInstallLines(agentRuntimeInstalls),
     "",
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[4]}'`,
     '"$RELEASE_DIR/$MIGRATE_ENTRYPOINT" --database-root "$STATE_ROOT/embedded-pg" --migration-id "$MIGRATION_ID"',
@@ -1352,8 +1542,8 @@ export function buildWorkspaceHostBootstrap(
     'OBSERVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
     `CHECKS_JSON=${shellQuote(checksJson)}`,
     'ATTESTATION_PATH="$STATE_ROOT/bootstrap-attestation.json"',
-    'jq -n --arg contractVersion "$CONTRACT_VERSION" --arg hostId "$HOST_ID" --arg action "$BOOTSTRAP_ACTION" --arg ubuntuVersion "$VERSION_ID" --arg observedAt "$OBSERVED_AT" --arg releaseVersion "$RELEASE_VERSION" --arg source "$BUNDLE_URL" --arg bundleSha256 "$BUNDLE_SHA256" --arg signingKeySha256 "$SIGNING_KEY_SHA256" --arg migrationId "$MIGRATION_ID" --arg serviceName "$SERVICE_NAME" --arg serviceUser "$SERVICE_USER" --arg serviceGroup "$SERVICE_GROUP" --arg workspaceUser "$WORKSPACE_USER" --arg workspaceGroup "$WORKSPACE_GROUP" --arg agentUser "$AGENT_USER" --arg agentGroup "$AGENT_GROUP" --arg runtimeRoot "$RUNTIME_ROOT" --arg stateRoot "$STATE_ROOT" --arg workspaceRoot "$WORKSPACE_ROOT" --argjson nodeMajor "$NODE_MAJOR" --argjson minimumNodeMajor "$MINIMUM_NODE_MAJOR" --argjson servicePort "$SERVICE_PORT" --argjson checks "$CHECKS_JSON" \\',
-    '  \'{contractVersion:$contractVersion,hostId:$hostId,action:$action,ubuntuVersion:$ubuntuVersion,observedAt:$observedAt,status:"healthy",release:{version:$releaseVersion,source:$source,bundleSha256:$bundleSha256,signingKeySha256:$signingKeySha256,signatureVerified:true},migration:{id:$migrationId,applied:true},runtime:{nodeMajor:$nodeMajor,minimumNodeMajor:$minimumNodeMajor,psu:true,pui:true,agentLaunchers:{claude:true,codex:true,omp:true},agentRuntimesVerifiedByBootstrap:false},service:{name:$serviceName,user:$serviceUser,group:$serviceGroup,bindHost:"127.0.0.1",port:$servicePort,active:true},isolation:{workspaceUser:$workspaceUser,workspaceGroup:$workspaceGroup,agentUser:$agentUser,agentGroup:$agentGroup,runtimeRoot:$runtimeRoot,stateRoot:$stateRoot,workspaceRoot:$workspaceRoot,runtimeReadableByWorkspaceUser:false,runtimeWritableByWorkspaceUser:false,runtimeReadableByAgentUser:true,runtimeWritableByAgentUser:false,agentHomeReadableBySshUser:false,workspaceWritableByService:true,workspaceWritableBySshUser:true,workspaceWritableByAgentUser:true,sudo:false,serviceGroupMember:false,operatorIngress:"ssh-local-forward",updateMode:"signed-atomic-release-swap"},checks:$checks}\' > "$ATTESTATION_PATH"',
+    'jq -n --arg contractVersion "$CONTRACT_VERSION" --arg hostId "$HOST_ID" --arg action "$BOOTSTRAP_ACTION" --arg ubuntuVersion "$VERSION_ID" --arg observedAt "$OBSERVED_AT" --arg releaseVersion "$RELEASE_VERSION" --arg source "$BUNDLE_URL" --arg bundleSha256 "$BUNDLE_SHA256" --arg signingKeySha256 "$SIGNING_KEY_SHA256" --arg migrationId "$MIGRATION_ID" --arg serviceName "$SERVICE_NAME" --arg serviceUser "$SERVICE_USER" --arg serviceGroup "$SERVICE_GROUP" --arg workspaceUser "$WORKSPACE_USER" --arg workspaceGroup "$WORKSPACE_GROUP" --arg agentUser "$AGENT_USER" --arg agentGroup "$AGENT_GROUP" --arg runtimeRoot "$RUNTIME_ROOT" --arg stateRoot "$STATE_ROOT" --arg workspaceRoot "$WORKSPACE_ROOT" --argjson nodeMajor "$NODE_MAJOR" --argjson minimumNodeMajor "$MINIMUM_NODE_MAJOR" --argjson servicePort "$SERVICE_PORT" ' + agentRuntimeJqArgs + '--argjson checks "$CHECKS_JSON" \\',
+    '  \'{contractVersion:$contractVersion,hostId:$hostId,action:$action,ubuntuVersion:$ubuntuVersion,observedAt:$observedAt,status:"healthy",release:{version:$releaseVersion,source:$source,bundleSha256:$bundleSha256,signingKeySha256:$signingKeySha256,signatureVerified:true},migration:{id:$migrationId,applied:true},runtime:{nodeMajor:$nodeMajor,minimumNodeMajor:$minimumNodeMajor,psu:true,pui:true,agentLaunchers:{claude:true,codex:true,omp:true},agentRuntimesVerifiedByBootstrap:false,agentRuntimesInstalledByBootstrap:' + agentRuntimesInstalled + agentRuntimeJqFields + '},service:{name:$serviceName,user:$serviceUser,group:$serviceGroup,bindHost:"127.0.0.1",port:$servicePort,active:true},isolation:{workspaceUser:$workspaceUser,workspaceGroup:$workspaceGroup,agentUser:$agentUser,agentGroup:$agentGroup,runtimeRoot:$runtimeRoot,stateRoot:$stateRoot,workspaceRoot:$workspaceRoot,runtimeReadableByWorkspaceUser:false,runtimeWritableByWorkspaceUser:false,runtimeReadableByAgentUser:true,runtimeWritableByAgentUser:false,agentHomeReadableBySshUser:false,workspaceWritableByService:true,workspaceWritableBySshUser:true,workspaceWritableByAgentUser:true,sudo:false,serviceGroupMember:false,operatorIngress:"ssh-local-forward",updateMode:"signed-atomic-release-swap"},checks:$checks}\' > "$ATTESTATION_PATH"',
     'chown "$SERVICE_USER:$SERVICE_GROUP" "$ATTESTATION_PATH"',
     'chmod 0640 "$ATTESTATION_PATH"',
     `printf '${WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX}%s\\n' "$(base64 --wrap=0 < \"$ATTESTATION_PATH\")"`,
