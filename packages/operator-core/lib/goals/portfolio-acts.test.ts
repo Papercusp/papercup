@@ -34,6 +34,7 @@ import {
   PORTFOLIO_PLACE_TOOLS,
   PORTFOLIO_STEER_TOOLS,
   argsCarryConditionalKey,
+  argsSatisfyConditionalAct,
   isPortfolioAct,
   portfolioActFacet,
 } from './portfolio-acts';
@@ -307,9 +308,53 @@ describe('PORTFOLIO_CONDITIONAL_ACTS — the name says nothing, the arguments de
     });
   });
 
+  /**
+   * The second polarity's positive control (WI-2142888). `improvements:capture`
+   * is what `provenance-stamp.ts` calls "the door a goal steward files most of
+   * its findings through", and a non-observation capture mints a real work-item —
+   * CREATE by this module's own definition. It was in NEITHER set, so a steward
+   * whose real output was captures scored `actsInWindow: 0` and, because
+   * idleness scores FAIL rather than `unknown` (WI-1740139), failed a graded
+   * rubric criterion for work it actually did.
+   */
+  it('names a non-observation improvements:capture as a CREATE act, by NOT-VALUE', () => {
+    expect(PORTFOLIO_CONDITIONAL_ACTS).toContainEqual({
+      tool: 'improvements:capture',
+      argKey: 'lane',
+      batchKey: null,
+      facet: 'create',
+      notValue: 'observation',
+    });
+  });
+
+  /**
+   * The polarity is the whole point of the entry above, so pin the choice rather
+   * than just the values: `absent: true` would have been the simpler field, and
+   * it is WRONG here because the tool's schema defaults `lane` to `'improvement'`
+   * and every call site in capture.ts tests `!== 'observation'`, never presence.
+   * An explicit `lane: 'improvement'` is a real filing; this asserts it counts.
+   */
+  it('credits an EXPLICIT non-observation lane, not merely an absent one', () => {
+    expect(isPortfolioAct('improvements:capture', { title: 't', lane: 'improvement' })).toBe(true);
+    expect(isPortfolioAct('improvements:capture', { title: 't' })).toBe(true);
+    expect(isPortfolioAct('improvements:capture', { title: 't', lane: 'observation' })).toBe(false);
+  });
+
   it('names only tools that actually exist', () => {
     const phantom = PORTFOLIO_CONDITIONAL_ACTS.map((a) => a.tool).filter((t) => !DECLARED.has(t));
     expect(phantom).toEqual([]);
+  });
+
+  /**
+   * `notValue` inverts the predicate; the batch leg is EXISTENTIAL ("any element
+   * carries the key"). Negating an existential silently gives the wrong
+   * quantifier — a batch would score as an act whenever ANY element was not an
+   * observation — so the combination is refused rather than guessed at. No case
+   * needs it today; this is what stops one being added without the design work.
+   */
+  it('never combines notValue with a batch form — the quantifier would be wrong', () => {
+    const both = PORTFOLIO_CONDITIONAL_ACTS.filter((a) => a.notValue != null && a.batchKey != null);
+    expect(both).toEqual([]);
   });
 
   /**
@@ -372,6 +417,41 @@ describe('PORTFOLIO_CONDITIONAL_ACTS — the name says nothing, the arguments de
     expect(argsCarryConditionalKey({ items: [{ goal: 'g' }] }, { argKey: 'goal', batchKey: null })).toBe(
       false,
     );
+  });
+
+  it('argsSatisfyConditionalAct: dispatches on polarity, and PRESENCE is unchanged', () => {
+    const presence = { argKey: 'goal', batchKey: 'items' };
+    expect(argsSatisfyConditionalAct({ id: 'WI-1', goal: null }, presence)).toBe(true);
+    expect(argsSatisfyConditionalAct({ id: 'WI-1', title: 'retitled' }, presence)).toBe(false);
+
+    const notValue = { argKey: 'lane', batchKey: null, notValue: 'observation' };
+    // Absent ⇒ act (the default filing), the value ⇒ non-act, another value ⇒ act.
+    expect(argsSatisfyConditionalAct({ title: 't' }, notValue)).toBe(true);
+    expect(argsSatisfyConditionalAct({ title: 't', lane: 'observation' }, notValue)).toBe(false);
+    expect(argsSatisfyConditionalAct({ title: 't', lane: 'improvement' }, notValue)).toBe(true);
+    // An explicit null/undefined lane is not the documented opt-out value.
+    expect(argsSatisfyConditionalAct({ title: 't', lane: null }, notValue)).toBe(true);
+    // A non-string value is a mismatch, therefore an act — an unexpected shape
+    // is not the opt-out.
+    expect(argsSatisfyConditionalAct({ title: 't', lane: ['observation'] }, notValue)).toBe(true);
+
+    /**
+     * ⚠ THE CONSERVATIVE FLOOR, and under `notValue` it is load-bearing rather
+     * than a formality. "No `lane` key" is the ACT condition, so a missing or
+     * opaque args payload is indistinguishable from a real filing — without this
+     * guard a caller holding only a tool name would score a false BUSY on every
+     * capture, which is the direction that lets a reading-and-reporting steward
+     * pass. The name alone never counts, in EITHER polarity.
+     */
+    expect(argsSatisfyConditionalAct(undefined, notValue)).toBe(false);
+    expect(argsSatisfyConditionalAct(null, notValue)).toBe(false);
+    expect(argsSatisfyConditionalAct('observation', notValue)).toBe(false);
+    expect(argsSatisfyConditionalAct([{ lane: 'improvement' }], notValue)).toBe(false);
+  });
+
+  it('portfolioActFacet resolves a notValue act to CREATE, and the opt-out to null', () => {
+    expect(portfolioActFacet('improvements:capture', { title: 't' })).toBe('create');
+    expect(portfolioActFacet('improvements:capture', { title: 't', lane: 'observation' })).toBeNull();
   });
 
   it('isPortfolioAct / portfolioActFacet resolve a conditional act from its arguments', () => {
@@ -464,6 +544,7 @@ describe('portfolioActLedgerPredicate — the SQL leg is derived from the same c
       expect(q.params).toContain(act.tool);
       expect(q.params).toContain(act.argKey);
       if (act.batchKey != null) expect(q.params).toContain(act.batchKey);
+      if (act.notValue != null) expect(q.params).toContain(act.notValue);
     }
     // jsonb key-EXISTENCE, so a deliberate null (a release) still matches.
     expect(q.text).toMatch(/ti\.args_json \? \$\d+::text/);
@@ -471,6 +552,24 @@ describe('portfolioActLedgerPredicate — the SQL leg is derived from the same c
     expect(q.text).toMatch(/jsonb_typeof\(ti\.args_json -> \$\d+::text\) = 'array'/);
     expect(q.text).toMatch(/jsonb_array_elements\(ti\.args_json -> \$\d+::text\) el/);
     expect(q.text).toMatch(/WHERE el \? \$\d+::text/);
+
+    /**
+     * The notValue leg, pinned in both its halves because each fails silently in
+     * the false-IDLE direction if dropped:
+     *  • IS DISTINCT FROM — `->` yields SQL NULL for an absent key, and a bare
+     *    `<>` would make that whole leg NULL, scoring the DEFAULT filing (the
+     *    common case) as a non-act.
+     *  • jsonb_typeof(args_json) = 'object' — the SQL half of the conservative
+     *    floor; without it a NULL or scalar args_json has no key, so
+     *    `-> key IS DISTINCT FROM value` is TRUE and every argument-less row
+     *    scores as an act.
+     */
+    if (PORTFOLIO_CONDITIONAL_ACTS.some((a) => a.notValue != null)) {
+      expect(q.text).toMatch(
+        /\(ti\.args_json -> \$\d+::text\) IS DISTINCT FROM to_jsonb\(\$\d+::text\)/,
+      );
+      expect(q.text).toMatch(/jsonb_typeof\(ti\.args_json\) = 'object'/);
+    }
     // The legs are OR-ed: a name match OR an args match — never AND.
     const byArgsLegs = PORTFOLIO_CONDITIONAL_ACTS.length;
     expect((q.text.match(/ OR /g) ?? []).length).toBeGreaterThanOrEqual(byArgsLegs);

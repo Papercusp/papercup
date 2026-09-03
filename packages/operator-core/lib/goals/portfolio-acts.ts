@@ -184,6 +184,52 @@ export type PortfolioActFacet = 'create' | 'place' | 'steer';
  * goal, and releasing work changes who is on it exactly as adopting does (rule 3
  * — a judgement to stop is management, not its absence).
  *
+ * ── ⚠ THE SECOND POLARITY: `notValue` — the DEFAULT is the act ──────────────
+ *
+ * `improvements:capture` is the case (WI-2142888), and it forced this field
+ * because PRESENCE cannot express it at any value of `argKey`.
+ *
+ * `provenance-stamp.ts` already calls that verb "the door a goal steward files
+ * most of its findings through", and a non-observation capture mints a real
+ * work-item through `captureImprovement → createIssue` — "a subject that did not
+ * exist now does", the CREATE facet verbatim. It was never in either set, so a
+ * steward whose real output was captures scored `actsInWindow: 0`. Measured
+ * 2026-09-02: goal `work-on-everything-070565` created two real work-items in an
+ * 80-minute window while the instrument scored the growth at zero and the
+ * `goal-portfolio-idle` escalation fired 124 times. That is the false-IDLE
+ * direction this module's own docblock names as the one that hurts — and it is
+ * worse here than a noisy alarm, because idleness scores as FAIL (not `unknown`)
+ * on the live `goal-mode-e2e` rubric (WI-1740139), so the steward FAILS a graded
+ * criterion for work it actually did.
+ *
+ * The bare name still must NOT go in `PORTFOLIO_ACT_TOOLS`: most captures are
+ * `lane: 'observation'` turn-end reflections, and counting those would credit
+ * every reflection as portfolio growth — the false-BUSY direction that lets a
+ * reading-and-reporting steward pass. So it is conditional. But the polarity is
+ * INVERTED from the `work_items:update` case: a real filing OMITS `lane` (it
+ * defaults to `'improvement'`), and an observation is the one value that opts
+ * OUT. Presence of `lane` is therefore evidence of a NON-act exactly as often as
+ * an act, and no `argKey` under the presence rule can separate them.
+ *
+ * `notValue` states that directly: the call is an act UNLESS `argKey` is present
+ * AND equal to `notValue`. Absent ⇒ act (the default filing); a different value
+ * ⇒ act; the named value ⇒ not an act.
+ *
+ * ⚠ Chosen over a simpler `absent: true` deliberately. The tool's schema defaults
+ * `lane` to `'improvement'` and every call site in `capture.ts` tests
+ * `lane === 'observation'` / `!== 'observation'` — never presence — so an
+ * explicit `lane: 'improvement'` is a REAL filing that `absent: true` would
+ * silently score as idle, re-opening the same false-IDLE hole one value over.
+ * (Live ledger, 12h to 2026-09-03T00:20Z: 158 calls with `lane` absent, 23 with
+ * `'observation'`, 0 explicit `'improvement'` — so the hole is currently unhit,
+ * which is exactly when it is cheapest to close and hardest to notice.)
+ *
+ * ⚠ `notValue` and `batchKey` are MUTUALLY EXCLUSIVE, pinned by the test. The
+ * batch leg is EXISTENTIAL ("any element carries the key"); negating a predicate
+ * flips the correct quantifier to universal, and silently keeping the existential
+ * one would count a batch as an act whenever ANY element was not an observation.
+ * No case needs the combination, so it is refused rather than guessed at.
+ *
  * ⚠ Deliberately NOT spelled into PORTFOLIO_ACT_TOOLS. Putting the bare name there
  * would count every retitle as placement — the false-BUSY direction, which is the
  * one that lets a reading-and-reporting steward pass. The test pins that no
@@ -198,16 +244,43 @@ export type PortfolioActFacet = 'create' | 'place' | 'steer';
 export interface PortfolioConditionalAct {
   /** Canonical tool name, exactly as the ledger stores it. */
   readonly tool: string;
-  /** Top-level argument whose PRESENCE (any value, null included) makes the call an act. */
+  /**
+   * The deciding argument.
+   *
+   * Under the default PRESENCE polarity its presence (any value, null included)
+   * makes the call an act. Under `notValue` its presence-with-that-value is what
+   * makes the call a NON-act.
+   */
   readonly argKey: string;
-  /** Batch-form array argument whose elements may carry `argKey` instead; null when the tool has no batch form. */
+  /**
+   * Batch-form array argument whose elements may carry `argKey` instead; null
+   * when the tool has no batch form. Must be null when `notValue` is set — see
+   * the mutual-exclusion note in the docblock above.
+   */
   readonly batchKey: string | null;
   /** The facet such an invocation lands in. */
   readonly facet: PortfolioActFacet;
+  /**
+   * INVERTS the polarity: the call is an act UNLESS `argKey` is present and
+   * strictly equal to this value. Omit for the default presence rule.
+   *
+   * Set only when the ACT is the default and one named value opts out
+   * (`improvements:capture` + `lane: 'observation'`). Comparison is on the raw
+   * string value, so a non-string `argKey` value is a mismatch and therefore an
+   * act — deliberately: an unexpected shape is not the documented opt-out.
+   */
+  readonly notValue?: string;
 }
 
 export const PORTFOLIO_CONDITIONAL_ACTS: readonly PortfolioConditionalAct[] = Object.freeze([
   { tool: 'work_items:update', argKey: 'goal', batchKey: 'items', facet: 'place' },
+  {
+    tool: 'improvements:capture',
+    argKey: 'lane',
+    batchKey: null,
+    facet: 'create',
+    notValue: 'observation',
+  },
 ]);
 
 const FACET_BY_TOOL: ReadonlyMap<string, PortfolioActFacet> = new Map<string, PortfolioActFacet>([
@@ -243,9 +316,31 @@ export function argsCarryConditionalKey(
   );
 }
 
+/**
+ * PURE: do these arguments make this invocation an act, under EITHER polarity?
+ *
+ * The polarity-aware entry point. `argsCarryConditionalKey` above stays the
+ * presence primitive it is named for; this dispatches on `notValue`.
+ *
+ * ⚠ The conservative floor holds in BOTH polarities: args that are not an object
+ * are a measured NON-act. Under `notValue` that is the load-bearing case rather
+ * than a formality — "no `lane` key" is the ACT condition, and a missing/opaque
+ * args payload is indistinguishable from it, so without this guard a caller
+ * holding only a tool name would score a false BUSY on every capture. Same
+ * reasoning as `isPortfolioAct`: the name alone never counts.
+ */
+export function argsSatisfyConditionalAct(
+  args: unknown,
+  act: Pick<PortfolioConditionalAct, 'argKey' | 'batchKey' | 'notValue'>,
+): boolean {
+  if (!isRecord(args)) return false;
+  if (act.notValue == null) return argsCarryConditionalKey(args, act);
+  return args[act.argKey] !== act.notValue;
+}
+
 function conditionalActFor(toolName: string, args: unknown): PortfolioConditionalAct | null {
   for (const act of PORTFOLIO_CONDITIONAL_ACTS) {
-    if (act.tool === toolName && argsCarryConditionalKey(args, act)) return act;
+    if (act.tool === toolName && argsSatisfyConditionalAct(args, act)) return act;
   }
   return null;
 }
