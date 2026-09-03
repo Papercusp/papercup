@@ -9,6 +9,15 @@
  * filesystem, database, or process work.
  */
 
+import {
+  applyRepairLegMeasurements,
+  parseRepairLegStates,
+  summarizeRepairLegs,
+  type FrozenRepairLegState,
+  type RepairLegMeasurement,
+  type RepairLegShrinkSummary,
+} from './repair-leg-lifecycle';
+
 export const FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION = 3 as const;
 export const FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE = 'repair-staging-mismatch';
 
@@ -160,6 +169,19 @@ export interface FrozenCandidateRepairQueue {
    * cycle that failed to converge.
    */
   convergenceRounds?: readonly FrozenRepairConvergenceRound[];
+  /**
+   * P-002 — the NON-TEST gate legs (lint / perf / desktop / delta) as first-class members of
+   * this cycle, with the same lifecycle a test file has: named, admitted by their own
+   * measured result, and tracked as they resolve.
+   *
+   * A leg CANNOT live in `failingTests` and work: everything that correlates that list to
+   * repair work correlates BY PATH, and a leg id is not a path. See `./repair-leg-lifecycle`
+   * for the correlation-key ruling (D-005).
+   *
+   * Optional and additive, exactly like `convergenceRounds`: a legacy queue parses with it
+   * absent, which reads as "no leg measurement recorded" — never as "no legs are failing".
+   */
+  legs?: readonly FrozenRepairLegState[];
 }
 
 /**
@@ -953,6 +975,9 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
    * the strictly smaller failure, and it is visible (rounds read as absent).
    */
   const convergenceRounds = parseConvergenceRounds(row.convergenceRounds);
+  // P-002 legs are observability on the same terms as rounds above: malformed entries are
+  // dropped individually, never failing the parse of a live queue.
+  const legs = parseRepairLegStates(row.legs);
   const blockedReason =
     row.blockedReason === 'attempts-exhausted' || row.blockedReason === 'wall-clock-exhausted'
       ? row.blockedReason
@@ -980,6 +1005,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     ...(blockedReason ? { blockedReason } : {}),
     ...(dispatchReservation ? { dispatchReservation } : {}),
     ...(convergenceRounds.length > 0 ? { convergenceRounds } : {}),
+    ...(legs.length > 0 ? { legs } : {}),
     failingTests: boundedFailures(row.failingTests as string[]),
   };
 }
@@ -1483,6 +1509,59 @@ export function markFrozenRepairVerificationRed(
     failingTests: boundedFailures(input.failingTests ?? []),
   };
 }
+
+/**
+ * P-002 — fold one tick's NON-TEST leg measurements into the queue.
+ *
+ * A SEPARATE seam from the red/green markers on purpose. Those take a flat `failingTests`
+ * list, which cannot say which entry is a leg or whether a leg passed; a leg's lifecycle is
+ * moved only by that leg's own measured result (D-005). Keeping it separate also means no
+ * existing caller signature changes, so nothing is stranded by adding legs.
+ *
+ * The round is read from the convergence history so leg rounds and convergence rounds are
+ * the SAME rounds — two shrink series over one cycle, never two clocks.
+ *
+ * ⚠ Legs absent from `measurements` are left exactly as they are. This function never
+ * removes a leg and never infers a pass from silence.
+ */
+export function recordFrozenRepairLegMeasurement(
+  queue: FrozenCandidateRepairQueue,
+  input: { measurements: readonly RepairLegMeasurement[]; head: string; nowMs: number },
+): FrozenCandidateRepairQueue {
+  assertTimestamp(input.nowMs, 'nowMs');
+  if (!nonBlank(input.head)) throw new Error('head is required to record a leg measurement');
+  const rounds = queue.convergenceRounds ?? [];
+  const round = rounds.reduce((max, entry) => (entry.round > max ? entry.round : max), 0) || 1;
+  const legs = applyRepairLegMeasurements(queue.legs, {
+    measurements: input.measurements,
+    head: input.head,
+    round,
+    nowMs: input.nowMs,
+  });
+  if (legs.length === 0) return queue;
+  return { ...queue, legs, updatedAtMs: input.nowMs };
+}
+
+/**
+ * P-002 — the leg shrink reading for a queue. Re-exported through this module so a caller
+ * holding a queue never has to know which file the lifecycle lives in.
+ */
+export function summarizeFrozenRepairLegs(queue: FrozenCandidateRepairQueue | null): RepairLegShrinkSummary {
+  return summarizeRepairLegs(queue?.legs);
+}
+
+export {
+  applyRepairLegMeasurements,
+  parseRepairLegStates,
+  partitionRepairSignatures,
+  summarizeRepairLegs,
+  FROZEN_REPAIR_LEG_CAP,
+  type FrozenRepairLegState,
+  type RepairLegMeasurement,
+  type RepairLegShrinkSummary,
+  type RepairLegStatus,
+  type RepairSignaturePartition,
+} from './repair-leg-lifecycle';
 
 /** The repair head passed its focused fixer work, but canonical staging contains a
  * content-equivalent repair with different patch context. The exact reverse-apply guard

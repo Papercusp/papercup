@@ -25,6 +25,8 @@ import {
   summarizeFrozenRepairConvergence,
   buildFrozenRepairConvergenceGateHealth,
   parseFrozenRepairConvergence,
+  projectFrozenRepairConvergenceCell,
+  projectFrozenRepairConvergenceScope,
   shouldConvergeRepairHead,
   shouldResyncRepairWorktree,
   type FrozenCandidateRepairQueue,
@@ -1604,6 +1606,116 @@ describe('P-013 / D-007 — the gate_health.convergence PROJECTION', () => {
     expect(parsed).not.toBeNull();
     expect(parsed!.converging).toBeNull();
     expect(parsed!.admissionRounds).toBe(1);
+  });
+});
+
+describe('P-006 / D-004 — failingNow publishes WHAT it counts, beside itself', () => {
+  /**
+   * PERMANENT deliberately-wrong control (CLAUDE.md: prove falsifiability without mutating the
+   * shared tree). This is the "scope" an implementer writes when they read D-004 as asking for a
+   * disclaimer: a static sentence with no subject and no vintage. It reads reassuring and settles
+   * nothing — a reader still cannot tell WHICH sha or WHEN, so they can still difference this
+   * count against repairTickLegs and get a number. Every assertion below must REJECT it.
+   */
+  const naiveScope = {
+    population: 'queue-admitted-failing-set' as const,
+    subject: null,
+    admittedAtOrBeforeMs: null,
+    admittedAtOrAfterMs: null,
+    notComparableTo: [] as readonly { reading: string; why: string }[],
+    summary: 'Counts may vary. Compare with care.',
+  };
+
+  function twoRoundQueue(): FrozenCandidateRepairQueue {
+    return parseFrozenCandidateRepairQueue({
+      ...fresh(),
+      failingTests: ['lib/a.test.ts'],
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: 5, atMs: T0 },
+        { round: 2, head: C1, failingCount: 1, atMs: T0 + 1_000 },
+      ],
+    })!;
+  }
+
+  it('CALIBRATION: the measured projection still carries failingNow itself, unchanged', () => {
+    // If this fails, the assertions below prove nothing about scope — they would be passing or
+    // failing for the wrong reason.
+    const record = buildFrozenRepairConvergenceGateHealth(twoRoundQueue(), T0 + 2_000);
+    const cell = projectFrozenRepairConvergenceCell(record);
+    expect(cell.failingNow).toBe(1);
+    expect(cell.unmeasured).toBe(false);
+  });
+
+  it('LOAD-BEARING: the scope names the SUBJECT sha — the naive control cannot', () => {
+    const queue = twoRoundQueue();
+    const record = buildFrozenRepairConvergenceGateHealth(queue, T0 + 2_000);
+    const { scope } = projectFrozenRepairConvergenceCell(record);
+    expect(scope.subject).toBe(queue.repairHead);
+    expect(scope.summary).toContain(queue.repairHead.slice(0, 12));
+    // The control: a count with no subject describes whatever sha the reader has in mind.
+    expect(naiveScope.subject).toBeNull();
+    expect(naiveScope.summary).not.toContain(queue.repairHead.slice(0, 12));
+  });
+
+  it('LOAD-BEARING: the scope BOUNDS the admission window instead of inventing an instant', () => {
+    const record = buildFrozenRepairConvergenceGateHealth(twoRoundQueue(), T0 + 9_000);
+    const { scope } = projectFrozenRepairConvergenceCell(record);
+    // The queue's own updatedAtMs is NOT carried in the stored record, so the honest answer is a
+    // bound, not a timestamp. Both ends come from fields the record really has.
+    expect(scope.admittedAtOrBeforeMs).toBe(record.observedAtMs);
+    expect(scope.admittedAtOrAfterMs).toBe(record.openedAtMs);
+    expect(scope.admittedAtOrAfterMs!).toBeLessThanOrEqual(scope.admittedAtOrBeforeMs!);
+    expect(naiveScope.admittedAtOrBeforeMs).toBeNull();
+  });
+
+  it('LOAD-BEARING: the scope NAMES repairTickLegs.failingSignatures as incomparable', () => {
+    // This is the exact 1-vs-2 disagreement that opened P-006. A scope that does not name the
+    // sibling reading leaves the subtraction available.
+    const record = buildFrozenRepairConvergenceGateHealth(twoRoundQueue(), T0 + 2_000);
+    const { scope } = projectFrozenRepairConvergenceCell(record);
+    const named = scope.notComparableTo.map((entry) => entry.reading);
+    expect(named).toContain('gate_health.repairTickLegs.failingSignatures');
+    for (const entry of scope.notComparableTo) expect(entry.why.length).toBeGreaterThan(40);
+    expect(naiveScope.notComparableTo).toHaveLength(0);
+  });
+
+  it('LOAD-BEARING: the UNMEASURED branch carries a scope too, and it does not read as zero', () => {
+    // The incomparability is structural, so it holds when there is no record at all. An
+    // unmeasured cell whose scope is missing invites "nothing counted" to be read as
+    // "nothing failing" — the exact false all-clear this plan exists to end.
+    const cell = projectFrozenRepairConvergenceCell(null);
+    expect(cell.unmeasured).toBe(true);
+    expect(cell.failingNow).toBeNull();
+    expect(cell.scope.population).toBe('nothing-counted');
+    expect(cell.scope.summary).toContain('not zero');
+    expect(cell.scope.notComparableTo.map((e) => e.reading)).toContain(
+      'gate_health.repairTickLegs.failingSignatures',
+    );
+  });
+
+  it('LOAD-BEARING: scope is DERIVED, never STORED — a stored blob without it still parses', () => {
+    // D-004's hard constraint. If a later change persists the scope as a required field,
+    // parseFrozenRepairConvergence rejects every pre-existing row and the cell silently drops to
+    // unmeasured. This test goes red for exactly that drift, in both directions.
+    const record = buildFrozenRepairConvergenceGateHealth(twoRoundQueue(), T0 + 2_000);
+    expect(record).not.toHaveProperty('scope');
+    const stored = JSON.parse(JSON.stringify(record)) as Record<string, unknown>;
+    expect(stored.scope).toBeUndefined();
+    // The pre-existing-row case: a blob written before this change must still be readable, and
+    // the reader must still get a scope for it.
+    const parsed = parseFrozenRepairConvergence(stored);
+    expect(parsed).not.toBeNull();
+    expect(projectFrozenRepairConvergenceCell(parsed).scope.subject).toBe(record.repairHead);
+  });
+
+  it('the scope is a PURE function of the record — same record, same scope', () => {
+    const record = buildFrozenRepairConvergenceGateHealth(twoRoundQueue(), T0 + 2_000);
+    expect(projectFrozenRepairConvergenceScope(record)).toEqual(
+      projectFrozenRepairConvergenceCell(record).scope,
+    );
+    expect(projectFrozenRepairConvergenceScope(null)).toEqual(
+      projectFrozenRepairConvergenceCell(null).scope,
+    );
   });
 });
 
