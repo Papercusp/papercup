@@ -1,0 +1,434 @@
+/**
+ * P-001 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03 — D-002, D-006, D-010):
+ * the ONE door through which a fix enters a frozen candidate's judged lineage.
+ *
+ * An ADMISSION is a plumbing commit on top of the queue's current `repairHead` whose tree is
+ * repairHead's tree with EXACTLY the named paths replaced by the named source's entries —
+ * a deletion when the path is absent at the source, the gitlink at the source pin for a
+ * submodule path. It is built with `read-tree` / `update-index --cacheinfo` / `write-tree` /
+ * `commit-tree -p repairHead` in a scratch index (the shared checkout's working tree and
+ * real index are never touched), and it is PROVED before it is published: `diff-tree
+ * --name-only repairHead..new` must be a non-empty SUBSET of the allowlist, or the commit
+ * is left unreferenced and the call refuses. The published lineage lives on the gate-owned
+ * ref `refs/papercusp/frozen/<candidate>`, advanced by compare-and-swap so two admissions
+ * cannot race, and every admission is returned as a ledger entry for the queue row.
+ *
+ * Nothing here reads the integration branch by name, fast-forwards, or merges. The only
+ * inputs are a repairHead, a source commit and a path list. Under D-010 the source is the
+ * shared checkout's `staging` (the agent fixed there; git-sync committed it) — there is one
+ * route — but the primitive is source-agnostic: any commit in the same object store works,
+ * which is what lets P-020 admit a synthesized hunk-exact blob through the same door.
+ *
+ * WHY a subset and not set-equality (the Aug-27 D-002 wording said "equals"): the STRAY
+ * direction is the only unsafe one. An allowlisted path whose source entry already equals
+ * repairHead's is reported under `unchanged` and the admission is idempotent; refusing it
+ * would make a re-run after a partial failure impossible. A diff naming a path OUTSIDE the
+ * allowlist is refused, always — that is the invariant the stray-file control in the test
+ * file falsifies.
+ */
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { FrozenRepairAdmission } from './frozen-candidate-repair-queue';
+
+export const FROZEN_LINEAGE_REF_PREFIX = 'refs/papercusp/frozen/';
+
+/** The identity every admission commit carries. It is the gate's, never the agent's: the
+ * agent is recorded in the ledger entry and the commit message, where attribution belongs. */
+export const ADMISSION_GIT_IDENTITY = Object.freeze({
+  name: 'Papercusp Green Checkpoint',
+  email: 'green-checkpoint@papercusp.local',
+});
+
+const SHA_RE = /^[0-9a-f]{40,64}$/;
+
+/** The gate-owned ref that carries a frozen candidate's judged lineage. */
+export function frozenLineageRef(candidate: string): string {
+  if (!SHA_RE.test(candidate)) {
+    throw new Error(`frozenLineageRef: candidate must be a full sha, got ${JSON.stringify(candidate)}`);
+  }
+  return `${FROZEN_LINEAGE_REF_PREFIX}${candidate}`;
+}
+
+export interface AdmissionGitResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/** Every git call goes through one runner so a test can observe or sabotage a step. */
+export type AdmissionGitRunner = (
+  argv: readonly string[],
+  opts: { cwd: string; env?: NodeJS.ProcessEnv },
+) => AdmissionGitResult;
+
+export const realAdmissionGit: AdmissionGitRunner = (argv, opts) => {
+  const r = spawnSync('git', [...argv], {
+    cwd: opts.cwd,
+    env: opts.env ?? process.env,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+};
+
+export type AdmissionEntryKind = 'blob' | 'symlink' | 'gitlink' | 'absent';
+
+export interface AdmissionTreeEntry {
+  path: string;
+  kind: AdmissionEntryKind;
+  /** Octal mode string as `ls-tree` prints it (100644 / 100755 / 120000 / 160000), null when absent. */
+  mode: string | null;
+  sha: string | null;
+}
+
+export type AdmissionRefusalCode =
+  | 'invalid-paths'
+  | 'repair-head-unresolvable'
+  | 'source-unresolvable'
+  | 'nothing-to-admit'
+  | 'stray-paths'
+  | 'lineage-ref-moved'
+  | 'git-failed';
+
+export interface AdmissionRefusal {
+  ok: false;
+  code: AdmissionRefusalCode;
+  detail: string;
+  /** stray-paths: what the built commit touched OUTSIDE the allowlist. Never empty for that code. */
+  stray?: string[];
+  /** invalid-paths: the offending inputs, verbatim. */
+  paths?: string[];
+  /** git-failed: the plumbing step that failed. */
+  step?: string;
+}
+
+export interface AdmissionSuccess {
+  ok: true;
+  commit: string;
+  tree: string;
+  /** The proved diff-tree name set — identical to `entry.paths`. */
+  diff: string[];
+  lineageRef: string;
+  entry: FrozenRepairAdmission;
+}
+
+export type AdmissionOutcome = AdmissionSuccess | AdmissionRefusal;
+
+/**
+ * Repo-relative, forward-slash, no `.`/`..` segments, no leading slash, no trailing slash.
+ * Returns null for anything that does not normalize to that shape — the caller refuses the
+ * whole call rather than admitting a best guess.
+ */
+export function normalizeAdmissionPath(raw: string): string | null {
+  if (typeof raw !== 'string') return null;
+  let p = raw.trim();
+  if (!p || p.includes('\\') || p.includes('\0')) return null;
+  if (p.startsWith('/')) return null;
+  p = p.replace(/\/{2,}/g, '/');
+  while (p.startsWith('./')) p = p.slice(2);
+  if (p.endsWith('/')) return null;
+  const segments = p.split('/');
+  if (segments.some((s) => s === '' || s === '.' || s === '..')) return null;
+  return p;
+}
+
+export function validateAdmissionPaths(
+  paths: readonly string[],
+): { ok: true; paths: string[] } | { ok: false; invalid: string[] } {
+  const invalid: string[] = [];
+  const out = new Set<string>();
+  for (const raw of paths) {
+    const p = normalizeAdmissionPath(raw);
+    if (p === null) invalid.push(String(raw));
+    else out.add(p);
+  }
+  if (invalid.length > 0) return { ok: false, invalid };
+  if (out.size === 0) return { ok: false, invalid: [] };
+  return { ok: true, paths: [...out].sort() };
+}
+
+/**
+ * The proof. Pure so it can be tested without a repository and so the stray-file control
+ * in the test file can falsify exactly this rule: every path the built commit changed must
+ * be in the allowlist; an allowlisted path the commit did not change is `unchanged`.
+ */
+export function proveAdmissionDiff(input: {
+  diff: readonly string[];
+  allowlist: readonly string[];
+}): { ok: true; admitted: string[]; unchanged: string[] } | { ok: false; stray: string[] } {
+  const allow = new Set(input.allowlist);
+  const stray = [...new Set(input.diff.filter((p) => !allow.has(p)))].sort();
+  if (stray.length > 0) return { ok: false, stray };
+  const admitted = [...new Set(input.diff)].sort();
+  const changed = new Set(admitted);
+  const unchanged = input.allowlist.filter((p) => !changed.has(p)).sort();
+  return { ok: true, admitted, unchanged };
+}
+
+function buildAdmissionMessage(input: {
+  candidate: string;
+  repairHead: string;
+  sourceRef: string;
+  sourceSha: string;
+  actor: string;
+  reason?: string;
+  paths: readonly string[];
+}): string {
+  const lines = [
+    `admit ${input.paths.length} path(s) onto frozen lineage ${input.candidate.slice(0, 12)}`,
+    '',
+    `candidate: ${input.candidate}`,
+    `repairHead: ${input.repairHead}`,
+    `source: ${input.sourceRef}@${input.sourceSha}`,
+    `actor: ${input.actor}`,
+    ...(input.reason ? [`reason: ${input.reason.replace(/\s+/g, ' ').trim()}`] : []),
+    'paths:',
+    ...input.paths.map((p) => `- ${p}`),
+  ];
+  return lines.join('\n') + '\n';
+}
+
+export interface AdmitPathsInput {
+  /** Repository root that holds BOTH repairHead and the source commit (they share the object store). */
+  root: string;
+  /** The immutable frozen candidate — names the lineage ref. */
+  candidate: string;
+  /** The queue's current repairHead: the parent of the admission commit. */
+  repairHead: string;
+  /** Repo-relative paths to admit. Refused when empty or malformed. */
+  paths: readonly string[];
+  /** The commit (any ref/sha in `root`) whose entries for `paths` are admitted. */
+  source: { ref: string };
+  /** Who admits — recorded in the ledger entry and the commit message. */
+  actor: string;
+  reason?: string;
+  nowMs: number;
+  git?: AdmissionGitRunner;
+}
+
+/**
+ * Build, prove and publish one admission. Synchronous on purpose: every step is a cheap
+ * plumbing call, the caller is a tool handler or the gate, and a sync sequence cannot be
+ * interleaved with a second admission in the same process.
+ */
+export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutcome {
+  const git = input.git ?? realAdmissionGit;
+  if (!Number.isFinite(input.nowMs) || input.nowMs <= 0) {
+    throw new Error('admitPathsOntoRepairHead: nowMs must be a positive timestamp');
+  }
+  if (typeof input.actor !== 'string' || !input.actor.trim()) {
+    throw new Error('admitPathsOntoRepairHead: actor must be non-empty');
+  }
+  const validated = validateAdmissionPaths(input.paths);
+  if (!validated.ok) {
+    return {
+      ok: false,
+      code: 'invalid-paths',
+      detail:
+        validated.invalid.length === 0
+          ? 'no paths were named; an admission is by explicit path allowlist'
+          : `not repo-relative normal paths: ${validated.invalid.map((p) => JSON.stringify(p)).join(', ')}`,
+      paths: validated.invalid,
+    };
+  }
+  const allowlist = validated.paths;
+
+  const run = (argv: readonly string[], env?: NodeJS.ProcessEnv): AdmissionGitResult =>
+    git(argv, { cwd: input.root, env: env ? { ...process.env, ...env } : undefined });
+  const revParse = (ref: string): string | null => {
+    const r = run(['rev-parse', '--verify', '--quiet', ref]);
+    const out = r.stdout.trim();
+    return r.status === 0 && SHA_RE.test(out) ? out : null;
+  };
+  const gitFailed = (step: string, r: AdmissionGitResult): AdmissionRefusal => ({
+    ok: false,
+    code: 'git-failed',
+    step,
+    detail: `${step} exited ${r.status}: ${(r.stderr || r.stdout).trim().slice(0, 400)}`,
+  });
+
+  const repairHeadSha = revParse(`${input.repairHead}^{commit}`);
+  if (!repairHeadSha) {
+    return {
+      ok: false,
+      code: 'repair-head-unresolvable',
+      detail: `repairHead ${input.repairHead} does not resolve to a commit in ${input.root}`,
+    };
+  }
+  const repairHeadTree = revParse(`${repairHeadSha}^{tree}`);
+  if (!repairHeadTree) return gitFailed('rev-parse repairHead^{tree}', run(['rev-parse', `${repairHeadSha}^{tree}`]));
+  const sourceSha = revParse(`${input.source.ref}^{commit}`);
+  if (!sourceSha) {
+    return {
+      ok: false,
+      code: 'source-unresolvable',
+      detail: `source ${JSON.stringify(input.source.ref)} does not resolve to a commit in ${input.root}`,
+    };
+  }
+
+  const lsTree = (
+    commit: string,
+    path: string,
+  ): { ok: true; entry: AdmissionTreeEntry } | { ok: false; refusal: AdmissionRefusal } => {
+    const r = run(['ls-tree', '-z', commit, '--', path]);
+    if (r.status !== 0) return { ok: false, refusal: gitFailed(`ls-tree ${commit.slice(0, 12)} -- ${path}`, r) };
+    const line = r.stdout.split('\0').find((l) => l.endsWith(`\t${path}`));
+    if (!line) return { ok: true, entry: { path, kind: 'absent', mode: null, sha: null } };
+    const m = /^(\d{6}) (blob|tree|commit) ([0-9a-f]{40,64})\t(.*)$/.exec(line);
+    if (!m) {
+      return {
+        ok: false,
+        refusal: gitFailed(`ls-tree ${commit.slice(0, 12)} -- ${path}`, { ...r, stderr: `unparseable entry ${JSON.stringify(line)}` }),
+      };
+    }
+    if (m[2] === 'tree') {
+      return {
+        ok: false,
+        refusal: {
+          ok: false,
+          code: 'invalid-paths',
+          detail: `${path} is a directory at ${commit.slice(0, 12)}; admit the files inside it by name`,
+          paths: [path],
+        },
+      };
+    }
+    const kind: AdmissionEntryKind = m[2] === 'commit' ? 'gitlink' : m[1] === '120000' ? 'symlink' : 'blob';
+    return { ok: true, entry: { path, kind, mode: m[1], sha: m[3] } };
+  };
+
+  const atSource = new Map<string, AdmissionTreeEntry>();
+  const atHead = new Map<string, AdmissionTreeEntry>();
+  for (const path of allowlist) {
+    const s = lsTree(sourceSha, path);
+    if (!s.ok) return s.refusal;
+    const h = lsTree(repairHeadSha, path);
+    if (!h.ok) return h.refusal;
+    atSource.set(path, s.entry);
+    atHead.set(path, h.entry);
+  }
+
+  const scratch = mkdtempSync(join(tmpdir(), 'papercusp-admit-'));
+  const indexEnv: NodeJS.ProcessEnv = { GIT_INDEX_FILE: join(scratch, 'index') };
+  try {
+    const rt = run(['read-tree', repairHeadSha], indexEnv);
+    if (rt.status !== 0) return gitFailed('read-tree', rt);
+    for (const path of allowlist) {
+      const s = atSource.get(path)!;
+      const h = atHead.get(path)!;
+      if (s.kind === 'absent') {
+        if (h.kind === 'absent') continue; // absent on both sides: nothing to do, reported as unchanged
+        const rm = run(['update-index', '--force-remove', '--', path], indexEnv);
+        if (rm.status !== 0) return gitFailed(`update-index --force-remove ${path}`, rm);
+        continue;
+      }
+      const ui = run(['update-index', '--add', '--replace', '--cacheinfo', `${s.mode},${s.sha},${path}`], indexEnv);
+      if (ui.status !== 0) return gitFailed(`update-index --cacheinfo ${path}`, ui);
+    }
+    const wt = run(['write-tree'], indexEnv);
+    const tree = wt.stdout.trim();
+    if (wt.status !== 0 || !SHA_RE.test(tree)) return gitFailed('write-tree', wt);
+    if (tree === repairHeadTree) {
+      return {
+        ok: false,
+        code: 'nothing-to-admit',
+        detail:
+          `every named path already has its ${input.source.ref} content on repairHead ` +
+          `${repairHeadSha.slice(0, 12)} — nothing to admit (unchanged: ${allowlist.join(', ')})`,
+      };
+    }
+
+    const message = buildAdmissionMessage({
+      candidate: input.candidate,
+      repairHead: repairHeadSha,
+      sourceRef: input.source.ref,
+      sourceSha,
+      actor: input.actor,
+      reason: input.reason,
+      paths: allowlist,
+    });
+    const identityEnv: NodeJS.ProcessEnv = {
+      GIT_AUTHOR_NAME: ADMISSION_GIT_IDENTITY.name,
+      GIT_AUTHOR_EMAIL: ADMISSION_GIT_IDENTITY.email,
+      GIT_COMMITTER_NAME: ADMISSION_GIT_IDENTITY.name,
+      GIT_COMMITTER_EMAIL: ADMISSION_GIT_IDENTITY.email,
+    };
+    const ct = run(['commit-tree', tree, '-p', repairHeadSha, '-m', message], identityEnv);
+    const commit = ct.stdout.trim();
+    if (ct.status !== 0 || !SHA_RE.test(commit)) return gitFailed('commit-tree', ct);
+
+    // THE PROOF. Ask git what the commit actually changed, then hold it against the allowlist.
+    // Everything above could be wrong (a mis-parsed mode, a runner that adds an extra entry,
+    // a future edit to the loop) and this still refuses a stray path.
+    const dt = run(['diff-tree', '-r', '--name-only', '--no-commit-id', '-z', repairHeadSha, commit]);
+    if (dt.status !== 0) return gitFailed('diff-tree proof', dt);
+    const diff = dt.stdout.split('\0').filter(Boolean);
+    const proof = proveAdmissionDiff({ diff, allowlist });
+    if (!proof.ok) {
+      return {
+        ok: false,
+        code: 'stray-paths',
+        stray: proof.stray,
+        detail:
+          `REFUSED: the built admission ${commit.slice(0, 12)} touches ${proof.stray.length} path(s) outside ` +
+          `the allowlist (${proof.stray.join(', ')}); it was NOT published and repairHead did not move`,
+      };
+    }
+    if (proof.admitted.length === 0) {
+      return { ok: false, code: 'nothing-to-admit', detail: 'the proved diff is empty' };
+    }
+    const parent = revParse(`${commit}^`);
+    if (parent !== repairHeadSha) {
+      return gitFailed('parent proof', { status: 1, stdout: '', stderr: `parent ${parent} != repairHead ${repairHeadSha}` });
+    }
+
+    // PUBLISH by compare-and-swap on the gate-owned lineage ref. The ref may not exist yet
+    // (first admission on a queue) — creation asserts absence. If it exists it must equal the
+    // repairHead the caller admitted onto; anything else means the lineage advanced under us.
+    const lineageRef = frozenLineageRef(input.candidate);
+    const current = revParse(lineageRef);
+    if (current !== null && current !== repairHeadSha) {
+      return {
+        ok: false,
+        code: 'lineage-ref-moved',
+        detail:
+          `${lineageRef} is at ${current.slice(0, 12)} but this admission was built onto ` +
+          `${repairHeadSha.slice(0, 12)}: the lineage advanced under you — re-read the queue and admit ` +
+          `onto its current repairHead`,
+      };
+    }
+    const ur = run([
+      'update-ref',
+      '-m',
+      `admit ${proof.admitted.length} path(s) by ${input.actor}`,
+      lineageRef,
+      commit,
+      current ?? '0'.repeat(repairHeadSha.length),
+    ]);
+    if (ur.status !== 0) {
+      return {
+        ok: false,
+        code: 'lineage-ref-moved',
+        detail: `update-ref ${lineageRef} refused (${(ur.stderr || ur.stdout).trim().slice(0, 300)}) — a concurrent admission won; re-read the queue and retry`,
+      };
+    }
+
+    const blobs: Record<string, string | null> = {};
+    for (const path of allowlist) blobs[path] = atSource.get(path)!.sha;
+    const entry: FrozenRepairAdmission = {
+      atMs: input.nowMs,
+      actor: input.actor.trim(),
+      source: { ref: input.source.ref, sha: sourceSha },
+      fromRepairHead: repairHeadSha,
+      toRepairHead: commit,
+      paths: proof.admitted,
+      unchanged: proof.unchanged,
+      blobs,
+      ...(input.reason ? { reason: input.reason } : {}),
+    };
+    return { ok: true, commit, tree, diff: proof.admitted, lineageRef, entry };
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
