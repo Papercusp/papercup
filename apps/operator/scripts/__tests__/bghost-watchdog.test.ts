@@ -1514,7 +1514,11 @@ describe('seed-cut quiesce awareness', () => {
   let markerBasename: string;
 
   beforeAll(async () => {
-    const mod = await import('../bghost-watchdog.mjs');
+    // Same PROBE_SCRIPT indirection as the top-level import: a bare '../bghost-watchdog.mjs'
+    // literal here is TS7016 at the green gate (no .d.mts, no directive — the
+    // check-unenrolled-mjs-imports ratchet reds on it), and it also pinned this block to the
+    // real module during a copy-out mutation probe.
+    const mod = await import(/* @vite-ignore */ process.env.PROBE_SCRIPT || '../bghost-watchdog.mjs');
     seedCutQuiesce = (mod as { seedCutQuiesce: typeof seedCutQuiesce }).seedCutQuiesce;
     markerBasename = (mod as { QUIESCE_MARKER_BASENAME: string }).QUIESCE_MARKER_BASENAME;
   });
