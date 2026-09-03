@@ -483,6 +483,111 @@ function cargoArtifactCandidates(root) {
 }
 
 /**
+ * A `/build/<crate>-<16-hex-hash>/` segment — the shape of a build-script dir
+ * inside SOME cargo target directory. Used to tell "a path into a cargo target"
+ * from any other absolute path a build script may mention.
+ */
+const CARGO_BUILD_DIR_SEGMENT = /\/build\/[A-Za-z0-9_.-]+-[0-9a-f]{16}(?:\/|$)/;
+
+/**
+ * Build-script outputs whose replayed metadata points into ANOTHER cargo target
+ * dir that no longer exists — the residue of MOVING a target dir (2026-09-03,
+ * WI-212675: ~/.cargo-target → /mnt/data/cargo-target). Cargo caches each build
+ * script's `output` file and replays its `cargo:KEY=VALUE` lines to dependents
+ * WITHOUT re-running the script while its fingerprint is fresh, and that
+ * fingerprint does not cover the target dir's own location. So tauri's cached
+ * `…PERMISSION_FILES_PATH=/home/…/.cargo-target/…/out/…` reached
+ * papercusp-desktop's build.rs verbatim, which panicked on a file that exists
+ * only at the old address (gate run 7f876d2d: `cargo test` exit 101 with ZERO
+ * parsed results — indistinguishable from a compile error, red-pinning the gate).
+ * Removing the stale build dirs is exactly what makes cargo re-run those
+ * scripts; rlibs stay, dependents recompile once.
+ *
+ * Deliberately NARROW. A referenced path counts as stale only when it
+ *   (a) carries a `/build/<crate>-<hash>/` segment (lives in SOME cargo target),
+ *   (b) is outside `targetDir`, and
+ *   (c) does not exist.
+ * A deleted SOURCE path in `rerun-if-changed` is not our business (cargo re-runs
+ * on it by itself), and a LIVE sibling target dir is left alone.
+ *
+ * @param {string} targetDir
+ * @param {{ exists?: (path: string) => boolean }} [options]
+ * @returns {Array<{ dir: string, profile: string, crate: string, staleRefs: string[] }>}
+ */
+export function findStaleBuildScriptOutputs(targetDir, { exists = existsSync } = {}) {
+  const root = resolve(targetDir);
+  const stale = [];
+  for (const profile of CARGO_PROFILE_DIR_NAMES) {
+    const buildDir = join(root, profile, 'build');
+    let entries = [];
+    try { entries = readdirSync(buildDir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const dir = join(buildDir, entry.name);
+      let text;
+      try { text = readFileSync(join(dir, 'output'), 'utf8'); } catch { continue; }
+      const staleRefs = new Set();
+      for (const line of text.split('\n')) {
+        if (!line.startsWith('cargo:')) continue;
+        for (const token of line.match(/\/[^\s]+/g) ?? []) {
+          const path = token.replace(/[,;)]+$/, '');
+          if (!CARGO_BUILD_DIR_SEGMENT.test(path)) continue;
+          // A plain prefix test, deliberately NOT the fs-backed pathIsInside: a path into
+          // THIS target dir is healthy whether or not it exists yet (an out/ file a later
+          // step writes), and must never be read as stale.
+          if (path === root || path.startsWith(`${root}/`)) continue;
+          if (exists(path)) continue;
+          staleRefs.add(path);
+        }
+      }
+      if (staleRefs.size > 0) stale.push({ dir, profile, crate: entry.name, staleRefs: [...staleRefs] });
+    }
+  }
+  return stale;
+}
+
+/**
+ * Remove the build-script dirs {@link findStaleBuildScriptOutputs} names so cargo
+ * re-runs exactly those scripts on the next build. Skips WHOLESALE when another
+ * process holds the target dir (a cargo mid-build would be corrupted by a delete
+ * underneath it) — the next run simply retries. Synchronous, like the reclaimer:
+ * it runs immediately before the cargo child is spawned.
+ *
+ * @param {string} targetDir
+ * @param {{ dryRun?: boolean, exists?: (path: string) => boolean,
+ *   pathIsLive?: (path: string) => boolean }} [options]
+ * @returns {{ targetDir: string, found: number, dryRun: boolean,
+ *   pruned: Array<{ path: string, crate: string, staleRef: string }>,
+ *   skipped: Array<{ path: string, reason: string }> }}
+ */
+export function pruneStaleBuildScriptOutputs(targetDir, options = {}) {
+  const dryRun = options.dryRun === true;
+  const pathIsLive = options.pathIsLive ?? defaultPathIsLive;
+  const exists = options.exists ?? existsSync;
+  const root = resolve(targetDir);
+  const stale = findStaleBuildScriptOutputs(root, { exists });
+  const result = { targetDir: root, found: stale.length, dryRun, pruned: [], skipped: [] };
+  if (stale.length === 0) return result;
+  if (pathIsLive(root)) {
+    result.skipped = stale.map((s) => ({ path: s.dir, reason: 'target dir in use by another process' }));
+    return result;
+  }
+  for (const s of stale) {
+    if (!dryRun) {
+      try {
+        if (lstatSync(s.dir).isSymbolicLink()) throw new Error('symbolic link');
+        rmSync(s.dir, { recursive: true, force: true });
+      } catch (error) {
+        result.skipped.push({ path: s.dir, reason: `remove failed: ${error.message}` });
+        continue;
+      }
+    }
+    result.pruned.push({ path: s.dir, crate: s.crate, staleRef: s.staleRefs[0] });
+  }
+  return result;
+}
+
+/**
  * Reclaim explicitly-owned, inactive build artifacts before Cargo admission.
  * This is intentionally synchronous: it runs immediately before a child would
  * otherwise be spawned and must finish before the refreshed statfs decision.

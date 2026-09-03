@@ -51,6 +51,7 @@ import {
   formatCargoDiskRefusal,
   formatCargoResultLine,
   parseCargoTestResultLines,
+  pruneStaleBuildScriptOutputs,
   reclaimInactiveCargoArtifacts,
   resolveCargoBin,
   resolveCargoTargetDir,
@@ -220,6 +221,26 @@ function runCargoTest(manifestAbs, extraArgs, coverage = null) {
       finishedAt: new Date(),
       diskAdmission,
     });
+  }
+
+  // WI-212675 (gate run 7f876d2d, 2026-09-03T19:26Z): a MOVED target dir leaves
+  // cached build-script outputs pointing at the old address; cargo replays them
+  // without re-running the script, and the dependent build.rs panics on a path
+  // that no longer exists (exit 101, 0 results — indistinguishable from a
+  // compile error). Prune those dirs so cargo re-runs exactly the affected
+  // scripts. Skips wholesale when another build holds the target dir.
+  try {
+    const stalePrune = pruneStaleBuildScriptOutputs(cargoTargetDir);
+    if (stalePrune.found > 0) {
+      console.warn(
+        `[report-cargo-tests] stale build-script outputs (moved target dir) under ${stalePrune.targetDir}: ` +
+        `found ${stalePrune.found}, pruned ${stalePrune.pruned.length}, skipped ${stalePrune.skipped.length}` +
+        (stalePrune.pruned[0] ? `; e.g. ${stalePrune.pruned[0].crate} → ${stalePrune.pruned[0].staleRef}` : '') +
+        (stalePrune.skipped[0] ? `; skip reason: ${stalePrune.skipped[0].reason}` : ''),
+      );
+    }
+  } catch (err) {
+    console.warn(`[report-cargo-tests] stale build-script output scan unavailable; continuing: ${err.message}`);
   }
 
   const configuredTargetDir = process.env.CARGO_TARGET_DIR;
