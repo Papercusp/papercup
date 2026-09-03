@@ -15,7 +15,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { getLegacyClient, getOrgPg, harnessQuery } from '@papercusp/db-org';
+import { getLegacyClient, getOrgPg, harnessQuery, harnessTransaction } from '@papercusp/db-org';
 import { resolveProject, resolvePhasedProject, harnessDir, rowToFeature } from '../../../harness-core';
 import { readEffectiveHarnessConfig } from '../../../harness-effective-config';
 import { phasePhaseLabel } from '../../../harness-phases';
@@ -244,7 +244,7 @@ const resetFeature = defineTool({
     `);
     const existing = existingRows[0] as any;
     if (!existing) return Response.json({ error: 'feature not found' }, { status: 404 });
-    await harnessQuery(project.slug, (sql) => sql.begin(async (tx) => {
+    await harnessTransaction(project.slug, async (tx) => {
       // work-item-status-full-unify P-007: reset re-queues to the UNIFIED claimable token
       // 'open' (was 'todo') — this raw write bypasses setWorkItemState's alias-fold, so a
       // literal 'todo' here reintroduced the legacy spelling the backfill removed.
@@ -254,7 +254,7 @@ const resetFeature = defineTool({
       `;
       auditFeatureChange(project.slug, id, 'status', existing.status, 'open', 'api:reset');
       auditFeatureChange(project.slug, id, 'attempts', existing.attempts, 0, 'api:reset');
-    }));
+    });
     const featRows = await harnessQuery(project.slug, (sql) => sql`
       SELECT * FROM harness_features WHERE harness_slug = ${project.slug} AND feature_id = ${id}
     `);
@@ -374,7 +374,7 @@ const updateFeature = defineTool({
 
     if (Object.keys(updates).length === 0) return Response.json({ ok: true, feature: rowToFeature(existing), changes: 0 });
 
-    await harnessQuery(project.slug, (sql) => sql.begin(async (tx) => {
+    await harnessTransaction(project.slug, async (tx) => {
       // Dynamic SET clause: `updates` keys are drawn from the fixed whitelist of
       // body fields validated above (never arbitrary/user-controlled key names),
       // so interpolating them as bare identifiers is safe. Values stay parameterized.
@@ -390,7 +390,7 @@ const updateFeature = defineTool({
         const oldVal = existing[field];
         auditFeatureChange(project.slug, id, field, oldVal, newVal, actor);
       }
-    }));
+    });
 
     // (The projects→spec-revision project_manager hook that enqueued a `pm_due`
     // pending_events row on a transition into 'passed' was retired with the PM
@@ -590,7 +590,7 @@ const importFeatures = defineTool({
     let inserted = 0;
     let updated = 0;
     let skippedKindMismatch = 0;
-    await harnessQuery(project.slug, (sql) => sql.begin(async (tx) => {
+    await harnessTransaction(project.slug, async (tx) => {
       for (const f of features) {
         const existingRows = await tx`
           SELECT kind FROM harness_features WHERE harness_slug = ${project.slug} AND feature_id = ${f.id}
@@ -633,7 +633,7 @@ const importFeatures = defineTool({
           inserted++;
         }
       }
-    }));
+    });
 
     // Write plan provenance to PG consolidated — best-effort (migration 084).
     // Logic extracted into pure helper for testability (R8-A).
@@ -811,7 +811,7 @@ const createFeature = defineTool({
     const claims = Array.isArray(body.claims) ? body.claims.map((s) => String(s).trim()).filter(Boolean) : [];
     const now = Date.now();
 
-    await harnessQuery(project.slug, (sql) => sql.begin(async (tx) => {
+    await harnessTransaction(project.slug, async (tx) => {
       await tx`
         INSERT INTO harness_features
           (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata, kind,
@@ -828,7 +828,7 @@ const createFeature = defineTool({
           ${now}, ${now}, ${now})
       `;
       auditFeatureChange(project.slug, id, '__created', null, { id, title, status }, actor);
-    }));
+    });
 
     const createdRows = await harnessQuery(project.slug, (sql) => sql`
       SELECT * FROM harness_features WHERE harness_slug = ${project.slug} AND feature_id = ${id}
@@ -865,10 +865,10 @@ const deleteFeature = defineTool({
     `);
     const existing = existingRows[0] as any;
     if (!existing) return Response.json({ error: 'feature not found' }, { status: 404 });
-    await harnessQuery(project.slug, (sql) => sql.begin(async (tx) => {
+    await harnessTransaction(project.slug, async (tx) => {
       await tx`DELETE FROM harness_features WHERE harness_slug = ${project.slug} AND feature_id = ${id}`;
       auditFeatureChange(project.slug, id, '__deleted', rowToFeature(existing), null, actor);
-    }));
+    });
     return Response.json({ ok: true, deleted: id });
   },
 });
@@ -897,7 +897,7 @@ const approveHumanReview = defineTool({
     if (!existing) return Response.json({ error: 'feature not found' }, { status: 404 });
     if (!existing.needs_human_review) return Response.json({ error: 'feature does not need human review' }, { status: 400 });
 
-    await harnessQuery(project.slug, (sql) => sql.begin(async (tx) => {
+    await harnessTransaction(project.slug, async (tx) => {
       let createdProject: any = null;
       if (body.create_project) {
         const projectId = body.project_id ?? `PROJ-${id.replace(/^[A-Z]+-/, '').toLowerCase()}`;
@@ -930,7 +930,7 @@ const approveHumanReview = defineTool({
         WHERE harness_slug = ${project.slug} AND feature_id = ${id}
       `;
       auditFeatureChange(project.slug, id, 'needs_human_review', true, false, actor);
-    }));
+    });
 
     const updatedRows = await harnessQuery(project.slug, (sql) => sql`
       SELECT * FROM harness_features WHERE harness_slug = ${project.slug} AND feature_id = ${id}
