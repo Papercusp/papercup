@@ -202,15 +202,53 @@ group_or_other_bits() {
   [ "${m: -2}" != "00" ]
 }
 
-# key_is_unencrypted <file> — 0 when the private key has NO passphrase, i.e. it
-# is directly usable by anyone who can read it. This is the fact that separates
-# "readable" from "usable" and it is why EI-22240449643643994's severity was
-# raised. ssh-keygen -y prints the PUBLIC half; it is redirected to /dev/null so
-# no key material ever reaches a log. A non-OpenSSH key (a TLS .pem) simply
-# fails here, which reports as "unknown", never as "encrypted".
-key_is_unencrypted() {
-  command -v ssh-keygen >/dev/null 2>&1 || return 1
-  ssh-keygen -y -P '' -f "${1:-}" >/dev/null 2>&1
+# key_encryption_state <file> — echoes "unencrypted" | "encrypted" | "unknown".
+#
+# An UNENCRYPTED key is directly usable by anyone who can read it. That is the
+# fact separating "readable" from "usable", and it is what raised
+# EI-22240449643643994 from a hygiene note to a credential exposure — so the
+# probe has to establish it, and has to fail toward "unknown" rather than toward
+# the reassuring "encrypted".
+#
+# ⚠ DO NOT "SIMPLIFY" THIS BACK TO `ssh-keygen -y -P ''`. That was the first
+# implementation and it is structurally broken HERE, in the false-comfort
+# direction: ssh-keygen REFUSES to load a key whose permissions are too open
+# ("Permissions 0664 ... are too open", exit 255) — which is TRUE OF EVERY KEY
+# THIS PROBE FLAGS, by definition. So it never once returns 0 on a finding, and
+# every exposed unencrypted key gets reported as "passphrase-protected". A
+# fixture test caught this; the earlier by-hand check on the real key only
+# appeared to work because it was run AFTER the key had been chmod'd to 0600.
+#
+# Header inspection has none of that coupling: it needs no permission from ssh,
+# never copies the key anywhere, and works on TLS/PEM keys that ssh-keygen
+# cannot read at all. Nothing decoded here is key material — only the format
+# magic and the cipher NAME are examined, and both are discarded unprinted.
+key_encryption_state() {
+  local f="${1:-}" head1
+  [ -r "$f" ] || { echo unknown; return; }
+  head1="$(head -c 200 "$f" 2>/dev/null | head -1)"
+  case "$head1" in
+    *'BEGIN ENCRYPTED PRIVATE KEY'*) echo encrypted; return ;;
+  esac
+  # Legacy PEM announces encryption in the header block, not the BEGIN line.
+  if head -20 "$f" 2>/dev/null | grep -qaE 'Proc-Type:.*ENCRYPTED|DEK-Info:'; then
+    echo encrypted; return
+  fi
+  case "$head1" in
+    *'BEGIN OPENSSH PRIVATE KEY'*)
+      # openssh-key-v1 body: the magic "openssh-key-v1\0", a uint32 length, then
+      # the cipher NAME — literally "none" when there is no passphrase, and
+      # "aes256-ctr" (or similar) when there is. 64 base64 chars is a whole
+      # number of quanta and decodes to 48 bytes, comfortably past the name.
+      if sed -n '2,4p' "$f" 2>/dev/null | tr -d '\n' | cut -c1-64 | base64 -d 2>/dev/null \
+           | head -c 48 | grep -qa 'none'; then
+        echo unencrypted; return
+      fi
+      echo encrypted; return ;;
+    *'BEGIN PRIVATE KEY'* | *'BEGIN RSA PRIVATE KEY'* | *'BEGIN EC PRIVATE KEY'* | *'BEGIN DSA PRIVATE KEY'*)
+      echo unencrypted; return ;;
+  esac
+  echo unknown
 }
 
 FINDINGS=""        # human-readable lines, appended by both tiers
@@ -224,12 +262,21 @@ add_finding() { FINDINGS="${FINDINGS}$1"$'\n'; FINDING_COUNT=$((FINDING_COUNT + 
 # key is still an exposure to anything running as the owner's group inside it,
 # and a 0600 key inside a 0775 directory is exposed to a path-traversal read of
 # anything else in there, so neither check subsumes the other.
-SSH_SCAN_OK=1
 SSH_KEYS_SEEN=""
+SSH_BLIND_ROOTS=""
 for root in $KEYPERM_SSH_ROOTS; do
   [ -d "$root" ] || { log "tier1: skip missing root $root"; continue; }
-  # A find that ERRORS is not a find that found nothing — constraint (3). Its
-  # exit status is captured so a partial walk can never be reported as clean.
+  # A root this process cannot read is a BLIND SPOT, not an empty one — the
+  # sweep runs unprivileged by design, so /root is normally unreadable here and
+  # contributes exactly zero rows while looking identical to a clean root.
+  # Deliberately NOT treated as a scan failure (that would fire every run); it
+  # is named in the log and in any filing so the coverage claim stays honest,
+  # and the positive control is what actually validates the sweep.
+  if [ ! -r "$root" ] || [ ! -x "$root" ]; then
+    log "tier1: root $root is NOT READABLE by $(id -un 2>/dev/null || echo '?') — BLIND SPOT, not a clean result."
+    SSH_BLIND_ROOTS="${SSH_BLIND_ROOTS}${root} "
+    continue
+  fi
   while IFS= read -r sshdir; do
     [ -n "$sshdir" ] || continue
     dmode="$(mode_of "$sshdir")"
@@ -242,13 +289,13 @@ for root in $KEYPERM_SSH_ROOTS; do
       SSH_KEYS_SEEN="${SSH_KEYS_SEEN}${f}"$'\n'
       fmode="$(mode_of "$f")"
       group_or_other_bits "$fmode" || continue
-      if key_is_unencrypted "$f"; then
-        add_finding "KEY  mode=${fmode} ${f} — UNENCRYPTED (no passphrase): readable == usable"
-      else
-        add_finding "KEY  mode=${fmode} ${f} — passphrase-protected or non-OpenSSH format"
-      fi
+      case "$(key_encryption_state "$f")" in
+        unencrypted) add_finding "KEY  mode=${fmode} ${f} — UNENCRYPTED (no passphrase): readable == directly usable" ;;
+        encrypted)   add_finding "KEY  mode=${fmode} ${f} — passphrase-protected (still fix the mode; an offline crack is unbounded)" ;;
+        *)           add_finding "KEY  mode=${fmode} ${f} — encryption state UNKNOWN (unrecognised key format); treat as unencrypted until checked" ;;
+      esac
     done < <(find "$sshdir" -maxdepth 1 -type f ! -name '*.pub' ! -name 'known_hosts*' ! -name 'config' ! -name 'authorized_keys*' 2>/dev/null)
-  done < <(find "$root" -maxdepth "$KEYPERM_SSH_MAXDEPTH" -type d -name .ssh 2>/dev/null) || SSH_SCAN_OK=0
+  done < <(find "$root" -maxdepth "$KEYPERM_SSH_MAXDEPTH" -type d -name .ssh 2>/dev/null)
 done
 
 # ── POSITIVE CONTROL — constraint (3) ───────────────────────────────────────
@@ -267,12 +314,12 @@ if [ -n "$KEYPERM_POSITIVE_CONTROL" ] && [ -f "$KEYPERM_POSITIVE_CONTROL" ]; the
 else
   log "positive control $KEYPERM_POSITIVE_CONTROL is absent — the tier-1 sweep is UNVALIDATED this run."
 fi
-log "tier1: .ssh sweep over [$KEYPERM_SSH_ROOTS] depth<=$KEYPERM_SSH_MAXDEPTH — positive control: $CONTROL_STATUS"
+log "tier1: .ssh sweep over [$KEYPERM_SSH_ROOTS] depth<=$KEYPERM_SSH_MAXDEPTH — positive control: $CONTROL_STATUS${SSH_BLIND_ROOTS:+; blind roots: $SSH_BLIND_ROOTS}"
 
-if [ "$CONTROL_STATUS" = "FAILED" ] || [ "$SSH_SCAN_OK" != 1 ]; then
+if [ "$CONTROL_STATUS" = "FAILED" ]; then
   file_red "scanbroken-red-ei-filed" \
     "fed-plane key-permission probe cannot validate itself on $(hostname 2>/dev/null || echo unknown-host) — its result is INDETERMINATE, not clean" \
-    "WI-2143622 key-permission probe: the tier-1 .ssh sweep FAILED ITS POSITIVE CONTROL (control=${CONTROL_STATUS}, findRc_ok=${SSH_SCAN_OK}). It was asked to rediscover a private key known to exist at ${KEYPERM_POSITIVE_CONTROL} while sweeping roots [${KEYPERM_SSH_ROOTS}] to depth ${KEYPERM_SSH_MAXDEPTH}, and did not. UNTIL THIS IS FIXED THE PROBE'S SILENCE MEANS NOTHING: an exposed key would produce the same empty output. Likely causes, in the order they have actually bitten here: a root on a filesystem the sweep does not cross; a depth bound too shallow for where the key lives; a permission refusal reading a directory (the sweep runs unprivileged by design); the control path itself moved. ACTION: run the script by hand with KEYPERM_NO_FILE=1 and read the tier-1 log lines, then correct KEYPERM_SSH_ROOTS / KEYPERM_SSH_MAXDEPTH / KEYPERM_POSITIVE_CONTROL. Do NOT silence this by deleting the control."
+    "WI-2143622 key-permission probe: the tier-1 .ssh sweep FAILED ITS POSITIVE CONTROL. It was asked to rediscover a private key known to exist at ${KEYPERM_POSITIVE_CONTROL} while sweeping roots [${KEYPERM_SSH_ROOTS}] to depth ${KEYPERM_SSH_MAXDEPTH}, and did not. Unreadable (blind) roots this run: [${SSH_BLIND_ROOTS:-none}]. UNTIL THIS IS FIXED THE PROBE'S SILENCE MEANS NOTHING: an exposed key would produce the same empty output. Likely causes, in the order they have actually bitten here: a root on a filesystem the sweep does not cross; a depth bound too shallow for where the key lives; a permission refusal reading a directory (the sweep runs unprivileged by design); the control path itself moved. ACTION: run the script by hand with KEYPERM_NO_FILE=1 and read the tier-1 log lines, then correct KEYPERM_SSH_ROOTS / KEYPERM_SSH_MAXDEPTH / KEYPERM_POSITIVE_CONTROL. Do NOT silence this by deleting the control."
 fi
 
 # ── TIER 2: content-matched sweep outside .ssh ──────────────────────────────
@@ -287,10 +334,18 @@ if [ "$KEYPERM_DEEP" = 1 ]; then
   for root in $KEYPERM_DEEP_ROOTS; do
     [ -d "$root" ] || { log "tier2: skip missing root $root"; continue; }
     log "tier2: content sweep of $root (timeout ${KEYPERM_DEEP_TIMEOUT_S}s)"
-    deep_out="$(timeout "$KEYPERM_DEEP_TIMEOUT_S" nice -n 19 ionice -c 3 \
-      find "$root" "${PRUNE_ARGS[@]}" -type f -size -64k -size +100c -print0 2>/dev/null \
-      | xargs -0 -r -n 200 grep -laI -m1 'PRIVATE KEY' 2>/dev/null || true)"
-    rc=${PIPESTATUS[0]}
+    # The WHOLE pipeline runs under one timeout, because the expensive half is
+    # the grep, not the find. It is wrapped in `bash -c` so that `timeout`'s own
+    # exit status is what lands in $? — a naive
+    #   deep_out="$(timeout … find … | xargs grep …)"; rc=${PIPESTATUS[0]}
+    # reads the ASSIGNMENT's status (i.e. grep's), never timeout's, so a killed
+    # sweep reports rc=1 and is indistinguishable from a clean one. That is
+    # precisely the false-clean this probe exists to refuse, so it is worth the
+    # extra process.
+    deep_out="$(timeout "$KEYPERM_DEEP_TIMEOUT_S" nice -n 19 ionice -c 3 bash -c '
+        find "$@" -print0 2>/dev/null | xargs -0 -r -n 200 grep -laI -m1 "PRIVATE KEY" 2>/dev/null
+      ' _ "$root" "${PRUNE_ARGS[@]}" -type f -size -64k -size +100c)"
+    rc=$?
     # 124 is timeout(1)'s own "the command timed out" status. Partial output from
     # a killed sweep is not a complete answer, so it is reported as such rather
     # than folded into the clean case.
