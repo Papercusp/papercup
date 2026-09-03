@@ -1684,6 +1684,38 @@ describe('frozenRepairHasNoMeasuredFailures (WI-2140605: no reproduce-fixer with
     expect(frozenRepairHasNoMeasuredFailures(undefined, [])).toBe(false);
     expect(frozenRepairHasNoMeasuredFailures(undefined, undefined)).toBe(false);
   });
+
+  // EI-22216541327801093: candidate 5fdc2b24b770 — a plain inconclusive hold tick (no
+  // repairTickLegs data) stamps failingTestsMeasured:false while leaving the PRIOR tick's
+  // (non-empty) failingTests names untouched, so the array-only check above sees "names
+  // present" and dispatches anyway. Three release-fixer attempts found nothing to fix.
+  describe('the failingTestsMeasured axis (EI-22216541327801093: non-empty but unmeasured)', () => {
+    it('a NON-empty failing set with failingTestsMeasured:false does NOT dispatch', () => {
+      expect(
+        frozenRepairHasNoMeasuredFailures(repairQueue(), ['lint:design-primitives', 'lint:plane-integrity'], false),
+      ).toBe(true);
+    });
+
+    it('a NON-empty failing set with failingTestsMeasured:true still dispatches (unaffected)', () => {
+      expect(frozenRepairHasNoMeasuredFailures(repairQueue(), ['lib/broken.test.ts'], true)).toBe(false);
+    });
+
+    it('a NON-empty failing set with failingTestsMeasured omitted (undefined) preserves prior behaviour', () => {
+      expect(frozenRepairHasNoMeasuredFailures(repairQueue(), ['lib/broken.test.ts'], undefined)).toBe(false);
+    });
+
+    it('a NON-empty failing set with failingTestsMeasured:null (genuinely unknown) also preserves prior behaviour', () => {
+      expect(frozenRepairHasNoMeasuredFailures(repairQueue(), ['lib/broken.test.ts'], null)).toBe(false);
+    });
+
+    it('an EMPTY failing set still does not dispatch regardless of the measured flag', () => {
+      expect(frozenRepairHasNoMeasuredFailures(repairQueue({ failingTests: [] }), [], true)).toBe(true);
+    });
+
+    it('failingTestsMeasured:false is out of scope with no repair queue, same as the array axis', () => {
+      expect(frozenRepairHasNoMeasuredFailures(undefined, ['lib/broken.test.ts'], false)).toBe(false);
+    });
+  });
 });
 
 describe('checkReleaseFixerCandidateStale — live re-verify (EI-8718)', () => {

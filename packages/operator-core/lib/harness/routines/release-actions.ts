@@ -4292,12 +4292,31 @@ export function isStaleReleaseFixerCandidate(check: ReleaseFixerCandidateStaleCh
  * merely not extracted is a different question, and widening this predicate to cover it
  * would risk suppressing a legitimate dispatch on a genuinely red gate — the one outcome
  * the fixer path must never have.
+ *
+ * EI-22216541327801093: an EMPTY `failingTests` is not the only shape of "nothing to
+ * reproduce". A plain inconclusive hold tick with no `repairTickLegs` data (run-lock
+ * contention, a killed pass, …) stamps `gate_health.failingTestsMeasured:false` while
+ * leaving the PRIOR tick's `failingTests` names untouched in the DB (see the hold-tick
+ * write in `trackGateStall` — the branch with no `tickLegs`), so the array this function
+ * sees can be non-empty yet describe nothing this tick actually verified. Measured on
+ * candidate 5fdc2b24b770: `failingTests` named two lint legs, `failingTestsMeasured` was
+ * `false` and `failingTestsCarriedForward` was `false` (so this is not the legitimate
+ * `mergeGateHealthMonotonic` carry-forward, which deliberately leaves `failingTestsMeasured`
+ * `true`), and three release-fixer dispatches then found all three legs passing.
+ *
+ * `failingTestsMeasured` is therefore an explicit third input, checked ONLY when it is the
+ * literal `false` — `undefined`/`null` (measured flag genuinely unknown, or the caller
+ * legitimately omitted it, as every pre-existing call site + test still does) preserves
+ * the original array-emptiness behaviour exactly, so this stays backward compatible and
+ * never turns "unknown" into a suppression a caller did not ask for.
  */
 export function frozenRepairHasNoMeasuredFailures(
   repairQueue: FrozenCandidateRepairQueue | undefined,
   failingTests: string[] | undefined,
+  failingTestsMeasured?: boolean | null,
 ): boolean {
   if (!repairQueue) return false;
+  if (failingTestsMeasured === false) return true;
   return !failingTests || failingTests.length === 0;
 }
 
@@ -4996,10 +5015,30 @@ export async function dispatchReleaseFixer(
   // returns a plain boolean rather than a `repairQueue is …` type guard on purpose, because
   // a type guard would also narrow the NEGATIVE branch to `undefined` — which is false here
   // (a defined queue WITH failures returns false) and would mis-type the dispatch path below.
-  if (repairQueue && frozenRepairHasNoMeasuredFailures(repairQueue, failingTests)) {
+  //
+  // EI-22216541327801093: the measured-flag half of this guard needs the LIVE routine row
+  // (the in-memory `failingTests` this function was called with can be the array a stale
+  // hold tick left untouched — see `frozenRepairHasNoMeasuredFailures`'s doc comment), so
+  // the dedup-record SELECT that already existed further down is pulled up here and widened
+  // to also read `gate_health.failingTestsMeasured`. Same single query, same round trip —
+  // only reordered, plus one more selected column.
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const rows = (await sql.unsafe(
+    `SELECT metadata->'last_fixer' AS lf,
+            metadata->'gate_health'->>'failingTestsMeasured' AS ftm
+       FROM harness_shared.routines
+      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+    [ctx.installSlug],
+  )) as Array<{ lf: ReleaseFixerRecord | null; ftm: string | null }>;
+  const lf = rows[0]?.lf ?? null;
+  const failingTestsMeasured = rows[0]?.ftm === 'true' ? true : rows[0]?.ftm === 'false' ? false : null;
+
+  if (repairQueue && frozenRepairHasNoMeasuredFailures(repairQueue, failingTests, failingTestsMeasured)) {
     console.log(
       `${orchestratorStdoutTag()} release-fixer dispatch skipped for ${candidate.slice(0, 8)}: frozen repair ` +
-        `queue has no measured failing tests — nothing to reproduce; a fresh verdict is the unblock, not a fixer`,
+        `queue has no measured failing tests (failingTestsMeasured=${failingTestsMeasured}) — nothing to ` +
+        `reproduce; a fresh verdict is the unblock, not a fixer`,
     );
     await appendPipelineEvent({
       workspaceId: ctx.workspaceId,
@@ -5011,13 +5050,12 @@ export async function dispatchReleaseFixer(
         repairHead: repairQueue.repairHead.slice(0, 12),
         phase: repairQueue.phase,
         attempts: repairQueue.attempts,
+        failingTestsMeasured,
       },
     }).catch(() => {});
     return null;
   }
 
-  const { getOrgPg } = await import('@papercusp/db-org');
-  const { sql } = getOrgPg();
   // P-012: dedup by the FAILURE SIGNATURE (the failing test files / workspaces), not the
   // candidate sha. While the gate stays red, staging advances hourly so every checkpoint
   // is a NEW candidate — keying on sha re-notified the human + re-spawned a fixer every
@@ -5026,12 +5064,6 @@ export async function dispatchReleaseFixer(
   // `candidate` is non-null here, so the shared helper's null case is unreachable — the
   // `?? candidate` keeps that provable to the type checker rather than widening `signature`.
   const signature = gateFailureSignature(failingTests, candidate) ?? candidate;
-  const rows = (await sql.unsafe(
-    `SELECT metadata->'last_fixer' AS lf FROM harness_shared.routines
-      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-    [ctx.installSlug],
-  )) as Array<{ lf: ReleaseFixerRecord | null }>;
-  const lf = rows[0]?.lf ?? null;
 
   // D-009 liveness-aware dedup: within the window, skip ONLY if the previously-
   // dispatched fixer is still alive. A dead/finished fixer re-dispatches now.
