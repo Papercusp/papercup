@@ -64,12 +64,33 @@ GATE_SUPERUSER_TOKEN_PATH="${GATE_SUPERUSER_TOKEN_PATH:-$HOME/.papercusp/superus
 GATE_SUPERUSER_BEARER="$(cat "$GATE_SUPERUSER_TOKEN_PATH" 2>/dev/null | tr -d '[:space:]' || true)"
 STATE_DIR="${DHT_STATE_DIR:-$HOME/.papercusp/dht-liveness}"; mkdir -p "$STATE_DIR"
 
+# State-aware RED dedup (EI-22240553542994017). Sourced, not optional: without it
+# this probe would silently fall back to age-only suppression, which is the defect.
+RED_MARKER_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/red-marker.sh"
+if [ -r "$RED_MARKER_LIB" ]; then
+  # shellcheck source=lib/red-marker.sh
+  . "$RED_MARKER_LIB"
+else
+  echo "[dht-liveness] FATAL: missing $RED_MARKER_LIB — refusing to run with age-only dedup." >&2
+  exit 2
+fi
+
 log() { echo "[dht-liveness $(date +%H:%M:%S 2>/dev/null || true)] $*" >&2; }
 now_s() { date +%s 2>/dev/null || echo 0; }
-age_h() { local f="$1"; [ -f "$f" ] || { echo 999999; return; }; echo $(( ( $(now_s) - $(cat "$f" 2>/dev/null || echo 0) ) / 3600 )); }
+# Delegates to the shared reader, which takes FIELD 1 of the marker. A bare `cat`
+# here would break on the "<epoch> <item-id>" marker format (arithmetic on a
+# non-numeric second field), so every marker age goes through one implementation.
+# Still correct for this script's bare-epoch last-ok / stale-ei-filed markers.
+age_h() { red_marker_age_h "$1"; }
 jstr() { printf '%s' "$1" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
 
+# Set by file_ei to the work-item id the filing resolved to (empty when it did not
+# confirm one). Recorded into the RED marker so the NEXT tick can ask whether that
+# item is still open instead of trusting the marker's age — EI-22240553542994017.
+LAST_FILED_EI_ID=""
+
 file_ei() { # <title> <body> — best-effort curl-MCP; loud echo + journald are the fallback
+  LAST_FILED_EI_ID=""
   [ "$DHT_NO_FILE" = 1 ] && return 0
   local resp
   local -a auth_hdr=()
@@ -87,7 +108,10 @@ file_ei() { # <title> <body> — best-effort curl-MCP; loud echo + journald are 
   local id_match
   id_match="$(printf '%s' "$resp" | grep -oaE '\\?"id\\?":\\?"WI-[0-9]+' | head -1)"
   if [ -n "$id_match" ]; then
-    log "EI filed OK → $(printf '%s' "$id_match" | grep -oaE 'WI-[0-9]+')"
+    # On a duplicate_identity refusal the response carries the OPEN twin this filing
+    # folded onto, so this id is the item that actually tracks the RED either way.
+    LAST_FILED_EI_ID="$(printf '%s' "$id_match" | grep -oaE 'WI-[0-9]+')"
+    log "EI filed OK → $LAST_FILED_EI_ID"
   else
     log "EI filing DID NOT CONFIRM (no WI id in response) — resp head: ${resp:0:200}"
   fi
@@ -249,14 +273,15 @@ fi
 
 # ── FAIL: dedup-file an EI (RED_REFILE_H window), never auto-restart. ──
 RED_MARKER="$STATE_DIR/red-ei-filed"
-red_marker_age_h="$(age_h "$RED_MARKER")"
+red_verdict="$(red_dedup_check "$RED_MARKER" "$DHT_RED_REFILE_H")"
 TITLE="papercup-isolated-dht liveness probe FAILED — bootstrap $DHT_HOST:$DHT_PORT unreachable/wedged"
 BODY="EI-8892/P-302 durable probe (apps/operator/scripts/p2p-dht-liveness-probe.mjs via papercup-dht-liveness-check.sh) FAILED against the live $DHT_UNIT bootstrap $DHT_HOST:$DHT_PORT — a two-PROCESS, identity-verified hyperswarm announce/connect did not complete within ${DHT_PROBE_TIMEOUT_MS}ms. READ THE PROBE'S OWN VERDICT CODE BELOW before diagnosing: 'announce-timeout' = the bootstrap is not acking (the classic wedge); 'bootstrap-silent' = queries sent with nothing back, which is AMBIGUOUS between a dead/wrong bootstrap address and this host's outbound path being dropped — the probe names the discriminating capture; 'tx-blocked' = another leg reached the bootstrap in the same run, so THIS host's egress is the fault; 'same-host-degenerate'/'wrong-peer'/'self-connection' = the run did not actually prove what it was asked to. This is the SILENT-WEDGE class (2026-07-06→07-09 3-day outage): the unit reports ActiveState=active but is not actually routing DHT traffic — no passive systemd/port signal catches this. THIS SCRIPT DOES NOT RESTART THE UNIT (detection + escalation only, by design — EI-8901 boot-grace lesson: a restart-authority health check on a signal that spans process restarts risks a restart-storm). Manual recovery: systemctl --user restart $DHT_UNIT, then re-run this probe to confirm recovery: node apps/operator/scripts/p2p-dht-liveness-probe.mjs --host $DHT_HOST --port $DHT_PORT. Probe output:\n$PROBE_OUT"
-if [ "$red_marker_age_h" -lt "$DHT_RED_REFILE_H" ]; then
-  log "RED already tracked (EI filed ${red_marker_age_h}h ago, < DHT_RED_REFILE_H ${DHT_RED_REFILE_H}h) — skipping duplicate filing. $TITLE"
+if [ "${red_verdict%% *}" = "SUPPRESS" ]; then
+  log "RED dedup: ${red_verdict#* }. $TITLE"
 else
+  log "RED dedup: ${red_verdict#* }"
   file_ei "$TITLE" "$BODY"
-  echo "$(now_s)" >"$RED_MARKER"
+  red_marker_write "$RED_MARKER" "$LAST_FILED_EI_ID"
 fi
 
 # ── staleness: no successful probe in DHT_STALE_H ⇒ a LOUDER, separate signal. ──

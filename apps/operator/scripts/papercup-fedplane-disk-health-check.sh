@@ -165,14 +165,15 @@ else
   log "disk usage at $DISK_PATH: ${DISK_PCT}% (warn threshold ${DISK_WARN_PCT}%)"
   if [ "$DISK_PCT" -ge "$DISK_WARN_PCT" ] 2>/dev/null; then
     RED_MARKER="$STATE_DIR/disk-red-ei-filed"
-    red_marker_age_h="$(age_h "$RED_MARKER")"
+    red_verdict="$(red_dedup_check "$RED_MARKER" "$DISK_RED_REFILE_H")"
     TITLE="fed-plane host disk usage ${DISK_PCT}% (>= ${DISK_WARN_PCT}% threshold) at $DISK_PATH on $(hostname 2>/dev/null || echo unknown-host)"
     BODY="EI-8982 durable disk-health probe: $DISK_PATH is at ${DISK_PCT}% used (warn threshold ${DISK_WARN_PCT}%). UNCHECKED this leads to total wedge (P-059 cause #9, 2026-07-10): a full disk fails ~/.papercusp/operator.lock writes with ENOSPC, serve spawns crash-loop (~25s connect-cycles), and the ONLY visible symptom is on a PEER machine as a mysterious connect/drop cycle — no local signal at all without this probe. ACTION: free space now (check for stale build artifacts — a cargo target dir or old .dmg/backup directories are common offenders) before it wedges federation. df output:\n$DF_LINE"
-    if [ "$red_marker_age_h" -lt "$DISK_RED_REFILE_H" ]; then
-      log "RED already tracked (EI filed ${red_marker_age_h}h ago, < DISK_RED_REFILE_H ${DISK_RED_REFILE_H}h) — skipping duplicate filing. $TITLE"
+    if [ "${red_verdict%% *}" = "SUPPRESS" ]; then
+      log "RED dedup: ${red_verdict#* }. $TITLE"
     else
+      log "RED dedup: ${red_verdict#* }"
       file_ei "$TITLE" "$BODY"
-      echo "$(now_s)" >"$RED_MARKER"
+      red_marker_write "$RED_MARKER" "$LAST_FILED_EI_ID"
     fi
   else
     rm -f "$STATE_DIR/disk-red-ei-filed"
@@ -194,14 +195,15 @@ else
   log "serve.log ($SERVE_LOG) ENOSPC/crash-loop signature count in tail: $SIG_COUNT (threshold $CRASH_LOOP_MIN_COUNT)"
   if [ "$SIG_COUNT" -ge "$CRASH_LOOP_MIN_COUNT" ] 2>/dev/null; then
     RED_MARKER="$STATE_DIR/crashloop-red-ei-filed"
-    red_marker_age_h="$(age_h "$RED_MARKER")"
+    red_verdict="$(red_dedup_check "$RED_MARKER" "$DISK_RED_REFILE_H")"
     TITLE="fed-plane serve.log ENOSPC crash-loop signature ($SIG_COUNT hits) on $(hostname 2>/dev/null || echo unknown-host)"
     BODY="EI-8982 durable disk-health probe: $SERVE_LOG's tail carries $SIG_COUNT ENOSPC / 'no space left on device' line(s) (threshold $CRASH_LOOP_MIN_COUNT) — the P-059 cause #9 crash-loop signature (repeated serve spawn/exit as the process fails to write ~/.papercusp/operator.lock). This can occur even if disk usage has since recovered (someone freed space) — the scarring in the log tail is still evidence a wedge happened and the peer(s) this machine talks to may have logged the 'connect/drop every ~25s' symptom during the window. ACTION: verify current disk usage is healthy (see the companion disk-usage probe in this same run) and confirm serve is no longer crash-looping (\`systemctl --user status\` / \`launchctl list\` / process list)."
-    if [ "$red_marker_age_h" -lt "$DISK_RED_REFILE_H" ]; then
-      log "RED already tracked (EI filed ${red_marker_age_h}h ago, < DISK_RED_REFILE_H ${DISK_RED_REFILE_H}h) — skipping duplicate filing. $TITLE"
+    if [ "${red_verdict%% *}" = "SUPPRESS" ]; then
+      log "RED dedup: ${red_verdict#* }. $TITLE"
     else
+      log "RED dedup: ${red_verdict#* }"
       file_ei "$TITLE" "$BODY"
-      echo "$(now_s)" >"$RED_MARKER"
+      red_marker_write "$RED_MARKER" "$LAST_FILED_EI_ID"
     fi
   fi
 fi
