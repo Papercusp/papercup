@@ -1040,6 +1040,16 @@ export class AzureWorkspaceHostProvider implements WorkspaceHostProvider {
             },
             dataDisks: [{ lun: 0, createOption: 'Attach', managedDisk: { id: dataDiskId } }],
           },
+          // ⚠ EI-22185970114422986 (D-238 class): this DISABLES password authentication and
+          // authorizes NO SSH public key — there is no `linuxConfiguration.ssh.publicKeys` here
+          // and `cloudInit` is an optional payload with no key requirement, so a planned Azure
+          // host is unreachable while the plan reports success. D-241's fail-closed key resolver
+          // does NOT protect this path: provisioning-runner.ts consults it only for providers
+          // declaring `capabilities.lifecycle.hostBootstrap`, and Azure declares false.
+          // Also suspected: ARM documents `disablePasswordAuthentication` under
+          // `osProfile.linuxConfiguration`, not on `osProfile` — unverifiable from this tree.
+          // The hazard is pinned by a characterization test in azure-provider.test.ts that must
+          // be INVERTED into a refusal when key delivery is designed (P-030 / P-035).
           osProfile: {
             computerName: settings.vmName,
             adminUsername: 'papercusp',

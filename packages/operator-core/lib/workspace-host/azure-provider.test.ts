@@ -353,6 +353,57 @@ describe('Azure workspace-host provider planning', () => {
     });
   });
 
+  // EI-22185970114422986 — CHARACTERIZATION, NOT APPROVAL. This pins a KNOWN HAZARD so the change
+  // that fixes it has to come through here and read this.
+  //
+  // Found by the D-238 class audit: *a step that restricts access whose surviving credential is
+  // authored somewhere else, or nowhere.* The Azure create plan turns password authentication OFF
+  // and authorizes no SSH public key anywhere — `osProfile` carries no
+  // `linuxConfiguration.ssh.publicKeys`, and `cloudInit` is an OPTIONAL caller-supplied payload
+  // with no key requirement. Apply the diagnostic — if the credential half silently did nothing,
+  // would this run still report success? — and the answer here is yes: the plan succeeds and the
+  // VM is unreachable, which is exactly how the GCP host bricked itself while attesting healthy.
+  //
+  // WHY THE GCP-SIDE FIX DOES NOT COVER THIS. `workspaceAuthorizedKeys` was made a REQUIRED field
+  // on the bootstrap input precisely so other providers could not silently reproduce the lockout,
+  // but that binds only callers of the BOOTSTRAP RENDER. Azure declares
+  // `capabilities.lifecycle.hostBootstrap: false`, and provisioning-runner.ts consults D-241's
+  // fail-closed key resolver ("controller has no identityFile, so no public key can be authorized
+  // on the host") ONLY when a provider declares that capability. So Azure reaches VM creation
+  // without ever passing the guard that was built to stop this.
+  //
+  // SUSPECTED, and NOT verifiable from this tree: ARM documents `disablePasswordAuthentication`
+  // under `osProfile.linuxConfiguration`, not directly on `osProfile` as it is set here. If that
+  // is right the flag is inert — the same defect pointing the other way, a security control that
+  // silently does nothing. No `@azure/arm-compute` types are vendored here, so that must be
+  // checked against the live API rather than asserted from the repo.
+  //
+  // WHEN KEY DELIVERY IS DESIGNED (P-030 / P-035): INVERT this test into a refusal, exactly as
+  // D-241 did for GCP — refuse to PLAN a create that disables password authentication without
+  // authorizing a key, instead of creating an unreachable VM and reporting success.
+  it('authorizes no SSH key yet, so an Azure host is planned unreachable (known hazard, D-238 class)', async () => {
+    const { provider } = providerAndClient();
+    const plan = await provider.plan(
+      {
+        action: 'provision' as const,
+        operationId: 'operation-1',
+        idempotencyKey: 'operation-1',
+        desired: desired(),
+      },
+      context(),
+    );
+    const vm = plan.steps.find((step) => step.id === 'create-vm')!.input as unknown as {
+      request: AzureArmPutInput;
+    };
+    const osProfile = (vm.request.properties as { osProfile: Record<string, unknown> }).osProfile;
+    expect(osProfile.disablePasswordAuthentication).toBe(true);
+    // The hazard in one assertion: access restricted, no credential authorized anywhere in the
+    // plan. When this stops being true the fix has landed — invert the test, do not delete it.
+    expect(JSON.stringify(plan.steps)).not.toMatch(
+      /publicKeys|ssh-ed25519|ssh-rsa|authorized_keys/,
+    );
+  });
+
   it('makes public IP optional and records existing network resources without scheduling their deletion ownership', async () => {
     const { provider } = providerAndClient();
     const existing = desired();
