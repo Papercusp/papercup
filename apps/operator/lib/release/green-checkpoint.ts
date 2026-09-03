@@ -4663,7 +4663,7 @@ async function proveFrozenRepairOutcomeAtStableTip(
       summary:
         `failure signature is not fully selectively re-runnable ` +
         `(${failingFiles.length} file(s), ${gateIds.length} gate(s), ${uncovered.length} non-file entry/entries); ` +
-        `the full canonical suite must decide staging ${tip.slice(0, 8)}`,
+        `the full canonical suite must decide this queue (staging tip ${tip.slice(0, 8)})`,
     };
   }
 
@@ -9594,6 +9594,32 @@ async function runGreenCheckpointInner(
           outcomeProof.kind === "tip-moved" &&
           opts.candidate !== undefined &&
           opts.diagnostic === undefined;
+        // WI-2143595: the full-suite arm used to judge the STAGING TIP unconditionally. That is
+        // the re-cut-at-tip treadmill freeze-and-converge (D-007) exists to prevent: every commit
+        // between the converged repairHead and the tip is re-admitted, and a red among them opens
+        // a NEW queue further downstream (observed 2026-09-03T18:23Z: d165d753 → 761d0a85, 62
+        // commits past the frozen candidate, on a 13-file + cargo/seed signature). When
+        // `release:repair-queue converge` fast-forwarded the repairHead onto the judged lineage it
+        // is a STAGING commit (an ancestor of the tip) descending from the frozen candidate, so the
+        // full suite can decide THAT sha and a green promotes exactly the converged fixes. An
+        // ISOLATED worktree repair (not on staging) still yields to the tip — main may only
+        // fast-forward to a staging commit (see "keeps an isolated repair off release") — and so
+        // does an unmoved repairHead (nothing converged; re-judging the frozen sha is the pin
+        // EI-211596 removed). An ancestry probe that cannot answer (a sha the integration root
+        // cannot see) is a fall-through to the tip, never a promotion of the isolated head.
+        const convergedRepairHeadOnStaging =
+          outcomeProof.kind === "full-suite-required" &&
+          repairQueue.repairHead !== repairQueue.candidate &&
+          (await isAncestor(
+            cfg.integrationRoot,
+            repairQueue.candidate,
+            repairQueue.repairHead,
+          ).catch(() => false)) &&
+          (await isAncestor(
+            cfg.integrationRoot,
+            repairQueue.repairHead,
+            outcomeProof.tip,
+          ).catch(() => false));
         if (
           outcomeProof.kind === "proved" ||
           outcomeProof.kind === "full-suite-required" ||
@@ -9615,13 +9641,17 @@ async function runGreenCheckpointInner(
             cfg.integrationRoot,
             outcomeProof.kind === "proved"
               ? outcomeProof.tip
-              : transportedCandidate,
+              : convergedRepairHeadOnStaging
+                ? reconciledQueue.repairHead
+                : transportedCandidate,
           );
           deps.log(
             outcomeProof.kind === "proved"
               ? `${outcomeProof.summary}; cleared the obsolete exact-patch queue and continuing with a normal gate at that exact tip`
               : outcomeProof.kind === "full-suite-required"
-                ? `${outcomeProof.summary}; retired the obsolete exact-patch queue inside the run lock and continuing with the full canonical gate at that exact tip`
+                ? convergedRepairHeadOnStaging
+                  ? `${outcomeProof.summary}; repairHead ${reconciledQueue.repairHead.slice(0, 8)} is a STAGING commit converged past frozen candidate ${reconciledQueue.candidate.slice(0, 8)}, so retired the obsolete exact-patch queue inside the run lock and continuing with the full canonical gate at that converged head — not at tip ${outcomeProof.tip.slice(0, 8)} (WI-2143595: a re-cut at tip re-admits every commit in between)`
+                  : `${outcomeProof.summary}; retired the obsolete exact-patch queue inside the run lock and continuing with the full canonical gate at that exact tip`
                 : `${outcomeProof.summary}; the run already transported canonical candidate ${transportedCandidate.slice(0, 8)}, so retired the obsolete exact-patch queue inside the run lock and continuing with the full canonical gate at that exact transported candidate`,
           );
         } else {

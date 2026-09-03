@@ -1545,6 +1545,128 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(result.candidate).not.toBe(youngStagingTip);
   });
 
+  it("WI-2143595: when the repair needs the full suite and the repairHead is a CONVERGED staging commit, the full gate judges that head — not the moving tip", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    // `release:repair-queue converge` fast-forwarded the repairHead onto the judged lineage:
+    // the fix is a STAGING commit descending from the frozen candidate — and staging kept
+    // moving underneath it.
+    const converged = await commit("b", "fixed on staging", "peer fix converged");
+    const stagingTip = await commit("c", "3", "later staging work");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: converged,
+      affectedTestProofGroup: "initial-proof-run",
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      // A MIXED red: one file plus one entry the narrow file/gate rescue cannot re-run, so the
+      // outcome proof is `full-suite-required` (the 2026-09-03T18:23Z shape: 13 files + a cargo
+      // and a seed-check entry).
+      failingTests: ["lib/broken.test.ts", "papercusp-desktop :: cargo test"],
+    };
+    const { deps, calls } = stubDeps(true);
+    const logs: string[] = [];
+    let cleanupCount = 0;
+    deps.log = (line) => logs.push(line);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.stagingContainsFrozenRepair = async () => false;
+    deps.resolveTip = async () => stagingTip;
+    deps.cleanupFrozenRepairWorktree = async () => {
+      cleanupCount += 1;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    // Pre-fix this was `stagingTip`: the queue was retired and a FRESH candidate cut at the
+    // tip, re-admitting every commit between the converged head and the tip (the D-007
+    // treadmill). The converged head is what the freeze was protecting; judge it.
+    expect(result).toMatchObject({
+      advanced: true,
+      green: true,
+      reason: "advanced",
+      candidate: converged,
+      from: ready,
+    });
+    expect(result.candidate).not.toBe(stagingTip);
+    expect(calls).toContain(`setup:${converged.slice(0, 7)}`);
+    expect(calls).not.toContain(`setup:${stagingTip.slice(0, 7)}`);
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+    // The exact-patch queue is still retired (its patch identity is obsolete either way).
+    expect(queue).toBeNull();
+    expect(cleanupCount).toBe(1);
+    expect(await revParse(repo, "ready")).toBe(converged);
+    expect(
+      logs.some((l) =>
+        l.includes("full canonical gate at that converged head"),
+      ),
+    ).toBe(true);
+  });
+
+  it("WI-2143595 CONTROL: an ISOLATED repair (not on staging) that needs the full suite still yields to the canonical tip — main may only fast-forward to a staging commit", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const repaired = await commit("b", "fixed", "isolated repair");
+
+    // The repair lives only in the isolated worktree lineage; canonical staging fixed the
+    // same thing independently and moved on. `repaired` descends from the frozen candidate
+    // but is NOT an ancestor of the tip, so it must not become the release candidate.
+    await git(repo, ["reset", "--hard", ready]);
+    await commit("b", "fixed independently", "canonical independent fix");
+    const stagingTip = await commit("c", "3", "later staging work");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: repaired,
+      affectedTestProofGroup: "initial-proof-run",
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      failingTests: ["lib/broken.test.ts", "papercusp-desktop :: cargo test"],
+    };
+    const { deps, calls } = stubDeps(true);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.stagingContainsFrozenRepair = async () => false;
+    deps.resolveTip = async () => stagingTip;
+    deps.cleanupFrozenRepairWorktree = async () => {};
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result).toMatchObject({
+      advanced: true,
+      green: true,
+      reason: "advanced",
+      candidate: stagingTip,
+      from: ready,
+    });
+    expect(result.candidate).not.toBe(repaired);
+    expect(calls).toContain(`setup:${stagingTip.slice(0, 7)}`);
+    expect(calls).not.toContain(`setup:${repaired.slice(0, 7)}`);
+    expect(queue).toBeNull();
+    expect(await revParse(repo, "ready")).toBe(stagingTip);
+  });
+
   it("keeps the transported quiet-cut candidate when staging moves during selective outcome proof", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
