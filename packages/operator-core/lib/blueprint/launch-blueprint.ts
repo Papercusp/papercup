@@ -776,109 +776,48 @@ export async function fireLaunchBlueprint(
     fireInput = { ...fireInput, bodyExtra: { ...fireInput.bodyExtra, spawnModel: benchModel } };
   }
 
-  // queen-steering-panel-2026-06-15 GAP-2 (P-006), generalized after the doc-steward
-  // quota trap: resolve a launch-blueprint role's OWN model from the owner's tier
-  // config so raising the 👑-tab menu/ceiling actually moves the autonomous role.
-  // The original gap was Queen-only (she passed no tier, so her own model stayed on
-  // the committed default while only her bee picks moved). The same shape applies to
-  // other autonomous launch roles like doc-steward: a failing role with no explicit
-  // bodyExtra.spawnModel silently fell back to the host Claude command even after the
-  // owner steered the fleet to chatgpt:5.5. Use the SAME bodyExtra.spawnModel →
-  // PAPERCUSP_SPAWN_MODEL channel as the bench pin above, and let explicit caller /
-  // bench pins win. Returns a spec only when it differs from the role's committed
-  // default, so un-steered launches stay byte-identical. Fail-soft on config reads.
-  if (fireInput.bodyExtra?.spawnModel == null) {
-    try {
-      const [{ readAgentConfig }, { getOwnerSteering }, { effectiveTierConfig, resolveRoleOwnModelSpec }] =
-        await Promise.all([import('../agent-config'), import('../owner-steering'), import('../fleet/model-tiers')]);
-      const [cfg, steering] = await Promise.all([
-        readAgentConfig().catch(() => null),
-        getOwnerSteering(input.workspaceId, input.installSlug).catch(() => null),
-      ]);
-      // P-002 (role-model-one-answer-2026-09-03): an EXPLICIT per-role model is THE
-      // ANSWER — the tier menu's family/floor/ceiling math gets no vote over it.
-      // Specific beats general, and `models[role]` is the most specific thing an owner
-      // can say about a role. Before this, `models[role]` was never consulted on the
-      // launch path at all: only the tier menu was, so a correctly-set per-role model
-      // was silently inert. Measured cost of that gap — nine consecutive release-fixers
-      // (2026-09-03 00:32Z→01:27Z) spawned on codex/gpt-5.6-sol and died instantly on a
-      // usage wall, while BOTH models['release-fixer']='claude-opus-5:xhigh' and
-      // roleBackends['release-fixer']='claude-code' were already set correctly. The
-      // backend is derived from the model spec downstream, so losing the model here
-      // silently lost the backend too, and the spawn body shipped self-contradictory.
-      const explicitRoleModel = cfg?.models?.[target.role]?.trim();
-      const spec = explicitRoleModel || resolveRoleOwnModelSpec(target.role, effectiveTierConfig(cfg, steering));
-      if (spec) fireInput = { ...fireInput, bodyExtra: { ...fireInput.bodyExtra, spawnModel: spec } };
-    } catch {
-      /* fail-soft: leave the role on its committed default if tier config is unreadable */
-    }
-  }
-
-  // WI-2142846: resolve a launch-blueprint role's OWN BACKEND from the owner's
-  // `roleBackends` config, mirroring the spawnModel resolution just above — same
-  // channel shape (bodyExtra → the /invoke route → an explicit per-spawn override),
-  // same fail-soft contract, same "let an explicit caller/bench pin win" precedence.
+  // Resolve what this role actually launches as — model AND backend — through the
+  // ONE resolver (fleet/role-launch.ts, plan role-model-one-answer-2026-09-03
+  // P-001/P-003/P-005). This block used to be three: a per-role/tier model
+  // resolution, an independent `roleBackends` lookup, and a compose-time
+  // contradiction check bolted on after the two disagreed in production. Splitting
+  // one question across three blocks is what let a body ship asserting a model and
+  // a backend that could not both be true.
   //
-  // Without this, a per-role backend override set via /settings/agent was invisible
-  // to THIS fire: the route's fallback resolution (resolveSpawnBackendModel →
-  // harness-invoke-once.ts's roleBackendOverride) reads process.env.AGENT_ROLE_BACKENDS,
-  // a snapshot mirrored into `process.env` only when THIS PROCESS itself called
-  // writeAgentConfig() or at THIS PROCESS's own boot (host-bootstrap.ts,
-  // applyToProcessEnv) — never on a later config change served by a different
-  // request/process. A long-running scheduler process (e.g. bg-host, which fires
-  // the release-fixer from green-checkpoint) can sit for hours/days between boots,
-  // so an operator's override silently never took effect until that process
-  // happened to restart (measured: WI-2142846, a `release-fixer` override sat
-  // ignored while the process ran the global `codex` default straight into a
-  // multi-day account usage wall). The capacity PREFLIGHT for this exact role
-  // (green-checkpoint.ts's resolveReleaseFixerProvider) already does a live
-  // readAgentConfig() read for exactly this reason — this fire-time resolution
-  // gives the actual dispatch the same freshness instead of trusting the stale
-  // env-var mirror, for every launch-blueprint-fired role, not just this one.
-  if (fireInput.bodyExtra?.spawnBackend == null) {
-    try {
-      const { readAgentConfig } = await import('../agent-config');
-      const cfg = await readAgentConfig().catch(() => null);
-      const backend = cfg?.roleBackends?.[target.role];
-      if (backend) fireInput = { ...fireInput, bodyExtra: { ...fireInput.bodyExtra, spawnBackend: backend } };
-    } catch {
-      /* fail-soft: leave backend resolution to the route's existing fallback */
-    }
-  }
-
-  // P-005 (role-model-one-answer-2026-09-03): a COMPOSE-TIME contradiction must be
-  // LOUD, not silently resolved. The two blocks above write spawnModel and
-  // spawnBackend independently, so the body can ship asserting both at once — and
-  // downstream the model spec decides the backend, so the spawnBackend half is the
-  // one that silently loses. That is exactly how nine release-fixers on 2026-09-03
-  // spawned onto a usage-walled codex account while roleBackends said 'claude-code':
-  // the contradiction was present in the body and nothing reported it.
+  // Two properties this file relies on and must not re-implement:
+  //   - a LIVE config read (not the `process.env.AGENT_MODELS` /
+  //     `AGENT_ROLE_BACKENDS` mirrors, which a long-running scheduler process such
+  //     as bg-host refreshes only at its own boot — WI-2142846: a `release-fixer`
+  //     override sat ignored for days while the process ran the stale global default);
+  //   - `spawnModel` stays null when nothing overrides the committed default, so an
+  //     un-steered launch is byte-identical to before.
   //
-  // WARN, do not throw: this runs on every autonomous launch, and a hard refusal here
-  // would take the fleet down over a config disagreement the caller cannot fix
-  // mid-flight. The precedence itself is deliberate (WI-4640) — this only makes the
-  // losing side visible. detectRoleBackendConflict in harness-invoke-once.ts answers
-  // the same question from ENV; this one reads the composed body, which is the only
-  // place the two resolutions are both concrete.
-  {
-    const composedModel = fireInput.bodyExtra?.spawnModel;
-    const composedBackend = fireInput.bodyExtra?.spawnBackend;
-    if (typeof composedModel === 'string' && typeof composedBackend === 'string') {
-      try {
-        const { inferBackendFromModelSpec } = await import('../harness-invoke-once');
-        const implied = inferBackendFromModelSpec(composedModel);
-        if (implied && implied !== composedBackend) {
-          console.warn(
-            `[backend-conflict] launch-blueprint role '${target.role}': composed body pins ` +
-              `spawnBackend '${composedBackend}' but spawnModel '${composedModel}' implies ` +
-              `'${implied}'. The MODEL WINS downstream, so this launch runs on '${implied}' and ` +
-              `the per-role backend is IGNORED. Align models['${target.role}'] and ` +
-              `roleBackends['${target.role}'] in /settings/agent; do not invert this precedence (WI-4640).`,
-          );
-        }
-      } catch {
-        /* fail-soft: a diagnostic must never break a launch */
+  // Explicit caller / bench pins still win: each field is written only when the
+  // caller left it unset.
+  if (fireInput.bodyExtra?.spawnModel == null || fireInput.bodyExtra?.spawnBackend == null) {
+    try {
+      const { resolveRoleLaunchLive } = await import('../fleet/role-launch');
+      const launch = await resolveRoleLaunchLive(target.role, {
+        workspaceId: input.workspaceId,
+        installSlug: input.installSlug,
+      });
+      const bodyExtra = { ...fireInput.bodyExtra };
+      if (bodyExtra.spawnModel == null && launch.spawnModel) bodyExtra.spawnModel = launch.spawnModel;
+      if (bodyExtra.spawnBackend == null && launch.backend) bodyExtra.spawnBackend = launch.backend;
+      fireInput = { ...fireInput, bodyExtra };
+
+      // P-005: a contradiction is reported, never silently resolved. WARN rather
+      // than throw — this runs on every autonomous launch, and a hard refusal would
+      // take the fleet down over a config disagreement the caller cannot fix
+      // mid-flight. The precedence itself is deliberate (WI-4640); this only makes
+      // the losing side visible, which is the half that was missing when nine
+      // release-fixers (2026-09-03 00:32Z→01:27Z) spawned onto a usage-walled codex
+      // account while `roleBackends['release-fixer']` said 'claude-code'.
+      if (launch.conflict) {
+        console.warn(`[backend-conflict] launch-blueprint role '${target.role}': ${launch.conflict.note}`);
       }
+    } catch {
+      /* fail-soft: leave the role on its committed default if config is unreadable */
     }
   }
 

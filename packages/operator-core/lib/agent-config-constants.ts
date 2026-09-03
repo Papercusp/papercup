@@ -779,6 +779,64 @@ export function launchAgentBackendForModel(model?: string | null): LaunchAgentBa
   return CLOUD_MODEL_MENU.find((choice) => choice.value === codexAlias && choice.backend === 'codex')?.backend ?? null;
 }
 
+/** How `backendForModelSpec` reached its answer, weakest rule last. Carried into
+    `resolveRoleLaunch`'s readout so a surprising pairing names the rule that made
+    it instead of being an unattributable guess. */
+export type ModelBackendEvidence = 'model-catalog' | 'model-shape';
+
+/**
+ * Which CLI actually runs `spec` — the SPAWN-side backend vocabulary
+ * (`AgentBackend`), derived from the model catalog rather than re-guessed per
+ * call site. `null` = the catalog does not recognize the id, so the caller must
+ * fall back to a configured backend instead of pairing a model with a guessed
+ * CLI (role-model-one-answer-2026-09-03 P-003: "backend rides with the model").
+ *
+ * Two rules, and the result says which one fired so the weaker one is visible:
+ *
+ *   - `model-catalog` — the id is IN a vocabulary: a `provider/id` OMP selector,
+ *     a `CLOUD_MODEL_MENU` bare alias (`opus`, `sol`, …), or a canonical
+ *     `gpt-5.6-*` expansion. This is the authoritative leg.
+ *   - `model-shape`   — the id is not in any menu but its SHAPE is unambiguous:
+ *     Codex-only prefixes (`openai-codex/`, `chatgpt:`, `gpt-<digit>`) and
+ *     Anthropic's versioned `claude-*` ids (`claude-opus-5`, `claude-haiku-4-5-…`),
+ *     which the menus deliberately do not enumerate because the CLI owns that
+ *     open set. Kept explicit and labelled: shape-matching a model id is exactly
+ *     the mechanism P-003 indicts, so it may run LAST and must never be silent.
+ *
+ * Codex is tested BEFORE the `provider/id` rule on purpose: `openai-codex/<id>`
+ * contains a slash but is a Codex spec, not an OMP selector.
+ */
+export function backendForModelSpec(
+  spec?: string | null,
+): { backend: AgentBackend; evidence: ModelBackendEvidence } | null {
+  const base = splitModelSpec(spec).model?.replace(/\[[^\]]+\]$/, '')?.toLowerCase() ?? null;
+  if (!base) return null;
+
+  // Codex-only shapes first — `openai-codex/…` would otherwise read as OMP's
+  // provider/id form. Mirrors harness-invoke-once's `inferBackendFromModelSpec`,
+  // which is the narrower "does this FORCE a backend swap" question.
+  if (base.startsWith('openai-codex/') || base.startsWith('chatgpt:') || /^gpt-\d/.test(base)) {
+    // `gpt-5.6-sol` and friends ARE menu rows; everything else gpt-shaped is shape-only.
+    const known = launchAgentBackendForModel(base) === 'codex';
+    return { backend: 'codex', evidence: known ? 'model-catalog' : 'model-shape' };
+  }
+
+  const fromMenu = launchAgentBackendForModel(base);
+  if (fromMenu) {
+    return {
+      backend: fromMenu === 'claude' ? 'claude-code' : fromMenu,
+      evidence: 'model-catalog',
+    };
+  }
+
+  // Anthropic's versioned ids (`claude-opus-5`, `claude-fable-5-1`, …). The bare
+  // aliases above are the menu; these full ids are the open set the CLI owns, and
+  // they are what `models[role]` actually holds after a /settings/agent edit.
+  if (/^claude-/.test(base)) return { backend: 'claude-code', evidence: 'model-shape' };
+
+  return null;
+}
+
 /**
  * Most members one `fleet:launch-on-plan` call may open — opening more than this
  * in one go is heavy and almost always a mistake (mirrors capability:terminal's
