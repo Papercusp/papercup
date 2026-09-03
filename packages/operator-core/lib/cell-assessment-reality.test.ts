@@ -65,6 +65,7 @@ import {
   assessFrozenRepairConvergence,
   type StoredFrozenRepairConvergence,
 } from './release/frozen-candidate-repair-queue';
+import { assessRetriage, type RetriageRunReading } from './release/in-flight-retriage';
 // ⚠ The REAL assessor, imported past the module mock below (which spreads the actual
 // module for exactly this reason): it is the SUBJECT of the goal control rows, and a
 // stubbed one would make every row assert against the mock instead of the code.
@@ -354,6 +355,29 @@ const FREEZE = (
     nowMs,
   );
 
+/**
+ * P-009 control builder. `null` is the UNMEASURED reading (both liveness reads failed),
+ * distinct from an inactive run — that distinction is the whole point of the cell, so the
+ * two must be separate rows rather than one defaulted case.
+ */
+const RETRIAGE = (over: Partial<RetriageRunReading> | null) =>
+  assessRetriage(
+    over === null
+      ? null
+      : {
+          active: true,
+          inRetriageWindow: true,
+          fromCandidate: '79c50b5b7b78',
+          candidate: 'd19af1bd60d8',
+          refireAttempt: 0,
+          maxRefires: 2,
+          totalRefires: 1,
+          absoluteCeiling: 6,
+          asOfAgeMs: 1_000,
+          ...over,
+        },
+  );
+
 const CONTROLS: Record<string, readonly Control[]> = {
   'gate.greenCheckpoint.convergence': [
     { label: 'no readable convergence record', expect: CONV(null) },
@@ -376,6 +400,22 @@ const CONTROLS: Record<string, readonly Control[]> = {
     { label: 'a frozen candidate is being held', expect: FREEZE({ state: 'held' }) },
     { label: 'a frozen candidate was retired this tick', expect: FREEZE({ state: 'retired' }) },
     { label: 'a frozen candidate is being repaired', expect: FREEZE({ state: 'converging' }) },
+  ],
+  'gate.greenCheckpoint.retriage': [
+    { label: 'neither liveness read answered', expect: RETRIAGE(null) },
+    { label: 'no checkpoint run is active at all', expect: RETRIAGE({ active: false }) },
+    {
+      label: 'a run is active but no refire is in flight',
+      expect: RETRIAGE({ inRetriageWindow: undefined }),
+    },
+    { label: 'a refire is in flight with budget remaining', expect: RETRIAGE({}) },
+    {
+      // Both bounds are checked, so the CEILING alone must reach the cap code: a run whose
+      // rescues all SUCCEED holds refireAttempt at 0 forever while totalRefires climbs, and
+      // reading the charged counter alone reports budget remaining when there is none.
+      label: 'a refire is in flight and the absolute ceiling is spent',
+      expect: RETRIAGE({ totalRefires: 6, absoluteCeiling: 6 }),
+    },
   ],
   'git.pipelinePosition': [
     { label: 'deployed + process started after the code', expect: PIPE({}) },
@@ -861,6 +901,18 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     'retired',
     'converging',
   ],
+  // P-009 truth table. `no-run-reading` is FIRST and is NOT `no-run`: the unmeasured reading
+  // is the one that must still hold a caller back, and collapsing it into the measured
+  // negative is the destructive green-light this cell exists to withhold. (Named
+  // `no-run-reading` rather than `not-measured` because the latter is reserved by the
+  // read-health vocabulary — a produced code may not reuse one, per D-008.)
+  'gate.greenCheckpoint.retriage': [
+    'no-run-reading',
+    'no-run',
+    'no-refire',
+    'in-flight',
+    'in-flight-at-cap',
+  ],
   'git.pipelinePosition': [
     'live',
     'restart-required',
@@ -982,8 +1034,12 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
    * suite green with zero cells examined. The plan item demands an EXPLICIT ten-of-ten
    * partition with zero residue, and this is it.
    */
-  it('registers exactly twenty-two cells and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(24);
+  // ⚠ The prose count in this title used to name a number and drifted the moment a cell was
+  // added (it said "twenty-two" while asserting 24). The literals below are the tripwire —
+  // they must stay hardcoded so adding a cell forces an author through this file — but the
+  // TITLE must not carry a second copy of them.
+  it('registers every built-in cell and routes every one to a resolver family', () => {
+    expect(BUILTIN_CELLS).toHaveLength(25);
     expect(
       PIPELINE_CELLS.length +
         GOAL_CELLS.length +
@@ -994,7 +1050,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
         CAPACITY_CELLS.length +
         ROLE_LAUNCH_CELLS.length,
     ).toBe(BUILTIN_CELLS.length);
-    expect(PIPELINE_CELLS).toHaveLength(11);
+    expect(PIPELINE_CELLS).toHaveLength(12);
     expect(GOAL_CELLS).toHaveLength(1);
     expect(PORTFOLIO_CELLS).toHaveLength(1);
     expect(HOST_MEMORY_CELLS).toHaveLength(2);
@@ -1307,6 +1363,32 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
         },
       }),
       'a DEAD fixer must not read as live remediation — the ~5h idle shape',
+    ],
+    // ── P-004's two freeze legs. They were registered without inversion probes, which left
+    // this partition asserting 22 pairs against 24 cells — i.e. the file was RED, and its
+    // own residue check is what caught it. Their decisive fields are the two conflations
+    // each cell was built to end.
+    [
+      'gate.greenCheckpoint.convergence',
+      'gate.convergence.converging',
+      CONV({ converging: true }) ?? '',
+      CONV({ converging: false }) ?? '',
+      'a shrinking failing set must not read as the treadmill the freeze exists to prevent',
+    ],
+    [
+      'gate.greenCheckpoint.freezeDisposition',
+      'gate.freezeDisposition.state',
+      FREEZE({ state: 'none' }) ?? '',
+      FREEZE({ state: 'off', enabled: false }) ?? '',
+      'a green gate with nothing frozen must not read as the owner having switched the mechanism off',
+    ],
+    // P-009. The decisive field is the one a caller acts on destructively.
+    [
+      'gate.greenCheckpoint.retriage',
+      'gate.retriage.inFlight',
+      RETRIAGE({}) ?? '',
+      RETRIAGE({ inRetriageWindow: undefined }) ?? '',
+      'a live auto-refire must not read as a run with no rescue to discard',
     ],
     [
       'gate.greenCheckpoint.ownership',

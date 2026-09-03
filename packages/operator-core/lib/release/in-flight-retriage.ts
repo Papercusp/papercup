@@ -429,7 +429,7 @@ export async function readRunnerCodeCommittedAtMs(
  *
  * `inFlight: null` means BOTH liveness reads failed — never "no refire in flight". A
  * reader that collapses unknown to false gets exactly the destructive green-light this
- * cell exists to withhold, so `standDown` is TRUE on `not-measured`: unknown HOLDS you, it
+ * cell exists to withhold, so `standDown` is TRUE on `no-run-reading`: unknown HOLDS you, it
  * does not release you. The stand-down advice is cheap and correct either way (see
  * {@link attributeRetriageToRun}); the claim that nothing is in flight is not.
  * ══════════════════════════════════════════════════════════════════════════════ */
@@ -454,7 +454,7 @@ export interface RetriageRunReading {
 
 /** Assessment codes for `gate.greenCheckpoint.retriage`. */
 export type RetriageCellCode =
-  | 'not-measured'
+  | 'no-run-reading'
   | 'no-run'
   | 'no-refire'
   | 'in-flight'
@@ -474,7 +474,7 @@ export interface RetriageCellProjection {
   runActive: boolean | null;
   /**
    * Would firing `release:checkpoint-run` right now be destructive or futile?
-   * TRUE on `in-flight*` (it discards a live rescue) AND on `not-measured` (unknown holds
+   * TRUE on `in-flight*` (it discards a live rescue) AND on `no-run-reading` (unknown holds
    * you). FALSE only when the reading positively says there is nothing to discard.
    */
   standDown: boolean;
@@ -510,7 +510,7 @@ export interface RetriageCellProjection {
  * `cell-assessment-reality.test.ts` exercises the same function the projection does.
  */
 export function assessRetriage(run: RetriageRunReading | null | undefined): RetriageCellCode {
-  if (run == null) return 'not-measured';
+  if (run == null) return 'no-run-reading';
   if (run.active !== true) return 'no-run';
   if (run.inRetriageWindow !== true) return 'no-refire';
   // Budget is only knowable once both charged counters are present. A marker carrying
@@ -529,7 +529,7 @@ export function assessRetriage(run: RetriageRunReading | null | undefined): Retr
 /**
  * PURE: project the re-triage reading into the shape `gate.greenCheckpoint.retriage` publishes.
  *
- * Emitted UNCONDITIONALLY — an unmeasured reading yields `code: 'not-measured'` with null
+ * Emitted UNCONDITIONALLY — an unmeasured reading yields `code: 'no-run-reading'` with null
  * fields, never a bare `null` in place of the object, for the same two reasons as
  * `projectFreezeDispositionCell`: the cell contract requires the declared assessment path
  * to exist in every live payload, and "I could not measure it" is itself an answer a reader
@@ -542,7 +542,7 @@ export function projectRetriageCell(
 ): RetriageCellProjection {
   const code = assessRetriage(run);
   const inFlight = code === 'in-flight' || code === 'in-flight-at-cap';
-  if (code === 'not-measured') {
+  if (code === 'no-run-reading') {
     return {
       code,
       unmeasured: true,

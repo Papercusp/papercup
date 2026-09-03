@@ -2340,6 +2340,108 @@ export const GATE_FREEZE_DISPOSITION_CELL: CellSpec = {
     '{ gate: { freezeDisposition: { code, unmeasured, state, reason, enabled, candidate, holdUntilMs, capacityRetryAtMs, observedAtMs, ageMs, stale, summary } } }',
 };
 
+/**
+ * Cell 2h — IS AN AUTO-REFIRE / RE-TRIAGE IN FLIGHT, AND MUST I STAND DOWN?
+ * main-green-status-visible-2026-09-03 P-009 (audit question #21).
+ *
+ * ── THE MEASURED GAP THIS CLOSES ────────────────────────────────────────────────
+ * The two ways to learn you were inside the re-triage window both arrived AFTER the
+ * decision to act: provoke `release:checkpoint-run`'s refusal, or hand-dig
+ * `retriageDetail` / `inFlightCandidate` / `verdictlessRefire` out of routine metadata.
+ * CLAUDE.md gives the rule its own 🚨 alarm block — firing into the window "discards the
+ * rescue and costs a full suite" — and an alarm block is the tell that a question is
+ * expensive and repeatedly got wrong. A rule whose only enforcement is a refusal you must
+ * provoke is not readable in advance; this cell makes it one.
+ *
+ * ── WHY THIS IS A SEPARATE CELL FROM `candidate` ────────────────────────────────
+ * Different subjects (D-014). `gate.greenCheckpoint.candidate` answers WHICH sha is being
+ * judged and how much to trust that reading; this answers WHETHER A DESTRUCTIVE ACTION IS
+ * SAFE RIGHT NOW. They dissociate: a perfectly authoritative `retriage-marker` candidate is
+ * exactly the reading you get while a refire is in flight, so trusting the sha says nothing
+ * about whether you may act on it.
+ *
+ * ── UNKNOWN HOLDS YOU, IT DOES NOT RELEASE YOU ──────────────────────────────────
+ * `standDown` is TRUE on `not-measured`. This is the one asymmetry in the whole family and
+ * it is deliberate: every other cell's unknown means "do not conclude", while this one's
+ * also means "do not act". Collapsing an unmeasured liveness reading to "nothing in flight"
+ * hands out precisely the green-light that costs a ~55min suite, and the stand-down advice
+ * is cheap and correct either way — the claim that nothing is in flight is not.
+ */
+export const GATE_RETRIAGE_CELL: CellSpec = {
+  cell: 'gate.greenCheckpoint.retriage',
+  registeredOn: '2026-09-03',
+  owner: 'su-4342525e-2b14-4780-bf1b-3b413480030d',
+  headline: 'gate.retriage.inFlight',
+  assessment: {
+    path: 'gate.retriage.code',
+    codes: {
+      // NOT `not-measured`: that literal is reserved by the read-health vocabulary
+      // (CELL_UNKNOWN_CODES), and D-008 keeps read-health and domain meaning in separate
+      // vocabularies so a caller can tell "the cell could not answer" from "the cell
+      // answered, and the answer is that the RUN could not be read".
+      'no-run-reading': {
+        meaning:
+          'Neither the run lock nor the cached run reading answered, so whether a refire is in flight is UNKNOWN. This is NOT "no refire in flight".',
+        safeAction:
+          'STAND DOWN anyway — unknown holds you. Do NOT fire release:checkpoint-run on this reading: if a rescue is in flight it is discarded and a full suite is lost. Re-read after the next tick, or read release:checkpoint-run\'s own refusal, which takes the same marker.',
+      },
+      'no-run': {
+        meaning:
+          'No checkpoint run is active at all, so no auto-refire can be in flight. A measured negative, not an absence.',
+        safeAction:
+          'Nothing to stand down for on THIS axis. Every other gate rule still applies — in particular, a manual run cuts a FRESH candidate at tip and restarts the treadmill, so read gate.greenCheckpoint.freezeDisposition before firing one.',
+      },
+      'no-refire': {
+        meaning:
+          'A checkpoint run IS active but no auto-refire is in flight — there is no rescue to discard.',
+        safeAction:
+          'A manual release:checkpoint-run would still be refused as `already_running`, so firing one buys nothing. Let the active run reach a verdict.',
+      },
+      'in-flight': {
+        meaning:
+          'An auto-refire IS in flight: this run judged a red stale and re-fired onto a newer candidate, and is re-verifying it now. The red you are reasoning about may belong to a candidate this run has ALREADY discarded.',
+        safeAction:
+          'STAND DOWN. Firing release:checkpoint-run now discards the rescue and costs a full suite (green-checkpoint.ts\'s own words). Read `abandonedFailingFiles` before fixing anything — those are the files the discarded red named. Wait for the verdict.',
+      },
+      'in-flight-at-cap': {
+        meaning:
+          'A refire is in flight AND the rescue budget is exhausted — by the charged counter, the absolute ceiling, or a disabled cap. The NEXT red STICKS.',
+        safeAction:
+          'STAND DOWN for this refire, and prepare for the red to be real: read `budgetLabel` for which bound is spent. This is the point at which a human lever starts to matter — but interrupting the in-flight run still costs the suite without changing the outcome.',
+      },
+    },
+    evidence: [
+      'gate.retriage.unmeasured',
+      'gate.retriage.standDown',
+      'gate.retriage.fromCandidate',
+      'gate.retriage.refiringCandidate',
+      'gate.retriage.abandonedFailingFiles',
+      'gate.retriage.budgetLabel',
+      'gate.retriage.summary',
+    ],
+  },
+  nullable: true,
+  unknownHoist: 'gate.retriage.unmeasured',
+  callerRelativity: { kind: 'global' },
+  provenance: {
+    obtainedBy:
+      "gate.checkpointRunInFlight — the leg gitPipelinePosition() already maps via mapCheckpointRunInFlight() from the live run-lock, the cached run reading and gate_health.inFlightRetriage (parseInFlightRetriage); projected by projectRetriageCell(), which re-reads nothing and consults the raw marker only for `failingFiles`, and only once in-flight is settled",
+    liveExercised: true,
+    evidence:
+      'Read live 2026-09-03T12:2xZ against the frozen candidate 79c50b5b7b78 / repairHead d19af1bd60d8: no refire in flight (the gate was serialized behind another checkpoint\'s fixer-dispatch reservation, attempts 0), i.e. the `no-run`/`no-refire` arm — the reading an agent watching a 103-red streak most needs, because it is the one under which firing a manual run looks harmless and is not.',
+  },
+  resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
+  visibility: OPERATOR_PIPELINE_VISIBILITY,
+  federation: { kind: 'local' },
+  changeSignal: {
+    kind: 'poll',
+    tool: 'dev:pipeline_position',
+    path: 'gate.retriage.inFlight',
+  },
+  shape:
+    '{ gate: { retriage: { code, unmeasured, inFlight, runActive, standDown, fromCandidate, refiringCandidate, abandonedFailingFiles, budgetLabel, atCap, refireAttempt, maxRefires, totalRefires, absoluteCeiling, observedAtMs, ageMs, asOfAgeMs, summary } } }',
+};
+
 export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,
@@ -2349,6 +2451,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   GATE_FREEZE_DISPOSITION_CELL,
   GATE_OWNER_BRIEF_CELL,
   GATE_QUALIFICATION_CELL,
+  GATE_RETRIAGE_CELL,
   GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,

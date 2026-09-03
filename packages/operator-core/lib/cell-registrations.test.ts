@@ -20,6 +20,7 @@ import {
   GATE_CANDIDATE_FAILURES_CELL,
   GATE_OWNER_BRIEF_CELL,
   GATE_QUALIFICATION_CELL,
+  GATE_RETRIAGE_CELL,
   GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
@@ -38,6 +39,7 @@ const OPERATOR_PIPELINE_CELLS = [
   GATE_CANDIDATE_FAILURES_CELL,
   GATE_OWNER_BRIEF_CELL,
   GATE_QUALIFICATION_CELL,
+  GATE_RETRIAGE_CELL,
   GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
@@ -180,6 +182,10 @@ describe('P-007: the four verdict cells', () => {
       // than from the tree. Registered here; excluded from NEW_CELLS on purpose.
       'gate.greenCheckpoint.ownership',
       'gate.greenCheckpoint.qualification',
+      // main-green-status-visible-2026-09-03 P-009 (audit Q#21): "is an auto-refire in
+      // flight — must I stand down?". A pure lens over gitPipelinePosition()'s already-mapped
+      // checkpointRunInFlight leg, so it IS in the pipeline family below.
+      'gate.greenCheckpoint.retriage',
       'gate.greenCheckpoint.verdict',
       'git.mainBehindStaging',
       'git.pipelinePosition',

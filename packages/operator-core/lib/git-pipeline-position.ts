@@ -1440,7 +1440,7 @@ export interface PipelinePosition {
      * calm-sounding) and `stale` (a record past its freshness window, e.g. a `retired` left
      * behind hours ago and read as current).
      *
-     * ⚠ ALWAYS an object — `code: 'not-measured'` is the unmeasured answer, never `null`.
+     * ⚠ ALWAYS an object — `code: 'no-disposition-recorded'` is the unmeasured answer, never `null`.
      */
     freezeDisposition?: FreezeDispositionCellProjection;
     /**
@@ -1454,8 +1454,8 @@ export interface PipelinePosition {
      * routine metadata by hand. CLAUDE.md gives it a standalone 🚨 alarm block, which is the
      * tell that it is expensive and repeatedly got wrong.
      *
-     * ⚠ ALWAYS an object — `code: 'not-measured'` is the unmeasured answer, never `null`. And
-     * `standDown` is TRUE on `not-measured`: unknown HOLDS you rather than releasing you,
+     * ⚠ ALWAYS an object — `code: 'no-run-reading'` is the unmeasured answer, never `null`. And
+     * `standDown` is TRUE on `no-run-reading`: unknown HOLDS you rather than releasing you,
      * because collapsing an unmeasured reading to "nothing in flight" is precisely the
      * destructive green-light this cell withholds.
      */
@@ -5405,7 +5405,7 @@ export async function gitPipelinePosition(
     // ladder) — it was simply never projected here, so "is this converging or is it a
     // treadmill?" was answerable only by grepping per-run checkpoint logs.
     //
-    // ⚠ ALWAYS AN OBJECT, never null: `code: 'not-measured'` with null fields is the
+    // ⚠ ALWAYS AN OBJECT, never null: `code: 'no-cycle-recorded'` with null fields is the
     // unmeasured answer. A bare null would both break the cell contract (the declared
     // assessment path must exist in every live payload) and re-create the ambiguity this
     // item exists to remove.
