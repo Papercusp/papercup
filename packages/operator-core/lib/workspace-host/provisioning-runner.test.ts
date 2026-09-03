@@ -72,7 +72,23 @@ function providerHarness(steps: readonly WorkspaceHostPlanStep[]) {
   }));
   const provider = {
     target: 'gcp',
-    capabilities: {},
+    capabilities: {
+      // WI-40474 (bb2c68cd) added the hostBootstrap gate at
+      // input.provider.capabilities.lifecycle.hostBootstrap — lifecycle is a REQUIRED field on
+      // WorkspaceHostProviderCapabilities, so a mock provider must always declare it. `false`
+      // preserves this suite's pre-existing behavior (no bootstrap render/consume).
+      lifecycle: {
+        start: false,
+        stop: false,
+        restart: false,
+        snapshot: false,
+        restore: false,
+        upgrade: false,
+        repair: false,
+        confirmedDestroy: false,
+        hostBootstrap: false,
+      },
+    },
     validateConnection: vi.fn(async () => ({
       ok: true,
       checkedAt: '2026-08-25T00:00:00Z',
