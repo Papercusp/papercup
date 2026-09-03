@@ -1617,6 +1617,44 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       status: 'skipped-disabled',
       detail: { reason: routing.skip.reason },
     });
+    // EI-17065: a green-checkpoint-{stall,watchdog} escalation for THIS installSlug can
+    // never self-clear once the gate stops being routable — trackGateStall (the only
+    // code that clears GATE_STALL_PHASE) fires only from a real green VERDICT below,
+    // and this branch returns before that ever runs. Distinct from EI-8396's dead-
+    // install-slug guard in collectEscalationSignals (watchdog.ts), which suppresses
+    // the collector only when the routine ROW is missing/inactive — here the routine
+    // is very much active and firing on schedule, it just never reaches trackGateStall
+    // because resolveCheckpointRouting returns `skip` first (not_found / no_blueprint /
+    // gate_disabled / no_repo — every reason means "no verdict will ever come from this
+    // path again until routing changes"). So clear any OPEN escalation for this
+    // installSlug right here — the one place that reliably observes the durable
+    // (non-transient) reason no verdict is coming. Best-effort: a DB hiccup here must
+    // never fail the routine tick, so this mirrors the try/catch used for the green-
+    // transition escalation clear below rather than propagating.
+    try {
+      const { GREEN_CHECKPOINT_ESCALATION_PHASES } = await import('../improvements/watchdog');
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { sql } = getOrgPg();
+      const note =
+        `\n[auto ${new Date().toISOString()}] green-checkpoint is not routable for this ` +
+        `install-slug (${routing.skip.reason}) — an un-routed gate can never produce a ` +
+        `green verdict to self-clear this escalation, so it was auto-cleared here.\n`;
+      await sql.unsafe(
+        `UPDATE harness_shared.harness_escalations
+            SET supervisor_notes = COALESCE(supervisor_notes, '') || $4,
+                escalation = NULL,
+                mtime_ms = $3
+          WHERE workspace_id = $1
+            AND harness_slug = $2
+            AND phase = ANY($5)
+            AND escalation IS NOT NULL`,
+        [ctx.workspaceId, ctx.installSlug, Date.now(), note, GREEN_CHECKPOINT_ESCALATION_PHASES],
+      );
+    } catch (e) {
+      console.warn(
+        `${orchestratorStdoutTag()} skipped-disabled escalation clear failed for ${ctx.installSlug}: ${e instanceof Error ? e.message : e}`,
+      );
+    }
     return;
   }
   const root = routing.root;
