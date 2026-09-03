@@ -90,9 +90,8 @@ function attestation(
       minimumNodeMajor: 22,
       psu: true,
       pui: true,
-      claude: true,
-      codex: true,
-      omp: true,
+      agentLaunchers: { claude: true, codex: true, omp: true },
+      agentRuntimesVerifiedByBootstrap: false,
     },
     service: {
       name: 'papercusp-workspace',
@@ -314,6 +313,51 @@ describe('buildWorkspaceHostBootstrap', () => {
     );
     expect(script).toContain('die "agent identity cannot write the scoped workspace root"');
     expect(script).toContain('die "workspace SSH user cannot write the scoped workspace root"');
+  });
+
+  it('attests agent LAUNCHERS, never agent RUNTIMES, and refuses the optimistic claim (D-252)', () => {
+    const script = buildWorkspaceHostBootstrap(input());
+
+    // What bootstrap can prove is `test -x` on three 539-byte psu launcher wrappers. It ships no
+    // vendor CLI and nothing installs one, so the old flat `claude:true,codex:true,omp:true` —
+    // read by every caller as "this host can run Claude" — was measuring a file permission while
+    // naming a product property. Same defect class as the pre-D-251 read boolean.
+    expect(script).toContain(
+      'agentLaunchers:{claude:true,codex:true,omp:true},agentRuntimesVerifiedByBootstrap:false',
+    );
+    expect(script).not.toContain('pui:true,claude:true,codex:true,omp:true');
+
+    // The validator must refuse the OPTIMISTIC direction specifically. A host asserting that
+    // bootstrap verified its agent runtimes is running pre-D-252 code or was hand-edited; either
+    // way nothing could have established the claim, since bootstrap has no such probe.
+    const overclaiming = validateWorkspaceHostBootstrapAttestation(
+      attestation({
+        runtime: {
+          ...attestation().runtime,
+          agentRuntimesVerifiedByBootstrap: true as false,
+        },
+      }),
+      input(),
+    );
+    expect(overclaiming.ok).toBe(false);
+    expect(overclaiming.errors).toContain(
+      'attestation claims bootstrap verified the agent runtimes; bootstrap cannot establish that (D-252)',
+    );
+
+    // A missing launcher is still a refusal — narrowing the CLAIM must not weaken the CHECK.
+    const missingLauncher = validateWorkspaceHostBootstrapAttestation(
+      attestation({
+        runtime: {
+          ...attestation().runtime,
+          agentLaunchers: { ...attestation().runtime.agentLaunchers, codex: false as true },
+        },
+      }),
+      input(),
+    );
+    expect(missingLauncher.ok).toBe(false);
+    expect(missingLauncher.errors).toContain('agent launcher prerequisite check failed');
+
+    expect(validateWorkspaceHostBootstrapAttestation(attestation(), input()).ok).toBe(true);
   });
 
   it('refuses to collapse the agent identity onto either existing account (D-248)', () => {

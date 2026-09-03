@@ -808,9 +808,8 @@ export function workspaceHostCleanRoomFixtureAttestation(
       minimumNodeMajor: fixture.bootstrapInput.minimumNodeMajor,
       psu: true,
       pui: true,
-      claude: true,
-      codex: true,
-      omp: true,
+      agentLaunchers: { claude: true, codex: true, omp: true },
+      agentRuntimesVerifiedByBootstrap: false,
     },
     service: {
       name: fixture.bootstrapInput.service.name,

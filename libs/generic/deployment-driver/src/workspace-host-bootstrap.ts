@@ -446,9 +446,32 @@ export interface WorkspaceHostBootstrapAttestation {
     minimumNodeMajor: number;
     psu: true;
     pui: true;
-    claude: true;
-    codex: true;
-    omp: true;
+    /**
+     * PRESENT AND EXECUTABLE — which is the entire claim bootstrap is entitled to make.
+     *
+     * These were `claude: true, codex: true, omp: true` directly under `runtime`, read by every
+     * caller as "this host can run Claude/Codex/OMP". They never meant that. The only thing
+     * behind them is `test -x` on `bin/{claude,codex,omp}`, and those three files are 539-byte
+     * psu LAUNCHER wrappers — the host ships no vendor CLI at all and nothing installs one
+     * (D-252, measured on the r19 bundle). A field whose NAME claims a product property and
+     * whose VALUE measures a file permission is the unbacked-boolean class P-046 exists to
+     * remove; it is the same defect as the old `runtimeReadableByWorkspaceUser` (D-251).
+     */
+    agentLaunchers: {
+      claude: true;
+      codex: true;
+      omp: true;
+    };
+    /**
+     * Bootstrap NEVER establishes that an agent runtime is installed and authenticated, so it
+     * attests the negative rather than staying silent — silence reads as "not checked", and a
+     * reader then supplies the optimistic default this constant exists to deny.
+     *
+     * The authority for the positive is the readiness probe in
+     * `workspace-host-agent-authentication.ts`, run later by the initializer, which reaches a
+     * real authenticated surface and scores "exit 0 but unparseable" as a FAILURE.
+     */
+    agentRuntimesVerifiedByBootstrap: false;
   };
   service: {
     name: string;
@@ -1330,7 +1353,7 @@ export function buildWorkspaceHostBootstrap(
     `CHECKS_JSON=${shellQuote(checksJson)}`,
     'ATTESTATION_PATH="$STATE_ROOT/bootstrap-attestation.json"',
     'jq -n --arg contractVersion "$CONTRACT_VERSION" --arg hostId "$HOST_ID" --arg action "$BOOTSTRAP_ACTION" --arg ubuntuVersion "$VERSION_ID" --arg observedAt "$OBSERVED_AT" --arg releaseVersion "$RELEASE_VERSION" --arg source "$BUNDLE_URL" --arg bundleSha256 "$BUNDLE_SHA256" --arg signingKeySha256 "$SIGNING_KEY_SHA256" --arg migrationId "$MIGRATION_ID" --arg serviceName "$SERVICE_NAME" --arg serviceUser "$SERVICE_USER" --arg serviceGroup "$SERVICE_GROUP" --arg workspaceUser "$WORKSPACE_USER" --arg workspaceGroup "$WORKSPACE_GROUP" --arg agentUser "$AGENT_USER" --arg agentGroup "$AGENT_GROUP" --arg runtimeRoot "$RUNTIME_ROOT" --arg stateRoot "$STATE_ROOT" --arg workspaceRoot "$WORKSPACE_ROOT" --argjson nodeMajor "$NODE_MAJOR" --argjson minimumNodeMajor "$MINIMUM_NODE_MAJOR" --argjson servicePort "$SERVICE_PORT" --argjson checks "$CHECKS_JSON" \\',
-    '  \'{contractVersion:$contractVersion,hostId:$hostId,action:$action,ubuntuVersion:$ubuntuVersion,observedAt:$observedAt,status:"healthy",release:{version:$releaseVersion,source:$source,bundleSha256:$bundleSha256,signingKeySha256:$signingKeySha256,signatureVerified:true},migration:{id:$migrationId,applied:true},runtime:{nodeMajor:$nodeMajor,minimumNodeMajor:$minimumNodeMajor,psu:true,pui:true,claude:true,codex:true,omp:true},service:{name:$serviceName,user:$serviceUser,group:$serviceGroup,bindHost:"127.0.0.1",port:$servicePort,active:true},isolation:{workspaceUser:$workspaceUser,workspaceGroup:$workspaceGroup,agentUser:$agentUser,agentGroup:$agentGroup,runtimeRoot:$runtimeRoot,stateRoot:$stateRoot,workspaceRoot:$workspaceRoot,runtimeReadableByWorkspaceUser:false,runtimeWritableByWorkspaceUser:false,runtimeReadableByAgentUser:true,runtimeWritableByAgentUser:false,agentHomeReadableBySshUser:false,workspaceWritableByService:true,workspaceWritableBySshUser:true,workspaceWritableByAgentUser:true,sudo:false,serviceGroupMember:false,operatorIngress:"ssh-local-forward",updateMode:"signed-atomic-release-swap"},checks:$checks}\' > "$ATTESTATION_PATH"',
+    '  \'{contractVersion:$contractVersion,hostId:$hostId,action:$action,ubuntuVersion:$ubuntuVersion,observedAt:$observedAt,status:"healthy",release:{version:$releaseVersion,source:$source,bundleSha256:$bundleSha256,signingKeySha256:$signingKeySha256,signatureVerified:true},migration:{id:$migrationId,applied:true},runtime:{nodeMajor:$nodeMajor,minimumNodeMajor:$minimumNodeMajor,psu:true,pui:true,agentLaunchers:{claude:true,codex:true,omp:true},agentRuntimesVerifiedByBootstrap:false},service:{name:$serviceName,user:$serviceUser,group:$serviceGroup,bindHost:"127.0.0.1",port:$servicePort,active:true},isolation:{workspaceUser:$workspaceUser,workspaceGroup:$workspaceGroup,agentUser:$agentUser,agentGroup:$agentGroup,runtimeRoot:$runtimeRoot,stateRoot:$stateRoot,workspaceRoot:$workspaceRoot,runtimeReadableByWorkspaceUser:false,runtimeWritableByWorkspaceUser:false,runtimeReadableByAgentUser:true,runtimeWritableByAgentUser:false,agentHomeReadableBySshUser:false,workspaceWritableByService:true,workspaceWritableBySshUser:true,workspaceWritableByAgentUser:true,sudo:false,serviceGroupMember:false,operatorIngress:"ssh-local-forward",updateMode:"signed-atomic-release-swap"},checks:$checks}\' > "$ATTESTATION_PATH"',
     'chown "$SERVICE_USER:$SERVICE_GROUP" "$ATTESTATION_PATH"',
     'chmod 0640 "$ATTESTATION_PATH"',
     `printf '${WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX}%s\\n' "$(base64 --wrap=0 < \"$ATTESTATION_PATH\")"`,
@@ -1492,10 +1515,20 @@ export function validateWorkspaceHostBootstrapAttestation(
     errors,
     candidate.runtime.psu === true &&
       candidate.runtime.pui === true &&
-      candidate.runtime.claude === true &&
-      candidate.runtime.codex === true &&
-      candidate.runtime.omp === true,
-    'agent CLI prerequisite check failed',
+      candidate.runtime.agentLaunchers?.claude === true &&
+      candidate.runtime.agentLaunchers?.codex === true &&
+      candidate.runtime.agentLaunchers?.omp === true,
+    'agent launcher prerequisite check failed',
+  );
+  // Refuse the OPTIMISTIC lie specifically. A host claiming bootstrap verified its agent
+  // runtimes is either running pre-D-252 code or has been hand-edited, and in both cases the
+  // claim is unbacked — bootstrap has no probe that could establish it. Asserting the literal
+  // `false` rather than ignoring the field is what makes a stale attestation legible instead of
+  // merely tolerated.
+  addMismatch(
+    errors,
+    candidate.runtime.agentRuntimesVerifiedByBootstrap === false,
+    'attestation claims bootstrap verified the agent runtimes; bootstrap cannot establish that (D-252)',
   );
   addMismatch(
     errors,
