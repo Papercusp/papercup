@@ -1424,6 +1424,60 @@ export function shippedSubjectPlanRefusal(args: {
   );
 }
 
+/**
+ * P-013 (design-to-code-coverage-seam-2026-09-02) — the STRUCTURED-CHECK FLOOR.
+ *
+ * An acceptance rubric is a plan's definition-of-done, and until now it could be made
+ * entirely of prose: 130 of the 275 acceptance rubrics that carry criteria (47%, measured
+ * 2026-09-03) name not one machine-checkable criterion, so nothing about the plan they
+ * gate is ever re-verified by a machine. This floor forbids that SILENCE. It deliberately
+ * does NOT judge which check is right — only that the rubric must say how it is checked.
+ *
+ * ⚠ Deliberately NOT a coverage mandate. P-013's own text asks for a kind:'coverage'
+ * criterion scoped to planTouched in EVERY acceptance rubric; D-034 records why that half
+ * is sequenced behind the evidence path instead of shipped here. All 2,019 censused
+ * surfaces sit at meets_l1..l4 = 0 because `coverage_evidence` holds 0 rows, and the
+ * grading rule is `belowUnwaived === 0 ? 'pass' : 'fail'` — so a mandatory coverage check
+ * would refuse EVERY acceptance emit fleet-wide (coverage_scope_empty over a scope that
+ * matches no censused surface, coverage_contradicted over one that does). Mandating an
+ * instrument whose evidence table is empty does not measure coverage; it stops shipping.
+ *
+ * Scope is acceptance-kind ONLY, and that is what keeps the cold-start seeder safe: all 13
+ * first-party rubric seeds carry kind = null and none of them carries a check, so a blanket
+ * floor would refuse `reseedRubricsAfterInstall` on every boot.
+ *
+ * Pure, so the rule is unit-testable without PG — the same posture as
+ * {@link acceptanceProposeReopensShippedPlan}.
+ */
+export function acceptanceRubricLacksStructuredCheck(args: {
+  kind: string;
+  criteria: readonly Pick<RubricCriterion, 'check'>[];
+}): boolean {
+  // An empty criteria array is the classRef / pure-investigation case (plan D-009): there
+  // is no criterion to attach a check to, so there is nothing to be silent ABOUT.
+  if (args.kind !== 'acceptance' || args.criteria.length === 0) return false;
+  return !args.criteria.some((c) => c.check != null);
+}
+
+/** The refusal text for {@link acceptanceRubricLacksStructuredCheck}; pure for the same reason. */
+export function structuredCheckFloorRefusal(args: { rubricId: string; criteriaCount: number }): string {
+  return (
+    'invalid_args: proposeRubric: acceptance_rubric_needs_structured_check — acceptance rubric ' +
+    `'${args.rubricId}' carries ${args.criteriaCount} criteria and not one of them has a structured ` +
+    '`check`, so nothing it asserts can ever be re-verified by a machine. Give at least ONE criterion ' +
+    'a check:\n' +
+    "  · check: { kind:'tests', files:['path/to/x.test.ts'] } — the majority idiom (628 criteria use it); " +
+    'the paths are validated HERE and actually RUN by scorecards:emit at grading time.\n' +
+    "  · check: { kind:'cargo', manifestPath, sourceFiles } — for a native crate.\n" +
+    "  · check: { kind:'instrument', instrumentKey:'none' } — the EXPLICIT MANUAL declaration. This is a " +
+    'legitimate answer for a docs/process plan: the floor forbids silence, not manual verification.\n' +
+    "⚠ Do NOT reach for check:{ kind:'coverage' } to satisfy this today. The surface census has 0 proven " +
+    'surfaces (coverage_evidence is empty), so every coverage check currently fails or refuses at GRADING ' +
+    'time and would block the emit you are authoring this rubric for.\n' +
+    'A pure-investigation rubric may still omit criteria entirely (classRef with an empty criteria array).'
+  );
+}
+
 async function assertAcceptanceLinksResolve(input: ProposeRubricInput): Promise<AcceptanceLinkResolution> {
   const subjectPlan = input.subjectPlan;
   const subjectGoal = input.subjectGoal;
@@ -1764,6 +1818,13 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   // inspect. This is pure and runs before any acceptance-link/store write.
   if (kind === 'acceptance') {
     assertAcceptanceRubricCitationPathsResolve(input.criteria, { root: input.checkPathRoot });
+  }
+  // P-013: the structured-check floor. Pure and cheap, so it refuses BEFORE any link
+  // resolution or store read — an acceptance rubric made entirely of prose gates nothing.
+  if (acceptanceRubricLacksStructuredCheck({ kind, criteria: input.criteria })) {
+    throw new Error(
+      structuredCheckFloorRefusal({ rubricId: input.rubricId, criteriaCount: input.criteria.length }),
+    );
   }
   // Acceptance links must RESOLVE before anything persists (plan P-003): a dangling
   // subjectPlan would never gate anything, silently.
