@@ -17,14 +17,20 @@ const mockBuildMemoryContextBlock = vi.fn().mockResolvedValue(null);
 vi.mock('../memory/injection', () => ({ buildMemoryContextBlock: mockBuildMemoryContextBlock }));
 
 // EI-20089384158051187: the standing-facts fold's `role` leg must be the SPAWNING
-// role, never a hardcoded one. We capture the selectors `foldFacts` is called with.
+// role, never a hardcoded one. We capture the selectors `foldFactsWithCensus` is
+// called with (P-004/D-006 moved computeCupWakeDossier off the plain `foldFacts`
+// wrapper onto `foldFactsWithCensus` so the dossier can render the per-selector
+// census — this mock must intercept whichever one production actually calls, or
+// the real (unmocked) function runs against no live DB, silently fails soft via
+// its own .catch(() => ''), and every assertion on the captured selectors sees
+// an empty call list instead of a real mismatch).
 // The factory SPREADS the original module rather than returning only these two
 // exports — returning a partial factory is how a mock strands some other consumer
 // of the same module and turns a green typecheck into a red tree.
-const mockFoldFacts = vi.fn().mockResolvedValue([]);
+const mockFoldFacts = vi.fn().mockResolvedValue({ facts: [], census: [] });
 vi.mock('../agent-facts/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../agent-facts/store')>()),
-  foldFacts: mockFoldFacts,
+  foldFactsWithCensus: mockFoldFacts,
   renderFactsFold: () => '',
 }));
 
@@ -41,7 +47,9 @@ function wi(over: Partial<WorkItem> = {}): WorkItem {
     takenAt: null,
     lastProgressAt: null,
     assignedBy: null,
+    createdBy: null,
     severity: null,
+    goalId: null,
     parent: null,
     payload: null,
     origin: 'local',
@@ -51,6 +59,10 @@ function wi(over: Partial<WorkItem> = {}): WorkItem {
     rankWriter: null,
     rankUpdatedAt: null,
     priority: null,
+    terminalOwner: null,
+    terminalCompletionRef: null,
+    terminalCompletionEvidence: null,
+    completionAuthority: null,
     createdAt: '2026-06-14',
     updatedAt: '2026-06-14',
     closedAt: null,

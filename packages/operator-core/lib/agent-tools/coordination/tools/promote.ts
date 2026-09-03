@@ -64,7 +64,7 @@ import { evaluatePromotionAssertionGate } from '../../plans/promotion-assertion-
 import { matchRoutingGateHint } from '../../../routing-gate-hints';
 import { loopbackFetch, readJsonBody } from '../../../loopback-fetch';
 import { resolveProject } from '../../../harness-core';
-import { getOrgPg, getLegacyClient } from '@papercusp/db-org';
+import { getOrgPg, harnessQuery } from '@papercusp/db-org';
 import { phaseRequiresTwoMachineRig } from '../../../plan-phase-rig';
 
 const PROMOTED_FENCE = '<!-- plan-pipeline: do not edit this block manually -->';
@@ -279,12 +279,13 @@ function buildForEachCtx(harnessSlug: string, workspaceId: string | undefined): 
       const fg = (await import('fast-glob')).default;
       return fg(pattern, { cwd: project.path, dot: false, onlyFiles: true });
     },
-    runSql: async (sql) => {
-      if (!/^\s*select\b/i.test(sql)) {
+    runSql: async (sqlText) => {
+      if (!/^\s*select\b/i.test(sqlText)) {
         throw new Error('a for_each sql resolver must be a read-only SELECT');
       }
-      const dbc = getLegacyClient(harnessSlug);
-      const rows = (await dbc.prepare(sql).all()) as Array<Record<string, unknown>>;
+      const rows = (await harnessQuery(harnessSlug, (sql) => sql.unsafe(sqlText))) as unknown as Array<
+        Record<string, unknown>
+      >;
       return rows.map((r) => String(Object.values(r)[0] ?? '')).filter(Boolean);
     },
   };

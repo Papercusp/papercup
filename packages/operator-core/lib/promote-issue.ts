@@ -28,7 +28,7 @@
  * in-process async mutex (`withHarnessSweepLock`) serializes them — combined
  * with the per-issue `linkedFeatureId` guard, no double-mint.
  */
-import { getLegacyClient } from '@papercusp/db-org';
+import { harnessQuery } from '@papercusp/db-org';
 import { auditFeatureChange } from './feature-audit';
 import { loadIssuesOrSeed, saveIssues } from './harness-issues';
 import { activeWorkspaceId } from './workspace-registry';
@@ -114,70 +114,65 @@ export async function mintFixFeatureRow(
 ): Promise<PromotedFeature> {
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const actor = opts.actor ?? 'issue-promote';
-  const dbc = getLegacyClient(project.slug);
 
-  // Inherit source_plan from the feature the issue was found in so the
-  // orchestrator's plan-gate (readFeaturesPg → metadata->>'source_plan')
-  // dispatches this fix exactly when that plan is started (D-016.2).
-  let sourcePlan: string | null = null;
-  if (issue.foundDuring) {
-    try {
-      const parentRow = (await dbc
-        .prepare(
-          `SELECT metadata->>'source_plan' AS source_plan
-             FROM harness_features
-            WHERE harness_slug = ? AND feature_id = ? LIMIT 1`,
-        )
-        .get(project.slug, issue.foundDuring)) as { source_plan: string | null } | undefined;
-      sourcePlan = parentRow?.source_plan ?? null;
-    } catch {
-      /* non-fatal: a missing/odd parent just means no plan inheritance */
+  // All three statements below (the two lookups + the INSERT) share ONE
+  // harnessQuery() call so they run against the same connection / per-tx
+  // search_path under PgBouncer (see harnessQuery's docstring) — matching the
+  // original single-`dbc`-client behavior.
+  const { featureId, claims, featureNotes } = await harnessQuery(project.slug, async (sql) => {
+    // Inherit source_plan from the feature the issue was found in so the
+    // orchestrator's plan-gate (readFeaturesPg → metadata->>'source_plan')
+    // dispatches this fix exactly when that plan is started (D-016.2).
+    let sourcePlan: string | null = null;
+    if (issue.foundDuring) {
+      try {
+        const parentRows = (await sql`
+          SELECT metadata->>'source_plan' AS source_plan
+            FROM harness_features
+           WHERE harness_slug = ${project.slug} AND feature_id = ${issue.foundDuring} LIMIT 1
+        `) as unknown as Array<{ source_plan: string | null }>;
+        sourcePlan = parentRows[0]?.source_plan ?? null;
+      } catch {
+        /* non-fatal: a missing/odd parent just means no plan inheritance */
+      }
     }
-  }
 
-  const fixRows = (await dbc
-    .prepare(
-      `SELECT feature_id FROM harness_features
-        WHERE harness_slug = ? AND feature_id LIKE 'F-FIX-%'`,
-    )
-    .all(project.slug)) as Array<{ feature_id: string }>;
-  const existingFixIds = fixRows
-    .map((r) => Number(r.feature_id.slice(6)))
-    .filter((n) => Number.isFinite(n));
-  const nextFixId = (existingFixIds.length ? Math.max(...existingFixIds) : 0) + 1;
-  const featureId = `F-FIX-${String(nextFixId).padStart(3, '0')}`;
+    const fixRows = (await sql`
+      SELECT feature_id FROM harness_features
+       WHERE harness_slug = ${project.slug} AND feature_id LIKE 'F-FIX-%'
+    `) as unknown as Array<{ feature_id: string }>;
+    const existingFixIds = fixRows
+      .map((r) => Number(r.feature_id.slice(6)))
+      .filter((n) => Number.isFinite(n));
+    const nextFixId = (existingFixIds.length ? Math.max(...existingFixIds) : 0) + 1;
+    const featureId = `F-FIX-${String(nextFixId).padStart(3, '0')}`;
 
-  const claims = issue.codePointer ? [`VAL-FIX-${nextFixId} @ ${issue.codePointer}`] : [];
-  const featureNotes = [
-    issue.evidence ?? '',
-    issue.suggestedFix ? `Suggested fix: ${issue.suggestedFix}` : '',
-  ]
-    .filter(Boolean)
-    .join('\n\n');
-  const metadata: Record<string, unknown> = { sourceIssueId: issue.id };
-  if (sourcePlan) metadata.source_plan = sourcePlan;
+    const claims = issue.codePointer ? [`VAL-FIX-${nextFixId} @ ${issue.codePointer}`] : [];
+    const featureNotes = [
+      issue.evidence ?? '',
+      issue.suggestedFix ? `Suggested fix: ${issue.suggestedFix}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+    const metadata: Record<string, unknown> = { sourceIssueId: issue.id };
+    if (sourcePlan) metadata.source_plan = sourcePlan;
 
-  const ts = Date.now();
-  await dbc
-    .prepare(
-      `INSERT INTO harness_features
+    const ts = Date.now();
+    await sql`
+      INSERT INTO harness_features
          (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata,
           kind, project_id, expected_cost_cents, tags, needs_human_review,
           workspace_id, ts, created_ts, updated_ts)
-       VALUES (?, ?, ?, NULL, 'open', 0, ?, ?, ?, NULL, NULL, NULL, NULL, false, ?, ?, ?, ?)`,
-    )
-    .run(
-      project.slug,
-      featureId,
-      issue.title,
-      claims.length ? JSON.stringify(claims) : null,
-      featureNotes || null,
-      JSON.stringify(metadata),
-      workspaceId,
-      ts,
-      ts,
-      ts,
-    );
+       VALUES (${project.slug}, ${featureId}, ${issue.title}, NULL, 'open', 0,
+               ${claims.length ? JSON.stringify(claims) : null},
+               ${featureNotes || null},
+               ${JSON.stringify(metadata)},
+               NULL, NULL, NULL, NULL, false,
+               ${workspaceId}, ${ts}, ${ts}, ${ts})
+    `;
+
+    return { featureId, claims, featureNotes };
+  });
 
   auditFeatureChange(
     project.slug,
@@ -268,10 +263,11 @@ export async function convertOpenIssuesToFeatures(
     // candidate. This happens for an EPHEMERAL gym harness whose schema was dropped between
     // the dispatch-sweep tick and here (the sweep races teardown), and for a not-yet-scaffolded
     // schema. `to_regclass` resolves via the legacy client's `harness_<slug>` search_path.
-    const probe = (await getLegacyClient(project.slug)
-      .prepare(`SELECT to_regclass('harness_features') AS rel`)
-      .get()) as { rel: string | null } | undefined;
-    if (!probe?.rel) return { promoted: [] };
+    const probeRows = (await harnessQuery(
+      project.slug,
+      (sql) => sql`SELECT to_regclass('harness_features') AS rel`,
+    )) as unknown as Array<{ rel: string | null }>;
+    if (!probeRows[0]?.rel) return { promoted: [] };
 
     const promoted: Array<{ issueId: string; featureId: string }> = [];
     for (const issue of candidates) {
