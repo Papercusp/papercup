@@ -606,9 +606,22 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
   HIST_SUBJ_HITS="$(grep -Eo "$DESTRUCTIVE_ERE" "$HISTORICAL_SNAPSHOT" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
 fi
 CMD_HITS="$(printf '%s\n%s' "$TEST_CMD" "$CALIBRATION_CMD" | grep -Eo "$DESTRUCTIVE_ERE" 2>/dev/null | sort -u | head -6 | tr '\n' ' ' || true)"
+# EI-22197950741786296: show WHERE it matched, not just WHICH token. The scan is a
+# deliberately blunt word match, so `truncate` in a comment refuses the file just as
+# hard as a real `rm -rf` call — and a bare token list gives the operator no way to
+# tell those apart, which is what makes a false positive feel arbitrary. The gate is
+# NOT narrowed (it exists because of a ~370GB loss, EI-20566003853444873, and the item's
+# own filer agreed narrowing it without a positive control would disarm it); instead the
+# refusal now quotes the site so a comment-only match is recognisable on sight.
+SUBJ_SITES="$(grep -nE "$DESTRUCTIVE_ERE" "$FILE" 2>/dev/null | head -4 | cut -c1-160 || true)"
 if [ -n "$SUBJ_HITS$HIST_SUBJ_HITS$CMD_HITS" ] && [ "$DELETES_ACK" -eq 0 ] && [ "$FAKE_DESTRUCTIVE" -eq 0 ]; then
   die "REFUSING: the probe would EXECUTE destructive code, and nothing sandboxes what a mutant DOES.
       Matched destructive primitives — current subject: ${SUBJ_HITS:-none}; historical subject: ${HIST_SUBJ_HITS:-none}; --test/--calibration: ${CMD_HITS:-none}
+
+      Where it matched in $FILE (first 4, line-numbered — if every one of these is a
+      comment or an identifier rather than a CALL, this is a false positive and
+      --fake-destructive is the cheap correct answer, not a workaround):
+${SUBJ_SITES:-        (no in-file match — the hit is in --test/--calibration)}
 
       This script's guarantees protect the FILE UNDER TEST, never the filesystem the
       mutant runs against. Executing a mutant of deletion code means running
