@@ -583,6 +583,17 @@ export async function handleLoopResumeTurnExit(
             body:
               `A loop:arm-owned loop's resume turn died on a ${klass} the operator must know about: ` +
               `${outcome.error.message}\n\n` +
+              // WI-2143683: `klass` is decided by scanning stderr+stdout TOGETHER, while the message
+              // quoted above is taken from stderr alone whenever stderr is non-empty — so on a failed
+              // exit whose provider wall went to stdout, the quoted text is NOT what produced the
+              // class. Measured over the 191 alerts this filer has written: 41 of 59 `usage_limit`
+              // ones quote a message containing no usage-limit signature at all, which reads as a
+              // misclassification to every agent who claims one. Render the classifier's OWN evidence
+              // whenever it differs, so the class can be judged instead of taken on trust.
+              (outcome.error.classifiedOn
+                ? `Classified \`${klass}\` on this line of the process output — the message above came ` +
+                  `from a different stream and is NOT the classifier's evidence:\n  ${outcome.error.classifiedOn}\n\n`
+                : '') +
               // WI-41683: the re-fire warning is only TRUE for the classes that re-arm.
               // contextOverflow and staleResumeTarget PAUSE the loop instead (the bracket
               // note below says so), so telling that reader "every wake risks re-firing"
