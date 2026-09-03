@@ -38,7 +38,9 @@ import {
   diagnoseFrozenCandidateRepairQueue,
   buildFrozenRepairStatusIdentity,
   parseFrozenCandidateRepairQueue,
+  parseFrozenRepairConvergence,
   type FrozenRepairQueueDiagnostic,
+  type StoredFrozenRepairConvergence,
 } from './release/frozen-candidate-repair-queue';
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
 import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
@@ -284,6 +286,26 @@ export interface GitPipelineSnapshot {
      * healthy. Read `observedAtMs` before treating a value as current.
      */
     freezeAndConverge?: FreezeAndConvergeGateHealth['freezeAndConverge'] | null;
+    /**
+     * main-green-status-visible-2026-09-03 P-004: IS THE QUEUE CONVERGING — is the failing
+     * set actually shrinking, how long has the freeze been open, and which round is it on?
+     *
+     * Sits beside `repairQueue`/`freezeAndConverge` as the third leg of the same subject:
+     * the queue says WHICH sha is frozen, the disposition says WHETHER the mechanism is
+     * acting, and this says WHETHER THAT ACTION IS WORKING. It was already DERIVED and
+     * persisted by `buildFrozenRepairConvergenceGateHealth` on every queue write and simply
+     * never projected here, so the one question the freeze exists to answer — "is this
+     * converging or is it a treadmill?" — could only be answered by grepping run logs.
+     *
+     * ⚠ `converging` and `failingFirst` are deliberately TRI-STATE. `null` means NOT YET
+     * KNOWABLE (fewer than two recorded rounds / no baseline), never "not converging" —
+     * conflating those calls a healthy new cycle a treadmill and is why the reader rejects
+     * a wrong-typed blob outright instead of coercing it.
+     *
+     * Null means the routine row carries no readable convergence record — NOT that the
+     * queue is healthy, and NOT that it is stuck.
+     */
+    convergence?: StoredFrozenRepairConvergence | null;
     /** Whether the sibling `failingTests` array came from a real code verdict.
      * `false` means the latest checkpoint ended before rendering one; `null` is a legacy or
      * malformed blob whose measurement state cannot be established. */
@@ -1487,6 +1509,10 @@ export async function gitPipelineSnapshot(
       // written by a version that shaped it differently, must read as "not measured" rather
       // than as a half-populated disposition a consumer would render as fact.
       freezeAndConverge: readFreezeAndConverge(gateHealth),
+      // P-004: same shape-checked discipline as the disposition above. The writer CLEARS
+      // this to JSON null when a cycle retires, so an absent/null/unrecognized blob must
+      // read as "not measured" rather than as a convergence summary with holes in it.
+      convergence: parseFrozenRepairConvergence(gateHealth['convergence']),
     },
     openConflict,
     windows: { day, week },
