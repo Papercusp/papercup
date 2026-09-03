@@ -27,6 +27,7 @@ import {
   markDesktopReady,
   closeDesktopSession,
   resolveDesktopForScope,
+  type DesktopCapabilities,
 } from '../../desktop/desktop-session-registry';
 import { killTask } from '../../task-manager/control';
 
@@ -107,13 +108,48 @@ export function desktopEnvForHive(potSlug: string): Record<string, string> {
 }
 
 /**
+ * The capabilities a fresh lease actually MEASURED, in the registry's shape.
+ *
+ * Pure and exported so the derivation is unit-testable without a Postgres row —
+ * the mirror below is best-effort and swallows its own failures, which is exactly
+ * the shape in which a wrong capability goes unnoticed.
+ *
+ * ⚠ BOTH fields are stamped from a MEASUREMENT, never from the presence of the
+ * object that carries it (D-004: capabilities are MEASURED, never assumed). That
+ * distinction is not pedantic — it is the bug this function was extracted to fix:
+ *
+ *  - `gl` was stamped as `Boolean(desktop.gl)`. `desktop.gl` is a GlStrategy
+ *    OBJECT and the ladder's negative verdict is `NO_GL_STRATEGY`, a frozen object
+ *    — so that expression is `true` for every lease ever recorded, including the
+ *    desktops the ladder positively concluded have no GL. A constant wearing a
+ *    measurement's name is worse than an absent field: `computer:list_desktops`
+ *    reports it under "measured capabilities" and a consumer believes it. The tier
+ *    is what the ladder actually decided, so read the tier.
+ *  - `a11y` was declared on `DesktopCapabilities` and never written at all, so the
+ *    provisioner's accessibility verdict died at this process boundary. The cost
+ *    lands on a DIFFERENT process much later: `computer:observe` is the first thing
+ *    that can tell you a desktop has no a11y bus, and it can only do so by
+ *    REFUSING (EI-22074168424155872). Recording it here is what lets a caller ask
+ *    before it drives, instead of discovering it from an error.
+ */
+export function leaseCapabilities(desktop: SandboxDesktop): DesktopCapabilities {
+  return {
+    // P-002's ladder verdict, not the presence of its result object.
+    gl: desktop.gl.tier !== 'none',
+    // P-007 — absent `a11y` is a legal screenshot-only desktop, not an error; it is
+    // still a fact a consumer must be able to read rather than infer from a refusal.
+    a11y: Boolean(desktop.a11y),
+  };
+}
+
+/**
  * Mirror a freshly-provisioned hive lease into the registry (scope='pot' per
  * D-005, kind='xvfb-local'). Best-effort: see `sessionIds`' comment for why a
  * failure here must never fail the provision.
  *
- * The GL verdict measured by P-002's ladder is stamped as a capability so
- * downstream consumers read it instead of re-probing the display (D-004:
- * capabilities are MEASURED, never assumed).
+ * The verdicts measured during provisioning are stamped as capabilities so
+ * downstream consumers read them instead of re-probing the display — see
+ * `leaseCapabilities` for what "measured" has to mean here.
  */
 async function recordLeaseInRegistry(potSlug: string, desktop: SandboxDesktop): Promise<void> {
   try {
@@ -134,11 +170,7 @@ async function recordLeaseInRegistry(potSlug: string, desktop: SandboxDesktop): 
       taskId: desktop.taskId,
     });
     sessionIds.set(potSlug, session.id);
-    await markDesktopReady(
-      session.id,
-      { capabilities: { gl: Boolean((desktop as { gl?: unknown }).gl) } },
-      undefined,
-    );
+    await markDesktopReady(session.id, { capabilities: leaseCapabilities(desktop) }, undefined);
   } catch {
     /* inventory only — a desktop without its row still works; the reconciler repairs it */
   }

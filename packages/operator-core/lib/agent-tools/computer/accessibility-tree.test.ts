@@ -598,3 +598,41 @@ describe('token estimates', () => {
     expect(treeTokens).toBeLessThan(shotTokens);
   });
 });
+
+/**
+ * EI-22074168424155872 — the refusal's REMEDY, which is the half that misleads.
+ *
+ * The guard itself is correct and deliberately unweakened here. What was wrong is
+ * that the remedy asserted a cause nobody measured ("it needs at-spi2-core + gjs"),
+ * so it read as *your host is missing packages* on a host where every one of them
+ * was installed. The cause it never named is the one that actually holds: only
+ * `provisionSandboxDesktop` starts a per-display at-spi bus and publishes it on the
+ * root window, so a hand-rolled Xvfb cannot be observed however complete the host is.
+ */
+describe('NoAccessibilityBusError remedy', () => {
+  const msg = new NoAccessibilityBusError(':111').message;
+
+  it('names the display and keeps the fail-closed rationale that must not be weakened', () => {
+    expect(msg).toContain(':111');
+    expect(msg).toContain('REFUSING to fall back to the ambient session bus');
+  });
+
+  it('leads with the provisioner discriminator, not with the host packages', () => {
+    expect(msg).toContain('computer:provision_desktop');
+    expect(msg).toContain('computer:list_desktops');
+    // Ordering is the assertion: the reader acts on the first cause they are given,
+    // and the package cause is the one that was false in the filed report.
+    expect(msg.indexOf('computer:provision_desktop')).toBeLessThan(msg.indexOf('at-spi2-core'));
+  });
+
+  it('still offers the fallback that always works', () => {
+    expect(msg).toContain('capability:computer screenshot');
+  });
+
+  it('qualifies the host-package cause instead of prescribing it outright', () => {
+    // The control: the old text said "To fix: provision the desktop with
+    // accessibility enabled (it needs …)" — an unconditional prescription.
+    expect(msg).not.toContain('To fix: provision the desktop with accessibility enabled');
+    expect(msg).toContain('Only if this display WAS provisioned');
+  });
+});

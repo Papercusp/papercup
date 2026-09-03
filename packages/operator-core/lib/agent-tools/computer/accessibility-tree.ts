@@ -855,14 +855,42 @@ export function parseA11yBusAddress(stdout: string): string | null {
   return null;
 }
 
+/**
+ * The refusal, and — the part that took an investigation to get right — a remedy
+ * that names the cause this state ACTUALLY has instead of the one it is easiest
+ * to write down.
+ *
+ * ⚠ THE REMEDY USED TO ASSERT AN UNMEASURED CAUSE. It said "provision the desktop
+ * with accessibility enabled (it needs at-spi2-core + gjs …)", which reads as *your
+ * host is missing packages*. Measured on this box while triaging EI-22074168424155872:
+ * `xprop`, `gdbus`, `dbus-daemon`, `gjs` and `/usr/share/dbus-1/services/org.a11y.Bus.service`
+ * were ALL present, a desktop stood up through `computer:provision_desktop` got
+ * `/run/user/1000/at-spi/bus_118` and its root-window property within seconds, and
+ * `computer:observe` read it fine. The reported failure was on `:111` — a display
+ * NOT in the desktop registry, in the range `scripts/verify-tauri-headless.sh`
+ * auto-picks (>=90). So the guard was right and the prescription was wrong, and an
+ * agent following it would have gone to install packages it already had.
+ *
+ * The real discriminator is WHO CREATED THE DISPLAY. `startA11yBus` runs only in
+ * `provisionSandboxDesktop`, and only it publishes `AT_SPI_BUS` on the root window
+ * (at-spi-bus-launcher does NOT set the property itself — measured on a throwaway
+ * `:198`: `GetAddress` returned a good `bus_198` while the root window still had no
+ * such atom). A hand-rolled `Xvfb :N` therefore CANNOT be observed, by construction
+ * and forever, no matter what the host has installed. Lead with that.
+ */
 export class NoAccessibilityBusError extends Error {
   constructor(display: string) {
     super(
       `computer:observe — display ${display} advertises no accessibility bus (no AT_SPI_BUS property on its root window). ` +
         'REFUSING to fall back to the ambient session bus: that fallback resolves to the OPERATOR\'S OWN desktop and ' +
         'returns a rich, plausible, completely wrong tree (measured: 69 host applications for a sandbox running one dialog). ' +
-        `To fix: provision the desktop with accessibility enabled (it needs ${A11Y_APT_PACKAGES.join(' + ')} and an ` +
-        'at-spi bus bound to this display), or use capability:computer screenshot instead.',
+        'MOST LIKELY CAUSE: this display was not created by computer:provision_desktop. Only that path starts a ' +
+        'per-display at-spi bus and publishes it on the root window, so a hand-rolled Xvfb (e.g. one from ' +
+        'scripts/verify-tauri-headless.sh, which auto-picks displays >=90) has no bus to find and never will. ' +
+        'Check with computer:list_desktops — a registry-backed desktop reports capabilities.a11y — and drive a ' +
+        'provisioned desktop, or use capability:computer screenshot on this one. ' +
+        `Only if this display WAS provisioned is the host itself suspect (it needs ${A11Y_APT_PACKAGES.join(' + ')} ` +
+        'plus /usr/share/dbus-1/services/org.a11y.Bus.service).',
     );
     this.name = 'NoAccessibilityBusError';
   }
