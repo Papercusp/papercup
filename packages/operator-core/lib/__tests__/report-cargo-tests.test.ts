@@ -37,9 +37,11 @@ import {
   ensureCargoCacheTag,
   formatCargoDiskRefusal,
   formatCargoResultLine,
+  diskProbePathFor,
   parseCargoTestResultLines,
   reclaimInactiveCargoArtifacts,
   resolveCargoBin,
+  resolveCargoTargetDir,
   shouldRunAffectedCargoSuite,
   stripCargoTerminalControlSequences,
 // @ts-ignore -- runtime reporter module intentionally tested from TypeScript.
@@ -325,7 +327,7 @@ describe('cargo disk admission (EI-21047688909295463)', () => {
   });
 
   it('wires the disk decision and refusal ahead of the executable Cargo spawn', () => {
-    const statfsAt = REPORTER_SOURCE.indexOf('statfsSync(manifestAbs)');
+    const statfsAt = REPORTER_SOURCE.indexOf('statfsSync(diskProbePath)');
     const refusalAt = REPORTER_SOURCE.indexOf('if (!diskAdmission.allowed)');
     const spawnAt = REPORTER_SOURCE.indexOf('spawn(resolveCargoBin()');
 
@@ -334,6 +336,75 @@ describe('cargo disk admission (EI-21047688909295463)', () => {
     expect(spawnAt).toBeGreaterThan(refusalAt);
     expect(REPORTER_SOURCE).toContain("cause: 'low-disk-admission-refused'");
     expect(REPORTER_SOURCE).toContain('code: CARGO_DISK_REFUSAL_EXIT_CODE');
+  });
+});
+
+describe('disk admission measures the mount Cargo writes to (WI-212675)', () => {
+  const manifest = '/checkouts/papercusp/papercusp-desktop/src-tauri/Cargo.toml';
+
+  it('probes the resolved target directory, never the manifest, and keys reservations + reclaim on it', () => {
+    // Source pins: the probe, the reservation read and the reclaim sweep all key
+    // on the target's path. `statfsSync(manifestAbs)` WAS the pre-fix probe, so its
+    // absence is the property under test, not a style preference.
+    expect(REPORTER_SOURCE).toContain('resolveCargoTargetDir(manifestAbs)');
+    expect(REPORTER_SOURCE).toContain('diskProbePathFor(cargoTargetDir)');
+    expect(REPORTER_SOURCE).toContain('statfsSync(diskProbePath)');
+    expect(REPORTER_SOURCE).toContain('readReservedBytes(diskProbePath)');
+    expect(REPORTER_SOURCE).toContain('configuredTargetDir: cargoTargetDir');
+    expect(REPORTER_SOURCE).not.toContain('statfsSync(manifestAbs)');
+    expect(REPORTER_SOURCE).not.toContain('readReservedBytes(manifestAbs)');
+  });
+
+  it('resolves the target with Cargo precedence: env, then metadata, then <manifest dir>/target', () => {
+    const metadata = () => '/mnt/data/cargo-target';
+    expect(
+      resolveCargoTargetDir(manifest, { env: { CARGO_TARGET_DIR: 'rel/target' }, cwd: '/work', metadata }),
+    ).toBe('/work/rel/target');
+    expect(
+      resolveCargoTargetDir(manifest, { env: { CARGO_TARGET_DIR: '  ' }, cwd: '/work', metadata }),
+    ).toBe('/mnt/data/cargo-target');
+    expect(
+      resolveCargoTargetDir(manifest, { env: {}, cwd: '/work', metadata: () => { throw new Error('no cargo'); } }),
+    ).toBe('/checkouts/papercusp/papercusp-desktop/src-tauri/target');
+    expect(
+      resolveCargoTargetDir(manifest, { env: {}, cwd: '/work', metadata: () => null }),
+    ).toBe('/checkouts/papercusp/papercusp-desktop/src-tauri/target');
+  });
+
+  it('walks a not-yet-created target up to its nearest existing ancestor for statfs', () => {
+    const existing = new Set(['/', '/mnt', '/mnt/data']);
+    const exists = (p: string) => existing.has(p);
+    expect(diskProbePathFor('/mnt/data/cargo-target/debug', { exists })).toBe('/mnt/data');
+    expect(diskProbePathFor('/mnt/data', { exists })).toBe('/mnt/data');
+    expect(diskProbePathFor('/nowhere/at/all', { exists })).toBe('/');
+  });
+
+  it('names the probed mount in the refusal, and leaves a probe-less admission message unchanged', () => {
+    const admission = assessCargoDiskAdmission({ totalBytes: 2000 * GIB, freeBytes: 80 * GIB });
+    expect(formatCargoDiskRefusal(admission)).toContain('filesystem is ');
+    expect(formatCargoDiskRefusal({ ...admission, probePath: '/mnt/data' })).toContain('filesystem at /mnt/data is ');
+  });
+
+  it('CONTROL: the pre-fix manifest-mount resolver is rejected by the scenario the fix must pass', () => {
+    // Permanent deliberately-wrong implementation (mutation-probe tier "module
+    // logic"): the old behaviour measured the manifest's own directory. The
+    // property — "the probed path lies under the configured target's mount" —
+    // must reject it, or the assertions above are not discriminating.
+    const manifestMountResolver = (manifestAbs: string) => dirname(manifestAbs);
+    const existing = new Set([
+      '/', '/mnt', '/mnt/data',
+      '/checkouts', '/checkouts/papercusp', '/checkouts/papercusp/papercusp-desktop',
+      '/checkouts/papercusp/papercusp-desktop/src-tauri',
+    ]);
+    const exists = (p: string) => existing.has(p);
+    const configuredTarget = '/mnt/data/cargo-target';
+    const probedUnderTarget = (resolver: (m: string) => string) =>
+      diskProbePathFor(resolver(manifest), { exists }).startsWith('/mnt/data');
+
+    expect(
+      probedUnderTarget((m) => resolveCargoTargetDir(m, { env: {}, cwd: '/work', metadata: () => configuredTarget })),
+    ).toBe(true);
+    expect(probedUnderTarget(manifestMountResolver)).toBe(false);
   });
 });
 

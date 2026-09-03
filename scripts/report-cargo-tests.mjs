@@ -47,11 +47,13 @@ import {
   ensureCargoCacheTag,
   cargoDiskPolicyFromEnv,
   classifyCargoRun,
+  diskProbePathFor,
   formatCargoDiskRefusal,
   formatCargoResultLine,
   parseCargoTestResultLines,
   reclaimInactiveCargoArtifacts,
   resolveCargoBin,
+  resolveCargoTargetDir,
 } from './lib/cargo-result.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -111,30 +113,45 @@ function parseArgs(argv) {
 function runCargoTest(manifestAbs, extraArgs, coverage = null) {
   const startedAt = new Date();
   const diskPolicy = cargoDiskPolicyFromEnv();
+  // WI-212675: measure the mount Cargo WRITES to. The target directory is
+  // config-driven (`build.target-dir`) and on this box lives on a different
+  // filesystem from the checkout, so probing the manifest's mount refused the
+  // suite hourly over a disk Cargo never touches. Resolved once per run; the
+  // probe below re-reads the SAME path every time it is called.
+  const cargoTargetDir = resolveCargoTargetDir(manifestAbs);
+  const diskProbePath = diskProbePathFor(cargoTargetDir);
   const readDiskAdmission = () => {
     try {
-      const fsst = statfsSync(manifestAbs);
+      const fsst = statfsSync(diskProbePath);
       // Space other live builds have already declared (EI-21951384112327922).
       // Read fresh on every probe, not once: the point is that this number moves
       // while we are deciding, and the post-reclaim re-measure below must see the
       // ledger as it is THEN. Fails open to 0.
       let reservedBytes = 0;
       try {
-        reservedBytes = readReservedBytes(manifestAbs);
+        reservedBytes = readReservedBytes(diskProbePath);
       } catch {
         reservedBytes = 0;
       }
-      return assessCargoDiskAdmission(
-        {
-          totalBytes: Number(fsst.blocks) * Number(fsst.bsize),
-          freeBytes: Number(fsst.bavail) * Number(fsst.bsize),
-          reservedBytes,
-        },
-        diskPolicy,
-      );
+      return {
+        ...assessCargoDiskAdmission(
+          {
+            totalBytes: Number(fsst.blocks) * Number(fsst.bsize),
+            freeBytes: Number(fsst.bavail) * Number(fsst.bsize),
+            reservedBytes,
+          },
+          diskPolicy,
+        ),
+        probePath: diskProbePath,
+        targetDir: cargoTargetDir,
+      };
     } catch (err) {
       console.warn(`[report-cargo-tests] disk admission probe unreadable; continuing fail-open: ${err.message}`);
-      return assessCargoDiskAdmission({ totalBytes: Number.NaN, freeBytes: Number.NaN }, diskPolicy);
+      return {
+        ...assessCargoDiskAdmission({ totalBytes: Number.NaN, freeBytes: Number.NaN }, diskPolicy),
+        probePath: diskProbePath,
+        targetDir: cargoTargetDir,
+      };
     }
   };
 
@@ -171,6 +188,10 @@ function runCargoTest(manifestAbs, extraArgs, coverage = null) {
       // heartbeatTtlMs is deliberately NOT lowered — see its policy comment.
       reclaim = reclaimInactiveCargoArtifacts({
         policy: { cargoTtlMs: 10 * 60_000 },
+        // The sweep must reach the target this run builds into even when it is
+        // config-driven rather than env-driven (WI-212675): the home-dir scan
+        // only finds `.cargo-target*` names.
+        configuredTargetDir: cargoTargetDir,
         stopWhen: () => readDiskAdmission().allowed,
       });
       if (reclaim.reclaimed > 0) diskAdmission = readDiskAdmission();

@@ -62,6 +62,63 @@ export function resolveCargoBin(env = process.env, home = homedir()) {
 }
 
 /**
+ * WI-212675: the mount disk admission must measure is the one Cargo WRITES to —
+ * the resolved target directory — never the one the manifest happens to sit on.
+ * On the dev box `~/.cargo/config.toml` points every checkout's `build.target-dir`
+ * at one shared target, and the two can live on different filesystems: the
+ * manifest's mount sat at 95% used (owner data, nothing Cargo could reclaim)
+ * while the target's mount had hundreds of GiB free, so the native suite was
+ * refused every hour over a disk it never writes to.
+ *
+ * Resolution mirrors Cargo's own precedence instead of re-implementing it:
+ *   1. `CARGO_TARGET_DIR` — a relative value resolves from `cwd`, as Cargo does;
+ *   2. `cargo metadata`'s `target_directory` — honours every config.toml layer;
+ *   3. `<manifest dir>/target` — Cargo's default when nothing is configured.
+ * `metadata` is an injectable seam so the precedence is unit-testable without
+ * a Cargo binary; a metadata failure falls through to Cargo's default rather
+ * than aborting admission.
+ */
+export function resolveCargoTargetDir(
+  manifestAbs,
+  { env = process.env, cwd = process.cwd(), metadata = readCargoMetadataTargetDir } = {},
+) {
+  const configured = typeof env.CARGO_TARGET_DIR === 'string' ? env.CARGO_TARGET_DIR.trim() : '';
+  if (configured) return resolve(cwd, configured);
+  try {
+    const fromMetadata = metadata(manifestAbs, env);
+    if (typeof fromMetadata === 'string' && fromMetadata.trim()) return resolve(fromMetadata.trim());
+  } catch {
+    // fall through to Cargo's default
+  }
+  return resolve(dirname(manifestAbs), 'target');
+}
+
+function readCargoMetadataTargetDir(manifestAbs, env = process.env) {
+  const out = execFileSync(
+    resolveCargoBin(env),
+    ['metadata', '--format-version', '1', '--no-deps', '--manifest-path', manifestAbs],
+    { encoding: 'utf8', env, timeout: 20_000, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 },
+  );
+  const parsed = JSON.parse(out);
+  return typeof parsed?.target_directory === 'string' ? parsed.target_directory : null;
+}
+
+/**
+ * statfs needs a path that exists, and a first build's target directory does
+ * not yet. Walk up to the nearest existing ancestor: every ancestor below the
+ * mount point shares the mount, so the measurement is unchanged.
+ */
+export function diskProbePathFor(dir, { exists = existsSync } = {}) {
+  let current = resolve(dir);
+  for (;;) {
+    if (exists(current)) return current;
+    const parent = dirname(current);
+    if (parent === current) return current;
+    current = parent;
+  }
+}
+
+/**
  * Cargo's cache-directory marker. Cargo clean requires this exact tag before
  * it will remove an explicitly selected target directory; keeping the marker
  * on an isolated target makes disk-pressure reclamation safe after the test
@@ -649,8 +706,12 @@ export function formatCargoDiskRefusal(admission) {
       ? `${admission.reservedGiB} GiB of that is already RESERVED by other in-flight builds on this ` +
         `filesystem, leaving ${admission.effectiveFreeGiB} GiB effectively free; `
       : '';
+  // Name the mount that was measured: it is the TARGET directory's, which on a
+  // multi-disk box is not the checkout's (WI-212675). Without it the reader runs
+  // `df` on the source tree and disputes a number that came from elsewhere.
+  const where = admission.probePath ? ` at ${admission.probePath}` : '';
   return (
-    `[report-cargo-tests] REFUSED before spawning Cargo: filesystem is ${admission.usedPct}% used ` +
+    `[report-cargo-tests] REFUSED before spawning Cargo: filesystem${where} is ${admission.usedPct}% used ` +
     `with ${admission.freeGiB} GiB available; ${reserved}admission requires at least ${minFreePct}% free ` +
     `unless absolute working headroom is at least ${admission.percentFloorBypassGiB} GiB, ` +
     `and always requires at least ${minFreeGiB} GiB free. ` +
