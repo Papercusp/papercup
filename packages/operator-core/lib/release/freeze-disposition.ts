@@ -252,3 +252,111 @@ export function readFreezeAndConverge(
     observedAtMs: r['observedAtMs'],
   };
 }
+
+/**
+ * The branchable reading of a freeze disposition — main-green-status-visible-2026-09-03 P-004.
+ *
+ * Distinct from {@link FreezeAndConvergeState} on purpose. The stored `state` is what the
+ * gate DID; this is what a reader should CONCLUDE, and the two differ in exactly the two
+ * places that have burned us:
+ *
+ *   • `not-measured` — there is no readable record. The stored union has no such member, so
+ *     a reader branching on `state` alone must invent a default for it, and both available
+ *     defaults (`none`, `off`) are WRONG and both sound calm.
+ *   • `stale` — a record exists but predates {@link FREEZE_DISPOSITION_FRESH_MS}. A
+ *     `retired` left behind by a run hours ago is history; read as current it is the
+ *     false-green class (WI-6228) applied to the freeze.
+ */
+export type FreezeDispositionCode =
+  | 'not-measured'
+  | 'stale'
+  | 'off'
+  | 'none'
+  | 'held'
+  | 'retired'
+  | 'converging';
+
+/**
+ * PURE: what should a reader conclude from this disposition, right now?
+ *
+ * Staleness OUTRANKS the state it qualifies. Not a stylistic ordering — a confident reading
+ * of the wrong vintage is the failure it prevents: a `retired` observed hours ago reads as
+ * "the gate just retired a candidate" when the truth is "the gate has not reported since".
+ */
+export function assessFreezeDisposition(
+  record: FreezeAndConvergeGateHealth['freezeAndConverge'] | null,
+  nowMs: number,
+): FreezeDispositionCode {
+  if (!record) return 'not-measured';
+  if (nowMs - record.observedAtMs > FREEZE_DISPOSITION_FRESH_MS) return 'stale';
+  return record.state;
+}
+
+/** The celled projection: the record, its vintage, and the branchable reading. */
+export interface FreezeDispositionCellProjection {
+  code: FreezeDispositionCode;
+  /** The stored state, or null when there is no readable record. NEVER defaulted. */
+  state: FreezeAndConvergeState | null;
+  /** Why it is in that state — the sentence that used to exist only in a per-run log. */
+  reason: string | null;
+  /** False ONLY for a measured `off`; null when unmeasured. Never coerced to a boolean. */
+  enabled: boolean | null;
+  candidate: string | null;
+  holdUntilMs: number | null;
+  capacityRetryAtMs: number | null;
+  observedAtMs: number | null;
+  ageMs: number | null;
+  /** True when the record is older than the freshness window; null when unmeasured. */
+  stale: boolean | null;
+  /** One line, ready to quote. Null when there is nothing measured to summarize. */
+  summary: string | null;
+}
+
+/**
+ * PURE: project the stored disposition into the shape `gate.greenCheckpoint.freezeDisposition`
+ * publishes.
+ *
+ * Emitted UNCONDITIONALLY — an absent record yields a projection whose every field is null
+ * and whose `code` is `not-measured`, never a bare `null` in place of the object. Two
+ * reasons, and the second is the load-bearing one:
+ *   1. The cell contract requires the declared assessment path to be PRESENT in every live
+ *      payload; a null object makes the cell silently stop answering.
+ *   2. "I could not measure the freeze" is itself an answer a reader must be able to branch
+ *      on. Collapsing it into absence is the exact ambiguity P-008 and this item exist to
+ *      end — and it is why every field here is null rather than defaulted.
+ */
+export function projectFreezeDispositionCell(
+  record: FreezeAndConvergeGateHealth['freezeAndConverge'] | null,
+  nowMs: number,
+): FreezeDispositionCellProjection {
+  const code = assessFreezeDisposition(record, nowMs);
+  if (!record) {
+    return {
+      code,
+      state: null,
+      reason: null,
+      enabled: null,
+      candidate: null,
+      holdUntilMs: null,
+      capacityRetryAtMs: null,
+      observedAtMs: null,
+      ageMs: null,
+      stale: null,
+      summary: null,
+    };
+  }
+  const ageMs = Math.max(0, nowMs - record.observedAtMs);
+  return {
+    code,
+    state: record.state,
+    reason: record.reason,
+    enabled: record.enabled,
+    candidate: record.candidate,
+    holdUntilMs: record.holdUntilMs,
+    capacityRetryAtMs: record.capacityRetryAtMs,
+    observedAtMs: record.observedAtMs,
+    ageMs,
+    stale: ageMs > FREEZE_DISPOSITION_FRESH_MS,
+    summary: summarizeFreezeAndConverge({ freezeAndConverge: record }, nowMs),
+  };
+}
