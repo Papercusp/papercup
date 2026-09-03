@@ -76,21 +76,21 @@ describe('frozen-candidate repair queue', () => {
     });
   });
 
-  it('falls through a measured dispatch-infeasible zero-attempt queue instead of freezing C', () => {
+  it('D-005: HOLDS a measured dispatch-infeasible zero-attempt queue — C stays frozen, nothing falls through to tip', () => {
     const decision = decideFrozenCandidateRepairQueue(fresh(), {
       nowMs: T0 + FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS + 1,
       dispatchFeasible: false,
     });
     expect(decision).toEqual({
-      kind: 'recut-at-tip',
+      kind: 'hold-dispatch-infeasible',
       reason: 'dispatch-infeasible',
-      abandonedCandidate: C,
+      candidate: C,
       repairHead: C,
       attempts: 0,
       ageMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS + 1,
       zeroAttemptStalled: true,
       zeroAttemptStallMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
-      gateDisposition: 'recut',
+      gateDisposition: 'blocked',
       runSuite: false,
       recordVerdict: false,
     });
@@ -137,9 +137,9 @@ describe('frozen-candidate repair queue', () => {
         zeroAttemptStallMs: 1,
       }),
     ).toMatchObject({
-      kind: 'recut-at-tip',
+      kind: 'hold-dispatch-infeasible',
       reason: 'dispatch-infeasible',
-      abandonedCandidate: C,
+      candidate: C,
       attempts: 0,
     });
   });
@@ -168,7 +168,7 @@ describe('frozen-candidate repair queue', () => {
       });
     });
 
-    it('still RETIRES once the hold budget itself is exhausted, so nobody can pin the gate forever', () => {
+    it('D-005: once the convergence hold itself is exhausted it BLOCKS (hold-dispatch-infeasible) — the inconclusive wait ends, the freeze does not', () => {
       expect(
         decideFrozenRepairDispatchInfeasible(fresh(), {
           nowMs: T0 + SIX_DAYS,
@@ -176,10 +176,15 @@ describe('frozen-candidate repair queue', () => {
           capacityRetryAtMs: T0 + SIX_DAYS * 2,
           convergenceHoldMs: 60_000,
         }),
-      ).toMatchObject({ kind: 'recut-at-tip', reason: 'dispatch-infeasible' });
+      ).toMatchObject({
+        kind: 'hold-dispatch-infeasible',
+        reason: 'dispatch-infeasible',
+        candidate: C,
+        gateDisposition: 'blocked',
+      });
     });
 
-    it('retires as before for a SHORT wall — waiting there really would buy nothing', () => {
+    it('D-005: a SHORT wall past the stall window BLOCKS too — waiting would buy nothing, but re-cutting is never the answer', () => {
       expect(
         decideFrozenRepairDispatchInfeasible(fresh(), {
           nowMs: T0 + 10_000,
@@ -187,17 +192,17 @@ describe('frozen-candidate repair queue', () => {
           // Wall lifts in 1s, well inside the stall window: this is ordinary pool churn.
           capacityRetryAtMs: T0 + 11_000,
         }),
-      ).toMatchObject({ kind: 'recut-at-tip' });
+      ).toMatchObject({ kind: 'hold-dispatch-infeasible', candidate: C });
     });
 
-    it('retires as before when the wall reset is UNKNOWN — an unknown must not extend a freeze', () => {
+    it('D-005: an UNKNOWN wall reset past the stall window BLOCKS — an unknown neither extends the inconclusive wait nor re-cuts', () => {
       expect(
         decideFrozenRepairDispatchInfeasible(fresh(), {
           nowMs: T0 + 10_000,
           zeroAttemptStallMs: 5_000,
           capacityRetryAtMs: null,
         }),
-      ).toMatchObject({ kind: 'recut-at-tip' });
+      ).toMatchObject({ kind: 'hold-dispatch-infeasible', candidate: C });
     });
 
     it('WI-2141736 D-002: the convergence hold is materially LONGER than the stall window it gates', () => {
@@ -234,7 +239,7 @@ describe('frozen-candidate repair queue', () => {
         capacityRetryAtMs: null,
       });
       expect(transientWall.kind).toBe('wait-for-dispatch-capacity');
-      expect(genuineDeadEnd.kind).toBe('recut-at-tip');
+      expect(genuineDeadEnd.kind).toBe('hold-dispatch-infeasible');
       // The discrimination itself is the property under test — a predicate that returned the
       // same verdict for both would satisfy the hold test and the retire test separately.
       expect(transientWall.kind).not.toBe(genuineDeadEnd.kind);
@@ -269,15 +274,15 @@ describe('frozen-candidate repair queue', () => {
     });
   });
 
-  it('WI-2141347: still retires-at-tip when the repairHead never converged (no fixes to test)', () => {
+  it('WI-2141347 / D-005: BLOCKS when the repairHead never moved (nothing new to test) — never a re-cut', () => {
     // Falsifiability control for the fix above: an UNconverged queue (repairHead === candidate,
-    // the fresh() default) must keep the original recut-at-tip behavior unchanged.
+    // the fresh() default) has nothing new to test, so it holds for admission.
     expect(
       decideFrozenRepairDispatchInfeasible(fresh(), {
         nowMs: T0 + 1,
         zeroAttemptStallMs: 1,
       }),
-    ).toMatchObject({ kind: 'recut-at-tip', repairHead: C });
+    ).toMatchObject({ kind: 'hold-dispatch-infeasible', candidate: C, repairHead: C });
   });
 
   it('WI-2141736 Layer 2: holds a fresh zero-attempt queue instead of retiring on the FIRST measured capacity wall', () => {
@@ -303,24 +308,24 @@ describe('frozen-candidate repair queue', () => {
     });
   });
 
-  it('WI-2141736 Layer 2: still recuts once the zero-attempt wall has genuinely stalled', () => {
+  it('WI-2141736 Layer 2 / D-005: BLOCKS once the zero-attempt wall has genuinely stalled', () => {
     // Falsifiability control for the wait above: crossing the SAME threshold with the SAME
-    // (unconverged) queue must still reach the original recut-at-tip outcome.
+    // (unconverged) queue must leave the inconclusive wait — into a HOLD, never a re-cut.
     expect(
       decideFrozenRepairDispatchInfeasible(fresh(), {
         nowMs: T0 + FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
         zeroAttemptStallMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
       }),
     ).toEqual({
-      kind: 'recut-at-tip',
+      kind: 'hold-dispatch-infeasible',
       reason: 'dispatch-infeasible',
-      abandonedCandidate: C,
+      candidate: C,
       repairHead: C,
       attempts: 0,
       ageMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
       zeroAttemptStalled: true,
       zeroAttemptStallMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
-      gateDisposition: 'recut',
+      gateDisposition: 'blocked',
       runSuite: false,
       recordVerdict: false,
     });
@@ -647,9 +652,7 @@ describe('frozen-candidate repair queue', () => {
       attempts: 9,
       fixerSpawnId: null,
     };
-    // P-008: priorEscapes:1 spends the default budget so the decision is the HOLD form of
-    // terminal; the recut form is equally terminal and equally advertises the recipe.
-    const diagnostic = diagnoseFrozenCandidateRepairQueue(exhausted, { nowMs: T0 + 2, priorEscapes: 1 });
+    const diagnostic = diagnoseFrozenCandidateRepairQueue(exhausted, { nowMs: T0 + 2 });
 
     expect(diagnostic?.decision).toBe('hold-exhausted');
     expect(diagnostic?.retireAllowed).toBe(true);
