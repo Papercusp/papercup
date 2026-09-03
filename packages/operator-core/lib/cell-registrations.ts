@@ -2134,11 +2134,219 @@ export const ROLE_LAUNCH_CELL: CellSpec = {
 };
 
 /** Every built-in cell, in registration order. */
+/**
+ * Cell 2f — IS THE FROZEN QUEUE CONVERGING, and how long has it been at it?
+ * main-green-status-visible-2026-09-03 P-004 (audit questions #17 and #18).
+ *
+ * ── THE MEASURED GAP THIS CLOSES ────────────────────────────────────────────────
+ * freeze-and-converge's entire promise is that repairs LAND ON a held candidate instead of
+ * each red re-cutting at tip. Whether that promise is being kept is a question about a
+ * TREND — is the failing set shrinking, round over round — and until now no instrument
+ * reported it. `buildFrozenRepairConvergenceGateHealth` had been DERIVING and persisting
+ * the whole summary on every queue write since D-007, and it was simply never projected,
+ * so the one question the mechanism exists to answer was answerable only by grepping
+ * per-run checkpoint logs. Measured 2026-09-03: 17 distinct candidates judged by CI in 30h
+ * with none re-judged — the tip-re-cut signature — while every surface an agent could read
+ * showed only an undifferentiated red.
+ *
+ * ── WHY `no-attempts` IS ITS OWN CODE ───────────────────────────────────────────
+ * Earned 2026-09-03. A queue can sit at `attempts: 0` for hours — tick after tick withheld
+ * by a provider wall or a dispatch reservation — while `consecutiveReds` climbs (103 that
+ * morning) and `failingTests` stays frozen at whatever the last tick that ACTUALLY RAN
+ * measured. From outside, that is indistinguishable from a live regression, and the
+ * natural response is to go hunting for the commit that broke it. There is no commit. It
+ * is a DISPATCH fact, not a code fact, so it must not be folded into the trend codes.
+ *
+ * ── THE TRI-STATE IS LOAD-BEARING ───────────────────────────────────────────────
+ * `not-yet-knowable` (fewer than two recorded rounds) is NOT `not-converging`. Collapsing
+ * them calls a healthy new freeze a treadmill, and "the freeze is a treadmill" is the
+ * belief that gets the mechanism switched off — which is the outage D-007 was written
+ * after.
+ */
+export const GATE_CONVERGENCE_CELL: CellSpec = {
+  cell: 'gate.greenCheckpoint.convergence',
+  registeredOn: '2026-09-03',
+  owner: 'su-4342525e-2b14-4780-bf1b-3b413480030d',
+  headline: 'gate.convergence.shrinkTotal',
+  assessment: {
+    path: 'gate.convergence.code',
+    codes: {
+      'no-cycle-recorded': {
+        meaning:
+          'No readable convergence record. This is a MEASURED ABSENCE of the subject — it says nothing about whether a queue is healthy, and nothing about whether one is stuck.',
+        safeAction:
+          'Do NOT read the null fields beside this as zeros; a `shrinkTotal` of null is not "not shrinking". Read gate.greenCheckpoint.freezeDisposition for whether a freeze exists at all, then release:repair-queue { op: "get" } for the live queue.',
+      },
+      'no-attempts': {
+        meaning:
+          'A cycle is open but NO fixer has ever run on it (attempts 0), so nothing has been measured to converge. The reds beside this describe the last tick that actually ran, not the current candidate.',
+        safeAction:
+          'Read this as a DISPATCH problem, not a code problem — do not go hunting for the commit that broke it. Check freezeDisposition.reason for what withheld dispatch (a provider wall, a reservation held by another checkpoint). Do NOT fire release:checkpoint-run: it cuts a fresh candidate at tip and restarts the treadmill.',
+      },
+      'not-yet-knowable': {
+        meaning:
+          'Fewer than two rounds are recorded, so there is no trend yet. NOT a verdict of failure — a healthy new cycle looks exactly like this.',
+        safeAction:
+          'Wait for the next round rather than concluding anything. Reporting this as "not converging" is what gets a working freeze switched off.',
+      },
+      converging: {
+        meaning:
+          'Every recorded round is no larger than the one before AND the failing set actually shrank. The mechanism is doing its job.',
+        safeAction:
+          'Let it run. Land further fixes ON TOP of the frozen candidate so they join this lineage; never cut a fresh candidate to "try again".',
+      },
+      'not-converging': {
+        meaning:
+          'Rounds are recorded and the failing set is NOT shrinking. This is the treadmill the freeze exists to prevent, and it is a real finding rather than an artefact.',
+        safeAction:
+          'Read shrinkPerRound to see where it stalled, and check whether new breakage is being imported faster than fixes land. Escalate on the work-item that owns the red — do NOT retire the queue on this code alone.',
+      },
+    },
+    evidence: [
+      'gate.convergence.unmeasured',
+      'gate.convergence.attempts',
+      'gate.convergence.admissionRounds',
+      'gate.convergence.shrinkPerRound',
+      'gate.convergence.ageMs',
+    ],
+  },
+  nullable: true,
+  unknownHoist: 'gate.convergence.unmeasured',
+  callerRelativity: { kind: 'global' },
+  provenance: {
+    obtainedBy:
+      "gate_health.convergence — DERIVED by buildFrozenRepairConvergenceGateHealth() in the same statement that persists repair_queue (rung 1 of the derived-truth ladder), shape-checked back by parseFrozenRepairConvergence() and projected by projectFrozenRepairConvergenceCell()",
+    liveExercised: true,
+    evidence:
+      'Read live 2026-09-03T11:38Z against frozen candidate 79c50b5b7b78: openedAtMs 1788427425483 (09:23:45Z), repairHead d19af1bd60d8, attempts 0, convergenceRounds [{ round 1, failingCount 1 }], failingTests ["lint:tsc"] — i.e. exactly the `no-attempts` shape, on a queue whose reds had been read as a code regression for over two hours.',
+  },
+  resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
+  visibility: OPERATOR_PIPELINE_VISIBILITY,
+  federation: { kind: 'local' },
+  changeSignal: {
+    kind: 'poll',
+    tool: 'dev:pipeline_position',
+    path: 'gate.convergence.shrinkTotal',
+  },
+  shape:
+    '{ gate: { convergence: { code, unmeasured, openedAtMs, ageMs, attempts, admissionRounds, failingFirst, failingNow, shrinkTotal, shrinkPerRound: [{ round, failingCount, delta }], converging, candidate, repairHead, phase, observedAtMs } } }',
+};
+
+/**
+ * Cell 2g — IS FREEZE-AND-CONVERGE ON RIGHT NOW, AND IF NOT WHY?
+ * main-green-status-visible-2026-09-03 P-004 (audit question #19), over the record P-008 landed.
+ *
+ * ── THE MEASURED GAP THIS CLOSES ────────────────────────────────────────────────
+ * `repairQueue: null` is three different facts wearing one value: "the owner switched the
+ * freeze off", "the gate just retired a frozen candidate", and "nothing is frozen, all is
+ * well". That ambiguity let freeze-and-converge sit off fleet-wide for a full day — 20
+ * frozen candidates retired, 0 resumed — while looking like an ordinary week (WI-2141736).
+ * A retire CLEARS the queue row, so `repairQueue` reads null exactly when it matters most.
+ *
+ * ── WHY THIS IS A SEPARATE CELL FROM `convergence` ──────────────────────────────
+ * Different subjects, and a CellSpec describes exactly one (D-014). This answers "is the
+ * mechanism ACTING"; the sibling answers "is that action WORKING". They dissociate in both
+ * directions — `state: 'converging'` with `code: 'no-attempts'` is precisely the live
+ * reading on 2026-09-03, and it is the combination that reads healthy and is not.
+ *
+ * ── THE TWO CODES THE STORED UNION CANNOT EXPRESS ───────────────────────────────
+ * `not-measured` and `stale`. A caller branching on the raw `state` has to invent a default
+ * for an absent record, and both plausible defaults (`none`, `off`) are wrong and calm. And
+ * a `retired` observed hours ago describes HISTORY — read as current it is the false-green
+ * class applied to the freeze, which is why staleness outranks the state it qualifies.
+ *
+ * ⚠ `off` and `none` are NOT synonyms. `off` = the owner's switch is off, reds do not
+ * freeze at all. `none` = the mechanism is ON and simply had no frozen candidate this tick,
+ * which is a green gate's normal state. Conflating them IS the original outage.
+ */
+export const GATE_FREEZE_DISPOSITION_CELL: CellSpec = {
+  cell: 'gate.greenCheckpoint.freezeDisposition',
+  registeredOn: '2026-09-03',
+  owner: 'su-4342525e-2b14-4780-bf1b-3b413480030d',
+  headline: 'gate.freezeDisposition.state',
+  assessment: {
+    path: 'gate.freezeDisposition.code',
+    codes: {
+      'no-disposition-recorded': {
+        meaning:
+          'The routine row carries no readable disposition. NOT "the freeze is healthy" and NOT "nothing is frozen" — the gate simply never told us.',
+        safeAction:
+          'Do not infer a state from the null fields beside this. Read release:repair-queue { op: "get" } for the live queue, and treat the freeze as unverified until a tick reports one.',
+      },
+      stale: {
+        meaning:
+          'A disposition exists but was observed longer ago than the freshness window, so it describes HISTORY. The gate has not reported since.',
+        safeAction:
+          'Read `observedAtMs`/`ageMs` and treat the state as a past reading, not current. A `retired` or `converging` from hours ago is exactly the value that reads as live and is not — re-read after the next tick before acting on it.',
+      },
+      off: {
+        meaning:
+          "The owner-visible switch is OFF: reds do NOT freeze a candidate at all, and the gate re-cuts at tip. This is the pre-D-001 treadmill, deliberately enabled.",
+        safeAction:
+          'If this is not intentional, that is the finding — report it. Do not "fix" it by firing checkpoint-run, which is the same behaviour by hand. The switch is FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT via /admin/features.',
+      },
+      none: {
+        meaning:
+          'The mechanism is ON and simply had no frozen candidate this tick. This is a GREEN gate\'s normal state — nothing to hold, nothing to retire.',
+        safeAction:
+          'Nothing to do. Do NOT read this as "the freeze is off"; that conflation is the outage this cell was built after.',
+      },
+      held: {
+        meaning:
+          'A frozen candidate is being HELD: no verdict this tick, no queue mutation, re-measured next tick. Repairs are expected to land on it meanwhile.',
+        safeAction:
+          'Read `holdUntilMs` for when the hold gives up, and `reason` for what it is waiting on. Land fixes ON TOP of the frozen candidate so they join the judged lineage; do not cut a fresh one.',
+      },
+      retired: {
+        meaning:
+          'A frozen candidate was RETIRED this tick and the gate falls through to a fresher candidate. Every repair that had accumulated on it is no longer being judged.',
+        safeAction:
+          'Read `reason` — a retire on anything other than provable unreachable-green is the D-007 treadmill re-entering, and it is worth a work-item. Check whether the reds it carried were already fixed at the old repairHead before accepting it.',
+      },
+      converging: {
+        meaning:
+          'A frozen candidate is live and being repaired — a fixer is dispatched, or repairHead is advancing.',
+        safeAction:
+          'Confirm the action is REAL before relying on it: read gate.greenCheckpoint.convergence, whose `no-attempts` code means zero fixer runs have happened despite this state. `converging` + `no-attempts` together is the combination that reads healthy and is not.',
+      },
+    },
+    evidence: [
+      'gate.freezeDisposition.unmeasured',
+      'gate.freezeDisposition.reason',
+      'gate.freezeDisposition.enabled',
+      'gate.freezeDisposition.observedAtMs',
+      'gate.freezeDisposition.stale',
+    ],
+  },
+  nullable: true,
+  unknownHoist: 'gate.freezeDisposition.unmeasured',
+  callerRelativity: { kind: 'global' },
+  provenance: {
+    obtainedBy:
+      'gate_health.freezeAndConverge — written by the checkpoint tick via buildFrozenAndConvergeGateHealth(), shape-checked back by readFreezeAndConverge() and projected with its vintage by projectFreezeDispositionCell()',
+    liveExercised: true,
+    evidence:
+      'Read live 2026-09-03T11:38Z: state "converging", enabled true, candidate 79c50b5b7b78, reason "frozen repair fixer dispatch is reserved by another checkpoint until 1788435139988; candidate d19af1bd remains serialized and no suite was run" — the sentence that previously existed only inside a per-run log, and the one that explained a 103-red streak nobody could account for.',
+  },
+  resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
+  visibility: OPERATOR_PIPELINE_VISIBILITY,
+  federation: { kind: 'local' },
+  changeSignal: {
+    kind: 'poll',
+    tool: 'dev:pipeline_position',
+    path: 'gate.freezeDisposition.state',
+  },
+  shape:
+    '{ gate: { freezeDisposition: { code, unmeasured, state, reason, enabled, candidate, holdUntilMs, capacityRetryAtMs, observedAtMs, ageMs, stale, summary } } }',
+};
+
 export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,
   GATE_CANDIDATE_CELL,
   GATE_CANDIDATE_FAILURES_CELL,
+  GATE_CONVERGENCE_CELL,
+  GATE_FREEZE_DISPOSITION_CELL,
   GATE_OWNER_BRIEF_CELL,
   GATE_QUALIFICATION_CELL,
   GATE_OWNERSHIP_CELL,

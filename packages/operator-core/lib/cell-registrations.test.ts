@@ -164,6 +164,13 @@ describe('P-007: the four verdict cells', () => {
       // WI-1702869. Own resolver (readGateCandidateFailures) — excluded from
       // NEW_CELLS for the same reason as ownership below.
       'gate.greenCheckpoint.candidateFailures',
+      // main-green-status-visible-2026-09-03 P-004, the two legs of "is the freeze WORKING":
+      // `convergence` answers whether the failing set is shrinking (audit Q#17/#18), and
+      // `freezeDisposition` whether the mechanism is acting at all and why (Q#19). They are
+      // separate cells because they dissociate — `converging` + `no-attempts` was the live
+      // reading on 2026-09-03, and that pair reads healthy while nothing has run.
+      'gate.greenCheckpoint.convergence',
+      'gate.greenCheckpoint.freezeDisposition',
       // gate-audit-hardening-2026-08-31 P-001: the composed owner brief — a pure
       // lens over gitPipelinePosition(), so it IS in NEW_CELLS.
       'gate.greenCheckpoint.ownerBrief',

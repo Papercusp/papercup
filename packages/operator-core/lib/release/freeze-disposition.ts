@@ -268,7 +268,12 @@ export function readFreezeAndConverge(
  *     false-green class (WI-6228) applied to the freeze.
  */
 export type FreezeDispositionCode =
-  | 'not-measured'
+  /**
+   * ⚠ Deliberately NOT the word `not-measured`: that belongs to the read-health vocabulary
+   * (`CellUnknownCode`), which the cell registry refuses to see reused as a domain verdict.
+   * Read-health for this cell is carried separately, by the `unmeasured` hoist.
+   */
+  | 'no-disposition-recorded'
   | 'stale'
   | 'off'
   | 'none'
@@ -287,7 +292,7 @@ export function assessFreezeDisposition(
   record: FreezeAndConvergeGateHealth['freezeAndConverge'] | null,
   nowMs: number,
 ): FreezeDispositionCode {
-  if (!record) return 'not-measured';
+  if (!record) return 'no-disposition-recorded';
   if (nowMs - record.observedAtMs > FREEZE_DISPOSITION_FRESH_MS) return 'stale';
   return record.state;
 }

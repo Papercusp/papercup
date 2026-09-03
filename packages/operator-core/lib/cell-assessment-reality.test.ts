@@ -57,6 +57,14 @@ import {
   assessMainBehindStaging,
 } from './git-pipeline-position';
 import { assessGateOwnership } from './coord/gate-ownership';
+import {
+  assessFreezeDisposition,
+  type FreezeAndConvergeGateHealth,
+} from './release/freeze-disposition';
+import {
+  assessFrozenRepairConvergence,
+  type StoredFrozenRepairConvergence,
+} from './release/frozen-candidate-repair-queue';
 // ⚠ The REAL assessor, imported past the module mock below (which spreads the actual
 // module for exactly this reason): it is the SUBJECT of the goal control rows, and a
 // stubbed one would make every row assert against the mock instead of the code.
@@ -298,7 +306,77 @@ const ROLE_LAUNCH_ROW = (over: Partial<RoleLaunch> = {}): RoleLaunch => ({
 });
 const ROLE_LAUNCH = (rows: readonly Partial<RoleLaunch>[]) => roleLaunchVerdict(rows.map((r) => ROLE_LAUNCH_ROW(r)));
 
+/**
+ * P-004 control builders. Both call the REAL exported assessor, so a declaration and its
+ * resolver cannot drift apart without one of these rows changing — the point of this file.
+ */
+const CONV_BASE: StoredFrozenRepairConvergence = {
+  openedAtMs: 1_000,
+  ageMs: 60_000,
+  attempts: 1,
+  admissionRounds: 2,
+  failingFirst: 5,
+  failingNow: 2,
+  shrinkTotal: 3,
+  shrinkPerRound: [
+    { round: 1, failingCount: 5, delta: null },
+    { round: 2, failingCount: 2, delta: -3 },
+  ],
+  converging: true,
+  candidate: 'c0ffee',
+  repairHead: 'deadbeef',
+  phase: 'awaiting-fixer',
+  observedAtMs: 61_000,
+};
+const CONV = (over: Partial<StoredFrozenRepairConvergence> | null = {}) =>
+  assessFrozenRepairConvergence(over === null ? null : { ...CONV_BASE, ...over });
+
+/** Freshness window is 3h; `NOW` sits just inside it for a record stamped at OBSERVED. */
+const FREEZE_OBSERVED = 10_000_000;
+const FREEZE_NOW = FREEZE_OBSERVED + 60_000;
+const FREEZE = (
+  over: Partial<FreezeAndConvergeGateHealth['freezeAndConverge']> | null = {},
+  nowMs: number = FREEZE_NOW,
+) =>
+  assessFreezeDisposition(
+    over === null
+      ? null
+      : {
+          enabled: true,
+          state: 'held',
+          reason: 'control-table reason',
+          candidate: 'c0ffee',
+          holdUntilMs: null,
+          capacityRetryAtMs: null,
+          observedAtMs: FREEZE_OBSERVED,
+          ...over,
+        },
+    nowMs,
+  );
+
 const CONTROLS: Record<string, readonly Control[]> = {
+  'gate.greenCheckpoint.convergence': [
+    { label: 'no readable convergence record', expect: CONV(null) },
+    { label: 'a cycle is open but no fixer has ever run', expect: CONV({ attempts: 0 }) },
+    {
+      label: 'one round only — no trend is knowable yet',
+      expect: CONV({ converging: null, admissionRounds: 1 }),
+    },
+    { label: 'the failing set is shrinking round over round', expect: CONV({ converging: true }) },
+    { label: 'rounds recorded but the set is not shrinking', expect: CONV({ converging: false }) },
+  ],
+  'gate.greenCheckpoint.freezeDisposition': [
+    { label: 'no readable disposition', expect: FREEZE(null) },
+    {
+      label: 'a disposition older than the freshness window',
+      expect: FREEZE({ state: 'retired' }, FREEZE_OBSERVED + 4 * 60 * 60 * 1_000),
+    },
+    { label: 'the owner switched the mechanism off', expect: FREEZE({ state: 'off', enabled: false }) },
+    { label: 'on, but nothing was frozen this tick', expect: FREEZE({ state: 'none' }) },
+    { label: 'a frozen candidate is being held', expect: FREEZE({ state: 'held' }) },
+    { label: 'a frozen candidate was retired this tick', expect: FREEZE({ state: 'retired' }) },
+    { label: 'a frozen candidate is being repaired', expect: FREEZE({ state: 'converging' }) },
+  ],
   'git.pipelinePosition': [
     { label: 'deployed + process started after the code', expect: PIPE({}) },
     { label: 'deployed but the process predates the code', expect: PIPE({ servingStartedSinceCodeChange: false }) },
@@ -762,6 +840,27 @@ const CONTROLS: Record<string, readonly Control[]> = {
  * to CONTROLS; the partition test below proves the alignment rather than assuming it.
  */
 const EXPECTED: Record<string, readonly (string | null)[]> = {
+  // P-004 truth table. `no-attempts` precedes the trend codes deliberately: a trend computed
+  // over zero fixer runs describes nothing that happened (measured 2026-09-03, candidate
+  // 79c50b5b7b78 sat at attempts 0 for 2h+ while consecutiveReds climbed to 103).
+  'gate.greenCheckpoint.convergence': [
+    'no-cycle-recorded',
+    'no-attempts',
+    'not-yet-knowable',
+    'converging',
+    'not-converging',
+  ],
+  // Staleness OUTRANKS the state it qualifies — row 2 is a `retired` read 4h after it was
+  // observed, and it must NOT surface as `retired`.
+  'gate.greenCheckpoint.freezeDisposition': [
+    'no-disposition-recorded',
+    'stale',
+    'off',
+    'none',
+    'held',
+    'retired',
+    'converging',
+  ],
   'git.pipelinePosition': [
     'live',
     'restart-required',
@@ -884,7 +983,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
    * partition with zero residue, and this is it.
    */
   it('registers exactly twenty-two cells and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(22);
+    expect(BUILTIN_CELLS).toHaveLength(24);
     expect(
       PIPELINE_CELLS.length +
         GOAL_CELLS.length +
@@ -895,7 +994,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
         CAPACITY_CELLS.length +
         ROLE_LAUNCH_CELLS.length,
     ).toBe(BUILTIN_CELLS.length);
-    expect(PIPELINE_CELLS).toHaveLength(9);
+    expect(PIPELINE_CELLS).toHaveLength(11);
     expect(GOAL_CELLS).toHaveLength(1);
     expect(PORTFOLIO_CELLS).toHaveLength(1);
     expect(HOST_MEMORY_CELLS).toHaveLength(2);

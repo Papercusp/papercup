@@ -1750,8 +1750,15 @@ export function parseFrozenRepairConvergence(raw: unknown): StoredFrozenRepairCo
  * `not-yet-knowable`.
  */
 export type FrozenRepairConvergenceCode =
-  /** No readable convergence record. NEVER "healthy" and never "stuck". */
-  | 'not-measured'
+  /**
+   * No readable convergence record. NEVER "healthy" and never "stuck".
+   *
+   * ⚠ Deliberately NOT the word `not-measured`: that belongs to the read-health vocabulary
+   * (`CellUnknownCode`), and the cell registry REFUSES a domain enum that reuses it, so an
+   * apparatus failure can never masquerade as a finding about the subject. Read-health for
+   * this cell is carried separately, by the `unmeasured` hoist.
+   */
+  | 'no-cycle-recorded'
   /** A cycle is open but no fixer has ever run — nothing has been MEASURED to converge. */
   | 'no-attempts'
   /** Fewer than two recorded rounds: there is no trend yet. Not a verdict of failure. */
@@ -1771,7 +1778,7 @@ export type FrozenRepairConvergenceCode =
 export function assessFrozenRepairConvergence(
   record: StoredFrozenRepairConvergence | null,
 ): FrozenRepairConvergenceCode {
-  if (!record) return 'not-measured';
+  if (!record) return 'no-cycle-recorded';
   if (record.attempts === 0) return 'no-attempts';
   if (record.converging === null) return 'not-yet-knowable';
   return record.converging ? 'converging' : 'not-converging';
