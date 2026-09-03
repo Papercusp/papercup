@@ -49,7 +49,10 @@ const rotated = {
     }),
   ),
 };
-const HOME = "/home/papercusp-workspace";
+// The AGENT identity's home, not the SSH login's (D-248). These were the same path until the
+// third identity split them, which is precisely why the delivered credentials sitting in the
+// customer's own home read as correct here for as long as they did.
+const HOME = "/home/papercusp-agent";
 const ROOT = "/credentials";
 
 class MemoryAgentHomeFilesystem implements WorkspaceHostAgentHomeFilesystem {
@@ -161,9 +164,9 @@ function consumer(
   return new WorkspaceHostAgentHomeConsumer({
     filesystem,
     materialRoot: ROOT,
-    workspaceHome: HOME,
-    workspaceUser: "papercusp-workspace",
-    workspaceGroup: "papercusp-workspace",
+    agentHome: HOME,
+    agentUser: "papercusp-agent",
+    agentGroup: "papercusp-agent",
   });
 }
 
@@ -299,18 +302,18 @@ describe("workspace-host sealed agent-home bundle", () => {
       expect.arrayContaining([
         {
           path: paths.claude,
-          owner: "papercusp-workspace",
-          group: "papercusp-workspace",
+          owner: "papercusp-agent",
+          group: "papercusp-agent",
         },
         {
           path: paths.codex,
-          owner: "papercusp-workspace",
-          group: "papercusp-workspace",
+          owner: "papercusp-agent",
+          group: "papercusp-agent",
         },
         {
           path: paths.omp,
-          owner: "papercusp-workspace",
-          group: "papercusp-workspace",
+          owner: "papercusp-agent",
+          group: "papercusp-agent",
         },
       ]),
     );
@@ -447,7 +450,7 @@ describe("workspace-host sealed agent-home bundle", () => {
 
     await expect(
       consumer(filesystem).revoke("agent-encrypted-reference", 1),
-    ).rejects.toThrow(/different workspace home/);
+    ).rejects.toThrow(/different agent home/);
     expect(filesystem.files.get(otherPath)?.toString()).toBe("do-not-remove");
   });
 
@@ -462,7 +465,7 @@ describe("workspace-host sealed agent-home bundle", () => {
       const guarded = new WorkspaceHostAgentHomeConsumer({
         filesystem: new NodeWorkspaceHostSystem(),
         materialRoot: join(temporary, "credentials"),
-        workspaceHome: home,
+        agentHome: home,
       });
 
       await expect(

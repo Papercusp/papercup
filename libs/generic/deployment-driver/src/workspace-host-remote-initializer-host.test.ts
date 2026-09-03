@@ -417,7 +417,9 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent credential consumer
       generation: 7,
     });
 
-    const paths = workspaceHostAgentHomePaths("/home/papercusp-workspace");
+    // The AGENT identity's home (D-248). Before the split this was the SSH login's own home, so
+    // the customer owned and could read the platform's Claude/Codex credentials at 0600.
+    const paths = workspaceHostAgentHomePaths("/home/papercusp-agent");
     expect(system.files.get(paths.claude)).toEqual(
       Buffer.from('{"account":"claude-canary"}'),
     );
@@ -440,7 +442,7 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent credential consumer
 });
 
 describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment", () => {
-  it("passes only explicit workspace identity variables, never ambient controller credentials", async () => {
+  it("runs the probes as the AGENT identity with only explicit variables, never the SSH login and never ambient controller credentials (D-248)", async () => {
     const invocations: WorkspaceHostAgentProbeInvocation[] = [];
     const runner: WorkspaceHostAgentProbeRunner = {
       async run(invocation) {
@@ -460,16 +462,36 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
     }).host;
     await host.probeAgentVerification();
     for (const invocation of invocations) {
+      // The identity here decides which account the bootstrap must grant runtime read to, and
+      // D-043 rules that it cannot be the SSH login. Asserting the negative alongside the
+      // positive because the two were the same string until D-248 split them, so an accidental
+      // revert reads as a passing test unless the wrong value is named explicitly.
       expect(invocation.env).toEqual({
-        HOME: "/home/papercusp-workspace",
-        USER: "papercusp-workspace",
-        LOGNAME: "papercusp-workspace",
+        HOME: "/home/papercusp-agent",
+        USER: "papercusp-agent",
+        LOGNAME: "papercusp-agent",
         PATH: "/opt/papercusp/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       });
       expect(invocation.env).not.toHaveProperty("ANTHROPIC_API_KEY");
       expect(invocation.env).not.toHaveProperty("OPENAI_API_KEY");
-      expect(invocation.runAsUser).toBe("papercusp-workspace");
+      expect(invocation.runAsUser).toBe("papercusp-agent");
+      expect(invocation.runAsUser).not.toBe("papercusp-workspace");
     }
+  });
+
+  it("refuses to run the agents as the workspace SSH account (D-043, D-248)", () => {
+    // The collapse is the whole defect, and nothing downstream catches it: delivered credentials
+    // land in the customer's own home and the customer's login must read the runtime, while
+    // every individual check still passes.
+    expect(() =>
+      createProductionWorkspaceHostRemoteInitializerDeps({
+        system: new RecordingSystem(),
+        workspaceRoot: "/workspaces",
+        credentialMaterialRoot: MATERIAL_ROOT,
+        agentUser: "papercusp-workspace",
+        now: () => NOW,
+      }),
+    ).toThrow(/agentUser must differ from workspaceUser/);
   });
 });
 
