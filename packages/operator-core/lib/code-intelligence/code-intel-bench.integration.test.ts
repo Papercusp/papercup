@@ -21,6 +21,7 @@ import {
   KNOWN_DIVERGENCES,
   KNOWN_RSS_EXCEEDANCES,
   classifyColdStarts,
+  classifyWarmQueries,
   classifyDivergence,
   formatLegReport,
   runLspAdapterLeg,
@@ -265,35 +266,14 @@ describe.skipIf(missing.length > 0)(
       ).toEqual([]);
     });
 
-    it('reports any warm TAIL breach, which the median assertion cannot see', () => {
-      // Deliberately NOT a hard failure yet, and deliberately not silent.
-      //
-      // The tail is real: bakeoff v10 measured one warm sample at 4988ms on
-      // `shadowed-symbol-no-cross-contamination` against a 1500ms budget while
-      // the median was 1ms. Its CAUSE is unconfirmed — 4988ms sits just under
-      // `settleMs` (5000ms), but that path has not been traced — so pinning a
-      // ceiling now would assert a bound nobody has shown the system meets,
-      // on a variance-prone number. That is the flake generator the
-      // cold-start test above refuses for the same reason, and a flaky gate
-      // test freezes the whole fleet.
-      //
-      // So: surface it with the sample array attached, so the next run of this
-      // leg carries the evidence needed to diagnose it. Promote to an
-      // assertion once the cause is known and a real bound exists.
-      const tails = classifyWarmQueries(report.measurements).filter(
-        (v) => v.tailOverBudget && !v.medianOverBudget,
-      );
-      for (const v of tails) {
-        console.warn(
-          `WARM-TAIL over budget (not yet asserted): ${v.caseId} ` +
-            `median=${v.medianMs}ms max=${v.maxMs}ms ` +
-            `budget=${DEFAULT_RESOURCE_BUDGET.warmQueryMsMax}ms ` +
-            `samples=[${v.samplesMs.join(', ')}]`,
-        );
-      }
-      // The grader itself must stay wired: a tail breach has to be COMPUTABLE
-      // here even while it is not yet fatal.
-      expect(Array.isArray(tails)).toBe(true);
-    });
+    // NOTE — the warm TAIL is graded but deliberately NOT asserted here yet.
+    // `formatLegReport` prints a WARM-TAIL banner with the sample array for
+    // every breach, which is the surfacing this leg needs. A hard assertion
+    // waits on a cause: bakeoff v10 measured one warm sample at 4988ms on
+    // `shadowed-symbol-no-cross-contamination` (median 1ms), and 4988ms sits
+    // just under `settleMs` (5000ms) — but that path has not been traced.
+    // Pinning a ceiling on an untraced, variance-prone number is the flake
+    // generator the cold-start test above refuses for the same reason, and a
+    // flaky gate test freezes the whole fleet. Promote once the cause is known.
   },
 );
