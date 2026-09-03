@@ -143,9 +143,11 @@ work-item-scoped conversation threads).
   `rg` + `lsp:query` for that question class until it does, and do NOT read the
   absence as "no call chains exist".
 
-  📖 Versions, re-provisioning, and the five failure modes that return a
-  CONFIDENT WRONG ANSWER (zero-indexed gitnexus lines, a server queried before
-  project load, a STALE gitnexus index, cold-start/RSS budgets): `/internal/docs/agent-insights/code-intelligence-backends-runbook`.
+  📖 Versions, re-provisioning, crash-residue recovery, and the six failure
+  modes that return a CONFIDENT WRONG ANSWER (zero-indexed gitnexus lines, a
+  server queried before project load, a STALE gitnexus index, and
+  `gitnexus.impact` silently answering CALLEES on an out-of-enum `direction` —
+  ask `graph:query { op:'callers' }`): `/internal/docs/agent-insights/code-intelligence-backends-runbook`.
 - **`notifications:recent`** — the app's recent toast/error stream; first
   stop for "why did the app just error?"
 - **`processes:kill`** — SIGTERM/SIGKILL a runaway OS process by PID to
