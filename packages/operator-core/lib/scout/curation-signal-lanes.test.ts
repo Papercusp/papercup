@@ -15,6 +15,7 @@ describe('buildSpendAnomalyPatterns — attribution/concentration, not raw spend
     const out = buildSpendAnomalyPatterns({
       windowMs: 7 * 24 * 60 * 60 * 1000,
       triggerAttributionAvailable: false,
+      attributedCostShare: 0,
       byTrigger: [{ trigger: 'unattributed', costUsd: 66_000, tokens: 10, runs: 100 }],
       byRoleClass: [
         { roleClass: 'interactive', costUsd: 65_000, tokens: 9, runs: 90 },
@@ -30,6 +31,7 @@ describe('buildSpendAnomalyPatterns — attribution/concentration, not raw spend
       buildSpendAnomalyPatterns({
         windowMs: 1,
         triggerAttributionAvailable: false,
+        attributedCostShare: 0,
         byTrigger: [{ trigger: 'unattributed', costUsd: 2, tokens: 10, runs: 1 }],
         byRoleClass: [],
       }),

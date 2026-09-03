@@ -30,7 +30,7 @@ const {
   registerDerivedReadMock: vi.fn(),
   loadModelPricingBookMock: vi.fn(async (): Promise<ModelPricingBookRow[]> => []),
   loadCoordTokenBreakdownMock: vi.fn(
-    async (): Promise<CoordTokenBreakdown> => ({ windowMs: 0, byTrigger: [], triggerAttributionAvailable: false, byRoleClass: [] }),
+    async (): Promise<CoordTokenBreakdown> => ({ windowMs: 0, byTrigger: [], triggerAttributionAvailable: false, attributedCostShare: 0, byRoleClass: [] }),
   ),
   loadCoordPollVolumeMock: vi.fn(
     async (): Promise<CoordPollVolume> => ({ windowMs: 0, tools: [], wakePollCalls: 0, wakePollRowSharePct: 0 }),
@@ -91,7 +91,7 @@ describe('insights.coordTokens resolver gate', () => {
 
     it('a NON-default HARNESS arg falls through to the live inline compute (snapshot has no per-harness variant)', async () => {
       loadModelPricingBookMock.mockImplementation(async () => [{ modelId: 'sonnet' } as ModelPricingBookRow]);
-      loadCoordTokenBreakdownMock.mockImplementation(async () => ({ windowMs: 604800000, byTrigger: [], triggerAttributionAvailable: false, byRoleClass: [{ roleClass: 'fleet', tokens: 1, costUsd: 1, runs: 1 }] }));
+      loadCoordTokenBreakdownMock.mockImplementation(async () => ({ windowMs: 604800000, byTrigger: [], triggerAttributionAvailable: false, attributedCostShare: 0, byRoleClass: [{ roleClass: 'fleet', tokens: 1, costUsd: 1, runs: 1 }] }));
       loadCoordPollVolumeMock.mockImplementation(async () => ({ windowMs: 86400000, tools: [], wakePollCalls: 3, wakePollRowSharePct: 75 }));
       const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('insights.coordTokens', { harness: 'papercusp' })) as Array<Record<string, unknown>>;
