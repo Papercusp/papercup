@@ -62,6 +62,11 @@ import { readGateCandidateFailures, type GateCandidateFailures } from './gate-ca
 import { composeGateOwnerBrief, type GateOwnerBrief } from './gate-owner-brief';
 import { listRuntimeVintage, type RuntimeVintageRow } from './runtime-vintage';
 import { projectCheckpointQualificationState } from './release/checkpoint-qualification-transaction';
+// P-004: the two pure projections behind `gate.greenCheckpoint.freezeDisposition` and
+// `gate.greenCheckpoint.convergence`. Both are rung-1 DERIVE over records this resolver
+// already loads — no second I/O path that could disagree with the first.
+import { projectFreezeDispositionCell } from './release/freeze-disposition';
+import { projectFrozenRepairConvergenceCell } from './release/frozen-candidate-repair-queue';
 
 const pexec = promisify(execFile);
 
@@ -1401,6 +1406,21 @@ export interface PipelinePosition {
      * value as current: a `retired` left behind by a run hours ago describes history.
      */
     freezeAndConverge?: GitPipelineSnapshot['gate']['freezeAndConverge'];
+    /**
+     * main-green-status-visible-2026-09-03 P-004 — IS THE QUEUE CONVERGING, and how long
+     * has it been at it?
+     *
+     * The third leg of the frozen-candidate subject, and the one that separates a working
+     * freeze from a treadmill: `repairQueue` says WHICH sha is frozen, `freezeAndConverge`
+     * says WHETHER the mechanism is acting, and this says WHETHER THAT ACTION IS WORKING —
+     * `shrinkTotal` (failingFirst - failingNow, positive = shrinking), `ageMs`,
+     * `admissionRounds`, and the per-round deltas behind them.
+     *
+     * ⚠ `converging` is TRI-STATE and `null` means NOT YET KNOWABLE (fewer than two rounds
+     * recorded), never "not converging". ⚠ `null` on the whole record means NOT MEASURED —
+     * check `observedAtMs` before treating a value as current.
+     */
+    convergence?: GitPipelineSnapshot['gate']['convergence'];
     /**
      * WI-1702869 — HOW MANY TEST FILES FAIL ON THE FROZEN CANDIDATE, and for each, whether
      * its fix is ALREADY contained in `repairHead`. The one number gate triage needs and the
@@ -5340,6 +5360,23 @@ export async function gitPipelinePosition(
     // ambiguity that let freeze-and-converge sit off fleet-wide for a day unnoticed.
     // Null here means NOT MEASURED, never healthy.
     freezeAndConverge: snap.gate.freezeAndConverge ?? null,
+    // P-004. The third leg of the same subject, and the one that answers whether the
+    // freeze is WORKING rather than merely ON. Already DERIVED and persisted on every
+    // queue write (`buildFrozenRepairConvergenceGateHealth`, rung 1 of the derived-truth
+    // ladder) — it was simply never projected here, so "is this converging or is it a
+    // treadmill?" was answerable only by grepping per-run checkpoint logs.
+    //
+    // ⚠ ALWAYS AN OBJECT, never null: `code: 'not-measured'` with null fields is the
+    // unmeasured answer. A bare null would both break the cell contract (the declared
+    // assessment path must exist in every live payload) and re-create the ambiguity this
+    // item exists to remove.
+    convergence: projectFrozenRepairConvergenceCell(snap.gate.convergence ?? null),
+    // P-004. The CELLED reading of `freezeAndConverge` directly above — same record, one
+    // derivation, computed here rather than re-read, so the two can never disagree. It
+    // adds exactly what the raw record cannot express: `not-measured` (absent) and `stale`
+    // (present but past its freshness window), the two readings a caller branching on the
+    // stored `state` union has to invent a default for.
+    freezeDisposition: projectFreezeDispositionCell(snap.gate.freezeAndConverge ?? null, Date.now()),
     // WI-1702869. Sits beside `repairQueue` because it is the same subject read one level
     // deeper: the queue says WHICH sha is frozen, this says WHAT IS FAILING on it and
     // whether each failure is already repaired at repairHead.
