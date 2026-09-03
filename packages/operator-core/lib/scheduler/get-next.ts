@@ -848,6 +848,170 @@ export interface IssueClaimAffinityCoverage {
 /** EI-16028: affinity is shipped, so its item-side input must not silently starve. */
 export const AFFINITY_PATH_COVERAGE_FLOOR = 0.5;
 
+/**
+ * ONE floor descriptor — the unit of {@link ISSUE_CLAIM_FLOORS}, from which the claim bar,
+ * the count SQL, the sample SQL, and both public result shapes are all DERIVED.
+ */
+export interface IssueClaimFloorSpec {
+  /** The `ok_*` boolean decorated by {@link issueClaimCandidateSubquery}. */
+  readonly ok: string;
+  /** snake_case SQL alias — the count column, the sample column, and the raw row key. */
+  readonly bucket: string;
+  /** camelCase key in {@link IssueClaimExclusionBreakdown.excluded} and {@link IssueClaimExclusionSample}. */
+  readonly field: string;
+  /**
+   * `ok_untaken` is the ONE floor that must not re-guard on itself. Every other bucket is
+   * measured over the UNTAKEN subset only: a taken row is trivially excluded for that
+   * reason alone, and counting it again under e.g. claimHold would double up and mislead.
+   */
+  readonly selfGuarded?: true;
+}
+
+/**
+ * THE FLOOR REGISTRY — the single source every claim-floor bucket is DERIVED from.
+ *
+ * WHY THIS EXISTS (EI-22180177490969530). The floor PREDICATES never drifted: each `ok_*`
+ * boolean is computed once, by the same exported helper the real claim path ANDs in. What
+ * drifted was the BUCKET VOCABULARY — the list of names those booleans are REPORTED under.
+ * It was restated by hand in five places (the claim bar, the count SELECT, the count row
+ * type, the sample SELECT, the sample row type) plus the two public result shapes, and
+ * adding a floor to the subquery without touching every one of them shipped a BUCKET-LESS
+ * floor: no SQL error, no type error, no failing test — just a floor that excludes rows and
+ * reports nothing. A reader then cannot distinguish "this floor excluded 2,000 rows" from
+ * "this floor never ran", because both render as the same absence.
+ *
+ * NOT HYPOTHETICAL: `ok_watchdog_recovery` had shipped in the claim bar with NO count
+ * bucket, NO sample bucket and NO field in {@link IssueClaimExclusionBreakdown} — found by
+ * differencing the two hand-maintained lists while building this registry, after the same
+ * class had already been patched instance-by-instance three times (EI-22172032354026579,
+ * EI-22172757071586188, and EI-22180066397319908, which fixed `stop_line` by appending one
+ * more hand-written line to the very list this replaces).
+ *
+ * THE PROPERTY THIS BUYS: a floor cannot be reported under a name absent from this list, and
+ * cannot sit in this list without being reported. The SQL and the TypeScript result shapes
+ * are both generated from these entries, so "add a floor, forget a bucket" is not an
+ * omission caught later — it is unrepresentable.
+ *
+ * SAME PATTERN, ALREADY PROVEN IN-TREE: `claim-floor-classification.ts` derives its floor
+ * vocabulary from the oracle's own `ISSUE_FLOOR_EXPLANATIONS` for a different consumer,
+ * after three divergent hand-rolled copies had silently disagreed (WI-2141964).
+ *
+ * ADDING A FLOOR: decorate it `ok_<name>` in {@link issueClaimCandidateSubquery}, then add
+ * ONE entry here. The claim bar, the counts, the samples and both public shapes follow.
+ * `get-next-floor-registry.test.ts` and the live-column guard in
+ * `get-next-exclusion-breakdown.integration.test.ts` fail until you do.
+ *
+ * ORDER is the AND/SELECT order only; it carries no semantics.
+ */
+export const ISSUE_CLAIM_FLOORS = [
+  { ok: 'ok_untaken', bucket: 'taken', field: 'taken', selfGuarded: true },
+  { ok: 'ok_claim_hold', bucket: 'claim_hold', field: 'claimHold' },
+  // Strict owner capability: credential, physical device, or external-service action.
+  { ok: 'ok_needs_owner_action', bucket: 'needs_owner_action', field: 'needsOwnerAction' },
+  { ok: 'ok_agent_review', bucket: 'agent_review', field: 'agentReview' },
+  { ok: 'ok_observation', bucket: 'observation_lane', field: 'observationLane' },
+  { ok: 'ok_external_blocker', bucket: 'external_blocker', field: 'externalBlocker' },
+  { ok: 'ok_plan_lane', bucket: 'plan_lane_reserved', field: 'planLaneReserved' },
+  { ok: 'ok_federation', bucket: 'federation_detector', field: 'federationDetector' },
+  { ok: 'ok_loop_noise', bucket: 'loop_noise', field: 'loopNoise' },
+  { ok: 'ok_completed', bucket: 'already_completed', field: 'alreadyCompleted' },
+  // EI-22180177490969530: the floor this registry was built to stop losing. It has been in
+  // the claim bar since EI-20106946822538304 and, until now, in NO breakdown at all — an
+  // eligible watchdog signal held in POOL was refused with the refusal reported nowhere.
+  { ok: 'ok_watchdog_recovery', bucket: 'watchdog_recovery', field: 'watchdogRecovery' },
+  { ok: 'ok_rig', bucket: 'cross_machine_rig', field: 'crossMachineRig' },
+  { ok: 'ok_no_blocker', bucket: 'blocked_dep', field: 'blockedDep' },
+  // BOTH caller-relative cooldown reasons, deliberately in ONE bucket (WI-5939): the row was
+  // released by THIS caller inside the release window (mig 499), OR it was FILED BY SOMEONE
+  // ELSE inside the filing-grace window, which holds a fresh filing for its filer so
+  // file-then-fix cannot be raced. Both clear on their own with no action; a row you filed
+  // yourself is never in the second leg. Knob: PAPERCUSP_FILING_GRACE_SEC (0 disables).
+  { ok: 'ok_cooldown', bucket: 'cooldown', field: 'cooldown' },
+  // WI-6409: a true-remote-origin row (federated in from a peer node, not authored by this
+  // node — see isIssueLocallyClaimableWhereSql). The real claim path (claimNextIssueWorkItem)
+  // and the READY miss-diagnosis have enforced this floor since work-item-status-full-unify
+  // (2026-07-20); this oracle did not apply it at all until WI-6409, so it OVER-COUNTED
+  // `claimable` by every untaken remote row — the confirmed root cause of the recurring
+  // "claim-path/read-path divergence" class (EI-10062/WI-4309/WI-5275/WI-5822/WI-6409): the
+  // oracle reported N survivors while `scheduler:get_next` claimed 0, because N of them were
+  // remote-origin and only the real claim path refused them.
+  { ok: 'ok_origin', bucket: 'remote_origin', field: 'remoteOrigin' },
+  // Born-pending duplicate screening has not yet been adjudicated.
+  { ok: 'ok_admission', bucket: 'admission_pending', field: 'admissionPending' },
+  // P-013/D-012 stop-the-line: the harness's gate-red-streak condition item has been open
+  // >24h, and the row is neither a bug nor an alarm-condition item. Non-zero here is a
+  // VERDICT ("the line is stopped"), never a drained lane — see stopTheLineExclusionSql /
+  // stopTheLineExplanation (work-items-admission).
+  { ok: 'ok_stop_line', bucket: 'stop_line', field: 'stopTheLine' },
+] as const satisfies readonly IssueClaimFloorSpec[];
+
+type IssueClaimFloorField = (typeof ISSUE_CLAIM_FLOORS)[number]['field'];
+type IssueClaimFloorBucket = (typeof ISSUE_CLAIM_FLOORS)[number]['bucket'];
+
+/** Per-floor exclusion COUNTS, one key per {@link ISSUE_CLAIM_FLOORS} entry. Every key is
+ *  always present: a floor that excluded nothing reports 0, which is a MEASUREMENT — never
+ *  the absence that used to be indistinguishable from "the floor never ran". */
+export type IssueClaimExclusionCounts = { [K in IssueClaimFloorField]: number };
+
+/** Per-floor exclusion SAMPLES, one key per {@link ISSUE_CLAIM_FLOORS} entry. Same
+ *  always-present rule as {@link IssueClaimExclusionCounts}: an empty array is a measurement. */
+export type IssueClaimExclusionSampleBuckets = { [K in IssueClaimFloorField]: string[] };
+
+/** Raw SQL row shapes for the derived bucket columns (snake_case, as Postgres returns them). */
+type IssueClaimExclusionCountRow = { [K in IssueClaimFloorBucket]: number };
+type IssueClaimExclusionSampleRow = { [K in IssueClaimFloorBucket]: string[] };
+
+/** The per-floor `WHERE` guard prefix for a bucket — see {@link IssueClaimFloorSpec.selfGuarded}.
+ *  Shared by the counts and the samples so the two populations can never disagree. */
+export function issueClaimFloorBucketGuard(floor: IssueClaimFloorSpec): string {
+  return floor.selfGuarded ? '' : 'ok_untaken AND ';
+}
+
+/** The count SELECT list, derived from {@link ISSUE_CLAIM_FLOORS}. Pure column identifiers
+ *  and literal keywords, no bound values — so `sql.unsafe` is safe here for the same reason
+ *  it is safe for {@link ALL_ISSUE_CLAIM_FLOORS_PASS}. Exported for the derivation guard. */
+export const ISSUE_CLAIM_EXCLUSION_COUNT_SELECT_SQL = ISSUE_CLAIM_FLOORS.map(
+  (f) => `count(*) FILTER (WHERE spec_match AND ${issueClaimFloorBucketGuard(f)}NOT ${f.ok})::int AS ${f.bucket}`,
+).join(',\n      ');
+
+/**
+ * Which registry floors are NOT reported by a given emitted SELECT list — the derivation
+ * guard's one predicate, exported so the guard TEST can exercise it against a deliberately
+ * broken input as well as the real one.
+ *
+ * ⚠ IT MUST FAIL LOUD ON A MIS-SCOPED INSTRUMENT, not quietly pass. An empty or wrong-relation
+ * `selectSql` reports EVERY floor as bucket-less rather than none — because "I measured
+ * nothing" and "I measured everything and found nothing wrong" are the exact pair this whole
+ * work-item exists to stop being the same value. The guard test pins both directions.
+ */
+export function findBucketlessFloors(
+  floors: readonly IssueClaimFloorSpec[],
+  selectSql: string,
+): string[] {
+  return floors
+    .filter((f) => !(selectSql.includes(`NOT ${f.ok}`) && new RegExp(`\\bAS\\s+${f.bucket}\\b`).test(selectSql)))
+    .map((f) => f.ok);
+}
+
+/** Project a raw count row onto the public camelCase shape — one key per registry floor,
+ *  always present, 0 when the column is absent from the row. */
+export function mapIssueClaimExclusionCounts(
+  row: Partial<IssueClaimExclusionCountRow> | undefined,
+): IssueClaimExclusionCounts {
+  const out: Record<string, number> = {};
+  for (const f of ISSUE_CLAIM_FLOORS) out[f.field] = row?.[f.bucket] ?? 0;
+  return out as IssueClaimExclusionCounts;
+}
+
+/** Sample-side twin of {@link mapIssueClaimExclusionCounts}. */
+export function mapIssueClaimExclusionSamples(
+  row: Partial<IssueClaimExclusionSampleRow> | undefined,
+): IssueClaimExclusionSampleBuckets {
+  const out: Record<string, string[]> = {};
+  for (const f of ISSUE_CLAIM_FLOORS) out[f.field] = row?.[f.bucket] ?? [];
+  return out as IssueClaimExclusionSampleBuckets;
+}
+
 export interface IssueClaimExclusionBreakdown {
   /** Issue-family rows (claimable status, this harness/workspace) the spec's OWN
    *  view.filter matches — BEFORE taken/floors. 0 here means the spec itself is the
@@ -867,45 +1031,12 @@ export interface IssueClaimExclusionBreakdown {
    *  floor after `taken` is counted only among the UNTAKEN subset (a taken row is
    *  trivially excluded for that reason alone — counting it again under e.g. claimHold
    *  would double up and mislead). Buckets are INDEPENDENT, not a partition: a row can
-   *  be counted under more than one floor. */
-  excluded: {
-    taken: number;
-    claimHold: number;
-    /** Strict owner capability: credential, physical device, or external-service action. */
-    needsOwnerAction: number;
-    agentReview: number;
-    observationLane: number;
-    externalBlocker: number;
-    planLaneReserved: number;
-    federationDetector: number;
-    loopNoise: number;
-    alreadyCompleted: number;
-    crossMachineRig: number;
-    blockedDep: number;
-    /** BOTH caller-relative cooldown reasons, deliberately in ONE bucket (WI-5939): the row was
-     *  released by THIS caller inside the release window (mig 499), OR it was FILED BY SOMEONE
-     *  ELSE inside the filing-grace window, which holds a fresh filing for its filer so
-     *  file-then-fix cannot be raced. Both clear on their own with no action; a row you filed
-     *  yourself is never in the second leg. Knob: PAPERCUSP_FILING_GRACE_SEC (0 disables). */
-    cooldown: number;
-    /** WI-6409: a true-remote-origin row (federated in from a peer node, not authored by
-     *  this node — see {@link isIssueLocallyClaimableWhereSql}). The real claim path
-     *  (`claimNextIssueWorkItem`) and the READY miss-diagnosis have enforced this floor
-     *  since work-item-status-full-unify (2026-07-20); this oracle did not apply it at
-     *  all until WI-6409, so it OVER-COUNTED `claimable` by every untaken remote row —
-     *  the confirmed root cause of the recurring "claim-path/read-path divergence"
-     *  class (EI-10062/WI-4309/WI-5275/WI-5822/WI-6409): the oracle reported N
-     *  survivors while `scheduler:get_next` claimed 0, because N of them were
-     *  remote-origin and only the real claim path refused them. */
-    remoteOrigin: number;
-    /** Born-pending duplicate screening has not yet been adjudicated. */
-    admissionPending?: number;
-    /** P-013/D-012 stop-the-line: the harness's gate-red-streak condition item has been
-     *  open >24h, and the row is neither a bug nor an alarm-condition item. Non-zero here
-     *  is a VERDICT ("the line is stopped"), never a drained lane — see
-     *  {@link stopTheLineExclusionSql} / stopTheLineExplanation (work-items-admission). */
-    stopTheLine?: number;
-  };
+   *  be counted under more than one floor.
+   *
+   *  DERIVED from {@link ISSUE_CLAIM_FLOORS} — one key per floor, every key always
+   *  present. Per-floor prose lives on the registry entries, beside the floor itself,
+   *  rather than in a parallel list that can fall behind it. */
+  excluded: IssueClaimExclusionCounts;
   /** Independent queue-control axes over the spec-matched population. These counts
    * deliberately overlap: one row may be actively claimed, lease-held, durably
    * parked, and awaiting agent review at the same instant. The legacy
@@ -934,27 +1065,26 @@ export interface IssueClaimExclusionBreakdown {
  *  count and the list together as one verdict MUST read them through
  *  {@link readIssueClaimability}, which puts them in one REPEATABLE READ transaction.
  *
- *  ⚠ THE ONE THING THIS CONSTANT DOES NOT GET FOR FREE (EI-20091339613996367). The floor
- *  LOGIC cannot drift — every `ok_*` boolean is computed by the same exported helper the
- *  claim path enforces. What IS hand-maintained is the SET below: a floor decorated by
- *  {@link issueClaimCandidateSubquery} but never ANDed here is computed for every candidate
- *  row and then silently IGNORED, so the count and the row list over-admit while every
- *  per-floor test still passes. Nothing about that failure is loud — no SQL error, no type
- *  error, and the seeded-row agreement tests only catch drift their fixtures happen to
- *  exercise, which a newly-added floor by definition has none of.
+ *  ⚠ WHAT THIS CONSTANT STILL DOES NOT GET FOR FREE (EI-20091339613996367). The floor LOGIC
+ *  cannot drift — every `ok_*` boolean is computed by the same exported helper the claim path
+ *  enforces. The SET used to be hand-maintained here, and a floor decorated by
+ *  {@link issueClaimCandidateSubquery} but never ANDed in was computed for every candidate row
+ *  and then silently IGNORED, so the count and the row list over-admitted while every per-floor
+ *  test still passed. That half is now DERIVED from {@link ISSUE_CLAIM_FLOORS}, so this bar and
+ *  the exclusion buckets cannot disagree with each other. What is STILL not free is the tie back
+ *  to the subquery: a floor decorated there and never added to the registry remains invisible to
+ *  both. Nothing about that failure is loud — no SQL error, no type error, and the seeded-row
+ *  agreement tests only catch drift their fixtures happen to exercise, which a newly-added floor
+ *  by definition has none of.
  *
  *  Exported for exactly one reason: `get-next-exclusion-breakdown.integration.test.ts`
  *  ("the claimability bar applies EVERY floor the candidate subquery computes") asserts this
  *  set equals the `ok_*` columns the subquery actually returns, read from live result-column
  *  METADATA rather than from source text — so a floor added to the subquery and forgotten
- *  here fails immediately instead of silently widening the queue. Add a floor to the
- *  subquery ⇒ add it here. */
-export const ALL_ISSUE_CLAIM_FLOORS_PASS =
-  `ok_untaken AND ok_claim_hold AND ok_needs_owner_action ` +
-  `AND ok_agent_review AND ok_observation ` +
-  `AND ok_external_blocker AND ok_plan_lane AND ok_federation AND ok_loop_noise ` +
-  `AND ok_completed AND ok_watchdog_recovery AND ok_rig AND ok_no_blocker ` +
-  `AND ok_cooldown AND ok_origin AND ok_admission AND ok_stop_line`;
+ *  fails immediately instead of silently widening the queue. That test is what pins the
+ *  registry to the real columns. Add a floor to the subquery ⇒ add it to
+ *  {@link ISSUE_CLAIM_FLOORS}. */
+export const ALL_ISSUE_CLAIM_FLOORS_PASS = ISSUE_CLAIM_FLOORS.map((f) => f.ok).join(' AND ');
 
 /**
  * The SHARED inner subquery for issue-family claimability: every candidate issue-family
@@ -1242,22 +1372,7 @@ async function aggregateIssueClaimExclusionsOn(
             END
           ) > 0
       )::int AS claimable_with_paths,
-      count(*) FILTER (WHERE spec_match AND NOT ok_untaken)::int                       AS taken,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_claim_hold)::int      AS claim_hold,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_needs_owner_action)::int AS needs_owner_action,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_agent_review)::int     AS agent_review,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_observation)::int     AS observation_lane,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_external_blocker)::int AS external_blocker,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_plan_lane)::int       AS plan_lane_reserved,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_federation)::int      AS federation_detector,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_loop_noise)::int      AS loop_noise,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_completed)::int       AS already_completed,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_rig)::int             AS cross_machine_rig,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_no_blocker)::int      AS blocked_dep,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_cooldown)::int        AS cooldown,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_origin)::int          AS remote_origin,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_admission)::int       AS admission_pending,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_stop_line)::int       AS stop_line,
+      ${sql.unsafe(ISSUE_CLAIM_EXCLUSION_COUNT_SELECT_SQL)},
       count(*) FILTER (
         WHERE spec_match AND NOT ok_claim_hold
           AND NULLIF(BTRIM(COALESCE(payload ->> 'held_open_by', '')), '') IS NOT NULL
@@ -1278,26 +1393,10 @@ async function aggregateIssueClaimExclusionsOn(
         WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'revision-requested'
       )::int AS revision_requested_agent_review
     FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} sub
-  `) as Array<{
+  `) as Array<IssueClaimExclusionCountRow & {
     matched: number;
     claimable: number;
     claimable_with_paths: number;
-    taken: number;
-    claim_hold: number;
-    needs_owner_action: number;
-    agent_review: number;
-    observation_lane: number;
-    external_blocker: number;
-    plan_lane_reserved: number;
-    federation_detector: number;
-    loop_noise: number;
-    already_completed: number;
-    cross_machine_rig: number;
-    blocked_dep: number;
-    cooldown: number;
-    remote_origin: number;
-    admission_pending: number;
-    stop_line: number;
     hold_open_leases: number;
     durable_parks: number;
     unattributed_claim_holds: number;
@@ -1319,25 +1418,16 @@ async function aggregateIssueClaimExclusionsOn(
       floor: AFFINITY_PATH_COVERAGE_FLOOR,
       belowFloor: claimable > 0 && nonEmptyPaths / claimable < AFFINITY_PATH_COVERAGE_FLOOR,
     },
+    // DERIVED from ISSUE_CLAIM_FLOORS — every floor gets a key, so a new floor cannot ship
+    // reporting nothing. The observation-lane substitution is the ONE documented override
+    // (see `laneScopedPopulation` above): that bucket alone is measured by the caller
+    // against the full candidate population, because a structural zero there is the
+    // "true diagnostic into a lie" failure WI-521425 named.
     excluded: {
-      taken: r?.taken ?? 0,
-      claimHold: r?.claim_hold ?? 0,
-      needsOwnerAction: r?.needs_owner_action ?? 0,
-      agentReview: r?.agent_review ?? 0,
-      observationLane: opts.laneScopedPopulation
-        ? opts.laneScopedPopulation.observationLane
-        : (r?.observation_lane ?? 0),
-      externalBlocker: r?.external_blocker ?? 0,
-      planLaneReserved: r?.plan_lane_reserved ?? 0,
-      federationDetector: r?.federation_detector ?? 0,
-      loopNoise: r?.loop_noise ?? 0,
-      alreadyCompleted: r?.already_completed ?? 0,
-      crossMachineRig: r?.cross_machine_rig ?? 0,
-      blockedDep: r?.blocked_dep ?? 0,
-      cooldown: r?.cooldown ?? 0,
-      remoteOrigin: r?.remote_origin ?? 0,
-      admissionPending: r?.admission_pending ?? 0,
-      stopTheLine: r?.stop_line ?? 0,
+      ...mapIssueClaimExclusionCounts(r),
+      ...(opts.laneScopedPopulation
+        ? { observationLane: opts.laneScopedPopulation.observationLane }
+        : {}),
     },
     queueControl: {
       activeClaims: r?.taken ?? 0,
@@ -1404,26 +1494,7 @@ export async function aggregateIssueClaimExclusions(
  *  `sampleLimit`; buckets OVERLAP exactly like the counts (a row can appear in more than
  *  one floor's sample). `taken` samples rows failing `ok_untaken` alone (mirrors how the
  *  counts treat it); every other bucket samples the UNTAKEN subset, same as the counts. */
-export interface IssueClaimExclusionSample {
-  taken: string[];
-  claimHold: string[];
-  needsOwnerAction: string[];
-  agentReview: string[];
-  observationLane: string[];
-  externalBlocker: string[];
-  planLaneReserved: string[];
-  federationDetector: string[];
-  loopNoise: string[];
-  alreadyCompleted: string[];
-  crossMachineRig: string[];
-  blockedDep: string[];
-  cooldown: string[];
-  /** WI-6409: sampled ids of true-remote-origin rows — see {@link IssueClaimExclusionBreakdown.excluded}'s remoteOrigin. */
-  remoteOrigin: string[];
-  admissionPending?: string[];
-  /** P-013/D-012: sampled ids refused by the stop-the-line floor — see
-   *  {@link IssueClaimExclusionBreakdown.excluded}'s stopTheLine. */
-  stopTheLine?: string[];
+export interface IssueClaimExclusionSample extends IssueClaimExclusionSampleBuckets {
   queueControl: IssueQueueControlSample;
 }
 
@@ -1462,8 +1533,15 @@ export interface IssueQueueControlSample {
  * `item_kind`; EI-18682848605075155). Wraps the SAME {@link issueClaimCandidateSubquery} +
  * floor predicates {@link aggregateIssueClaimExclusions} counts, materialized ONCE via a
  * `WITH` CTE and sampled per floor, so a sampled id applies the identical bar to what the
- * counts call excluded, and adding/removing a floor there automatically applies here too.
+ * counts call excluded.
  * READ-ONLY, no claim side-effect — this is purely a diagnostic companion to the counts.
+ *
+ * ⚠ THIS DOCSTRING USED TO PROMISE SAFETY IT DID NOT HAVE (EI-22180177490969530). It said
+ * "adding/removing a floor there automatically applies here too" — true of the `ok_*`
+ * PREDICATES, false of the BUCKET NAMES, which were a hand-written list right below it. A
+ * floor added to the counts and forgotten here sampled nothing while the prose said it
+ * could not happen. Both lists are now generated from {@link ISSUE_CLAIM_FLOORS}, so the
+ * claim is finally structural rather than aspirational — do not re-hand-write either one.
  *
  * ⚠ That agreement is PER SNAPSHOT (WI-5947). Called on its own this is a SEPARATE
  * round-trip from the counts, so under concurrent claims a sampled id CAN disagree with the
@@ -1522,43 +1600,18 @@ export async function sampleIssueClaimExclusions(
      ) t)
   `;
 
+  // DERIVED from ISSUE_CLAIM_FLOORS, exactly like the counts — same registry, same
+  // per-floor guard, so the two reads cannot report different bucket vocabularies.
+  // `sampleLimit` stays a BOUND parameter inside each fragment; only column identifiers
+  // are interpolated as text.
+  const sampleSelect = ISSUE_CLAIM_FLOORS.map(
+    (f) => sql`${sampleOf(`NOT ${f.ok}`, issueClaimFloorBucketGuard(f))} AS ${sql.unsafe(f.bucket)}`,
+  ).reduce((acc, frag) => sql`${acc}, ${frag}`);
+
   const rows = (await sql`
     WITH sub AS ${candidateFromSource(sql, sub, opts.precomputedTable)}
-    SELECT
-      ${sampleOf('NOT ok_untaken', '')}        AS taken,
-      ${sampleOf('NOT ok_claim_hold')}          AS claim_hold,
-      ${sampleOf('NOT ok_needs_owner_action')}  AS needs_owner_action,
-      ${sampleOf('NOT ok_agent_review')}         AS agent_review,
-      ${sampleOf('NOT ok_observation')}         AS observation_lane,
-      ${sampleOf('NOT ok_external_blocker')}    AS external_blocker,
-      ${sampleOf('NOT ok_plan_lane')}           AS plan_lane_reserved,
-      ${sampleOf('NOT ok_federation')}          AS federation_detector,
-      ${sampleOf('NOT ok_loop_noise')}          AS loop_noise,
-      ${sampleOf('NOT ok_completed')}           AS already_completed,
-      ${sampleOf('NOT ok_rig')}                 AS cross_machine_rig,
-      ${sampleOf('NOT ok_no_blocker')}          AS blocked_dep,
-      ${sampleOf('NOT ok_cooldown')}            AS cooldown,
-      ${sampleOf('NOT ok_origin')}              AS remote_origin,
-      ${sampleOf('NOT ok_admission')}           AS admission_pending,
-      ${sampleOf('NOT ok_stop_line')}           AS stop_line
-  `) as Array<{
-    taken: string[];
-    claim_hold: string[];
-    needs_owner_action: string[];
-    agent_review: string[];
-    observation_lane: string[];
-    external_blocker: string[];
-    plan_lane_reserved: string[];
-    federation_detector: string[];
-    loop_noise: string[];
-    already_completed: string[];
-    cross_machine_rig: string[];
-    blocked_dep: string[];
-    cooldown: string[];
-    remote_origin: string[];
-    admission_pending: string[];
-    stop_line: string[];
-  }>;
+    SELECT ${sampleSelect}
+  `) as Array<IssueClaimExclusionSampleRow>;
   const controlRows = (await sql`
     SELECT * FROM (
       (SELECT 'active-claim'::text AS axis, feature_id, taken_by, taken_at, payload
@@ -1642,25 +1695,7 @@ export async function sampleIssueClaimExclusions(
     }
   }
   const r = rows[0];
-  return {
-    taken: r?.taken ?? [],
-    claimHold: r?.claim_hold ?? [],
-    needsOwnerAction: r?.needs_owner_action ?? [],
-    agentReview: r?.agent_review ?? [],
-    observationLane: r?.observation_lane ?? [],
-    externalBlocker: r?.external_blocker ?? [],
-    planLaneReserved: r?.plan_lane_reserved ?? [],
-    federationDetector: r?.federation_detector ?? [],
-    loopNoise: r?.loop_noise ?? [],
-    alreadyCompleted: r?.already_completed ?? [],
-    crossMachineRig: r?.cross_machine_rig ?? [],
-    blockedDep: r?.blocked_dep ?? [],
-    cooldown: r?.cooldown ?? [],
-    remoteOrigin: r?.remote_origin ?? [],
-    admissionPending: r?.admission_pending ?? [],
-    stopTheLine: r?.stop_line ?? [],
-    queueControl,
-  };
+  return { ...mapIssueClaimExclusionSamples(r), queueControl };
 }
 
 /** One claimable issue-family row surfaced by {@link listIssueClaimableRows} — a lean,
