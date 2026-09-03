@@ -348,13 +348,28 @@ const invoke = defineTool({
       : [];
     const spawnModelPin =
       typeof (body as any)?.spawnModel === 'string' ? ((body as any).spawnModel as string).trim() : '';
-    let routeBackendModel = resolveSpawnBackendModel(role, spawnModelPin || undefined, undefined);
+    // WI-2142846: an explicit per-fire backend override — set by launch-blueprint.ts's
+    // live readAgentConfig() role-backend resolution (bodyExtra.spawnBackend), the
+    // SAME channel shape spawnModel already uses. Validated against the same 3-value
+    // set roleBackendOverride accepts (never 'auto' — that is not a concrete backend
+    // an override can name); an unrecognized value is dropped rather than trusted, so
+    // this route can never be handed a spawnBackend the rest of the resolution chain
+    // (applyBackendSwap's DEFAULT_BACKEND_CMDS lookup) does not know how to honor.
+    const rawSpawnBackend = (body as any)?.spawnBackend;
+    const spawnBackendPin =
+      rawSpawnBackend === 'claude-code' || rawSpawnBackend === 'omp' || rawSpawnBackend === 'codex'
+        ? rawSpawnBackend
+        : undefined;
+    let routeBackendModel = resolveSpawnBackendModel(role, spawnModelPin || undefined, spawnBackendPin);
     let routeBackend = routeBackendModel.backend;
     // Set below only when the omp→claude-code tracked-launch rescue (D-fix
-    // EI-18133554034909305) applies, so the actual spawned child (buildInvokeOnce,
-    // via spawnInvokeOnce's extraEnv) resolves the SAME backend the tracked-session
-    // guard below decided on — not just this route's own bookkeeping.
-    let backendFallbackForSpawnEnv: string | null = null;
+    // EI-18133554034909305) applies, OR an explicit spawnBackend pin was supplied
+    // above (WI-2142846) — either way, the actual spawned child (buildInvokeOnce, via
+    // spawnInvokeOnce's extraEnv) independently RE-RESOLVES the backend from scratch
+    // (see the comment at this variable's use below) and would otherwise ignore this
+    // route's own resolution entirely, landing back on ITS OWN stale/unconfigured
+    // default rather than the one this route (or its caller) just decided on.
+    let backendFallbackForSpawnEnv: string | null = spawnBackendPin ?? null;
     // Per-hive override (domain-generic-hive-architecture-2026-06-18 P-012/P-013/D-013):
     // the loopback invoke route is the single chokepoint for the HTTP-based autonomous
     // spawns (queen via bpkind=hive, overwatch, launch blueprints) — all of which carry a

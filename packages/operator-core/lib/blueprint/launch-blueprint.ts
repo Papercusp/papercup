@@ -802,6 +802,41 @@ export async function fireLaunchBlueprint(
     }
   }
 
+  // WI-2142846: resolve a launch-blueprint role's OWN BACKEND from the owner's
+  // `roleBackends` config, mirroring the spawnModel resolution just above — same
+  // channel shape (bodyExtra → the /invoke route → an explicit per-spawn override),
+  // same fail-soft contract, same "let an explicit caller/bench pin win" precedence.
+  //
+  // Without this, a per-role backend override set via /settings/agent was invisible
+  // to THIS fire: the route's fallback resolution (resolveSpawnBackendModel →
+  // harness-invoke-once.ts's roleBackendOverride) reads process.env.AGENT_ROLE_BACKENDS,
+  // a snapshot mirrored into `process.env` only when THIS PROCESS itself called
+  // writeAgentConfig() or at THIS PROCESS's own boot (host-bootstrap.ts,
+  // applyToProcessEnv) — never on a later config change served by a different
+  // request/process. A long-running scheduler process (e.g. bg-host, which fires
+  // the release-fixer from green-checkpoint) can sit for hours/days between boots,
+  // so an operator's override silently never took effect until that process
+  // happened to restart (measured: WI-2142846, a `release-fixer` override sat
+  // ignored while the process ran the global `codex` default straight into a
+  // multi-day account usage wall). The capacity PREFLIGHT for this exact role
+  // (green-checkpoint.ts's resolveReleaseFixerProvider) already does a live
+  // readAgentConfig() read for exactly this reason — this fire-time resolution
+  // gives the actual dispatch the same freshness instead of trusting the stale
+  // env-var mirror, for every launch-blueprint-fired role, not just this one.
+  if (process.env.WI2142846_DEBUG) {
+    throw new Error(`[DEBUG] fireInput.bodyExtra before spawnBackend block = ${JSON.stringify(fireInput.bodyExtra)}`);
+  }
+  if (fireInput.bodyExtra?.spawnBackend == null) {
+    try {
+      const { readAgentConfig } = await import('../agent-config');
+      const cfg = await readAgentConfig().catch(() => null);
+      const backend = cfg?.roleBackends?.[target.role];
+      if (backend) fireInput = { ...fireInput, bodyExtra: { ...fireInput.bodyExtra, spawnBackend: backend } };
+    } catch {
+      /* fail-soft: leave backend resolution to the route's existing fallback */
+    }
+  }
+
   const fire = _fire ?? defaultFire;
   const fired = (await fire({ ...fireInput, ...target })) as LaunchSpawnInfo | undefined;
   return { ...target, spawn: fired ?? null };

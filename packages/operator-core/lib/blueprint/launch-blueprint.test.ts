@@ -330,6 +330,65 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('opus:max'); // not overridden
   });
 
+  // WI-2142846: fireLaunchBlueprint's role-BACKEND resolution — same shape/precedence
+  // as the spawnModel block just above, added because the release-fixer's per-role
+  // `roleBackends['release-fixer']` override was silently invisible to the actual
+  // dispatch (it was honoured only by green-checkpoint.ts's PREFLIGHT capacity check,
+  // which does its own separate live readAgentConfig() read).
+  describe('WI-2142846: role-backend resolution (bodyExtra.spawnBackend)', () => {
+    it('resolves the configured roleBackends override for the firing role at launch', async () => {
+      readAgentConfig.mockResolvedValueOnce({
+        models: {}, tiers: [], tierCeilings: {},
+        roleBackends: { 'release-fixer': 'claude-code' },
+      } as unknown as Awaited<ReturnType<typeof readAgentConfig>>);
+      const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+      setLaunchBlueprintFire((input) => { fired.push(input); });
+      const target = await fireLaunchBlueprint('release-fix', { ...opts, kickoff: 'gate red' });
+      expect(target.role).toBe('release-fixer');
+      expect(fired).toHaveLength(1);
+      expect((fired[0]!.bodyExtra as { spawnBackend?: string }).spawnBackend).toBe('claude-code');
+    });
+
+    it('leaves spawnBackend unset when the role has no configured override (falls through to the route\'s own resolution)', async () => {
+      // default readAgentConfig mock carries no roleBackends at all.
+      const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+      setLaunchBlueprintFire((input) => { fired.push(input); });
+      await fireLaunchBlueprint('release-fix', { ...opts, kickoff: 'gate red' });
+      expect((fired[0]!.bodyExtra as { spawnBackend?: string } | undefined)?.spawnBackend).toBeUndefined();
+    });
+
+    it('a caller-set spawnBackend WINS over the configured roleBackends override', async () => {
+      readAgentConfig.mockResolvedValueOnce({
+        models: {}, tiers: [], tierCeilings: {},
+        roleBackends: { 'release-fixer': 'claude-code' },
+      } as unknown as Awaited<ReturnType<typeof readAgentConfig>>);
+      const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+      setLaunchBlueprintFire((input) => { fired.push(input); });
+      await fireLaunchBlueprint('release-fix', { ...opts, kickoff: 'gate red', bodyExtra: { spawnBackend: 'omp' } });
+      expect((fired[0]!.bodyExtra as { spawnBackend?: string }).spawnBackend).toBe('omp'); // not overridden
+    });
+
+    it('fails soft (no throw, no spawnBackend) when the config read rejects', async () => {
+      readAgentConfig.mockRejectedValueOnce(new Error('pg unreachable'));
+      const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+      setLaunchBlueprintFire((input) => { fired.push(input); });
+      const target = await fireLaunchBlueprint('release-fix', { ...opts, kickoff: 'gate red' });
+      expect(target.role).toBe('release-fixer');
+      expect((fired[0]!.bodyExtra as { spawnBackend?: string } | undefined)?.spawnBackend).toBeUndefined();
+    });
+
+    it('does not resolve a backend for an unrelated role even when SOME roleBackends entries exist', async () => {
+      readAgentConfig.mockResolvedValueOnce({
+        models: {}, tiers: [], tierCeilings: {},
+        roleBackends: { 'doc-steward': 'codex' }, // release-fixer has no entry
+      } as unknown as Awaited<ReturnType<typeof readAgentConfig>>);
+      const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+      setLaunchBlueprintFire((input) => { fired.push(input); });
+      await fireLaunchBlueprint('release-fix', { ...opts, kickoff: 'gate red' });
+      expect((fired[0]!.bodyExtra as { spawnBackend?: string } | undefined)?.spawnBackend).toBeUndefined();
+    });
+  });
+
   it('fireLaunchBlueprintForEvent fires the launch blueprint that declares the event key', async () => {
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];
     setLaunchBlueprintFire((input) => {
