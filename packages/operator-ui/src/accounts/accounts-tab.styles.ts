@@ -16,7 +16,11 @@
  * inside a comment — closes the string and the module stops parsing.
  */
 export const ACCOUNTS_TAB_CSS = `
-.pclsb-acct { display: flex; flex-direction: column; gap: 7px; padding: 9px 10px 12px; font-size: 12px; color: var(--fg, #e7e7ea); }
+/* The panel is its own query container (see the @container rule at the bottom):
+   it is mounted in hosts of different widths — the operator's drag-resizable
+   rail and the portal's ~281px dock — so every width decision below has to be
+   asked of THIS element, never of the window. */
+.pclsb-acct { container: operator-panel / inline-size; display: flex; flex-direction: column; gap: 7px; padding: 9px 10px 12px; font-size: 12px; color: var(--fg, #e7e7ea); }
 .pclsb-acct__hero {
   display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 8px 9px; border-radius: 8px;
   background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)) 88%, var(--accent, #8b5cf6) 12%);
@@ -145,7 +149,17 @@ export const ACCOUNTS_TAB_CSS = `
   text-decoration: none; align-self: flex-start; }
 .pclsb-acct__manage:hover { text-decoration: underline; }
 .pclsb-acct__foot { margin: 0; font-size: 10px; line-height: 1.35; color: var(--fg-mute, #8a8a91); border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08)); padding-top: 7px; }
-@media (max-width: 300px) {
+/* The narrow-pane reflow keys off THIS PANEL'S width, not the window's.
+   It was @media (max-width: 300px) — which asks how wide the VIEWPORT is, a
+   question this panel has never had a stake in. In the operator that query
+   could only fire with the whole window under 300px (so: never, including
+   when the rail is dragged narrow, which it is designed to be), and in the
+   portal's 281px dock it stayed dead at a 1280px viewport while the row's
+   name column collapsed to 10.8px and the account label overflowed across
+   its neighbours. Measured, not guessed: grid-template-columns resolved to
+   "10.8125px 26.5469px 169.234px". A container query asks the question that
+   was always meant. */
+@container operator-panel (max-width: 300px) {
   .pclsb-acct__top { grid-template-columns: minmax(0, 1fr) auto; }
   .pclsb-acct__btns { grid-column: 1 / -1; }
   .pclsb-acct__usage { grid-template-columns: 1fr; }
