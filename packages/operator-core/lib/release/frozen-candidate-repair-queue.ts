@@ -22,20 +22,12 @@ export const FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION = 3 as const;
 export const FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE = 'repair-staging-mismatch';
 
 /** These bounds stop unattended fixer churn. Exhaustion retains the candidate at the queue
- * head; it never authorizes a newer moving-tip candidate — UNLESS `maxCandidateEscapes` is
- * raised above 0 (P-048, green-main-fast-2026-08-25), which permits a BOUNDED number of
- * exhausted pins to be abandoned in favour of a fresh tip cut.
- *
- * `maxCandidateEscapes: 1` — the owner-gated lever WAS pulled: P-008 of
- * gate-verdict-liveness-and-repair-reliability-2026-08-31 (activation-audited, owner-directed)
- * ratifies "maxCandidateEscapes 0 → 1/day". The limit stays a plain in-window count; the
- * rolling-DAY window is measured by the caller from the durable escape ledger
- * (`gate_health.candidateEscapes`, frozen-candidate-escape-ledger.ts), and the engine FAILS
- * CLOSED to the historical hold-exhausted behaviour whenever that ledger cannot be read or
- * written — so 0-behaviour remains the floor, never exceeded silently. An escape re-cuts at
- * tip; a genuinely persistent red reds the fresh candidate too, exhausts again, and the spent
- * budget then holds permanently — the bound is what stops a real red being laundered into
- * perpetual re-cutting (see decideExhaustedPin). */
+ * head and NEVER authorizes a newer moving-tip candidate — D-005 of
+ * frozen-candidate-stays-frozen-through-all-fixes-2026-09-03 (owner-ratified 2026-09-03). The
+ * P-048/P-008 `maxCandidateEscapes` recut hatch that briefly existed (0 → 1/day on 2026-09-01)
+ * was deleted outright: every automatic retire observed since 2026-08-19 was a re-cut in
+ * disguise, and a re-cut is the treadmill the freeze exists to stop. An exhausted pin BLOCKS
+ * and escalates; an admission through the one door (repair-head-admission.ts) un-blocks it. */
 /* `maxAgeMs` was 4h until 2026-08-27 [owner 2026-08-27, approved in-session].
  * WHY IT MOVED (WI-85288): the 4h budget was calibrated against fixers that never ran.
  * From 2026-08-24 16:57Z to 2026-08-27, EVERY dispatched release-fixer was SIGTERM'd at
@@ -49,14 +41,10 @@ export const FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE = 'repair-staging-mismatch
  * dispatched at 13:23:19Z was already inside a queue reading `hold-exhausted` — its commit
  * would have been discarded unverified at the 14:22:37Z evaluation.
  * 8h covers dispatch + a full fixer run + up to two hourly verification ticks.
- * NOT CHANGED: maxAttempts. maxCandidateEscapes moved 0 → 1 on 2026-09-01 under the P-008
- * owner decision, and back to 0 PERMANENTLY on 2026-09-03 under D-005 of
- * frozen-candidate-stays-frozen-through-all-fixes-2026-09-03: exhaustion blocks and escalates,
- * it never re-cuts — the decision functions no longer read the field at all. */
+ * NOT CHANGED: maxAttempts. */
 export const DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS = Object.freeze({
   maxAttempts: 3,
   maxAgeMs: 8 * 60 * 60 * 1_000,
-  maxCandidateEscapes: 0,
 });
 
 /**
@@ -279,9 +267,6 @@ export const FROZEN_REPAIR_CONVERGENCE_ROUND_CAP = 24;
 export interface FrozenRepairQueueLimits {
   maxAttempts: number;
   maxAgeMs: number;
-  /** P-048: how many exhausted pins may be abandoned for a fresh tip cut. 0 disables the
-   * escape hatch entirely and preserves the historical permanent hold. */
-  maxCandidateEscapes: number;
   /**
    * P-005: cap on attempt refunds for unproductive infrastructure fixer deaths (see
    * FrozenCandidateRepairQueue.freeRetries). OPTIONAL so existing limit constructors are
@@ -386,14 +371,6 @@ export type FrozenRepairQueueDecision =
       reason: FrozenCandidateBlockedReason;
       candidate: string;
       repairHead: string;
-      /**
-       * P-048 observability: these two distinguish the only two ways to reach a permanent
-       * hold — escapes DISABLED (`maxCandidateEscapes === 0`, the default) versus escapes
-       * SPENT (`escapesUsed >= maxCandidateEscapes`). Without them a persistent red and a
-       * switched-off escape hatch are indistinguishable at the surface.
-       */
-      escapesUsed: number;
-      maxCandidateEscapes: number;
       gateDisposition: 'blocked';
       runSuite: false;
       recordVerdict: false;
@@ -424,7 +401,8 @@ export interface FrozenRepairDispatchInfeasibleDecision {
  * frozen candidate and re-cuts at tip for a reason that has nothing to do with the code under
  * test — reinstating exactly the re-cut-at-tip treadmill D-007's freeze-and-converge exists to
  * stop. This decision holds the candidate — inconclusive, no verdict recorded — until the wall
- * has genuinely persisted past `zeroAttemptStallMs`; only then does `recut-at-tip` fire.
+ * has genuinely persisted past `zeroAttemptStallMs` AND the convergence hold; only then does
+ * `hold-dispatch-infeasible` (a BLOCK, never a re-cut — D-005) fire.
  */
 interface FrozenRepairDispatchPendingBase {
   kind: 'wait-for-dispatch-capacity';
@@ -491,16 +469,6 @@ export interface FrozenRepairQueueObservation {
   /** Required only after a repair verified green. `null` means not measured yet. */
   stagingContainsRepair?: boolean | null;
   /**
-   * P-048: how many frozen candidates this gate has ALREADY abandoned, read by the caller
-   * from durable gate health.
-   *
-   * It is an observation and not a queue field on purpose. An escape DISCARDS the queue, so a
-   * counter living on the queue row would reset to 0 on every escape and the bound would never
-   * bind — producing exactly the unbounded re-cut churn the bound exists to prevent. Absent or
-   * negative is read as 0.
-   */
-  priorEscapes?: number;
-  /**
    * P-009: repo-relative paths currently EDITED in the canonical shared checkout, as the
    * caller measured them (e.g. `git status --porcelain` over the staging tree).
    *
@@ -554,12 +522,6 @@ export interface FrozenRepairQueueDiagnostic {
   /** True only after an unassigned zero-attempt queue outlives the normal dispatch window. */
   zeroAttemptStalled: boolean;
   zeroAttemptStallMs: number;
-  /** P-048 gate-health surface: escapes already spent, the ceiling, and whether an exhausted
-   * pin would still be allowed to re-cut. `escapeAvailable:false` with `maxCandidateEscapes:0`
-   * reads as "hatch disabled"; with a nonzero ceiling it reads as "budget spent". */
-  escapesUsed: number;
-  maxCandidateEscapes: number;
-  escapeAvailable: boolean;
   fixerSpawnId: string | null;
   fixerAlive: boolean | null;
   dispatchReservation: {
@@ -630,10 +592,9 @@ export function buildFrozenRepairStatusIdentity(queue: FrozenCandidateRepairQueu
 }
 
 /**
- * Measured dispatch infeasibility is not a candidate verdict and must not hold an immutable pin.
- * The caller retires the queue and falls through to the current staging tip. This policy is
- * deliberately independent of `maxCandidateEscapes`: that budget bounds failed REPAIR attempts,
- * while this branch proves no repair attempt can begin at all.
+ * Measured dispatch infeasibility is not a candidate verdict. A momentary wall waits; a wall
+ * that outlasts the convergence hold BLOCKS the queue (D-005) — the caller escalates once and
+ * holds the frozen lineage for admission. It never retires and never reads the staging tip.
  */
 export function decideFrozenRepairDispatchInfeasible(
   queue: FrozenCandidateRepairQueue,
@@ -661,13 +622,11 @@ export function decideFrozenRepairDispatchInfeasible(
   if (queue.phase !== 'awaiting-fixer' || queue.fixerSpawnId !== null || queue.dispatchReservation !== undefined) {
     throw new Error('dispatch infeasibility requires an unassigned awaiting-fixer queue without a reservation');
   }
-  // WI-2141347: a converged repairHead (only ever an ancestor of staging — see
-  // `shouldConvergeRepairHead` — so already vetted, never unpushed fixer content) is a
-  // structurally sound candidate to test even though no fixer can be dispatched right now.
-  // Retiring it here would discard that convergence untested and re-cut at whatever staging
-  // tip happens to be current, re-admitting the whole last-green radius for nothing. Test it
-  // instead, exactly like a fresh candidate — this queue's own bookkeeping is still abandoned
-  // by the caller (same as the recut-at-tip path), so no repair-queue continuity is implied.
+  // WI-2141347: a repairHead that already moved past the frozen candidate (an admitted fix,
+  // i.e. a commit ON the frozen lineage) is a structurally sound candidate to test even though
+  // no fixer can be dispatched right now. Test it, exactly like a fresh candidate — the caller
+  // abandons this queue's own bookkeeping, and a red there freezes a new queue at that same
+  // in-lineage sha, never at the staging tip.
   if (queue.repairHead !== queue.candidate) {
     return {
       kind: 'test-candidate',
@@ -872,9 +831,6 @@ function assertLimits(limits: FrozenRepairQueueLimits): void {
   }
   if (!Number.isFinite(limits.maxAgeMs) || limits.maxAgeMs <= 0) {
     throw new Error('maxAgeMs must be a positive finite duration');
-  }
-  if (!Number.isInteger(limits.maxCandidateEscapes) || limits.maxCandidateEscapes < 0) {
-    throw new Error('maxCandidateEscapes must be a non-negative integer');
   }
   if (
     limits.maxFreeRetries !== undefined &&
@@ -1087,44 +1043,26 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
 
 /** Decide the next orchestration step. A queue always wins over a moving staging tip. */
 /**
- * P-048 — the ONE policy point for "this pin is exhausted; now what?".
+ * The ONE policy point for "this pin is exhausted; now what?" — centralized so the answer
+ * cannot differ between the three exhaustion sites.
  *
- * Every exhaustion path used to return `hold-exhausted`, which retains the pin as queue head
- * indefinitely. That is a deadlock rather than a flake: replacing the head requires a green,
- * and an exhausted pin is by construction one that could not produce a green. The class is
- * evidenced — main's last green commit is titled "Repair frozen candidate f9030aa73955", i.e.
- * a human has already broken this deadlock by hand at least once.
- *
- * `maxCandidateEscapes` is what keeps the hatch from trading a deadlock for unbounded churn.
- * An escape re-cuts at tip; if the red is a GENUINE persistent regression still present at tip,
- * the fresh candidate reds too, exhausts too, and the budget is spent — after which the gate
- * holds permanently and the red surfaces. So the bound is precisely the property that stops a
- * real red being laundered into perpetual re-cutting.
- *
- * Centralized rather than inlined at each of the three exhaustion sites so the escape budget
- * cannot be enforced at two of them and silently skipped at the third.
+ * D-005 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): exhaustion BLOCKS and
+ * escalates; it never re-cuts. An exhausted pin is not a deadlock any more: the queue stays
+ * addressable, and an admission (markFrozenRepairAdmitted, via repair-head-admission.ts) lands
+ * a fix ON the frozen lineage and returns the queue to verification. The P-048/P-008 escape
+ * hatch that used to answer `recut-at-tip` here was deleted — every automatic retire seen
+ * since 2026-08-19 was a re-cut in disguise, and the owner wants the candidate held until it
+ * is green.
  */
 function decideExhaustedPin(
   queue: FrozenCandidateRepairQueue,
-  observation: FrozenRepairQueueObservation,
-  limits: FrozenRepairQueueLimits,
   reason: FrozenCandidateBlockedReason,
 ): FrozenRepairQueueDecision {
-  // D-005 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): exhaustion BLOCKS and
-  // escalates; it never re-cuts. The P-048/P-008 escape hatch is deleted — every automatic
-  // retire seen since 2026-08-19 was a re-cut in disguise, and the owner wants the candidate
-  // held until it is green. `observation.priorEscapes` and `limits.maxCandidateEscapes` are
-  // deliberately NOT read; the two counters stay on the decision as zeros so the surfaces that
-  // render them keep their shape until P-009 removes them.
-  void observation;
-  void limits;
   return {
     kind: 'hold-exhausted',
     reason,
     candidate: queue.candidate,
     repairHead: queue.repairHead,
-    escapesUsed: 0,
-    maxCandidateEscapes: 0,
     gateDisposition: 'blocked',
     runSuite: false,
     recordVerdict: false,
@@ -1150,10 +1088,10 @@ export function decideFrozenCandidateRepairQueue(
     };
   }
   if (queue.phase === 'blocked') {
-    // The load-bearing escape site: a queue PERSISTED as blocked is the steady state of the
-    // deadlock, so an escape budget that skipped this branch would only ever help a queue that
-    // happened to exhaust during the current tick.
-    return decideExhaustedPin(queue, observation, limits, queue.blockedReason!);
+    // A queue PERSISTED as blocked is the steady state of the hold: it re-decides to the same
+    // hold every tick (the caller escalates only on the open→blocked transition) until an
+    // admission moves the phase back to ready-to-verify.
+    return decideExhaustedPin(queue, queue.blockedReason!);
   }
 
   // A dispatch lease serializes launchers; it is not liveness authority for a fixer that
@@ -1175,7 +1113,7 @@ export function decideFrozenCandidateRepairQueue(
   // Going green inside the budget satisfies D-001 even if promotion bookkeeping crosses the
   // boundary a moment later. The normal promotion freshness checks still apply downstream.
   if (queue.phase !== 'ready-to-promote' && ageMs >= limits.maxAgeMs) {
-    return decideExhaustedPin(queue, observation, limits, 'wall-clock-exhausted');
+    return decideExhaustedPin(queue, 'wall-clock-exhausted');
   }
 
   if (queue.phase === 'awaiting-fixer') {
@@ -1203,7 +1141,7 @@ export function decideFrozenCandidateRepairQueue(
     }
     if (!queue.fixerSpawnId || observation.fixerAlive === false) {
       if (queue.attempts >= limits.maxAttempts) {
-        return decideExhaustedPin(queue, observation, limits, 'attempts-exhausted');
+        return decideExhaustedPin(queue, 'attempts-exhausted');
       }
       return {
         kind: 'dispatch-fixer',
@@ -1370,7 +1308,6 @@ export function diagnoseFrozenCandidateRepairQueue(
   if (!queue) return null;
   const decision = decideFrozenCandidateRepairQueue(queue, observation, limits);
   const ageMs = Math.max(0, observation.nowMs - queue.openedAtMs);
-  const escapesUsed = Math.max(0, Math.trunc(observation.priorEscapes ?? 0));
   const reservation = queue.dispatchReservation
     ? {
         ...queue.dispatchReservation,
@@ -1426,9 +1363,6 @@ export function diagnoseFrozenCandidateRepairQueue(
     ageExpired: ageMs >= limits.maxAgeMs,
     zeroAttemptStalled,
     zeroAttemptStallMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
-    escapesUsed,
-    maxCandidateEscapes: limits.maxCandidateEscapes,
-    escapeAvailable: limits.maxCandidateEscapes > 0 && escapesUsed < limits.maxCandidateEscapes,
     fixerSpawnId: queue.fixerSpawnId,
     fixerAlive,
     dispatchReservation: reservation,
