@@ -803,7 +803,36 @@ export type GateCandidateAssessment =
   | 'candidate-not-yet-published'
   | 'judging-current-path'
   | 'judging-without-current-path'
+  | 'frozen-candidate-contains-path'
+  | 'frozen-candidate-without-path'
   | 'inferred-candidate';
+
+/**
+ * Where `changeInCandidate.judgingSha` came from, and which of those readings a caller may
+ * ACT on. ONE list, exported, so the cell registration's `headlineSource.authoritative`
+ * derives from it instead of restating it by hand (derived-truth ladder rung 1): the
+ * registration used to list only `'retriage-marker'` while the resolver already trusted
+ * `'in-flight-candidate'` too, so the door reported `source.authoritative:false` for a
+ * reading the code itself treated as an observation.
+ *
+ *  - `'retriage-marker'` / `'in-flight-candidate'` — the run's OWN published markers.
+ *  - `'repair-queue'` — main-green-status-visible-2026-09-03 P-011 follow-up (grader card
+ *    EI-22277841040474660, C5 leg 3): the frozen repair queue's candidate. Under
+ *    freeze-and-converge (default ON, D-007) every later run RESUMES that exact sha, and the
+ *    recorded red was computed on it, so between runs — and during a CRON run, whose probe
+ *    degrades to a checkout-head inference — the persisted queue row is a better answer to
+ *    "which sha did the gate judge" than any probe. Before this the cell answered
+ *    `no-active-run` (with a safe action that named a re-cut at tip) for the entire
+ *    between-runs life of a frozen queue, which is most of its life.
+ *  - `'run-probe'` — an inference; never authoritative.
+ */
+export const AUTHORITATIVE_JUDGING_SHA_SOURCES = ['retriage-marker', 'in-flight-candidate', 'repair-queue'] as const;
+export type JudgingShaSource = (typeof AUTHORITATIVE_JUDGING_SHA_SOURCES)[number] | 'run-probe';
+export function isAuthoritativeJudgingShaSource(
+  source: JudgingShaSource | null | undefined,
+): source is (typeof AUTHORITATIVE_JUDGING_SHA_SOURCES)[number] {
+  return !!source && (AUTHORITATIVE_JUDGING_SHA_SOURCES as readonly string[]).includes(source);
+}
 export type DeployedShaAssessment =
   | 'executing'
   | 'restart-required'
@@ -990,14 +1019,19 @@ export function assessGateCandidate(input: {
     if (input.checkpointRunInFlight == null) return null;
     return input.verdictUnknownLegs.includes('changeInCandidate.judgingSha') ? null : 'no-active-run';
   }
-  if (input.judgingShaSource !== 'retriage-marker' && input.judgingShaSource !== 'in-flight-candidate')
-    return 'inferred-candidate';
+  if (!isAuthoritativeJudgingShaSource(input.judgingShaSource)) return 'inferred-candidate';
   if (
     input.verdictUnknownLegs.includes('changeInCandidate.judgingContainsPath') ||
     input.judgingContainsPath === null ||
     input.judgingContainsPath === undefined
   )
     return null;
+  // A 'repair-queue' sha with NO run in flight is the FROZEN candidate the next run resumes,
+  // not a run judging right now — say so with its own codes, whose safe action is the
+  // converge lever (never a re-cut). While a run IS active it resumed that same candidate
+  // (freeze-and-converge), so the in-flight codes are the right reading.
+  if (input.judgingShaSource === 'repair-queue' && input.checkpointRunInFlight?.active !== true)
+    return input.judgingContainsPath ? 'frozen-candidate-contains-path' : 'frozen-candidate-without-path';
   return input.judgingContainsPath ? 'judging-current-path' : 'judging-without-current-path';
 }
 
@@ -2496,7 +2530,7 @@ export interface ChangeInCandidate {
    * one named the ABANDONED candidate. CLAUDE.md meanwhile told agents the cell's sha was
    * "already marker-preferred per WI-7035"; WI-7035 only ever fixed `checkpointRunInFlight`.
    */
-  judgingShaSource?: 'retriage-marker' | 'in-flight-candidate' | 'run-probe';
+  judgingShaSource?: JudgingShaSource;
   /**
    * Does that candidate carry this path's WORKING-TREE content? null = not comparable.
    * Omitted when `judgingShaSource === 'run-probe'`: the checkout-head inference can change
@@ -2622,7 +2656,30 @@ export interface GateCandidates {
    * about — the trap CLAUDE.md's `lint:required-field-strands` exists for. A probe-only
    * resolver that omits it is read as `'run-probe'` by `reconcileGateCandidates`.
    */
-  judgingShaSource?: 'retriage-marker' | 'in-flight-candidate' | 'run-probe';
+  judgingShaSource?: JudgingShaSource;
+}
+
+/**
+ * The frozen repair queue as `reconcileGateCandidates` needs it — structural, so the
+ * snapshot's richer row and a two-field test fixture both satisfy it.
+ */
+export interface FrozenQueueForReconcile {
+  candidate?: string | null;
+  frozenCandidate?: string | null;
+  phase?: string | null;
+}
+
+/**
+ * The sha a frozen repair queue pins, or null when the queue is absent or no longer the
+ * gate's subject. `'blocked'` (attempts / wall-clock exhausted) is excluded on purpose: a
+ * blocked queue is awaiting retire or escape, so "the next run resumes this candidate" no
+ * longer holds and the probe is the honest fallback.
+ */
+export function frozenQueueCandidate(queue: FrozenQueueForReconcile | null | undefined): string | null {
+  if (!queue) return null;
+  if (queue.phase === 'blocked') return null;
+  const sha = queue.frozenCandidate ?? queue.candidate ?? null;
+  return typeof sha === 'string' && sha.length > 0 ? sha : null;
 }
 
 /**
