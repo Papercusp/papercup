@@ -76,10 +76,6 @@ async function loadCorpus(): Promise<CorpusEntry[]> {
       }
     }
   }
-  if (process.env.P023_DUMP_CORPUS) {
-    const fs = await import('node:fs');
-    fs.writeFileSync(process.env.P023_DUMP_CORPUS, JSON.stringify(out));
-  }
   return out;
 }
 
