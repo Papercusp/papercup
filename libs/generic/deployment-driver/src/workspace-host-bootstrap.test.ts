@@ -270,6 +270,50 @@ describe('buildWorkspaceHostBootstrap agent runtime installs (D-259)', () => {
   });
 
   /**
+   * MEASURED on canary-11 (2026-09-03): a GCE startup-script runs as root with NO $HOME, and the
+   * ollama CLI panics in `envconfig.Models()` (config.go:120) from `NewCLI()` — BEFORE any
+   * subcommand runs — when it is unset:
+   *
+   *     panic: $HOME is not defined
+   *
+   * That is a whole class, not one call: it took down `ollama pull` (canary-10's undiagnosable
+   * 26ms failure) and it silently defeated the version guard too, because `ollama --version`
+   * panicked to empty stdout so the comparison never matched and the runtime was re-downloaded
+   * on every boot. So the guard is "every CLI invocation carries HOME", enumerated from the
+   * rendered script rather than spot-checked — a NEW ollama CLI call added without HOME fails
+   * here instead of on a host. The SERVER is deliberately exempt: systemd derives HOME from
+   * `User=`, which is why this is a CLI-only fix and not a global export.
+   */
+  it('gives every ollama CLI invocation a HOME, since a startup-script has none', () => {
+    const script = buildWorkspaceHostBootstrap(
+      input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+    );
+    expect(script).toContain('OLLAMA_CLI_HOME="${HOME:-/root}"');
+
+    const cliInvocations = script
+      .split('\n')
+      .filter(
+        (line) =>
+          // RUNNING the binary with a subcommand — not `[[ -x /usr/local/bin/ollama ]]`, which
+          // is a file test that starts no process and therefore needs no environment.
+          /\/usr\/local\/bin\/ollama\s+(--version|pull|show)\b/.test(line) &&
+          // The systemd unit's own ExecStart is the server, not the CLI.
+          !line.includes('ExecStart='),
+      );
+    // A calibration case: if this ever selects nothing, the assertion below would pass
+    // vacuously and report a fixed script as safe.
+    expect(cliInvocations.length).toBeGreaterThanOrEqual(3);
+    for (const line of cliInvocations) {
+      expect(line).toContain('HOME="$OLLAMA_CLI_HOME"');
+    }
+
+    // HOME must be defined before the first invocation that relies on it.
+    expect(script.indexOf('OLLAMA_CLI_HOME="${HOME:-/root}"')).toBeLessThan(
+      script.indexOf('HOME="$OLLAMA_CLI_HOME"'),
+    );
+  });
+
+  /**
    * D-264's rule, applied one service later: when a phase MUTATES a service, nothing after it may
    * assume that service's runtime state. `systemctl enable --now` returns once systemd has forked
    * the unit, not once its HTTP API accepts connections — and the pull talks to that API.
