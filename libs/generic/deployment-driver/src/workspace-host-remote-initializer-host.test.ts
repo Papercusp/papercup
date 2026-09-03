@@ -4,6 +4,8 @@ import {
   WorkspaceHostOperationError,
   WorkspaceHostGitCredentialBindingRegistry,
   WORKSPACE_HOST_DEFAULT_WORKSPACE_ROOT,
+  WORKSPACE_HOST_RELEASE_BIN_DIR,
+  WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_FILE,
   createProductionWorkspaceHostRemoteInitializerDeps,
   type WorkspaceHostCommandInput,
   type WorkspaceHostSystem,
@@ -476,6 +478,140 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
       expect(invocation.env).not.toHaveProperty("OPENAI_API_KEY");
       expect(invocation.runAsUser).toBe("papercusp-agent");
       expect(invocation.runAsUser).not.toBe("papercusp-workspace");
+    }
+  });
+
+  it("execs the vendor path the attestation recorded, not the bare name that resolves to a launcher wrapper (D-259 Defect 2)", async () => {
+    const vendor = {
+      claude: "/home/papercusp-agent/.local/bin/claude",
+      codex: "/home/papercusp-agent/.papercusp/runtime/node_modules/.bin/codex",
+      omp: "/home/papercusp-agent/.local/bin/omp",
+    };
+    const invocations: WorkspaceHostAgentProbeInvocation[] = [];
+    const runner: WorkspaceHostAgentProbeRunner = {
+      async run(invocation) {
+        invocations.push(invocation);
+        return invocation.command === vendor.omp
+          ? { exitCode: 0, stdout: '{"account":"can…001"}' }
+          : { exitCode: 0, stdout: "logged in as canary@example.test" };
+      },
+    };
+    const system = new RecordingSystem();
+    await system.writePrivateFile(
+      WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_FILE,
+      Buffer.from(
+        JSON.stringify({
+          runtime: {
+            agentRuntimesInstalledByBootstrap: true,
+            agentRuntimes: vendor,
+          },
+        }),
+      ),
+    );
+    const host = createProductionWorkspaceHostRemoteInitializerDeps({
+      system,
+      workspaceRoot: "/workspaces",
+      credentialMaterialRoot: MATERIAL_ROOT,
+      agentProbeRunner: runner,
+      now: () => NOW,
+    }).host;
+
+    await host.probeAgentVerification();
+
+    expect(invocations.map((invocation) => invocation.command)).toEqual([
+      vendor.claude,
+      vendor.codex,
+      vendor.omp,
+    ]);
+    // The probe PATH still leads with the release bin, and that is fine — the point is that the
+    // command is no longer a bare name for that path to resolve. Asserting both together is what
+    // pins the fix: a regression restores the bare name while this env stays identical.
+    for (const invocation of invocations) {
+      expect(invocation.env?.PATH).toBe(
+        `${WORKSPACE_HOST_RELEASE_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+      );
+      expect(invocation.command.startsWith(WORKSPACE_HOST_RELEASE_BIN_DIR)).toBe(
+        false,
+      );
+    }
+  });
+
+  it("falls back to the bare command when no attestation exists, so a pre-install host fails its probe rather than erroring", async () => {
+    const invocations: WorkspaceHostAgentProbeInvocation[] = [];
+    const runner: WorkspaceHostAgentProbeRunner = {
+      async run(invocation) {
+        invocations.push(invocation);
+        return { exitCode: 127, stdout: "" };
+      },
+    };
+    const host = createProductionWorkspaceHostRemoteInitializerDeps({
+      system: new RecordingSystem(),
+      workspaceRoot: "/workspaces",
+      credentialMaterialRoot: MATERIAL_ROOT,
+      agentProbeRunner: runner,
+      now: () => NOW,
+    }).host;
+
+    const report = await host.probeAgentVerification();
+
+    expect(invocations.map((invocation) => invocation.command)).toEqual([
+      "claude",
+      "codex",
+      "omp",
+    ]);
+    expect(report.allReady).toBe(false);
+  });
+
+  it("refuses an attested path inside the release bin — that directory holds wrappers, not vendor CLIs", async () => {
+    const system = new RecordingSystem();
+    await system.writePrivateFile(
+      WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_FILE,
+      Buffer.from(
+        JSON.stringify({
+          runtime: {
+            agentRuntimes: {
+              claude: `${WORKSPACE_HOST_RELEASE_BIN_DIR}/claude`,
+            },
+          },
+        }),
+      ),
+    );
+    const host = createProductionWorkspaceHostRemoteInitializerDeps({
+      system,
+      workspaceRoot: "/workspaces",
+      credentialMaterialRoot: MATERIAL_ROOT,
+      agentProbeRunner: { async run() {
+        throw new Error("probe must not run against a wrapper path");
+      } },
+      now: () => NOW,
+    }).host;
+
+    await expect(host.probeAgentVerification()).rejects.toThrow(
+      /holds launcher wrappers rather than vendor CLIs/,
+    );
+  });
+
+  it("refuses a corrupt attestation instead of silently degrading to the bare-name fallback", async () => {
+    // The distinction the fallback above depends on: ABSENT means "this host has no vendor
+    // runtime" and is a legitimate probe failure; MALFORMED means the attestation says something
+    // unreadable, and treating that as absent would report a probe failure whose real cause was a
+    // corrupt attestation nobody ever looked at.
+    for (const body of ["{not json", JSON.stringify({ runtime: { agentRuntimes: ["/usr/bin/claude"] } }), JSON.stringify({ runtime: { agentRuntimes: { claude: "claude" } } })]) {
+      const system = new RecordingSystem();
+      await system.writePrivateFile(
+        WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_FILE,
+        Buffer.from(body),
+      );
+      const host = createProductionWorkspaceHostRemoteInitializerDeps({
+        system,
+        workspaceRoot: "/workspaces",
+        credentialMaterialRoot: MATERIAL_ROOT,
+        agentProbeRunner: { async run() {
+          throw new Error("probe must not run against a corrupt attestation");
+        } },
+        now: () => NOW,
+      }).host;
+      await expect(host.probeAgentVerification()).rejects.toThrow();
     }
   });
 
