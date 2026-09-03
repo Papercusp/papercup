@@ -335,6 +335,60 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('opus:max'); // not overridden
   });
 
+  // P-002 (role-model-one-answer-2026-09-03): an EXPLICIT per-role `models[role]` is THE
+  // ANSWER — the tier menu's family/floor/ceiling math gets no vote over it. Before this,
+  // `models[role]` was never read on the launch path, so a correctly-set per-role model was
+  // silently inert; that cost nine dead release-fixers on 2026-09-03, each spawned onto a
+  // usage-walled codex account while `models['release-fixer']='claude-opus-5:xhigh'` sat
+  // ignored. The falsifiable half is the tier menu below: it is deliberately set to a
+  // CROSS-PROVIDER gpt spec, which is exactly what used to win.
+  it('P-002: an explicit per-role models[role] WINS over the tier menu', async () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const cfgWithRoleModel = {
+      models: { mug: 'claude-opus-5:xhigh' },
+      tiers: [{ name: 'deep', spec: 'gpt-5.6-sol:xhigh', backend: 'codex' }],
+      tierCeilings: {},
+    } as unknown as Awaited<ReturnType<typeof readAgentConfig>>;
+    // Called twice per fire: once by the spawnModel block, once by the spawnBackend block.
+    readAgentConfig.mockResolvedValueOnce(cfgWithRoleModel).mockResolvedValueOnce(cfgWithRoleModel);
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => { fired.push(input); });
+    const target = await fireLaunchBlueprint('coding', { ...opts, kickoff: 'go' });
+    expect(target.role).toBe('mug');
+    expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('claude-opus-5:xhigh');
+  });
+
+  it('P-002: a caller-set spawnModel still WINS over an explicit per-role models[role]', async () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const cfgWithRoleModel = {
+      models: { mug: 'claude-opus-5:xhigh' },
+      tiers: [] as unknown[],
+      tierCeilings: {},
+    } as unknown as Awaited<ReturnType<typeof readAgentConfig>>;
+    // EXACTLY ONE queued value: a caller-set spawnModel short-circuits the spawnModel
+    // block, so only the spawnBackend block reads config. Queueing two would leak the
+    // spare `mockResolvedValueOnce` into the NEXT test (mockClear does not drain the
+    // once-queue), which is precisely how this pair first failed.
+    readAgentConfig.mockResolvedValueOnce(cfgWithRoleModel);
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => { fired.push(input); });
+    await fireLaunchBlueprint('coding', { ...opts, kickoff: 'go', bodyExtra: { spawnModel: 'opus:max' } });
+    expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('opus:max');
+    expect(readAgentConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('P-002: with NO per-role models[role], the tier menu still resolves (no regression)', async () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    getOwnerSteering.mockResolvedValueOnce({
+      directive: null, eligiblePlans: [], eligibleHives: [], pauseNewWork: false, pausedUntil: null,
+      modelTiers: [{ name: 'deep', spec: 'opus:max' }], tierCeilings: null,
+    });
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => { fired.push(input); });
+    await fireLaunchBlueprint('coding', { ...opts, kickoff: 'go' });
+    expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('opus:max');
+  });
+
   // WI-2142846: fireLaunchBlueprint's role-BACKEND resolution — same shape/precedence
   // as the spawnModel block just above, added because the release-fixer's per-role
   // `roleBackends['release-fixer']` override was silently invisible to the actual

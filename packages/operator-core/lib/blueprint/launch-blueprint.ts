@@ -846,6 +846,42 @@ export async function fireLaunchBlueprint(
     }
   }
 
+  // P-005 (role-model-one-answer-2026-09-03): a COMPOSE-TIME contradiction must be
+  // LOUD, not silently resolved. The two blocks above write spawnModel and
+  // spawnBackend independently, so the body can ship asserting both at once — and
+  // downstream the model spec decides the backend, so the spawnBackend half is the
+  // one that silently loses. That is exactly how nine release-fixers on 2026-09-03
+  // spawned onto a usage-walled codex account while roleBackends said 'claude-code':
+  // the contradiction was present in the body and nothing reported it.
+  //
+  // WARN, do not throw: this runs on every autonomous launch, and a hard refusal here
+  // would take the fleet down over a config disagreement the caller cannot fix
+  // mid-flight. The precedence itself is deliberate (WI-4640) — this only makes the
+  // losing side visible. detectRoleBackendConflict in harness-invoke-once.ts answers
+  // the same question from ENV; this one reads the composed body, which is the only
+  // place the two resolutions are both concrete.
+  {
+    const composedModel = fireInput.bodyExtra?.spawnModel;
+    const composedBackend = fireInput.bodyExtra?.spawnBackend;
+    if (typeof composedModel === 'string' && typeof composedBackend === 'string') {
+      try {
+        const { inferBackendFromModelSpec } = await import('../harness-invoke-once');
+        const implied = inferBackendFromModelSpec(composedModel);
+        if (implied && implied !== composedBackend) {
+          console.warn(
+            `[backend-conflict] launch-blueprint role '${target.role}': composed body pins ` +
+              `spawnBackend '${composedBackend}' but spawnModel '${composedModel}' implies ` +
+              `'${implied}'. The MODEL WINS downstream, so this launch runs on '${implied}' and ` +
+              `the per-role backend is IGNORED. Align models['${target.role}'] and ` +
+              `roleBackends['${target.role}'] in /settings/agent; do not invert this precedence (WI-4640).`,
+          );
+        }
+      } catch {
+        /* fail-soft: a diagnostic must never break a launch */
+      }
+    }
+  }
+
   const fire = _fire ?? defaultFire;
   const fired = (await fire({ ...fireInput, ...target })) as LaunchSpawnInfo | undefined;
   return { ...target, spawn: fired ?? null };
