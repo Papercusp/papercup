@@ -394,7 +394,8 @@ export interface GitPipelineSnapshot {
      * `apps/operator/lib/release/green-checkpoint.ts`'s `RepairTickLegs` /
      * `RepairTickLegRecord`). This was already being WRITTEN; nothing ever read it back
      * into this snapshot, so `gate.candidateFailures` could only ever report a bare
-     * `postSuiteMeasured` tri-state boolean and could never NAME which leg was failing.
+     * `postSuiteMeasured` tri-state boolean and could never NAME which leg was failing
+     * (P-003 has since deleted that field; `nonTestLegs.perLeg` is the named surface).
      * `null` when no repair queue is open, or one is open but has had no hold tick yet.
      */
     repairTickLegs?: StoredRepairTickLegs | null;
