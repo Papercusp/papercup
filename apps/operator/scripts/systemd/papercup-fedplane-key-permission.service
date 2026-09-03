@@ -1,0 +1,30 @@
+[Unit]
+Description=Papercusp fed-plane private-key exposure probe (WI-2143622)
+# Detection + escalation ONLY — this unit never chmods, moves or deletes a key,
+# and never reads or logs key material. It reports paths and mode bits and files
+# an EI; remediation is a human/agent call made off that filing (the same
+# EI-8901-derived posture as papercup-fedplane-disk-health.service).
+#
+# Deliberately a systemd timer, NOT a DBOS scheduled workflow / in-process
+# operator tick (dbos-scheduler-consolidation-2026-06-03 D-004 / EI-1622): this
+# is host-level infra health, not product state.
+#
+# Runs UNPRIVILEGED, as the user. /root is therefore unreadable and is reported
+# by the probe as a named BLIND SPOT rather than counted as clean. A host that
+# needs /root covered should install this as a SYSTEM unit instead — do not add
+# sudo to a detector.
+After=network-online.target
+
+[Service]
+Type=oneshot
+# The tier-2 content sweep is the expensive half and this box routinely sits at
+# load average 60+. A security probe that degrades its host is a security probe
+# somebody disables, so it runs at the bottom of both the CPU and I/O queues.
+Nice=19
+IOSchedulingClass=idle
+# Must exceed KEYPERM_DEEP_TIMEOUT_S (default 900s) plus the tier-1 sweep, or
+# systemd kills the probe before its OWN timeout can fire — and the probe's
+# timeout is what converts a truncated sweep into an INDETERMINATE verdict
+# instead of a silent clean one.
+TimeoutStartSec=2400
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/papercup-fedplane-key-permission-check.sh

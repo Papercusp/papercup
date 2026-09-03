@@ -1,0 +1,23 @@
+[Unit]
+Description=Run the Papercusp private-key exposure probe daily (WI-2143622) — catches a world-readable SSH/TLS private key that no other detector looks for
+
+[Timer]
+# DAILY, not every-5-minutes like the disk probe, for two reasons: key
+# permissions change on the timescale of a human action rather than a runaway
+# process, and the tier-2 content sweep is minutes of I/O on a busy host. The
+# exposure this probe exists for (EI-22240449643643994) sat undetected for an
+# unbounded period and was found by luck, so daily is not a compromise — it is
+# the difference between bounded and unbounded.
+#
+# Wall-clock scheduling survives systemd user-manager restarts (EI-10733/
+# EI-11989); Persistent catches up a probe missed during the restart.
+OnCalendar=daily
+# Spreads the I/O burst across the night rather than firing on the same second
+# as every other daily unit on the box.
+RandomizedDelaySec=3h
+AccuracySec=1min
+Persistent=true
+Unit=papercup-fedplane-key-permission.service
+
+[Install]
+WantedBy=timers.target

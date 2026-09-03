@@ -102,9 +102,28 @@ fi
 KEYPERM_SSH_ROOTS="${KEYPERM_SSH_ROOTS:-/home /root /mnt/data/back}"
 KEYPERM_SSH_MAXDEPTH="${KEYPERM_SSH_MAXDEPTH:-6}"
 KEYPERM_DEEP="${KEYPERM_DEEP:-1}"
-KEYPERM_DEEP_ROOTS="${KEYPERM_DEEP_ROOTS:-$HOME /mnt/data/back}"
+# NOT "$HOME" — measured 2026-09-03 at load average ~63, nice 19 / ionice idle:
+# a whole-$HOME sweep took 543s (9m03s), i.e. it consumed 60% of the 900s default
+# budget on ONE root and left no headroom for a busier day. It is that expensive
+# because $HOME here carries ~1.6M small files in toolchain and state trees that
+# cannot hold a key worth alarming on: .papercusp 681k, go 468k, .local 172k,
+# .rustup 114k, .cache 69k, .npm 62k, .cargo 51k. A probe that files a RED about
+# its own timeout on any slow day gets muted exactly like one that alarms on grpc
+# testdata — the failure this design spent its whole budget avoiding,
+# reintroduced through the back door of a careless default.
+#
+# So the default names the trees tier 2 is actually FOR: the dev checkouts (a
+# .pem committed into a working tree), user config, and the backup tree — which
+# is where the 2026-09-03 key was found. Measured: 394k candidate files after
+# pruning, and the find leg completes in under 100s. Widen it deliberately with
+# a matching KEYPERM_DEEP_TIMEOUT_S; do not widen it and leave the budget.
+KEYPERM_DEEP_ROOTS="${KEYPERM_DEEP_ROOTS:-$HOME/papercupai-workspace $HOME/.config /mnt/data/back}"
 KEYPERM_DEEP_TIMEOUT_S="${KEYPERM_DEEP_TIMEOUT_S:-900}"
-KEYPERM_POSITIVE_CONTROL="${KEYPERM_POSITIVE_CONTROL:-$HOME/.ssh/id_ed25519}"
+# ${VAR-default}, NOT ${VAR:-default} — the colon form treats an explicitly EMPTY
+# value as unset and substitutes the default, which would silently cancel the
+# documented opt-out below and re-enable a control the operator deliberately
+# switched off. Same reason on KEYPERM_EXCLUDE_DIRS.
+KEYPERM_POSITIVE_CONTROL="${KEYPERM_POSITIVE_CONTROL-$HOME/.ssh/id_ed25519}"
 KEYPERM_NO_FILE="${KEYPERM_NO_FILE:-0}"
 KEYPERM_RED_REFILE_H="${KEYPERM_RED_REFILE_H:-24}"
 OPERATOR_MCP_URL="${OPERATOR_MCP_URL:-http://127.0.0.1:3070/api/mcp?superuser=1}"
@@ -118,8 +137,18 @@ mkdir -p "$STATE_DIR" 2>/dev/null || true
 # reports 755 published test keys per run. Names, not paths, so a vendored tree
 # is pruned wherever it is unpacked — the same openssl-src appeared under two
 # different VM-release-trust scratch directories with random suffixes.
-EXCLUDE_DIRS_DEFAULT='node_modules gomodcache* .git target dependency-generations openssl-src postgresql-src hetzner-rescue testdata .cargo-target vendor'
-KEYPERM_EXCLUDE_DIRS="${KEYPERM_EXCLUDE_DIRS:-$EXCLUDE_DIRS_DEFAULT}"
+# Two populations, both excluded for the same reason — a hit inside them is
+# never actionable — but worth telling apart when tuning:
+#   VENDORED third-party source, whose "keys" are published test vectors
+#     (node_modules, gomodcache*, openssl-src, postgresql-src, testdata,
+#      vendor, hetzner-rescue OS snapshots, dependency-generations);
+#   TOOLCHAIN/BUILD/CACHE trees, which are regenerable and dominate the file
+#     count rather than the risk (.git, target, .cargo-target, .cache, .cargo,
+#      .rustup, .npm, .pnpm-store, __pycache__).
+# The cache half is what makes a widened KEYPERM_DEEP_ROOTS survivable; see the
+# measurement on KEYPERM_DEEP_ROOTS below.
+EXCLUDE_DIRS_DEFAULT='node_modules gomodcache* .git target dependency-generations openssl-src postgresql-src hetzner-rescue testdata vendor site-packages dist-packages .venv venv .cargo-target .cache .cargo .rustup .npm .pnpm-store __pycache__'
+KEYPERM_EXCLUDE_DIRS="${KEYPERM_EXCLUDE_DIRS-$EXCLUDE_DIRS_DEFAULT}"
 
 log() { echo "[fedplane-key-perm $(date +%H:%M:%S 2>/dev/null || true)] $*" >&2; }
 jstr() { printf '%s' "$1" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
@@ -180,13 +209,33 @@ file_red() {
   red_marker_write "$marker" "$LAST_FILED_EI_ID"
 }
 
-# is_private_key <file> — 0 when the file carries a PRIVATE KEY header.
+# The one content predicate, shared by both tiers.
+#
+# ⚠ IT MUST MATCH THE PEM DELIMITER, NOT THE BARE PHRASE "PRIVATE KEY". The
+# first implementation grepped for the phrase and the first full live run
+# immediately proved that wrong: it flagged Python SOURCE FILES that merely
+# mention it — cryptography/hazmat/primitives/serialization/ssh.py, jwt/utils.py,
+# joserfc/_rfc7519/security.py — because any library that PARSES PEM naturally
+# contains the string in a constant or regex. That is a false-positive class
+# large enough to bury a real finding, which is the failure mode this whole
+# design is organised around.
+#
+# Anchoring on a line that IS the delimiter ("-----BEGIN [LABEL] PRIVATE KEY-----"
+# at start of line) keeps every real key — OpenSSH, PKCS#1, PKCS#8, EC, DSA,
+# ENCRYPTED — while dropping source that only talks about them. The pattern is
+# written with -{5} rather than five literal dashes so this script does not
+# itself contain a PEM begin-block: that token trips the repo secrets guard on
+# write and, worse, the pot-git publish guard, whose baseline never advances past
+# a refused range.
+KEY_HEADER_RE='^-{5}BEGIN [A-Z0-9 ]*PRIVATE KEY-{5}'
+
+# is_private_key <file> — 0 when the file IS a private key.
 # -I skips binaries, -m1 stops at the first match, and NOTHING from the file is
 # ever echoed: this predicate answers yes/no and discards the matched line.
 is_private_key() {
   local f="${1:-}"
   [ -f "$f" ] && [ -r "$f" ] || return 1
-  grep -qaI -m1 'PRIVATE KEY' "$f" 2>/dev/null
+  grep -qaIE -m1 "$KEY_HEADER_RE" "$f" 2>/dev/null
 }
 
 # mode_of <path> — numeric mode ("600"), or empty when unreadable.
@@ -304,22 +353,30 @@ done
 # shallow, a permissions refusal) and its silence carries no information. Report
 # that as a RED about the detector rather than letting an empty finding list be
 # read as a clean bill of health.
-CONTROL_STATUS="skipped"
-if [ -n "$KEYPERM_POSITIVE_CONTROL" ] && [ -f "$KEYPERM_POSITIVE_CONTROL" ]; then
-  if printf '%s' "$SSH_KEYS_SEEN" | grep -qxF "$KEYPERM_POSITIVE_CONTROL"; then
-    CONTROL_STATUS="passed"
-  else
-    CONTROL_STATUS="FAILED"
-  fi
+#
+# A CONFIGURED-BUT-MISSING control is a FAILURE, not a skip. That distinction is
+# the whole point: if the control path is stale, typo'd, or the key moved, the
+# probe would otherwise run unvalidated forever while still printing "no exposed
+# private keys found" — a false clean produced by the safety mechanism itself.
+# A host that genuinely holds no private key can opt out DELIBERATELY with
+# KEYPERM_POSITIVE_CONTROL="", which is loud in the log and cannot happen by
+# accident the way a wrong path can.
+if [ -z "$KEYPERM_POSITIVE_CONTROL" ]; then
+  CONTROL_STATUS="opted-out"
+  log "positive control DISABLED (KEYPERM_POSITIVE_CONTROL empty) — this run is UNVALIDATED by design."
+elif [ ! -f "$KEYPERM_POSITIVE_CONTROL" ]; then
+  CONTROL_STATUS="ABSENT"
+elif printf '%s' "$SSH_KEYS_SEEN" | grep -qxF "$KEYPERM_POSITIVE_CONTROL"; then
+  CONTROL_STATUS="passed"
 else
-  log "positive control $KEYPERM_POSITIVE_CONTROL is absent — the tier-1 sweep is UNVALIDATED this run."
+  CONTROL_STATUS="FAILED"
 fi
 log "tier1: .ssh sweep over [$KEYPERM_SSH_ROOTS] depth<=$KEYPERM_SSH_MAXDEPTH — positive control: $CONTROL_STATUS${SSH_BLIND_ROOTS:+; blind roots: $SSH_BLIND_ROOTS}"
 
-if [ "$CONTROL_STATUS" = "FAILED" ]; then
+if [ "$CONTROL_STATUS" = "FAILED" ] || [ "$CONTROL_STATUS" = "ABSENT" ]; then
   file_red "scanbroken-red-ei-filed" \
     "fed-plane key-permission probe cannot validate itself on $(hostname 2>/dev/null || echo unknown-host) — its result is INDETERMINATE, not clean" \
-    "WI-2143622 key-permission probe: the tier-1 .ssh sweep FAILED ITS POSITIVE CONTROL. It was asked to rediscover a private key known to exist at ${KEYPERM_POSITIVE_CONTROL} while sweeping roots [${KEYPERM_SSH_ROOTS}] to depth ${KEYPERM_SSH_MAXDEPTH}, and did not. Unreadable (blind) roots this run: [${SSH_BLIND_ROOTS:-none}]. UNTIL THIS IS FIXED THE PROBE'S SILENCE MEANS NOTHING: an exposed key would produce the same empty output. Likely causes, in the order they have actually bitten here: a root on a filesystem the sweep does not cross; a depth bound too shallow for where the key lives; a permission refusal reading a directory (the sweep runs unprivileged by design); the control path itself moved. ACTION: run the script by hand with KEYPERM_NO_FILE=1 and read the tier-1 log lines, then correct KEYPERM_SSH_ROOTS / KEYPERM_SSH_MAXDEPTH / KEYPERM_POSITIVE_CONTROL. Do NOT silence this by deleting the control."
+    "WI-2143622 key-permission probe: the tier-1 .ssh sweep FAILED ITS POSITIVE CONTROL (status=${CONTROL_STATUS}; ABSENT means the configured control path does not exist, FAILED means it exists but the sweep did not reach it). It was asked to rediscover a private key expected at ${KEYPERM_POSITIVE_CONTROL} while sweeping roots [${KEYPERM_SSH_ROOTS}] to depth ${KEYPERM_SSH_MAXDEPTH}, and did not. Unreadable (blind) roots this run: [${SSH_BLIND_ROOTS:-none}]. UNTIL THIS IS FIXED THE PROBE'S SILENCE MEANS NOTHING: an exposed key would produce the same empty output. Likely causes, in the order they have actually bitten here: a root on a filesystem the sweep does not cross; a depth bound too shallow for where the key lives; a permission refusal reading a directory (the sweep runs unprivileged by design); the control path itself moved. ACTION: run the script by hand with KEYPERM_NO_FILE=1 and read the tier-1 log lines, then correct KEYPERM_SSH_ROOTS / KEYPERM_SSH_MAXDEPTH / KEYPERM_POSITIVE_CONTROL. Do NOT silence this by deleting the control."
 fi
 
 # ── TIER 2: content-matched sweep outside .ssh ──────────────────────────────
@@ -343,8 +400,9 @@ if [ "$KEYPERM_DEEP" = 1 ]; then
     # precisely the false-clean this probe exists to refuse, so it is worth the
     # extra process.
     deep_out="$(timeout "$KEYPERM_DEEP_TIMEOUT_S" nice -n 19 ionice -c 3 bash -c '
-        find "$@" -print0 2>/dev/null | xargs -0 -r -n 200 grep -laI -m1 "PRIVATE KEY" 2>/dev/null
-      ' _ "$root" "${PRUNE_ARGS[@]}" -type f -size -64k -size +100c)"
+        re="$1"; shift
+        find "$@" -print0 2>/dev/null | xargs -0 -r -n 200 grep -laIE -m1 "$re" 2>/dev/null
+      ' _ "$KEY_HEADER_RE" "$root" "${PRUNE_ARGS[@]}" -type f -size -64k -size +100c)"
     rc=$?
     # 124 is timeout(1)'s own "the command timed out" status. Partial output from
     # a killed sweep is not a complete answer, so it is reported as such rather

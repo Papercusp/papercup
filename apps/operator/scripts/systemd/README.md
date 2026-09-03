@@ -953,6 +953,131 @@ DISK_RED_REFILE_H=6 bash apps/operator/scripts/papercup-fedplane-disk-health-che
 
 ---
 
+# Private-key exposure probe — installation (WI-2143622)
+
+`papercup-fedplane-key-permission.{service,timer}` runs
+`../papercup-fedplane-key-permission-check.sh` **daily** and files an EI when a
+private key — or a `.ssh` directory containing one — is readable by group or
+other.
+
+**Root cause this catches:** on 2026-09-03 an UNENCRYPTED SSH private key was
+found at `/mnt/data/back/Debug/.ssh/id_ed25519`, mode 0664 inside a 0775
+directory (EI-22240449643643994). Group- *and* world-readable, with no
+passphrase — so readable meant directly usable by any local account. It
+surfaced only because an agent happened to `stat` that path during an unrelated
+disk-reclaim check. Nothing on this box was looking for it: the fed-plane
+detector family covered disk (EI-8982), DHT liveness (EI-8892) and backup
+health, and key permissions were an uncovered class. The interval between
+exposure and discovery was bounded only by luck.
+
+**Detection + escalation ONLY** — same posture as the probes above. It never
+chmods, moves or deletes anything, and it never reads or logs key MATERIAL:
+findings carry paths and mode bits, nothing else.
+
+## The three things that make this probe trustworthy
+
+Read these before changing it — each one is a measured result, and reverting any
+of them breaks the probe in a way that still looks like it is working.
+
+1. **Content-match, never filename.** `id_*` matches `/usr/share/i18n`'s `id_ID`
+   LOCALE files, while a real key named `deploy.pem` is missed entirely. Every
+   candidate is confirmed by a `PRIVATE KEY` header in the file.
+
+2. **Vendored trees are excluded, or nobody reads the output.** A census of
+   `/mnt/data` on 2026-09-03 content-matched **755** group/world-readable
+   private keys, and every single one was published third-party test material:
+   496 openssl-src/postgresql-src test suites, 188 gomodcache (grpc, kopia,
+   sigstore, in-toto), 17 node_modules fixtures, 4 Go stdlib testdata. Mode 444
+   on a read-only module cache is normal. The measured post-exclusion floor on
+   this box is **zero**, which is what makes a hit worth waking someone for.
+
+3. **An empty result is not automatically a clean result.** This is the one a
+   security probe most often omits, because the broken direction is the
+   reassuring one. During that same census, three separate instruments produced
+   a clean-looking nothing — `find / -xdev` (never crosses into `/home` or
+   `/mnt/data` here: separate mounts) returned ZERO rows while two `id_ed25519`
+   files demonstrably existed; a whole-box foreground find was SIGTERM-killed at
+   its deadline and printed nothing; and a log read taken while the writer was
+   still running looked identical to a finished empty one. So the probe carries
+   a **positive control** (a key it must rediscover every run), treats a
+   timed-out sweep as INDETERMINATE, and names unreadable roots as BLIND SPOTS.
+   A run that cannot prove it still finds the key we already know about has
+   established nothing about the keys we do not.
+
+⛔ **Do not "simplify" the encryption check back to `ssh-keygen -y -P ''`.**
+ssh-keygen REFUSES to load a key whose permissions are too open (exit 255) —
+which is true of every key this probe flags, by definition — so it reported
+unencrypted world-readable keys as passphrase-protected, understating severity
+in exactly the reassuring direction. The header-inspection implementation needs
+no permission from ssh, copies nothing, and also covers TLS keys ssh-keygen
+cannot read at all. A named regression test pins it.
+
+## Two tiers
+
+- **Tier 1 — `.ssh` directories** (`KEYPERM_SSH_ROOTS`, default
+  `/home /root /mnt/data/back`, depth `KEYPERM_SSH_MAXDEPTH`=6). Checks the
+  directory mode *and* each contained key's mode; neither subsumes the other.
+  ~15s on this box. This is the tier that catches the 2026-09-03 shape.
+- **Tier 2 — content sweep outside `.ssh`** (`KEYPERM_DEEP_ROOTS`, default
+  `$HOME /mnt/data/back`). Catches an exported deploy key or a loose `.pem`.
+  Bounded by `KEYPERM_DEEP_TIMEOUT_S` and run at `nice 19` / `ionice -c 3`,
+  because this box routinely sits at load average 60+ and a probe that degrades
+  its host is a probe somebody disables.
+
+The unit runs **unprivileged**, so `/root` is unreadable and is reported as a
+named blind spot rather than counted as clean. A host that needs `/root` covered
+should install this as a SYSTEM unit — do not add `sudo` to a detector.
+
+## Install — Linux (systemd --user)
+
+```bash
+cd ~/papercupai-workspace/papercusp/apps/operator/scripts/systemd
+ln -sf "$(pwd)/papercup-fedplane-key-permission.service" ~/.config/systemd/user/
+ln -sf "$(pwd)/papercup-fedplane-key-permission.timer"   ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now papercup-fedplane-key-permission.timer
+```
+
+Verify: `systemctl --user list-timers papercup-fedplane-key-permission.timer`,
+`journalctl --user -u papercup-fedplane-key-permission.service --since today`.
+
+## Manual run / dry-run
+
+```bash
+# Log-only, no EI filed — tier 1 only (fast):
+KEYPERM_NO_FILE=1 KEYPERM_DEEP=0 \
+  bash apps/operator/scripts/papercup-fedplane-key-permission-check.sh
+
+# Both tiers, log-only:
+KEYPERM_NO_FILE=1 bash apps/operator/scripts/papercup-fedplane-key-permission-check.sh
+```
+
+## Tune
+
+```bash
+# Widen/narrow the .ssh sweep:
+KEYPERM_SSH_ROOTS="/home /srv" KEYPERM_SSH_MAXDEPTH=8 bash …
+
+# Raise the deep-sweep budget on a slow or busy host (a TIMEOUT files a RED
+# saying the tier-2 result is INDETERMINATE — it is never reported as clean):
+KEYPERM_DEEP_TIMEOUT_S=1800 bash …
+
+# Add a vendored tree that is producing noise (directory NAME globs, so a tree
+# is pruned wherever it is unpacked):
+KEYPERM_EXCLUDE_DIRS="node_modules gomodcache* .git target vendor my-vendored-thing" bash …
+
+# RED-EI dedup window (default 24h; state-aware via lib/red-marker.sh, so a
+# dropped tracking item causes a refile rather than silent suppression):
+KEYPERM_RED_REFILE_H=6 bash …
+```
+
+A host that genuinely holds no private key can opt out of self-validation with
+`KEYPERM_POSITIVE_CONTROL=""`. Note that a configured-but-MISSING control path
+is a **failure**, not a skip — otherwise a stale path lets the probe print "no
+exposed private keys found" forever while validating nothing.
+
+---
+
 # Postgres backup + offsite kopia — the EXECUTION units (EI-12028)
 
 `papercusp-db-backup.{timer,service}` (hourly `pg_dump -Fd -j` per database, EI-10733),
