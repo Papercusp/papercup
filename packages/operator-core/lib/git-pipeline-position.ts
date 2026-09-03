@@ -52,7 +52,11 @@ import {
 } from './candidate-contains';
 import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contract';
 import { describeRefusal, refuseAnswer, type RefusedAnswer } from './field-reliability';
-import { describeRefireBudget } from './release/in-flight-retriage';
+import {
+  describeRefireBudget,
+  projectRetriageCell,
+  type RetriageCellProjection,
+} from './release/in-flight-retriage';
 import { gateAbortLever, gateAbortRefireClause, gateAbortVintage } from './release/gate-abort-status';
 import { formatIdleAge } from './format/relative-time';
 import { reconcileGateVerdictFreshnessWithCheckpointRun } from './release/gate-verdict-freshness';
@@ -1439,6 +1443,23 @@ export interface PipelinePosition {
      * ⚠ ALWAYS an object — `code: 'not-measured'` is the unmeasured answer, never `null`.
      */
     freezeDisposition?: FreezeDispositionCellProjection;
+    /**
+     * main-green-status-visible-2026-09-03 P-009 — IS AN AUTO-REFIRE / RE-TRIAGE IN FLIGHT,
+     * i.e. must I stand down before firing a manual `release:checkpoint-run`?
+     *
+     * The CELLED reading of `checkpointRunInFlight` directly above — same leg, one
+     * derivation, computed here rather than re-read. It exists because the question had no
+     * READ at all: the only ways to learn you were inside the window were to provoke
+     * `release:checkpoint-run`'s refusal (after deciding to act) or to dig the marker out of
+     * routine metadata by hand. CLAUDE.md gives it a standalone 🚨 alarm block, which is the
+     * tell that it is expensive and repeatedly got wrong.
+     *
+     * ⚠ ALWAYS an object — `code: 'not-measured'` is the unmeasured answer, never `null`. And
+     * `standDown` is TRUE on `not-measured`: unknown HOLDS you rather than releasing you,
+     * because collapsing an unmeasured reading to "nothing in flight" is precisely the
+     * destructive green-light this cell withholds.
+     */
+    retriage?: RetriageCellProjection;
     /**
      * WI-1702869 — HOW MANY TEST FILES FAIL ON THE FROZEN CANDIDATE, and for each, whether
      * its fix is ALREADY contained in `repairHead`. The one number gate triage needs and the
@@ -5395,6 +5416,14 @@ export async function gitPipelinePosition(
     // (present but past its freshness window), the two readings a caller branching on the
     // stored `state` union has to invent a default for.
     freezeDisposition: projectFreezeDispositionCell(snap.gate.freezeAndConverge ?? null, Date.now()),
+    // P-009. The CELLED reading of `checkpointRunInFlight` — projected from the leg already
+    // mapped above rather than from a second query, so the answer on the plane and the answer
+    // one field away cannot disagree. The raw marker rides alongside for `failingFiles` alone,
+    // which the mapped leg does not project, and is consulted only once that leg has settled
+    // that a refire IS in flight.
+    //
+    // ⚠ ALWAYS AN OBJECT, never null — same contract as the two projections above.
+    retriage: projectRetriageCell(checkpointRunInFlight, snap.gate.inFlightRetriage, Date.now()),
     // WI-1702869. Sits beside `repairQueue` because it is the same subject read one level
     // deeper: the queue says WHICH sha is frozen, this says WHAT IS FAILING on it and
     // whether each failure is already repaired at repairHead.
