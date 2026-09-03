@@ -308,8 +308,16 @@ function findClaudeOwnerDialogAnswer(content: readonly unknown[]): string | null
  * deliberately narrower than session-ingest's cleanTurnText (no boilerplate-
  * prefix / min-length drop): this reader's contract is to surface ALL user
  * turns for per-turn classification, never to silently drop a short one.
+ *
+ * Exported (EI-22215681617737293) so relay-provenance-resolve.ts's Tier 2/3
+ * `relayOf`/`relayQuote` verifier can recognize the SAME shape instead of
+ * carrying its own copy that silently drops it — that drift is exactly what
+ * let a verbatim owner directive queued mid-turn resolve `found:true` here
+ * (and in sessions:search, which is backed by session-ingest.ts's matching
+ * `parseClaudeQueuedCommand`) while the relay verifier reported `unverified`
+ * for the identical text in the identical transcript.
  */
-function findClaudeQueuedCommandTurn(o: Record<string, unknown>): RecordedUserTurn | null {
+export function findClaudeQueuedCommandTurn(o: Record<string, unknown>): RecordedUserTurn | null {
   const attachment = o.attachment as
     | { type?: unknown; commandMode?: unknown; origin?: { kind?: unknown }; prompt?: unknown; timestamp?: unknown }
     | undefined;

@@ -36,7 +36,7 @@
  */
 
 import { open } from 'node:fs/promises';
-import { classifyRecordedTurn, OWNER_DIALOG_TURN_MARKER } from '../../turn-provenance/turn-ref';
+import { classifyRecordedTurn, findClaudeQueuedCommandTurn, OWNER_DIALOG_TURN_MARKER } from '../../turn-provenance/turn-ref';
 import { blockPayloadText, CLAUDE_OWNER_DIALOG_RESULT_PREFIXES } from '../../transcript-wire';
 import type { AgentIdentity } from './identity';
 import { getMessageById } from './messages';
@@ -146,8 +146,9 @@ function codexTimestamp(value: unknown): string {
 /** Parse the human (owner-typed OR owner-dialog) turns out of raw JSONL text,
  *  in file order. Skips plain tool_result-only user entries (general tool
  *  output, never owner speech), isMeta rows, and synthetic/machine-injected
- *  turns. Supports Claude JSONL (including an AskUserQuestion dialog answer),
- *  Codex rollout JSONL, and Codex history.jsonl. */
+ *  turns. Supports Claude JSONL (including an AskUserQuestion dialog answer
+ *  and a prompt queued while a turn was running), Codex rollout JSONL, and
+ *  Codex history.jsonl. */
 export function parseHumanTurns(jsonl: string): HumanTurn[] {
   const out: HumanTurn[] = [];
   for (const line of jsonl.split('\n')) {
@@ -169,6 +170,20 @@ export function parseHumanTurns(jsonl: string): HumanTurn[] {
       // plumbing, check for a Claude owner-dialog answer (AskUserQuestion).
       if (text == null && Array.isArray(m.content)) {
         text = findClaudeOwnerDialogAnswer(m.content);
+      }
+    } else if (o.type === 'attachment') {
+      // EI-22215681617737293: a prompt the owner typed WHILE A TURN WAS
+      // RUNNING is recorded as a top-level `attachment` line (queued, then
+      // absorbed mid-turn), never the ordinary `type:'user'` shape above —
+      // the exact asymmetry turn-ref.ts's parseUserTurns already fixed for
+      // verifyTurnRefs (WI-2141807). Reuse its shape-matcher rather than
+      // re-deriving it a third time (session-ingest.ts is the second copy,
+      // for the recall index) so this verifier and sessions:search agree on
+      // which turns exist instead of drifting apart.
+      const queued = findClaudeQueuedCommandTurn(o);
+      if (queued) {
+        text = queued.text;
+        ts = queued.ts || ts;
       }
     } else if (o.type === 'response_item') {
       // Codex rollout rows. `event_msg` also mirrors UserMessage items, but
