@@ -15846,6 +15846,19 @@ export function realCheckpointDeps(
             if (
               !(await isAncestor(queue.worktreePath, queue.repairHead, head))
             ) {
+              // WI-212675: a clean worktree strictly BEHIND repairHead is the normal shape
+              // after `release:repair-queue converge` fast-forwarded repairHead onto the
+              // staging tip without touching the worktree (the tool moves the queue row;
+              // only the gate's own dispatch path re-syncs the tree). Every commit the
+              // worktree holds is already contained in repairHead, so there is nothing to
+              // finalize and nothing that could be lost — that is "changed nothing", not
+              // "moved non-forward". Reading it as non-forward threw here, which burned the
+              // attempt on an "UNREACHABLE finalize" and skipped the ready-to-verify read
+              // in the recover-dead-fixer branch. The throw below still guards a worktree
+              // holding commits repairHead does not.
+              if (await isAncestor(queue.worktreePath, head, queue.repairHead)) {
+                return null;
+              }
               throw new Error(
                 `repair worktree moved non-forward: ${queue.repairHead.slice(0, 8)} !<= ${head.slice(0, 8)}`,
               );

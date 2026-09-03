@@ -4119,6 +4119,54 @@ describe("WI-1634331: prepareFrozenRepairWorktree re-syncs an ALREADY-BUILT stal
     }
   });
 
+  it("WI-212675: finalize reads a CLEAN worktree strictly BEHIND a converged repairHead as 'changed nothing', never 'moved non-forward'", async () => {
+    // `release:repair-queue converge` moves repairHead onto the staging tip and leaves the
+    // worktree where the last fixer left it. At the next tick the recover-dead-fixer branch
+    // calls finalize FIRST (re-sync only happens on the dispatch path), so a strictly-behind
+    // worktree used to throw "non-forward" here — burning the attempt and skipping the
+    // converged-head verification the branch now performs.
+    const f = wedgedFixture("green-cp-finalize-behind-");
+    const priorWorkspace = process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+    const priorHarness = process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+    try {
+      process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = "fixture-workspace";
+      process.env.PAPERCUSP_GATE_VERDICT_HARNESS = "fixture-harness";
+      const deps = realCheckpointDeps({
+        ...cfg,
+        integrationRoot: f.repo,
+        releaseRoot: f.repo,
+        checkpointRoot: f.repo,
+        integrationBranch: "staging",
+      });
+      // Precondition: worktree at the frozen candidate, repairHead converged past it.
+      expect(gitAt(f.worktreePath, "rev-parse", "HEAD")).toBe(f.frozenCandidate);
+      expect(
+        gitAt(f.repo, "merge-base", "--is-ancestor", f.frozenCandidate, f.stagingTip),
+      ).toBe("");
+
+      await expect(
+        deps.finalizeFrozenRepairWorktree?.(queueFor(f, f.stagingTip)),
+      ).resolves.toBeNull();
+      // Nothing was moved or committed by the read.
+      expect(gitAt(f.worktreePath, "rev-parse", "HEAD")).toBe(f.frozenCandidate);
+
+      // CONTROL: a worktree holding a commit repairHead does NOT have is still refused —
+      // finalize commits the dirty tree itself, which puts HEAD off repairHead's history.
+      writeFileSync(join(f.worktreePath, "fixer-commit"), "a fixer's own diverged work");
+      await expect(
+        deps.finalizeFrozenRepairWorktree?.(queueFor(f, f.stagingTip)),
+      ).rejects.toThrow(/non-forward/);
+    } finally {
+      if (priorWorkspace === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+      else process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = priorWorkspace;
+      if (priorHarness === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+      else process.env.PAPERCUSP_GATE_VERDICT_HARNESS = priorHarness;
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
   it("NEVER clobbers a DIRTY worktree, even though it is strictly behind", async () => {
     // A repair worktree is the only place a dead fixer's uncommitted work still exists, and
     // finalizeFrozenRepairWorktree is the path that commits it. Widen the re-sync to move a
