@@ -74,6 +74,7 @@ let obs: Sql;
 
 const savedEnv = {
   url: process.env.HARNESS_DATABASE_URL,
+  adminUrl: process.env.HARNESS_ADMIN_DATABASE_URL,
   pgbouncer: process.env.PAPERCUSP_PGBOUNCER,
 };
 
@@ -116,11 +117,37 @@ async function resetSchemas() {
   for (const schema of [SCHEMA_A, SCHEMA_B]) {
     await obs.unsafe(`TRUNCATE ${schema}.harness_features, ${schema}.feature_audit`);
   }
+  await obs.unsafe(`TRUNCATE harness_shared.feature_audit_consolidated`);
+}
+
+// brainstorm.ts's promote handler fire-and-forget-audits every mutation via
+// auditFeatureChange() (feature-audit.ts), which writes to
+// harness_shared.feature_audit_consolidated through the ADMIN pool
+// (getOrgPg(), now pointed at this fresh test db via HARNESS_ADMIN_DATABASE_URL
+// below) — provision the real shared-schema table so that best-effort insert
+// succeeds against THIS isolated db instead of either erroring (console.warn,
+// which vitest-fail-on-console turns into a failure) or, pre-fix, silently
+// writing test rows into the real box's live Postgres.
+async function provisionSharedAuditTable() {
+  await obs.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared`);
+  await obs.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.feature_audit_consolidated (
+      id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      feature_id text NOT NULL,
+      ts bigint NOT NULL,
+      field text NOT NULL,
+      old_value text,
+      new_value text,
+      actor text
+    )`);
 }
 
 beforeAll(async () => {
   db = await createFreshTestDb({ prefix: 'fvbp' });
   process.env.HARNESS_DATABASE_URL = db.url;
+  process.env.HARNESS_ADMIN_DATABASE_URL = db.url;
   process.env.PAPERCUSP_PGBOUNCER = '0';
   _resetUrlCacheForTests();
   await _resetForTests();
@@ -128,6 +155,7 @@ beforeAll(async () => {
   obs = postgres(db.url, { max: 1, onnotice: () => {} });
   await provisionSchema(SCHEMA_A);
   await provisionSchema(SCHEMA_B);
+  await provisionSharedAuditTable();
 }, 120_000);
 
 afterEach(async () => {
@@ -140,6 +168,8 @@ afterAll(async () => {
   await db?.drop().catch(() => {});
   if (savedEnv.url === undefined) delete process.env.HARNESS_DATABASE_URL;
   else process.env.HARNESS_DATABASE_URL = savedEnv.url;
+  if (savedEnv.adminUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
+  else process.env.HARNESS_ADMIN_DATABASE_URL = savedEnv.adminUrl;
   if (savedEnv.pgbouncer === undefined) delete process.env.PAPERCUSP_PGBOUNCER;
   else process.env.PAPERCUSP_PGBOUNCER = savedEnv.pgbouncer;
   _resetUrlCacheForTests();
