@@ -202,6 +202,7 @@
     "lint:peer-dep-conflicts": "node scripts/check-peer-dep-conflicts.mjs",
     "lint:no-restart": "node scripts/check-no-restart-imports.mjs",
     "lint:no-tracked-node-modules": "node scripts/check-tracked-node-modules.mjs",
+    "lint:submodule-coverage-ignore": "node scripts/check-submodule-coverage-ignore.mjs",
     "lint:smart-quotes": "tsx scripts/check-smart-quotes.mjs",
     "lint:constant-conditional": "tsx scripts/check-constant-conditional.mjs",
     "lint:mdx": "tsx scripts/check-mdx.mjs",

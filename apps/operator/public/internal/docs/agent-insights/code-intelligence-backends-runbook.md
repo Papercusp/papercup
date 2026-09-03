@@ -1,27 +1,40 @@
 # Code intelligence: which backend answers which question, and how to operate them
 URL: /internal/docs/agent-insights/code-intelligence-backends-runbook
 
-The operator runbook for the five code-intelligence backends (rg, LSP, GitNexus, ast-grep, packers): the ratified routing contract, the exact pinned versions and where they live, how to re-provision each, and — the part that costs hours when missed — the five failure modes that return a CONFIDENT WRONG ANSWER rather than an error. Measured at HEAD 2026-08-21 under plan code-intelligence-routing-lsp-gitnexus-2026-08-20.
+The operator runbook for the code-intelligence backends (rg, LSP, GitNexus, ast-grep, packers): the ratified routing contract, the exact pinned versions and where they live, the SIX failure modes that return a CONFIDENT WRONG ANSWER rather than an error, and the crash-residue mode that once killed GitNexus fleet-wide while it still advertised 17 working tools. Re-verified against source at HEAD 2026-09-03 under plan code-intelligence-routing-lsp-gitnexus-2026-08-20.
 
 > Authored as P-019 of `code-intelligence-routing-lsp-gitnexus-2026-08-20`. The
 > routing contract is D-001; the exact backend/version record with every rejected
 > alternative is **D-048** on that plan. This page is the operational half: how to
 > call each backend, how to repair it, and how it lies to you.
+>
+> Re-verified against source 2026-09-03. Two things changed materially since the
+> 2026-08-21 cut and are called out where they land: the call-graph question now
+> routes to `graph:query` (D-058), and GitNexus crash residue is now recovered
+> AUTOMATICALLY (§4) — the older "delete these two files by hand" instruction is
+> superseded and should not be followed.
 
 ## 1. The routing contract — question class decides the backend
 
 Each row is a *question class*, not a preference. Picking by habit rather than by
 question is what the contract exists to stop.
 
-| the question                                 | the authority                                                | not                                                                   |
-| -------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------- |
-| definition, references, type truth           | `lsp:query` — real compiler semantics                        | a grep for the declaration: it cannot resolve shadowing or re-exports |
-| call chains, impact radius, topology         | `gitnexus.context` / `gitnexus.impact` (dot form, not colon) | `gitnexus.query` — see §3.1                                           |
-| structural code patterns (shape, not text)   | the ast-grep facade                                          | a regex that approximates an AST                                      |
-| an exact keyword or phrase                   | `search:fulltext`                                            | `ILIKE '%…%'`                                                         |
-| a paraphrased concept                        | `search:semantic`                                            | keyword search that misses the wording                                |
-| exhaustive exact-text sweep                  | plain `rg` / `grep` — still the right tool                   | a graph query, which is indexed and can lag                           |
-| packaging evidence for a reviewer or a model | `code:pack` — strictly POST-retrieval                        | a raw packer binary; it skips the pinned version and the secret rails |
+| the question                                 | the authority                                                | not                                                                                |
+| -------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| definition, references, type truth           | `lsp:query` — real compiler semantics                        | a grep for the declaration: it cannot resolve shadowing or re-exports              |
+| who CALLS this symbol                        | `graph:query { op:'callers' }`                               | `gitnexus.impact { direction:'callers' }` — silently answers **callees**, see §3.6 |
+| call chains, impact radius, topology         | `gitnexus.context` / `gitnexus.impact` (dot form, not colon) | `gitnexus.query` — see §3.1                                                        |
+| structural code patterns (shape, not text)   | the ast-grep facade                                          | a regex that approximates an AST                                                   |
+| an exact keyword or phrase                   | `search:fulltext`                                            | `ILIKE '%…%'`                                                                      |
+| a paraphrased concept                        | `search:semantic`                                            | keyword search that misses the wording                                             |
+| exhaustive exact-text sweep                  | plain `rg` / `grep` — still the right tool                   | a graph query, which is indexed and can lag                                        |
+| packaging evidence for a reviewer or a model | `code:pack` — strictly POST-retrieval                        | a raw packer binary; it skips the pinned version and the secret rails              |
+
+**Curated code-intelligence tools are namespaced by PLANE, never by vendor**
+(D-058): the curated facade is `graph:query`, not `gitnexus:query`. The dotted
+`gitnexus.*` names above are the raw *plugin* surface, which is a different thing
+and carries the traps in §3. Prefer the curated `graph:query` where it covers the
+question — it validates its arguments, where the raw plugin does not (§3.6).
 
 The LSP surface registers as **one** tool with an `op` enum, not seven separate
 tools (D-011) — so it is `lsp:query { op: … }`, and a missing `op` is the usual
@@ -29,7 +42,8 @@ first-call mistake.
 
 ## 2. What is installed, and where
 
-Exact versions, read from the live install and recorded in full in D-048:
+Exact versions, read from the live install and recorded in full in D-048
+(gitnexus re-confirmed at 1.6.9 on 2026-09-03):
 
 | backend                                     | version                     | location                                                               |
 | ------------------------------------------- | --------------------------- | ---------------------------------------------------------------------- |
@@ -38,9 +52,9 @@ Exact versions, read from the live install and recorded in full in D-048:
 | rust-analyzer                               | 1.97.1 (8bab26f 2026-07-14) | rustup component, `stable-x86_64-unknown-linux-gnu`                    |
 | gitnexus                                    | 1.6.9                       | `~/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus`              |
 | repomix                                     | 1.18.0                      | `~/.papercusp/vendor/repomix`                                          |
-| code2prompt                                 | 4.2.0                       | `~/.papercusp/vendor/code2prompt/bin/code2prompt`                      |
+| code2prompt                                 | 4.2.0                       | `~/.papercusp/vendor/code2prompt`                                      |
 
-Two things about this table bite people:
+Three things about this table bite people:
 
 **The two TypeScript versions are both correct.** The vendored `typescript`
 dependency is `@typescript/typescript6@6.0.2`, which ships **no** `tsserver.js`.
@@ -55,7 +69,21 @@ alias rather than a publishable package (`npm view` 404s it), so the adapter mus
 install into the workspace rewrites `node_modules/.bin` underneath every peer
 agent's in-flight test run.
 
-Re-provision with the same isolation:
+**The gitnexus bridge ships a GENERATED runtime artifact.**
+`libs/papercusp/plugins/gitnexus-bridge/index.cjs` is built from `index.ts` — it
+carries a `DO NOT EDIT` banner saying so. **Editing `index.ts` alone never reaches
+the running bridge**; you must regenerate:
+
+```bash
+npm run gen:gitnexus-bridge          # rebuild index.cjs from index.ts
+npm run gen:gitnexus-bridge:check    # verify the artifact matches its source
+```
+
+This is the single most common "I fixed the bridge and nothing changed" cause.
+`runtime-artifact-parity.test.ts` in that directory guards the drift, so a stale
+artifact fails there rather than silently serving old code.
+
+Re-provision the vendored backends with the same isolation:
 
 ```bash
 npm install --prefix ~/.papercusp/vendor/lsp \
@@ -63,7 +91,7 @@ npm install --prefix ~/.papercusp/vendor/lsp \
 npm install --prefix ~/.papercusp/vendor/gitnexus gitnexus@1.6.9
 ```
 
-## 3. The five failure modes that return a confident wrong answer
+## 3. The six failure modes that return a confident wrong answer
 
 This is the section worth reading before you trust a result. Every entry fails
 *toward* a plausible answer, so nothing throws and nothing looks broken.
@@ -115,7 +143,75 @@ stale index measures INDEX LAG and reports it as routing quality. Check with
 `gitnexus analyze` IMMEDIATELY before measuring — not at the start of a session
 that will still be running an hour later.
 
-## 4. Performance you should expect
+### 3.6 `gitnexus.impact` silently INVERTS the answer on an unrecognized `direction`
+
+The raw plugin's `direction` accepts only `'upstream' | 'downstream' | 'both'`
+(`gitnexus-facade.ts`), and an unrecognized value is not rejected — it falls
+through to the `?? 'downstream'` default. So `direction:'callers'`, which reads
+perfectly naturally, returns **callees**: the exact opposite of what was asked,
+self-reported as `epistemic:"exact"`, byte-identical to what a nonsense direction
+returns (measured, WI-2142910).
+
+Use `graph:query { op:'callers' }` instead. `callers`/`callees` are first-class
+ops there (`contracts.ts`), it returns call sites with `line1`, it excludes the
+definition site, it reports index staleness — and, decisively, it **rejects** a
+bad op rather than inverting the answer.
+
+## 4. When GitNexus is dead fleet-wide: crash residue and automatic recovery
+
+The operational failure you are most likely to actually hit, and the one whose
+symptom tells you nothing useful.
+
+**Symptom.** An opaque `gitnexus mcp process exited` on every call, or a native
+SEGFAULT from the LadybugDB binding. Measured 2026-08-21 (D-016): the 20-minute
+analyze timeout SIGKILLed the process group, and from that moment **both the CLI
+and the MCP bridge died on every call — GitNexus was 100% dead fleet-wide while
+still advertising 17 working tools.** Nothing reported itself as broken.
+
+**Cause.** A SIGKILLed `gitnexus analyze` leaves the on-disk index in a
+crash-inconsistent state. Every read-only open then replays a pending WAL and
+segfaults. There are three distinct residue shapes, and the state space matters:
+
+| residue kind      | on disk                                      | how it got there                                           |
+| ----------------- | -------------------------------------------- | ---------------------------------------------------------- |
+| `orphan-shadow`   | shadow present, **no** database              | killed BEFORE promoting the shadow                         |
+| `orphan-wal`      | database + pending `lbug.wal`, **no** shadow | killed AFTER promoting                                     |
+| `dead-shadow-wal` | database + an EMPTY, stale shadow            | killed mid-build (the 20-minute timeout does exactly this) |
+
+**Recovery is now AUTOMATIC — do not hand-delete anything.** `cleanCrashResidue()`
+runs as a preflight on every `gitnexus-reindex` tick *and* fires immediately after
+a timeout kill, so reads stay answerable instead of segfaulting until the next
+tick. Superseded guidance told operators to delete `lbug.shadow` and
+`lbug.wal.checkpoint` by hand; that is no longer correct and risks racing the
+recovery.
+
+What you should know when you look at a live `.gitnexus/`:
+
+* **`lbug.wal.missing-shadow.<timestamp>-<id>` files are QUARANTINED residue, not
+  corruption.** Recovery moves WAL residue aside rather than destroying evidence.
+  They are safe to leave; they are the audit trail of a recovered crash.
+* **A WAL sitting ALONGSIDE a shadow is a build genuinely in progress and is never
+  touched.** That is what keeps recovery from firing on a concurrent `analyze`.
+* **A shadow a live writer still holds open is deliberately SPARED.** Recovery
+  probes writer liveness via `/proc` and only cleans what is provably orphaned;
+  when that probe is unavailable it falls back to a zero-byte size proxy and says
+  so, because that proxy cannot see a mid-write orphan.
+* ⛔ **Never delete `lbug` itself.** It is the database, not residue — 5.19 GB on
+  this box, and a rebuild costs \~10–20 minutes fleet-wide.
+
+**Why deleting a stray WAL is safe, precisely** — two measured facts, not
+assumptions: (1) a healthy index carries no WAL at all, verified by repeated
+successful reads, so a WAL is always a writer's residue rather than steady state;
+and (2) the preflight runs immediately before a full `analyze` that rebuilds the
+index wholesale, so discarding pending WAL data cannot lose anything the next step
+would have used.
+
+**Diagnosis is no longer opaque.** The bridge's close handler forwards `(code,
+signal)` plus a bounded ring of the child's last stderr lines, and it states an
+EMPTY stderr as a *finding* ("abrupt or native crash") rather than omitting the
+section — an absent explanation and an absent section used to look identical.
+
+## 5. Performance you should expect
 
 Measured at HEAD, two runs:
 
@@ -140,7 +236,23 @@ The practical consequence: warm-up, if it is ever added, must be **per-project
 and demand-driven**. An eager version is actively harmful — tsserver serialises,
 so prewarming projects nobody asks about delays the queries someone is waiting on.
 
-## 5. Verifying a backend is genuinely answering
+**Honest caveat on `analyze` duration — it is unexplained, and backlog size does
+NOT predict it.** Two measured runs straddle the 20-minute (1200s) timeout in the
+wrong order: 592s at 77 commits behind SUCCEEDED, while 1201s at 35 commits behind
+TIMED OUT. Do not size a timeout, or reason about whether a reindex will finish,
+from how far behind the index is. This is a known open question, not a settled
+model.
+
+**Index footprint.** `.gitnexus/` measured 6,558 MB on 2026-09-03 (`lbug` 4,946 MB
+
+* `parsedfile-cache` 1,132 MB + `parse-cache` 475 MB) against a 2,048 MB nominal
+  budget — an accounted, bounded exceedance recorded in `KNOWN_INDEX_DISK_EXCEEDANCES`
+  rather than a live alert, so that a day-one-red gauge does not train everyone to
+  ignore it. Separately, `GITNEXUS_LBUG_MAX_DB_BYTES` (16 GiB) is the LadybugDB mmap
+  outage cliff — a different quantity from the selection budget, and not derivable
+  from it.
+
+## 6. Verifying a backend is genuinely answering
 
 The recurring mistake is accepting a green suite that silently skipped.
 
@@ -155,6 +267,43 @@ The recurring mistake is accepting a green suite that silently skipped.
 * **Check the GitNexus index is FRESH, not merely present** — `gitnexus status`
   must show `Indexed commit` == `Current commit`. A stale index answers without
   erroring (§3.5), so "gitnexus responded" is not evidence the answer is current.
+* **After a reindex, check the CANARY, not just the exit code.** The reindex
+  routine runs a post-analyze probe (file / symbol / call-edge / def-edge counts
+  plus a name round-trip) and treats a clean exit with a failed canary as failure,
+  because an `analyze` can exit 0 having produced an index that answers nothing.
 * **Know what the corpus does not cover.** Interface implementations / type
   definitions and rename preview are UNEVALUATED. Do not claim coverage the
   corpus does not have.
+
+## 7. Rejected alternatives, and the evidence that rejected them
+
+Recorded so they are not re-proposed. Each was considered and measured, not
+dismissed.
+
+**Raising `GITNEXUS_ANALYZE_TIMEOUT_MS` to stop the crash-residue wedge.**
+Rejected (D-016): it moves the cliff without removing it, and ANY SIGKILL —
+timeout, OOM, reboot — reproduces the identical residue. Recovery has to be
+unconditional at the kill site, which is what shipped.
+
+**Guarding crash residue with the single `shadow && !db` predicate.** Rejected
+after it failed in production: that predicate is one corner of a 2×2, and with the
+shadow *absent* it no-ops — so the wedge it was written to end recurred verbatim in
+the direction it did not test. The generalised lesson, recorded as D-016: a
+crash-consistency guard must cover the whole state space of the artifacts it
+protects, not the one corner that was observed failing.
+
+**Deleting `lbug` to clear a wedged index.** Rejected: it is the database, not
+residue. Deleting it converts a seconds-long residue cleanup into a \~10–20 minute
+fleet-wide rebuild.
+
+**Eager LSP project warm-up.** Rejected (D-047): tsserver serialises, so
+prewarming projects nobody asked about delays the queries someone is waiting on.
+Any warm-up must be per-project and demand-driven.
+
+**Deriving the index-disk budget from `GITNEXUS_LBUG_MAX_DB_BYTES`.** Rejected:
+the 2 GiB selection budget and the 16 GiB mmap outage cliff are different
+quantities measuring different things; collapsing them loses both signals.
+
+**Pinning the rust-analyzer cold start in both directions.** Rejected (D-046): it
+drifts \~562ms run to run, so a two-sided pin produces flakes rather than signal.
+The exceedance is accounted and bounded instead.
