@@ -259,11 +259,17 @@ describe('gate.greenCheckpoint.candidateFailures (P-003/P-007) — spec resolves
     expect(pathExists(p, 'gate.candidateFailures.nonTestLegs.outstanding').value).toEqual(['lint:tsc']);
   });
 
-  it('no leg measurement is not-recorded (flag present, legs null) — the P-012 pairing survives a null subtree', async () => {
+  it('no leg measurement is not-recorded (flag present, legs UNMEASURED but present) — the P-012 pairing rides beside an empty list, never a null subtree', async () => {
     const p = { gate: { candidateFailures: await read() } };
-    // `nonTestLegs` is null here BY DESIGN, so its paired paths are absent — the flag beside
-    // them says why. The invariant's own violation sweep must accept that shape.
+    // C2 (EI-22270968007901491): `nonTestLegs` used to be null here, which made its paired
+    // paths ABSENT — and an absent declared evidence path downgrades the whole assessment to
+    // `unavailable` on the ordinary path (cell-assessment-reality measured it live: 222/223).
+    // Now the subtree is always an object: the list arrives EMPTY and the flag beside it says
+    // it is unmeasured. Both halves of the pairing must resolve.
     expect(pathExists(p, 'gate.candidateFailures.nonTestLegsMeasured').value).toBe('not-recorded');
+    expect(pathExists(p, 'gate.candidateFailures.nonTestLegs.perLeg').value).toEqual([]);
+    expect(pathExists(p, 'gate.candidateFailures.nonTestLegs.outstanding').value).toEqual([]);
+    assertNoDrift(S(), p);
     expect(measurednessViolations(S(), p)).toEqual([]);
     expect(pathExists(p, S().assessment!.path).value).toBe('none-failing');
   });

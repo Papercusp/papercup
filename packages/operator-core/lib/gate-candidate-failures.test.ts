@@ -422,14 +422,21 @@ describe('readGateCandidateFailures', () => {
   });
 
   describe('nonTestLegs (WI-2143253)', () => {
-    it('is null when the caller has no repairTickLegs measurement', async () => {
+    it('is an UNMEASURED object — never null — when the caller has no repairTickLegs measurement (C2)', async () => {
       const res = await readGateCandidateFailures({
         candidateSha: CANDIDATE,
         repairHeadSha: REPAIR_HEAD,
         root: '/repo',
         sql: fakeSql({ filesJudged: 1, failing: [] }),
       });
-      expect(res.nonTestLegs).toBeNull();
+      // D-003 §2: code plus null FIELDS, never a bare null subtree. The independent grader
+      // (EI-22270968007901491, C2) measured the live cell downgrading to `unavailable`
+      // because `nonTestLegs.perLeg` — a declared evidence path — vanished with the null.
+      expect(res.nonTestLegs).not.toBeNull();
+      expect(res.nonTestLegsMeasured).toBe('not-recorded');
+      expect(res.nonTestLegs).toMatchObject({ current: null, head: null, atMs: null, all: [], failing: [], perLeg: [], outstanding: [] });
+      expect(res.nonTestLegs.reading).toMatch(/NOT MEASURED/);
+      expect(res.nonTestLegs.shrink.measured).toBe(false);
     });
 
     it('names which non-test legs are failing, not just that something was measured', async () => {
@@ -587,6 +594,37 @@ describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', 
     });
   }
 
+  it('C2 FALSIFIER: with NO tick snapshot, queue-admitted FAILING legs still surface by name and stay outstanding (not measuring is not a pass)', async () => {
+    // Before C2 (EI-22270968007901491) `nonTestLegs` was null whenever no repair-tick
+    // snapshot existed — so a cycle that had ADMITTED two failing legs rendered nothing, the
+    // declared evidence paths vanished, and the verdict read `none-failing`. The lifecycle
+    // is real evidence on its own (D-005 §4): list every admitted leg as not-measured, and
+    // keep a failing one outstanding until something actually measures it passing.
+    const res = await readGateCandidateFailures({
+      candidateSha: CANDIDATE,
+      repairHeadSha: REPAIR_HEAD,
+      root: '/repo',
+      sql: fakeSql({ filesJudged: 223, failing: [] }),
+      git: fakeGit({}),
+      queueLegs,
+      // deliberately NO repairTickLegs
+    });
+    expect(res.nonTestLegsMeasured).toBe('not-recorded');
+    expect(res.nonTestLegs.head).toBeNull();
+    expect(res.nonTestLegs.all).toEqual([]);
+    expect(res.nonTestLegs.perLeg.map((l) => [l.id, l.measuredNow, l.lifecycle])).toEqual([
+      ['lint:design-primitives', 'not-measured', 'failing'],
+      ['lint:plane-ratchet', 'not-measured', 'failing'],
+    ]);
+    expect(res.nonTestLegs.outstanding).toEqual(['lint:design-primitives', 'lint:plane-ratchet']);
+    expect(res.nonTestLegs.reading).toMatch(/NOT MEASURED/);
+    expect(res.nonTestLegs.reading).toMatch(/lint:plane-ratchet/);
+    // The shrink reading still comes from the lifecycle, unchanged by the missing snapshot.
+    expect(res.nonTestLegs.shrink.failingLegIds).toEqual(['lint:design-primitives', 'lint:plane-ratchet']);
+    // …and the VERDICT sees them: zero failing files + an unrepaired admitted leg is not an all-clear.
+    expect(res.assessment).toBe('non-test-leg-failing');
+  });
+
   it('CALIBRATION: a leg measurement makes the answer "measured" and names the failing leg', async () => {
     const res = await read();
     expect(res.nonTestLegsMeasured).toBe('measured');
@@ -604,7 +642,14 @@ describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', 
     // The old `postSuiteMeasured: null` was indistinguishable from "measured, came back
     // empty" — and it resolved null forever, because no caller ever supplied it.
     expect(res.nonTestLegsMeasured).toBe('not-recorded');
-    expect(res.nonTestLegs).toBeNull();
+    // C2 (EI-22270968007901491): NEVER null — the cell's declared evidence paths
+    // (`nonTestLegs.perLeg` / `.outstanding`) must ARRIVE, and the flag beside them is what
+    // says they are unmeasured. A null subtree made assessmentFrom downgrade the whole cell.
+    expect(res.nonTestLegs.perLeg).toEqual([]);
+    expect(res.nonTestLegs.outstanding).toEqual([]);
+    expect(res.nonTestLegs.head).toBeNull();
+    expect(res.nonTestLegs.current).toBeNull();
+    expect(res.nonTestLegs.reading).toMatch(/NOT MEASURED/);
     // ...and the scope sentence must still refuse the green reading.
     expect(res.scope).toMatch(/BY NAME/);
   });
@@ -811,7 +856,14 @@ describe('P-007 — a red non-test leg is NEVER none-failing on any reading of t
   it('no leg measurement at all leaves the file-only verdict alone (the P-012 flag says the legs were not looked at)', async () => {
     const res = await read({});
     expect(res.nonTestLegsMeasured).toBe('not-recorded');
-    expect(res.nonTestLegs).toBeNull();
+    // C2 (EI-22270968007901491): NEVER null — the cell's declared evidence paths
+    // (`nonTestLegs.perLeg` / `.outstanding`) must ARRIVE, and the flag beside them is what
+    // says they are unmeasured. A null subtree made assessmentFrom downgrade the whole cell.
+    expect(res.nonTestLegs.perLeg).toEqual([]);
+    expect(res.nonTestLegs.outstanding).toEqual([]);
+    expect(res.nonTestLegs.head).toBeNull();
+    expect(res.nonTestLegs.current).toBeNull();
+    expect(res.nonTestLegs.reading).toMatch(/NOT MEASURED/);
     expect(res.assessment).toBe('none-failing');
   });
 
