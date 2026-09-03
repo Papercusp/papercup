@@ -2,6 +2,10 @@
  * `/internal/docs/*` — the Starlight static site, served by the Hono host.
  *
  * Faithful port of `apps/operator/proxy.ts`'s docs concerns:
+ *   0. Refused outright on a `vm-release` distribution (a customer workspace
+ *      host), where loopback is not an identity boundary — see the gate's own
+ *      comment for the evidence. This is checked BEFORE (1), so the bypass in
+ *      (1) cannot re-open it there.
  *   1. Loopback-only gate (403 unless 127.0.0.1 / localhost / IPv6 ::1 /
  *      tauri.localhost OR `PAPERCUSP_INTERNAL_DOCS_BYPASS=1`).
  *   2. Per-page `Accept: text/markdown` → `<slug>.md` twin
@@ -19,6 +23,7 @@ import { Hono } from 'hono';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
 import { isLoopbackHost } from '@papercusp/operator-core/lib/endpoint-route/loopback-guard';
+import { isVmReleaseDistribution } from '@papercusp/operator-core/lib/vm-release-runtime-policy';
 
 /**
  * Starlight docs root. `__dirname`-relative in dev (host run via `tsx`);
@@ -86,6 +91,44 @@ export const docsRoutes = new Hono();
 
 // Loopback gate. Runs before any docs route handler.
 docsRoutes.use('/internal/docs/*', async (c, next) => {
+  // WI-2143103 / D-256. A vm-release host is MULTI-PRINCIPAL, and that breaks the
+  // premise the loopback gate below was written under.
+  //
+  // On the desktop, "loopback" meant "the one human at this machine" — the owner.
+  // On a customer workspace host it means "anyone with a shell", and the customer
+  // HAS one: the bootstrap creates $WORKSPACE_USER with `--shell /bin/bash` and
+  // `AllowUsers $WORKSPACE_USER`. So `curl http://127.0.0.1:$SERVICE_PORT/internal/docs/...`
+  // from the customer's own SSH session satisfies isLoopbackHost BY CONSTRUCTION.
+  // The gate is not buggy; its meaning changed under it when the deployment target
+  // moved. That walks straight through the identity separation the filesystem layer
+  // (D-043/D-251: /opt/papercusp is 0750 root:$SERVICE_GROUP, and $WORKSPACE_USER is
+  // created with `--groups ""`) enforces correctly.
+  //
+  // Refuse the surface outright here rather than gating it on an agent token, because
+  // on vm-release it has NO legitimate consumer to keep serving (all three verified
+  // against the shipped 4.4GB bundle, 2026-09-03):
+  //   1. No papercusp code path fetches /internal/docs/* over HTTP — the only HTTP
+  //      callers in the tree are apps/operator/e2e/docs-routes.spec.ts, which runs
+  //      against dev/desktop, never a workspace host.
+  //   2. The docs:* agent tools do not read this surface at all. They resolve the
+  //      .mdx SOURCE tree via DOCS_CONTENT_ROOT (agent-tools/docs/_repo-paths.ts →
+  //      apps/operator-docs/src/content/docs), never PAPERCUSP_DOCS_ROOT.
+  //   3. That source tree does not ship: the bundle carries apps/operator-docs/src/content
+  //      as an EMPTY directory, 0 .mdx files bundle-wide (controls: 1242 .md, 977 .html
+  //      found by the same probe). So the engineering corpus is already unresolvable on a
+  //      workspace host, with or without this mount.
+  // What the 293MB mount DID reach was the customer. Hence: closed, not tokenized.
+  //
+  // Checked BEFORE the bypass on purpose — PAPERCUSP_INTERNAL_DOCS_BYPASS is a
+  // debugging affordance and must not be able to re-open this on a customer VM.
+  if (isVmReleaseDistribution()) {
+    return new Response(
+      'Internal engineering docs are not served on a workspace host: loopback is not an '
+        + 'identity boundary here, so this surface cannot distinguish the papercusp agent '
+        + "from the workspace's own SSH user.",
+      { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } },
+    );
+  }
   const ok = isLoopbackHost(c.req.header('host') ?? null)
     || process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS === '1';
   if (!ok) {
