@@ -385,19 +385,16 @@ export default defineTool({
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
         .nullish()
-        .transform((v) => v ?? undefined)
         .describe('What this wake accomplished (concrete progress).'),
       left: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
         .nullish()
-        .transform((v) => v ?? undefined)
         .describe('What remains, in order.'),
       insight: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
         .nullish()
-        .transform((v) => v ?? undefined)
         // observation-and-recall-surface-honesty-2026-08-16 P-001: this field is the
         // turn-end reflection path — checkpoint-harvest's boundInsight() takes its FIRST
         // LINE verbatim as the filed observation's title, which is the only thing
@@ -408,25 +405,21 @@ export default defineTool({
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
         .nullish()
-        .transform((v) => v ?? undefined)
         .describe('The single concrete next action for the next wake.'),
       keyInsight: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
         .nullish()
-        .transform((v) => v ?? undefined)
         .describe('Compatibility alias for `insight`; explicit `insight` wins when both are supplied.'),
       nextAction: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
         .nullish()
-        .transform((v) => v ?? undefined)
         .describe('Compatibility alias for `next`; explicit `next` wins when both are supplied.'),
       goal: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
         .nullish()
-        .transform((v) => v ?? undefined)
         .describe(
           'Compatibility alias for `next`, for callers mirroring loop:arm { goal }. Explicit `next` wins when both are supplied.',
         ),
@@ -440,10 +433,16 @@ export default defineTool({
       // every optional carry-content field above. The whole point of these fields is to
       // tolerate a payload SHARED with loop:arm — and an explicit `null` is exactly the
       // shape a shared payload takes for a slot that has no value, so `.optional()`
-      // refused the case the field exists to serve. Nothing downstream needed changing:
-      // every consumer already coalesces (`args.x ?? …`, `args.workItem?.trim()`,
-      // `detectCarryNoteRescueSignals(string | null | undefined)`), so null and omitted
-      // were always the same value to the handler. Only the schema disagreed.
+      // refused the case the field exists to serve.
+      //
+      // Widening the schema alone was NOT sufficient, which is worth stating because it
+      // looks sufficient: most consumers do coalesce (`args.workItem?.trim()`,
+      // `(args.learned ?? '').trim()`, `detectCarryNoteRescueSignals(string|null|…)`), but
+      // TWO readers did not, and both are repaired with this change — the `carry` builder,
+      // which used to pass `args` through raw when no `checkpoint` alias was present, and
+      // the object `.refine()`, whose `!== undefined` counted a null as a write. Do NOT
+      // "simplify" either back: a `.transform()` here is not an option either, since an
+      // unrepresentable JSON Schema breaks tools/list for the entire catalog.
       workItem: z
         .string()
         .max(120)
@@ -717,19 +716,29 @@ export default defineTool({
         ),
     })
     .refine(
-      (a) =>
-        a.read === true ||
-        a.note !== undefined ||
-        a.checkpoint !== undefined ||
-        a.did !== undefined ||
-        a.left !== undefined ||
-        a.insight !== undefined ||
-        a.next !== undefined ||
-        a.keyInsight !== undefined ||
-        a.nextAction !== undefined ||
-        a.goal !== undefined ||
-        a.walls !== undefined ||
-        a.checks !== undefined,
+      (a) => {
+        // EI-21719647580242620: the carry-content fields are `.nullish()`, and for them an
+        // explicit null means OMITTED. A bare `!== undefined` would therefore count
+        // `{ left: null }` as a write, admit it, and compose a note out of nothing — a
+        // carry-note CLEAR wearing a write's costume, the exact silent-loss this guard
+        // exists to refuse. `note` and `checkpoint` are deliberately NOT in this set: for
+        // those two a null is the DOCUMENTED explicit clear, so it must still count.
+        const set = (v: unknown) => v !== undefined && v !== null;
+        return (
+          a.read === true ||
+          a.note !== undefined ||
+          a.checkpoint !== undefined ||
+          set(a.did) ||
+          set(a.left) ||
+          set(a.insight) ||
+          set(a.next) ||
+          set(a.keyInsight) ||
+          set(a.nextAction) ||
+          set(a.goal) ||
+          a.walls !== undefined ||
+          a.checks !== undefined
+        );
+      },
       {
         // P-004: `monitorDelta` is deliberately NOT a write on its own. It RIDES a
         // checkpoint (D-002 §3 — "a delta checkpoint … resets the budget"), and the
@@ -1019,17 +1028,24 @@ export default defineTool({
     // object in the inferred type, because TS cannot correlate the two expressions.
     const checkpointNote =
       typeof args.checkpoint === 'string' || args.checkpoint === null ? args.checkpoint : undefined;
-    const carry = checkpointObject
-      ? {
-          did: args.did ?? checkpointObject.did,
-          left: args.left ?? checkpointObject.left,
-          insight: args.insight ?? checkpointObject.insight,
-          next: args.next ?? checkpointObject.next,
-          keyInsight: args.keyInsight ?? checkpointObject.keyInsight,
-          nextAction: args.nextAction ?? checkpointObject.nextAction,
-          goal: args.goal ?? checkpointObject.goal,
-        }
-      : args;
+    // EI-21719647580242620: ALWAYS build the normalized shape — never pass `args` through
+    // raw. These fields are `.nullish()`, so a caller sharing a loop:arm payload may send an
+    // explicit `null`, and every reader below means OMITTED by that: the rescue guard's
+    // `=== undefined` tests, the render, the truncation loop. The old `: args` shortcut
+    // leaked a raw null into the render for `did` and `left` — the only two fields with no
+    // downstream alias `??` to launder it — so `{ did:'x', left:null }` rendered
+    // `"left":null`, and a null `left` ALSO silently disabled the tagged-blob rescue by
+    // failing its `carry.left === undefined` precondition. `??` collapses null and undefined
+    // to the same absent value for all seven, which is the whole contract.
+    const carry = {
+      did: args.did ?? checkpointObject?.did,
+      left: args.left ?? checkpointObject?.left,
+      insight: args.insight ?? checkpointObject?.insight,
+      next: args.next ?? checkpointObject?.next,
+      keyInsight: args.keyInsight ?? checkpointObject?.keyInsight,
+      nextAction: args.nextAction ?? checkpointObject?.nextAction,
+      goal: args.goal ?? checkpointObject?.goal,
+    };
     const rescued =
       carry.did !== undefined &&
       carry.left === undefined &&

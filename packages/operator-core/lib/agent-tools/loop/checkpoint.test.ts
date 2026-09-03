@@ -598,6 +598,16 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     await call({ did: 'same' });
     expect(renderedWithNulls).toBe(setLoopCarryNote.mock.calls[0]?.[1]);
 
+    // A null-ONLY payload is not a write at all: if null means omitted, it must be refused
+    // exactly as `{}` is. Admitting it would compose a note out of nothing — a carry-note
+    // CLEAR wearing a write's costume, which is the silent loss this tool guards against.
+    expect(() => parse({ left: null, insight: null })).toThrow(/nothing to write/);
+
+    // ...but `note`/`checkpoint` are NOT in that class: for them an explicit null is the
+    // documented CLEAR, so it must still count as a write.
+    expect(() => parse({ note: null })).not.toThrow();
+    expect(() => parse({ checkpoint: null })).not.toThrow();
+
     // CONTROL: the fields OUTSIDE this class must still refuse null. Without this the
     // assertions above would pass just as well against a schema that stopped validating.
     expect(() => parse({ did: 'progress', learnedLevel: null })).toThrow();
