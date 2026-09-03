@@ -1484,10 +1484,22 @@ dependency_generation_ensure() {
     return 75
   fi
   if [ "$reuse_manifest_eligible" = 'true' ]; then
+    # Same live-input-drift family as the torn-source refusal above, not a distinct
+    # failure class: source_before/source_after can match (no torn-source) while this
+    # check still fails, because it is the only one of the two that re-verifies live
+    # `$integration_root/$rel` existence rather than comparing manifest content. The
+    # after-copy manifest scan above can take tens of seconds on this shared tree
+    # (duration_ms=92770 measured 2026-09-03), and a concurrent writer can remove a
+    # node_modules tree in that window after it was already recorded with a stable
+    # fingerprint. Reserve exit 75 here too so green-checkpoint's writer-owned
+    # exit-code contract (see buildTerminalFailureCheckpointResult in
+    # green-checkpoint.ts) classifies this as infra-inconclusive/no-verdict instead of
+    # an anonymous crash — it was previously exit 1, which fabricated a hard crash for
+    # what is really the fourth live-input-drift refusal, not a code defect.
     dependency_generation_manifest_records_are_reusable "$after_manifest" "$integration_root" || {
       dependency_generation_log 'FATAL: verified source manifest lost the incremental-reuse contract'
       dependency_generation_remove_build "$build"
-      return 1
+      return 75
     }
     tree_manifest="$build/.tree-manifest"
     cp -- "$after_manifest" "$tree_manifest" || {

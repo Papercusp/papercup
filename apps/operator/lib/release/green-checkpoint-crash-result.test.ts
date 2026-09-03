@@ -311,6 +311,16 @@ describe('WI-41252 / D-066: dependency-generation torn snapshots are not code re
         '--ensure-ref e8d04df9 exited 75: [dependency-generation] FATAL: dependency inputs ' +
         'changed during generation prewarm; refusing a stale selector',
     ],
+    [
+      // 2026-09-03: this site used to return exit 1 (a hard crash, no verdict recorded
+      // with the right reason) even though it is the same live-input-drift family as the
+      // other three — source_before/source_after can match while a node_modules tree the
+      // manifest recorded still vanishes from the live tree during the tens-of-seconds
+      // after-copy scan. See apps/operator/bin/release/dependency-generation.sh.
+      'post-copy manifest lost the incremental-reuse contract',
+      'bash /repo/apps/operator/bin/release/dependency-generation.sh --integration /repo exited 75: ' +
+        '[dependency-generation] FATAL: verified source manifest lost the incremental-reuse contract',
+    ],
   ])('classifies %s as infra-inconclusive with the exact dependency phase', (_label, message) => {
     const r = buildTerminalFailureCheckpointResult({
       candidate: 'dfe7bd9f4e56',
