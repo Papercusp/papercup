@@ -20,10 +20,33 @@
  * THE RULE: one process, one pot, one device. The swarm join already decided
  * the identity peers attribute this harness to (`BootedHarnessHandle
  * .announceIdentity`); git-sync FOLLOWS it. The gh-login actor is the fallback
- * only when no in-process swarm identity exists for the pot (harness not booted
- * here, or relocated to a sidecar whose advertisement carries no identity) —
- * on a single-account box the two coincide, which is why this was invisible
- * everywhere but the tower.
+ * only when NOTHING anywhere is serving this pot — on a single-account box the
+ * two coincide, which is why this was invisible everywhere but the tower.
+ *
+ * WHY THE FALLBACK IS NOW GUARDED (WI-2142873, measured 2026-09-02): the first
+ * pass of this fix left the fallback unconditional, and that reopened the same
+ * defect through a different door. The substrate owner and the routine that
+ * runs git-sync are frequently SEPARATE OS PROCESSES, and the boot-all registry
+ * is deliberately process-local, so a perfectly healthy harness is invisible to
+ * the git-sync process. `booted` came back null there for a reason that says
+ * NOTHING about which device serves the pot — and the code read it as "no swarm
+ * identity exists", then signed as the gh-login device anyway.
+ *
+ * Measured consequence on the live two-machine rig: 216 papercusp ref-announces
+ * signed as the papercupai device `IXfGu216` while the tower actually served
+ * that pot's topic as `XPAsvso1`, alongside 387 correctly-signed ones — the SAME
+ * code path resolving differently per process. A peer dials
+ * `announcement.device_pubkey`, finds no socket filed under it, and parks. The
+ * VM retried one such announcement 48 times over 8.4h; the pot read NOT
+ * CONVERGED for 630+ minutes against a convergence bar that was unreachable by
+ * construction.
+ *
+ * So an announcement signed under a device that does not serve the pot's topic
+ * is strictly WORSE than no announcement: it is unfetchable, and it pins every
+ * peer's convergence check behind it. When the owner tells us it holds a booted
+ * handle for this pot but we could not obtain its identity, we therefore REFUSE
+ * rather than fall back. The un-booted case keeps the gh fallback, so a genuine
+ * single-account box is unaffected.
  */
 import type { UsageActor } from '../usage-actor';
 
@@ -49,14 +72,54 @@ export interface BootedSwarmIdentityLike {
 }
 
 /**
+ * What we know about the pot's substrate BEYOND this process's own registry.
+ *
+ * Exists to keep one specific inference out of the decision: "the local
+ * registry has no handle" is evidence about THIS PROCESS, never about whether
+ * something serves the pot. Only the substrate owner can answer that, so its
+ * answer is passed in explicitly rather than assumed from a local miss.
+ */
+export interface HiveGitActorSubstrateEvidence {
+  /**
+   * Does the substrate owner currently report a booted handle for this pot?
+   *
+   * `true` — the owner holds one, so a device IS serving this pot's topic and
+   * the gh-login actor is provably not it. Refuse rather than sign as it.
+   * `false` — the owner reports no handle for this pot; nothing serves it, and
+   * the gh fallback is the honest best effort (the pre-existing behaviour).
+   * `undefined` — UNKNOWN: no fresh advertisement to read. Deliberately NOT
+   * treated as `false`; it preserves the historical fallback rather than
+   * turning an unreadable row into a refusal that would silence a healthy
+   * single-account box.
+   */
+  ownerReportsBooted?: boolean | undefined;
+}
+
+/** Why no actor could be chosen. `refused-owner-booted-identity-unavailable`
+ *  is a DELIBERATE refusal, not an absence — the caller should log it and skip
+ *  the leg, never treat it as "no identity configured". */
+export type HiveGitActorRefusal =
+  | 'no-identity'
+  | 'refused-owner-booted-identity-unavailable';
+
+/**
  * Pure decision: prefer the booted swarm identity; fall back to the gh-login
  * actor (deriving its keychain via `buildKeychainId`); null when neither
- * exists (gh unauthenticated AND no swarm join — no identity to act as).
+ * exists (gh unauthenticated AND no swarm join — no identity to act as), or
+ * when the owner proves something serves this pot but its identity could not
+ * be obtained (see the WI-2142873 note at the top of this file).
+ *
+ * `booted` is the swarm identity however it was OBTAINED — this process's own
+ * boot-all registry, or the substrate owner's cross-process advertisement. Both
+ * are the same fact (the identity this harness's swarm hello carries), so both
+ * report `source: 'booted-swarm'`; the transport that carried it is a detail
+ * for the caller's log, not a different kind of identity.
  */
 export function pickHiveGitActor(
   booted: BootedSwarmIdentityLike | null | undefined,
   ghActor: UsageActor | null | undefined,
   buildKeychainId: (githubUserId: number) => string,
+  evidence?: HiveGitActorSubstrateEvidence,
 ): HiveGitActor | null {
   if (booted && booted.devicePubkeyBase64 && booted.keychainId) {
     return {
@@ -66,6 +129,11 @@ export function pickHiveGitActor(
       source: 'booted-swarm',
     };
   }
+  // The owner holds a booted handle for this pot, so SOMETHING is serving its
+  // topic under an identity we failed to read. The gh-login actor is therefore
+  // provably not that device (if it were, we would have read it). Signing as it
+  // mints an announcement no peer can dial — the WI-2142873 failure.
+  if (evidence?.ownerReportsBooted === true) return null;
   if (!ghActor?.devicePubkey) return null;
   return {
     githubUserId: ghActor.githubUserId,
@@ -73,4 +141,23 @@ export function pickHiveGitActor(
     keychainId: buildKeychainId(ghActor.githubUserId),
     source: 'gh-login',
   };
+}
+
+/**
+ * Why `pickHiveGitActor` returned null, for the caller's log. Kept beside the
+ * decision so the two cannot drift: a refusal and a plain absence look
+ * identical at the call site otherwise, and they call for different operator
+ * responses (fix the identity plumbing vs. authenticate gh).
+ */
+export function explainHiveGitActorAbsence(
+  booted: BootedSwarmIdentityLike | null | undefined,
+  ghActor: UsageActor | null | undefined,
+  evidence?: HiveGitActorSubstrateEvidence,
+): HiveGitActorRefusal {
+  const haveBooted = Boolean(booted?.devicePubkeyBase64 && booted?.keychainId);
+  if (!haveBooted && evidence?.ownerReportsBooted === true) {
+    return 'refused-owner-booted-identity-unavailable';
+  }
+  void ghActor;
+  return 'no-identity';
 }

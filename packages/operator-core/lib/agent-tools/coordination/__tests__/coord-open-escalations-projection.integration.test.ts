@@ -371,4 +371,66 @@ describe('coord_open_escalations projection trigger (migration 355)', () => {
     // The newest row overall must be the LAST row of the default page.
     expect(defaultPage.escalations.at(-1)?.msg_id).toBe('recent-05');
   });
+
+  // EI-15377: conditionKey/q on the PROJECTION fast path must see the WHOLE open
+  // set (not a recency window) and must never carry filterWindowCaveat — that
+  // flag exists specifically to warn about the legacy windowed fold path, which
+  // this leg never falls back to when the projection read succeeds.
+  it('conditionKey/q filter the COMPLETE open set via the projection and never carry filterWindowCaveat (EI-15377)', async () => {
+    configureCoordLog(new PgCoordLog({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' }));
+    setFlagOverridesForTest({ [FLAGS.COORD_OPEN_ESCALATIONS_PROJECTION]: true });
+
+    // An OLD row that a small recency-windowed maxRecords would never reach on
+    // the legacy fold path, to prove this leg reads the whole set regardless.
+    const oldMatch = {
+      ts: '2020-01-01T00:00:00.000Z',
+      msg_id: 'old-dead-routines',
+      from: 'A',
+      to: ['human'],
+      kind: 'escalation',
+      severity: 'advisory',
+      summary: 'dead routines stale',
+      subjectSignature: 'dead-routines-papercusp',
+      resolved: null,
+    };
+    // Many newer, unrelated rows crowding the recency window.
+    for (let i = 1; i <= 10; i++) {
+      const msgId = `noise-${String(i).padStart(2, '0')}`;
+      const row = {
+        ts: `2026-01-01T00:00:${String(i).padStart(2, '0')}.000Z`,
+        msg_id: msgId,
+        from: 'A',
+        to: ['human'],
+        kind: 'escalation',
+        severity: 'advisory',
+        summary: `unrelated noise ${i}`,
+        resolved: null,
+      };
+      await db.sql`
+        INSERT INTO harness_shared.coord_open_escalations (workspace_id, msg_id, ts, body)
+        VALUES ('default', ${msgId}, ${row.ts}, ${db.sql.json(row)})`;
+    }
+    await db.sql`
+      INSERT INTO harness_shared.coord_open_escalations (workspace_id, msg_id, ts, body)
+      VALUES ('default', ${oldMatch.msg_id}, ${oldMatch.ts}, ${db.sql.json(oldMatch)})`;
+
+    // A small maxRecords that would bury the old row under the noise on the
+    // legacy fold path — the projection leg must still find it via conditionKey.
+    const byKey = await listEscalationsPaginated({
+      status: 'open',
+      maxRecords: 3,
+      conditionKey: 'dead-routines-papercusp',
+    });
+    expect(byKey.escalations.map((e) => e.msg_id)).toEqual(['old-dead-routines']);
+    expect(byKey.filterWindowCaveat).toBeUndefined();
+
+    const byQ = await listEscalationsPaginated({ status: 'open', maxRecords: 3, q: 'dead routines' });
+    expect(byQ.escalations.map((e) => e.msg_id)).toEqual(['old-dead-routines']);
+    expect(byQ.filterWindowCaveat).toBeUndefined();
+
+    // A genuine miss against the complete open set proves absence (no caveat).
+    const miss = await listEscalationsPaginated({ status: 'open', maxRecords: 3, conditionKey: 'no-such-key' });
+    expect(miss.escalations).toEqual([]);
+    expect(miss.filterWindowCaveat).toBeUndefined();
+  });
 });

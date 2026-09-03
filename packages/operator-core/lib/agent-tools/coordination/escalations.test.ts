@@ -257,6 +257,91 @@ describe('listEscalationsPaginated — bounded read (EI-1548)', () => {
   });
 });
 
+describe('listEscalationsPaginated — conditionKey/q lookup filters (EI-15377)', () => {
+  // These exercise the LEGACY windowed fold path (no PG fast path configured in
+  // this file's seam), which is the leg that must carry `filterWindowCaveat`.
+  // The projection fast path (status:'open' + the flag ON) is covered separately
+  // in coord-open-escalations-projection.integration.test.ts, where it can run
+  // against a real PG-backed projection.
+
+  it('conditionKey does an exact match against subjectSignature, not a substring', async () => {
+    configureCoordLog(new InMemoryCoordLog());
+    await coordLog.putEvent('escalations', 'e1', {
+      ts: '2026-01-01T00:00:01.000Z', msg_id: 'e1', from: 'A', to: ['human'],
+      kind: 'escalation', summary: 'dead-routines stale', resolved: null,
+      subjectSignature: 'dead-routines-papercusp',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    await coordLog.putEvent('escalations', 'e2', {
+      ts: '2026-01-01T00:00:02.000Z', msg_id: 'e2', from: 'A', to: ['human'],
+      kind: 'escalation', summary: 'git-sync-stall', resolved: null,
+      subjectSignature: 'git-sync-stall-papercusp',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const hit = await listEscalationsPaginated({ conditionKey: 'dead-routines-papercusp', maxRecords: 50 });
+    expect(hit.escalations.map((e) => e.msg_id)).toEqual(['e1']);
+
+    // A substring of a real subjectSignature must NOT match (exact, not fuzzy).
+    const miss = await listEscalationsPaginated({ conditionKey: 'dead-routines', maxRecords: 50 });
+    expect(miss.escalations).toEqual([]);
+  });
+
+  it('q does a case-insensitive substring match over summary AND body', async () => {
+    configureCoordLog(new InMemoryCoordLog());
+    await coordLog.putEvent('escalations', 'e1', {
+      ts: '2026-01-01T00:00:01.000Z', msg_id: 'e1', from: 'A', to: ['human'],
+      kind: 'escalation', summary: 'GIT-SYNC stall detected', resolved: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    await coordLog.putEvent('escalations', 'e2', {
+      ts: '2026-01-01T00:00:02.000Z', msg_id: 'e2', from: 'A', to: ['human'],
+      kind: 'escalation', summary: 'unrelated advisory', body: 'mentions git-sync in the body only', resolved: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    await coordLog.putEvent('escalations', 'e3', {
+      ts: '2026-01-01T00:00:03.000Z', msg_id: 'e3', from: 'A', to: ['human'],
+      kind: 'escalation', summary: 'totally unrelated', resolved: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const r = await listEscalationsPaginated({ q: 'git-sync', maxRecords: 50 });
+    expect(r.escalations.map((e) => e.msg_id).sort()).toEqual(['e1', 'e2']);
+  });
+
+  it('a filtered read on the legacy windowed path carries filterWindowCaveat:true — a miss does not prove absence', async () => {
+    await seedOpen(3);
+    const r = await listEscalationsPaginated({ q: 'no-such-condition', maxRecords: 50 });
+    expect(r.escalations).toEqual([]);
+    expect(r.filterWindowCaveat).toBe(true);
+  });
+
+  it('an UNFILTERED read never carries filterWindowCaveat', async () => {
+    await seedOpen(3);
+    const r = await listEscalationsPaginated({ maxRecords: 50 });
+    expect(r.filterWindowCaveat).toBeUndefined();
+  });
+
+  it('conditionKey and q compose as AND when both are supplied', async () => {
+    configureCoordLog(new InMemoryCoordLog());
+    await coordLog.putEvent('escalations', 'e1', {
+      ts: '2026-01-01T00:00:01.000Z', msg_id: 'e1', from: 'A', to: ['human'],
+      kind: 'escalation', summary: 'stale condition', resolved: null,
+      subjectSignature: 'shared-key',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    await coordLog.putEvent('escalations', 'e2', {
+      ts: '2026-01-01T00:00:02.000Z', msg_id: 'e2', from: 'A', to: ['human'],
+      kind: 'escalation', summary: 'unrelated text', resolved: null,
+      subjectSignature: 'shared-key',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const both = await listEscalationsPaginated({ conditionKey: 'shared-key', q: 'stale', maxRecords: 50 });
+    expect(both.escalations.map((e) => e.msg_id)).toEqual(['e1']);
+  });
+});
+
 describe('resolveEscalationsBatch — single-load drain (EI-1490)', () => {
   async function seedOpens(log: InMemoryCoordLog, n: number): Promise<string[]> {
     const ids: string[] = [];

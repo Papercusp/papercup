@@ -140,3 +140,91 @@ export function judgeCoverageWiring(input: CoverageWiringInput): CoverageWiringV
     violations,
   };
 }
+
+/**
+ * WI-2142887 — the coverage report must be able to SEE a file that no test imports.
+ *
+ * A separate claim from the wiring one above, and it fails in the direction nobody
+ * notices. v8 reports only the files a run LOADED, so without `all: true` a changed
+ * file with no test has no lcov record, and `scripts/patch-coverage.ts` can only
+ * answer `undetermined` for it. Measured on apps/operator-vite: 36.9% of the source
+ * population (97 of 263) was unjudgeable that way; with `all: true` it was 0%.
+ *
+ * `undetermined` is not a failing verdict, so a regression here does not redden
+ * anything — the gate just quietly stops judging a third of the diff while still
+ * reporting a healthy number. That is why it needs a guard rather than a comment.
+ */
+export interface CoverageCompletenessVerdict {
+  ok: boolean;
+  allEnabled: boolean;
+  includePresent: boolean;
+  missingToolingExcludes: string[];
+  violations: string[];
+}
+
+/** `coverage.all` — instrument every included file, not only the loaded ones. */
+const COVERAGE_ALL = /^\s*all:\s*true\s*,?\s*$/;
+
+/** `coverage.include` — the population `all` applies to. */
+const COVERAGE_INCLUDE = /^\s*include:\s*\[/;
+
+/**
+ * Build/tooling/story/example code, which `all: true` makes visible for the first
+ * time (it was never loaded before). Excluded in the same change that enables it,
+ * so the number is not depressed by files nobody intends to test.
+ */
+export const TOOLING_EXCLUDES = [
+  '**/bin/**',
+  '**/scripts/**',
+  '**/.storybook/**',
+  '**/examples/**',
+  '**/vitest-shims/**',
+];
+
+export function judgeCoverageCompleteness(configSource: string): CoverageCompletenessVerdict {
+  // Comment-stripped on purpose: prose ABOUT `all: true` must not satisfy a check
+  // that the setting is present — that is the same each-end-documents-the-other
+  // trap judgeCoverageWiring above exists to catch, one level down.
+  const configLines = stripComments(configSource);
+  const allEnabled = configLines.some((line) => COVERAGE_ALL.test(line));
+  const includePresent = configLines.some((line) => COVERAGE_INCLUDE.test(line));
+  const body = configLines.join('\n');
+  const missingToolingExcludes = TOOLING_EXCLUDES.filter((glob) => !body.includes(glob));
+
+  const violations: string[] = [];
+
+  if (!allEnabled) {
+    violations.push(
+      'libs/test-config/src/vitest-config.ts no longer sets `coverage.all: true`. ' +
+        'v8 then reports only the files a run LOADED, so every changed file with no ' +
+        'test becomes `undetermined` in scripts/patch-coverage.ts (measured: 36.9% of ' +
+        'apps/operator-vite). `undetermined` is not a failing verdict, so the gate goes ' +
+        'quiet rather than red — restore `all: true` or retire the patch gate deliberately.',
+    );
+  }
+
+  if (allEnabled && !includePresent) {
+    violations.push(
+      '`coverage.all: true` without an explicit `coverage.include` instruments every ' +
+        'file Vitest can reach, which sweeps in generated and vendored code and depresses ' +
+        'the number with things nobody intends to test. Declare the include glob.',
+    );
+  }
+
+  if (allEnabled && missingToolingExcludes.length > 0) {
+    violations.push(
+      `\`coverage.all: true\` is set but these tooling excludes are gone (${missingToolingExcludes.join(', ')}). ` +
+        'They only matter once `all` is on — before that these files were never loaded, ' +
+        'so dropping them silently re-adds 78 build/story/example files (56 in apps/operator) ' +
+        'to the denominator.',
+    );
+  }
+
+  return {
+    ok: violations.length === 0,
+    allEnabled,
+    includePresent,
+    missingToolingExcludes,
+    violations,
+  };
+}

@@ -25,6 +25,7 @@ import {
   NON_PROBED_UNITS,
   DOWN_CONFIRM_TICKS,
   ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS,
+  PORTLESS_PROBE_NAME_SET,
   applyDownConfirmDebounce,
   type ProbeResult,
 } from './service-health';
@@ -263,8 +264,13 @@ describe('unit-coverage decisions (WI-6149 D-010 item 4)', () => {
     // Damping is keyed by ProbeResult.name. A typo'd key is not an error — it is
     // silently NO damping, i.e. exactly the phantom-DOWN flood the entry was
     // added to prevent, with a green test suite.
-    const portless = new Set(['desktop', 'bg-host-ticker', 'bg-host-code', 'substrate-sidecar', 'embed-sidecar']);
-    const emittable = new Set([...HEALTH_ENDPOINTS.map((s) => s.name), ...portless]);
+    //
+    // EI-15810: this used to hand-type the portless set here, which had already
+    // silently drifted (missing 'mcp-proxy-code') before this change — the exact
+    // rot service-health.test.ts's own PORTLESS_PROBE_NAME_SET-derived guard exists
+    // to prevent (see its comment re: EI-19375157952766991). Deriving from the same
+    // exported set both fixes that drift and stops this file re-introducing it.
+    const emittable = new Set([...HEALTH_ENDPOINTS.map((s) => s.name), ...PORTLESS_PROBE_NAME_SET]);
     const orphans = Object.keys(DOWN_CONFIRM_TICKS).filter((name) => !emittable.has(name));
     expect(
       orphans,

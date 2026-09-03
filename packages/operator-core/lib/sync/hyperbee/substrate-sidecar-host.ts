@@ -454,6 +454,13 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
           ownLogKey: rec.booted.ownLog.keyHex,
           ownLogLength: rec.booted.ownLog.length,
           swarmTopicHex: null,
+          // WI-2142873: the swarm — and the identity it greets peers under —
+          // lives HERE, in the sidecar. Without carrying it back, the main
+          // process's `RemoteBootedHarnessHandle` reports no identity and every
+          // git-sync hive leg signs pot announcements as the gh-login device
+          // instead: announcements no peer can dial, because peers file our
+          // socket under the device in the HELLO, not the one in the signature.
+          announceIdentity: rec.booted.announceIdentity ?? null,
           mergeLoopStarted: true,
           admittedPeerCount: rec.booted.admitted.size,
         };
@@ -510,6 +517,8 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
       ownLogKey: handle.ownLog.keyHex,
       ownLogLength: handle.ownLog.length,
       swarmTopicHex: null,
+      // WI-2142873 — see the existing-record branch above.
+      announceIdentity: handle.announceIdentity ?? null,
       mergeLoopStarted: true,
       admittedPeerCount: handle.admitted.size,
     };

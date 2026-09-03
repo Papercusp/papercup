@@ -664,6 +664,8 @@ export const PORTLESS_PROBE_NAMES = {
   mcpProxyCode: 'mcp-proxy-code',
   substrateSidecar: 'substrate-sidecar',
   embedSidecar: 'embed-sidecar',
+  /** See {@link probeJournalCanary} (EI-15810, EI-2434 follow-up). */
+  journalCanary: 'journal-canary',
 } as const;
 
 /** Flat lookup for "is this name a portless probe target?" */
@@ -1489,6 +1491,231 @@ export async function probeEmbedSidecar(
   }
 }
 
+/**
+ * EI-15810 (EI-2434 follow-up): the user-manager journald stdout-capture path can
+ * silently wedge HOST-WIDE — every `--user` unit keeps running and serving traffic,
+ * but new stdout output stops landing in the journal. EI-2434 found this by accident,
+ * days into an unrelated incident (EI-2421); there was no signal it had happened at
+ * all. Not built in EI-2434 itself (the reproducing state had already cleared by the
+ * time that pass was picked up) — this is the deferred detection-only guard.
+ *
+ * Every tick this writes a fresh nonce to THIS process's own stdout, then checks
+ * whether the PRIOR tick's nonce (module state — see `pendingJournalCanary`) landed in
+ * the journal. That design choice is deliberate, not incidental: by the time a
+ * previous-tick nonce is checked it is already a full `runServiceHealthTick` interval
+ * (60s) old — far past any conceivable journald ingestion latency — so this probe adds
+ * ZERO blocking delay to `probeAll()`. Several callers (`dev:service_health`, the
+ * watchdog's inline-probe-on-stale fallback) run `probeAll()` synchronously and
+ * on-demand; a probe that slept in-place before checking its own just-written canary
+ * would tax every one of those calls, every tick, forever. Checking the PRIOR write
+ * instead of sleeping on THIS one also produces a strictly stronger signal: two
+ * consecutive DOWN ticks mean two INDEPENDENTLY-written canaries both failed to land,
+ * not one write re-checked after a fixed pause.
+ *
+ * A miss means journald has stopped capturing THIS unit's stdout — it is explicitly
+ * NOT a claim that the unit itself is down (same pitfall `probeSubstrateSidecar`'s note
+ * guards against for :3070 vs the sidecar it probes). There is no in-process fix: the
+ * known recovery is a human-triggered host reboot/relogin. Detection alone would have
+ * saved the multi-day diagnosis in EI-2421 — a miss now fires a service-health signal
+ * instead of the blackout being silently absorbed.
+ *
+ * Fail-soft + platform/context-aware, mirroring every other portless probe in this
+ * file: non-Linux, not running under a systemd `--user` `.service` unit at all (a dev
+ * shell, a test process, the desktop shell), no prior canary to check yet (the first
+ * tick since process start), or an unreadable journal all read `present:false` —
+ * liveness UNKNOWN, never a fabricated verdict either way. Only a PROVEN miss
+ * (`journalctl --grep` genuinely matched nothing — see `classifyJournalctlFailure`'s
+ * `'no-match'`, the same exit-1-empty-stderr semantic `journal-read.ts` already had to
+ * learn once) is reported as a real DOWN, damped by `JOURNAL_CANARY_DOWN_CONFIRM_TICKS`
+ * like every other probe in this family that can see a transient single-tick blip
+ * (`bg-host-ticker`, `embed-sidecar`).
+ */
+
+/**
+ * Bounded exec budget for the confirming journalctl read — deliberately far below
+ * `journal-read.ts`'s `JOURNAL_TIMEOUT_MS` (30s, sized for that module's heavier,
+ * unscoped/wide-window interactive reads). This read is unit-scoped, grep-scoped to
+ * one nonce, and windowed from the prior write with `SINCE_CUSHION_MS` of slack, so a
+ * healthy read finishes in well under a second; a run that needs longer than this
+ * budget is itself worth surfacing as a probe failure rather than stalling a 60s
+ * health tick.
+ */
+export const JOURNAL_CANARY_READ_TIMEOUT_MS = 3_000;
+
+/**
+ * Safety margin subtracted from the prior canary's write time before it is used as the
+ * confirming read's `--since` bound (clock rounding, not a landing-time allowance —
+ * see the module doc comment above for why this probe never waits on landing).
+ */
+export const JOURNAL_CANARY_SINCE_CUSHION_MS = 2_000;
+
+/**
+ * Pure: extract a systemd `.service` unit name from a `/proc/self/cgroup` body, or
+ * null. Split out from {@link resolveOwnServiceUnit} so the parsing logic is
+ * unit-testable without touching the filesystem.
+ */
+export function parseOwnServiceUnitFromCgroup(cgroupBody: string): string | null {
+  for (const line of cgroupBody.split('\n')) {
+    const match = line.match(/\/([^/\s]+\.service)(?:\/|$)/);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+/**
+ * Which systemd `--user` `.service` unit (if any) THIS process is running under,
+ * derived from `/proc/self/cgroup` rather than a lookup table: a systemd-managed
+ * unit's process lives in a cgroup path ending in `<unit>.service` (verified live on
+ * this host: `.../app.slice/papercusp-dev-api.service`), while an ad-hoc process (a
+ * dev shell, a test run, an agent terminal) lives in a `.scope`, never a `.service`.
+ * Returns null for anything that is not a systemd `.service` unit — including every
+ * non-Linux host and every read failure — so the caller can treat "no unit" and
+ * "unreadable" identically as `present:false`, matching every other portless probe.
+ */
+export async function resolveOwnServiceUnit(): Promise<string | null> {
+  if (process.platform !== 'linux') return null;
+  try {
+    const { readFile } = await import('node:fs/promises');
+    const raw = await readFile('/proc/self/cgroup', 'utf8');
+    return parseOwnServiceUnitFromCgroup(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function defaultJournalCanaryExec(args: string[], timeoutMs: number): Promise<{ stdout: string }> {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = promisify(execFile);
+  return run('journalctl', args, { timeout: timeoutMs, maxBuffer: 64 * 1024 });
+}
+
+/** Render epoch milliseconds in journalctl's unambiguous `@epoch` grammar — never a
+ *  relative or locale-formatted spec. journalctl parses `--since`/`--until` in the
+ *  HOST'S LOCAL time while every papercusp surface (including this probe's own
+ *  `writtenAtMs`) is UTC epoch ms; `@epoch` is the one form immune to that mismatch. */
+function journalCanaryEpoch(ms: number): string {
+  return `@${Math.floor(ms / 1000)}`;
+}
+
+/** Cross-tick pending-canary state: the nonce written on the PRIOR tick, checked on
+ *  THIS tick (see the module doc comment above for why). Module-scoped like
+ *  `lastEmbedSidecarProvenInferenceMs`; resets on process restart, which is correct —
+ *  a fresh process has no prior canary to check yet (the first-tick present:false
+ *  branch in `probeJournalCanary` below). */
+let pendingJournalCanary: { unit: string; nonce: string; writtenAtMs: number } | null = null;
+
+/** Test seam: forget cross-tick canary state so a case starts from a fresh process. */
+export function __resetJournalCanaryStateForTests(): void {
+  pendingJournalCanary = null;
+}
+
+/** Injectable seams for {@link probeJournalCanary} — production uses the real
+ *  filesystem/subprocess/console; tests substitute all three so the probe never needs
+ *  a live systemd host to exercise, and never has to wait out a real tick interval. */
+export interface JournalCanaryDeps {
+  resolveUnit?: () => Promise<string | null>;
+  exec?: (args: string[], timeoutMs: number) => Promise<{ stdout: string }>;
+  writeCanary?: (line: string) => void;
+  readTimeoutMs?: number;
+}
+
+export async function probeJournalCanary(deps: JournalCanaryDeps = {}): Promise<ProbeResult> {
+  const name = PORTLESS_PROBE_NAMES.journalCanary;
+  const start = Date.now();
+  if (process.platform !== 'linux') {
+    return { name, up: true, status: null, latencyMs: 0, present: false, note: 'non-Linux host — no journald to canary' };
+  }
+  const resolveUnit = deps.resolveUnit ?? resolveOwnServiceUnit;
+  let unit: string | null;
+  try {
+    unit = await resolveUnit();
+  } catch {
+    unit = null;
+  }
+  if (!unit) {
+    return {
+      name,
+      up: true,
+      status: null,
+      latencyMs: Date.now() - start,
+      present: false,
+      note: 'not running under a systemd --user .service unit — nothing to canary (dev shell, test process, or desktop shell)',
+    };
+  }
+
+  const exec = deps.exec ?? defaultJournalCanaryExec;
+  const readTimeoutMs = deps.readTimeoutMs ?? JOURNAL_CANARY_READ_TIMEOUT_MS;
+  const pending = pendingJournalCanary;
+  let result: ProbeResult;
+  if (!pending || pending.unit !== unit) {
+    // First tick since process start, or the resolved unit changed mid-process
+    // (shouldn't happen — a cgroup doesn't move — but resync rather than compare
+    // a nonce against the wrong unit's journal): nothing to check yet.
+    result = {
+      name,
+      up: true,
+      status: null,
+      latencyMs: Date.now() - start,
+      present: false,
+      note: pending ? 'canary unit changed — resynchronizing' : 'no prior canary to check yet (first tick since process start) — writing one now',
+    };
+  } else {
+    try {
+      await exec(
+        ['--user', '-u', pending.unit, '-g', pending.nonce, '--since', journalCanaryEpoch(pending.writtenAtMs - JOURNAL_CANARY_SINCE_CUSHION_MS), '--no-pager', '-o', 'cat'],
+        readTimeoutMs,
+      );
+      result = {
+        name,
+        up: true,
+        status: null,
+        latencyMs: Date.now() - start,
+        note: `stdout capture healthy — the prior tick's canary landed in the journal for ${unit}`,
+      };
+    } catch (e) {
+      const { classifyJournalctlFailure } = await import('./journal-read');
+      const { kind } = classifyJournalctlFailure(e);
+      if (kind === 'no-match') {
+        // journalctl exits 1 with EMPTY stderr when --grep matched nothing — a
+        // genuinely clean read, and the exact miss this probe exists to catch.
+        result = {
+          name,
+          up: false,
+          status: null,
+          latencyMs: Date.now() - start,
+          note:
+            `⚠ the prior tick's canary WROTE to stdout but did NOT land in the journal for ${unit} — ` +
+            `journald's stdout-capture path for this unit may be silently wedged (EI-2434: host-wide, ` +
+            `every --user unit stays up and serves traffic while its journal logging goes dark). This ` +
+            `is NOT a claim that ${unit} itself is down. Known recovery: a host reboot/relogin — ` +
+            `nothing here can self-heal it.`,
+        };
+      } else {
+        // no-systemd / timeout / error: the READ failed, not a proven miss — never
+        // fabricate a verdict either way (same contract as every sibling probe).
+        result = {
+          name,
+          up: true,
+          status: null,
+          latencyMs: Date.now() - start,
+          present: false,
+          note: `journal canary liveness unknown (${kind}: journalctl read failed)`,
+        };
+      }
+    }
+  }
+
+  // Write THIS tick's canary for the NEXT tick to check, unconditionally — a wedge
+  // must not stop new canaries from being written, or the probe would go permanently
+  // blind the moment it starts failing instead of continuing to confirm/clear.
+  const nonce = `svchealth-${process.pid}-${start.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const writeCanary = deps.writeCanary ?? ((line: string) => console.log(line));
+  writeCanary(`[journal-canary] ${nonce}`);
+  pendingJournalCanary = { unit, nonce, writtenAtMs: start };
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Supervised-process registry (critical-process-supervisor-2026-07-04 P-001,
 // EI-7021 design). ADDITIVE ONLY — a static metadata list describing which
@@ -1739,7 +1966,7 @@ export async function probeAll(specs?: EndpointSpec[]): Promise<ProbeResult[]> {
   // the embed sidecar HAS a port but is opt-in, so its probe is present:false-aware
   // rather than a raw HEALTH_ENDPOINTS entry (phantom-DOWN guard).
   const probeSpecs = specs ?? resolveHealthEndpoints();
-  const [http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, substrateSidecar, embedSidecar] = await Promise.all([
+  const [http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, substrateSidecar, embedSidecar, journalCanary] = await Promise.all([
     Promise.all(probeSpecs.map((s) => probeEndpoint(s))),
     probeDesktop(),
     probeBgHostTicker(),
@@ -1747,8 +1974,9 @@ export async function probeAll(specs?: EndpointSpec[]): Promise<ProbeResult[]> {
     probeMcpProxyCodeDrift(),
     probeSubstrateSidecar(),
     probeEmbedSidecar(),
+    probeJournalCanary(),
   ]);
-  return [...http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, substrateSidecar, embedSidecar];
+  return [...http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, substrateSidecar, embedSidecar, journalCanary];
 }
 
 /**
@@ -1777,6 +2005,8 @@ export async function probeNamedService(name: string): Promise<ProbeResult | nul
       return probeSubstrateSidecar();
     case PORTLESS_PROBE_NAMES.embedSidecar:
       return probeEmbedSidecar();
+    case PORTLESS_PROBE_NAMES.journalCanary:
+      return probeJournalCanary();
     default:
       return null;
   }
@@ -1959,12 +2189,24 @@ export const BG_HOST_TICKER_DOWN_CONFIRM_TICKS = 2;
  */
 export const EMBED_SIDECAR_DOWN_CONFIRM_TICKS = 2;
 
+/**
+ * EI-15810: journald ingestion of a healthy `--user` unit's forwarded stdout is
+ * normally sub-second, but a momentary scheduling/IO blip on this heavily-loaded box
+ * could in principle push one canary past its landing-delay window without the
+ * host-wide wedge EI-2434 diagnosed actually being present. Two ticks costs nothing
+ * (a real wedge, once present, does not self-clear — it stays down until the human
+ * reboot/relogin) and matches the precedent every other single-signal portless probe
+ * in this file follows (`bg-host-ticker`, `embed-sidecar`).
+ */
+export const JOURNAL_CANARY_DOWN_CONFIRM_TICKS = 2;
+
 export const DOWN_CONFIRM_TICKS: Readonly<Record<string, number>> = {
   [PORTLESS_PROBE_NAMES.desktop]: DESKTOP_DOWN_CONFIRM_TICKS,
   'staging-api': STAGING_API_DOWN_CONFIRM_TICKS,
   [PORTLESS_PROBE_NAMES.bgHostTicker]: BG_HOST_TICKER_DOWN_CONFIRM_TICKS,
   'oddsmith-sidecar': ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS,
   [PORTLESS_PROBE_NAMES.embedSidecar]: EMBED_SIDECAR_DOWN_CONFIRM_TICKS,
+  [PORTLESS_PROBE_NAMES.journalCanary]: JOURNAL_CANARY_DOWN_CONFIRM_TICKS,
 };
 
 let downStreaks: Record<string, number> = {};

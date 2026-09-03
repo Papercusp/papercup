@@ -36,7 +36,12 @@ import { existsSync } from 'node:fs';
 import { workspacesRoot } from '../../workspace-registry';
 import type { ProjectEntry } from '../../harness-registry';
 import { join } from 'node:path';
-import { bootHarnessSubstrate, type BootedHarnessHandle, type BootHarnessOpts } from './boot';
+import {
+  bootHarnessSubstrate,
+  type BootedAnnounceIdentity,
+  type BootedHarnessHandle,
+  type BootHarnessOpts,
+} from './boot';
 import type { SwarmBinding } from './derive-swarm-topic';
 import type { MergeCursorStore } from './read-merge';
 import { loadSharedConfigFromProjectDir } from '../../harness/load-shared-config';
@@ -1768,6 +1773,24 @@ export async function closeAllBootedHarnesses(): Promise<number> {
 export interface BootedHandleSummary {
   workspaceId: string;
   harnessSlug: string;
+  /**
+   * The identity this harness's swarm hello/announce carries — the ONLY device
+   * peers will accept an announcement from for this pot, because it is the
+   * device they filed our socket under.
+   *
+   * Published with the handle list (WI-2142873) because the readers that need
+   * it live in OTHER PROCESSES: this registry is deliberately process-local, so
+   * a git-sync routine running outside the substrate owner sees no handle at
+   * all and used to sign pot announcements as the gh-login device instead —
+   * announcements no peer can dial. Enumerating a handle without saying WHO it
+   * serves as is what made that silent; same reasoning as the `healthInputs`
+   * bundle (EI-20575137548097507), one field over.
+   *
+   * `null` = this handle genuinely has no swarm identity (no join). Absent on a
+   * summary produced by a pre-WI-2142873 owner, which a reader must treat as
+   * UNKNOWN, never as null — see `pickHiveGitActor`.
+   */
+  announceIdentity?: BootedAnnounceIdentity | null;
 }
 
 export function listBootedHandles(): BootedHandleSummary[] {
@@ -1776,6 +1799,7 @@ export function listBootedHandles(): BootedHandleSummary[] {
     out.push({
       workspaceId: handle.workspaceId,
       harnessSlug: handle.harnessSlug,
+      announceIdentity: handle.announceIdentity ?? null,
     });
   }
   return out;
@@ -1797,6 +1821,7 @@ export function listRelocatedBootedHandles(): BootedHandleSummary[] {
     out.push({
       workspaceId: handle.workspaceId,
       harnessSlug: handle.harnessSlug,
+      announceIdentity: handle.announceIdentity ?? null,
     });
   }
   return out;
