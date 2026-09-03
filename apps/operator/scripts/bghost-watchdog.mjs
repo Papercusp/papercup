@@ -1384,6 +1384,23 @@ async function poll() {
     // not active → a crash; Restart=always handles that. Don't interfere.
     return;
   }
+  // EI-22091522428797790. WI-2140796 established a declaration/refusal/force contract for a
+  // DELIBERATE bg-host quiesce: a P-101 clean-seed re-cut opens the hyperbee corestore that bg-host
+  // fd-locks, so it stops the unit for ~3h and a restart during that window produces repeated
+  // boot_fail. `dev:restart` honours that contract (bg-host-quiesce-guard.ts); this watchdog did
+  // not, so the contract had only two of its three named parties.
+  //
+  // The cut STOPPING the unit is already handled by the is-active return above. What this closes is
+  // the residual window where the unit is still ACTIVE while a cut is declared: the ticker
+  // legitimately stops advancing, which reads here as a freeze and would fire an actuation that
+  // fights the cut. Same fail-soft rule as every other signal in this file — a declared quiesce
+  // SKIPS the judgment; it never concludes frozen, and an absent/unreadable marker (the normal
+  // case) never disables the watchdog.
+  const quiesce = seedCutQuiesce();
+  if (quiesce) {
+    log(`seed-cut quiesce DECLARED (${quiesce}) — skipping freeze judgment (not concluding frozen)`);
+    return;
+  }
   // EI-18133447445064828: activation is independent of freeze recovery. A HEALTHY bg-host can run
   // stale committed routine code indefinitely, so check it before the PG freshness path. The helper is
   // internally throttled + reentrancy-guarded and can only request a coordinated restart after the
