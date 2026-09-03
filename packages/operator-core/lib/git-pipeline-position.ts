@@ -909,7 +909,7 @@ export function staleVerdictSafeLever(
  *     which is also the precise answer to "the judged candidate predates my commit":
  *     converging lands the fix ON the judged lineage instead of re-cutting away from it.
  *   • non-null, terminal — the retire recipe, for a decision the mechanism itself called
- *     finished (`recut-at-tip` / `hold-exhausted`).
+ *     finished (`hold-dispatch-infeasible` / `hold-exhausted`).
  *   • null — the queue is NOT retirable (live fixer, active dispatch reservation, or unknown
  *     liveness). That is where firing is MOST wrong, and it is the one case with no
  *     queue-authored sentence to defer to, so say so explicitly rather than letting the
