@@ -187,6 +187,32 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
     expect(runProbe(fx)).toContain('no exposed private keys found');
   });
 
+  // ⛔ REGRESSION GUARD. The first implementation grepped for the bare phrase
+  // "PRIVATE KEY", and the first full live sweep immediately flagged Python
+  // SOURCE FILES that merely mention it — cryptography's serialization/ssh.py,
+  // pyjwt's utils.py, joserfc's security.py — because any library that PARSES
+  // PEM contains the string in a constant or regex. Dozens of confident false
+  // positives per run is how a detector gets muted, so the predicate anchors on
+  // a line that IS the delimiter.
+  it('ignores source code that merely MENTIONS private keys', () => {
+    const fx = withControl(fixture());
+    const p = join(fx.sshDir, 'pem_parser.py');
+    writeFileSync(
+      p,
+      [
+        '# Handles PEM encoding of private key material.',
+        'PRIVATE_KEY_HEADER = "PRIVATE KEY"',
+        'def is_private_key(blob):',
+        '    return "PRIVATE KEY" in blob  # matches BEGIN RSA PRIVATE KEY etc.',
+      ].join('\n'),
+    );
+    chmodSync(p, 0o664);
+
+    const out = runProbe(fx);
+    expect(out).not.toContain('pem_parser.py');
+    expect(out).toContain('no exposed private keys found');
+  });
+
   it('ignores a world-readable file that is not actually a private key', () => {
     // Constraint (1): content-match, never filename. `id_*` matches locale files
     // such as /usr/share/i18n/locales/id_ID, which are not keys.
@@ -199,12 +225,40 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
 
   // ── Constraint (3): an empty result is not automatically a clean result ────
   describe('self-validation', () => {
-    it('declares its result INDETERMINATE when the positive control is not rediscovered', () => {
+    it('declares its result INDETERMINATE when a real control key exists but the sweep never reaches it', () => {
       const fx = withControl(fixture());
-      const out = runProbe(fx, { KEYPERM_POSITIVE_CONTROL: join(fx.root, 'nowhere', 'control') });
+      const outside = join(fx.root, 'outside');
+      mkdirSync(outside, { recursive: true });
+      const control = join(outside, 'control');
+      writeFileSync(control, KEY_BODIES.opensshPlain);
+      chmodSync(control, 0o600);
+
+      const out = runProbe(fx, {
+        KEYPERM_POSITIVE_CONTROL: control,
+        KEYPERM_SSH_ROOTS: join(fx.root, 'home'),
+      });
       expect(out).toContain('positive control: FAILED');
       expect(out).toContain('cannot validate itself');
       expect(out).toContain('INDETERMINATE, not clean');
+    });
+
+    // A configured control that does not exist is the misconfiguration most
+    // likely to happen silently (a stale path, a moved key). Treating it as a
+    // skip would let the probe print "no exposed private keys found" forever
+    // while validating nothing — a false clean manufactured by the safety
+    // mechanism itself, which is worse than having no control at all.
+    it('treats a CONFIGURED BUT MISSING control as a failure, not a skip', () => {
+      const fx = withControl(fixture());
+      const out = runProbe(fx, { KEYPERM_POSITIVE_CONTROL: join(fx.root, 'nowhere', 'control') });
+      expect(out).toContain('positive control: ABSENT');
+      expect(out).toContain('cannot validate itself');
+    });
+
+    it('allows a deliberate opt-out for a host that genuinely holds no key', () => {
+      const fx = withControl(fixture());
+      const out = runProbe(fx, { KEYPERM_POSITIVE_CONTROL: '' });
+      expect(out).toContain('UNVALIDATED by design');
+      expect(out).not.toContain('cannot validate itself');
     });
 
     it('passes its positive control when the control key is inside a swept root', () => {
