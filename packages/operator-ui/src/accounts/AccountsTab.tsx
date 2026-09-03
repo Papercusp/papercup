@@ -174,6 +174,8 @@ function useNow(enabled: boolean, intervalMs = 1000): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!enabled) return undefined;
+    // timer-classification: ui-timer — relative-time re-render (countdown/"Xs ago"
+    // labels), reads no store; setNow(Date.now()) is a pure clock tick.
     const t = setInterval(() => setNow(Date.now()), intervalMs);
     return () => clearInterval(t);
   }, [enabled, intervalMs]);
