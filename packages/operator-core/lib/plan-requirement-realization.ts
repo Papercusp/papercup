@@ -31,8 +31,33 @@
  *   2. Only `covered`/`repaired` are checked. `rejected` and `open` are honest
  *      dispositions that make no claim of absorption, and demanding evidence for
  *      them would punish the accurate answer.
+ *
+ * P-016 / D-040 closed the gap those limits left open. Resolving a `P-NNN` target
+ * against the folded audit alone answers "was this item ever verified?", never "is this
+ * item still in the plan?" — and the two diverge, because `getEffectiveItemAudits` folds
+ * EVERY completion pass and is never filtered by the current item list. An item deleted
+ * from the plan therefore keeps its verifying entry forever, and the drift loop that
+ * would notice iterates the plan's CURRENT items (so it cannot see a deleted one) and
+ * explicitly skips `dropped` ones. So the requirement stayed `covered` on the strength of
+ * evidence for work the plan had abandoned, and nothing said so. The target is now
+ * resolved against the plan first: a target the plan no longer contains is `unrealized`
+ * (`target-not-in-plan`), and a `dropped` one is REPORTED rather than convicted, since a
+ * mapping may name a live sibling that genuinely absorbed it.
+ *
+ * ⚠ P-016 asked for this via the stored `audited_plan_content_hash`; that instrument
+ * cannot do it. It is a WHOLE-PLAN hash, so it changes when any decision, `## Now` line
+ * or item status changes and can never name WHICH item moved — it is already reported,
+ * correctly and non-blockingly, as `changedSinceAudit`/`revisionGap`. The item-level
+ * question it was meant to answer already had an exact instrument in `itemTextHash`
+ * (a rewritten item is caught today as `audit_coverage_stale`); what was missing was
+ * item LIVENESS, which is what this does.
  */
-import { isVerifyingCitation, type ActivationAuditMapping, type EffectiveItemAudit } from './plan-audits';
+import {
+  isVerifyingCitation,
+  type ActivationAuditMapping,
+  type EffectiveItemAudit,
+  type PlanItemStatus,
+} from './plan-audits';
 
 /** Dispositions that ASSERT the plan absorbed the requirement, and so owe evidence. */
 const REALIZING_DISPOSITIONS: ReadonlySet<ActivationAuditMapping['disposition']> = new Set([
@@ -43,7 +68,7 @@ const REALIZING_DISPOSITIONS: ReadonlySet<ActivationAuditMapping['disposition']>
 /** A plan-item target. `D-NNN` and `section:<heading>` are deliberately not this. */
 const PLAN_ITEM_TARGET = /^P-\d{3,}$/;
 
-export type UnrealizedReason = 'no-item-audit' | 'no-verifying-citation';
+export type UnrealizedReason = 'no-item-audit' | 'no-verifying-citation' | 'target-not-in-plan';
 
 export interface UnrealizedRequirement {
   mappingId: string;
@@ -66,6 +91,34 @@ export interface ExemptMapping {
   disposition: ActivationAuditMapping['disposition'];
   /** The non-item destinations it named instead. */
   planTargets: string[];
+}
+
+/**
+ * P-016: a realizing mapping whose `P-NNN` target is still IN the plan but was
+ * consciously abandoned (`status: 'dropped'`). Dropping is a legitimate recorded exit
+ * (D-002), and the completion-audit drift loop deliberately skips dropped items — so a
+ * requirement routed to one is judged by nobody, while the activation audit goes on
+ * asserting the plan absorbed it.
+ *
+ * NOT a violation, for the same reason D-035 refused to make the non-item exemption one:
+ * a mapping may name several targets, and a requirement genuinely absorbed by a live
+ * sibling item is not made false by an abandoned one beside it. Reported instead, so the
+ * abandoned destination is visible.
+ */
+export interface DroppedTarget {
+  mappingId: string;
+  requirement: string;
+  disposition: ActivationAuditMapping['disposition'];
+  planTarget: string;
+  /**
+   * The silent case, and the one P-016 was filed for: a folded audit entry STILL carries
+   * a verifying citation for this item, gathered before it was dropped, so the coverage
+   * claim passes on evidence for work the plan then abandoned. `getEffectiveItemAudits`
+   * folds every completion pass and never filters by the plan's current items, so that
+   * entry survives the drop indefinitely. Measured 2026-09-03: 28 of 83 dropped targets
+   * fleet-wide are vouched this way.
+   */
+  vouchedByStaleAudit: boolean;
 }
 
 export interface RequirementRealizationVerdict {
@@ -94,6 +147,12 @@ export interface RequirementRealizationVerdict {
    * which is the guarantee this module already claimed and the gate was dropping.
    */
   exemptMappings: ExemptMapping[];
+  /**
+   * P-016: realizing targets pointing at a plan item that is still present but
+   * `dropped`. Non-blocking — see {@link DroppedTarget}. Empty when `planItems` was not
+   * supplied or could not be read.
+   */
+  droppedTargets: DroppedTarget[];
   /** Mappings dispositioned covered/repaired whose evidence is missing. */
   unrealized: UnrealizedRequirement[];
 }
@@ -101,6 +160,21 @@ export interface RequirementRealizationVerdict {
 export interface RequirementRealizationInput {
   mappings: ReadonlyArray<ActivationAuditMapping>;
   itemAudits: ReadonlyArray<EffectiveItemAudit>;
+  /**
+   * P-016: the plan's CURRENT items, so a target can be resolved against the plan
+   * before the folded audit is asked about it. Without it this judge resolves `P-NNN`
+   * targets ONLY against `getEffectiveItemAudits`, which folds every completion pass
+   * and never filters by the current item list — so an item deleted from the plan keeps
+   * a verifying audit entry forever and silently vouches for the requirement routed to it.
+   *
+   * ⚠ OPTIONAL, AND AN EMPTY LIST IS TREATED AS "NOT SUPPLIED" — deliberately, because
+   * `getPlanItemStatuses` fails toward `[]` and its own contract says a caller must never
+   * read that as "the plan has no items". Validating targets against an empty list would
+   * mark EVERY target `target-not-in-plan` and refuse every plan on a transient database
+   * error. Absent this input the liveness rules are skipped entirely and the judge behaves
+   * exactly as it did before P-016.
+   */
+  planItems?: ReadonlyArray<PlanItemStatus>;
 }
 
 export function judgeRequirementRealization(
@@ -114,7 +188,17 @@ export function judgeRequirementRealization(
   const unrealized: UnrealizedRequirement[] = [];
   const skippedTargets: string[] = [];
   const exemptMappings: ExemptMapping[] = [];
+  const droppedTargets: DroppedTarget[] = [];
   let checkedTargets = 0;
+
+  // P-016: null when the caller supplied no items, or supplied an empty list — which
+  // `getPlanItemStatuses` also returns on a read failure. Both collapse to "the plan's
+  // item list is unknown", and an unknown list must disable the liveness rules rather
+  // than convict every target of not existing.
+  const statusByItem =
+    input.planItems && input.planItems.length > 0
+      ? new Map(input.planItems.map((item) => [item.itemId, item.status]))
+      : null;
 
   for (const mapping of input.mappings) {
     if (!REALIZING_DISPOSITIONS.has(mapping.disposition)) continue;
@@ -135,7 +219,38 @@ export function judgeRequirementRealization(
       judgeableTargets += 1;
       checkedTargets += 1;
 
+      // P-016: resolve the target against the plan BEFORE asking the folded audit about
+      // it. A target the plan no longer contains cannot be realized by anything, however
+      // confidently a surviving audit entry vouches for it — and that entry does survive,
+      // because the fold spans every completion pass and is never filtered by the current
+      // item list. Checked ahead of the audit lookup so a stale entry cannot pre-empt it.
+      const currentStatus = statusByItem?.get(trimmed);
+      if (statusByItem && currentStatus === undefined) {
+        unrealized.push({
+          mappingId: mapping.id,
+          requirement: mapping.requirement,
+          disposition: mapping.disposition,
+          planTarget: trimmed,
+          reason: 'target-not-in-plan',
+        });
+        continue;
+      }
+
       const audit = auditByItem.get(trimmed);
+
+      // A dropped target keeps the ordinary evidence rule below — loosening it here would
+      // let the 55 dropped targets that fail today start passing. This only ADDS the
+      // report, so the abandoned destination stops being invisible either way.
+      if (currentStatus === 'dropped') {
+        droppedTargets.push({
+          mappingId: mapping.id,
+          requirement: mapping.requirement,
+          disposition: mapping.disposition,
+          planTarget: trimmed,
+          vouchedByStaleAudit: audit?.entry.citations.some(isVerifyingCitation) ?? false,
+        });
+      }
+
       if (!audit) {
         unrealized.push({
           mappingId: mapping.id,
@@ -176,8 +291,19 @@ export function judgeRequirementRealization(
     checkedTargets,
     skippedTargets,
     exemptMappings,
+    droppedTargets,
     unrealized,
   };
+}
+
+/** One-line-per-entry rendering for the gate's (non-blocking) dropped-target report. */
+export function describeDroppedTarget(entry: DroppedTarget): string {
+  const requirement =
+    entry.requirement.length > 80 ? `${entry.requirement.slice(0, 77)}...` : entry.requirement;
+  const vouched = entry.vouchedByStaleAudit
+    ? 'still vouched by a pre-drop verifying citation'
+    : 'no verifying citation';
+  return `${entry.mappingId} (${entry.disposition}) → ${entry.planTarget} [dropped, ${vouched}]: "${requirement}"`;
 }
 
 /** One-line-per-entry rendering for the gate's (non-blocking) exemption report. */
@@ -193,7 +319,9 @@ export function describeUnrealized(entry: UnrealizedRequirement): string {
   const why =
     entry.reason === 'no-item-audit'
       ? 'no item audit'
-      : 'audited with no verifying (code/test) citation';
+      : entry.reason === 'target-not-in-plan'
+        ? 'the plan no longer contains this item'
+        : 'audited with no verifying (code/test) citation';
   const requirement =
     entry.requirement.length > 80 ? `${entry.requirement.slice(0, 77)}...` : entry.requirement;
   return `${entry.mappingId} (${entry.disposition}) → ${entry.planTarget}: ${why} — "${requirement}"`;

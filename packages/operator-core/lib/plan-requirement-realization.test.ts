@@ -11,9 +11,15 @@ import {
   judgeRequirementRealization,
   describeUnrealized,
   describeExemptMapping,
+  describeDroppedTarget,
   type RequirementRealizationInput,
 } from './plan-requirement-realization';
-import type { ActivationAuditMapping, AuditCitation, EffectiveItemAudit } from './plan-audits';
+import type {
+  ActivationAuditMapping,
+  AuditCitation,
+  EffectiveItemAudit,
+  PlanItemStatus,
+} from './plan-audits';
 
 const mapping = (over: Partial<ActivationAuditMapping> = {}): ActivationAuditMapping => ({
   id: 'M-001',
@@ -246,6 +252,157 @@ describe('judgeRequirementRealization', () => {
       expect(line).toContain('covered');
       expect(line).toContain('D-011');
       expect(line).toContain('section:Now');
+    });
+  });
+
+  /**
+   * P-016 / D-040: TARGET LIVENESS. Resolving a `P-NNN` against the folded audit answers
+   * "was this item ever verified?", never "is this item still in the plan?" — and
+   * `getEffectiveItemAudits` spans every completion pass with no filter by the current
+   * item list, so a deleted item's verifying entry outlives it and keeps satisfying the
+   * coverage claim.
+   *
+   * Both directions, because each rule here can only make the gate wrong in ONE of them:
+   * `target-not-in-plan` makes it REFUSE (a false positive blocks a good plan) and the
+   * dropped-target report makes it PASS (a false negative hides an abandoned target).
+   */
+  describe('target liveness against the plan current items (P-016)', () => {
+    const planItem = (itemId: string, status: string): PlanItemStatus => ({
+      itemId,
+      status,
+      itemText: `text for ${itemId}`,
+    });
+
+    it('REFUSES a target the plan no longer contains, though a verifying audit survives for it', () => {
+      // The exact silent orphan P-016 was filed for: P-001 was deleted from the plan, but
+      // its pre-deletion audit entry is still in the fold and still carries a code citation.
+      const v = judge({
+        mappings: [mapping({ planTargets: ['P-001'] })],
+        itemAudits: [itemAudit('P-001', [CODE])],
+        planItems: [planItem('P-002', 'done')],
+      });
+      expect(v.ok).toBe(false);
+      expect(v.unrealized).toHaveLength(1);
+      expect(v.unrealized[0]?.reason).toBe('target-not-in-plan');
+      expect(v.unrealized[0]?.planTarget).toBe('P-001');
+    });
+
+    it('CALIBRATION: that same stale audit passes when the item is still in the plan', () => {
+      // Without this the case above proves nothing — it would read identically if the
+      // judge had simply started refusing everything.
+      const v = judge({
+        mappings: [mapping({ planTargets: ['P-001'] })],
+        itemAudits: [itemAudit('P-001', [CODE])],
+        planItems: [planItem('P-001', 'done')],
+      });
+      expect(v.ok).toBe(true);
+      expect(v.unrealized).toHaveLength(0);
+    });
+
+    it('FAILS OPEN on an empty item list — getPlanItemStatuses returns [] on a read error', () => {
+      // Convicting every target here would refuse every plan in the fleet on one bad read.
+      const v = judge({
+        mappings: [mapping({ planTargets: ['P-001'] })],
+        itemAudits: [itemAudit('P-001', [CODE])],
+        planItems: [],
+      });
+      expect(v.ok).toBe(true);
+      expect(v.unrealized).toHaveLength(0);
+      expect(v.droppedTargets).toHaveLength(0);
+    });
+
+    it('behaves exactly as before P-016 when planItems is not supplied at all', () => {
+      const v = judge({
+        mappings: [mapping({ planTargets: ['P-001'] })],
+        itemAudits: [itemAudit('P-001', [CODE])],
+      });
+      expect(v.ok).toBe(true);
+      expect(v.unrealized).toHaveLength(0);
+      expect(v.droppedTargets).toHaveLength(0);
+    });
+
+    it('REPORTS a dropped target vouched by a pre-drop citation without refusing it', () => {
+      // D-002 makes dropping a legitimate exit, so this must not gate — but the pairing
+      // (abandoned item + surviving verifying citation) is precisely what was invisible.
+      const v = judge({
+        mappings: [mapping({ planTargets: ['P-001'] })],
+        itemAudits: [itemAudit('P-001', [CODE])],
+        planItems: [planItem('P-001', 'dropped')],
+      });
+      expect(v.ok).toBe(true);
+      expect(v.unrealized).toHaveLength(0);
+      expect(v.droppedTargets).toHaveLength(1);
+      expect(v.droppedTargets[0]?.planTarget).toBe('P-001');
+      expect(v.droppedTargets[0]?.vouchedByStaleAudit).toBe(true);
+    });
+
+    it('does NOT loosen a dropped target that has no verifying citation', () => {
+      // The dropped targets that fail today must keep failing; the report is additive.
+      const v = judge({
+        mappings: [mapping({ planTargets: ['P-001'] })],
+        itemAudits: [itemAudit('P-001', [DOC])],
+        planItems: [planItem('P-001', 'dropped')],
+      });
+      expect(v.ok).toBe(false);
+      expect(v.unrealized[0]?.reason).toBe('no-verifying-citation');
+      expect(v.droppedTargets[0]?.vouchedByStaleAudit).toBe(false);
+    });
+
+    it('leaves a mapping with a live verified sibling passing, reporting only the dropped one', () => {
+      const v = judge({
+        mappings: [mapping({ planTargets: ['P-001', 'P-002'] })],
+        itemAudits: [itemAudit('P-001', [CODE]), itemAudit('P-002', [TEST])],
+        planItems: [planItem('P-001', 'dropped'), planItem('P-002', 'done')],
+      });
+      expect(v.ok).toBe(true);
+      expect(v.droppedTargets.map((d) => d.planTarget)).toEqual(['P-001']);
+    });
+
+    it('never applies liveness to a non-item target — a D-NNN is exempt, not missing', () => {
+      // A `D-NNN` is never in plan_items, so a naive liveness check would convict every
+      // decision-terminated mapping. It must stay on the exemption path (D-035).
+      const v = judge({
+        mappings: [mapping({ planTargets: ['D-011'] })],
+        itemAudits: [],
+        planItems: [planItem('P-001', 'done')],
+      });
+      expect(v.ok).toBe(true);
+      expect(v.unrealized).toHaveLength(0);
+      expect(v.exemptMappings).toHaveLength(1);
+    });
+
+    it('does not report a dropped target for a non-realizing disposition', () => {
+      const v = judge({
+        mappings: [mapping({ disposition: 'rejected', planTargets: ['P-001'] })],
+        itemAudits: [],
+        planItems: [planItem('P-001', 'dropped')],
+      });
+      expect(v.ok).toBe(true);
+      expect(v.droppedTargets).toHaveLength(0);
+    });
+
+    it('describeUnrealized explains a missing target in repair terms', () => {
+      const v = judge({
+        mappings: [mapping({ planTargets: ['P-001'] })],
+        itemAudits: [itemAudit('P-001', [CODE])],
+        planItems: [planItem('P-002', 'done')],
+      });
+      const line = describeUnrealized(v.unrealized[0]!);
+      expect(line).toContain('P-001');
+      expect(line).toContain('the plan no longer contains this item');
+    });
+
+    it('describeDroppedTarget names the target and whether a stale citation still vouches', () => {
+      const v = judge({
+        mappings: [mapping({ planTargets: ['P-001'] })],
+        itemAudits: [itemAudit('P-001', [CODE])],
+        planItems: [planItem('P-001', 'dropped')],
+      });
+      const line = describeDroppedTarget(v.droppedTargets[0]!);
+      expect(line).toContain('M-001');
+      expect(line).toContain('P-001');
+      expect(line).toContain('dropped');
+      expect(line).toContain('still vouched by a pre-drop verifying citation');
     });
   });
 });

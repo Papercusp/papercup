@@ -57,6 +57,7 @@ import {
 import {
   describeUnrealized,
   judgeRequirementRealization,
+  type DroppedTarget,
   type ExemptMapping,
 } from './plan-requirement-realization';
 import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
@@ -128,6 +129,19 @@ export interface PlanAcceptanceGateVerdict {
    * means there is something to look at.
    */
   requirementExemptions?: ExemptMapping[];
+  /**
+   * P-016 / D-040: realizing requirement mappings routed to a plan item that is still
+   * present but `dropped`. Present on a SATISFIED verdict, and deliberately not a
+   * refusal: dropping is the recorded exit D-002 provides, and a mapping naming several
+   * targets can be genuinely absorbed by a live sibling.
+   *
+   * What it exists to make visible is the pairing the gate could not see before —
+   * `vouchedByStaleAudit`, a dropped item whose PRE-DROP verifying citation is still
+   * carried forward by the all-passes audit fold and is still satisfying the coverage
+   * claim. Measured 2026-09-03: 28 of 83 dropped targets fleet-wide. Omitted entirely
+   * when there are none, so its presence always means there is something to look at.
+   */
+  requirementDroppedTargets?: DroppedTarget[];
   /** Why the gate refused (satisfied:false). */
   code?: PlanAcceptanceGateCode;
   /** Teaching message for the refusal — the authoring/grading nudge (P-004). */
@@ -426,6 +440,9 @@ export async function evaluatePlanAcceptanceGate(
   // D-035: collected in the nested code-truth block below and read at the final return,
   // so it is declared at function scope alongside forcedChecks for the same reason.
   let requirementExemptions: ExemptMapping[] = [];
+  // P-016/D-040: same reason as requirementExemptions above — collected in the nested
+  // code-truth block and read at the final return.
+  let requirementDroppedTargets: DroppedTarget[] = [];
   /**
    * EI-22181490624100467 — repo-relative paths of the code/test citations the
    * code-truth audit actually rests on, collected as they are re-resolved below so
@@ -667,11 +684,20 @@ export async function evaluatePlanAcceptanceGate(
         const realization = judgeRequirementRealization({
           mappings: activationMappings,
           itemAudits: effectiveAudits,
+          // P-016 / D-040: without this the judge resolves every `P-NNN` target against
+          // the folded audit alone, which spans all passes and is never filtered by the
+          // plan's current items — so an item deleted from the plan keeps vouching for
+          // the requirement routed to it. `items` is the same list the drift loop above
+          // used, and its empty-on-read-failure case is handled inside the judge.
+          planItems: items,
         });
         // D-035: capture the exemption BEFORE the refusal branch. These mappings are not
         // violations and must never gate — but they were previously computed and dropped,
         // so nothing ever saw the population that passed by not being judged at all.
         requirementExemptions = realization.exemptMappings;
+        // P-016 / D-040: likewise captured before the refusal branch — a dropped target is
+        // reported, never a violation, so it must survive a SATISFIED verdict.
+        requirementDroppedTargets = realization.droppedTargets;
         if (!realization.ok) {
           if (force) {
             forcedChecks.push('requirement_unrealized');
@@ -1106,6 +1132,7 @@ export async function evaluatePlanAcceptanceGate(
     ...(vettedUnderWaiver ? { vettedUnderWaiver } : {}),
     ...(specCoverage ? { specCoverage } : {}),
     ...(requirementExemptions.length > 0 ? { requirementExemptions } : {}),
+    ...(requirementDroppedTargets.length > 0 ? { requirementDroppedTargets } : {}),
     gradedBy: independent.createdBy ?? null,
     gradedVia: independentVia,
     ...(unknownRatedCriteria.length > 0 ? { unknownRatedCriteria } : {}),
