@@ -4,21 +4,24 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Tool catalog
-description: Every projected tool — built-in (defineTool) and plugin-contributed — exposed across HTTP and MCP transports. Counts in this page are approximate snapshots; agents should use `agent_tools:list` for the live, role-filtered view.
+title: "Tool catalog"
+description: "Every projected tool — built-in (defineTool) and plugin-contributed — exposed across HTTP and MCP transports. Counts in this page are approximate snapshots; agents should use `agent_tools:list` for the live, role-filtered view."
+type: Insight
+discovered: 2026-09-03
+status: active
+documents:
+  - "scripts/gen-tool-catalog.ts"
+  - "scripts/gen-doc-tool-catalog.ts"
+  - "packages/agent-mcp/src/tools"
+  - "packages/operator-core/lib/agent-tools"
+plans:
+  - "plugin-mcp-migration-brief-2026-05-10"
+  - "endpoint-route-migration-2026-05-20"
+  - "fumadocs-to-starlight-2026-05-20"
+  - "starlight-projection-generators-2026-06-05"
+  - "docs-and-memory-as-projections-2026-06-05"
 sidebar:
   order: 13
-plans:
-  - plugin-mcp-migration-brief-2026-05-10
-  - endpoint-route-migration-2026-05-20
-  - fumadocs-to-starlight-2026-05-20
-  - starlight-projection-generators-2026-06-05
-  - docs-and-memory-as-projections-2026-06-05
-documents:
-  - scripts/gen-tool-catalog.ts
-  - scripts/gen-doc-tool-catalog.ts
-  - packages/agent-mcp/src/tools
-  - packages/operator-core/lib/agent-tools
 ---
 
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
@@ -126,10 +129,10 @@ Code-graph queries proxied to a long-lived `gitnexus mcp` subprocess. Tools regi
 |---|---|
 | `gitnexus.list_repos` | List indexed repos with stats (files, nodes, edges, communities, processes) |
 | `gitnexus.context` | Repo overview + entrypoints |
-| `gitnexus.query` | Natural-language query → ranked processes + symbols + timing |
+| `gitnexus.query` | Natural-language query — returns **UNRANKED** results: D-021 measured ~20 confident-looking rows for a nonsense symbol, and a wrong argument name yields byte-identical output, proving the search term is never applied. See [code-intelligence-backends-runbook §3.1](/internal/docs/agent-insights/code-intelligence-backends-runbook) before relying on ordering. |
 | `gitnexus.cypher` | Raw Cypher against the graph |
 | `gitnexus.detect_changes` | Diff vs last index, surface impacted regions |
-| `gitnexus.impact` | Find downstream impact of a symbol/file |
+| `gitnexus.impact` | Find downstream impact of a symbol/file — an unrecognized `direction` silently falls back to `downstream` and self-reports `epistemic:"exact"` (WI-2142910); for "who calls this" use `graph:query { op:'callers' }` instead. |
 | `gitnexus.api_impact` | API-surface change impact |
 | `gitnexus.route_map` | HTTP routes + handlers |
 | `gitnexus.tool_map` | MCP tools + handlers |
