@@ -692,11 +692,17 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
         safeAction:
           'Read each row\'s `reading` before fixing anything. A row saying nothing else moved is real work — fix it so the fix lands ON TOP of the frozen candidate. A row that hedges needs `testing:run` on that ONE file at repairHead FIRST; measured 2026-09-02, all 3 such rows were already fixed and re-fixing them was wasted work. Never cut a fresh candidate to "try again".',
       },
+      'non-test-leg-failing': {
+        meaning:
+          'No test file is still broken, but a NON-TEST leg (lint / perf / desktop / delta) is red on this candidate and its fix has not landed — `nonTestLegs.outstanding` names it. Before P-007 (main-green-status-visible-2026-09-03) this shape rendered as `none-failing`: the verdict counted only test files, so a gate wedged on a lint leg read "nothing failing" on the one cell whose job is to say what is failing.',
+        safeAction:
+          'Repair the NAMED leg — make THAT LEG pass on top of the frozen candidate (a path match is not evidence about a leg, D-005). Read `nonTestLegs.perLeg[].reading` for each outstanding id; `stillBrokenCount: 0` beside this code is a fact about test files only, never an all-clear. Never cut a fresh candidate to "try again".',
+      },
       'none-failing': {
         meaning:
-          'No file failed in the radius the gate judged for this candidate. ⚠ THE RADIUS IS NOT THE SUITE — see `scope`.',
+          'No file failed in the radius the gate judged for this candidate, AND no measured non-test leg is red. ⚠ THE RADIUS IS NOT THE SUITE — see `scope`. And `nonTestLegsMeasured: "not-recorded"` beside this code means the legs were never LOOKED AT, which is not the same as "no legs failing" (P-012).',
         safeAction:
-          'Do NOT report "the gate is green". Check `nonTestLegs.perLeg` (WHICH leg, by name) and the main fast-forward; a passing affected-tests leg is not a green gate. `nonTestLegsMeasured: "not-recorded"` means no leg measurement exists — it is NOT "no legs failing".',
+          'Do NOT report "the gate is green". Check `nonTestLegsMeasured` (was any leg measured at all?), `nonTestLegs.perLeg` (WHICH leg, by name) and the main fast-forward; a passing affected-tests leg is not a green gate.',
       },
     },
     evidence: [
