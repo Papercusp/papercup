@@ -1622,3 +1622,116 @@ describe('WI-42354: the generation store is born un-committable', () => {
     expect(git('status', '--porcelain').stdout.trim()).toBe('');
   }, NATIVE_SHELL_TIMEOUT_MS);
 });
+
+// The publish lock is documented as "short", and its waiter used to give up after a
+// fixed 300 attempts (30s) and return 73 — which every one of its six call sites
+// propagates as a hard failure. That combination is a BOUNDED waiter against an
+// UNBOUNDED holder: acquire()'s retry loop calls cleanup_abandoned on EVERY failed
+// mkdir, so a same-host lock whose writer PID is dead is reclaimed within one 0.1s
+// tick. The budget is therefore never spent on an abandoned lock — it can only ever
+// be reached while the holder is genuinely ALIVE, doing legitimate work (the
+// full-tree validation walk on the replacement/removal race, or a retention prune),
+// which on a multi-GB generation runs for minutes. Reaching it crashed the caller
+// outright: green-checkpoint recorded `inconclusive: error` and never ran a suite.
+describe('dependency-generation publish-lock waiter', () => {
+  function publishLockScenario(
+    scenario: 'dead-writer' | 'live-then-release' | 'live-holder',
+    env: Record<string, string> = {},
+    timeoutMs?: number,
+  ): ShellResult & { signal: NodeJS.Signals | null } {
+    const root = mkdtempSync(join(tmpdir(), 'papercusp-publish-lock-'));
+    roots.push(root);
+    const wrapper = [
+      'set -uo pipefail',
+      'source "$SCRIPT"',
+      'lock="$ROOT/.publish-lock"',
+      'mkdir "$lock"',
+      // Every background holder gets its OWN stdio. Inheriting the pipes makes an
+      // orphaned holder outlive the spawnSync timeout still holding them open, so
+      // the parent blocks on EOF long after the child was killed — the run then
+      // takes ~40s per timeout case instead of the budget under test.
+      'case "$SCENARIO" in',
+      // A pid we have already reaped is definitively dead, so cleanup_abandoned
+      // must reclaim it rather than the waiter burning its budget on it.
+      '  dead-writer) sleep 0 </dev/null >/dev/null 2>&1 & holder=$!; wait "$holder" 2>/dev/null || true ;;',
+      '  live-then-release) sleep 300 </dev/null >/dev/null 2>&1 & holder=$!; ( sleep 2; rm -rf -- "$lock" ) </dev/null >/dev/null 2>&1 & ;;',
+      '  live-holder) sleep 45 </dev/null >/dev/null 2>&1 & holder=$! ;;',
+      'esac',
+      'printf "host=%s\\npid=%s\\nstarted=%s\\n" \\',
+      '  "$(dependency_generation_host)" "$holder" "$(date +%s)" > "$lock/writer"',
+      'if dependency_generation_acquire_publish_lock "$ROOT"; then',
+      '  printf "ACQUIRED\\n"',
+      'else',
+      '  printf "FAILED rc=%s\\n" "$?"',
+      'fi',
+      'kill "$holder" 2>/dev/null || true',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8',
+      timeout: timeoutMs,
+      env: { ...process.env, SCRIPT, ROOT: root, SCENARIO: scenario, ...env },
+    });
+    return {
+      status: result.status,
+      signal: result.signal,
+      stdout: String(result.stdout ?? ''),
+      stderr: String(result.stderr ?? ''),
+    };
+  }
+
+  it('reclaims a lock whose writer PID is dead instead of waiting out the budget', () => {
+    // This is the premise that makes a generous budget safe: an abandoned lock is
+    // never what the waiter is waiting for. A 1s budget is far too short to outlast
+    // anything, so acquiring proves the reclaim path ran, not that we waited it out.
+    const result = publishLockScenario('dead-writer', {
+      DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC: '1',
+    });
+    expect(result.stdout).toContain('ACQUIRED');
+    expect(result.stderr).toContain('quarantined abandoned publish lock');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('waits for a LIVE holder and acquires the lock once it is released', () => {
+    const result = publishLockScenario('live-then-release', {
+      DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC: '30',
+    });
+    expect(result.stdout).toContain('ACQUIRED');
+    expect(result.stdout).not.toContain('FAILED');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('honours the configured budget and NAMES the live holder when it times out', () => {
+    // A bare "timed out" left the reader unable to tell contention from a wedged
+    // writer; the message must identify who held it and for how long.
+    const result = publishLockScenario('live-holder', {
+      DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC: '1',
+    });
+    expect(result.stdout).toContain('FAILED rc=73');
+    expect(result.stderr).toContain(
+      'FATAL: timed out waiting for the short dependency-generation publish lock after 1s',
+    );
+    expect(result.stderr).toMatch(/holder host=\S+ pid=\d+ held=\d+s/);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('falls back to the default budget when the override is not a number', () => {
+    // A non-numeric override must not degrade to 0 attempts (an instant exit 73).
+    const result = publishLockScenario(
+      'live-holder',
+      { DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC: 'not-a-number' },
+      5_000,
+    );
+    expect(result.stdout).not.toContain('FAILED');
+    expect(result.signal).toBe('SIGTERM');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('THE REGRESSION: the default budget outlasts the old 30s hard-fail', () => {
+    // Directly falsifies the pre-fix behaviour. With a live holder and no override,
+    // the waiter must STILL be waiting after 30s rather than having returned 73 —
+    // and its progress heartbeat must name the resolved default, so this asserts the
+    // magnitude behaviourally instead of regex-matching the constant in the source.
+    const result = publishLockScenario('live-holder', {}, 33_000);
+    expect(result.stdout).not.toContain('FAILED');
+    expect(result.signal).toBe('SIGTERM');
+    expect(result.stderr).toContain(
+      'still waiting for the dependency-generation publish lock after 30s of 900s',
+    );
+  }, NATIVE_SHELL_TIMEOUT_MS);
+});

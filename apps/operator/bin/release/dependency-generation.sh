@@ -839,15 +839,55 @@ dependency_generation_write_owner() {
     "$(dependency_generation_host)" "$$" "$(date +%s)" > "$marker"
 }
 
+# Name the current holder, so a timeout distinguishes ordinary contention from
+# a wedged writer instead of leaving the reader to guess from a bare "timed out".
+dependency_generation_publish_lock_holder() {
+  local lock="$1" marker="$1/writer" host pid started now
+  if [ ! -f "$marker" ]; then
+    [ -d "$lock" ] || { printf 'released-during-wait'; return 0; }
+    printf 'unknown-writer'
+    return 0
+  fi
+  host="$(dependency_generation_read_field "$marker" host)"
+  pid="$(dependency_generation_read_field "$marker" pid)"
+  started="$(dependency_generation_read_field "$marker" started)"
+  case "$started" in
+    ''|*[!0-9]*) printf 'host=%s pid=%s' "${host:-?}" "${pid:-?}" ; return 0 ;;
+  esac
+  now="$(date +%s)"
+  printf 'host=%s pid=%s held=%ss' "${host:-?}" "${pid:-?}" "$((now - started))"
+}
+
+# The retry loop below calls cleanup_abandoned on EVERY failed mkdir, and that
+# reclaims a same-host lock whose writer PID is dead within one 0.1s tick. So
+# this budget is never spent waiting on an abandoned lock: it is only ever
+# reached while the holder is genuinely ALIVE (or is a foreign-host writer,
+# which writer_is_live preserves fail-closed on purpose). A live holder may
+# legitimately be inside the full-tree validation walk taken on the
+# replacement/removal race, or a retention prune — both of which run for
+# minutes on a multi-GB generation. The old 300-attempt (30s) budget was
+# therefore a BOUNDED waiter against an UNBOUNDED holder, and turned ordinary
+# contention into a hard exit 73 that crashed the caller outright:
+# green-checkpoint recorded `inconclusive: error` and never ran a suite at all.
+# Wait long enough to outlast a legitimate hold, log progress so a long wait is
+# not mistaken for a hang, and name the holder if it really does time out.
 dependency_generation_acquire_publish_lock() {
-  local generation_root="$1" lock attempts=0
+  local generation_root="$1" lock attempts=0 max_attempts timeout_sec
+  timeout_sec="${DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC:-900}"
+  case "$timeout_sec" in
+    ''|*[!0-9]*) timeout_sec=900 ;;
+  esac
+  max_attempts=$((timeout_sec * 10))
   lock="$generation_root/.publish-lock"
   while ! mkdir "$lock" 2>/dev/null; do
     dependency_generation_cleanup_abandoned "$generation_root"
     attempts=$((attempts + 1))
-    if [ "$attempts" -ge 300 ]; then
-      dependency_generation_log 'FATAL: timed out waiting for the short dependency-generation publish lock'
+    if [ "$attempts" -ge "$max_attempts" ]; then
+      dependency_generation_log "FATAL: timed out waiting for the short dependency-generation publish lock after ${timeout_sec}s (holder $(dependency_generation_publish_lock_holder "$lock"))"
       return 73
+    fi
+    if [ $((attempts % 300)) -eq 0 ]; then
+      dependency_generation_log "still waiting for the dependency-generation publish lock after $((attempts / 10))s of ${timeout_sec}s (holder $(dependency_generation_publish_lock_holder "$lock"))"
     fi
     sleep 0.1
   done
