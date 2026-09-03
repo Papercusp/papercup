@@ -31,10 +31,10 @@ agent-chat  flags  generic  holepunch-spike  host-platform  marketplace-public-u
 ```
 </details>
 
-<details><summary><code>packages/</code> — 10 entries</summary>
+<details><summary><code>packages/</code> — 11 entries</summary>
 
 ```
-agent-mcp  backup  coordination  docs-engine  omp-plugin  operator-core  plugin-loader  plugin-sdk  plugin-wit  tooldef-mcp
+agent-mcp  backup  coordination  docs-engine  omp-plugin  operator-core  operator-ui  plugin-loader  plugin-sdk  plugin-wit  tooldef-mcp
 ```
 </details>
 

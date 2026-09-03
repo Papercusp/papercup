@@ -988,6 +988,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/check-scope-defaults.mjs: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
   },
   {
+    path: "scripts/check-submodule-coverage-ignore.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/check-submodule-coverage-ignore.mjs (found by the gate on the frozen candidate, WI-212675): its only start is ONE synchronous, awaited `execFileSync('git', ['check-ignore', '-q', <probe path>])` per invocation — a CI/guard helper probing whether the coverage sentinel is gitignored. It is bounded by the single probe, holds no resident queue, and must remain runnable while productive capacity is pressured because it is part of the release gate's own lint leg.",
+  },
+  {
     path: "scripts/check-sidecar-fallback-reported.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",
