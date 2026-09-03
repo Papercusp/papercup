@@ -13,13 +13,16 @@ const queue = {
   fixerSpawnId: 'fixer-1',
   failingTests: ['lib/red.test.ts'],
 };
+const NEW_HEAD = 'd'.repeat(40);
 const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   retire: vi.fn(),
   write: vi.fn(),
   alive: vi.fn(),
   audit: vi.fn(),
-  assessConverge: vi.fn(),
+  admit: vi.fn(),
+  retract: vi.fn(),
+  containment: vi.fn(),
 }));
 vi.mock('../../harness/routines/release-actions', () => ({
   readFrozenCandidateRepairQueue: mocks.read,
@@ -27,13 +30,39 @@ vi.mock('../../harness/routines/release-actions', () => ({
   writeFrozenCandidateRepairQueue: mocks.write,
 }));
 vi.mock('../../release/fixer-liveness', () => ({ releaseFixerSpawnAlive: mocks.alive }));
-vi.mock('../../release/converge-repair-head', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../release/converge-repair-head')>()),
-  assessConvergeRepairHead: mocks.assessConverge,
+vi.mock('../../release-deploy-launch', () => ({ integrationRoot: () => '/repo' }));
+vi.mock('../../release/judged-sha-containment', () => ({
+  integrationBranch: () => 'staging',
+  containmentForPaths: mocks.containment,
+}));
+vi.mock('../../release/repair-head-admission', () => ({
+  admitPathsOntoRepairHead: mocks.admit,
+  retractAdmission: mocks.retract,
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-1' }));
 vi.mock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
-vi.mock('../locks/identity', () => ({ readIdentity: async () => ({ ownerId: 'su-test' }) }));
+vi.mock('../locks/identity', () => ({ readIdentity: () => ({ ownerId: 'su-test' }) }));
+
+/** What the P-001 primitive returns for a clean single-path admission onto the fixture queue. */
+const admissionOf = (published: boolean, paths = ['lib/red.test.ts']) => ({
+  ok: true as const,
+  commit: NEW_HEAD,
+  tree: 't'.repeat(40),
+  diff: paths,
+  unchanged: [] as string[],
+  lineageRef: `refs/papercusp/frozen/${'a'.repeat(40)}`,
+  published,
+  entry: {
+    atMs: 10,
+    actor: 'su-test',
+    source: { ref: 'staging', sha: 'e'.repeat(40) },
+    fromRepairHead: 'c'.repeat(40),
+    toRepairHead: NEW_HEAD,
+    paths,
+    unchanged: [] as string[],
+    blobs: Object.fromEntries(paths.map((p) => [p, 'f'.repeat(40)])),
+  },
+});
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: { unsafe: mocks.audit } }),
@@ -51,6 +80,11 @@ beforeEach(() => {
   mocks.alive.mockResolvedValue(false);
   mocks.retire.mockResolvedValue({ retired: true, current: null });
   mocks.audit.mockResolvedValue([]);
+  mocks.write.mockResolvedValue(undefined);
+  mocks.retract.mockReturnValue(true);
+  mocks.containment.mockImplementation((paths: string[], judgedSha: string) =>
+    paths.map((path) => ({ path, containedInJudgedSha: judgedSha === NEW_HEAD, judgedBlob: null, stagingBlob: null })),
+  );
 });
 
 describe('release:repair-queue', () => {
@@ -76,7 +110,7 @@ describe('release:repair-queue', () => {
     // decision is `recover-dead-fixer`. The tool must surface the safe verb, not a
     // paste-ready call that would destroy a queue the gate is about to recover.
     expect(result.repairQueue.nextAction).not.toContain('expectedUpdatedAtMs: 2');
-    expect(result.repairQueue.nextAction).toContain("op: 'converge'");
+    expect(result.repairQueue.nextAction).toContain("op: 'admit'");
     expect(result.callerAuthorization).toMatchObject({
       status: 'not-applicable',
       authorized: null,
@@ -127,26 +161,171 @@ describe('release:repair-queue', () => {
     });
   });
 
+  // ---- admit: THE door onto the judged lineage (P-002 / D-004 / D-010) -------------------
+
+  it('admit REFUSES without paths, touching neither git nor the row — an admission is by explicit allowlist', async () => {
+    const result = body(await tool.handler({ op: 'admit' } as never, { role: 'su' } as never));
+    expect(result).toMatchObject({ ok: false, op: 'admit', refused: true, reason: 'paths_required', admitted: false });
+    expect(mocks.admit).not.toHaveBeenCalled();
+    expect(mocks.write).not.toHaveBeenCalled();
+  });
+
+  it('admit reports no-frozen-queue when nothing is frozen, and builds nothing', async () => {
+    mocks.read.mockResolvedValue(null);
+    const result = body(
+      await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never),
+    );
+    expect(result).toMatchObject({ ok: true, op: 'admit', verdict: 'no-frozen-queue', admitted: false });
+    expect(result.nextAction).toMatch(/Do not fire release:checkpoint-run/);
+    expect(mocks.admit).not.toHaveBeenCalled();
+  });
+
+  it('dry run: the primitive builds + proves with dryRun:true onto the CURRENT repairHead, and nothing is published or persisted', async () => {
+    mocks.admit.mockReturnValue(admissionOf(false));
+    const result = body(
+      await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never),
+    );
+    expect(mocks.admit).toHaveBeenCalledTimes(1);
+    expect(mocks.admit.mock.calls[0]![0]).toMatchObject({
+      root: '/repo',
+      candidate: queue.candidate,
+      repairHead: queue.repairHead,
+      paths: ['lib/red.test.ts'],
+      source: { ref: 'staging' },
+      actor: 'su-test',
+      dryRun: true,
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      op: 'admit',
+      dryRun: true,
+      admitted: false,
+      verdict: 'would-admit',
+      judgedSha: queue.repairHead,
+      wouldMoveRepairHead: { from: queue.repairHead, to: NEW_HEAD },
+      proof: { diff: ['lib/red.test.ts'], unchanged: [] },
+    });
+    expect(result.note).toMatch(/confirm:true/);
+    expect(mocks.write).not.toHaveBeenCalled();
+    expect(mocks.retract).not.toHaveBeenCalled();
+  });
+
+  it('confirm:true publishes, marks the queue ADMITTED (repairHead moved, phase ready-to-verify, ledger entry), persists and audits', async () => {
+    mocks.admit.mockReturnValue(admissionOf(true));
+    const result = body(
+      await tool.handler(
+        { op: 'admit', paths: ['lib/red.test.ts'], confirm: true, reason: 'gate red on this file' } as never,
+        { role: 'su' } as never,
+      ),
+    );
+    expect(mocks.admit.mock.calls[0]![0]).toMatchObject({ dryRun: false, reason: 'gate red on this file' });
+    expect(mocks.write).toHaveBeenCalledTimes(1);
+    const [target, written] = mocks.write.mock.calls[0]!;
+    expect(target).toEqual({ workspaceId: 'ws-1', installSlug: 'papercusp' });
+    expect(written).toMatchObject({
+      candidate: queue.candidate,
+      repairHead: NEW_HEAD,
+      phase: 'ready-to-verify',
+      admissions: [{ fromRepairHead: queue.repairHead, toRepairHead: NEW_HEAD, paths: ['lib/red.test.ts'] }],
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      op: 'admit',
+      admitted: true,
+      verdict: 'admitted',
+      persisted: true,
+      auditRecorded: true,
+      judgedSha: NEW_HEAD,
+      movedRepairHead: { from: queue.repairHead, to: NEW_HEAD },
+      repairQueue: { repairHead: NEW_HEAD, phase: 'ready-to-verify' },
+    });
+    // Containment is reported against the NEW judged sha, where the path is now carried.
+    expect(result.containment).toEqual([expect.objectContaining({ path: 'lib/red.test.ts', containedInJudgedSha: true })]);
+    expect(result.nextAction).toMatch(/Do NOT fire release:checkpoint-run/);
+    expect(mocks.retract).not.toHaveBeenCalled();
+    // The audit row names the admission, never a tip.
+    const auditDetails = JSON.parse(mocks.audit.mock.calls[0]![1][5]);
+    expect(auditDetails).toMatchObject({ op: 'admit', from: queue.repairHead, to: NEW_HEAD, paths: ['lib/red.test.ts'], persisted: true });
+  });
+
+  it('a queue-row write failure RETRACTS the published lineage ref so ref and row cannot disagree', async () => {
+    mocks.admit.mockReturnValue(admissionOf(true));
+    mocks.write.mockRejectedValue(new Error('pg down'));
+    const result = body(
+      await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+    );
+    expect(mocks.retract).toHaveBeenCalledWith({
+      root: '/repo',
+      candidate: queue.candidate,
+      published: NEW_HEAD,
+      previousRepairHead: queue.repairHead,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      admitted: false,
+      refused: true,
+      reason: 'persist_failed',
+      persisted: false,
+      judgedSha: queue.repairHead,
+    });
+    expect(result.note).toMatch(/retracted/);
+  });
+
+  it('a primitive refusal (stray-paths) is surfaced verbatim and nothing is written', async () => {
+    mocks.admit.mockReturnValue({
+      ok: false,
+      code: 'stray-paths',
+      stray: ['lib/other.ts'],
+      detail: 'REFUSED: the built admission touches 1 path(s) outside the allowlist',
+    });
+    const result = body(
+      await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      refused: true,
+      verdict: 'refused',
+      reason: 'stray-paths',
+      stray: ['lib/other.ts'],
+      judgedSha: queue.repairHead,
+    });
+    expect(mocks.write).not.toHaveBeenCalled();
+  });
+
+  it('nothing-to-admit reads as already-admitted: idempotent, ok:true, no write', async () => {
+    mocks.admit.mockReturnValue({ ok: false, code: 'nothing-to-admit', detail: 'every named path already has its staging content' });
+    const result = body(
+      await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+    );
+    expect(result).toMatchObject({ ok: true, admitted: false, verdict: 'already-admitted', judgedSha: queue.repairHead });
+    expect(mocks.write).not.toHaveBeenCalled();
+  });
+
+  it("converge is an ALIAS of admit — same door, same semantics, result op:'admit'", async () => {
+    mocks.admit.mockReturnValue(admissionOf(true));
+    const result = body(
+      await tool.handler({ op: 'converge', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+    );
+    expect(result).toMatchObject({ ok: true, op: 'admit', verdict: 'admitted', admitted: true });
+    expect(mocks.admit.mock.calls[0]![0]).toMatchObject({ paths: ['lib/red.test.ts'], dryRun: false });
+    // The alias never fast-forwards: the only head it can produce is the primitive's commit.
+    expect(result.movedRepairHead).toEqual({ from: queue.repairHead, to: NEW_HEAD });
+  });
+
   // EI-22208176411693669: assessFrozenRepairFixerAuthorization correctly labels the
   // SU-bearer transport 'not-applicable' (never 'authorized-delegate') because that
   // transport carries no verified per-spawn signature regardless of its cosmetic
-  // ?role= catalog hint. But the converge write-gate is a SEPARATE `if` a few lines
+  // ?role= catalog hint. But the admit write-gate is a SEPARATE `if` a few lines
   // below callerAuthorization, and before this fix it independently required
   // role==='su' OR an OPERATOR_CONFIG_WRITE_ROLE OR authorized===true — none of which
   // a superuser caller whose ?role= was forwarded as 'release-fixer' satisfied — so it
-  // was thrown out of convergence even though dispatch on that transport is already
-  // unconditional. This pins that the write-gate itself, not just the label, bypasses.
-  it('EI-22208176411693669: an isSuperuser caller may converge even when its cosmetic role hint is release-fixer', async () => {
-    mocks.assessConverge.mockReturnValue({
-      verdict: 'would-converge',
-      newRepairHead: 'd'.repeat(40),
-      judgedSha: 'd'.repeat(40),
-      nextAction: null,
-    });
-    mocks.write.mockResolvedValue(undefined);
+  // was thrown out even though dispatch on that transport is already unconditional.
+  // This pins that the write-gate itself, not just the label, bypasses.
+  it('EI-22208176411693669: an isSuperuser caller may admit even when its cosmetic role hint is release-fixer', async () => {
+    mocks.admit.mockReturnValue(admissionOf(true));
     const result = body(
       await tool.handler(
-        { op: 'converge', confirm: true } as never,
+        { op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never,
         {
           role: 'release-fixer',
           isSuperuser: true,
@@ -155,7 +334,7 @@ describe('release:repair-queue', () => {
         } as never,
       ),
     );
-    expect(result).toMatchObject({ ok: true, converged: true, persisted: true });
+    expect(result).toMatchObject({ ok: true, admitted: true, persisted: true });
     expect(result.callerAuthorization).toMatchObject({ status: 'not-applicable', authorized: null });
     expect(mocks.write).toHaveBeenCalled();
   });
@@ -164,16 +343,10 @@ describe('release:repair-queue', () => {
   // queue-delegated fixer must still be refused. This is what proves the fix bypasses
   // on isSuperuser specifically, rather than having widened the gate for every
   // release-fixer-labelled caller.
-  it('control: a non-superuser caller with an unverified or mismatched release-fixer identity is still refused convergence', async () => {
-    mocks.assessConverge.mockReturnValue({
-      verdict: 'would-converge',
-      newRepairHead: 'd'.repeat(40),
-      judgedSha: 'd'.repeat(40),
-      nextAction: null,
-    });
+  it('control: a non-superuser caller with an unverified or mismatched release-fixer identity is still refused admission', async () => {
     await expect(
       tool.handler(
-        { op: 'converge', confirm: true } as never,
+        { op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never,
         {
           role: 'release-fixer',
           isSuperuser: false,
@@ -182,6 +355,7 @@ describe('release:repair-queue', () => {
         } as never,
       ),
     ).rejects.toThrow(/requires operator, architect, mug, su/);
+    expect(mocks.admit).not.toHaveBeenCalled();
     expect(mocks.write).not.toHaveBeenCalled();
   });
 
@@ -260,7 +434,7 @@ describe('release:repair-queue', () => {
     // and checkpoint-run is NOT the lever to restart it.
     expect(retired.nextStep).toMatch(/re-?freez/i);
     expect(retired.nextStep).toMatch(/release:checkpoint-run/);
-    expect(retired.nextStep).toMatch(/converge/);
+    expect(retired.nextStep).toMatch(/op: "admit"/);
 
     // CONTROL — the assertions above are all "field is present and matches", so they
     // would pass just as well if `nextStep` were emitted unconditionally on every
