@@ -174,37 +174,64 @@ function minutes(ms: number | null): number | null {
  *    matching `argsCarryConditionalKey`. The `jsonb_typeof` guard keeps
  *    `jsonb_array_elements` off a scalar, which would otherwise raise and turn
  *    the whole read into `ledger-unreadable`.
- *  • `notValue` — the act is the DEFAULT and one named value opts out, so the
- *    row matches unless the key is present with that exact value. `->` yields SQL
- *    NULL for an absent key, and `IS DISTINCT FROM` is what makes that NULL read
- *    as "not the opt-out value" instead of collapsing the whole leg to NULL the
- *    way a bare `<>` would — which is the false-IDLE direction, again.
+ *  • `default-act` — the act is the DEFAULT and named clauses opt out, so the row
+ *    matches unless one of them holds. A VALUED clause is equality on the raw
+ *    jsonb; a VALUELESS one is truthiness, spelled as the four falsy JSON
+ *    literals so it means exactly what `optOutHolds`'s `Boolean(v)` means.
  *
- * ⚠ The `jsonb_typeof(ti.args_json) = 'object'` guard on the `notValue` leg is
+ * ⚠ The `jsonb_typeof(ti.args_json) = 'object'` guard on the default-act leg is
  * the SQL half of `argsSatisfyConditionalAct`'s conservative floor, and it is
  * load-bearing rather than defensive: a row whose `args_json` is NULL or a scalar
- * has no key, so without it `-> key IS DISTINCT FROM value` is TRUE and every
- * argument-less row would score as an act. `jsonb_typeof(NULL)` is NULL, so the
- * one guard covers both shapes.
+ * has no keys, so no opt-out clause can hold and EVERY argument-less row would
+ * score as an act. `jsonb_typeof(NULL)` is NULL, so the one guard covers both
+ * shapes.
+ *
+ * ⚠⚠ EVERY CLAUSE MUST BE NULL-SAFE, and this is the trap that actually bit —
+ * caught only by EXECUTING the predicate, because a test that pins the rendered
+ * SQL text agrees with a query that returns the wrong rows.
+ *
+ * `->` yields SQL NULL for an absent key, and three-valued logic then eats the
+ * whole leg in BOTH obvious spellings:
+ *   • `key <> value`                → NULL for an absent key.
+ *   • `NOT (key = value OR …)`      → `NOT (NULL OR false)` → NULL.
+ * Either way the row is not counted, and the DEFAULT filing — a capture with no
+ * `lane` at all, i.e. the single most common real act — silently scores zero.
+ * That is the exact false-IDLE bug this entry exists to fix, reintroduced one
+ * layer down. Measured before the fix: 9 capture calls in the motivating window
+ * scored 0 acts, not 5.
+ *
+ * So the valued clause is `IS NOT DISTINCT FROM` (NULL-safe equality: an absent
+ * key is cleanly NOT the opt-out value), and the truthy clause guards with
+ * `IS NOT NULL AND` before its `NOT IN`. Both then return a strict boolean, which
+ * is what makes the enclosing `NOT (… OR …)` mean what it reads as.
  *
  * EXPORTED for the pin in `portfolio-acts.test.ts`, which renders it through a
  * recording tag and asserts every leg is present with the right parameters.
  */
 export function portfolioActLedgerPredicate(sql: Sql) {
   const byName = sql`ti.tool_name = ANY(${PORTFOLIO_ACT_TOOLS as string[]}::text[])`;
-  const byArgs = PORTFOLIO_CONDITIONAL_ACTS.map((act) =>
-    act.notValue != null
-      ? sql`(ti.tool_name = ${act.tool} AND jsonb_typeof(ti.args_json) = 'object'
-            AND (ti.args_json -> ${act.argKey}::text) IS DISTINCT FROM to_jsonb(${act.notValue}::text))`
-      : act.batchKey == null
-        ? sql`(ti.tool_name = ${act.tool} AND ti.args_json ? ${act.argKey}::text)`
-        : sql`(ti.tool_name = ${act.tool} AND (
+  const byArgs = PORTFOLIO_CONDITIONAL_ACTS.map((act) => {
+    if (act.rule === 'default-act') {
+      const optedOut = act.optOut
+        .map((clause) =>
+          clause.value == null
+            ? sql`((ti.args_json -> ${clause.key}::text) IS NOT NULL
+                   AND (ti.args_json -> ${clause.key}::text) NOT IN ('false'::jsonb, 'null'::jsonb, '0'::jsonb, '""'::jsonb))`
+            : sql`((ti.args_json -> ${clause.key}::text) IS NOT DISTINCT FROM to_jsonb(${clause.value}::text))`,
+        )
+        .reduce((acc, c) => sql`(${acc} OR ${c})`);
+      return sql`(ti.tool_name = ${act.tool} AND jsonb_typeof(ti.args_json) = 'object'
+            AND NOT ${optedOut})`;
+    }
+    return act.batchKey == null
+      ? sql`(ti.tool_name = ${act.tool} AND ti.args_json ? ${act.argKey}::text)`
+      : sql`(ti.tool_name = ${act.tool} AND (
             ti.args_json ? ${act.argKey}::text
             OR (jsonb_typeof(ti.args_json -> ${act.batchKey}::text) = 'array'
                 AND EXISTS (SELECT 1 FROM jsonb_array_elements(ti.args_json -> ${act.batchKey}::text) el
                              WHERE el ? ${act.argKey}::text))
-          ))`,
-  );
+          ))`;
+  });
   return [byName, ...byArgs].reduce((acc, p) => sql`(${acc} OR ${p})`);
 }
 

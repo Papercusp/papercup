@@ -184,7 +184,7 @@ export type PortfolioActFacet = 'create' | 'place' | 'steer';
  * goal, and releasing work changes who is on it exactly as adopting does (rule 3
  * — a judgement to stop is management, not its absence).
  *
- * ── ⚠ THE SECOND POLARITY: `notValue` — the DEFAULT is the act ──────────────
+ * ── ⚠ THE SECOND POLARITY: `default-act` — the DEFAULT is the act ───────────
  *
  * `improvements:capture` is the case (WI-2142888), and it forced this field
  * because PRESENCE cannot express it at any value of `argKey`.
@@ -211,24 +211,35 @@ export type PortfolioActFacet = 'create' | 'place' | 'steer';
  * OUT. Presence of `lane` is therefore evidence of a NON-act exactly as often as
  * an act, and no `argKey` under the presence rule can separate them.
  *
- * `notValue` states that directly: the call is an act UNLESS `argKey` is present
- * AND equal to `notValue`. Absent ⇒ act (the default filing); a different value
- * ⇒ act; the named value ⇒ not an act.
+ * `rule: 'default-act'` states that directly: the call is an act UNLESS one of
+ * its named `optOut` clauses holds.
  *
- * ⚠ Chosen over a simpler `absent: true` deliberately. The tool's schema defaults
- * `lane` to `'improvement'` and every call site in `capture.ts` tests
+ * ⚠ TWO clauses are required here, and the second was found by running the first
+ * against the live ledger rather than by reading the schema. On the motivating
+ * holder's 80-minute window the `lane` clause alone credited NINE acts where the
+ * steward had filed FIVE items — because four of those calls carried
+ * `checkDuplicatesOnly: true`, whose own tool contract says it returns
+ * `created: false, reason: 'check-only'` and "creates nothing". A dedup probe is
+ * a READ, and consequence 1 of the membership rule is that reads are NEVER
+ * portfolio acts. Crediting it is the false-BUSY direction — the one that lets a
+ * reading-and-reporting steward pass — so the fix for a false-IDLE bug would have
+ * shipped a false-BUSY leak in the same entry.
+ *
+ * ⚠ A VALUE clause, not an `absent: true` one. The tool's schema defaults `lane`
+ * to `'improvement'` and every call site in `capture.ts` tests
  * `lane === 'observation'` / `!== 'observation'` — never presence — so an
- * explicit `lane: 'improvement'` is a REAL filing that `absent: true` would
+ * explicit `lane: 'improvement'` is a REAL filing that an absence rule would
  * silently score as idle, re-opening the same false-IDLE hole one value over.
  * (Live ledger, 12h to 2026-09-03T00:20Z: 158 calls with `lane` absent, 23 with
  * `'observation'`, 0 explicit `'improvement'` — so the hole is currently unhit,
  * which is exactly when it is cheapest to close and hardest to notice.)
  *
- * ⚠ `notValue` and `batchKey` are MUTUALLY EXCLUSIVE, pinned by the test. The
- * batch leg is EXISTENTIAL ("any element carries the key"); negating a predicate
- * flips the correct quantifier to universal, and silently keeping the existential
- * one would count a batch as an act whenever ANY element was not an observation.
- * No case needs the combination, so it is refused rather than guessed at.
+ * ⚠ `default-act` carries NO batch form, and that is a type-level refusal rather
+ * than a convention. The batch leg is EXISTENTIAL ("any element carries the
+ * key"); negating a predicate flips the correct quantifier to universal, and
+ * silently keeping the existential one would score a batch as an act whenever ANY
+ * element was not an observation. No case needs the combination, so the union
+ * below makes it unrepresentable instead of guessing at it.
  *
  * ⚠ Deliberately NOT spelled into PORTFOLIO_ACT_TOOLS. Putting the bare name there
  * would count every retitle as placement — the false-BUSY direction, which is the
@@ -241,45 +252,75 @@ export type PortfolioActFacet = 'create' | 'place' | 'steer';
  * list so a conditional act added here reaches the ledger scan without a second
  * hand-copy.
  */
-export interface PortfolioConditionalAct {
-  /** Canonical tool name, exactly as the ledger stores it. */
-  readonly tool: string;
+/**
+ * One opt-out clause on a `default-act`: the invocation is NOT an act when it
+ * holds. Clauses are OR-ed — any one of them excludes the call.
+ */
+export interface PortfolioActOptOut {
+  /** Argument key that can opt the call out. */
+  readonly key: string;
   /**
-   * The deciding argument.
+   * Opt out when `key` is present and strictly equals this string. Omit to opt
+   * out whenever `key` carries any TRUTHY value.
    *
-   * Under the default PRESENCE polarity its presence (any value, null included)
-   * makes the call an act. Under `notValue` its presence-with-that-value is what
-   * makes the call a NON-act.
+   * The two forms exist because the two real clauses differ in kind: `lane` is an
+   * enum whose ONE value `'observation'` opts out (every other value, and its
+   * absence, is a real filing), while `checkDuplicatesOnly` is a boolean flag
+   * where `false` and absent both mean "really file it". Comparison is on the raw
+   * string value, so a non-string under a valued clause is a mismatch and
+   * therefore still an act — an unexpected shape is not the documented opt-out.
    */
-  readonly argKey: string;
-  /**
-   * Batch-form array argument whose elements may carry `argKey` instead; null
-   * when the tool has no batch form. Must be null when `notValue` is set — see
-   * the mutual-exclusion note in the docblock above.
-   */
-  readonly batchKey: string | null;
-  /** The facet such an invocation lands in. */
-  readonly facet: PortfolioActFacet;
-  /**
-   * INVERTS the polarity: the call is an act UNLESS `argKey` is present and
-   * strictly equal to this value. Omit for the default presence rule.
-   *
-   * Set only when the ACT is the default and one named value opts out
-   * (`improvements:capture` + `lane: 'observation'`). Comparison is on the raw
-   * string value, so a non-string `argKey` value is a mismatch and therefore an
-   * act — deliberately: an unexpected shape is not the documented opt-out.
-   */
-  readonly notValue?: string;
+  readonly value?: string;
 }
 
+interface PortfolioConditionalActBase {
+  /** Canonical tool name, exactly as the ledger stores it. */
+  readonly tool: string;
+  /** The facet such an invocation lands in. */
+  readonly facet: PortfolioActFacet;
+}
+
+/**
+ * Polarity 1 — the act is the EXCEPTION. Most calls to this tool are not acts;
+ * a key's PRESENCE (any value, null included) is what makes one.
+ */
+export interface PortfolioKeyPresentAct extends PortfolioConditionalActBase {
+  readonly rule: 'key-present';
+  /** Top-level argument whose presence makes the call an act. */
+  readonly argKey: string;
+  /** Batch-form array argument whose elements may carry `argKey` instead; null when the tool has no batch form. */
+  readonly batchKey: string | null;
+}
+
+/**
+ * Polarity 2 — the act is the DEFAULT. Most calls to this tool ARE acts, and the
+ * named `optOut` clauses are what exclude the rest.
+ *
+ * ⚠ Deliberately has no `batchKey`: negating an existential batch predicate needs
+ * the opposite quantifier, so the combination is unrepresentable rather than
+ * silently wrong (see the docblock above).
+ */
+export interface PortfolioDefaultAct extends PortfolioConditionalActBase {
+  readonly rule: 'default-act';
+  /** OR-ed exclusions; a call matching any one of them is not an act. Must be non-empty. */
+  readonly optOut: readonly PortfolioActOptOut[];
+}
+
+export type PortfolioConditionalAct = PortfolioKeyPresentAct | PortfolioDefaultAct;
+
 export const PORTFOLIO_CONDITIONAL_ACTS: readonly PortfolioConditionalAct[] = Object.freeze([
-  { tool: 'work_items:update', argKey: 'goal', batchKey: 'items', facet: 'place' },
+  { rule: 'key-present', tool: 'work_items:update', argKey: 'goal', batchKey: 'items', facet: 'place' },
   {
+    rule: 'default-act',
     tool: 'improvements:capture',
-    argKey: 'lane',
-    batchKey: null,
     facet: 'create',
-    notValue: 'observation',
+    optOut: [
+      // A turn-end reflection: filed outside the work queue by design (D-005).
+      { key: 'lane', value: 'observation' },
+      // A dedup PROBE: `created:false, reason:'check-only'` — it creates nothing,
+      // and a read is never a portfolio act.
+      { key: 'checkDuplicatesOnly' },
+    ],
   },
 ]);
 
@@ -329,13 +370,24 @@ export function argsCarryConditionalKey(
  * holding only a tool name would score a false BUSY on every capture. Same
  * reasoning as `isPortfolioAct`: the name alone never counts.
  */
-export function argsSatisfyConditionalAct(
-  args: unknown,
-  act: Pick<PortfolioConditionalAct, 'argKey' | 'batchKey' | 'notValue'>,
-): boolean {
+export function argsSatisfyConditionalAct(args: unknown, act: PortfolioConditionalAct): boolean {
   if (!isRecord(args)) return false;
-  if (act.notValue == null) return argsCarryConditionalKey(args, act);
-  return args[act.argKey] !== act.notValue;
+  if (act.rule === 'key-present') return argsCarryConditionalKey(args, act);
+  return !act.optOut.some((clause) => optOutHolds(args, clause));
+}
+
+/**
+ * Does one opt-out clause exclude this call?
+ *
+ * A VALUED clause is strict string equality on the raw argument. A VALUELESS one
+ * is JS truthiness, which is the rule the SQL twin mirrors literally: absent,
+ * `null`, `false`, `0` and `''` do not opt out; anything else does. Stated here
+ * once so the two implementations cannot drift into disagreeing about what
+ * "truthy" means.
+ */
+function optOutHolds(args: Record<string, unknown>, clause: PortfolioActOptOut): boolean {
+  const v = args[clause.key];
+  return clause.value == null ? Boolean(v) : v === clause.value;
 }
 
 function conditionalActFor(toolName: string, args: unknown): PortfolioConditionalAct | null {
