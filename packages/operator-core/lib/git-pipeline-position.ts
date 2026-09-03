@@ -34,6 +34,7 @@ import { devDeployState, type DevDeployState } from './dev-deploy-state';
 import {
   gitPipelineSnapshot,
   projectGreenCheckpointPause,
+  type GateFailingTestsProvenance,
   type GitPipelineSnapshot,
 } from './git-pipeline-stats';
 import type { GitSyncSkippedPath } from './harness/git-sync/run-git-sync';
@@ -1144,6 +1145,8 @@ export interface PipelinePosition {
     failingTests?: string[];
     /** Same-surface proof for whether the failingTests array was actually measured. */
     failingTestsMeasured?: boolean | null;
+    /** P-005: names whether failingTests is measured, carried, not measured, or unknown. */
+    failingTestsProvenance?: GateFailingTestsProvenance;
     lastGreenAtMs: number | null;
     /** WI-282: the green-checkpoint is WEDGED / not firing (visible even at 0 reds). */
     fireStale: boolean;
@@ -5368,11 +5371,16 @@ export async function gitPipelinePosition(
     },
     checkpointRunInFlight,
   );
+  // P-005: ONE reading, used both by ownerBrief below and verdictProvenance later.
+  // Hoisting the local avoids either composer re-reading deploy state or the two
+  // reader-facing answers deriving opposite polarities independently.
+  const greenPinAtStagingHead = snap.deploy?.greenPinAtStagingHead ?? null;
   const gate = {
     stalled: snap.gate.stalled,
     consecutiveReds: snap.gate.consecutiveReds,
     failingTests: snap.gate.failingTests,
     failingTestsMeasured: snap.gate.failingTestsMeasured,
+    failingTestsProvenance: snap.gate.failingTestsProvenance ?? 'unknown',
     lastGreenAtMs: snap.gate.lastGreenAtMs,
     ...(() => {
       const pauseProjection = projectGreenCheckpointPause(snap.routines?.greenCheckpoint ?? null);
@@ -5457,6 +5465,8 @@ export async function gitPipelinePosition(
     consecutiveReds: gate.consecutiveReds,
     failingTests: gate.failingTests,
     failingTestsMeasured: gate.failingTestsMeasured,
+    failingTestsProvenance: gate.failingTestsProvenance,
+    mainBehindStaging: greenPinAtStagingHead === null ? null : !greenPinAtStagingHead,
     lastGreenAtMs: gate.lastGreenAtMs,
     verdictObservedAtMs: gate.verdictObservedAtMs,
     fireStale: gate.fireStale,
@@ -5593,9 +5603,8 @@ export async function gitPipelinePosition(
       }
     }
   }
-  // ONE reading, two polarities. Both fields below are this same local, so they cannot
-  // drift apart the way two independent `snap.deploy?...` reads could.
-  const greenPinAtStagingHead = snap.deploy?.greenPinAtStagingHead ?? null;
+  // ONE reading, two polarities. The local was hoisted before ownerBrief composition;
+  // both fields below and that headline read the SAME value, so they cannot drift apart.
   // WI-38367: the old END of the staging buffer, measured ONLY when a buffer actually
   // exists — the healthy `greenPinAtStagingHead === true` case pays no subprocess at
   // all, and the range this walks is by definition the buffer itself. It lives here

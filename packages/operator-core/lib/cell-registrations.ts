@@ -761,8 +761,15 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
     codes: {
       green: {
         meaning:
-          'The gate is green about what it last judged. Check git.mainBehindStaging separately for the ordinary promotion buffer.',
-        safeAction: 'Proceed; nothing on the gate needs an owner decision.',
+          'The gate is green about what it last judged and no staging buffer was measured. If unknownLegs names mainBehindStaging, the promotion reading is withheld rather than guessed.',
+        safeAction:
+          'Proceed. If mainBehindStaging is named in unknownLegs, re-read the instrument before claiming staging is fully promoted.',
+      },
+      'green-not-promoted': {
+        meaning:
+          'The gate is green about its last judged pin, but staging contains newer commits that have not yet reached that green pin. This is a promotion buffer, not a red verdict.',
+        safeAction:
+          'The green-checkpoint is the single lever: let or trigger its next verdict after checking gate.greenCheckpoint.retriage; do not fast-forward main directly.',
       },
       'red-owned-remediating': {
         meaning: 'The gate is red, a LIVE session owns the incident, and remediation shows signs of life.',
@@ -786,6 +793,12 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
         safeAction:
           "Read gate.greenCheckpoint.ownership and claim the incident (or wake whoever should) — an unowned red is everyone's blocker and no one's work.",
       },
+      'no-verdict': {
+        meaning:
+          'The latest gate attempt rendered no verdict: an inconclusive hold stopped judgment, so zero new reds is NOT evidence of green.',
+        safeAction:
+          'Clear the condition named by whyNot.inconclusiveStatus, then run the gate again; do not chase carried failingLegs as though this attempt measured them.',
+      },
       'not-judging': {
         meaning:
           'The gate has not fired within its interval — nothing is being judged, so red/green counters describe the past.',
@@ -805,6 +818,12 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
       // labelled-unmeasured/carried-empty list apart from a confident empty
       // measurement (the false-green class this cell exists to prevent).
       'gate.ownerBrief.whyNot.measured',
+      // P-005: measured:null still covers two opposite states. The named provenance
+      // separates a carried list from a wholly unknown one without inference from []/length.
+      'gate.ownerBrief.whyNot.provenance',
+      // P-005: makes `green` versus `green-not-promoted` independently checkable in the
+      // SAME cell read; the answer must not send callers to a second state read.
+      'verdictProvenance.mainBehindStaging',
       'gate.ownerBrief.ownership.assessmentCode',
       'gate.ownerBrief.remediation.fixerAlive',
       'gate.ownerBrief.vintageSpreadMs',
