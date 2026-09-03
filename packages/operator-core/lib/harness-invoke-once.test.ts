@@ -22,7 +22,9 @@ import {
   applyBackendSwap,
   applyRoleModel,
   buildInvokeOnce,
+  detectRoleBackendConflict,
   fallbackBaseCmd,
+  formatRoleBackendConflict,
   inferBackendFromModelSpec,
   isOmpBackendExplicitlyConfigured,
   resolveSpawnBackendModel,
@@ -756,5 +758,88 @@ describe('resolveSpawnBackendModel — governor bucket key for a pipeline spawn 
     // WI-4623 revert: cup's committed floor is the bare `sonnet[1m]:high`, a claude
     // id — so the bucket is the claude-code sonnet[1m] bucket, not a codex one.
     expect(resolveSpawnBackendModel('cup')).toEqual({ backend: 'claude-code', model: 'sonnet[1m]' });
+  });
+});
+
+describe('WI-2142846: role/model backend conflict is reported, not silently resolved', () => {
+  it('reports the exact production conflict — a claude-code role pinned onto a codex model spec', () => {
+    // The live release-fixer configuration that kept the green gate red: the role
+    // backend said claude-code, the model map said a Codex-family spec, and the
+    // spec won with nothing logged.
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ 'release-fixer': 'gpt-5.6-sol:xhigh' }));
+    vi.stubEnv('AGENT_ROLE_BACKENDS', JSON.stringify({ 'release-fixer': 'claude-code' }));
+
+    const conflict = detectRoleBackendConflict('release-fixer');
+    expect(conflict).toEqual({
+      role: 'release-fixer',
+      modelSpec: 'gpt-5.6-sol:xhigh',
+      inferredBackend: 'codex',
+      roleBackend: 'claude-code',
+    });
+
+    // The message must name BOTH settings and which one lost, or a reader cannot
+    // act on it; and it must warn off the WI-4640 "fix" of inverting precedence.
+    const text = formatRoleBackendConflict(conflict!);
+    expect(text).toContain('release-fixer');
+    expect(text).toContain('claude-code');
+    expect(text).toContain('gpt-5.6-sol:xhigh');
+    expect(text).toContain('codex');
+    expect(text).toContain('WI-4640');
+  });
+
+  it('does NOT change the resolved backend — the WI-4640 precedence still stands', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    vi.stubEnv('AGENT_BACKEND', 'claude-code');
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ 'release-fixer': 'gpt-5.6-sol:xhigh' }));
+    vi.stubEnv('AGENT_ROLE_BACKENDS', JSON.stringify({ 'release-fixer': 'claude-code' }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const env = buildInvokeOnce(spec({ role: 'release-fixer' })).env;
+
+    // Still codex: baking a Codex id onto the claude CLI 404s at launch (WI-4640).
+    expect(env.AGENT_BACKEND).toBe('codex');
+    expect(env.PAPERCUSP_SPAWN_BACKEND).toBe('codex');
+    // …but it is no longer silent.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('[backend-conflict]');
+    warn.mockRestore();
+  });
+
+  it('stays silent when there is nothing to disagree about', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // agreement — both say codex
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ 'release-fixer': 'gpt-5.6-sol:xhigh' }));
+    vi.stubEnv('AGENT_ROLE_BACKENDS', JSON.stringify({ 'release-fixer': 'codex' }));
+    expect(detectRoleBackendConflict('release-fixer')).toBeNull();
+
+    // the model spec implies no backend at all, so the role backend is uncontested
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ 'release-fixer': 'claude-opus-5:xhigh' }));
+    vi.stubEnv('AGENT_ROLE_BACKENDS', JSON.stringify({ 'release-fixer': 'claude-code' }));
+    expect(detectRoleBackendConflict('release-fixer')).toBeNull();
+
+    // no per-role backend set — nothing is being overridden
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ 'release-fixer': 'gpt-5.6-sol:xhigh' }));
+    vi.stubEnv('AGENT_ROLE_BACKENDS', undefined as unknown as string);
+    expect(detectRoleBackendConflict('release-fixer')).toBeNull();
+
+    // an explicit per-spawn backend outranks BOTH, so it is a choice, not a conflict
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ 'release-fixer': 'gpt-5.6-sol:xhigh' }));
+    vi.stubEnv('AGENT_ROLE_BACKENDS', JSON.stringify({ 'release-fixer': 'claude-code' }));
+    expect(detectRoleBackendConflict('release-fixer', undefined, 'omp')).toBeNull();
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('keys off the EFFECTIVE spec, so a per-spawn model override can itself create the conflict', () => {
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ 'release-fixer': 'claude-opus-5:xhigh' }));
+    vi.stubEnv('AGENT_ROLE_BACKENDS', JSON.stringify({ 'release-fixer': 'claude-code' }));
+    // the env map agrees with the role backend, but this spawn overrides the model
+    expect(detectRoleBackendConflict('release-fixer', 'gpt-5.6-sol:xhigh')).toMatchObject({
+      inferredBackend: 'codex',
+      roleBackend: 'claude-code',
+      modelSpec: 'gpt-5.6-sol:xhigh',
+    });
   });
 });

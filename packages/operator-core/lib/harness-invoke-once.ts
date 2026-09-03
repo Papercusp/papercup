@@ -199,6 +199,63 @@ export function roleBackendOverride(role: string): AgentBackend | undefined {
   }
 }
 
+/** A disagreement between the two EXPLICIT operator settings that steer a
+    spawn's backend. `inferredBackend` is the one that WINS. */
+export interface RoleBackendConflict {
+  role: string;
+  /** The effective `AGENT_MODELS[role]` spec whose family implied a backend. */
+  modelSpec: string;
+  /** Implied by `modelSpec` — the backend the spawn actually launches on. */
+  inferredBackend: AgentBackend;
+  /** The per-role `AGENT_ROLE_BACKENDS[role]` choice being overridden. */
+  roleBackend: AgentBackend;
+}
+
+/**
+ * Detect the case where `AGENT_MODELS[role]` (a model spec, whose family implies
+ * a backend) and `AGENT_ROLE_BACKENDS[role]` (a backend named outright) — both
+ * EXPLICIT operator settings — disagree.
+ *
+ * The disagreement is resolved toward the model spec, and must keep being:
+ * baking a Codex-only id onto the claude CLI 404s on every fire, hard-downing
+ * the role (WI-4640). What was wrong is that the resolution was SILENT, so a
+ * role pinned to `claude-code` could launch on `codex` indefinitely with nothing
+ * saying why — the release-fixer ran that way against a usage-walled Codex
+ * account while the green gate sat red for 100 consecutive runs (WI-2142846).
+ * This reports the conflict; it deliberately does NOT change the precedence.
+ *
+ * Returns null unless BOTH settings resolve AND disagree — never a guess. A
+ * per-spawn `PAPERCUSP_SPAWN_BACKEND` outranks both and so is not a conflict,
+ * and a role carrying only one of the two settings has nothing to disagree with.
+ */
+export function detectRoleBackendConflict(
+  role: string,
+  overrideSpec?: string,
+  overrideBackend?: string,
+): RoleBackendConflict | null {
+  if (overrideBackend) return null;
+  const roleBackend = roleBackendOverride(role);
+  if (!roleBackend) return null;
+  const modelSpec = resolveEffectiveRoleModelSpec(role, overrideSpec);
+  const inferredBackend = inferBackendFromModelSpec(modelSpec);
+  if (!inferredBackend || inferredBackend === roleBackend) return null;
+  return { role, modelSpec, inferredBackend, roleBackend };
+}
+
+/** One-line, greppable rendering of a `RoleBackendConflict`. Says which setting
+    won, which was ignored, and why the precedence is deliberate — so a reader
+    hitting it in a log does not "fix" it by inverting the order (that is the
+    WI-4640 regression). */
+export function formatRoleBackendConflict(conflict: RoleBackendConflict): string {
+  return (
+    `[backend-conflict] role '${conflict.role}': AGENT_ROLE_BACKENDS pins ` +
+    `'${conflict.roleBackend}' but the AGENT_MODELS spec '${conflict.modelSpec}' implies ` +
+    `'${conflict.inferredBackend}'. Launching on '${conflict.inferredBackend}' and IGNORING ` +
+    `the per-role backend — a model spec baked onto the wrong CLI fails at launch (WI-4640). ` +
+    `Align the two settings in /settings/agent; do not invert this precedence.`
+  );
+}
+
 /**
  * True when `role`'s resolved 'omp' backend traces to an EXPLICIT operator
  * choice — a per-role `AGENT_ROLE_BACKENDS` override, or a globally configured
@@ -411,6 +468,16 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
     spec.extraEnv?.PAPERCUSP_SPAWN_BACKEND ||
     inferBackendFromModelSpec(effectiveSpawnSpec) ||
     roleBackendOverride(spec.role);
+  // WI-2142846: the precedence above is deliberate (WI-4640), but it silently
+  // discards an explicit per-role backend when the model spec implies another.
+  // Say so at the spawn seam — that silence is what let the release-fixer launch
+  // on a usage-walled Codex account for a day while the gate sat red.
+  const backendConflict = detectRoleBackendConflict(
+    spec.role,
+    spec.extraEnv?.PAPERCUSP_SPAWN_MODEL,
+    spec.extraEnv?.PAPERCUSP_SPAWN_BACKEND,
+  );
+  if (backendConflict) console.warn(formatRoleBackendConflict(backendConflict));
   const roleAgentCmd = applyRoleModel(
     applyBackendSwap(
       process.env.AGENT_CMD ?? process.env.CLAUDE ?? fallbackBaseCmd(effectiveSpawnSpec),
