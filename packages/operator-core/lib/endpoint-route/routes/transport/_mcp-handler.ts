@@ -601,6 +601,38 @@ function isSuperuserGlobalFlagAdmin(toolName: string): boolean {
 }
 
 /**
+ * EI-22068944239934723: LAUNCH-shaped tools whose cross-hive `harness_forbidden` refusal
+ * should also name the sanctioned route.
+ *
+ * The clamp itself is CORRECT and must not widen — it is the cross-tenant boundary
+ * (P-006/P-007/P-008), so a papercusp-scoped session must not be able to launch a fleet
+ * into a sibling hive. But `work_items:claim` and `work_items:get` already get tailored
+ * cross-hive routes in this refusal while launch-shaped tools got a bare "no". The
+ * reporting session held a goal worklist that legitimately named another hive's plan,
+ * hit the bare refusal, and read it as "this work cannot be materialized at all" rather
+ * than "this is the wrong door" — so it stopped instead of routing. A boundary that is
+ * right to refuse is still wrong to refuse WITHOUT naming where the work can go.
+ */
+const CROSS_HIVE_LAUNCH_TOOLS: ReadonlySet<string> = new Set([
+  'fleet:launch-on-plan',
+  'fleet:create',
+  'capability:launch-agent',
+]);
+
+/** The cross-hive route hint for a launch-shaped tool, or '' for any other tool. */
+export function crossHiveLaunchHint(toolName: string, scopeHive: string): string {
+  if (!CROSS_HIVE_LAUNCH_TOOLS.has(toolName)) return '';
+  return (
+    ` Launching into another hive is not available from a session confined to "${scopeHive}", by design. ` +
+    'Either run the fleet from a session scoped to THAT hive, or use discovery:pots → pot:request_work ' +
+    '(with an outbound work-request grant) to ask the owning Pot to do the work in its own domain. ' +
+    "Note that `hive` on fleet:launch-on-plan selects which shared hive's federated SEAT-OFFERS to place " +
+    "onto for placement:'remote' — it is a cross-MACHINE knob, not a cross-hive harness escape, so passing " +
+    'it here will not lift this refusal.'
+  );
+}
+
+/**
  * Parse the seven per-spawn URL params and return a partial
  * UnifiedToolContext fragment. Returns null if any required params are
  * missing — the caller falls back to built-in-only listing (e.g. dev
@@ -871,7 +903,7 @@ async function applyScopedSuperuserTransportClamp(
               content: [
                 {
                   type: 'text' as const,
-                  text: `harness_forbidden: harness "${requestedHarness}" is outside this session's hive "${scopeHive}".${crossHiveClaimHint}${crossHiveWorkItemReadHint}`,
+                  text: `harness_forbidden: harness "${requestedHarness}" is outside this session's hive "${scopeHive}".${crossHiveClaimHint}${crossHiveWorkItemReadHint}${crossHiveLaunchHint(toolName, scopeHive)}`,
                 },
               ],
             },
@@ -2791,7 +2823,7 @@ const handler = createMcpHandler(
                     content: [
                       {
                         type: 'text' as const,
-                        text: `harness_forbidden: harness "${argHarness}" is outside this session's hive "${scopeHive}".${crossHiveClaimHint}${crossHiveWorkItemReadHint}`,
+                        text: `harness_forbidden: harness "${argHarness}" is outside this session's hive "${scopeHive}".${crossHiveClaimHint}${crossHiveWorkItemReadHint}${crossHiveLaunchHint(toolName, scopeHive)}`,
                       },
                     ],
                   };
