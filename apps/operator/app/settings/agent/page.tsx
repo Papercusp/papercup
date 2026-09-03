@@ -106,11 +106,37 @@ interface CodexSettingsDiagnostics {
   endedAt: string | null;
   home: CodexHomeDiagnostics;
 }
+/**
+ * What a role will ACTUALLY launch as — resolved server-side by the one resolver
+ * the launch path itself calls (packages/operator-core/lib/fleet/role-launch.ts),
+ * so this column cannot drift from real behaviour
+ * (role-model-one-answer-2026-09-03 P-004).
+ */
+interface RoleLaunchRow {
+  model: string;
+  backend: AgentBackend | null;
+  source: "per-role" | "tier-menu" | "committed-default";
+  backendSource:
+    | "tier-row"
+    | "model-catalog"
+    | "model-shape"
+    | "role-backends"
+    | "inherit";
+  why: string;
+  conflict: {
+    configured: AgentBackend;
+    effective: AgentBackend;
+    note: string;
+  } | null;
+}
+
 interface ConfigSnapshot {
   config: AgentConfig;
   binaries: DetectedBinaries;
   codexDiagnostics: CodexSettingsDiagnostics | null;
   effectiveBackend: AgentBackend;
+  /** Keyed by role; present only for CONFIGURED roles (see the route's comment). */
+  roleLaunch?: Record<string, RoleLaunchRow>;
   envOverrides: {
     AGENT_BACKEND: string | null;
     AGENT_CMD: string | null;
@@ -127,6 +153,49 @@ interface TestResult {
 }
 
 const ROLE_ROUTING_ROLES = ROLE_ROUTING_ROWS.map((row) => row.role);
+
+/**
+ * The RESULT of the three controls to its left, not a fourth input.
+ *
+ * The page used to show only the inputs — backend, model, tier ceiling — and
+ * nothing showed what they added up to, so a per-role model the launch path
+ * silently ignored looked perfectly configured. That is exactly how nine
+ * release-fixers (2026-09-03) launched onto a usage-walled codex account while
+ * both `models` and `roleBackends` read Claude in this very table.
+ *
+ * `source` is deliberately on-screen rather than in a tooltip: "which rule won"
+ * IS the diagnosis. A row reading `tier menu` when the owner typed a model in the
+ * box beside it is the bug, stated.
+ */
+function RoleLaunchCell({ row }: { row: RoleLaunchRow | undefined }) {
+  if (!row) {
+    return (
+      <div style={{ fontSize: 11, color: "var(--fg-mute)", lineHeight: 1.35 }}>
+        built-in default
+      </div>
+    );
+  }
+  const SOURCE_LABEL: Record<RoleLaunchRow["source"], string> = {
+    "per-role": "per-role model",
+    "tier-menu": "tier menu",
+    "committed-default": "built-in default",
+  };
+  return (
+    <div style={{ fontSize: 11, lineHeight: 1.4 }} title={row.why}>
+      <code style={{ fontSize: 11 }}>{row.model || "(CLI default)"}</code>
+      <div style={{ color: "var(--fg-mute)" }}>
+        on <code style={{ fontSize: 11 }}>{row.backend ?? "host default"}</code>
+      </div>
+      <div style={{ color: "var(--fg-mute)" }}>via {SOURCE_LABEL[row.source]}</div>
+      {row.conflict && (
+        <div style={{ color: "var(--danger, #c00)", marginTop: 2 }}>
+          ⚠ backend <code style={{ fontSize: 11 }}>{row.conflict.configured}</code>{" "}
+          is ignored — the model decides the CLI.
+        </div>
+      )}
+    </div>
+  );
+}
 
 function filteredRoleModels(
   models: Record<string, string> | undefined,
@@ -170,6 +239,10 @@ export default function AgentSettingsPage() {
   const [backend, setBackend] = useState<GlobalBackend>("omp");
   const [cmd, setCmd] = useState("");
   const [roleModels, setRoleModels] = useState<Record<string, string>>({});
+  /** Read-only readout of what each role resolves to; refreshed on every load. */
+  const [roleLaunch, setRoleLaunch] = useState<Record<string, RoleLaunchRow>>(
+    {},
+  );
   const [roleBackends, setRoleBackends] =
     useState<Record<string, SurfaceChoice>>(initialRoleBackends);
   // Per-surface backend overrides. 'inherit' means "omit from the map" (use
@@ -242,6 +315,7 @@ export default function AgentSettingsPage() {
         tierCeilings: d.config.tierCeilings ?? {},
       };
       setRoleModels(nextRoleModels);
+      setRoleLaunch(d.roleLaunch ?? {});
       const fetchedRoleBackends = d.config.roleBackends ?? {};
       setRoleBackends({
         ...initialRoleBackends(),
@@ -925,7 +999,7 @@ export default function AgentSettingsPage() {
               style={{
                 display: "grid",
                 gridTemplateColumns:
-                  "150px minmax(220px, 1fr) 150px 170px 150px",
+                  "150px minmax(220px, 1fr) 150px 170px 150px 210px",
                 gap: 8,
                 alignItems: "center",
                 fontSize: 11,
@@ -937,6 +1011,7 @@ export default function AgentSettingsPage() {
               <span>Backend</span>
               <span>Model</span>
               <span>Tier ceiling</span>
+              <span>Launches as</span>
             </div>
             {ROLE_ROUTING_ROWS.map((row) => (
               <div
@@ -944,7 +1019,7 @@ export default function AgentSettingsPage() {
                 style={{
                   display: "grid",
                   gridTemplateColumns:
-                    "150px minmax(220px, 1fr) 150px 170px 150px",
+                    "150px minmax(220px, 1fr) 150px 170px 150px 210px",
                   gap: 8,
                   alignItems: "flex-start",
                   fontSize: 13,
@@ -1020,6 +1095,7 @@ export default function AgentSettingsPage() {
                     })
                   }
                 />
+                <RoleLaunchCell row={roleLaunch[row.role]} />
               </div>
             ))}
           </div>

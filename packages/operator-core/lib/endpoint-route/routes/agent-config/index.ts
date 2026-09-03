@@ -32,6 +32,7 @@ import {
   type AgentConfig,
 } from '../../../agent-config';
 import { DEFAULT_MODEL_TIERS, MODEL_EFFORT_LEVELS } from '../../../agent-config-constants';
+import { resolveRoleLaunch } from '../../../fleet/role-launch';
 import { launchableModes } from '../../../modes/registry';
 import { detectBinaries } from '../../../agent-bin-detect';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -80,6 +81,45 @@ export default [
             }
           : null,
         effectiveBackend: effectiveBackend(cfg),
+        // role-model-one-answer-2026-09-03 P-004 — WHAT EACH ROLE WILL LAUNCH AS,
+        // resolved by the SAME function the launch path calls (fleet/role-launch.ts),
+        // so this readout cannot drift from the real behaviour. Keyed by role.
+        //
+        // Rendered as the settings page's "Launches as" column. Before it, the page
+        // showed the three INPUTS (backend / model / ceiling) and nothing showed
+        // their RESULT — so a per-role model that the launch path silently ignored
+        // looked perfectly configured (measured: nine release-fixers, 2026-09-03).
+        //
+        // Population is the CONFIGURED roles (the union of models / roleBackends /
+        // tierCeilings keys), not every launchable role: a role with no
+        // configuration resolves to its committed default, which the page can say
+        // without a server round-trip. Steering is deliberately NOT applied — this
+        // route is workspace-level and names no pot, so it reports the WORKSPACE
+        // answer rather than guessing which session override to fold in.
+        roleLaunch: Object.fromEntries(
+          [
+            ...new Set([
+              ...Object.keys(cfg.models ?? {}),
+              ...Object.keys(cfg.roleBackends ?? {}),
+              ...Object.keys(cfg.tierCeilings ?? {}),
+            ]),
+          ]
+            .sort()
+            .map((role) => {
+              const r = resolveRoleLaunch(role, { cfg });
+              return [
+                role,
+                {
+                  model: r.model,
+                  backend: r.backend,
+                  source: r.source,
+                  backendSource: r.backendSource,
+                  why: r.why,
+                  conflict: r.conflict,
+                },
+              ];
+            }),
+        ),
         envOverrides: {
           AGENT_BACKEND: process.env.AGENT_BACKEND ?? null,
           AGENT_CMD: process.env.AGENT_CMD ?? null,

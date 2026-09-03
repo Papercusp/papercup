@@ -2028,6 +2028,105 @@ export const CAPACITY_VERDICT_CELL: CellSpec = {
     '{ capacityVerdict: { provider, atCapacity: boolean, binding: "usage-wall"|"admission-concurrency"|"pacing-policy"|"none", evidence: [{ signal, value, writer, means }], reason, unknown: string[] }, capacityUnknown: string[] }',
 };
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * role-model-one-answer-2026-09-03 P-004 — WHAT WILL THIS ROLE LAUNCH AS?
+ *
+ * ── THE GAP, MEASURED ──────────────────────────────────────────────────────────
+ *
+ * On 2026-09-03 (00:32Z→01:27Z) nine consecutive release-fixers spawned onto a
+ * usage-walled codex account and died instantly, while `models['release-fixer']`
+ * = 'claude-opus-5:xhigh' and `roleBackends['release-fixer']` = 'claude-code'
+ * were BOTH already set correctly. The launch path never consulted `models[role]`,
+ * so the explicit answer was inert — and nothing in the system could be asked what
+ * a role resolved to. Establishing it took hand-writing a tsx probe against an
+ * internal test seam; with this cell it is one read.
+ *
+ * ── WHY THE HEADLINE IS A VERDICT AND NOT THE MODEL ────────────────────────────
+ *
+ * The obvious headline is the model spec, and it is the wrong one. A spec is a
+ * STRING a reader must adjudicate — is `claude-opus-5:xhigh` beside backend
+ * `codex` right or catastrophic? — and adjudicating it is precisely the step that
+ * did not happen. `verdict` is the adjudication: `conflicted` says a configured
+ * backend is being overruled by the model, which is the shape of the incident.
+ * The per-role `{ model, backend, source, why }` rows are on the payload for the
+ * reader who then needs the specifics.
+ *
+ * `conflicted` outranks `undetermined` deliberately: a contradiction is a launch
+ * that will run somewhere the owner did not choose, while an undetermined backend
+ * merely inherits the host's agent command — the pre-existing default.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+export const ROLE_LAUNCH_CELL: CellSpec = {
+  cell: 'agent.roleLaunch',
+  registeredOn: '2026-09-03',
+  owner: 'role-model-one-answer-2026-09-03',
+  headline: 'verdict',
+
+  assessment: {
+    path: 'verdict',
+    codes: {
+      consistent: {
+        meaning:
+          'Every reported role resolves to a model AND a backend that agree — no configured roleBackends entry is being overruled.',
+        safeAction: 'Launch. The resolved pair is what the spawn will carry.',
+      },
+      conflicted: {
+        meaning:
+          "At least one role's configured roleBackends value disagrees with the backend its model implies. The MODEL wins downstream (WI-4640), so the configured backend is ignored and that role launches on a CLI the owner did not pick.",
+        safeAction:
+          "Read `conflicts` for the affected roles and each row's `conflict.note`, then align models[role] and roleBackends[role] in /settings/agent. Do NOT invert the precedence — pairing a Codex model with the claude binary is fatal at launch.",
+      },
+      undetermined: {
+        meaning:
+          "At least one role's backend could not be determined from its model or its configuration, so that launch inherits the host's agent command rather than a chosen CLI.",
+        safeAction:
+          'Read `backendUndetermined`. Inheriting is the pre-existing default and is often fine; set roleBackends[role] when the host command is not the CLI that model needs.',
+      },
+    },
+    evidence: ['conflicts', 'backendUndetermined'],
+  },
+
+  /**
+   * Axis 2. FALSE. The resolver is a pure function over config that returns one of
+   * three enum values on every path: a role with no configuration at all resolves
+   * `source: 'committed-default'` and still yields `consistent`. There is no read
+   * that can fail into a default — an unreadable agent-config makes the TOOL fail,
+   * which surfaces as `resolver-failed`, not as a silently-`consistent` verdict.
+   */
+  nullable: false,
+  whyTotal:
+    'roleLaunchVerdict() is total over the resolved rows and the resolver has no I/O that can degrade: readAgentConfig either returns a config or throws (→ resolver-failed), and every role — configured or not — resolves to one of the three codes.',
+
+  callerRelativity: { kind: 'global' },
+
+  provenance: {
+    obtainedBy:
+      'resolveRoleLaunch() over the LIVE stored agent-config + owner steering — the same pure function the launch path itself calls, so the readout cannot disagree with the launch',
+    liveExercised: true,
+    evidence:
+      "Exercised against the live workspace config 2026-09-03 with all 8 launch roles pinned to claude-opus-5:xhigh + roleBackends claude-code: every row resolved source='per-role', backend='claude-code' (model-shape), conflicts=[] — the reading that was unavailable during the release-fixer incident hours earlier.",
+  },
+
+  resolver:
+    'the config:role-launch handler (resolveRoleLaunch over readAgentConfig + getOwnerSteering) @ packages/operator-core/lib/agent-tools/config/role-launch.ts',
+
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
+  changeSignal: { kind: 'poll', tool: 'config:role-launch', path: 'verdict' },
+
+  /**
+   * The verdict IS the material path: it moves only when a role's resolution
+   * genuinely changes coherence. The per-role model strings move on every menu
+   * edit, so headlining one would wake a subscriber for cosmetic churn.
+   */
+  materiality: {
+    path: 'verdict',
+    why: 'a launch is either coherent or it is not; the model/backend strings churn on ordinary menu edits, while coherence changes only when a role starts (or stops) launching somewhere the owner did not choose.',
+  },
+
+  shape:
+    '{ verdict: "consistent"|"conflicted"|"undetermined", population: "configured"|"requested", populationNote, roles: [{ role, model, backend, source, backendSource, spawnModel, why, conflict }], conflicts: string[], backendUndetermined: string[] }',
+};
+
 /** Every built-in cell, in registration order. */
 export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,
@@ -2051,6 +2150,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   GOVERNOR_RESOURCES_CELL,
   GOVERNOR_RECOVERY_CELL,
   CAPACITY_VERDICT_CELL,
+  ROLE_LAUNCH_CELL,
 ];
 
 /** Register every built-in cell. Idempotent — safe to call from more than one entry

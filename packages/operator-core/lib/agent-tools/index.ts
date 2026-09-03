@@ -879,6 +879,7 @@ import './config/reset-overrides';
 import './config/set-compaction-limit';
 // context-trimming-tiers-2026-07-01 P-005 — the tier-menu read/write surface
 // (per-tier soft compaction limits ride the menu):
+import './config/role-launch';
 import './config/tiers-get';
 import './config/tiers-set';
 import './config/terminal-emulator';
