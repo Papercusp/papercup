@@ -21,7 +21,7 @@ export default defineTool({
   name: 'fleet:selected_cup',
   profile: 'engineer',
   description:
-    'Get or set the ephemeral "selected bee" for the bee-dossier dock pane. With no args, RETURNS the currently selected bee (the bee pane polls this). With `select`, PUBLISHES the selection (the swarm/Fleet pane calls this when its cursor moves). In-memory, per-workspace, non-durable — a transport between the two pui dock processes, never persisted.',
+    'Get or set the ephemeral "selected cup" for the bee-dossier dock pane. With no args, RETURNS the currently selected cup (the bee pane polls this). With `select`, PUBLISHES the selection (the swarm/Fleet pane calls this when its cursor moves). In-memory, per-workspace, non-durable — a transport between the two pui dock processes, never persisted.',
   guidance: {
     when: 'Driving the desktop chat dock\'s cup-dossier pane: the swarm pane sets the selection on cursor move; the cup pane reads it to know which cup to render.',
     notWhen:

@@ -128,13 +128,13 @@ export default defineTool({
   name: 'fleet:place_batch',
   profile: 'engineer',
   description:
-    'Place a whole batch of ready work onto the fleet in ONE wake: ranks each task↔bee by affinity (explicit-intent > file-overlap > recent-activity > queue-similarity), then warm-injects onto warm bees / fresh-spawns into free slots / queues the overflow — up to the fleet ceiling. The Mug\'s serial placement loop, collapsed to one call. Pass `tasks` (your importance-ranked frontier) or a `harness` to pull its open backlog; `dry_run` returns the plan without acting.',
+    'Place a whole batch of ready work onto the fleet in ONE wake: ranks each task↔cup by affinity (explicit-intent > file-overlap > recent-activity > queue-similarity), then warm-injects onto warm cups / fresh-spawns into free slots / queues the overflow — up to the fleet ceiling. The Mug\'s serial placement loop, collapsed to one call. Pass `tasks` (your importance-ranked frontier) or a `harness` to pull its open backlog; `dry_run` returns the plan without acting.',
   guidance: {
     when: 'You (the Mug) have surveyed + ranked the ready frontier and want to place several tasks at once instead of placing one task per turn. Pass the ranked work-item ids as `tasks` (importance order) — the tool fans them across free slots + warm cups by affinity in one turn.',
     notWhen:
       'Placing a SINGLE task (just coord:send), or you have not yet surveyed the frontier (work_items:list + fleet:assignments first). Not a survey tool — it acts. Use dry_run:true to preview the plan.',
     chaining:
-      'work_items:list (the frontier) + fleet:assignments (bee load) → fleet:place_batch { tasks } → fleet:tree to watch the fresh spawns; an await_event in the result means re-run for the deferred tail on a freed slot.',
+      'work_items:list (the frontier) + fleet:assignments (cup load) → fleet:place_batch { tasks } → fleet:tree to watch the fresh spawns; an await_event in the result means re-run for the deferred tail on a freed slot.',
   },
   capability: 'work_items:write',
   // tool-call-batching-wrappers-2026-06-21 P-011 — composite marker: replaces the
@@ -168,7 +168,7 @@ export default defineTool({
       .enum(['file-overlap', 'topic-overlap', 'entity-overlap'])
       .optional()
       .describe(
-        "Which affinity signal dominates placement — your hive's `affinity.kind`. Default file-overlap (the coding hive); topic-overlap for a generic/research hive (a bee shares a SUBJECT, not files); entity-overlap for same-harness/scope. The ranker reweights accordingly (hive-blueprint-generalization P-011).",
+        "Which affinity signal dominates placement — your hive's `affinity.kind`. Default file-overlap (the coding hive); topic-overlap for a generic/research hive (a cup shares a SUBJECT, not files); entity-overlap for same-harness/scope. The ranker reweights accordingly (hive-blueprint-generalization P-011).",
       ),
     dry_run: z.boolean().optional().describe('Return the placement PLAN (decisions + counts) WITHOUT spawning/injecting — preview the batch.'),
     workspace: z.string().max(120).optional(),
@@ -213,7 +213,7 @@ export default defineTool({
           ...skipped,
           ...deferred.map((t) => ({
             id: t.id,
-            reason: 'file-conflict — touch-set overlaps a running bee, active peer lane, or an admitted sibling (P-002/EI-3061)',
+            reason: 'file-conflict — touch-set overlaps a running cup, active peer lane, or an admitted sibling (P-002/EI-3061)',
           })),
         ];
       }
@@ -380,7 +380,7 @@ export function buildPlacementWarnings(opts: { spawned: number; wakeMode: WakeMo
   const warnings: string[] = [];
   if (opts.spawned > 0 && opts.wakeMode === 'manual') {
     warnings.push(
-      `global wake-mode is 'manual' (hive paused): the ${opts.spawned} fresh-spawned bee(s) are placed but their boot-wake STAGES instead of firing — they will NOT start until wake-mode is restored to 'auto' (coord:wake-mode { mode: 'auto' }). This placement is a no-op until then.`,
+      `global wake-mode is 'manual' (pot paused): the ${opts.spawned} fresh-spawned cup(s) are placed but their boot-wake STAGES instead of firing — they will NOT start until wake-mode is restored to 'auto' (coord:wake-mode { mode: 'auto' }). This placement is a no-op until then.`,
     );
   }
   return warnings;
@@ -701,7 +701,7 @@ export async function executeBatch(opts: {
             task: d.task.id,
             action: 'unplaced',
             bee,
-            reason: `warm-inject undelivered (woken:0); no spawn headroom — released to the frontier${reaped ? ' (zombie bee auto-reaped; retry next batch)' : ''}`,
+            reason: `warm-inject undelivered (woken:0); no spawn headroom — released to the frontier${reaped ? ' (zombie cup auto-reaped; retry next batch)' : ''}`,
           });
         }
         continue;

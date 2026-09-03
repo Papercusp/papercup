@@ -607,9 +607,9 @@ export default defineTool({
   name: 'fleet:kill',
   profile: 'engineer',
   description:
-    'KILL an agent — desktop OR headless — through one verb. Interactive psu member: graceful SIGTERM (→SIGKILL) to its session, and close_terminal (default true) ALSO closes its terminal window (windows never close on their own — the tab drops to a shell after the agent exits). Managed headless psu member: the same session termination with kind:headless + terminal:none and no window ancestry. Headless nursery cup/bee: delegates to the transitive cancel path (claims + locks released). `terminal_pids` closes ORPHANED windows whose agent already exited. Self-kill refused; reason required; every kill audited.',
+    'KILL an agent — desktop OR headless — through one verb. Interactive psu member: graceful SIGTERM (→SIGKILL) to its session, and close_terminal (default true) ALSO closes its terminal window (windows never close on their own — the tab drops to a shell after the agent exits). Managed headless psu member: the same session termination with kind:headless + terminal:none and no window ancestry. Headless nursery cup: delegates to the transitive cancel path (claims + locks released). `terminal_pids` closes ORPHANED windows whose agent already exited. Self-kill refused; reason required; every kill audited.',
   guidance: {
-    when: 'Winding down a fleet member for real (not just ending its turn — that is turn:interrupt), removing a dead member\'s stale window, or stopping a headless cup. "Close that agent\'s terminal" / "kill that bee" both land here.',
+    when: 'Winding down a fleet member for real (not just ending its turn — that is turn:interrupt), removing a dead member\'s stale window, or stopping a headless cup. "Close that agent\'s terminal" / "kill that cup" both land here.',
     notWhen:
       'To END A TURN but keep the agent alive — turn:interrupt. To cancel a whole nursery subtree by spawn id with full bulk semantics — fleet:cancel (fleet:kill delegates to the same machinery for a single headless target).',
     chaining:

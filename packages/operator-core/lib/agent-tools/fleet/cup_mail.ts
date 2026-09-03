@@ -21,7 +21,7 @@ export default defineTool({
   name: 'fleet:cup_mail',
   profile: 'engineer',
   description:
-    "Read one bee's coordination mail by ownerId: its INBOX (messages addressed to it, or broadcast) and its OUTBOX (messages it sent). The observer view behind the bee-dossier dock pane — distinct from coord:inbox, which reads YOUR own inbox. Read-only; no heartbeat. Each side reads a bounded newest-first window: `exhausted:false` means older mail exists beyond it, so treat that side's `total` as a floor, not a census.",
+    "Read one cup's coordination mail by ownerId: its INBOX (messages addressed to it, or broadcast) and its OUTBOX (messages it sent). The observer view behind the bee-dossier dock pane — distinct from coord:inbox, which reads YOUR own inbox. Read-only; no heartbeat. Each side reads a bounded newest-first window: `exhausted:false` means older mail exists beyond it, so treat that side's `total` as a floor, not a census.",
   guidance: {
     when: 'Rendering the cup-dossier pane, or inspecting what a specific cup has received/sent without being that cup.',
     notWhen:

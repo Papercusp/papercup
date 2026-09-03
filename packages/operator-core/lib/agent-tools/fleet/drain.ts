@@ -33,11 +33,11 @@ import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 export default defineTool({
   name: 'fleet:drain',
   description:
-    'Signal one OR many running BEES to gracefully wind down (checkpoint, release locks/claims, return work-list, exit). Pass `bee_id` for one or `bee_ids` for several. Distinct from fleet:cancel (hard kill). The bee can cooperate or request deferral (propose/dispose); the fleet leader waits bounded time before reclaiming the slot. Returns immediately; the drain is async. OWNER-DIRECTED sessions (su/sentinel/planner) are auto-REFUSED per target: not bees, no reclaimable slot, don\'t count against maxBees. Returns { ok, results:[{ ok, bee_id, msg_id, … | error }], counts } — correlate by bee_id, not position; one failure (or a refusal) never fails the rest.',
+    'Signal one OR many running CUPS to gracefully wind down (checkpoint, release locks/claims, return work-list, exit). Pass `bee_id` for one or `bee_ids` for several. Distinct from fleet:cancel (hard kill). The cup can cooperate or request deferral (propose/dispose); the fleet leader waits bounded time before reclaiming the slot. Returns immediately; the drain is async. OWNER-DIRECTED sessions (su/sentinel/planner) are auto-REFUSED per target: not cups, no reclaimable slot, don\'t count against maxBees. Returns { ok, results:[{ ok, bee_id, msg_id, … | error }], counts } — correlate by bee_id, not position; one failure (or a refusal) never fails the rest.',
   guidance: {
     when: 'You (the fleet leader) want to reclaim member slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each cup a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.',
     notWhen:
-      'The bee is running a high-priority task (let it finish). Immediate slot reclaim is critical, or the bee is unresponsive (use fleet:cancel). NEVER to reclaim an owner-directed session (su engineer, sentinel/operator, planner): not part of the maxBees population — the tool refuses them, but don\'t target them (pausing the pot operator ≠ drain your fleet-leader peers).',
+      'The cup is running a high-priority task (let it finish). Immediate slot reclaim is critical, or the cup is unresponsive (use fleet:cancel). NEVER to reclaim an owner-directed session (su engineer, sentinel/operator, planner): not part of the maxBees population — the tool refuses them, but don\'t target them (pausing the pot operator ≠ drain your fleet-leader peers).',
     chaining: 'fleet:drain { bee_id | bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → capability:launch-agent for a fresh ad-hoc agent (or fleet:launch-on-plan for a plan-bound member).',
   },
   capability: 'coord:write',
@@ -108,9 +108,9 @@ export default defineTool({
             kind: cls.kind,
             driveMode: cls.driveMode,
             error:
-              `refused: ${bee_id} is an owner-directed ${cls.kind} session (driveMode=responsive), not a bee — ` +
+              `refused: ${bee_id} is an owner-directed ${cls.kind} session (driveMode=responsive), not a cup — ` +
               `it holds no reclaimable slot and is not part of the maxBees population, so it cannot be drained. ` +
-              `Only its owner ends it. To reclaim bee slots, target queen/overwatch/bee sessions only.`,
+              `Only its owner ends it. To reclaim cup slots, target queen/overwatch/cup sessions only.`,
           };
         }
         // One drain cue PER bee — never a single broadcast: each bee must be the
@@ -128,7 +128,7 @@ export default defineTool({
           msg_id: sent.msg_id,
           ts: sent.ts,
           timeout_sec: args.timeout_sec,
-          next: `Monitor fleet:assignments to see when the bee releases its slot. On timeout, escalate or use fleet:cancel { spawn_id } if the bee doesn't comply.`,
+          next: `Monitor fleet:assignments to see when the cup releases its slot. On timeout, escalate or use fleet:cancel { spawn_id } if the cup doesn't comply.`,
         };
       },
       { keyOf: (bee_id) => ({ bee_id }) },

@@ -82,7 +82,7 @@ export default defineTool({
             error:
               `refused: ${spawn_id} is not a nursery spawn in workspace ${workspaceId}; ` +
               `fleet:cancel only cancels rows in harness_shared.spawned_agents. ` +
-              `If this is an owner-directed OMP/static session, do not treat it as a cancellable fleet bee.`,
+              `If this is an owner-directed OMP/static session, do not treat it as a cancellable fleet cup.`,
           };
         }
         const res = await cancelSubtree(sql, {
