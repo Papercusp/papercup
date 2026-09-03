@@ -55,7 +55,8 @@ const OBSERVATIONS: Array<{ label: string; obs: FrozenRepairQueueObservation }> 
   { label: 'dispatch infeasible after the stall window', obs: { nowMs: T0 + FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS + 1, dispatchFeasible: false } },
   { label: 'staging contains the repair', obs: { nowMs: T0 + 1, stagingContainsRepair: true } },
   { label: 'staging lacks the repair', obs: { nowMs: T0 + 1, stagingContainsRepair: false } },
-  { label: 'zero escapes used', obs: { nowMs: T0 + maxAgeMs + 1, priorEscapes: 0 } },
+  // A stale caller still passing the deleted P-048 budget observation: ignored, never honoured.
+  { label: 'stale priorEscapes observation', obs: { nowMs: T0 + maxAgeMs + 1, priorEscapes: 0 } as unknown as FrozenRepairQueueObservation },
 ];
 
 const ROW_VARIANTS: Array<{ label: string; make: (phase: FrozenCandidateRepairPhase) => FrozenCandidateRepairQueue }> = [
@@ -90,8 +91,11 @@ describe('a queue row in any phase never lets the gate judge the tip (P-013(b))'
     }
   }
 
-  it('the default limits grant NO candidate escapes (D-005: exhaustion blocks, it never re-cuts)', () => {
-    expect(DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS.maxCandidateEscapes).toBe(0);
+  it('the limits carry NO candidate-escape budget at all (D-005: the P-048 hatch is deleted, not zeroed)', () => {
+    // A zeroed budget would be a switch someone could flip back on; the field's ABSENCE is
+    // the property. A stray value on a stale caller's limits object is ignored, never honoured.
+    expect(DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS).not.toHaveProperty('maxCandidateEscapes');
+    expect(Object.keys(DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS).sort()).toEqual(['maxAgeMs', 'maxAttempts']);
   });
 
   it('no queue row at all is the ONLY input that judges the tip', () => {
