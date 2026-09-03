@@ -50,11 +50,13 @@ export const FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE = 'repair-staging-mismatch
  * would have been discarded unverified at the 14:22:37Z evaluation.
  * 8h covers dispatch + a full fixer run + up to two hourly verification ticks.
  * NOT CHANGED: maxAttempts. maxCandidateEscapes moved 0 → 1 on 2026-09-01 under the P-008
- * owner decision documented above. */
+ * owner decision, and back to 0 PERMANENTLY on 2026-09-03 under D-005 of
+ * frozen-candidate-stays-frozen-through-all-fixes-2026-09-03: exhaustion blocks and escalates,
+ * it never re-cuts — the decision functions no longer read the field at all. */
 export const DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS = Object.freeze({
   maxAttempts: 3,
   maxAgeMs: 8 * 60 * 60 * 1_000,
-  maxCandidateEscapes: 1,
+  maxCandidateEscapes: 0,
 });
 
 /**
@@ -93,7 +95,7 @@ export type FrozenCandidateRepairPhase =
   | 'ready-to-verify'
   | 'ready-to-promote'
   | 'blocked';
-export type FrozenCandidateBlockedReason = 'attempts-exhausted' | 'wall-clock-exhausted';
+export type FrozenCandidateBlockedReason = 'attempts-exhausted' | 'wall-clock-exhausted' | 'dispatch-infeasible';
 
 /**
  * Durable evidence that a frozen candidate pin was released because its age crossed the
@@ -182,6 +184,73 @@ export interface FrozenCandidateRepairQueue {
    * absent, which reads as "no leg measurement recorded" — never as "no legs are failing".
    */
   legs?: readonly FrozenRepairLegState[];
+  /**
+   * P-001 / D-002 / D-006 — the ADMISSION LEDGER: every plumbing commit that advanced
+   * `repairHead`, in order. Under D-002 `repairHead` moves ONLY by an entry here (fast-forward
+   * to tip is gone), so this is both the audit trail ("what exactly is being judged, and who
+   * put it there?") and the completion evidence P-022 reads. Optional and additive like `legs`:
+   * a legacy queue parses with it absent, which reads as "no admission recorded".
+   */
+  admissions?: readonly FrozenRepairAdmission[];
+}
+
+/**
+ * One admission (see ./repair-head-admission.ts): the source commit the entries came from,
+ * the head it was built on, the head it produced, and exactly which paths changed.
+ */
+export interface FrozenRepairAdmission {
+  atMs: number;
+  /** The agent (ownerId) that admitted — attribution lives here, never in git identity. */
+  actor: string;
+  /** The ref the caller named and the commit it resolved to at admission time. */
+  source: { ref: string; sha: string };
+  fromRepairHead: string;
+  toRepairHead: string;
+  /** Paths whose content changed on the lineage (== the proved diff-tree name set). */
+  paths: string[];
+  /** Allowlisted paths whose source content already equalled repairHead's — no diff, idempotent. */
+  unchanged: string[];
+  /** path -> blob/gitlink sha at the source, null for a deletion. */
+  blobs: Record<string, string | null>;
+  reason?: string;
+}
+
+/** Ledger cap: a runaway admission loop cannot grow the persisted queue without bound. The
+ * NEWEST entries are kept — the ledger's job is "what is on the lineage now", and every
+ * dropped entry's content is still reachable from the commits themselves. */
+export const FROZEN_REPAIR_ADMISSION_CAP = 200;
+
+function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
+  if (!Array.isArray(raw)) return [];
+  const out: FrozenRepairAdmission[] = [];
+  for (const v of raw) {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+    const e = v as Record<string, unknown>;
+    const source = e.source as Record<string, unknown> | null | undefined;
+    if (!validTimestamp(e.atMs) || !nonBlank(e.actor) || !nonBlank(e.fromRepairHead) || !nonBlank(e.toRepairHead)) continue;
+    if (!source || typeof source !== 'object' || Array.isArray(source) || !nonBlank(source.ref) || !nonBlank(source.sha)) continue;
+    if (!Array.isArray(e.paths) || !e.paths.every((p) => typeof p === 'string')) continue;
+    const unchanged =
+      Array.isArray(e.unchanged) && e.unchanged.every((p) => typeof p === 'string') ? (e.unchanged as string[]) : [];
+    const blobs: Record<string, string | null> = {};
+    if (e.blobs && typeof e.blobs === 'object' && !Array.isArray(e.blobs)) {
+      for (const [k, val] of Object.entries(e.blobs as Record<string, unknown>)) {
+        if (val === null || typeof val === 'string') blobs[k] = val;
+      }
+    }
+    out.push({
+      atMs: e.atMs as number,
+      actor: e.actor as string,
+      source: { ref: source.ref as string, sha: source.sha as string },
+      fromRepairHead: e.fromRepairHead as string,
+      toRepairHead: e.toRepairHead as string,
+      paths: e.paths as string[],
+      unchanged,
+      blobs,
+      ...(nonBlank(e.reason) ? { reason: e.reason as string } : {}),
+    });
+  }
+  return out.slice(-FROZEN_REPAIR_ADMISSION_CAP);
 }
 
 /**
@@ -308,24 +377,11 @@ export type FrozenRepairQueueDecision =
     }
   | {
       /**
-       * P-048: this pin is exhausted AND an escape is still budgeted — abandon it and let the
-       * caller cut a fresh candidate at tip. Deliberately `runSuite:false` / `recordVerdict:false`:
-       * abandoning a pin is not a verdict ON that pin, and recording one would let an escape be
-       * misread as a judged red.
+       * D-005 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the ONLY answer to an
+       * exhausted pin. The P-048 `recut-at-tip` escape was deleted — every automatic retire seen
+       * since 2026-08-19 was a re-cut in disguise. The row, candidate and repairHead stay; the
+       * gate escalates ONCE; an admission through the one door (P-001) un-blocks it.
        */
-      kind: 'recut-at-tip';
-      reason: FrozenCandidateBlockedReason;
-      abandonedCandidate: string;
-      repairHead: string;
-      /** 1-based: which escape this is. */
-      escapeOrdinal: number;
-      /** Escapes still budgeted AFTER this one; 0 means the next exhaustion holds forever. */
-      remainingEscapes: number;
-      gateDisposition: 'recut';
-      runSuite: false;
-      recordVerdict: false;
-    }
-  | {
       kind: 'hold-exhausted';
       reason: FrozenCandidateBlockedReason;
       candidate: string;
@@ -344,15 +400,17 @@ export type FrozenRepairQueueDecision =
     };
 
 export interface FrozenRepairDispatchInfeasibleDecision {
-  kind: 'recut-at-tip';
+  /** D-005: a measured, LASTING dispatch wall BLOCKS the queue (row/candidate/repairHead intact)
+   * and escalates; it never retires or re-cuts. Agents converge onto it through admission. */
+  kind: 'hold-dispatch-infeasible';
   reason: 'dispatch-infeasible';
-  abandonedCandidate: string;
+  candidate: string;
   repairHead: string;
   attempts: number;
   ageMs: number;
   zeroAttemptStalled: boolean;
   zeroAttemptStallMs: number;
-  gateDisposition: 'recut';
+  gateDisposition: 'blocked';
   runSuite: false;
   recordVerdict: false;
 }
@@ -671,16 +729,19 @@ export function decideFrozenRepairDispatchInfeasible(
       recordVerdict: false,
     };
   }
+  // D-005: the wall outlasted the convergence hold. BLOCK — row, candidate and repairHead
+  // intact — and let the caller escalate once. Never retire, never re-cut: an admission
+  // through the one door (P-001 / markFrozenRepairAdmitted) is what un-blocks this queue.
   return {
-    kind: 'recut-at-tip',
+    kind: 'hold-dispatch-infeasible',
     reason: 'dispatch-infeasible',
-    abandonedCandidate: queue.candidate,
+    candidate: queue.candidate,
     repairHead: queue.repairHead,
     attempts: queue.attempts,
     ageMs,
     zeroAttemptStalled: true,
     zeroAttemptStallMs,
-    gateDisposition: 'recut',
+    gateDisposition: 'blocked',
     runSuite: false,
     recordVerdict: false,
   };
@@ -970,9 +1031,14 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   if (!Array.isArray(row.failingTests) || !row.failingTests.every((v) => typeof v === 'string')) {
     return null;
   }
-  if ((row.phase === 'ready-to-verify' || row.phase === 'ready-to-promote') && (row.attempts as number) < 1)
-    return null;
-  if ((row.phase === 'ready-to-verify' || row.phase === 'ready-to-promote') && !nonBlank(row.fixerSpawnId)) return null;
+  // P-001 / D-010: a verification phase is reached EITHER by a dispatched fixer (attempts ≥ 1
+  // and a spawn id) OR by an admission through the one door — an admitted fix from any agent
+  // needs no fixer bookkeeping. A legacy row with no admissions keeps the old invariant exactly.
+  const admissions = parseAdmissions(row.admissions);
+  if (row.phase === 'ready-to-verify' || row.phase === 'ready-to-promote') {
+    const viaFixer = (row.attempts as number) >= 1 && nonBlank(row.fixerSpawnId);
+    if (!viaFixer && admissions.length === 0) return null;
+  }
   /**
    * Rounds are OBSERVABILITY, not safety, so a malformed value is dropped rather than
    * failing the whole parse. The queue itself is the gate's safety state — refusing to
@@ -985,7 +1051,9 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   // dropped individually, never failing the parse of a live queue.
   const legs = parseRepairLegStates(row.legs);
   const blockedReason =
-    row.blockedReason === 'attempts-exhausted' || row.blockedReason === 'wall-clock-exhausted'
+    row.blockedReason === 'attempts-exhausted' ||
+    row.blockedReason === 'wall-clock-exhausted' ||
+    row.blockedReason === 'dispatch-infeasible'
       ? row.blockedReason
       : undefined;
   if (row.phase === 'blocked' && !blockedReason) return null;
@@ -1012,6 +1080,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     ...(dispatchReservation ? { dispatchReservation } : {}),
     ...(convergenceRounds.length > 0 ? { convergenceRounds } : {}),
     ...(legs.length > 0 ? { legs } : {}),
+    ...(admissions.length > 0 ? { admissions } : {}),
     failingTests: boundedFailures(row.failingTests as string[]),
   };
 }
@@ -1041,28 +1110,21 @@ function decideExhaustedPin(
   limits: FrozenRepairQueueLimits,
   reason: FrozenCandidateBlockedReason,
 ): FrozenRepairQueueDecision {
-  const escapesUsed = Math.max(0, Math.trunc(observation.priorEscapes ?? 0));
-  const { maxCandidateEscapes } = limits;
-  if (maxCandidateEscapes > 0 && escapesUsed < maxCandidateEscapes) {
-    return {
-      kind: 'recut-at-tip',
-      reason,
-      abandonedCandidate: queue.candidate,
-      repairHead: queue.repairHead,
-      escapeOrdinal: escapesUsed + 1,
-      remainingEscapes: maxCandidateEscapes - escapesUsed - 1,
-      gateDisposition: 'recut',
-      runSuite: false,
-      recordVerdict: false,
-    };
-  }
+  // D-005 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): exhaustion BLOCKS and
+  // escalates; it never re-cuts. The P-048/P-008 escape hatch is deleted — every automatic
+  // retire seen since 2026-08-19 was a re-cut in disguise, and the owner wants the candidate
+  // held until it is green. `observation.priorEscapes` and `limits.maxCandidateEscapes` are
+  // deliberately NOT read; the two counters stay on the decision as zeros so the surfaces that
+  // render them keep their shape until P-009 removes them.
+  void observation;
+  void limits;
   return {
     kind: 'hold-exhausted',
     reason,
     candidate: queue.candidate,
     repairHead: queue.repairHead,
-    escapesUsed,
-    maxCandidateEscapes,
+    escapesUsed: 0,
+    maxCandidateEscapes: 0,
     gateDisposition: 'blocked',
     runSuite: false,
     recordVerdict: false,
@@ -1341,7 +1403,9 @@ export function diagnoseFrozenCandidateRepairQueue(
   // terminal for this candidate earns the retire recipe; every other decision keeps the SAFE
   // verb advertised. `retireAllowed`/`retireRefusal` are deliberately left untouched — the
   // permission and the recommendation are different questions and other callers read the former.
-  const retirementIsTheDecision = decision.kind === 'hold-exhausted' || decision.kind === 'recut-at-tip';
+  // D-005: the terminal decisions are HOLDS now (never a re-cut); retire stays owner-only.
+  const retirementIsTheDecision =
+    decision.kind === 'hold-exhausted' || decision.kind === 'hold-dispatch-infeasible';
   const identity = buildFrozenRepairStatusIdentity(queue);
   const nextAction = !retireAllowed
     ? null
@@ -1493,6 +1557,48 @@ export function markFrozenRepairFixerFinished(
     phase: 'ready-to-verify',
     repairHead: input.repairHead,
     updatedAtMs: input.nowMs,
+  };
+}
+
+/**
+ * P-001 / D-002 — record one admission on the row and advance `repairHead` to the commit it
+ * produced. This is the ONLY function that moves `repairHead` forward by content (the fixer
+ * completion above is the other mover and is retired with the worktree under D-010).
+ *
+ * Phase: an admitted fix is content to VERIFY. `ready-to-test` stays — the candidate's own
+ * suite has not judged yet and its red is what seeds the signature; the verification tick
+ * after it judges the new head. Every other phase moves to `ready-to-verify`, INCLUDING
+ * `blocked` (an admission is precisely the agent/human convergence a blocked queue is waiting
+ * for — D-005 blocks automatic dispatch, never verification of a landed fix) and
+ * `ready-to-promote` (new content invalidates the promotion proof).
+ *
+ * The primitive's compare-and-swap on the lineage ref already refused a stale build; the
+ * `fromRepairHead` check here is the row-level echo of that, so a caller that re-read the
+ * queue after admitting cannot splice a ledger entry onto the wrong head.
+ */
+export function markFrozenRepairAdmitted(
+  queue: FrozenCandidateRepairQueue,
+  entry: FrozenRepairAdmission,
+): FrozenCandidateRepairQueue {
+  assertTimestamp(entry.atMs, 'atMs');
+  if (!nonBlank(entry.toRepairHead)) throw new Error('admission toRepairHead must be non-empty');
+  if (entry.fromRepairHead !== queue.repairHead) {
+    throw new Error(
+      `admission was built onto ${entry.fromRepairHead.slice(0, 12)} but the queue's repairHead is ` +
+        `${queue.repairHead.slice(0, 12)}: re-read the queue and admit onto its current head`,
+    );
+  }
+  if (entry.paths.length === 0) throw new Error('an admission with no changed paths is not an admission');
+  const admissions = [...(queue.admissions ?? []), entry].slice(-FROZEN_REPAIR_ADMISSION_CAP);
+  const phase: FrozenCandidateRepairPhase = queue.phase === 'ready-to-test' ? 'ready-to-test' : 'ready-to-verify';
+  const { blockedReason: _leavingBlocked, ...rest } = queue;
+  void _leavingBlocked;
+  return {
+    ...rest,
+    phase,
+    repairHead: entry.toRepairHead,
+    admissions,
+    updatedAtMs: Math.max(queue.updatedAtMs, entry.atMs),
   };
 }
 
