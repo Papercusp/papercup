@@ -16,7 +16,7 @@
  */
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { harnessQuery } from '@papercusp/db-org';
+import { harnessTransaction } from '@papercusp/db-org';
 import { resolvePhasedProject, harnessDir, safeRead } from '../../../harness-core';
 import { phasePhaseLabel } from '../../../harness-phases';
 import { loadIssuesOrSeed, saveIssues } from '../../../harness-issues';
@@ -208,7 +208,7 @@ const promote = defineTool({
       const title = firstLine.trim().slice(0, 200);
       const notes = rest.join('\n').trim() || null;
       const ts = Date.now();
-      const id = await harnessQuery(project.slug, (sql) => sql.begin(async (tx) => {
+      const id = await harnessTransaction(project.slug, async (tx) => {
         const ideaRows = await tx`
           SELECT feature_id FROM harness_features
            WHERE harness_slug = ${project.slug} AND feature_id LIKE 'F-IDEA-%'
@@ -228,7 +228,7 @@ const promote = defineTool({
             NULL, NULL, NULL, NULL, false, ${ts}, ${ts}, ${ts})
         `;
         return newId;
-      }));
+      });
       auditFeatureChange(
         project.slug, id, '__created', null,
         { id, title, source: 'brainstorm' },
