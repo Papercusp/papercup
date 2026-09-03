@@ -13122,7 +13122,14 @@ describe("WI-2141736: the fixer's provider is DERIVED from agent-config, never h
 });
 
 describe("WI-606293: release-fixer provider-capacity preflight", () => {
-  const RESET_AT = Date.parse("2026-09-03T16:24:00.000Z");
+  // A wall that resets ~24h from NOW, minute-aligned so the ISO form below is stable within a
+  // run. This was a fixed calendar timestamp (2026-09-03T16:24Z) and time-bombed the file: the
+  // "OUTLASTS the stall window" falsifier below went red the moment the wall clock passed it,
+  // reading a "wall reset an hour ago" as "wall reset in ~24h". A test about relative time
+  // must anchor to the clock it runs under.
+  const RESET_AT =
+    Math.floor(Date.now() / 60_000) * 60_000 + 24 * 60 * 60 * 1_000;
+  const RESET_AT_ISO = new Date(RESET_AT).toISOString();
 
   /** A queue that routes to decision.kind === "dispatch-fixer" (reason "unassigned"). */
   const unassignedQueue = (
@@ -13210,7 +13217,7 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     });
     expect(result.summary).toContain("WITHHELD");
     expect(result.summary).toContain("usage-walled");
-    expect(result.summary).toContain("2026-09-03T16:24:00.000Z");
+    expect(result.summary).toContain(RESET_AT_ISO);
     // The attempt budget is the scarce resource this whole preflight protects.
     expect(queue?.attempts).toBe(1);
   });
@@ -13584,7 +13591,7 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     });
     expect(line).toContain("WITHHELD for abcdef12");
     expect(line).toContain("usage-walled");
-    expect(line).toContain("2026-09-03T16:24:00.000Z");
+    expect(line).toContain(RESET_AT_ISO);
     expect(line).toContain(
       "No repair attempt and no dispatch reservation were spent",
     );
