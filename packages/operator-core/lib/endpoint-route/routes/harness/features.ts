@@ -758,8 +758,15 @@ const createFeature = defineTool({
     // Budget enforcement at proposal-add time: if project_id + budget +
     // expected_cost_cents would push committed-spend over budget → reject.
     if (body.project_id && typeof body.expected_cost_cents === 'number' && body.expected_cost_cents > 0) {
+      // Narrowed to a local const: TS control-flow narrowing on `body.project_id`
+      // from the truthy check above does not persist into the harnessQuery
+      // callback (a nested function expression, which TS treats conservatively
+      // for property-access narrowing), so the bare property access still
+      // types as `string | undefined` inside sql`` below without this.
+      const projectId = body.project_id;
+      const expectedCostCents = body.expected_cost_cents;
       const projectRows = await harnessQuery(project.slug, (sql) => sql`
-        SELECT id, name, budget_cents FROM projects WHERE id = ${body.project_id}
+        SELECT id, name, budget_cents FROM projects WHERE id = ${projectId}
       `);
       const project_row = projectRows[0] as any;
       if (project_row && project_row.budget_cents !== null) {
@@ -781,7 +788,7 @@ const createFeature = defineTool({
               (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata, kind,
                project_id, expected_cost_cents, tags, needs_human_review, ts, created_ts, updated_ts)
             VALUES (${project.slug}, ${id}, ${title}, ${rejectSummary}, 'out_of_budget', 0, NULL,
-              ${rejectNotes}, NULL, ${body.kind ?? null}, ${body.project_id}, ${body.expected_cost_cents},
+              ${rejectNotes}, NULL, ${body.kind ?? null}, ${projectId}, ${expectedCostCents},
               NULL, false, ${now}, ${now}, ${now})
           `);
           auditFeatureChange(project.slug, id, '__rejected_budget', null, { project: project_row.id, budget: Number(project_row.budget_cents), committed, proposed: body.expected_cost_cents }, actor);

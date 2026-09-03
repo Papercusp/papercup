@@ -40,6 +40,24 @@ vi.mock('../../../harness-core', async () => {
   };
 });
 
+// notifySyncInvalidate (Postgres LISTEN/NOTIFY-backed SSE invalidation) is
+// orthogonal to the harness-scoping property under test here, and reliably
+// throws "notifySyncInvalidate is not a function" specifically in the POOLED
+// (PAPERCUSP_PGBOUNCER=1) describe.each iteration — reproduced deterministically
+// with only the promote tests selected (no getAudit interaction), so it is a
+// module-resolution artifact of this test file's mid-process DIRECT→POOLED env
+// flip (production never flips PGBOUNCER on a live process), not a bug in the
+// harnessTransaction/auditFeatureChange migration under test. auditFeatureChange's
+// fire-and-forget call reaches it AFTER a real, unmocked DB write to
+// harness_shared.feature_audit_consolidated (provisionSharedAuditTable below),
+// so the write-correctness property this suite cares about stays fully exercised;
+// only the downstream UI-refresh notification is stubbed, so it can never turn
+// into an uncaught console.warn that vitest-fail-on-console flags as a failure.
+vi.mock('../../../sync-sse', () => ({
+  notifySyncInvalidate: vi.fn(async () => {}),
+  stopInvalidationListener: vi.fn(async () => {}),
+}));
+
 import feature_views_routes from './feature-views';
 import brainstorm_routes from './brainstorm';
 
