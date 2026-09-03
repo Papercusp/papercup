@@ -273,18 +273,23 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
 
   it('GAP-2: an owner tier override raises the QUEEN\'s OWN model (bodyExtra.spawnModel) at launch', async () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    // Owner set the menu (mug's home tier `standard`, WI-4623 revert) to opus:xhigh in the 👑-tab → session override.
+    // 2026-09-02 owner directive (role-models.ts ROLE_MODEL_DEFAULTS) moved mug's committed
+    // default to `opus:xhigh` — her home tier (roleHomeTier, matched by family) is therefore now
+    // `deep`, not the pre-directive `standard`. Owner raises that tier's spec to `opus:max` (a
+    // stronger EFFORT within the same opus family) in the 👑-tab → session override, so the
+    // override is a real escalation above her already-opus committed floor.
     getOwnerSteering.mockResolvedValueOnce({
       directive: null, eligiblePlans: [], eligibleHives: [], pauseNewWork: false, pausedUntil: null,
-      modelTiers: [{ name: 'standard', spec: 'opus:xhigh' }], tierCeilings: null,
+      modelTiers: [{ name: 'deep', spec: 'opus:max' }], tierCeilings: null,
     });
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];
     setLaunchBlueprintFire((input) => { fired.push(input); });
     const target = await fireLaunchBlueprint('coding', { ...opts, kickoff: 'go' });
     expect(target.role).toBe('mug');
     expect(fired).toHaveLength(1);
-    // Her OWN model is now tier-driven — resolved from the owner's menu, not her sonnet[1m]:high default.
-    expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('opus:xhigh');
+    // Her OWN model is now tier-driven — resolved from the owner's menu, raised past her
+    // committed opus:xhigh floor to opus:max.
+    expect((fired[0]!.bodyExtra as { spawnModel?: string }).spawnModel).toBe('opus:max');
   });
 
   it('GAP-2: owner steering also raises non-Queen launch roles such as doc-steward', async () => {
