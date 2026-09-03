@@ -26,6 +26,7 @@
  */
 
 import type { LocalWriteOp } from './boot';
+import { redactExternalIngest } from './external-ingest-envelope';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import type { HarnessFeatureRow } from './projections/harness-features';
 import type { HarnessPlanRow } from './projections/harness-plans';
@@ -1290,7 +1291,20 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     type: 'put',
     table,
     hbKey: outboxRow.key,
-    value,
+    // EI-22088522809897790 — the POST-ADMISSION half of the guard the PUBLIC SEED
+    // path already applies (seed-provider-corestore's seedSnapshotValueTransform).
+    // A plan run launched from an external trigger carries the owner's raw ingest
+    // (full inbound email: sender, recipients, subject, HTML body) at
+    // work_items.payload.plan_run.inputs.trigger.payload, and THIS is the boundary
+    // where such a row becomes a block in the own log that every admitted member
+    // replicates. Strip the private payload, keep the routing fields and the row.
+    // Nothing downstream consumes the federated copy: the private args live in the
+    // owner-local, UNFEDERATED harness_shared.trigger_runs.args, and the write-side
+    // tools (gmail:create-draft, slack:respond-in-thread) already resolve recipient,
+    // thread, headers and OAuth credential from THERE by planRunId, on the operator
+    // that holds the credential. Identity-preserving: an ordinary row is returned
+    // unchanged, by reference.
+    value: redactExternalIngest(value),
     ts,
     schema_version: CURRENT_SCHEMA_VERSION,
     // D-001: carry the local row's PG-stamped HLC (substrate_outbox.op_hlc =

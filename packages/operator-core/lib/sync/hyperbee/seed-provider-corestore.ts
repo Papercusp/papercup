@@ -53,6 +53,17 @@ import type {
 import { hostname, tmpdir, userInfo } from 'node:os';
 import { openNamedLog, type PeerLogOp } from './peer-log';
 import {
+  decodeEncodedJson,
+  isExternalTriggerEnvelope,
+  valueCarriesExternalIngest,
+} from './external-ingest-envelope';
+
+// The external-ingest predicates moved to ./external-ingest-envelope so the outbox
+// row mapper (the POST-ADMISSION replication boundary) can share this ONE definition
+// without importing corestore/child_process/fs through this module. Re-exported here
+// because this module was their original home and is where callers still import them.
+export { isExternalTriggerEnvelope, valueCarriesExternalIngest };
+import {
   DROP_SNAPSHOT_ROW,
   isSnapshotOp,
   produceFilteredSnapshotIntoLog,
@@ -183,21 +194,6 @@ function redactString(value: string, literals: readonly string[]): string {
   return redacted;
 }
 
-function decodeEncodedJson(value: Uint8Array | ArrayBuffer): { text: string; json?: unknown } | undefined {
-  const bytes = value instanceof ArrayBuffer ? new Uint8Array(value) : value;
-  let text: string;
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch {
-    return undefined;
-  }
-  try {
-    return { text, json: JSON.parse(text) as unknown };
-  } catch {
-    return { text };
-  }
-}
-
 /**
  * Deep scan of a row VALUE for any hunted identity literal — strings, object KEYS, arrays,
  * and encoded-JSON bytes. Keys are scanned on purpose: build #5's five raw `aviynw` survivors
@@ -219,39 +215,6 @@ export function valueCarriesSeedIdentity(value: unknown, literals: readonly stri
     if (stringCarriesSeedIdentity(key, literals) || valueCarriesSeedIdentity(child, literals)) return true;
   }
   return false;
-}
-
-/**
- * An external-integration event envelope — the shape `external-triggers/*` writes when it
- * ingests the OWNER'S connected account (Gmail today; any `ext:<source>:<event>` adapter):
- * `{ key:'ext:gmail:message.received', source:'gmail', event:'message.received', payload:{…} }`,
- * or the canonical ingest record `{ source, event, dedupeKey, payload|adapterPayload }`.
- * The payload is the owner's private inbox — sender, recipients, subject, full HTML body —
- * and it reaches the hive INSIDE work-item payloads (a plan run's `inputs.trigger`,
- * features-by-id PR-974 in the 2026-09-01 seed), not in a table of its own, so the public
- * seed must drop the whole row wherever the envelope appears in a value.
- */
-export function isExternalTriggerEnvelope(value: unknown): boolean {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const v = value as Record<string, unknown>;
-  const hasSourceEvent = typeof v.source === 'string' && typeof v.event === 'string';
-  if (!hasSourceEvent) return false;
-  const hasPayload =
-    (typeof v.payload === 'object' && v.payload !== null) || (typeof v.adapterPayload === 'object' && v.adapterPayload !== null);
-  if (!hasPayload) return false;
-  return (typeof v.key === 'string' && v.key.startsWith('ext:')) || typeof v.dedupeKey === 'string';
-}
-
-/** Deep scan of a row VALUE for an {@link isExternalTriggerEnvelope} anywhere inside it. */
-export function valueCarriesExternalIngest(value: unknown): boolean {
-  if (value === null || typeof value !== 'object') return false;
-  if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
-    const decoded = decodeEncodedJson(value);
-    return decoded?.json !== undefined ? valueCarriesExternalIngest(decoded.json) : false;
-  }
-  if (Array.isArray(value)) return value.some(valueCarriesExternalIngest);
-  if (isExternalTriggerEnvelope(value)) return true;
-  return Object.values(value).some(valueCarriesExternalIngest);
 }
 
 function redactEncodedJson(value: Uint8Array | ArrayBuffer, literals: readonly string[]): unknown {
