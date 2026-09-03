@@ -2237,7 +2237,7 @@ export const GATE_CONVERGENCE_CELL: CellSpec = {
     path: 'gate.convergence.shrinkTotal',
   },
   shape:
-    '{ gate: { convergence: { code, unmeasured, openedAtMs, ageMs, attempts, admissionRounds, failingFirst, failingNow, shrinkTotal, shrinkPerRound: [{ round, failingCount, delta }], converging, candidate, repairHead, phase, observedAtMs } } }',
+    '{ gate: { convergence: { code, unmeasured, openedAtMs, ageMs, attempts, admissionRounds, failingFirst, failingNow, shrinkTotal, shrinkPerRound: [{ round, failingCount, delta }], converging, candidate, repairHead, phase, observedAtMs, scope: { population, subject, admittedAtOrBeforeMs, admittedAtOrAfterMs, notComparableTo: [{ reading, why }], summary } } } }',
 };
 
 /**
