@@ -1193,9 +1193,10 @@ export function defaultCompactionLimitForWindow(window: number, opts?: { fleetMe
  * a user/agent-set limit is clamped to (context-trimming-tiers D-001):
  * `floor((window − margin) / 1.2)`, floored to 1k for stable display.
  * 200k window → 158,000. EXCEPTION: a `[1m]`-carrying spec is capped at
- * 400,000 — 200,000 when `opts.fleetMember` (owner directive 2026-07-19,
- * superseding the 300,000 of 2026-07-03; see
- * COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP) —
+ * {@link COMPACTION_LIMIT_DEFAULT_1M_CAP} — {@link COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP}
+ * when `opts.fleetMember` (owner directive 2026-07-19, superseding the 300,000 of
+ * 2026-07-03; the fleet-member cap has since moved again — read the constant, and
+ * see SUPERSEDED_1M_FLEET_MEMBER_CAPS for the values live sessions may still carry) —
  * so it compacts preemptively despite the 1M window. Keyed on the `[1m]`
  * MARKER, not the family name: a bare `sonnet` / `opus` launch that skipped
  * normalization really runs a 200k auto-compact window in CC (live-verified
@@ -1295,12 +1296,17 @@ export function supersededDerivedCompactionLimits(spec?: string | null, opts?: {
     out.push(defaultCompactionLimitForWindow(MODEL_WINDOW_DEFAULT, opts));
   }
 
-  // The Claude counterpart (EI-22241751831038573). The codex branch above was the
-  // FIRST instance of this failure and its fix was scoped to codex, which left the
-  // identical hole open for `[1m]` Claude fleet members — the population the
-  // 200_000 → 250_000 cap raise then stranded. `[1m]` is a Claude-only marker, so
-  // these two branches address disjoint specs.
-  if (opts?.fleetMember && derivesFrom1mWindow(spec)) {
+  // The counterpart for every backend that lands on the 1M FLEET-MEMBER cap
+  // (EI-22241751831038573). The codex branch above was the first instance of this
+  // failure and its fix was scoped to codex, which left the identical hole open for
+  // the population the 200_000 → 250_000 cap raise then stranded.
+  //
+  // Keyed on the DERIVED SEED, not on the `[1m]` marker: a bare `gpt-5.6-luna:high`
+  // carries no marker yet resolves to a 1M window through modelWindowForSpec, so a
+  // marker test silently excludes an entire backend that can be stranded exactly the
+  // same way. Asking "does this spec actually derive the 1M fleet-member cap?" cannot
+  // drift from the derivation it is protecting.
+  if (opts?.fleetMember && defaultCompactionLimitForSpec(spec, opts) === COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP) {
     out.push(...SUPERSEDED_1M_FLEET_MEMBER_CAPS);
   }
 

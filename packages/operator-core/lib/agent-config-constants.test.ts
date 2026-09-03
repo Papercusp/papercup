@@ -8,6 +8,9 @@ import {
   isDefault1mModelSpec,
   defaultCompactionLimitForSpec,
   defaultCompactionLimitForWindow,
+  supersededDerivedCompactionLimits,
+  derivesFrom1mWindow,
+  SUPERSEDED_1M_FLEET_MEMBER_CAPS,
   selfSetCeilingForWindow,
   selfSetCeilingForSpec,
   clampCompactionLimit,
@@ -286,6 +289,74 @@ describe('codex extended-window specs seed the SAME role caps as claude [1m]', (
     expect(defaultCompactionLimitForSpec('opus[1m]')).toBe(400_000);
     expect(defaultCompactionLimitForSpec('haiku')).toBe(158_000);
     expect(defaultCompactionLimitForSpec('sonnet')).toBe(158_000);
+  });
+});
+
+describe('supersededDerivedCompactionLimits reaches stranded claude [1m] fleet members (EI-22241751831038573)', () => {
+  // The watchdog's upward heal fires only when a stored limit equals the CURRENT
+  // derived seed or one of these. Measured 2026-09-03: a fleet member pinned at
+  // 200_000 against a true 1M window (cap since moved to 250_000) was unraisable,
+  // so every carry-respawn successor re-crossed the limit within ~8 minutes — 15
+  // consecutive sessions. The codex branch had the identical bug and its fix was
+  // scoped to codex, leaving claude bare.
+  const stored = 200_000;
+
+  it('lists the outgoing fleet-member cap so a stranded session is recognised as DERIVED', () => {
+    for (const spec of ['claude-opus-5[1m]', 'opus[1m]', 'sonnet[1m]']) {
+      const superseded = supersededDerivedCompactionLimits(spec, { fleetMember: true });
+      expect(superseded).toContain(stored);
+      // and the heal predicate the watchdog actually evaluates now passes
+      const seed = defaultCompactionLimitForSpec(spec, { fleetMember: true });
+      expect(seed === stored || superseded.includes(stored)).toBe(true);
+    }
+  });
+
+  it('still raises TOWARD the policy cap, never past it', () => {
+    expect(defaultCompactionLimitForSpec('opus[1m]', { fleetMember: true })).toBe(
+      COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
+    );
+  });
+
+  it('never reports the CURRENT derivation as superseded', () => {
+    for (const spec of ['claude-opus-5[1m]', 'opus[1m]', null]) {
+      const current = defaultCompactionLimitForSpec(spec, { fleetMember: true });
+      expect(supersededDerivedCompactionLimits(spec, { fleetMember: true })).not.toContain(current);
+    }
+  });
+
+  it('does NOT widen non-1m specs or non-fleet-members (the fix stays scoped)', () => {
+    expect(supersededDerivedCompactionLimits('claude-opus-5', { fleetMember: true })).toEqual([]);
+    // a leader/solo keeps its own cap history, which these values are not part of
+    expect(supersededDerivedCompactionLimits('opus[1m]', { fleetMember: false })).toEqual([]);
+  });
+
+  it('derivesFrom1mWindow is the SHORT-CIRCUIT branch, not "resolves to a 1M window"', () => {
+    // The marker/blank short-circuit implies a 1M derivation...
+    for (const spec of ['opus[1m]', 'claude-opus-5[1m]', null, '', '   ']) {
+      expect(derivesFrom1mWindow(spec)).toBe(true);
+      expect(defaultCompactionLimitForSpec(spec, { fleetMember: false })).toBe(
+        defaultCompactionLimitForWindow(MODEL_WINDOW_1M, { fleetMember: false }),
+      );
+    }
+    // ...but NOT conversely: a bare gpt-5.6-luna:high carries no [1m] marker and
+    // still resolves to a 1M window via modelWindowForSpec. Keying the superseded
+    // list on this helper would have excluded that whole backend, which is why the
+    // list keys on the DERIVED SEED instead.
+    expect(derivesFrom1mWindow('gpt-5.6-luna:high')).toBe(false);
+    expect(modelWindowForSpec('gpt-5.6-luna:high')).toBe(MODEL_WINDOW_1M);
+  });
+
+  it('covers a markerless spec that still derives the 1M fleet-member cap', () => {
+    expect(defaultCompactionLimitForSpec('gpt-5.6-luna:high', { fleetMember: true })).toBe(
+      COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
+    );
+    expect(supersededDerivedCompactionLimits('gpt-5.6-luna:high', { fleetMember: true })).toContain(stored);
+  });
+
+  it('every superseded cap is below the current one (they are OUTGOING values)', () => {
+    for (const cap of SUPERSEDED_1M_FLEET_MEMBER_CAPS) {
+      expect(cap).not.toBe(COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP);
+    }
   });
 });
 
