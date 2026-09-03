@@ -349,9 +349,57 @@ export const WORKSPACE_HOST_BOOTSTRAP_CHECKS = [
   "workspace-acl",
   "privileged-conduits",
   "ssh-forwarding-policy",
+  // D-238's property, finally NAMED. `harden-os` already refuses to render a brick, but that
+  // guard fires five phases before `healthy` is claimed and appeared NOWHERE in the attestation —
+  // so the single property whose absence made the original host unrecoverable was invisible in
+  // the document that asserts the host is fine (EI-22185970114422986).
+  "workspace-ssh-authorized-keys",
 ] as const;
 export type WorkspaceHostBootstrapCheckName =
   (typeof WORKSPACE_HOST_BOOTSTRAP_CHECKS)[number];
+
+/**
+ * The host-side observation that ESTABLISHES each attested check (EI-22185970114422986).
+ *
+ * `checks` is serialized into the attestation by the RENDERER — `{ name, ok: true }` for every
+ * name above — before the host has executed a single line, and
+ * `validateWorkspaceHostBootstrapAttestation` then requires each one to be `ok: true`, which the
+ * renderer guaranteed. Read literally, that array can never report a failure of any named
+ * property. Apply the diagnostic this item was filed for — *if the check half silently did
+ * nothing, would this run still report success?* — and the answer was yes, for every name.
+ *
+ * The design INTENT is sound and is kept: each check corresponds to a `die` guard earlier in the
+ * script, so reaching `attest-health` at all is the proof. What was missing is anything BINDING a
+ * name to its guard. A name added with no guard is attested `ok: true` for a property nobody
+ * measured; a guard deleted from the render leaves its name attesting on nothing. Both are
+ * silent, and both are the same shape as the lockout this item was filed for.
+ *
+ * This map is that binding, and `workspace-host-bootstrap.test.ts` fails the build when any
+ * fragment is absent from the rendered script. It is a PIN, not a derivation (derived-truth
+ * ladder rung 2): the fragment proves the observation is still EMITTED, not that it observes the
+ * right thing. So bind the narrowest fragment that would disappear if the guard were removed.
+ */
+export const WORKSPACE_HOST_BOOTSTRAP_CHECK_EVIDENCE: Readonly<
+  Record<WorkspaceHostBootstrapCheckName, string>
+> = {
+  "ubuntu-24.04": `|| die "Ubuntu ${WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION} is required"`,
+  "bundle-digest": '"$BUNDLE_SHA256" "$BUNDLE_PATH" | sha256sum --check --strict -',
+  "bundle-signature": 'minisign -Vm "$BUNDLE_PATH" -x "$SIGNATURE_PATH"',
+  "node-runtime": "bundled Node runtime is below the required floor",
+  "embedded-postgres-migration": '"$RELEASE_DIR/$MIGRATE_ENTRYPOINT" --database-root',
+  "agent-cli-prerequisites": '"$CLAUDE_ENTRYPOINT" "$CODEX_ENTRYPOINT" "$OMP_ENTRYPOINT"',
+  "pui-generation": "missing or empty PUI install manifest",
+  "pui-operator-freshness": '"$RUNTIME_ROOT/current/$PUI_ENTRYPOINT" doctor',
+  "loopback-service": 'systemctl is-active --quiet "$SERVICE_NAME.service"',
+  "service-identity": "--property User --value",
+  "runtime-permissions": "runtime release tree must not be world-readable",
+  "workspace-identity": "workspace SSH user belongs to sudo",
+  "workspace-acl": "workspace SSH user cannot write the scoped workspace root",
+  "privileged-conduits": "conduit interpreter is missing or not executable",
+  "ssh-forwarding-policy": 'grep -Fx "allowtcpforwarding local"',
+  "workspace-ssh-authorized-keys":
+    "workspace authorized_keys is unreadable or empty at attest time",
+};
 
 export interface WorkspaceHostBootstrapRelease {
   /** Stable, shell-safe release identifier (for example `2026.8.22-1`). */
@@ -1782,6 +1830,26 @@ export function buildWorkspaceHostBootstrap(
     'SSHD_POLICY="$(sshd -T -C user="$WORKSPACE_USER",host=localhost,addr=127.0.0.1)"',
     'grep -Fx "allowtcpforwarding local" <<<"$SSHD_POLICY" >/dev/null || die "SSH TCP forwarding must be local-only"',
     'grep -Fx "permitopen 127.0.0.1:$SERVICE_PORT" <<<"$SSHD_POLICY" >/dev/null || die "SSH forwarding must be restricted to the loopback operator"',
+    // EI-22185970114422986 — the reachability property, observed WHERE `healthy` IS CLAIMED.
+    //
+    // `harden-os` already refuses to render a brick (`test -s … || die`), and that guard stays.
+    // But it fires five phases earlier, so it cannot speak for the state of the host at the
+    // moment the attestation is written, and it contributes nothing TO that attestation: the
+    // document asserting the host is fine was silent on the one property whose absence made the
+    // original host unrecoverable. These lines observe it here, and `workspace-ssh-authorized-keys`
+    // is what carries the result.
+    //
+    // What this deliberately does NOT claim: that anyone connected. The host holds no private
+    // key, so it cannot prove reachability end to end — only that the file it wrote is present,
+    // non-empty and safely owned, and that sshd is configured to accept a key from it. End-to-end
+    // reachability is proven by the CONTROLLER's own connection, never by the host's self-report.
+    // Naming the check after what it observes instead of after what we wish it meant is the whole
+    // lesson of this item: an attestation that cannot fail on the property that matters converts
+    // an outage into a false positive.
+    '[[ -s "/home/$WORKSPACE_USER/.ssh/authorized_keys" ]] || die "workspace authorized_keys is unreadable or empty at attest time; the host is unreachable"',
+    '[[ "$(stat -c "%U %a" "/home/$WORKSPACE_USER/.ssh/authorized_keys")" == "$WORKSPACE_USER 600" ]] || die "workspace authorized_keys ownership or mode is unsafe"',
+    'grep -Fx "pubkeyauthentication yes" <<<"$SSHD_POLICY" >/dev/null || die "sshd would refuse public-key authentication for the workspace user"',
+    'grep -Eq "^authorizedkeysfile .*\\.ssh/authorized_keys" <<<"$SSHD_POLICY" || die "sshd does not read the authorized_keys this bootstrap wrote"',
     'OBSERVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
     `CHECKS_JSON=${shellQuote(checksJson)}`,
     'ATTESTATION_PATH="$STATE_ROOT/bootstrap-attestation.json"',

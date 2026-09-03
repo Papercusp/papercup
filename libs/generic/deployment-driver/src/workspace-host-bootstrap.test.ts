@@ -8,6 +8,7 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX,
   WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES,
   WORKSPACE_HOST_BOOTSTRAP_CHECKS,
+  WORKSPACE_HOST_BOOTSTRAP_CHECK_EVIDENCE,
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_PHASES,
   WORKSPACE_HOST_AGENT_NODE_SHA256,
@@ -1028,6 +1029,97 @@ describe('buildWorkspaceHostBootstrap', () => {
           input({ workspaceAuthorizedKeys: [KEY, KEY] }),
         ),
       ).toThrow(/must not repeat a key/);
+    });
+  });
+
+  // EI-22185970114422986 — the CLASS the lockout belonged to: a step that reports success on a
+  // property it never observed. `checks` is serialized into the attestation by the RENDERER as
+  // `{ name, ok: true }` for every name, and `validateWorkspaceHostBootstrapAttestation` then
+  // requires exactly that — so the array could not report a failure of anything. The design
+  // (every name has a `die` guard upstream, so reaching attest-health is the proof) is sound and
+  // is kept; what was missing is anything BINDING a name to its guard.
+  describe('attested checks are bound to a host-side observation (EI-22185970114422986)', () => {
+    it('renders the observation that establishes every attested check', () => {
+      const script = buildWorkspaceHostBootstrap(input());
+      const attestingOnNothing = WORKSPACE_HOST_BOOTSTRAP_CHECKS.filter(
+        (name) => !script.includes(WORKSPACE_HOST_BOOTSTRAP_CHECK_EVIDENCE[name]),
+      );
+      // Named, never counted: the failure has to say WHICH check is attesting on nothing.
+      expect(attestingOnNothing).toEqual([]);
+    });
+
+    it('declares evidence for every attested name and for no name that is not attested', () => {
+      expect(
+        Object.keys(WORKSPACE_HOST_BOOTSTRAP_CHECK_EVIDENCE).sort(),
+      ).toEqual([...WORKSPACE_HOST_BOOTSTRAP_CHECKS].sort());
+    });
+
+    // A guard that has never failed is a guard nobody has tested. The map is only worth its line
+    // count if an unrendered fragment is actually REPORTED, so prove that here rather than
+    // trusting it — with a fabricated copy, so nothing in the tree is mutated to run the control.
+    it('is falsifiable: a check whose observation is not rendered is reported by name', () => {
+      const script = buildWorkspaceHostBootstrap(input());
+      const fabricated: Record<string, string> = {
+        ...WORKSPACE_HOST_BOOTSTRAP_CHECK_EVIDENCE,
+        'ssh-forwarding-policy': 'die "no bootstrap has ever emitted this line"',
+      };
+      const attestingOnNothing = WORKSPACE_HOST_BOOTSTRAP_CHECKS.filter(
+        (name) => !script.includes(fabricated[name]),
+      );
+      expect(attestingOnNothing).toEqual(['ssh-forwarding-policy']);
+    });
+  });
+
+  // The second half of the same item: the property the ORIGINAL host died of was not among the
+  // attested checks at all, and its only guard fired five phases before `healthy` was claimed.
+  describe('attest-time SSH reachability observation (EI-22185970114422986)', () => {
+    it('re-observes authorized_keys where healthy is CLAIMED, not only in harden-os', () => {
+      const script = buildWorkspaceHostBootstrap(input());
+      const hardenGuard = script.indexOf(
+        'test -s "/home/$WORKSPACE_USER/.ssh/authorized_keys" || die',
+      );
+      const attestGuard = script.indexOf(
+        '[[ -s "/home/$WORKSPACE_USER/.ssh/authorized_keys" ]] || die "workspace authorized_keys is unreadable or empty at attest time',
+      );
+      const attestationWritten = script.indexOf('ATTESTATION_PATH=');
+      expect(hardenGuard).toBeGreaterThan(-1);
+      // Ordering IS the property: an observation after the attestation cannot inform it, and one
+      // that only runs in harden-os cannot speak for the host minutes later.
+      expect(attestGuard).toBeGreaterThan(hardenGuard);
+      expect(attestGuard).toBeLessThan(attestationWritten);
+    });
+
+    it('asserts sshd will actually read the key file this bootstrap wrote', () => {
+      const script = buildWorkspaceHostBootstrap(input());
+      expect(script).toContain(
+        'stat -c "%U %a" "/home/$WORKSPACE_USER/.ssh/authorized_keys"',
+      );
+      expect(script).toContain(
+        'grep -Fx "pubkeyauthentication yes" <<<"$SSHD_POLICY"',
+      );
+      expect(script).toContain(
+        'grep -Eq "^authorizedkeysfile .*\\.ssh/authorized_keys" <<<"$SSHD_POLICY"',
+      );
+    });
+
+    it('names the check so the attestation is not silent about reachability', () => {
+      expect(WORKSPACE_HOST_BOOTSTRAP_CHECKS).toContain(
+        'workspace-ssh-authorized-keys',
+      );
+      // The validator iterates the same list, so an attestation that omits the new check is
+      // refused rather than accepted as healthy.
+      const verdict = validateWorkspaceHostBootstrapAttestation(
+        attestation({
+          checks: WORKSPACE_HOST_BOOTSTRAP_CHECKS.filter(
+            (name) => name !== 'workspace-ssh-authorized-keys',
+          ).map((name) => ({ name, ok: true })),
+        }),
+        input(),
+      );
+      expect(verdict.ok).toBe(false);
+      expect(verdict.errors).toContain(
+        "required bootstrap check 'workspace-ssh-authorized-keys' did not pass",
+      );
     });
   });
 
