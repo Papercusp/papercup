@@ -57,6 +57,13 @@ export interface RemoteBootedHarnessOpts {
   ownLogKey: string;
   /** Own-log length at boot (seeds the locally-tracked length). */
   ownLogLength?: number;
+  /**
+   * The swarm announce identity the SIDECAR greets peers under, returned by
+   * `substrate:bootHarness` (WI-2142873). Undefined when the response carried
+   * none — a pre-WI-2142873 sidecar — which is why `announceIdentity` reports
+   * `null` rather than inventing one.
+   */
+  announceIdentity?: BootedAnnounceIdentity | null;
   /** The IPC client (defaults to the process-global substrate IPC client). */
   client: SubstrateRpcCaller;
 }
@@ -84,6 +91,8 @@ interface ExistingSidecarBootResponse {
   storeId: string;
   ownLogKey: string;
   ownLogLength?: number;
+  /** WI-2142873 — absent from a pre-fix sidecar. */
+  announceIdentity?: BootedAnnounceIdentity | null;
 }
 
 /** Match the in-process peer-dial registry's fail-soft contract: callers get a
@@ -137,6 +146,7 @@ export async function openHiveGitDuplexViaExistingSidecar(
       storeId: booted.storeId,
       ownLogKey: booted.ownLogKey,
       ownLogLength: booted.ownLogLength,
+      announceIdentity: booted.announceIdentity ?? null,
       client,
     });
     return await handle.openHiveGitDuplexToDevice(opts.devicePubkeyBase64, opts.request);
@@ -210,6 +220,7 @@ export class RemoteBootedHarnessHandle implements BootedHarnessHandle {
   private readonly _ownLog: RemoteOwnLog;
   private readonly lengthHolder: LengthHolder;
   private readonly closeHooks = new Set<() => void | Promise<void>>();
+  private readonly _announceIdentity: BootedAnnounceIdentity | null;
   private closed = false;
 
   // The main process has no admitted set / swarm — they relocate to the sidecar.
@@ -221,6 +232,7 @@ export class RemoteBootedHarnessHandle implements BootedHarnessHandle {
     this.storeId = opts.storeId;
     this.client = opts.client;
     this.lengthHolder = { length: opts.ownLogLength ?? 0 };
+    this._announceIdentity = opts.announceIdentity ?? null;
     this._ownLog = new RemoteOwnLog(opts.storeId, opts.client, opts.ownLogKey, this.lengthHolder);
   }
 
@@ -314,9 +326,16 @@ export class RemoteBootedHarnessHandle implements BootedHarnessHandle {
 
   get announceIdentity(): BootedAnnounceIdentity | null {
     // The swarm — and the identity it greets peers under — lives in the
-    // sidecar; the advertisement this handle is built from does not carry it.
-    // Callers (the git-sync hive legs) fall back to the gh-login actor.
-    return null;
+    // sidecar, so this is whatever `substrate:bootHarness` carried back
+    // (WI-2142873). It used to be a hardcoded `null`, which sent every
+    // git-sync hive leg to the gh-login actor and signed this pot's
+    // announcements as a device that does not serve its topic.
+    //
+    // Still `null` against a pre-WI-2142873 sidecar. That is deliberately NOT
+    // repaired by guessing: a caller must distinguish "no identity" from "this
+    // handle exists", and `pickHiveGitActor` refuses rather than falling back
+    // when the owner reports a booted handle whose identity it cannot read.
+    return this._announceIdentity;
   }
 
   /**

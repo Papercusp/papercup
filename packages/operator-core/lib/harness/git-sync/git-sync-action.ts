@@ -161,7 +161,11 @@ import { Duplex } from 'node:stream';
 // (a no-op on an owner).
 import { listHiveMembersForLocalPot } from '../../federated-pot-scope';
 import { resolveUsageActor } from '../usage-actor';
-import { pickHiveGitActor, type HiveGitActor } from './hive-git-actor';
+import {
+  explainHiveGitActorAbsence,
+  pickHiveGitActor,
+  type HiveGitActor,
+} from './hive-git-actor';
 import { loadCachedLocalAnnounceIdentity } from '../../sync/hyperbee/local-announce-identity';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { signWithDeviceKey } from '../../identity/sign-with-device-key';
@@ -3615,10 +3619,74 @@ async function resolveHiveGitActor(
       (installSlug === potHomeSlug ? null : getBootedHarness(workspaceId, potHomeSlug));
     booted = handle?.announceIdentity ?? null;
   } catch {
-    booted = null; // boot-all unavailable in this process — the gh-login fallback applies
+    booted = null; // boot-all unavailable in this process
   }
+
+  // WI-2142873: a miss above is evidence about THIS PROCESS, not about the pot.
+  // The substrate owner and the routine running git-sync are routinely separate
+  // OS processes and this registry is process-local, so ask the owner before
+  // concluding that no swarm identity exists. Same process split, and the same
+  // published row, that `resolveHiveGitDialContext` consults one function below
+  // (EI-20438405483051865) — that leg taught the dial about relocation while
+  // this one kept silently downgrading the IDENTITY.
+  let ownerReportsBooted: boolean | undefined;
+  if (!booted) {
+    const owner = await resolveOwnerAnnounceIdentity(workspaceId, installSlug, potHomeSlug);
+    booted = owner.identity;
+    ownerReportsBooted = owner.ownerReportsBooted;
+  }
+
   const ghActor = booted ? null : await resolveUsageActor();
-  return pickHiveGitActor(booted, ghActor, resolveDeviceKeychainId);
+  const actor = pickHiveGitActor(booted, ghActor, resolveDeviceKeychainId, { ownerReportsBooted });
+  if (!actor) {
+    const reason = explainHiveGitActorAbsence(booted, ghActor, { ownerReportsBooted });
+    if (reason === 'refused-owner-booted-identity-unavailable') {
+      console.warn(
+        `[git-sync] ${installSlug}: REFUSING to act as the gh-login device for pot ${potHomeSlug} — ` +
+          `the substrate owner holds a booted handle for it but advertised no announce identity ` +
+          `(likely a pre-WI-2142873 substrate owner). Signing under a device that does not serve ` +
+          `this pot's topic would mint announcements no peer can dial; skipping this leg instead.`,
+      );
+    }
+  }
+  return actor;
+}
+
+/**
+ * Ask the substrate owner which device serves this pot, when our own
+ * process-local registry has no handle (WI-2142873).
+ *
+ * Tries the local install slug first and then the pot home, mirroring the
+ * registry lookup above exactly: a hive's submodule installs share the home
+ * harness's swarm join, and therefore its identity, without a handle of their
+ * own. Never throws — an unreadable advertisement leaves `ownerReportsBooted`
+ * undefined (UNKNOWN), which preserves the historical gh-login fallback rather
+ * than converting a PG hiccup into a refusal.
+ */
+async function resolveOwnerAnnounceIdentity(
+  workspaceId: string,
+  installSlug: string,
+  potHomeSlug: string,
+): Promise<{
+  identity: { devicePubkeyBase64: string; githubUserId: number; keychainId: string } | null;
+  ownerReportsBooted: boolean | undefined;
+}> {
+  try {
+    const { getPgBootedHarnessAnnounceIdentity } = await import(
+      '../../sync/hyperbee/substrate-booted-handles-pg'
+    );
+    const slugs = installSlug === potHomeSlug ? [installSlug] : [installSlug, potHomeSlug];
+    let ownerReportsBooted: boolean | undefined;
+    for (const slug of slugs) {
+      const answer = await getPgBootedHarnessAnnounceIdentity(workspaceId, slug);
+      if (!answer) continue; // UNKNOWN for this slug — leaves the flag untouched
+      ownerReportsBooted = ownerReportsBooted === true ? true : answer.booted;
+      if (answer.identity) return { identity: answer.identity, ownerReportsBooted: true };
+    }
+    return { identity: null, ownerReportsBooted };
+  } catch {
+    return { identity: null, ownerReportsBooted: undefined };
+  }
 }
 
 async function resolveHiveGitDialContext(

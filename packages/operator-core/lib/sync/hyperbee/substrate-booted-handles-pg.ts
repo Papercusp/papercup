@@ -42,6 +42,7 @@ import {
   listRelocatedBootedHandles,
   type BootedHandleSummary,
 } from './boot-all';
+import type { BootedAnnounceIdentity } from './boot';
 import { readOperatorState, writeOperatorState } from '../../operator-state-pg';
 import {
   collectSubstrateHealthInputs,
@@ -95,6 +96,27 @@ interface PgBootedHandlesPayload {
 
 export interface PgRelocatedHarnessEndpoint {
   socketPath: string;
+  advertisedAt: number;
+}
+
+/**
+ * What the substrate owner says about ONE pot's swarm identity, for a reader in
+ * another process (WI-2142873).
+ *
+ * The three states are deliberately distinct, because collapsing any two of
+ * them is what caused the defect this exists to fix:
+ *
+ * - `null` (no result)  — UNKNOWN. No fresh advertisement; we learned nothing.
+ * - `{ booted: false }` — the owner holds NO handle for this pot. Nothing
+ *   serves it, so a gh-login fallback is the honest best effort.
+ * - `{ booted: true, identity }` — a handle exists. `identity` is the device
+ *   peers file our socket under; a `null` identity means the owner is running
+ *   pre-WI-2142873 code and could not tell us, which is NOT permission to sign
+ *   as some other device.
+ */
+export interface PgBootedHarnessIdentity {
+  booted: boolean;
+  identity: BootedAnnounceIdentity | null;
   advertisedAt: number;
 }
 
@@ -263,4 +285,39 @@ export async function getPgRelocatedHarnessEndpoint(
   );
   if (!exact) return null;
   return { socketPath: sidecar.socketPath, advertisedAt: row.sentAt };
+}
+
+/**
+ * Resolve the swarm announce identity the substrate owner holds for one exact
+ * pot — the WI-2142873 reader.
+ *
+ * Reads the FULL handle list, not just the sidecar-relocated one: a harness
+ * booted IN-PROCESS in the owner is equally invisible to a git-sync routine
+ * running elsewhere, and it fails exactly the same way. Scoping this to
+ * relocated handles would have fixed one of the two process splits and left
+ * the other signing announcements no peer can dial.
+ *
+ * Returns `null` for UNKNOWN (no fresh row) so a caller can tell "the owner
+ * says nothing serves this pot" from "we could not ask" — see
+ * `PgBootedHarnessIdentity`.
+ */
+export async function getPgBootedHarnessAnnounceIdentity(
+  workspaceId: string,
+  harnessSlug: string,
+  opts?: { maxAgeMs?: number; now?: () => number },
+): Promise<PgBootedHarnessIdentity | null> {
+  const row = await readFreshPgBootedHandlesPayload(opts);
+  if (!row) return null;
+  const match = row.handles.find(
+    (handle) => handle?.workspaceId === workspaceId && handle?.harnessSlug === harnessSlug,
+  );
+  if (!match) return { booted: false, identity: null, advertisedAt: row.sentAt };
+  const identity = match.announceIdentity;
+  // A half-identity is not an identity: signing needs BOTH the device peers
+  // filed us under and the keychain that can sign as it.
+  const usable =
+    identity && typeof identity.devicePubkeyBase64 === 'string' && identity.devicePubkeyBase64
+      ? identity
+      : null;
+  return { booted: true, identity: usable, advertisedAt: row.sentAt };
 }

@@ -44,7 +44,7 @@ import {
   type OutboxKeepaliveHandle,
 } from './substrate-outbox-keepalive';
 import { createPgMergeCursorStore } from './pg-merge-cursor-store';
-import type { BootHarnessOpts } from './boot';
+import type { BootedAnnounceIdentity, BootHarnessOpts } from './boot';
 
 export interface BootSubstrateOpts {
   perHarnessTimeoutMs?: number;
@@ -240,6 +240,10 @@ export async function bootSubstrateWithFallback(
         storeId: string;
         ownLogKey: string;
         ownLogLength?: number;
+        // WI-2142873: the sidecar owns the swarm, so it owns the identity peers
+        // file our socket under. Carrying it back is what lets the git-sync hive
+        // legs sign as the device that actually serves this pot's topic.
+        announceIdentity?: BootedAnnounceIdentity | null;
       }>('substrate:bootHarness', {
         workspaceRoot: bootOpts.workspaceRoot,
         workspaceId: bootOpts.workspaceId,
@@ -252,6 +256,7 @@ export async function bootSubstrateWithFallback(
         storeId: booted.storeId,
         ownLogKey: booted.ownLogKey,
         ownLogLength: booted.ownLogLength,
+        announceIdentity: booted.announceIdentity ?? null,
         client,
       });
     };
