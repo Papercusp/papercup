@@ -65,6 +65,8 @@ import { assessHostMemoryPressure } from './agent-tools/state/host-memory';
 import { assessTestingCensusPopulation, assessTestingCoverageFloor } from './agent-tools/testing/coverage';
 import { deriveCapacityVerdict, type AdmissionTerms } from './fleet/capacity-verdict';
 import type { ProviderPoolVerdict } from './deployment/account-pool-store';
+import { roleLaunchVerdict } from './agent-tools/config/role-launch';
+import type { RoleLaunch } from './fleet/role-launch';
 import hostMemoryPressureTool from './agent-tools/state/host-memory';
 import coverageTool from './agent-tools/testing/coverage';
 import governorStateTool from './agent-tools/state/governor-state';
@@ -144,6 +146,9 @@ const GOVERNOR_CELLS = BUILTIN_CELLS.filter(
 );
 const CAPACITY_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'fleet:capacity',
+);
+const ROLE_LAUNCH_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'config:role-launch',
 );
 
 async function livePipelinePayload(path?: string) {
@@ -279,6 +284,19 @@ const CAPACITY = (
     pool: CAPACITY_POOL(pool),
     admission,
   }).binding;
+
+const ROLE_LAUNCH_ROW = (over: Partial<RoleLaunch> = {}): RoleLaunch => ({
+  role: 'worker',
+  spawnModel: null,
+  model: 'claude-opus-5:xhigh',
+  source: 'per-role',
+  backend: 'claude-code',
+  backendSource: 'model-shape',
+  why: 'assessment reality control',
+  conflict: null,
+  ...over,
+});
+const ROLE_LAUNCH = (rows: readonly Partial<RoleLaunch>[]) => roleLaunchVerdict(rows.map((r) => ROLE_LAUNCH_ROW(r)));
 
 const CONTROLS: Record<string, readonly Control[]> = {
   'git.pipelinePosition': [
@@ -726,6 +744,16 @@ const CONTROLS: Record<string, readonly Control[]> = {
     },
     { label: 'both measured legs are clear', expect: CAPACITY() },
   ],
+  'agent.roleLaunch': [
+    { label: 'every reported role resolves without conflict', expect: ROLE_LAUNCH([{}]) },
+    {
+      label: "a role's configured roleBackends disagrees with its resolved backend",
+      expect: ROLE_LAUNCH([
+        { conflict: { configured: 'codex', effective: 'claude-code', note: 'assessment reality control' } },
+      ]),
+    },
+    { label: 'a role has no determinable backend', expect: ROLE_LAUNCH([{ backend: null, backendSource: 'inherit' }]) },
+  ],
 };
 
 /**
@@ -844,6 +872,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   'governor.resources': ['unconstrained', 'constrained', 'unknown'],
   'governor.recovery': ['stable', 'recovering', 'stalled', 'unknown'],
   'capacity.verdict': ['usage-wall', 'admission-concurrency', 'pacing-policy', 'none'],
+  'agent.roleLaunch': ['consistent', 'conflicted', 'undetermined'],
 };
 
 describe('P-004: the built-in partition — every cell is assessed, with no residue', () => {
@@ -854,8 +883,8 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
    * suite green with zero cells examined. The plan item demands an EXPLICIT ten-of-ten
    * partition with zero residue, and this is it.
    */
-  it('registers exactly twenty-one cells and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(21);
+  it('registers exactly twenty-two cells and routes every one to a resolver family', () => {
+    expect(BUILTIN_CELLS).toHaveLength(22);
     expect(
       PIPELINE_CELLS.length +
         GOAL_CELLS.length +
@@ -863,7 +892,8 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
         HOST_MEMORY_CELLS.length +
         COVERAGE_CELLS.length +
         GOVERNOR_CELLS.length +
-        CAPACITY_CELLS.length,
+        CAPACITY_CELLS.length +
+        ROLE_LAUNCH_CELLS.length,
     ).toBe(BUILTIN_CELLS.length);
     expect(PIPELINE_CELLS).toHaveLength(9);
     expect(GOAL_CELLS).toHaveLength(1);
@@ -872,6 +902,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
     expect(COVERAGE_CELLS).toHaveLength(2);
     expect(GOVERNOR_CELLS).toHaveLength(5);
     expect(CAPACITY_CELLS).toHaveLength(1);
+    expect(ROLE_LAUNCH_CELLS).toHaveLength(1);
   });
 
   /**
@@ -1259,6 +1290,13 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
       CAPACITY({}, { reachable: true, blind: false, dispatchBudget: 0, inFlight: 12 }),
       CAPACITY({}, { reachable: true, blind: false, dispatchBudget: 1, inFlight: 12 }),
       'a self-imposed zero-slot admission clamp must not read as a measured clear lane',
+    ],
+    [
+      'agent.roleLaunch',
+      'roles[0].conflict',
+      ROLE_LAUNCH([{ conflict: { configured: 'codex', effective: 'claude-code', note: 'assessment reality control' } }]) ?? '',
+      ROLE_LAUNCH([{}]) ?? '',
+      'a role in conflict must not read as consistent',
     ],
   ];
 
