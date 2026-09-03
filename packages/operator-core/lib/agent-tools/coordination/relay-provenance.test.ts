@@ -280,6 +280,48 @@ describe('parseHumanTurns — owner-typed turns out of a session JSONL', () => {
     expect(turns).toEqual([]);
   });
 
+  // EI-22215681617737293: a prompt the owner typed WHILE A TURN WAS RUNNING
+  // is recorded as a top-level `attachment`/`queued_command` line (queued,
+  // then absorbed mid-turn), never the ordinary `type:'user'` shape the tests
+  // above cover. Before this fix that line fell through every branch as
+  // unrecognized plumbing, so a genuine `relayQuote` naming the owner's exact
+  // words resolved `unverified` even though sessions:search (backed by
+  // session-ingest.ts's matching shape check) found the same text at score
+  // 1.0 on an `owner-typed` turn in the same transcript.
+  it('extracts a Claude queued_command (owner-typed-while-busy) turn — the relay-verifier regression', () => {
+    const prompt = 'GET TO A STOPPING POINT THEN PAUSE YOUR WORK';
+    const ts = '2026-09-03T05:45:00.923Z';
+    const turns = parseHumanTurns(
+      row({
+        type: 'attachment',
+        timestamp: ts,
+        attachment: { type: 'queued_command', commandMode: 'prompt', origin: { kind: 'human' }, prompt, timestamp: ts },
+      }),
+    );
+    expect(turns).toEqual([{ ts, text: prompt }]);
+  });
+
+  // Regression guard for the same change: a non-human origin, a non-'prompt'
+  // commandMode, or an empty prompt must still be dropped — this reader's
+  // gate is exactly as narrow as turn-ref.ts's findClaudeQueuedCommandTurn.
+  it('drops a non-human or non-prompt queued_command attachment', () => {
+    const base = {
+      type: 'attachment',
+      timestamp: '2026-09-03T05:45:00.923Z',
+      attachment: {
+        type: 'queued_command',
+        commandMode: 'prompt',
+        origin: { kind: 'human' },
+        prompt: 'ignored either way',
+        timestamp: '2026-09-03T05:45:00.923Z',
+      },
+    };
+    expect(parseHumanTurns(row({ ...base, attachment: { ...base.attachment, origin: { kind: 'assistant' } } }))).toEqual([]);
+    expect(parseHumanTurns(row({ ...base, attachment: { ...base.attachment, commandMode: 'other' } }))).toEqual([]);
+    expect(parseHumanTurns(row({ ...base, attachment: { ...base.attachment, prompt: '   ' } }))).toEqual([]);
+    expect(parseHumanTurns(row({ ...base, attachment: { ...base.attachment, type: 'other' } }))).toEqual([]);
+  });
+
   it('extracts Codex rollout response_item user turns and skips injected wakes', () => {
     const turns = parseHumanTurns(
       [
