@@ -183,7 +183,9 @@ describe('P-012: the guard is falsifiable — deliberately broken pairings again
       unknownHoist: 'gate.candidateFailures.unknownLegs',
       assessment: {
         ...CF.assessment!,
-        evidence: [...CF.assessment!.evidence, 'gate.candidateFailures.unknownLegs'],
+        // `unavailable` stops being the unknownHoist here, so it must be hoisted as
+        // evidence for the other pairs to keep travelling.
+        evidence: [...CF.assessment!.evidence, 'gate.candidateFailures.unknownLegs', 'gate.candidateFailures.unavailable'],
         measuredBy: { ...CF.assessment!.measuredBy, 'gate.candidateFailures.stillBrokenCount': 'gate.candidateFailures.unknownLegs' },
       },
     };
@@ -295,8 +297,14 @@ describe('P-012: the read surface carries the flag WITH the value', () => {
     expect(scope.measuredBy).toBeUndefined();
 
     const prose = formatCellAssessment(a, CF.cell);
-    expect(prose).toContain('gate.candidateFailures.distinctFailingFiles = [] (measured-ness: gate.candidateFailures.unavailable = "test_runs unreachable")');
-    expect(prose).toContain('nonTestLegs.perLeg = [] (measured-ness: gate.candidateFailures.nonTestLegsMeasured = "not-recorded")');
+    // The flag is printed in the SAME clause as the value — `briefCellValue`'s exact
+    // rendering of `[]` and of a string is its own business; the pairing is what is pinned.
+    expect(prose).toMatch(
+      /gate\.candidateFailures\.distinctFailingFiles = [^;]*\(measured-ness: gate\.candidateFailures\.unavailable = [^;)]*test_runs unreachable[^;)]*\)/,
+    );
+    expect(prose).toMatch(
+      /gate\.candidateFailures\.nonTestLegs\.perLeg = [^;]*\(measured-ness: gate\.candidateFailures\.nonTestLegsMeasured = [^;)]*not-recorded[^;)]*\)/,
+    );
   });
 
   it('a flag that did not arrive is reported as pairing DRIFT in the same slot, never as measured', async () => {
