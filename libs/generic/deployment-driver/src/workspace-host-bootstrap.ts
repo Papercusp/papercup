@@ -121,6 +121,37 @@ export const WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES = [
 export type WorkspaceHostBootstrapAptPackage =
   (typeof WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES)[number];
 
+/**
+ * Node runtime installed into the AGENT identity's OWN home, for the vendor agent CLIs (D-264).
+ *
+ * ⚠ This is the SECOND Node on the host and that is deliberate — do not "simplify" it away by
+ * pointing the agent at the bundled one. The release bundle's Node lives at
+ * `$RELEASE_DIR/bin/node`, in the SAME directory as the psu wrappers named `claude`/`codex`/`omp`,
+ * and `AGENT_RUNTIME_PATH` excludes that directory on purpose: a wrapper on the resolve PATH makes
+ * `command -v codex` succeed on a host with no vendor runtime at all (the D-247 confusion). Putting
+ * the release bin on the agent's PATH to obtain `node` would re-open exactly that hole.
+ *
+ * And the bundle could not have supplied `npm` regardless: it ships a BARE `node` binary with no
+ * npm beside it (verified against the r20 artifact — no `npm`, `npx` or `npm-cli.js` anywhere in
+ * the tree), while the apt contract above deliberately ships no nodejs/npm either. `@openai/codex`
+ * is published as a ~13KB JS shim whose `bin` is `bin/codex.js` with the real binary in a
+ * per-platform optional dependency, so the agent identity needs `npm` to INSTALL it and `node` to
+ * RUN it. One official Node tarball supplies both.
+ *
+ * Pinned to the same version the bundle carries, so a host runs ONE Node version even though it
+ * holds two copies. `.tar.gz` and not `.tar.xz`: the apt contract has no `xz-utils`.
+ *
+ * The tarball is checksum-pinned HERE rather than trusted from the network, which is strictly
+ * stronger than the surrounding vendor installers (`curl | bash` for Claude, a bare download for
+ * omp) — a compromised or swapped upstream artifact fails the comparison instead of executing.
+ * Bumping the version REQUIRES replacing these digests from `https://nodejs.org/dist/v<version>/SHASUMS256.txt`.
+ */
+export const WORKSPACE_HOST_AGENT_NODE_VERSION = '24.18.1';
+export const WORKSPACE_HOST_AGENT_NODE_SHA256: Readonly<Record<'x64' | 'arm64', string>> = {
+  x64: '9f5eb6ac21845a66c493c91a253b1da32fd684e89e9b7202d4936982336be4ca',
+  arm64: 'df224555a083b918e46260cc969838501b9f9a87140c1195e5b9597b56d5dae2',
+};
+
 export interface WorkspaceHostNativeDependencyProvider {
   soname: string;
   aptPackage: string;
@@ -954,6 +985,66 @@ function assignment(name: string, value: string): string {
  * The resolved absolute path is captured per agent so the canary's readiness probe can exec the
  * VENDOR binary directly instead of shelling the wrapper.
  */
+/**
+ * Install Node (and therefore npm) into the agent identity's own `~/.local`, BEFORE any vendor
+ * agent install runs (D-264).
+ *
+ * WHY THIS EXISTS — the failure it removes was expensive to read, so it is worth stating plainly.
+ * The codex install argv is the DESKTOP onboarding script, reused verbatim by this host
+ * (`buildFrameworkInstallSpec`), and it opens with `npm init -y`. On a developer's machine npm is
+ * simply there. On this host it is nowhere: not in the apt contract, and not in the bundle, which
+ * ships a bare `node` with no npm. So bootstrap died at `bash: line 4: npm: command not found` ->
+ * `agent runtime install failed: codex`, ABORTING before `/usr/local/bin/papercusp-workspace-host-initialize`
+ * was ever installed — which surfaced downstream as every canary failing `0/6` with a bare
+ * `exit 127 ... No such file or directory`. That error names a MISSING FILE, so it reads as a
+ * packaging defect in the 2GB bundle; the bundle was fine and verified. A missing-file error at
+ * step 0 is more often an aborted predecessor than a bad package.
+ *
+ * Extraction is limited to `bin/` and `lib/` (the tarball also carries docs/headers that nothing
+ * here needs) and lands in `$AGENT_HOME/.local`, which `AGENT_RUNTIME_PATH` ALREADY resolves — so
+ * this adds no new PATH entry and cannot widen the resolve surface. Re-running is a no-op once the
+ * pinned version is present, keeping the bootstrap replay-safe.
+ */
+function agentNodeRuntimeInstallLines(): string[] {
+  const version = WORKSPACE_HOST_AGENT_NODE_VERSION;
+  const script = [
+    "set -euo pipefail",
+    'target="$HOME/.local"',
+    // Idempotent: a replay (or an upgrade re-running this bootstrap) re-downloads nothing.
+    `if [ "$("$target/bin/node" --version 2>/dev/null || true)" = "v${version}" ]; then exit 0; fi`,
+    'case "$(uname -m)" in',
+    `  x86_64) arch=x64; sum=${WORKSPACE_HOST_AGENT_NODE_SHA256.x64};;`,
+    `  aarch64) arch=arm64; sum=${WORKSPACE_HOST_AGENT_NODE_SHA256.arm64};;`,
+    // Fail closed and NAME the architecture: a silent skip here would hand the codex install the
+    // same "npm: command not found" this function exists to remove.
+    '  *) echo "unsupported architecture for the agent Node runtime: $(uname -m)" >&2; exit 1;;',
+    "esac",
+    `dir="node-v${version}-linux-$arch"`,
+    'tmp="$target/.node-install"',
+    'rm -rf "$tmp"',
+    'mkdir -p "$tmp" "$target"',
+    `curl -fsSL --retry 3 -o "$tmp/node.tar.gz" "https://nodejs.org/dist/v${version}/$dir.tar.gz"`,
+    // The pin is the trust boundary: a swapped upstream tarball fails here rather than executing.
+    'printf "%s  %s\\n" "$sum" "$tmp/node.tar.gz" | sha256sum -c - >/dev/null',
+    'tar -xzf "$tmp/node.tar.gz" -C "$target" --strip-components=1 "$dir/bin" "$dir/lib"',
+    'rm -rf "$tmp"',
+    // Assert both halves rather than assuming the extract produced them: npm is a symlink into
+    // lib/, so an extract that took bin/ alone would leave a `node` that works and an `npm` that
+    // dangles — the exact shape that fails later, inside the codex install, reading as codex's bug.
+    '"$target/bin/node" --version >/dev/null',
+    '"$target/bin/npm" --version >/dev/null',
+  ].join("\n");
+  return [
+    "",
+    `# D-264: the vendor agent CLIs need npm to install and node to run; the host has neither`,
+    `# (apt ships none, and the bundle's Node is a bare binary in the wrapper dir PATH excludes).`,
+    `echo "==> installing agent Node runtime v${version}" >&2`,
+    `runuser -u "$AGENT_USER" -- env HOME="$AGENT_HOME" PATH="$AGENT_RUNTIME_PATH" /bin/bash -c ${shellQuote(
+      script,
+    )} || die ${shellQuote(`agent Node runtime install failed (v${version})`)}`,
+  ];
+}
+
 function agentRuntimeInstallLines(
   installs: readonly WorkspaceHostAgentRuntimeInstall[],
 ): string[] {
@@ -964,6 +1055,9 @@ function agentRuntimeInstallLines(
     "# and psu resolves a real backend from well-known dirs. Without these installs psu aborts",
     "# every agent launch, so the host cannot run an agent at all.",
     'AGENT_RUNTIME_PATH="$AGENT_HOME/.local/bin:$AGENT_HOME/.papercusp/runtime/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"',
+    // Ordered BEFORE the vendor installs: codex's own installer shells `npm`, so this is a
+    // prerequisite of the loop below rather than one more entry in it.
+    ...agentNodeRuntimeInstallLines(),
   ];
   for (const install of installs) {
     const argv = [install.command, ...install.args].map(shellQuote).join(" ");
