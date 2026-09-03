@@ -1657,10 +1657,18 @@ export default defineTool({
       routingHint = existing ?? matchRoutingGateHint(wi.title) ?? undefined;
       if (wi.kind === 'bug') {
         const build = getBuildInfo();
+        // EI-22283949842250645: `headSha` was ALSO fed `build.sha` here, which is the
+        // RUNTIME identity — so the freshness scorer's two axes received one value and
+        // its source axis ("has this been fixed in the tree since it was reported?")
+        // compared a value against itself and always affirmed. The source axis is now
+        // measured path-scoped in the bounded enrichment tail below; until that lands
+        // it is declared UNMEASURED rather than affirmed, so a timed-out tail degrades
+        // to an honest "not checked" instead of back to the false "matches current".
         freshness = assessClaimFreshness(wi.payload, {
-          headSha: build.sha,
+          headSha: null,
           runtimeSha: build.sha,
           runtimeVersion: build.version,
+          sourceSignal: { kind: 'unmeasured', reason: 'source generation not yet measured' },
         });
       }
     }
@@ -1733,6 +1741,12 @@ export default defineTool({
       sourceCitation: unknown;
       sourceCitationWarning: string;
     } | null;
+    // EI-22283949842250645: the measured source axis for the freshness verdict above.
+    // Lives in the bounded tail because it costs one `git log` per cited path; a
+    // timeout leaves the verdict at its honest "unmeasured" rather than affirming.
+    let sourceGenerationSignal = null as
+      | import('../../work-item-claim-freshness').SourceGenerationSignal
+      | null;
 
     const enrichSuccessfulClaim = async (): Promise<void> => {
       // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
@@ -1817,6 +1831,7 @@ export default defineTool({
       if (res?.workItem) {
         const wi = res.workItem as {
           id?: string | null;
+          kind?: string | null;
           payload?: unknown;
           harness?: string | null;
           title?: string | null;
@@ -1824,7 +1839,7 @@ export default defineTool({
           sourcePlanSlug?: string | null;
           sourcePlanItemIds?: string[] | null;
         };
-        [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint, behaviorContractHint, pathHintsHint, planItemLandedHint, siblingPathOverlapHint, sourceCitationHint] =
+        [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint, behaviorContractHint, pathHintsHint, planItemLandedHint, siblingPathOverlapHint, sourceCitationHint, sourceGenerationSignal] =
           await Promise.all([
             import('../../plan-decisions-claim-port')
               .then(async (m) => {
@@ -1959,6 +1974,15 @@ export default defineTool({
                   })
                   .catch(() => null)
               : Promise.resolve(null),
+            // EI-22283949842250645: measure the freshness verdict's source axis —
+            // "do this item's own paths carry commits newer than the generation it
+            // was observed against?". Only meaningful for the bug family, which is
+            // the only family that carries a freshness envelope.
+            wi?.kind === 'bug'
+              ? import('../../source-generation-claim-port')
+                  .then((m) => m.getClaimTimeSourceGenerationSignal({ workItem: wi }))
+                  .catch(() => null)
+              : Promise.resolve(null),
           ]);
       }
       // EI-10541: a successful self-pull means this agent is transitioning idle -> working, so
@@ -1980,6 +2004,20 @@ export default defineTool({
         timeoutMs: remainingBudgetMs(),
         label: 'scheduler:get_next:postClaimEnrichment',
       });
+      // EI-22283949842250645: re-score the freshness verdict now that the source axis
+      // has an actual measurement behind it. Pure CPU over an already-fetched payload,
+      // so it sits OUTSIDE the deadline guard; if the leg above timed out or failed,
+      // `sourceGenerationSignal` stays null and the honest "unmeasured" verdict from
+      // the pre-enrichment pass is what the caller receives.
+      if (freshness && sourceGenerationSignal) {
+        const build = getBuildInfo();
+        freshness = assessClaimFreshness((res.workItem as { payload?: unknown }).payload, {
+          headSha: null,
+          runtimeSha: build.sha,
+          runtimeVersion: build.version,
+          sourceSignal: sourceGenerationSignal,
+        });
+      }
     }
     // EI-16057: on a MISS ONLY, resolve `harness` against the registry before deciding
     // between "genuinely drained" (fleetScopedMiss / missDiagnosis below) and "the
