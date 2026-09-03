@@ -98,6 +98,20 @@
 #                                        condition, not a fresh EI every tick)
 set -uo pipefail
 
+# State-aware RED dedup (EI-22240553542994017). Sourced, not optional: without it
+# this probe falls back to age-only suppression — "I filed something inside the
+# window" logged with the words "RED already tracked", which is a strictly
+# stronger claim than what was checked. On the disk detector that gap ran 10h39m
+# against a DROPPED item while the journal asserted the condition was owned.
+RED_MARKER_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/red-marker.sh"
+if [ -r "$RED_MARKER_LIB" ]; then
+  # shellcheck source=lib/red-marker.sh
+  . "$RED_MARKER_LIB"
+else
+  echo "[backup-health] FATAL: missing $RED_MARKER_LIB — refusing to run with age-only dedup." >&2
+  exit 2
+fi
+
 # ── ALARM SAFETY: a TEST must not be able to fire the real alarm (EI-10746) ──
 # Its sibling ~/.config/kopia/healthcheck.sh had the identical hole and it BIT: on
 # 2026-07-12 22:25, three failure-path test runs against a 4-minute-old healthy dump each
@@ -169,7 +183,12 @@ STATE_DIR="${BACKUP_STATE_DIR:-$HOME/.papercusp/backup-health}"; mkdir -p "$STAT
 
 log() { echo "[backup-health $(date +%H:%M:%S 2>/dev/null || true)] $*" >&2; }
 now_s() { date +%s 2>/dev/null || echo 0; }
-age_h() { local f="$1"; [ -f "$f" ] || { echo 999999; return; }; echo $(( ( $(now_s) - $(cat "$f" 2>/dev/null || echo 0) ) / 3600 )); }
+# Delegates to the shared reader, which takes FIELD 1 of the marker. The old
+# implementation was `cat` piped into arithmetic, which BREAKS on the
+# "<epoch> <item-id>" marker format red_marker_write now produces — a two-field
+# marker would make `$(( now - "1788465012 WI-2143622" ))` a syntax error and the
+# age unusable. Every marker age goes through one implementation for that reason.
+age_h() { red_marker_age_h "$1"; }
 mtime_s() { local f="$1"; stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0; }
 jstr() { printf '%s' "$1" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
 
@@ -186,9 +205,42 @@ jstr() { printf '%s' "$1" | python3 -c 'import json,sys;print(json.dumps(sys.std
 # off — the precise failure this comment claims to prevent. The "discrimination test below"
 # the comment used to cite did not exist either; it does now (--self-test), and it fails if
 # any call site ever bypasses mark_red again.
-mark_red() { [ "$BACKUP_NO_FILE" = 1 ] && return 0; echo "$(now_s)" >"$1"; }
+#
+# It now records the FILED ITEM ID alongside the timestamp (EI-22240553542994017),
+# so the next tick can ask whether that item is still open instead of trusting the
+# marker's age. The BACKUP_NO_FILE guard above is unchanged and still comes first:
+# a dry-run must not write a marker at all, id or no id.
+mark_red() { [ "$BACKUP_NO_FILE" = 1 ] && return 0; red_marker_write "$1" "$LAST_FILED_EI_ID"; }
+
+# red_gate <marker> <label> — the ONE dedup decision, shared by all nine RED sites.
+# Returns 0 when the caller should file, 1 when it should skip, and logs the
+# library's verdict VERBATIM either way.
+#
+# Logging the verdict text rather than a hand-written sentence is the point of
+# EI-22240553542994017. Every site used to print the words "RED already tracked",
+# which asserts the condition is OWNED — while the code had only checked that a
+# filing happened inside the window. When the tracked item had been dropped those
+# words were false, and false in the direction that stops anyone looking: on the
+# disk detector the journal asserted ownership for 10h39m while nothing tracked
+# the RED. red_dedup_check returns a reason that states exactly what it did and
+# did not establish ("still open (state 'open')" vs "records NO item id — tracking
+# UNVERIFIED, suppressing on age alone"), so the journal can no longer claim more
+# than was checked.
+red_gate() {
+  local marker="${1:-}" label="${2:-}" verdict
+  verdict="$(red_dedup_check "$marker" "$BACKUP_RED_REFILE_H")"
+  log "RED dedup ($label): ${verdict#* }"
+  [ "${verdict%% *}" = "SUPPRESS" ] && return 1
+  return 0
+}
+
+# Set by file_ei to the work-item id the filing resolved to (empty when it did not
+# confirm one). mark_red records it into the marker so the NEXT tick can state-check
+# the item rather than trusting the marker's age — EI-22240553542994017.
+LAST_FILED_EI_ID=""
 
 file_ei() { # <title> <body> — best-effort curl-MCP; loud echo + journald are the fallback
+  LAST_FILED_EI_ID=""
   [ "$BACKUP_NO_FILE" = 1 ] && { log "BACKUP_NO_FILE=1 — would have filed: $1"; return 0; }
   local resp
   local -a auth_hdr=()
@@ -203,7 +255,11 @@ file_ei() { # <title> <body> — best-effort curl-MCP; loud echo + journald are 
   local id_match
   id_match="$(printf '%s' "$resp" | grep -oaE '\\?"id\\?":\\?"WI-[0-9]+' | head -1)"
   if [ -n "$id_match" ]; then
-    log "EI filed OK → $(printf '%s' "$id_match" | grep -oaE 'WI-[0-9]+')"
+    # On a duplicate_identity refusal the response carries the OPEN twin this
+    # filing folded onto, so this id is the item that actually tracks the RED
+    # either way — precisely the one the next tick needs to state-check.
+    LAST_FILED_EI_ID="$(printf '%s' "$id_match" | grep -oaE 'WI-[0-9]+')"
+    log "EI filed OK → $LAST_FILED_EI_ID"
   else
     log "EI filing DID NOT CONFIRM (no WI id in response) — resp head: ${resp:0:200}"
   fi
@@ -386,9 +442,7 @@ INVESTIGATION RECIPE (traps verified while working WI-38595, 2026-08-14, and WI-
 2. CONFIRM WHICH VOLUME a directory is on before reclaiming anything: 'findmnt -T <path>' or 'stat -c %d <path>'. On this box /tmp is a BIND MOUNT from a second physical disk, so deleting 136 GiB of stale /tmp scratch frees exactly nothing on the volume this alarm is about.
 3. Enumerate consumers in ONE bounded backgrounded pass: 'nice -n 19 ionice -c3 du -x -d3 / | sort -hr > /tmp/scan-1.txt' (~7 min here). Re-run it later into scan-2.txt and DIFF the two — a diff of two snapshots is the only reliable attribution of NET growth per directory.
 4. Do NOT attribute growth by mtime ('find -newermt'). It counts a file's WHOLE size when the file is merely touched, so a single live VM image reads as hundreds of GiB 'written' in 26h. Note also that qcow2 images grow monotonically and never return space the guest frees — and the .img suffix lies, so check the magic ('QFI\\373' = qcow2)."
-    if [ "$(age_h "$red_marker")" -lt "$BACKUP_RED_REFILE_H" ]; then
-      log "RED already tracked (Postgres data volume, filed $(age_h "$red_marker")h ago < ${BACKUP_RED_REFILE_H}h) — skipping duplicate filing."
-    else
+    if red_gate "$red_marker" "Postgres data volume"; then
       file_ei "$title" "$body"
       mark_red "$red_marker"
     fi
@@ -479,9 +533,7 @@ With lock_timeout the failure mode is a clean abort instead:
     -c 'VACUUM (FULL, VERBOSE, ANALYZE) <schema>.<relation>'
 
 This probe is detection-only; it never rewrites, deletes, or restarts anything."
-  if [ "$(age_h "$red_marker")" -lt "$BACKUP_RED_REFILE_H" ]; then
-    log "RED already tracked (TOAST bloat, filed $(age_h "$red_marker")h ago < ${BACKUP_RED_REFILE_H}h) — skipping duplicate filing."
-  else
+  if red_gate "$red_marker" "TOAST bloat"; then
     file_ei "$title" "$body"
     mark_red "$red_marker"
   fi
@@ -531,9 +583,7 @@ ACTION: read the measured trend first. If it is still shrinking, compare consecu
 
 df output:
 ${df_line}"
-    if [ "$(age_h "$red_marker")" -lt "$BACKUP_RED_REFILE_H" ]; then
-      log "RED already tracked (backup volume, filed $(age_h "$red_marker")h ago < ${BACKUP_RED_REFILE_H}h) — skipping duplicate filing."
-    else
+    if red_gate "$red_marker" "backup volume"; then
       file_ei "$title" "$body"
       mark_red "$red_marker"
     fi
@@ -666,9 +716,7 @@ HOW TO ACT ON THIS:
 WHY BOTH /tmp AND /tmp/pcv ARE WATCHED: vitest-config.ts FORCES TMPDIR=/tmp/pcv for every test process, so a count of /tmp's top level cannot see the directory where test scratch actually lands. Measuring only /tmp under-reported this exact leak by 6x (74,385 seen vs 523,644 real). If a new tool forces its own TMPDIR, add it to BACKUP_TMPDIR_WATCH.
 
 This probe is detection-only; it never deletes anything."
-    if [ "$(age_h "$red_marker")" -lt "$BACKUP_RED_REFILE_H" ]; then
-      log "RED already tracked (tmpdir entries, $dir) — skipping duplicate filing."
-    else
+    if red_gate "$red_marker" "tmpdir entries $dir"; then
       file_ei "$title" "$body"
       mark_red "$red_marker"
     fi
@@ -714,9 +762,7 @@ check_workspace_dump_transactions() {
   local body="The per-workspace backup hook found $count attempt-scoped pg-embedded transaction file(s) whose filename-encoded writer PID is no longer alive (${bytes} bytes total; oldest ${oldest_h}h; sample: $sample).
 
 These are partial, non-restorable transactions, not backup artifacts. They consume the same filesystem headroom the next transactional dump needs. packages/backup must reap dead-writer PID/sequence files before its free-space admission check while preserving files owned by live concurrent writers. This probe is detection-only and deleted nothing."
-  if [ "$(age_h "$red_marker")" -lt "$BACKUP_RED_REFILE_H" ]; then
-    log "RED already tracked (dead workspace dump transaction) — skipping duplicate filing."
-  else
+  if red_gate "$red_marker" "dead workspace dump transaction"; then
     file_ei "$title" "$body"; mark_red "$red_marker"
   fi
 }
@@ -1299,9 +1345,7 @@ for art in $BACKUP_ARTIFACTS __OPTIONAL_ARTIFACTS_FOLLOW__ $BACKUP_OPTIONAL_ARTI
     TITLE="DB backup artifact MISSING: $art (no dump has ever succeeded at $BACKUP_DUMP_DIR)"
     BODY="EI-10733 durable backup-health probe: expected dump artifact '$f' does not exist at all. There is NO recoverable database dump. Check ~/.config/kopia/db-backup.sh, its timer (systemctl --user status papercusp-db-backup.timer), and $BACKUP_HOOK_LOG."
     RED_MARKER="$STATE_DIR/missing-${art//\//-}"   # art may contain '/' (pg/papercusp) — flatten for the filename
-    if [ "$(age_h "$RED_MARKER")" -lt "$BACKUP_RED_REFILE_H" ]; then
-      log "RED already tracked (missing $art) — skipping duplicate filing."
-    else
+    if red_gate "$RED_MARKER" "missing $art"; then
       file_ei "$TITLE" "$BODY"; mark_red "$RED_MARKER"
     fi
     continue
@@ -1336,9 +1380,7 @@ LIKELY CAUSES (check in this order):
 
 An orphaned/stuck dump is not just a dead backup — it holds AccessShareLock on ~593 tables, which starves every migration's ACCESS EXCLUSIVE and can wedge the whole release pipeline (EI-10730)."
     fi
-    if [ "$(age_h "$RED_MARKER")" -lt "$BACKUP_RED_REFILE_H" ]; then
-      log "RED already tracked (stale $art, filed $(age_h "$RED_MARKER")h ago < ${BACKUP_RED_REFILE_H}h) — skipping duplicate filing."
-    else
+    if red_gate "$RED_MARKER" "stale $art"; then
       file_ei "$TITLE" "$BODY"; mark_red "$RED_MARKER"
     fi
   else
@@ -1372,9 +1414,7 @@ else
 This fires EARLY, before the artifact ages past the freshness bar — precisely so a broken backup is caught in hours, not the 30 DAYS it went unnoticed on 2026-07-12 (EI-10733).
 
 Read the per-DB error in $BACKUP_HOOK_LOG (db-backup.sh logs 'db FAIL (...)' per database) and $BACKUP_DUMP_DIR/STATUS.json (failed[]). db-backup.sh only accepts a dump that passes pg_restore -l, so a FAILED run means the dump errored or produced an unreadable archive — read the actual pg_dump error, do NOT blindly raise PC_BACKUP_TIMEOUT_SEC. Also check for an orphaned pg_dump backend holding AccessShareLock on ~593 tables, which can wedge the release pipeline for hours (EI-10730): SELECT pid, application_name, backend_start FROM pg_stat_activity WHERE application_name LIKE 'pg_dump%'."
-    if [ "$(age_h "$RED_MARKER")" -lt "$BACKUP_RED_REFILE_H" ]; then
-      log "RED already tracked (consecutive fails) — skipping duplicate filing."
-    else
+    if red_gate "$RED_MARKER" "consecutive fails"; then
       file_ei "$TITLE" "$BODY"; mark_red "$RED_MARKER"
     fi
   else
@@ -1403,9 +1443,7 @@ $STALE_TMPS
 pg_dump -Fd refuses to write into a non-empty target, so as long as a stale '.tmp' sits here the database it belongs to fails EVERY hourly run — silently, unless (a)/(b) above happen to also fire. This is the EI-18678678853631218 failure shape: a failed dump's 0700 postgres-owned '.tmp' cannot be removed by a plain \`rm -rf\` running as the service user on the failure path.
 
 CHECK FIRST: db-backup.sh's rm_tmp() (added 2026-07-26) should already fall back to \`sudo -n rm -rf\` for exactly this case — if a .tmp is still stranded, that fallback itself is failing (e.g. a sudoers/NOPASSWD change, disk-full on the delete). Read \$BACKUP_DUMP_DIR/db-backup.log for 'WARN could not remove stale tmp' to confirm, then fix the sudoers/perms gap. Manual recovery: \`sudo rm -rf <path>\` once, to let the next hourly run proceed."
-    if [ "$(age_h "$RED_MARKER")" -lt "$BACKUP_RED_REFILE_H" ]; then
-      log "RED already tracked (stranded tmp) — skipping duplicate filing."
-    else
+    if red_gate "$RED_MARKER" "stranded tmp"; then
       file_ei "$TITLE" "$BODY"; mark_red "$RED_MARKER"
     fi
   else
