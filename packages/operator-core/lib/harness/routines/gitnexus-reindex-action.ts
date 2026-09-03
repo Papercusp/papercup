@@ -52,6 +52,12 @@ import {
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 import { managedSpawn } from '../../task-manager/managed-spawn';
+import { dirSizeBytes } from '../../storage/disk';
+import {
+  DEFAULT_RESOURCE_BUDGET,
+  classifyIndexDisk,
+  type IndexDiskVerdict,
+} from '../../code-intelligence/contracts';
 
 /** Registry alias this repo is indexed under (`analyze --name papercusp`). The alias
  *  disambiguates it from other checkouts on the box whose basename would collide. */
@@ -955,6 +961,22 @@ export interface GitnexusHealth {
   dbHeadroomBytes?: number | null;
   /** Suppresses repeated ceiling alerts until usage falls below the threshold. */
   dbAlerted?: boolean;
+  /**
+   * WHOLE-index on-disk footprint, graded against the code-intelligence layer's
+   * `indexDiskMbMax` selection budget (WI-2142942).
+   *
+   * Deliberately SEPARATE from `dbBytes` above, which stats the `lbug` file
+   * alone against a different quantity — LadybugDB's 16GiB mmap cliff. Those
+   * are not two readings of one number: measured 2026-09-03, lbug was 4946MB
+   * of a 6558MB `.gitnexus/`, so 1607MB of parse caches was outside every
+   * pre-existing instrument.
+   */
+  indexDiskMb?: number | null;
+  indexDiskBudgetMb?: number;
+  /** `within-budget` | `accepted-exceedance` | `over-ceiling` | `not-measured`. */
+  indexDiskStatus?: string;
+  /** Suppresses repeated over-ceiling alerts until the footprint comes back under. */
+  indexDiskAlerted?: boolean;
 }
 
 export const GITNEXUS_HEALTH_DEFAULT: GitnexusHealth = {
@@ -988,6 +1010,94 @@ export function measureGitnexusDbUsage(
   } catch {
     return { dbBytes: null, dbMaxBytes, dbUtilization: null, dbHeadroomBytes: null };
   }
+}
+
+/** Wall-clock bound for the `.gitnexus/` walk. Truncation here is REPORTED. */
+const GITNEXUS_INDEX_WALK_BUDGET_MS = 4_000;
+
+/**
+ * Measure the WHOLE `.gitnexus/` footprint and grade it against the
+ * code-intelligence layer's `indexDiskMbMax` selection budget (WI-2142942).
+ *
+ * This is not a second reading of `measureGitnexusDbUsage`. That one stats the
+ * `lbug` FILE against LadybugDB's mmap cliff — an outage threshold for the
+ * storage engine. This one sizes the whole index directory against a selection
+ * policy. Measured 2026-09-03 the two differ by 1607MB of parse caches that no
+ * pre-existing instrument could see.
+ *
+ * ⚠ `maxEntries` is deliberately unbounded here, and that is a correctness
+ * choice, not laziness: `dirSizeBytes` sets `budget.truncated` when it stops on
+ * the wall-clock deadline but breaks SILENTLY when it hits `maxEntries`, so an
+ * entry-capped walk under-counts with no way for a caller to know. Under-counting
+ * is the dangerous direction — it turns a real breach into a clean pass — so the
+ * only limit left binding is the one that reports itself, and a walk that runs
+ * out of time grades `not-measured` rather than passing on a partial total.
+ */
+export function measureGitnexusIndexDisk(
+  root: string,
+  budgetMb: number = DEFAULT_RESOURCE_BUDGET.indexDiskMbMax,
+): IndexDiskVerdict {
+  const dir = path.join(root, '.gitnexus');
+  if (!existsSync(dir)) return classifyIndexDisk('gitnexus', null, { budgetMb });
+
+  const budget = { deadlineMs: Date.now() + GITNEXUS_INDEX_WALK_BUDGET_MS, truncated: false };
+  let bytes: number;
+  try {
+    bytes = dirSizeBytes(dir, Number.MAX_SAFE_INTEGER, budget);
+  } catch {
+    // Absence, never a fabricated 0 — a zero would read as "costs nothing".
+    return classifyIndexDisk('gitnexus', null, { budgetMb });
+  }
+  return classifyIndexDisk('gitnexus', Math.round(bytes / (1024 * 1024)), {
+    truncated: budget.truncated === true,
+    budgetMb,
+  });
+}
+
+/**
+ * PURE — fold an index-disk verdict into health, alerting ONCE per crossing.
+ *
+ * Alerts only on `over-ceiling`, never on `accepted-exceedance`. That
+ * distinction is the whole reason the exceedance record exists: gitnexus is
+ * knowingly 3.2x the budget today, so alerting on the breach itself would fire
+ * on every tick from day one, and a gauge that is always red is one everyone
+ * learns to scroll past — which is how this budget came to be ignored in the
+ * first place. What is worth waking someone for is GROWTH past the bounded
+ * ceiling we accepted.
+ *
+ * `not-measured` deliberately neither alerts nor clears the flag: it is an
+ * absence of evidence, and letting it clear `indexDiskAlerted` would re-arm the
+ * alert so a flapping measurement could page repeatedly for one condition.
+ */
+export function decideIndexDiskHealthUpdate(
+  prev: GitnexusHealth,
+  verdict: IndexDiskVerdict,
+): { next: Pick<GitnexusHealth, 'indexDiskMb' | 'indexDiskBudgetMb' | 'indexDiskStatus' | 'indexDiskAlerted'>; shouldAlert: boolean } {
+  const measuredMb = verdict.status === 'not-measured' ? null : verdict.measuredMb;
+  const wasAlerted = prev.indexDiskAlerted === true;
+
+  if (verdict.status === 'not-measured') {
+    return {
+      next: {
+        indexDiskMb: null,
+        indexDiskBudgetMb: verdict.budgetMb,
+        indexDiskStatus: verdict.status,
+        indexDiskAlerted: wasAlerted,
+      },
+      shouldAlert: false,
+    };
+  }
+
+  const overCeiling = verdict.status === 'over-ceiling';
+  return {
+    next: {
+      indexDiskMb: measuredMb,
+      indexDiskBudgetMb: verdict.budgetMb,
+      indexDiskStatus: verdict.status,
+      indexDiskAlerted: overCeiling,
+    },
+    shouldAlert: overCeiling && !wasAlerted,
+  };
 }
 
 export interface GitnexusDbHealthUpdate {
@@ -1073,6 +1183,7 @@ async function trackGitnexusDbCapacity(
   threshold: number,
 ): Promise<void> {
   const usage = measureGitnexusDbUsage(root);
+  const indexDisk = measureGitnexusIndexDisk(root);
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
@@ -1083,7 +1194,8 @@ async function trackGitnexusDbCapacity(
     )) as Array<{ gh: Partial<GitnexusHealth> | null }>;
     const prev: GitnexusHealth = { ...GITNEXUS_HEALTH_DEFAULT, ...(rows[0]?.gh ?? {}) };
     const update = decideGitnexusDbHealthUpdate(prev, usage, threshold);
-    const next: GitnexusHealth = { ...prev, ...update.next };
+    const indexUpdate = decideIndexDiskHealthUpdate(prev, indexDisk);
+    const next: GitnexusHealth = { ...prev, ...update.next, ...indexUpdate.next };
     await sql.unsafe(
       `UPDATE harness_shared.routines
           SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
@@ -1111,6 +1223,29 @@ async function trackGitnexusDbCapacity(
           dbUtilization: usage.dbUtilization,
           dbHeadroomBytes: usage.dbHeadroomBytes,
           threshold,
+        },
+      });
+    }
+    if (indexUpdate.shouldAlert && indexDisk.status === 'over-ceiling') {
+      const { notifyAttention } = await import('../../attention-notify');
+      const ceiling = indexDisk.acceptedCeilingMb;
+      await notifyAttention({
+        kind: 'intervention',
+        title: 'GitNexus index has grown past its accepted on-disk ceiling',
+        body:
+          `The GitNexus index for ${ctx.installSlug} is ${indexDisk.measuredMb}MB, past the ` +
+          `${ceiling === null ? `${indexDisk.budgetMb}MB selection budget` : `${ceiling}MB bounded allowance`} ` +
+          'recorded in KNOWN_INDEX_DISK_EXCEEDANCES. That allowance accepts a MEASURED breach of the ' +
+          `${indexDisk.budgetMb}MB budget; it does not accept unbounded growth, which is what this is. ` +
+          'Either reclaim index disk or re-record the exceedance deliberately with a fresh measurement.',
+        importance: 'urgent',
+        workspaceId: ctx.workspaceId,
+        harnessSlug: ctx.installSlug,
+        data: {
+          indexDiskMb: indexDisk.measuredMb,
+          indexDiskBudgetMb: indexDisk.budgetMb,
+          acceptedCeilingMb: ceiling,
+          status: indexDisk.status,
         },
       });
     }

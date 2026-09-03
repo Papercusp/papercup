@@ -39,7 +39,9 @@ import {
   readStrandedIncompleteIndex,
   gitnexusMetaPath,
   measureGitnexusDbUsage,
+  measureGitnexusIndexDisk,
   decideGitnexusDbHealthUpdate,
+  decideIndexDiskHealthUpdate,
   decideReindex,
   readRegistryEntry,
   shouldSkipForHive,
@@ -505,6 +507,90 @@ describe('stranded incomplete-index marker — reported, never cleared (EI-22172
     writeFileSync(gitnexusMetaPath(root), '{ truncated mid-write');
     expect(readStrandedIncompleteIndex(root)).toBeNull();
     expect(readStrandedIncompleteIndex(join(root, 'does-not-exist'))).toBeNull();
+  });
+});
+
+describe('index-disk budget telemetry (WI-2142942)', () => {
+  const base = {
+    consecutiveFailures: 0,
+    alerted: false,
+    lastFailureAt: null,
+    lastSuccessAt: null,
+  };
+
+  it('measures the WHOLE .gitnexus directory, not just the lbug file', () => {
+    // The gap this closes: measureGitnexusDbUsage stats lbug alone, so a
+    // measured 2026-09-03 footprint of 6558MB was reported as 4946MB and
+    // 1607MB of parse caches was invisible to every instrument.
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-indexdisk-'));
+    mkdirSync(join(root, '.gitnexus'));
+    mkdirSync(join(root, '.gitnexus', 'parse-cache'));
+    writeFileSync(gitnexusDbPaths(root).db, 'x'.repeat(1024));
+    writeFileSync(join(root, '.gitnexus', 'parse-cache', 'a'), 'y'.repeat(2048));
+
+    const v = measureGitnexusIndexDisk(root, 2_048);
+    expect(v.status).toBe('within-budget');
+    // Both files counted — the lbug-only reading would have missed the cache.
+    expect(v.status === 'within-budget' && v.measuredMb).toBe(0); // <1MB, rounds to 0
+  });
+
+  it('grades a missing index not-measured, never a zero-byte pass', () => {
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-indexdisk-missing-'));
+    const v = measureGitnexusIndexDisk(root, 2_048);
+    expect(v.status).toBe('not-measured');
+    expect(v.status).not.toBe('within-budget');
+  });
+
+  it('alerts once when growth passes the accepted ceiling', () => {
+    const over = decideIndexDiskHealthUpdate(base, {
+      backend: 'gitnexus',
+      status: 'over-ceiling',
+      budgetMb: 2_048,
+      measuredMb: 12_000,
+      acceptedCeilingMb: 10_240,
+    });
+    expect(over.shouldAlert).toBe(true);
+    expect(over.next.indexDiskAlerted).toBe(true);
+
+    // Same condition on the next tick must NOT re-alert.
+    const again = decideIndexDiskHealthUpdate({ ...base, ...over.next }, {
+      backend: 'gitnexus',
+      status: 'over-ceiling',
+      budgetMb: 2_048,
+      measuredMb: 12_100,
+      acceptedCeilingMb: 10_240,
+    });
+    expect(again.shouldAlert).toBe(false);
+  });
+
+  it('does NOT alert on the accepted exceedance itself', () => {
+    // gitnexus is knowingly 3.2x the budget. Alerting on that would fire every
+    // tick from day one, and an always-red gauge is one nobody reads — which is
+    // how this budget came to be ignored in the first place.
+    const accepted = decideIndexDiskHealthUpdate(base, {
+      backend: 'gitnexus',
+      status: 'accepted-exceedance',
+      budgetMb: 2_048,
+      measuredMb: 6_558,
+      acceptedCeilingMb: 10_240,
+    });
+    expect(accepted.shouldAlert).toBe(false);
+    expect(accepted.next.indexDiskStatus).toBe('accepted-exceedance');
+  });
+
+  it('does not let a not-measured tick re-arm the alert', () => {
+    // Absence of evidence must not clear the flag: a flapping measurement
+    // would otherwise page repeatedly for one unchanged condition.
+    const alerted = { ...base, indexDiskAlerted: true };
+    const unknown = decideIndexDiskHealthUpdate(alerted, {
+      backend: 'gitnexus',
+      status: 'not-measured',
+      budgetMb: 2_048,
+      reason: 'walk truncated',
+    });
+    expect(unknown.shouldAlert).toBe(false);
+    expect(unknown.next.indexDiskAlerted).toBe(true);
+    expect(unknown.next.indexDiskMb).toBeNull();
   });
 });
 
