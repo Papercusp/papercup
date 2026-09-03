@@ -30,6 +30,8 @@ import {
   TOOL_ERROR_RULES,
   FINGERPRINTED_TOOL_ERROR_CLASSES,
   normalizeSuspectedToolFailure,
+  matchKnownExternalToolFailure,
+  KNOWN_EXTERNAL_TOOL_FAILURE_CLASSES,
   type ToolErrorClass,
 } from './tool-error-classifier';
 import { TOOL_ERROR_CORPUS } from './tool-error-corpus.fixture';
@@ -220,5 +222,112 @@ describe('SQL generators are driven by the table (structural check; real-PG pari
     expect(fpCase).toContain('transient');
     expect(fpCase).not.toContain('rate-limit'); // coarse — excluded
     expect(fpCase).toContain('regexp_replace'); // the skeleton arithmetic is present
+  });
+});
+
+describe('known-external tool-failure classes — deny the direct bypass for an already-adjudicated class (WI-2143658)', () => {
+  // Every string below is REAL reporter prose, taken from the measured
+  // population of filed rows (2026-09-03). That matters: the defect being
+  // guarded is that these all describe ONE failure while producing different
+  // dedup identities, so hand-invented prose would not exercise it.
+  const REAL_RACE_REPORTS = [
+    'Failed to create unified exec process: No such file or directory (os error 2)',
+    'CreateProcess rejected: Failed to create unified exec process: No such file or directory (os error 2) on a second independent loop:checkpoint invocation',
+    'exec_command intermittently fails to create the unified shell',
+    'unified exec could not create process',
+    'unified exec process rejected with no such file',
+    'CreateProcess message rejected: failed to create unified exec process',
+  ];
+
+  it.each(REAL_RACE_REPORTS)('recognises the documented Codex race: %s', (message) => {
+    const matched = matchKnownExternalToolFailure({ toolName: 'exec_command', message });
+    expect(matched?.id).toBe('codex-exec-command-parallel-launch-race');
+  });
+
+  it.each(REAL_RACE_REPORTS)('denies the direct bypass even when the reporter attests reproduction: %s', (message) => {
+    const normalized = normalizeSuspectedToolFailure({
+      toolName: 'exec_command',
+      errorCode: 'CreateProcess',
+      message,
+      // The honest attestation that was minting claimable duplicates.
+      reproduced: true,
+    });
+    expect(normalized.direct).toBe(false);
+    expect(normalized.knownExternal?.docSlug).toBe('agent-insights/codex-exec-command-parallel-launch-race');
+  });
+
+  it.each(['clearServerMismatch', 'hardInternal'] as const)(
+    'denies the bypass for the other direct-evidence flag %s too (all three routes, not just reproduced)',
+    (field) => {
+      const normalized = normalizeSuspectedToolFailure({
+        toolName: 'exec_command',
+        message: 'Failed to create unified exec process: No such file or directory (os error 2)',
+        [field]: true,
+      });
+      expect(normalized.direct).toBe(false);
+    },
+  );
+
+  // ── CONTROLS. A false match hides a real defect inside a row triage has been
+  // told to ignore, so the over-match guards matter more than the matches.
+
+  it.each([
+    'CreateProcess failed because the supplied workdir does not exist',
+    'caller misspelled the workspace path as papercuspai-workspace',
+    'CreateProcess rejected nonexistent workdir /nonexistent/workspace/path',
+    'exec_command rejected the working directory path typo before command execution',
+  ])('does NOT match the separate mistyped-workdir class, which has a different fix: %s', (message) => {
+    expect(matchKnownExternalToolFailure({ toolName: 'exec_command', message })).toBeNull();
+    const normalized = normalizeSuspectedToolFailure({ toolName: 'exec_command', message, reproduced: true });
+    // Unchanged behaviour: a real, attested, fixable report stays claimable.
+    expect(normalized.direct).toBe(true);
+    expect(normalized.knownExternal).toBeNull();
+  });
+
+  it('prefers a MISS when a race report also mentions a workdir — the exclude is deliberately conservative', () => {
+    // Documented intent, not an accident: this falls back to today's behaviour
+    // rather than risk suppressing a report that may be the workdir class.
+    const message = 'Failed to create unified exec process, though the workdir was valid';
+    expect(matchKnownExternalToolFailure({ toolName: 'exec_command', message })).toBeNull();
+  });
+
+  it('is gated on the tool name — identical prose about a PAPERCUSP tool is never suppressed', () => {
+    const message = 'Failed to create unified exec process: No such file or directory (os error 2)';
+    expect(matchKnownExternalToolFailure({ toolName: 'capability:bash', message })).toBeNull();
+    const normalized = normalizeSuspectedToolFailure({ toolName: 'capability:bash', message, reproduced: true });
+    expect(normalized.direct).toBe(true);
+  });
+
+  it('leaves an unrelated tool failure completely untouched', () => {
+    const normalized = normalizeSuspectedToolFailure({
+      toolName: 'work_items:complete',
+      message: 'terminal writer rejected a valid state',
+      reproduced: true,
+    });
+    expect(normalized.direct).toBe(true);
+    expect(normalized.knownExternal).toBeNull();
+  });
+
+  it('does not disturb the dedup identity it sits beside (watchdogKey/fingerprint unchanged)', () => {
+    const message = 'Failed to create unified exec process: No such file or directory (os error 2)';
+    const normalized = normalizeSuspectedToolFailure({ toolName: 'exec_command', errorCode: 'CreateProcess', message });
+    expect(normalized.watchdogKey).toBe(
+      `repeated-tool-error:${toolErrorSignalKey('exec_command', normalized.class, normalized.messageFingerprint)}`,
+    );
+  });
+
+  it('fails OPEN on empty input rather than throwing inside a filing', () => {
+    expect(matchKnownExternalToolFailure({ toolName: '', message: '' })).toBeNull();
+    expect(matchKnownExternalToolFailure({ toolName: 'exec_command', message: '' })).toBeNull();
+  });
+
+  it('every registered pattern compiles (this module\'s dual-engine convention)', () => {
+    expect(KNOWN_EXTERNAL_TOOL_FAILURE_CLASSES.length).toBeGreaterThan(0);
+    for (const klass of KNOWN_EXTERNAL_TOOL_FAILURE_CLASSES) {
+      expect(() => new RegExp(klass.match, 'i')).not.toThrow();
+      if (klass.exclude) expect(() => new RegExp(klass.exclude as string, 'i')).not.toThrow();
+      expect(klass.toolNames.every((name) => name === name.toLowerCase())).toBe(true);
+      expect(klass.docSlug).toMatch(/^agent-insights\//);
+    }
   });
 });

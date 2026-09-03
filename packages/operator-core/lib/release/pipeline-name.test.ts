@@ -9,6 +9,7 @@ import {
   isMultiPipelineGateKey,
   isMultiPipelineGateKeyPattern,
   pipelineName,
+  pipelineRef,
   pipelineTag,
   MULTI_PIPELINE_GATE_KEYS,
 } from './pipeline-name';
@@ -70,6 +71,47 @@ describe('pipelineTag', () => {
   it('⭐ is not the bare bracketed basename that was misread as a placeholder', () => {
     expect(pipelineTag('email')).not.toBe('[email]');
     expect(pipelineTag('email')).toContain('email');
+  });
+});
+
+describe('pipelineRef — EI-22240267519750098: the CLAIM must be attributable, not just the prefix', () => {
+  // Fourth instance of one class. The three fixes before it all asked "is the pipeline
+  // NAMED?" — prefix the broadcast, prefix the wake banner, make the prefix legible — and
+  // coverage became complete. It recurred anyway: an su read
+  //   [pipeline:email] 🟩 green-checkpoint: `main` advanced to ad49e48a (green, deployable)
+  // as their own gate greening. A prefix reads as routing metadata; the sentence after it
+  // is the claim, and its subject `main` is a ref every reader resolves against their OWN
+  // checkout. So the property here is not presence but: does the CLAIM survive losing the
+  // prefix?
+
+  it('qualifies the ref with its pipeline', () => {
+    expect(pipelineRef('email', 'main')).toBe('email:main');
+    expect(pipelineRef('papercusp', 'ready')).toBe('papercusp:ready');
+  });
+
+  it('⭐ CONTROL — "is the pipeline named?" passes on the exact string that caused the incident', () => {
+    // A permanent deliberately-weak predicate, kept as the control: it must NOT be able to
+    // separate the pre-fix rendering from the fixed one. Nothing in production is mutated
+    // to prove this guard falsifiable.
+    const preFix = `${pipelineTag('email')} 🟩 green-checkpoint: \`main\` advanced to ad49e48a`;
+    const postFix = `${pipelineTag('email')} 🟩 green-checkpoint: \`${pipelineRef('email', 'main')}\` advanced to ad49e48a`;
+    expect(preFix).toContain('email');
+    expect(postFix).toContain('email');
+
+    // The real predicate — strip the routing prefix, then look for a ref a reader would
+    // resolve locally — separates them. This is the assertion the incident fails.
+    const claimOf = (s: string): string => s.slice(pipelineTag('email').length).trim();
+    const bareMain = /(^|[^:\w-])main\b/;
+    expect(claimOf(preFix)).toMatch(bareMain);
+    expect(claimOf(postFix)).not.toMatch(bareMain);
+  });
+
+  it('keeps neighbouring pipelines distinguishable — the papercusp/papercup hazard at ref level', () => {
+    expect(pipelineRef('papercusp', 'main')).not.toBe(pipelineRef('papercup', 'main'));
+    for (const p of ['email', 'papercusp', 'papercup', 'oddsmith', 'hello-world-3-pot']) {
+      expect(pipelineRef(p, 'main')).not.toBe('main');
+      expect(pipelineRef(p, 'main')).toContain(p);
+    }
   });
 });
 
