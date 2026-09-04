@@ -791,14 +791,12 @@ export default defineTool({
   name: 'work_items:checkpoint',
   profile: 'engineer',
   description:
-    "Write (or clear) one OR many work-items' checkpoints — a compressed snapshot of your in-flight state. " +
-    'Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. ' +
-    'Your transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
-    "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
-    'Writes are verify-read — a suspicious shrink can be BLOCKED; see `returns`. ' +
-    'Refuses a peer-held item (`not_holder`) and active writes to terminal items (`terminal_item`); explicit clears still allowed. ' +
-    '`rowsMode:"merge"` (default) adds check rows while the body still replaces; `"replace"` retires rows. ' +
-    'Full body+rows replacement: append:false, rowsMode:"replace", confirmShrink:true, confirmRetire:true.',
+    'Write or clear one OR many work-item checkpoints. ' +
+    'Single: `{ id, checkpoint? }`; many: `items:[{ id, checkpoint?, harness? }]`. ' +
+    'Checkpoints preserve successor continuity across task boundaries; replace-on-write by default, `append:true` joins prior text. ' +
+    'Writes verify-read and block suspicious shrink; peer-held/terminal-item writes are refused while explicit clears remain allowed. ' +
+    '`rowsMode:"merge"` adds check rows while replacing the body; `"replace"` retires rows. ' +
+    'Full body+rows replacement requires `append:false, rowsMode:"replace", confirmShrink:true, confirmRetire:true`.',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
