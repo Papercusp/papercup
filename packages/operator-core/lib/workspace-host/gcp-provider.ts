@@ -26,7 +26,7 @@ import type {
   WorkspaceHostSnapshotRef,
   WorkspaceHostTransportProfile,
 } from '@papercusp/deployment-driver';
-import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
+import { assertWorkspaceHostSecretIsolation, WORKSPACE_HOST_DATA_ROOT } from '@papercusp/deployment-driver';
 import {
   GCP_CLOUD_PLATFORM_SCOPE,
   createGcpWorkspaceHostAcquireAuth,
@@ -1144,6 +1144,33 @@ function durableFilesystemStartupScript(
     'mountpoint -q "$data_mount" || mount "$data_mount"',
     'resize2fs "$data_device"',
     'install -d -m 0750 "$data_mount"/{postgres,repositories,transcripts,workspaces}',
+    // ⛔ CUSTOMER WORKSPACES MUST LAND ON THE DURABLE DISK (WI-2143796, proven on canary-14).
+    //
+    // WORKSPACE_HOST_DATA_ROOT is `/srv/papercusp/workspaces` — a path on the BOOT disk, which
+    // `upgrade` DELETES and recreates from the new image (planUpgrade below retains only the data
+    // disk, `{ ...dataDisk, autoDelete: false }`). Measured 2026-09-03: a file written to that root
+    // as the customer SSH user was GONE after a ledger-verified `succeeded|100` upgrade, while the
+    // data disk persisted untouched — i.e. every customer workspace was destroyed by a routine
+    // image upgrade. The `workspaces` directory created just above, on the durable mount, was never
+    // referenced by anything: the storage was already provisioned and simply not used.
+    //
+    // Bind, rather than relocating WORKSPACE_HOST_DATA_ROOT itself, because the bootstrap builds a
+    // deliberate permission boundary at that path — 0711 on /srv/papercusp so the workspace user can
+    // traverse but not list, 0770 + named-user ACLs on the root itself — while $data_mount is
+    // 0750 root:$SERVICE_GROUP with the workspace account deliberately NOT in that group (D-043:
+    // keep runtime files root-owned and non-readable to the workspace user). Moving the root under
+    // $data_mount would put customer workspaces behind a directory the customer is denied, or force
+    // that boundary open. A bind mount keeps the entire published path, permission and ACL model
+    // byte-identical and changes only which disk the bytes live on. The ACLs are stored in the ext4
+    // filesystem on the data disk, so they now survive the upgrade too.
+    //
+    // This runs BEFORE the user bootstrap (see the ordering contract in this function's header), so
+    // the bootstrap's own `install -d`/`setfacl` on the workspace root write straight through to the
+    // durable disk. fstab carries the bind so it survives reboot as well as instance recreation.
+    `install -d -m 0711 '${WORKSPACE_HOST_DATA_ROOT.replace(/\/[^/]+$/, '')}'`,
+    `install -d '${WORKSPACE_HOST_DATA_ROOT}'`,
+    `grep -q " ${WORKSPACE_HOST_DATA_ROOT} none bind" /etc/fstab || printf "%s ${WORKSPACE_HOST_DATA_ROOT} none bind 0 0\\n" "$data_mount/workspaces" >> /etc/fstab`,
+    `mountpoint -q '${WORKSPACE_HOST_DATA_ROOT}' || mount --bind "$data_mount/workspaces" '${WORKSPACE_HOST_DATA_ROOT}'`,
     ...(userScript ? ['', '# User-supplied bootstrap follows the durable mount.', userScript] : []),
     '',
   ].join('\n');

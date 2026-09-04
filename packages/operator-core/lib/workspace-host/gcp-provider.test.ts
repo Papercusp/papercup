@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  WORKSPACE_HOST_DATA_ROOT,
   WORKSPACE_HOST_PROVIDER_CONTRACT_CHECKS,
   runFakeWorkspaceHostProviderContractSuite,
   type WorkspaceHostApplyResult,
@@ -700,6 +701,49 @@ describe('GCP workspace-host provider planning', () => {
     const script = instance.metadata.items.find(({ key }) => key === 'startup-script')?.value ?? '';
     expect(script).toContain('resize2fs "$data_device"');
     expect(script).not.toContain('# User-supplied bootstrap follows the durable mount.');
+  });
+
+  it('binds the customer workspace root onto the DURABLE disk, before the bootstrap runs', async () => {
+    // WI-2143796, proven on canary-14: WORKSPACE_HOST_DATA_ROOT is a path on the BOOT disk, and
+    // `upgrade` deletes and recreates that disk while retaining only the data disk — so a routine
+    // image upgrade destroyed every customer workspace. A file written to that root as the customer
+    // SSH user was GONE after a ledger-verified succeeded|100 upgrade, while the data disk persisted.
+    //
+    // This test is the guard. It fails if the bind is dropped, or if WORKSPACE_HOST_DATA_ROOT is
+    // moved without the bind following it — the two constants live in different packages and
+    // neither imports the other, which is exactly how the original defect went unnoticed.
+    const { provider } = providerAndClient();
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'bind', idempotencyKey: 'bind', desired: desired() },
+      // A bootstrap IS supplied here, because the ordering assertion below is the point of this
+      // test: the bind must be emitted before the bootstrap that writes into the workspace root.
+      context({}, '#!/usr/bin/env bash\necho papercusp-bootstrap\n'),
+    );
+    const instance = (
+      plan.steps.find(({ id }) => id === 'create-instance')!.input as unknown as { request: GcpInstanceInsertInput }
+    ).request;
+    const script = instance.metadata.items.find(({ key }) => key === 'startup-script')?.value ?? '';
+
+    // The workspace root is NOT under the durable mount by path — that is the whole reason a bind
+    // is required rather than a plain mkdir, so assert the premise the fix rests on.
+    expect(WORKSPACE_HOST_DATA_ROOT.startsWith(`${GCP_DATA_MOUNT_POINT}/`)).toBe(false);
+
+    expect(script).toContain(
+      `mountpoint -q '${WORKSPACE_HOST_DATA_ROOT}' || mount --bind "$data_mount/workspaces" '${WORKSPACE_HOST_DATA_ROOT}'`,
+    );
+    // Survives reboot as well as instance recreation.
+    expect(script).toContain(`grep -q " ${WORKSPACE_HOST_DATA_ROOT} none bind" /etc/fstab`);
+    // The bind SOURCE must be the directory this script creates on the durable mount.
+    expect(script).toContain('install -d -m 0750 "$data_mount"/{postgres,repositories,transcripts,workspaces}');
+
+    // ORDERING IS LOAD-BEARING: the bind must precede the user bootstrap, so the bootstrap's own
+    // `install -d`/`setfacl` on the workspace root write through to the durable disk instead of
+    // being hidden by a mount that lands on top of them afterwards.
+    const bindAt = script.indexOf(`mount --bind "$data_mount/workspaces"`);
+    const bootstrapAt = script.indexOf('# User-supplied bootstrap follows the durable mount.');
+    expect(bindAt).toBeGreaterThan(-1);
+    expect(bootstrapAt).toBeGreaterThan(-1);
+    expect(bindAt).toBeLessThan(bootstrapAt);
   });
 
   it('provisions restricted direct SSH with only tcp/22 and returns a complete machine profile', async () => {
