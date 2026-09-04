@@ -48,7 +48,8 @@ vi.mock('./rubrics', () => ({
   readRubricPlanRevision: vi.fn(),
   META_ACCEPTANCE_RUBRIC_ID: 'meta-acceptance-rubric',
 }));
-vi.mock('./scorecards', () => ({
+vi.mock('./scorecards', async (orig) => ({
+  ...(await orig<typeof import('./scorecards')>()),
   listScorecards: vi.fn(),
 }));
 vi.mock('./acceptance-author-identity', () => ({

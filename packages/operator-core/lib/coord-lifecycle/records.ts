@@ -269,6 +269,13 @@ export const CompletionTreeStampSchema = z
           workingTreeBlobSha: completionBlobShaSlot,
           headBlobSha: completionBlobShaSlot,
           /**
+           * EI-22344624691081449: caller-declared intentional deletion. A
+           * deletion is proven only when both blob identities are null, and
+           * the server stamps this marker rather than inferring intent from
+           * absence alone.
+           */
+          deletion: z.literal(true).optional(),
+          /**
            * WI-42441: why the HEAD side could not be READ, when that is the reason
            * `headBlobSha` is null. A null alone conflates "the commit genuinely does
            * not carry this path" with "the server could not resolve it" — and those
@@ -312,6 +319,8 @@ export const CompletionSettlementManifestSchema = z.object({
     path: z.string().min(1),
     workingTreeBlobSha: completionBlobShaSlot,
     headBlobSha: completionBlobShaSlot,
+    /** EI-22344624691081449: caller-declared intentional deletion. */
+    deletion: z.literal(true).optional(),
   })).min(1).max(60),
   residualPaths: z.array(z.object({
     path: z.string().min(1),
@@ -473,6 +482,12 @@ export type RootCauseVerification = z.infer<typeof RootCauseVerificationSchema>;
 export const CompletionVerificationEvidenceSchema = z.object({
   /** Files/modules changed, for audit queries without reading completion prose. */
   filesChanged: FilesChangedSchema,
+  /**
+   * EI-22344624691081449: paths intentionally removed by this completion.
+   * Kept separate from `filesChanged` so absence can be proven as a deletion
+   * rather than misclassified as a missing or fabricated changed path.
+   */
+  filesDeleted: FilesChangedSchema,
   /** Exact command/probe run, or the concrete already-fixed verification. */
   testsRun: z.string().min(1).optional(),
   /** Result summary, e.g. "9/9 green" or "HTTP 200 smoke passed". */
@@ -848,6 +863,8 @@ export const CompletionRecordSchema = z.object({
   /** Top-level alias for the structured verification coverage record (WI-37960). */
   coverage: CompletionCoverageSchema.optional(),
   filesChanged: FilesChangedSchema,
+  /** Top-level alias for `verification.filesDeleted`; intentional removals. */
+  filesDeleted: FilesChangedSchema,
   testsRun: z.string().min(1).optional(),
   testResult: z.string().min(1).optional(),
   verifiedHow: CompletionVerifiedHowSchema.optional(),

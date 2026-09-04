@@ -82,9 +82,11 @@ const commentText = (v: { body?: string; comment?: string }): string => (v.body 
  * field claim_next actually gates on. This is a narrow, conservative match
  * (multi-word completion phrases, not bare "done"/"green") so it nudges on
  * genuine completion-sounding posts without flagging routine status chatter.
+ * WI-6958 adds the two measured phrases that escaped the first classifier:
+ * "closing as done" and "flipping state to done".
  */
 const COMPLETION_LIKE_RE =
-  /\b(done\s*(?:\+|and)?\s*green|vm[- ]?verified|fully\s+(?:fixed|implemented|resolved|done)|ready\s+to\s+close|closing\s+this\s+(?:out|item)|complete(?:d)?\s+(?:and|&)\s+(?:verified|tested|green)|all\s+tests?\s+(?:green|passing).{0,40}\bdone\b)/i;
+  /\b(done\s*(?:\+|and)?\s*green|vm[- ]?verified|fully\s+(?:fixed|implemented|resolved|done)|ready\s+to\s+close|closing\s+this\s+(?:out|item)|closing\s+as\s+done|flipp(?:ing|ed)\s+(?:the\s+)?state\s+to\s+done|complete(?:d)?\s+(?:and|&)\s+(?:verified|tested|green)|all\s+tests?\s+(?:green|passing).{0,40}\bdone\b)/i;
 
 /** A soft, non-blocking reminder attached to a result when a completion-shaped
  *  post lands on a still-open item — never fails the comment itself. */

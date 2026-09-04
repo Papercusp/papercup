@@ -34,7 +34,7 @@ import {
   META_ACCEPTANCE_RUBRIC_ID,
   readRubricPlanRevision,
 } from './rubrics';
-import { listScorecards } from './scorecards';
+import { listScorecards, ratingVerdict } from './scorecards';
 import {
   areAcceptanceLineageRelated,
   resolvePlanImplementerIdentities,
@@ -80,6 +80,7 @@ export type PlanAcceptanceGateCode =
   | 'acceptance_rubric_vetted_after_grading'
   | 'acceptance_ungraded'
   | 'self_graded_only'
+  | 'acceptance_bar_not_met'
   | 'acceptance_not_recorded'
   | 'acceptance_rejected'
   // plan-completion-audit-and-acceptance-verdict-2026-08-13 — the code-truth family.
@@ -1074,6 +1075,62 @@ export async function evaluatePlanAcceptanceGate(
         `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' is only graded by its ` +
         `own author ('${implementer}')${principalLabel} — grader ≠ implementer (plan D-005, the self-graded-homework guard). A ` +
         `different agent or the owner must file the grading scorecard.`,
+    };
+  }
+
+  // requirements-with-teeth-bar-before-method-2026-09-04 P-013 (landed early to
+  // close P-012's deliberately committed red baseline): an author's acceptance
+  // verdict is a process decision, never a waiver over the independently measured
+  // outcome. Legacy criteria carry no structural bar policy and retain their prior
+  // behavior; the lifecycle gate added by this plan separately makes that metadata
+  // mandatory for the post-adoption cohort.
+  const unmetMandatoryOutcomeBars = rubric.criteria.flatMap((criterion) => {
+    const policy = criterion as typeof criterion & {
+      role?: 'outcome' | 'disclosure';
+      mandatory?: boolean;
+      passRatings?: string[];
+      barKey?: string;
+    };
+    if (policy.role !== 'outcome' || policy.mandatory !== true) return [];
+
+    const rating = independent.ratings[criterion.key]?.rating?.trim() ?? null;
+    const explicitPassRatings = (policy.passRatings ?? [])
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+    const passes =
+      rating != null &&
+      (explicitPassRatings.length > 0
+        ? explicitPassRatings.includes(rating.toLowerCase())
+        : ratingVerdict(rating) === 'pass');
+    return passes
+      ? []
+      : [
+          {
+            criterionKey: criterion.key,
+            barKey: policy.barKey ?? criterion.key,
+            rating,
+          },
+        ];
+  });
+  if (unmetMandatoryOutcomeBars.length > 0) {
+    const detail = unmetMandatoryOutcomeBars
+      .map(
+        ({ criterionKey, barKey, rating }) =>
+          `'${criterionKey}' (bar '${barKey}', rating ${rating == null ? 'missing' : `'${rating}'`})`,
+      )
+      .join(', ');
+    return {
+      satisfied: false,
+      code: 'acceptance_bar_not_met',
+      rubricId: rubric.rubricId,
+      gradedBy: independent.createdBy ?? null,
+      gradedVia: independentVia,
+      ...(unknownRatedCriteria.length > 0 ? { unknownRatedCriteria } : {}),
+      message:
+        `plan '${planSlug}' cannot be marked shipped: mandatory outcome bar(s) are not met in the ` +
+        `authoritative independent grading: ${detail}. Every mandatory outcome needs a current ` +
+        `pass-equivalent rating; a disclosure criterion or the rubric author's acceptance verdict ` +
+        `cannot substitute for the outcome.`,
     };
   }
   // ── vetting PRECEDED grading (EI-21827040531672903) ──

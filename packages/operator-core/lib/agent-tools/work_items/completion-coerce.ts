@@ -57,6 +57,7 @@ export const COMPLETION_FIELDS: readonly string[] = [
   ...STRING_FIELDS,
   ...BOOL_FIELDS,
   'filesChanged',
+  'filesDeleted',
   'verification',
   'coverage',
   'rootCauseVerification',
@@ -90,7 +91,7 @@ const SERVER_GENERATED_COMPLETION_FIELDS = [
 /** Exact object-form example shared by the schema error and the tool guidance. */
 export const COMPLETION_OBJECT_EXAMPLE =
   '{ summary: "what changed", testsRun: "npm run test:file -- path/to.test.ts", testResult: "passed", ' +
-  'verifiedHow: "unit", addedTests: true, filesChanged: ["path/to/file"], ' +
+  'verifiedHow: "unit", addedTests: true, filesChanged: ["path/to/file"], filesDeleted: ["path/to/removed"], ' +
   'verification: { coverage: { population: ["all named items"], checked: ["all named items"], ' +
   'notChecked: [], notApplicable: [], residue: ["none"] } } }';
 
@@ -236,10 +237,11 @@ const COMPLETION_SHAPE_KEYS = new Set([
   'tests',
   'testsRun',
   'testResult',
-  'verifiedHow',
-  'addedTests',
-  'filesChanged',
-  'whatLanded',
+    'verifiedHow',
+    'addedTests',
+    'filesChanged',
+    'filesDeleted',
+    'whatLanded',
   'deferred',
   'migrations',
   'coverage',
@@ -356,6 +358,7 @@ export function coerceCompletionShape(raw: unknown): unknown {
       if (Array.isArray(value)) verification[f] = joinToString(value) || undefined;
     }
     verification.filesChanged = coerceFilesChanged(verification.filesChanged);
+    verification.filesDeleted = coerceFilesChanged(verification.filesDeleted);
     verification.addedTests = coerceBooleanFlag(verification.addedTests);
     out.verification = verification;
   }
@@ -404,6 +407,7 @@ export function coerceCompletionShape(raw: unknown): unknown {
   // unwraps `{ path, change }` records while leaving invalid entries for schema
   // validation instead of recording "[object Object]".
   out.filesChanged = coerceFilesChanged(out.filesChanged);
+  out.filesDeleted = coerceFilesChanged(out.filesDeleted);
 
   // string-typed fields: an array becomes a joined string.
   for (const f of STRING_FIELDS) {

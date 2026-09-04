@@ -148,6 +148,26 @@ describe('work_items:comment handler (bulk keyed-array)', () => {
       expect(getM).toHaveBeenCalledWith('WI-1', undefined);
     });
 
+    it.each([
+      ['post 54805', 'Closing as done given: the acceptance criterion is met with fresh independent verification.'],
+      [
+        'post 54809',
+        'Actually flipping state to done now (the prior "closing as done" comment never took effect as a state transition).',
+      ],
+    ])('matches the measured WI-5391 %s completion phrase (WI-6958)', async (_case, comment) => {
+      cmtM.mockResolvedValue({ id: 'post-1' } as never);
+      mockResolvedTyped(getM, wi({ id: 'WI-5391', state: 'open' }));
+
+      const b = await body({ id: 'WI-5391', body: comment });
+
+      expect(b.results[0]).toMatchObject({
+        ok: true,
+        id: 'WI-5391',
+        hint: expect.stringContaining('work_items:complete'),
+      });
+      expect(getM).toHaveBeenCalledWith('WI-5391', undefined);
+    });
+
     it('the SAME post on an ALREADY-terminal item carries no hint', async () => {
       cmtM.mockResolvedValue({ id: 'post-1' } as never);
       mockResolvedTyped(getM, wi({ id: 'WI-1', state: 'resolved' }));
