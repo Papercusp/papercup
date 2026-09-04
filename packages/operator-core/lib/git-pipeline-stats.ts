@@ -549,6 +549,8 @@ export interface RetriageVerdict {
   classification: 'real-red' | 'stale-candidate' | 'unknown';
   /** The tip the failing files were re-run at (short sha), when there was one. */
   tip: string | null;
+  /** When that tip measurement finished. Null for legacy or unmeasured verdicts. */
+  tipObservedAtMs: number | null;
   /** The classifier's own sentence — for `unknown`, the "tip re-run SKIPPED: <why>" reason. */
   detail: string;
   /** The candidate this verdict pertains to. Always equal to the snapshot's `observedCandidate`
@@ -632,6 +634,10 @@ export function pickRetriageVerdict(
     return {
       classification,
       tip: typeof r.tip === 'string' ? r.tip : null,
+      tipObservedAtMs:
+        typeof r.tipObservedAtMs === 'number' && Number.isFinite(r.tipObservedAtMs)
+          ? r.tipObservedAtMs
+          : null,
       detail: typeof r.detail === 'string' ? r.detail : '',
       candidate: cand,
     };

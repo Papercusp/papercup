@@ -546,7 +546,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const candidate = await commit("b", "2", "candidate");
     const { deps } = stubDeps(true);
     const setupTree = vi.fn(async () => undefined);
-    const runGreen = vi.fn(async () => ({ green: true, summary: "must not run" }));
+    const runGreen = vi.fn(async () => ({
+      green: true,
+      summary: "must not run",
+    }));
     let observation: TickFreezeObservation | null = null;
     deps.setupTree = setupTree;
     deps.runGreen = runGreen;
@@ -559,7 +562,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       observation = value;
     };
 
-    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
 
     expect(result).toMatchObject({
       advanced: false,
@@ -571,7 +577,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION + 1,
       },
     });
-    expect(result.summary).toContain("refusing to conclude that no candidate is frozen");
+    expect(result.summary).toContain(
+      "refusing to conclude that no candidate is frozen",
+    );
     expect(setupTree).not.toHaveBeenCalled();
     expect(runGreen).not.toHaveBeenCalled();
     expect(observation).toMatchObject({
@@ -870,7 +878,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     // A peer's fix reached the judged lineage via `release:repair-queue { op:'admit' }`
     // (P-001): repairHead moved forward, phase did not. The fixer dispatched at this head
     // finds nothing to change.
-    const converged = await commit("b", "fixed on staging", "peer fix admitted");
+    const converged = await commit(
+      "b",
+      "fixed on staging",
+      "peer fix admitted",
+    );
     const now = Date.now();
     let queue: FrozenCandidateRepairQueue | null = {
       schemaVersion: 3,
@@ -900,7 +912,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     deps.frozenRepairFixerAlive = async () => false;
     deps.dispatchFrozenRepairFixer = async () => {
       calls.push("dispatch");
-      return { spawnId: "post-verification-fixer", runId: "post-verification-run" };
+      return {
+        spawnId: "post-verification-fixer",
+        runId: "post-verification-run",
+      };
     };
 
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
@@ -913,7 +928,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       attempts: 1,
     });
     expect(
-      logs.some((l) => l.startsWith("FROZEN_REPAIR_ADMITTED_HEAD_READY_TO_VERIFY")),
+      logs.some((l) =>
+        l.startsWith("FROZEN_REPAIR_ADMITTED_HEAD_READY_TO_VERIFY"),
+      ),
     ).toBe(true);
     // The suite ran at the converged head in the same tick, and any replacement fixer was
     // launched only AFTER that verification went red — never ahead of it (the pre-fix
@@ -921,11 +938,16 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(calls).toContain("runGreen");
     expect(calls).toContain(`setup:${converged.slice(0, 7)}`);
     const dispatchAt = calls.indexOf("dispatch");
-    expect(dispatchAt === -1 || dispatchAt > calls.indexOf("runGreen")).toBe(true);
+    expect(dispatchAt === -1 || dispatchAt > calls.indexOf("runGreen")).toBe(
+      true,
+    );
     expect(result.candidate).toBe(converged);
     // The red at the converged head appended its round, so the NEXT no-op fixer at this head
     // takes the dead path (see the control below) rather than re-entering the suite.
-    expect(queue?.convergenceRounds?.map((r) => r.head)).toEqual([frozen, converged]);
+    expect(queue?.convergenceRounds?.map((r) => r.head)).toEqual([
+      frozen,
+      converged,
+    ]);
     expect(queue?.repairHead).toBe(converged);
   });
 
@@ -933,7 +955,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
-    const converged = await commit("b", "still broken", "peer change converged");
+    const converged = await commit(
+      "b",
+      "still broken",
+      "peer change converged",
+    );
     const now = Date.now();
     let queue: FrozenCandidateRepairQueue | null = {
       schemaVersion: 3,
@@ -1300,7 +1326,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const repaired = await commit("b", "3", "forward repair");
     // P-007/D-004: see above — the repair head must be reachable from the candidate's admission
     // ledger ref, which is what `release:repair-queue { op:'admit' }` advances in production.
-    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, repaired]);
+    await git(repo, [
+      "update-ref",
+      `refs/papercusp/frozen/${frozen}`,
+      repaired,
+    ]);
     // The repair is NOT on staging: staging fixed nothing and moved on. Pre-P-005 this exact
     // shape was re-queued as `repair-staging-mismatch` for an "alignment fixer" — the lineage
     // was required to be observable on staging before it could be judged. It no longer is.
@@ -1367,7 +1397,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     // P-007/D-004: a repairHead can only differ from the candidate because
     // `admitPathsOntoRepairHead` produced it, and that CAS-advances the admission ledger ref.
     // Promotion now requires that ref, so the fixture models the one door the head came through.
-    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, repaired]);
+    await git(repo, [
+      "update-ref",
+      `refs/papercusp/frozen/${frozen}`,
+      repaired,
+    ]);
 
     // Staging fixed the same thing independently and moved on. Pre-P-005 the queue's signature
     // was re-run at THIS tip and, on a pass, the queue was retired and the gate re-cut at the
@@ -1431,7 +1465,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     });
     expect(result.candidate).not.toBe(stagingTip);
     expect(retestedRefs).toEqual([repaired, repaired]);
-    expect(calls.slice(0, calls.indexOf("runGreen"))).not.toContain("resolveTip");
+    expect(calls.slice(0, calls.indexOf("runGreen"))).not.toContain(
+      "resolveTip",
+    );
     expect(calls).toContain(`setup:${repaired.slice(0, 7)}`);
     expect(calls).not.toContain(`setup:${stagingTip.slice(0, 7)}`);
     expect(queue).toBeNull();
@@ -1447,7 +1483,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     // P-007/D-004: a repairHead can only differ from the candidate because
     // `admitPathsOntoRepairHead` produced it, and that CAS-advances the admission ledger ref.
     // Promotion now requires that ref, so the fixture models the one door the head came through.
-    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, repaired]);
+    await git(repo, [
+      "update-ref",
+      `refs/papercusp/frozen/${frozen}`,
+      repaired,
+    ]);
 
     await git(repo, ["reset", "--hard", ready]);
     const transportedQuietCut = await commit(
@@ -1518,7 +1558,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     // The repair head happens to be a STAGING commit here (the pre-D-004 convergence shape) —
     // and staging kept moving underneath it. Under P-005 that ancestry is irrelevant: the
     // repair head is judged at its own sha whether or not staging can see it.
-    const converged = await commit("b", "fixed on staging", "peer fix converged");
+    const converged = await commit(
+      "b",
+      "fixed on staging",
+      "peer fix converged",
+    );
     // P-007/D-004: promotion is now fail-closed on the admission ledger ref — a repairHead may
     // differ from the candidate ONLY because `admitPathsOntoRepairHead` produced it, and that
     // CAS-advances this ref. This fixture predates that requirement: it modelled the pre-D-004
@@ -1526,7 +1570,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     // convergence any more. Model the one door a repair head can legitimately come through.
     // The test's SUBJECT is unchanged — a mixed signature the narrow runners cannot re-run is
     // judged by the full gate AT THE REPAIR HEAD, never at the moving tip.
-    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, converged]);
+    await git(repo, [
+      "update-ref",
+      `refs/papercusp/frozen/${frozen}`,
+      converged,
+    ]);
     const stagingTip = await commit("c", "3", "later staging work");
     const now = Date.now();
     let queue: FrozenCandidateRepairQueue | null = {
@@ -1574,11 +1622,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
     expect(queue).toBeNull();
     expect(await revParse(repo, "ready")).toBe(converged);
-    expect(
-      logs.some((l) =>
-        l.includes("the full gate at repair head"),
-      ),
-    ).toBe(true);
+    expect(logs.some((l) => l.includes("the full gate at repair head"))).toBe(
+      true,
+    );
   });
 
   it("P-005 (inverts the WI-2143595 control): an ISOLATED repair head — not on staging — is judged at ITS OWN sha and never yields to the tip", async () => {
@@ -1589,7 +1635,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     // P-007/D-004: a repairHead can only differ from the candidate because
     // `admitPathsOntoRepairHead` produced it, and that CAS-advances the admission ledger ref.
     // Promotion now requires that ref, so the fixture models the one door the head came through.
-    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, repaired]);
+    await git(repo, [
+      "update-ref",
+      `refs/papercusp/frozen/${frozen}`,
+      repaired,
+    ]);
 
     // The repair lives only on the frozen lineage; canonical staging fixed the same thing
     // independently and moved on. `repaired` descends from the frozen candidate but is NOT an
@@ -1645,7 +1695,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     // P-007/D-004: a repairHead can only differ from the candidate because
     // `admitPathsOntoRepairHead` produced it, and that CAS-advances the admission ledger ref.
     // Promotion now requires that ref, so the fixture models the one door the head came through.
-    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, repaired]);
+    await git(repo, [
+      "update-ref",
+      `refs/papercusp/frozen/${frozen}`,
+      repaired,
+    ]);
 
     await git(repo, ["reset", "--hard", ready]);
     const transportedQuietCut = await commit(
@@ -1711,7 +1765,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       from: ready,
     });
     expect(gateRefs).toEqual([repaired]);
-    expect(calls.slice(0, calls.indexOf("runGreen"))).not.toContain("resolveTip");
+    expect(calls.slice(0, calls.indexOf("runGreen"))).not.toContain(
+      "resolveTip",
+    );
     expect(queue).toBeNull();
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
     expect(await revParse(repo, "ready")).toBe(repaired);
@@ -1728,7 +1784,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     // P-007/D-004: a repairHead can only differ from the candidate because
     // `admitPathsOntoRepairHead` produced it, and that CAS-advances the admission ledger ref.
     // Promotion now requires that ref, so the fixture models the one door the head came through.
-    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, repaired]);
+    await git(repo, [
+      "update-ref",
+      `refs/papercusp/frozen/${frozen}`,
+      repaired,
+    ]);
 
     await git(repo, ["reset", "--hard", ready]);
     const stagingTip = await commit("b", "different", "canonical staging tip");
@@ -1799,7 +1859,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const repaired = await commit("b", "fixed", "verified repair");
     // The admission ledger ref is what makes `repaired` a LINEAGE commit rather than merely a
     // descendant of the candidate. `admitPathsOntoRepairHead` CAS-advances it in production.
-    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, repaired]);
+    await git(repo, [
+      "update-ref",
+      `refs/papercusp/frozen/${frozen}`,
+      repaired,
+    ]);
 
     // Staging moved on independently and does NOT contain the repair head. Under D-001 that was
     // fatal: the repair was "verification-only", so it was joined into this moving tip and the
@@ -1871,7 +1935,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const frozen = await commit("b", "broken", "frozen candidate");
     // Descends from the frozen candidate, but no admission ever authored it: there is no
     // `refs/papercusp/frozen/<candidate>` ref pointing at it. Descent is not membership.
-    const impostor = await commit("b", "fixed", "not admitted through the one door");
+    const impostor = await commit(
+      "b",
+      "fixed",
+      "not admitted through the one door",
+    );
     await git(repo, ["reset", "--hard", ready]);
     const stagingTip = await commit("c", "3", "later staging work");
 
@@ -2094,15 +2162,26 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    return { ready, frozen, movingTip, deps, calls, writes, queue: () => queue };
+    return {
+      ready,
+      frozen,
+      movingTip,
+      deps,
+      calls,
+      writes,
+      queue: () => queue,
+    };
   };
 
   it("D-005: an exhausted pin HOLDS — blocked row kept, no worktree abandonment, no suite, the moving tip is never read", async () => {
     // The P-048/P-008 recut hatch used to fire here: record an escape, write:null, clean the
     // worktree, and re-enter the gate at `movingTip`. Every one of those is now a regression.
-    const { frozen, movingTip, deps, calls, writes } = await exhaustedPinFixture();
+    const { frozen, movingTip, deps, calls, writes } =
+      await exhaustedPinFixture();
     const dispositions: Parameters<
-      NonNullable<Parameters<typeof runGreenCheckpoint>[1]["recordFreezeDisposition"]>
+      NonNullable<
+        Parameters<typeof runGreenCheckpoint>[1]["recordFreezeDisposition"]
+      >
     >[0][] = [];
     deps.recordFreezeDisposition = async (d) => {
       dispositions.push(d);
@@ -2131,7 +2210,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(result.summary).toContain("op: 'admit'");
     expect(result.summary).not.toMatch(/re-?cut/i);
     expect(dispositions).toHaveLength(1);
-    expect(dispositions[0]).toMatchObject({ enabled: true, state: "held", candidate: frozen });
+    expect(dispositions[0]).toMatchObject({
+      enabled: true,
+      state: "held",
+      candidate: frozen,
+    });
   });
 
   it("D-005: the hold auto-escalates exactly once, on the open→blocked transition — a resumed tick re-reads the blocked row silently", async () => {
@@ -2142,7 +2225,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(escalationsAfterFirst).toBe(1);
 
     const resumed = await runGreenCheckpoint(cfg(), deps, { noPush: true });
-    expect(calls.filter((c) => c === "escalate").length).toBe(escalationsAfterFirst);
+    expect(calls.filter((c) => c === "escalate").length).toBe(
+      escalationsAfterFirst,
+    );
     expect(calls).not.toContain("runGreen");
     expect(calls).not.toContain("write:null");
     expect(resumed).toMatchObject({
@@ -3183,7 +3268,11 @@ describe("EI-218328 exact checkpoint-run evidence", () => {
       logPath: "/var/lib/papercusp/checkpoint-logs/oddsmith-run.log",
       runId: "run-oddsmith-1",
     });
-    expect(Object.keys(evidence).sort()).toEqual(["integrationRoot", "logPath", "runId"]);
+    expect(Object.keys(evidence).sort()).toEqual([
+      "integrationRoot",
+      "logPath",
+      "runId",
+    ]);
   });
 
   it("omits unavailable optional values instead of inventing a run identity", () => {
@@ -5010,9 +5099,9 @@ describe("runGreenCheckpoint", () => {
     // a verdict WAS produced, so the absence below is a real absence and not an
     // empty message list.
     expect(messages.length).toBeGreaterThan(0);
-    expect(
-      messages.some((m) => m.includes("MODIFIED SINCE candidate")),
-    ).toBe(false);
+    expect(messages.some((m) => m.includes("MODIFIED SINCE candidate"))).toBe(
+      false,
+    );
   });
 
   // EI-18685041726970077 — owner-flagged highest-leverage fix: every not-green verdict
@@ -7693,12 +7782,30 @@ describe("classifyRedAgainstTip (stale-candidate re-triage)", () => {
   });
 
   it("describeRealRedAtTip falls back to the honest hedge with no split", () => {
-    expect(describeRealRedAtTip("bbbbbbbb2222", ["a.test.ts"])).toContain(
-      "INDIVIDUALLY",
+    const observedAtMs = Date.parse("2026-08-02T22:11:19.000Z");
+    const detail = describeRealRedAtTip(
+      "bbbbbbbb2222",
+      ["a.test.ts"],
+      undefined,
+      observedAtMs,
     );
+    expect(detail).toContain("AS OF 2026-08-02T22:11:19.000Z");
+    expect(detail).toContain("re-verify against current tip before acting");
+    expect(detail).toContain("INDIVIDUALLY");
     expect(describeRealRedAtTip("bbbbbbbb2222", ["a.test.ts"], [])).toContain(
       "INDIVIDUALLY",
     );
+  });
+
+  it("emits the same tip observation time as machine-readable provenance", () => {
+    const tipObservedAtMs = Date.parse("2026-08-02T22:11:19.000Z");
+    const v = classifyRedAgainstTip({
+      ...base,
+      tipRetest: { ran: true, pass: false },
+      tipObservedAtMs,
+    });
+    expect(v.tipObservedAtMs).toBe(tipObservedAtMs);
+    expect(v.detail).toContain(new Date(tipObservedAtMs).toISOString());
   });
 
   describe("splitTipFailuresPerFile (diagnostic per-file split — WI-7217)", () => {
@@ -8356,7 +8463,9 @@ describe("buildGreenCheckpointEnv (the gate measures COMMITTED defaults)", () =>
     );
     expect(env.PAPERCUSP_TEST_ATTRIBUTION).toBe("1");
     // And from a host that never mentioned it at all.
-    expect(buildGreenCheckpointEnv("b", partialEnv({})).PAPERCUSP_TEST_ATTRIBUTION).toBe("1");
+    expect(
+      buildGreenCheckpointEnv("b", partialEnv({})).PAPERCUSP_TEST_ATTRIBUTION,
+    ).toBe("1");
   });
 
   it("disables Python bytecode writes in gate children, overriding any host value", () => {
@@ -8569,7 +8678,7 @@ describe("GATE_FAILURE_SHAPE (EI-19971472409393390)", () => {
         failureShape: shape,
       }),
     ).toContain(
-      "GATE_HELD_BY count=1 attribution=attributed truncated=false postSuite=not-measured entries=[\"lib/cell-access-parity.test.ts\"]\nGATE_FAILURE_SHAPE count=6 deterministic=6 timeout=0 maxLoadavgPerCore=0.40 unclassified=0",
+      'GATE_HELD_BY count=1 attribution=attributed truncated=false postSuite=not-measured entries=["lib/cell-access-parity.test.ts"]\nGATE_FAILURE_SHAPE count=6 deterministic=6 timeout=0 maxLoadavgPerCore=0.40 unclassified=0',
     );
   });
 });
@@ -12228,7 +12337,12 @@ describe("EI-21949138739080608 — the pipeline tag must READ as an identifier",
   });
 
   it("keeps the discriminator for every pipeline, not just word-collisions", () => {
-    for (const p of ["papercusp", "papercup", "oddsmith", "hello-world-3-pot"]) {
+    for (const p of [
+      "papercusp",
+      "papercup",
+      "oddsmith",
+      "hello-world-3-pot",
+    ]) {
       expect(pipelineTag(p)).toBe(`[pipeline:${p}]`);
       expect(pipelineTag(p)).toContain(p);
     }
@@ -12282,8 +12396,7 @@ describe("EI-22240267519750098 — the CLAIM carries the pipeline, not just the 
 
   // A ref a reader resolves against their OWN tree: `ready` NOT already qualified by a
   // `<pipeline>:`. The `[^:\w-]` guard is what distinguishes `email:ready` from `` `ready` ``.
-  const bareRef = (ref: string): RegExp =>
-    new RegExp(`(^|[^:\\w-])${ref}\\b`);
+  const bareRef = (ref: string): RegExp => new RegExp(`(^|[^:\\w-])${ref}\\b`);
 
   const captureDelivered = (
     green: boolean,
@@ -12615,6 +12728,7 @@ describe("P-005: post-suite low-memory scheduling and timing evidence", () => {
         "lint:tsc",
         "lint:tsc:papercusp-libs",
         "lint:tsc:workspaces",
+        "lint:tsc:operator",
         "lint:tsc:orchestrator",
         "lint:tsc:scripts",
         "lint:migrations",
@@ -12827,16 +12941,32 @@ describe("EI-20014356905761236: the verdict log records whether its verdict prom
     const logPath = join(repo, "verdict-held-event.log");
     const deps = withLog(stubDeps(true).deps, true, logPath);
     deps.perfGate = async () => ({ action: "block", summary: "perf BLOCK" });
-    const emitted: { key: string; summary: string; payload: unknown; cancelSiblingKeysFor?: string[] }[] = [];
-    deps.emitEvent = async ({ key, summary, payload, cancelSiblingKeysFor }) => {
+    const emitted: {
+      key: string;
+      summary: string;
+      payload: unknown;
+      cancelSiblingKeysFor?: string[];
+    }[] = [];
+    deps.emitEvent = async ({
+      key,
+      summary,
+      payload,
+      cancelSiblingKeysFor,
+    }) => {
       emitted.push({ key, summary, payload, cancelSiblingKeysFor });
     };
 
     const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
-    expect(r).toMatchObject({ green: true, advanced: false, reason: "perf-held" });
+    expect(r).toMatchObject({
+      green: true,
+      advanced: false,
+      reason: "perf-held",
+    });
     const pipeline = pipelineName(repo);
-    const heldEvents = emitted.filter((e) => e.key.startsWith("green-checkpoint:held"));
+    const heldEvents = emitted.filter((e) =>
+      e.key.startsWith("green-checkpoint:held"),
+    );
     expect(heldEvents.map((e) => e.key)).toEqual([
       "green-checkpoint:held",
       `green-checkpoint:held:${pipeline}`,
@@ -12865,7 +12995,9 @@ describe("EI-20014356905761236: the verdict log records whether its verdict prom
     }
     // Neither of the other three families fired — held is mutually exclusive with them.
     expect(emitted.some((e) => e.key.startsWith("release:green"))).toBe(false);
-    expect(emitted.some((e) => e.key.startsWith("green-checkpoint:red"))).toBe(false);
+    expect(emitted.some((e) => e.key.startsWith("green-checkpoint:red"))).toBe(
+      false,
+    );
   });
 
   it("a candidate that really did become the pin says promoted=true (the positive control)", async () => {
@@ -13374,27 +13506,35 @@ describe("WI-2141736: the fixer's provider is DERIVED from agent-config, never h
 
   it("follows the role backend to claude when release-fixer is pinned to claude-code", async () => {
     await expect(
-      withConfig({ backend: "codex", roleBackends: { "release-fixer": "claude-code" } }),
+      withConfig({
+        backend: "codex",
+        roleBackends: { "release-fixer": "claude-code" },
+      }),
     ).resolves.toBe("claude");
   });
 
   it("still answers codex when the role is pinned to codex", async () => {
     await expect(
-      withConfig({ backend: "claude-code", roleBackends: { "release-fixer": "codex" } }),
+      withConfig({
+        backend: "claude-code",
+        roleBackends: { "release-fixer": "codex" },
+      }),
     ).resolves.toBe("codex");
   });
 
   it("falls back to the GLOBAL backend when the role carries no override", async () => {
-    await expect(withConfig({ backend: "claude-code", roleBackends: {} })).resolves.toBe(
-      "claude",
-    );
+    await expect(
+      withConfig({ backend: "claude-code", roleBackends: {} }),
+    ).resolves.toBe("claude");
   });
 
   // Failing OPEN is the contract: an unknown must never masquerade as a measured wall,
   // so a backend with no account-pool provider yields undefined and the caller keeps its
   // named default rather than withholding a dispatch.
   it("returns undefined for a backend with no account-pool provider", async () => {
-    await expect(withConfig({ backend: "omp", roleBackends: {} })).resolves.toBeUndefined();
+    await expect(
+      withConfig({ backend: "omp", roleBackends: {} }),
+    ).resolves.toBeUndefined();
   });
 
   it("returns undefined rather than throwing when the config cannot be read", async () => {
@@ -13485,13 +13625,11 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
   });
 
   it("withholds the dispatch when every account is usage-walled, spending no attempt", async () => {
-    const { result, dispatched, queue } = await runWithCapacity(
-      async () => ({
-        ok: false,
-        summary: "all 5 codex account(s) are usage-walled",
-        retryAtMs: RESET_AT,
-      }),
-    );
+    const { result, dispatched, queue } = await runWithCapacity(async () => ({
+      ok: false,
+      summary: "all 5 codex account(s) are usage-walled",
+      retryAtMs: RESET_AT,
+    }));
 
     expect(dispatched).toBe(0);
     // Refused BEFORE worktree preparation, so a walled pool costs no setup either.
@@ -13534,7 +13672,9 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
       throw new Error("dispatch-infeasible queue must not launch a fixer");
     };
     const dispositions: Parameters<
-      NonNullable<Parameters<typeof runGreenCheckpoint>[1]["recordFreezeDisposition"]>
+      NonNullable<
+        Parameters<typeof runGreenCheckpoint>[1]["recordFreezeDisposition"]
+      >
     >[0][] = [];
     deps.recordFreezeDisposition = async (d) => {
       dispositions.push(d);
@@ -13780,7 +13920,9 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
       candidate: frozen,
       capacityRetryAtMs: RESET_AT,
     });
-    expect(dispositions[0]?.reason).toContain("provider-capacity infeasibility");
+    expect(dispositions[0]?.reason).toContain(
+      "provider-capacity infeasibility",
+    );
     expect(result).toMatchObject({
       advanced: false,
       candidate: frozen,

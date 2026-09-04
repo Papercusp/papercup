@@ -750,6 +750,8 @@ export interface CheckpointVerdict {
   retriage?: {
     classification: 'real-red' | 'stale-candidate' | 'unknown';
     tip: string | null;
+    /** Completion time of the tip measurement. Null/absent means no successful tip re-run. */
+    tipObservedAtMs?: number | null;
     detail: string;
     /** Structural mirror of RedTriage.autoRefire. Optional for old CLI payloads; absent is not
      *  proof that the cap was reached, so callers must fail closed before persisting stale fields. */
@@ -1356,6 +1358,10 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
     detail.retriage = {
       classification: v.retriage.classification,
       tip: v.retriage.tip ? v.retriage.tip.slice(0, 12) : null,
+      tipObservedAtMs:
+        typeof v.retriage.tipObservedAtMs === 'number' && Number.isFinite(v.retriage.tipObservedAtMs)
+          ? v.retriage.tipObservedAtMs
+          : null,
       detail: v.retriage.detail.slice(0, 500),
     };
   }

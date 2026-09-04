@@ -853,7 +853,12 @@ describe('pickRetriageVerdict (EI-19399662484764592, pure)', () => {
         ev({
           detail: {
             candidate: 'abc123456789',
-            retriage: { classification: 'real-red', tip: 'def456789012', detail: 'reproduce at tip' },
+            retriage: {
+              classification: 'real-red',
+              tip: 'def456789012',
+              tipObservedAtMs: 1_775_000_000_000,
+              detail: 'reproduce at tip',
+            },
           },
         }),
       ],
@@ -862,6 +867,7 @@ describe('pickRetriageVerdict (EI-19399662484764592, pure)', () => {
     expect(got).toEqual({
       classification: 'real-red',
       tip: 'def456789012',
+      tipObservedAtMs: 1_775_000_000_000,
       detail: 'reproduce at tip',
       candidate: 'abc123456789',
     });
@@ -882,6 +888,7 @@ describe('pickRetriageVerdict (EI-19399662484764592, pure)', () => {
     expect(got?.classification).toBe('unknown');
     expect(got?.detail).toContain('SKIPPED');
     expect(got?.tip).toBeNull();
+    expect(got?.tipObservedAtMs).toBeNull();
   });
 
   it("⭐ REFUSES to attribute a DIFFERENT candidate's re-triage to this verdict — a plausible wrong answer is worse than none", () => {

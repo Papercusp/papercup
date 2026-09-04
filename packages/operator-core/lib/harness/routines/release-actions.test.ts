@@ -2942,12 +2942,14 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
         retriage: {
           classification: 'real-red',
           tip: 'b'.repeat(40),
+          tipObservedAtMs: 1_775_000_000_000,
           detail: '6 failing file(s) REPRODUCE at tip bbbbbbbb',
         },
       });
       expect(d.retriage).toEqual({
         classification: 'real-red',
         tip: 'b'.repeat(12),
+        tipObservedAtMs: 1_775_000_000_000,
         detail: '6 failing file(s) REPRODUCE at tip bbbbbbbb',
       });
     });
@@ -2975,6 +2977,7 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
       });
       expect((d.retriage as { detail: string }).detail).toHaveLength(500);
       expect((d.retriage as { tip: string | null }).tip).toBeNull();
+      expect((d.retriage as { tipObservedAtMs: number | null }).tipObservedAtMs).toBeNull();
     });
 
     it('omits retriage entirely when the run produced none (a green tick records no verdict about staleness)', () => {
