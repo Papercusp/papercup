@@ -57,6 +57,32 @@ export const WORKSPACE_HOST_BOOTC_BASE_IMAGE =
   'quay.io/centos-bootc/centos-bootc:stream9';
 
 /**
+ * The ONE containers signature policy a bootc pull actually consults — D-286.
+ *
+ * This is not a default or a convention; it is the only path with any effect, and pinning it is
+ * what makes D-262 condition 2 ("that policy MUST be asserted by the bootstrap's own verify
+ * phase") mean something. MEASURED on the base, with paired controls
+ * (`p306-signature-policy-probe.sh` probes D-F):
+ *
+ * - With no `--policy` flag, `/etc/containers/policy.json` IS consulted: the base's shipped
+ *   permissive policy accepts an unsigned image (exit 0), and replacing that same file with
+ *   `reject` turns the identical command into "rejected by policy" (exit 1).
+ * - A perfectly valid policy at ANY OTHER path is IGNORED without `--policy` — the unsigned copy
+ *   still fails, so the other file demonstrably gates nothing.
+ * - `bootc upgrade --help` exposes ZERO policy flags, so bootc cannot be pointed elsewhere even
+ *   deliberately.
+ *
+ * Hence the validation below requires EQUALITY rather than merely an absolute path. A render
+ * that asserted a well-formed `sigstoreSigned` policy at, say,
+ * `/usr/lib/papercusp/release-signature-policy.json` would pass every check it performs and
+ * attest `signatureVerified: true` while the pull went through the base's permissive default —
+ * a policy that is present, correct, and consulted by nothing. That is D-262's own trap
+ * (a mechanism "present, looks adopted, inert until configured") reproduced one level up, and
+ * it is exactly the unbacked-boolean class D-252 exists to remove.
+ */
+export const WORKSPACE_HOST_CONTAINERS_POLICY_PATH = '/etc/containers/policy.json';
+
+/**
  * The update path each model actually performs — declared as a PAIRING, not as two independent
  * unions, and this is the load-bearing part.
  *
@@ -679,12 +705,18 @@ export interface WorkspaceHostBootcRelease {
   /** Base the product image was built FROM. Defaults to `WORKSPACE_HOST_BOOTC_BASE_IMAGE`. */
   baseImage?: string;
   /**
-   * Absolute path of the containers signature policy the host must be running under.
+   * Path of the containers signature policy the host must be running under. MUST equal
+   * {@link WORKSPACE_HOST_CONTAINERS_POLICY_PATH} — it is a field rather than a constant only so
+   * that the attestation carries the path it actually asserted, rather than a reader having to
+   * assume it.
    *
    * NOT a policy this script writes: an image whose signature is only checked by a policy the
    * same run installed has a window in which it was checked by nothing. The policy belongs to
    * the image (P-308), and this render ASSERTS it is present and requires a signature for the
    * release repository — a read, which is the strongest honest claim from inside the host.
+   *
+   * The equality check is D-286: any other path is a file the pull never consults, so asserting
+   * it would be green over nothing. See the constant for the measurement.
    */
   signaturePolicyPath: string;
 }
@@ -1106,6 +1138,15 @@ function validateInput(
     requireCondition(
       SAFE_ABSOLUTE_PATH.test(bootc.signaturePolicyPath),
       'bootc.signaturePolicyPath must be an absolute path',
+    );
+    // EQUALITY, not merely absoluteness — D-286. Asserting a policy at any other path is a check
+    // over a file the pull never reads: it would pass, and attest `signatureVerified: true`,
+    // while the image was admitted by the base's permissive default. Refusing here is the only
+    // place the render can tell the two apart, because from inside the host a correct-looking
+    // policy at the wrong path is indistinguishable from a correct one.
+    requireCondition(
+      bootc.signaturePolicyPath === WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
+      `bootc.signaturePolicyPath must be ${WORKSPACE_HOST_CONTAINERS_POLICY_PATH} — the only policy a bootc pull consults; a policy anywhere else gates nothing`,
     );
   }
   requireCondition(

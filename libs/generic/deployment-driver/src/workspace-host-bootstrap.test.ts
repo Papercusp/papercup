@@ -11,6 +11,7 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_SHARED_CHECKS,
   WORKSPACE_HOST_MODELS,
   WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+  WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
   WORKSPACE_HOST_BOOTSTRAP_STAGED_PREFIX,
   WORKSPACE_HOST_UPDATE_MODE_BY_MODEL,
   workspaceHostBootstrapChecks,
@@ -1723,6 +1724,49 @@ describe('workspace-host bootstrap attestation', () => {
           }),
         ),
       ).toThrow('bootc.image must be a registry-qualified image reference');
+    });
+
+    // D-286. The failure this refuses is the one that LOOKS like success: a real, well-formed
+    // `sigstoreSigned` policy sitting at a path the pull never reads. Every check the render
+    // performs passes over it — the file exists, jq finds the entry — and the attestation says
+    // `signatureVerified: true`, while bootc admitted the image under the base's permissive
+    // `/etc/containers/policy.json`. Measured with paired controls (probes D-F): replacing that
+    // one file flips an identical unsigned copy from exit 0 to "rejected by policy", and a valid
+    // permissive policy at any other path changes nothing.
+    it('refuses a signature policy at any path other than the one a pull consults', () => {
+      expect(WORKSPACE_HOST_CONTAINERS_POLICY_PATH).toBe(
+        '/etc/containers/policy.json',
+      );
+      for (const path of [
+        // The most plausible wrong answer: our own artifact's name, in a papercusp-owned
+        // directory. It is absolute, it is real, and it gates nothing.
+        '/usr/lib/papercusp/release-signature-policy.json',
+        '/etc/containers/policy.json.d/papercusp.json',
+        '/etc/pki/papercusp/policy.json',
+      ]) {
+        expect(() =>
+          buildWorkspaceHostBootstrap(
+            bootcInput({
+              bootc: { ...bootcInput().bootc!, signaturePolicyPath: path },
+            }),
+          ),
+        ).toThrow('the only policy a bootc pull consults');
+      }
+    });
+
+    // The positive control for the refusal above: absoluteness alone was the OLD bar, so a test
+    // that only proved rejection would also pass against a render that refused everything.
+    it('accepts the policy path a pull actually consults, and attests it', () => {
+      const script = buildWorkspaceHostBootstrap(
+        bootcInput({
+          bootc: {
+            ...bootcInput().bootc!,
+            signaturePolicyPath: WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
+          },
+        }),
+      );
+      expect(script).toContain(WORKSPACE_HOST_CONTAINERS_POLICY_PATH);
+      expect(script).toContain('signaturePolicyPath');
     });
 
     it('refuses a digest that is not a pinned sha256 manifest digest', () => {

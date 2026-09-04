@@ -14,6 +14,18 @@
 #                                                       and C accepting is what proves the
 #                                                       verification is OFF by default.
 #
+# D-286 added three more, which establish that the RENDER's assertion is about the right file:
+#
+#   PROBE D  [insecureAcceptAnything, sigstoreSigned] + unsigned -> expect REJECT (scope arrays
+#            are ALL-of, so "has a sigstoreSigned entry" is a sufficient check), with a signed
+#            positive control so D cannot pass against a reject-everything policy.
+#   PROBE E  no --policy flag, /etc/containers/policy.json swapped -> ACCEPT then REJECT, which
+#            is what proves THAT file is the one gating the pull.
+#   PROBE F  a valid permissive policy at another path             -> expect REJECT (ignored).
+#
+# D-F are why `WORKSPACE_HOST_CONTAINERS_POLICY_PATH` is an equality check and not a
+# SAFE_ABSOLUTE_PATH check: F is the failure that looks exactly like success.
+#
 # Costs nothing and reaches no cloud: no registry, no network signing service, no cosign on the
 # host. The signing and verification both run inside the bootc base image, using the skopeo it
 # already carries (the same skopeo `bootc` itself shells out to — `rpm -q --requires bootc`
@@ -100,6 +112,64 @@ echo "=== PROBE C: UNSIGNED under the base's SHIPPED policy (expect ACCEPT — D
 skopeo --policy /etc/containers/policy.json copy dir:/work/unsigned dir:/work/out-default >/dev/null 2>&1
 c=\$?; echo "C_EXIT=\$c"
 [ "\$c" -eq 0 ] || echo "C_NOTE: the base no longer accepts unsigned by default — D-262's premise may have changed upstream; re-read /etc/containers/policy.json before relying on this file."
+
+
+# ── D-286: the two properties the RENDER's policy assertion rests on ──────────────────────────
+# The render asserts (a) the policy at \$SIGNATURE_POLICY_PATH contains a sigstoreSigned entry for
+# the release repo, and (b) attests that path. Both are green over nothing unless:
+#   D  a co-present insecureAcceptAnything does NOT weaken a sigstoreSigned entry in the same
+#      scope array — otherwise "at least one sigstoreSigned entry" is not a sufficient check.
+#   E  the file at /etc/containers/policy.json is the one a pull actually consults.
+#   F  a valid policy at ANY OTHER path is ignored — the failure that looks like success.
+
+cat > /work/pol-mixed.json <<POL
+{
+  "default": [{"type": "reject"}],
+  "transports": {
+    "dir": {
+      "": [
+        {"type": "insecureAcceptAnything"},
+        {
+          "type": "sigstoreSigned",
+          "keyPath": "/work/relkey.pub",
+          "signedIdentity": {"type": "exactReference", "dockerReference": "$IDENT"}
+        }
+      ]
+    }
+  }
+}
+POL
+
+echo "=== PROBE D: UNSIGNED under [insecureAcceptAnything, sigstoreSigned] (expect REJECT) ==="
+skopeo --policy /work/pol-mixed.json copy dir:/work/unsigned dir:/work/out-mixed-unsigned >/dev/null 2>&1
+d=\$?; echo "D_EXIT=\$d"
+[ "\$d" -ne 0 ] || { echo "D_UNEXPECTED: scope-array requirements are ANY-of, not ALL-of — the render's 'has a sigstoreSigned entry' check is INSUFFICIENT and must also reject weakening entries"; fail=1; }
+# Positive control for D: the same mixed policy must still ACCEPT a correctly signed image, or D
+# would 'pass' against a policy that rejects everything.
+skopeo --policy /work/pol-mixed.json copy dir:/work/signed dir:/work/out-mixed-signed >/dev/null 2>&1
+dc=\$?; echo "D_CONTROL_SIGNED_EXIT=\$dc"
+[ "\$dc" -eq 0 ] || { echo "D_CONTROL_UNEXPECTED: the mixed policy rejects even a signed image, so PROBE D measured nothing"; fail=1; }
+
+echo "=== PROBE E: /etc/containers/policy.json is what a NO-FLAG pull consults (expect ACCEPT then REJECT) ==="
+skopeo copy dir:/work/unsigned dir:/work/out-noflag-permissive >/dev/null 2>&1
+e1=\$?; echo "E_PERMISSIVE_EXIT=\$e1"
+cp /etc/containers/policy.json /work/orig-policy.json
+printf '{"default":[{"type":"reject"}]}\n' > /etc/containers/policy.json
+skopeo copy dir:/work/unsigned dir:/work/out-noflag-reject >/dev/null 2>&1
+e2=\$?; echo "E_REJECT_EXIT=\$e2"
+[ "\$e1" -eq 0 ] && [ "\$e2" -ne 0 ] || { echo "E_UNEXPECTED: replacing /etc/containers/policy.json did not change the verdict of an identical no-flag copy — that file is not the one gating the pull, and WORKSPACE_HOST_CONTAINERS_POLICY_PATH is wrong"; fail=1; }
+
+echo "=== PROBE F: a VALID permissive policy at another path is IGNORED (expect REJECT) ==="
+# /etc/containers/policy.json is still reject-all from E. If a correct policy elsewhere could
+# rescue this copy, the render could assert a file that gates nothing and be green.
+cp /work/orig-policy.json /work/elsewhere-permissive.json
+skopeo copy dir:/work/unsigned dir:/work/out-elsewhere >/dev/null 2>&1
+f=\$?; echo "F_EXIT=\$f"
+[ "\$f" -ne 0 ] || { echo "F_UNEXPECTED: a policy outside /etc/containers/policy.json affected the pull — the path pin is not the whole story"; fail=1; }
+cp /work/orig-policy.json /etc/containers/policy.json
+
+echo "=== bootc exposes no policy override (expect 0 matches) ==="
+echo "BOOTC_POLICY_FLAGS=\$(bootc upgrade --help 2>&1 | grep -ci 'policy')"
 
 echo "PROBE_RESULT=\$( [ \$fail -eq 0 ] && echo PASS || echo FAIL )"
 exit \$fail
