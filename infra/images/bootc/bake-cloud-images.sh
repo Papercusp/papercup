@@ -31,6 +31,7 @@
 #                        scope, and dropping it makes the host refuse its own release with a
 #                        message byte-identical to "unsigned" (p307-registries-d-scope-probe.sh).
 #   --key PATH           cosign private key; COSIGN_PASSWORD is read from the environment.
+#   --pubkey PATH        matching public key (default: --key with .key replaced by .pub).
 #   --tag TAG            image tag to publish (default: papercusp-workspace-host-<date>).
 #   --clouds LIST        comma-separated subset of gcp,aws,azure (default: all three).
 #   --out DIR            artifact directory (default: ./.bake-out).
@@ -50,7 +51,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 declare -A CLOUD_TYPE=( [gcp]=gce      [aws]=ami       [azure]=vhd )
 declare -A CLOUD_FILE=( [gcp]=image/disk.raw [aws]=image/disk.raw [azure]=vhd/disk.vhd )
 
-REGISTRY=""; KEY=""; TAG=""; CLOUDS="gcp,aws,azure"; OUT="./.bake-out"
+REGISTRY=""; KEY=""; PUBKEY=""; TAG=""; CLOUDS="gcp,aws,azure"; OUT="./.bake-out"
 INSECURE=0; DRY_RUN=0
 BIB_IMG="${BOOTC_IMAGE_BUILDER:-quay.io/centos-bootc/bootc-image-builder:latest}"
 SKOPEO_IMG="${SKOPEO_IMAGE:-quay.io/centos-bootc/centos-bootc:stream9}"
@@ -61,6 +62,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --registry) REGISTRY="${2:-}"; shift 2;;
     --key) KEY="${2:-}"; shift 2;;
+    --pubkey) PUBKEY="${2:-}"; shift 2;;
     --tag) TAG="${2:-}"; shift 2;;
     --clouds) CLOUDS="${2:-}"; shift 2;;
     --out) OUT="${2:-}"; shift 2;;
@@ -85,6 +87,25 @@ REPO="$REGISTRY/workspace-host"
 PODMAN=(podman)
 if [ "$(id -u)" -ne 0 ]; then PODMAN=(sudo -n podman); fi
 TLS=(); [ "$INSECURE" -eq 1 ] && TLS=(--tls-verify=false)
+
+# A specialised image must contain the public half of the key that signs it. Merely pointing
+# policy.json at a future path produces a host that fails closed but can never upgrade, and the
+# first real P-307 render proved that this path had never been populated. Resolve and validate it
+# BEFORE the expensive build. The key is public; base64 is only a quoting-safe build-arg encoding.
+if [ "$DRY_RUN" -eq 0 ]; then
+  [ -f "$KEY" ] || die "private key not found: $KEY"
+  [ -n "$PUBKEY" ] || PUBKEY="${KEY%.key}.pub"
+  [ -f "$PUBKEY" ] || die "public key not found: $PUBKEY (pass --pubkey)"
+  PUBKEY_B64="$(base64 -w0 < "$PUBKEY")"
+  [ -n "$PUBKEY_B64" ] || die "public key is empty: $PUBKEY"
+  STORAGE_DRIVER="${RELEASE_STORAGE_DRIVER:-$("${PODMAN[@]}" info --format '{{.Store.GraphDriverName}}' 2>/dev/null)}"
+else
+  PUBKEY_B64=""
+  STORAGE_DRIVER="${RELEASE_STORAGE_DRIVER:-overlay}"
+fi
+case "$STORAGE_DRIVER" in
+  ''|*[!A-Za-z0-9_-]*) die "could not determine a valid containers/storage graph driver";;
+esac
 
 mkdir -p "$OUT" || die "cannot create $OUT"
 
@@ -145,11 +166,13 @@ export SYFT_BIN="$SYFT_RESOLVED" GRYPE_BIN="$GRYPE_RESOLVED"
 # 3), all-or-nothing, so an image either names the real registry in both files or fails closed
 # in both. Passing it here is what makes the built image able to verify its own upgrades.
 if [ "$DRY_RUN" -eq 1 ]; then
-  echo "DRY_RUN: would podman build --build-arg RELEASE_REGISTRY_NAMESPACE=$REGISTRY -t $REPO:$TAG"
+  echo "DRY_RUN: would podman build with registry=$REGISTRY storage-driver=$STORAGE_DRIVER and the release public key -t $REPO:$TAG"
 else
   echo "### 1/4 build (one image, all clouds)"
   "${PODMAN[@]}" build \
     --build-arg "RELEASE_REGISTRY_NAMESPACE=$REGISTRY" \
+    --build-arg "RELEASE_STORAGE_DRIVER=$STORAGE_DRIVER" \
+    --build-arg "RELEASE_SIGNING_PUBKEY_B64=$PUBKEY_B64" \
     -f "$HERE/workspace-host.Containerfile" -t "$REPO:$TAG" "$HERE" \
     || { echo "BAKE_RESULT=FAILED build"; exit 1; }
   "${PODMAN[@]}" push "${TLS[@]}" "$REPO:$TAG" \
@@ -185,7 +208,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "DRY_RUN: would run release-supply-chain.sh --image $PINNED"
 else
   echo "### 3/4 supply chain (sign, attest, SBOM, scan, verify-back)"
-  sc_args=(--image "$PINNED" --key "$KEY" --out "$OUT/supply-chain")
+  sc_args=(--image "$PINNED" --key "$KEY" --pubkey "$PUBKEY" --out "$OUT/supply-chain")
   [ "$INSECURE" -eq 1 ] && sc_args+=(--insecure-registry)
   bash "$HERE/release-supply-chain.sh" "${sc_args[@]}"
   sc_rc=$?

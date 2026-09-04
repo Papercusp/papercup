@@ -25,19 +25,34 @@ this file, the customer host verifies NOTHING and is strictly weaker than the pa
 
 ## Substitution points
 
-This is a TEMPLATE, not a finished policy. Two values are deliberately placeholders because the
-artifacts that define them did not exist when it was written:
+This is a TEMPLATE, not a finished policy. The registry is deliberately a placeholder, and the
+public key is deliberately absent, until a release build supplies both:
 
 - `<RELEASE_REGISTRY_NAMESPACE>` — the registry repo the release is published to. Substituted at
   BUILD time by `workspace-host.Containerfile` layer 3 (P-307), all-or-nothing across this file
   and `release-registries.d.yaml`. **Include the PORT**: it is part of the signature scope, and a
   port-less key matches nothing while refusing byte-identically to an unsigned image.
-- `/etc/pki/papercusp/release-signing.pub` — the sigstore PUBLIC key. P-308's `cosign sign`
-  produces the matching signature; the key is baked into the image at build time, never fetched
-  at run time.
+- `/etc/pki/papercusp/release-signing.pub` — the sigstore PUBLIC key. `bake-cloud-images.sh`
+  takes it from `--pubkey` (or the `.pub` sibling of `--key`), validates it during the build,
+  and bakes it into the image before P-308 signs the resulting digest. It is never fetched at
+  run time. A specialised build with a registry but no matching public key is refused.
 
 Leaving a placeholder in place makes the policy fail CLOSED (the reference cannot match), which
 is the correct direction for an unfinished supply chain.
+
+## The narrow `containers-storage` exception is for image rendering only (D-291)
+
+`bootc-image-builder` installs its source through `containers-storage:`. The supply-chain gate
+has already signed and verified one registry digest before that step, then the bake pulls that
+exact digest into local storage and asserts it exists. A specialised build therefore adds one
+local rule at `[<graph-driver>@/var/lib/containers/storage]<RELEASE_REGISTRY_NAMESPACE>` with
+`insecureAcceptAnything`, so the renderer can install only our digest-pinned repository.
+
+This is deliberately not a transport default: a five-arm probe proved the scoped rule accepts
+our image and rejects a foreign local image that a blanket rule accepts. The `docker:` rule is
+unchanged and remains `sigstoreSigned`; upgrades from the release registry still require the
+baked public key. The rule is injected by `workspace-host.Containerfile`, rather than written
+into this template, so an unspecialised image carries no local-storage allowance at all.
 
 ## Coupling (D-262 condition 3)
 

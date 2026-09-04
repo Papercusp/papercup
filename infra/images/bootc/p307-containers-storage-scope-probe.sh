@@ -107,10 +107,16 @@ EOF
 # ⚠ The scope is NOT the same string the docker: rule takes. containers/image's
 # storageTransport.ValidatePolicyConfigurationScope REQUIRES a leading store specifier: a bare
 # `127.0.0.1:5096/papercusp` is refused at LOAD time as `Unknown key`, taking the whole policy
-# with it (arm E measures exactly this). The accepted shape is
-#   [<driver>@<graphroot>+<runroot>]<namespace>
-# so the scope embeds THREE environment-dependent paths that the docker: scope does not.
-STORE_SPEC="${P307_STORE_SPEC:-[overlay@/var/lib/containers/storage+/run/containers/storage]}"
+# with it (arm E measures exactly this). Use the SHORT official driver+graph-root form:
+#   [<driver>@<graphroot>]<namespace>
+# It matched a live reference that also carried runroot + overlay options. The tempting longer
+# form with runroot but without those live options rejected our image, as did graph-root-only;
+# copying a partially observed full spec into policy is therefore less portable, not more exact.
+STORAGE_DRIVER="${P307_STORAGE_DRIVER:-$("${PODMAN[@]}" info --format '{{.Store.GraphDriverName}}' 2>/dev/null)}"
+case "$STORAGE_DRIVER" in
+  ''|*[!A-Za-z0-9_-]*) echo "SETUP FAILED: invalid storage driver '$STORAGE_DRIVER'"; exit 2;;
+esac
+STORE_SPEC="${P307_STORE_SPEC:-[$STORAGE_DRIVER@/var/lib/containers/storage]}"
 { echo '{'; echo '  "default": [{ "type": "reject" }],'; echo '  "transports": {'; docker_block
   echo '    ,"containers-storage": {'
   echo "      \"$STORE_SPEC$NAMESPACE\": [ { \"type\": \"insecureAcceptAnything\" } ]"
