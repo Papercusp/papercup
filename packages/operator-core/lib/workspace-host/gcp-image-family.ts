@@ -475,8 +475,14 @@ function validateCleanBootProof(
   ) {
     fail('GCP clean-room boot must prove private boot, OS Login, confirmed teardown, and zero residue');
   }
+  // P-306: `artifact.release.bundleSha256` is the SIGNED TARBALL digest, so this comparison is
+  // only meaningful for an ubuntu-release-bundle host. A bootc attestation is refused here by its
+  // model rather than being compared against a field it does not carry — where the comparison
+  // would silently be `undefined !== <digest>`, i.e. always true, and the clean-room proof would
+  // fail with a message about the signed release instead of about the unsupported host model.
   if (
     !expectedAttestation ||
+    proof.attestation.hostModel !== 'ubuntu-release-bundle' ||
     proof.attestation.status !== 'healthy' ||
     !proof.attestation.release.signatureVerified ||
     proof.attestation.release.version !== artifact.image.version ||

@@ -183,7 +183,17 @@ export function evaluateWorkspaceHostReleaseGate(
   if (!cleanRoom.attestation) {
     cleanRoomErrors.push('exact bootstrap attestation is missing');
   } else {
-    if (
+    // P-306: this gate proves a SIGNED TARBALL identity — bundle digest against the artifact's
+    // digest, signing key against the artifact's key. A bootc attestation has neither, and its
+    // release identity is an image digest checked against an image artifact matrix that does not
+    // exist yet (P-307). Refuse it by name rather than letting it reach the comparisons below,
+    // where every `!==` against an absent field is true and the failure would be reported as a
+    // release-identity mismatch — a wrong diagnosis of a gate that simply cannot judge this host.
+    if (cleanRoom.attestation.hostModel !== 'ubuntu-release-bundle') {
+      cleanRoomErrors.push(
+        `release gate cannot verify a '${cleanRoom.attestation.hostModel}' attestation: it proves a signed-tarball identity, and the bootc image artifact matrix is not built yet (P-307)`,
+      );
+    } else if (
       cleanRoom.attestation.release.version !== input.artifact.release.version ||
       cleanRoom.attestation.release.bundleSha256 !== releaseDigest ||
       cleanRoom.attestation.release.signingKeySha256 !== input.artifact.release.signingKeySha256
