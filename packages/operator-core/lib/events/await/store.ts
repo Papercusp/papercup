@@ -2013,12 +2013,24 @@ export async function fireTimedOutAwaits(): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
-    UPDATE harness_shared.event_awaits
+    UPDATE harness_shared.event_awaits AS await
        SET fired_at = now(), fired_reason = 'timeout'
-     WHERE workspace_id = ${ws} AND timeout_behavior = 'wake'
-       AND expires_ts IS NOT NULL AND expires_ts <= now()
-       AND producer_health IS NULL
-       AND fired_at IS NULL AND cancelled_at IS NULL
+     WHERE await.workspace_id = ${ws} AND await.timeout_behavior = 'wake'
+       AND await.once = true
+       AND await.expires_ts IS NOT NULL AND await.expires_ts <= now()
+       AND await.producer_health IS NULL
+       AND await.fired_at IS NULL AND await.cancelled_at IS NULL
+       -- An emit records its fire latch before claiming waiter rows. If the
+       -- latest fire for this key landed during this await's lifetime, let
+       -- the event claim win this timeout race.
+       AND NOT EXISTS (
+         SELECT 1
+           FROM harness_shared.event_key_fires AS fire
+          WHERE fire.workspace_id = await.workspace_id
+            AND fire.event_key = await.event_key
+            AND fire.last_fired_at >= await.created_at
+            AND fire.last_fired_at <= await.expires_ts
+       )
     RETURNING *
   `;
   return rows.map(mapAwait);

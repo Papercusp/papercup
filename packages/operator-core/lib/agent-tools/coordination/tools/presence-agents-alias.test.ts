@@ -35,6 +35,7 @@ vi.mock('../presence-cursor-overlay', () => ({
 
 import presenceTool from './presence';
 import { shapeCoordPresence } from './presence-shape';
+const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
 
 const ROWS = [
   { ownerId: 'su-1', sessionState: 'live', wakeable: true },
@@ -84,5 +85,64 @@ describe('coord:presence `agents` alias (EI-21845811145701209)', () => {
     expect(out.agents).toEqual(out.active);
     // Never the raw untrimmed reference re-leaked under the alias key.
     expect(out.agents).not.toBe(ROWS);
+  });
+
+  it('keeps the shaped activeTruncated disclosure valid for MCP structured output', async () => {
+    const active = Array.from({ length: 45 }, (_, index) => ({
+      ownerId: `su-${index}`,
+      sessionState: 'live',
+      wakeable: true,
+      intent: `agent-${index}`,
+    }));
+    mocks.assemblePresenceSnapshot.mockResolvedValueOnce({
+      as_of: '2026-08-30T15:00:00.000Z',
+      scope: 'workspace',
+      etag: 'etag-large',
+      summary: { active: active.length, wakeable: active.length, byState: { live: active.length } },
+      active,
+    });
+
+    const projected = lookupByMcpName('coord:presence')!;
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'coord:presence',
+      {},
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'test-workspace',
+        harnessSlug: 'papercusp',
+        runId: 'presence-schema-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        contextTier: 'trimmed',
+        tx: vi.fn(async () => []),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const structured = dispatched.result?.structuredContent as {
+      activeTruncated?: Record<string, unknown>;
+    };
+    expect(structured.activeTruncated).toMatchObject({
+      censusCount: 45,
+      truncatedByLimit: true,
+      limit: 40,
+    });
+    expect(structured.activeTruncated?.shown).toEqual(expect.any(Number));
+    expect(structured.activeTruncated?.shown).toBeGreaterThan(0);
+    expect(structured.activeTruncated?.shown).toBeLessThan(45);
+    expect(
+      (projected.outputJsonSchema?.properties as Record<string, { type?: string }>).activeTruncated?.type,
+    ).toBe('object');
+    expect((presenceTool as unknown as {
+      result: { safeParse: (value: unknown) => { success: boolean; error?: unknown } };
+    }).result.safeParse(structured).success).toBe(true);
   });
 });

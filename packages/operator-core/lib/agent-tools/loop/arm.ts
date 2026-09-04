@@ -697,7 +697,7 @@ export default defineTool({
       if (preservingPriorMonitor) {
         // This is a carry/cadence retune, not a new monitor authority request. Reuse
         // the already-admitted policy and avoid re-running admission/dedup checks.
-        preparedMonitorConfig = prior.monitor ?? null;
+        preparedMonitorConfig = prior?.monitor ?? null;
       } else {
         if (!args.monitor) {
           return monitorRefusal(

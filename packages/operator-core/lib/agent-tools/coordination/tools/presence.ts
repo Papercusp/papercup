@@ -231,7 +231,20 @@ export default defineTool({
       summary: z.unknown().optional(),
       active: z.array(z.unknown()).optional(),
       agents: z.array(z.unknown()).optional(),
-      activeTruncated: z.boolean().optional(),
+      // The tier shaper emits a structured disclosure object when it caps the
+      // roster (see presence-shape.ts). Keep the advertised/structured result
+      // schema aligned with that shaped payload; declaring this as boolean
+      // makes MCP clients reject otherwise valid large-roster reads.
+      activeTruncated: z
+        .object({
+          shown: z.number(),
+          censusCount: z.number(),
+          truncatedByLimit: z.literal(true),
+          limit: z.number(),
+          reason: z.literal('response_budget').optional(),
+          more: z.string(),
+        })
+        .optional(),
       self: z.unknown().optional(),
       etag: z.string().optional(),
       as_of: z.string().optional(),

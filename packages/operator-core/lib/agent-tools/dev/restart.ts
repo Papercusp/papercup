@@ -79,6 +79,7 @@ import { resourceLockDomain } from '../locks/coordination-domain';
 import { tryAcquireResource, tryReleaseResource, type ResourceHolder } from '../locks/su-lock-store';
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { acquireWithContentionRetry } from '../locks/contention-retry';
+import { workspaceTxnOptionsForExclusiveWait } from '../locks/resource-acquire-wait';
 import { probeServiceStart } from './systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
 import { preflightRestartTarget } from './restart-preflight';
@@ -91,6 +92,7 @@ import {
 import { DESKTOP_DEV_RESOURCE, resolveDesktopDevListener, restartDesktopDev } from './desktop-dev-restart';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { probeHttpReachable, type HttpProbeResult } from '../../escalating-http-probe';
+import { listListeningSockets } from '../../listening-sockets';
 import {
   acquireGitSyncRestartBarrier,
   GIT_SYNC_RESTART_BARRIER_DRAIN_SEC,
@@ -450,14 +452,82 @@ export type GatewayRestartReadiness = {
   ready: boolean;
   pidChanged: boolean;
   observedPid: number | null;
+  listener: GatewayListenerReadiness | null;
   health: HttpProbeResult | null;
   waitedMs: number;
 };
 
-const gatewayHealthUrl = () => `http://127.0.0.1:${Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788}/healthz`;
+export type GatewayListenerReadiness = {
+  port: number;
+  checked: boolean;
+  ownedByPid: boolean;
+  ownerVisible: boolean;
+  observedPids: number[];
+  detail: string;
+};
+
+const gatewayPort = () => Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788;
+const gatewayHealthUrl = () => `http://127.0.0.1:${gatewayPort()}/healthz`;
 
 function isLiveMainPid(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0;
+}
+
+/**
+ * Prove that the new systemd MainPID owns the gateway's TCP listener before
+ * probing HTTP. A reachable /healthz endpoint is not enough: an orphaned
+ * process can keep :8788 alive while the replacement exits with EADDRINUSE.
+ *
+ * The listen-table helper distinguishes "bound but owner hidden" from "not
+ * bound". Both are fail-closed here because neither proves that this MainPID
+ * owns the port.
+ */
+async function probeGatewayListenerOwnership(pid: number): Promise<GatewayListenerReadiness> {
+  const port = gatewayPort();
+  try {
+    const result = await listListeningSockets({ port, limit: 32 });
+    const sockets = result.sockets;
+    const observedPids = [
+      ...new Set(
+        sockets.flatMap((socket) =>
+          socket.pids.length > 0 ? socket.pids : socket.pid == null ? [] : [socket.pid],
+        ),
+      ),
+    ];
+    const ownerVisible = sockets.some((socket) => socket.ownerVisible);
+    const ownedByPid = sockets.some(
+      (socket) => socket.ownerVisible && (socket.pids.includes(pid) || socket.pid === pid),
+    );
+
+    let detail: string;
+    if (ownedByPid) {
+      detail = `listener on :${port} is owned by new MainPID ${pid}`;
+    } else if (sockets.length === 0) {
+      detail = `no listener was observed on :${port}`;
+    } else if (!ownerVisible) {
+      detail = `:${port} is listening, but its owning PID is not visible to this process`;
+    } else {
+      detail = `:${port} is owned by PID(s) ${observedPids.join(', ') || 'unknown'}, not new MainPID ${pid}`;
+    }
+
+    return {
+      port,
+      checked: true,
+      ownedByPid,
+      ownerVisible,
+      observedPids,
+      detail,
+    };
+  } catch (error) {
+    return {
+      port,
+      checked: true,
+      ownedByPid: false,
+      ownerVisible: false,
+      observedPids: [],
+      detail: `could not verify ownership of :${port}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
 }
 
 /**
@@ -491,6 +561,18 @@ async function waitForGatewayRestartReadiness(beforePid: number | null): Promise
     const pidChanged =
       isLiveMainPid(currentPid) && (!previousPidKnown || currentPid !== beforePid);
     if (pidChanged) {
+      const listener = await probeGatewayListenerOwnership(currentPid);
+      if (!listener.ownedByPid) {
+        return {
+          ready: false,
+          pidChanged: true,
+          observedPid: currentPid,
+          listener,
+          health: null,
+          waitedMs: Date.now() - startedAt,
+        };
+      }
+
       let health: HttpProbeResult;
       try {
         health = await probeHttpReachable(gatewayHealthUrl());
@@ -504,6 +586,7 @@ async function waitForGatewayRestartReadiness(beforePid: number | null): Promise
         ready: health.reachable,
         pidChanged: true,
         observedPid: currentPid,
+        listener,
         health,
         waitedMs: Date.now() - startedAt,
       };
@@ -518,6 +601,7 @@ async function waitForGatewayRestartReadiness(beforePid: number | null): Promise
     ready: false,
     pidChanged: false,
     observedPid: isLiveMainPid(current?.mainPid) ? current.mainPid : null,
+    listener: null,
     health: null,
     waitedMs: Date.now() - startedAt,
   };
@@ -1002,16 +1086,20 @@ export default defineTool({
       // proceed. Retry the whole transaction so every attempt gets a fresh
       // connection/transaction after the failed one has rolled back.
       const cooldown = await acquireWithContentionRetry(() =>
-        inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-          tryAcquireResource(tx, {
-            coordinationDomain,
-            resource: cd,
-            mode: 'exclusive',
-            owner: ownerId,
-            ownerLabel,
-            reason: `${target} restart cooldown (WI-4221 / EI-10896)`,
-            ttlSec: cooldownSec,
-          }),
+        inWorkspaceTxn(
+          coordinationDomain,
+          ownerId,
+          (tx) =>
+            tryAcquireResource(tx, {
+              coordinationDomain,
+              resource: cd,
+              mode: 'exclusive',
+              owner: ownerId,
+              ownerLabel,
+              reason: `${target} restart cooldown (WI-4221 / EI-10896)`,
+              ttlSec: cooldownSec,
+            }),
+          workspaceTxnOptionsForExclusiveWait(gitSyncDrainSec),
         ),
       );
       if (!cooldown.ok) {

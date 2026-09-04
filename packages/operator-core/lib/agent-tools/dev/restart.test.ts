@@ -44,6 +44,13 @@ vi.mock('../../escalating-http-probe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../escalating-http-probe')>();
   return { ...actual, probeHttpReachable: vi.fn() };
 });
+// EI-21651903020639415: gateway readiness must prove that the replacement
+// MainPID owns the listener before probing /healthz. Keep the listener table
+// hermetic here; its own parser/OS integration coverage lives in listening-sockets.
+vi.mock('../../listening-sockets', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../listening-sockets')>();
+  return { ...actual, listListeningSockets: vi.fn() };
+});
 // EI-18661647550414959: the pre-kill "can this tree actually boot?" check. Mocked so
 // the suite never shells out to systemctl; its own logic is covered in
 // restart-preflight.test.ts. The default (set in beforeEach) is a clean tree.
@@ -86,6 +93,7 @@ import { guardResource, type FenceToken, type GuardOutcome, type GuardSpec } fro
 import { spawn } from 'node:child_process';
 import { probeServiceStart } from './systemd-service-probe';
 import { probeHttpReachable } from '../../escalating-http-probe';
+import { listListeningSockets } from '../../listening-sockets';
 import { preflightRestartTarget } from './restart-preflight';
 import { resolveDesktopDevListener, restartDesktopDev } from './desktop-dev-restart';
 import { getOrgPg } from '@papercusp/db-org';
@@ -105,6 +113,7 @@ const guardM = vi.mocked(guardResource);
 const spawnM = vi.mocked(spawn);
 const probeM = vi.mocked(probeServiceStart);
 const gatewayHealthM = vi.mocked(probeHttpReachable);
+const listeningSocketsM = vi.mocked(listListeningSockets);
 const preflightM = vi.mocked(preflightRestartTarget);
 const desktopResolveM = vi.mocked(resolveDesktopDevListener);
 const desktopRestartM = vi.mocked(restartDesktopDev);
@@ -140,6 +149,28 @@ const quiesceVerdict = (over: Record<string, unknown> = {}) =>
     probeFailed: false,
     note: 'bg-host is not quiesced.',
     ...over,
+  }) as never;
+
+const gatewayListenerResult = (pid: number) =>
+  ({
+    sockets: [
+      {
+        port: 8788,
+        address: '127.0.0.1',
+        family: 'ipv4',
+        pid,
+        pids: [pid],
+        listeners: 1,
+        command: 'gateway',
+        ownerVisible: true,
+        reserved: false,
+        acceptQueue: { pending: 0, backlog: 511 },
+      },
+    ],
+    matched: 1,
+    totalListening: 1,
+    truncated: false,
+    ownerHidden: 0,
   }) as never;
 
 const clearGateCollision = () => ({
@@ -235,6 +266,13 @@ beforeEach(() => {
   // Benign default: no live main process to report. Individual tests that care
   // about the coalesce-truth check or the restartedFromPid surfacing override it.
   mockResolvedTyped(probeM, { ok: true, mainPid: 0 });
+  listeningSocketsM.mockResolvedValue({
+    sockets: [],
+    matched: 0,
+    totalListening: 0,
+    truncated: false,
+    ownerHidden: 0,
+  } as never);
   gatewayHealthM.mockResolvedValue({ reachable: true, detail: 'HTTP 200' });
   preflightM.mockResolvedValue(bootVerdict());
   desktopResolveM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
@@ -936,6 +974,12 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
       undefined,
       expect.objectContaining({ maxDrainSec: 45 }),
     );
+    expect(workspaceTxnM).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.any(Function),
+      { minLockTimeoutMs: 45_000, minStatementTimeoutMs: 45_000 },
+    );
   });
 
   it('with NO drain budget the preflight still hard-refuses — the default path is unchanged', async () => {
@@ -1491,6 +1535,7 @@ describe('dev:restart gateway readiness (EI-21651903020639415)', () => {
     mockResolvedOnceTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9999 } as never);
     mockResolvedOnceTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9998 } as never);
     mockResolvedOnceTyped(probeM, { ok: true, mainPid: 5252, secondsSinceStart: 1 } as never);
+    listeningSocketsM.mockResolvedValue(gatewayListenerResult(5252));
     mockResolvedTyped(gatewayHealthM, { reachable: true, detail: 'HTTP 200' });
     guardM.mockImplementation(runGuard(fenceOk(31)) as never);
 
@@ -1536,6 +1581,7 @@ describe('dev:restart gateway readiness (EI-21651903020639415)', () => {
     mockResolvedOnceTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9999 } as never);
     mockResolvedOnceTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9999 } as never);
     mockResolvedOnceTyped(probeM, { ok: true, mainPid: 5252, secondsSinceStart: 1 } as never);
+    listeningSocketsM.mockResolvedValue(gatewayListenerResult(5252));
     mockResolvedTyped(gatewayHealthM, { reachable: false, detail: 'ConnectionRefused' });
     guardM.mockImplementation(runGuard(fenceOk(32)) as never);
 

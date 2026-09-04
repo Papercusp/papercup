@@ -150,7 +150,11 @@ import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { probeWakeReachability } from '../../events/await/wake-reachability';
 import { readEventConditionReachability, type ExternalConditionReachability } from '../../external-condition-reachability';
 import { resolveHomePotSlug } from '../pot/_resolve';
-import { admitMonitorArm, prepareMonitorConfig } from '../../harness/routines/monitor-policy';
+import {
+  admitMonitorArm,
+  prepareMonitorConfig,
+  type PersistedMonitorConfig,
+} from '../../harness/routines/monitor-policy';
 import { computeLoopOverwriteNote, resolveBlockedBackoff } from './arm';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
 import {
@@ -203,13 +207,12 @@ const monitorConfig = (overrides: Record<string, unknown> = {}) => ({
   authority: { kind: 'work-item', workItem: 'WI-42' },
   ...overrides,
 });
-const persistedMonitorConfig = (overrides: Record<string, unknown> = {}) => ({
+const persistedMonitorConfig = (): PersistedMonitorConfig => ({
   predicateKey: 'release:green:papercusp',
   stopCondition: 'the exact green verdict is recorded',
   noDeltaBudget: 3,
   remainingNoDeltaBudget: 2,
   authority: { kind: 'work-item', workItem: 'WI-42' },
-  ...overrides,
 });
 
 const asWorkItem = (overrides: Partial<WorkItem> = {}): WorkItem => ({

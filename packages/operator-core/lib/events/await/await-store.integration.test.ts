@@ -512,6 +512,63 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(await store.listActiveAwaits('su-12')).toEqual([]);
   });
 
+  it('gives an in-window event fire precedence over a one-shot timeout (real PG)', async () => {
+    const eventKey = 'timeout-race:event-wins';
+    const awaited = await store.registerAwait({
+      subscriberId: 'su-timeout-race-event',
+      eventKey,
+      timeoutBehavior: 'wake',
+      timeoutSec: 0,
+      once: true,
+    });
+    const sql = h.sql as import('postgres').Sql;
+
+    // Use the real latch writer, then place the await deadline just after the
+    // recorded fire so the row is already due while the fire remains in its
+    // [created_at, expires_ts] window.
+    await store.recordKeyFire({ eventKey, firedBy: 'integration-test' });
+    const [fire] = await sql<{ last_fired_at: string }[]>`
+      SELECT last_fired_at
+        FROM harness_shared.event_key_fires
+       WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+         AND event_key = ${eventKey}
+    `;
+    expect(fire).toBeDefined();
+    await sql`
+      UPDATE harness_shared.event_awaits
+         SET created_at = ${fire.last_fired_at}::timestamptz - interval '1 second',
+             expires_ts = ${fire.last_fired_at}::timestamptz + interval '1 millisecond'
+       WHERE id = ${awaited.id}
+    `;
+    await new Promise((r) => setTimeout(r, 20));
+
+    const timedOut = await store.fireTimedOutAwaits();
+
+    expect(timedOut.some((a) => a.id === awaited.id)).toBe(false);
+    const [state] = await sql<{ fired_at: string | null; fired_reason: string | null }[]>`
+      SELECT fired_at, fired_reason
+        FROM harness_shared.event_awaits
+       WHERE id = ${awaited.id}
+    `;
+    expect(state).toEqual({ fired_at: null, fired_reason: null });
+  });
+
+  it('does not timeout standing watches in the wake-timeout sweep', async () => {
+    const awaited = await store.registerAwait({
+      subscriberId: 'su-standing-timeout',
+      eventKey: 'timeout-race:standing',
+      timeoutBehavior: 'wake',
+      timeoutSec: 0,
+      once: false,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const timedOut = await store.fireTimedOutAwaits();
+
+    expect(timedOut.some((a) => a.id === awaited.id)).toBe(false);
+    expect((await store.listActiveAwaits('su-standing-timeout')).map((a) => a.id)).toEqual([awaited.id]);
+  });
+
   it('the wake meter aggregates per subscriber/status/channel', async () => {
     const meter = await store.wakeMeter({ sinceHours: 24 });
     expect(meter.length).toBeGreaterThan(0);
