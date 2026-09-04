@@ -195,10 +195,25 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
    * on purpose too. A blanket restore would also navigate away from a genuine
    * first-run/auth landing, hiding the exact false green `waitForAppMount` was
    * built to make impossible (EI-18889416741921988).
-   */
+  */
   beforeEach(async () => {
-    const pathname = await browser.execute(() => location.pathname);
-    if (isNonShellOperatorRoute(pathname)) await spaNavigate(OPERATOR_SHELL_ROUTE);
+    const current = await browser.execute(() => ({
+      pathname: location.pathname,
+      search: location.search,
+      hash: location.hash,
+    }));
+    if (isNonShellOperatorRoute(current.pathname)) {
+      await spaNavigate(OPERATOR_SHELL_ROUTE);
+    } else if (
+      current.pathname === OPERATOR_SHELL_ROUTE &&
+      (current.search || current.hash)
+    ) {
+      // Query-driven interactions are real app state too. In particular,
+      // command-palette-open leaves ?palette=true behind; carrying that modal
+      // into Learning intercepts the next user's click even though both tests
+      // happen to share /adv. Restore the documented bare-shell baseline.
+      await spaNavigate(OPERATOR_SHELL_ROUTE);
+    }
   });
 
   it("opens the global command palette within budget", async () => {
@@ -282,10 +297,11 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
       } catch {
         /* ignore */
       }
-      document
-        .querySelector<HTMLElement>('button[aria-label="Observations"]')
-        ?.click();
     }, NAME);
+    // Use WebDriver's native click path: this spec promises a REAL user
+    // interaction, and it also surfaces an overlay/interception regression
+    // that HTMLElement.click() would bypass.
+    await browser.$('button[aria-label="Observations"]').click();
 
     const measured = await browser.waitUntil(
       async () =>
@@ -413,6 +429,27 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     // location.assign() tears down the WebDriver session (see the note above),
     // and pushState+popstate stalls a cross-route transition 10-40+s (see
     // spaNavigate's doc comment, WI-6543).
+    // Enter the Work tab first, then wait for its project selector to prove
+    // harnessProjects.lite has resolved. Applying ?slug= on the same turn as
+    // AdvShell's first registry restore races that restore; the later write
+    // can legitimately replace the unverified deep link with its persisted
+    // selection, leaving no dock for the panel request to target.
+    await spaNavigate("/adv?tab=harnesses");
+    await waitForAppMount(browser);
+    await browser.waitUntil(
+      async () =>
+        await browser.execute(() => {
+          const trigger = document.querySelector<HTMLElement>(
+            ".pc-advshell__select-trigger",
+          );
+          return Boolean(trigger && !trigger.hasAttribute("disabled"));
+        }),
+      {
+        timeout: 20_000,
+        timeoutMsg: "Work-tab project selector did not become ready within 20s",
+      },
+    );
+
     const harnessesUrl = await browser.execute(() => {
       const u = new URL(location.href);
       u.searchParams.set("tab", "harnesses");
@@ -422,7 +459,39 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
       return u.pathname + u.search + u.hash;
     });
     await spaNavigate(harnessesUrl);
-    await waitForAppMount(browser);
+    const dockReady = await browser.waitUntil(
+      async () =>
+        await browser.execute(() =>
+          Boolean(
+            document.querySelector(
+              ".pc-adv-harnesses .dockview-theme-dark",
+            ),
+          ),
+        ),
+      {
+        timeout: 20_000,
+        timeoutMsg: "papercusp Work dock did not mount within 20s",
+      },
+    ).then(() => true, () => false);
+
+    if (!dockReady) {
+      const snapshot = await browser.execute(() => ({
+        href: location.href,
+        projectSelectorDisabled:
+          document.querySelector<HTMLElement>(
+            ".pc-advshell__select-trigger",
+          )?.hasAttribute("disabled") ?? null,
+        workspacePresent: Boolean(document.querySelector(".pc-adv-harnesses")),
+        emptyText:
+          document.querySelector<HTMLElement>(".pc-adv-harnesses__empty")
+            ?.textContent?.trim() ?? null,
+        bodyText: (document.body.textContent ?? "").trim().slice(0, 320),
+      }));
+      throw new Error(
+        "papercusp Work dock did not mount after the registry-ready deep link; " +
+          `workspace snapshot=${JSON.stringify(snapshot)}`,
+      );
+    }
 
     // Persisted dock layouts are user-defined and need not contain the Work
     // items panel. Queue + focus the registered panel explicitly so this spec

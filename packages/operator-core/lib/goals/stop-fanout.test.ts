@@ -41,6 +41,7 @@ const setMode = vi.hoisted(() =>
 );
 const clearImpliedModes = vi.hoisted(() => vi.fn(async (): Promise<string[]> => []));
 const potsForGoal = vi.hoisted(() => vi.fn());
+const unlinkPot = vi.hoisted(() => vi.fn(async () => true));
 const sqlRows = vi.hoisted(() => ({
   owners: [] as string[],
   unattributed: 0,
@@ -87,6 +88,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getOrgPg: () => ({ sql }),
   potsForGoal,
+  unlinkPot,
 }));
 vi.mock('../pot/pause-core', () => ({ pausePotState, resumePotState }));
 vi.mock('../harness/routines/loop', () => ({
@@ -124,6 +126,7 @@ beforeEach(() => {
   sqlRows.drainFleet = null;
   clearImpliedModes.mockResolvedValue([]);
   potsForGoal.mockResolvedValue([]);
+  unlinkPot.mockResolvedValue(true);
   windDownGoalFleet.mockResolvedValue({
     ok: true,
     fleet: 'goal-drain-g1',
@@ -215,6 +218,70 @@ describe('executeGoalStop', () => {
     expect(report.potsStopped).toEqual([]);
     expect(pausePotState).not.toHaveBeenCalled();
     expect(report.degraded).toBe(false);
+  });
+
+  it.each(['killed', 'achieved'] as const)(
+    'tombstones owned goal_pots links on terminal %s using the supplied transaction',
+    async (status) => {
+      const transaction = sql as never;
+      potsForGoal.mockResolvedValue([
+        link('owned-pot', 'owner'),
+        link('contributing-pot', 'contributing'),
+      ]);
+
+      await executeGoalStop({
+        goalId: 'g1',
+        workspaceId: 'ws',
+        status,
+        actor: 'su-test',
+        sql: transaction,
+      });
+
+      expect(unlinkPot).toHaveBeenCalledTimes(1);
+      expect(unlinkPot).toHaveBeenCalledWith(transaction, {
+        workspaceId: 'ws',
+        goalId: 'g1',
+        harnessSlug: 'owned-pot',
+        by: 'su-test',
+      });
+      // The contributing relationship is not this goal's ownership authority.
+      expect(unlinkPot).not.toHaveBeenCalledWith(
+        transaction,
+        expect.objectContaining({ harnessSlug: 'contributing-pot' }),
+      );
+    },
+  );
+
+  it('keeps goal_pots links on pause so active can resume the same relationship', async () => {
+    const transaction = sql as never;
+    potsForGoal.mockResolvedValue([link('owned-pot', 'owner')]);
+
+    await executeGoalStop({
+      goalId: 'g1',
+      workspaceId: 'ws',
+      status: 'paused',
+      actor: 'su-test',
+      sql: transaction,
+    });
+
+    expect(unlinkPot).not.toHaveBeenCalled();
+  });
+
+  it('treats an already-tombstoned owner link as an idempotent no-op', async () => {
+    const transaction = sql as never;
+    potsForGoal.mockResolvedValue([link('owned-pot', 'owner')]);
+    unlinkPot.mockResolvedValue(false);
+
+    await expect(
+      executeGoalStop({
+        goalId: 'g1',
+        workspaceId: 'ws',
+        status: 'killed',
+        actor: 'su-test',
+        sql: transaction,
+      }),
+    ).resolves.toMatchObject({ status: 'killed' });
+    expect(unlinkPot).toHaveBeenCalledTimes(1);
   });
 });
 

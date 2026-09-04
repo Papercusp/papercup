@@ -33,6 +33,8 @@
  * caller read "paused" as "burn stopped" is the bug, not the fix.
  */
 
+import type { Sql } from 'postgres';
+
 /**
  * The statuses that WIND A GOAL DOWN — one name for the set, so widening it is a
  * single edit rather than five unions that can drift apart.
@@ -164,6 +166,13 @@ export interface GoalTransitionInput {
   status: StoppingStatus | 'active';
   /** The agent performing the transition, for the audit trail. */
   actor?: string | null;
+  /**
+   * The caller's transaction, when the transition accompanies a goal write.
+   * Keeping the handle on the seam makes terminal relationship cleanup commit
+   * or roll back with the status row; background sweeps omit it and use their
+   * normal host connection.
+   */
+  sql?: Sql;
 }
 
 /** @deprecated Narrower alias kept only so existing call sites keep reading naturally. */

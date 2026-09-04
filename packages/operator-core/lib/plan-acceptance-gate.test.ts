@@ -485,6 +485,69 @@ describe('evaluatePlanAcceptanceGate', () => {
     });
   });
 
+  it('RED BASELINE: a passed disclosure and author accept cannot waive an unmet mandatory outcome bar', async () => {
+    mockRubric.mockResolvedValue(
+      acceptanceRubric({
+        criteria: [
+          {
+            key: 'activation-outcome',
+            title: 'Coverage activation exists',
+            model: 'The code-to-test activation path produces coverage-evidence rows.',
+            method: 'Read the activation instrument and the resulting coverage-evidence rows.',
+            driftMarkers: 'No rows exist for the activation path.',
+            role: 'outcome',
+            barKey: 'R-7',
+            mandatory: true,
+          },
+          {
+            key: 'activation-shortfall-disclosed',
+            title: 'Activation shortfall is disclosed',
+            model: 'Any activation shortfall is reported accurately.',
+            method: 'Read the completion report.',
+            driftMarkers: 'The report overstates activation.',
+            role: 'disclosure',
+            coversBarKeys: ['R-7'],
+            mandatory: false,
+          },
+        ] as unknown as Rubric['criteria'],
+      }),
+    );
+    const ratings = {
+      'activation-outcome': { rating: 'unknown', evidence: 'The required coverage-evidence rows do not exist.' },
+      'activation-shortfall-disclosed': { rating: 'pass', evidence: 'The completion report names the shortfall.' },
+    };
+    mockScorecards.mockResolvedValue([
+      scorecard({
+        issueId: 'EI-independent-disclosure-pass',
+        createdAt: '2026-08-21T01:00:00Z',
+        createdBy: 'su-grader',
+        ratings,
+        nKeys: 2,
+      }),
+      scorecard({
+        issueId: 'EI-author-accepts-disclosure',
+        createdAt: '2026-08-21T02:00:00Z',
+        createdBy: 'su-implementer',
+        ratings,
+        nKeys: 2,
+        acceptance: {
+          verdict: 'accept',
+          reasoning: 'The disclosure is accurate even though the activation outcome is unproven.',
+        },
+      }),
+    ]);
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+
+    expect(v).toMatchObject({
+      satisfied: false,
+      code: 'acceptance_bar_not_met',
+      rubricId: 'ar-some-plan',
+      gradedBy: 'su-grader',
+    });
+    expect(v.message).toContain('activation-outcome');
+  });
+
   it('a new independent grading without an implementer verdict refuses acceptance_not_recorded', async () => {
     mockRubric.mockResolvedValue(acceptanceRubric());
     mockScorecards.mockResolvedValue([scorecard({ createdAt: '2026-08-21T01:00:00Z', createdBy: 'su-grader' })]);

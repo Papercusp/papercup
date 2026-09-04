@@ -545,6 +545,47 @@ describe('goals:update — closing a goal', () => {
     expect(calls.some((c) => /UPDATE/.test(c.sql))).toBe(false);
   });
 
+  it('passes the goal write transaction to the terminal stop fan-out', async () => {
+    const transaction = makeTx();
+    let received: unknown;
+    const report: GoalStopReport = {
+      goalId: 'g1',
+      status: 'killed',
+      potsStopped: [],
+      potsSkippedContributing: [],
+      loopsStopped: [],
+      unattributedActiveLoops: 0,
+      modesCleared: [],
+      modesLeftArmed: [],
+      degraded: false,
+    };
+    setGoalTransitionExecutor(async (input) => {
+      received = input;
+      return report;
+    });
+
+    try {
+      await tool.handler(
+        tool.args.parse({ id: 'g1', status: 'killed' }) as never,
+        {
+          tx: transaction as never,
+          workspaceId: 'papercusp-workspace',
+          harnessSlug: 'papercusp',
+          principal: { workspaceId: 'papercusp-workspace' },
+        } as never,
+      );
+    } finally {
+      setGoalTransitionExecutor(undefined);
+    }
+
+    expect(received).toMatchObject({
+      goalId: 'g1',
+      workspaceId: 'papercusp-workspace',
+      status: 'killed',
+      sql: transaction,
+    });
+  });
+
   it('requires an id', () => {
     expect(tool.args.safeParse({}).success).toBe(false);
     expect(tool.args.safeParse({ id: '' }).success).toBe(false);

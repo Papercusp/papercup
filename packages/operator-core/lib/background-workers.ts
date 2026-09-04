@@ -161,8 +161,10 @@ export function requestOnlyHost(env: NodeJS.ProcessEnv = process.env): boolean {
  *
  * `nodeCluster.isPrimary` alone answers "am I a node:cluster-forked worker", NOT "did I
  * boot the substrate". Under the dedicated `papercup-bg-host` topology those diverge:
- * :3070/:3270 are each their own unforked cluster primary yet are declared request-only
- * and never boot the substrate — bg-host does.
+ * :3070/:3270 are declared request-only and never boot the substrate — bg-host does.
+ * In particular, :3070 is a clustered request host: its workers fail `isPrimary`, while
+ * its request-only primary fails `requestOnlyHost`. Neither half alone identifies the
+ * substrate owner; the combined predicate does.
  *
  * EI-18735338283879820: keeping this predicate in ONE place is the actual fix. WI-5307
  * corrected the read side with an inline copy of this expression but left the write side
