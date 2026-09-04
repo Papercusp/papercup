@@ -1,0 +1,41 @@
+# Papercusp's own pot — identities-v1-2026-08-30 P-024 / D-027.
+#
+# This is a runnable POT document, not an identity: it deliberately declares no
+# `slots:` of its own.  The inherited papercusp-engineer layer supplies the
+# exclusive domain document; invoke threads the loader's raw layer chain so that
+# inheritance is visible to prompt resolution even though this harness-local file
+# does not live in the built-in blueprints/<id>/ tree.
+id: papercusp
+extends: papercusp-engineer
+kind: pot
+version: 0.1.0
+description: >-
+  Papercusp's own engineering pot: senior su collaborators work the shared
+  staging tree, coordinate through work items and plans, and ship through the
+  green-checkpoint release gate.
+
+workItem:
+  kind: feature
+  idPrefix: WI
+
+spine:
+  decider: su
+  claimModel: self-claim-priority
+  default: { to: idle }
+
+roles:
+  - id: su
+    description: Senior engineer-collaborator with operator and admin authority.
+
+lexicon:
+  workUnit: work item
+  reviewGate: green checkpoint
+
+fleet:
+  workerRoles:
+    # The explicit pot/role ceiling required by D-005. `*` preserves this pot's
+    # superuser mandate while identity grants still cannot exceed the declared
+    # ceiling (and the universal never-auto protected floor remains independent).
+    - id: su
+      capabilities: ["*"]
+  watcher: papercup
