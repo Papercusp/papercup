@@ -1357,15 +1357,32 @@ describe('diffSignatureBreaks — generic type parameters', () => {
     expect(reasons(after, before)).toEqual([]);
   });
 
-  it('KNOWN LIMIT (EI-21909944792089774): a type-param RENAME still reports, via the value-param path', () => {
-    // The positional type-param comparison above is correctly silent here; the noise comes from
-    // the older comparison of literal type TEXT (`a: T` vs `a: U`). Filed rather than patched:
-    // silencing it needs type-param names normalised out of the recorded text, and class members
-    // need the enclosing declaration's parameters threaded down into them.
-    expect(reasons('export function pick<U>(items: U[], n: number): U {}')).toEqual([
-      'param-type-changed',
-      'return-type-changed',
-    ]);
+  it('stays SILENT when a type parameter is renamed — references are alpha-normalised positionally', () => {
+    expect(reasons('export function pick<U>(items: U[], n: number): U {}')).toEqual([]);
+  });
+
+  it('stays SILENT when an enclosing interface generic is renamed in a method signature', () => {
+    const before = 'export interface Box<T> { get(value: T): T; }';
+    const after = 'export interface Box<U> { get(value: U): U; }';
+
+    expect(diffSignatureBreaks(before, after)).toEqual([]);
+  });
+
+  it('stays SILENT when an enclosing class generic is renamed in a method and constructor', () => {
+    const before = `
+      export class Box<T> {
+        constructor(value: T) {}
+        get(value: T): T { return value; }
+      }
+    `;
+    const after = `
+      export class Box<U> {
+        constructor(value: U) {}
+        get(value: U): U { return value; }
+      }
+    `;
+
+    expect(diffSignatureBreaks(before, after)).toEqual([]);
   });
 
   /**

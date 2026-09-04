@@ -18,6 +18,12 @@
  *      timestamp is older than the staleness window the DBOS scheduler has likely
  *      wedged (the FB-24 / EI-455 shape) and reaping has silently stopped. Detection
  *      MUST be external to the (possibly wedged) sweep — hence this reader.
+ *   3. Did a terminal completion prove settlement but fail to retain its authority?
+ *      A proposed terminal row whose settlement manifest has an explicit empty
+ *      `residualPaths` array has already proved every declared path against a commit.
+ *      If it remains proposed, the authority upgrade was rejected or reverted; an
+ *      ordinary proposed row with missing or non-empty residue is still waiting for
+ *      git-sync and must not be counted here.
  *
  * Pure data access (takes the sql handle); the liveness predicate is the SHARED
  * `liveHolderFragment` from work-items-stale-claims, so "dead holder" means exactly
@@ -27,7 +33,8 @@
 import type { Sql, TransactionSql } from 'postgres';
 import { liveHolderFragment, STALE_CLAIM_GRACE_MS } from './work-items-stale-claims';
 import { STALE_PLAN_ASSIGNMENT_GRACE_MS } from './plan-items/stale-claims';
-import { FEATURE_NON_REQUEUE_STATES } from './work-item-dispatch-states';
+import { ANY_FAMILY_TERMINAL_STATES, FEATURE_NON_REQUEUE_STATES } from './work-item-dispatch-states';
+import { TERMINAL_COMPLETION_EVIDENCE_KEY } from './coord-lifecycle/records';
 import { activeWorkspaceId } from './workspace-registry';
 
 type Db = Sql | TransactionSql;
@@ -88,6 +95,10 @@ export interface WorkQueueHealth {
   reaperStale: boolean;
   /** Rows freed on the reaper's most recent run. */
   reaperLastReleased: number | null;
+  /** Terminal proposed completions whose settlement manifest proves zero residue.
+   *  This is the read-side signature of a failed/reverted proposed -> committed
+   *  authority upgrade, not ordinary pre-commit settlement work. */
+  settlementAuthorityFailures: number;
 }
 
 /**
@@ -121,6 +132,7 @@ export async function readWorkQueueHealth(
       dead_held_features: number;
       dead_assigned_issues: number;
       dead_held_assignments: number;
+      settlement_authority_failures: number;
     }[]
   >`
     WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
@@ -160,7 +172,20 @@ export async function readWorkQueueHealth(
              SELECT 1 FROM harness_shared.agent_name_sessions s
                JOIN live_holder_asg h ON h.alias = s.session_owner_id
               WHERE s.workspace_id = asg.workspace_id AND s.agent_name = asg.assignee_name
-           ))::int AS dead_held_assignments`;
+           ))::int AS dead_held_assignments,
+      -- WI-1338072: an explicit empty residualPaths array is a settlement proof.
+      -- Keep this distinct from ordinary proposed rows: missing or non-empty
+      -- residualPaths means the close is still waiting for git-sync, while a
+      -- terminal proposed row with [] means the authority upgrade failed/reverted.
+      (SELECT count(*) FROM harness_shared.work_items wi
+         WHERE (${ws}::text IS NULL OR wi.workspace_id = ${ws})
+           AND wi.status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[])
+           AND wi.authority = 'proposed'
+           AND wi.payload #> ${[
+             TERMINAL_COMPLETION_EVIDENCE_KEY,
+             'settlementManifest',
+             'residualPaths',
+           ]}::text[] = '[]'::jsonb)::int AS settlement_authority_failures`;
 
   const run = await readSweepRun(sql, STALE_CLAIM_SWEEP_NAME);
   const reaperLastRunMs = run?.lastRunMs ?? null;
@@ -172,6 +197,7 @@ export async function readWorkQueueHealth(
     deadHeldFeatures: Number(counts?.dead_held_features ?? 0),
     deadAssignedIssues: Number(counts?.dead_assigned_issues ?? 0),
     deadHeldAssignments: Number(counts?.dead_held_assignments ?? 0),
+    settlementAuthorityFailures: Number(counts?.settlement_authority_failures ?? 0),
     reaperLastRunMs,
     reaperAgeMs,
     reaperStale,

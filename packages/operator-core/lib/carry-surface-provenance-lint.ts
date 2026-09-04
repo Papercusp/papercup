@@ -292,6 +292,7 @@ const NON_HUMAN_ATTRIBUTION_TARGETS = new Set([
   'reaper', 'router', 'linter', 'release', 'checkpoint', 'pipeline', 'script', 'bot',
   'agent', 'fleet', 'leader', 'peer', 'reviewer', 'grader', 'consult', 'system', 'policy',
   'default', 'design', 'contract', 'mug', 'kettle', 'scout', 'blender', 'overwatch',
+  'decision',
 ]);
 
 /**

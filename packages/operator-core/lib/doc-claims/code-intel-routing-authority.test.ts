@@ -75,7 +75,7 @@ describe('D-001 code-intelligence routing authority', () => {
       expect(verdict.violations).toHaveLength(1);
       expect(verdict.violations[0]!.tool).toBe('gitnexus.query');
       expect(verdict.violations[0]!.position).toBe('authority-cell');
-      expect(verdict.violations[0]!.reason).toMatch(/UNRANKED NOISE/);
+      expect(verdict.violations[0]!.reason).toMatch(/unavailable/i);
     });
 
     it('catches the exact su-playbook bullet P-017 removed — raw repomix.pack advertised as high-value', () => {
@@ -114,7 +114,7 @@ describe('D-001 code-intelligence routing authority', () => {
   describe('false-positive controls (correct guidance must NOT be flagged)', () => {
     it('does not flag a banned tool named in the "not" column — that IS the fix', () => {
       const verdict = judgeCodeIntelRouting(
-        '| call chains | `gitnexus.context` / `gitnexus.impact` | `gitnexus.query` — UNRANKED NOISE, not empty (D-021) |',
+        '| call chains | `gitnexus.context` / `gitnexus.impact` | `gitnexus.query` — unavailable; may SIGSEGV the shared MCP process (D-065) |',
       );
       expect(verdict.violations).toEqual([]);
       expect(verdict.positionsChecked).toBeGreaterThan(0);
@@ -122,7 +122,7 @@ describe('D-001 code-intelligence routing authority', () => {
 
     it('does not flag a banned tool named in a ⚠ prose warning', () => {
       const verdict = judgeCodeIntelRouting(
-        '⚠ Two raw backends are deliberately NOT the route. `gitnexus.query` returns UNRANKED NOISE, and raw `repomix.pack` skips the pinned version.',
+        '⚠ Two raw backends are deliberately NOT the route. `gitnexus.query` is unavailable and fail-closed, and raw `repomix.pack` skips the pinned version.',
       );
       expect(verdict.ok).toBe(true);
     });
@@ -176,8 +176,8 @@ describe('D-001 code-intelligence routing authority', () => {
       const verdict = judgeCodeIntelRouting(
         [
           '⚠ **Two raw backends are deliberately NOT the route.** `gitnexus.query`',
-          'returns UNRANKED NOISE rather than an empty set — a nonsense symbol yields',
-          '~20 confident-looking rows (measured, D-021). Raw `repomix.pack` skips',
+          'is unavailable — historical builds returned empty or unranked noise and',
+          'current probes SIGSEGV the shared MCP process (D-065). Raw `repomix.pack` skips',
           'the pinned version and the secret-scanning rails `code:pack` enforces.',
         ].join('\n'),
       );

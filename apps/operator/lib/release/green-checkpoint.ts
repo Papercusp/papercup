@@ -9446,6 +9446,74 @@ async function runGreenCheckpointInner(
       };
     }
   }
+  // P-008 crash recovery. `ready-to-promote` is written BEFORE main advances. If the process
+  // then dies after the fast-forward but before staging's ancestry bridge (or its queue clear),
+  // the next tick sees main already at repairHead. Retry ONLY that idempotent bridge and return;
+  // do not spend another full suite and do not fall through to the moving staging tip.
+  if (
+    repairQueue?.phase === "ready-to-promote" &&
+    lastReady === repairQueue.repairHead &&
+    deps.absorbPromotedLineageIntoStaging
+  ) {
+    const pendingQueue = repairQueue;
+    let absorption: StagingLineageAbsorptionResult;
+    try {
+      absorption =
+        await deps.absorbPromotedLineageIntoStaging(pendingQueue);
+    } catch (error) {
+      absorption = {
+        ok: false,
+        status: "git-failed",
+        repairHead: pendingQueue.repairHead,
+        differences: [],
+        summary: `staging-lineage recovery threw: ${error instanceof Error ? error.message : error}`,
+      };
+    }
+    deps.log(`P-008 post-promotion recovery: ${absorption.summary}`);
+    if (absorption.ok) {
+      try {
+        await deps.writeFrozenRepairQueue?.(null);
+      } catch (error) {
+        const summary =
+          `${absorption.summary}; ancestry is absorbed but the ready-to-promote queue clear ` +
+          `failed, so the row remains as an idempotent retry marker: ${error instanceof Error ? error.message : error}`;
+        deps.log(summary);
+        return withRepairIdentity({
+          advanced: false,
+          candidate: pendingQueue.repairHead,
+          from: lastReady,
+          green: null,
+          reason: "repair-in-progress",
+          summary,
+          repairQueue: pendingQueue,
+        });
+      }
+      return {
+        advanced: false,
+        candidate: pendingQueue.repairHead,
+        from: lastReady,
+        green: null,
+        reason: "up-to-date",
+        summary:
+          `${absorption.summary}; cleared the durable frozen queue after recovering the ` +
+          `post-promotion staging bridge`,
+      };
+    }
+    const summary =
+      `${absorption.summary}; main is already at proven repairHead ` +
+      `${pendingQueue.repairHead.slice(0, 12)}, and the ready-to-promote queue is retained ` +
+      `for an idempotent staging-absorption retry`;
+    deps.log(summary);
+    return withRepairIdentity({
+      advanced: false,
+      candidate: pendingQueue.repairHead,
+      from: lastReady,
+      green: null,
+      reason: "repair-in-progress",
+      summary,
+      repairQueue: pendingQueue,
+    });
+  }
   // D-004 / P-009 / P-010 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): there is
   // deliberately NO age-, stall- or "fossil"-based release of a pinned candidate here. The
   // WI-42207 block that used to live at this point released any pin older than

@@ -55,6 +55,21 @@ const RETROSPECTIVE_METADATA_REFERENCE = CURRENT.replace(
   '- **P-002** `todo` Open item.\n- **P-003** `done` Fixed item.\n- **P-004** `done` Fixed item.',
 );
 
+const DECISION_REFERENCE = CURRENT.replace(
+  '**State:** P-001 is done.',
+  "**State:** D-022 records P-001's stack-mutation primitive — attach/detach with delivery semantics.",
+);
+
+const RESIDUE_HANDOFF = CURRENT.replace(
+  '**State:** P-001 is done.',
+  "**State:** P-001's measurement residue is owned by WI-1311290, not dropped.",
+);
+
+const RESIDUE_CARRY_FORWARD = CURRENT.replace(
+  '**State:** P-001 is done.',
+  "**State:** P-001's measurement residue carries forward under WI-1311290.",
+);
+
 const EXHAUSTIVE_OMISSION = CURRENT.replace(
   '**Next:** Continue with P-002.',
   '**Next:** P-002 only, and it is not actionable yet.',
@@ -242,6 +257,50 @@ describe('detectNowItemContradictions', () => {
     );
 
     expect(detectNowItemContradictions(proposed)).toEqual([]);
+  });
+
+  it('allows a neutral decision reference for a terminal item', () => {
+    expect(detectNowItemContradictions(parsePlan(DECISION_REFERENCE))).toEqual([]);
+  });
+
+  it('still flags action or status wording around a decision reference', () => {
+    const action = parsePlan(
+      CURRENT.replace(
+        '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
+        '**State:** Revisit D-022 records P-001 before continuing.\n\n**Next:** Continue with P-002.',
+      ),
+    );
+    const pending = parsePlan(
+      CURRENT.replace(
+        '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
+        '**State:** D-022 records P-001 as pending work.\n\n**Next:** Continue with P-002.',
+      ),
+    );
+
+    expect(detectNowItemContradictions(action)).toEqual([
+      expect.objectContaining({ id: 'P-001', status: 'done' }),
+    ]);
+    expect(detectNowItemContradictions(pending)).toEqual([
+      expect.objectContaining({ id: 'P-001', status: 'done' }),
+    ]);
+  });
+
+  it.each([
+    ['owned residue', RESIDUE_HANDOFF],
+    ['carried residue', RESIDUE_CARRY_FORWARD],
+  ])('allows a terminal item in a neutral %s handoff', (_label, proposed) => {
+    expect(detectNowItemContradictions(parsePlan(proposed))).toEqual([]);
+  });
+
+  it.each([
+    "P-001's measurement residue remains open under WI-1311290.",
+    "Revisit P-001's measurement residue is owned by WI-1311290, not dropped.",
+    "P-001's measurement residue is owned by WI-1311290, not dropped yet.",
+  ])('still flags an active, action-oriented, or future residue handoff: %s', (state) => {
+    const proposed = parsePlan(CURRENT.replace('**State:** P-001 is done.', `**State:** ${state}`));
+    expect(detectNowItemContradictions(proposed)).toEqual([
+      expect.objectContaining({ id: 'P-001', status: 'done' }),
+    ]);
   });
 
   it('still flags action or active-status wording around a cross-ledger reference', () => {
@@ -462,6 +521,58 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
     );
 
     expect(result.value).toEqual({ ok: true });
+  });
+
+  it('accepts a neutral decision reference for a terminal item', () => {
+    const result = evaluateNowUpdate(
+      CURRENT,
+      "D-022 records P-001's stack-mutation primitive — attach/detach with delivery semantics.",
+      'Continue with P-002.',
+      SLUG,
+    );
+
+    expect(result.value).toEqual({ ok: true });
+  });
+
+  it('rejects a status-invalidating decision reference for a terminal item', () => {
+    const result = evaluateNowUpdate(
+      CURRENT,
+      'D-022 records P-001 as pending work.',
+      'Continue with P-002.',
+      SLUG,
+    );
+
+    expect(result.newBody).toBeNull();
+    expect(result.value).toEqual({
+      ok: false,
+      code: 'now_item_status_contradiction',
+      contradictions: [expect.objectContaining({ id: 'P-001', status: 'done' })],
+    });
+  });
+
+  it.each([
+    "P-001's measurement residue is owned by WI-1311290, not dropped.",
+    "P-001's measurement residue carries forward under WI-1311290.",
+  ])('accepts a neutral terminal residue handoff: %s', (state) => {
+    const result = evaluateNowUpdate(CURRENT, state, 'Continue with P-002.', SLUG);
+
+    expect(result.value).toEqual({ ok: true });
+  });
+
+  it('rejects an active terminal residue handoff', () => {
+    const result = evaluateNowUpdate(
+      CURRENT,
+      "P-001's measurement residue remains open under WI-1311290.",
+      'Continue with P-002.',
+      SLUG,
+    );
+
+    expect(result.newBody).toBeNull();
+    expect(result.value).toEqual({
+      ok: false,
+      code: 'now_item_status_contradiction',
+      contradictions: [expect.objectContaining({ id: 'P-001', status: 'done' })],
+    });
   });
 
   it('accepts a cross-plan P-NNN citation even when this plan has its own terminal item of the same number', () => {

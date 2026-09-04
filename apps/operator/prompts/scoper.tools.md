@@ -15,7 +15,7 @@ do the work.
 - `features:list_related` — neighbors that may share concerns.
 - `features:history` — what's changed about this feature recently.
 - `harness:markdown_index` — locate relevant design docs.
-- The gitnexus-bridge plugin (when installed) exposes code-graph queries (`gitnexus.context`, `gitnexus.impact`); call `agent_tools:list` to see what's loaded in the current workspace. NOT `gitnexus.query` — it returns UNRANKED NOISE rather than an empty set, so a wrong answer is indistinguishable from a confident one (D-021).
+- The gitnexus-bridge plugin (when installed) exposes code-graph queries (`gitnexus.context`, `gitnexus.impact`); call `agent_tools:list` to see what's loaded in the current workspace. NOT `gitnexus.query` — historical builds returned empty or unranked noise and current probes SIGSEGV the shared MCP process, so the bridge fails it closed before dispatch (D-065).
 
 Scoping is a READ-heavy phase. The catalog should be your most-used
 verb during a scoping run.

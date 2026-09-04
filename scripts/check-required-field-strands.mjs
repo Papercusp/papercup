@@ -339,7 +339,39 @@ export function diffRequiredAdditions(beforeText, afterText, fileName = 'f.ts') 
  * `foo(a: {x: string})` and a prettier-wrapped `foo(a: {\n  x: string;\n})` are the same
  * type; reporting the second as a breach is how an advisory gets tuned out.
  */
-const typeText = (node, sf) => (node ? node.getText(sf).replace(/\s+/g, ' ').trim() : null);
+/**
+ * Render a type's source text while alpha-normalising references to the callable's
+ * type parameters. Type parameters are positional, so `<T>(a: T): T` and
+ * `<U>(a: U): U` publish the same callable surface even though their source text
+ * differs. Walking TypeReferenceNodes instead of replacing identifier text blindly
+ * keeps property names and qualified names intact.
+ */
+const typeText = (node, sf, typeParamNames = new Map()) => {
+  if (!node) return null;
+  let text = node.getText(sf);
+  if (typeParamNames.size > 0) {
+    const nodeStart = node.getStart(sf);
+    const replacements = [];
+    const visit = (current) => {
+      if (ts.isTypeReferenceNode(current) && ts.isIdentifier(current.typeName)) {
+        const replacement = typeParamNames.get(current.typeName.text);
+        if (replacement) {
+          replacements.push({
+            start: current.typeName.getStart(sf) - nodeStart,
+            end: current.typeName.getEnd() - nodeStart,
+            replacement,
+          });
+        }
+      }
+      ts.forEachChild(current, visit);
+    };
+    visit(node);
+    for (const { start, end, replacement } of replacements.sort((a, b) => b.start - a.start)) {
+      text = `${text.slice(0, start)}${replacement}${text.slice(end)}`;
+    }
+  }
+  return text.replace(/\s+/g, ' ').trim();
+};
 
 /**
  * Collect every EXPORTED callable's signature, keyed by name (`foo`) for function
@@ -375,7 +407,15 @@ export function collectExportedSignatures(sourceText, fileName = 'f.ts') {
   const sf = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
   const sigs = new Map(); // key -> { typeParams, params: [{ name, optional, rest, type }], ret }
 
-  const record = (key, node) => {
+  const record = (key, node, enclosingTypeParameters = []) => {
+    // A member's annotations can refer to the generic parameters of its enclosing
+    // interface/class as well as its own. Give each positional slot a stable name
+    // before rendering the annotations so a rename at either scope stays silent.
+    const allTypeParameters = [...enclosingTypeParameters, ...(node.typeParameters ?? [])];
+    const typeParamNames = new Map();
+    for (const [index, tp] of allTypeParameters.entries()) {
+      if (ts.isIdentifier(tp.name)) typeParamNames.set(tp.name.text, `__papercusp_type_param_${index}__`);
+    }
     sigs.set(key, {
       // Carried so a generic's ARITY, CONSTRAINTS and DEFAULTS are visible to the diff: adding
       // a type parameter strands every explicit `foo<A>()` site, and tightening a constraint
@@ -384,16 +424,16 @@ export function collectExportedSignatures(sourceText, fileName = 'f.ts') {
       // never be diffed: type parameters are positional, so `<T>` → `<U>` is a pure rename.
       typeParams: (node.typeParameters ?? []).map((tp) => ({
         name: ts.isIdentifier(tp.name) ? tp.name.text : '?',
-        constraint: typeText(tp.constraint, sf),
+        constraint: typeText(tp.constraint, sf, typeParamNames),
         hasDefault: Boolean(tp.default),
       })),
       params: node.parameters.map((p) => ({
         name: ts.isIdentifier(p.name) ? p.name.text : '?',
         optional: Boolean(p.questionToken || p.initializer),
         rest: Boolean(p.dotDotDotToken),
-        type: typeText(p.type, sf),
+        type: typeText(p.type, sf, typeParamNames),
       })),
-      ret: typeText(node.type, sf),
+      ret: typeText(node.type, sf, typeParamNames),
     });
   };
 
@@ -443,7 +483,7 @@ export function collectExportedSignatures(sourceText, fileName = 'f.ts') {
       for (const m of stmt.members) {
         if (!ts.isMethodSignature(m) || !m.name) continue;
         const name = ts.isIdentifier(m.name) || ts.isStringLiteral(m.name) ? m.name.text : null;
-        if (name) record(`${stmt.name.text}.${name}`, m);
+        if (name) record(`${stmt.name.text}.${name}`, m, stmt.typeParameters ?? []);
       }
     } else if (ts.isClassDeclaration(stmt) && isExported(stmt) && stmt.name) {
       // An exported class is a public callable surface too, and its CONSTRUCTOR is the one
@@ -451,12 +491,12 @@ export function collectExportedSignatures(sourceText, fileName = 'f.ts') {
       for (const m of stmt.members) {
         if (isInaccessible(m)) continue;
         if (ts.isConstructorDeclaration(m)) {
-          record(`${stmt.name.text}.constructor`, m);
+          record(`${stmt.name.text}.constructor`, m, stmt.typeParameters ?? []);
           continue;
         }
         if (!ts.isMethodDeclaration(m) || !m.name) continue;
         const name = ts.isIdentifier(m.name) || ts.isStringLiteral(m.name) ? m.name.text : null;
-        if (name) record(`${stmt.name.text}.${name}`, m);
+        if (name) record(`${stmt.name.text}.${name}`, m, stmt.typeParameters ?? []);
       }
     }
   }
@@ -524,12 +564,6 @@ export function diffSignatureBreaks(beforeText, afterText, fileName = 'f.ts') {
     // Type parameters, compared POSITIONALLY and never by name — TS resolves type arguments by
     // position, so `<T>` → `<U>` is a rename that strands nobody and must stay silent.
     //
-    // KNOWN GAP, tracked as EI-21909944792089774: this block is rename-blind, but the VALUE
-    // parameter comparison below is not. It compares literal type TEXT, so `a: T` → `a: U`
-    // still reports param-type-changed + return-type-changed on a pure rename. Fixing it needs
-    // type-parameter names alpha-normalised out of the recorded type text — and, for class
-    // members, the enclosing declaration's type parameters threaded down into them. That is a
-    // scoping change, which is why it is filed rather than patched here.
     const wasTp = was.typeParams ?? [];
     const nowTp = now.typeParams ?? [];
     for (let i = wasTp.length; i < nowTp.length; i++) {

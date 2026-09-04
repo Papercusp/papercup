@@ -8,11 +8,11 @@
  * guidance when P-017 opened, and neither looked wrong while you read it:
  *
  *   - CLAUDE.md routed "code graph / call sites" to `gitnexus.query`. That
- *     intent returns UNRANKED NOISE rather than an empty set — a nonsense
- *     symbol yields ~20 confident-looking rows, and a wrong ARG NAME yields
- *     byte-identical output, proving the search term is never applied
- *     (measured, D-021). Its failure mode is indistinguishable from success,
- *     which is exactly why prose review never catches it.
+ *     intent has never had a trustworthy result contract: D-021 measured
+ *     unranked noise, WI-35557 measured empty results, and D-065 measured a
+ *     native SIGSEGV that kills the shared MCP process. A recommendation can
+ *     therefore be wrong while looking successful OR destroy the evidence
+ *     channel, which is exactly why prose review never catches it.
  *   - Both su playbooks advertised raw `repomix.pack`, which skips the pinned
  *     version and the secret-scanning rails `code:pack` enforces (D-040/D-041).
  *
@@ -37,7 +37,7 @@ export const BANNED_ROUTES: readonly BannedRoute[] = Object.freeze([
     tool: 'gitnexus.query',
     instead: 'gitnexus.context / gitnexus.impact',
     reason:
-      'returns UNRANKED NOISE rather than an empty set, so a wrong answer is indistinguishable from a confident one (D-021)',
+      'is unavailable: historical builds returned empty or unranked noise and current probes SIGSEGV the shared MCP process (D-021/WI-35557/D-065)',
   }),
   Object.freeze({
     tool: 'repomix.pack',

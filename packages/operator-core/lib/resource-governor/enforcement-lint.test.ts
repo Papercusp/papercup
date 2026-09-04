@@ -142,13 +142,15 @@ describe('resource governor enforcement lint', () => {
     const declarationStart = queueSource.indexOf('private readonly onActualDemand:');
     const admitStart = queueSource.indexOf('async admit(');
     const retryStart = queueSource.indexOf('stored = await acquireWithContentionRetry(');
+    const retryEnd = queueSource.indexOf('    } catch (error)', retryStart);
     expect(declarationStart).toBeGreaterThanOrEqual(0);
     expect(admitStart).toBeGreaterThan(declarationStart);
     expect(retryStart).toBeGreaterThan(admitStart);
+    expect(retryEnd).toBeGreaterThan(retryStart);
     expect(inspectGovernorSource(queueSource.slice(declarationStart, admitStart))).not.toContain(
       'retry-around-receipt',
     );
-    expect(inspectGovernorSource(queueSource.slice(retryStart, retryStart + 220))).toContain(
+    expect(inspectGovernorSource(queueSource.slice(retryStart, retryEnd))).toContain(
       'retry-around-receipt',
     );
   });

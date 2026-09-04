@@ -14,7 +14,7 @@ implement.
 - `audit:list` — what happened recently in the harness.
 - `coord:inbox` — failure reports from workers / validators.
 - `harness:escalation` — supervisor's notes if the failure was escalated.
-- Then code: when the gitnexus-bridge plugin is installed, `gitnexus.context` (definition + callers/callees) and `gitnexus.impact` (downstream radius) are the fastest way to find call sites + impact. NOT `gitnexus.query` — it returns UNRANKED NOISE rather than an empty set, so a wrong answer is indistinguishable from a confident one (D-021).
+- Then code: when the gitnexus-bridge plugin is installed, `gitnexus.context` (definition + callers/callees) and `gitnexus.impact` (downstream radius) are the fastest way to find call sites + impact. NOT `gitnexus.query` — historical builds returned empty or unranked noise and current probes SIGSEGV the shared MCP process, so the bridge fails it closed before dispatch (D-065).
 
 Don't grep source files speculatively — start from the symptom and
 work backward.

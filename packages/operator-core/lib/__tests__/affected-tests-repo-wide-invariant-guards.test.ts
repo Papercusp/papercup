@@ -474,6 +474,37 @@ describe('affected-tests: generated su.md projection guard (EI-21618443971639284
   });
 });
 
+/** identities-v1 P-024 — a marker rename/miss must reach the exact-once guard
+ * from every authored/projection tree, including bare submodule gitlinks. */
+const SU_SPLICE_MARKER_SCRIPT = 'lint:su-splice-markers';
+const SU_SPLICE_MARKER_TASK = HOST_WORKSPACE + ' :: ' + SU_SPLICE_MARKER_SCRIPT;
+
+describe('affected-tests: SU splice-marker exact-once guard (identities-v1 P-024)', () => {
+  it.each([
+    'libs/papercusp',
+    'libs/papercusp/packages/harness/blueprints/base/prompts/su.md',
+    'apps/operator/prompts/papercusp-su-engineer.tools.md',
+    'packages/operator-core/lib/desktop-install/splice-tooling-overlay.ts',
+    'packages/operator-core/lib/desktop-install/__fixtures__/su-render-baseline/su.base.md',
+    'papercusp-desktop',
+    'papercusp-desktop/src-tauri/env-sidecars/staging/harness/blueprints/base/prompts/su.md',
+    'scripts/check-su-splice-markers.ts',
+  ])('attaches for a splice-contract input: %s', (changedPath) => {
+    expect(dryTasks(changedPath)).toContain(SU_SPLICE_MARKER_TASK);
+  });
+
+  it('does not attach for an unrelated prose path', () => {
+    expect(dryTasks(PROMPT_UNRELATED_PATH)).not.toContain(SU_SPLICE_MARKER_TASK);
+  });
+
+  it('keeps the guard script defined on the host workspace', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    expect(pkg.scripts?.[SU_SPLICE_MARKER_SCRIPT]).toContain('check-su-splice-markers.ts');
+  });
+});
+
 describe('affected-tests: authored-doc guard candidate scope (EI-21079330201572062)', () => {
   it('passes the exact changed authored doc to the guard', () => {
     const line = dryTaskLine(dryTasks(AUTHORED_DOC_PATH), AUTHORED_DOC_TASK);

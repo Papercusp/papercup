@@ -1887,7 +1887,47 @@ describe('WI-5075 carry-respawn kill-loop breaker (rapid-refire guard)', () => {
     }
   });
 
-  it('recovery below the limit closes the breaker — a later genuine crossing cuts again', async () => {
+  it('transient successor recovery samples do not re-arm the breaker — landed churn is suppressed', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-07-16T12:00:00Z'));
+      armCarryCapableHost();
+
+      // Each landed cut briefly produces a fresh successor below the limit before
+      // the successor burns back over it. Those low samples must not erase the
+      // streak that eventually suppresses the churn loop.
+      for (let i = 0; i < 3; i += 1) {
+        estimateMock.mockResolvedValue(170_000);
+        const cut = await checkCompactionCompliance(fakeSql({ seeded }));
+        expect(cut.carryRespawned).toEqual(['hot']);
+
+        vi.setSystemTime(Date.now() + 7 * 60_000);
+        estimateMock.mockResolvedValue(10_000);
+        const successorBoot = await checkCompactionCompliance(fakeSql({ seeded }));
+        expect(successorBoot.overLimit).toEqual([]);
+
+        if (i < 2) vi.setSystemTime(Date.now() + 7 * 60_000);
+      }
+
+      vi.setSystemTime(Date.now() + 7 * 60_000);
+      estimateMock.mockResolvedValue(170_000);
+      const suppressed = await checkCompactionCompliance(fakeSql({ seeded }));
+      expect(suppressed.carryRespawned).toEqual([]);
+      expect(suppressed.forceCompacted).toEqual([]);
+      expect(injectMock).toHaveBeenCalledTimes(3);
+      expect(openEscalationMock).toHaveBeenCalledTimes(1);
+
+      const escPayload = (openEscalationMock.mock.calls[0] as unknown as [
+        unknown,
+        { summary?: string },
+      ])?.[1];
+      expect(escPayload?.summary).toContain('carry-respawn CHURN');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sustained recovery below the limit closes the breaker — a later genuine crossing cuts again', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
       vi.setSystemTime(new Date('2026-07-16T12:00:00Z'));
@@ -1900,10 +1940,25 @@ describe('WI-5075 carry-respawn kill-loop breaker (rapid-refire guard)', () => {
       const tripped = await checkCompactionCompliance(fakeSql({ seeded }));
       expect(tripped.carryRespawned).toEqual([]);
 
-      // The owner recovers (a landed cut / compaction finally tracked) — the
-      // streak + escalation dedup clear with the other per-owner state.
+      // One low successor sample is not enough to prove sustained recovery.
       estimateMock.mockResolvedValue(10_000);
       vi.setSystemTime(Date.now() + 7 * 60_000);
+      const transient = await checkCompactionCompliance(fakeSql({ seeded }));
+      expect(transient.overLimit).toEqual([]);
+
+      // The owner remains below the limit, but not yet for the full streak
+      // window measured from the first low sample.
+      vi.setSystemTime(Date.now() + 29 * 60_000);
+      const stillRetained = await checkCompactionCompliance(fakeSql({ seeded }));
+      expect(stillRetained.overLimit).toEqual([]);
+      estimateMock.mockResolvedValue(170_000);
+      const stillSuppressed = await checkCompactionCompliance(fakeSql({ seeded }));
+      expect(stillSuppressed.carryRespawned).toEqual([]);
+
+      // The owner remains below the limit for the full streak window, so the
+      // streak + escalation dedup finally clear with the other per-owner state.
+      vi.setSystemTime(Date.now() + 1 * 60_000);
+      estimateMock.mockResolvedValue(10_000);
       const recovered = await checkCompactionCompliance(fakeSql({ seeded }));
       expect(recovered.overLimit).toEqual([]);
 
@@ -1912,6 +1967,42 @@ describe('WI-5075 carry-respawn kill-loop breaker (rapid-refire guard)', () => {
       vi.setSystemTime(Date.now() + 7 * 60_000);
       const again = await checkCompactionCompliance(fakeSql({ seeded }));
       expect(again.carryRespawned).toEqual(['hot']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a compaction-limit change immediately re-arms a retained streak', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-07-16T12:00:00Z'));
+      armCarryCapableHost();
+
+      for (let i = 0; i < 3; i += 1) {
+        estimateMock.mockResolvedValue(170_000);
+        const cut = await checkCompactionCompliance(fakeSql({ seeded }));
+        expect(cut.carryRespawned).toEqual(['hot']);
+        vi.setSystemTime(Date.now() + 7 * 60_000);
+        estimateMock.mockResolvedValue(10_000);
+        await checkCompactionCompliance(fakeSql({ seeded }));
+        if (i < 2) vi.setSystemTime(Date.now() + 7 * 60_000);
+      }
+
+      vi.setSystemTime(Date.now() + 7 * 60_000);
+      estimateMock.mockResolvedValue(170_000);
+      const suppressed = await checkCompactionCompliance(fakeSql({ seeded }));
+      expect(suppressed.carryRespawned).toEqual([]);
+      expect(openEscalationMock).toHaveBeenCalledTimes(1);
+
+      // Changing the configured limit is an explicit operator re-arm, even
+      // though the current estimate is still below the new limit.
+      const changedLimit = [{ ...seeded[0], compaction_limit: 200_000 }];
+      const rearmed = await checkCompactionCompliance(fakeSql({ seeded: changedLimit }));
+      expect(rearmed.overLimit).toEqual([]);
+
+      const restoredLimit = await checkCompactionCompliance(fakeSql({ seeded }));
+      expect(restoredLimit.carryRespawned).toEqual(['hot']);
+      expect(openEscalationMock).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

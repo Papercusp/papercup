@@ -5,7 +5,7 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Code intelligence: which backend answers which question, and how to operate them"
-description: "The operator runbook for the code-intelligence backends (rg, LSP, GitNexus, ast-grep, packers): the ratified routing contract, the exact pinned versions and where they live, the SIX failure modes that return a CONFIDENT WRONG ANSWER rather than an error, and the crash-residue mode that once killed GitNexus fleet-wide while it still advertised 17 working tools. Re-verified against source at HEAD 2026-09-03 under plan code-intelligence-routing-lsp-gitnexus-2026-08-20."
+description: "The operator runbook for code-intelligence backends (rg, LSP, GitNexus, ast-grep, packers): the ratified routing contract, pinned versions, six high-risk failure modes (including the fail-closed raw query path), and automatic GitNexus crash-residue recovery."
 type: Insight
 discovered: 2026-08-21
 tags: ["code-intelligence", "lsp", "gitnexus", "routing", "runbook"]
@@ -23,6 +23,8 @@ plans:
   - "code-intelligence-routing-lsp-gitnexus-2026-08-20"
 ---
 
+The operator runbook for the code-intelligence backends (rg, LSP, GitNexus, ast-grep, packers): the ratified routing contract, the exact pinned versions and where they live, the SIX failure modes that return a CONFIDENT WRONG ANSWER rather than an error, and the crash-residue mode that once killed GitNexus fleet-wide while it still advertised 17 working tools. Re-verified against source at HEAD 2026-09-03 under plan code-intelligence-routing-lsp-gitnexus-2026-08-20.
+
 > Authored as P-019 of `code-intelligence-routing-lsp-gitnexus-2026-08-20`. The
 > routing contract is D-001; the exact backend/version record with every rejected
 > alternative is **D-048** on that plan. This page is the operational half: how to
@@ -39,16 +41,16 @@ plans:
 Each row is a *question class*, not a preference. Picking by habit rather than by
 question is what the contract exists to stop.
 
-| the question | the authority | not |
-|---|---|---|
-| definition, references, type truth | `lsp:query` — real compiler semantics | a grep for the declaration: it cannot resolve shadowing or re-exports |
-| who CALLS this symbol | `graph:query { op:'callers' }` | `gitnexus.impact { direction:'callers' }` — silently answers **callees**, see §3.6 |
-| call chains, impact radius, topology | `gitnexus.context` / `gitnexus.impact` (dot form, not colon) | `gitnexus.query` — see §3.1 |
-| structural code patterns (shape, not text) | the ast-grep facade | a regex that approximates an AST |
-| an exact keyword or phrase | `search:fulltext` | `ILIKE '%…%'` |
-| a paraphrased concept | `search:semantic` | keyword search that misses the wording |
-| exhaustive exact-text sweep | plain `rg` / `grep` — still the right tool | a graph query, which is indexed and can lag |
-| packaging evidence for a reviewer or a model | `code:pack` — strictly POST-retrieval | a raw packer binary; it skips the pinned version and the secret rails |
+| the question                                 | the authority                                                | not                                                                                |
+| -------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| definition, references, type truth           | `lsp:query` — real compiler semantics                        | a grep for the declaration: it cannot resolve shadowing or re-exports              |
+| who CALLS this symbol                        | `graph:query { op:'callers' }`                               | `gitnexus.impact { direction:'callers' }` — silently answers **callees**, see §3.6 |
+| call chains, impact radius, topology         | `gitnexus.context` / `gitnexus.impact` (dot form, not colon) | `gitnexus.query` — see §3.1                                                        |
+| structural code patterns (shape, not text)   | the ast-grep facade                                          | a regex that approximates an AST                                                   |
+| an exact keyword or phrase                   | `search:fulltext`                                            | `ILIKE '%…%'`                                                                      |
+| a paraphrased concept                        | `search:semantic`                                            | keyword search that misses the wording                                             |
+| exhaustive exact-text sweep                  | plain `rg` / `grep` — still the right tool                   | a graph query, which is indexed and can lag                                        |
+| packaging evidence for a reviewer or a model | `code:pack` — strictly POST-retrieval                        | a raw packer binary; it skips the pinned version and the secret rails              |
 
 **Curated code-intelligence tools are namespaced by PLANE, never by vendor**
 (D-058): the curated facade is `graph:query`, not `gitnexus:query`. The dotted
@@ -65,14 +67,14 @@ first-call mistake.
 Exact versions, read from the live install and recorded in full in D-048
 (gitnexus re-confirmed at 1.6.9 on 2026-09-03):
 
-| backend | version | location |
-|---|---|---|
-| typescript-language-server | 6.0.0 | `~/.papercusp/vendor/lsp` |
-| tsserver (via transitive `@typescript/old`) | stock typescript 6.0.3 | `~/.papercusp/vendor/lsp/node_modules/@typescript/old/lib/tsserver.js` |
-| rust-analyzer | 1.97.1 (8bab26f 2026-07-14) | rustup component, `stable-x86_64-unknown-linux-gnu` |
-| gitnexus | 1.6.9 | `~/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus` |
-| repomix | 1.18.0 | `~/.papercusp/vendor/repomix` |
-| code2prompt | 4.2.0 | `~/.papercusp/vendor/code2prompt` |
+| backend                                     | version                     | location                                                               |
+| ------------------------------------------- | --------------------------- | ---------------------------------------------------------------------- |
+| typescript-language-server                  | 6.0.0                       | `~/.papercusp/vendor/lsp`                                              |
+| tsserver (via transitive `@typescript/old`) | stock typescript 6.0.3      | `~/.papercusp/vendor/lsp/node_modules/@typescript/old/lib/tsserver.js` |
+| rust-analyzer                               | 1.97.1 (8bab26f 2026-07-14) | rustup component, `stable-x86_64-unknown-linux-gnu`                    |
+| gitnexus                                    | 1.6.9                       | `~/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus`              |
+| repomix                                     | 1.18.0                      | `~/.papercusp/vendor/repomix`                                          |
+| code2prompt                                 | 4.2.0                       | `~/.papercusp/vendor/code2prompt`                                      |
 
 Three things about this table bite people:
 
@@ -111,19 +113,28 @@ npm install --prefix ~/.papercusp/vendor/lsp \
 npm install --prefix ~/.papercusp/vendor/gitnexus gitnexus@1.6.9
 ```
 
-## 3. The six failure modes that return a confident wrong answer
+## 3. Six high-risk failure modes: confident wrong answers or a hard-crashed evidence channel
 
-This is the section worth reading before you trust a result. Every entry fails
-*toward* a plausible answer, so nothing throws and nothing looks broken.
+This is the section worth reading before you trust a result. Five entries fail
+*toward* a plausible answer, so nothing looks broken. The raw natural-language
+query path is worse: current builds can crash the shared MCP child, so the bridge
+now fails it closed before dispatch.
 
-### 3.1 `gitnexus.query` returns unranked noise, not an empty set
+### 3.1 `gitnexus.query` is unavailable and fails closed before dispatch
 
-A nonsense symbol yields ~20 confident-looking rows, and a wrong argument name
-yields byte-identical output — proving the search term is never applied
-(measured, D-021). It is the one intent whose failure looks exactly like success.
-Use `gitnexus.context` / `gitnexus.impact`. Guidance that puts `gitnexus.query`
-in recommendation position is a lint failure (D-042).
+This path has never had a stable trustworthy result contract. D-021 measured
+~20 unranked rows whose content ignored the query; WI-35557 later measured empty
+results. At P-019 acceptance on 2026-09-04, two independent real-symbol probes
+instead killed the shared GitNexus MCP process with SIGSEGV (D-065). That crash
+also removes the sibling `context` / `impact` / `trace` evidence channel until the
+child restarts.
 
+The bridge therefore refuses `gitnexus.query` locally **before** spawning or
+calling the child. Do not probe it to discover which historical outcome a runtime
+has. Use `rg` for keywords, `gitnexus.context` for an exact symbol already known by
+name/uid, and `graph:query` for callers/callees/topology. Guidance that puts
+`gitnexus.query` in recommendation position is a lint failure (D-042); guidance
+that asserts one absolute row outcome is stale (D-065).
 ### 3.2 A language server queried before project load returns the WRONG location
 
 Not an error — a plausible wrong answer (D-010). Readiness must come from the
@@ -153,7 +164,7 @@ absence as evidence about the code.
 `gitnexus` answers happily against whatever it indexed last and does not warn at
 query time, so a stale index is indistinguishable from a fresh one in the result.
 Measured 2026-08-21: `Indexed commit: 1b6621f` against `Current commit: ce1545d`,
-status `stale`, on a 5.3G index built ~50 minutes earlier. On a tree this active,
+status `stale`, on a 5.3G index built \~50 minutes earlier. On a tree this active,
 under a git-sync routine that commits continuously, the index goes stale within
 the hour.
 
@@ -192,11 +203,11 @@ still advertising 17 working tools.** Nothing reported itself as broken.
 crash-inconsistent state. Every read-only open then replays a pending WAL and
 segfaults. There are three distinct residue shapes, and the state space matters:
 
-| residue kind | on disk | how it got there |
-|---|---|---|
-| `orphan-shadow` | shadow present, **no** database | killed BEFORE promoting the shadow |
-| `orphan-wal` | database + pending `lbug.wal`, **no** shadow | killed AFTER promoting |
-| `dead-shadow-wal` | database + an EMPTY, stale shadow | killed mid-build (the 20-minute timeout does exactly this) |
+| residue kind      | on disk                                      | how it got there                                           |
+| ----------------- | -------------------------------------------- | ---------------------------------------------------------- |
+| `orphan-shadow`   | shadow present, **no** database              | killed BEFORE promoting the shadow                         |
+| `orphan-wal`      | database + pending `lbug.wal`, **no** shadow | killed AFTER promoting                                     |
+| `dead-shadow-wal` | database + an EMPTY, stale shadow            | killed mid-build (the 20-minute timeout does exactly this) |
 
 **Recovery is now AUTOMATIC — do not hand-delete anything.** `cleanCrashResidue()`
 runs as a preflight on every `gitnexus-reindex` tick *and* fires immediately after
@@ -207,17 +218,17 @@ recovery.
 
 What you should know when you look at a live `.gitnexus/`:
 
-- **`lbug.wal.missing-shadow.<timestamp>-<id>` files are QUARANTINED residue, not
+* **`lbug.wal.missing-shadow.<timestamp>-<id>` files are QUARANTINED residue, not
   corruption.** Recovery moves WAL residue aside rather than destroying evidence.
   They are safe to leave; they are the audit trail of a recovered crash.
-- **A WAL sitting ALONGSIDE a shadow is a build genuinely in progress and is never
+* **A WAL sitting ALONGSIDE a shadow is a build genuinely in progress and is never
   touched.** That is what keeps recovery from firing on a concurrent `analyze`.
-- **A shadow a live writer still holds open is deliberately SPARED.** Recovery
+* **A shadow a live writer still holds open is deliberately SPARED.** Recovery
   probes writer liveness via `/proc` and only cleans what is provably orphaned;
   when that probe is unavailable it falls back to a zero-byte size proxy and says
   so, because that proxy cannot see a mid-write orphan.
-- ⛔ **Never delete `lbug` itself.** It is the database, not residue — 5.19 GB on
-  this box, and a rebuild costs ~10–20 minutes fleet-wide.
+* ⛔ **Never delete `lbug` itself.** It is the database, not residue — 5.19 GB on
+  this box, and a rebuild costs \~10–20 minutes fleet-wide.
 
 **Why deleting a stray WAL is safe, precisely** — two measured facts, not
 assumptions: (1) a healthy index carries no WAL at all, verified by repeated
@@ -235,21 +246,21 @@ section — an absent explanation and an absent section used to look identical.
 
 Measured at HEAD, two runs:
 
-| | TypeScript | rust-analyzer |
-|---|---|---|
-| cold start | 3,917ms / 3,418ms | 10,760ms / 11,322ms |
-| steady-state RSS | 66.7 MB | 2,817 MB |
+|                  | TypeScript        | rust-analyzer       |
+| ---------------- | ----------------- | ------------------- |
+| cold start       | 3,917ms / 3,418ms | 10,760ms / 11,322ms |
+| steady-state RSS | 66.7 MB           | 2,817 MB            |
 
 The rust cold start exceeds the nominal budget. That is an **accounted, bounded**
 exceedance rather than a regression, and it is deliberately not pinned in both
-directions because it drifts ~562ms run to run (D-046).
+directions because it drifts \~562ms run to run (D-046).
 
 **Warm-start latency is dominated by PROJECT LOAD, not by query cost.** A
 definition on a warm server took 21,305ms — and the cause was established by a
 discriminating experiment rather than inference: the same query, asked first on a
 cold server with no references call anywhere before it, reproduced the timing
 almost exactly, which made the rival explanation impossible by construction
-(D-047). Loading `operator-core` costs ~21.7s against ~3.9s for a small package,
+(D-047). Loading `operator-core` costs \~21.7s against \~3.9s for a small package,
 while adopting a *second* project on an already-warm server costs only 539ms.
 
 The practical consequence: warm-up, if it is ever added, must be **per-project
@@ -264,33 +275,34 @@ from how far behind the index is. This is a known open question, not a settled
 model.
 
 **Index footprint.** `.gitnexus/` measured 6,558 MB on 2026-09-03 (`lbug` 4,946 MB
-+ `parsedfile-cache` 1,132 MB + `parse-cache` 475 MB) against a 2,048 MB nominal
-budget — an accounted, bounded exceedance recorded in `KNOWN_INDEX_DISK_EXCEEDANCES`
-rather than a live alert, so that a day-one-red gauge does not train everyone to
-ignore it. Separately, `GITNEXUS_LBUG_MAX_DB_BYTES` (16 GiB) is the LadybugDB mmap
-outage cliff — a different quantity from the selection budget, and not derivable
-from it.
+
+* `parsedfile-cache` 1,132 MB + `parse-cache` 475 MB) against a 2,048 MB nominal
+  budget — an accounted, bounded exceedance recorded in `KNOWN_INDEX_DISK_EXCEEDANCES`
+  rather than a live alert, so that a day-one-red gauge does not train everyone to
+  ignore it. Separately, `GITNEXUS_LBUG_MAX_DB_BYTES` (16 GiB) is the LadybugDB mmap
+  outage cliff — a different quantity from the selection budget, and not derivable
+  from it.
 
 ## 6. Verifying a backend is genuinely answering
 
 The recurring mistake is accepting a green suite that silently skipped.
 
-- **Check the binaries resolve at the exact paths the specs use** — and pair the
+* **Check the binaries resolve at the exact paths the specs use** — and pair the
   check with a positive control on a path you know exists. An `ls` of a missing
   path and an `ls` of a present one both print nothing useful once the exit code
   is discarded, so an absence claim without a control is not evidence.
-- **Run the live suites:** the bakeoff (`code-intel-bench.integration.test.ts`)
+* **Run the live suites:** the bakeoff (`code-intel-bench.integration.test.ts`)
   exercises both real servers; the facade and acceptance-corpus suites cover
   routing and fixtures. A bakeoff that reports success having *skipped* both
   servers looks identical to one that passed.
-- **Check the GitNexus index is FRESH, not merely present** — `gitnexus status`
+* **Check the GitNexus index is FRESH, not merely present** — `gitnexus status`
   must show `Indexed commit` == `Current commit`. A stale index answers without
   erroring (§3.5), so "gitnexus responded" is not evidence the answer is current.
-- **After a reindex, check the CANARY, not just the exit code.** The reindex
+* **After a reindex, check the CANARY, not just the exit code.** The reindex
   routine runs a post-analyze probe (file / symbol / call-edge / def-edge counts
   plus a name round-trip) and treats a clean exit with a failed canary as failure,
   because an `analyze` can exit 0 having produced an index that answers nothing.
-- **Know what the corpus does not cover.** Interface implementations / type
+* **Know what the corpus does not cover.** Interface implementations / type
   definitions and rename preview are UNEVALUATED. Do not claim coverage the
   corpus does not have.
 
@@ -312,7 +324,7 @@ crash-consistency guard must cover the whole state space of the artifacts it
 protects, not the one corner that was observed failing.
 
 **Deleting `lbug` to clear a wedged index.** Rejected: it is the database, not
-residue. Deleting it converts a seconds-long residue cleanup into a ~10–20 minute
+residue. Deleting it converts a seconds-long residue cleanup into a \~10–20 minute
 fleet-wide rebuild.
 
 **Eager LSP project warm-up.** Rejected (D-047): tsserver serialises, so
@@ -324,5 +336,5 @@ the 2 GiB selection budget and the 16 GiB mmap outage cliff are different
 quantities measuring different things; collapsing them loses both signals.
 
 **Pinning the rust-analyzer cold start in both directions.** Rejected (D-046): it
-drifts ~562ms run to run, so a two-sided pin produces flakes rather than signal.
+drifts \~562ms run to run, so a two-sided pin produces flakes rather than signal.
 The exceedance is accounted and bounded instead.
