@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "plan": "identities-v1-2026-08-30",
   "item": "P-018",
-  "generatedAt": "2026-09-03T22:53:43.435Z",
+  "generatedAt": "2026-09-04T07:05:08.245Z",
   "inputs": {
     "base": {
       "path": "su.base.md",
@@ -38,8 +38,8 @@
   },
   "tiers": {
     "full": {
-      "totalBytes": 136083,
-      "sha256": "3b8bc92aab13569dad39706bb700da30b737bc8edadaef27e4fc948c48f7696d",
+      "totalBytes": 111678,
+      "sha256": "c323b4a6f4d855f381d7a7e03efcf3eb4771415eac5bca2aafc92b9def134baa",
       "sections": [
         {
           "heading": "(preamble)",
@@ -96,28 +96,10 @@
           "sha256": "4d405b8f96cd969629e7f144b9c7b131157e8ea1932298a896aa52a70a79ea2a"
         },
         {
-          "heading": "## AUTO mode — the owner's switch for \"act, don't ask\"",
+          "heading": "## Operating modes — state in the registry, definitions as identity layers",
           "origin": "generated",
-          "bytes": 12812,
-          "sha256": "135d121559f12e0c6ab325206c6cdb93a1122ddb112a7f687e6db7bbc3ae3dc8"
-        },
-        {
-          "heading": "## IDEATE mode — the owner's switch for \"invent net-new, don't just patch\"",
-          "origin": "generated",
-          "bytes": 7581,
-          "sha256": "3079018da833cab37e35d1df7cfb51a6cacc5a19df57296f93ea175a56c90d5a"
-        },
-        {
-          "heading": "## DRAIN mode — the owner's switch for \"drain the work queue to terminal\"",
-          "origin": "generated",
-          "bytes": 4530,
-          "sha256": "37549a38e483a08a93270ea56e6418fd237e2a62f47193a0f8992a317fc0841d"
-        },
-        {
-          "heading": "## AUDIT mode — the owner's switch for \"step back and audit the whole picture\"",
-          "origin": "generated",
-          "bytes": 3503,
-          "sha256": "e04e80d44046cdcabab66b222f731863b100e807163452adf6b922c2683d2750"
+          "bytes": 4024,
+          "sha256": "f9971c7b7c1d9f1d3672329fb8087f7eafe1e6775c22fbd5426c2edb93d40b18"
         },
         {
           "heading": "## Registering work is a SEPARATE discipline from asking approval — AUTO waives the ask, NOT the register",
@@ -194,8 +176,8 @@
       ]
     },
     "fleet": {
-      "totalBytes": 109915,
-      "sha256": "2cb85bee54396527ed60888ae9ff36f8f59b4210e92055756e9c9f31595b11ae",
+      "totalBytes": 111678,
+      "sha256": "c323b4a6f4d855f381d7a7e03efcf3eb4771415eac5bca2aafc92b9def134baa",
       "sections": [
         {
           "heading": "(preamble)",
@@ -252,10 +234,10 @@
           "sha256": "4d405b8f96cd969629e7f144b9c7b131157e8ea1932298a896aa52a70a79ea2a"
         },
         {
-          "heading": "## AUTO mode — you are in it",
+          "heading": "## Operating modes — state in the registry, definitions as identity layers",
           "origin": "generated",
-          "bytes": 2261,
-          "sha256": "e65b43fcc9c48f417f4b81749a89bd88bd61c9bb786254e07a00755203be1e6f"
+          "bytes": 4024,
+          "sha256": "f9971c7b7c1d9f1d3672329fb8087f7eafe1e6775c22fbd5426c2edb93d40b18"
         },
         {
           "heading": "## Registering work is a SEPARATE discipline from asking approval — AUTO waives the ask, NOT the register",
