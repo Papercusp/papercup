@@ -157,3 +157,37 @@ describe('resolveAcceptanceGraderEligibility sole-vetting-critic rail (EI-221823
     expect(result.refusal?.code).toBe('grader_is_sole_vetting_critic');
   });
 });
+
+describe('grader_in_implementer_lineage remedy text (EI-22268985547402093)', () => {
+  /**
+   * The refusal message is the ONE surface where a blocked author learns how to
+   * route the grading, so a wrong remedy there is not cosmetic — it is executed.
+   * It used to advise "use an unassigned grading work-item for scheduler pull",
+   * which admission screening refuses for a promoter-tick window; WI-2142286 and
+   * WI-2140951 both followed that advice into open-for-40h+ strands. The working
+   * route is `assign_to` + `bypass:explicit-assignment` (live since 2026-08-31),
+   * which is born-admitted and claimable by the named grader in the same write.
+   */
+  const remedy = async () => {
+    lineageRelated.mockResolvedValue(true);
+    const result = await resolveAcceptanceGraderEligibility({
+      rubric: RUBRIC,
+      callerId: 'su-launched-by-author',
+      workspaceId: 'ws-test',
+    });
+    expect(result.refusal?.code).toBe('grader_in_implementer_lineage');
+    return result.refusal?.error ?? '';
+  };
+
+  it('names the assign_to / explicit-assignment route that actually admits the item', async () => {
+    const error = await remedy();
+    expect(error).toContain('assign_to');
+    expect(error).toContain('bypass:explicit-assignment');
+  });
+
+  it('CONTROL: does NOT recommend filing the grading request unassigned for scheduler pull', async () => {
+    const error = await remedy();
+    expect(error).not.toMatch(/unassigned grading work-item for scheduler pull/);
+    expect(error).toMatch(/Do NOT file it unassigned/);
+  });
+});

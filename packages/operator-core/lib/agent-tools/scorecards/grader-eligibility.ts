@@ -250,8 +250,10 @@ export async function resolveAcceptanceGraderEligibility(params: {
         error:
           `grader '${callerId}' is in acceptance-rubric author '${implementer}'s spawn/rebind lineage — ` +
           'a related session cannot supply the independent grading; recruit an existing unrelated live session via ' +
-          'coord:presence/coord:dispatch, or use an unassigned grading work-item for scheduler pull — never launch a ' +
-          'grader from this lineage',
+          "coord:presence/coord:dispatch, then work_items:create the grading request WITH assign_to naming that peer " +
+          '(bypass:explicit-assignment makes it born-admitted and claimable in the same write). Do NOT file it ' +
+          'unassigned for scheduler pull — admission screening refuses every claimant, the named grader included, ' +
+          'for a promoter-tick window. Never launch a grader from this lineage',
       },
     };
   }
