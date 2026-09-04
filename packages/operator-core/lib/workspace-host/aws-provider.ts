@@ -6,6 +6,7 @@ import type {
   WorkspaceHostConnectionValidation,
   WorkspaceHostDesiredSpec,
   WorkspaceHostHealthAttestation,
+  WorkspaceHostHealthCheck,
   WorkspaceHostImage,
   WorkspaceHostObservation,
   WorkspaceHostPlan,
@@ -25,7 +26,11 @@ import type {
   WorkspaceHostSnapshotRef,
   WorkspaceHostTransportProfile,
 } from '@papercusp/deployment-driver';
-import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
+import {
+  assertWorkspaceHostSecretIsolation,
+  resolveWorkspaceHostHealthStatus,
+  unmeasuredHealthCheck,
+} from '@papercusp/deployment-driver';
 import { AWS_WORKSPACE_HOST_TARGET } from './aws-connection';
 import {
   AWS_WORKSPACE_HOST_TRANSPORTS,
@@ -1055,20 +1060,30 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     const instanceRef = knownResource(host.resources, AWS_INSTANCE_RESOURCE_KIND);
     const instance = instanceRef ? await this.client.describeInstance(instanceRef.providerId) : undefined;
     const running = instance?.state === 'running';
-    const instanceOk = instance?.instanceStatus === 'ok';
-    const systemOk = instance?.systemStatus === 'ok';
-    const ssmOnline = instance?.ssmOnline === true;
+    // EC2 status checks carry their own "not measured" values: `initializing` means the check
+    // has not produced a verdict yet, and `insufficient-data` is AWS saying it cannot tell.
+    // Collapsing either (or an absent field) to `false` reports a host as FAILING when nothing
+    // has been measured — the WI-2143924 coercion, with AWS's own vocabulary for it discarded.
+    const statusCheck = (value: AwsInstanceObservation['instanceStatus']): boolean | null =>
+      value === 'ok' ? true : value === 'impaired' ? false : null;
+    const instanceOk = statusCheck(instance?.instanceStatus);
+    const systemOk = statusCheck(instance?.systemStatus);
+    // NOT `=== true`: `ssmOnline` is optional and no AWS client in this tree writes it.
+    const ssmOnline = instance?.ssmOnline ?? null;
+    const checks: WorkspaceHostHealthCheck[] = [
+      { name: 'ec2-running', ok: running, detail: instance?.state ?? 'absent' },
+      { name: 'ec2-instance-status', ok: instanceOk, detail: instance?.instanceStatus ?? 'absent' },
+      { name: 'ec2-system-status', ok: systemOk, detail: instance?.systemStatus ?? 'absent' },
+      ssmOnline === null
+        ? unmeasuredHealthCheck('ssm-online', 'no producer writes ssmOnline on the AWS path')
+        : { name: 'ssm-online', ok: ssmOnline },
+    ];
     return {
       hostId: host.hostId,
       observedAt: this.now(),
-      status: !running ? 'unreachable' : instanceOk && systemOk && ssmOnline ? 'healthy' : 'degraded',
+      status: resolveWorkspaceHostHealthStatus({ reachable: running, checks }),
       ...(instance?.imageId ? { image: { id: instance.imageId } } : {}),
-      checks: [
-        { name: 'ec2-running', ok: running, detail: instance?.state ?? 'absent' },
-        { name: 'ec2-instance-status', ok: instanceOk, detail: instance?.instanceStatus ?? 'absent' },
-        { name: 'ec2-system-status', ok: systemOk, detail: instance?.systemStatus ?? 'absent' },
-        { name: 'ssm-online', ok: ssmOnline },
-      ],
+      checks,
     };
   }
 }

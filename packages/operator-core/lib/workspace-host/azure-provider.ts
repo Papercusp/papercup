@@ -6,6 +6,7 @@ import type {
   WorkspaceHostConnectionValidation,
   WorkspaceHostDesiredSpec,
   WorkspaceHostHealthAttestation,
+  WorkspaceHostHealthCheck,
   WorkspaceHostImage,
   WorkspaceHostObservation,
   WorkspaceHostPlan,
@@ -25,7 +26,11 @@ import type {
   WorkspaceHostSnapshotRef,
   WorkspaceHostTransportProfile,
 } from '@papercusp/deployment-driver';
-import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
+import {
+  assertWorkspaceHostSecretIsolation,
+  resolveWorkspaceHostHealthStatus,
+  unmeasuredHealthCheck,
+} from '@papercusp/deployment-driver';
 import { AZURE_WORKSPACE_HOST_TARGET } from './azure-connection';
 import {
   AZURE_WORKSPACE_HOST_TRANSPORTS,

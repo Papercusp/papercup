@@ -154,6 +154,18 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
   private readonly instances = new Map<string, GcpInstanceObservation>();
   private readonly snapshots = new Map<string, GcpSnapshotObservation>();
 
+  /**
+   * WI-2143924: the real Compute client NEVER writes `agentOnline` (gcp-api-client.test.ts
+   * pins its absence), so this fake deliberately does not either — a fixture that sets it
+   * would validate a provider assumption against itself and hide exactly the defect that
+   * shipped. A test wanting the MEASURED branches must ask for them here, explicitly.
+   */
+  setAgentOnline(name: string, agentOnline: boolean): void {
+    const instance = this.instances.get(name);
+    if (!instance) throw new Error(`fake GCP client has no instance '${name}'`);
+    this.instances.set(name, { ...instance, agentOnline });
+  }
+
   seedExistingNetwork(): void {
     this.networks.set('shared-vpc', { name: 'shared-vpc', observedAt: NOW });
     this.subnetworks.set('shared-subnet', { name: 'shared-subnet', observedAt: NOW });
@@ -431,7 +443,7 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
         attachedDiskNames: [dataDiskName],
         internalIp: '10.132.12.2',
         ...(input.networkInterfaces[0].accessConfigs ? { externalIp: '203.0.113.42' } : {}),
-        agentOnline: true,
+        // No `agentOnline` — see setAgentOnline() above. The real client never writes it.
         labels: input.labels,
         recreateInput: input,
         observedAt: NOW,
@@ -1298,5 +1310,69 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
         context(),
       );
     }
+  });
+});
+
+describe('GCP workspace-host health attestation (WI-2143924)', () => {
+  it('reports unknown — never degraded — when nothing produced agentOnline', async () => {
+    // The whole defect in one assertion. `agentOnline` has no producer on the GCP path, so
+    // reading it as `=== true` reported a RUNNING, fully-provisioned host as `degraded` and
+    // made `healthy` unreachable — a caller gating on health would have hung forever.
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+
+    const health = await provider.attestHealth(host, context());
+
+    expect(health.status).toBe('unknown');
+    expect(health.checks).toContainEqual({
+      name: 'workspace-agent-online',
+      ok: null,
+      detail: 'no producer writes agentOnline on the GCP path',
+    });
+    expect(health.checks).toContainEqual({ name: 'compute-running', ok: true, detail: 'RUNNING' });
+  });
+
+  it('does not let observe and attestHealth disagree about the same unmeasured field', async () => {
+    // Before the fix these read one unset field in OPPOSITE directions — `observe` as
+    // `=== false` (so: running) and `attestHealth` as `=== true` (so: degraded) — and one
+    // healthy host was simultaneously both. Neither may now claim a measurement was made.
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+
+    const [observation, health] = await Promise.all([
+      provider.observe(host, context()),
+      provider.attestHealth(host, context()),
+    ]);
+
+    expect(observation.state).toBe('running');
+    expect(health.status).not.toBe('degraded');
+    expect(health.status).not.toBe('healthy');
+  });
+
+  it('reports healthy once the agent signal is genuinely measured and passing', async () => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    const vm = host.resources.find((resource) => resource.kind === 'vm')!;
+    client.setAgentOnline(vm.providerId, true);
+
+    const health = await provider.attestHealth(host, context());
+
+    expect(health.status).toBe('healthy');
+    expect(health.checks).toContainEqual({ name: 'workspace-agent-online', ok: true });
+  });
+
+  it('reports degraded — and demotes the lifecycle state — for a MEASURED offline agent', async () => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    const vm = host.resources.find((resource) => resource.kind === 'vm')!;
+    client.setAgentOnline(vm.providerId, false);
+
+    const [observation, health] = await Promise.all([
+      provider.observe(host, context()),
+      provider.attestHealth(host, context()),
+    ]);
+
+    expect(health.status).toBe('degraded');
+    expect(observation.state).toBe('degraded');
   });
 });

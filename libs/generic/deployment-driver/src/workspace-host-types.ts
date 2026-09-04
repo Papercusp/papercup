@@ -476,7 +476,8 @@ export interface WorkspaceHostHealthCheck {
  * healthy ships a premature success, and polling for a `healthy` the provider cannot
  * produce hangs forever.
  */
-export type WorkspaceHostHealthStatus = "healthy" | "degraded" | "unreachable" | "unknown";
+export const WORKSPACE_HOST_HEALTH_STATUSES = ["healthy", "degraded", "unreachable", "unknown"] as const;
+export type WorkspaceHostHealthStatus = (typeof WORKSPACE_HOST_HEALTH_STATUSES)[number];
 export interface WorkspaceHostHealthAttestation {
   hostId: string;
   observedAt: string;
