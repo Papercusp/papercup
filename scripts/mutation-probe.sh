@@ -113,9 +113,17 @@
 #   deliberately-corrupted deletion logic against the real filesystem with your
 #   full privileges: one probe of a reaper script did exactly that and destroyed
 #   ~370GB (~/windows-vm, ~/Downloads, ~/backups, most of papercupai-workspace).
-#   So the probe now REFUSES by default when the subject file or the --test
-#   command contains destructive primitives (rm/rmdir/unlink/shred/mkfs/
-#   dd of=/truncate/find -delete). Two ways forward, in order of preference:
+#   So COPY-OUT and IN-TREE MUTATION modes now REFUSE by default when the
+#   subject file or the --test command contains destructive primitives
+#   (rm/rmdir/unlink/shred/mkfs/dd of=/truncate/find -delete). Two ways
+#   forward, in order of preference:
+#
+#   Historical mode is different: it executes an UNMUTATED source snapshot,
+#   not a deliberately-corrupted mutant. The same scan is therefore a
+#   warning there, so a real historical falsifiability comparison is not
+#   made unusable merely because the subject cleans up its own scratch file.
+#   If a historical guard actually executes deletion logic, callers can still
+#   opt into --fake-destructive or --i-know-this-deletes --sandbox-root.
 #
 #   --fake-destructive       TIER-0, use this one. Prepends shim executables
 #                            (rm, rmdir, unlink, shred, truncate, mkfs, dd) to
@@ -595,7 +603,9 @@ fi
 # ---------------------------------------------------------------------------
 # Destructive-subject gate (EI-20566003853444873, the 2026-08-15 incident).
 # Everything above only READS the subject; the first EXECUTION of anything is
-# the baseline guard run below, so this gate must sit before it. The scan is
+# the baseline guard run below, so this gate must sit before it in mutation
+# modes. Historical mode executes an unmutated source snapshot and keeps the
+# same scan as a warning instead of refusing the comparison. The scan is
 # deliberately conservative — a false positive costs one flag; a false negative
 # already cost ~370GB.
 # ---------------------------------------------------------------------------
@@ -614,7 +624,10 @@ CMD_HITS="$(printf '%s\n%s' "$TEST_CMD" "$CALIBRATION_CMD" | grep -Eo "$DESTRUCT
 # own filer agreed narrowing it without a positive control would disarm it); instead the
 # refusal now quotes the site so a comment-only match is recognisable on sight.
 SUBJ_SITES="$(grep -nE "$DESTRUCTIVE_ERE" "$FILE" 2>/dev/null | head -4 | cut -c1-160 || true)"
-if [ -n "$SUBJ_HITS$HIST_SUBJ_HITS$CMD_HITS" ] && [ "$DELETES_ACK" -eq 0 ] && [ "$FAKE_DESTRUCTIVE" -eq 0 ]; then
+HISTORICAL_DESTRUCTIVE_HITS="$SUBJ_HITS$HIST_SUBJ_HITS$CMD_HITS"
+if [ -n "$HISTORICAL_DESTRUCTIVE_HITS" ] && [ "$HISTORICAL_MODE" -eq 1 ]; then
+  log "historical mode: destructive primitives detected (current subject: ${SUBJ_HITS:-none}; historical subject: ${HIST_SUBJ_HITS:-none}; --test/--calibration: ${CMD_HITS:-none}); no mutant is produced, so allowing the unmutated historical source comparison. Use --fake-destructive or --i-know-this-deletes --sandbox-root if the guard itself executes deletion logic."
+elif [ -n "$HISTORICAL_DESTRUCTIVE_HITS" ] && [ "$DELETES_ACK" -eq 0 ] && [ "$FAKE_DESTRUCTIVE" -eq 0 ]; then
   die "REFUSING: the probe would EXECUTE destructive code, and nothing sandboxes what a mutant DOES.
       Matched destructive primitives — current subject: ${SUBJ_HITS:-none}; historical subject: ${HIST_SUBJ_HITS:-none}; --test/--calibration: ${CMD_HITS:-none}
 
@@ -904,8 +917,8 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
     log "VERDICT: HARNESS ERROR (historical guard exited $HISTORICAL_RC) — no falsifiability verdict is sound"
   fi
 
-  printf 'MUTATION_PROBE_RESULT mode=historical verdict=%s expected=%s target=%s current_exit=%d historical_exit=%d calibration_current=%d calibration_historical=%d against_commit=%s absence_control=%s positive_controls=%d\n' \
-    "$VERDICT" "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CALIBRATION_CURRENT_RC" "$CALIBRATION_HISTORICAL_RC" "$HISTORICAL_SHA" "$MUST_BE_ABSENT" "${#POSITIVE_CONTROLS[@]}"
+  printf 'MUTATION_PROBE_RESULT mode=historical verdict=%s expected=%s target=%s current_exit=%d historical_exit=%d calibration_current=%d calibration_historical=%d against_commit=%s absence_control=%s positive_controls=%d destructive_primitives=%s\n' \
+    "$VERDICT" "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CALIBRATION_CURRENT_RC" "$CALIBRATION_HISTORICAL_RC" "$HISTORICAL_SHA" "$MUST_BE_ABSENT" "${#POSITIVE_CONTROLS[@]}" "${HISTORICAL_DESTRUCTIVE_HITS// /,}"
 
   [ "$VERDICT" = "harness-error" ] && exit 2
   [ "$VERDICT" = "$EXPECT" ] || exit 1
