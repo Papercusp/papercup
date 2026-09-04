@@ -33,6 +33,7 @@ import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { crossCheckLaunchVerification, buildOwnerActivityReader } from '../../fleet/launch-verification-cross-check';
 import { fleetEverMembers } from '../../fleet-membership-store';
 import { buildFleetPopulationLifecycle } from '../fleet/fleet-population';
+import { getLoopStatuses } from '../../harness/routines/loop';
 
 /**
  * WI-3818: bound the two OPTIONAL legs — completionStats (harness-scoped

@@ -92,3 +92,217 @@ export interface ExperimentRunCtx {
   /** Injected for the rate-pause wait (defaults to real setTimeout in the runner). */
   sleep?(ms: number): Promise<void>;
 }
+
+/**
+ * The shared lifecycle contract for a learning change (P-001).
+ *
+ * Producers (Scout, Gym, regret mining, and transfer) may discover different
+ * candidate kinds, but they all publish this same envelope before a change can
+ * be promoted.  Keeping the contract beside the existing experiment types lets
+ * each producer reuse the experiment/eval-battery and provenance seams without
+ * inventing another acceptance shape.
+ */
+export type LearningEvidenceStatus = 'pass' | 'fail' | 'not-measured';
+
+export type LearningActorKind = 'human' | 'agent' | 'auto-grader' | 'system';
+
+export interface LearningActor {
+  readonly kind: LearningActorKind;
+  /** Stable owner/session id, or `human`/`auto-grader` for those surfaces. */
+  readonly id: string;
+  readonly role?: string;
+}
+
+export interface LearningPotScope {
+  /** The pot that owns the candidate and its policy updates. */
+  readonly potId: string;
+  /** Workspace containing the owning pot. */
+  readonly workspaceId: string;
+  /** Explicitly permitted transfer targets; empty means pot-local only. */
+  readonly applicablePots?: readonly string[];
+}
+
+export interface LearningCandidate {
+  readonly id: string;
+  readonly version: string;
+  /** Parent version that the candidate was evaluated against. */
+  readonly parentVersion: string;
+  /** Hash of the complete immutable variant/artifact. */
+  readonly variantHash: string;
+  readonly actor: LearningActor;
+  readonly potScope: LearningPotScope;
+  readonly createdAt: string;
+}
+
+export interface LearningExperiment {
+  readonly batteryId: string;
+  readonly testId: string;
+  readonly baselineId: string;
+  readonly challengerId: string;
+  readonly taskHash: string;
+  readonly modelHash: string;
+  readonly promptHash: string;
+  readonly rubricHash: string;
+  readonly codeHash: string;
+  readonly repeats: number;
+  readonly startedAt: string;
+  readonly completedAt?: string;
+}
+
+export type LearningEvidenceKind = 'objective' | 'judgment' | 'regression' | 'probe' | 'cost' | 'rollback';
+
+export interface LearningEvidence {
+  readonly id: string;
+  readonly kind: LearningEvidenceKind;
+  readonly status: LearningEvidenceStatus;
+  readonly coverage: { readonly required: number; readonly measured: number };
+  readonly artifactRefs: readonly string[];
+  readonly recordedAt: string;
+}
+
+export interface LearningSpend {
+  readonly requestedUsd: number;
+  readonly reservedUsd: number;
+  readonly usedUsd: number;
+  readonly unsettledUsd: number;
+  readonly settledAt?: string;
+}
+
+export type LearningDecisionVerdict = 'accepted' | 'rejected' | 'inconclusive';
+
+export interface LearningDecision {
+  readonly verdict: LearningDecisionVerdict;
+  readonly authority: LearningActor;
+  readonly reason: string;
+  readonly evidenceIds: readonly string[];
+  readonly decidedAt: string;
+}
+
+export interface LearningActivation {
+  readonly version: string;
+  readonly parentVersion: string;
+  /** Rollback target captured before the new version is exposed. */
+  readonly rollbackVersion: string;
+  readonly exposure: { readonly population: string; readonly percentage: number };
+  readonly activatedAt: string;
+}
+
+export type LearningOutcomeStatus = 'pending' | 'matured' | 'right-censored';
+
+export interface LearningOutcome {
+  readonly status: LearningOutcomeStatus;
+  readonly measuredAt?: string;
+  readonly value?: number;
+  readonly artifactRefs?: readonly string[];
+}
+
+export interface LearningContract {
+  readonly contractVersion: '1';
+  readonly candidate: LearningCandidate;
+  readonly experiment: LearningExperiment;
+  readonly evidence: readonly LearningEvidence[];
+  readonly spend: LearningSpend;
+  readonly decision: LearningDecision;
+  readonly activation?: LearningActivation;
+  readonly outcomes: readonly LearningOutcome[];
+}
+
+export interface LearningContractValidation {
+  readonly ok: boolean;
+  readonly errors: readonly string[];
+}
+
+/**
+ * Validate the fail-closed invariants shared by every learning producer.
+ * This is deliberately side-effect free so adapters can run it before any
+ * governor reservation, promotion write, or prompt activation.
+ */
+export function validateLearningContract(contract: LearningContract): LearningContractValidation {
+  const errors: string[] = [];
+  const nonEmpty = (value: string | undefined, field: string) => {
+    if (typeof value !== 'string' || value.trim().length === 0) errors.push(`${field} must be non-empty`);
+  };
+  const finiteNonNegative = (value: number, field: string) => {
+    if (!Number.isFinite(value) || value < 0) errors.push(`${field} must be a finite non-negative number`);
+  };
+
+  if (contract.contractVersion !== '1') errors.push('contractVersion must be 1');
+  for (const [value, field] of [
+    [contract.candidate.id, 'candidate.id'],
+    [contract.candidate.version, 'candidate.version'],
+    [contract.candidate.parentVersion, 'candidate.parentVersion'],
+    [contract.candidate.variantHash, 'candidate.variantHash'],
+    [contract.candidate.actor.id, 'candidate.actor.id'],
+    [contract.candidate.potScope.potId, 'candidate.potScope.potId'],
+    [contract.candidate.potScope.workspaceId, 'candidate.potScope.workspaceId'],
+    [contract.experiment.batteryId, 'experiment.batteryId'],
+    [contract.experiment.testId, 'experiment.testId'],
+    [contract.experiment.baselineId, 'experiment.baselineId'],
+    [contract.experiment.challengerId, 'experiment.challengerId'],
+    [contract.experiment.taskHash, 'experiment.taskHash'],
+    [contract.experiment.modelHash, 'experiment.modelHash'],
+    [contract.experiment.promptHash, 'experiment.promptHash'],
+    [contract.experiment.rubricHash, 'experiment.rubricHash'],
+    [contract.experiment.codeHash, 'experiment.codeHash'],
+    [contract.decision.authority.id, 'decision.authority.id'],
+    [contract.decision.reason, 'decision.reason'],
+  ] as const) nonEmpty(value, field);
+
+  if (contract.experiment.baselineId === contract.experiment.challengerId) {
+    errors.push('experiment baseline and challenger must differ');
+  }
+  if (!Number.isInteger(contract.experiment.repeats) || contract.experiment.repeats < 1) {
+    errors.push('experiment.repeats must be a positive integer');
+  }
+
+  for (const [value, field] of [
+    [contract.spend.requestedUsd, 'spend.requestedUsd'],
+    [contract.spend.reservedUsd, 'spend.reservedUsd'],
+    [contract.spend.usedUsd, 'spend.usedUsd'],
+    [contract.spend.unsettledUsd, 'spend.unsettledUsd'],
+  ] as const) finiteNonNegative(value, field);
+  if (contract.spend.reservedUsd > contract.spend.requestedUsd) errors.push('spend.reservedUsd cannot exceed requestedUsd');
+  if (contract.spend.usedUsd + contract.spend.unsettledUsd > contract.spend.reservedUsd) {
+    errors.push('spend.usedUsd + unsettledUsd cannot exceed reservedUsd');
+  }
+
+  const evidenceById = new Map<string, LearningEvidence>();
+  for (const evidence of contract.evidence) {
+    nonEmpty(evidence.id, 'evidence.id');
+    if (evidenceById.has(evidence.id)) errors.push(`evidence id is duplicated: ${evidence.id}`);
+    evidenceById.set(evidence.id, evidence);
+    if (!Number.isInteger(evidence.coverage.required) || evidence.coverage.required < 0) {
+      errors.push(`evidence ${evidence.id} required coverage must be a non-negative integer`);
+    }
+    if (!Number.isInteger(evidence.coverage.measured) || evidence.coverage.measured < 0) {
+      errors.push(`evidence ${evidence.id} measured coverage must be a non-negative integer`);
+    }
+    if (evidence.coverage.measured > evidence.coverage.required) {
+      errors.push(`evidence ${evidence.id} measured coverage cannot exceed required coverage`);
+    }
+    if (evidence.artifactRefs.length === 0) errors.push(`evidence ${evidence.id} needs an artifact reference`);
+  }
+  for (const id of contract.decision.evidenceIds) {
+    if (!evidenceById.has(id)) errors.push(`decision references unknown evidence: ${id}`);
+  }
+
+  if (contract.decision.verdict === 'accepted') {
+    if (contract.evidence.length === 0) errors.push('accepted decision requires evidence');
+    for (const evidence of contract.evidence) {
+      if (evidence.status !== 'pass') errors.push(`accepted decision has ${evidence.status} evidence: ${evidence.id}`);
+      if (evidence.coverage.measured < evidence.coverage.required) errors.push(`accepted decision has incomplete evidence: ${evidence.id}`);
+    }
+  }
+  if (contract.activation) {
+    if (contract.decision.verdict !== 'accepted') errors.push('activation requires an accepted decision');
+    nonEmpty(contract.activation.version, 'activation.version');
+    nonEmpty(contract.activation.parentVersion, 'activation.parentVersion');
+    nonEmpty(contract.activation.rollbackVersion, 'activation.rollbackVersion');
+    nonEmpty(contract.activation.exposure.population, 'activation.exposure.population');
+    if (!Number.isFinite(contract.activation.exposure.percentage) || contract.activation.exposure.percentage <= 0 || contract.activation.exposure.percentage > 100) {
+      errors.push('activation exposure percentage must be in (0, 100]');
+    }
+  }
+
+  return { ok: errors.length === 0, errors };
+}

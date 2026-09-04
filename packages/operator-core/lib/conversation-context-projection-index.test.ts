@@ -15,7 +15,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..', '..', '..');
 const MIGRATION = join(
   REPO_ROOT,
-  'libs/papercusp/libs/db/sql/1114-activity-report-session-lookup-index.sql.DRAFT',
+  'libs/papercusp/libs/db/sql/1114-activity-report-session-lookup-index.sql',
 );
 const SOURCE = join(REPO_ROOT, 'packages/operator-core/lib/conversation-context-projection.ts');
 const INDEX = 'tool_invocations_activity_session_lookup_idx';

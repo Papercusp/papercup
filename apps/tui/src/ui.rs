@@ -7709,19 +7709,25 @@ mod tests {
     #[test]
     fn surface_b_min_width_matches_the_layout_constraints_it_guards() {
         // Hard geometric floor: dock 40 + presence rail 30 + body Min(48).
-        assert!(
-            SURFACE_B_MIN_WIDTH >= 40 + 30 + 48,
-            "the gate must leave room for the dock, the presence rail and an unclipped body"
-        );
+        const {
+            assert!(
+                SURFACE_B_MIN_WIDTH >= 40 + 30 + 48,
+                "the gate must leave room for the dock, the presence rail and an unclipped body"
+            );
+        }
         // The real bar: the dock plus a conventional 120-column content body.
-        assert!(
-            SURFACE_B_MIN_WIDTH >= 40 + 120,
-            "the body beside the dock must stay a usable content width, not just the unclipped minimum"
-        );
-        assert!(
-            SURFACE_B_MIN_WIDTH <= 200,
-            "the gate must fit an ordinary maximized terminal — above this, D-005's always-visible pane is hidden in practice (WI-2140985)"
-        );
+        const {
+            assert!(
+                SURFACE_B_MIN_WIDTH >= 40 + 120,
+                "the body beside the dock must stay a usable content width, not just the unclipped minimum"
+            );
+        }
+        const {
+            assert!(
+                SURFACE_B_MIN_WIDTH <= 200,
+                "the gate must fit an ordinary maximized terminal — above this, D-005's always-visible pane is hidden in practice (WI-2140985)"
+            );
+        }
     }
 
     #[test]

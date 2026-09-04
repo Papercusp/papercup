@@ -45,7 +45,7 @@
 import { z } from 'zod';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, statSync, type Dirent } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync, type Dirent } from 'node:fs';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -219,6 +219,51 @@ function isWorkspaceCheckoutRoot(root: string): boolean {
   }
 }
 
+/**
+ * Discover independent workspace checkouts sitting beside the requested repo.
+ *
+ * A structured rubric check is stored as a portable workspace-relative path such
+ * as `portal/tests/foo.test.ts`, but the test router must execute it from the
+ * `portal` checkout itself.  The plan-audit citation resolver already admits
+ * these sibling repositories; keep testing:run on the same admission rule rather
+ * than rejecting a real, tracked test merely because it is outside the ambient
+ * checkout.  Only direct children with a real `.git` directory and a workspace
+ * package are admitted, so release/checkpoint worktrees and arbitrary folders do
+ * not become execution roots.
+ */
+function independentWorkspaceCheckoutRoots(root: string): ReadonlyMap<string, string> {
+  const names = new Map<string, string>();
+  let realRoot = root;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    // A stale requested root is handled by the normal resolver; keep the literal
+    // path here so a sibling can still be discovered from its parent.
+  }
+  const parent = dirname(resolve(root));
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(parent, { withFileTypes: true });
+  } catch {
+    return names;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    const candidate = join(parent, entry.name);
+    try {
+      if (realpathSync(candidate) === realRoot) continue;
+      // A pointer-file `.git` identifies a release/checkpoint worktree, not an
+      // independent checkout that may supply rubric evidence or run tests.
+      if (!statSync(join(candidate, '.git')).isDirectory()) continue;
+      if (!isWorkspaceCheckoutRoot(candidate)) continue;
+      names.set(entry.name, realpathSync(candidate));
+    } catch {
+      // Broken symlink / disappearing checkout: leave it out of this snapshot.
+    }
+  }
+  return names;
+}
+
 function isVitestCheckoutRoot(root: string): boolean {
   if (!isWorkspaceCheckoutRoot(root)) return false;
   return (
@@ -349,6 +394,7 @@ export function normalizeTestFilePaths(
   workspaceDirs: string[] = declaredWorkspaceDirs(root),
 ): TestFilePathResolution {
   const normalized: string[] = [];
+  const siblings = independentWorkspaceCheckoutRoots(root);
   for (const file of files) {
     if (isAbsolute(file)) {
       normalized.push(file);
@@ -366,7 +412,25 @@ export function normalizeTestFilePaths(
       .filter((candidate) => isInsideRoot(root, candidate) && existsSync(candidate))
       .map((candidate) => relative(root, candidate).split(sep).join('/'));
     if (matches.length > 1) return { ok: false, path: file, matches };
-    normalized.push(matches.length === 1 ? matches[0] : file);
+    if (matches.length === 1) {
+      normalized.push(matches[0]!);
+      continue;
+    }
+
+    // Workspace-relative sibling checkout spelling (`portal/tests/foo.test.ts`).
+    // Return the absolute file so checkoutRootForTestFiles can hand the complete
+    // request to that repository's own router/config.  Keep the original spelling
+    // only when no admitted sibling contains it.
+    const first = file.replace(/\\/g, '/').split('/')[0];
+    const siblingRoot = first ? siblings.get(first) : undefined;
+    if (siblingRoot && file.length > first!.length + 1) {
+      const siblingCandidate = resolve(siblingRoot, file.slice(first!.length + 1));
+      if (isInsideRoot(siblingRoot, siblingCandidate) && existsSync(siblingCandidate)) {
+        normalized.push(siblingCandidate);
+        continue;
+      }
+    }
+    normalized.push(file);
   }
   return { ok: true, files: normalized };
 }
@@ -1207,7 +1271,16 @@ export async function runTestFilesCore(opts: {
   testNamePattern?: string;
   signal?: AbortSignal;
 }): Promise<TestFilesCoreResult> {
-  const root = checkoutRootForTestFiles(opts.files, opts.root);
+  // Normalize once before selecting the checkout.  A workspace-relative sibling
+  // spelling (for example `portal/tests/foo.test.ts`) becomes an absolute path in
+  // normalizeTestFilePaths; selecting from that result lets the router switch to
+  // the sibling checkout's own Vitest config instead of trying to run the path from
+  // the ambient Papercusp tree.
+  const requestedPaths = normalizeTestFilePaths(opts.files, opts.root);
+  const root = checkoutRootForTestFiles(
+    requestedPaths.ok ? requestedPaths.files : opts.files,
+    opts.root,
+  );
   const runId = randomUUID();
 
   // WI-7189 / EI-19383071792758676: a wrong-tree resolution used to be SILENT —
@@ -1232,7 +1305,10 @@ export async function runTestFilesCore(opts: {
         `session's harness/project is registered.`,
     };
   }
-  const pathResolution = normalizeTestFilePaths(opts.files, root);
+  const pathResolution = normalizeTestFilePaths(
+    requestedPaths.ok ? requestedPaths.files : opts.files,
+    root,
+  );
   if (!pathResolution.ok) {
     return {
       ok: false,

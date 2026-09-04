@@ -28,6 +28,7 @@ import {
   type CoverageMeasurement,
   type CoverageReader,
 } from './rubrics-criterion-checks';
+import { checkoutRootForPath } from './agent-tools/testing/run';
 import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
 import { rubricCriterionSchema, rubricTemplateDataSchema, rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
 import { effectiveCriterionInstrumentKey, planRowToRubric } from './rubrics';
@@ -51,6 +52,20 @@ writeFileSync(join(outside, 'escape.rs'), '#[test]\nfn escape_test() {}\n');
 symlinkSync(join(outside, 'escape.rs'), join(root, 'apps', 'tui', 'src', 'escape.rs'));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 afterAll(() => rmSync(outside, { recursive: true, force: true }));
+
+// Independent sibling checkout fixture.  The production workspace exposes these
+// as `portal/tests/foo.test.ts`; the check validator must admit that spelling and
+// hand the absolute file to testing:run so it can switch to the sibling's router.
+const siblingWorkspace = mkdtempSync(join(tmpdir(), 'rubric-checks-sibling-workspace-'));
+const siblingAmbient = join(siblingWorkspace, 'papercusp');
+const siblingRepo = join(siblingWorkspace, 'portal');
+mkdirSync(join(siblingAmbient, '.git'), { recursive: true });
+writeFileSync(join(siblingAmbient, 'package.json'), JSON.stringify({ workspaces: [] }));
+mkdirSync(join(siblingRepo, '.git'), { recursive: true });
+writeFileSync(join(siblingRepo, 'package.json'), JSON.stringify({ workspaces: [] }));
+mkdirSync(join(siblingRepo, 'tests'), { recursive: true });
+writeFileSync(join(siblingRepo, 'tests', 'sibling.test.ts'), 'export {}\n');
+afterAll(() => rmSync(siblingWorkspace, { recursive: true, force: true }));
 
 const testsCheck = (files: string[]) => ({ kind: 'tests' as const, files });
 const cargoCheck = (manifestPath: string, sourceFiles: string[], test?: string) => ({
@@ -205,6 +220,29 @@ describe('validateCriterionCheckPaths / assertCriterionCheckPathsResolve', () =>
       manifestPath: 'apps/tui/Cargo.toml',
       sourceFiles: ['apps/tui/src/app.rs', 'apps/tui/src/ui.rs'],
     });
+  });
+
+  it('admits a workspace-relative path in an independent sibling checkout', () => {
+    const siblingPath = 'portal/tests/sibling.test.ts';
+    const v = validateCriterionCheckPaths([{ key: 'sibling', check: testsCheck([siblingPath]) }], {
+      root: siblingAmbient,
+    });
+    expect(v.ok).toBe(true);
+    expect(v.checked).toBe(1);
+    expect(v.normalizedByKey.sibling).toEqual([join(siblingRepo, 'tests', 'sibling.test.ts')]);
+    expect(checkoutRootForPath(v.normalizedByKey.sibling![0]!)).toBe(siblingRepo);
+    expect(() => assertCriterionCheckPathsResolve([{ key: 'sibling', check: testsCheck([siblingPath]) }], { root: siblingAmbient })).not.toThrow();
+  });
+
+  it('refuses sibling-prefixed paths that traverse outside the admitted checkout', () => {
+    const traversal = 'portal/../papercusp/package.json';
+    const v = validateCriterionCheckPaths([{ key: 'traversal', check: testsCheck([traversal]) }], {
+      root: siblingAmbient,
+    });
+    expect(v.ok).toBe(false);
+    expect(v.failures).toEqual([
+      expect.objectContaining({ criterionKey: 'traversal', path: traversal }),
+    ]);
   });
 
   it('REFUSES a Cargo source symlink that resolves outside the claimed tree', () => {

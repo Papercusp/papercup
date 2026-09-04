@@ -6,7 +6,6 @@
  * reachable through the new partial index.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Sql } from 'postgres';
@@ -51,9 +50,9 @@ beforeAll(async () => {
     INSERT INTO harness_shared.tool_invocations
       (id, workspace_id, tool_name, invoked_at, args_json)
     VALUES
-      (1, ${WORKSPACE}, 'activity:report', now() - interval '2 seconds', ${JSON.stringify({ session_id: SESSION })}::jsonb),
-      (2, 'default', 'activity_report', now() - interval '1 second', ${JSON.stringify({ sessionId: SESSION })}::jsonb),
-      (3, ${WORKSPACE}, 'activity:report', now(), ${JSON.stringify({ session_id: 'other-session' })}::jsonb)`;
+      (1, ${WORKSPACE}, 'activity:report', now() - interval '2 seconds', jsonb_build_object('session_id', ${SESSION}::text)),
+      (2, 'default', 'activity_report', now() - interval '1 second', jsonb_build_object('sessionId', ${SESSION}::text)),
+      (3, ${WORKSPACE}, 'activity:report', now(), jsonb_build_object('session_id', 'other-session'))`;
   await sql`
     INSERT INTO harness_shared.tool_invocations
       (id, workspace_id, tool_name, invoked_at, args_json)
