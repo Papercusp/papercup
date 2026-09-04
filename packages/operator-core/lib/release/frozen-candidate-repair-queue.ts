@@ -122,8 +122,6 @@ export interface FrozenCandidateRepairQueue {
   /** Initial gate process's PAPERCUSP_TEST_RUN_GROUP. Later verifiers keep their own runId;
    * this stable identity is only for affected-task proof reuse. Null means execute fully. */
   affectedTestProofGroup?: string | null;
-  /** Gate-owned isolation path. Agents never switch the canonical shared checkout. */
-  worktreePath: string;
   /** Number of fixer attempts actually dispatched (not reds observed or suites run). */
   attempts: number;
   /**
@@ -301,7 +299,6 @@ export type FrozenRepairQueueDecision =
       reason: 'unassigned' | 'fixer-dead';
       nextAttempt: number;
       repairHead: string;
-      worktreePath: string;
       runSuite: false;
       recordVerdict: false;
     }
@@ -448,8 +445,8 @@ export type FrozenRepairDispatchPendingDecision =
 
 /**
  * WI-2141347: the dispatch-infeasible retire, but for a queue whose movable `repairHead` has
- * already CONVERGED past its frozen `candidate` (see `shouldConvergeRepairHead` — only ever an
- * ancestor of staging, so already vetted, never unpushed fixer content). Retiring that queue and
+ * already ADVANCED past its frozen `candidate` (a path-exact admission — P-001 — only ever
+ * commits admitted fix blobs onto the frozen lineage). Retiring that queue and
  * re-cutting at whatever staging tip happens to be NOW discards the converged lineage untested
  * and re-admits the full last-green radius for no reason: the repairHead is itself a perfectly
  * good candidate to test. The caller treats this exactly like a fresh `test-candidate` (abandon
@@ -706,100 +703,6 @@ export function decideFrozenRepairDispatchInfeasible(
   };
 }
 
-/**
- * EI-21036544613774607: whether the queue's MOVABLE `repairHead` (never the immutable
- * `candidate` — see the field doc above) should be fast-forwarded to the current staging
- * tip before a repair worktree is built from it.
- *
- * A frozen candidate's `repairHead` starts equal to `candidate` and stays there until a
- * fixer produces its own commit (see `markFrozenRepairFixerFinished`). While it is STILL
- * an ancestor of staging — i.e. no fixer commit has yet diverged from staging's own
- * history — converging it is free: every commit reachable from the new value is, by
- * construction, already vetted and committed on staging (git-sync only ever commits
- * there), so no new/unverified code is introduced. Once a fixer commit exists,
- * `repairHead` carries unique, unpushed content and is no longer an ancestor of staging;
- * this then correctly refuses to converge and leaves that in-flight repair alone.
- *
- * `repairHeadIsAncestorOfStaging: null` means the ancestor check itself was inconclusive
- * or errored (a git failure, a temporarily-unreachable ref). Fails closed: no convergence
- * is today's behaviour, and it is the safe default whenever the check cannot be trusted.
- */
-export function shouldConvergeRepairHead(input: {
-  repairHead: string;
-  stagingTip: string;
-  repairHeadIsAncestorOfStaging: boolean | null;
-}): { converge: boolean; newRepairHead: string | null } {
-  if (
-    input.repairHeadIsAncestorOfStaging === true &&
-    input.stagingTip !== input.repairHead
-  ) {
-    return { converge: true, newRepairHead: input.stagingTip };
-  }
-  return { converge: false, newRepairHead: null };
-}
-
-/**
- * WI-1634331: whether an ALREADY-BUILT repair worktree may be fast-forwarded onto the
- * queue's current `repairHead`.
- *
- * `shouldConvergeRepairHead` (above) advances the MOVABLE `repairHead`. Nothing moves the
- * WORKTREE with it: `prepareFrozenRepairWorktree` builds that worktree exactly once and
- * returns early forever after (its `.git`-exists guard — the very early return the
- * converge contract doc already cites as this bug's evidence). So the converge fix repairs
- * only the FIRST-build case; from the second dispatch onward `repairHead` walks forward
- * while the worktree stays pinned where it was built.
- *
- * That gap is self-worsening rather than merely sticky. A fixer working in the stale
- * worktree commits a descendant of the OLD head, so `finalizeFrozenRepairWorktree`'s
- * `isAncestor(repairHead, head)` check fails, it throws, and the throw is swallowed into
- * the same `null` the call site reads as "the fixer ran and correctly changed nothing" —
- * burning an attempt on a state that can NEVER reach ready-to-verify. Every subsequent
- * hourly converge widens the gap, so each remaining attempt burns faster than the last.
- *
- * This is deliberately the NARROWEST safe rule, because a repair worktree is the one place
- * a dead fixer's unpushed work can still exist and there is no second copy of it:
- *  - `dirty` — uncommitted work is present. NEVER move it. That work is unrecoverable once
- *    clobbered, and `finalizeFrozenRepairWorktree` is precisely the path that commits it.
- *  - `worktreeHeadIsAncestorOfRepairHead === true` — every commit reachable from the
- *    worktree is ALREADY contained in `repairHead`, so a checkout can lose nothing by
- *    construction. This is the wedge, and the only case that moves.
- *  - `false` — the worktree holds commits `repairHead` does not (a real fixer commit, or a
- *    genuine divergence). Leave it and let finalize adjudicate; that is its job.
- *  - `null` — the ancestry check itself failed (a git error, an unreachable ref). Fails
- *    closed exactly as `shouldConvergeRepairHead` does: no move.
- *
- * Returning the `reason` for a REFUSAL as well as for the move keeps the log at the call
- * site able to say WHICH of those four states it observed. "The worktree was not re-synced"
- * is otherwise indistinguishable across a lossless no-op, protected fixer work, and a
- * broken git — the same conflation, one level up, that made the original defect silent.
- */
-export function shouldResyncRepairWorktree(input: {
-  worktreeHead: string;
-  repairHead: string;
-  dirty: boolean;
-  worktreeHeadIsAncestorOfRepairHead: boolean | null;
-}): {
-  resync: boolean;
-  reason:
-    | "already-current"
-    | "dirty"
-    | "not-behind"
-    | "ancestry-unknown"
-    | "behind";
-} {
-  if (input.worktreeHead === input.repairHead) {
-    return { resync: false, reason: "already-current" };
-  }
-  if (input.dirty) return { resync: false, reason: "dirty" };
-  if (input.worktreeHeadIsAncestorOfRepairHead === null) {
-    return { resync: false, reason: "ancestry-unknown" };
-  }
-  if (!input.worktreeHeadIsAncestorOfRepairHead) {
-    return { resync: false, reason: "not-behind" };
-  }
-  return { resync: true, reason: "behind" };
-}
-
 function nonBlank(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
@@ -918,14 +821,12 @@ export function createFrozenCandidateQueue(input: {
   candidate: string;
   qualificationAttemptId?: string | null;
   base: string | null;
-  worktreePath: string;
   failingTests?: readonly string[];
   affectedTestProofGroup?: string | null;
   nowMs: number;
 }): FrozenCandidateRepairQueue {
   if (!nonBlank(input.candidate)) throw new Error('candidate must be non-empty');
   if (input.base !== null && !nonBlank(input.base)) throw new Error('base must be null or non-empty');
-  if (!nonBlank(input.worktreePath)) throw new Error('worktreePath must be non-empty');
   assertTimestamp(input.nowMs, 'nowMs');
   return {
     schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
@@ -935,7 +836,6 @@ export function createFrozenCandidateQueue(input: {
     base: input.base,
     repairHead: input.candidate,
     affectedTestProofGroup: nonBlank(input.affectedTestProofGroup) ? input.affectedTestProofGroup : null,
-    worktreePath: input.worktreePath,
     attempts: 0,
     openedAtMs: input.nowMs,
     updatedAtMs: input.nowMs,
@@ -973,7 +873,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     row.phase !== 'blocked'
   )
     return null;
-  if (!nonBlank(row.candidate) || !nonBlank(row.repairHead) || !nonBlank(row.worktreePath)) {
+  if (!nonBlank(row.candidate) || !nonBlank(row.repairHead)) {
     return null;
   }
   if (row.qualificationAttemptId != null && !nonBlank(row.qualificationAttemptId)) return null;
@@ -1022,7 +922,6 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     repairHead: row.repairHead,
     // v1/missing/malformed proof state keeps the queue valid but forces full execution.
     affectedTestProofGroup: nonBlank(row.affectedTestProofGroup) ? row.affectedTestProofGroup : null,
-    worktreePath: row.worktreePath,
     attempts: row.attempts as number,
     // P-005 refund bookkeeping is observability-adjacent: malformed values read as absent
     // (0 refunds granted) rather than failing the parse — same rationale as rounds above.
@@ -1148,7 +1047,6 @@ export function decideFrozenCandidateRepairQueue(
         reason: queue.fixerSpawnId ? 'fixer-dead' : 'unassigned',
         nextAttempt: queue.attempts + 1,
         repairHead: queue.repairHead,
-        worktreePath: queue.worktreePath,
         runSuite: false,
         recordVerdict: false,
       };
@@ -1290,10 +1188,10 @@ export function detectFrozenRepairSharedTreeCollision(
       `⚠ FROZEN-REPAIR COLLISION: ${colliding.length} of the frozen candidate's failing path(s) ` +
       `are edited in the SHARED checkout while repair ${queue!.candidate.slice(0, 12)} is in flight ` +
       `at head ${queue!.repairHead.slice(0, 12)} (phase ${queue!.phase}). ` +
-      `The gate promotes this repair ONLY after the exact patch is observed on staging, so a shared-tree ` +
-      `edit that diverges from ${queue!.worktreePath} does not fail loudly — it silently withholds ` +
-      `promotion and reads as "the repair did not work". Author the fix in that worktree; editing the ` +
-      `shared checkout is NOT admission. Colliding: ${shown.join(', ')}` +
+      `The gate judges ONLY the frozen lineage (candidate + admitted fix blobs), so a shared-tree edit ` +
+      `that is never admitted does not fail loudly — it silently withholds promotion and reads as ` +
+      `"the repair did not work". Editing the shared checkout is authoring, NOT admission: land the fix ` +
+      `with release:repair-queue { op: 'admit', paths: [...] }. Colliding: ${shown.join(', ')}` +
       (truncated
         ? ` …and ${colliding.length - shown.length} more (list capped at ${FROZEN_REPAIR_COLLISION_PATH_DISPLAY_CAP})`
         : ''),

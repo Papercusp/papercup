@@ -37,7 +37,6 @@ function row(phase: FrozenCandidateRepairPhase, overrides: Partial<FrozenCandida
     candidate: C,
     base: null,
     repairHead: phase === 'ready-to-test' ? C : R,
-    worktreePath: '/repo/.papercusp/worktrees/green-candidate-11111111',
     attempts: phase === 'ready-to-test' ? 0 : 1,
     openedAtMs: T0,
     updatedAtMs: T0,

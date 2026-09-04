@@ -88,16 +88,6 @@ import {
   type DependencyPrebuildTarget,
 } from "@papercusp/operator-core/lib/release/dependency-generation-prebuild";
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
-import {
-  reapAbandonedCandidateWorktrees,
-  newestDirtyPathMtimeMs,
-  REAPER_DIRTY_STALE_MS,
-} from "@papercusp/operator-core/lib/release/green-candidate-worktree-reaper";
-import {
-  commitRepairWorktreeProgress as commitRepairWorktreeProgressImpl,
-  repairProgressRefName,
-  REPAIR_PROGRESS_REF_PREFIX,
-} from "@papercusp/operator-core/lib/release/repair-worktree-progress";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
 // P-005 / D-008: the hygiene-vs-product classifier. Pure and fail-closed — it decides,
 // it never files and never promotes. Actuation (the condition flip below, and filing the
@@ -131,8 +121,6 @@ import {
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
   buildFrozenRepairStatusIdentity,
-  shouldConvergeRepairHead,
-  shouldResyncRepairWorktree,
   type FrozenCandidateFossilAbandonment,
   type FrozenCandidateRepairQueue,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
@@ -1083,7 +1071,6 @@ export interface CheckpointDeps {
     candidate: string;
     repairHead: string;
     failingTests: readonly string[];
-    worktreePath?: string | null;
     capacityRetryAtMs?: number | null;
     capacitySummary?: string | null;
     heldMs: number;
@@ -1105,27 +1092,6 @@ export interface CheckpointDeps {
    * able to switch this off by accident — only an owner can.
    */
   freezeAndConvergeEnabled?(): Promise<boolean>;
-  prepareFrozenRepairWorktree?(
-    queue: FrozenCandidateRepairQueue,
-  ): Promise<void>;
-  /**
-   * EI-21036544613774607: fast-forward the queue's MOVABLE `repairHead` (never the
-   * immutable `candidate`) to the current staging tip when `repairHead` is still an
-   * ancestor of staging — i.e. before any fixer commit has diverged from it. This is
-   * what stops a repair worktree from branching off a stale frozen sha and re-failing
-   * on a bug staging already fixed (the exact evidence this bug was filed with:
-   * `prepareFrozenRepairWorktree` only ever builds the worktree ONCE per queue, at
-   * whatever `repairHead` was at that moment — see its worktree-exists early return).
-   * Absent, or on any git error, the queue is returned unchanged (fail-closed — worst
-   * case is today's behaviour). Must be called BEFORE `prepareFrozenRepairWorktree` so
-   * a first-time worktree build lands on the converged head.
-   */
-  convergeRepairHeadWithStaging?(
-    queue: FrozenCandidateRepairQueue,
-  ): Promise<FrozenCandidateRepairQueue>;
-  finalizeFrozenRepairWorktree?(
-    queue: FrozenCandidateRepairQueue,
-  ): Promise<string | null>;
   frozenRepairFixerAlive?(spawnId: string): Promise<boolean | null>;
   /**
    * P-005: classify a DEAD fixer for attempt-refund purposes (infrastructure death with
@@ -1166,31 +1132,6 @@ export interface CheckpointDeps {
   reconcileFrozenRepairIntoStaging?(
     queue: FrozenCandidateRepairQueue,
   ): Promise<string | null>;
-  cleanupFrozenRepairWorktree?(
-    queue: FrozenCandidateRepairQueue,
-  ): Promise<void>;
-  /**
-   * P-006 (gate-verdict-liveness-and-repair-reliability-2026-08-31): snapshot any
-   * UNCOMMITTED fixer progress in the repair worktree as a WIP commit pinned to a
-   * survivor ref (`refs/papercusp/repair-progress/*`), so a killed fixer's edits
-   * survive worktree deletion and remain ancestry-visible to converge/resync/finalize.
-   * Called (a) on the dispatch path BEFORE `convergeRepairHeadWithStaging` — a committed
-   * snapshot turns "dirty" into "ahead", so converge correctly HOLDS `repairHead`
-   * instead of moving it past unpushed work — and (b) inside the production
-   * `cleanupFrozenRepairWorktree` immediately before `worktree remove --force`.
-   * MUST be fail-soft: absence or failure leaves exactly today's behaviour.
-   */
-  commitRepairWorktreeProgress?(
-    queue: FrozenCandidateRepairQueue,
-    label: string,
-  ): Promise<void>;
-  /** WI-488635: reclaim candidate worktrees left behind by runs that DIED before reaching
-   *  a `cleanupFrozenRepairWorktree` path (crash, kill, timeout, host restart). Those are
-   *  ~13 GiB each and walk the box past the Cargo pre-spawn admission floor, after which
-   *  every affected-tests run on the host silently drops its Rust coverage. `activePaths`
-   *  are never reaped; the reaper additionally refuses anything younger than its own age
-   *  floor, so an in-flight tree is unreachable even if `activePaths` is incomplete. */
-  reapAbandonedCandidateWorktrees?(activePaths: string[]): Promise<void>;
   log(s: string): void;
   /** WI-4957: THIS run's own identity — independent of `candidate` (the sha it judges).
    *  Two runs can judge the exact same candidate (a re-fire after an infra hiccup, or the
@@ -8872,29 +8813,6 @@ async function runGreenCheckpointInner(
     let fired: FrozenRepairDispatchResult | null = null;
     let dispatchError: unknown = null;
     try {
-      // P-006: snapshot any uncommitted predecessor-fixer progress BEFORE the converge
-      // decision reads ancestry. A committed snapshot turns "dirty" into "ahead": converge
-      // then correctly HOLDS repairHead (instead of moving it past unpushed work, which
-      // stranded the dirty tree on a stale head and burned the next attempt on an
-      // UNREACHABLE finalize), and the fixer dispatched below resumes FROM the progress.
-      // Fail-soft both ways: the production impl never throws, and even a throwing
-      // injected impl must degrade to today's behaviour, never fail the dispatch.
-      try {
-        await deps.commitRepairWorktreeProgress?.(dispatchQueue, "pre-dispatch");
-      } catch (error) {
-        deps.log(
-          `warn: pre-dispatch repair-progress snapshot failed (proceeding): ${error instanceof Error ? error.message : error}`,
-        );
-      }
-      // EI-21036544613774607: converge the MOVABLE repairHead onto current staging
-      // BEFORE the worktree is built, so a first-time worktree build (the common case —
-      // prepareFrozenRepairWorktree is a no-op once the worktree already exists) never
-      // branches off a stale frozen sha that staging has already fixed. Fails closed to
-      // the unchanged queue on any error; never touches the immutable `candidate`.
-      dispatchQueue =
-        (await deps.convergeRepairHeadWithStaging?.(dispatchQueue)) ??
-        dispatchQueue;
-      await deps.prepareFrozenRepairWorktree?.(dispatchQueue);
       await renewalChain;
       if (!reservationLost) {
         fired = (await deps.dispatchFrozenRepairFixer?.(dispatchQueue)) ?? null;
@@ -9080,25 +8998,12 @@ async function runGreenCheckpointInner(
         candidate: canonicalCandidate,
         qualificationAttemptId: queue.qualificationAttemptId ?? null,
         base: lastReady,
-        worktreePath: path.join(
-          cfg.integrationRoot,
-          ".papercusp",
-          "worktrees",
-          `green-candidate-${pipelineName(cfg.integrationRoot)}-${canonicalCandidate.slice(0, 12)}`,
-        ),
         // The isolated repair suite is proof about another SHA. Re-entry must execute the
         // complete canonical gate and therefore cannot inherit that affected-task proof.
         affectedTestProofGroup: null,
         nowMs: Date.now(),
       });
       await deps.writeFrozenRepairQueue!(canonicalQueue);
-      await deps
-        .cleanupFrozenRepairWorktree?.(queue)
-        .catch((error) =>
-          deps.log(
-            `warn: verification-only repair worktree cleanup failed: ${error instanceof Error ? error.message : error}`,
-          ),
-        );
       return {
         ok: true,
         candidate: canonicalCandidate,
@@ -9184,13 +9089,6 @@ async function runGreenCheckpointInner(
       };
       opts.fossilAbandonment = fossilAbandonment;
       await deps.writeFrozenRepairQueue?.(null);
-      await deps
-        .cleanupFrozenRepairWorktree?.(fossilQueue)
-        .catch((e) =>
-          deps.log(
-            `warn: fossil-released repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
-          ),
-        );
       repairQueue = null;
       deps.log(
         `frozen-candidate-fossil: released the stable-candidate pin on ` +
@@ -9259,61 +9157,25 @@ async function runGreenCheckpointInner(
 
     if (decision.kind === "recover-dead-fixer") {
       const deadSpawnId = decision.fixerSpawnId;
-      // WI-1634331: `finalizeFrozenRepairWorktree` returns null for "the fixer ran and
-      // correctly changed nothing", and THROWS for "this worktree can never reach
-      // ready-to-verify" (its non-forward guard). Collapsing the throw into the same null
-      // made those two indistinguishable, so a structurally-unreachable queue burned its
-      // attempts one hourly tick at a time while the log said only "finalize failed" — the
-      // reader had no way to tell a spent attempt from an impossible one. Track the
-      // failure separately so the outcome below can NAME which of the two it observed.
-      let finalizeFailed = false;
-      const finishedHead = await deps
-        .finalizeFrozenRepairWorktree?.(repairQueue)
-        .catch((e) => {
-          finalizeFailed = true;
-          deps.log(
-            `frozen repair finalize failed for ${repairQueue!.repairHead.slice(0, 8)}: ${e instanceof Error ? e.message : e}`,
-          );
-          return null;
-        });
-      if (finalizeFailed) {
-        // Deliberately still burns the attempt: that is what makes the queue TERMINATE
-        // (attempts -> hold-exhausted -> blocked) instead of spinning forever, and this
-        // change is not the place to alter termination. What changes is that the state is
-        // no longer silent or mislabelled.
+      // P-003 / D-010 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): there is
+      // no authoring worktree to finalize. A dispatched fixer authors on the shared staging
+      // checkout and lands its fix through the ONE door — `release:repair-queue { op:'admit',
+      // paths }` (P-001 admitPathsOntoRepairHead) — which advances `repairHead` on the frozen
+      // lineage and flips the row to ready-to-verify BEFORE the fixer exits. So a dead fixer
+      // leaves exactly two observable states: the head it admitted awaits verification, or
+      // nothing was admitted at all.
+      if (frozenRepairHeadAwaitsVerification(repairQueue)) {
+        // The fixer admitted its fix (or a peer admitted one while it ran) and then exited
+        // without the gate ever judging that head. "Fix admitted" is a completion, not a
+        // death — verify the head. A red there appends the convergence round that routes
+        // the NEXT no-op fixer onto the dead path below, so a red head can never re-enter
+        // the suite for free. The attempt stays spent: the fixer did work, and a refund
+        // would need the dead-marker's phase, which ready-to-verify cannot carry.
         deps.log(
-          `frozen repair attempt for ${repairQueue.repairHead.slice(0, 8)} is being spent on an ` +
-            `UNREACHABLE finalize, not on a fixer that made no change — the repair worktree ` +
-            `${repairQueue.worktreePath} cannot produce a descendant of repairHead. Since ` +
-            `WI-1634331 prepareFrozenRepairWorktree re-syncs a clean, strictly-behind worktree ` +
-            `before each dispatch, a queue still reaching here has a worktree holding commits ` +
-            `repairHead does not (or a failing git), which no re-sync may safely discard.`,
-        );
-      }
-      if (finishedHead && finishedHead !== repairQueue.repairHead) {
-        repairQueue = markFrozenRepairFixerFinished(repairQueue, {
-          spawnId: deadSpawnId,
-          repairHead: finishedHead,
-          nowMs: Date.now(),
-        });
-      } else if (
-        !finalizeFailed &&
-        frozenRepairHeadAwaitsVerification(repairQueue)
-      ) {
-        // WI-212675: the fixer was dispatched at a CONVERGED head the suite has never judged
-        // (a peer's fix reached repairHead via `release:repair-queue admit`, not via this
-        // worktree) and correctly changed nothing. "Nothing left to change" is a completion,
-        // not a death — verify the head it was dispatched at. A red there appends the
-        // convergence round that routes the NEXT no-op fixer onto the dead path below, so a
-        // red head can never re-enter the suite for free. The attempt stays spent: the fixer
-        // did inspect the tree, and a refund would need the dead-marker's phase, which
-        // ready-to-verify cannot carry.
-        deps.log(
-          `FROZEN_REPAIR_CONVERGED_HEAD_READY_TO_VERIFY: fixer ${deadSpawnId} changed nothing at ` +
-            `repairHead ${repairQueue.repairHead.slice(0, 8)}, which converged past frozen candidate ` +
-            `${repairQueue.candidate.slice(0, 8)} and has never been verified — reading "no edits" ` +
-            `as "nothing left to fix here" and running the repair verification at that head instead ` +
-            `of spending another dispatch on it.`,
+          `FROZEN_REPAIR_ADMITTED_HEAD_READY_TO_VERIFY: fixer ${deadSpawnId} exited with ` +
+            `repairHead ${repairQueue.repairHead.slice(0, 8)} admitted onto frozen candidate ` +
+            `${repairQueue.candidate.slice(0, 8)} and never verified — running the repair ` +
+            `verification at that head instead of spending another dispatch on it.`,
         );
         repairQueue = markFrozenRepairFixerFinished(repairQueue, {
           spawnId: deadSpawnId,
@@ -9321,13 +9183,12 @@ async function runGreenCheckpointInner(
           nowMs: Date.now(),
         });
       } else {
-        // P-005: a dead fixer that advanced nothing may deserve an attempt REFUND — but
-        // only on evidence (zero tool invocations = infrastructure death), never when the
-        // finalize itself failed (that branch deliberately burns to guarantee termination,
-        // see WI-1634331 above), and never without a classifier (fail-closed).
-        const deathClass = finalizeFailed
-          ? null
-          : await deps.classifyDeadFrozenRepairFixer?.(deadSpawnId).catch(() => null);
+        // P-005: a dead fixer that admitted nothing may deserve an attempt REFUND — but
+        // only on evidence (zero tool invocations = infrastructure death), and never
+        // without a classifier (fail-closed).
+        const deathClass = await deps
+          .classifyDeadFrozenRepairFixer?.(deadSpawnId)
+          .catch(() => null);
         const attemptsBefore = repairQueue.attempts;
         repairQueue = markFrozenRepairFixerDead(repairQueue, {
           spawnId: deadSpawnId,
@@ -9448,13 +9309,6 @@ async function runGreenCheckpointInner(
           const abandonedQueue = repairQueue;
           const testedRepairHead = dispatchInfeasible.candidate;
           await deps.writeFrozenRepairQueue?.(null);
-          await deps
-            .cleanupFrozenRepairWorktree?.(abandonedQueue)
-            .catch((e) =>
-              deps.log(
-                `warn: dispatch-infeasible repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
-              ),
-            );
           repairQueue = null;
           candidate = await revParse(cfg.integrationRoot, testedRepairHead);
           initialCandidateVerification = true;
@@ -9532,7 +9386,6 @@ async function runGreenCheckpointInner(
                 candidate: repairQueue.candidate,
                 repairHead: repairQueue.repairHead,
                 failingTests: repairQueue.failingTests,
-                worktreePath: repairQueue.worktreePath,
                 capacityRetryAtMs: dispatchInfeasible.capacityRetryAtMs,
                 capacitySummary: dispatch.capacityHold.summary,
                 heldMs: dispatchInfeasible.ageMs,
@@ -9936,19 +9789,12 @@ async function runGreenCheckpointInner(
     !diagnosticOnly &&
     !repairQueue &&
     deps.writeFrozenRepairQueue &&
-    deps.prepareFrozenRepairWorktree &&
     deps.dispatchFrozenRepairFixer
   ) {
     repairQueue = createFrozenCandidateQueue({
       candidate,
       qualificationAttemptId: deps.qualificationAttemptId ?? null,
       base: lastReady,
-      worktreePath: path.join(
-        cfg.integrationRoot,
-        ".papercusp",
-        "worktrees",
-        `green-candidate-${pipelineName(cfg.integrationRoot)}-${candidate.slice(0, 12)}`,
-      ),
       affectedTestProofGroup: deps.runId ?? null,
       nowMs: Date.now(),
     });
@@ -9964,27 +9810,6 @@ async function runGreenCheckpointInner(
     `checkpointing candidate ${candidate.slice(0, 8)} (base ${lastReady?.slice(0, 8) ?? "none"})`,
   );
 
-  // WI-488635: sweep worktrees abandoned by earlier runs BEFORE this pass calls setupTree,
-  // so the space is back before the Cargo admission check reads free disk. The candidate is
-  // final here, so both live paths are known. Non-fatal by construction — reclaiming disk
-  // must never be able to fail the gate.
-  await deps
-    .reapAbandonedCandidateWorktrees?.(
-      [
-        repairQueue?.worktreePath,
-        path.join(
-          cfg.integrationRoot,
-          ".papercusp",
-          "worktrees",
-          `green-candidate-${pipelineName(cfg.integrationRoot)}-${candidate.slice(0, 12)}`,
-        ),
-      ].filter((p): p is string => typeof p === "string" && p.length > 0),
-    )
-    .catch((error) =>
-      deps.log(
-        `warn: abandoned candidate-worktree sweep failed: ${error instanceof Error ? error.message : error}`,
-      ),
-    );
   /**
    * WI-7069: the instant the candidate became FINAL.
    *
@@ -10880,7 +10705,6 @@ async function runGreenCheckpointInner(
     if (
       !diagnosticOnly &&
       deps.writeFrozenRepairQueue &&
-      deps.prepareFrozenRepairWorktree &&
       deps.dispatchFrozenRepairFixer
     ) {
       let repairQueueRedPersisted = false;
@@ -10896,10 +10720,10 @@ async function runGreenCheckpointInner(
       ) {
         // WI-2141375: `repairQueue` was read once before this (possibly hour-long) suite
         // started — a peer's `release:repair-queue{op:'admit'}` can advance the
-        // PERSISTED row's repairHead in the meantime without touching phase (convergence
-        // only ever fast-forwards repairHead while it stays an ancestor of staging; see
-        // `shouldConvergeRepairHead`'s doc-comment). Writing the red transition from that
-        // stale in-memory snapshot would silently overwrite the peer's converged
+        // PERSISTED row's repairHead in the meantime (a path-exact admission commits the
+        // fix blobs onto the frozen lineage and moves repairHead to that commit — P-001).
+        // Writing the red transition from that
+        // stale in-memory snapshot would silently overwrite the peer's admitted
         // repairHead back to the candidate, discarding it from the queue row (it still
         // survives on staging tip, but the frozen lineage loses it). Re-read the current
         // row right before the write and prefer it — but ONLY when it is still
@@ -10959,12 +10783,6 @@ async function runGreenCheckpointInner(
             candidate,
             qualificationAttemptId: deps.qualificationAttemptId ?? null,
             base: lastReady,
-            worktreePath: path.join(
-              cfg.integrationRoot,
-              ".papercusp",
-              "worktrees",
-              `green-candidate-${pipelineName(cfg.integrationRoot)}-${candidate.slice(0, 12)}`,
-            ),
             failingTests,
             affectedTestProofGroup: deps.runId ?? null,
             nowMs: Date.now(),
@@ -12252,13 +12070,6 @@ async function runGreenCheckpointInner(
   const adv = repairPromotionAdvance;
   if (repairQueue) {
     await deps.writeFrozenRepairQueue?.(null);
-    await deps
-      .cleanupFrozenRepairWorktree?.(repairQueue)
-      .catch((e) =>
-        deps.log(
-          `warn: promoted repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
-        ),
-      );
   }
   deps.log(
     `✅ ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? "none"} → ${candidate.slice(0, 8)} (green)`,
@@ -15256,38 +15067,6 @@ export function realCheckpointDeps(
   // carries the measured sentence a projection cannot reconstruct) always wins. One
   // checkpoint process is one tick, so a closure variable is the whole lifetime needed.
   let freezeDispositionRecordedThisTick = false;
-  // P-006: shared salvage path — the `commitRepairWorktreeProgress` dep (dispatch path,
-  // pre-converge) and `cleanupFrozenRepairWorktree` (pre-deletion) both route here so the
-  // two sites can never disagree. Fail-soft by contract: any failure is logged, never thrown.
-  const salvageRepairWorktreeProgress = async (
-    queue: FrozenCandidateRepairQueue,
-    label: string,
-  ): Promise<void> => {
-    const result = await commitRepairWorktreeProgressImpl({
-      worktreePath: queue.worktreePath,
-      refName: repairProgressRefName(
-        pipelineName(cfg.integrationRoot),
-        queue.candidate,
-      ),
-      label,
-      deps: {
-        exec: async (cmd, args, o) => {
-          const r = await exec(cmd, args, {
-            timeoutMs: o.timeoutMs,
-            allowNonZero: true,
-          });
-          return { code: r.code, stdout: r.stdout, stderr: r.stderr };
-        },
-        log,
-      },
-      timeoutMs: SETUP_TREE_TIMEOUT_MS,
-    });
-    if (result.outcome === "failed") {
-      log(
-        `warn: repair-progress auto-commit failed (${label}, ${queue.worktreePath}): ${result.detail}`,
-      );
-    }
-  };
   return {
     isolationRun,
     concurrentRun,
@@ -15587,389 +15366,6 @@ export function realCheckpointDeps(
               fired,
             );
           },
-          async convergeRepairHeadWithStaging(
-            queue: FrozenCandidateRepairQueue,
-          ) {
-            // Fail-closed on ANY error here: a broken ancestor check must degrade to
-            // "leave repairHead exactly as it was" (today's behaviour), never to a guess,
-            // and it must never be able to wedge a dispatch that would otherwise have
-            // succeeded — see the CheckpointDeps doc on this hook.
-            let stagingTip: string;
-            let repairHeadIsAncestorOfStaging: boolean | null;
-            try {
-              stagingTip = await revParse(
-                cfg.integrationRoot,
-                cfg.integrationBranch,
-              );
-              repairHeadIsAncestorOfStaging = await isAncestor(
-                cfg.integrationRoot,
-                queue.repairHead,
-                stagingTip,
-              );
-            } catch (error) {
-              log(
-                `frozen repair repairHead-converge check failed — leaving repairHead ` +
-                  `${queue.repairHead.slice(0, 12)} unchanged: ${
-                    error instanceof Error ? error.message : error
-                  }`,
-              );
-              return queue;
-            }
-            const decision = shouldConvergeRepairHead({
-              repairHead: queue.repairHead,
-              stagingTip,
-              repairHeadIsAncestorOfStaging,
-            });
-            if (!decision.converge || !decision.newRepairHead) return queue;
-            const converged: FrozenCandidateRepairQueue = {
-              ...queue,
-              repairHead: decision.newRepairHead,
-            };
-            log(
-              `frozen repair repairHead converged ${queue.repairHead.slice(0, 12)} -> ` +
-                `${decision.newRepairHead.slice(0, 12)} (still an ancestor of staging tip ` +
-                `${cfg.integrationBranch}; no repair-fixer commits have diverged yet)`,
-            );
-            try {
-              const { writeFrozenCandidateRepairQueue } =
-                await import("@papercusp/operator-core/lib/harness/routines/release-actions");
-              await writeFrozenCandidateRepairQueue(repairTarget, converged);
-            } catch (error) {
-              // Non-fatal: the in-memory converged queue still flows into
-              // prepareFrozenRepairWorktree/dispatchFrozenRepairFixer below. Only the
-              // durable persist failed, so a later re-read could observe the pre-converge
-              // value again — logged loudly rather than silently swallowed.
-              log(
-                `frozen repair repairHead-converge persist failed (proceeding with the ` +
-                  `in-memory converged value only): ${
-                    error instanceof Error ? error.message : error
-                  }`,
-              );
-            }
-            return converged;
-          },
-          async commitRepairWorktreeProgress(
-            queue: FrozenCandidateRepairQueue,
-            label: string,
-          ) {
-            // P-006: fail-soft snapshot of uncommitted fixer progress. See the module
-            // header of repair-worktree-progress.ts for the full mechanism and limits.
-            await salvageRepairWorktreeProgress(queue, label);
-          },
-          async prepareFrozenRepairWorktree(queue: FrozenCandidateRepairQueue) {
-            if (existsSync(path.join(queue.worktreePath, ".git"))) {
-              // WI-1634331: the worktree already exists, so the build below is skipped —
-              // but `repairHead` may have been converged FORWARD since it was built, and
-              // nothing else in the system ever moves this tree. Left alone, the fixer
-              // dispatched next works from a stale head, its commit is not a descendant of
-              // `repairHead`, and finalize burns an attempt on an unreachable state.
-              // Re-sync here, and ONLY when `shouldResyncRepairWorktree` proves it lossless.
-              try {
-                const worktreeHead = await revParse(queue.worktreePath, "HEAD");
-                const status = await exec(
-                  "git",
-                  ["-C", queue.worktreePath, "status", "--porcelain=v1"],
-                  { timeoutMs: SETUP_TREE_TIMEOUT_MS },
-                );
-                const dirty = Boolean(status.stdout.trim());
-                // Skip the ancestry probe entirely when dirty: the decision is already
-                // settled by `dirty`, and this saves a git call on the protected path.
-                const worktreeHeadIsAncestorOfRepairHead =
-                  dirty || worktreeHead === queue.repairHead
-                    ? null
-                    : await isAncestor(
-                        queue.worktreePath,
-                        worktreeHead,
-                        queue.repairHead,
-                      );
-                const decision = shouldResyncRepairWorktree({
-                  worktreeHead,
-                  repairHead: queue.repairHead,
-                  dirty,
-                  worktreeHeadIsAncestorOfRepairHead,
-                });
-                if (decision.resync) {
-                  await exec(
-                    "git",
-                    [
-                      "-C",
-                      queue.worktreePath,
-                      "checkout",
-                      "--detach",
-                      queue.repairHead,
-                    ],
-                    { timeoutMs: SETUP_TREE_TIMEOUT_MS },
-                  );
-                  // WI-40231 again: the gitlink can MOVE between the old head and
-                  // `repairHead`, so a checkout alone leaves the submodule working tree at
-                  // the wrong commit (or absent). Same non-fatal, loudly-logged contract as
-                  // the first-build path below — an unfetchable submodule must not wedge
-                  // the freeze, but the reader must be handed the cause, not a TS2307.
-                  const resyncSubmodules = await exec(
-                    "git",
-                    [
-                      "-C",
-                      queue.worktreePath,
-                      "submodule",
-                      "update",
-                      "--init",
-                      "--recursive",
-                    ],
-                    {
-                      timeoutMs: SETUP_TREE_TIMEOUT_MS,
-                      allowNonZero: true,
-                      killProcessGroupOnTimeout: true,
-                      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-                    },
-                  );
-                  if (resyncSubmodules.code !== 0) {
-                    log(
-                      `warn: re-synced frozen repair worktree ${queue.worktreePath} has ` +
-                        `INCOMPLETE submodules (git submodule update --init exited ` +
-                        `${resyncSubmodules.code}) — a relative-path import into a submodule ` +
-                        `will fail TS2307 in that tree regardless of the fix: ` +
-                        `${(resyncSubmodules.stderr || resyncSubmodules.stdout || "").trim().slice(0, 500)}`,
-                    );
-                  }
-                  log(
-                    `frozen repair worktree re-synced ${worktreeHead.slice(0, 12)} -> ` +
-                      `${queue.repairHead.slice(0, 12)} (clean, and every worktree commit was ` +
-                      `already contained in repairHead, so nothing could be lost)`,
-                  );
-                } else if (decision.reason !== "already-current") {
-                  log(
-                    `frozen repair worktree NOT re-synced (${decision.reason}): worktree at ` +
-                      `${worktreeHead.slice(0, 12)}, repairHead ${queue.repairHead.slice(0, 12)} — ` +
-                      `${
-                        decision.reason === "dirty"
-                          ? "uncommitted fixer work is present and must be preserved for finalize"
-                          : decision.reason === "not-behind"
-                            ? "the worktree holds commits repairHead does not; finalize adjudicates"
-                            : "the ancestry check failed, so failing closed"
-                      }`,
-                  );
-                }
-              } catch (error) {
-                // Fail closed to today's behaviour: an unchanged worktree is exactly the
-                // pre-fix state, never worse than it.
-                log(
-                  `frozen repair worktree re-sync check failed — leaving ${queue.worktreePath} ` +
-                    `unchanged: ${error instanceof Error ? error.message : error}`,
-                );
-              }
-              return;
-            }
-            mkdirSync(path.dirname(queue.worktreePath), { recursive: true });
-            await exec(
-              "git",
-              [
-                "-C",
-                cfg.integrationRoot,
-                "worktree",
-                "add",
-                "--detach",
-                queue.worktreePath,
-                queue.repairHead,
-              ],
-              { timeoutMs: SETUP_TREE_TIMEOUT_MS },
-            );
-            // WI-40231: `git worktree add` populates the SUPERPROJECT ONLY — every
-            // submodule lands UNINITIALIZED (`git submodule status` prefixes each with
-            // `-`). This tree is where a release-fixer must REPRODUCE the red, so that is
-            // not cosmetic: operator-core reaches into `libs/papercusp` by RELATIVE path
-            // (packages/operator-core/test/_org-test-db.ts imports
-            // `../../../libs/papercusp/...`), a path node_modules resolution can never
-            // repair, so `lint:tsc` in this worktree fails TS2307 "Cannot find module"
-            // NO MATTER what the fixer edits. The fixer then cannot tell a real red from
-            // its own broken tree.
-            //
-            // Measured: on candidate 3a3e4587 three consecutive fixers were dispatched and
-            // `repairHead` never advanced — none could produce a commit. Every OTHER tree
-            // the gate uses (integration root, checkpoint tree) reports 0 uninitialized
-            // submodules; this worktree was the only one that did not.
-            //
-            // Deliberately NON-FATAL: a submodule that cannot be fetched must not wedge the
-            // freeze — the queue write and fixer dispatch above still have to happen — but
-            // it is logged LOUDLY so the next reader is handed the cause instead of
-            // inferring it from a TS2307. GIT_TERMINAL_PROMPT=0 stops a credential prompt
-            // from hanging the gate for the whole SETUP_TREE_TIMEOUT_MS window.
-            const submodules = await exec(
-              "git",
-              [
-                "-C",
-                queue.worktreePath,
-                "submodule",
-                "update",
-                "--init",
-                "--recursive",
-              ],
-              {
-                timeoutMs: SETUP_TREE_TIMEOUT_MS,
-                allowNonZero: true,
-                killProcessGroupOnTimeout: true,
-                env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-              },
-            );
-            if (submodules.code !== 0) {
-              log(
-                `warn: frozen repair worktree ${queue.worktreePath} has INCOMPLETE submodules ` +
-                  `(git submodule update --init exited ${submodules.code}) — a relative-path ` +
-                  `import into a submodule (e.g. lint:tsc over libs/papercusp) will fail TS2307 ` +
-                  `in that tree regardless of the fix: ${(submodules.stderr || submodules.stdout || "").trim().slice(0, 500)}`,
-              );
-            }
-
-            // EI-21142032293145491: `git worktree add` also leaves the dependency tree empty.
-            // Without a worktree-local node_modules, Node walks up through this nested repair
-            // path into the canonical staging checkout. Workspace symlinks then resolve source
-            // files from staging instead of the frozen candidate, so tsc reports a convincing
-            // mixture of real candidate diagnostics and foreign staging diagnostics (and the
-            // same candidate can produce different results as peers edit staging). Reuse the
-            // existing isolated-checkout dependency copier; `copy` is required here because
-            // the repair tree is committed after the fixer exits and must not share inodes with
-            // a concurrent install in staging. `--prepare-existing` preserves the worktree and
-            // the submodules initialized above while still rebuilding every node_modules tree.
-            const selectedDependencyGeneration =
-              await selectPrewarmedDependencyGeneration(
-                queue.repairHead,
-                queue.worktreePath,
-              );
-            // D-033 / WI-42329 governs THIS site too — the ruling landed on `setupTree`
-            // below and this structurally identical call was missed. The correctness
-            // boundary is the same: the whole-box barrier is required only when the
-            // selector had to PUBLISH a fresh generation this run. A REUSED generation is
-            // immutable and content-addressed, and materialization only copies it into
-            // `queue.worktreePath` — a private, per-queue worktree, so it is parallel-safe
-            // across pots for exactly the reason the checkpoint root is.
-            //
-            // Holding it unconditionally is strictly worse HERE than it was on setupTree:
-            // this path runs only while the gate is ALREADY red, so a host-wide hold
-            // serialized every pot's hourly gate at the moment throughput matters most —
-            // the same shape D-033 measured (3 acquired / 16 starved-after-900s over 40
-            // runs, `main` frozen 6 days).
-            //
-            // `reused` is advisory and degrades to false, so an unparseable selector answer
-            // keeps the conservative exclusive hold.
-            const exclusiveMaterialization =
-              !selectedDependencyGeneration.reused;
-            log(
-              `frozen repair dependency generation ${selectedDependencyGeneration.identity} ` +
-                `reused=${selectedDependencyGeneration.reused} — ` +
-                (exclusiveMaterialization
-                  ? "EXCLUSIVE materialization (fresh publish this run)"
-                  : "shared-slot materialization (D-033: reuse needs no whole-box hold)"),
-            );
-            const dependencies = await exec(
-              "bash",
-              [
-                path.join(toolingRoot(), "scripts/pc-heavy.sh"),
-                ...(exclusiveMaterialization ? ["--exclusive-all-slots"] : []),
-                "--",
-                "bash",
-                path.join(
-                  toolingRoot(),
-                  "apps/operator/bin/release/setup-release-checkout.sh",
-                ),
-                "--ref",
-                queue.repairHead,
-                "--integration",
-                cfg.integrationRoot,
-                "--release",
-                queue.worktreePath,
-                "--node-modules",
-                "force",
-                "--node-modules-copy",
-                "copy",
-                "--node-modules-generation",
-                "required",
-                "--node-modules-generation-id",
-                selectedDependencyGeneration.identity,
-                "--node-modules-generation-token",
-                selectedDependencyGeneration.token,
-                "--prepare-existing",
-              ],
-              {
-                timeoutMs: SETUP_TREE_TIMEOUT_MS,
-                timeoutResetsOnProgress: true,
-                hardTimeoutMs: SETUP_TREE_HARD_TIMEOUT_MS,
-                killProcessGroupOnTimeout: true,
-              },
-            );
-            log(
-              `prepared frozen repair worktree dependencies at ${queue.worktreePath} ` +
-                `(setup-release-checkout.sh exited ${dependencies.code})`,
-            );
-          },
-          async finalizeFrozenRepairWorktree(
-            queue: FrozenCandidateRepairQueue,
-          ) {
-            if (!existsSync(path.join(queue.worktreePath, ".git"))) return null;
-            const dirty = await exec("git", [
-              "-C",
-              queue.worktreePath,
-              "status",
-              "--porcelain=v1",
-            ]);
-            if (dirty.stdout.trim()) {
-              await exec("git", ["-C", queue.worktreePath, "add", "-A"]);
-              await exec("git", [
-                "-C",
-                queue.worktreePath,
-                "-c",
-                "user.name=Papercusp Green Checkpoint",
-                "-c",
-                "user.email=green-checkpoint@papercusp.local",
-                "commit",
-                "-m",
-                `Repair frozen candidate ${queue.candidate.slice(0, 12)}`,
-              ]);
-            }
-            const head = await revParse(queue.worktreePath, "HEAD");
-            if (head === queue.repairHead) return null;
-            if (
-              !(await isAncestor(queue.worktreePath, queue.repairHead, head))
-            ) {
-              // WI-212675: a clean worktree strictly BEHIND repairHead is the normal shape
-              // after `release:repair-queue converge` fast-forwarded repairHead onto the
-              // staging tip without touching the worktree (the tool moves the queue row;
-              // only the gate's own dispatch path re-syncs the tree). Every commit the
-              // worktree holds is already contained in repairHead, so there is nothing to
-              // finalize and nothing that could be lost — that is "changed nothing", not
-              // "moved non-forward". Reading it as non-forward threw here, which burned the
-              // attempt on an "UNREACHABLE finalize" and skipped the ready-to-verify read
-              // in the recover-dead-fixer branch. The throw below still guards a worktree
-              // holding commits repairHead does not.
-              if (await isAncestor(queue.worktreePath, head, queue.repairHead)) {
-                return null;
-              }
-              throw new Error(
-                `repair worktree moved non-forward: ${queue.repairHead.slice(0, 8)} !<= ${head.slice(0, 8)}`,
-              );
-            }
-            return head;
-          },
-          async frozenRepairFixerAlive(spawnId: string) {
-            const { getOrgPg } = await import("@papercusp/db-org");
-            const { releaseFixerSpawnAlive } =
-              await import("@papercusp/operator-core/lib/release/fixer-liveness");
-            return releaseFixerSpawnAlive(getOrgPg().sql, spawnId);
-          },
-          async classifyDeadFrozenRepairFixer(spawnId: string) {
-            const { getOrgPg } = await import("@papercusp/db-org");
-            const { classifyDeadReleaseFixerSpawn } =
-              await import("@papercusp/operator-core/lib/release/fixer-liveness");
-            return classifyDeadReleaseFixerSpawn(getOrgPg().sql, spawnId);
-          },
-          async dispatchFrozenRepairFixer(queue: FrozenCandidateRepairQueue) {
-            const { dispatchReleaseFixer } =
-              await import("@papercusp/operator-core/lib/harness/routines/release-actions");
-            return dispatchReleaseFixer(
-              repairTarget,
-              queue.repairHead,
-              queue.failingTests,
-              queue,
-            );
-          },
           async reconcileFrozenRepairIntoStaging(
             queue: FrozenCandidateRepairQueue,
           ) {
@@ -16020,154 +15416,8 @@ export function realCheckpointDeps(
             ]);
             return joinedSha;
           },
-          async cleanupFrozenRepairWorktree(queue: FrozenCandidateRepairQueue) {
-            if (!existsSync(queue.worktreePath)) return;
-            // P-006: a deletion is the LAST moment any uncommitted fixer progress exists —
-            // salvage-commit it to the survivor ref before `worktree remove --force`.
-            // Fail-soft: salvageRepairWorktreeProgress never throws.
-            await salvageRepairWorktreeProgress(queue, "pre-cleanup");
-            await exec(
-              "git",
-              [
-                "-C",
-                cfg.integrationRoot,
-                "worktree",
-                "remove",
-                "--force",
-                queue.worktreePath,
-              ],
-              { timeoutMs: SETUP_TREE_TIMEOUT_MS },
-            );
-          },
         }
       : {}),
-    // WI-488635: the retention sweep the per-queue cleanup above cannot provide — it only
-    // ever runs on a path a LIVING run reaches, so a run that dies leaks its tree forever.
-    async reapAbandonedCandidateWorktrees(activePaths: string[]) {
-      // WI-954677: the 6h age floor is right in the ordinary case and wrong in the only
-      // case that matters. Candidate trees appear about hourly, so ~6 coexist by design
-      // and each is un-reapable precisely BECAUSE it is recent — meaning this sweep, whose
-      // stated job is to free space before the Cargo admission check below, could never
-      // reclaim anything when space was actually short.
-      //
-      // Reuse the disk-space alarm's OWN low-space predicate rather than minting a second
-      // threshold here: "under pressure" must have exactly one definition in this gate.
-      // Non-fatal by construction — a sampling failure leaves the conservative floor in
-      // force, which is the same behaviour as before this existed.
-      let diskPressure = false;
-      try {
-        const [snapshots, policy] = await Promise.all([
-          sampleCheckpointDisk(),
-          checkpointDiskPolicy(),
-        ]);
-        diskPressure = snapshots.some((snapshot) =>
-          isDiskSnapshotLow(snapshot, policy),
-        );
-      } catch (error) {
-        log(
-          `warn: candidate-worktree sweep could not sample disk pressure, keeping the default floor: ${
-            error instanceof Error ? error.message : error
-          }`,
-        );
-      }
-      await reapAbandonedCandidateWorktrees({
-        integrationRoot: cfg.integrationRoot,
-        pipeline: pipelineName(cfg.integrationRoot),
-        activeWorktreePaths: activePaths,
-        diskPressure,
-        deps: {
-          async gitWorktreeRemove(worktreePath: string) {
-            const removed = await exec(
-              "git",
-              [
-                "-C",
-                cfg.integrationRoot,
-                "worktree",
-                "remove",
-                "--force",
-                worktreePath,
-              ],
-              { timeoutMs: SETUP_TREE_TIMEOUT_MS, allowNonZero: true },
-            );
-            return removed.code === 0
-              ? { ok: true }
-              : {
-                  ok: false,
-                  detail: (removed.stderr || removed.stdout || "")
-                    .trim()
-                    .slice(0, 200),
-                };
-          },
-          async removeDirectory(worktreePath: string) {
-            rmSync(worktreePath, { recursive: true, force: true });
-          },
-          async gitWorktreePrune() {
-            await exec(
-              "git",
-              ["-C", cfg.integrationRoot, "worktree", "prune"],
-              { timeoutMs: SETUP_TREE_TIMEOUT_MS },
-            );
-          },
-          // EI-21714994180505750: re-check at the MOMENT of deletion, not on the scan. A
-          // gate worktree went dirtyTracked 0 -> 14 in four minutes when a repair agent
-          // started editing inside it; the age floor cannot see that, because editing files
-          // deep in a tree never touches the top-level directory mtime.
-          //
-          // P-006 refinement: dirty ≠ live. FRESH dirt (a peer editing now) still preserves
-          // the tree untouched, but STALE dirt is a dead run's stranded work — the exact
-          // state that left 23 uncommitted files sitting in
-          // green-candidate-papercusp-5738f8817eb6 forever (preserved every sweep, ~13 GiB,
-          // edits inert). Admitting a stale-dirty tree is safe because the executor runs
-          // `salvageDirtyTree` (below) immediately before removal, committing the dirt to a
-          // survivor ref first.
-          async confirmStillAbandoned(worktreePath: string) {
-            if (!existsSync(path.join(worktreePath, ".git"))) return true;
-            const status = await exec(
-              "git",
-              ["-C", worktreePath, "status", "--porcelain"],
-              { timeoutMs: SETUP_TREE_TIMEOUT_MS, allowNonZero: true },
-            );
-            // Fail CLOSED: an unreadable tree is one we cannot prove is abandoned.
-            if (status.code !== 0) return false;
-            if (status.stdout.trim().length === 0) return true;
-            const newest = newestDirtyPathMtimeMs(worktreePath, status.stdout);
-            // Null = no dirty path could be statted — not evidence of abandonment.
-            if (newest === null) return false;
-            return Date.now() - newest >= REAPER_DIRTY_STALE_MS;
-          },
-          // P-006: last-chance salvage before the removal that confirmStillAbandoned
-          // admitted — commits stale stranded dirt and pins it to a survivor ref so the
-          // reap frees the disk WITHOUT destroying a dead run's work.
-          async salvageDirtyTree(worktreePath: string) {
-            const base = path
-              .basename(worktreePath)
-              .replace(/[^A-Za-z0-9._-]+/g, "-");
-            const result = await commitRepairWorktreeProgressImpl({
-              worktreePath,
-              refName: `${REPAIR_PROGRESS_REF_PREFIX}${base}`,
-              label: "reaper-salvage",
-              deps: {
-                exec: async (cmd, args, o) => {
-                  const r = await exec(cmd, args, {
-                    timeoutMs: o.timeoutMs,
-                    allowNonZero: true,
-                  });
-                  return { code: r.code, stdout: r.stdout, stderr: r.stderr };
-                },
-                log,
-              },
-              timeoutMs: SETUP_TREE_TIMEOUT_MS,
-            });
-            if (result.outcome === "failed") {
-              log(
-                `warn: reaper dirty-tree salvage failed for ${worktreePath} (reap proceeds): ${result.detail}`,
-              );
-            }
-          },
-          log,
-        },
-      });
-    },
     // WI-38422: the cheap candidate-scoped rejection pass. This intentionally shells
     // the SAME lint:tsc script the post-suite leg runs, with the SAME release-gate env
     // isolation and the SAME 16 GiB sequential-leg heap. The only difference is scope:

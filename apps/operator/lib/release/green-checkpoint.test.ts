@@ -406,7 +406,6 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
       candidate: frozen,
       base: ready,
       repairHead: frozen,
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 1,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -424,7 +423,6 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
     };
     // All three must be wired or the :9087 repair branch is skipped entirely and this
     // test would pass for the wrong reason.
-    deps.prepareFrozenRepairWorktree = async () => {};
     deps.dispatchFrozenRepairFixer = async () => ({
       spawnId: "fixer",
       runId: "run",
@@ -454,7 +452,6 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
       candidate: frozen,
       base: ready,
       repairHead: frozen,
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 0,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -475,7 +472,6 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
     };
-    deps.prepareFrozenRepairWorktree = async () => {};
     deps.dispatchFrozenRepairFixer = async () => ({
       spawnId: "fixer",
       runId: "run",
@@ -504,7 +500,6 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
       candidate: frozen,
       base: ready,
       repairHead: frozen,
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 0,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -524,7 +519,6 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
     };
-    deps.prepareFrozenRepairWorktree = async () => {};
     deps.dispatchFrozenRepairFixer = async () => ({
       spawnId: "fixer",
       runId: "run",
@@ -554,11 +548,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       trace.push(`write:${next?.phase ?? "clear"}`);
       persisted.push(next);
       queue = next;
-    };
-    deps.prepareFrozenRepairWorktree = async () => {
-      throw new Error(
-        "a green initial candidate must not prepare a repair worktree",
-      );
     };
     deps.dispatchFrozenRepairFixer = async () => {
       throw new Error("a green initial candidate must not dispatch a fixer");
@@ -614,7 +603,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       let movingTip: string | null = null;
       let queue: FrozenCandidateRepairQueue | null = null;
       const writes: Array<FrozenCandidateRepairQueue | null> = [];
-      let prepared = false;
       let dispatched = false;
       deps.runGreen = async () => {
         calls.push("runGreen");
@@ -640,12 +628,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       deps.writeFrozenRepairQueue = async (next) => {
         writes.push(next);
         queue = next;
-      };
-      deps.prepareFrozenRepairWorktree = async () => {
-        prepared = true;
-        throw new Error(
-          "automatic first-red path must re-triage before preparing a fixer",
-        );
       };
       deps.dispatchFrozenRepairFixer = async () => {
         dispatched = true;
@@ -673,7 +655,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       expect(calls.indexOf("runTestsAtRef")).toBeGreaterThan(
         calls.indexOf("runGreen"),
       );
-      expect(prepared).toBe(false);
       expect(dispatched).toBe(false);
       expect(queue).toMatchObject({
         phase: "awaiting-fixer",
@@ -717,7 +698,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
     };
-    deps.prepareFrozenRepairWorktree = async () => {};
     deps.dispatchFrozenRepairFixer = async (next) => {
       dispatchedHeads.push(next.repairHead);
       return { spawnId: "fixer-1", runId: "run-1" };
@@ -793,7 +773,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       candidate: frozen,
       base: ready,
       repairHead: frozen,
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 1,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -813,8 +792,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.finalizeFrozenRepairWorktree = async () => null;
-    deps.prepareFrozenRepairWorktree = async () => {};
     deps.dispatchFrozenRepairFixer = async () => ({
       spawnId: "replacement-fixer",
       runId: "replacement-run",
@@ -840,13 +817,14 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(calls).not.toContain("runGreen");
   });
 
-  it("WI-212675: a dead fixer that changed nothing at a CONVERGED, never-verified head moves the queue to ready-to-verify and runs the suite there instead of re-dispatching", async () => {
+  it("WI-212675: a dead fixer that changed nothing at an ADMITTED, never-verified head moves the queue to ready-to-verify and runs the suite there instead of re-dispatching", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
-    // A peer's fix reached the judged lineage via `release:repair-queue converge`: repairHead
-    // moved forward, phase did not. The fixer dispatched at this head finds nothing to change.
-    const converged = await commit("b", "fixed on staging", "peer fix converged");
+    // A peer's fix reached the judged lineage via `release:repair-queue { op:'admit' }`
+    // (P-001): repairHead moved forward, phase did not. The fixer dispatched at this head
+    // finds nothing to change.
+    const converged = await commit("b", "fixed on staging", "peer fix admitted");
     const now = Date.now();
     let queue: FrozenCandidateRepairQueue | null = {
       schemaVersion: 3,
@@ -854,7 +832,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       candidate: frozen,
       base: ready,
       repairHead: converged,
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 1,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -874,8 +851,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.finalizeFrozenRepairWorktree = async () => null;
-    deps.prepareFrozenRepairWorktree = async () => {};
     deps.dispatchFrozenRepairFixer = async () => {
       calls.push("dispatch");
       return { spawnId: "post-verification-fixer", runId: "post-verification-run" };
@@ -883,7 +858,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
 
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
-    // The recover write is a COMPLETION at the converged head, not a death.
+    // The recover write is a COMPLETION at the admitted head, not a death.
     expect(writes[0]).toMatchObject({
       phase: "ready-to-verify",
       repairHead: converged,
@@ -891,7 +866,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       attempts: 1,
     });
     expect(
-      logs.some((l) => l.startsWith("FROZEN_REPAIR_CONVERGED_HEAD_READY_TO_VERIFY")),
+      logs.some((l) => l.startsWith("FROZEN_REPAIR_ADMITTED_HEAD_READY_TO_VERIFY")),
     ).toBe(true);
     // The suite ran at the converged head in the same tick, and any replacement fixer was
     // launched only AFTER that verification went red — never ahead of it (the pre-fix
@@ -919,7 +894,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       candidate: frozen,
       base: ready,
       repairHead: converged,
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 1,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -940,8 +914,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.finalizeFrozenRepairWorktree = async () => null;
-    deps.prepareFrozenRepairWorktree = async () => {};
     deps.dispatchFrozenRepairFixer = async () => ({
       spawnId: "replacement-fixer",
       runId: "replacement-run",
@@ -978,7 +950,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       candidate: frozen,
       base: ready,
       repairHead: frozen,
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 0,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -996,11 +967,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     deps.frozenRepairFixerAlive = async () => {
       throw new Error(
         "liveness must not be queried for an active dispatch reservation",
-      );
-    };
-    deps.prepareFrozenRepairWorktree = async () => {
-      throw new Error(
-        "worktree must not be prepared while another checkpoint owns dispatch",
       );
     };
     deps.dispatchFrozenRepairFixer = async () => {
@@ -1040,9 +1006,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     deps.writeFrozenRepairQueue = async () => {};
     deps.reserveFrozenRepairFixer = async () => null;
     deps.finalizeFrozenRepairFixer = async () => null;
-    deps.prepareFrozenRepairWorktree = async () => {
-      throw new Error("worktree must not be prepared without the reservation");
-    };
     deps.dispatchFrozenRepairFixer = async () => {
       throw new Error("fixer must not launch without the reservation");
     };
@@ -1155,7 +1118,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       await firstReservation;
       return reserved;
     };
-    deps.prepareFrozenRepairWorktree = async () => {};
     deps.dispatchFrozenRepairFixer = async () => {
       dispatchCount += 1;
       return { spawnId: "fixer-1", runId: "run-1" };
@@ -1200,7 +1162,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(queue?.dispatchReservation).toBeUndefined();
   });
 
-  it("renews the frozen-repair reservation throughout slow preparation", async () => {
+  it("renews the frozen-repair reservation throughout a slow dispatch", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "2", "frozen candidate");
@@ -1212,7 +1174,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       base: ready,
       repairHead: frozen,
       affectedTestProofGroup: null,
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 0,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -1245,13 +1206,12 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       return queue;
     };
     deps.frozenRepairReservationHeartbeatMs = 5;
-    deps.prepareFrozenRepairWorktree = async () => {
+    // P-003 / D-010: there is no worktree to prepare any more, so the dispatch itself is
+    // the only slow step the reservation heartbeat has to outlast.
+    deps.dispatchFrozenRepairFixer = async () => {
       await new Promise((resolve) => setTimeout(resolve, 30));
+      return { spawnId: "fixer-slow", runId: "run-slow" };
     };
-    deps.dispatchFrozenRepairFixer = async () => ({
-      spawnId: "fixer-slow",
-      runId: "run-slow",
-    });
     deps.finalizeFrozenRepairFixer = async (current, fired) => {
       const { dispatchReservation: _reservation, ...withoutReservation } =
         current;
@@ -1301,7 +1261,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       base: ready,
       repairHead: repaired,
       affectedTestProofGroup: "initial-proof-run",
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 1,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -1310,7 +1269,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       // nothing is selectively re-runnable and the full gate at the repair head decides.
       failingTests: ["lib/broken.test.ts"],
     };
-    let cleanupCount = 0;
     let verificationExecution: Parameters<CheckpointDeps["runGreen"]>[2];
     const { deps, calls } = stubDeps(true);
     deps.runId = "verifier-run";
@@ -1325,9 +1283,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     };
     deps.frozenRepairFixerAlive = async () => false;
     deps.resolveTip = async () => stagingTip;
-    deps.cleanupFrozenRepairWorktree = async () => {
-      cleanupCount += 1;
-    };
 
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
@@ -1348,7 +1303,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     });
     expect(await revParse(repo, "ready")).toBe(repaired);
     expect(queue).toBeNull();
-    expect(cleanupCount).toBe(1);
   });
 
   it("P-005: every signature entry is re-run AT the repair head — never the tip — and a selective green proceeds to the full gate at that same head", async () => {
@@ -1371,7 +1325,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       base: ready,
       repairHead: repaired,
       affectedTestProofGroup: "initial-proof-run",
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 1,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -1384,7 +1337,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     };
     const { deps, calls } = stubDeps(true);
     const retestedRefs: string[] = [];
-    let cleanupCount = 0;
     deps.readFrozenRepairQueue = async () => queue;
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
@@ -1408,9 +1360,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       expect(gateIds).toEqual(["lint:identity-leak"]);
       return { pass: true, summary: "gate passes at the repair head" };
     };
-    deps.cleanupFrozenRepairWorktree = async () => {
-      cleanupCount += 1;
-    };
 
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
@@ -1427,7 +1376,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(calls).toContain(`setup:${repaired.slice(0, 7)}`);
     expect(calls).not.toContain(`setup:${stagingTip.slice(0, 7)}`);
     expect(queue).toBeNull();
-    expect(cleanupCount).toBe(1);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
     expect(await revParse(repo, "ready")).toBe(repaired);
   });
@@ -1457,7 +1405,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       base: ready,
       repairHead: repaired,
       affectedTestProofGroup: "initial-proof-run",
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 1,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -1472,16 +1419,12 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       ],
     };
     const { deps, calls } = stubDeps(true);
-    let cleanupCount = 0;
     deps.readFrozenRepairQueue = async () => queue;
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
     deps.resolveTip = async () => youngStagingTip;
-    deps.cleanupFrozenRepairWorktree = async () => {
-      cleanupCount += 1;
-    };
 
     const result = await runGreenCheckpoint(cfg(), deps, {
       candidate: transportedQuietCut,
@@ -1500,7 +1443,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(calls).toContain(`setup:${repaired.slice(0, 7)}`);
     expect(calls).not.toContain(`setup:${transportedQuietCut.slice(0, 7)}`);
     expect(queue).toBeNull();
-    expect(cleanupCount).toBe(1);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
     expect(await revParse(repo, "ready")).toBe(repaired);
   });
@@ -1522,7 +1464,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       base: ready,
       repairHead: converged,
       affectedTestProofGroup: "initial-proof-run",
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 1,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -1534,7 +1475,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     };
     const { deps, calls } = stubDeps(true);
     const logs: string[] = [];
-    let cleanupCount = 0;
     deps.log = (line) => logs.push(line);
     deps.readFrozenRepairQueue = async () => queue;
     deps.writeFrozenRepairQueue = async (next) => {
@@ -1542,9 +1482,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     };
     deps.frozenRepairFixerAlive = async () => false;
     deps.resolveTip = async () => stagingTip;
-    deps.cleanupFrozenRepairWorktree = async () => {
-      cleanupCount += 1;
-    };
 
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
@@ -1563,7 +1500,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(calls).not.toContain(`setup:${stagingTip.slice(0, 7)}`);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
     expect(queue).toBeNull();
-    expect(cleanupCount).toBe(1);
     expect(await revParse(repo, "ready")).toBe(converged);
     expect(
       logs.some((l) =>
@@ -1593,7 +1529,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       base: ready,
       repairHead: repaired,
       affectedTestProofGroup: "initial-proof-run",
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 1,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -1607,7 +1542,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     };
     deps.frozenRepairFixerAlive = async () => false;
     deps.resolveTip = async () => stagingTip;
-    deps.cleanupFrozenRepairWorktree = async () => {};
 
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
@@ -1655,7 +1589,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       base: ready,
       repairHead: repaired,
       affectedTestProofGroup: "initial-proof-run",
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 1,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -1665,7 +1598,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const { deps, calls } = stubDeps(true);
     const resolvedTips = [proofTipBefore, proofTipAfter];
     const gateRefs: string[] = [];
-    let cleanupCount = 0;
     deps.readFrozenRepairQueue = async () => queue;
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
@@ -1681,9 +1613,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       gateRefs.push(ref);
       expect(gateIds).toEqual(["lint:tsc"]);
       return { pass: true, summary: "gate passes at the repair head" };
-    };
-    deps.cleanupFrozenRepairWorktree = async () => {
-      cleanupCount += 1;
     };
 
     const result = await runGreenCheckpoint(cfg(), deps, {
@@ -1701,7 +1630,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(gateRefs).toEqual([repaired]);
     expect(calls.slice(0, calls.indexOf("runGreen"))).not.toContain("resolveTip");
     expect(queue).toBeNull();
-    expect(cleanupCount).toBe(1);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
     expect(await revParse(repo, "ready")).toBe(repaired);
     expect(result.candidate).not.toBe(transportedQuietCut);
@@ -1725,7 +1653,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       base: ready,
       repairHead: repaired,
       affectedTestProofGroup: "initial-proof-run",
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 1,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -1799,7 +1726,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       base: ready,
       repairHead: repaired,
       affectedTestProofGroup: "initial-proof-run",
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 1,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -1812,7 +1738,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.cleanupFrozenRepairWorktree = async () => {};
     const pushedCandidates: string[] = [];
     const advancedCandidates: string[] = [];
     deps.push = async (_ref, _base, candidateSha) => {
@@ -1925,7 +1850,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       candidate: frozen,
       base: ready,
       repairHead: repaired,
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 1,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
@@ -1939,7 +1863,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.prepareFrozenRepairWorktree = async () => {};
     deps.dispatchFrozenRepairFixer = async (next) => {
       dispatchedHeads.push(next.repairHead);
       return { spawnId: "fixer-2", runId: "run-2" };
@@ -1966,138 +1889,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(await revParse(repo, "ready")).toBe(ready);
   });
 
-  // EI-21036544613774607 / plan frozen-candidate-compliance-enforcement-2026-08-30 P-001.
-  //
-  // The CheckpointDeps contract for `convergeRepairHeadWithStaging` states it "Must be
-  // called BEFORE `prepareFrozenRepairWorktree` so a first-time worktree build lands on
-  // the converged head." That ordering was asserted only by a prose comment at the call
-  // site, so swapping the two statements left every suite green while reintroducing the
-  // exact bug the item fixed: the worktree branches off the stale frozen sha and the
-  // repair re-fails on bugs staging already fixed.
-  //
-  // This pins the CONSEQUENCE rather than the sequence — it asserts the worktree is built
-  // from the CONVERGED head — so it cannot be satisfied by reordering bookkeeping while
-  // still handing a stale queue to the worktree builder.
-  it("converges the repairHead BEFORE preparing the worktree, so a first build never branches off the stale frozen sha", async () => {
-    const ready = await commit("a", "1", "ready");
-    await git(repo, ["branch", "ready", ready]);
-    const frozen = await commit("b", "2", "frozen candidate");
-    const repaired = await commit("b", "3", "staging already fixed this");
-    const now = Date.now();
-    let queue: FrozenCandidateRepairQueue | null = {
-      schemaVersion: 1,
-      phase: "ready-to-verify",
-      candidate: frozen,
-      base: ready,
-      // Stale: still sitting on the frozen candidate while staging has moved to `repaired`.
-      repairHead: frozen,
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
-      attempts: 1,
-      openedAtMs: now - 1_000,
-      updatedAtMs: now - 500,
-      fixerSpawnId: "fixer-1",
-      failingTests: ["lib/first.test.ts"],
-    };
-    const order: string[] = [];
-    const { deps } = stubDeps(false, ["lib/still-broken.test.ts"]);
-    deps.readFrozenRepairQueue = async () => queue;
-    deps.writeFrozenRepairQueue = async (next) => {
-      queue = next;
-    };
-    deps.frozenRepairFixerAlive = async () => false;
-    deps.convergeRepairHeadWithStaging = async (next) => {
-      order.push("converge");
-      return { ...next, repairHead: repaired };
-    };
-    deps.prepareFrozenRepairWorktree = async (next) => {
-      order.push(`worktree:${next.repairHead}`);
-    };
-    deps.dispatchFrozenRepairFixer = async (next) => {
-      order.push(`dispatch:${next.repairHead}`);
-      return { spawnId: "fixer-2", runId: "run-2" };
-    };
-
-    await runGreenCheckpoint(cfg(), deps, { noPush: true });
-
-    // Order, and — load-bearing — the head each later step actually received.
-    expect(order).toEqual([
-      "converge",
-      `worktree:${repaired}`,
-      `dispatch:${repaired}`,
-    ]);
-    // Explicit negative: the worktree must never be built from the frozen candidate.
-    expect(order).not.toContain(`worktree:${frozen}`);
-    // The immutable candidate is untouched; only repairHead moved.
-    expect(queue).toMatchObject({ candidate: frozen, repairHead: repaired });
-  });
-
-  // P-006 (gate-verdict-liveness-and-repair-reliability-2026-08-31): the progress
-  // snapshot must run BEFORE convergeRepairHeadWithStaging. Converge only moves
-  // repairHead while "no repair-fixer commits have diverged yet"; a killed fixer's
-  // UNCOMMITTED edits are invisible to that ancestry read, so converging first moves
-  // repairHead past unpushed work and strands the dirty tree on a stale head. The
-  // snapshot turns the dirty state into a commit converge can SEE. This pins both the
-  // order and — load-bearing — that the snapshot receives the PRE-converge queue.
-  it("snapshots repair-worktree progress BEFORE converging repairHead, and a throwing snapshot never fails the dispatch", async () => {
-    const ready = await commit("a", "1", "ready");
-    await git(repo, ["branch", "ready", ready]);
-    const frozen = await commit("b", "2", "frozen candidate");
-    const repaired = await commit("b", "3", "staging already fixed this");
-    const now = Date.now();
-    let queue: FrozenCandidateRepairQueue | null = {
-      schemaVersion: 1,
-      phase: "ready-to-verify",
-      candidate: frozen,
-      base: ready,
-      repairHead: frozen,
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
-      attempts: 1,
-      openedAtMs: now - 1_000,
-      updatedAtMs: now - 500,
-      fixerSpawnId: "fixer-1",
-      failingTests: ["lib/first.test.ts"],
-    };
-    const order: string[] = [];
-    const { deps } = stubDeps(false, ["lib/still-broken.test.ts"]);
-    deps.readFrozenRepairQueue = async () => queue;
-    deps.writeFrozenRepairQueue = async (next) => {
-      queue = next;
-    };
-    deps.frozenRepairFixerAlive = async () => false;
-    deps.commitRepairWorktreeProgress = async (next, label) => {
-      order.push(`progress:${next.repairHead}:${label}`);
-      // Fail-soft contract: even a throwing snapshot must not fail the dispatch.
-      throw new Error("index.lock exists");
-    };
-    deps.convergeRepairHeadWithStaging = async (next) => {
-      order.push("converge");
-      return { ...next, repairHead: repaired };
-    };
-    deps.prepareFrozenRepairWorktree = async (next) => {
-      order.push(`worktree:${next.repairHead}`);
-    };
-    deps.dispatchFrozenRepairFixer = async (next) => {
-      order.push(`dispatch:${next.repairHead}`);
-      return { spawnId: "fixer-2", runId: "run-2" };
-    };
-
-    await runGreenCheckpoint(cfg(), deps, { noPush: true });
-
-    // The snapshot sees the PRE-converge queue (repairHead still the frozen sha) and
-    // runs first; the throw is absorbed and every later step still fires in order.
-    expect(order).toEqual([
-      `progress:${frozen}:pre-dispatch`,
-      "converge",
-      `worktree:${repaired}`,
-      `dispatch:${repaired}`,
-    ]);
-    expect(queue).toMatchObject({
-      candidate: frozen,
-      repairHead: repaired,
-      fixerSpawnId: "fixer-2",
-    });
-  });
-
   it("persists automation exhaustion as blocked and never selects a newer staging tip", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
@@ -2111,7 +1902,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       base: ready,
       repairHead: frozen,
       affectedTestProofGroup: "initial-proof-run",
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 3,
       openedAtMs: now - 60_000,
       updatedAtMs: now - 30_000,
@@ -2126,14 +1916,8 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.prepareFrozenRepairWorktree = async () => {
-      throw new Error("an exhausted queue must not prepare a fixer worktree");
-    };
     deps.dispatchFrozenRepairFixer = async () => {
       throw new Error("an exhausted queue must not dispatch another fixer");
-    };
-    deps.cleanupFrozenRepairWorktree = async () => {
-      throw new Error("an exhausted queue must remain durable");
     };
 
     const first = await runGreenCheckpoint(cfg(), deps, { noPush: true });
@@ -2202,7 +1986,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       base: ready,
       repairHead: frozen,
       affectedTestProofGroup: "initial-proof-run",
-      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 3,
       openedAtMs: now - 60_000,
       updatedAtMs: now - 30_000,
@@ -2225,9 +2008,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     // The P-048/P-008 recut hatch used to fire here: record an escape, write:null, clean the
     // worktree, and re-enter the gate at `movingTip`. Every one of those is now a regression.
     const { frozen, movingTip, deps, calls, writes } = await exhaustedPinFixture();
-    deps.cleanupFrozenRepairWorktree = async () => {
-      throw new Error("an exhausted queue must remain durable");
-    };
     const dispositions: Parameters<
       NonNullable<Parameters<typeof runGreenCheckpoint>[1]["recordFreezeDisposition"]>
     >[0][] = [];
@@ -2263,9 +2043,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
 
   it("D-005: the hold auto-escalates exactly once, on the open→blocked transition — a resumed tick re-reads the blocked row silently", async () => {
     const { frozen, deps, calls } = await exhaustedPinFixture();
-    deps.cleanupFrozenRepairWorktree = async () => {
-      throw new Error("an exhausted queue must remain durable");
-    };
 
     await runGreenCheckpoint(cfg(), deps, { noPush: true });
     const escalationsAfterFirst = calls.filter((c) => c === "escalate").length;
@@ -13338,7 +13115,6 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     candidate: frozen,
     base: ready,
     repairHead: frozen,
-    worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
     attempts: 1,
     openedAtMs: Date.now() - 1_000,
     updatedAtMs: Date.now() - 500,
@@ -13364,13 +13140,9 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     );
     const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
     let dispatched = 0;
-    let prepared = 0;
     deps.readFrozenRepairQueue = async () => queue;
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
-    };
-    deps.prepareFrozenRepairWorktree = async () => {
-      prepared += 1;
     };
     deps.dispatchFrozenRepairFixer = async () => {
       dispatched += 1;
@@ -13379,7 +13151,7 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     deps.checkFixerProviderCapacity = capacity;
 
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
-    return { result, dispatched, prepared, queue };
+    return { result, dispatched, queue };
   }
 
   // INSTRUMENT CHECK for the withhold assertions below. If this ever stops dispatching,
@@ -13394,7 +13166,7 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
   });
 
   it("withholds the dispatch when every account is usage-walled, spending no attempt", async () => {
-    const { result, dispatched, prepared, queue } = await runWithCapacity(
+    const { result, dispatched, queue } = await runWithCapacity(
       async () => ({
         ok: false,
         summary: "all 5 codex account(s) are usage-walled",
@@ -13404,7 +13176,6 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
 
     expect(dispatched).toBe(0);
     // Refused BEFORE worktree preparation, so a walled pool costs no setup either.
-    expect(prepared).toBe(0);
     // A walled provider says nothing about the candidate: it must stay inconclusive
     // (green: null) so it cannot inflate the red streak.
     expect(result).toMatchObject({
@@ -13435,17 +13206,10 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
       updatedAtMs: Date.now() - 15 * 60 * 1_000,
     };
     const { deps, calls } = stubDeps(true);
-    const cleaned: string[] = [];
     deps.readFrozenRepairQueue = async () => queue;
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
       calls.push(next === null ? "write:null" : `write:${next.phase}`);
-    };
-    deps.cleanupFrozenRepairWorktree = async (oldQueue) => {
-      cleaned.push(oldQueue.candidate);
-    };
-    deps.prepareFrozenRepairWorktree = async () => {
-      throw new Error("dispatch-infeasible queue must not prepare a fixer worktree");
     };
     deps.dispatchFrozenRepairFixer = async () => {
       throw new Error("dispatch-infeasible queue must not launch a fixer");
@@ -13469,7 +13233,6 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
 
     expect(calls).not.toContain("runGreen");
     expect(calls).not.toContain("write:null");
-    expect(cleaned).toEqual([]);
     expect(queue).toMatchObject({
       phase: "blocked",
       blockedReason: "dispatch-infeasible",
@@ -13521,18 +13284,9 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
       updatedAtMs: Date.now() - 30_000,
     };
     const { deps } = stubDeps(true);
-    const cleaned: string[] = [];
     deps.readFrozenRepairQueue = async () => queue;
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
-    };
-    deps.cleanupFrozenRepairWorktree = async (oldQueue) => {
-      cleaned.push(oldQueue.candidate);
-    };
-    deps.prepareFrozenRepairWorktree = async () => {
-      throw new Error(
-        "dispatch-infeasible-but-not-stalled queue must not prepare a fixer worktree",
-      );
     };
     deps.dispatchFrozenRepairFixer = async () => {
       throw new Error(
@@ -13552,7 +13306,6 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
     // The frozen candidate survives untouched: no worktree cleanup, no queue abandonment.
-    expect(cleaned).toEqual([]);
     // P-003 negative control: this hold resolves inside the 15-minute stall window, so no
     // work-item is minted. Routing ordinary pool churn to the fleet is how a useful alarm
     // becomes noise nobody claims.
@@ -13588,7 +13341,6 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
       updatedAtMs: Date.now() - 15 * 60 * 1_000,
     };
     const { deps } = stubDeps(true);
-    const cleaned: string[] = [];
     const routed: Parameters<
       NonNullable<
         Parameters<typeof runGreenCheckpoint>[1]["routeFrozenRepairToAgents"]
@@ -13597,12 +13349,6 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     deps.readFrozenRepairQueue = async () => queue;
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
-    };
-    deps.cleanupFrozenRepairWorktree = async (oldQueue) => {
-      cleaned.push(oldQueue.candidate);
-    };
-    deps.prepareFrozenRepairWorktree = async () => {
-      throw new Error("a capacity-held queue must not prepare a fixer worktree");
     };
     deps.dispatchFrozenRepairFixer = async () => {
       throw new Error("a capacity-held queue must not launch a fixer");
@@ -13628,7 +13374,6 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
 
     // SURVIVES the run: no worktree cleanup, no abandonment, still pinned to the candidate
     // agents are converging on.
-    expect(cleaned).toEqual([]);
     // P-003: holding is only worth something if the repair reaches somebody. With no fixer
     // dispatchable, agents ARE the repair path, so the hold must route — naming the frozen
     // candidate (not tip) and the failing set to converge onto it.
@@ -13678,18 +13423,9 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
       updatedAtMs: Date.now() - heldTooLongMs,
     };
     const { deps, calls } = stubDeps(true);
-    const cleaned: string[] = [];
     deps.readFrozenRepairQueue = async () => queue;
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
-    };
-    deps.cleanupFrozenRepairWorktree = async (oldQueue) => {
-      cleaned.push(oldQueue.candidate);
-    };
-    deps.prepareFrozenRepairWorktree = async () => {
-      throw new Error(
-        "a hold-expired queue must not prepare a fixer worktree",
-      );
     };
     deps.dispatchFrozenRepairFixer = async () => {
       throw new Error("a hold-expired queue must not launch a fixer");
@@ -13711,7 +13447,6 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
     expect(calls).not.toContain("runGreen");
-    expect(cleaned).toEqual([]);
     expect(queue).toMatchObject({
       phase: "blocked",
       blockedReason: "dispatch-infeasible",

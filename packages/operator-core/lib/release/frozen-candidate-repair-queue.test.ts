@@ -26,8 +26,6 @@ import {
   parseFrozenRepairConvergence,
   projectFrozenRepairConvergenceCell,
   projectFrozenRepairConvergenceScope,
-  shouldConvergeRepairHead,
-  shouldResyncRepairWorktree,
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
 
@@ -35,14 +33,12 @@ const C = '1111111111111111111111111111111111111111';
 const C1 = '2222222222222222222222222222222222222222';
 const C2 = '3333333333333333333333333333333333333333';
 const BASE = '0000000000000000000000000000000000000000';
-const ROOT = '/repo/.papercusp/worktrees/green-candidate-11111111';
 const T0 = 1_800_000_000_000;
 
 function fresh(): FrozenCandidateRepairQueue {
   return createFrozenCandidateRepairQueue({
     candidate: C,
     base: BASE,
-    worktreePath: ROOT,
     failingTests: ['lib/a.test.ts'],
     nowMs: T0,
   });
@@ -58,7 +54,6 @@ describe('frozen-candidate repair queue', () => {
       base: BASE,
       repairHead: C,
       affectedTestProofGroup: null,
-      worktreePath: ROOT,
       attempts: 0,
       fixerSpawnId: null,
       failingTests: ['lib/a.test.ts'],
@@ -68,7 +63,6 @@ describe('frozen-candidate repair queue', () => {
       reason: 'unassigned',
       nextAttempt: 1,
       repairHead: C,
-      worktreePath: ROOT,
       runSuite: false,
       recordVerdict: false,
     });
@@ -254,7 +248,7 @@ describe('frozen-candidate repair queue', () => {
   });
 
   it('WI-2141347: tests a CONVERGED repairHead instead of retiring, when dispatch is infeasible', () => {
-    // repairHead diverged from candidate via convergence (shouldConvergeRepairHead) — still an
+    // repairHead diverged from candidate via an admission (P-001 admitPathsOntoRepairHead) — still an
     // ancestor of staging, already vetted, never unpushed fixer content — while candidate itself
     // stays frozen and the queue is still unassigned/awaiting-fixer (a walled provider).
     const converged: FrozenCandidateRepairQueue = { ...fresh(), repairHead: C1 };
@@ -375,7 +369,6 @@ describe('frozen-candidate repair queue', () => {
       candidate: C,
       qualificationAttemptId: 'qualification-attempt-1',
       base: BASE,
-      worktreePath: ROOT,
       affectedTestProofGroup: 'initial-gate-run',
       nowMs: T0,
     });
@@ -420,7 +413,6 @@ describe('frozen-candidate repair queue', () => {
     const current = createFrozenCandidateRepairQueue({
       candidate: C,
       base: BASE,
-      worktreePath: ROOT,
       affectedTestProofGroup: 'initial-gate-run',
       nowMs: T0,
     });
@@ -926,7 +918,6 @@ describe('frozen-candidate repair queue', () => {
     const readyToTest = createFrozenCandidateQueue({
       candidate: C,
       base: BASE,
-      worktreePath: ROOT,
       nowMs: T0,
     });
     expect(parseFrozenCandidateRepairQueue(readyToTest)).toEqual(readyToTest);
@@ -1100,10 +1091,9 @@ describe('P-009 — shared-tree collision detector (REPORT-ONLY)', () => {
     expect(got.collisionCount).toBe(1);
   });
 
-  it('says so LOUDLY: names the worktree and that a shared-checkout edit is NOT admission', () => {
+  it('says so LOUDLY: names the frozen lineage and that a shared-checkout edit is NOT admission', () => {
     const got = detectFrozenRepairSharedTreeCollision(inFlight(), ['lib/b.test.ts']);
     expect(got.detail).toContain('FROZEN-REPAIR COLLISION');
-    expect(got.detail).toContain(ROOT);
     expect(got.detail).toContain('NOT admission');
     expect(got.detail).toContain('lib/b.test.ts');
   });
@@ -1661,179 +1651,6 @@ describe('P-006 / D-004 — failingNow publishes WHAT it counts, beside itself',
     expect(projectFrozenRepairConvergenceScope(null)).toEqual(
       projectFrozenRepairConvergenceCell(null).scope,
     );
-  });
-});
-
-describe('EI-21036544613774607 — shouldConvergeRepairHead (repairHead converge-to-staging predicate)', () => {
-  it('converges when repairHead is a strict ancestor of a moved staging tip', () => {
-    expect(
-      shouldConvergeRepairHead({
-        repairHead: C,
-        stagingTip: C1,
-        repairHeadIsAncestorOfStaging: true,
-      }),
-    ).toEqual({ converge: true, newRepairHead: C1 });
-  });
-
-  it('does not converge when repairHead already equals the staging tip', () => {
-    // Ancestor-of-self is technically true for `merge-base --is-ancestor`, but converging
-    // to an identical sha would be a no-op write; the predicate short-circuits it.
-    expect(
-      shouldConvergeRepairHead({
-        repairHead: C,
-        stagingTip: C,
-        repairHeadIsAncestorOfStaging: true,
-      }),
-    ).toEqual({ converge: false, newRepairHead: null });
-  });
-
-  it('does NOT converge a diverged repairHead (a fixer commit exists, not an ancestor of staging)', () => {
-    // This is the historical repro's exact shape: repairHead carries a unique repair
-    // commit that never landed on staging, so it must be left completely untouched.
-    expect(
-      shouldConvergeRepairHead({
-        repairHead: C1,
-        stagingTip: C2,
-        repairHeadIsAncestorOfStaging: false,
-      }),
-    ).toEqual({ converge: false, newRepairHead: null });
-  });
-
-  it('fails closed (no converge) when the ancestor check is inconclusive (null)', () => {
-    // null means the git ancestor check itself errored or could not resolve — the
-    // predicate must default to "leave repairHead unchanged", never to a guess.
-    expect(
-      shouldConvergeRepairHead({
-        repairHead: C,
-        stagingTip: C1,
-        repairHeadIsAncestorOfStaging: null,
-      }),
-    ).toEqual({ converge: false, newRepairHead: null });
-  });
-
-  it('never returns a newRepairHead other than the observed staging tip', () => {
-    const result = shouldConvergeRepairHead({
-      repairHead: BASE,
-      stagingTip: C2,
-      repairHeadIsAncestorOfStaging: true,
-    });
-    expect(result.converge).toBe(true);
-    expect(result.newRepairHead).toBe(C2);
-    // Never the immutable `candidate` field, and never any sha not passed in as stagingTip.
-    expect(result.newRepairHead).not.toBe(C);
-  });
-});
-
-describe('WI-1634331 — shouldResyncRepairWorktree (stale repair-worktree predicate)', () => {
-  const OLD = 'a'.repeat(40);
-  const NEW = 'b'.repeat(40);
-
-  it('re-syncs a CLEAN worktree whose head is strictly contained in repairHead', () => {
-    // The wedge: converge advanced repairHead, the worktree stayed where it was built,
-    // and every commit it holds is already reachable from repairHead — so moving it
-    // cannot lose anything.
-    expect(
-      shouldResyncRepairWorktree({
-        worktreeHead: OLD,
-        repairHead: NEW,
-        dirty: false,
-        worktreeHeadIsAncestorOfRepairHead: true,
-      }),
-    ).toEqual({ resync: true, reason: 'behind' });
-  });
-
-  it('NEVER moves a dirty worktree — uncommitted fixer work has no second copy', () => {
-    // finalizeFrozenRepairWorktree is the path that commits this work. A checkout here
-    // would destroy it irrecoverably, so `dirty` outranks being behind.
-    expect(
-      shouldResyncRepairWorktree({
-        worktreeHead: OLD,
-        repairHead: NEW,
-        dirty: true,
-        worktreeHeadIsAncestorOfRepairHead: true,
-      }),
-    ).toEqual({ resync: false, reason: 'dirty' });
-  });
-
-  it('NEVER moves a worktree holding commits repairHead does not have', () => {
-    // A real fixer commit already exists on this worktree; finalize adjudicates it.
-    expect(
-      shouldResyncRepairWorktree({
-        worktreeHead: OLD,
-        repairHead: NEW,
-        dirty: false,
-        worktreeHeadIsAncestorOfRepairHead: false,
-      }),
-    ).toEqual({ resync: false, reason: 'not-behind' });
-  });
-
-  it('FAILS CLOSED when the ancestry check itself was inconclusive', () => {
-    // Same discipline as shouldConvergeRepairHead: a null ancestry verdict is UNKNOWN,
-    // never "safe to move".
-    expect(
-      shouldResyncRepairWorktree({
-        worktreeHead: OLD,
-        repairHead: NEW,
-        dirty: false,
-        worktreeHeadIsAncestorOfRepairHead: null,
-      }),
-    ).toEqual({ resync: false, reason: 'ancestry-unknown' });
-  });
-
-  it('is a no-op when the worktree is already at repairHead', () => {
-    expect(
-      shouldResyncRepairWorktree({
-        worktreeHead: NEW,
-        repairHead: NEW,
-        dirty: false,
-        worktreeHeadIsAncestorOfRepairHead: true,
-      }),
-    ).toEqual({ resync: false, reason: 'already-current' });
-  });
-
-  it('reports already-current even when the tree is dirty at the right head', () => {
-    // Head equality is checked FIRST, so an in-flight fixer working at the correct head
-    // is reported as needing nothing rather than as a protected-dirty refusal.
-    expect(
-      shouldResyncRepairWorktree({
-        worktreeHead: NEW,
-        repairHead: NEW,
-        dirty: true,
-        worktreeHeadIsAncestorOfRepairHead: null,
-      }),
-    ).toEqual({ resync: false, reason: 'already-current' });
-  });
-
-  it('gives every REFUSAL a distinct reason, so a no-op is never confused with a wedge', () => {
-    // The original defect was a conflation (a throw read as "changed nothing"). The
-    // predicate must not reintroduce one: the four non-moving states are distinguishable.
-    const reasons = [
-      shouldResyncRepairWorktree({
-        worktreeHead: NEW,
-        repairHead: NEW,
-        dirty: false,
-        worktreeHeadIsAncestorOfRepairHead: true,
-      }).reason,
-      shouldResyncRepairWorktree({
-        worktreeHead: OLD,
-        repairHead: NEW,
-        dirty: true,
-        worktreeHeadIsAncestorOfRepairHead: true,
-      }).reason,
-      shouldResyncRepairWorktree({
-        worktreeHead: OLD,
-        repairHead: NEW,
-        dirty: false,
-        worktreeHeadIsAncestorOfRepairHead: false,
-      }).reason,
-      shouldResyncRepairWorktree({
-        worktreeHead: OLD,
-        repairHead: NEW,
-        dirty: false,
-        worktreeHeadIsAncestorOfRepairHead: null,
-      }).reason,
-    ];
-    expect(new Set(reasons).size).toBe(4);
   });
 });
 
