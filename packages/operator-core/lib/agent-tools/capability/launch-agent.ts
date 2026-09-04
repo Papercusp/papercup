@@ -363,6 +363,13 @@ export default defineTool({
         .describe(
           'Which agent CLI backs a FRESH launch (default: the psu default). Ignored for resume/fork — a session resumes under the CLI it was recorded on.',
         ),
+      role: z
+        .string()
+        .max(120)
+        .optional()
+        .describe(
+          'psu --role: a registered persona id resolved against the target harness (the valid ids are harness-specific). This is not a lane/job label; put lane direction in the brief or label.',
+        ),
       fleet: z
         .string()
         .max(120)
@@ -1066,7 +1073,10 @@ export default defineTool({
       // additive on a launch path the whole fleet shares. A goal that pins
       // `false` DOES pass `false` through — that is the new capability.
       headless: goalLaunch.effective.headless ?? (args.headless || undefined),
-      role: persistedHeadcountProfile?.config.role,
+      // An explicit flat role is the caller's persona choice and must win over
+      // any persisted fleet profile. This mirrors member > fleet precedence:
+      // a saved role is only a fallback when the caller omitted the field.
+      role: args.role ?? persistedHeadcountProfile?.config.role,
       launchContext: persistedHeadcountProfile?.config.launchContext,
       extraArgs: args.extraArgs ?? undefined,
     };

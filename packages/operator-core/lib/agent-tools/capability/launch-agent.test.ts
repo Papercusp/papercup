@@ -342,6 +342,15 @@ describe('published launch args schema', () => {
     expect(launchAgent.args.safeParse({ brief: 'independent work', independent: true }).success).toBe(true);
   });
 
+  it('accepts a flat top-level persona role for fresh launches', () => {
+    const parsed = launchAgent.args.safeParse({ brief: 'persona-specific work', role: 'reviewer' });
+
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.role).toBe('reviewer');
+    }
+  });
+
   it('does not impose a local agent-count ceiling before governed admission', () => {
     expect(launchAgent.args.safeParse({ brief: 'wide governed fan-out', count: 64 }).success).toBe(true);
     expect(
@@ -456,6 +465,31 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
   it('launches N agents on one brief', async () => {
     await launchAgent.handler({ brief: 'triage the backlog', count: 3 }, ctx);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('wires the flat persona role into a fresh launch command', async () => {
+    await launchAgent.handler({ brief: 'run as reviewer', role: 'reviewer' }, ctx);
+
+    expect(spawnedCommand()).toContain('--role=reviewer');
+  });
+
+  it('lets a per-member role override the flat persona role', async () => {
+    await launchAgent.handler(
+      {
+        brief: 'run the role-specific work',
+        role: 'reviewer',
+        count: 2,
+        members: [{ role: 'architect' }],
+      },
+      ctx,
+    );
+
+    const commands = spawnConsoleMock.mock.calls.map(
+      ([opts]) => (opts as { envelope: { greetingCmd: string } }).envelope.greetingCmd,
+    );
+    expect(commands).toHaveLength(2);
+    expect(commands[0]).toContain('--role=architect');
+    expect(commands[1]).toContain('--role=reviewer');
   });
 
   it('rejects an unknown per-member persona before claiming or opening any terminal', async () => {
