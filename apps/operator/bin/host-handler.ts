@@ -22,6 +22,7 @@
  *                 shell for client routes.
  */
 import { Hono } from 'hono';
+import type { Http2Bindings, HttpBindings } from '@hono/node-server';
 import { app } from './host-app';
 import { apiCors } from './host-cors';
 import { docsRoutes } from './host-docs';
@@ -107,7 +108,7 @@ host.route('/', pageRoutes);
 //    `/api/*` terminates here: an unknown API path returns the inner app's
 //    real (JSON) 404, NOT the SPA shell — so the SPA fallback below never
 //    sees an `/api/*` request.
-host.all('/api/*', (c) => app.fetch(c.req.raw));
+host.all('/api/*', (c) => app.fetch(c.req.raw, c.env));
 
 // 8. SPA fallback (Phase G3) — the built Vite app for everything the API,
 //    docs, page-namespace, and cross-app routes above did not claim.
@@ -122,6 +123,9 @@ if (process.env.PAPERCUSP_SERVE_UI !== '0') {
   host.route('/', spaRoutes);
 }
 
-export async function handler(req: Request): Promise<Response> {
-  return host.fetch(req);
+export async function handler(
+  req: Request,
+  env?: HttpBindings | Http2Bindings,
+): Promise<Response> {
+  return host.fetch(req, env);
 }
