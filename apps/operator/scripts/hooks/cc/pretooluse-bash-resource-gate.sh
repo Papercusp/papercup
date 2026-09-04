@@ -1535,6 +1535,96 @@ def _scannable_quote_stripped():
             _SCANNABLE_CACHE['qs'] = _strip_quotes_and_comments(command)
     return _SCANNABLE_CACHE['qs']
 
+
+def _pgrep_short_flags_have_f(flags_str):
+    # Case-sensitive: -f/--full is full-cmdline match; -F is pidfile (not it).
+    for _g in re.findall(r'-([A-Za-z]+)', flags_str):
+        if 'f' in _g:
+            return True
+    return False
+
+
+# A one-shot full-cmdline query is not an infinite loop, so denying it would be
+# disproportionate. Its answer is still untrustworthy when the pattern is
+# literal and unbracketed: the invoking `bash -c` carries that same text in its
+# argv, which manufactures a plausible PID even when no target exists. This is
+# the quieter half of WI-7134's live failure — three of four owner-id lookups
+# returned the querying shell rather than the fleet member.
+#
+# This runs before the generic pipeline advisories below. `pgrep -f … | head`
+# is the most tempting way to turn the contaminated set into one plausible PID,
+# so the specific self-match diagnosis must win the single advisory slot.
+_PGREP_ONESHOT_ADVISORY = (
+    'bare pgrep -f self-match advisory (WI-7134): this command is proceeding, '
+    'but its result includes your own invoking shell whenever the unbracketed '
+    'pattern appears literally in the command. A plausible PID is therefore '
+    'not proof that the target exists. For a Papercusp-managed agent/task use '
+    '`processes:list { coordOwnerId: "<coord-owner-id>", live: true }`; its '
+    '`confinement` result includes the derived cgroup path, scope unit, source, '
+    'and whether the task is inside the operator cgroup. For a raw host pattern '
+    'use `node scripts/proc-guard.mjs check <pattern>`, which excludes the '
+    "caller and its ancestors. If raw pgrep is essential, bracket the first "
+    "character (`pgrep -f '[l]int-tsc'`) so the pattern cannot match its own "
+    'argv. Advisory only; this command is proceeding as issued.'
+)
+
+
+def _unbracketed_pgrep_full_match(cmd):
+    """Return a bounded one-shot `pgrep -f` invocation, or None.
+
+    `_scannable()` has already dequoted executed shell payloads and placed
+    nested `bash -c` / command-substitution bodies on their own lines. Splitting
+    on shell control operators therefore gives us command-position matching
+    without treating quoted prose as an invocation.
+    """
+    for _segment in re.split(r'(?:&&|\|\||[;&|\n])', cmd):
+        _candidate = _segment.strip()
+        if not _candidate:
+            continue
+        # Shell control words and negation may prefix a real command while
+        # leaving it at command position. Loop forms are denied by the stronger
+        # guard below after this advisory is selected; deny() still wins.
+        while True:
+            _trimmed = re.sub(
+                r'^(?:(?:if|then|elif|do|while|until)\s+|!\s*|command\s+)',
+                '',
+                _candidate,
+                count=1,
+            )
+            if _trimmed == _candidate:
+                break
+            _candidate = _trimmed.lstrip()
+
+        _call = re.match(r'(?:\S*/)?pgrep\b(.*)$', _candidate)
+        if not _call:
+            continue
+
+        _has_full = False
+        _after_double_dash = False
+        _pattern = None
+        for _token in re.findall(r'\S+', _call.group(1)):
+            if not _after_double_dash and _token == '--':
+                _after_double_dash = True
+                continue
+            if not _after_double_dash and _token.startswith('-') and _token != '-':
+                if _token == '--full' or (
+                        not _token.startswith('--')
+                        and _pgrep_short_flags_have_f(_token)):
+                    _has_full = True
+                continue
+            _pattern = _token
+            break
+
+        if _has_full and _pattern and '[' not in _pattern:
+            return _candidate[:160]
+    return None
+
+
+if not ADVISORY:
+    _pgrep_oneshot = _unbracketed_pgrep_full_match(_scannable())
+    if _pgrep_oneshot:
+        ADVISORY = _PGREP_ONESHOT_ADVISORY
+
 # Shared by the background notification guard and the foreground verification
 # guard below. The filter list is intentionally heuristic: every downstream
 # pipeline stage replaces the upstream status, but these are the common output
@@ -2762,8 +2852,9 @@ if _ak_walks and _ak_stops_at_1 and _ak_signals:
 # `bash -c` wrapper's own cmdline still contains the pattern and is not named
 # grep. UNCONDITIONAL for the same reason as the pkill guard: the hazard is
 # the process-table scope of the poll, not any particular tree. Scoped to the
-# loop CONDITION (the unexitable form) — a one-shot `pgrep -f` merely includes
-# itself in the result and still terminates, so it stays allowed.
+# loop CONDITION (the unexitable form). A one-shot `pgrep -f` still terminates,
+# so it remains allowed, but its result is contaminated by the caller's own
+# `bash -c` argv; the advisory immediately below teaches the safe read paths.
 _PGREP_LOOP_DENY = (
     'process-table wait-loop self-match guard (EI-19312699396945642): this '
     'loop can NEVER exit — `{op}` matches the FULL command line, and your own '
@@ -2778,13 +2869,6 @@ _PGREP_LOOP_DENY = (
     "pattern cannot match its own argv: pgrep -f '[l]int-tsc' (same trick as "
     "ps aux | grep '[f]oo')."
 )
-
-def _pgrep_short_flags_have_f(flags_str):
-    # Case-sensitive: -f/--full is full-cmdline match; -F is pidfile (not it).
-    for _g in re.findall(r'-([A-Za-z]+)', flags_str):
-        if 'f' in _g:
-            return True
-    return False
 
 for _lp in re.finditer(
         r'(?:^|[;&\n])\s*(?:until|while)\s+(?:!\s*)?([^;\n]{1,300})',

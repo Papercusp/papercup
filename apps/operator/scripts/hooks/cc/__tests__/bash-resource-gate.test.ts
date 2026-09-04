@@ -1490,7 +1490,9 @@ describe('pkill/killall host-wide dev-process guard (EI-18690252462401774)', () 
  * minutes exactly here (2026-08-02). `ps | grep` loop conditions share the
  * defect, and `grep -v grep` does NOT fix it (the bash -c wrapper still
  * matches). UNCONDITIONAL, same rationale as the pkill guard. Scoped to loop
- * CONDITIONS: one-shot pgrep/ps|grep reads terminate and stay allowed.
+ * CONDITIONS: one-shot pgrep/ps|grep reads terminate and stay allowed. The
+ * separate WI-7134 advisory below warns on an unbracketed one-shot `pgrep -f`
+ * without converting it into a denial.
  */
 function expectSelfMatchDeny(out: { stdout: string; status: number | null }) {
   const reason = denyReason(out);
@@ -1522,13 +1524,51 @@ describe('process-table wait-loop self-match guard (EI-19312699396945642)', () =
     ["bracket idiom ps|grep: grep '[b]uild-step'", "until ! ps aux | grep '[b]uild-step'; do sleep 5; done"],
     ['name-only pgrep (no -f: matches comm, not the argv)', 'until ! pgrep myserver; do sleep 5; done'],
     ['pidfile flag -F is not -f', 'while pgrep -F /run/x.pid worker; do sleep 5; done'],
-    ['one-shot pgrep -f (terminates; merely includes itself)', 'pgrep -f lint-tsc'],
     ['one-shot ps|grep (the routine listing idiom)', 'ps aux | grep "npm install"'],
     ['PID-based wait loop (the recommended remedy)', 'while kill -0 12345; do sleep 5; done'],
     ['tail --pid wait (the other remedy)', 'tail --pid=12345 -f /dev/null'],
     ['non-process-table until loop', 'until curl -s localhost:3070/api/health; do sleep 2; done'],
     ['prose mention, not command position', 'echo "an until pgrep -f loop never exits"'],
   ])('allows %s', (_label, command) => {
+    expectAllow(runGate(bashCmd(command)));
+  });
+});
+
+/**
+ * WI-7134 — a one-shot `pgrep -f <literal>` terminates, but the returned PID
+ * set is still contaminated by the invoking `bash -c`, whose argv contains the
+ * same literal pattern. Keep this SOFT: teach the managed-task and raw-host
+ * alternatives while allowing the caller's diagnostic to run.
+ */
+describe('bare pgrep -f self-match advisory (WI-7134)', () => {
+  function expectPgrepAdvisory(out: { stdout: string; status: number | null }) {
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow');
+    expect(hso.additionalContext).toContain('bare pgrep -f self-match advisory');
+    expect(hso.additionalContext).toContain('processes:list');
+    expect(hso.additionalContext).toContain('coordOwnerId');
+    expect(hso.additionalContext).toContain('scripts/proc-guard.mjs');
+  }
+
+  it.each([
+    ['the reported one-shot shape', 'pgrep -f owner-id-123'],
+    ['bundled short options', 'pgrep -af owner-id-123'],
+    ['long --full option', 'pgrep --full owner-id-123'],
+    ['explicit option terminator', 'pgrep -f -- owner-id-123'],
+    ['path-qualified binary in a pipeline', '/usr/bin/pgrep -qf owner-id-123 | head -1'],
+    ['conditional query', 'if pgrep -f owner-id-123; then echo live; fi'],
+    ['nested shell payload', "bash -c 'pgrep -f owner-id-123'"],
+  ])('advises without denying %s', (_label, command) => {
+    expectPgrepAdvisory(runGate(bashCmd(command)));
+  });
+
+  it.each([
+    ['bracketed full-cmdline pattern', "pgrep -f '[o]wner-id-123'"],
+    ['name-only lookup', 'pgrep owner-id-123'],
+    ['pidfile flag -F', 'pgrep -F /run/worker.pid worker'],
+    ['quoted prose', 'echo "pgrep -f owner-id-123 is unsafe"'],
+  ])('stays silent for %s', (_label, command) => {
     expectAllow(runGate(bashCmd(command)));
   });
 });
