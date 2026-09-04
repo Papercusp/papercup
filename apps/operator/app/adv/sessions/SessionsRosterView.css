@@ -1051,9 +1051,23 @@
   font-weight: 400;
 }
 /* The separator is punctuation between two roles — it should read as neither.
-   Dropping it below both is what stops "id · note" scanning as one string. */
+   Dropping it below both is what stops "id · note" scanning as one string.
+
+   WI-7310: this asked for `--pc-dossier-dim` on the reasonable-sounding premise
+   that "dim" is the dimmest ink. It is not. The pane's ramp is text > dim >
+   mute (`_semantic.black.css`: --fg #f5f5f5, --fg-dim #b8b8b8, --fg-mute
+   #808080), so `dim` is the MIDDLE step and `--pc-dossier-mute` — what
+   `.pc-dossier__note` uses — is the dimmest. The separator was therefore
+   rendering BRIGHTER than the prose it separates: the exact inversion the
+   comment above says to avoid, from a token whose name reads like a rank it
+   does not hold.
+   Fixed structurally rather than by picking a different token: the separator
+   now takes the SAME ink as the note and steps down from it with opacity, so
+   "below the note" is true by construction in every theme instead of resting on
+   an assumption about how two token names happen to be ordered. */
 .pc-dossier__sep {
-  color: var(--pc-dossier-dim);
+  color: var(--pc-dossier-mute);
+  opacity: 0.55;
   /* Not a semantic character; keep it out of the accessibility tree via the
      markup's aria-hidden, and keep it from being selected with the id. */
   user-select: none;
