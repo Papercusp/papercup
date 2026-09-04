@@ -6740,7 +6740,7 @@ export interface SuiteRefusal {
 /**
  * WI-1761602: did this suite output REFUSE to render a verdict rather than fail one?
  *
- * Split out as an exported pure predicate — the same shape as `frozenPinIsFossilized` /
+ * Split out as an exported pure predicate — the same shape as
  * `isJudgingPinnedActiveRepair` — so the risky half is testable without standing up a
  * checkpoint fixture. Pure + total: no match ⇒ `null`, never throws.
  *
@@ -7644,84 +7644,14 @@ export interface CheckpointOpts {
 export { quietCutSecFromEnv };
 
 /**
- * WI-42207: has a PINNED frozen candidate aged past the point where it can still produce a
- * publishable verdict?
- *
- * Split out as a pure predicate because it is the only risky part of the release decision — the
- * surrounding plumbing (write null, clean the worktree, fall through to the fresh tip) is
- * mechanical, while getting THIS wrong in either direction is expensive: release too eagerly and
- * an in-progress repair loses its pin, hold too long and the gate livelocks (`main` frozen 6 days,
- * 44 consecutive reds, 2026-08-26).
- *
- * Returns FALSE for an absent or non-finite commit time on purpose. `commitUnixTime` is
- * `Number(await git(...))`, which yields NaN rather than throwing when git prints anything
- * non-numeric — and `NaN > x` is false, so an unguarded compare would hold the pin forever while
- * looking like a deliberate decision. Holding on unreadable input is the safe direction (the pin
- * survives, a later run re-asks), so the guard makes that explicit rather than incidental.
- */
-/**
- * How long a pinned repair may show NO progress before its pin is released regardless of the
- * queue's own budget. One full suite plus 30m of slack: a queue whose writer died mid-suite must
- * not hold the pin forever, but a queue that is merely SLOW has to survive its own suite — and a
- * single legitimate suite can run for {@link GREEN_CHECKPOINT_SUITE_TIMEOUT_MS}.
- */
-export const FROZEN_REPAIR_STALL_MS =
-  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS + 30 * 60_000;
-
-export function frozenPinIsFossilized(input: {
-  committedAtSec: number | null | undefined;
-  nowMs: number;
-  fossilAgeMs?: number;
-  /** The pinned queue's own progress state. Passed as scalars, not the queue object, so this
-   *  stays a pure predicate testable without a queue fixture. ABSENT ⇒ no queue ⇒ the historical
-   *  unconditional-release behaviour, unchanged. */
-  repairPhase?: FrozenCandidateRepairQueue["phase"] | null;
-  repairBlockedReason?: FrozenCandidateRepairQueue["blockedReason"] | null;
-  repairUpdatedAtMs?: number | null;
-  stallMs?: number;
-}): boolean {
-  const { committedAtSec, nowMs } = input;
-  if (committedAtSec == null || !Number.isFinite(committedAtSec)) return false;
-  const ageMs = Math.max(0, nowMs - committedAtSec * 1_000);
-  if (ageMs <= (input.fossilAgeMs ?? CANDIDATE_FOSSIL_AGE_MS)) return false;
-
-  // Plan D-004 (frozen-candidate-outlives-its-repair-2026-08-27): past the age threshold, release
-  // the pin ONLY when the repair is not actually progressing.
-  //
-  // Why this guard exists at all — measured 2026-08-27, by CALL-SITE ORDER, not by reading the
-  // constants: this predicate fires ~80 lines BEFORE `decideFrozenCandidateRepairQueue`, and the
-  // caller sets `repairQueue = null` in between. So for any repair that lives past
-  // CANDIDATE_FOSSIL_AGE_MS (2h), the queue's OWN budget —
-  // DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS { maxAttempts: 3, maxAgeMs: 4h } — was UNREACHABLE CODE:
-  // `maxAgeMs` could never fire and `blockedReason: 'wall-clock-exhausted'` was dead in
-  // production. Every frozen candidate died to this 2h wall clock, none to a verdict
-  // (96061f5e@122m, bd653329@147m, bd653329@366m), and one suite alone can consume 115m of the
-  // 2h. Deferring here is what makes the designed 4h/3-attempt budget reachable.
-  //
-  // The release paths kept, in order — each restores the historical behaviour for a case where
-  // there is no progress to protect:
-  //   1. no queue at all            → unchanged, unconditional release;
-  //   2. the queue's own budget is spent (phase 'blocked' / any blockedReason) → release;
-  //   3. the queue is wedged (no `updatedAtMs` movement within FROZEN_REPAIR_STALL_MS) → release,
-  //      which covers a writer that died without ever marking itself blocked;
-  //   4. malformed/missing progress data → release, because inventing an indefinite hold from
-  //      absent data is worse than the behaviour this replaced.
-  // Only a demonstrably PROGRESSING repair now holds its pin, and only until its own budget ends.
-  if (input.repairPhase == null) return true;
-  if (input.repairPhase === "blocked" || input.repairBlockedReason != null) {
-    return true;
-  }
-  const updatedAtMs = input.repairUpdatedAtMs;
-  if (updatedAtMs == null || !Number.isFinite(updatedAtMs)) return true;
-  return nowMs - updatedAtMs > (input.stallMs ?? FROZEN_REPAIR_STALL_MS);
-}
-
-/**
  * Plan D-004: is the verdict we are about to publish about a candidate that an ACTIVE repair
  * deliberately pinned?
  *
- * Split out as a pure predicate for the same reason {@link frozenPinIsFossilized} is: it is the
- * risky half of the fossil verdict-withholding decision, and the surrounding code is mechanical.
+ * Split out as a pure predicate because it is the risky half of the fossil verdict-withholding
+ * decision (gate-verdict-freshness rule 5), and the surrounding code is mechanical. Note there is
+ * deliberately NO companion "release the pin once it is old" predicate any more
+ * (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03 P-009/P-010): a pinned lineage is
+ * held until it is promoted or an operator retires it, however old it gets.
  *
  * The withholding rule exists to stop a fossil red dispatching agents against code the gate never
  * judged as current. That reasoning INVERTS for a pinned repair: the queue chose that exact
@@ -7854,7 +7784,6 @@ async function tryLongestGreenPrefix(
   noPush: boolean,
   logPartialGreenGate: (line: string) => void,
   budget: SalvageBudget,
-  fossilAbandonment?: FrozenCandidateFossilAbandonment,
 ): Promise<CheckpointResult | null> {
   if (!deps.commitsInRange || !deps.affectedWorkspacesForRange) return null; // not wired (e.g. a minimal stub)
   if (!failingTests?.length) return null; // no signature → can't localize → don't guess
@@ -8247,7 +8176,6 @@ async function tryLongestGreenPrefix(
       redTip: candidate,
       pipeline,
       runId: deps.runId ?? null,
-      ...(fossilAbandonment ? { fossilAbandonment } : {}),
     };
     const cancelSiblingKeysFor = [
       "green-checkpoint:red",
@@ -8291,7 +8219,6 @@ async function tryLongestGreenPrefix(
     reason: "advanced-prefix",
     summary: confirm.summary,
     failingTests,
-    ...(fossilAbandonment ? { fossilAbandonment } : {}),
     ...(deps.runId ? { runId: deps.runId } : {}),
   };
 }
@@ -10664,7 +10591,6 @@ async function runGreenCheckpointInner(
       ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
       ...(deps.runId ? { runId: deps.runId } : {}),
       ...(logPath ? { logPath } : {}),
-      ...(fossilAbandonment ? { fossilAbandonment } : {}),
     })
     .catch((e) =>
       deps.log(
@@ -10956,7 +10882,6 @@ async function runGreenCheckpointInner(
               ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
               ...(checkpointEvidence ? { checkpointEvidence } : {}),
               ...(typecheckPreflight ? { typecheckPreflight } : {}),
-              ...(fossilAbandonment ? { fossilAbandonment } : {}),
               ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
             };
             await emitTerminalRed(terminalResult);
@@ -11273,7 +11198,6 @@ async function runGreenCheckpointInner(
         // coord:orient, a release-fixer) can read commitsBehind / changed-in-range
         // as FIELDS instead of re-parsing the prose line above.
         lineage: lineage ?? null,
-        ...(fossilAbandonment ? { fossilAbandonment } : {}),
       };
       // EI-12457: this candidate resolved red — a subscriber's still-pending green
       // await for this pipeline can now never legitimately fire.
@@ -11760,7 +11684,6 @@ async function runGreenCheckpointInner(
           deadlineMs: salvageDeadlineMs,
           initialConfirmEstimateMs: salvageCostEstimateMs,
         },
-        fossilAbandonment,
       ).catch((e) => {
         salvageErrored = true;
         logPartialGreenGate(
@@ -12238,7 +12161,6 @@ async function runGreenCheckpointInner(
       pipeline,
       candidateSource,
       runId: deps.runId ?? null,
-      ...(fossilAbandonment ? { fossilAbandonment } : {}),
     };
     // EI-12457: this candidate resolved green — a subscriber's still-pending red
     // await for this pipeline can now never legitimately fire.
@@ -12447,9 +12369,6 @@ export async function runGreenCheckpoint(
       : {}),
     candidateSource,
     ...(diagnostic ? { diagnostic } : {}),
-    ...(innerOpts.fossilAbandonment
-      ? { fossilAbandonment: innerOpts.fossilAbandonment }
-      : {}),
   };
   // P-008: leave exactly ONE freeze disposition describing THIS tick, from the one place
   // every return site and every caller already funnels through. `converging` and `none` are

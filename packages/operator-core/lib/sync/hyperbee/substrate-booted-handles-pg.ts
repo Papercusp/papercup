@@ -120,6 +120,21 @@ export interface PgBootedHarnessIdentity {
   advertisedAt: number;
 }
 
+/**
+ * The last device the substrate owner advertised for one pot, IGNORING
+ * freshness — see `getPgLastKnownHarnessAnnounceDevice` for why the stale case
+ * has to stay distinguishable from the never-advertised one.
+ *
+ * `stale` is reported rather than acted on: it is the caller's business whether
+ * an aged claim about WHICH device serves a pot is still good enough to refuse
+ * on. It is not good enough to SIGN on, which is why no identity is returned.
+ */
+export interface PgLastKnownHarnessAnnounceDevice {
+  devicePubkeyBase64: string;
+  advertisedAt: number;
+  stale: boolean;
+}
+
 export interface BootedHandlesPgPublisherHandle {
   stop(): void;
 }
@@ -320,4 +335,65 @@ export async function getPgBootedHarnessAnnounceIdentity(
       ? identity
       : null;
   return { booted: true, identity: usable, advertisedAt: row.sentAt };
+}
+
+/**
+ * The device the substrate owner LAST advertised as serving one pot, read
+ * WITHOUT the freshness bound.
+ *
+ * WHY THIS EXISTS (WI-2142873 follow-on, measured 2026-09-04): the freshness
+ * bound collapses two different facts into one `null`, and the difference
+ * between them is the whole answer.
+ *
+ *   - There has never been an advertisement (no row, or no entry for this pot).
+ *     Nothing is known to serve it; a gh-login fallback is the honest best
+ *     effort, and that is the single-account box this module must not silence.
+ *   - There IS an advertisement naming a device, it has simply gone stale.
+ *     Staleness means "that device may no longer be up". It does NOT mean the
+ *     gh-login device took over, so it is not permission to sign as one we have
+ *     positive evidence is the wrong device.
+ *
+ * `getPgBootedHarnessAnnounceIdentity` returns `null` for both, so the caller
+ * cannot tell them apart and takes the fallback in both. On this box the two
+ * collide on every restart of the process that is BOTH substrate owner and
+ * git-sync host: the previous owner's row ages past
+ * DEFAULT_PG_SNAPSHOT_MAX_AGE_MS (30s) while the new one has not yet booted the
+ * harness, so a leg firing in that window signed as the gh-login device and
+ * minted one announcement no peer can dial — re-arming every peer's convergence
+ * bar once per restart, faster than the announcement window can age it out.
+ *
+ * Returns `null` when nothing was ever advertised for this pot; otherwise the
+ * device plus how old that claim is, so a caller can refuse instead of
+ * mis-signing. Never throws: an unreadable row is reported as `null`, which
+ * preserves the historical fallback rather than converting a PG hiccup into a
+ * refusal.
+ */
+export async function getPgLastKnownHarnessAnnounceDevice(
+  workspaceId: string,
+  harnessSlug: string,
+  opts?: { maxAgeMs?: number; now?: () => number },
+): Promise<PgLastKnownHarnessAnnounceDevice | null> {
+  let row: PgBootedHandlesPayload | null;
+  try {
+    row = await readOperatorState<PgBootedHandlesPayload>(
+      'substrate_booted_handles_status',
+      undefined,
+      { fresh: true },
+    );
+  } catch {
+    return null;
+  }
+  if (!row || !Array.isArray(row.handles) || typeof row.sentAt !== 'number') return null;
+  const match = row.handles.find(
+    (handle) => handle?.workspaceId === workspaceId && handle?.harnessSlug === harnessSlug,
+  );
+  const devicePubkeyBase64 = match?.announceIdentity?.devicePubkeyBase64;
+  if (typeof devicePubkeyBase64 !== 'string' || !devicePubkeyBase64) return null;
+  const maxAgeMs = opts?.maxAgeMs ?? DEFAULT_PG_SNAPSHOT_MAX_AGE_MS;
+  const now = opts?.now ?? (() => Date.now());
+  return {
+    devicePubkeyBase64,
+    advertisedAt: row.sentAt,
+    stale: now() - row.sentAt > maxAgeMs,
+  };
 }

@@ -31,13 +31,19 @@
  *
  * Exit codes: 0 ok (or dry run) · 1 refused (a guard fired) · 2 misuse.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   docPartHasChanges,
   validateDocPart,
   type DocPartKind,
   type SetDocPartInput,
 } from "../packages/operator-core/lib/harness/docs/doc-record";
+// identities-v1 P-022: the addressing vocabulary — registered slot ids and the built-in
+// blueprint tier — so a `--stack-scope` token that nothing can ever wear is refused at
+// the write seat rather than sitting unreachable forever.
+import { SLOT_IDS, SU_STATIC_LAYERS } from "@papercusp/orchestrator/blueprint";
+import { harnessRoot } from "@papercusp/harness/paths";
 import {
   applyEditInMemory,
   evictionDelta,

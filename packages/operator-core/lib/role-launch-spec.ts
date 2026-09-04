@@ -800,6 +800,43 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   const { modelWindowForSpec } = await import('./agent-config-constants');
   const personaTier: 'full' | 'fleet' =
     input.personaTier ?? (input.model && modelWindowForSpec(input.model) <= 200_000 ? 'fleet' : 'full');
+  // identities-v1 P-022: the Project guide is selected by the WEARER'S STACK, not by
+  // harness alone. The wearer is the same binding the first render composes from —
+  // the su static layers (domain / stance / practice) + the session binding (fleet
+  // posture, mode axes) — expanded to addressing tokens; the composer reads the
+  // `harness_doc_parts` rows addressed to any of them and splices them after the
+  // default guide through `projectGuideAtBudget`. No addressed rows ⇒ the default guide,
+  // byte-identical. A guide-less profile (generic; power with no repo guide) never
+  // composes — renderSuPlaybook only calls the seam when a guide resolved. The rows are
+  // read from the doc the default guide was projected from: the ENGINEER profile splices
+  // papercusp's own CLAUDE.md, so its parts live under the projector's harness
+  // (PAPERCUSP_HARNESS_SLUG, default 'papercusp'); the POWER profile's guide is the
+  // managed repo's, so its parts live under that harness.
+  const composeProjectGuide = await (async () => {
+    if (launchProfile === 'generic') return undefined;
+    const guideHarness =
+      launchProfile === 'engineer' ? (process.env.PAPERCUSP_HARNESS_SLUG ?? 'papercusp') : harnessSlug;
+    if (!guideHarness) return undefined;
+    try {
+      const { SU_STATIC_LAYERS, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
+      const { projectGuideComposerForWearer } = await import('./doc-projection/addressed-project-guide');
+      const binding = suSessionBinding({ fleetRole: input.fleetRole ?? null, modes: input.modes ?? null });
+      return projectGuideComposerForWearer({
+        wearer: { role: 'su', layers: [...SU_STATIC_LAYERS, ...binding.layers] },
+        workspaceId: input.workspaceId,
+        harnessSlug: guideHarness,
+        client: input.agent,
+        onError: (err) => {
+          console.warn(
+            `[role-launch-spec] addressed project-guide read failed — splicing the default guide: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        },
+      });
+    } catch (e) {
+      console.warn(`[role-launch-spec] project-guide addressing unavailable — default guide: ${e instanceof Error ? e.message : String(e)}`);
+      return undefined;
+    }
+  })();
   const rendered = await renderSuPlaybook({
     agent: input.agent,
     profile: input.profile,
@@ -809,7 +846,15 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     baseSource: suBaseSource,
     baseText: suBaseText,
     overlayDir: suOverlayDir,
+    composeProjectGuide,
   });
+  if (rendered.projectGuideAddressed) {
+    const a = rendered.projectGuideAddressed;
+    console.log(
+      `[role-launch-spec] project guide addressed: ${a.partKeys.length} part(s) (+${a.addedChars} chars) for ` +
+        `${a.tokens.join(', ')}: ${a.partKeys.join(', ')}`,
+    );
+  }
   // domain-generic-agent-personas-2026-06-17 P-008 (su-path hive-instance override): when the
   // su persona came from the blueprint (flag-on), append the launch hive's INSTANCE override for
   // su — its project-specifics (e.g. the Papercusp hive's Tauri/:3070/endpoint-system content),

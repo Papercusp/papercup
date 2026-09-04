@@ -22,6 +22,7 @@ import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { resolveWorkspaceForHarness } from '../workspace-for-harness';
 import { deriveFrontmatterIndex, sha256 } from './authored-doc-projection';
 import type { SubjectRef } from './subject-ref';
+import { guideAddressProblems, type GuideAddressVocabulary } from '../../doc-projection/guide-address';
 
 export type DocSource = 'generated' | 'manual' | 'augmented';
 export type DocStatus = 'fresh' | 'stale' | 'review' | 'untracked' | 'unknown';
@@ -63,6 +64,8 @@ export interface SetDocPartInput {
   projectRank?: number;
   targetSection?: string | null;
   rationalePartKey?: string | null;
+  /** P-022 addressing tokens (`blueprint:<id>` / `slot:<slot>` / `role:<role>`); empty = unaddressed. */
+  stackScope?: string[];
 }
 
 export interface DocPartValidationInput {
@@ -71,6 +74,14 @@ export interface DocPartValidationInput {
   clientScope: readonly string[];
   targetSection: string | null;
   rationalePartKey: string | null;
+  /**
+   * P-022: the part's addressing declaration. Optional so every pre-P-022 caller
+   * validates exactly as before; when present it is checked against migration 1104's
+   * two CHECKs (addressed ⇒ projects; token shape) plus the supplied vocabulary.
+   */
+  stackScope?: readonly string[];
+  /** Vocabulary for the token check — registered slot ids, blueprint existence. */
+  stackVocabulary?: GuideAddressVocabulary;
 }
 
 /** The body and persisted columns that make up a doc-part's effective value. */
@@ -82,6 +93,8 @@ export interface DocPartComparable {
   projectRank: number;
   targetSection: string | null;
   rationalePartKey: string | null;
+  /** P-022 addressing tokens; omitted on both sides compares as unaddressed. */
+  stackScope?: readonly string[];
 }
 
 /**
@@ -93,6 +106,8 @@ export interface DocPartComparable {
  * tests share the same comparison semantics.
  */
 export function docPartHasChanges(before: DocPartComparable, after: DocPartComparable): boolean {
+  const beforeStack = before.stackScope ?? [];
+  const afterStack = after.stackScope ?? [];
   return (
     before.body !== after.body ||
     before.kind !== after.kind ||
@@ -101,7 +116,9 @@ export function docPartHasChanges(before: DocPartComparable, after: DocPartCompa
     before.targetSection !== after.targetSection ||
     before.rationalePartKey !== after.rationalePartKey ||
     before.clientScope.length !== after.clientScope.length ||
-    before.clientScope.some((scope, index) => scope !== after.clientScope[index])
+    before.clientScope.some((scope, index) => scope !== after.clientScope[index]) ||
+    beforeStack.length !== afterStack.length ||
+    beforeStack.some((token, index) => token !== afterStack[index])
   );
 }
 
@@ -122,6 +139,16 @@ export function validateDocPart(input: DocPartValidationInput): string | null {
   }
   if (input.kind === 'prose' && input.clientScope.length > 0) {
     return `${input.partKey}: prose parts cannot project to a client`;
+  }
+  // P-022 (migration 1104): an addressed part must project somewhere, and every token
+  // must be an address the launch seat can ever match.
+  const stackScope = input.stackScope ?? [];
+  if (stackScope.length > 0 && input.clientScope.length === 0) {
+    return `${input.partKey}: an addressed part (stack_scope set) must also project to a client (client_scope empty)`;
+  }
+  const addressProblems = guideAddressProblems(stackScope, input.stackVocabulary);
+  if (addressProblems.length > 0) {
+    return `${input.partKey}: stack_scope ${addressProblems.join('; ')}`;
   }
   return null;
 }

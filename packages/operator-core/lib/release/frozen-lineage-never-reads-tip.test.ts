@@ -118,7 +118,11 @@ describe('a queue row in any phase never lets the gate judge the tip (P-013(b))'
  */
 // lib/release → lib → operator-core → packages → <repo root>
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
-const GATE_SOURCE = readFileSync(join(REPO_ROOT, 'apps/operator/lib/release/green-checkpoint.ts'), 'utf8');
+// Overridable so a falsifiability probe (scripts/mutation-probe.sh, copy-out / historical mode)
+// can point this guard at a snapshot without mutating the shared tree.
+const GATE_SOURCE_PATH =
+  process.env.FROZEN_LINEAGE_GATE_SOURCE ?? join(REPO_ROOT, 'apps/operator/lib/release/green-checkpoint.ts');
+const GATE_SOURCE = readFileSync(GATE_SOURCE_PATH, 'utf8');
 
 describe('the ready-to-verify path verifies the repair head at its own sha, never the tip (P-005)', () => {
   it('the tip-proving predecessor is neither declared nor called', () => {
@@ -168,5 +172,60 @@ describe('the ready-to-verify path verifies the repair head at its own sha, neve
     }
     expect(body).toContain('const head = queue.repairHead;');
     expect(body).not.toMatch(/resolveTip|integrationBranch/);
+  });
+});
+
+/**
+ * P-009 / P-010 (D-004): NOTHING un-freezes a lineage but promotion or an explicit operator
+ * retire — in particular no AGE, STALL or "fossil" clock. Written as a falsifier against the
+ * tree of 2026-09-04 06:25Z, where the WI-42207 block in green-checkpoint.ts released the
+ * 97c0b102 pin (549m old, `updatedAtMs` unmoved for one suite + 30m) and judged tip 7910b78c —
+ * every assertion below is red on that source (`frozenPinIsFossilized` declared, the
+ * `frozen-candidate-fossil:` log line present, a third `writeFrozenRepairQueue(null)` site with
+ * no promotion marker near it).
+ *
+ * The queue-null writes that REMAIN are enumerated by the marker that must sit within the
+ * preceding window, so adding a fourth clearing path anywhere in the gate fails here unless it
+ * is one of the two sanctioned shapes.
+ */
+describe('no age, stall or fossil clock ever clears a queue row (P-009/P-010)', () => {
+  it('the fossil release predicate, its stall window and its evidence type are gone', () => {
+    for (const forbidden of [
+      'frozenPinIsFossilized',
+      'FROZEN_REPAIR_STALL_MS',
+      'frozen-candidate-fossil',
+      'fossilAbandonment',
+      'FrozenCandidateFossilAbandonment',
+    ]) {
+      expect(GATE_SOURCE.includes(forbidden), `${forbidden} is back in the gate`).toBe(false);
+    }
+  });
+
+  it('every queue-clearing write sits on a sanctioned path: promotion, or the WI-2141347 converged-head retest', () => {
+    const sites = [...GATE_SOURCE.matchAll(/writeFrozenRepairQueue!?\??\.?\(\s*null\s*\)/g)];
+    // Exactly the two sanctioned shapes. A new one must be argued into this list, not added.
+    expect(sites.length, 'a new writeFrozenRepairQueue(null) site appeared').toBe(2);
+    const SANCTIONED = [
+      // The lineage's own repairHead has converged past the frozen candidate: its bookkeeping row
+      // is dropped but the CONVERGED repairHead (a sha on the lineage) is what gets tested next.
+      /WI-2141347/,
+      // `main` was fast-forwarded to the lineage: the queue has done its job.
+      /repairPromotionAdvance/,
+    ];
+    for (const site of sites) {
+      const window = GATE_SOURCE.slice(Math.max(0, site.index! - 2500), site.index!);
+      expect(
+        SANCTIONED.some((re) => re.test(window)),
+        `writeFrozenRepairQueue(null) at offset ${site.index} has no promotion / converged-head marker in its window`,
+      ).toBe(true);
+      // And neither sanctioned window may be an age/stall decision in disguise.
+      expect(window).not.toMatch(/commitUnixTime|ageMs|updatedAtMs\s*[<>]/);
+    }
+  });
+
+  it('the queue limits carry no wall-clock retirement input the gate could act on', () => {
+    // P-010 proper (deleting `maxAgeMs`) lands separately; until then this pins that the GATE
+    // never reads the queue's age against a threshold to decide a clear.
+    expect(GATE_SOURCE).not.toMatch(/maxAgeMs\s*\)\s*\{[\s\S]{0,400}writeFrozenRepairQueue/);
   });
 });

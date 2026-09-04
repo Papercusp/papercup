@@ -3671,6 +3671,17 @@ export interface RenderSuPlaybookInput {
    */
   projectGuideSource?: string;
   /**
+   * identities-v1 P-022 — the per-audience seam. Called with the RESOLVED default guide
+   * (the projected CLAUDE.md text + its path) and returns the guide THIS wearer receives:
+   * the default plus the parts addressed to the wearer's stack, already passed through
+   * `projectGuideAtBudget`. Omitted ⇒ the default guide splices untouched, byte-identical
+   * to every pre-P-022 render. Not called when no guide resolved (`text === ''`), so a
+   * guide-less launch stays guide-less. This module stays DB-free: the composer that
+   * reads `harness_doc_parts` lives in `doc-projection/addressed-project-guide.ts` and
+   * role-launch-spec threads it through here.
+   */
+  composeProjectGuide?: (resolved: { text: string; source: string }) => Promise<ComposedProjectGuide>;
+  /**
    * Persona TIER (context-trimming-tiers P-017). 'full' (default) = today's
    * playbook, byte-identical. 'fleet' = the fleet-member tier rendered from
    * the SAME base: FULL-ONLY tagged sections stripped (orientation, named
@@ -3739,6 +3750,26 @@ export interface RenderedSuPlaybook {
   overlaySource: string;
   /** Resolved project-guide path, '' when none was spliced. */
   projectGuideSource: string;
+  /**
+   * P-022: what the `composeProjectGuide` seam did, when one was supplied and a guide
+   * resolved — the wearer's tokens, the addressed part keys spliced, whether the budget
+   * cut the tail. `null` when the default guide was spliced untouched.
+   */
+  projectGuideAddressed: ComposedProjectGuide['addressed'] | null;
+}
+
+/** The result of the P-022 per-audience seam — see `RenderSuPlaybookInput.composeProjectGuide`. */
+export interface ComposedProjectGuide {
+  text: string;
+  truncated: boolean;
+  addressed: {
+    /** The wearer's expanded stack tokens the addressed rows were matched against. */
+    tokens: string[];
+    /** `part_key`s of the addressed parts spliced after the default guide, in read order. */
+    partKeys: string[];
+    /** Chars the addressed sections added before the budget seam. */
+    addedChars: number;
+  } | null;
 }
 
 /**
@@ -3823,15 +3854,26 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   // the (large) guide file when the base actually carries the marker.
   let text = withNotes;
   let projectGuideSource = '';
+  let projectGuideAddressed: RenderedSuPlaybook['projectGuideAddressed'] = null;
   if (withNotes.includes(PROJECT_GUIDE_MARKER)) {
     const guide = await resolveProjectGuideText(baseSource, input.projectGuideSource);
     projectGuideSource = guide.source;
-    text = spliceGeneratedSection(withNotes, PROJECT_GUIDE_MARKER, renderProjectGuideSection(guide.text));
+    // P-022: the per-audience seam — the default guide is what every reader gets; the
+    // composer (when supplied, and only when a guide resolved) appends the parts addressed
+    // to THIS wearer's stack and holds the whole thing to the budget. No composer, or no
+    // guide ⇒ the default splices untouched, byte-identical to every earlier render.
+    let guideText = guide.text;
+    if (input.composeProjectGuide && guide.text) {
+      const composed = await input.composeProjectGuide(guide);
+      guideText = composed.text;
+      projectGuideAddressed = composed.addressed;
+    }
+    text = spliceGeneratedSection(withNotes, PROJECT_GUIDE_MARKER, renderProjectGuideSection(guideText));
   }
   // P-017 fleet tier: strip every FULL-ONLY tagged block (base + generated
   // sections alike). Applied LAST so tags survive every splice above. The
   // FULL tier keeps the content but drops the marker comment lines — no
   // internal marker leaks into a rendered prompt (psu-prompt-isolation).
   text = tier === 'fleet' ? stripFullOnlySections(text) : stripFullOnlyMarkers(text);
-  return { text, baseSource, overlaySource, projectGuideSource };
+  return { text, baseSource, overlaySource, projectGuideSource, projectGuideAddressed };
 }

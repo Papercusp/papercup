@@ -23,6 +23,8 @@ import {
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostDurableResourcePlan,
   type WorkspaceHostDurableWorkflowSpec,
+  type WorkspaceHostFailedRunTeardown,
+  type WorkspaceHostLiveCanarySpec,
   type WorkspaceHostManualDestroyReceipt,
   type WorkspaceHostObservation,
   type WorkspaceHostPlan,
@@ -190,23 +192,25 @@ export interface WorkspaceHostProvisioningResult {
 }
 
 /** External evidence the operator cannot manufacture from Compute Engine itself. */
-export interface WorkspaceHostDestroyCanaryEvidence {
+interface WorkspaceHostDestroyCanaryEvidenceBase {
   runId: string;
   workspaceId: string;
-  contractApproval: WorkspaceHostContractApproval;
   maxSpendCents?: number;
   teardownDeadlineAt: string;
   /** Durable Cloud Billing budget resource (or an equally authoritative external budget). */
   budgetEvidenceRef: string;
   /** A provider read establishing the cumulative project baseline before this run mutated anything. */
   preRunZeroBaseline: WorkspaceHostCanaryCostEvidence;
-  /** Cumulative, named cost entries known when teardown begins. */
+  /** Cumulative, named cost entries known when teardown begins. Empty only under failedRunTeardown. */
   costEvidence: readonly WorkspaceHostCanaryCostEvidence[];
   /** Provider-delayed billing entries learned after the initial settle. */
   lateObservedSpend?: readonly WorkspaceHostCanaryCostEvidence[];
   /**
    * Audit context for an emergency/manual teardown. Confirmations are intentionally absent here:
    * the runner creates them only from provider-produced post-delete reads.
+   *
+   * This waives the canary LABEL requirement for a host provisioned before the tag contract existed
+   * (see resolveDestroyCanaryLabels) — it is not, and must never become, a cost-evidence waiver.
    */
   emergencyManualDestroy?: {
     actorId: string;
@@ -214,6 +218,25 @@ export interface WorkspaceHostDestroyCanaryEvidence {
     procedureRef: string;
   };
 }
+
+/**
+ * Destroy admission takes one of two authorizations, never both.
+ *
+ * The normal route cites an approved provider-contract report and the settled economics of a run
+ * that completed. A run that FAILED can produce none of that by construction, so it cites an
+ * audited `failedRunTeardown` instead, which relaxes the economic family — and only that family.
+ * Identity evidence (the immutable canary labels and the controller-independent pre-delete census)
+ * is unchanged on both routes: the product will still not delete a resource it cannot prove is ours.
+ */
+export type WorkspaceHostDestroyCanaryEvidence =
+  | (WorkspaceHostDestroyCanaryEvidenceBase & {
+      contractApproval: WorkspaceHostContractApproval;
+      failedRunTeardown?: undefined;
+    })
+  | (WorkspaceHostDestroyCanaryEvidenceBase & {
+      contractApproval?: undefined;
+      failedRunTeardown: WorkspaceHostFailedRunTeardown;
+    });
 
 export interface WorkspaceHostDestroyEvidenceResult {
   completionReceipt: WorkspaceHostCanaryCompletionReceipt;
@@ -316,11 +339,23 @@ function validateDestroyCanaryEvidence(evidence: WorkspaceHostDestroyCanaryEvide
   if (evidence.preRunZeroBaseline.reservationId) {
     problems.push('canary.preRunZeroBaseline must be passive provider evidence, not a reservation settlement');
   }
-  if (evidence.costEvidence.length === 0) {
-    problems.push('canary requires at least one named cumulative cost entry');
-  }
-  if ((evidence.lateObservedSpend?.length ?? 0) === 0) {
-    problems.push('canary requires at least one provider-delayed observed spend entry');
+  const failedRunTeardown = evidence.failedRunTeardown;
+  if (failedRunTeardown) {
+    // The ECONOMIC family — settled cumulative cost and provider-delayed observed spend — is what a
+    // failed run cannot produce, so this is the only place the audited path relaxes anything. The
+    // zero baseline above stays mandatory: it is read BEFORE the run mutates anything, so a failed
+    // run still has it. Identity is resolved separately in resolveDestroyCanaryLabels and is
+    // untouched by this branch.
+    if (failedRunTeardown.failedOperationIds.length === 0) {
+      problems.push('canary.failedRunTeardown must name at least one failed operation');
+    }
+  } else {
+    if (evidence.costEvidence.length === 0) {
+      problems.push('canary requires at least one named cumulative cost entry');
+    }
+    if ((evidence.lateObservedSpend?.length ?? 0) === 0) {
+      problems.push('canary requires at least one provider-delayed observed spend entry');
+    }
   }
   for (const [index, entry] of [
     evidence.preRunZeroBaseline,
@@ -335,7 +370,39 @@ function validateDestroyCanaryEvidence(evidence: WorkspaceHostDestroyCanaryEvide
   externalEvidenceRef(evidence.preRunZeroBaseline.providerEvidenceRef, 'canary.preRunZeroBaseline.providerEvidenceRef');
   isoTimestamp(evidence.preRunZeroBaseline.observedAt, 'canary.preRunZeroBaseline.observedAt');
   isoTimestamp(evidence.teardownDeadlineAt, 'canary.teardownDeadlineAt');
+  if (failedRunTeardown) {
+    nonEmpty(failedRunTeardown.actorId, 'canary.failedRunTeardown.actorId');
+    nonEmpty(failedRunTeardown.reason, 'canary.failedRunTeardown.reason');
+    externalEvidenceRef(failedRunTeardown.procedureRef, 'canary.failedRunTeardown.procedureRef');
+    for (const [index, operationId] of failedRunTeardown.failedOperationIds.entries()) {
+      nonEmpty(operationId, `canary.failedRunTeardown.failedOperationIds[${index}]`);
+    }
+  }
   assertWorkspaceHostSecretIsolation(evidence, 'workspaceHost.destroy.canary');
+}
+
+/**
+ * Build the canary-ledger spec from destroy evidence, carrying whichever authorization the request
+ * supplied. Shared by the preflight and the finalize ledger so the two can never disagree about
+ * which authorization a single destroy is running under.
+ */
+function destroyCanaryLedgerSpec(
+  input: RunWorkspaceHostDestroyInput,
+  target: StoredWorkspaceHostDestroyTarget,
+): WorkspaceHostLiveCanarySpec {
+  const base = {
+    runId: input.canary.runId,
+    workspaceId: input.canary.workspaceId,
+    target: input.provider.target,
+    scope: target.desired.scope,
+    cloudCredentialRef: input.connection.cloudCredentialRef,
+    ...(input.canary.maxSpendCents !== undefined ? { maxSpendCents: input.canary.maxSpendCents } : {}),
+    teardownDeadlineAt: input.canary.teardownDeadlineAt,
+  };
+  const failedRunTeardown = input.canary.failedRunTeardown;
+  return failedRunTeardown
+    ? { ...base, failedRunTeardown }
+    : { ...base, contractApproval: input.canary.contractApproval };
 }
 
 interface DestroyCanaryLabelBinding {
@@ -441,16 +508,7 @@ async function preflightDestroyCanaryLedger(
     if (!Number.isFinite(firstRegisteredAt) || baselineAt > firstRegisteredAt) {
       throw new Error('pre-run zero baseline must predate every registered provider resource');
     }
-    const ledger = new WorkspaceHostLiveCanaryHarness({
-      runId: input.canary.runId,
-      workspaceId: input.canary.workspaceId,
-      target: input.provider.target,
-      scope: target.desired.scope,
-      cloudCredentialRef: input.connection.cloudCredentialRef,
-      contractApproval: input.canary.contractApproval,
-      ...(input.canary.maxSpendCents !== undefined ? { maxSpendCents: input.canary.maxSpendCents } : {}),
-      teardownDeadlineAt: input.canary.teardownDeadlineAt,
-    });
+    const ledger = new WorkspaceHostLiveCanaryHarness(destroyCanaryLedgerSpec(input, target));
     ledger.recordObservedSpend(input.canary.preRunZeroBaseline);
     for (const evidence of input.canary.costEvidence) ledger.recordObservedSpend(evidence);
     for (const evidence of input.canary.lateObservedSpend ?? []) ledger.recordObservedSpend(evidence);
@@ -1135,16 +1193,7 @@ function restoreCanaryLedger(
   destroyTargets: readonly WorkspaceHostResourceRef[],
   tags: Readonly<Record<string, string>>,
 ): WorkspaceHostLiveCanaryHarness {
-  const ledger = new WorkspaceHostLiveCanaryHarness({
-    runId: input.canary.runId,
-    workspaceId: input.canary.workspaceId,
-    target: input.provider.target,
-    scope: target.desired.scope,
-    cloudCredentialRef: input.connection.cloudCredentialRef,
-    contractApproval: input.canary.contractApproval,
-    ...(input.canary.maxSpendCents !== undefined ? { maxSpendCents: input.canary.maxSpendCents } : {}),
-    teardownDeadlineAt: input.canary.teardownDeadlineAt,
-  });
+  const ledger = new WorkspaceHostLiveCanaryHarness(destroyCanaryLedgerSpec(input, target));
   for (const resource of destroyTargets) {
     const persisted = target.resources.find(
       (entry) =>
@@ -1385,6 +1434,17 @@ export async function runWorkspaceHostDestroy(
               mode: 'legacy-manual-purpose',
               purpose: destroyLabelBinding.legacyPurpose,
               preDeleteCensus: 'controller-independent-exact-population',
+            },
+          }
+        : {}),
+      ...(input.canary.failedRunTeardown
+        ? {
+            evidenceAdmission: {
+              mode: 'failed-run-teardown',
+              waives: 'economic-evidence-only',
+              actorId: input.canary.failedRunTeardown.actorId,
+              procedureRef: input.canary.failedRunTeardown.procedureRef,
+              failedOperationIds: [...input.canary.failedRunTeardown.failedOperationIds],
             },
           }
         : {}),

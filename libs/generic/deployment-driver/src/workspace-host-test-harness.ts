@@ -123,6 +123,27 @@ function requireCents(value: number, label: string): void {
   }
 }
 
+function requireFailedRunTeardown(
+  teardown: WorkspaceHostFailedRunTeardown,
+): void {
+  requireNonEmpty(teardown.actorId, "failedRunTeardown.actorId");
+  requireNonEmpty(teardown.reason, "failedRunTeardown.reason");
+  requireNonEmpty(teardown.procedureRef, "failedRunTeardown.procedureRef");
+  // A teardown that names no failed operation is indistinguishable from one asserting the run
+  // failed because saying so is convenient. The operation ids are what an auditor reads back.
+  if (teardown.failedOperationIds.length === 0) {
+    throw new Error(
+      "Failed-run teardown must name at least one failed operation it cleans up after",
+    );
+  }
+  for (const [index, operationId] of teardown.failedOperationIds.entries()) {
+    requireNonEmpty(
+      operationId,
+      `failedRunTeardown.failedOperationIds[${index}]`,
+    );
+  }
+}
+
 function validatePlanShape(
   checks: WorkspaceHostProviderContractCheck[],
   plan: WorkspaceHostPlan,
@@ -633,17 +654,54 @@ export interface WorkspaceHostContractApproval {
   approvedAt: string;
 }
 
-export interface WorkspaceHostLiveCanarySpec {
+/**
+ * Authorization to tear down a canary host whose run FAILED.
+ *
+ * A failed run cannot produce the economic evidence a completed one does: there is no approved
+ * contract report to cite, no settled cumulative cost, and no provider-delayed observed spend.
+ * Demanding them anyway makes the hosts most likely to need teardown exactly the ones that cannot
+ * be torn down. This authorization waives that economic family and nothing else — the immutable
+ * canary labels and the controller-independent census still have to hold, because those are what
+ * prove the resources being deleted are ours.
+ *
+ * It is deliberately NOT the same hatch as an emergency manual destroy, which waives the LABEL
+ * requirement for a host provisioned before the canary tag contract existed. The two waive disjoint
+ * evidence families; merging them would let one request drop both proofs at once.
+ */
+export interface WorkspaceHostFailedRunTeardown {
+  actorId: string;
+  reason: string;
+  procedureRef: string;
+  /** The failed operation(s) this teardown cleans up after; at least one. */
+  failedOperationIds: readonly string[];
+}
+
+interface WorkspaceHostLiveCanarySpecBase {
   runId: string;
   workspaceId: string;
   target: WorkspaceHostProviderTarget;
   scope: WorkspaceHostScopeRef;
   cloudCredentialRef: CloudCredentialRef;
-  contractApproval: WorkspaceHostContractApproval;
   /** May be lower than D-020's cap, never higher. Defaults to USD 25. */
   maxSpendCents?: number;
   teardownDeadlineAt: string;
 }
+
+/**
+ * A canary ledger is authorized either by an approved provider-contract report — the normal path,
+ * and the one that gates live provider WORK — or by an audited failed-run teardown, which is
+ * teardown-only. The two are mutually exclusive by construction so neither can be supplied as a
+ * stand-in for the other.
+ */
+export type WorkspaceHostLiveCanarySpec =
+  | (WorkspaceHostLiveCanarySpecBase & {
+      contractApproval: WorkspaceHostContractApproval;
+      failedRunTeardown?: undefined;
+    })
+  | (WorkspaceHostLiveCanarySpecBase & {
+      contractApproval?: undefined;
+      failedRunTeardown: WorkspaceHostFailedRunTeardown;
+    });
 
 export const WORKSPACE_HOST_CANARY_TAG_KEYS = {
   canary: "papercusp_canary",
@@ -696,16 +754,30 @@ export interface WorkspaceHostManualDestroyReceipt {
   confirmation: WorkspaceHostDestroyConfirmation;
   providerEvidence?: Readonly<Record<string, unknown>>;
 }
-export interface WorkspaceHostCanaryCompletionReceipt {
+interface WorkspaceHostCanaryCompletionReceiptBase {
   runId: string;
   target: WorkspaceHostProviderTarget;
-  contractReportRef: string;
   completedAt: string;
   spentCents: number;
   maxSpendCents: number;
   resourceCount: number;
   costEvidence: readonly WorkspaceHostCanaryCostEvidence[];
 }
+
+/**
+ * Mirrors the ledger's authorization. A completed run cites its approved contract report; a
+ * failed-run teardown cites the audited procedure instead and says so, so no reader of a persisted
+ * receipt can mistake one for the other.
+ */
+export type WorkspaceHostCanaryCompletionReceipt =
+  | (WorkspaceHostCanaryCompletionReceiptBase & {
+      contractReportRef: string;
+      failedRunTeardown?: undefined;
+    })
+  | (WorkspaceHostCanaryCompletionReceiptBase & {
+      contractReportRef?: undefined;
+      failedRunTeardown: WorkspaceHostFailedRunTeardown;
+    });
 
 function sameResource(
   a: WorkspaceHostResourceRef,
@@ -773,19 +845,25 @@ export class WorkspaceHostLiveCanaryHarness {
         "Live canary requires a non-empty typed cloudCredentialRef",
       );
     }
-    const approval = spec.contractApproval;
-    if (
-      !approval ||
-      approval.status !== "approved" ||
-      approval.suiteVersion !== WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION ||
-      !approval.reportRef?.trim() ||
-      !approval.approvedBy?.trim()
-    ) {
-      throw new Error(
-        "Live provider work is blocked until the current fake-provider contract report is approved",
-      );
+    if (spec.failedRunTeardown) {
+      // Teardown-only authorization: it stands in for the economic evidence a failed run can never
+      // produce, never for provider work. Nothing below this branch creates or mutates a resource.
+      requireFailedRunTeardown(spec.failedRunTeardown);
+    } else {
+      const approval = spec.contractApproval;
+      if (
+        !approval ||
+        approval.status !== "approved" ||
+        approval.suiteVersion !== WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION ||
+        !approval.reportRef?.trim() ||
+        !approval.approvedBy?.trim()
+      ) {
+        throw new Error(
+          "Live provider work is blocked until the current fake-provider contract report is approved",
+        );
+      }
+      requireTimestamp(approval.approvedAt, "contractApproval.approvedAt");
     }
-    requireTimestamp(approval.approvedAt, "contractApproval.approvedAt");
     requireTimestamp(spec.teardownDeadlineAt, "teardownDeadlineAt");
     this.maxSpendCents =
       spec.maxSpendCents ?? WORKSPACE_HOST_LIVE_CANARY_MAX_SPEND_CENTS;
@@ -1079,10 +1157,20 @@ export class WorkspaceHostLiveCanaryHarness {
       throw new Error(
         "Cannot finalize a canary until the orphan census is clean",
       );
+    // A const alias, so the spec's authorization union narrows on the check below.
+    const spec = this.spec;
+    const authorization = spec.failedRunTeardown
+      ? {
+          failedRunTeardown: {
+            ...spec.failedRunTeardown,
+            failedOperationIds: [...spec.failedRunTeardown.failedOperationIds],
+          },
+        }
+      : { contractReportRef: spec.contractApproval.reportRef };
     return {
-      runId: this.spec.runId,
-      target: this.spec.target,
-      contractReportRef: this.spec.contractApproval.reportRef,
+      runId: spec.runId,
+      target: spec.target,
+      ...authorization,
       completedAt,
       spentCents: this.spentCents(),
       maxSpendCents: this.maxSpendCents,

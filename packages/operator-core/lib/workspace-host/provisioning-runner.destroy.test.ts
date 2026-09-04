@@ -17,6 +17,7 @@ import {
 import {
   runWorkspaceHostDestroy,
   type RunWorkspaceHostDestroyInput,
+  type WorkspaceHostDestroyCanaryEvidence,
   type WorkspaceHostDestroyStore,
   WorkspaceHostProvisioningRequestError,
 } from './provisioning-runner';
@@ -458,5 +459,122 @@ describe('runWorkspaceHostDestroy', () => {
     expect(reason).toMatch(/census is not clean after 1 read\(s\)/);
     expect(reason).toMatch(/(provider|orphan)\.\w+=\[/);
     expect(reason).toContain('pc-host-');
+  });
+});
+
+// WI-2143805: a host whose canary run FAILED could not be destroyed through the product route at
+// all. Destroy admission demanded an approved contract report, settled cumulative cost, and a
+// provider-delayed observed-spend entry — evidence only a run that COMPLETED can produce — so the
+// hosts most in need of teardown were exactly the ones the product refused to tear down, leaving
+// the operator to reach around it with a script. `failedRunTeardown` relaxes that economic family
+// and nothing else: identity still has to hold, which is what these four cases pin, in both
+// directions. A test that only proves the new path works would equally pass if the requirement had
+// simply been deleted.
+describe('runWorkspaceHostDestroy failed-run teardown', () => {
+  const failedRunCanary = (): WorkspaceHostDestroyCanaryEvidence => ({
+    runId: RUN_ID,
+    workspaceId: WORKSPACE_ID,
+    maxSpendCents: 2_500,
+    teardownDeadlineAt: '2099-01-01T00:00:00.000Z',
+    budgetEvidenceRef: 'gcp://billing/budgets/workspace-host-canary',
+    preRunZeroBaseline: { cents: 0, observedAt: NOW, providerEvidenceRef: 'gcp://billing/baseline-zero' },
+    // Exactly what a failed run has: the baseline read before it mutated anything, and nothing else.
+    costEvidence: [],
+    failedRunTeardown: {
+      actorId: 'operator:test',
+      reason: 'canary run failed during bootstrap; the host must still be torn down',
+      procedureRef: 'runbook://workspace-host/gcp/failed-run-teardown-v1',
+      failedOperationIds: ['op-run-1'],
+    },
+  });
+
+  it('destroys a failed-canary host on evidence a failed run can actually produce', async () => {
+    const { provider, apply } = providerHarness();
+    const { store, updateHostState } = storeHarness();
+
+    const result = await runWorkspaceHostDestroy({ ...runInput(provider, store), canary: failedRunCanary() });
+
+    expect(result.status).toBe('succeeded');
+    expect(apply).toHaveBeenCalledTimes(resources.length);
+    expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'absent', discard: true }));
+    // The receipt cites the audited procedure, and carries NO contract report ref — a reader of the
+    // persisted signal can tell a failed-run teardown from a completed canary without guessing.
+    expect(result.evidence?.completionReceipt).toMatchObject({
+      spentCents: 0,
+      resourceCount: resources.length,
+      failedRunTeardown: { procedureRef: 'runbook://workspace-host/gcp/failed-run-teardown-v1' },
+    });
+    expect(result.evidence?.completionReceipt.contractReportRef).toBeUndefined();
+    expect(store.beginOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: expect.objectContaining({
+          evidenceAdmission: {
+            mode: 'failed-run-teardown',
+            waives: 'economic-evidence-only',
+            actorId: 'operator:test',
+            procedureRef: 'runbook://workspace-host/gcp/failed-run-teardown-v1',
+            failedOperationIds: ['op-run-1'],
+          },
+        }),
+      }),
+    );
+  });
+
+  // The calibration case. Without it the test above would pass just as well against a build that
+  // dropped the economic requirement outright, which is the failure this whole item is about.
+  it('still refuses the identical evidence when failedRunTeardown is absent', async () => {
+    const { provider, apply } = providerHarness();
+    const { store } = storeHarness();
+    const { failedRunTeardown: _waiver, ...withoutWaiver } = failedRunCanary();
+    const canary = {
+      ...withoutWaiver,
+      contractApproval: {
+        status: 'approved' as const,
+        suiteVersion: WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
+        reportRef: 'report://gcp/fake-contract',
+        approvedBy: 'operator:test',
+        approvedAt: NOW,
+      },
+    } satisfies WorkspaceHostDestroyCanaryEvidence;
+
+    await expect(
+      runWorkspaceHostDestroy({ ...runInput(provider, store), canary }),
+    ).rejects.toMatchObject({
+      problems: expect.arrayContaining([
+        expect.stringContaining('at least one named cumulative cost entry'),
+        expect.stringContaining('provider-delayed observed spend entry'),
+      ]),
+    });
+    expect(provider.plan).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it('does not waive identity: a canary label that disagrees with the run still refuses', async () => {
+    const { provider, apply } = providerHarness();
+    const { store } = storeHarness({ ...desired, labels: { ...labels, papercusp_run_id: 'canary_someone_else' } });
+
+    await expect(
+      runWorkspaceHostDestroy({ ...runInput(provider, store), canary: failedRunCanary() }),
+    ).rejects.toMatchObject({
+      problems: [expect.stringContaining(`papercusp_run_id=${RUN_ID}`)],
+    });
+    expect(provider.plan).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  // The two waivers stay disjoint. emergencyManualDestroy is the LABEL waiver for a host
+  // provisioned before the canary tag contract existed; failedRunTeardown waives economics only.
+  // Neither may stand in for the other, or one request could drop both proofs at once.
+  it('does not waive the canary labels a pre-tagging host is missing — that is still the manual path', async () => {
+    const { provider, apply } = providerHarness();
+    const { store } = storeHarness({ ...desired, labels: { purpose: 'legacy-canary' } });
+
+    await expect(
+      runWorkspaceHostDestroy({ ...runInput(provider, store), canary: failedRunCanary() }),
+    ).rejects.toMatchObject({
+      problems: expect.arrayContaining([expect.stringContaining('papercusp_canary=true')]),
+    });
+    expect(provider.plan).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
   });
 });

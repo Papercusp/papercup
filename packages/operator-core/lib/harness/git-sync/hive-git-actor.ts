@@ -93,6 +93,28 @@ export interface HiveGitActorSubstrateEvidence {
    * single-account box.
    */
   ownerReportsBooted?: boolean | undefined;
+  /**
+   * The device the owner LAST advertised as serving this pot, even if that
+   * advertisement has since gone stale — `undefined` when nothing was ever
+   * advertised for it.
+   *
+   * WHY (WI-2142873 follow-on, measured 2026-09-04): `ownerReportsBooted` is
+   * UNKNOWN whenever the advertisement is merely too OLD to trust, and UNKNOWN
+   * preserves the gh-login fallback. On a box where one process is BOTH the
+   * substrate owner and the git-sync host, its own restart guarantees that
+   * window: the previous owner's row ages out (30s) before the new one has
+   * booted the harness, so a leg firing in between signed as the gh-login
+   * device and minted an announcement no peer can dial — once per restart,
+   * which on the live tower re-armed every peer's convergence bar faster than
+   * the 500-row announcement window could age it out. P-203 Leg A stayed RED
+   * with the identity fix already running, for exactly this reason.
+   *
+   * A stale claim is weak evidence about whether that device is still UP. It is
+   * strong evidence about WHICH device serves the pot, and that is the only
+   * question being asked here — so it is enough to refuse on, and never enough
+   * to sign on (no identity travels with it).
+   */
+  lastAdvertisedServingDevicePubkey?: string | undefined;
 }
 
 /** Why no actor could be chosen. `refused-owner-booted-identity-unavailable`
@@ -100,7 +122,8 @@ export interface HiveGitActorSubstrateEvidence {
  *  the leg, never treat it as "no identity configured". */
 export type HiveGitActorRefusal =
   | 'no-identity'
-  | 'refused-owner-booted-identity-unavailable';
+  | 'refused-owner-booted-identity-unavailable'
+  | 'refused-stale-advertisement-names-another-device';
 
 /**
  * Pure decision: prefer the booted swarm identity; fall back to the gh-login
@@ -135,6 +158,17 @@ export function pickHiveGitActor(
   // mints an announcement no peer can dial — the WI-2142873 failure.
   if (evidence?.ownerReportsBooted === true) return null;
   if (!ghActor?.devicePubkey) return null;
+  // The owner's advertisement is too stale to trust as liveness, but it still
+  // NAMES the device that serves this pot, and it is not this one. Signing
+  // anyway mints the unfetchable announcement described in the header — so the
+  // stale-but-present case refuses, while the never-advertised case (undefined)
+  // keeps the fallback and leaves a genuine single-account box untouched.
+  if (
+    evidence?.lastAdvertisedServingDevicePubkey &&
+    evidence.lastAdvertisedServingDevicePubkey !== ghActor.devicePubkey
+  ) {
+    return null;
+  }
   return {
     githubUserId: ghActor.githubUserId,
     devicePubkey: ghActor.devicePubkey,
@@ -158,6 +192,13 @@ export function explainHiveGitActorAbsence(
   if (!haveBooted && evidence?.ownerReportsBooted === true) {
     return 'refused-owner-booted-identity-unavailable';
   }
-  void ghActor;
+  if (
+    !haveBooted &&
+    ghActor?.devicePubkey &&
+    evidence?.lastAdvertisedServingDevicePubkey &&
+    evidence.lastAdvertisedServingDevicePubkey !== ghActor.devicePubkey
+  ) {
+    return 'refused-stale-advertisement-names-another-device';
+  }
   return 'no-identity';
 }

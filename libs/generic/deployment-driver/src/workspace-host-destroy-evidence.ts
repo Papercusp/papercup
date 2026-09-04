@@ -9,13 +9,12 @@ import type {
   WorkspaceHostCanaryCostEvidence,
   WorkspaceHostCanaryOrphanCensus,
   WorkspaceHostContractApproval,
+  WorkspaceHostFailedRunTeardown,
 } from "./workspace-host-test-harness";
 
-/** Structurally matches the operator destroy route's external-evidence input. */
-export interface WorkspaceHostDestroyCanaryEvidenceContract {
+interface WorkspaceHostDestroyCanaryEvidenceContractBase {
   runId: string;
   workspaceId: string;
-  contractApproval: WorkspaceHostContractApproval;
   maxSpendCents?: number;
   teardownDeadlineAt: string;
   budgetEvidenceRef: string;
@@ -23,6 +22,23 @@ export interface WorkspaceHostDestroyCanaryEvidenceContract {
   costEvidence: readonly WorkspaceHostCanaryCostEvidence[];
   lateObservedSpend?: readonly WorkspaceHostCanaryCostEvidence[];
 }
+
+/**
+ * Structurally matches the operator destroy route's external-evidence input.
+ *
+ * Authorization follows the ledger's: an approved contract report for a run that completed, or an
+ * audited failed-run teardown for one that did not. Only the economic evidence differs between the
+ * two; the identity evidence the adapter validates below is required either way.
+ */
+export type WorkspaceHostDestroyCanaryEvidenceContract =
+  | (WorkspaceHostDestroyCanaryEvidenceContractBase & {
+      contractApproval: WorkspaceHostContractApproval;
+      failedRunTeardown?: undefined;
+    })
+  | (WorkspaceHostDestroyCanaryEvidenceContractBase & {
+      contractApproval?: undefined;
+      failedRunTeardown: WorkspaceHostFailedRunTeardown;
+    });
 
 export interface WorkspaceHostCredentialTeardownObservation {
   channel: WorkspaceHostCredentialChannel;

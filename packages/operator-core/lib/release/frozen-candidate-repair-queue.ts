@@ -363,19 +363,6 @@ export type FrozenCandidateRepairPhase =
   | 'blocked';
 export type FrozenCandidateBlockedReason = 'attempts-exhausted' | 'wall-clock-exhausted' | 'dispatch-infeasible';
 
-/**
- * Durable evidence that a frozen candidate pin was released because its age crossed the
- * candidate-fossil threshold. This is intentionally separate from the repair queue: the queue
- * is cleared as part of the release, while this record preserves which immutable candidate was
- * abandoned and why for the checkpoint result/event readers.
- */
-export interface FrozenCandidateFossilAbandonment {
-  abandonedCandidate: string;
-  ageMs: number;
-  thresholdMs: number;
-  reason: 'candidate-fossil';
-}
-
 export interface FrozenRepairDispatchReservation {
   token: string;
   claimedAtMs: number;

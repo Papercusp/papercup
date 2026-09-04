@@ -59,10 +59,24 @@ function isCostEvidence(value: unknown): boolean {
   );
 }
 
+/**
+ * A teardown after a FAILED canary run. It carries the audit context in place of the economic
+ * evidence such a run can never produce; it waives nothing about identity.
+ */
+function isFailedRunTeardown(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.actorId === 'string' &&
+    typeof value.reason === 'string' &&
+    typeof value.procedureRef === 'string' &&
+    Array.isArray(value.failedOperationIds) &&
+    value.failedOperationIds.length > 0 &&
+    value.failedOperationIds.every((entry) => typeof entry === 'string')
+  );
+}
+
 function parseCanaryEvidence(value: unknown): WorkspaceHostDestroyCanaryEvidence | null {
-  if (!isRecord(value) || !isRecord(value.contractApproval) || !isCostEvidence(value.preRunZeroBaseline)) {
-    return null;
-  }
+  if (!isRecord(value) || !isCostEvidence(value.preRunZeroBaseline)) return null;
   if (!Array.isArray(value.costEvidence) || !value.costEvidence.every(isCostEvidence)) return null;
   if (
     value.lateObservedSpend !== undefined &&
@@ -79,17 +93,28 @@ function parseCanaryEvidence(value: unknown): WorkspaceHostDestroyCanaryEvidence
   ) {
     return null;
   }
-  if (
-    typeof value.runId !== 'string' ||
-    typeof value.workspaceId !== 'string' ||
-    typeof value.teardownDeadlineAt !== 'string' ||
-    typeof value.budgetEvidenceRef !== 'string' ||
-    (value.maxSpendCents !== undefined && typeof value.maxSpendCents !== 'number') ||
+  if (value.failedRunTeardown !== undefined && !isFailedRunTeardown(value.failedRunTeardown)) return null;
+  if (value.failedRunTeardown !== undefined) {
+    // The two authorizations are mutually exclusive: a request may not present an approved contract
+    // report AND claim the run failed. Accepting both would make the audit record ambiguous about
+    // which evidence the destroy was actually admitted on.
+    if (value.contractApproval !== undefined) return null;
+  } else if (
+    !isRecord(value.contractApproval) ||
     value.contractApproval.status !== 'approved' ||
     typeof value.contractApproval.suiteVersion !== 'string' ||
     typeof value.contractApproval.reportRef !== 'string' ||
     typeof value.contractApproval.approvedBy !== 'string' ||
     typeof value.contractApproval.approvedAt !== 'string'
+  ) {
+    return null;
+  }
+  if (
+    typeof value.runId !== 'string' ||
+    typeof value.workspaceId !== 'string' ||
+    typeof value.teardownDeadlineAt !== 'string' ||
+    typeof value.budgetEvidenceRef !== 'string' ||
+    (value.maxSpendCents !== undefined && typeof value.maxSpendCents !== 'number')
   ) {
     return null;
   }

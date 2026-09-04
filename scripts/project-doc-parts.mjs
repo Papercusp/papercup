@@ -526,6 +526,63 @@ export function partTargetsClient(part, client) {
 }
 
 /**
+ * identities-v1 P-022 — the second projection axis: WHO the part is for.
+ *
+ * `stack_scope` is a list of addressing tokens (`blueprint:<id>` / `slot:<slot>` /
+ * `role:<role>` — the grammar lives ONCE, in operator-core's `guide-address.ts`; this
+ * script treats tokens as OPAQUE strings). Empty = UNADDRESSED = the part reaches every
+ * reader and lives in the default file. Non-empty = the part reaches only a wearer
+ * whose expanded stack intersects it — `stack_scope && tokens`, the same OR-semantics
+ * `client_scope` has.
+ */
+export function partIsAddressed(part) {
+  return (part.stack_scope ?? []).length > 0;
+}
+
+/**
+ * Does this part reach `audience`? `audience === null` is the DEFAULT projection — the
+ * file every reader gets — so only unaddressed parts qualify; an addressed part is for
+ * somebody in particular and never lands in the default file. An audience (a wearer's
+ * token list) gets the unaddressed parts PLUS every part addressed to any of its tokens.
+ */
+export function partReachesAudience(part, audience) {
+  if (!partIsAddressed(part)) return true;
+  if (audience === null || audience === undefined) return false;
+  const scope = part.stack_scope ?? [];
+  return scope.some((token) => audience.includes(token));
+}
+
+/**
+ * The addressed inventory of a part set: per token, the parts that carry it (in read
+ * order) and their total size. What the CLI reports so an author can see which audiences
+ * a doc currently distinguishes without composing each one.
+ */
+export function addressedInventory(parts) {
+  const byToken = new Map();
+  for (const p of [...parts].sort(readOrder)) {
+    for (const token of p.stack_scope ?? []) {
+      if (!byToken.has(token)) byToken.set(token, { token, parts: [], chars: 0 });
+      const entry = byToken.get(token);
+      entry.parts.push(p.part_key);
+      entry.chars += p.body.length;
+    }
+  }
+  return [...byToken.values()].sort((a, b) => (a.token < b.token ? -1 : a.token > b.token ? 1 : 0));
+}
+
+/** Parse `--audience=<token,token,…>` — tokens are opaque here; an empty list is a misuse. */
+export function parseAudienceArg(argv) {
+  const raw = argv.find((a) => a.startsWith('--audience='))?.slice('--audience='.length);
+  if (raw === undefined) return null;
+  const tokens = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) throw new Error('--audience needs at least one token, e.g. --audience=blueprint:su.fleet-leader');
+  return [...new Set(tokens)].sort();
+}
+
+/**
  * Deterministic read order. `ordinal` is the document position and is the only order
  * that matters; `part_key` breaks a tie so two parts sharing an ordinal (a rule and a
  * later-inserted sibling) can never swap between runs. P-012 asserts byte-identical
@@ -728,8 +785,13 @@ export function assemble(parts, { banner = null, spill = null } = {}) {
  * and could still emit an over-budget file, which is the exact outcome D-008 forbids.
  * 116 parts of ~57k chars makes this trivially cheap.
  */
-export function projectClient(allParts, { client, docId, file, reader, budget, banner = true }) {
-  const mine = allParts.filter((p) => partTargetsClient(p, client)).sort(readOrder);
+export function projectClient(allParts, { client, docId, file, reader, budget, banner = true, audience = null }) {
+  // P-022: `audience` (a wearer's token list) selects the addressed parts that join the
+  // unaddressed ones; the default `null` composes the file every reader gets, from the
+  // unaddressed parts alone — so an addressed row's existence never changes that file.
+  const mine = allParts
+    .filter((p) => partTargetsClient(p, client) && partReachesAudience(p, audience))
+    .sort(readOrder);
   const head = banner ? projectionBanner({ client, file, reader, docId }) : null;
 
   let text = assemble(mine, { banner: head });
@@ -916,7 +978,7 @@ async function connect() {
 
 export async function readProjectedParts(client, docId) {
   const { rows } = await client.query(
-    `SELECT part_key, kind, body, ordinal, client_scope, target_section, project_rank
+    `SELECT part_key, kind, body, ordinal, client_scope, target_section, project_rank, stack_scope
        FROM harness_shared.harness_doc_parts
       WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3
         AND tombstone = false AND cardinality(client_scope) > 0
@@ -933,7 +995,7 @@ export async function readProjectedParts(client, docId) {
  */
 export async function readAllParts(client, docId) {
   const { rows } = await client.query(
-    `SELECT part_key, kind, body, ordinal, client_scope, target_section, project_rank
+    `SELECT part_key, kind, body, ordinal, client_scope, target_section, project_rank, stack_scope
        FROM harness_shared.harness_doc_parts
       WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3
         AND tombstone = false
@@ -1074,12 +1136,24 @@ Options:
   --context-tokens=<count>                     context window used for the budget
   --chars-per-token=<count>                    budget chars/token (default: 4)
   --accept-canonicalized-drift=<client>:<sha>  acknowledge reviewed file drift
+  --audience=<token,…>                         PREVIEW the guide a wearer whose stack
+                                               expands to these tokens receives
+                                               (blueprint:<id> | slot:<slot> | role:<role>);
+                                               prints the composition per client, writes
+                                               nothing — add --audience-out=<dir> to write
+                                               <dir>/<client file> for inspection
   -h, --help                                   show this help and exit
+
+The default CLAUDE.md / AGENTS.md are composed from UNADDRESSED parts only (empty
+stack_scope). An addressed part (identities-v1 P-022) reaches a launch whose stack
+matches one of its tokens — spliced by role-launch-spec at launch, never written to
+the repo root — and this command reports that inventory on every run.
 
 Examples:
   node scripts/project-doc-parts.mjs
   node scripts/project-doc-parts.mjs --write
-  node scripts/project-doc-parts.mjs --write-corpus`;
+  node scripts/project-doc-parts.mjs --write-corpus
+  node scripts/project-doc-parts.mjs --audience=blueprint:su.fleet-leader,slot:autonomy`;
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const argv = process.argv.slice(2);
@@ -1100,6 +1174,24 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error(
       "✗ --accept-canonicalized-drift is meaningful only with --write.",
     );
+    process.exit(2);
+  }
+  // P-022: an audience PREVIEW is a dry read — never combined with a write, so a preview
+  // can never be mistaken for (or accidentally become) the default file on disk.
+  let audience = null;
+  try {
+    audience = parseAudienceArg(argv);
+  } catch (err) {
+    console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
+  const audienceOut = argv.find((a) => a.startsWith('--audience-out='))?.slice('--audience-out='.length) ?? null;
+  if (audience && (write || writeCorpus)) {
+    console.error('✗ --audience is a preview and cannot be combined with --write / --write-corpus.');
+    process.exit(2);
+  }
+  if (audienceOut && !audience) {
+    console.error('✗ --audience-out needs --audience=<token,…>.');
     process.exit(2);
   }
   const docId = (argv.find((a) => a.startsWith('--doc-id='))?.split('=')[1]) ?? 'claude-md';
@@ -1169,6 +1261,54 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const parts = await readProjectedParts(client, docId);
     console.log(`project-doc-parts: ${WORKSPACE_ID}/${HARNESS_SLUG}/${docId}`);
     console.log(`  parts          ${parts.length} projected (${fmt(parts.reduce((a, p) => a + p.body.length, 0))} chars of bodies)`);
+
+    // ── P-022: the addressed inventory ───────────────────────────────────────
+    // Reported on EVERY run, because an addressed part is invisible in the default
+    // files by design: without this line the only way to learn a doc distinguishes
+    // audiences would be to launch as each one.
+    const addressed = parts.filter(partIsAddressed);
+    const inventory = addressedInventory(addressed);
+    if (addressed.length === 0) {
+      console.log('  addressed      none — every projected part is unaddressed (stack_scope empty), so the default files carry all of them');
+    } else {
+      console.log(
+        `  addressed      ${addressed.length} part(s) (${fmt(addressed.reduce((a, p) => a + p.body.length, 0))} chars) ` +
+          `reach ONLY a matching stack — they are NOT in the default files below:`,
+      );
+      for (const entry of inventory) {
+        console.log(`    ${entry.token.padEnd(36)} ${String(entry.parts.length).padStart(3)} part(s)  ${fmt(entry.chars).padStart(7)} chars  ${entry.parts.slice(0, 4).join(', ')}${entry.parts.length > 4 ? ` (+${entry.parts.length - 4})` : ''}`);
+      }
+    }
+
+    // ── P-022: audience preview ──────────────────────────────────────────────
+    // `--audience=<tokens>` composes what a wearer whose stack expands to those tokens
+    // would receive: the unaddressed parts PLUS the parts addressed to any token. The
+    // SAME projectClient the default files use, so the preview cannot drift from the
+    // launch-time composition's part selection (the launch seam adds the addressed
+    // sections after the default file; here they compose in document order — the
+    // preview answers "which parts, how large", not the exact launch bytes).
+    if (audience) {
+      console.log(`\n  audience preview — tokens: ${audience.join(', ')}`);
+      const reached = addressed.filter((p) => partReachesAudience(p, audience));
+      if (reached.length === 0) {
+        console.log('    ⓘ no addressed part matches these tokens — this audience receives exactly the default files');
+      }
+      for (const spec of CLIENTS) {
+        const out = projectClient(parts, { ...spec, docId, budget, audience });
+        const joined = out.kept.filter(partIsAddressed).map((p) => p.part_key);
+        console.log(`    ${spec.file.padEnd(10)} ${fmt(out.text.length).padStart(7)} chars — ${out.kept.length} part(s), ${joined.length} addressed joined${joined.length ? `: ${joined.join(', ')}` : ''}${out.dropped.length ? `; ${out.dropped.length} cut by budget` : ''}`);
+        if (audienceOut) {
+          const { mkdirSync } = await import('node:fs');
+          mkdirSync(audienceOut, { recursive: true });
+          const target = resolve(audienceOut, spec.file);
+          writeFileSync(target, out.text, 'utf8');
+          console.log(`               wrote ${target}`);
+        }
+      }
+      console.log('\n  ✓ audience preview — nothing projected. The default files are unaffected by addressed parts.');
+      await client.end();
+      process.exit(failed ? 1 : 0);
+    }
 
     // ── the corpus ───────────────────────────────────────────────────────────
     // Written independently of --write, and that separation is deliberate: D-014

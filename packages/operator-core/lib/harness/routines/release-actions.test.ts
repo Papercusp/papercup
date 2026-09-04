@@ -2628,27 +2628,6 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     });
   });
 
-  it('EI-21763163890991789: buildCheckpointDetail preserves bounded fossil-pin abandonment evidence', () => {
-    const d = buildCheckpointDetail({
-      reason: 'candidate-fossil',
-      green: null,
-      candidate: 'd'.repeat(40),
-      fossilAbandonment: {
-        abandonedCandidate: 'a'.repeat(40),
-        ageMs: 121 * 60_000 + 999.9,
-        thresholdMs: 120 * 60_000 + 0.9,
-        reason: 'candidate-fossil',
-      },
-    });
-
-    expect(d.fossilAbandonment).toEqual({
-      abandonedCandidate: 'a'.repeat(12),
-      ageMs: 121 * 60_000 + 999,
-      thresholdMs: 120 * 60_000,
-      reason: 'candidate-fossil',
-    });
-  });
-
   it('EI-203121: buildCheckpointDetail persists bounded per-leg execution identity beside repairQueue', () => {
     const d = buildCheckpointDetail({
       reason: 'not-green',
