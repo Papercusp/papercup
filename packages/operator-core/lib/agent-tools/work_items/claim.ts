@@ -29,6 +29,7 @@ import {
   type ClaimFloorAttribution,
   type UnresolvedDepBlocker,
 } from '../../work-items';
+import { mintForceTakeoverAdmission } from '../../issues-engineer';
 import { lookupWorkItem } from './_lookup';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { holderContextReader, resolveHolderAdvisory } from '../coordination/holder-advisory';
@@ -450,6 +451,18 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
   // on every claim, and it is what the batch test caught. Awaiting here costs nothing measurable
   // because the read has been in flight across admission + the pre-claim lookup already.
   const concurrency = await concurrencyBefore;
+  // EI-22345414208647835: carry the force guard's authorization into the claim writer
+  // as a server-minted capability. The core CAS still requires the exact expected holder
+  // at UPDATE time; this only releases the orthogonal born-pending admission floor for
+  // the checked takeover.
+  const forceTakeoverAdmission = forced
+    ? mintForceTakeoverAdmission({
+        itemId: it.id,
+        target: claimer,
+        expectedAssignee: forced.holder,
+        workspaceId: identity.workspaceId ?? '',
+      })
+    : undefined;
   // EI-20731607691070897: `fromHolder` lets a caller hand an item THEY hold to a named
   // `assignee` in this same compare-and-claim, instead of being refused and left with
   // release → peer-claims (which exposes the item to the whole fleet in between). When
@@ -458,6 +471,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     harness: it.harness,
     fromHolder: claimerDefault,
     ...(forced ? { expectedAssignee: forced.holder } : {}),
+    ...(forceTakeoverAdmission ? { forceTakeoverAdmission } : {}),
   });
   if (workItem && forced) {
     // The CAS has landed; leave both a durable audit row and the same holder/owner
