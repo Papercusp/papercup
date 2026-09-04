@@ -4760,7 +4760,19 @@ function leadClause(p: Omit<PipelinePosition, 'summary'>): string {
       (p.gate.fireStaleReason ? `${p.gate.fireStaleReason} ` : '')
     );
   }
-  if (!p.nextAction) return `WAITING AT ${at} (nothing to do — this leg is advancing on its own). `;
+  if (!p.nextAction) {
+    // EI-22162745262638300: a measured gate wait is only a release-plane wait.
+    // The implementation/acceptance plane remains usable on staging/current-build,
+    // so a bare "nothing to do" sentence strands work that does not need main/:3070.
+    if (p.blockedOn === 'gate') {
+      return (
+        'WAITING AT GATE (the release verdict is advancing on its own). ' +
+        'Continue implementation and non-final verification on staging/current-build; ' +
+        'wait for this gate only for final shipment or a deployed-only check. '
+      );
+    }
+    return `WAITING AT ${at} (nothing to do — this leg is advancing on its own). `;
+  }
   // When the lever belongs to a LATER stage than where the change sits, say both: "the leg
   // you are on is fine, but this one is not". Collapsing them would either hide that the
   // change is still upstream, or hide that something downstream is actionable now.
