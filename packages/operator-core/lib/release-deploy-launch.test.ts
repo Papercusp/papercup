@@ -132,6 +132,7 @@ describe('computeDeployStatus — decision tree', () => {
       zeroAttemptStallMs: 15 * 60_000,
       fixerSpawnId: 'fixer-1',
       fixerAlive: false,
+      signature: [],
       dispatchReservation: null,
       decision: 'recover-dead-fixer',
       retireAllowed: true,

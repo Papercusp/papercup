@@ -829,6 +829,7 @@ describe("EI-21007486441633274: real frozen-repair ancestry reconciliation", () 
         updatedAtMs: Date.now(),
         fixerSpawnId: "fixture-fixer",
         failingTests: [],
+        signature: [],
       });
 
       expect(joined).toMatch(/^[0-9a-f]{40}$/);

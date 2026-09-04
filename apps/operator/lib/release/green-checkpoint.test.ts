@@ -411,6 +411,7 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
       updatedAtMs: now - 500,
       fixerSpawnId: null,
       failingTests: ["lib/broken.test.ts"],
+      signature: [],
     };
     const logs: string[] = [];
     const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
@@ -457,6 +458,7 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
       updatedAtMs: now - 500,
       fixerSpawnId: null,
       failingTests: ["lib/broken.test.ts"],
+      signature: [],
     };
     let reads = 0;
     let queue: FrozenCandidateRepairQueue | null = staleQueue;
@@ -505,6 +507,7 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
       updatedAtMs: now - 500,
       fixerSpawnId: null,
       failingTests: ["lib/broken.test.ts"],
+      signature: [],
     };
     let queue: FrozenCandidateRepairQueue | null = staleQueue;
     const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
@@ -783,6 +786,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         expiresAtMs: now + 60_000,
       },
       failingTests: ["lib/broken.test.ts"],
+      signature: [],
     };
     const writes: FrozenCandidateRepairQueue[] = [];
     const { deps, calls } = stubDeps(true);
@@ -837,6 +841,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       updatedAtMs: now - 500,
       fixerSpawnId: "no-op-fixer",
       failingTests: ["lib/broken.test.ts"],
+      signature: [],
       convergenceRounds: [
         { round: 1, head: frozen, failingCount: 1, atMs: now - 1_000 },
       ],
@@ -899,6 +904,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       updatedAtMs: now - 500,
       fixerSpawnId: "no-op-fixer",
       failingTests: ["lib/broken.test.ts"],
+      signature: [],
       // The converged head was ALREADY verified red (round 2). A no-op fixer here is a failed
       // attempt, and reading it as "verify" would spend a full suite every tick.
       convergenceRounds: [
@@ -960,6 +966,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         expiresAtMs: now + 60_000,
       },
       failingTests: ["lib/broken.test.ts"],
+      signature: [],
     };
     const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
     let dispatchCount = 0;
@@ -1179,6 +1186,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       updatedAtMs: now - 500,
       fixerSpawnId: null,
       failingTests: ["lib/broken.test.ts"],
+      signature: [],
     };
     const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
     let renewals = 0;
@@ -1268,6 +1276,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       // A bare file path with no workspace beside it: the file rescue cannot locate it, so
       // nothing is selectively re-runnable and the full gate at the repair head decides.
       failingTests: ["lib/broken.test.ts"],
+      signature: [],
     };
     let verificationExecution: Parameters<CheckpointDeps["runGreen"]>[2];
     const { deps, calls } = stubDeps(true);
@@ -1334,6 +1343,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         "lib/broken.test.ts",
         "lint:identity-leak",
       ],
+      signature: [],
     };
     const { deps, calls } = stubDeps(true);
     const retestedRefs: string[] = [];
@@ -1417,6 +1427,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         "papercusp-desktop :: cargo test",
         "bin/lib/b3-revocation-kcut.selftest.sh",
       ],
+      signature: [],
     };
     const { deps, calls } = stubDeps(true);
     deps.readFrozenRepairQueue = async () => queue;
@@ -1472,6 +1483,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       // nothing selective is measured and the full gate at the repair head decides (the
       // 2026-09-03T18:23Z shape: 13 files + a cargo and a seed-check entry).
       failingTests: ["lib/broken.test.ts", "papercusp-desktop :: cargo test"],
+      signature: [],
     };
     const { deps, calls } = stubDeps(true);
     const logs: string[] = [];
@@ -1534,6 +1546,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       updatedAtMs: now - 500,
       fixerSpawnId: "fixer-1",
       failingTests: ["lib/broken.test.ts", "papercusp-desktop :: cargo test"],
+      signature: [],
     };
     const { deps, calls } = stubDeps(true);
     deps.readFrozenRepairQueue = async () => queue;
@@ -1594,6 +1607,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       updatedAtMs: now - 500,
       fixerSpawnId: "fixer-1",
       failingTests: ["lint:tsc"],
+      signature: [],
     };
     const { deps, calls } = stubDeps(true);
     const resolvedTips = [proofTipBefore, proofTipAfter];
@@ -1658,6 +1672,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       updatedAtMs: now - 500,
       fixerSpawnId: "fixer-1",
       failingTests: ["@papercusp/web", "lib/broken.test.ts"],
+      signature: [],
     };
     const { deps, calls } = stubDeps(true);
     const retestedRefs: string[] = [];
@@ -1731,6 +1746,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       updatedAtMs: now - 500,
       fixerSpawnId: "fixer-1",
       failingTests: ["lib/broken.test.ts"],
+      signature: [],
     };
     const { deps, calls } = stubDeps(true);
     deps.readFrozenRepairQueue = async () => queue;
@@ -1855,6 +1871,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       updatedAtMs: now - 500,
       fixerSpawnId: "fixer-1",
       failingTests: ["lib/first.test.ts"],
+      signature: [],
     };
     const dispatchedHeads: string[] = [];
     const { deps, calls } = stubDeps(false, ["lib/still-broken.test.ts"]);
@@ -1907,6 +1924,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       updatedAtMs: now - 30_000,
       fixerSpawnId: "dead-fixer",
       failingTests: ["lib/still-broken.test.ts"],
+      signature: [],
     };
     const { deps, calls } = stubDeps(true);
     const writes: Array<FrozenCandidateRepairQueue | null> = [];
@@ -1991,6 +2009,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       updatedAtMs: now - 30_000,
       fixerSpawnId: "dead-fixer",
       failingTests: ["lib/still-broken.test.ts"],
+      signature: [],
     };
     const { deps, calls } = stubDeps(true);
     const writes: Array<FrozenCandidateRepairQueue | null> = [];
@@ -13120,6 +13139,7 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     updatedAtMs: Date.now() - 500,
     fixerSpawnId: null,
     failingTests: ["lib/broken.test.ts"],
+    signature: [],
   });
 
   /**

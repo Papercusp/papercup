@@ -3089,6 +3089,7 @@ describe('computeStages: position x health', () => {
             zeroAttemptStallMs: 15 * 60_000,
             fixerSpawnId: 'dead-fixer',
             fixerAlive: false,
+            signature: [],
             dispatchReservation: null,
             // This fixture supplies no shared-tree edit set, so the collision probe is
             // explicitly UNMEASURED rather than a false all-clear (measured:false ≠ zero paths).
@@ -5429,6 +5430,7 @@ describe('stage levers (P-005)', () => {
     zeroAttemptStallMs: 15 * 60_000,
     fixerSpawnId: 'dead-fixer',
     fixerAlive: false,
+    signature: [],
     dispatchReservation: null,
     sharedTreeCollision: {
       measured: false,
