@@ -116,6 +116,10 @@ import {
   readStructuredOwnerAsk,
 } from './harness/improvements/agent-review-policy';
 import { hasResourceGovernorReceiptPayload, ResourceGovernorReleaseRequiredError } from './resource-governor/queue';
+import {
+  projectWorkItemColumns,
+  type WorkItemReadOptions,
+} from './work-item-read-projection';
 
 /**
  * Release cleanup is only needed on the explicit release paths. Keep the
@@ -176,6 +180,8 @@ import {
   isLeaderDispatchAdmission,
   deriveSelfFiledFalloutAdmission,
   isSelfFiledFalloutAdmission,
+  isForceTakeoverAdmission,
+  type ForceTakeoverAdmission,
   mergeIssuePayload,
   planItemSourceFromPayloadPatch,
   markIssueProgress,
@@ -1557,7 +1563,11 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
 }
 
 /** Resolve one work-item by id, searching both kind-tables (ids are disjoint across families). */
-export async function getWorkItem(id: string, harness?: string): Promise<WorkItem | null> {
+export async function getWorkItem(
+  id: string,
+  harness?: string,
+  opts: WorkItemReadOptions = {},
+): Promise<WorkItem | null> {
   // ⚠ `harness` is NOT applied to the issue-family branch — see harnessScopeMismatch()
   // below for why that is deliberate, and for the guard that covers what it leaves open.
   //
@@ -1570,9 +1580,9 @@ export async function getWorkItem(id: string, harness?: string): Promise<WorkIte
   // `getFeatureWorkItemOnly` 12 lines below already states the correct rule (F-B3: "a
   // bare WI/F id is unique only within a (workspace, harness), not globally") — the two
   // halves of one id space disagreed, and the issue half was the one being trusted.
-  const issue = await getIssue(id);
+  const issue = await getIssue(id, opts);
   if (issue) return issueToWorkItem(issue);
-  return getFeatureWorkItemOnly(id, harness);
+  return getFeatureWorkItemOnly(id, harness, opts);
 }
 
 /**
@@ -1610,13 +1620,17 @@ import { trackDetached } from './detached-imports';
  * can reuse it directly instead of re-invoking the full `getWorkItem` (which would
  * redundantly re-run the issue-family lookup a claimer has already resolved).
  */
-async function getFeatureWorkItemOnly(id: string, harness?: string): Promise<WorkItem | null> {
+async function getFeatureWorkItemOnly(
+  id: string,
+  harness?: string,
+  opts: WorkItemReadOptions = {},
+): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
   // F-B3 (workspace-data-isolation-leaks): a bare WI/F id is unique only within a
   // (workspace, harness), not globally — scope to the active workspace so an id
   // collision across workspaces can't return the wrong row (getOrgPg bypasses RLS).
   const rows = await sql<FeatureRowDb[]>`
-    SELECT ${sql.unsafe(FEATURE_COLS)}
+    SELECT ${sql.unsafe(projectWorkItemColumns(FEATURE_COLS, opts.payloadProjection))}
       FROM harness_shared.harness_features_consolidated
      WHERE feature_id = ${id}
        AND workspace_id = ${activeWorkspaceId()}
@@ -4846,6 +4860,13 @@ export async function claimWorkItem(
      * changes between the guard read and the write.
      */
     expectedAssignee?: string;
+    /**
+     * EI-22345414208647835 — opaque capability minted by work_items:claim
+     * after its checked force guard authorizes replacing the exact holder.
+     * It bypasses only the born-pending admission floor; the expected-holder
+     * CAS and feature-family G2/origin floor still apply.
+     */
+    forceTakeoverAdmission?: ForceTakeoverAdmission;
   } = {},
 ): Promise<WorkItem | null> {
   // EI-1545: resolve the issue-scope workspace ONCE, up front, and reuse that SAME
@@ -4900,6 +4921,7 @@ export async function claimWorkItem(
       workspaceId: issueWs,
       fromHolder: opts.fromHolder,
       expectedAssignee: opts.expectedAssignee,
+      forceTakeoverAdmission: opts.forceTakeoverAdmission,
       ...(isLeaderDispatchAdmission(leaderDispatchAdmission) ? { leaderDispatchAdmission } : {}),
       ...(isSelfFiledFalloutAdmission(selfFiledFalloutAdmission) ? { selfFiledFalloutAdmission } : {}),
     });
@@ -4950,7 +4972,24 @@ export async function claimWorkItem(
          -- (unless its verified author is trusted — P-010 trust leg, ws-scoped).
          AND ${autoPickableWhereSql(sql, ws)}
          -- P-002 born-pending: duplicate screening is a second, orthogonal gate.
-         AND ${admittedWhereSql(sql)}
+         AND ${
+           (() => {
+             const forceAdmission =
+               isForceTakeoverAdmission(opts.forceTakeoverAdmission) &&
+               opts.forceTakeoverAdmission.itemId === id &&
+               opts.forceTakeoverAdmission.target === assignee &&
+               opts.forceTakeoverAdmission.workspaceId === ws &&
+               opts.forceTakeoverAdmission.expectedAssignee === expectedAssignee
+                 ? opts.forceTakeoverAdmission
+                 : null;
+             return forceAdmission
+               ? sql`(
+                   ${admittedWhereSql(sql)}
+                   OR (admission = 'pending' AND taken_by = ${forceAdmission.expectedAssignee})
+                 )`
+               : admittedWhereSql(sql);
+           })()
+         }
       RETURNING ${sql.unsafe(FEATURE_COLS)}`;
     claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }
@@ -5469,7 +5508,12 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
            EXISTS (
              SELECT 1 FROM harness_shared.harness_features_consolidated bf
               WHERE bf.workspace_id = harness_shared.harness_features_consolidated.workspace_id
-                AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
+                -- EI-218628: split the dep-side scalar so the work_items primary key can
+                -- serve both identity columns. Keep this aligned with unsatisfiedBlockerSql
+                -- and migration 1087.
+                AND position('#' in d.blocker_ref) > 0
+                AND bf.harness_slug = split_part(d.blocker_ref, '#', 1)
+                AND bf.feature_id = substring(d.blocker_ref from position('#' in d.blocker_ref) + 1)
                 AND (
                   (bf.authority IS NOT NULL AND bf.authority NOT IN ('committed', 'validated')
                     AND lower(COALESCE(bf.status, '')) NOT IN ('deprecated', 'dropped'))
