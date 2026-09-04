@@ -93,7 +93,9 @@ import {
 // types `mock.calls` as the empty tuple `[]`, so reading `call[0]` to inspect
 // the dispatched payload is a TS2493 error against a call that genuinely
 // carries an argument at runtime.
-const mockCreateWorkflowDispatch = vi.fn(async (_args?: unknown) => ({}) as unknown);
+const mockCreateWorkflowDispatch = vi.fn(
+  async (_args?: unknown) => ({}) as unknown,
+);
 const mockGetOctokit = vi.fn(async () => ({
   rest: { actions: { createWorkflowDispatch: mockCreateWorkflowDispatch } },
 }));
@@ -199,8 +201,8 @@ function makeExec(responses: ExecResp[]) {
     // setupTree now establishes exact source before looking up its input key.
     const programmed =
       isDependencyGenerationSelector || isSourceOnlySetup
-      ? undefined
-      : responses[i++];
+        ? undefined
+        : responses[i++];
     const r = isDependencyGenerationSelector
       ? {
           code: 0,
@@ -212,14 +214,13 @@ function makeExec(responses: ExecResp[]) {
             stdout:
               "[setup-release] SETUP_RELEASE_SOURCE_ONLY ref=fixture sha=fixture status=ready\n",
           }
-      : programmed ??
-      (isSetupRelease
-        ? {
-            code: 0,
-            stdout:
-              `[setup-release] DEPENDENCY_GENERATION_PIN identity=${FIXTURE_DEPENDENCY_GENERATION_ID}`,
-          }
-        : { code: 0 });
+        : (programmed ??
+          (isSetupRelease
+            ? {
+                code: 0,
+                stdout: `[setup-release] DEPENDENCY_GENERATION_PIN identity=${FIXTURE_DEPENDENCY_GENERATION_ID}`,
+              }
+            : { code: 0 }));
     return { code: r.code, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   };
   return { exec, calls };
@@ -325,6 +326,20 @@ writeFileSync(
 afterAll(() =>
   rmSync(workspacesTypecheckTree, { recursive: true, force: true }),
 );
+
+// EI-19391297380137349: apps/operator has its own baseline-ratcheted project, outside the
+// operator-core typecheck. Isolate its optional post-suite leg from every sibling gate.
+const operatorTypecheckTree = mkdtempSync(
+  join(tmpdir(), "green-cp-operator-typecheck-tree-"),
+);
+writeFileSync(
+  join(operatorTypecheckTree, "package.json"),
+  JSON.stringify({
+    name: "cp-operator-typecheck-fixture",
+    scripts: { "lint:tsc:operator": "node scripts/lint-tsc-operator.mjs" },
+  }),
+);
+afterAll(() => rmSync(operatorTypecheckTree, { recursive: true, force: true }));
 
 // WI-38284: root `scripts/*.ts` is its own no-emit typecheck project. Keep a candidate
 // fixture that opts into only that script so these tests exercise the real optional-leg
@@ -454,7 +469,9 @@ describe("WI-41720 / D-073: dependency-selection fatal path reaches the real CLI
 
     const exec: CheckpointExec = async (cmd, args, opts) => {
       expect(args).toContainEqual(
-        expect.stringMatching(/apps\/operator\/bin\/release\/dependency-generation\.sh$/),
+        expect.stringMatching(
+          /apps\/operator\/bin\/release\/dependency-generation\.sh$/,
+        ),
       );
       opts?.onOutput?.(
         "stdout",
@@ -513,13 +530,10 @@ describe("WI-41720 / D-073: dependency-selection fatal path reaches the real CLI
       releaseLock: () => observed.push("lock:release"),
     });
     const exits: number[] = [];
-    const handler = createFatalProcessHandler(
-      finalizeFatalError,
-      (code) => {
-        observed.push(`exit:${code}`);
-        exits.push(code);
-      },
-    );
+    const handler = createFatalProcessHandler(finalizeFatalError, (code) => {
+      observed.push(`exit:${code}`);
+      exits.push(code);
+    });
 
     handler(capturedFailure);
     await vi.waitFor(() => expect(exits).toEqual([1]));
@@ -835,7 +849,8 @@ describe("P-007/D-004: the real deps no longer wire a frozen-repair staging join
         // Record<string, unknown> do not sufficiently overlap for a direct
         // assertion (TS2352). Probing for a key the type no longer declares is
         // exactly the point of this assertion, so widen through `unknown`.
-        (deps as unknown as Record<string, unknown>).reconcileFrozenRepairIntoStaging,
+        (deps as unknown as Record<string, unknown>)
+          .reconcileFrozenRepairIntoStaging,
       ).toBeUndefined();
       // POSITIVE CONTROL: these same deps DO carry the hooks the gate still uses, so an empty
       // or mis-built `deps` object cannot make the assertion above pass by accident.
@@ -936,22 +951,20 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
   it("threads candidate and frozen-repair attribution into the suite without replacing the verifier run id", async () => {
     // suite green → marker grep has no match → SPA build green.
     const { exec, calls } = makeExec([{ code: 0 }, { code: 1 }, { code: 0 }]);
-    const r = await realCheckpointDeps(cfg, exec, "repair-verifier-run").runGreen(
-      cpTree,
-      "base-sha",
-      {
-        candidate: "c".repeat(40),
-        affectedTestProofGroup: "initial-proof-run",
-      },
-    );
+    const r = await realCheckpointDeps(
+      cfg,
+      exec,
+      "repair-verifier-run",
+    ).runGreen(cpTree, "base-sha", {
+      candidate: "c".repeat(40),
+      affectedTestProofGroup: "initial-proof-run",
+    });
 
     expect(r.green).toBe(true);
     expect(calls[0].opts?.env?.PAPERCUSP_TEST_RUN_GROUP).toBe(
       "repair-verifier-run",
     );
-    expect(calls[0].opts?.env?.PAPERCUSP_TEST_RUN_COMMIT).toBe(
-      "c".repeat(40),
-    );
+    expect(calls[0].opts?.env?.PAPERCUSP_TEST_RUN_COMMIT).toBe("c".repeat(40));
     expect(calls[0].opts?.env?.AFFECTED_TASK_VERDICT_PROOF_GROUP).toBe(
       "initial-proof-run",
     );
@@ -1021,7 +1034,9 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
         output: "typecheck passed",
       },
     });
-    expect(typecheck?.executionIdentity?.dependencies.nodeModules).toMatchObject({
+    expect(
+      typecheck?.executionIdentity?.dependencies.nodeModules,
+    ).toMatchObject({
       hash: null,
       inode: null,
       source: "missing",
@@ -1323,6 +1338,56 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
     } finally {
       rmSync(allTree, { recursive: true, force: true });
     }
+  });
+
+  // EI-19391297380137349: apps/operator's canonical baseline gate existed but the release
+  // checkpoint never invoked it. These assertions keep discovery, execution, and the stable
+  // failure signature wired through the real dependency path.
+  it("detects the optional lint:tsc:operator script without requiring it from subject hives", () => {
+    expect(hasNpmScript(cpTree, "lint:tsc:operator")).toBe(false);
+    expect(hasNpmScript(operatorTypecheckTree, "lint:tsc:operator")).toBe(true);
+  });
+
+  it("runs the operator typecheck leg before the SPA build when the candidate provides it", async () => {
+    const { exec, calls } = makeExec([
+      { code: 0 },
+      { code: 0 },
+      { code: 1 },
+      { code: 0 },
+    ]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(
+      operatorTypecheckTree,
+      "base-sha",
+    );
+
+    expect(r.green).toBe(true);
+    expect(calls).toHaveLength(4);
+    expect(calls[1].cmd).toBe("npm");
+    expect(calls[1].args).toEqual(["run", "lint:tsc:operator"]);
+    expect(calls[1].opts?.cwd).toBe(operatorTypecheckTree);
+    expect(calls[1].opts?.env?.GREEN_CHECKPOINT).toBe("1");
+    expect(calls[2].cmd).toBe("git");
+    expect(calls[3].args).toContain("build");
+  });
+
+  it("holds the candidate when apps/operator typecheck reports a regression", async () => {
+    const { exec, calls } = makeExec([
+      { code: 0 },
+      {
+        code: 1,
+        stdout: "apps/operator/lib/host.ts(7,3): error TS2322: Type mismatch",
+      },
+    ]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(
+      operatorTypecheckTree,
+      null,
+    );
+
+    expect(r.green).toBe(false);
+    expect(r.failingTests).toContain("lint:tsc:operator");
+    expect(r.summary).toContain("OPERATOR TYPECHECK FAILED");
+    expect(r.summary).toContain("apps/operator/lib/host.ts");
+    expect(calls.some((c) => c.args.includes("build"))).toBe(false);
   });
 
   // WI-38284: root scripts are load-bearing TypeScript CLIs, but they sit outside every
@@ -1860,7 +1925,8 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
       if (i === 1)
         return {
           code: 1,
-          stdout: ">>> @example/fixture-x :: npm run test\n FAIL  lib/a.test.ts > c",
+          stdout:
+            ">>> @example/fixture-x :: npm run test\n FAIL  lib/a.test.ts > c",
           stderr: "",
         };
       throw new Error("vitest spawn ENOMEM"); // the isolation re-run itself errors
@@ -2460,8 +2526,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       // while the selector is still unseen. If acquireCheckpointRunLock moves
       // above publication, this hook makes the test fail inside the publisher.
       const prelockTrace = join(root, "publisher-ran-before-lock");
-      process.env.DEPENDENCY_GENERATION_AFTER_COPY_HOOK =
-        `test ! -e ${JSON.stringify(lockDir)} && printf prelock > ${JSON.stringify(prelockTrace)}`;
+      process.env.DEPENDENCY_GENERATION_AFTER_COPY_HOOK = `test ! -e ${JSON.stringify(lockDir)} && printf prelock > ${JSON.stringify(prelockTrace)}`;
 
       // The actual install-mutex wrapper + dependency-generation.sh run here.
       // With no selector on disk, this must publish/index the exact committed
@@ -2565,8 +2630,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       if (priorAfterCopyHook === undefined)
         delete process.env.DEPENDENCY_GENERATION_AFTER_COPY_HOOK;
       else
-        process.env.DEPENDENCY_GENERATION_AFTER_COPY_HOOK =
-          priorAfterCopyHook;
+        process.env.DEPENDENCY_GENERATION_AFTER_COPY_HOOK = priorAfterCopyHook;
       if (priorPcHeavyDir === undefined) delete process.env.PC_HEAVY_DIR;
       else process.env.PC_HEAVY_DIR = priorPcHeavyDir;
       if (lock?.acquired) lock.release();
@@ -2574,9 +2638,10 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     }
   }, 120_000);
 
-  function expectMutexGuardedGenerationSelector(
-    call: { cmd: string; args: string[] },
-  ) {
+  function expectMutexGuardedGenerationSelector(call: {
+    cmd: string;
+    args: string[];
+  }) {
     expect(call.cmd).toBe(process.execPath);
     expect(call.args).toEqual([
       expect.stringMatching(/scripts\/npm-install-safe\.mjs$/),
@@ -2585,7 +2650,9 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       "--exec-under-lock",
       "--",
       "bash",
-      expect.stringMatching(/apps\/operator\/bin\/release\/dependency-generation\.sh$/),
+      expect.stringMatching(
+        /apps\/operator\/bin\/release\/dependency-generation\.sh$/,
+      ),
       "--integration",
       "/int",
       "--select-inputs-from",
@@ -2661,8 +2728,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     const { exec, calls } = makeExec([
       {
         code: 0,
-        stdout:
-          `copied checkpoint dependencies\n[setup-release] DEPENDENCY_GENERATION_PIN identity=${generationId}`,
+        stdout: `copied checkpoint dependencies\n[setup-release] DEPENDENCY_GENERATION_PIN identity=${generationId}`,
       },
     ]);
 
@@ -2708,8 +2774,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     const { exec, calls } = makeExec([
       {
         code: 0,
-        stdout:
-          `copied checkpoint dependencies\n[setup-release] DEPENDENCY_GENERATION_PIN identity=${generationId}`,
+        stdout: `copied checkpoint dependencies\n[setup-release] DEPENDENCY_GENERATION_PIN identity=${generationId}`,
       },
     ]);
     const setup = await realCheckpointDeps(cfg, exec).setupTree("cand123", {
@@ -2726,11 +2791,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     expect(calls[0].opts?.onOutput).toBeTypeOf("function");
     expect(calls[0].opts?.killProcessGroupOnTimeout).toBe(true);
     expect(calls[1].cmd).toBe("bash");
-    expect(
-      calls[1].args[0].endsWith(
-        "scripts/pc-heavy.sh",
-      ),
-    ).toBe(true);
+    expect(calls[1].args[0].endsWith("scripts/pc-heavy.sh")).toBe(true);
     expect(calls[1].args).toEqual(
       // `force` (not `auto`): the checkpoint tree must always re-copy node_modules — the
       // `auto` heuristic is blind to nested-dep drift and spuriously red the gate (EI-2699).
@@ -2740,7 +2801,9 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       expect.arrayContaining([
         "--",
         "bash",
-        expect.stringMatching(/apps\/operator\/bin\/release\/setup-release-checkout\.sh$/),
+        expect.stringMatching(
+          /apps\/operator\/bin\/release\/setup-release-checkout\.sh$/,
+        ),
         "--ref",
         "cand123",
         "--integration",
@@ -2765,8 +2828,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     expect(calls[1].opts?.env?.PC_HEAVY_RELEASE_GATE).toBe("1");
     expect(setup).toEqual({
       identity: `setup-release-checkout:cand123:deps=${generationId}`,
-      output:
-        `copied checkpoint dependencies\n[setup-release] DEPENDENCY_GENERATION_PIN identity=${generationId}`,
+      output: `copied checkpoint dependencies\n[setup-release] DEPENDENCY_GENERATION_PIN identity=${generationId}`,
     });
   });
 
@@ -2797,9 +2859,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       realCheckpointDeps(cfg, exec).setupTree("cand-moved-generation", {
         preparedSource: true,
       }),
-    ).rejects.toThrow(
-      `expected selected identity ${generationId}`,
-    );
+    ).rejects.toThrow(`expected selected identity ${generationId}`);
   });
 
   it("push rides the PAPERCUSP_MAIN_PUSH_OK guard (the one writer allowed past the main pre-push hook)", async () => {
@@ -2888,7 +2948,9 @@ describe("materialization phase heartbeat — EI-21357012876642589", () => {
     vi.useFakeTimers();
     const lockDirs: string[] = [];
     try {
-      const lockDir = mkdtempSync(join(tmpdir(), "green-checkpoint-heartbeat-"));
+      const lockDir = mkdtempSync(
+        join(tmpdir(), "green-checkpoint-heartbeat-"),
+      );
       lockDirs.push(lockDir);
       writeCheckpointRunPhase(lockDir, "materializing");
       const initial = readFileSync(join(lockDir, "phase.json"), "utf8");
@@ -2909,12 +2971,18 @@ describe("materialization phase heartbeat — EI-21357012876642589", () => {
       // The deadline tick only stops the heartbeat; it must not write a refresh at
       // or after the hard maximum, even though the recursive timer is still pending.
       vi.advanceTimersByTime(50);
-      expect(readFileSync(join(lockDir, "phase.json"), "utf8")).toBe(secondRefresh);
+      expect(readFileSync(join(lockDir, "phase.json"), "utf8")).toBe(
+        secondRefresh,
+      );
       vi.advanceTimersByTime(1_000);
-      expect(readFileSync(join(lockDir, "phase.json"), "utf8")).toBe(secondRefresh);
+      expect(readFileSync(join(lockDir, "phase.json"), "utf8")).toBe(
+        secondRefresh,
+      );
 
       // Normal setup completion stops the timer before its maximum as well.
-      const earlyStopDir = mkdtempSync(join(tmpdir(), "green-checkpoint-heartbeat-stop-"));
+      const earlyStopDir = mkdtempSync(
+        join(tmpdir(), "green-checkpoint-heartbeat-stop-"),
+      );
       lockDirs.push(earlyStopDir);
       writeCheckpointRunPhase(earlyStopDir, "materializing");
       const stopEarly = startMaterializationHeartbeat(earlyStopDir, {
@@ -2925,11 +2993,14 @@ describe("materialization phase heartbeat — EI-21357012876642589", () => {
       const beforeStop = readFileSync(join(earlyStopDir, "phase.json"), "utf8");
       stopEarly();
       vi.advanceTimersByTime(1_000);
-      expect(readFileSync(join(earlyStopDir, "phase.json"), "utf8")).toBe(beforeStop);
+      expect(readFileSync(join(earlyStopDir, "phase.json"), "utf8")).toBe(
+        beforeStop,
+      );
       stop();
     } finally {
       vi.useRealTimers();
-      for (const lockDir of lockDirs) rmSync(lockDir, { recursive: true, force: true });
+      for (const lockDir of lockDirs)
+        rmSync(lockDir, { recursive: true, force: true });
     }
   });
 });
@@ -3244,9 +3315,7 @@ describe("EI-19332206710686203: rescue re-runs carry an explicit per-test timeou
       expect(run.opts?.cwd).toBe(join(standaloneTree, "papercusp-desktop"));
     }
     expect(
-      calls.some(
-        (call) => call.cmd === "npm" && call.args.includes(file),
-      ),
+      calls.some((call) => call.cmd === "npm" && call.args.includes(file)),
     ).toBe(false);
   });
 });
@@ -3375,11 +3444,13 @@ describe("clearEscalation — sweeps the release-not-green CLASS, not the whole 
 
     it("does not match the detector alert, or a foreign row", () => {
       expect(
-        isReleaseNotGreenEscalation(row({ source: DETECTOR_ESCALATION_SOURCE })),
+        isReleaseNotGreenEscalation(
+          row({ source: DETECTOR_ESCALATION_SOURCE }),
+        ),
       ).toBe(false);
-      expect(isReleaseNotGreenEscalation(row({ source: "some-other-tool" }))).toBe(
-        false,
-      );
+      expect(
+        isReleaseNotGreenEscalation(row({ source: "some-other-tool" })),
+      ).toBe(false);
       expect(isReleaseNotGreenEscalation(null)).toBe(false);
       expect(isReleaseNotGreenEscalation(undefined)).toBe(false);
     });
@@ -3416,7 +3487,10 @@ describe("clearEscalation — sweeps the release-not-green CLASS, not the whole 
       const resolved = resolveEscalationCalls.map((c) => c.msg_id).sort();
       // Behaviour-PRESERVING for everything that exists today: the real row and
       // the legacy unmarked row are still resolved on recovery.
-      expect(resolved).toEqual(["esc-legacy-unmarked", "esc-release-not-green"]);
+      expect(resolved).toEqual([
+        "esc-legacy-unmarked",
+        "esc-release-not-green",
+      ]);
       // ...and the rows the old source-only sweep would have wrongly swept are
       // untouched. `esc-future-gate-alert` is the whole point of the change.
       expect(resolved).not.toContain("esc-future-gate-alert");
@@ -3433,9 +3507,17 @@ describe("clearEscalation — sweeps the release-not-green CLASS, not the whole 
       const oldPredicate = (e: Record<string, unknown>) =>
         e.source === "green-checkpoint";
       const rows = [
-        row({ msg_id: "esc-release-not-green", source: GATE_ESCALATION_SOURCE, [ESCALATION_CLASS_META_KEY]: RELEASE_NOT_GREEN_ESCALATION_CLASS }),
+        row({
+          msg_id: "esc-release-not-green",
+          source: GATE_ESCALATION_SOURCE,
+          [ESCALATION_CLASS_META_KEY]: RELEASE_NOT_GREEN_ESCALATION_CLASS,
+        }),
         row({ msg_id: "esc-legacy-unmarked", source: GATE_ESCALATION_SOURCE }),
-        row({ msg_id: "esc-future-gate-alert", source: GATE_ESCALATION_SOURCE, [ESCALATION_CLASS_META_KEY]: "some-future-gate-alert" }),
+        row({
+          msg_id: "esc-future-gate-alert",
+          source: GATE_ESCALATION_SOURCE,
+          [ESCALATION_CLASS_META_KEY]: "some-future-gate-alert",
+        }),
       ];
       expect(rows.filter(oldPredicate)).toHaveLength(3);
       expect(rows.filter(isReleaseNotGreenEscalation)).toHaveLength(2);
