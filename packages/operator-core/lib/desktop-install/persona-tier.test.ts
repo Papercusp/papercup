@@ -46,16 +46,15 @@ describe('stripFullOnlySections (P-017)', () => {
   });
 });
 
-describe('renderModesPolicy tiers (P-017)', () => {
-  it('full = today (AUTO negotiation + IDEATE); fleet = compact always-AUTO, no IDEATE', () => {
+describe('renderModesPolicy tiers (P-017 → P-021)', () => {
+  it('both tiers render the same KERNEL stub — the definitions are identity layers bound by registry state, not by tier', () => {
     const full = renderModesPolicy();
-    expect(full).toContain('## AUTO mode — the owner\'s switch');
-    expect(full).toContain('## IDEATE mode');
     const fleet = renderModesPolicy('fleet');
-    expect(fleet).toContain('## AUTO mode — you are in it');
-    expect(fleet).not.toContain('IDEATE');
-    expect(fleet).toContain('loop:arm');
-    expect(fleet.length).toBeLessThan(full.length / 4);
+    expect(fleet).toBe(full);
+    expect(full).toContain('## Operating modes');
+    expect(full).not.toContain('## AUTO mode — the owner\'s switch');
+    expect(full).not.toContain('## AUTO mode — you are in it');
+    expect(full).not.toContain('## IDEATE mode');
   });
 });
 

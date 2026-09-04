@@ -962,7 +962,10 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
   // invent-vs-patch switch + the AUTO×IDEATE composition table — is spliced into BOTH the
   // engineer + power su bases at AUTO_MODE_MARKER (the AUTO half used to be hand-copied into
   // papercusp-su-engineer.tools.md only; power had none).
-  it('splices the canonical operating-modes clause (AUTO + IDEATE) at the AUTO-MODE marker (engineer + power)', async () => {
+  // identities-v1 P-021 (D-008): the marker now splices the KERNEL half of the modes (state,
+  // registration, the implication table, the authority split); the AUTO / IDEATE / DRAIN /
+  // AUDIT DEFINITIONS are identity layers bound by registry state, absent from a modes-off render.
+  it('splices the kernel operating-modes stub at the AUTO-MODE marker (engineer + power) — no definition rides along', async () => {
     const AUTO_MARKER = '<!-- PAPERCUSP-SU:AUTO-MODE -->';
     for (const [profile, baseName, label] of [
       ['engineer', 'papercusp-su-engineer.tools.md', '# Engineer base'],
@@ -973,23 +976,22 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
         `${label}\n\n${AUTO_MARKER}\n\n${MARKER}\n\n## Tail\n`,
       );
       const r = await renderSuPlaybook({ agent: 'claude', profile, operatorAppRoot: tmpAppRoot });
-      expect(r.text).toContain('## AUTO mode — the owner\'s switch for "act, don\'t ask"');
-      // the fleshed-out AUTO↔loop relationship must be present
-      expect(r.text).toContain('AUTO mode + the engine loop are the two halves');
-      // the AUTO-mode loop cadence default (1m) must be present (owner directive 2026-06-24)
-      expect(r.text).toContain('intervalSec: 60');
-      // IDEATE mode (owner directive 2026-06-30): the second switch + the AUTO×IDEATE table
-      expect(r.text).toContain('## IDEATE mode — the owner\'s switch for "invent net-new, don\'t just patch"');
-      expect(r.text).toContain('IDEATE × AUTO compose');
-      expect(r.text).toContain('| **ideate on** |');
+      expect(r.text).toContain('## Operating modes — state in the registry, definitions as identity layers');
+      expect(r.text).toContain("mode:set { mode:'auto', reason, ownerDirected:true }");
+      // the definitions are NOT in a modes-off render (P-021 acceptance)
+      expect(r.text).not.toContain('## AUTO mode — the owner\'s switch for "act, don\'t ask"');
+      expect(r.text).not.toContain('AUTO mode + the engine loop are the two halves');
+      expect(r.text).not.toContain('## IDEATE mode — the owner\'s switch for "invent net-new, don\'t just patch"');
+      expect(r.text).not.toContain('IDEATE × AUTO compose');
       // the generated marker comment must never ship literally
       expect(r.text).not.toContain(AUTO_MARKER);
     }
   });
 
-  it('AUTO-MODE marker absent → clause omitted, no literal marker (opt-out base)', async () => {
+  it('AUTO-MODE marker absent → stub omitted, no literal marker (opt-out base)', async () => {
     // The beforeEach fixture base carries NO auto-mode marker — a base may opt out.
     const r = await renderSuPlaybook({ agent: 'claude', operatorAppRoot: tmpAppRoot });
+    expect(r.text).not.toContain('## Operating modes');
     expect(r.text).not.toContain('## AUTO mode');
     expect(r.text).not.toContain('## IDEATE mode');
     expect(r.text).not.toContain('<!-- PAPERCUSP-SU:AUTO-MODE -->');
