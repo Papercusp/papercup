@@ -451,15 +451,36 @@ export interface WorkspaceHostObservation {
   observedAt: string;
   drift: readonly string[];
 }
+/**
+ * One health signal.
+ *
+ * `ok: null` means NOT MEASURED: the probe behind this signal was never run, or this
+ * provider has no way to run it. That is a THIRD outcome, distinct from both pass and
+ * fail, and it must never be collapsed into a boolean. A provider that reads an optional
+ * observation field as `field === true` turns "nobody measured" into "failing", and one
+ * that reads it as `field === false` turns the same absence into "passing" — both are
+ * confident verdicts about a measurement that does not exist, and two call sites reading
+ * one unset field landed on opposite coercions here (WI-2143924: `attestHealth` reported
+ * `degraded` while `observe` reported `running`, for the same healthy host).
+ */
 export interface WorkspaceHostHealthCheck {
   name: string;
-  ok: boolean;
+  /** `true` = measured, passing · `false` = measured, failing · `null` = NOT MEASURED. */
+  ok: boolean | null;
   detail?: string;
 }
+/**
+ * `unknown` = the host is reachable and nothing measured has failed, but at least one
+ * check was never measured — so "healthy" is not a claim the attestation is entitled to
+ * make. A caller that gates on health MUST handle it explicitly: treating `unknown` as
+ * healthy ships a premature success, and polling for a `healthy` the provider cannot
+ * produce hangs forever.
+ */
+export type WorkspaceHostHealthStatus = "healthy" | "degraded" | "unreachable" | "unknown";
 export interface WorkspaceHostHealthAttestation {
   hostId: string;
   observedAt: string;
-  status: "healthy" | "degraded" | "unreachable";
+  status: WorkspaceHostHealthStatus;
   image?: WorkspaceHostImageRef;
   bootstrapVersion?: string;
   checks: readonly WorkspaceHostHealthCheck[];
