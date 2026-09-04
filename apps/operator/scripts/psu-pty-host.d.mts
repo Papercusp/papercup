@@ -1010,6 +1010,49 @@ export function controlBytes(decoded: any): any;
 /** Strip ANSI escapes (CSI / OSC / simple ESC pairs) + normalize \r so a TUI
  *  byte stream reads as plain lines. Pure — exported for tests. */
 export function stripAnsi(s: any): string;
+/**
+ * Normalize a PTY stream without making chunk boundaries observable.
+ *
+ * The Codex TUI emits ANSI paint sequences and carriage-return redraw frames.
+ * Applying {@link stripAnsi} independently to each `onData` chunk is not
+ * sufficient: an escape sequence or CRLF pair may be split across two chunks.
+ * This small state machine carries only those incomplete protocol fragments,
+ * strips terminal controls, turns CR redraws into physical lines, and chunks
+ * a line at a bounded UTF-8 byte size while preserving its visible text.
+ *
+ * @param {{maxLineBytes?: number}} [options]
+ * @returns {{push:(chunk?: any)=>string, flush:()=>string, reset:()=>void}}
+ */
+export function makeHeadlessLogNormalizer({ maxLineBytes, }?: {
+    maxLineBytes?: number;
+}): {
+    push: (chunk?: any) => string;
+    flush: () => string;
+    reset: () => void;
+};
+/**
+ * Open the normalized companion log for a headless PTY host.
+ *
+ * Writes are synchronous and bounded because this path is a diagnostic
+ * side-channel: a failed or full companion log must never interrupt the
+ * managed PTY. The file is retained as a tail-bounded, newline-delimited
+ * artifact; raw PTY bytes still travel through the original stdout fd.
+ *
+ * @param {string} path
+ * @param {{maxLineBytes?: number, maxBytes?: number, maxWriteBytes?: number}} [options]
+ * @returns {{path:string, enabled:boolean, push:(chunk?:any)=>void, flush:()=>void, close:()=>void}}
+ */
+export function createHeadlessNormalizedLogWriter(path: string, { maxLineBytes, maxBytes, maxWriteBytes, }?: {
+    maxLineBytes?: number;
+    maxBytes?: number;
+    maxWriteBytes?: number;
+}): {
+    path: string;
+    enabled: boolean;
+    push: (chunk?: any) => void;
+    flush: () => void;
+    close: () => void;
+};
 /** The onboarding actuator is never enabled for an interactive or non-Claude
  * launch. Pure and exported so the environment gate cannot silently broaden. */
 export function headlessClaudeOnboardingEnabled(env?: NodeJS.ProcessEnv): boolean;
@@ -1669,6 +1712,8 @@ export function injectTurn(sock: string, text: string, ownerId?: string): Promis
  * @param {(proof:any)=>Promise<void>} [o.onKickoffPersisted] lifecycle acknowledgement
  * @param {object} [o.signalSource]      process-like on/off signal source (tests)
  * @param {()=>object} [o.reapScopeResidue] exact-session-cgroup cleanup (tests)
+ * @param {string} [o.normalizedLogPath] optional headless grep-safe log path; normally
+ *   supplied through {@link HEADLESS_NORMALIZED_LOG_ENV} in `o.env`
  * @param {(args:string[])=>any} [o.mintRecycleArgs] mint argv for an ordinary recycle
  * @param {(args:string[])=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
@@ -1701,6 +1746,7 @@ export function hostThroughPty(o: {
     onKickoffPersisted?: ((proof: any) => Promise<void>) | undefined;
     signalSource?: object | undefined;
     reapScopeResidue?: (() => object) | undefined;
+    normalizedLogPath?: string | undefined;
     mintRecycleArgs?: ((args: string[]) => any) | undefined;
     mintCarryRespawnArgs?: ((args: string[]) => any) | undefined;
     refreshPersonaFile?: (() => Promise<any>) | undefined;
@@ -1711,6 +1757,16 @@ export function hostThroughPty(o: {
     activityPersistMs?: number | undefined;
     nativePersistenceTimeoutMs?: number | undefined;
 }): Promise<any>;
+/** Environment fragments injected by launchers and tests need not carry every
+ * ambient key that an application framework merges into NodeJS.ProcessEnv.
+ * @typedef {Record<string, string | undefined>} EnvironmentMap
+ */
+/**
+ * The environment key used by a headless spawn to give this host a separate,
+ * grep-safe copy of the child PTY stream. The ordinary stdout path remains
+ * byte-oriented/raw for the existing lifecycle and activity consumers.
+ */
+export const HEADLESS_NORMALIZED_LOG_ENV: "PAPERCUSP_PSU_HEADLESS_NORMALIZED_LOG";
 /** WI-38292: the psu-pty-host version THIS PROCESS IS ACTUALLY RUNNING, frozen at
  *  module load. psu-launcher.mjs imports this module ONCE into a long-lived process
  *  and `recycleChild` only ever replaces the CLI child, so a deployed host fix stays
@@ -1778,6 +1834,13 @@ export const SHUTDOWN_ACK_DELAY_MS: number;
  *  purpose — the consumer question is "active or idle for minutes?", and a
  *  per-byte rewrite would turn the pty bridge into an fs hot loop. */
 export const ACTIVITY_PERSIST_MS: 15000;
+/**
+ * Bounds for the diagnostic companion log. A PTY frame can contain an
+ * arbitrarily long carriage-return redraw, so line boundaries alone are not
+ * enough: a frame with no newline must be chunked before it reaches disk.
+ */
+export const HEADLESS_NORMALIZED_LOG_MAX_LINE_BYTES: number;
+export const HEADLESS_NORMALIZED_LOG_MAX_BYTES: number;
 /**
  * Claude can still show its first-run wizard to a headless launch even when
  * the persisted config says onboarding is complete. A human can press Enter

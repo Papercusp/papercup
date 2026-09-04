@@ -56,8 +56,8 @@ import {
   mergeDistilledRuns,
   parseFailureDetailsSidecar,
   TESTING_RUN_MAX_PAYLOAD_BYTES,
-  persistRunSnapshot,
   startRun,
+  startRunDurable,
   type SpawnRequest,
   type DistilledTestRun,
 } from '../../testing-run-store';
@@ -1371,8 +1371,8 @@ export async function runTestFilesCore(opts: {
       // checkouts have no scripts/test-files.mjs route, so they retain the
       // existing explicit recovery hint until that route can be represented as
       // one store run.
-      const detachedSnapshot = hasRouter
-        ? startRun(
+      const detachedStart = hasRouter
+        ? await startRunDurable(
             buildDetachedTestRunRequest({
               root,
               files: pathResolution.files,
@@ -1380,16 +1380,8 @@ export async function runTestFilesCore(opts: {
             }),
           )
         : undefined;
-      // startRun registers the run in THIS process's in-memory map and writes its
-      // durable row fire-and-forget. That write is bounded at 1s and swallows its
-      // failures, so under the very saturation that produced this timeout the run
-      // can have no durable row at all — and because the row is only re-written at
-      // finish, an operator restart during the run (routine here) then makes the id
-      // we are about to advertise permanently unpollable. Await one bounded persist
-      // so the advertised id is durable, and when it does not land, stop promising
-      // testing:run-status will answer. The upsert is idempotent and reads the live
-      // snapshot, so re-writing what startRun already queued is safe.
-      const detachedDurable = detachedSnapshot ? await persistRunSnapshot(detachedSnapshot) : false;
+      const detachedSnapshot = detachedStart?.snapshot;
+      const detachedDurable = detachedStart?.durable === true;
       const detachedRunId = detachedSnapshot?.runId;
       return {
         ok: false,

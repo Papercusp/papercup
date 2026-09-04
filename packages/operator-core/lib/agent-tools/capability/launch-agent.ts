@@ -1640,7 +1640,8 @@ export default defineTool({
         const terminalPid = o.terminalPid == null ? 'unavailable' : String(o.terminalPid);
         lines.push(
           `  • ${o.terminal} (launcher pid ${o.pid ?? '?'}; terminal pid ${terminalPid}) in ${cwd}` +
-            `${o.display ? ` [DISPLAY=${o.display}]` : ''}`,
+            `${o.display ? ` [DISPLAY=${o.display}]` : ''}` +
+            `${o.normalizedLogPath ? `; grep-safe log: ${o.normalizedLogPath}` : ''}`,
         );
       }
       const hasLaunchBrief = Boolean(isSuccessor ? successorBrief : args.brief || anyMemberBrief);
@@ -1689,6 +1690,7 @@ export default defineTool({
               {
                 taskId: result.taskId ?? null,
                 logPath: result.logPath ?? null,
+                normalizedLogPath: result.normalizedLogPath ?? null,
                 pid: result.pid,
                 terminalPid: result.terminalPid ?? null,
                 label: memberLabels[i],

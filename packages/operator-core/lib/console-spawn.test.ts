@@ -23,6 +23,7 @@ import {
   spawnConsole,
   spawnHeadless,
   headlessLogPath,
+  headlessNormalizedLogPath,
   wrapHeadlessSigtermDiagnostic,
   buildHeadlessSpawnCommand,
   buildConsoleScopedSpawnCommand,
@@ -461,6 +462,21 @@ describe('headlessLogPath — per-session log filename (headless-fleet-launch P-
   it('falls back to tmpdir when no dir given, and never yields an empty base name', () => {
     const p = headlessLogPath({ logDir: null, label: '···', pid: 1, nowMs: 2 });
     expect(p).toMatch(/headless-1-2\.log$/);
+  });
+});
+
+describe('headlessNormalizedLogPath — grep-safe companion filename', () => {
+  it('keeps the companion beside the raw log without introducing another timestamp', () => {
+    expect(headlessNormalizedLogPath('/tmp/fleet/member-42-1000.log')).toBe(
+      '/tmp/fleet/member-42-1000.normalized.log',
+    );
+    expect(headlessNormalizedLogPath('/tmp/fleet/member-42-1000.raw')).toBe(
+      '/tmp/fleet/member-42-1000.raw.normalized.log',
+    );
+  });
+
+  it('returns an empty path for an empty input', () => {
+    expect(headlessNormalizedLogPath('  ')).toBe('');
   });
 });
 

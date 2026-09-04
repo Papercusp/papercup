@@ -1150,6 +1150,12 @@ export type SpawnConsoleResult =
       /** Durable per-session output for a headless launch. */
       logPath?: string;
       /**
+       * Durable normalized companion output for a headless launch. Unlike
+       * {@link logPath}, this sidecar is ANSI-free, CR-split, and line/size
+       * bounded so identity diagnostics can safely read it with grep.
+       */
+      normalizedLogPath?: string;
+      /**
        * The spawned terminal's Node handle (Linux/macOS server-side spawns) so
        * callers can attach exit watchers / adv-session bookkeeping. `null` on
        * the WI-3289 Windows desktop-bridge path — the child lives in the Rust
@@ -2085,6 +2091,20 @@ export function headlessLogPath(
   return join(dir, `${safe}-${stamp}.log`);
 }
 
+/**
+ * Derive the grep-safe companion path from a headless launch's raw log path.
+ * Keeping the two paths as siblings makes the relationship obvious to callers
+ * and avoids a second timestamp that could make the artifacts hard to pair.
+ * Pure + exported for callers/tests that need to predict the sidecar path.
+ */
+export function headlessNormalizedLogPath(logPath: string): string {
+  const path = String(logPath ?? '').trim();
+  if (!path) return '';
+  return path.endsWith('.log')
+    ? `${path.slice(0, -'.log'.length)}.normalized.log`
+    : `${path}.normalized.log`;
+}
+
 export interface SpawnHeadlessOpts {
   /** Envelope from `buildConsoleEnvelope` (cwd, env, greetingCmd) — greetingCmd MUST
    *  be a `psu --headless …` command for the session to stay injectable. */
@@ -2093,6 +2113,9 @@ export interface SpawnHeadlessOpts {
   label?: string | null;
   /** Directory for the per-session log file (created if absent). Defaults to tmpdir. */
   logDir?: string | null;
+  /** Optional explicit path for the ANSI-free, bounded companion log. Defaults
+   * to {@link headlessNormalizedLogPath} beside the raw per-session log. */
+  normalizedLogPath?: string | null;
   /**
    * EI-9748: injectable platform/PATH probes for {@link buildHeadlessSpawnCommand}.
    * Tests MUST pass fakes — the default (real) probes check the live PATH for
@@ -2404,13 +2427,29 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       code: 500,
     };
   }
-  const launchEnv = kickoffProofRequest
-    ? {
-        ...envelope.env,
-        [KICKOFF_PROOF_PATH_ENV]: kickoffProofRequest.path,
-        [KICKOFF_PROOF_TOKEN_ENV]: kickoffProofRequest.token,
-      }
-    : envelope.env;
+  let logDir = opts.logDir?.trim() || null;
+  if (logDir) {
+    try {
+      mkdirSync(logDir, { recursive: true });
+    } catch {
+      logDir = null; // fall back to tmp if the dir can't be made
+    }
+  }
+  const logPath = headlessLogPath({ logDir, label });
+  const normalizedLogPath = opts.normalizedLogPath?.trim() || headlessNormalizedLogPath(logPath);
+  const launchEnv = {
+    ...envelope.env,
+    // Keep the raw stdout log byte-oriented for existing lifecycle/activity
+    // consumers. The managed pty host reads this separate path and writes its
+    // bounded ANSI-free companion without changing that contract.
+    [HEADLESS_NORMALIZED_LOG_ENV]: normalizedLogPath,
+    ...(kickoffProofRequest
+      ? {
+          [KICKOFF_PROOF_PATH_ENV]: kickoffProofRequest.path,
+          [KICKOFF_PROOF_TOKEN_ENV]: kickoffProofRequest.token,
+        }
+      : {}),
+  };
   // Same one-liner shape spawnConsole builds — appearance prelude is harmless
   // with no TTY (the OSC escapes just land in the log). Headless sessions have
   // no desktop window or native .mcp.json watcher, so omit the visible-console
@@ -2423,16 +2462,6 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       scheme: null,
     }, null, false, false),
   );
-
-  let logDir = opts.logDir?.trim() || null;
-  if (logDir) {
-    try {
-      mkdirSync(logDir, { recursive: true });
-    } catch {
-      logDir = null; // fall back to tmp if the dir can't be made
-    }
-  }
-  const logPath = headlessLogPath({ logDir, label });
   let logFd: number | null = null;
   try {
     logFd = openSync(logPath, 'a');
@@ -2595,6 +2624,7 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       terminal: `headless (log: ${logPath})`,
       taskId: enrolment.taskId,
       logPath,
+      normalizedLogPath,
       child,
       childExit,
       display: null,
