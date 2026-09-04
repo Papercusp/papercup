@@ -35,7 +35,7 @@
 # and unreadable by the identity that needs them, with the host reporting
 # healthy throughout.
 
-FROM quay.io/centos-bootc/centos-bootc:stream9
+FROM quay.io/centos-bootc/centos-bootc:stream9 AS workspace-host-os
 
 # The image records the base it was built FROM, because a BOOTED host cannot
 # otherwise answer that question about itself: `bootc status` reports the ref
@@ -376,3 +376,49 @@ RUN install -d -o root -g "$PAPERCUSP_SERVICE_GROUP" -m 0750 \
 # host (kernel + bootloader shape, ostree-incompatible layout). It catches the
 # common errors at BUILD time rather than at install time on a customer VM.
 RUN bootc container lint
+
+# ── Optional P-305 release layer ─────────────────────────────────────────────
+#
+# The P-306/P-307 product build deliberately remains the default final target:
+# it proves the OS image independently of any one vm-release.  A deployable
+# workspace host, however, must carry one immutable versioned runtime in the
+# same ostree deployment.  `bake-cloud-images.sh --release-root …
+# --release-version …` selects this target and supplies the already-verified
+# extracted release as the named `papercusp-release` build context.  Keeping the
+# payload outside the ordinary context avoids copying a multi-GiB release into
+# the repository merely to build it.
+#
+# The source release is produced with developer-friendly group/world modes.
+# Normalize it to the same root:$PAPERCUSP_SERVICE_GROUP, no-world-access shape
+# as the bundle bootstrap before committing it to the image.  POSIX ACLs cannot
+# survive a container commit, so papercusp-host-prepare.service reapplies the
+# papercusp-agent read/execute ACL recursively on every boot.
+FROM workspace-host-os AS workspace-host-release
+ARG PAPERCUSP_SERVICE_GROUP=papercusp
+ARG PAPERCUSP_RELEASE_VERSION
+COPY --from=papercusp-release / /opt/papercusp/releases/${PAPERCUSP_RELEASE_VERSION}/
+RUN set -eux; \
+    case "${PAPERCUSP_RELEASE_VERSION}" in \
+      [A-Za-z0-9]*) ;; \
+      *) echo "FATAL: PAPERCUSP_RELEASE_VERSION must start with an alphanumeric" >&2; exit 1;; \
+    esac; \
+    case "${PAPERCUSP_RELEASE_VERSION}" in \
+      *[!A-Za-z0-9._+-]*) echo "FATAL: PAPERCUSP_RELEASE_VERSION contains unsafe characters" >&2; exit 1;; \
+    esac; \
+    [ "${#PAPERCUSP_RELEASE_VERSION}" -le 128 ] \
+      || { echo "FATAL: PAPERCUSP_RELEASE_VERSION is longer than 128 characters" >&2; exit 1; }; \
+    RELEASE_DIR="/opt/papercusp/releases/${PAPERCUSP_RELEASE_VERSION}"; \
+    find "$RELEASE_DIR" -mindepth 1 -print -quit | grep -q . \
+      || { echo "FATAL: named papercusp-release build context is empty" >&2; exit 1; }; \
+    chown -R "root:${PAPERCUSP_SERVICE_GROUP}" "$RELEASE_DIR"; \
+    chmod -R o-rwx "$RELEASE_DIR"; \
+    find "$RELEASE_DIR" -type d -exec chmod g+rx {} +; \
+    find "$RELEASE_DIR" -type f -exec chmod g+r {} +; \
+    ln -s "releases/${PAPERCUSP_RELEASE_VERSION}" /opt/papercusp/current; \
+    [ "$(readlink -f /opt/papercusp/current)" = "$RELEASE_DIR" ]; \
+    bootc container lint
+
+# Default output for every existing invocation.  `--target
+# workspace-host-release` is explicit, so P-306/P-307 builds neither require nor
+# accidentally inherit a vm-release named context.
+FROM workspace-host-os AS workspace-host
