@@ -38,6 +38,7 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import type { NotifyAgentsOpts, NotifyAgentsResult } from '../agent-tools/coordination/notify-agents';
 import type { EmitAwaitedEventOpts, EmitResult } from '../events/await/engine';
 import type { ExpirySweepDeps, SilentResponderCandidate } from './consult-expiry-core';
+import { HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
 import type { ConsultReviveContext, ConsultReviveResult } from './revive-responder';
 import type { ThreadableStore } from '@papercusp/coordination/capabilities';
 
@@ -75,6 +76,8 @@ export interface SilentResponderDetectorDeps {
     opts: { hydratePerId: true },
   ) => Promise<ReadonlyMap<string, { sessionState?: string | null }>>;
   getThreadStore: (workspaceId: string) => SilentResponderThreadStore;
+  /** Injectable clock for the bounded live-busy pickup window. */
+  now?: () => Date;
 }
 
 /** `listRecentPosts` is a production-only bounded extension of the shared
@@ -160,16 +163,29 @@ export function consultExpiryRevive(
     );
 }
 
-/** Detect the specific post-routing failure mode that otherwise waits for the
- * full expiry window: the selected owner was active after this row's route,
- * is now parked, and the consult's thread still has zero posts. Presence and
- * liveness are batched by owner; thread reads are partitioned by row workspace.
+/** Detect post-routing no-pickup failures that otherwise wait for the full
+ * expiry window. Two observations are safe enough to advance as an implicit
+ * decline when the consult thread is still empty:
+ *
+ *  - the selected owner became active after routing and re-parked; or
+ *  - the owner is still live after one hard-blocked expiry window. This is the
+ *    continuously-busy case: a queued wake can sit behind unrelated work for
+ *    the four-hour `proceed` window even though no consult turn was picked up.
+ *
+ * Reusing HARD_BLOCKED_EXPIRY_MS gives a live responder the same bounded pickup
+ * opportunity a blocking requester already accepts, while still cutting the
+ * `proceed` dead end from hours to minutes. The original responder remains in
+ * the digest and the existing cascade refill/revival machinery owns recovery.
+ * Presence and liveness are batched by owner; thread reads are partitioned by
+ * row workspace.
  */
 export function consultExpiryFindSilentResponders(
   deps: SilentResponderDetectorDeps,
 ): NonNullable<ExpirySweepDeps['findSilentResponders']> {
   return async (rows: readonly SilentResponderCandidate[]) => {
     if (rows.length === 0) return new Set<string>();
+
+    const checkedAtMs = (deps.now ? deps.now() : new Date()).getTime();
 
     const responderIds = [...new Set(rows.map((row) => row.responderId))];
     const [presenceEntries, verdicts] = await Promise.all([
@@ -198,8 +214,15 @@ export function consultExpiryFindSilentResponders(
         const lastActiveAt = presenceByOwner.get(row.responderId)?.lastActiveAt;
         const activeMs = lastActiveAt == null ? Number.NaN : Date.parse(String(lastActiveAt));
         const routedMs = Date.parse(row.routedAt);
-        if (!Number.isFinite(activeMs) || !Number.isFinite(routedMs) || activeMs <= routedMs) return;
-        if (verdicts.get(row.responderId)?.sessionState !== 'parked') return;
+        if (!Number.isFinite(routedMs)) return;
+        const sessionState = verdicts.get(row.responderId)?.sessionState;
+        const reparkedAfterRoute =
+          sessionState === 'parked' && Number.isFinite(activeMs) && activeMs > routedMs;
+        const livePastPickupWindow =
+          sessionState === 'live' &&
+          Number.isFinite(checkedAtMs) &&
+          checkedAtMs - routedMs >= HARD_BLOCKED_EXPIRY_MS;
+        if (!reparkedAfterRoute && !livePastPickupWindow) return;
 
         const store = getStore(row.workspaceId);
         const thread = await store.getThreadByParent({ kind: 'conversation', ref: row.conversationId });

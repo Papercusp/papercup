@@ -227,6 +227,7 @@ describe('consultExpiryFindSilentResponders', () => {
       getPresence: async (ownerId) => presence.get(ownerId) ?? null,
       resolveSessionStates,
       getThreadStore,
+      now: () => new Date('2026-08-27T05:02:00.000Z'),
     })(rows);
 
     expect(found).toEqual(new Set(['conv-positive']));
@@ -239,5 +240,39 @@ describe('consultExpiryFindSilentResponders', () => {
     );
     expect(parentCalls).not.toEqual(expect.arrayContaining([{ workspaceId: 'ws-live', ref: 'conv-live' }]));
     expect(parentCalls).not.toEqual(expect.arrayContaining([{ workspaceId: 'ws-before', ref: 'conv-before' }]));
+  });
+
+  it('bounds a continuously-live no-pickup responder at the hard-blocked window, but not before it', async () => {
+    const now = new Date('2026-08-27T06:00:00.000Z');
+    const staleRoute = new Date(now.getTime() - 30 * 60_000).toISOString();
+    const freshRoute = new Date(now.getTime() - 30 * 60_000 + 1).toISOString();
+    const rows = [
+      { workspaceId: ROW_WS, conversationId: 'conv-live-stale', responderId: 'su-live-stale', routedAt: staleRoute },
+      { workspaceId: ROW_WS, conversationId: 'conv-live-fresh', responderId: 'su-live-fresh', routedAt: freshRoute },
+      { workspaceId: ROW_WS, conversationId: 'conv-live-posted', responderId: 'su-live-posted', routedAt: staleRoute },
+    ];
+    const verdicts = new Map(rows.map((row) => [row.responderId, { sessionState: 'live' }]));
+    const threadReads: string[] = [];
+
+    const found = await consultExpiryFindSilentResponders({
+      // A live busy turn need not update presence after the consult route; the
+      // bounded window + empty thread are the pickup evidence for this branch.
+      getPresence: async () => ({ lastActiveAt: null }),
+      resolveSessionStates: async () => verdicts,
+      getThreadStore: () => ({
+        getThreadByParent: async (parent) => ({ thread_id: `thread-${parent.ref}` }) as never,
+        listRecentPosts: async (threadId) => {
+          threadReads.push(threadId);
+          return { total: threadId === 'thread-conv-live-posted' ? 1 : 0 };
+        },
+      }),
+      now: () => now,
+    })(rows);
+
+    expect(found).toEqual(new Set(['conv-live-stale']));
+    expect(threadReads).toEqual(
+      expect.arrayContaining(['thread-conv-live-stale', 'thread-conv-live-posted']),
+    );
+    expect(threadReads).not.toContain('thread-conv-live-fresh');
   });
 });
