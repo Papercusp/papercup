@@ -27,6 +27,19 @@ import {
   type LearningLoopRegistration,
 } from './core';
 import { potLearningEnabled } from '../learning/pot-gate/store';
+import {
+  planReservation,
+  reservationHeadroomUsd,
+  settleReservation,
+  summarizeSpendPositions,
+  toLearningSpend,
+  type LearningSpendPositions,
+  type ReservationRefusal,
+  type SpendAttemptKind,
+  type SpendDisposition,
+  type SpendReservationStatus,
+} from './spend';
+import type { LearningSpend } from '../experiment/types';
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => String(v);
@@ -199,7 +212,24 @@ export async function governorCheck(
   const potEnabled = reg?.potSlug
     ? await potLearningEnabled(sql, { workspaceId: q.workspaceId, potSlug: reg.potSlug })
     : undefined;
-  return checkLoopVerdict(reg, q.floorUsd ?? LEARNING_GOVERNOR_BUDGET_FLOOR_USD, potEnabled);
+  // P-005: spend RESERVED by attempts still in flight is committed money the
+  // registration's `spent_usd` has not been charged for yet. Counting it as
+  // spend is what stops N concurrent attempts each reading the same headroom
+  // and collectively overspending it. Only lifetime rows gate on it — a
+  // per-cycle cap bounds ONE run by contract (enforcement 'native'), so open
+  // attempts on other runs are deliberately not charged against it.
+  //
+  // Before any reservation exists this term is 0, so the verdict is exactly
+  // what it was pre-P-005; and on a substrate without migration 1116 the read
+  // degrades to 0 rather than throwing, keeping the same fail-open posture the
+  // pot gate above uses (the preflight's own catch is fail-CLOSED, so an
+  // exception here would refuse every loop on an un-migrated substrate).
+  const openReserved =
+    reg && reg.budgetKind === 'lifetime' && reg.budgetUsd !== null
+      ? await sumOpenReservedUsd(sql, { workspaceId: q.workspaceId, loopId: q.loopId })
+      : 0;
+  const effective = reg && openReserved > 0 ? { ...reg, spentUsd: reg.spentUsd + openReserved } : reg;
+  return checkLoopVerdict(effective, q.floorUsd ?? LEARNING_GOVERNOR_BUDGET_FLOOR_USD, potEnabled);
 }
 
 // ---------------------------------------------------------------------------

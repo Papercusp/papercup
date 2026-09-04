@@ -145,7 +145,7 @@ export interface RecordRoutedIdeaInput {
 export interface ScoutLedgerOpts {
   workspaceId?: string;
   harnessSlug?: string;
-  /** The hive home slug — per-hive lens-weight scope (per-hive-learning-loops D-008). */
+  /** The owning pot/hive-home slug — explicit pot-local scope for learning reads and weights. */
   potSlug?: string;
   cycleId?: string;
   limit?: number;
@@ -623,9 +623,10 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
     SELECT idea_id, lens, cycle_id, rail, routed_ref, source_hive, target_hive, title,
            addresses_pattern_refs, routed_at,
            human_grade, human_feedback, graded_by, graded_at, created_by
-      FROM harness_shared.scout_routed_ideas
+     FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${ws}
        ${originClause(sql, opts.origin)}
+       ${opts.potSlug ? sql`AND source_hive = ${opts.potSlug}` : sql``}
        ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
        ${opts.cycleId ? sql`AND cycle_id = ${opts.cycleId}` : sql``}
        ${opts.ideaIds ? sql`AND idea_id = ANY(${[...opts.ideaIds]}::text[])` : sql``}
