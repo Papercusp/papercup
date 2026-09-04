@@ -383,7 +383,8 @@ export interface FrozenRepairDispatchReservation {
 }
 
 export interface FrozenCandidateRepairQueue {
-  schemaVersion: 1 | typeof FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION;
+  /** Every version the parser accepts; a parsed row is always re-stamped with the current one. */
+  schemaVersion: 1 | 2 | 3 | typeof FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION;
   phase: FrozenCandidateRepairPhase;
   /** The fixed C persisted before its first suite. Never moves for this queue entry. */
   candidate: string;

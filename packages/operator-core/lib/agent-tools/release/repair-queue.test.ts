@@ -12,6 +12,7 @@ const queue = {
   updatedAtMs: 2,
   fixerSpawnId: 'fixer-1',
   failingTests: ['lib/red.test.ts'],
+  signature: [],
 };
 const NEW_HEAD = 'd'.repeat(40);
 const mocks = vi.hoisted(() => ({

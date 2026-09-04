@@ -3161,6 +3161,18 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       // of an unstarted queue matches on the exact predecessor id — a missing key and a null
       // must both read as "no qualification", keeping a legacy queue fail-closed.
       qualificationAttemptId: null,
+      // P-006: a legacy row persisted with no typed signature gets one DERIVED from its flat
+      // list on read (schema 4), stamped with the row's repair head and round 1, so an older
+      // build's row reads as a complete v4 row rather than an empty signature.
+      signature: [
+        {
+          kind: 'test-file',
+          id: 'lib/broken.test.ts',
+          recipe: 'npm run test:file -- lib/broken.test.ts',
+          admittedRound: 1,
+          measuredHead: 'c'.repeat(40),
+        },
+      ],
     });
     expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
       1,
