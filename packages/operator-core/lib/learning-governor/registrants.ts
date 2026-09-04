@@ -34,9 +34,16 @@ import {
   governorCheck,
   recordLearningSpend,
   registerLearningLoop,
+  reserveLearningSpend,
+  settleLearningSpend,
   type RecordLearningSpendInput,
   type RegisterLearningLoopInput,
+  type ReserveLearningSpendInput,
+  type ReserveLearningSpendResult,
+  type SettleLearningSpendInput,
+  type SettleLearningSpendResult,
 } from './store';
+import type { ReservationRefusal, SpendAttemptKind } from './spend';
 
 /** Injectable IO seam (tests). Defaults = the real flag + store + pool. */
 export interface GovernorGlueDeps {
@@ -44,6 +51,10 @@ export interface GovernorGlueDeps {
   getSql?: () => Promise<Sql>;
   register?: (sql: Sql, input: RegisterLearningLoopInput) => Promise<unknown>;
   recordSpend?: (sql: Sql, input: RecordLearningSpendInput) => Promise<unknown>;
+  /** P-005: open one spend attempt (default: reserveLearningSpend). */
+  reserve?: (sql: Sql, input: ReserveLearningSpendInput) => Promise<ReserveLearningSpendResult>;
+  /** P-005: close one spend attempt (default: settleLearningSpend). */
+  settle?: (sql: Sql, input: SettleLearningSpendInput) => Promise<SettleLearningSpendResult>;
   check?: (sql: Sql, q: { workspaceId: string; loopId: string; floorUsd?: number }) => Promise<GovernorVerdict>;
   /** P-004: resolve the pot a scout install learns for (default: resolveLearningPotSlug). */
   resolvePot?: (q: { workspaceId: string; harnessSlug: string }) => Promise<string | null>;
@@ -60,6 +71,8 @@ const defaultDeps: Required<GovernorGlueDeps> = {
   },
   register: registerLearningLoop,
   recordSpend: recordLearningSpend,
+  reserve: reserveLearningSpend,
+  settle: settleLearningSpend,
   check: governorCheck,
   // Lazy import for the same reason as getSql: the flag-off unit path must not
   // load (or pay for) the registry resolver.
@@ -103,6 +116,136 @@ export async function learningGovernorPreflight(
     d.log(`preflight failed for ${q.loopId} — refusing (fail-closed): ${e instanceof Error ? e.message : e}`);
     return { allow: false, reason: 'governor-error', remainingUsd: null };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Governed spend ATTEMPT (P-005) — the seam every spending call wraps
+// ---------------------------------------------------------------------------
+
+/** What the wrapped work reports back. `cancelled` closes the attempt without charging it as work done. */
+export interface SpendAttemptReport<T> {
+  /** What the attempt actually cost. Partial work reports its partial cost. */
+  costUsd: number;
+  value: T;
+  /** The attempt stopped deliberately (a gate closed, nothing left to do) rather than completing. */
+  cancelled?: boolean;
+}
+
+export interface GovernedSpendAttemptInput<T> {
+  workspaceId: string;
+  loopId: string;
+  potSlug?: string | null;
+  attemptKind: SpendAttemptKind;
+  /** What this attempt asks the governor to set aside up front. */
+  requestedUsd: number;
+  signalOrigin?: 'organic' | 'drill' | 'replay' | 'shadow';
+  runRef?: string | null;
+  note?: string | null;
+  /** false ⇒ ledger the charge without bumping the registration's spent_usd (mirror-mode loops). */
+  accumulate?: boolean;
+  /**
+   * The work. `grant.reservedUsd` is what the governor set aside — bound the
+   * work to it. `grant.clamped` says the grant was smaller than the request.
+   *
+   * If this throws, the attempt settles as `failed`. Attach a `costUsd`
+   * property to the thrown error to declare money that was burned before the
+   * failure — that is the proposer-call case P-005 names, where tokens are
+   * spent and then the parse blows up.
+   */
+  run: (grant: { reservedUsd: number; clamped: boolean }) => Promise<SpendAttemptReport<T>>;
+}
+
+export type GovernedSpendAttemptOutcome<T> =
+  | { ok: true; value: T; costUsd: number; reservationId: string; clamped: boolean; cancelled: boolean }
+  /** The governor refused BEFORE the work ran — nothing was spent. */
+  | { ok: false; reason: 'refused'; refusal: ReservationRefusal; headroomUsd: number | null }
+  /** The governor is dark (kill-switch) — the work did not run. */
+  | { ok: false; reason: 'governor-dark' }
+  /** The work threw. The attempt is settled 'failed' with whatever it burned. */
+  | { ok: false; reason: 'failed'; error: string; costUsd: number; reservationId: string | null };
+
+function burnedCostOf(e: unknown): number {
+  const c = (e as { costUsd?: unknown } | null)?.costUsd;
+  return typeof c === 'number' && Number.isFinite(c) && c > 0 ? c : 0;
+}
+
+/**
+ * Run one spending call inside a governor reservation, and settle it EXACTLY
+ * once on every path — success, partial, cancellation, or throw.
+ *
+ * This is the answer to the shape the mirrors below still have: they ledger
+ * only `if (costUsd > 0)`, so a proposer call that burned tokens and then threw
+ * and an evaluation that completed 3 of 10 tasks are both invisible. Wrapping
+ * the call means the ATTEMPT is the ledgered unit, not the happy path's price
+ * tag, and the four amounts (requested / reserved / used / unsettled) are
+ * whole.
+ *
+ * A settlement failure never masks the work: the value is returned and the
+ * failure is logged. That leaves the reservation OPEN, which is the honest
+ * state — it shows up in `unsettledUsd` as work whose cost is unknown, rather
+ * than silently reading as free.
+ */
+export async function runGovernedSpendAttempt<T>(
+  input: GovernedSpendAttemptInput<T>,
+  deps?: GovernorGlueDeps,
+): Promise<GovernedSpendAttemptOutcome<T>> {
+  const d = resolve(deps);
+  if (!(await d.enabled())) return { ok: false, reason: 'governor-dark' };
+  const sql = await d.getSql();
+  const reserved = await d.reserve(sql, {
+    workspaceId: input.workspaceId,
+    loopId: input.loopId,
+    ...(input.potSlug === undefined ? {} : { potSlug: input.potSlug }),
+    attemptKind: input.attemptKind,
+    requestedUsd: input.requestedUsd,
+    ...(input.signalOrigin ? { signalOrigin: input.signalOrigin } : {}),
+    runRef: input.runRef ?? null,
+    note: input.note ?? null,
+  });
+  if (!reserved.ok) {
+    return { ok: false, reason: 'refused', refusal: reserved.reason, headroomUsd: reserved.headroomUsd };
+  }
+  const reservationId = reserved.reservation.id;
+  const settle = async (
+    disposition: 'used' | 'cancelled' | 'failed',
+    usedUsd: number,
+    note?: string,
+  ): Promise<void> => {
+    try {
+      await d.settle(sql, {
+        workspaceId: input.workspaceId,
+        reservationId,
+        disposition,
+        usedUsd,
+        ...(note ? { note } : {}),
+        ...(input.accumulate === undefined ? {} : { accumulate: input.accumulate }),
+      });
+    } catch (e) {
+      d.log(
+        `settlement failed for reservation ${reservationId} (${disposition}, $${usedUsd}) — ` +
+          `it stays OPEN and visible as unsettled spend: ${e instanceof Error ? e.message : e}`,
+      );
+    }
+  };
+  let report: SpendAttemptReport<T>;
+  try {
+    report = await input.run({ reservedUsd: reserved.reservation.reservedUsd, clamped: reserved.clamped });
+  } catch (e) {
+    const burned = burnedCostOf(e);
+    const error = e instanceof Error ? e.message : String(e);
+    await settle('failed', burned, `attempt failed: ${error}`);
+    return { ok: false, reason: 'failed', error, costUsd: burned, reservationId };
+  }
+  const cancelled = report.cancelled === true;
+  await settle(cancelled ? 'cancelled' : 'used', report.costUsd);
+  return {
+    ok: true,
+    value: report.value,
+    costUsd: report.costUsd,
+    reservationId,
+    clamped: reserved.clamped,
+    cancelled,
+  };
 }
 
 // ---------------------------------------------------------------------------

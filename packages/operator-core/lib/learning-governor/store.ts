@@ -314,3 +314,304 @@ export async function listLearningSpendEvents(
      LIMIT ${limit}`) as Row[];
   return rows.map(mapEvent);
 }
+
+// ---------------------------------------------------------------------------
+// Spend RESERVATION + SETTLEMENT (P-005) — migration 1116
+//
+// The lifecycle the post-hoc ledger above cannot express. Decisions live in
+// the pure core (spend.ts); this is the SQL that binds them, plus the one
+// concurrency guarantee that has to live here: the reservation decision runs
+// under a row lock on the registration, so two attempts cannot both read the
+// same headroom and both grant against it.
+// ---------------------------------------------------------------------------
+
+export interface LearningSpendReservation {
+  id: string;
+  workspaceId: string;
+  loopId: string;
+  potSlug: string | null;
+  attemptKind: string;
+  requestedUsd: number;
+  reservedUsd: number;
+  usedUsd: number;
+  status: SpendReservationStatus;
+  signalOrigin: string;
+  runRef: string | null;
+  note: string | null;
+  createdAt: number;
+  settledAt: number | null;
+}
+
+function mapReservation(r: Row): LearningSpendReservation {
+  return {
+    id: str(r.id),
+    workspaceId: str(r.workspace_id),
+    loopId: str(r.loop_id),
+    potSlug: strOrNull(r.pot_slug),
+    attemptKind: str(r.attempt_kind),
+    requestedUsd: Number(r.requested_usd ?? 0),
+    reservedUsd: Number(r.reserved_usd ?? 0),
+    usedUsd: Number(r.used_usd ?? 0),
+    status: str(r.status) as SpendReservationStatus,
+    signalOrigin: str(r.signal_origin),
+    runRef: strOrNull(r.run_ref),
+    note: strOrNull(r.note),
+    createdAt: ts(r.created_at),
+    settledAt: r.settled_at === null || r.settled_at === undefined ? null : ts(r.settled_at),
+  };
+}
+
+/** Table-absent (pre-1116 substrate) degrades to the empty/zero reading, never a throw. */
+function isUndefinedTable(e: unknown): boolean {
+  const code = (e as { code?: unknown } | null)?.code;
+  return code === '42P01' || /relation .* does not exist/i.test(e instanceof Error ? e.message : '');
+}
+
+/**
+ * Σ reserved on attempts still OPEN for one loop — the "committed but not yet
+ * charged" term `governorCheck` folds into spend, and the `unsettledUsd`
+ * number for that loop.
+ */
+export async function sumOpenReservedUsd(
+  sql: Sql,
+  q: { workspaceId: string; loopId?: string },
+): Promise<number> {
+  try {
+    const rows = (await sql`
+      SELECT COALESCE(SUM(reserved_usd), 0) AS open_reserved
+        FROM harness_shared.learning_spend_reservations
+       WHERE workspace_id = ${q.workspaceId}
+         AND status = 'open'
+         ${q.loopId ? sql`AND loop_id = ${q.loopId}` : sql``}`) as Row[];
+    return Number(rows[0]?.open_reserved ?? 0);
+  } catch (e) {
+    if (isUndefinedTable(e)) return 0;
+    throw e;
+  }
+}
+
+export interface ReserveLearningSpendInput {
+  workspaceId: string;
+  loopId: string;
+  /** The pot the attempt learns FOR (P-004); omitted ⇒ inherited from the registration. */
+  potSlug?: string | null;
+  attemptKind?: SpendAttemptKind;
+  requestedUsd: number;
+  signalOrigin?: 'organic' | 'drill' | 'replay' | 'shadow';
+  runRef?: string | null;
+  note?: string | null;
+  floorUsd?: number;
+}
+
+export type ReserveLearningSpendResult =
+  | { ok: true; reservation: LearningSpendReservation; clamped: boolean; headroomUsd: number | null }
+  | { ok: false; reason: ReservationRefusal; requestedUsd: number; headroomUsd: number | null };
+
+/**
+ * Open one attempt. Refuses (fail-closed) on an unbudgeted registration, an
+ * invalid amount, or no headroom; grants a CLAMPED reservation when the loop
+ * can afford some but not all of the request — a partial grant is an allow,
+ * and the caller bounds itself at `reservation.reservedUsd`.
+ *
+ * The registration row is locked FOR UPDATE for the duration of the decision.
+ * That lock is the whole reason concurrent attempts are safe: without it two
+ * callers read the same `spent_usd` + open-reservation sum and both grant.
+ *
+ * A missing registration refuses as 'unbudgeted' — the same posture as the
+ * D-004 preflight, which refuses an unregistered loop outright.
+ */
+export async function reserveLearningSpend(
+  sql: Sql,
+  q: ReserveLearningSpendInput,
+): Promise<ReserveLearningSpendResult> {
+  const run = async (tx: Sql | TransactionSql): Promise<ReserveLearningSpendResult> => {
+    const regRows = (await tx`
+      SELECT * FROM harness_shared.learning_governor_loops
+       WHERE workspace_id = ${q.workspaceId} AND loop_id = ${q.loopId}
+       FOR UPDATE`) as Row[];
+    const reg = regRows[0] ? mapLoop(regRows[0]) : null;
+    const openReserved = await sumOpenReservedUsd(tx as Sql, {
+      workspaceId: q.workspaceId,
+      loopId: q.loopId,
+    });
+    const headroomUsd = reservationHeadroomUsd(
+      reg,
+      openReserved,
+      q.floorUsd ?? LEARNING_GOVERNOR_BUDGET_FLOOR_USD,
+    );
+    const plan = planReservation({ requestedUsd: q.requestedUsd, headroomUsd });
+    if (!plan.ok) {
+      return { ok: false, reason: plan.reason ?? 'no-headroom', requestedUsd: q.requestedUsd, headroomUsd };
+    }
+    const rows = (await tx`
+      INSERT INTO harness_shared.learning_spend_reservations
+        (workspace_id, loop_id, pot_slug, attempt_kind, requested_usd, reserved_usd,
+         status, signal_origin, run_ref, note)
+      VALUES (${q.workspaceId}, ${q.loopId}, ${q.potSlug === undefined ? (reg?.potSlug ?? null) : q.potSlug},
+        ${q.attemptKind ?? 'cycle'}, ${q.requestedUsd}, ${plan.reservedUsd},
+        'open', ${q.signalOrigin ?? 'organic'}, ${q.runRef ?? null}, ${q.note ?? null})
+      RETURNING *`) as Row[];
+    return {
+      ok: true,
+      reservation: mapReservation(rows[0]),
+      clamped: plan.clamped,
+      headroomUsd,
+    };
+  };
+  const begin = (sql as unknown as { begin?: unknown }).begin;
+  return typeof begin === 'function'
+    ? ((await sql.begin(run)) as ReserveLearningSpendResult)
+    : run(sql);
+}
+
+export interface SettleLearningSpendInput {
+  workspaceId: string;
+  reservationId: string;
+  disposition: SpendDisposition;
+  /** What was actually charged. Defaults to 0 — a cancelled/failed attempt that burned nothing. */
+  usedUsd?: number;
+  note?: string | null;
+  /**
+   * true (default): the charge also bumps the registration's spent_usd — the
+   * path for loops whose only spend store is the governor. false: ledger the
+   * event only (mirror-mode loops whose row spent syncs from their own store).
+   */
+  accumulate?: boolean;
+}
+
+export type SettleLearningSpendResult =
+  | {
+      ok: true;
+      reservation: LearningSpendReservation;
+      /** The charge event, when one was written (a zero-cost settlement writes none). */
+      event: LearningSpendEvent | null;
+      releasedUsd: number;
+      overrunUsd: number;
+    }
+  | { ok: false; reason: 'not-found' | 'already-settled'; reservation: LearningSpendReservation | null };
+
+/**
+ * Close one attempt — the ONLY way an attempt leaves 'open'. Idempotent by
+ * construction: the row is taken FOR UPDATE and a non-'open' status returns
+ * `already-settled` rather than charging twice, so a retried settlement after
+ * a crash cannot double-bill.
+ *
+ * Money still lands on learning_spend_events (append-only, migration 244),
+ * linked back by reservation_id; this row records the lifecycle. A settlement
+ * that charged nothing writes NO event — the reservation row is itself the
+ * record that the attempt happened and cost nothing, which is exactly the
+ * cancelled/failed case the old `costUsd > 0` guards dropped on the floor.
+ */
+export async function settleLearningSpend(
+  sql: Sql,
+  q: SettleLearningSpendInput,
+): Promise<SettleLearningSpendResult> {
+  const run = async (tx: Sql | TransactionSql): Promise<SettleLearningSpendResult> => {
+    const rows = (await tx`
+      SELECT * FROM harness_shared.learning_spend_reservations
+       WHERE workspace_id = ${q.workspaceId} AND id = ${q.reservationId}
+       FOR UPDATE`) as Row[];
+    if (!rows[0]) return { ok: false, reason: 'not-found', reservation: null };
+    const current = mapReservation(rows[0]);
+    if (current.status !== 'open') {
+      return { ok: false, reason: 'already-settled', reservation: current };
+    }
+    const settlement = settleReservation({
+      reservedUsd: current.reservedUsd,
+      disposition: q.disposition,
+      ...(q.usedUsd === undefined ? {} : { usedUsd: q.usedUsd }),
+    });
+    const updated = (await tx`
+      UPDATE harness_shared.learning_spend_reservations
+         SET used_usd = ${settlement.usedUsd},
+             status = ${settlement.status},
+             note = COALESCE(${q.note ?? null}, note),
+             settled_at = now()
+       WHERE workspace_id = ${q.workspaceId} AND id = ${q.reservationId}
+       RETURNING *`) as Row[];
+    let event: LearningSpendEvent | null = null;
+    if (settlement.usedUsd > 0) {
+      const evRows = (await tx`
+        INSERT INTO harness_shared.learning_spend_events
+          (workspace_id, loop_id, pot_slug, cost_usd, signal_origin, run_ref, note, reservation_id)
+        VALUES (${q.workspaceId}, ${current.loopId}, ${current.potSlug}, ${settlement.usedUsd},
+          ${current.signalOrigin}, ${current.runRef}, ${q.note ?? current.note}, ${current.id})
+        RETURNING *`) as Row[];
+      event = mapEvent(evRows[0]);
+      if (q.accumulate !== false) {
+        await tx`
+          UPDATE harness_shared.learning_governor_loops
+             SET spent_usd = spent_usd + ${settlement.usedUsd}, updated_at = now()
+           WHERE workspace_id = ${q.workspaceId} AND loop_id = ${current.loopId}`;
+      }
+    }
+    return {
+      ok: true,
+      reservation: mapReservation(updated[0]),
+      event,
+      releasedUsd: settlement.releasedUsd,
+      overrunUsd: settlement.overrunUsd,
+    };
+  };
+  const begin = (sql as unknown as { begin?: unknown }).begin;
+  return typeof begin === 'function'
+    ? ((await sql.begin(run)) as SettleLearningSpendResult)
+    : run(sql);
+}
+
+export async function listLearningSpendReservations(
+  sql: Sql,
+  q: { workspaceId: string; loopId?: string; status?: SpendReservationStatus; limit?: number },
+): Promise<LearningSpendReservation[]> {
+  const limit = Math.min(Math.max(q.limit ?? 50, 1), 500);
+  try {
+    const rows = (await sql`
+      SELECT * FROM harness_shared.learning_spend_reservations
+       WHERE workspace_id = ${q.workspaceId}
+         ${q.loopId ? sql`AND loop_id = ${q.loopId}` : sql``}
+         ${q.status ? sql`AND status = ${q.status}` : sql``}
+       ORDER BY created_at DESC
+       LIMIT ${limit}`) as Row[];
+    return rows.map(mapReservation);
+  } catch (e) {
+    if (isUndefinedTable(e)) return [];
+    throw e;
+  }
+}
+
+/**
+ * The four amounts, separately — requested / reserved / used / unsettled — for
+ * a workspace, optionally narrowed to one loop or a time window.
+ *
+ * Returned in BOTH shapes on purpose: `positions` carries the governor's own
+ * diagnostics (open and overrun attempt counts), and `spend` is the P-001
+ * `LearningSpend` a learning contract embeds verbatim, so a candidate's spend
+ * record is the governor's ledger rather than a number reassembled beside it.
+ */
+export async function getLearningSpendPositions(
+  sql: Sql,
+  q: { workspaceId: string; loopId?: string; sinceMs?: number },
+): Promise<{ positions: LearningSpendPositions; spend: LearningSpend }> {
+  let positions: LearningSpendPositions;
+  try {
+    const since = q.sinceMs === undefined ? null : new Date(q.sinceMs).toISOString();
+    const rows = (await sql`
+      SELECT requested_usd, reserved_usd, used_usd, status
+        FROM harness_shared.learning_spend_reservations
+       WHERE workspace_id = ${q.workspaceId}
+         ${q.loopId ? sql`AND loop_id = ${q.loopId}` : sql``}
+         ${since ? sql`AND created_at >= ${since}` : sql``}`) as Row[];
+    positions = summarizeSpendPositions(
+      rows.map((r) => ({
+        requestedUsd: Number(r.requested_usd ?? 0),
+        reservedUsd: Number(r.reserved_usd ?? 0),
+        usedUsd: Number(r.used_usd ?? 0),
+        status: str(r.status) as SpendReservationStatus,
+      })),
+    );
+  } catch (e) {
+    if (!isUndefinedTable(e)) throw e;
+    positions = summarizeSpendPositions([]);
+  }
+  return { positions, spend: toLearningSpend(positions, new Date().toISOString()) };
+}
