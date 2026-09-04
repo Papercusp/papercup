@@ -168,6 +168,11 @@ export function activityMode(call: ActivityCall): ActivityMixMode {
     (typeof call.args === 'string' && /(?:to|recipients?)\s*[:=].{0,80}["']human["']/.test(args));
 
   if (OWNER_REPORTING.has(tool) || (tool === 'coord:send' && explicitlyTargetsHuman)) return 'owner-comms';
+  // EI-22350571033073559: launching a delegated worker is portfolio supervision,
+  // not implementation by the goal holder. Keep this ahead of the broad
+  // capability:* implementation bucket so the contract-required launch door
+  // cannot manufacture a non-zero hands-on share.
+  if (tool === 'capability:launch-agent') return 'supervise';
   if (
     tool.startsWith('coord:') ||
     tool.startsWith('fleet:') ||

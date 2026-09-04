@@ -68,6 +68,11 @@ describe('activity:mix pure attribution', () => {
     expect(activityMode({ ts: 2, tool: 'coord:send', args: { to: ['human'], body: 'status report' } })).toBe('owner-comms');
   });
 
+  it('counts delegated agent launch as supervision without weakening implementation detection', () => {
+    expect(activityMode({ ts: 1, tool: 'capability:launch-agent', args: {} })).toBe('supervise');
+    expect(activityMode({ ts: 2, tool: 'capability:edit', args: { file_path: 'src/a.ts' } })).toBe('implement');
+  });
+
   it('splits a burst that mentions multiple portfolio responsibilities', () => {
     const result = summarizeActivityMix([
       row(0, 'dev:pg_query', { sql: 'inspect qemu Windows incident and Linux dpkg packaging' }),
