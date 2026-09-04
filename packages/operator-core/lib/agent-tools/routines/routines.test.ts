@@ -380,7 +380,7 @@ describe('routines:list', () => {
       skipped_count: 1,
       skipped_sample: ['packages/operator-core/lib/mine.ts'],
     });
-    expect(b.routines[0].health.git_sync_exclusions.warning).toContain('green-checkpoint candidate');
+    expect(b.routines[0].health.git_sync_exclusions.warning).toContain('last completed sweep');
   });
 
   it('leaves the headline last_status untouched when the derived verdict is not degraded', async () => {
