@@ -251,7 +251,6 @@ describe('P-002 — legs on the queue itself', () => {
     return createFrozenCandidateRepairQueue({
       candidate: '1111111111111111111111111111111111111111',
       base: '0000000000000000000000000000000000000000',
-      worktreePath: '/repo/.papercusp/worktrees/green-candidate-11111111',
       failingTests: ['lint:tsc'],
       nowMs: T0,
     });
