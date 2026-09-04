@@ -4825,6 +4825,57 @@ export async function mergeWorkItemPayload(
 }
 
 /**
+ * Rebind a plan-promoted feature lane whose fleet reservation points at a fleet
+ * that was never created.
+ *
+ * `fleet:launch-on-plan` reserves promoted rows before its admission gate and
+ * creates the fleet only after that gate passes. A refused launch can therefore
+ * leave an open, unclaimed row stamped for a fleet that does not exist. A later
+ * launch under a different fleet slug must be able to adopt that orphan, but it
+ * must never steal a reservation from a persisted fleet.
+ *
+ * Keep the proof and write in ONE statement: the row must still be open,
+ * unclaimed, plan-promoted, stamped to a different fleet, and that currently
+ * stamped fleet must have no durable registry row. The compare-and-set shape
+ * also prevents a stale application read from authorizing the mutation.
+ */
+export async function rebindOrphanedPlanFleetReservation(input: {
+  id: string;
+  harness: string;
+  workspaceId: string;
+  fleetSlug: string;
+}): Promise<boolean> {
+  const fleetSlug = input.fleetSlug.trim();
+  if (!fleetSlug) throw new Error('rebindOrphanedPlanFleetReservation: empty fleetSlug');
+  const { sql } = getOrgPg();
+  const rows = await sql<{ feature_id: string }[]>`
+    UPDATE harness_shared.harness_features_consolidated AS feature
+       SET payload = jsonb_set(
+             COALESCE(feature.payload, '{}'::jsonb),
+             '{fleet_slug}'::text[],
+             to_jsonb(${fleetSlug}::text),
+             true
+           ),
+           updated_ts = ${Date.now()}
+     WHERE feature.workspace_id = ${input.workspaceId}
+       AND feature.harness_slug = ${input.harness}
+       AND feature.feature_id = ${input.id}
+       AND (CASE WHEN feature.status = 'todo' THEN 'open' ELSE feature.status END) = 'open'
+       AND (feature.taken_by IS NULL OR feature.taken_by = '')
+       AND COALESCE(feature.payload, '{}'::jsonb) ? 'plan_item'
+       AND COALESCE(feature.payload, '{}'::jsonb) ? 'fleet_slug'
+       AND feature.payload ->> 'fleet_slug' IS DISTINCT FROM ${fleetSlug}
+       AND NOT EXISTS (
+         SELECT 1
+           FROM harness_shared.agent_fleets registered
+          WHERE registered.workspace_id = feature.workspace_id
+            AND registered.fleet_slug = feature.payload ->> 'fleet_slug'
+       )
+    RETURNING feature.feature_id`;
+  return rows.length > 0;
+}
+
+/**
  * Claimable.claim — the tuple-space atomic `in` for a SPECIFIC item (feature → taken_by;
  * issue → assignee). Atomic compare-and-claim (fleet-as-supervised-blackboard D-004):
  * the feature-family UPDATE only succeeds when the item is unclaimed OR already held by

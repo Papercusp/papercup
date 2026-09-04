@@ -34,7 +34,7 @@ import { FLAGS } from '@papercusp/flags';
 import { resolveEffectiveStatusForItems, type ItemStatus, type PlanItem } from '@papercusp/plan-parser';
 import { systemDistinctId } from './flag-distinct-id';
 import { readPlanBySlug, type PlanRow } from './agent-tools/plans/source';
-import { getWorkItem, linkWorkItem, type FeatureFamilyKind } from './work-items';
+import { getWorkItem, linkWorkItem, type ActiveFeatureFamilyKind } from './work-items';
 import { upsertConditionWorkItem } from './coord/condition-upsert';
 import { PLAN_ITEM_KIND, planItemRef } from './issue-blocks-merge';
 import {
@@ -171,8 +171,8 @@ export interface PromotePlanItemsOptions {
    * TEMPLATE and payload.plan_run identifies this immutable fire.
    */
   planRun?: PlanRunPromotionContext;
-  /** Preserve the plan template's authored feature-family executor kind. */
-  itemKind?: FeatureFamilyKind;
+  /** Preserve the plan template's authored, forward-active feature-family executor kind. */
+  itemKind?: ActiveFeatureFamilyKind;
   /**
    * EI-21574373783224719: the fleet this promotion is minting a lane FOR. When set,
    * each promoted work-item carries `payload.fleet_slug`, which is leg 1 of

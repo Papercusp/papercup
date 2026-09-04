@@ -34,13 +34,13 @@ export default defineTool({
   name: 'goals:set-property',
   needsWorkspaceTx: true,
   description:
-    "Write ONE typed property value on a goal (P-023). The property must be DECLARED in the goal's property_schema; the value is validated against its datatype's payload_schema; editable_by is enforced (owner-edit vs agent-edit provenance is derived from the caller, never self-declared); expectedVersion is a CAS guard (0 = no explicit value yet — a 'stale' refusal means re-read and retry). Emits a property_changed delta event the owning agent's next orient folds.",
+    "Write ONE typed property value on a goal (P-023). The property must be DECLARED in the goal's property_schema; the value is validated against its datatype's payload_schema; editable_by is enforced (owner-edit vs agent-edit provenance is derived from the caller, never self-declared); expectedVersion is a CAS guard (0 = no explicit value yet — a 'stale' refusal means re-read and retry). An array-length reduction is refused as shrink_blocked unless confirmShrink:true explicitly authorizes the destructive replacement after a full read. Emits a property_changed delta event the owning agent's next orient folds.",
   guidance: {
     when: "Changing a declared property's VALUE on a goal — the owner steering surface and the agent's own typed state updates both land here.",
     notWhen:
       "DECLARING properties — that is the property_schema document, set at creation (goals:create / goals:start { propertySchema }). Free-form goal fields (title, body, criterion) — goals:update. Plan properties — plans:set-property.",
     chaining:
-      "goals:get { id, detail:'full' } (read property_schema + properties incl. each version) → goals:set-property { goalId, property, value, expectedVersion } → on 'stale', re-read and retry with the reported actualVersion.",
+      "goals:get { id, detail:'full' } (read property_schema + COMPLETE properties incl. each version) → goals:set-property { goalId, property, value, expectedVersion } → on 'stale', re-read and retry with the reported actualVersion; on 'shrink_blocked', confirm the full authoritative list before deliberately retrying with confirmShrink:true.",
     seeAlso: ['plans:set-property (the plan sibling)', 'goals:get (read the declarations + values back)'],
   },
   capability: 'goals:write',
@@ -62,6 +62,12 @@ export default defineTool({
       .nonnegative()
       .describe(
         'CAS guard: the per-property version you last read; 0 = the property has no explicit value yet. A mismatch refuses as stale with the actual version.',
+      ),
+    confirmShrink: z
+      .boolean()
+      .optional()
+      .describe(
+        'Required only when the proposed array is shorter than the authoritative prior array. Pass true only after a full, untruncated goals:get read proves the removals are intentional; omitted/false returns shrink_blocked without writing.',
       ),
   }),
   async handler(args, ctx) {
@@ -103,6 +109,7 @@ export default defineTool({
       property: args.property,
       value: args.value,
       expectedVersion: args.expectedVersion,
+      confirmShrink: args.confirmShrink,
       provenance,
       actorId,
     });

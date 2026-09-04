@@ -14,6 +14,11 @@ const MAX_CANDIDATES = 200;
 export type SettlementResidualReason = 'identity-unavailable' | 'missing-from-commit' | 'content-mismatch';
 export type SettlementResidualPath = { path: string; reason: SettlementResidualReason };
 
+/** EI-22344624691081449: manifest entries may describe an intentional deletion. */
+type SettlementIdentity = CompletionSettlementManifest['contentIdentity'][number] & {
+  deletion?: true;
+};
+
 /**
  * WI-1409142: restore the two blob-sha keys the terminal payload write used to drop.
  *
@@ -59,7 +64,9 @@ export function residualPathsForCommit(
   if (!committed) {
     return receipt.normalizedPaths.map((path) => ({ path, reason: 'identity-unavailable' }));
   }
-  const closeIdentity = new Map(receipt.contentIdentity.map((entry) => [entry.path, entry.workingTreeBlobSha]));
+  const closeIdentity = new Map<string, SettlementIdentity>(
+    receipt.contentIdentity.map((entry) => [entry.path, entry as SettlementIdentity]),
+  );
   return receipt.normalizedPaths.flatMap((path): SettlementResidualPath[] => {
     const expected = closeIdentity.get(path);
     if (!expected) return [{ path, reason: 'identity-unavailable' }];
@@ -69,8 +76,19 @@ export function residualPathsForCommit(
     // fix, the other asks the closer to go re-commit work that is already committed —
     // and an unreadable submodule used to land in the second.
     if (!actual || actual.status === 'unresolvable') return [{ path, reason: 'identity-unavailable' }];
+    if (expected.deletion === true) {
+      // A deletion is settled by a definitive absence in the emitted commit.
+      // Do not let a malformed deletion entry with a non-null close identity
+      // become proof merely because the path happens to be absent.
+      if (expected.workingTreeBlobSha !== null || expected.headBlobSha !== null) {
+        return [{ path, reason: 'identity-unavailable' }];
+      }
+      return actual.status === 'absent' ? [] : [{ path, reason: 'content-mismatch' }];
+    }
+    const expectedSha = expected.workingTreeBlobSha;
+    if (expectedSha == null) return [{ path, reason: 'identity-unavailable' }];
     if (actual.status === 'absent') return [{ path, reason: 'missing-from-commit' }];
-    return actual.sha === expected ? [] : [{ path, reason: 'content-mismatch' }];
+    return actual.sha === expectedSha ? [] : [{ path, reason: 'content-mismatch' }];
   });
 }
 
@@ -108,12 +126,20 @@ function confirmedTreeStampForSettlement(
     // write a treeStamp entry whose shas are undefined — which
     // completionTreeContentIdentityMatches would then have to reject, silently
     // undoing the very upgrade this function exists to make survive the trigger.
-    .filter((entry) => normalized.has(entry.path) && entry.workingTreeBlobSha != null)
-    .map((entry) => ({
-      path: entry.path,
-      workingTreeBlobSha: entry.workingTreeBlobSha,
-      headBlobSha: entry.workingTreeBlobSha,
-    }));
+    .filter((entry) => {
+      if (!normalized.has(entry.path)) return false;
+      const deletion = (entry as SettlementIdentity).deletion === true;
+      return deletion || entry.workingTreeBlobSha != null;
+    })
+    .map((entry) => {
+      const deletion = (entry as SettlementIdentity).deletion === true;
+      return {
+        path: entry.path,
+        workingTreeBlobSha: deletion ? null : entry.workingTreeBlobSha,
+        headBlobSha: deletion ? null : entry.workingTreeBlobSha,
+        ...(deletion ? { deletion: true as const } : {}),
+      };
+    });
   if (contentIdentity.length === 0) return undefined;
   return { repositoryRoot: manifest.repositoryRoot, headSha: commitSha, contentIdentity };
 }

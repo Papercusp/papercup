@@ -36,6 +36,12 @@ vi.mock('../../session-port/cleanup', () => ({
   cleanupExpiredSessionPorts: (...args: unknown[]) => cleanupMock(...args),
 }));
 
+const packageCacheRetentionMock = vi.fn(async (_opts?: unknown) => []);
+vi.mock('../../storage/package-cache-retention', () => ({
+  DEFAULT_PACKAGE_CACHE_MAX_BYTES: 8 * 1024 ** 3,
+  runPackageCacheRetention: (...args: unknown[]) => packageCacheRetentionMock(...args),
+}));
+
 const sqlUnsafeMock = vi.fn(async (): Promise<Array<Record<string, unknown>>> => []);
 const sqlTagMockFn = vi.fn(async (): Promise<Array<Record<string, unknown>>> => []);
 const sqlTagMock = Object.assign(sqlTagMockFn, { unsafe: sqlUnsafeMock }) as unknown as TestSql;
@@ -66,6 +72,7 @@ import {
   type ReindexTarget,
 } from './telemetry-retention-action';
 import { buildTelemetryRetentionTriggerConfig } from './seed-telemetry-retention-routine';
+import { DEFAULT_PACKAGE_CACHE_MAX_BYTES } from '../../storage/package-cache-retention';
 
 const okResult = (over: Record<string, unknown> = {}) => ({
   ok: true,
@@ -234,7 +241,10 @@ describe('reindexBloatedIndexes (EI-7482)', () => {
       1,
       'DROP INDEX CONCURRENTLY IF EXISTS harness_shared.route_invocations_ws_time_idx_ccnew',
     );
-    expect(unsafe).toHaveBeenNthCalledWith(2, 'REINDEX INDEX CONCURRENTLY harness_shared.route_invocations_ws_time_idx');
+    expect(unsafe).toHaveBeenNthCalledWith(
+      2,
+      'REINDEX INDEX CONCURRENTLY harness_shared.route_invocations_ws_time_idx',
+    );
   });
 
   it('ignores a stale-index row that fails identifier validation (never interpolates it)', async () => {
@@ -284,6 +294,7 @@ describe('system:telemetry-retention action', () => {
     sqlTagMockFn.mockReset().mockResolvedValue([]);
     guardResourceMock.mockClear();
     cleanupMock.mockClear();
+    packageCacheRetentionMock.mockReset().mockResolvedValue([]);
     // The action logs warn() on the invalid/failed-prune branches exercised below;
     // the repo's vitest-fail-on-console treats an un-mocked warn as a failure, so
     // capture it (the real assertions are on pruneMock / non-throwing).
@@ -300,6 +311,10 @@ describe('system:telemetry-retention action', () => {
 
     expect(pruneMock).toHaveBeenCalledTimes(5);
     expect(cleanupMock).toHaveBeenCalledWith({ workspaceId: 'ws-1' });
+    expect(packageCacheRetentionMock).toHaveBeenCalledWith({
+      dryRun: false,
+      maxBytes: DEFAULT_PACKAGE_CACHE_MAX_BYTES,
+    });
     expect(pruneMock).toHaveBeenNthCalledWith(1, {
       categoryId: 'route-invocations',
       olderThanDays: 7,
@@ -338,6 +353,39 @@ describe('system:telemetry-retention action', () => {
     expect(guardResourceMock).not.toHaveBeenCalled();
   });
 
+  it('persists default-on package-cache retention config and honors its action knobs', async () => {
+    const seeded = buildTelemetryRetentionTriggerConfig();
+    expect(seeded).toMatchObject({
+      package_cache_enabled: true,
+      package_cache_max_bytes: DEFAULT_PACKAGE_CACHE_MAX_BYTES,
+    });
+
+    pruneMock.mockResolvedValue(okResult());
+    const action = getSystemAction('telemetry-retention');
+    await action!(
+      ctx({
+        dry_run: true,
+        package_cache_max_bytes: 1234,
+      }),
+    );
+    expect(packageCacheRetentionMock).toHaveBeenCalledWith({ dryRun: true, maxBytes: 1234 });
+
+    packageCacheRetentionMock.mockClear();
+    await action!(ctx({ package_cache_enabled: false }));
+    expect(packageCacheRetentionMock).not.toHaveBeenCalled();
+  });
+
+  it('contains an unexpected package-cache retention failure', async () => {
+    pruneMock.mockResolvedValue(okResult());
+    packageCacheRetentionMock.mockRejectedValue(new Error('cache scan failed'));
+    const action = getSystemAction('telemetry-retention');
+
+    await expect(action!(ctx({}))).resolves.toBeUndefined();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('package-cache retention failed — cache scan failed'),
+    );
+  });
+
   it('drains a category: re-calls while the prune reports partial', async () => {
     pruneMock
       .mockResolvedValueOnce(okResult({ partial: true }))
@@ -366,9 +414,7 @@ describe('system:telemetry-retention action', () => {
   it('stops a target on prune failure (ok:false) without throwing', async () => {
     pruneMock.mockResolvedValue({ ok: false, reason: 'invalid_category', removed: 0 });
     const action = getSystemAction('telemetry-retention');
-    await expect(
-      action!(ctx({ targets: [{ category: 'bogus', retention_days: 7 }] })),
-    ).resolves.toBeUndefined();
+    await expect(action!(ctx({ targets: [{ category: 'bogus', retention_days: 7 }] }))).resolves.toBeUndefined();
     expect(pruneMock).toHaveBeenCalledTimes(1);
   });
 
@@ -384,9 +430,7 @@ describe('system:telemetry-retention action', () => {
     for (const [lockSpec] of guardResourceMock.mock.calls) {
       expect(lockSpec).toMatchObject({ resource: 'db-schema' });
     }
-    expect(sqlUnsafeMock).toHaveBeenCalledWith(
-      expect.stringContaining('REINDEX INDEX CONCURRENTLY harness_shared.'),
-    );
+    expect(sqlUnsafeMock).toHaveBeenCalledWith(expect.stringContaining('REINDEX INDEX CONCURRENTLY harness_shared.'));
   });
 
   it('dry_run logs the plan and never reaches guardResource even when the cadence matches', async () => {

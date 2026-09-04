@@ -93,6 +93,87 @@ describe('P-023: prepareTypedPropertyMutation', () => {
     });
   });
 
+  it('blocks an array-length reduction unless the caller explicitly confirms the shrink', () => {
+    const stored = {
+      worklist: {
+        value: ['first', 'second', 'third'],
+        version: 4,
+        edited_at: new Date().toISOString(),
+        edited_by: 'avi',
+        provenance: 'owner-edit' as const,
+      },
+    };
+
+    const blocked = prepareTypedPropertyMutation(
+      base({ properties: stored, expectedVersion: 4, value: ['first'] }),
+    );
+    expect(blocked).toEqual({
+      ok: false,
+      code: 'shrink_blocked',
+      property: 'worklist',
+      priorLength: 3,
+      proposedLength: 1,
+      actualVersion: 4,
+      recovery: { confirmShrink: true },
+    });
+
+    const confirmed = prepareTypedPropertyMutation(
+      base({
+        properties: stored,
+        expectedVersion: 4,
+        value: ['first'],
+        confirmShrink: true,
+      }),
+    );
+    expect(confirmed.ok).toBe(true);
+    if (!confirmed.ok) return;
+    expect(confirmed.entry.value).toEqual(['first']);
+    expect(confirmed.entry.version).toBe(5);
+  });
+
+  it('does not treat array growth, same-length replacement, or scalar writes as shrink', () => {
+    const worklist = {
+      value: ['first', 'second'],
+      version: 2,
+      edited_at: new Date().toISOString(),
+      edited_by: 'avi',
+      provenance: 'owner-edit' as const,
+    };
+    for (const value of [
+      ['replacement', 'same-length'],
+      ['first', 'second', 'third'],
+    ]) {
+      expect(
+        prepareTypedPropertyMutation(
+          base({ properties: { worklist }, expectedVersion: 2, value }),
+        ).ok,
+      ).toBe(true);
+    }
+
+    expect(
+      prepareTypedPropertyMutation(
+        base({ property: 'notes', value: 'short', provenance: 'agent-edit' }),
+      ).ok,
+    ).toBe(true);
+  });
+
+  it('reports stale before shrink_blocked when the caller version is not current', () => {
+    const stored = {
+      worklist: {
+        value: ['first', 'second'],
+        version: 3,
+        edited_at: new Date().toISOString(),
+        edited_by: 'avi',
+        provenance: 'owner-edit' as const,
+      },
+    };
+    expect(
+      prepareTypedPropertyMutation(
+        base({ properties: stored, expectedVersion: 2, value: [] }),
+      ),
+    ).toMatchObject({ ok: false, code: 'stale', actualVersion: 3 });
+  });
+
   it('ok: envelope build — version bump, provenance + actor stamp, merged document', () => {
     const r = prepareTypedPropertyMutation(base({}));
     expect(r.ok).toBe(true);

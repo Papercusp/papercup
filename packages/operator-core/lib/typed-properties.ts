@@ -51,7 +51,16 @@ export type TypedPropertyMutationFailure =
   | { ok: false; code: 'unknown_property'; property: string }
   | { ok: false; code: 'forbidden'; property: string; editableBy: PropertyEditableBy }
   | { ok: false; code: 'stale'; property: string; expectedVersion: number; actualVersion: number }
-  | { ok: false; code: 'invalid_value'; property: string; datatype: string; issues: string[] };
+  | { ok: false; code: 'invalid_value'; property: string; datatype: string; issues: string[] }
+  | {
+      ok: false;
+      code: 'shrink_blocked';
+      property: string;
+      priorLength: number;
+      proposedLength: number;
+      actualVersion: number;
+      recovery: { confirmShrink: true };
+    };
 
 export type TypedPropertyMutationResult =
   | TypedPropertyMutationFailure
@@ -70,6 +79,15 @@ export interface PrepareTypedPropertyMutationArgs {
   property: string;
   value: unknown;
   expectedVersion: number;
+  /**
+   * Explicitly confirms that an array-length reduction is intentional.
+   *
+   * Typed-property values are whole replacements. A caller that received a
+   * result-door-trimmed array otherwise cannot distinguish its excerpt from
+   * the authoritative list, so every reduction fails closed unless the caller
+   * opts into the destructive path after a complete read.
+   */
+  confirmShrink?: boolean;
   provenance: PropertyEditProvenance;
   actorId: string;
   editedAt?: string;
@@ -171,6 +189,24 @@ export function prepareTypedPropertyMutation(
     };
   }
 
+  const priorValue = current ? current.value : definition.default;
+  if (
+    args.confirmShrink !== true &&
+    Array.isArray(priorValue) &&
+    Array.isArray(args.value) &&
+    args.value.length < priorValue.length
+  ) {
+    return {
+      ok: false,
+      code: 'shrink_blocked',
+      property: args.property,
+      priorLength: priorValue.length,
+      proposedLength: args.value.length,
+      actualVersion,
+      recovery: { confirmShrink: true },
+    };
+  }
+
   const entry: StoredTypedProperty = {
     value: args.value,
     version: actualVersion + 1,
@@ -181,10 +217,9 @@ export function prepareTypedPropertyMutation(
   return {
     ok: true,
     definition,
-    priorValue: current ? current.value : definition.default,
+    priorValue,
     priorVersion: actualVersion,
     entry,
     properties: { ...stored.data, [args.property]: entry },
   };
 }
-

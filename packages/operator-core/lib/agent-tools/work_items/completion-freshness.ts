@@ -23,6 +23,19 @@ const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 const MAX_PATHS_PROBED = 60;
 const OBJECT_SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 
+/**
+ * EI-22344624691081449: a deletion is caller-owned evidence, but the server
+ * still stamps the observed absence on the identity entry. Keep this local
+ * intersection until the shared record schema carries the same optional marker.
+ */
+type CompletionTreeContentIdentityWithDeletion = CompletionTreeContentIdentity & {
+  deletion?: true;
+};
+
+type CompletionEvidenceWithDeletedPaths = CompletionVerificationEvidence & {
+  filesDeleted?: readonly string[];
+};
+
 export type { CompletionTreeContentIdentity } from '../../coord-lifecycle/records';
 
 function canonicalEvidence(value: unknown): string {
@@ -69,6 +82,8 @@ export interface CompletionTreeStampProbe {
   readBytes?: (absPath: string) => Uint8Array | undefined;
   /** Declared paths whose working-tree and HEAD blob identities should be recorded. */
   filesChanged?: readonly string[];
+  /** Declared paths that must be absent from both the working tree and HEAD. */
+  filesDeleted?: readonly string[];
   /** Injectable HEAD tree lookup; production uses one bounded `git ls-tree` read. */
   headBlobs?: (
     repoRoot: string,
@@ -230,11 +245,21 @@ function contentIdentity(
   repositoryRoot: string,
   headSha: string,
   filesChanged: readonly string[],
+  filesDeleted: readonly string[],
   probe: CompletionTreeStampProbe,
-): CompletionTreeContentIdentity[] | undefined {
-  const paths = [
-    ...new Set(filesChanged.slice(0, MAX_PATHS_PROBED).map((path) => normalizedRepoPath(repositoryRoot, path))),
-  ] as string[];
+): CompletionTreeContentIdentityWithDeletion[] | undefined {
+  const normalizedChanged = filesChanged
+    .slice(0, MAX_PATHS_PROBED)
+    .map((path) => normalizedRepoPath(repositoryRoot, path));
+  const normalizedDeleted = filesDeleted
+    .slice(0, MAX_PATHS_PROBED)
+    .map((path) => normalizedRepoPath(repositoryRoot, path));
+  if (normalizedChanged.some((path) => !path) || normalizedDeleted.some((path) => !path)) return undefined;
+  const changedSet = new Set(normalizedChanged as string[]);
+  const deletedSet = new Set(normalizedDeleted as string[]);
+  // A path cannot truthfully be both modified and deleted in one completion.
+  if ([...deletedSet].some((path) => changedSet.has(path))) return undefined;
+  const paths = [...new Set([...changedSet, ...deletedSet])];
   if (paths.length === 0 || paths.some((path) => !path)) return undefined;
   const head = (probe.headBlobs ?? completionHeadBlobMap)(repositoryRoot, headSha, paths);
   if (!head) return undefined;
@@ -250,10 +275,12 @@ function contentIdentity(
   return paths.map((path) => {
     const bytes = readBytes(nodePath.join(repositoryRoot, path));
     const resolution = head.get(path);
+    const deletion = deletedSet.has(path);
     return {
       path,
       workingTreeBlobSha: bytes === undefined ? null : gitBlobSha(bytes, headSha.length),
       headBlobSha: headBlobShaOf(resolution),
+      ...(deletion ? { deletion: true as const } : {}),
       // Carried so the closer is told WHY, not just that it failed (WI-42441).
       ...(resolution?.status === 'unresolvable' ? { headBlobUnresolvable: resolution.reason } : {}),
     };
@@ -305,7 +332,9 @@ export type UnprovenContentIdentityReason =
   | 'missing-from-commit'
   | 'content-mismatch'
   | 'absent-from-both'
-  | 'absent-from-working-tree';
+  | 'absent-from-working-tree'
+  | 'deletion-present-in-working-tree'
+  | 'deletion-present-in-commit';
 
 export type UnprovenContentIdentityRow = {
   path: string;
@@ -369,8 +398,16 @@ export function unprovenContentIdentityPaths(
     // The server could not READ the HEAD side — a different failure with a different
     // remedy, reported by unresolvableContentIdentityPaths. Not ours.
     if (entry.headBlobUnresolvable) return [];
+    const deletion = (entry as CompletionTreeContentIdentityWithDeletion).deletion === true;
     const inTree = entry.workingTreeBlobSha !== null;
     const inHead = entry.headBlobSha !== null;
+    if (deletion) {
+      if (!inTree && !inHead) return [];
+      if (inTree) {
+        return [{ path: entry.path, reason: 'deletion-present-in-working-tree', settles: 'never' as const }];
+      }
+      return [{ path: entry.path, reason: 'deletion-present-in-commit', settles: 'never' as const }];
+    }
     if (inTree && inHead) {
       return entry.workingTreeBlobSha === entry.headBlobSha
         ? [] // proven — this path is fine
@@ -387,7 +424,7 @@ export function unprovenContentIdentityPaths(
 }
 
 export function completionTreeContentIdentityMatches(
-  identity: readonly CompletionTreeContentIdentity[] | undefined,
+  identity: readonly CompletionTreeContentIdentityWithDeletion[] | undefined,
 ): boolean {
   // WI-1409142: `!= null`, deliberately loose, so it rejects an ABSENT key as well as
   // an explicit null. Stored evidence really can arrive with these keys missing — a
@@ -414,9 +451,11 @@ export function completionTreeContentIdentityMatches(
     repoBacked.length &&
     repoBacked.every(
       (entry) =>
-        entry.workingTreeBlobSha != null &&
-        entry.headBlobSha != null &&
-        entry.workingTreeBlobSha === entry.headBlobSha,
+        entry.deletion === true
+          ? entry.workingTreeBlobSha == null && entry.headBlobSha == null
+          : entry.workingTreeBlobSha != null &&
+            entry.headBlobSha != null &&
+            entry.workingTreeBlobSha === entry.headBlobSha,
     ),
   );
 }
@@ -438,10 +477,11 @@ export function committedCloseDowngradedForUnprovenContentIdentity(
   authorityByEvidence: string,
   filesChanged: readonly string[] | undefined,
   treeStamp: CompletionTreeStamp | undefined,
+  filesDeleted: readonly string[] | undefined = undefined,
 ): boolean {
   return (
     authorityByEvidence === 'committed' &&
-    Boolean(filesChanged?.length) &&
+    Boolean(filesChanged?.length || filesDeleted?.length) &&
     !completionTreeContentIdentityMatches(treeStamp?.contentIdentity)
   );
 }
@@ -467,6 +507,12 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
       }
     });
 
+  const hasDeclaredPaths = probe.filesChanged !== undefined || probe.filesDeleted !== undefined;
+  const stampIdentity = (repositoryRoot: string, headSha: string) =>
+    hasDeclaredPaths
+      ? contentIdentity(repositoryRoot, headSha, probe.filesChanged ?? [], probe.filesDeleted ?? [], probe)
+      : undefined;
+
   try {
     const repositoryRoot = nodePath.resolve(repoRoot);
     let gitDir = nodePath.join(repositoryRoot, '.git');
@@ -481,9 +527,7 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
     if (!head) return undefined;
     if (SHA_RE.test(head)) {
       const stamp: CompletionTreeStamp = { repositoryRoot, headSha: head };
-      const identity = probe.filesChanged
-        ? contentIdentity(repositoryRoot, head, probe.filesChanged, probe)
-        : undefined;
+      const identity = stampIdentity(repositoryRoot, head);
       return identity ? { ...stamp, contentIdentity: identity } : stamp;
     }
 
@@ -493,9 +537,7 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
     const loose = readFile(nodePath.join(gitDir, ref))?.trim();
     if (loose && SHA_RE.test(loose)) {
       const stamp: CompletionTreeStamp = { repositoryRoot, headSha: loose };
-      const identity = probe.filesChanged
-        ? contentIdentity(repositoryRoot, loose, probe.filesChanged, probe)
-        : undefined;
+      const identity = stampIdentity(repositoryRoot, loose);
       return identity ? { ...stamp, contentIdentity: identity } : stamp;
     }
 
@@ -506,9 +548,7 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
       const [sha, name] = line.trim().split(/\s+/, 2);
       if (name === ref && sha && SHA_RE.test(sha)) {
         const stamp: CompletionTreeStamp = { repositoryRoot, headSha: sha };
-        const identity = probe.filesChanged
-          ? contentIdentity(repositoryRoot, sha, probe.filesChanged, probe)
-          : undefined;
+        const identity = stampIdentity(repositoryRoot, sha);
         return identity ? { ...stamp, contentIdentity: identity } : stamp;
       }
     }
@@ -554,7 +594,13 @@ export function completionTreeStampForEvidence(
 
   const exists = probe.exists ?? ((abs: string) => existsSync(abs));
   const isCheckoutRoot = probe.isCheckoutRoot ?? hasValidGitEntry;
-  const declared = (evidence.filesChanged ?? []).slice(0, MAX_PATHS_PROBED);
+  const evidenceWithDeleted = evidence as CompletionEvidenceWithDeletedPaths;
+  const changedDeclared = evidence.filesChanged ?? [];
+  const deletedDeclared = evidenceWithDeleted.filesDeleted ?? [];
+  const changedRaw = new Set(changedDeclared.map((path) => path.trim()));
+  if (deletedDeclared.some((path) => changedRaw.has(path.trim()))) return undefined;
+  const deletedRaw = new Set(deletedDeclared.map((path) => path.trim()));
+  const declared = [...changedDeclared, ...deletedDeclared].slice(0, MAX_PATHS_PROBED);
   const primaryRoot = roots[0]!;
 
   // A relative path such as `papercusp-desktop/bin/check.sh` is resolved against the
@@ -725,15 +771,28 @@ export function completionTreeStampForEvidence(
    * checkouts and a handful of screenshot artifacts stored no stamp at all and closed
    * as `proposed` with no diagnostic naming which paths were the problem.
    */
-  const ownerForPath = (raw: string): string | undefined => {
-    const nested = nestedOwners.get(raw.trim());
+  const ownerForPath = (raw: string, deletion = false): string | undefined => {
+    const declaredPath = raw.trim();
+    const nested = nestedOwners.get(declaredPath);
     if (nested) return nested.root;
+    if (deletion) {
+      // A deleted path is intentionally absent, so existence-based ownership
+      // scoring cannot find it. Absolute paths still carry a physical checkout
+      // boundary; relative paths retain the selected-root compatibility rule.
+      if (nodePath.isAbsolute(declaredPath)) {
+        const containingRoots = candidateRoots
+          .filter((repoRoot) => Boolean(pathForRoot(repoRoot, declaredPath)))
+          .sort((a, b) => b.length - a.length);
+        return containingRoots[0];
+      }
+      return pathForRoot(selectedRoot, declaredPath) ? selectedRoot : undefined;
+    }
     // Mirror the scoring loop's tie rule EXACTLY: deepest-containing-checkout wins only
     // for an ABSOLUTE declared path (where containment is a real fact and a submodule
     // should stamp its own HEAD). A RELATIVE path resolves "inside" every root by
     // construction, so it retains the primary-root compatibility rule instead —
     // EI-20460682854560939, "legacy completions do not change repositories".
-    const declaredIsAbsolute = nodePath.isAbsolute(raw.trim());
+    const declaredIsAbsolute = nodePath.isAbsolute(declaredPath);
     let best: string | undefined;
     let bestSpecificity = -1;
     for (const repoRoot of candidateRoots) {
@@ -766,21 +825,24 @@ export function completionTreeStampForEvidence(
   };
 
   const groups = new Map<string, string[]>();
-  const artifactPaths: string[] = [];
+  const deletedGroups = new Map<string, string[]>();
+  const artifactPaths: { path: string; deletion: boolean }[] = [];
   for (const raw of declared) {
     const declaredPath = raw.trim();
     // A glob or empty citation is INVALID, not an artifact. WI-312624 made the
     // fail-closed bail explicit for exactly this case; keep it.
     if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) return undefined;
-    const owner = ownerForPath(raw);
+    const deletion = deletedRaw.has(declaredPath);
+    const owner = ownerForPath(raw, deletion);
     const file = owner ? fileForRoot(owner, raw) : undefined;
     if (!owner || !file) {
-      artifactPaths.push(declaredPath);
+      artifactPaths.push({ path: declaredPath, deletion });
       continue;
     }
-    const group = groups.get(owner) ?? [];
+    const targetGroups = deletion ? deletedGroups : groups;
+    const group = targetGroups.get(owner) ?? [];
     group.push(file);
-    groups.set(owner, group);
+    targetGroups.set(owner, group);
   }
 
   const primaryStamp = completionTreeStamp({
@@ -789,27 +851,32 @@ export function completionTreeStampForEvidence(
     readBytes: probe.readBytes,
     headBlobs: probe.headBlobs,
     filesChanged: groups.get(selectedRoot) ?? [],
+    filesDeleted: deletedGroups.get(selectedRoot) ?? [],
   });
   if (!primaryStamp) return undefined;
 
   const identity: CompletionTreeContentIdentity[] = [...(primaryStamp.contentIdentity ?? [])];
-  for (const [repoRoot, files] of groups) {
+  for (const repoRoot of new Set([...groups.keys(), ...deletedGroups.keys()])) {
     if (repoRoot === selectedRoot) continue;
+    const files = groups.get(repoRoot) ?? [];
+    const deletedFiles = deletedGroups.get(repoRoot) ?? [];
     const stamp = completionTreeStamp({
       repoRoot,
       readFile: probe.readFile,
       readBytes: probe.readBytes,
       headBlobs: probe.headBlobs,
       filesChanged: files,
+      filesDeleted: deletedFiles,
     });
     if (!stamp?.contentIdentity) {
       // That checkout's HEAD could not be read. Record ITS paths as unproven — with the
       // reason, per WI-42441 — instead of discarding every other repository's proof.
-      for (const path of files) {
+      for (const path of [...files, ...deletedFiles]) {
         identity.push({
           path,
           workingTreeBlobSha: null,
           headBlobSha: null,
+          ...(deletedFiles.includes(path) ? { deletion: true as const } : {}),
           repositoryRoot: repoRoot,
           headBlobUnresolvable: `checkout '${repoRoot}' HEAD could not be read`,
         });
@@ -820,8 +887,14 @@ export function completionTreeStampForEvidence(
       identity.push({ ...entry, repositoryRoot: repoRoot, headSha: stamp.headSha });
     }
   }
-  for (const path of artifactPaths) {
-    identity.push({ path, workingTreeBlobSha: null, headBlobSha: null, outOfRepoArtifact: true });
+  for (const { path, deletion } of artifactPaths) {
+    identity.push({
+      path,
+      workingTreeBlobSha: null,
+      headBlobSha: null,
+      ...(deletion ? { deletion: true as const } : {}),
+      outOfRepoArtifact: true,
+    });
   }
 
   return identity.length
@@ -849,7 +922,7 @@ function storedTreeStamp(value: unknown): CompletionTreeStamp | undefined {
   const headSha = typeof record.headSha === 'string' ? record.headSha.trim() : '';
   if (!repositoryRoot || !SHA_RE.test(headSha)) return undefined;
   const rawIdentity = record.contentIdentity;
-  let contentIdentity: CompletionTreeContentIdentity[] | undefined;
+  let contentIdentity: CompletionTreeContentIdentityWithDeletion[] | undefined;
   if (rawIdentity !== undefined) {
     if (!Array.isArray(rawIdentity) || rawIdentity.length === 0 || rawIdentity.length > MAX_PATHS_PROBED)
       return undefined;
@@ -867,7 +940,29 @@ function storedTreeStamp(value: unknown): CompletionTreeStamp | undefined {
         (headBlobSha !== null && (typeof headBlobSha !== 'string' || !OBJECT_SHA_RE.test(headBlobSha)))
       )
         return undefined;
-      contentIdentity.push({ path, workingTreeBlobSha, headBlobSha });
+      const deletion = entry.deletion;
+      if (deletion !== undefined && deletion !== true) return undefined;
+      const headBlobUnresolvable = entry.headBlobUnresolvable;
+      if (headBlobUnresolvable !== undefined && (typeof headBlobUnresolvable !== 'string' || !headBlobUnresolvable.trim()))
+        return undefined;
+      const repositoryRootEntry = entry.repositoryRoot;
+      if (repositoryRootEntry !== undefined && (typeof repositoryRootEntry !== 'string' || !repositoryRootEntry.trim()))
+        return undefined;
+      const headShaEntry = entry.headSha;
+      if (headShaEntry !== undefined && (typeof headShaEntry !== 'string' || !SHA_RE.test(headShaEntry)))
+        return undefined;
+      const outOfRepoArtifact = entry.outOfRepoArtifact;
+      if (outOfRepoArtifact !== undefined && outOfRepoArtifact !== true) return undefined;
+      contentIdentity.push({
+        path,
+        workingTreeBlobSha,
+        headBlobSha,
+        ...(deletion ? { deletion } : {}),
+        ...(headBlobUnresolvable ? { headBlobUnresolvable } : {}),
+        ...(repositoryRootEntry ? { repositoryRoot: nodePath.resolve(repositoryRootEntry) } : {}),
+        ...(headShaEntry ? { headSha: headShaEntry } : {}),
+        ...(outOfRepoArtifact ? { outOfRepoArtifact } : {}),
+      });
     }
   }
   return { repositoryRoot: nodePath.resolve(repositoryRoot), headSha, ...(contentIdentity ? { contentIdentity } : {}) };
@@ -905,7 +1000,10 @@ export function completionFreshnessForEvidence(
     // that is not applicable. Older writers dropped an explicit `filesChanged: []`, so
     // an omitted path list is included here; a non-empty list remains unavailable below.
     const filesChanged = record.filesChanged;
-    if (filesChanged === undefined || (Array.isArray(filesChanged) && filesChanged.length === 0)) {
+    const filesDeleted = record.filesDeleted;
+    const hasChangedPaths = Array.isArray(filesChanged) && filesChanged.length > 0;
+    const hasDeletedPaths = Array.isArray(filesDeleted) && filesDeleted.length > 0;
+    if (!hasChangedPaths && !hasDeletedPaths) {
       return {
         verdict: 'not-applicable',
         storedTreeStamp: stored,
@@ -924,9 +1022,10 @@ export function completionFreshnessForEvidence(
     current = (
       probe.currentStamp ??
       ((stamp) =>
-        completionTreeStamp({
+      completionTreeStamp({
           repoRoot: stamp.repositoryRoot,
-          filesChanged: stamp.contentIdentity?.map((entry) => entry.path),
+          filesChanged: stamp.contentIdentity?.filter((entry) => (entry as CompletionTreeContentIdentityWithDeletion).deletion !== true).map((entry) => entry.path),
+          filesDeleted: stamp.contentIdentity?.filter((entry) => (entry as CompletionTreeContentIdentityWithDeletion).deletion === true).map((entry) => entry.path),
         }))
     )(stored);
   } catch {

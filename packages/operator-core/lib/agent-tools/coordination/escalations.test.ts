@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
 import { configureCoordLog, resetCoordLog, coordLog } from './log';
 import {
+  detectOwnerAuthorshipClaim,
   expireStaleAdvisoryEscalations,
   listEscalations,
   listEscalationsPaginated,
@@ -14,6 +15,8 @@ import {
   reopenEscalation,
   resolveEscalation,
   resolveEscalationsBatch,
+  UNVERIFIED_OWNER_AUTHORSHIP_CLAIM_TAG,
+  type OwnerAuthorshipClaimLocation,
 } from './escalations';
 import { resolvedEventId } from '@papercusp/coordination/core';
 import type { AgentIdentity } from './identity';
@@ -424,6 +427,52 @@ describe('resolveEscalationsBatch — single-load drain (EI-1490)', () => {
 
 describe('openEscalation dedup + advisory expiry (WI-1503)', () => {
   const identity = { ownerId: 'bee-7' } as AgentIdentity;
+
+  describe('WI-6943 — second-person owner-authorship guard', () => {
+    const claimCases: Array<[string, OwnerAuthorshipClaimLocation, string | undefined]> = [
+      ['Your change broke the release gate', 'summary', undefined],
+      ['You wrote the failing resolver', 'summary', undefined],
+      ['You have updated this config before', 'summary', undefined],
+      ['The regression needs review', 'body', 'You authored the affected patch'],
+    ];
+
+    it.each(claimCases)('tags an unverified claim in %s', async (summary, location, body) => {
+      configureCoordLog(new InMemoryCoordLog());
+      expect(detectOwnerAuthorshipClaim(summary, body)).toBe(location);
+
+      const rec = await openEscalation(identity, {
+        severity: 'question',
+        summary,
+        ...(body ? { body } : {}),
+      });
+
+      expect(rec.summary).toBe(`${UNVERIFIED_OWNER_AUTHORSHIP_CLAIM_TAG} ${summary}`);
+    });
+
+    it('stays quiet on text that does not attribute owner authorship', async () => {
+      configureCoordLog(new InMemoryCoordLog());
+      const rec = await openEscalation(identity, {
+        severity: 'question',
+        summary: 'The proposed change needs review',
+        body: 'The release fixer wrote the patch and recorded its evidence.',
+      });
+
+      expect(detectOwnerAuthorshipClaim(rec.summary ?? '', rec.body)).toBeNull();
+      expect(rec.summary).toBe('The proposed change needs review');
+    });
+
+    it('keeps the guard presentation-only for dedup and never stacks the tag', async () => {
+      configureCoordLog(new InMemoryCoordLog());
+      const summary = 'Your commit still fails the focused test';
+      const first = await openEscalation(identity, { severity: 'question', summary });
+      const repeated = await openEscalation(identity, { severity: 'question', summary });
+
+      expect(repeated.msg_id).toBe(first.msg_id);
+      expect((repeated as Record<string, unknown>).subjectSignature).toBe(summary.toLowerCase());
+      expect(repeated.summary).toBe(`${UNVERIFIED_OWNER_AUTHORSHIP_CLAIM_TAG} ${summary}`);
+      expect((repeated.summary ?? '').match(/\[UNVERIFIED owner-authorship claim\]/g)).toHaveLength(1);
+    });
+  });
 
   it('dedups a repeat open escalation onto the existing row instead of stacking a second open event', async () => {
     configureCoordLog(new InMemoryCoordLog());

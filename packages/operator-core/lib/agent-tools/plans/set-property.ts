@@ -33,13 +33,13 @@ const text = (payload: Record<string, unknown>, isError = false) => ({
 export default defineTool({
   name: 'plans:set-property',
   description:
-    "Write ONE typed property value on a plan (P-023). The property must be DECLARED in the plan's property_schema; the value is validated against its datatype's payload_schema; editable_by is enforced (owner-edit vs agent-edit provenance derived from the caller); expectedVersion is a CAS guard (0 = no explicit value yet — 'stale' means re-read and retry). Emits a property_changed delta event on the plan-events rail.",
+    "Write ONE typed property value on a plan (P-023). The property must be DECLARED in the plan's property_schema; the value is validated against its datatype's payload_schema; editable_by is enforced (owner-edit vs agent-edit provenance derived from the caller); expectedVersion is a CAS guard (0 = no explicit value yet — 'stale' means re-read and retry). An array-length reduction is refused as shrink_blocked unless confirmShrink:true explicitly authorizes the destructive replacement after a full read. Emits a property_changed delta event on the plan-events rail.",
   guidance: {
     when: "Changing a declared property's VALUE on a plan — owner steering and agent typed-state updates.",
     notWhen:
       'DECLARING properties — plans:new { propertySchema } at creation. Plan content/frontmatter — plans:set-content / set-frontmatter-field. Item status — plans:set-status. Goal properties — goals:set-property.',
     chaining:
-      "plans:get-properties { slug } (declarations + values + per-property versions) → plans:set-property { slug, property, value, expectedVersion } → on 'stale', re-read and retry.",
+      "plans:get-properties { slug } (declarations + COMPLETE values + per-property versions) → plans:set-property { slug, property, value, expectedVersion } → on 'stale', re-read and retry; on 'shrink_blocked', confirm the full authoritative list before deliberately retrying with confirmShrink:true.",
     seeAlso: ['goals:set-property (the goal sibling)', 'plans:get-properties (read them back)'],
   },
   capability: 'plans:write',
@@ -62,6 +62,12 @@ export default defineTool({
       .nonnegative()
       .describe(
         'CAS guard: the per-property version you last read; 0 = the property has no explicit value yet.',
+      ),
+    confirmShrink: z
+      .boolean()
+      .optional()
+      .describe(
+        'Required only when the proposed array is shorter than the authoritative prior array. Pass true only after a full, untruncated plans:get-properties read proves the removals are intentional; omitted/false returns shrink_blocked without writing.',
       ),
   }),
   async handler(args, ctx) {
@@ -87,6 +93,7 @@ export default defineTool({
         property: args.property,
         value: args.value,
         expectedVersion: args.expectedVersion,
+        confirmShrink: args.confirmShrink,
         provenance,
         actorId,
       }),

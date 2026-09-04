@@ -18,15 +18,34 @@
 // shell, no build step) must stay plain-JS-executable with zero devDependency on
 // the test toolchain. If a THIRD consumer shows up, promote both to one shared
 // `libs/generic/fs-mutex` package instead of a third copy.
-import { randomUUID } from 'node:crypto';
-import { homedir, hostname } from 'node:os';
-import { join, resolve } from 'node:path';
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { randomUUID } from "node:crypto";
+import { homedir, hostname } from "node:os";
+import { join, resolve } from "node:path";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { readFileSync } from "node:fs";
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_STALE_MS = 10 * 60_000;
 const DEFAULT_RETRY_MS = 250;
+
+/**
+ * Host-wide reader/writer boundary for package-manager cache access.
+ *
+ * Safe installs hold a READER lease: installs in independent checkouts can keep
+ * running concurrently. The retention janitor takes the WRITER lease before a
+ * native npm/bun/pnpm cache prune, which drains every safe install first and
+ * prevents a cache clear from racing extraction in staging, release, or a
+ * checkpoint checkout. Keep the key here, beside the primitive both callers
+ * already share, so the two sides cannot silently drift onto different locks.
+ */
+export const PACKAGE_CACHE_MUTEX_NAME = "package-manager-cache";
 
 function intEnv(name, fallback) {
   const raw = process.env[name];
@@ -60,7 +79,9 @@ export function resolveFsMutexLockRoot(env = process.env, options = {}) {
   const platform = options.platform ?? process.platform;
   const homeDir = options.homeDir ?? homedir();
   const stableDefault =
-    platform === 'win32' ? join(homeDir, '.papercusp', 'fs-mutex-locks') : '/tmp/pcv/fs-mutex-locks';
+    platform === "win32"
+      ? join(homeDir, ".papercusp", "fs-mutex-locks")
+      : "/tmp/pcv/fs-mutex-locks";
   return resolve(env.PAPERCUSP_FS_MUTEX_LOCK_DIR ?? stableDefault);
 }
 
@@ -69,7 +90,7 @@ function lockRoot() {
 }
 
 function safeName(name) {
-  return name.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return name.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
 function readerRoot(lockRootDir, name) {
@@ -78,9 +99,9 @@ function readerRoot(lockRootDir, name) {
 
 async function readOwner(lockDir) {
   try {
-    return await readFile(join(lockDir, 'owner.json'), 'utf8');
+    return await readFile(join(lockDir, "owner.json"), "utf8");
   } catch {
-    return '(owner unknown)';
+    return "(owner unknown)";
   }
 }
 
@@ -94,7 +115,7 @@ async function readOwner(lockDir) {
 async function isOwnerProcessConfirmedDead(lockDir) {
   let raw;
   try {
-    raw = await readFile(join(lockDir, 'owner.json'), 'utf8');
+    raw = await readFile(join(lockDir, "owner.json"), "utf8");
   } catch {
     return false;
   }
@@ -104,13 +125,14 @@ async function isOwnerProcessConfirmedDead(lockDir) {
   } catch {
     return false;
   }
-  if (typeof owner.pid !== 'number' || typeof owner.host !== 'string') return false;
+  if (typeof owner.pid !== "number" || typeof owner.host !== "string")
+    return false;
   if (owner.host !== hostname()) return false;
   try {
     process.kill(owner.pid, 0);
     return false; // no throw ⇒ signal delivered ⇒ process exists (or we lack permission ⇒ assume alive)
   } catch (error) {
-    return error && error.code === 'ESRCH';
+    return error && error.code === "ESRCH";
   }
 }
 
@@ -125,7 +147,10 @@ async function reclaimAbandonedLock(lockDir, staleMs) {
   // valve. The positive pid check is what lets a crashed reader release its
   // marker promptly; the age fallback also handles a process dying between
   // mkdir and owner.json, where there is no pid to inspect.
-  if (await isOwnerProcessConfirmedDead(lockDir) || (await lockAgeMs(lockDir)) > staleMs) {
+  if (
+    (await isOwnerProcessConfirmedDead(lockDir)) ||
+    (await lockAgeMs(lockDir)) > staleMs
+  ) {
     await rm(lockDir, { recursive: true, force: true });
     return true;
   }
@@ -156,7 +181,7 @@ function queueRoot(lockRootDir, name) {
  * concurrent callers on the same host.
  */
 function ticketId(startedAtMs) {
-  return `${String(startedAtMs).padStart(16, '0')}-${process.pid}-${randomUUID()}`;
+  return `${String(startedAtMs).padStart(16, "0")}-${process.pid}-${randomUUID()}`;
 }
 
 // EI-21917992245424964: the owner record answered "IS the holder alive?" and nothing about
@@ -181,21 +206,22 @@ const INTENT_MAX_KEYS = 12;
 const INTENT_MAX_STRING_CHARS = 200;
 
 function sanitizeIntent(intent) {
-  if (!intent || typeof intent !== 'object' || Array.isArray(intent)) return null;
+  if (!intent || typeof intent !== "object" || Array.isArray(intent))
+    return null;
   const out = {};
   let kept = 0;
   for (const [key, value] of Object.entries(intent)) {
     if (kept >= INTENT_MAX_KEYS) break;
-    if (typeof value === 'string') {
+    if (typeof value === "string") {
       if (value.length === 0) continue;
       out[key] =
         value.length > INTENT_MAX_STRING_CHARS
           ? `${value.slice(0, INTENT_MAX_STRING_CHARS)}…`
           : value;
-    } else if (typeof value === 'number') {
+    } else if (typeof value === "number") {
       if (!Number.isFinite(value)) continue;
       out[key] = value;
-    } else if (typeof value === 'boolean') {
+    } else if (typeof value === "boolean") {
       out[key] = value;
     } else {
       continue;
@@ -219,24 +245,32 @@ function sanitizeIntent(intent) {
 async function reclaimAbandonedTicket(ticketDir, staleMs) {
   let raw;
   try {
-    raw = await readFile(join(ticketDir, 'owner.json'), 'utf8');
+    raw = await readFile(join(ticketDir, "owner.json"), "utf8");
   } catch {
-    if ((await lockAgeMs(ticketDir)) > staleMs) await rm(ticketDir, { recursive: true, force: true });
+    if ((await lockAgeMs(ticketDir)) > staleMs)
+      await rm(ticketDir, { recursive: true, force: true });
     return;
   }
   let owner;
   try {
     owner = JSON.parse(raw);
   } catch {
-    if ((await lockAgeMs(ticketDir)) > staleMs) await rm(ticketDir, { recursive: true, force: true });
+    if ((await lockAgeMs(ticketDir)) > staleMs)
+      await rm(ticketDir, { recursive: true, force: true });
     return;
   }
-  if (typeof owner.pid !== 'number' || typeof owner.host !== 'string' || owner.host !== hostname()) return;
+  if (
+    typeof owner.pid !== "number" ||
+    typeof owner.host !== "string" ||
+    owner.host !== hostname()
+  )
+    return;
   try {
     process.kill(owner.pid, 0);
     return; // no throw ⇒ signal delivered ⇒ owner is alive (or unconfirmable ⇒ assume alive)
   } catch (error) {
-    if (error && error.code === 'ESRCH') await rm(ticketDir, { recursive: true, force: true });
+    if (error && error.code === "ESRCH")
+      await rm(ticketDir, { recursive: true, force: true });
   }
 }
 
@@ -253,8 +287,11 @@ async function oldestTicketDir(ticketsDir, staleMs) {
   } catch {
     return null;
   }
-  const ticketDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => join(ticketsDir, entry.name));
-  for (const ticketDir of ticketDirs) await reclaimAbandonedTicket(ticketDir, staleMs);
+  const ticketDirs = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => join(ticketsDir, entry.name));
+  for (const ticketDir of ticketDirs)
+    await reclaimAbandonedTicket(ticketDir, staleMs);
   let remaining;
   try {
     remaining = (await readdir(ticketsDir, { withFileTypes: true }))
@@ -271,7 +308,7 @@ async function writerLockIsHeld(lockDir, staleMs) {
   try {
     await stat(lockDir);
   } catch (error) {
-    if (error.code === 'ENOENT') return false;
+    if (error.code === "ENOENT") return false;
     throw error;
   }
   return !(await reclaimAbandonedLock(lockDir, staleMs));
@@ -280,16 +317,25 @@ async function writerLockIsHeld(lockDir, staleMs) {
 async function listReaderLocks(readersDir) {
   try {
     const entries = await readdir(readersDir, { withFileTypes: true });
-    return entries.filter((entry) => entry.isDirectory()).map((entry) => join(readersDir, entry.name));
+    return entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(readersDir, entry.name));
   } catch (error) {
-    if (error.code === 'ENOENT') return [];
+    if (error.code === "ENOENT") return [];
     throw error;
   }
 }
 
 async function waitForReaders(
   readersDir,
-  { timeoutMs, staleMs, retryMs, startedAt, onWaiting, waitingNoticeIntervalMs = 0 },
+  {
+    timeoutMs,
+    staleMs,
+    retryMs,
+    startedAt,
+    onWaiting,
+    waitingNoticeIntervalMs = 0,
+  },
 ) {
   let announcedWaiting = false;
   // WI-1490656: same re-announce cadence as the write-lock wait. Fixing only the write path
@@ -305,15 +351,21 @@ async function waitForReaders(
     const elapsed = Date.now() - startedAt;
     const dueForNotice =
       !announcedWaiting ||
-      (waitingNoticeIntervalMs > 0 && elapsed - lastWaitingNoticeMs >= waitingNoticeIntervalMs);
+      (waitingNoticeIntervalMs > 0 &&
+        elapsed - lastWaitingNoticeMs >= waitingNoticeIntervalMs);
     if (dueForNotice && onWaiting) {
       announcedWaiting = true;
       lastWaitingNoticeMs = elapsed;
-      onWaiting({ owner: await readOwner(activeReaders[0]), elapsedMs: elapsed });
+      onWaiting({
+        owner: await readOwner(activeReaders[0]),
+        elapsedMs: elapsed,
+      });
     }
     if (elapsed > timeoutMs) {
       const currentOwner = await readOwner(activeReaders[0]);
-      throw new Error(`Timed out after ${timeoutMs}ms waiting for fs-mutex readers (${readersDir}); holder: ${currentOwner}`);
+      throw new Error(
+        `Timed out after ${timeoutMs}ms waiting for fs-mutex readers (${readersDir}); holder: ${currentOwner}`,
+      );
     }
     await sleep(retryMs);
   }
@@ -332,17 +384,22 @@ async function waitForReaders(
  * @returns {Promise<T>}
  */
 export async function withFsMutex(name, fn, opts = {}) {
-  if (opts.mode === 'read' || opts.mode === 'reader') return withFsMutexRead(name, fn, opts);
-  if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === '1') {
+  if (opts.mode === "read" || opts.mode === "reader")
+    return withFsMutexRead(name, fn, opts);
+  if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === "1") {
     return fn();
   }
 
   const root = lockRoot();
   const lockDir = join(root, `${safeName(name)}.lock`);
   const readersDir = readerRoot(root, name);
-  const timeoutMs = opts.timeoutMs ?? intEnv('PAPERCUSP_FS_MUTEX_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
-  const staleMs = opts.staleMs ?? intEnv('PAPERCUSP_FS_MUTEX_STALE_MS', DEFAULT_STALE_MS);
-  const retryMs = opts.retryMs ?? intEnv('PAPERCUSP_FS_MUTEX_RETRY_MS', DEFAULT_RETRY_MS);
+  const timeoutMs =
+    opts.timeoutMs ??
+    intEnv("PAPERCUSP_FS_MUTEX_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
+  const staleMs =
+    opts.staleMs ?? intEnv("PAPERCUSP_FS_MUTEX_STALE_MS", DEFAULT_STALE_MS);
+  const retryMs =
+    opts.retryMs ?? intEnv("PAPERCUSP_FS_MUTEX_RETRY_MS", DEFAULT_RETRY_MS);
   const startedAt = Date.now();
   // Nested under its own key rather than merged: a caller can then never shadow `pid` /
   // `host` / `startedAt`, which are the fields the reclaim path and every waiter trust.
@@ -371,7 +428,10 @@ export async function withFsMutex(name, fn, opts = {}) {
   try {
     await mkdir(ticketsDir, { recursive: true });
     await mkdir(myTicketDir);
-    await writeFile(join(myTicketDir, 'owner.json'), `${JSON.stringify(owner, null, 2)}\n`);
+    await writeFile(
+      join(myTicketDir, "owner.json"),
+      `${JSON.stringify(owner, null, 2)}\n`,
+    );
     ticketRegistered = true;
   } catch {
     ticketRegistered = false;
@@ -387,7 +447,9 @@ export async function withFsMutex(name, fn, opts = {}) {
   // `waitingNoticeIntervalMs` get the notice RE-ANNOUNCED on that cadence, so the WAITING
   // state keeps emitting attributable forward-progress bytes for as long as it lasts.
   const waitingNoticeIntervalMs =
-    Number(opts.waitingNoticeIntervalMs) > 0 ? Number(opts.waitingNoticeIntervalMs) : 0;
+    Number(opts.waitingNoticeIntervalMs) > 0
+      ? Number(opts.waitingNoticeIntervalMs)
+      : 0;
   const announceWaiting = async (elapsedMs) => {
     if (!opts.onWaiting) return;
     const due =
@@ -410,7 +472,9 @@ export async function withFsMutex(name, fn, opts = {}) {
           await announceWaiting(elapsed);
           if (elapsed > timeoutMs) {
             const currentOwner = await readOwner(lockDir);
-            throw new Error(`Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`);
+            throw new Error(
+              `Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`,
+            );
           }
           await sleep(retryMs);
           continue;
@@ -425,12 +489,12 @@ export async function withFsMutex(name, fn, opts = {}) {
         // The mkdir above IS the grant, so stamp the grant instant here and make it
         // answerable instead of inviting the same misreading again.
         await writeFile(
-          join(lockDir, 'owner.json'),
+          join(lockDir, "owner.json"),
           `${JSON.stringify({ ...owner, acquiredAt: new Date().toISOString() }, null, 2)}\n`,
         );
         break;
       } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
+        if (error.code !== "EEXIST") throw error;
 
         const elapsed = Date.now() - startedAt;
         await announceWaiting(elapsed);
@@ -447,7 +511,9 @@ export async function withFsMutex(name, fn, opts = {}) {
         }
         if (elapsed > timeoutMs) {
           const currentOwner = await readOwner(lockDir);
-          throw new Error(`Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`);
+          throw new Error(
+            `Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`,
+          );
         }
         await sleep(retryMs);
       }
@@ -497,22 +563,29 @@ export async function withFsMutex(name, fn, opts = {}) {
  * @returns {Promise<T>}
  */
 export async function withFsMutexRead(name, fn, opts = {}) {
-  if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === '1') return fn();
+  if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === "1") return fn();
 
   const root = lockRoot();
   const writerDir = join(root, `${safeName(name)}.lock`);
   const readersDir = readerRoot(root, name);
-  const timeoutMs = opts.timeoutMs ?? intEnv('PAPERCUSP_FS_MUTEX_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
-  const staleMs = opts.staleMs ?? intEnv('PAPERCUSP_FS_MUTEX_STALE_MS', DEFAULT_STALE_MS);
-  const retryMs = opts.retryMs ?? intEnv('PAPERCUSP_FS_MUTEX_RETRY_MS', DEFAULT_RETRY_MS);
+  const timeoutMs =
+    opts.timeoutMs ??
+    intEnv("PAPERCUSP_FS_MUTEX_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
+  const staleMs =
+    opts.staleMs ?? intEnv("PAPERCUSP_FS_MUTEX_STALE_MS", DEFAULT_STALE_MS);
+  const retryMs =
+    opts.retryMs ?? intEnv("PAPERCUSP_FS_MUTEX_RETRY_MS", DEFAULT_RETRY_MS);
   const startedAt = Date.now();
-  const readerDir = join(readersDir, `${process.pid}-${Date.now()}-${randomUUID()}.lock`);
+  const readerDir = join(
+    readersDir,
+    `${process.pid}-${Date.now()}-${randomUUID()}.lock`,
+  );
   const owner = {
     pid: process.pid,
     host: hostname(),
     startedAt: new Date(startedAt).toISOString(),
     name,
-    mode: 'read',
+    mode: "read",
   };
 
   await mkdir(root, { recursive: true });
@@ -525,11 +598,15 @@ export async function withFsMutexRead(name, fn, opts = {}) {
     try {
       await mkdir(readerDir);
       markerCreated = true;
-      await writeFile(join(readerDir, 'owner.json'), `${JSON.stringify(owner, null, 2)}\n`);
+      await writeFile(
+        join(readerDir, "owner.json"),
+        `${JSON.stringify(owner, null, 2)}\n`,
+      );
       ready = !(await writerLockIsHeld(writerDir, staleMs));
     } catch (error) {
-      if (error.code !== 'EEXIST') {
-        if (markerCreated) await rm(readerDir, { recursive: true, force: true });
+      if (error.code !== "EEXIST") {
+        if (markerCreated)
+          await rm(readerDir, { recursive: true, force: true });
         throw error;
       }
     }
@@ -544,7 +621,9 @@ export async function withFsMutexRead(name, fn, opts = {}) {
     }
     if (elapsed > timeoutMs) {
       const currentOwner = await readOwner(writerDir);
-      throw new Error(`Timed out after ${timeoutMs}ms waiting for fs-mutex writer ("${name}"); holder: ${currentOwner}`);
+      throw new Error(
+        `Timed out after ${timeoutMs}ms waiting for fs-mutex writer ("${name}"); holder: ${currentOwner}`,
+      );
     }
     await sleep(retryMs);
   }
@@ -574,7 +653,7 @@ export async function withFsMutexRead(name, fn, opts = {}) {
 export function peekFsMutexSync(name) {
   const lockDir = join(lockRoot(), `${safeName(name)}.lock`);
   try {
-    const raw = readFileSync(join(lockDir, 'owner.json'), 'utf8');
+    const raw = readFileSync(join(lockDir, "owner.json"), "utf8");
     return { held: true, owner: JSON.parse(raw), lockDir };
   } catch {
     return { held: false, lockDir };

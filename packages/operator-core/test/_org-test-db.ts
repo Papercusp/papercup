@@ -173,8 +173,15 @@ export async function createOrgTestDb(): Promise<OrgTestDb> {
   const adminSql = applyRawSerializerFixes(postgres(adminDsn, clientOpts));
 
   const cleanup = async () => {
-    await appSql.end({ timeout: 5 }).catch(() => {});
-    await adminSql.end({ timeout: 5 }).catch(() => {});
+    // The two clients are independent. Waiting for their five-second shutdown
+    // ceilings serially can consume Vitest's entire default 10s afterAll budget
+    // before db.drop() even starts, turning green integration assertions red at
+    // teardown. Close them concurrently so the lifecycle ceiling is one client
+    // timeout plus the drop, not the sum of both timeouts.
+    await Promise.all([
+      appSql.end({ timeout: 5 }).catch(() => {}),
+      adminSql.end({ timeout: 5 }).catch(() => {}),
+    ]);
     await db.drop().catch(() => {});
   };
 

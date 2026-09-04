@@ -56,11 +56,16 @@ describe('typed-properties-db (real PG, migration 923)', () => {
     // Owning rows: one goal, one plan.
     await db.adminSql`
       INSERT INTO harness_shared.goals (id, install_slug, workspace_id, title, status, property_schema)
-      VALUES ('g-tp-1', ${HARNESS}, ${WS}, 'typed props goal', 'active',
-              ${JSON.stringify({
-                worklist: { datatype: 'string-list', default: ['perf'], editable_by: 'both' },
-                budget: { datatype: 'freeform', editable_by: 'owner' },
-              })}::text::jsonb)`;
+      VALUES
+        ('g-tp-1', ${HARNESS}, ${WS}, 'typed props goal', 'active',
+         ${JSON.stringify({
+           worklist: { datatype: 'string-list', default: ['perf'], editable_by: 'both' },
+           budget: { datatype: 'freeform', editable_by: 'owner' },
+         })}::text::jsonb),
+        ('g-tp-shrink', ${HARNESS}, ${WS}, 'typed props shrink guard', 'active',
+         ${JSON.stringify({
+           worklist: { datatype: 'string-list', editable_by: 'both' },
+         })}::text::jsonb)`;
     await db.adminSql`
       INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, title, status, property_schema)
       VALUES (${WS}, ${HARNESS}, 'tp-plan-2026-08-23', 'typed props plan', 'draft',
@@ -176,6 +181,62 @@ describe('typed-properties-db (real PG, migration 923)', () => {
       actorId: 'avi',
     });
     expect(missing).toEqual({ ok: false, code: 'not_found' });
+  });
+
+  it('goal write cycle: a rejected array shrink preserves the stored value; explicit confirmation writes it', async () => {
+    const initial = await applyGoalPropertyWrite(db.adminSql, {
+      workspaceId: WS,
+      goalId: 'g-tp-shrink',
+      property: 'worklist',
+      value: ['first', 'second', 'third'],
+      expectedVersion: 0,
+      provenance: 'agent-edit',
+      actorId: 'su-1',
+    });
+    expect(initial.ok).toBe(true);
+
+    const blocked = await applyGoalPropertyWrite(db.adminSql, {
+      workspaceId: WS,
+      goalId: 'g-tp-shrink',
+      property: 'worklist',
+      value: ['first'],
+      expectedVersion: 1,
+      provenance: 'agent-edit',
+      actorId: 'su-1',
+    });
+    expect(blocked).toMatchObject({
+      ok: false,
+      code: 'shrink_blocked',
+      priorLength: 3,
+      proposedLength: 1,
+      actualVersion: 1,
+      recovery: { confirmShrink: true },
+    });
+
+    const afterBlocked = await db.adminSql<Array<{ value: unknown; version: number }>>`
+      SELECT properties->'worklist'->'value' AS value,
+             (properties->'worklist'->>'version')::int AS version
+        FROM harness_shared.goals
+       WHERE id = 'g-tp-shrink' AND workspace_id = ${WS}`;
+    expect(afterBlocked[0]).toMatchObject({
+      value: ['first', 'second', 'third'],
+      version: 1,
+    });
+
+    const confirmed = await applyGoalPropertyWrite(db.adminSql, {
+      workspaceId: WS,
+      goalId: 'g-tp-shrink',
+      property: 'worklist',
+      value: ['first'],
+      expectedVersion: 1,
+      confirmShrink: true,
+      provenance: 'agent-edit',
+      actorId: 'su-1',
+    });
+    expect(confirmed.ok).toBe(true);
+    if (!confirmed.ok) return;
+    expect(confirmed.entry.value).toEqual(['first']);
+    expect(confirmed.entry.version).toBe(2);
   });
 
   it('plan write cycle: same core on the harness_plans PK', async () => {

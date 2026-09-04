@@ -12962,7 +12962,7 @@
           "POST"
         ]
       },
-      "description": "Write ONE typed property value on a goal (P-023). The property must be DECLARED in the goal's property_schema; the value is validated against its datatype's payload_schema; editable_by is enforced (owner-edit vs agent-edit provenance is derived from the caller, never self-declared); expectedVersion is a CAS guard (0 = no explicit value yet — a 'stale' refusal means re-read and retry). Emits a property_changed delta event the owning agent's next orient folds.",
+      "description": "Write ONE typed property value on a goal (P-023). The property must be DECLARED in the goal's property_schema; the value is validated against its datatype's payload_schema; editable_by is enforced (owner-edit vs agent-edit provenance is derived from the caller, never self-declared); expectedVersion is a CAS guard (0 = no explicit value yet — a 'stale' refusal means re-read and retry). An array-length reduction is refused as shrink_blocked unless confirmShrink:true explicitly authorizes the destructive replacement after a full read. Emits a property_changed delta event the owning agent's next orient folds.",
       "capabilities": [
         "goals:write"
       ],
@@ -12981,7 +12981,7 @@
       "guidance": {
         "when": "Changing a declared property's VALUE on a goal — the owner steering surface and the agent's own typed state updates both land here.",
         "notWhen": "DECLARING properties — that is the property_schema document, set at creation (goals:create / goals:start { propertySchema }). Free-form goal fields (title, body, criterion) — goals:update. Plan properties — plans:set-property.",
-        "chaining": "goals:get { id, detail:'full' } (read property_schema + properties incl. each version) → goals:set-property { goalId, property, value, expectedVersion } → on 'stale', re-read and retry with the reported actualVersion."
+        "chaining": "goals:get { id, detail:'full' } (read property_schema + COMPLETE properties incl. each version) → goals:set-property { goalId, property, value, expectedVersion } → on 'stale', re-read and retry with the reported actualVersion; on 'shrink_blocked', confirm the full authoritative list before deliberately retrying with confirmShrink:true."
       }
     },
     {
@@ -22475,7 +22475,7 @@
           "POST"
         ]
       },
-      "description": "Write ONE typed property value on a plan (P-023). The property must be DECLARED in the plan's property_schema; the value is validated against its datatype's payload_schema; editable_by is enforced (owner-edit vs agent-edit provenance derived from the caller); expectedVersion is a CAS guard (0 = no explicit value yet — 'stale' means re-read and retry). Emits a property_changed delta event on the plan-events rail.",
+      "description": "Write ONE typed property value on a plan (P-023). The property must be DECLARED in the plan's property_schema; the value is validated against its datatype's payload_schema; editable_by is enforced (owner-edit vs agent-edit provenance derived from the caller); expectedVersion is a CAS guard (0 = no explicit value yet — 'stale' means re-read and retry). An array-length reduction is refused as shrink_blocked unless confirmShrink:true explicitly authorizes the destructive replacement after a full read. Emits a property_changed delta event on the plan-events rail.",
       "capabilities": [
         "plans:write"
       ],
@@ -22494,7 +22494,7 @@
       "guidance": {
         "when": "Changing a declared property's VALUE on a plan — owner steering and agent typed-state updates.",
         "notWhen": "DECLARING properties — plans:new { propertySchema } at creation. Plan content/frontmatter — plans:set-content / set-frontmatter-field. Item status — plans:set-status. Goal properties — goals:set-property.",
-        "chaining": "plans:get-properties { slug } (declarations + values + per-property versions) → plans:set-property { slug, property, value, expectedVersion } → on 'stale', re-read and retry."
+        "chaining": "plans:get-properties { slug } (declarations + COMPLETE values + per-property versions) → plans:set-property { slug, property, value, expectedVersion } → on 'stale', re-read and retry; on 'shrink_blocked', confirm the full authoritative list before deliberately retrying with confirmShrink:true."
       }
     },
     {
@@ -26713,7 +26713,7 @@
           "POST"
         ]
       },
-      "description": "Return the exact typed grading skeleton for a rubric. Optionally validate + canonicalize a complete ratings map, attach deterministic instrument snapshots, bind positive release-gating ratings to the tested green SHA, compute its evidence fingerprint, and show the criterion delta from the latest scorecard. Read-only; use scorecards:emit to file the validated result.",
+      "description": "Return the exact typed grading skeleton for a rubric. Optionally validate + canonicalize a complete ratings map, attach deterministic instrument snapshots, bind positive release-gating ratings to the tested green SHA, compute its evidence fingerprint, and show the criterion delta from the latest scorecard. Read-only; its input intentionally excludes emit-only metadata such as subject, acceptance, vetting links, terminal, and force. Use scorecards:emit to file the validated result.",
       "capabilities": [
         "coord:read"
       ],
@@ -26739,9 +26739,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Before grading/emitting a rubric scorecard, especially in GRADE mode. This eliminates criterion-key, rating-case, evidence, and nested-schema guessing. For an acceptance rubric it also returns `graderEligibility` — whether YOU may file the grading at all; read it BEFORE doing the grading work, not after.",
+        "when": "Before grading/emitting a rubric scorecard, especially in GRADE mode. This eliminates criterion-key, rating-case, evidence, and nested-schema guessing. For an acceptance rubric it also returns `graderEligibility` — whether YOU may file the grading at all; read it BEFORE doing the grading work, not after. The read-only input is limited to `rubricRef`, `sourceHive`, `ratings`, `instrumentSnapshots`, and `testedSha`; pass `subject` and other write metadata only to `scorecards:emit`.",
         "notWhen": "Reading scorecard history only — scorecards:list. Filing the validated scorecard — scorecards:emit.",
-        "chaining": "scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with the canonical result. `testedSha` is required when a releaseGating rubric has a pass-like rating."
+        "chaining": "scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with the canonical result. `subject` is an emit-only field: do not pass it to either evaluate call; include it on `scorecards:emit` when the scorecard needs a subject. `testedSha` is required when a releaseGating rubric has a pass-like rating."
       }
     },
     {

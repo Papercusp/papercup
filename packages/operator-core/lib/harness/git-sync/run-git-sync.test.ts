@@ -1056,6 +1056,49 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('https-fallback.txt');
   });
 
+  it('WI-2144358: retries an unresolved GitHub SSH account alias through configured HTTPS credentials', async () => {
+    writeFileSync(join(repo, 'ssh-alias-fallback.txt'), 'account-alias transport fallback\n');
+    const aliasUrl = 'git@github.com-git-graph:papercupai/git-graph.git';
+    const rewrite = 'url.https://github.com/.insteadOf=git@github.com-git-graph:';
+    const calls: string[][] = [];
+    const failedOnce = new Set<string>();
+    const realRunGit: RunGit = async (args, cwd) => {
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+      return {
+        code: result.status ?? -1,
+        stdout: String(result.stdout ?? ''),
+        stderr: String(result.stderr ?? ''),
+      };
+    };
+    const runGit: RunGit = async (args, cwd) => {
+      calls.push([...args]);
+      const command = args[0];
+      if (command === 'remote' && args[1] === 'get-url') {
+        return { code: 0, stdout: `${aliasUrl}\n`, stderr: '' };
+      }
+      if ((command === 'fetch' || command === 'push') && !failedOnce.has(command)) {
+        failedOnce.add(command);
+        return {
+          code: 128,
+          stdout: '',
+          stderr: 'ssh: Could not resolve hostname github.com-git-graph: Name or service not known\n',
+        };
+      }
+      return realRunGit(args, cwd);
+    };
+
+    const out = await runGitSync('test', { repoPath: repo, runGit, config: cfg });
+
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') expect(out.pushed).toContain('superproject');
+    expect(failedOnce).toEqual(new Set(['fetch', 'push']));
+    expect(calls.filter((args) => args[0] === '-c' && args[1] === rewrite)).toEqual([
+      ['-c', rewrite, 'fetch', 'origin', 'main'],
+      ['-c', rewrite, 'push', 'origin', 'HEAD:main'],
+    ]);
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('ssh-alias-fallback.txt');
+  });
+
   it('EI-20378687739683215: retries a GitHub SSH email-verification rejection through HTTPS', async () => {
     writeFileSync(join(repo, 'email-verification-fallback.txt'), 'verified automation account\n');
     const rewrite = 'url.https://github.com/.insteadOf=git@github.com:';

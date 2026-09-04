@@ -93,6 +93,43 @@ const OPEN_ESCALATION_DEDUP_KIND_KEY = 'dedupKind';
 const DEFAULT_ADVISORY_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_ADVISORY_EXPIRY_LIMIT = 200;
 
+/**
+ * WI-6943: every escalation is addressed to the human, so second-person prose
+ * such as "your change" attributes a shared-tree edit to the owner. That claim
+ * is not established by the escalation transport (and git history is especially
+ * unsuitable evidence in this workspace). Keep delivery fail-open, but make the
+ * unverified attribution impossible to miss on the owner-facing summary.
+ */
+export const UNVERIFIED_OWNER_AUTHORSHIP_CLAIM_TAG = '[UNVERIFIED owner-authorship claim]';
+
+const OWNER_POSSESSIVE_AUTHORSHIP_RE =
+  /\byour\s+(?:change(?:s)?|code|commit(?:s)?|edit(?:s)?|patch(?:es)?|implementation|work)\b/i;
+const OWNER_ACTION_AUTHORSHIP_RE =
+  /\byou(?:'ve|\s+have)?\s+(?:wrote|written|authored|updated|changed|implemented|committed|edited|introduced|added|removed|modified)\b/i;
+
+export type OwnerAuthorshipClaimLocation = 'summary' | 'body' | 'summary-and-body';
+
+/** Narrow, pure detector for second-person authorship claims on the human-only surface. */
+export function detectOwnerAuthorshipClaim(
+  summary: string,
+  body?: string,
+): OwnerAuthorshipClaimLocation | null {
+  const hasClaim = (text: string | undefined) =>
+    Boolean(text && (OWNER_POSSESSIVE_AUTHORSHIP_RE.test(text) || OWNER_ACTION_AUTHORSHIP_RE.test(text)));
+  const inSummary = hasClaim(summary);
+  const inBody = hasClaim(body);
+  if (inSummary && inBody) return 'summary-and-body';
+  if (inSummary) return 'summary';
+  if (inBody) return 'body';
+  return null;
+}
+
+function ownerAuthorshipGuardedSummary(summary: string, body?: string): string {
+  if (!detectOwnerAuthorshipClaim(summary, body)) return summary;
+  if (summary.startsWith(UNVERIFIED_OWNER_AUTHORSHIP_CLAIM_TAG)) return summary;
+  return `${UNVERIFIED_OWNER_AUTHORSHIP_CLAIM_TAG} ${summary}`;
+}
+
 type EscalationMeta = Record<string, unknown> & {
   dedupKind?: string;
   lastSeenTs?: string;
@@ -426,10 +463,15 @@ export async function openEscalation(
   },
 ): Promise<EscalationOpenResult> {
   const nowIso = new Date().toISOString();
+  const guardedSummary = ownerAuthorshipGuardedSummary(input.summary, input.body);
+  const guardedInput = guardedSummary === input.summary ? input : { ...input, summary: guardedSummary };
+  // Dedup on the caller's stable subject, not on our presentation-only tag. This
+  // lets a pre-guard open row coalesce and refresh into the guarded rendering
+  // instead of forking a second owner escalation for the same condition.
   const dedup = escalationDedupIdentity(input);
-  const locked = await openEscalationWithPgDedupLock(identity, input, dedup, nowIso);
+  const locked = await openEscalationWithPgDedupLock(identity, guardedInput, dedup, nowIso);
   if (locked) return locked.coalesced ? markCoalesced(locked.record) : locked.record;
-  const bumped = await tryBumpProjectionDuplicate(dedup, nowIso, input.severity, input.summary);
+  const bumped = await tryBumpProjectionDuplicate(dedup, nowIso, guardedInput.severity, guardedInput.summary);
   if (bumped) return markCoalesced(bumped);
   const existing = await findOpenDuplicate(dedup);
   if (existing) {
@@ -438,8 +480,8 @@ export async function openEscalation(
       dedup,
       nowIso,
       repeatCountOf(existing as Record<string, unknown>) + 1,
-      input.severity,
-      input.summary,
+      guardedInput.severity,
+      guardedInput.summary,
     );
     // The non-PG fallback has no materialized projection to update. Upsert the
     // coalesced record under its original msg_id so list/readers observe the
@@ -448,7 +490,7 @@ export async function openEscalation(
     return markCoalesced(refreshed);
   }
 
-  const env = buildOpenEscalationRecord(identity, input, dedup, nowIso);
+  const env = buildOpenEscalationRecord(identity, guardedInput, dedup, nowIso);
   await coordLog.putEvent('escalations', env.msg_id, env);
   return env;
 }

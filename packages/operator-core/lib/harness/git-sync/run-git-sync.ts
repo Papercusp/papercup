@@ -884,13 +884,39 @@ export async function checkToolRoutingBeforeCommit(
 
 const GITHUB_HTTPS_INSTEAD_OF_ARGS = ['-c', 'url.https://github.com/.insteadOf=git@github.com:'] as const;
 
+const GITHUB_SSH_HOST_RE = String.raw`github\.com(?:-[A-Za-z0-9_-]+)?`;
+
+/** Process-local insteadOf prefix for canonical GitHub SSH URLs and simple
+ * per-account SSH-config aliases such as `github.com-git-graph`. A dot is not
+ * allowed in the alias suffix, so a lookalike DNS name cannot be canonicalized
+ * to GitHub by this recovery path. */
+const githubSshInsteadOfPrefix = (url: string): string | null => {
+  const trimmed = url.trim();
+  const scp = new RegExp(`^(git@${GITHUB_SSH_HOST_RE}:)`, 'i').exec(trimmed);
+  if (scp?.[1]) return scp[1];
+  const ssh = new RegExp(`^(ssh://git@${GITHUB_SSH_HOST_RE}/)`, 'i').exec(trimmed);
+  return ssh?.[1] ?? null;
+};
+
 /**
  * The one SSH-auth failure for which git-sync has an equivalent configured
  * credential plane to try. Keep this exact: network failures, repository
  * authorization failures, and non-GitHub SSH hosts need their original error.
  */
 export const isGitHubSshPublicKeyFailure = (result: { stdout: string; stderr: string }): boolean =>
-  /git@github\.com:\s*Permission denied \(publickey\)\.?/i.test(`${result.stdout}\n${result.stderr}`);
+  new RegExp(`git@${GITHUB_SSH_HOST_RE}:\\s*Permission denied \\(publickey\\)\\.?`, 'i').test(
+    `${result.stdout}\n${result.stderr}`,
+  );
+
+/** A missing local SSH-config alias for a GitHub account is a transport-plane
+ * failure with the same safe HTTPS equivalent as a missing SSH key. */
+export const isGitHubSshAliasResolutionFailure = (result: {
+  stdout: string;
+  stderr: string;
+}): boolean =>
+  new RegExp(`ssh:\\s*Could not resolve hostname github\\.com-[A-Za-z0-9_-]+:`, 'i').test(
+    `${result.stdout}\n${result.stderr}`,
+  );
 
 /** GitHub can authenticate an SSH key successfully and still reject every write because the
  *  account behind that key has no verified email. The configured HTTPS credential may belong to
@@ -901,8 +927,7 @@ export const isGitHubSshEmailVerificationFailure = (result: {
   stderr: string;
 }): boolean => /(?:remote:\s*)?You must verify your email address\.?/i.test(`${result.stdout}\n${result.stderr}`);
 
-const isGitHubSshRemoteUrl = (url: string): boolean =>
-  /^(?:git@github\.com:|ssh:\/\/git@github\.com\/)/i.test(url.trim());
+const isGitHubSshRemoteUrl = (url: string): boolean => githubSshInsteadOfPrefix(url) !== null;
 
 /**
  * Retry one GitHub fetch/push through the existing HTTPS credential helper when
@@ -919,32 +944,41 @@ const runNetworkGitWithGitHubHttpsFallback = async (
   const command = gitSubcommand(args);
   const publicKeyFailure = isGitHubSshPublicKeyFailure(first);
   const emailVerificationFailure = isGitHubSshEmailVerificationFailure(first);
+  const aliasResolutionFailure = isGitHubSshAliasResolutionFailure(first);
   if (
     first.code === 0 ||
     (command !== 'fetch' && command !== 'push') ||
-    (!publicKeyFailure && !emailVerificationFailure)
+    (!publicKeyFailure && !emailVerificationFailure && !aliasResolutionFailure)
   ) {
     return first;
   }
 
-  // Unlike the public-key error, GitHub's email-policy response does not name the SSH host.
-  // Prove the remote before applying the process-local insteadOf rewrite; an HTTPS or non-GitHub
-  // account-policy failure must retain its original result rather than retrying the same plane.
-  if (emailVerificationFailure && !publicKeyFailure) {
+  let insteadOfArgs: readonly string[] = GITHUB_HTTPS_INSTEAD_OF_ARGS;
+  // Unlike the canonical public-key error, GitHub's email-policy response and an
+  // unresolved account alias do not prove the configured remote URL shape. Read
+  // the remote and derive its exact process-local prefix; an HTTPS, non-GitHub,
+  // or dotted lookalike host must retain its original failure.
+  if (emailVerificationFailure || aliasResolutionFailure) {
     const remote = args[1];
     if (!remote) return first;
     const remoteUrl = isGitHubSshRemoteUrl(remote)
       ? remote
       : (await runGit(['remote', 'get-url', remote], cwd)).stdout.trim();
-    if (!isGitHubSshRemoteUrl(remoteUrl)) return first;
+    const insteadOfPrefix = githubSshInsteadOfPrefix(remoteUrl);
+    if (!insteadOfPrefix) return first;
+    insteadOfArgs = ['-c', `url.https://github.com/.insteadOf=${insteadOfPrefix}`];
   }
 
   log(
     `[git-sync] ${cwd}: GitHub SSH ${
-      publicKeyFailure ? 'publickey authentication failed' : 'account requires email verification'
+      publicKeyFailure
+        ? 'publickey authentication failed'
+        : aliasResolutionFailure
+          ? 'account host alias could not resolve'
+          : 'account requires email verification'
     } during ${command}; retrying once through configured HTTPS credentials`,
   );
-  return runGit([...GITHUB_HTTPS_INSTEAD_OF_ARGS, ...args], cwd);
+  return runGit([...insteadOfArgs, ...args], cwd);
 };
 
 /** GitHub hard-rejects blobs ≥100MB (pre-receive) — a committed oversized blob makes

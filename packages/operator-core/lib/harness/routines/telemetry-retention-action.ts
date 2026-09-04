@@ -22,6 +22,9 @@
  *     `route-invocations`@7d + `tool-invocations`@14d + `harness-run-output`@14d
  *     + `agent-activity`@7d + `memory-recall-query-text`@3d.
  *   - `dry_run` — plan + log but delete nothing (preview a first run).
+ *   - `package_cache_enabled` — set `false` to disable npm/bun/pnpm cache
+ *     retention (enabled by default).
+ *   - `package_cache_max_bytes` — per-cache high-water mark; defaults to 8 GiB.
  *   - `reindex_indexes` — `Array<{ schema: string; index: string }>`; default the
  *     two heavily-bloated telemetry indexes from EI-7482 plus all five
  *     `shared_presence` indexes (EI-19462887419312553).
@@ -43,6 +46,7 @@
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { pruneStorageCategory } from '../../storage/prune';
+import { DEFAULT_PACKAGE_CACHE_MAX_BYTES, runPackageCacheRetention } from '../../storage/package-cache-retention';
 import { cleanupExpiredSessionPorts } from '../../session-port/cleanup';
 import { DEFAULT_RETENTION_TARGETS, type RetentionTarget } from './telemetry-retention-targets';
 
@@ -154,7 +158,7 @@ export async function reindexBloatedIndexes(
         console.log(`[telemetry-retention] reindex: rebuilt ${qualified}`);
       } else {
         console.warn(
-        `[telemetry-retention] reindex: skipped ${qualified} (db-schema ${outcome.reason ?? 'busy'}) — will retry next cadence`,
+          `[telemetry-retention] reindex: skipped ${qualified} (db-schema ${outcome.reason ?? 'busy'}) — will retry next cadence`,
         );
       }
     } catch (err) {
@@ -173,9 +177,7 @@ const MAX_CALLS_PER_TARGET = 50;
 export function resolveTargets(cfg: Record<string, unknown>): RetentionTarget[] {
   const raw = cfg.targets;
   if (Array.isArray(raw) && raw.length > 0) {
-    return raw
-      .map((t) => t as RetentionTarget)
-      .filter((t) => t && typeof t.category === 'string');
+    return raw.map((t) => t as RetentionTarget).filter((t) => t && typeof t.category === 'string');
   }
   return [...DEFAULT_RETENTION_TARGETS];
 }
@@ -188,9 +190,7 @@ registerSystemAction('telemetry-retention', async (ctx: SystemActionCtx) => {
   for (const t of targets) {
     const days = Number(t.retention_days);
     if (!Number.isFinite(days) || days < 0) {
-      console.warn(
-        `[telemetry-retention] skipping "${t.category}": invalid retention_days ${t.retention_days}`,
-      );
+      console.warn(`[telemetry-retention] skipping "${t.category}": invalid retention_days ${t.retention_days}`);
       continue;
     }
 
@@ -239,6 +239,37 @@ registerSystemAction('telemetry-retention', async (ctx: SystemActionCtx) => {
       `[telemetry-retention] session-port cleanup: ${cleanup.expiredRows} expired row(s), ` +
         `${cleanup.artifactsDeleted + cleanup.orphanArtifactsDeleted} artifact(s) deleted, ${cleanup.errors} error(s)`,
     );
+  }
+
+  // Package-manager caches are host-global and disposable, but their layouts
+  // are manager-owned. Reuse this daily janitor and let the dedicated retention
+  // helper measure + invoke native cleanup under the install/cache fs mutex.
+  // Keep the step best-effort: cache sizing or a missing package-manager binary
+  // must never prevent the database/session-port retention work from settling.
+  if (cfg.package_cache_enabled !== false) {
+    const configuredMaxBytes = Number(cfg.package_cache_max_bytes);
+    const maxBytes =
+      Number.isFinite(configuredMaxBytes) && configuredMaxBytes > 0
+        ? Math.floor(configuredMaxBytes)
+        : DEFAULT_PACKAGE_CACHE_MAX_BYTES;
+    try {
+      const outcomes = await runPackageCacheRetention({ dryRun, maxBytes });
+      for (const outcome of outcomes) {
+        const summary =
+          `[telemetry-retention] ${outcome.manager} cache ${outcome.status}: ` +
+          `${outcome.beforeBytes} -> ${outcome.afterBytes} byte(s)` +
+          (outcome.note ? ` (${outcome.note})` : '');
+        if (outcome.status === 'prune-failed' || outcome.status === 'mutex-unavailable') {
+          console.warn(summary);
+        } else {
+          console.log(summary);
+        }
+      }
+    } catch (error) {
+      console.warn(
+        `[telemetry-retention] package-cache retention failed — ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   // ── Periodic index-bloat maintenance (EI-7482) ──────────────────────────

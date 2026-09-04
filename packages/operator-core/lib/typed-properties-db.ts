@@ -123,6 +123,8 @@ export interface TypedPropertyWriteArgs {
   value: unknown;
   /** CAS guard — the version the caller last read; 0 = "no explicit value yet". */
   expectedVersion: number;
+  /** Explicit destructive opt-in for an authoritative array-length reduction. */
+  confirmShrink?: boolean;
   provenance: PropertyEditProvenance;
   actorId: string;
 }
@@ -150,6 +152,7 @@ async function runPreparedMutation(
     property: args.property,
     value: args.value,
     expectedVersion: args.expectedVersion,
+    confirmShrink: args.confirmShrink,
     provenance: args.provenance,
     actorId: args.actorId,
     validate: () => (resolved === null || resolved.ok ? { ok: true } : { ok: false, issues: resolved.issues }),

@@ -46,10 +46,14 @@ beforeEach(() => {
 
 describe('goals:set-property effective-holder fence', () => {
   it('checks the caller before the typed-property writer runs', async () => {
-    const out = (await tool.handler(args as never, ctx as never)) as Out;
+    const out = (await tool.handler({ ...args, confirmShrink: true } as never, ctx as never)) as Out;
     expect(out.isError).toBeUndefined();
     expect(mocks.guard).toHaveBeenCalledWith(ctx, 'ws-1', ctx.tx);
     expect(mocks.apply).toHaveBeenCalledOnce();
+    expect(mocks.apply).toHaveBeenCalledWith(
+      ctx.tx,
+      expect.objectContaining({ confirmShrink: true }),
+    );
   });
 
   it('refuses an expired predecessor without calling the property writer', async () => {
