@@ -135,6 +135,13 @@ import {
   shouldPreemptStalledIntegrator,
   type PriorIntegratorProgressState,
 } from './integrator-progress-state';
+import {
+  completeGithubBridgeState,
+  completeOwnHeadPublishState,
+  completeRefAnnounceState,
+  type GitSyncRoutineMetadataPatch,
+  type RefAnnounceRoutineState,
+} from './routine-metadata-state';
 import { canonicalRepoKey } from '../../sync/pot-git/repo-identity';
 import { adoptRefusedRepoKey } from '../../sync/pot-git/adopt-refused-repo-key';
 import {
@@ -1827,7 +1834,7 @@ const GIT_SYNC_HISTORY_LIMIT = 30;
 async function patchRoutineMetadata(
   slug: string,
   workspaceId: string,
-  patch: Record<string, unknown>,
+  patch: GitSyncRoutineMetadataPatch,
   historyEntry?: GitSyncHistoryEntry,
 ): Promise<void> {
   const { sql } = getOrgPg();
@@ -3432,7 +3439,7 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
             last_errors: outcome.errors.slice(0, 10),
           }
         : {}),
-      github_bridge: {
+      github_bridge: completeGithubBridgeState({
         at: Date.now(),
         ran: outcome.ran,
         skipped: outcome.skipped ?? null,
@@ -3460,7 +3467,7 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
         // one standing.
         egress_head: outcome.egressHead ?? prevEgressHead,
         errors: outcome.errors.slice(0, 10),
-      },
+      }),
     });
 
     // EI-20331175777179195: a local `synced` outcome is NOT proof that a bridged
@@ -3574,7 +3581,7 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
       console.log(formatOwnHeadPublishedLine(slug, outcome));
     }
     await patchRoutineMetadata(slug, workspaceId, {
-      own_head_publish: {
+      own_head_publish: completeOwnHeadPublishState({
         at: Date.now(),
         changed: outcome.changed,
         branch: outcome.branch,
@@ -3606,7 +3613,7 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
         // this tick — a health check reading `refused` alone would otherwise
         // stay blind to an exemption quietly keeping the plane un-wedged.
         exemptedFindingsCount: outcome.exemptedFindings.length,
-      },
+      }),
     });
   } catch (e) {
     console.warn(`[git-sync] ${slug}: own-head publish leg failed: ${e instanceof Error ? e.message : e}`);
@@ -4657,14 +4664,6 @@ async function runRefAnnounceLeg(
     // This is per git-sync routine/repo, and it never imports a peer-controlled
     // copy of our own namespace.
     const { sql } = getOrgPg();
-    type RefAnnounceRoutineState = {
-      lastEventId: number;
-      budgetStates: Record<string, AnnounceBudgetState | null>;
-      publishVersion?: number;
-      /** P-203 Leg A: announcements not yet mirrored, carried OUTSIDE the
-       *  cursor (newest per device) — see `decideRefAnnounceReceiveCursor`. */
-      parked?: ParkedRefAnnouncements;
-    };
     const stateRows = await sql<{ ref_announce: RefAnnounceRoutineState | null }[]>`
       SELECT metadata->'ref_announce' AS ref_announce
         FROM harness_shared.routines
@@ -4727,13 +4726,13 @@ async function runRefAnnounceLeg(
       // before this write leaves the store-local version authoritative; a later
       // full-store rebuild resumes above the greatest version recorded here.
       await patchRoutineMetadata(slug, workspaceId, {
-        ref_announce: {
+        ref_announce: completeRefAnnounceState({
           lastEventId: priorState?.lastEventId ?? 0,
           budgetStates: priorState?.budgetStates ?? {},
           publishVersion: Math.max(priorPublishVersion, announcement.version),
           parked: priorState?.parked ?? {},
           at: Date.now(),
-        },
+        }),
       });
     }
     if (publishOutcome.errors.length) {
@@ -4789,13 +4788,13 @@ async function runRefAnnounceLeg(
       // advance the cursor past them so a bad row can't loop forever. Nothing
       // was parked either (a parked row is always in the batch).
       await patchRoutineMetadata(slug, workspaceId, {
-        ref_announce: {
+        ref_announce: completeRefAnnounceState({
           lastEventId: maxRowId,
           budgetStates: priorState?.budgetStates ?? {},
           publishVersion: Math.max(priorPublishVersion, publishOutcome.announcement?.version ?? 0),
           parked: {},
           at: Date.now(),
-        },
+        }),
       });
       return;
     }
@@ -4890,13 +4889,13 @@ async function runRefAnnounceLeg(
     );
 
     await patchRoutineMetadata(slug, workspaceId, {
-      ref_announce: {
+      ref_announce: completeRefAnnounceState({
         lastEventId: cursorDecision.cursor,
         budgetStates: Object.fromEntries(receiveOutcome.budgetStates),
         publishVersion: Math.max(priorPublishVersion, publishOutcome.announcement?.version ?? 0),
         parked: cursorDecision.parked,
         at: Date.now(),
-      },
+      }),
     });
     for (const u of cursorDecision.unparked) {
       console.info(
