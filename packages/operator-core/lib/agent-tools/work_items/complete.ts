@@ -1270,6 +1270,26 @@ function completionTextParts(completion: unknown): string[] {
 }
 
 /**
+ * Path-vintage claims need a narrower prose population than the general completion
+ * text used by the other advisory detectors. `testsRun`, `testResult`, `verifiedHow`,
+ * and `coordNotes` routinely cite a script, command, or probe path as evidence without
+ * claiming that path was changed. `deferred` and `migrations` likewise describe
+ * surrounding work, not the changed-file census. Only the completion headline and
+ * landed-change descriptions can supplement the structured `filesChanged` declaration.
+ */
+function completionTargetClaimTextParts(completion: unknown): string[] {
+  if (!completion || typeof completion !== 'object' || Array.isArray(completion)) return [];
+  const rec = completion as Record<string, unknown>;
+  const strings = (value: unknown): string[] =>
+    typeof value === 'string'
+      ? [value]
+      : Array.isArray(value)
+        ? value.filter((entry): entry is string => typeof entry === 'string')
+        : [];
+  return [...strings(rec.summary), ...strings(rec.whatLanded)];
+}
+
+/**
  * EI-20551121122206657: `addedTests` read from BOTH placements, mirroring
  * completionFilesChanged below. The tool's own description tells callers to put
  * structured evidence under `completion.verification`, so reading only the top level
@@ -1418,7 +1438,7 @@ function completionClaimsTargetPaths(itemPaths: string[], completion: unknown): 
   const filesChanged = completionFilesChanged(completion)
     .map(repoRelativePath)
     .filter((path): path is string => Boolean(path));
-  const prose = completionTextParts(completion).join('\n');
+  const prose = completionTargetClaimTextParts(completion).join('\n');
   const explicitlyClaimed = itemPaths.filter(
     (target) => filesChanged.some((file) => sameRepoPath(file, target)) || prose.includes(target),
   );
