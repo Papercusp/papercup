@@ -25,8 +25,6 @@ pub enum SuSessionBackend {
 }
 
 impl SuSessionBackend {
-    pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::Omp];
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Claude => "claude",
@@ -962,7 +960,11 @@ mod tests {
     #[test]
     fn backend_and_lifecycle_labels_are_stable() {
         assert_eq!(
-            SuSessionBackend::ALL.map(SuSessionBackend::as_str),
+            [
+                SuSessionBackend::Claude.as_str(),
+                SuSessionBackend::Codex.as_str(),
+                SuSessionBackend::Omp.as_str(),
+            ],
             ["claude", "codex", "omp"]
         );
         assert_eq!(

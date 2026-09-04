@@ -15,12 +15,15 @@ import {
   diagnoseFrozenCandidateRepairQueue,
   frozenRepairHeadAwaitsVerification,
   markFrozenCandidateVerificationRed,
+  markFrozenRepairAdmitted,
+  markFrozenRepairAgeEscalated,
   markFrozenRepairExhausted,
   markFrozenRepairFixerDead,
   markFrozenRepairFixerDispatched,
   markFrozenRepairFixerFinished,
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
+  recordFrozenRepairLegMeasurement,
   parseFrozenCandidateRepairQueue,
   parseFrozenCandidateRepairQueueRead,
   summarizeFrozenRepairConvergence,
@@ -444,6 +447,59 @@ describe('frozen-candidate repair queue', () => {
       repairHead: C,
       nextAttempt: 1,
     });
+  });
+
+  it('P-003 keeps the fixer-state clock stable across queue bookkeeping, and advances it on dispatch', () => {
+    const initial = fresh();
+    expect(initial.fixerStateChangedAtMs).toBe(T0);
+
+    const ageEscalated = markFrozenRepairAgeEscalated(initial, {
+      rung: 1,
+      nowMs: T0 + 8 * 60 * 60 * 1_000,
+    });
+    expect(ageEscalated.updatedAtMs).toBe(T0 + 8 * 60 * 60 * 1_000);
+    expect(ageEscalated.fixerStateChangedAtMs).toBe(T0);
+
+    const withLeg = recordFrozenRepairLegMeasurement(ageEscalated, {
+      head: C,
+      measurements: [{ id: 'lint:tsc', status: 'fail' }],
+      nowMs: T0 + 9 * 60 * 60 * 1_000,
+    });
+    expect(withLeg.updatedAtMs).toBe(T0 + 9 * 60 * 60 * 1_000);
+    expect(withLeg.fixerStateChangedAtMs).toBe(T0);
+    expect(withLeg.legs).toHaveLength(1);
+
+    const admitted = markFrozenRepairAdmitted(withLeg, {
+      atMs: T0 + 10 * 60 * 60 * 1_000,
+      actor: 'su-fixer',
+      source: { ref: 'staging', sha: C1 },
+      fromRepairHead: C,
+      toRepairHead: C1,
+      paths: ['lib/a.test.ts'],
+      unchanged: [],
+      blobs: { 'lib/a.test.ts': 'blob-a' },
+    });
+    expect(admitted.updatedAtMs).toBe(T0 + 10 * 60 * 60 * 1_000);
+    expect(admitted.fixerStateChangedAtMs).toBe(T0);
+
+    const dispatched = markFrozenRepairFixerDispatched(withLeg, {
+      spawnId: 'fixer-1',
+      nowMs: T0 + 11 * 60 * 60 * 1_000,
+    });
+    // Dispatch is the real succession transition; bookkeeping before it must not move the clock.
+    expect(dispatched.fixerStateChangedAtMs).toBe(T0 + 11 * 60 * 60 * 1_000);
+  });
+
+  it('P-003 preserves the dedicated clock through JSONB round-trip and falls back for legacy rows', () => {
+    const current = fresh();
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(current)));
+    expect(parsed?.fixerStateChangedAtMs).toBe(T0);
+
+    const legacy = { ...current } as Record<string, unknown>;
+    delete legacy.fixerStateChangedAtMs;
+    const parsedLegacy = parseFrozenCandidateRepairQueue(legacy);
+    expect(parsedLegacy).not.toBeNull();
+    expect(parsedLegacy?.fixerStateChangedAtMs).toBeUndefined();
   });
 
   it('persists the initial proof group and parses legacy or malformed proof state fail-closed', () => {

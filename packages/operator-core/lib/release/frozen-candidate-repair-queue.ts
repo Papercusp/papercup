@@ -434,6 +434,13 @@ export interface FrozenCandidateRepairQueue {
   freeRetries?: number;
   openedAtMs: number;
   updatedAtMs: number;
+  /**
+   * P-003 cross-plan integration: timestamp for the CURRENT fixer-succession state.
+   * Unlike `updatedAtMs` (the generic row/version clock), this moves only when the queue
+   * enters or replaces an `awaiting-fixer` state. Optional and additive so legacy rows
+   * remain readable; the classifier falls back to `updatedAtMs` when it is absent.
+   */
+  fixerStateChangedAtMs?: number;
   /** Current/last spawn. A completion from any other spawn is stale and rejected. */
   fixerSpawnId: string | null;
   /** Automation may stop, but the queue head remains immutable until it is green. */
@@ -1269,6 +1276,14 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     Number.isInteger(row.ageEscalatedRung) && (row.ageEscalatedRung as number) > 0
       ? (row.ageEscalatedRung as number)
       : undefined;
+  // P-003 cross-plan integration: malformed/forward-skewed clock state is observability
+  // metadata, not a reason to discard the queue. Accept it only when it is a sane timestamp
+  // no newer than the row version; the classifier falls back to `updatedAtMs` otherwise.
+  const fixerStateChangedAtMs =
+    validTimestamp(row.fixerStateChangedAtMs) &&
+    (row.fixerStateChangedAtMs as number) <= (row.updatedAtMs as number)
+      ? (row.fixerStateChangedAtMs as number)
+      : undefined;
   // P-006 / P-014: a pre-schema-4 row (or a v4 row an older build rewrote without the array)
   // gets its typed signature DERIVED from the flat list — the live queue keeps parsing across
   // the bump, and the flat projection is rebuilt from the result so the two agree on read.
@@ -1294,6 +1309,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
       : {}),
     openedAtMs: row.openedAtMs,
     updatedAtMs: row.updatedAtMs,
+    ...(fixerStateChangedAtMs !== undefined ? { fixerStateChangedAtMs } : {}),
     fixerSpawnId: row.fixerSpawnId as string | null,
     ...(blockedReason ? { blockedReason } : {}),
     ...(ageEscalatedRung !== undefined ? { ageEscalatedRung } : {}),
@@ -1706,6 +1722,7 @@ export function markFrozenCandidateVerificationRed(
     ...queue,
     phase: 'awaiting-fixer',
     updatedAtMs: input.nowMs,
+    fixerStateChangedAtMs: input.nowMs,
     convergenceRounds: appendConvergenceRound(queue, {
       head: queue.repairHead,
       failingTests,
@@ -1764,6 +1781,7 @@ export function markFrozenRepairFixerDispatched(
     ...queue,
     attempts: queue.attempts + 1,
     updatedAtMs: input.nowMs,
+    fixerStateChangedAtMs: input.nowMs,
     fixerSpawnId: input.spawnId,
   };
 }
@@ -1802,6 +1820,7 @@ export function markFrozenRepairFixerDead(
     ...(refund ? { attempts: queue.attempts - 1, freeRetries: (queue.freeRetries ?? 0) + 1 } : {}),
     fixerSpawnId: null,
     updatedAtMs: input.nowMs,
+    fixerStateChangedAtMs: input.nowMs,
   };
 }
 
@@ -1924,6 +1943,7 @@ export function markFrozenRepairVerificationRed(
     ...queue,
     phase: 'awaiting-fixer',
     updatedAtMs: input.nowMs,
+    fixerStateChangedAtMs: input.nowMs,
     fixerSpawnId: null,
     convergenceRounds: appendConvergenceRound(queue, {
       head: input.repairHead,

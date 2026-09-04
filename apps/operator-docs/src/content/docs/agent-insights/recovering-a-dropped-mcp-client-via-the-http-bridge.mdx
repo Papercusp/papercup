@@ -4,14 +4,14 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Recovering a dropped papercusp-su MCP client via the HTTP bridge
-description: When your harness MCP client disconnects (tools vanish, ToolSearch finds nothing) but the operator :3070 is healthy, replay MCP JSON-RPC directly via curl to /api/mcp and keep working — don't just idle waiting to reconnect.
-discovered: 2026-06-20
-tags: [mcp, coordination, reliability, operator, recovery, runbook]
-status: active
-documents:
-  - packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts
+title: "Recovering a dropped papercusp-su MCP client via the HTTP bridge"
+description: "Merged into agent-insights/mcp-client-drop-curl-recovery; retained as a historical redirect for existing links."
 type: Insight
+discovered: 2026-06-20
+tags: ["mcp", "coordination", "reliability", "operator", "recovery", "runbook"]
+status: superseded
+documents:
+  - "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts"
 generated:
   by: agent
   at: 2026-06-20

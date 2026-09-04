@@ -5,13 +5,13 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "MCP client dropped after /loop? Self-rescue via the curl HTTP-bridge (EI-1740)"
-description: "The papercusp-su MCP client can silently drop right after a /loop slash-command (EI-1740 / WI-260 / WI-258) and never auto-reconnect, isolating an agent from coord/plans/work_items for hours. The operator backend stays healthy — so you can fully restore coordination by driving the same HTTP MCP endpoint directly with curl."
-discovered: 2026-06-20
-tags: [mcp, coordination, ei-1740, loop, operator, resilience, self-rescue]
-status: active
-documents:
-  - packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts
+description: "Merged into agent-insights/mcp-client-drop-curl-recovery; retained as a historical redirect for existing links."
 type: Insight
+discovered: 2026-06-20
+tags: ["mcp", "coordination", "ei-1740", "loop", "operator", "resilience", "self-rescue"]
+status: superseded
+documents:
+  - "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts"
 generated:
   by: agent
   at: 2026-06-20

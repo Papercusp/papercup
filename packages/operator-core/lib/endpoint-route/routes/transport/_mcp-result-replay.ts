@@ -43,6 +43,24 @@ export interface StoredMcpResult {
   structuredContent?: unknown;
 }
 
+/** The marker stored while an idempotent write is executing asynchronously. */
+export const PENDING_MCP_RESULT_STATE = 'pending';
+
+export interface PendingMcpResultMarker {
+  state: typeof PENDING_MCP_RESULT_STATE;
+  tool: string;
+  progressId: string;
+  ownerKey: string;
+  idempotencyKey: string;
+  request: Record<string, unknown>;
+}
+
+export interface PendingMcpResultClaim {
+  claimed: boolean;
+  pending: boolean;
+  result: StoredMcpResult | null;
+}
+
 /** Replay rows older than this are dead — the caller has long moved on. */
 const REPLAY_TTL_MS = 60 * 60 * 1000;
 /** Opportunistic sweep at most this often per process. */
@@ -73,6 +91,29 @@ export function validIdempotencyKey(v: unknown): string | null {
   return k;
 }
 
+function decodeStoredMcpResult(result: unknown, isError: boolean): StoredMcpResult | null {
+  const decoded =
+    typeof result === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(result) as unknown;
+          } catch {
+            return null;
+          }
+        })()
+      : result;
+  if (!decoded || typeof decoded !== 'object') return null;
+  const stored = decoded as StoredMcpResult;
+  return {
+    ...stored,
+    ...(isError ? { isError: true } : {}),
+  };
+}
+
+export function isPendingMcpResult(result: StoredMcpResult | null | undefined): boolean {
+  return result?._meta?.state === PENDING_MCP_RESULT_STATE;
+}
+
 export async function lookupStoredMcpResult(
   ownerKey: string,
   idempotencyKey: string,
@@ -86,13 +127,61 @@ export async function lookupStoredMcpResult(
   `;
   const row = rows[0];
   if (!row) return null;
-  const stored = row.result as StoredMcpResult;
+  const stored = decodeStoredMcpResult(row.result, row.is_error);
+  // Pending receipts are coordination state, not terminal tool results. The
+  // MCP handler calls this before invoking the tool on a retry, so returning a
+  // pending marker here would make the retry look like a completed write.
+  if (!stored || isPendingMcpResult(stored)) return null;
   return {
     ...stored,
-    ...(row.is_error ? { isError: true } : {}),
     // Tag the replay so the caller KNOWS this is the stored outcome of a
     // prior execution, not a fresh run.
     _meta: { ...(stored._meta ?? {}), replayed: true },
+  };
+}
+
+/**
+ * Atomically reserve an idempotency key for an asynchronous write.
+ *
+ * The transport stores the handler's returned result after dispatch. Inserting
+ * the pending receipt before returning means that write is a harmless no-op
+ * on the same key, while a retry can observe the pending row and avoid
+ * starting a second background operation.
+ */
+export async function claimPendingMcpResult(args: {
+  ownerKey: string;
+  idempotencyKey: string;
+  toolName: string;
+  workspaceId: string;
+  result: StoredMcpResult;
+}): Promise<PendingMcpResultClaim> {
+  const { sql } = getOrgPg();
+  const resultJson = serializeStoredMcpResult(args.result);
+  const inserted = await sql<Array<{ result: unknown; is_error: boolean }>>`
+    INSERT INTO harness_shared.mcp_tool_results
+      (owner_key, idempotency_key, tool_name, workspace_id, result, is_error)
+    VALUES
+      (${args.ownerKey}, ${args.idempotencyKey}, ${args.toolName},
+       ${args.workspaceId}, ${resultJson}::text::jsonb, ${args.result.isError === true})
+    ON CONFLICT (owner_key, idempotency_key) DO NOTHING
+    RETURNING result, is_error
+  `;
+  if (inserted[0]) {
+    return { claimed: true, pending: true, result: decodeStoredMcpResult(inserted[0].result, inserted[0].is_error) };
+  }
+
+  const existing = await sql<Array<{ result: unknown; is_error: boolean }>>`
+    SELECT result, is_error
+      FROM harness_shared.mcp_tool_results
+     WHERE owner_key = ${args.ownerKey} AND idempotency_key = ${args.idempotencyKey}
+  `;
+  const current = existing[0]
+    ? decodeStoredMcpResult(existing[0].result, existing[0].is_error)
+    : null;
+  return {
+    claimed: false,
+    pending: isPendingMcpResult(current),
+    result: current,
   };
 }
 
@@ -192,6 +281,42 @@ export async function storeMcpResult(args: {
     ON CONFLICT (owner_key, idempotency_key) DO NOTHING
   `;
   maybeSweep();
+}
+
+/**
+ * Replace a pending receipt with the terminal result of its background write.
+ *
+ * A terminal receipt is never overwritten: this preserves first-write-wins if
+ * a recovery path races a completion callback. If the transport failed before
+ * it persisted the pending row, the INSERT fallback still records the terminal
+ * result so a later retry can replay it.
+ */
+export async function finalizePendingMcpResult(args: {
+  ownerKey: string;
+  idempotencyKey: string;
+  toolName: string;
+  workspaceId: string;
+  result: StoredMcpResult;
+}): Promise<boolean> {
+  const { sql } = getOrgPg();
+  const resultJson = serializeStoredMcpResult(args.result);
+  const rows = await sql<Array<{ result: unknown }>>`
+    INSERT INTO harness_shared.mcp_tool_results
+      (owner_key, idempotency_key, tool_name, workspace_id, result, is_error)
+    VALUES
+      (${args.ownerKey}, ${args.idempotencyKey}, ${args.toolName},
+       ${args.workspaceId}, ${resultJson}::text::jsonb, ${args.result.isError === true})
+    ON CONFLICT (owner_key, idempotency_key) DO UPDATE
+      SET tool_name = EXCLUDED.tool_name,
+          workspace_id = EXCLUDED.workspace_id,
+          result = EXCLUDED.result,
+          is_error = EXCLUDED.is_error,
+          created_at = now()
+    WHERE mcp_tool_results.result->'_meta'->>'state' = ${PENDING_MCP_RESULT_STATE}
+    RETURNING result
+  `;
+  maybeSweep();
+  return rows.length > 0;
 }
 
 export async function sweepExpiredMcpResults(now = Date.now()): Promise<number> {
