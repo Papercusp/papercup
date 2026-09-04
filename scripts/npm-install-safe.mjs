@@ -49,12 +49,22 @@
  * Running that build command under the install mutex makes it wait for the
  * verified install boundary instead of repeatedly reading the transition.
  */
-import { spawnSync } from 'node:child_process';
-import { readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { withFsMutexRead, withFsMutex } from './lib/fs-mutex.mjs';
+import { spawnSync } from "node:child_process";
+import {
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { createHash } from "node:crypto";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  PACKAGE_CACHE_MUTEX_NAME,
+  withFsMutexRead,
+  withFsMutex,
+} from "./lib/fs-mutex.mjs";
 import {
   findIncompleteWorkspacePackagesWithRetry,
   findInvalidWorkspacePackageVersionsWithRetry,
@@ -69,14 +79,17 @@ import {
   resolveWorkspaceDirs,
 } from "./check-declared-deps-extracted.mjs";
 
-const DEFAULT_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const DEFAULT_REPO_ROOT = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
 
-const REPAIR_ARGS = ['install', '--legacy-peer-deps'];
+const REPAIR_ARGS = ["install", "--legacy-peer-deps"];
 const EXEC_UNDER_LOCK_FLAG = "--exec-under-lock";
-const CACHE_VERIFY_ARGS = ['cache', 'verify'];
+const CACHE_VERIFY_ARGS = ["cache", "verify"];
 const DEPENDENCY_GENERATION_SCRIPT = join(
   DEFAULT_REPO_ROOT,
-  'apps/operator/bin/release/dependency-generation.sh',
+  "apps/operator/bin/release/dependency-generation.sh",
 );
 
 /**
@@ -89,10 +102,10 @@ export function cacheVerifyArgs(npmArgs = []) {
   const cacheArgs = [];
   for (let index = 0; index < npmArgs.length; index += 1) {
     const arg = npmArgs[index];
-    if (arg === '--cache' && typeof npmArgs[index + 1] === 'string') {
+    if (arg === "--cache" && typeof npmArgs[index + 1] === "string") {
       cacheArgs.push(arg, npmArgs[index + 1]);
       index += 1;
-    } else if (typeof arg === 'string' && arg.startsWith('--cache=')) {
+    } else if (typeof arg === "string" && arg.startsWith("--cache=")) {
       cacheArgs.push(arg);
     }
   }
@@ -113,28 +126,34 @@ export function verificationScopeForNpmArgs({
   const selectors = [];
   for (let index = 0; index < npmArgs.length; index += 1) {
     const arg = npmArgs[index];
-    if (arg === '--workspace' || arg === '-w') {
-      if (typeof npmArgs[index + 1] === 'string') selectors.push(npmArgs[++index]);
-    } else if (typeof arg === 'string' && arg.startsWith('--workspace=')) {
-      selectors.push(arg.slice('--workspace='.length));
-    } else if (typeof arg === 'string' && arg.startsWith('-w=')) {
-      selectors.push(arg.slice('-w='.length));
+    if (arg === "--workspace" || arg === "-w") {
+      if (typeof npmArgs[index + 1] === "string")
+        selectors.push(npmArgs[++index]);
+    } else if (typeof arg === "string" && arg.startsWith("--workspace=")) {
+      selectors.push(arg.slice("--workspace=".length));
+    } else if (typeof arg === "string" && arg.startsWith("-w=")) {
+      selectors.push(arg.slice("-w=".length));
     }
   }
-  if (selectors.length === 0) return { workspaceDirs: undefined, repairWorkspaceArgs: [] };
+  if (selectors.length === 0)
+    return { workspaceDirs: undefined, repairWorkspaceArgs: [] };
 
-  const readJson = deps.readJson ?? ((path) => JSON.parse(readFileSync(path, 'utf8')));
+  const readJson =
+    deps.readJson ?? ((path) => JSON.parse(readFileSync(path, "utf8")));
   const workspaceDirs = resolveWorkspaceDirs(repoRoot, deps);
   const bySelector = new Map();
   for (const dir of workspaceDirs) {
     bySelector.set(dir, dir);
     bySelector.set(`./${dir}`, dir);
-    const manifest = readJson(join(repoRoot, dir, 'package.json'));
-    if (typeof manifest?.name === 'string') bySelector.set(manifest.name, dir);
+    const manifest = readJson(join(repoRoot, dir, "package.json"));
+    if (typeof manifest?.name === "string") bySelector.set(manifest.name, dir);
   }
   const selectedDirs = selectors.map((selector) => {
     const dir = bySelector.get(selector);
-    if (!dir) throw new Error(`npm workspace selector did not resolve after install: ${selector}`);
+    if (!dir)
+      throw new Error(
+        `npm workspace selector did not resolve after install: ${selector}`,
+      );
     return dir;
   });
   const uniqueDirs = [...new Set(selectedDirs)];
@@ -157,9 +176,9 @@ export function verifyNpmCache({
   runNpm = spawnSync,
   env = process.env,
 } = {}) {
-  const result = runNpm('npm', cacheVerifyArgs(npmArgs), {
+  const result = runNpm("npm", cacheVerifyArgs(npmArgs), {
     cwd: repoRoot,
-    stdio: 'inherit',
+    stdio: "inherit",
     env,
   });
   if (result.error) throw result.error;
@@ -168,7 +187,12 @@ export function verifyNpmCache({
 
 function isStrictlyWithin(parent, candidate) {
   const rel = relative(parent, candidate);
-  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+  return (
+    rel !== "" &&
+    rel !== ".." &&
+    !rel.startsWith(`..${sep}`) &&
+    !isAbsolute(rel)
+  );
 }
 
 /**
@@ -184,14 +208,16 @@ export function packageLocalRepairTargets({
   const root = resolve(repoRoot);
   const targets = findings.map((finding) => {
     if (
-      typeof finding?.workspace !== 'string' ||
+      typeof finding?.workspace !== "string" ||
       finding.workspace.length === 0 ||
-      typeof finding?.package !== 'string' ||
+      typeof finding?.package !== "string" ||
       finding.package.length === 0
     ) {
-      throw new Error('refusing package-local repair target without workspace and package names');
+      throw new Error(
+        "refusing package-local repair target without workspace and package names",
+      );
     }
-    const nodeModulesDir = resolve(root, finding.workspace, 'node_modules');
+    const nodeModulesDir = resolve(root, finding.workspace, "node_modules");
     if (!isStrictlyWithin(root, nodeModulesDir)) {
       throw new Error(
         `refusing package-local repair outside repo root: ${finding.workspace}/node_modules`,
@@ -236,10 +262,9 @@ export function removePackageLocalRepairLockEntries({
   if (findings.length === 0) return [];
 
   const root = resolve(repoRoot);
-  const lockPath = join(root, 'package-lock.json');
+  const lockPath = join(root, "package-lock.json");
   const readLock =
-    deps.readLock ??
-    (() => JSON.parse(readFileSync(lockPath, 'utf8')));
+    deps.readLock ?? (() => JSON.parse(readFileSync(lockPath, "utf8")));
   const writeLock =
     deps.writeLock ??
     ((lock) => {
@@ -259,17 +284,19 @@ export function removePackageLocalRepairLockEntries({
   try {
     lock = readLock();
   } catch (error) {
-    if (error?.code === 'ENOENT') return [];
+    if (error?.code === "ENOENT") return [];
     throw error;
   }
   if (
     !lock ||
-    typeof lock !== 'object' ||
+    typeof lock !== "object" ||
     !lock.packages ||
-    typeof lock.packages !== 'object' ||
+    typeof lock.packages !== "object" ||
     Array.isArray(lock.packages)
   ) {
-    throw new Error('refusing package-local repair: package-lock.json has no packages object');
+    throw new Error(
+      "refusing package-local repair: package-lock.json has no packages object",
+    );
   }
 
   const removed = [];
@@ -278,11 +305,11 @@ export function removePackageLocalRepairLockEntries({
       repoRoot: root,
       findings: [finding],
     });
-    const key = relative(root, target).split(sep).join('/');
+    const key = relative(root, target).split(sep).join("/");
     const entry = lock.packages[key];
     if (
-      typeof finding.installed !== 'string' ||
-      typeof entry?.version !== 'string' ||
+      typeof finding.installed !== "string" ||
+      typeof entry?.version !== "string" ||
       entry.version !== finding.installed
     ) {
       continue;
@@ -319,7 +346,11 @@ export async function verifyDepsExtracted({
     deps,
   });
   const inspect = async () => {
-    const declared = await findUnextractedDepsWithRetry({ repoRoot, workspaceDirs, deps });
+    const declared = await findUnextractedDepsWithRetry({
+      repoRoot,
+      workspaceDirs,
+      deps,
+    });
     const packageLocal = await findIncompleteWorkspacePackagesWithRetry({
       repoRoot,
       workspaceDirs,
@@ -362,7 +393,13 @@ export async function verifyDepsExtracted({
     };
   };
 
-  const report = ({ missing, incomplete, invalidVersions, unsatisfiedRanges, runtimeFailures }) => {
+  const report = ({
+    missing,
+    incomplete,
+    invalidVersions,
+    unsatisfiedRanges,
+    runtimeFailures,
+  }) => {
     if (missing.length > 0) console.error(formatMissing(missing));
     if (incomplete.length > 0)
       console.error(formatIncompleteWorkspacePackages(incomplete));
@@ -374,7 +411,13 @@ export async function verifyDepsExtracted({
       console.error(formatRuntimeFailures(runtimeFailures));
   };
 
-  const healthy = ({ missing, incomplete, invalidVersions, unsatisfiedRanges, runtimeFailures }) =>
+  const healthy = ({
+    missing,
+    incomplete,
+    invalidVersions,
+    unsatisfiedRanges,
+    runtimeFailures,
+  }) =>
     missing.length === 0 &&
     incomplete.length === 0 &&
     invalidVersions.length === 0 &&
@@ -397,16 +440,16 @@ export async function verifyDepsExtracted({
   });
   if (removedTargets.length > 0) {
     console.error(
-      `NPM_INSTALL_SAFE removed ${removedTargets.length} invalid package-local node${removedTargets.length === 1 ? '' : 's'} before repair:\n${removedTargets
+      `NPM_INSTALL_SAFE removed ${removedTargets.length} invalid package-local node${removedTargets.length === 1 ? "" : "s"} before repair:\n${removedTargets
         .map((target) => `  - ${relative(repoRoot, target)}`)
-        .join('\n')}`,
+        .join("\n")}`,
     );
   }
   if (removedLockEntries.length > 0) {
     console.error(
-      `NPM_INSTALL_SAFE removed ${removedLockEntries.length} stale package-lock entr${removedLockEntries.length === 1 ? 'y' : 'ies'} before repair:\n${removedLockEntries
+      `NPM_INSTALL_SAFE removed ${removedLockEntries.length} stale package-lock entr${removedLockEntries.length === 1 ? "y" : "ies"} before repair:\n${removedLockEntries
         .map((entry) => `  - ${entry}`)
-        .join('\n')}`,
+        .join("\n")}`,
     );
   }
   const repairArgs = [...REPAIR_ARGS, ...repairWorkspaceArgs];
@@ -440,8 +483,20 @@ export function repoLockName(repoRoot = DEFAULT_REPO_ROOT) {
   // both resolve to the identical lock; a genuinely different checkout
   // (different real path) gets its own lock instead of blocking on this one.
   const real = realpathSync(resolve(repoRoot));
-  const digest = createHash('sha1').update(real).digest('hex').slice(0, 12);
+  const digest = createHash("sha1").update(real).digest("hex").slice(0, 12);
   return `npm-install-${digest}`;
+}
+
+/**
+ * Hold a shared host-wide cache lease while a package manager may read/write
+ * its global cache. Independent safe installs remain concurrent (reader +
+ * reader); the scheduled package-cache janitor takes the matching writer lease
+ * before native cleanup. This is deliberately separate from the repo-scoped
+ * install writer, because staging/release/checkpoint have different realpaths
+ * while sharing the same user-level caches.
+ */
+export function withPackageCacheReadLease(fn, opts = {}) {
+  return withFsMutexRead(PACKAGE_CACHE_MUTEX_NAME, fn, opts);
 }
 
 /**
@@ -450,8 +505,8 @@ export function repoLockName(repoRoot = DEFAULT_REPO_ROOT) {
  * the implicit install explicit before spawning npm.
  */
 export function normalizeNpmArgs(argv) {
-  if (argv.length === 0) return ['install'];
-  return argv[0].startsWith('-') ? ['install', ...argv] : argv;
+  if (argv.length === 0) return ["install"];
+  return argv[0].startsWith("-") ? ["install", ...argv] : argv;
 }
 
 /**
@@ -467,15 +522,15 @@ export async function publishDependencyGeneration({
   runPublisher = spawnSync,
   env = process.env,
 } = {}) {
-  if (env.PAPERCUSP_SKIP_DEP_GENERATION === '1') return 0;
+  if (env.PAPERCUSP_SKIP_DEP_GENERATION === "1") return 0;
   const lockName = repoLockName(repoRoot);
   const result = await withFsMutexRead(
     lockName,
     () =>
       runPublisher(
-        'bash',
-        [DEPENDENCY_GENERATION_SCRIPT, '--integration', repoRoot],
-        { cwd: repoRoot, stdio: 'inherit', env },
+        "bash",
+        [DEPENDENCY_GENERATION_SCRIPT, "--integration", repoRoot],
+        { cwd: repoRoot, stdio: "inherit", env },
       ),
     {
       onWaiting: ({ owner, elapsedMs }) => {
@@ -500,14 +555,19 @@ export async function publishDependencyGeneration({
  * `--repo-root` is recognized only as the first wrapper argument and an
  * optional `--` cleanly separates it from the npm argv.
  */
-export function parseCliArgs(argv = process.argv.slice(2), { cwd = process.cwd() } = {}) {
+export function parseCliArgs(
+  argv = process.argv.slice(2),
+  { cwd = process.cwd() } = {},
+) {
   let repoRoot = DEFAULT_REPO_ROOT;
   let npmArgv = [...argv];
 
-  if (npmArgv[0] === '--repo-root' || npmArgv[0]?.startsWith('--repo-root=')) {
-    const inline = npmArgv[0].startsWith('--repo-root=') ? npmArgv[0].slice('--repo-root='.length) : null;
+  if (npmArgv[0] === "--repo-root" || npmArgv[0]?.startsWith("--repo-root=")) {
+    const inline = npmArgv[0].startsWith("--repo-root=")
+      ? npmArgv[0].slice("--repo-root=".length)
+      : null;
     const rawRoot = inline ?? npmArgv[1];
-    if (!rawRoot) throw new Error('--repo-root requires a path');
+    if (!rawRoot) throw new Error("--repo-root requires a path");
     repoRoot = resolve(cwd, rawRoot);
     npmArgv = npmArgv.slice(inline === null ? 2 : 1);
   }
@@ -518,7 +578,7 @@ export function parseCliArgs(argv = process.argv.slice(2), { cwd = process.cwd()
     return { repoRoot, commandArgs };
   }
 
-  if (npmArgv[0] === '--') npmArgv = npmArgv.slice(1);
+  if (npmArgv[0] === "--") npmArgv = npmArgv.slice(1);
 
   return { repoRoot, npmArgs: normalizeNpmArgs(npmArgv) };
 }
@@ -539,21 +599,21 @@ export function runCommandUnderInstallMutex({
   }
   const [command, ...args] = commandArgs;
   const lockName = repoLockName(repoRoot);
-  const mutexAlreadyHeld = env.PAPERCUSP_INSTALL_MUTEX_HELD === '1';
+  const mutexAlreadyHeld = env.PAPERCUSP_INSTALL_MUTEX_HELD === "1";
   const childEnv = {
     ...env,
-    ...(mutexAlreadyHeld ? {} : { PAPERCUSP_INSTALL_MUTEX_HELD: '1' }),
+    ...(mutexAlreadyHeld ? {} : { PAPERCUSP_INSTALL_MUTEX_HELD: "1" }),
   };
 
   const executeReader = async () => {
     // Reader diagnostics belong on stderr: callers such as ptool expose the
     // child command's stdout as a machine-readable JSON stream.
     console.error(
-      `${mutexAlreadyHeld ? 'NPM_INSTALL_SAFE mutex already held; running nested reader directly' : 'NPM_INSTALL_SAFE guarding reader'}: ${commandArgs.join(' ')} (root=${repoRoot}, lock=${lockName})`,
+      `${mutexAlreadyHeld ? "NPM_INSTALL_SAFE mutex already held; running nested reader directly" : "NPM_INSTALL_SAFE guarding reader"}: ${commandArgs.join(" ")} (root=${repoRoot}, lock=${lockName})`,
     );
     const result = runCommand(command, args, {
       cwd: repoRoot,
-      stdio: 'inherit',
+      stdio: "inherit",
       env: childEnv,
     });
     if (result.error) throw result.error;
@@ -566,17 +626,13 @@ export function runCommandUnderInstallMutex({
   // self-deadlock when the outer command still owns the writer lock.
   if (mutexAlreadyHeld) return executeReader();
 
-  return withFsMutexRead(
-    lockName,
-    executeReader,
-    {
-      onWaiting: ({ owner, elapsedMs }) => {
-        console.error(
-          `NPM_INSTALL_SAFE reader waiting on an install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
-        );
-      },
+  return withFsMutexRead(lockName, executeReader, {
+    onWaiting: ({ owner, elapsedMs }) => {
+      console.error(
+        `NPM_INSTALL_SAFE reader waiting on an install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
+      );
     },
-  );
+  });
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -586,35 +642,48 @@ export async function main(argv = process.argv.slice(2)) {
   const { repoRoot, npmArgs } = parsed;
   const lockName = repoLockName(repoRoot);
 
-  const installStatus = await withFsMutex(
-    lockName,
-    async () => {
-      const cacheStatus = verifyNpmCache({ repoRoot, npmArgs });
-      if (cacheStatus !== 0) {
-        console.error(
-          `NPM_INSTALL_SAFE_FATAL: npm cache verify exited ${cacheStatus}; cache integrity is unverified.`,
-        );
-        return cacheStatus;
-      }
-      console.log(`NPM_INSTALL_SAFE running: npm ${npmArgs.join(' ')} (root=${repoRoot}, lock=${lockName})`);
-      // Tell the root `preinstall` guard that THIS install is the sanctioned one — it holds the
-      // writer lock, so it cannot tear a green-checkpoint dependency copy. Without the marker the
-      // guard cannot distinguish us from the bare `npm install` it exists to refuse.
-      const result = spawnSync('npm', npmArgs, {
-        cwd: repoRoot,
-        stdio: 'inherit',
-        env: { ...process.env, PAPERCUSP_INSTALL_SAFE_ACTIVE: '1' },
-      });
-      if (result.error) throw result.error;
-      const status = result.status ?? 1;
-      // A FAILED npm run reports its own error — never mask it with a dep verdict.
-      if (status !== 0 || process.env.PAPERCUSP_SKIP_DEP_VERIFY === '1') return status;
-      return verifyDepsExtracted({ repoRoot, npmArgs });
-    },
+  const installStatus = await withPackageCacheReadLease(
+    () =>
+      withFsMutex(
+        lockName,
+        async () => {
+          const cacheStatus = verifyNpmCache({ repoRoot, npmArgs });
+          if (cacheStatus !== 0) {
+            console.error(
+              `NPM_INSTALL_SAFE_FATAL: npm cache verify exited ${cacheStatus}; cache integrity is unverified.`,
+            );
+            return cacheStatus;
+          }
+          console.log(
+            `NPM_INSTALL_SAFE running: npm ${npmArgs.join(" ")} (root=${repoRoot}, lock=${lockName})`,
+          );
+          // Tell the root `preinstall` guard that THIS install is the sanctioned one — it holds the
+          // writer lock, so it cannot tear a green-checkpoint dependency copy. Without the marker the
+          // guard cannot distinguish us from the bare `npm install` it exists to refuse.
+          const result = spawnSync("npm", npmArgs, {
+            cwd: repoRoot,
+            stdio: "inherit",
+            env: { ...process.env, PAPERCUSP_INSTALL_SAFE_ACTIVE: "1" },
+          });
+          if (result.error) throw result.error;
+          const status = result.status ?? 1;
+          // A FAILED npm run reports its own error — never mask it with a dep verdict.
+          if (status !== 0 || process.env.PAPERCUSP_SKIP_DEP_VERIFY === "1")
+            return status;
+          return verifyDepsExtracted({ repoRoot, npmArgs });
+        },
+        {
+          onWaiting: ({ owner, elapsedMs }) => {
+            console.log(
+              `NPM_INSTALL_SAFE waiting on another agent's install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
+            );
+          },
+        },
+      ),
     {
       onWaiting: ({ owner, elapsedMs }) => {
         console.log(
-          `NPM_INSTALL_SAFE waiting on another agent's install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
+          `NPM_INSTALL_SAFE waiting on package-cache maintenance (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
         );
       },
     },
@@ -629,7 +698,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       process.exitCode = status;
     })
     .catch((error) => {
-      console.error(`NPM_INSTALL_SAFE_ERROR ${error instanceof Error ? error.message : String(error)}`);
+      console.error(
+        `NPM_INSTALL_SAFE_ERROR ${error instanceof Error ? error.message : String(error)}`,
+      );
       process.exitCode = 1;
     });
 }
