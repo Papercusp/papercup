@@ -31535,7 +31535,7 @@
           "POST"
         ]
       },
-      "description": "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history.",
+      "description": "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history; when ref is omitted, it clears the sole matching active blocker and refuses ambiguity.",
       "capabilities": [
         "work_items:write"
       ],
@@ -31562,7 +31562,7 @@
       "guidance": {
         "when": "Work cannot proceed until a named event fires, a gate changes, runtime/external state becomes ready, or a human capability becomes available. Always pass capability when you know it; omitted legacy rows infer live-dependency, human rows product-decision. Use a stable ref and name the concrete nextVerb when one exists.",
         "notWhen": "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source, blocked item as target), preserving the dependency graph. A vague concern with no actual stop condition is a comment, not a blocker. Do not use a main/:3070/green-checkpoint blocker to pause ordinary implementation; staging/current-build is the acceptance plane. Only final shipment or a named deployed-only property may wait on the release plane.",
-        "chaining": "work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call infers kind from a ref naming one active blocker; pass kind when the ref is reused."
+        "chaining": "work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call may omit ref when the item has one matching active blocker; pass ref (and kind when reused) if the request is ambiguous."
       }
     },
     {

@@ -28,6 +28,16 @@ describe('createFailoverPool (EI-535) — load distribution', () => {
     expect(p.active().accountId).toBe('a');
   });
 
+  it('uses a caller-supplied health key without collapsing equal-health round-robin fairness', () => {
+    const p = createFailoverPool([acct('a'), acct('b'), acct('c')]);
+    const scores: Record<string, number> = { a: 10, b: 0, c: 0 };
+    expect(p.active((a) => scores[a.accountId]!).accountId).toBe('b');
+    // The next seed is b, so an equal score keeps b rather than collapsing every pick onto array index 0.
+    expect(p.active((a) => scores[a.accountId]!).accountId).toBe('b');
+    // Plain active() is still the original cursor-based round robin.
+    expect(p.active().accountId).toBe('c');
+  });
+
   it('a single-account pool always returns that account', () => {
     const p = createFailoverPool([acct('solo')]);
     expect(p.active().accountId).toBe('solo');
@@ -192,6 +202,13 @@ describe('createFailoverPool — onExhausted failover', () => {
     const p = createFailoverPool([acct('a'), acct('b')], { now: () => t });
     const next = p.onExhausted('a', t + 3_600_000);
     expect(next?.accountId).toBe('b');
+  });
+
+  it('chooses the healthiest available replacement when a key is supplied', () => {
+    const t = 1000;
+    const p = createFailoverPool([acct('a'), acct('b'), acct('c')], { now: () => t });
+    const next = p.onExhausted('a', t + 3_600_000, (a) => ({ b: 5, c: 1 })[a.accountId] ?? 0);
+    expect(next?.accountId).toBe('c');
   });
 
   it('never returns the exhausted account itself', () => {

@@ -144,4 +144,23 @@ describe('check-no-cdn-egress (P-004)', () => {
     expect(output).toContain('vendor/third-languages.js');
     expect(output).not.toContain('third-<hash>.js');
   });
+
+  it('ignores stale docs swap leftovers copied into the build output', () => {
+    // postbuild-copy publishes docs through `docs.old.<pid>` so concurrent
+    // readers can finish walking the previous tree. A leftover can be copied
+    // by Vite before its grace-period reaper runs, but it is not served output
+    // and must not create a PID-dependent baseline entry.
+    const staleUrl = 'https://cdn.jsdelivr.net/npm/stale-doc@1.0.0/dist/stale.js';
+    const liveUrl = 'https://cdn.jsdelivr.net/npm/live-code@1.0.0/dist/live.js';
+    const dist = fixture('docs-swap-leftover', {
+      'internal/docs.old.1415107/agent-insights/auditing-cdn-egress.html': `const u="${staleUrl}";`,
+      'assets/app.js': `const u="${liveUrl}";`,
+    });
+    const { status, output } = runGuard(dist);
+
+    expect(status).toBe(1);
+    expect(output).toContain(liveUrl);
+    expect(output).not.toContain(staleUrl);
+    expect(output).not.toContain('docs.old.1415107');
+  });
 });

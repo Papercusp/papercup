@@ -31,6 +31,8 @@ vi.mock('../../deployment/account-pool-store', () => ({
   defaultScaleOutDeps: vi.fn(() => ({})),
 }));
 vi.mock('../../deployment/account-pool', () => ({
+  accountsForProvider: vi.fn((pool: { accounts: Array<{ provider?: string }> }, provider: string) =>
+    pool.accounts.filter((account) => (account.provider ?? 'claude') === provider)),
   registerAccount: vi.fn(() => 'POOL2'),
   removeAccount: vi.fn(() => 'POOL2'),
   recordAccountReset: vi.fn(() => 'POOL2'),
@@ -65,6 +67,7 @@ const listTool = mod.accountsListTool;
 
 type Out = { data?: any; content?: Array<{ text: string }> };
 const body = (o: Out) => (o.data ?? JSON.parse(o.content![0].text));
+const listArgsSchema = listTool.args as { safeParse: (value: unknown) => { success: boolean } };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -258,6 +261,11 @@ describe('accounts:status', () => {
 });
 
 describe('accounts:list', () => {
+  it('accepts an optional provider filter and rejects unknown providers', () => {
+    expect(listArgsSchema.safeParse({ provider: 'codex' }).success).toBe(true);
+    expect(listArgsSchema.safeParse({ provider: 'vertex' }).success).toBe(false);
+  });
+
   it('returns the pool accounts including their egress pins', async () => {
     loadM.mockResolvedValue({
       accounts: [
@@ -267,5 +275,21 @@ describe('accounts:list', () => {
     const b = body(await listTool.handler({} as never, {} as never) as Out);
     expect(b.ok).toBe(true);
     expect(b.accounts[0]).toMatchObject({ id: 'A1', egress: { localAddress: '203.0.113.7' } });
+  });
+
+  it('filters legacy Claude and explicit Codex rows when provider is supplied', async () => {
+    loadM.mockResolvedValue({
+      accounts: [
+        { id: 'legacy', credentialRef: 'token:/legacy' },
+        { id: 'claude-1', provider: 'claude', credentialRef: 'token:/claude' },
+        { id: 'codex-1', provider: 'codex', credentialRef: 'env:CODEX_TOKEN' },
+      ],
+    } as never);
+
+    const b = body(await listTool.handler({ provider: 'codex' } as never, {} as never) as Out);
+
+    expect(b.accounts).toEqual([
+      { id: 'codex-1', provider: 'codex', credentialRef: 'env:CODEX_TOKEN' },
+    ]);
   });
 });

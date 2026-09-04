@@ -14,6 +14,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { trackDetached } from '../../detached-imports';
+import { accountsForProvider } from '../../deployment/account-pool';
 
 const ok = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...payload }) }],
@@ -88,9 +89,9 @@ export default defineTool({
 export const accountsListTool = defineTool({
   name: 'accounts:list',
   description:
-    "List the inference gateway's account pool: each account's id/label/credentialRef, the member harness slugs bound to it, and its rate-limit projection (pausedUntil / penaltyCount). Returns {ok, accounts}.",
+    "List the inference gateway's account pool: each account's id/label/credentialRef, the member harness slugs bound to it, and its rate-limit projection (pausedUntil / penaltyCount). Optionally filter by provider ('claude' or 'codex'). Returns {ok, accounts}.",
   guidance: {
-    when: 'Seeing which accounts the gateway can draw from and what each is bound to.',
+    when: 'Seeing which accounts the gateway can draw from and what each is bound to; pass provider to inspect one provider pool.',
     notWhen: 'Wanting live headroom + sustained-limit flags — accounts:status.',
     seeAlso: [
       'accounts:status (live headroom + sustained-limit flags per account)',
@@ -101,12 +102,16 @@ export const accountsListTool = defineTool({
   capability: 'harness:read',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z.object({ workspace: wsArg }),
+  args: z.object({
+    provider: z.enum(['claude', 'codex']).optional().describe("Filter to one provider's accounts."),
+    workspace: wsArg,
+  }),
   async handler(args) {
     const { loadAccountPool } = await import('../../deployment/account-pool-store');
     const ws = args.workspace ?? activeWorkspaceId();
     const pool = await loadAccountPool(ws);
-    return ok({ accounts: pool.accounts });
+    const accounts = args.provider ? accountsForProvider(pool, args.provider) : pool.accounts;
+    return ok({ accounts });
   },
 });
 

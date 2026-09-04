@@ -2804,6 +2804,64 @@ export function createInferenceGateway(deps: GatewayDeps) {
       burnAction?: AccountBurnAction;
     }
   >();
+  /** The ONE gateway adaptation into accountLoadKey. Claude supplies its live per-account governor;
+   *  Codex supplies the same durable capacity/burn hints plus shared transport state. Keeping the
+   *  adaptation here prevents the provider handlers from growing subtly different health formulas. */
+  const accountHealthKey = (
+    account: ActiveAccount,
+    at: number,
+    cgov?: RateLimitGovernor,
+  ): number => {
+    const accountId = account.accountId;
+    const h = accountRateHints.get(accountId);
+    const unified = cgov?.snapshot().unified;
+    const base = accountLoadKey({
+      paused:
+        (cgov?.state.pausedUntil ?? 0) > at ||
+        (egressPauseUntil.get(accountId) ?? 0) > at ||
+        (h?.pausedUntil ?? 0) > at,
+      exhausted:
+        !!unified?.rejected && !(unified.resetAt > 0 && unified.resetAt <= at),
+      transportHealth: (egressFailStreak.get(accountId) ?? 0) > 0 ? 'degraded' : 'healthy',
+      inFlight: cgov?.state.inFlight,
+      utilization: unified?.utilization,
+      capacityWindows: [
+        { utilization: unified?.utilization, resetAt: unified?.resetAt },
+        { utilization: h?.utilization, resetAt: h?.windowResetAt },
+        { utilization: h?.utilization7d, resetAt: h?.windowResetAt7d },
+      ],
+      now: at,
+      burnAction: h?.burnAction,
+    });
+    if (base === Infinity) return base;
+    const poolEntries = effectiveEgressEntries(account);
+    if (poolEntries.length > 1) {
+      let cooled = 0;
+      for (const e of poolEntries) {
+        if ((ipCooldownUntil.get(egressCacheKey(accountId, e)) ?? 0) > at) cooled++;
+      }
+      if (cooled >= poolEntries.length) return Infinity;
+      if (cooled > 0) return base + cooled * ACCOUNT_INFLIGHT_LOAD_WEIGHT;
+    }
+    return base;
+  };
+  /** Request-local view of a Codex pool: pins remain strict through select(), while every unpinned
+   *  initial pick and post-failure rotation asks the pool to rank with the shared health key. */
+  const healthAwareCodexPool = (source: AccountPool): AccountPool => {
+    const keyOf = (account: ActiveAccount) => accountHealthKey(account, Date.now());
+    return {
+      active: (override) => source.active(override ?? keyOf),
+      onExhausted: (accountId, resetAt, override) =>
+        source.onExhausted(accountId, resetAt, override ?? keyOf),
+      select: (accountId) => source.select?.(accountId) ?? null,
+      readmit: (accountId) => source.readmit?.(accountId),
+      healthyCount: (extra) => source.healthyCount?.(extra) ?? 0,
+      size: () => source.size?.() ?? source.entries?.().length ?? 0,
+      peek: () => source.peek?.() ?? source.active(keyOf),
+      entries: () => source.entries?.() ?? [],
+      msSinceReadmit: (accountId, nowMs) => source.msSinceReadmit?.(accountId, nowMs),
+    };
+  };
   function recordRoute(
     ownerId: string | undefined,
     accountId: string,
@@ -3930,63 +3988,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // lowest unified utilization (most residual budget). u ∈ [0,1] keeps the flaky bucket disjoint; a clean,
     // idle, fresh-proxy account scores 0. SHARED by the unpinned proactive pick AND the soft-pin failover.
     const now0 = Date.now();
-    const keyOf = (cgov: RateLimitGovernor, account: ActiveAccount): number => {
-      const accountId = account.accountId;
-      const governorPaused = cgov.state.pausedUntil > now0;
-      const transportPaused = (egressPauseUntil.get(accountId) ?? 0) > now0;
-      // COLD-START fallback: the live governor is blank right after a gateway restart, so consult the durable
-      // rate hint — disqualify an account the projection knows is paused (403/429/transport) or at/over a
-      // still-open 5h/7d window. Without this the selector bounces requests onto known-dead accounts until it
-      // re-learns by failing on each (and burst-throttles the one healthy survivor with the retry churn).
-      const h = accountRateHints.get(accountId);
-      const unified = cgov.snapshot().unified;
-      const u = unified?.utilization ?? 0;
-      // DISQUALIFY a budget-EXHAUSTED account — its binding 5h/7d window is REJECTING or essentially full,
-      // so it WILL 429 (e.g. a Claude-Max account whose 7-DAY opus budget is spent: util7d=1.0 while its 5h
-      // window reads ~0). Scoring it as merely `u` (≈1.0) made it look only "slightly worse" than a healthy
-      // account — so a BUSY-but-healthy account (low util + the soft-pin `load` term ⇒ key>1) ranked WORSE
-      // than an IDLE exhausted sibling (key≈1.0), and the soft-pin-failover / proactive pick bounced the
-      // request ONTO the exhausted account → 429. Owner-reported: an account with weekly headroom kept
-      // throwing api errors on its pinned consoles because their requests were being failed over onto the
-      // 7d-exhausted siblings. An exhausted account is UNUSABLE, not "slightly worse" — take it out of the race.
-      // LOAD-AWARE key (load-aware-routing-2026-06-29): fold the account's LIVE in-flight count into the
-      // score so selection proactively prefers the LEAST-LOADED account with headroom — not just the
-      // lowest-utilization one. An exhausted/rejected window ⇒ out of the race (Infinity); a flaky proxy
-      // is bucketed behind every clean account; among clean accounts in-flight is the primary term and
-      // utilization the residual-budget tiebreak. An idle, clean, fresh-proxy account still scores 0 (the
-      // happy path), so the `bestKey > 0` gates below skip the walk exactly as before — the change only
-      // bites once an account actually carries concurrent load, which is precisely when we want to spread.
-      const base = accountLoadKey({
-        paused: governorPaused || transportPaused || (h?.pausedUntil ?? 0) > now0,
-        exhausted: !!unified?.rejected && !(unified.resetAt > 0 && unified.resetAt <= now0),
-        transportHealth: (egressFailStreak.get(accountId) ?? 0) > 0 ? 'degraded' : 'healthy',
-        inFlight: cgov.state.inFlight,
-        utilization: u,
-        capacityWindows: [
-          { utilization: unified?.utilization, resetAt: unified?.resetAt },
-          { utilization: h?.utilization, resetAt: h?.windowResetAt },
-          { utilization: h?.utilization7d, resetAt: h?.windowResetAt7d },
-        ],
-        now: now0,
-        burnAction: h?.burnAction,
-      });
-      if (base === Infinity) return base;
-      // egress-ip-pool DE-CONCENTRATION (P-005, gateway-per-account-egress-ip-pool): when an account has a
-      // multi-IP pool, penalize it in proportion to how many of its egress IPs are currently COOLED (a per-IP
-      // Cloudflare/transport throttle). This steers soft-pin-failover + the unpinned proactive pick AWAY from
-      // an account whose IPs are getting throttled toward one with FRESH IPs — so overflow stops re-piling onto
-      // the very account whose IP just tripped Cloudflare (the amplifier behind the owner-reported throttle),
-      // and a busy account's remaining IPs stay fresh for whoever pinned it. ALL IPs cooled ⇒ Infinity (out of
-      // the race; the per-account circuit also covers that). A 0/1-IP account is unaffected (today's behavior).
-      const poolEntries = effectiveEgressEntries(account);
-      if (poolEntries.length > 1) {
-        let cooled = 0;
-        for (const e of poolEntries) if ((ipCooldownUntil.get(egressCacheKey(accountId, e)) ?? 0) > now0) cooled++;
-        if (cooled >= poolEntries.length) return Infinity;
-        if (cooled > 0) return base + cooled * ACCOUNT_INFLIGHT_LOAD_WEIGHT; // each cooled IP ≈ one in-flight unit of "prefer someone else"
-      }
-      return base;
-    };
+    const keyOf = (cgov: RateLimitGovernor, account: ActiveAccount): number =>
+      accountHealthKey(account, now0, cgov);
     if (pinned === null) {
       // SEED with the round-robin pick so a healthy active() is KEPT — round-robin fairness is preserved and
       // only a STRICTLY-better account displaces it. A key-0 active (healthy, idle, fresh proxy) can't be beaten
@@ -5894,7 +5897,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // resolved account over rather than letting the adapter select again.
       initialAccount: cli,
       accounts: () => codexCliAccounts(),
-      pool: codexCliPool ?? null,
+      pool: codexCliPool ? healthAwareCodexPool(codexCliPool) : null,
       run: codexCliRun,
       model,
       effort,
@@ -6310,7 +6313,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // never selects an initial account itself.
         initialAccount: cli,
         accounts: () => codexCliAccounts(),
-        pool: codexCliPool,
+        pool: codexCliPool ? healthAwareCodexPool(codexCliPool) : undefined,
         upstreamUrl: codexBackendUrl(url),
         method: req.method ?? 'POST',
         requestHeaders: req.headers,
@@ -6380,7 +6383,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // blindly re-holding the account that just exhausted. Hard pins remain strict.
       if (attemptsUsed > 0 && !routing.hardPin && codexCliPool) {
         try {
-          const candidateId = codexCliPool.active().accountId;
+          const candidateId = healthAwareCodexPool(codexCliPool).active().accountId;
           cli = codexCliAccounts().find((account) => account.accountId === candidateId) ?? cli;
         } catch {
           /* all accounts still exhausted — the adapter will make the truthful terminal decision */
@@ -6933,7 +6936,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         let selectedId: string | undefined = codexCliAffinityId(true) ?? undefined;
         if (!selectedId) {
           try {
-            selectedId = codexCliPool?.active().accountId;
+            selectedId = codexCliPool ? healthAwareCodexPool(codexCliPool).active().accountId : undefined;
           } catch {
             /* unavailable pool; fall back to list */
           }
@@ -6965,12 +6968,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
           } else if (!pinnedBearer) {
             autoAffinityTally.nokey++;
           }
-          active = pinnedBearer ?? affinityBearer ?? adapter.pool.active();
+          active = pinnedBearer ?? affinityBearer ?? healthAwareCodexPool(adapter.pool).active();
         } catch (e) {
           let selectedId: string | undefined = codexCliAffinityId(false) ?? undefined;
           if (!selectedId) {
             try {
-              selectedId = codexCliPool?.active().accountId;
+              selectedId = codexCliPool ? healthAwareCodexPool(codexCliPool).active().accountId : undefined;
             } catch {
               /* unavailable pool; fall back to list */
             }
@@ -7095,15 +7098,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // pool TWICE per request and start every unpinned request on the SECOND account.
     // Replay that account for the initial selection and delegate everything after it.
     const bearerPool = adapter.pool!;
+    const healthAwareBearerPool = healthAwareCodexPool(bearerPool);
     let initialSelectionServed = false;
     const kernelPool: AccountPool = {
       active: () => {
-        if (initialSelectionServed) return bearerPool.active();
+        if (initialSelectionServed) return healthAwareBearerPool.active();
         initialSelectionServed = true;
         return active;
       },
-      onExhausted: (exhaustedId, resetAt) => bearerPool.onExhausted(exhaustedId, resetAt),
-      select: (accountId) => bearerPool.select?.(accountId) ?? null,
+      onExhausted: (exhaustedId, resetAt) => healthAwareBearerPool.onExhausted(exhaustedId, resetAt),
+      select: (accountId) => healthAwareBearerPool.select?.(accountId) ?? null,
     };
 
     const kernelAdapter = createCodexBearerKernelAdapter({

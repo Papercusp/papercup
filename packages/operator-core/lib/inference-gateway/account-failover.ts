@@ -163,17 +163,37 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
    *  still have budget, so the fleet's load distributes evenly. Falls back to plain round-robin
    *  (including paused accounts) only when EVERY account is currently exhausted, so the gateway still
    *  picks SOMETHING (the retry loop / governor then paces it) rather than starving. */
-  function active(): ActiveAccount {
+  function active(keyOf?: (account: ActiveAccount) => number): ActiveAccount {
+    let seedIdx = -1;
     for (let step = 0; step < live.length; step++) {
       const idx = (rrIdx + step) % live.length;
       if (available(live[idx])) {
-        rrIdx = (idx + 1) % live.length;
-        return live[idx];
+        seedIdx = idx;
+        break;
       }
     }
-    const idx = rrIdx % live.length;
-    rrIdx = (idx + 1) % live.length;
-    return live[idx];
+    // When every account is in the pool's in-memory exhausted set, preserve the existing fallback:
+    // pick SOMETHING so the request ladder can emit a truthful terminal response instead of starving.
+    if (seedIdx < 0) seedIdx = rrIdx % live.length;
+    rrIdx = (seedIdx + 1) % live.length;
+    const seed = live[seedIdx];
+    if (!keyOf) return seed;
+
+    let best = seed;
+    let bestKey = keyOf(seed);
+    // Scan in round-robin order and replace only on a STRICTLY lower score. Equal-health accounts
+    // therefore retain the seed's fair cursor order; health ranking never collapses ties onto index 0.
+    for (let step = 1; step < live.length; step++) {
+      const idx = (seedIdx + step) % live.length;
+      const candidate = live[idx];
+      if (!available(candidate)) continue;
+      const key = keyOf(candidate);
+      if (key < bestKey) {
+        best = candidate;
+        bestKey = key;
+      }
+    }
+    return best;
   }
 
   /** H3 (inference-gateway-audit-2026-06-23): the NON-advancing twin of active() — same "current best"
@@ -192,18 +212,37 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
   /** Mark `exhaustedId` out of rotation until `resetAt`, and return the next DIFFERENT account that
    *  still has budget for the retry loop to rotate onto (null when none remain → egress pauses until
    *  a reset). Idempotent: re-exhausting an already-paused account just refreshes its reset. */
-  function onExhausted(exhaustedId: string, resetAt: number): ActiveAccount | null {
+  function onExhausted(
+    exhaustedId: string,
+    resetAt: number,
+    keyOf?: (account: ActiveAccount) => number,
+  ): ActiveAccount | null {
     exhaustedUntil.set(exhaustedId, resetAt > now() ? resetAt : now() + FIVE_HOURS_MS);
     // Re-exhausted ⇒ no longer "freshly readmitted"; drop any stale early-readmit stamp so the next
     // rejoin's boundary is this new pause's expiry, not a prior readmit() (msSinceReadmit, WI-3151).
     readmittedAt.delete(exhaustedId);
+    let bestIdx = -1;
+    let bestKey = Infinity;
     for (let step = 0; step < live.length; step++) {
       const idx = (rrIdx + step) % live.length;
       if (live[idx].accountId !== exhaustedId && available(live[idx])) {
-        rrIdx = (idx + 1) % live.length;
-        log('warn', `inference-gateway: '${exhaustedId}' out of rotation → '${live[idx].accountId}'`);
-        return live[idx];
+        if (!keyOf) {
+          bestIdx = idx;
+          break;
+        }
+        const key = keyOf(live[idx]);
+        // Keep the first available candidate as a terminal-response fallback even when every external
+        // health key is Infinity; the request ladder still needs a concrete account to explain the wall.
+        if (bestIdx < 0 || key < bestKey) {
+          bestIdx = idx;
+          bestKey = key;
+        }
       }
+    }
+    if (bestIdx >= 0) {
+      rrIdx = (bestIdx + 1) % live.length;
+      log('warn', `inference-gateway: '${exhaustedId}' out of rotation → '${live[bestIdx].accountId}'`);
+      return live[bestIdx];
     }
     log(
       'error',

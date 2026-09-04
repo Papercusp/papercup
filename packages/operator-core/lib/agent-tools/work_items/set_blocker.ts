@@ -36,7 +36,7 @@ const BLOCKER_CAPABILITY = z.enum(EXTERNAL_BLOCKER_CAPABILITIES);
 const fields = {
   kind: BLOCKER_KIND.optional(),
   capability: BLOCKER_CAPABILITY.optional(),
-  ref: z.string().min(1).max(300),
+  ref: z.string().min(1).max(300).optional(),
   summary: z.string().max(1000).optional(),
   evidence: z.string().max(4000).optional(),
   nextVerb: z.string().max(300).optional(),
@@ -51,7 +51,7 @@ export default defineTool({
   name: 'work_items:set_blocker',
   profile: 'engineer',
   description:
-    "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history.",
+    "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history; when ref is omitted, it clears the sole matching active blocker and refuses ambiguity.",
   guidance: {
     // P-011: response documentation lives here, not in `description` — `returns` is not
     // counted against the 1500-char prompt-weight budget and is demand-loaded via
@@ -62,7 +62,7 @@ export default defineTool({
     notWhen:
       "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source, blocked item as target), preserving the dependency graph. A vague concern with no actual stop condition is a comment, not a blocker. Do not use a main/:3070/green-checkpoint blocker to pause ordinary implementation; staging/current-build is the acceptance plane. Only final shipment or a named deployed-only property may wait on the release plane.",
     chaining:
-      'work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call infers kind from a ref naming one active blocker; pass kind when the ref is reused.',
+      'work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call may omit ref when the item has one matching active blocker; pass ref (and kind when reused) if the request is ambiguous.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
@@ -86,8 +86,26 @@ export default defineTool({
       items: z.array(itemSpec).min(1).max(100).optional(),
     })
     .strict()
-    .refine((args) => (args.items?.length ?? 0) > 0 || (Boolean(args.id) && Boolean(args.ref)), {
-      message: 'pass { id, ref, kind?, summary? } for one, or items:[{ id, ref, kind?, … }]',
+    .refine(
+      (args) =>
+        (args.items?.length ?? 0) > 0 ||
+        (Boolean(args.id) && (Boolean(args.ref) || args.clear === true)),
+      {
+        message:
+          'pass { id, ref, kind?, summary? } for one, or items:[{ id, ref, kind?, … }]; clear:true may omit ref when one active blocker matches',
+      },
+    )
+    .superRefine((args, ctx) => {
+      if (!args.items?.length) return;
+      for (const [index, item] of args.items.entries()) {
+        if (!item.clear && !item.ref) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['items', index, 'ref'],
+            message: 'ref is required when setting a blocker',
+          });
+        }
+      }
     })
     .refine((args) => (args.items?.length ?? 0) > 0 || Boolean(args.kind) || args.clear === true, {
       message: 'kind is required when setting a blocker; clear:true may infer kind from ref',
@@ -155,6 +173,13 @@ export default defineTool({
           };
         }
         if (!input.clear) {
+          if (!input.ref) {
+            return {
+              ok: false as const,
+              id: input.id,
+              error: `work_item '${input.id}' blocker ref is required when setting a blocker. Blocker was not written.`,
+            };
+          }
           // WI-2141488: a bare work-item id here is inert — no event key, nothing
           // to await, nothing to clear — so the row would wait forever. Refuse at
           // the write; `clear` is deliberately exempt so rows already carrying a
@@ -218,11 +243,43 @@ export default defineTool({
         // dependency. The schema already rejects kind-less set requests; this
         // guard is defensive for callers that bypass parsing.
         let resolvedKind = input.kind;
-        if (!resolvedKind && input.clear) {
+        let resolvedRef = input.ref;
+        if (input.clear && !resolvedRef) {
+          const active = activeExternalBlockers(workItem.payload);
+          const candidates = resolvedKind ? active.filter((blocker) => blocker.kind === resolvedKind) : active;
+          if (candidates.length > 1) {
+            const qualifier = resolvedKind ? ` of kind '${resolvedKind}'` : '';
+            return {
+              ok: false as const,
+              id: input.id,
+              error:
+                `work_item '${input.id}' clear-only blocker request omitted ref but matches ${candidates.length} active blockers${qualifier}; ` +
+                'pass ref explicitly',
+            };
+          }
+          const candidate = candidates[0];
+          if (!candidate) {
+            return {
+              ok: true as const,
+              id: input.id,
+              changed: false,
+              workItem,
+              activeBlockers: active,
+              blockerHistory: readExternalBlockers(workItem.payload),
+              capabilityDisposition: externalBlockerCapabilityPolicy(input.capability ?? 'live-dependency'),
+              autoCleared: false,
+            };
+          }
+          resolvedKind = candidate.kind;
+          resolvedRef = candidate.ref;
+        } else if (input.clear && !resolvedKind) {
+          // A clear-only request with a ref may omit kind when the ref points to
+          // exactly one active blocker. Keep the (kind, ref) identity strict when
+          // a ref is reused across different blocker kinds.
           const matchingKinds = [
             ...new Set(
               activeExternalBlockers(workItem.payload)
-                .filter((blocker) => blocker.ref === input.ref)
+                .filter((blocker) => blocker.ref === resolvedRef)
                 .map((blocker) => blocker.kind),
             ),
           ];
@@ -231,7 +288,7 @@ export default defineTool({
               ok: false as const,
               id: input.id,
               error:
-                `work_item '${input.id}' clear-only blocker ref '${input.ref}' is ambiguous across kinds ` +
+                `work_item '${input.id}' clear-only blocker ref '${resolvedRef}' is ambiguous across kinds ` +
                 `(${matchingKinds.join(', ')}); pass kind explicitly`,
             };
           }
@@ -249,11 +306,13 @@ export default defineTool({
             };
           }
         }
-        if (!resolvedKind) {
+        if (!resolvedKind || !resolvedRef) {
           return {
             ok: false as const,
             id: input.id,
-            error: 'kind is required when setting a blocker',
+            error: input.clear
+              ? 'clear-only blocker requests need an active blocker ref to resolve'
+              : 'kind and ref are required when setting a blocker',
           };
         }
 
@@ -262,7 +321,7 @@ export default defineTool({
           {
             kind: resolvedKind,
             capability: input.capability,
-            ref: input.ref,
+            ref: resolvedRef,
             summary: input.summary,
             evidence: input.evidence,
             nextVerb: input.nextVerb,
@@ -322,7 +381,7 @@ export default defineTool({
             lifecycle = await setWorkItemClaimHold(input.id, false, {
               harness: input.harness,
               by: identity.ownerId,
-              reason: `external blocker ${resolvedKind}:${input.ref} cleared`,
+              reason: `external blocker ${resolvedKind}:${resolvedRef} cleared`,
             });
           }
           if (lifecycle && typeof lifecycle === 'object' && 'workItem' in lifecycle) {
@@ -371,7 +430,7 @@ export default defineTool({
           ),
           autoCleared: history.autoCleared,
           lifecycle,
-          ...(resolvedKind === 'event' && !input.clear && !history.autoCleared ? { await: { event: input.ref } } : {}),
+          ...(resolvedKind === 'event' && !input.clear && !history.autoCleared ? { await: { event: resolvedRef } } : {}),
         };
       },
       { keyOf: (input) => ({ id: input.id, kind: input.kind, ref: input.ref }) },

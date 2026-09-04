@@ -23,8 +23,15 @@ export interface ActiveAccount {
  * `active()` may advance a pool cursor; read-only callers use `peek()` or `entries()`.
  */
 export interface AccountPool {
-  active(): ActiveAccount;
-  onExhausted(exhaustedId: string, resetAt: number): ActiveAccount | null;
+  /** Pick the next unpinned account. A caller may supply the shared health key (lower is better);
+   *  omitting it preserves the pool's round-robin behavior exactly. */
+  active(keyOf?: (account: ActiveAccount) => number): ActiveAccount;
+  /** Mark one account exhausted and choose a replacement, optionally through the same health key. */
+  onExhausted(
+    exhaustedId: string,
+    resetAt: number,
+    keyOf?: (account: ActiveAccount) => number,
+  ): ActiveAccount | null;
   /** Resolve an account-affinity pin without silently substituting another account. */
   select?(accountId: string): ActiveAccount | null;
   /** Clear a transport/rate pause when a health probe proves the account usable again. */
