@@ -12504,8 +12504,78 @@ async function runGreenCheckpointInner(
       });
   }
   const adv = repairPromotionAdvance;
+  let stagingAbsorptionNote = "";
   if (repairQueue) {
-    await deps.writeFrozenRepairQueue?.(null);
+    // P-008: main's green fast-forward and staging's ancestry bridge are distinct writes.
+    // Never clear the durable queue between them: it is the crash-recovery marker that lets
+    // the next tick retry the bridge without re-running the full gate or cutting at tip.
+    const promotionLanded =
+      adv.advanced || adv.reason === "already-at-candidate";
+    if (!promotionLanded) {
+      const refusalSummary =
+        `frozen repair ${candidate.slice(0, 8)} passed the full gate but ${cfg.releaseRef} ` +
+        `did not advance (${adv.reason}); retaining the ready-to-promote queue and refusing ` +
+        `to fold or clear the lineage`;
+      deps.log(refusalSummary);
+      stampPromotion(false, "repair-in-progress");
+      return withRepairIdentity({
+        advanced: false,
+        candidate,
+        from: adv.from,
+        green: null,
+        reason: "repair-in-progress",
+        summary: refusalSummary,
+        repairQueue,
+        ...(deps.runId ? { runId: deps.runId } : {}),
+        ...(logPath ? { logPath } : {}),
+        ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+      });
+    }
+
+    if (deps.absorbPromotedLineageIntoStaging) {
+      let absorption: StagingLineageAbsorptionResult;
+      try {
+        absorption = await deps.absorbPromotedLineageIntoStaging(repairQueue);
+      } catch (error) {
+        absorption = {
+          ok: false,
+          status: "git-failed",
+          repairHead: repairQueue.repairHead,
+          differences: [],
+          summary: `staging-lineage absorption threw: ${error instanceof Error ? error.message : error}`,
+        };
+      }
+      deps.log(`P-008 post-promotion staging bridge: ${absorption.summary}`);
+      if (absorption.ok) {
+        try {
+          await deps.writeFrozenRepairQueue?.(null);
+          repairQueue = null;
+        } catch (error) {
+          stagingAbsorptionNote =
+            `Staging now descends from the promoted lineage, but clearing the durable queue ` +
+            `failed (${error instanceof Error ? error.message : error}); the ready-to-promote ` +
+            `row remains as an idempotent retry marker.`;
+          deps.log(`P-008 ${stagingAbsorptionNote}`);
+        }
+      } else {
+        stagingAbsorptionNote =
+          `${absorption.summary}. Main is already at the proven lineage; the ready-to-promote ` +
+          `queue remains so the next tick retries only this ancestry bridge.`;
+        deps.log(`P-008 ${stagingAbsorptionNote}`);
+        await deps
+          .escalate?.(
+            `green-checkpoint: staging has not absorbed promoted frozen lineage ${candidate.slice(0, 8)}`,
+            stagingAbsorptionNote,
+          )
+          .catch(() => {});
+      }
+    } else {
+      // Compatibility for direct/test callers whose dependency object predates P-008. Every
+      // recording production run wires the bridge above; keeping this fallback preserves old
+      // stubs without pretending an absent production dep completed the bridge.
+      await deps.writeFrozenRepairQueue?.(null);
+      repairQueue = null;
+    }
   }
   deps.log(
     `✅ ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? "none"} → ${candidate.slice(0, 8)} (green)`,
@@ -12524,6 +12594,9 @@ async function runGreenCheckpointInner(
   const flakeNote = flakeSuspects?.length
     ? `\n\n⚠️ Load-flake absorbed: ${flakeSuspects.join(", ")} failed under the gate's concurrent load (a per-file flake, or a worker-pool OOM crash) but PASSED on a reduced-concurrency re-run. Consider quarantining / investigating memory if it recurs.`
     : "";
+  const stagingNote = stagingAbsorptionNote
+    ? `\n\n⚠️ Post-promotion staging ancestry bridge pending: ${stagingAbsorptionNote}`
+    : "";
   await deps
     .broadcast(
       // EI-18685042025868279: the HEADLINE must carry the qualification, not just the body.
@@ -12535,7 +12608,7 @@ async function runGreenCheckpointInner(
           ? ` [${(retriedTests ?? []).filter((t) => t.outcome === "passed-on-rerun").length} passed on retry — NOT a clean green]`
           : ""
       }`,
-      `Was ${adv.from?.slice(0, 8) ?? "unset"}. The next deploy will pick this up.${retryNote}${flakeNote}`,
+      `Was ${adv.from?.slice(0, 8) ?? "unset"}. The next deploy will pick this up.${retryNote}${flakeNote}${stagingNote}`,
     )
     .catch(() => {});
   // P-002: the gate recovered — resolve any open `release-not-green` escalation.
@@ -12606,7 +12679,9 @@ async function runGreenCheckpointInner(
     from: adv.from,
     green: true,
     reason: "advanced",
-    summary,
+    summary: stagingAbsorptionNote
+      ? `${summary}\n\n${stagingAbsorptionNote}`
+      : summary,
     ...(flakeSuspects?.length ? { flakeSuspects } : {}),
     // EI-18685042025868279: THE point of the item — this is the advance verdict, the one a
     // consumer reads to decide whether `main` moved onto a clean tree. Carrying
@@ -12621,6 +12696,7 @@ async function runGreenCheckpointInner(
       ? { hygieneDebt: hygieneSplit.hygieneWorkItems }
       : {}),
     ...(deps.runId ? { runId: deps.runId } : {}),
+    ...(repairQueue ? { repairQueue } : {}),
     ...(logPath ? { logPath } : {}),
     ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
   };

@@ -117,6 +117,7 @@ import {
   formatSelfWatchdogDuration,
   isNothingToGate,
   realCheckpointDeps,
+  foldPromotedLineageIntoStaging,
   SETUP_TREE_TIMEOUT_MS,
   SETUP_TREE_HARD_TIMEOUT_MS,
   formatGatePromotionTrailer,
@@ -2144,6 +2145,231 @@ beforeEach(async () => {
 afterEach(() => {
   vi.restoreAllMocks();
   rmSync(repo, { recursive: true, force: true });
+});
+
+describe("P-008: promoted frozen lineage is absorbed into staging history", () => {
+  it("holds the git-sync lock, creates an ours merge, preserves staging's tree, and reports admitted-path differences", async () => {
+    const base = await commit("shared.txt", "base", "base");
+    await git(repo, ["branch", "repair", base]);
+    await git(repo, ["checkout", "-q", "repair"]);
+    const repairHead = await commit(
+      "lib/admitted.ts",
+      "promoted fix",
+      "admitted frozen-lineage fix",
+    );
+
+    await git(repo, ["checkout", "-q", "main"]);
+    await commit(
+      "lib/admitted.ts",
+      "newer staging edit",
+      "independent staging edit",
+    );
+    const stagingBefore = await revParse(repo, "main");
+    const treeBefore = await git(repo, [
+      "rev-parse",
+      "--verify",
+      `${stagingBefore}^{tree}`,
+    ]);
+    const lockEvents: string[] = [];
+
+    const result = await foldPromotedLineageIntoStaging(
+      {
+        integrationRoot: repo,
+        integrationBranch: "main",
+        repairHead,
+        admittedPaths: ["lib/admitted.ts", "lib/admitted.ts"],
+        workspaceId: "test-workspace",
+        installSlug: "test-harness",
+      },
+      {
+        withGitSyncLock: async (run) => {
+          lockEvents.push("acquired:git-sync:test-harness");
+          try {
+            return await run();
+          } finally {
+            lockEvents.push("released:git-sync:test-harness");
+          }
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      status: "merged",
+      stagingBefore,
+      repairHead,
+      differences: [{ path: "lib/admitted.ts" }],
+    });
+    expect(lockEvents).toEqual([
+      "acquired:git-sync:test-harness",
+      "released:git-sync:test-harness",
+    ]);
+    if (!result.ok) throw new Error(result.summary);
+    expect(
+      (
+        await git(repo, ["show", "-s", "--format=%P", result.stagingAfter])
+      ).split(" "),
+    ).toEqual([stagingBefore, repairHead]);
+    expect(
+      await git(repo, [
+        "rev-parse",
+        "--verify",
+        `${result.stagingAfter}^{tree}`,
+      ]),
+    ).toBe(treeBefore);
+    expect(
+      await git(repo, ["show", `${result.stagingAfter}:lib/admitted.ts`]),
+    ).toBe("newer staging edit");
+    expect(result.differences[0].promotedBlob).not.toBe(
+      result.differences[0].stagingBlob,
+    );
+
+    // Idempotence is the crash-recovery contract: a retry sees ancestry already present and
+    // creates no second merge commit.
+    const retry = await foldPromotedLineageIntoStaging(
+      {
+        integrationRoot: repo,
+        integrationBranch: "main",
+        repairHead,
+        admittedPaths: ["lib/admitted.ts"],
+        workspaceId: "test-workspace",
+        installSlug: "test-harness",
+      },
+      { withGitSyncLock: async (run) => run() },
+    );
+    expect(retry).toMatchObject({
+      ok: true,
+      status: "already-descendant",
+      stagingBefore: result.stagingAfter,
+      stagingAfter: result.stagingAfter,
+    });
+    expect(await revParse(repo, "main")).toBe(result.stagingAfter);
+  });
+
+  it("fails closed instead of leaking a staged peer change into the ancestry commit", async () => {
+    const base = await commit("shared.txt", "base", "base");
+    await git(repo, ["branch", "repair", base]);
+    await git(repo, ["checkout", "-q", "repair"]);
+    const repairHead = await commit("fix.ts", "repair", "repair");
+    await git(repo, ["checkout", "-q", "main"]);
+    const stagingBefore = await commit("staging.ts", "tip", "staging tip");
+    writeFileSync(join(repo, "peer.ts"), "uncommitted peer work");
+    await git(repo, ["add", "peer.ts"]);
+
+    const result = await foldPromotedLineageIntoStaging(
+      {
+        integrationRoot: repo,
+        integrationBranch: "main",
+        repairHead,
+        admittedPaths: ["fix.ts"],
+        workspaceId: "test-workspace",
+        installSlug: "test-harness",
+      },
+      { withGitSyncLock: async (run) => run() },
+    );
+
+    expect(result).toMatchObject({ ok: false, status: "index-dirty" });
+    expect(await revParse(repo, "main")).toBe(stagingBefore);
+  });
+});
+
+describe("P-008: queue clearing is serialized after staging absorption", () => {
+  it("keeps ready-to-promote on lock contention, then retries only the bridge without another suite", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const repaired = await commit("b", "fixed", "admitted repair");
+    await git(repo, [
+      "update-ref",
+      `refs/papercusp/frozen/${frozen}`,
+      repaired,
+    ]);
+    await git(repo, ["reset", "--hard", ready]);
+    const stagingTip = await commit("c", "later", "moving staging tip");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: repaired,
+      affectedTestProofGroup: "initial-proof-run",
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      // This cannot be selectively re-run, so one full canonical gate at repairHead is the
+      // promotion proof. The test's subject starts immediately after that proof.
+      failingTests: ["papercusp-desktop :: cargo test"],
+      signature: [],
+    };
+    const { deps, calls } = stubDeps(true);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    let absorptionAttempts = 0;
+    deps.absorbPromotedLineageIntoStaging = async (current) => {
+      calls.push("absorb-staging");
+      absorptionAttempts += 1;
+      // The bridge is downstream of the green-pin fast-forward, never a pre-promotion merge.
+      expect(await revParse(repo, "ready")).toBe(repaired);
+      if (absorptionAttempts === 1) {
+        return {
+          ok: false,
+          status: "lock-busy",
+          repairHead: current.repairHead,
+          differences: [],
+          summary: "git-sync:test is busy",
+        };
+      }
+      return {
+        ok: true,
+        status: "already-descendant",
+        stagingBefore: stagingTip,
+        stagingAfter: stagingTip,
+        repairHead: current.repairHead,
+        differences: [],
+        summary: "staging ancestry already absorbed",
+      };
+    };
+
+    const promoted = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(promoted).toMatchObject({
+      advanced: true,
+      green: true,
+      reason: "advanced",
+      candidate: repaired,
+      repairQueue: { phase: "ready-to-promote", repairHead: repaired },
+    });
+    expect(promoted.summary).toContain("ready-to-promote queue remains");
+    expect(queue).toMatchObject({
+      phase: "ready-to-promote",
+      repairHead: repaired,
+    });
+    expect(calls.indexOf("advance")).toBeLessThan(
+      calls.indexOf("absorb-staging"),
+    );
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+
+    const recovered = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(recovered).toMatchObject({
+      advanced: false,
+      green: null,
+      reason: "up-to-date",
+      candidate: repaired,
+    });
+    expect(recovered.summary).toContain("post-promotion staging bridge");
+    expect(queue).toBeNull();
+    expect(absorptionAttempts).toBe(2);
+    // No second selective proof, full suite, or advance: ready-to-promote + main==repairHead
+    // is the durable crash marker for retrying exactly the missing bridge.
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+    expect(calls.filter((call) => call === "advance")).toHaveLength(1);
+  });
 });
 
 describe("in-flight candidate publication", () => {
