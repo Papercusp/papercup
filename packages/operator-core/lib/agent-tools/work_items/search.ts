@@ -107,7 +107,7 @@ export function shapeWorkItemsSearch(data: unknown, tier: keyof typeof SEARCH_TI
 export default defineTool({
   name: 'work_items:search',
   profile: 'engineer',
-  description: 'Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary FUSED (RRF) with a semantic (embedding cosine) leg, so differently-worded matches surface too (semantic:false for lexical-only). Filter by harness or kind. Use to dedup before creating. Returns compact match rows in { ok, count, items, legs, retryable, retry? } — use work_items:get { id } for full state; NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`). READ `legs` before concluding "no duplicate exists": legs.degraded:true means a ranking leg did not contribute (legs.warning says why, e.g. the embedder is down), so a short list may be a degraded search rather than an absence. When `retryable:true`, retry before treating the result as a verified-empty or creating a new item. A cold query-embedder warmup includes a stable `retry.token` shared by concurrent calls and `retry.afterMs` guidance.',
+  description: 'Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary FUSED (RRF) with a semantic (embedding cosine) leg, so differently-worded matches surface too (semantic:false for lexical-only). Filter by harness or kind. The required free-text argument is `query` — `q` is not an alias. Use to dedup before creating. Returns compact match rows in { ok, count, items, legs, retryable, retry? } — use work_items:get { id } for full state; NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`). READ `legs` before concluding "no duplicate exists": legs.degraded:true means a ranking leg did not contribute (legs.warning says why, e.g. the embedder is down), so a short list may be a degraded search rather than an absence. When `retryable:true`, retry before treating the result as a verified-empty or creating a new item. A cold query-embedder warmup includes a stable `retry.token` shared by concurrent calls and `retry.afterMs` guidance.',
   guidance: {
     when: 'You want to find existing work-items by free text (e.g. dedup before filing, or locate a known issue/feature).',
     chaining: 'work_items:search (dedup) → work_items:create, or → work_items:get { id } for detail.',
@@ -127,7 +127,11 @@ export default defineTool({
   },
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    query: z.string().min(1).max(400),
+    query: z
+      .string()
+      .min(1)
+      .max(400)
+      .describe('Required free-text search input. Use `query`; `q` is not an alias.'),
     harness: z.string().max(80).optional(),
     // P-001/P-011 generic-kind: a built-in kind OR a workspace-registered generic-kind
     // datatype. familyOf() routes it to the feature family + featureFamilyKindClause admits

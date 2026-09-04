@@ -42,6 +42,19 @@ describe('work_items:search transaction scope', () => {
   });
 });
 
+describe('work_items:search argument contract', () => {
+  it('documents and enforces the required query-only input', () => {
+    const args = search.args as {
+      safeParse: (value: unknown) => { success: boolean };
+      shape?: { query?: { description?: string } };
+    };
+
+    expect(args.safeParse({ q: 'legacy alias' }).success).toBe(false);
+    expect(args.safeParse({ query: 'canonical input' }).success).toBe(true);
+    expect(args.shape?.query?.description).toMatch(/use `query`.*`q` is not an alias/i);
+  });
+});
+
 describe('work_items:search bounded result projection', () => {
   it('returns a compact match row and leaves detail payloads to work_items:get', () => {
     const match = projectWorkItemSearchMatch(
