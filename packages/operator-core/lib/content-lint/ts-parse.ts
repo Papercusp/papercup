@@ -181,11 +181,30 @@ function findTsGrammarError(fileName: string, text: string, scriptKind: ts.Scrip
         noResolve: true,
         noLib: true,
         experimentalDecorators: true,
-        // `import x = require("x")` is valid TypeScript for CommonJS consumers.
-        // Without an explicit module kind, TypeScript 6 resolves `ModuleKind.None`
-        // and reports TS1202 even though the source is valid under the project's
-        // CommonJS configuration.
-        module: ts.ModuleKind.CommonJS,
+        // MODULE + TARGET ARE PART OF THE SAFETY ARGUMENT, not incidental setup.
+        // TypeScript reports several sub-2000 GRAMMAR codes purely as a function of
+        // these two options, so a mismatch here MANUFACTURES file-breaking diagnostics
+        // on files that are perfectly valid under the project's real tsconfig.
+        //
+        // `preserve` is the only kind satisfying all three constraints at once:
+        //   · `import x = require("x")` stays legal (TS1202) — without an explicit
+        //     module kind TypeScript 6 resolves `ModuleKind.None` and rejects it.
+        //   · top-level `await` stays legal (TS1378).
+        //   · `import.meta` stays legal (TS1343).
+        // `commonjs` satisfies only the first, `esnext` only the last two, and
+        // `nodenext` trades TS1343 for TS1470. The explicit ES2022 target is required
+        // ALONGSIDE it because TS1378 tests `target >= ES2017` independently: a program
+        // built without one defaults to ES5. (The `createSourceFile` ScriptTarget above
+        // sets the PARSE target, not `compilerOptions.target`, which is what the grammar
+        // checks read.) Both match the repo's own tsconfigs — module ESNext, target ES2022.
+        //
+        // EI-22372621599811236: `module: CommonJS` with no target quarantined 1,529 of
+        // 15,377 tracked files (627 TS1378 + 902 TS1343) — ~10% of the repo, every one
+        // of them valid — because git-sync EXCLUDES a flagged file from the auto-commit.
+        // Change either option only with a both-directions re-run of ts-parse.test.ts:
+        // no new flags on valid modern syntax, AND the real breakage cases still caught.
+        module: ts.ModuleKind.Preserve,
+        target: ts.ScriptTarget.ES2022,
       },
       host,
     );

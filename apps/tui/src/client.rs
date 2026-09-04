@@ -2032,7 +2032,7 @@ impl OperatorClient {
         let envelope = self
             .run_tool(
                 "work_items:burn_down",
-                serde_json::json!({ "harness": harness, "limit": 2000 }),
+                work_frontier_burn_down_args(harness),
             )
             .await?;
         let mut frontier: WorkFrontier = serde_json::from_value(run_tool_inner_json(&envelope)?)
@@ -2046,10 +2046,7 @@ impl OperatorClient {
             .collect();
         if !ids.is_empty() {
             let detail = self
-                .run_tool(
-                    "work_items:get",
-                    serde_json::json!({ "ids": ids, "harness": harness, "detail": true }),
-                )
+                .run_tool("work_items:get", work_frontier_detail_args(ids, harness))
                 .await?;
             apply_frontier_block_counts(&mut frontier, &run_tool_inner_json(&detail)?);
         }
@@ -2777,6 +2774,28 @@ impl OperatorClient {
         )
         .await
     }
+}
+
+/// Build the two raw tool argument payloads used by [`OperatorClient::work_frontier`].
+/// `payloadTier` is framework-reserved and must be nested in the target tool's
+/// args when the call goes through `/api/agent-mcp/run-tool`; leaving it out lets
+/// the result-door apply its default clipped tier, which can splice a literal
+/// truncation marker into the inner JSON and make the frontier undecodable.
+fn work_frontier_burn_down_args(harness: &str) -> serde_json::Value {
+    serde_json::json!({
+        "harness": harness,
+        "limit": 2000,
+        "payloadTier": "full",
+    })
+}
+
+fn work_frontier_detail_args(ids: Vec<String>, harness: &str) -> serde_json::Value {
+    serde_json::json!({
+        "ids": ids,
+        "harness": harness,
+        "detail": true,
+        "payloadTier": "full",
+    })
 }
 
 /// IPC wraps `sys:http` status failures in anyhow text rather than exposing
@@ -3618,6 +3637,55 @@ mod tests {
         assert_eq!(b["args"]["agent"], "s-1");
         assert_eq!(b["args"]["mode"], "manual");
         assert_eq!(b["confirmed"], false);
+    }
+
+    #[test]
+    fn work_frontier_reads_request_nested_full_payload_tier() {
+        // `payloadTier` is a framework control on the target tool, so it must
+        // survive inside run-tool's nested `args` object. Without this opt-in,
+        // the result door can splice its truncation marker into the JSON text
+        // and the Fleet pane reports a misleading parse error.
+        let burn_down = super::run_tool_body(
+            "work_items:burn_down",
+            super::work_frontier_burn_down_args("papercusp"),
+        );
+        assert_eq!(burn_down["args"]["payloadTier"], "full");
+        assert_eq!(burn_down["args"]["harness"], "papercusp");
+
+        let detail = super::run_tool_body(
+            "work_items:get",
+            super::work_frontier_detail_args(vec!["WI-ready".into()], "papercusp"),
+        );
+        assert_eq!(detail["args"]["payloadTier"], "full");
+        assert_eq!(detail["args"]["ids"][0], "WI-ready");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a running operator (endpoint-ipc socket present)"]
+    async fn live_work_frontier_fetch_decodes_the_full_payload() {
+        // This is the exact Fleet request path, over the real discovered
+        // operator transport. A clipped result used to leave a literal
+        // truncation marker in content[0].text and surface as a parse error.
+        let client = OperatorClient::from_discovery()
+            .await
+            .expect("connect via discovery");
+        let frontier = client
+            .work_frontier("papercup")
+            .await
+            .expect("decode work frontier over the live wire");
+        eprintln!(
+            "live work frontier: harness={} total={} terminal={} unclaimed={} in-flight={} parked={}",
+            frontier.harness,
+            frontier.counts.total,
+            frontier.counts.terminal,
+            frontier.counts.unclaimed,
+            frontier.counts.in_flight,
+            frontier.counts.parked,
+        );
+        assert!(
+            frontier.counts.total >= frontier.counts.terminal,
+            "frontier totals must include its terminal bucket"
+        );
     }
 
     #[test]

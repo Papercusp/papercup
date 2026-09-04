@@ -114,6 +114,65 @@ describe('findTsParseError', () => {
 });
 
 /**
+ * EI-22372621599811236 — the MODULE/TARGET class, and the guard whose absence let it land.
+ *
+ * Phase 2's `module`/`target` are not incidental setup: TypeScript reports a family of
+ * sub-2000 GRAMMAR codes purely as a function of them, so the wrong pair MANUFACTURES
+ * file-breaking diagnostics on files that are valid under the project's real tsconfig
+ * (module ESNext, target ES2022) — and a flagged file is EXCLUDED from git-sync's
+ * auto-commit, so a false positive here strands work rather than merely mis-reporting it.
+ *
+ * Measured when this landed: `module: CommonJS` with no explicit target flagged 1,529 of
+ * 15,377 tracked files — 627 TS1378 (top-level `await`) + 902 TS1343 (`import.meta`),
+ * ~10% of the repo, every one of them valid. The quarantined file that surfaced it,
+ * routines.test.ts, was ALREADY COMMITTED and green; only the git-sync guard disagreed.
+ *
+ * The three cases below are pinned TOGETHER on purpose, because they are mutually
+ * exclusive under every module kind but `preserve`: `commonjs` satisfies only TS1202,
+ * `esnext` only TS1378+TS1343, `nodenext` trades TS1343 for TS1470. Any single-case test
+ * would therefore pass against a setting that breaks one of the others — which is exactly
+ * how the CommonJS regression got in past a suite that already covered TS1202 (above).
+ */
+describe('findTsParseError — module/target grammar options (EI-22372621599811236)', () => {
+  it('does not flag top-level await (TS1378) — legal under the repo module ESNext/target ES2022', () => {
+    const topLevelAwait = ["const mod = await import('./list');", 'export default mod;'].join('\n');
+    expect(findTsParseError('top-level-await.ts', topLevelAwait)).toBeNull();
+  });
+
+  it('does not flag import.meta (TS1343)', () => {
+    expect(findTsParseError('meta.ts', 'export const here = import.meta.url;\n')).toBeNull();
+  });
+
+  it('still does not flag import-assignment (TS1202) — the constraint that forced CommonJS', () => {
+    // The sibling of the TS1202 case above, restated HERE so the three constraints sit in
+    // one block: a future edit that fixes one of these by breaking another reds immediately
+    // instead of trading one silent quarantine class for a different one.
+    const importEquals = ["import path = require('node:path');", 'export const sep = path.sep;'].join('\n');
+    expect(findTsParseError('import-equals.ts', importEquals)).toBeNull();
+  });
+
+  it('CONTROL: an explicit target is required, not merely a module kind', () => {
+    // TS1378 tests `module` AND `target >= ES2017` INDEPENDENTLY, and a program built with
+    // no target defaults to ES5 — so a module-only fix leaves top-level await flagged. The
+    // `createSourceFile` ScriptTarget.Latest above sets the PARSE target, NOT
+    // `compilerOptions.target`, which is what the grammar checks read; that gap is precisely
+    // what made this look configured when it was not. Asserting the detector's own verdict
+    // on the two shapes keeps the pair honest without duplicating its compiler options here.
+    expect(findTsParseError('a.ts', "export const m = await import('./x');\n")).toBeNull();
+    expect(findTsParseError('b.ts', 'export const u = import.meta.url;\n')).toBeNull();
+  });
+
+  it('CONTROL: the widened options still catch the real breakage cases', () => {
+    // The negative direction. Loosening module/target must not loosen the detector itself:
+    // if it did, every test above would pass for the wrong reason — a check that flags
+    // nothing is the silent non-guard this file exists to prevent.
+    expect(findTsParseError('x.ts', 'export export const X = 1;\n')).not.toBeNull();
+    expect(findTsParseError('y.ts', 'const a = 1;\nconst a = 2;\nexport { a };\n')).not.toBeNull();
+    expect(findTsParseError('z.ts', "const s = 'unterminated;\nexport default s;\n")).not.toBeNull();
+  });
+});
+
+/**
  * WI-37398 — the DUPLICATE MODIFIER class.
  *
  * TypeScript's parser is deliberately error-TOLERANT here: `export export const X = 1`

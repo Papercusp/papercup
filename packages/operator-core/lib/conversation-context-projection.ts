@@ -773,7 +773,11 @@ async function readForeignConversationContextProjection(
              coord_owner_id, goal_ref
         FROM harness_shared.tool_invocations
        WHERE (workspace_id = ${args.workspaceId} OR workspace_id = 'default')
-         AND tool_name = ANY(${['activity:report', 'activity_report']}::text[])
+         AND tool_name IN ('activity:report', 'activity_report')
+         -- These predicates mirror migration 1114's partial index.  They are
+         -- logically redundant with the COALESCE equality, but PostgreSQL needs
+         -- them stated to prove the partial index covers both producer spellings.
+         AND (args_json ? 'session_id' OR args_json ? 'sessionId')
          AND COALESCE(args_json->>'session_id', args_json->>'sessionId') = ${args.sessionId}
        ORDER BY invoked_at DESC, id DESC
        LIMIT ${FOREIGN_PROJECTION_TOOL_LIMIT}`,
