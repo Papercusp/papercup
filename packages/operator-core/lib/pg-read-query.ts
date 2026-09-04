@@ -2311,8 +2311,17 @@ export function buildAdvSessionsLivenessAdvisory(rawSql: string): string | null 
  * and a reader who got the hard clause right is shown the other four in the
  * remedy text anyway. That is a chosen tradeoff, not an oversight.
  *
- * The clause list mirrors `capPopulationPredicate` in agent-facts/store.ts. If
- * the cap's exemptions change, change this text in the same edit.
+ * The clause list mirrors `capPopulationPredicate` in agent-facts/store.ts —
+ * a hand-maintained SECOND COPY of a predicate the store already owns, so it
+ * drifts silently unless something pins it. It did: the partition clause added
+ * by EI-20365165629381535 (`measurement->'subjectVolatile'`) never reached this
+ * text, so for a time the advertised "full predicate" merged the ordinary and
+ * volatile populations and compared the total against one of two different
+ * caps — the exact over-count this advisory exists to prevent, reproduced by
+ * the advisory itself. Do not rely on remembering to update it: the drift pin
+ * in pg-read-query.test.ts ("mirrors every column the canonical
+ * capPopulationPredicate constrains") derives the required token set from
+ * store.ts at test time and fails when a new clause is not named here.
  */
 export function buildAgentFactsSupersessionAdvisory(rawSql: string): string | null {
   const tables = extractReferencedTables(rawSql);
@@ -2353,8 +2362,8 @@ export function buildAgentFactsSupersessionAdvisory(rawSql: string): string | nu
     'WITHOUT stamping `retracted_at` and WITHOUT shortening `expires_at`, so a superseded row ' +
     'keeps both liveness markers intact forever — the error grows with how diligently the fleet ' +
     'CORRECTS facts, and it reads as "the per-scope cap has stopped enforcing". Measured ' +
-    "2026-09-01 on scope='harness', scope_ref='papercusp': this predicate returns 471 where the " +
-    'population the cap actually caps is 200. Adding `superseded_at IS NULL` alone is NOT enough ' +
+    "2026-09-01 on scope='harness', scope_ref='papercusp': this predicate returned 471 against a " +
+    'then-200 cap. Adding `superseded_at IS NULL` alone is NOT enough ' +
     '— it closes only 131 of the 271-row gap (conventions account for 81, exempt slots 59). The ' +
     'full predicate, mirroring capPopulationPredicate in agent-facts/store.ts:\n' +
     "  WHERE workspace_id = :ws AND scope = :scope AND coalesce(scope_ref,'') = :ref\n" +
@@ -2363,8 +2372,15 @@ export function buildAgentFactsSupersessionAdvisory(rawSql: string): string | nu
     '    AND retracted_at IS NULL AND expires_at > now()\n' +
     "    AND key NOT LIKE 'wall:%' AND key NOT LIKE 'dead-end:%' AND key NOT LIKE 'guard-rail:%'\n" +
     "    AND COALESCE(kind,'') <> 'convention'\n" +
+    "    AND measurement->'subjectVolatile' IS DISTINCT FROM 'true'::jsonb  -- ORDINARY partition\n" +
+    "       -- (flip that last clause to = 'true'::jsonb to count the VOLATILE one instead)\n" +
+    'That last clause is NOT optional: ordinary and volatile facts are capped as SEPARATE ' +
+    'populations under SEPARATE ceilings (FACTS_PER_SCOPE_CAP vs FACTS_VOLATILE_PER_SCOPE_CAP in ' +
+    'agent-facts/store.ts), so a count that omits it merges two populations and then compares the ' +
+    'total against one of two different caps — the same over-count shape this advisory exists to ' +
+    'prevent, one level down. ' +
     'Prefer `facts:list { scope, scopeRef }`, which already scopes correctly; this advisory exists ' +
-    'for reads that drop to SQL. For the live at-cap forecast including the ranked next victim, ' +
+    'for reads that drop to SQL. For the live at-cap forecast, ' +
     '`facts:assert { dryRun: true }` reports populationSize/cap/atCap from that same predicate.'
   );
 }
