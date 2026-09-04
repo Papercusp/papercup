@@ -463,6 +463,32 @@ describe('runWorkspaceHostDestroy', () => {
     expect(reason).toMatch(/(provider|orphan)\.\w+=\[/);
     expect(reason).toContain('pc-host-');
   });
+
+  // WI-2143626: a FAILED destroy discarded the one artefact that says what is still RECLAIMABLE.
+  // The destroy census runs with `expected: []`, so every managed resource still visible lands in
+  // `reaperPlan` carrying a reclaim state (and, while quarantined, the instant it becomes eligible).
+  // `reaperPlan` has no production consumer anywhere — only this message — so if it is not named
+  // here it is not recoverable at all. That is why p046-canary-04..07 left networks, subnets, Cloud
+  // NAT routers and 4x100GiB disks billing for days, found only by a by-hand six-kind census.
+  it('names what is still RECLAIMABLE, not merely what is still live, when a destroy fails', async () => {
+    const { provider, inventoryManagedResources } = providerHarness();
+    const { store, updateOperation } = storeHarness();
+    inventoryManagedResources.mockResolvedValue(legacyInventorySnapshot());
+
+    const result = await runWorkspaceHostDestroy({ ...runInput(provider, store), censusSettleMs: 0 });
+
+    expect(result.status).toBe('failed');
+    const failure = updateOperation.mock.calls.map(([entry]) => entry).find((entry) => entry.status === 'failed');
+    const reason = String((failure?.error as { reason?: unknown } | undefined)?.reason ?? '');
+    // The survivors were first observed at NOW, far outside the 60s orphan grace by the time the
+    // census evaluates, so the plan's verdict is that they are reclaimable RIGHT NOW. Losing that
+    // verdict — not losing the resource list — is what made the strandage undiscoverable.
+    expect(reason).toContain('provider.reapEligible=[');
+    expect(reason).toMatch(/provider\.reapEligible=\[[^\]]*pc-host-/);
+    // CONTROL: the reclaim verdict must be ADDITIVE to the survivor list, never a relabelling of it.
+    // Without both assertions a regression that merely renamed `provider.untracked` would pass.
+    expect(reason).toContain('provider.untracked=[');
+  });
 });
 
 // WI-2143805: a canary host could not be destroyed through the product route at all — destroy
