@@ -29,7 +29,7 @@ export default defineTool({
   guidance: {
     when: 'You or the owner need an answer another Pot is the authority on (it owns that domain). Find the peer via discovery:pots, then pot:ask, then events:await the returned answeredEvent.',
     notWhen:
-      'Handing the peer WORK to do (use pot:request_work). Within-Pot questions (coord:ask / conversations). Granting a peer to send asks INTO this Pot (that is the inbound pot:cross_grant).',
+      'Handing the peer WORK to do (use pot:request_work). Within-Pot questions (coord:send / coord:message-agent). Granting a peer to send asks INTO this Pot (that is the inbound pot:cross_grant).',
     chaining:
       'discovery:pots (find the peer Pot pubkey) → pot:ask { pot, peerPotPubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding asks with pot:asks.',
     seeAlso: [

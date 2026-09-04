@@ -44,6 +44,133 @@ export const RELEASE_READINESS_RUBRIC_ID = 'blender-release-readiness';
 const SCORECARD_PAGE = 100;
 
 /**
+ * A positive grade is only called durable after it repeats enough times to span
+ * more than one server-stamped generation. Kept at this read boundary rather
+ * than added to the rubric rating vocabulary: `pass` remains the grader's
+ * categorical observation, while this is the confidence earned by its history.
+ */
+export const RELEASE_READINESS_PASS_CONFIDENCE_POLICY = {
+  minConsecutivePassObservations: 3,
+  minDistinctGenerations: 2,
+} as const;
+
+export interface ReleaseReadinessCriterionPassConfidence {
+  /** The newest settled rating for this criterion. */
+  latestRating: string;
+  /** `pass` is durable; a positive grade below policy stays `provisional-pass`. */
+  verdict: 'not-passing' | 'provisional-pass' | 'pass';
+  /** Positive ratings in the uninterrupted newest run. */
+  consecutivePassObservations: number;
+  /** Distinct deploy/restart identities represented by that positive run. */
+  distinctGenerationCount: number;
+  /** Positive observations that predate (or lack) a generation stamp. */
+  unwatermarkedPassObservations: number;
+  newestObservedAt: string;
+  oldestSupportingObservationAt: string | null;
+}
+
+export interface ReleaseReadinessPassConfidence {
+  policy: typeof RELEASE_READINESS_PASS_CONFIDENCE_POLICY;
+  criteria: Record<string, ReleaseReadinessCriterionPassConfidence>;
+}
+
+interface PassConfidenceScorecard {
+  createdAt: string;
+  ratings?: Record<string, { rating: string }>;
+  testedSha?: string;
+  gradedGeneration?: {
+    deployedSha?: string | null;
+    hostStartedAt?: string | null;
+    bootHeadSha?: string | null;
+    scoutCodeHash?: string | null;
+  };
+}
+
+// Mirrors the positive vocabulary accepted by scorecards:emit's instrument
+// verdict check without importing the PG-backed scorecards module into this
+// fail-soft read. The blender rubric currently uses `pass`; the wider set keeps
+// the derivation honest if the rubric adopts the shared healthy/exemplary scale.
+const PASS_LIKE_RATINGS = new Set(['pass', 'healthy', 'green', 'good', 'yes', 'exemplary', 'exceptional']);
+
+function isPassLikeRating(rating: string): boolean {
+  return PASS_LIKE_RATINGS.has(rating.trim().toLowerCase());
+}
+
+/**
+ * One identity per scorecard, never one token per stamp field. Otherwise a
+ * single observation carrying both a SHA and host-start timestamp would count
+ * as two generations and manufacture a durable pass by itself.
+ */
+function scorecardGenerationIdentity(row: PassConfidenceScorecard): string | null {
+  const generation = row.gradedGeneration;
+  const code = [row.testedSha, generation?.deployedSha, generation?.bootHeadSha, generation?.scoutCodeHash].find(
+    (value): value is string => typeof value === 'string' && value.trim().length > 0,
+  );
+  const restart = generation?.hostStartedAt?.trim() || null;
+  if (!code && !restart) return null;
+  return `${code?.trim().toLowerCase() ?? 'unknown-code'}@${restart ?? 'unknown-restart'}`;
+}
+
+/**
+ * Derive pass confidence from the existing settled scorecard history. Input may
+ * be in any order; each criterion considers only its newest uninterrupted run
+ * of pass-like ratings, so an intervening at-risk/fail/unknown resets the proof.
+ */
+export function deriveReleaseReadinessPassConfidence(
+  rows: readonly PassConfidenceScorecard[],
+): ReleaseReadinessPassConfidence {
+  const newestFirst = [...rows].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const criterionKeys = new Set<string>();
+  for (const row of newestFirst) {
+    for (const key of Object.keys(row.ratings ?? {})) criterionKeys.add(key);
+  }
+
+  const criteria: Record<string, ReleaseReadinessCriterionPassConfidence> = {};
+  for (const criterion of [...criterionKeys].sort()) {
+    const observations = newestFirst.filter((row) => row.ratings?.[criterion]);
+    const newest = observations[0];
+    const latestRating = newest?.ratings?.[criterion]?.rating;
+    if (!newest || !latestRating) continue;
+
+    if (!isPassLikeRating(latestRating)) {
+      criteria[criterion] = {
+        latestRating,
+        verdict: 'not-passing',
+        consecutivePassObservations: 0,
+        distinctGenerationCount: 0,
+        unwatermarkedPassObservations: 0,
+        newestObservedAt: newest.createdAt,
+        oldestSupportingObservationAt: null,
+      };
+      continue;
+    }
+
+    const supporting: PassConfidenceScorecard[] = [];
+    for (const row of observations) {
+      const rating = row.ratings?.[criterion]?.rating;
+      if (!rating || !isPassLikeRating(rating)) break;
+      supporting.push(row);
+    }
+    const watermarks = supporting.map(scorecardGenerationIdentity);
+    const distinctGenerationCount = new Set(watermarks.filter((value): value is string => value !== null)).size;
+    const durable =
+      supporting.length >= RELEASE_READINESS_PASS_CONFIDENCE_POLICY.minConsecutivePassObservations &&
+      distinctGenerationCount >= RELEASE_READINESS_PASS_CONFIDENCE_POLICY.minDistinctGenerations;
+    criteria[criterion] = {
+      latestRating,
+      verdict: durable ? 'pass' : 'provisional-pass',
+      consecutivePassObservations: supporting.length,
+      distinctGenerationCount,
+      unwatermarkedPassObservations: watermarks.filter((value) => value === null).length,
+      newestObservedAt: newest.createdAt,
+      oldestSupportingObservationAt: supporting.at(-1)?.createdAt ?? null,
+    };
+  }
+
+  return { policy: RELEASE_READINESS_PASS_CONFIDENCE_POLICY, criteria };
+}
+
+/**
  * How much evidence the displayed score actually rests on (EI-21949865560276745).
  *
  * The strip used to render a bare `latest N/10` beside a raw card count. Both numbers
@@ -80,6 +207,12 @@ export interface ReleaseReadinessScoreEvidence {
    * absence is "not recorded", never "fresh".
    */
   latestGenerationFreshness: 'fresh' | 'stale' | 'unknown' | null;
+  /**
+   * History-derived confidence for each criterion's newest settled rating. A
+   * one-tick positive is `provisional-pass`; only a repeated run spanning at
+   * least two stamped generations remains plain `pass`.
+   */
+  passConfidence: ReleaseReadinessPassConfidence;
   /**
    * TRUE when the page hit its cap: every count above is then a FLOOR, not a total.
    * Authoritative (`listScorecardPage` over-fetches one row) rather than inferred from
@@ -188,6 +321,7 @@ async function readRubricInfo(): Promise<ReleaseReadinessRubricInfo | null> {
       windowEnd: latestScorecardAt,
       latestAgeMs: latestScorecardAt ? Math.max(0, Date.now() - Date.parse(latestScorecardAt)) : null,
       latestGenerationFreshness: newest?.generationFreshness?.status ?? null,
+      passConfidence: deriveReleaseReadinessPassConfidence(admissible),
       countTruncated: page.hasMore,
     };
   } catch {

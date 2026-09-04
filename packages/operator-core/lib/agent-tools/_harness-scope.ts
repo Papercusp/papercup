@@ -109,6 +109,326 @@ export type HarnessScope =
   | { kind: 'all' }
   | { kind: 'none' };
 
+/** The ordered, durable bindings that may supply one concrete harness. */
+export type InheritedHarnessSource = 'explicit' | 'claim' | 'plan' | 'fleet' | 'brief' | 'session';
+
+export interface HarnessScopeCandidate {
+  source: InheritedHarnessSource;
+  harnessSlug: string;
+  refs: string[];
+}
+
+export interface HarnessBindingRead {
+  harnesses?: readonly (string | null | undefined)[];
+  refs?: readonly string[];
+  /** A binding exists but is no longer trustworthy (expired/missing/moved). */
+  stale?: boolean;
+  detail?: string;
+}
+
+export interface HarnessScopeInheritanceInput {
+  explicitHarness?: string | null;
+  ownerId?: string | null;
+  workspaceId?: string | null;
+  /** Exact plan identities already bound by the caller. Presence supplies this when omitted. */
+  planSlugs?: readonly string[];
+  sessionHarness?: string | null;
+}
+
+export interface HarnessScopeInheritanceReaders {
+  claim(input: HarnessScopeInheritanceInput): Promise<HarnessBindingRead>;
+  plan(input: HarnessScopeInheritanceInput): Promise<HarnessBindingRead>;
+  fleet(input: HarnessScopeInheritanceInput): Promise<HarnessBindingRead>;
+  brief(input: HarnessScopeInheritanceInput): Promise<HarnessBindingRead>;
+}
+
+type ActiveClaimBinding = {
+  workspaceId: string;
+  harnessSlug: string;
+  workItemId: string;
+  expired: boolean;
+};
+
+/** Injectable claim adapter, exported so hot callers can use an already-loaded store seam. */
+export async function readClaimHarnessBinding(
+  input: HarnessScopeInheritanceInput,
+  readClaim: (workspaceId: string, ownerId: string) => Promise<ActiveClaimBinding | null>,
+): Promise<HarnessBindingRead> {
+  const workspaceId = concreteWorkspace(input);
+  const ownerId = input.ownerId?.trim();
+  if (!workspaceId || !ownerId) return {};
+  const claim = await readClaim(workspaceId, ownerId);
+  if (!claim) return {};
+  const harnesses = [claim.harnessSlug];
+  if (claim.expired || claim.workspaceId !== workspaceId) {
+    return {
+      harnesses,
+      refs: [claim.workItemId],
+      stale: true,
+      detail: `active claim ${claim.workItemId} is expired or belongs to workspace ${claim.workspaceId}`,
+    };
+  }
+  return { harnesses, refs: [claim.workItemId] };
+}
+
+type PresencePlanBinding = {
+  currentPlanSlug?: string | null;
+  workspaceId?: string | null;
+  stale?: boolean;
+};
+
+export async function readPlanHarnessBinding(
+  input: HarnessScopeInheritanceInput,
+  readPresence: (ownerId: string) => Promise<PresencePlanBinding | null>,
+  readPlanHarnesses: (workspaceId: string, slugs: readonly string[]) => Promise<Map<string, string[]>>,
+): Promise<HarnessBindingRead> {
+  const workspaceId = concreteWorkspace(input);
+  if (!workspaceId) return {};
+  let planSlugs = [...new Set((input.planSlugs ?? []).map((slug) => slug.trim()).filter(Boolean))];
+  if (planSlugs.length === 0) {
+    const ownerId = input.ownerId?.trim();
+    if (!ownerId) return {};
+    const presence = await readPresence(ownerId);
+    const planSlug = presence?.currentPlanSlug?.trim();
+    if (!planSlug) return {};
+    if (presence?.stale || (presence?.workspaceId && presence.workspaceId !== workspaceId)) {
+      return {
+        refs: [planSlug],
+        stale: true,
+        detail: `bound plan ${planSlug} comes from stale or cross-workspace presence`,
+      };
+    }
+    planSlugs = [planSlug];
+  }
+  const bySlug = await readPlanHarnesses(workspaceId, planSlugs);
+  const missing = planSlugs.filter((slug) => (bySlug.get(slug) ?? []).length === 0);
+  const harnesses = planSlugs.flatMap((slug) => bySlug.get(slug) ?? []);
+  if (missing.length > 0) {
+    return {
+      harnesses,
+      refs: planSlugs,
+      stale: true,
+      detail: `bound plan(s) no longer resolve in workspace ${workspaceId}: ${missing.join(', ')}`,
+    };
+  }
+  return { harnesses, refs: planSlugs };
+}
+
+type ClaimSpecHarnessBinding = {
+  source: 'cup' | 'fleet' | 'default';
+  harnessSlug?: string | null;
+  fleetSlug?: string;
+};
+
+export async function readFleetHarnessBinding(
+  input: HarnessScopeInheritanceInput,
+  readRecord: (args: { cupId: string; workspaceId: string }) => Promise<ClaimSpecHarnessBinding>,
+): Promise<HarnessBindingRead> {
+  const workspaceId = concreteWorkspace(input);
+  const ownerId = input.ownerId?.trim();
+  if (!workspaceId || !ownerId) return {};
+  const record = await readRecord({ cupId: ownerId, workspaceId });
+  if (record.source === 'default') {
+    return record.fleetSlug
+      ? { refs: [record.fleetSlug], stale: true, detail: `fleet ${record.fleetSlug} has no current claim-spec binding` }
+      : {};
+  }
+  const harnessSlug = concreteHarness(record.harnessSlug);
+  if (!harnessSlug) {
+    return record.source === 'fleet'
+      ? {
+          refs: record.fleetSlug ? [record.fleetSlug] : [],
+          stale: true,
+          detail: 'fleet claim spec has no concrete harness binding',
+        }
+      : {};
+  }
+  return { harnesses: [harnessSlug], refs: record.fleetSlug ? [record.fleetSlug] : [] };
+}
+
+type SessionBriefHarnessBinding = {
+  workspaceId?: string | null;
+  harnessSlug?: string | null;
+};
+
+export async function readBriefHarnessBinding(
+  input: HarnessScopeInheritanceInput,
+  readBrief: (ownerId: string) => Promise<SessionBriefHarnessBinding | null>,
+): Promise<HarnessBindingRead> {
+  const ownerId = input.ownerId?.trim();
+  if (!ownerId) return {};
+  const brief = await readBrief(ownerId);
+  const harnessSlug = concreteHarness(brief?.harnessSlug);
+  if (!brief || !harnessSlug) return {};
+  const workspaceId = concreteWorkspace(input);
+  if (workspaceId && brief.workspaceId?.trim() && brief.workspaceId.trim() !== workspaceId) {
+    return {
+      harnesses: [harnessSlug],
+      refs: [ownerId],
+      stale: true,
+      detail: `session brief belongs to workspace ${brief.workspaceId}, not ${workspaceId}`,
+    };
+  }
+  return { harnesses: [harnessSlug], refs: [ownerId] };
+}
+
+export type InheritedHarnessScope =
+  | {
+      kind: 'harness';
+      slug: string;
+      source: InheritedHarnessSource;
+      candidates: HarnessScopeCandidate[];
+      conflictingBindings: HarnessScopeCandidate[];
+    }
+  | {
+      kind: 'all';
+      source: 'explicit';
+      candidates: HarnessScopeCandidate[];
+      conflictingBindings: HarnessScopeCandidate[];
+    }
+  | {
+      kind: 'none';
+      reason: 'missing' | 'ambiguous' | 'stale' | 'reader_error';
+      source?: InheritedHarnessSource;
+      candidates: HarnessScopeCandidate[];
+      conflictingBindings: HarnessScopeCandidate[];
+      detail?: string;
+    };
+
+function concreteHarness(value: string | null | undefined): string | null {
+  const slug = value?.trim();
+  return slug && !isAllHarnessSentinel(slug) ? slug : null;
+}
+
+function concreteWorkspace(input: HarnessScopeInheritanceInput): string | null {
+  return concreteHarness(input.workspaceId);
+}
+
+/**
+ * Production readers are loaded lazily so this foundational module does not import the
+ * coordination, scheduler, plan, and carry stores back into every synchronous caller.
+ * Tests inject small readers and exercise the decision independently of Postgres.
+ */
+export const defaultHarnessScopeInheritanceReaders: HarnessScopeInheritanceReaders = {
+  async claim(input) {
+    const { getActiveClaimForOwner } = await import('../work-item-claims');
+    return readClaimHarnessBinding(input, getActiveClaimForOwner);
+  },
+
+  async plan(input) {
+    const [{ getPresence }, { planHarnessesForSlugs }] = await Promise.all([
+      import('./coordination/presence'),
+      import('./plans/source'),
+    ]);
+    return readPlanHarnessBinding(input, getPresence, planHarnessesForSlugs);
+  },
+
+  async fleet(input) {
+    const { getClaimSpecRecord } = await import('../scheduler/claim-spec-store');
+    return readFleetHarnessBinding(input, getClaimSpecRecord);
+  },
+
+  async brief(input) {
+    const { getSessionBrief } = await import('../session-brief');
+    return readBriefHarnessBinding(input, (ownerId) => getSessionBrief({ ownerId }));
+  },
+};
+
+/**
+ * Resolve one concrete harness through the canonical precedence chain:
+ * explicit argument → live work-item claim → bound plan → fleet claim spec →
+ * durable session brief → session context.
+ *
+ * A binding reader is fail-closed: stale data, a thrown read, or more than one
+ * concrete candidate returns a typed non-resolution instead of falling through
+ * to a lower-precedence guess. The response always carries the candidates and
+ * conflicting bindings that made the decision.
+ */
+export async function resolveInheritedHarnessScope(
+  input: HarnessScopeInheritanceInput,
+  readers: HarnessScopeInheritanceReaders = defaultHarnessScopeInheritanceReaders,
+): Promise<InheritedHarnessScope> {
+  const explicit = input.explicitHarness?.trim();
+  if (explicit) {
+    if (isAllHarnessSentinel(explicit)) {
+      return { kind: 'all', source: 'explicit', candidates: [], conflictingBindings: [] };
+    }
+    const candidate = { source: 'explicit' as const, harnessSlug: explicit, refs: [] };
+    return {
+      kind: 'harness',
+      slug: explicit,
+      source: 'explicit',
+      candidates: [candidate],
+      conflictingBindings: [],
+    };
+  }
+
+  const candidates: HarnessScopeCandidate[] = [];
+  for (const source of ['claim', 'plan', 'fleet', 'brief'] as const) {
+    let read: HarnessBindingRead;
+    try {
+      read = await readers[source](input);
+    } catch (error) {
+      return {
+        kind: 'none',
+        reason: 'reader_error',
+        source,
+        candidates,
+        conflictingBindings: [],
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const refs = [...new Set((read.refs ?? []).map((ref) => ref.trim()).filter(Boolean))];
+    const sourceCandidates = [...new Set((read.harnesses ?? []).map(concreteHarness).filter((v): v is string => Boolean(v)))]
+      .map((harnessSlug) => ({ source, harnessSlug, refs }));
+    candidates.push(...sourceCandidates);
+    if (read.stale) {
+      return {
+        kind: 'none',
+        reason: 'stale',
+        source,
+        candidates,
+        conflictingBindings: sourceCandidates,
+        ...(read.detail ? { detail: read.detail } : {}),
+      };
+    }
+    if (sourceCandidates.length > 1) {
+      return {
+        kind: 'none',
+        reason: 'ambiguous',
+        source,
+        candidates,
+        conflictingBindings: sourceCandidates,
+        detail: `${source} binding resolves to multiple harnesses: ${sourceCandidates.map((c) => c.harnessSlug).join(', ')}`,
+      };
+    }
+    if (sourceCandidates.length === 1) {
+      const winner = sourceCandidates[0]!;
+      return {
+        kind: 'harness',
+        slug: winner.harnessSlug,
+        source,
+        candidates,
+        conflictingBindings: [],
+      };
+    }
+  }
+
+  const sessionHarness = concreteHarness(input.sessionHarness);
+  if (sessionHarness) {
+    const candidate = { source: 'session' as const, harnessSlug: sessionHarness, refs: [] };
+    candidates.push(candidate);
+    return {
+      kind: 'harness',
+      slug: sessionHarness,
+      source: 'session',
+      candidates,
+      conflictingBindings: [],
+    };
+  }
+  return { kind: 'none', reason: 'missing', candidates, conflictingBindings: [] };
+}
+
 /**
  * Resolve harness scope from an explicit per-call `harness` arg + the session
  * ctx. Precedence:

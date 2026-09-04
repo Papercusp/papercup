@@ -26,9 +26,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity } from '../identity';
-import { COORD_ROLES } from '../roles';
+import { defineTool, UnauthorizedToolError } from '@papercusp/agent-mcp';
+import { ADMIN_COORD_UI_OWNER, resolveAgentIdentity } from '../identity';
 import { openConversation } from '../conversations';
 import { hardText, LIMITS } from '../../limits';
 
@@ -46,7 +45,9 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  // Empty is an explicit deny-all role allowlist. The owner UI reaches the
+  // HTTP projection through the loopback, CSRF-guarded admin proxy instead.
+  agentRoles: [],
   args: z.object({
     question: hardText(LIMITS.ANNOTATION),
     to: z
@@ -59,6 +60,11 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    if (ctx.transport !== 'http' || identity.ownerId !== ADMIN_COORD_UI_OWNER) {
+      throw new UnauthorizedToolError(
+        'coord:ask is owner-UI-only; agents must use coord:send or coord:message-agent.',
+      );
+    }
     // `to` is schema-required (min 1), so a directed recipient always exists by
     // the time we get here. The old knowledge tier + force_open pair is gone:
     // a DIRECTED ask names a person, so knowledge must never answer on their

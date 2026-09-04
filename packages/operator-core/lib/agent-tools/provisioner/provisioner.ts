@@ -103,7 +103,7 @@ export const provisionerInstallTool = defineTool({
     "Plan + apply the provisioner flow: write the recommended backend's systemd user-unit + register it in the gateway's local-backend pool. Default: no start, no GPU touch — pass `start:true` to enable+start + health-check it (loads the model onto the GPU). `provisionBinary:true` (WI-1617) resolves a real `llama-server` binary first; `pullVllmImage:true` (WI-1618, vLLM combos only) pulls the pinned vLLM image first; `pullWeights:true` pulls missing llama-server weights first — each can take real minutes and fails the call outright rather than silently falling back. Returns {ok, plan, result:{wroteUnit,registered,started}}; `plan.blocked` non-null refuses the apply with `result.error`.",
   guidance: {
     when: 'Actually provisioning a local inference backend after reviewing provisioner:plan_install\'s output.',
-    notWhen: 'A GPU-resident process may already be running — check coord:presence / coord:ask before `start:true`. Config-write + registry-registration alone (start omitted/false) is always safe. To preview without committing to a download/build, use provisioner:plan_install.',
+    notWhen: 'A GPU-resident process may already be running — check coord:presence and send a directed coord:send when coordination is needed before `start:true`. Config-write + registry-registration alone (start omitted/false) is always safe. To preview without committing to a download/build, use provisioner:plan_install.',
     chaining: 'provisioner:plan_install (review) → provisioner:install (start:false default; add provisionBinary:true / pullVllmImage:true on first run) → once verified idle, provisioner:install again with start:true, or start the unit manually.',
     seeAlso: ['provisioner:plan_install', 'gateway:local_backend_list', 'gateway:local_backend_register'],
   },
@@ -115,7 +115,7 @@ export const provisionerInstallTool = defineTool({
       .boolean()
       .optional()
       .describe(
-        'Also enable+start the systemd unit and health-check it. Default false. WARNING: true loads the recommended model onto the GPU — confirm via coord:presence/coord:ask that nothing else needs the card first.',
+        'Also enable+start the systemd unit and health-check it. Default false. WARNING: true loads the recommended model onto the GPU — check coord:presence and coordinate directly via coord:send first.',
       ),
     provisionBinary: z
       .boolean()

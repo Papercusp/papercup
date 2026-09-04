@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AUTO_AFFINITY_TTL_MS,
   CONTEXT_1M_STICKY_MIN_EST_TOKENS,
+  accumulateGatewayRouteUsage,
   hasContext1mBeta,
   nativeSessionIdFromMetaUserId,
   shouldRestoreContext1m,
@@ -16,6 +17,32 @@ import {
 import { CLAUDE_CONTEXT_1M_BETA, withOAuthBeta } from './credential-store';
 
 const NATIVE = 'da701a71-7e45-4018-bb76-cca675de0cfd';
+
+describe('accumulateGatewayRouteUsage — observed prompt floor', () => {
+  const sample = (inputTotal: number) => ({
+    inputTotal,
+    inputTokens: 10,
+    cacheRead: inputTotal - 20,
+    cacheCreate: 10,
+  });
+
+  it('records the first exact total as the observed floor', () => {
+    expect(accumulateGatewayRouteUsage(null, sample(168_100), 10)).toEqual({
+      ...sample(168_100),
+      observedInputFloor: 168_100,
+      observations: 1,
+      at: 10,
+    });
+  });
+
+  it('keeps the minimum across samples while the latest exact usage advances', () => {
+    const first = accumulateGatewayRouteUsage(null, sample(168_100), 10);
+    const grown = accumulateGatewayRouteUsage(first, sample(199_236), 20);
+    const smaller = accumulateGatewayRouteUsage(grown, sample(167_686), 30);
+    expect(grown).toMatchObject({ inputTotal: 199_236, observedInputFloor: 168_100, observations: 2, at: 20 });
+    expect(smaller).toMatchObject({ inputTotal: 167_686, observedInputFloor: 167_686, observations: 3, at: 30 });
+  });
+});
 
 describe('hasContext1mBeta — the served window is the HEADER, not the body marker', () => {
   it('sees the CLI’s client-side [1m] resolution (bare model id + beta header)', () => {

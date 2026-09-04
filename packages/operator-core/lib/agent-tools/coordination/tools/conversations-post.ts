@@ -22,9 +22,9 @@ export default defineTool({
     'Start a discussion (open-ended) or append a reply to an existing conversation. Omit conversation_id and its id alias to start a new discussion tagged with topics; pass either key to reply (conversation_id wins when both are supplied). Replies fan out to the conversation\'s subscribers.',
   guidance: {
     when:
-      'Open-ended coordination with no single answer ("how should we approach X?"), or contributing to an existing thread via conversation_id (or its id alias). For a question that wants an answer, use coord:ask instead.',
+      'Open-ended coordination with no single answer ("how should we approach X?"), or contributing to an existing thread via conversation_id (or its id alias). For a directed peer question, use coord:send with expects:"answer" or coord:message-agent for a durable thread.',
     notWhen:
-      'A factual question → coord:ask (it tries knowledge first). To accept an answer + close a question → conversations:resolve.',
+      'A quick directed question → coord:send with expects:"answer". To accept an answer + close a question → conversations:resolve.',
     chaining:
       'conversations:post (start) → others conversations:post (reply) / conversations:join. conversations:get to read the thread.',
     seeAlso: [

@@ -28,7 +28,12 @@ vi.mock('../scorecards', () => ({
 // against a local copy that had already drifted. It is a pure predicate in a leaf
 // module, so using the real one costs nothing.
 
-import { readReleaseReadiness, RELEASE_READINESS_RUBRIC_ID } from './learning-release-readiness-read';
+import {
+  deriveReleaseReadinessPassConfidence,
+  readReleaseReadiness,
+  RELEASE_READINESS_PASS_CONFIDENCE_POLICY,
+  RELEASE_READINESS_RUBRIC_ID,
+} from './learning-release-readiness-read';
 
 const sampleReport = {
   criteria: [
@@ -270,7 +275,9 @@ describe('readReleaseReadiness', () => {
 
       expect(ev?.excluded).toEqual({ provisional: 1, gradingAuditPending: 0 });
       // The invariant the one-bucket rule exists for: excluded + admitted == the page.
-      expect((ev?.excluded.provisional ?? 0) + (ev?.excluded.gradingAuditPending ?? 0) + (ev?.sampleCount ?? 0)).toBe(2);
+      expect((ev?.excluded.provisional ?? 0) + (ev?.excluded.gradingAuditPending ?? 0) + (ev?.sampleCount ?? 0)).toBe(
+        2,
+      );
     });
 
     /**
@@ -379,6 +386,98 @@ describe('readReleaseReadiness', () => {
         windowEnd: null,
         latestAgeMs: null,
         latestGenerationFreshness: null,
+      });
+    });
+  });
+
+  describe('pass confidence spans repeated, distinct generations (EI-18770861086528737)', () => {
+    const card = (id: number, rating: string, generation?: { code: string; startedAt: string }) => ({
+      createdAt: `2026-07-${String(id).padStart(2, '0')}T00:00:00.000Z`,
+      ratings: { 'cycle-error-rate': { rating } },
+      ...(generation
+        ? {
+            gradedGeneration: {
+              bootHeadSha: generation.code,
+              hostStartedAt: generation.startedAt,
+            },
+          }
+        : {}),
+    });
+
+    it('keeps a single positive observation machine-readable as provisional-pass', () => {
+      const result = deriveReleaseReadinessPassConfidence([
+        card(3, 'pass', { code: 'aaaaaaa', startedAt: '2026-07-03T00:00:00.000Z' }),
+      ]);
+
+      expect(result.policy).toEqual(RELEASE_READINESS_PASS_CONFIDENCE_POLICY);
+      expect(result.criteria['cycle-error-rate']).toMatchObject({
+        latestRating: 'pass',
+        verdict: 'provisional-pass',
+        consecutivePassObservations: 1,
+        distinctGenerationCount: 1,
+        unwatermarkedPassObservations: 0,
+      });
+    });
+
+    it('promotes only three consecutive positives spanning at least two generation identities', () => {
+      const result = deriveReleaseReadinessPassConfidence([
+        card(5, 'pass', { code: 'bbbbbbb', startedAt: '2026-07-05T00:00:00.000Z' }),
+        card(4, 'pass', { code: 'bbbbbbb', startedAt: '2026-07-05T00:00:00.000Z' }),
+        card(3, 'pass', { code: 'aaaaaaa', startedAt: '2026-07-03T00:00:00.000Z' }),
+      ]);
+
+      expect(result.criteria['cycle-error-rate']).toMatchObject({
+        verdict: 'pass',
+        consecutivePassObservations: 3,
+        distinctGenerationCount: 2,
+        oldestSupportingObservationAt: '2026-07-03T00:00:00.000Z',
+      });
+    });
+
+    it('does not let repeated ticks from one generation masquerade as cross-generation confidence', () => {
+      const generation = { code: 'aaaaaaa', startedAt: '2026-07-03T00:00:00.000Z' };
+      const result = deriveReleaseReadinessPassConfidence([
+        card(5, 'pass', generation),
+        card(4, 'pass', generation),
+        card(3, 'pass', generation),
+      ]);
+
+      expect(result.criteria['cycle-error-rate']).toMatchObject({
+        verdict: 'provisional-pass',
+        consecutivePassObservations: 3,
+        distinctGenerationCount: 1,
+      });
+    });
+
+    it('resets the proof when the newest settled rating is no longer positive', () => {
+      const result = deriveReleaseReadinessPassConfidence([
+        card(6, 'at-risk', { code: 'ccccccc', startedAt: '2026-07-06T00:00:00.000Z' }),
+        card(5, 'pass', { code: 'bbbbbbb', startedAt: '2026-07-05T00:00:00.000Z' }),
+        card(4, 'pass', { code: 'bbbbbbb', startedAt: '2026-07-05T00:00:00.000Z' }),
+        card(3, 'pass', { code: 'aaaaaaa', startedAt: '2026-07-03T00:00:00.000Z' }),
+      ]);
+
+      expect(result.criteria['cycle-error-rate']).toMatchObject({
+        latestRating: 'at-risk',
+        verdict: 'not-passing',
+        consecutivePassObservations: 0,
+        distinctGenerationCount: 0,
+      });
+    });
+
+    it('surfaces unstamped positive observations but never counts them as distinct generations', async () => {
+      listScorecardPage.mockResolvedValue({
+        rows: [card(5, 'pass'), card(4, 'pass'), card(3, 'pass')],
+        hasMore: false,
+      });
+
+      const snap = await readReleaseReadiness();
+
+      expect(snap.rubric?.scoreEvidence?.passConfidence.criteria['cycle-error-rate']).toMatchObject({
+        verdict: 'provisional-pass',
+        consecutivePassObservations: 3,
+        distinctGenerationCount: 0,
+        unwatermarkedPassObservations: 3,
       });
     });
   });

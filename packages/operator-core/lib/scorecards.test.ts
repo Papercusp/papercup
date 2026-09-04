@@ -7,9 +7,9 @@
  * excluded as unassessable.
  */
 import { describe, it, expect } from 'vitest';
-import { computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale } from './scorecards';
+import { computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale } from './scorecards';
 import type { Rubric } from './rubrics';
-import type { CriterionTrend } from './scorecards';
+import type { CriterionTrend, ScorecardReleaseGateSnapshot } from './scorecards';
 
 // EI-12147: the graded-generation stamp's read-side validator — a scorecard row must
 // surface WHICH generation it graded, and a malformed/pre-stamp payload must degrade.
@@ -169,6 +169,123 @@ describe('scorecardEvidenceFingerprint (EI-12459)', () => {
     const withRecipe = scorecardEvidenceFingerprint({ rubricRef: 'r', ratings, rerunRecipe: recipe });
     expect(withRecipe).not.toBe(legacy);
     expect(scorecardEvidenceFingerprint({ rubricRef: 'r', ratings, rerunRecipe: recipe })).toBe(withRecipe);
+  });
+
+  it('includes testedSha in release evidence identity while preserving legacy hashes when absent', () => {
+    const ratings = { a: { rating: 'PASS', evidence: 'same drill output' } };
+    const legacy = scorecardEvidenceFingerprint({ rubricRef: 'r', ratings });
+    const atA = scorecardEvidenceFingerprint({ rubricRef: 'r', ratings, testedSha: 'aaaaaaa111111' });
+    const atB = scorecardEvidenceFingerprint({ rubricRef: 'r', ratings, testedSha: 'bbbbbbb222222' });
+
+    expect(atA).not.toBe(legacy);
+    expect(atB).not.toBe(atA);
+    expect(scorecardEvidenceFingerprint({ rubricRef: 'r', ratings, testedSha: 'aaaaaaa111111' })).toBe(atA);
+  });
+});
+
+describe('evaluateScorecardReleaseGateBinding (EI-18706603928993591)', () => {
+  const snapshot = (over: Record<string, unknown> = {}): ScorecardReleaseGateSnapshot => ({
+    generatedAtMs: Date.parse('2026-09-04T16:00:00.000Z'),
+    gate: {
+      countersUnknown: null,
+      recordedVerdict: 'green' as const,
+      verdictStale: false,
+      verdictStaleReason: null,
+      fireStale: false,
+      fireStaleReason: null,
+      consecutiveNoVerdict: 0,
+      inconclusive: null,
+      observedCandidate: 'abcdef123456',
+      failingTests: [],
+      ...((over.gate as Record<string, unknown> | undefined) ?? {}),
+    },
+    deploy: {
+      greenPin: { sha: 'abcdef1234567890' },
+      stagingHead: { sha: 'abcdef1234567890' },
+      greenPinBehindStaging: 0,
+      ...((over.deploy as Record<string, unknown> | undefined) ?? {}),
+    },
+  }) as ScorecardReleaseGateSnapshot;
+
+  it('binds a short tested SHA only when the same commit is green, current, and at staging HEAD', () => {
+    expect(
+      evaluateScorecardReleaseGateBinding({
+        testedSha: 'abcdef1',
+        snapshot: snapshot(),
+      }),
+    ).toMatchObject({
+      status: 'bound',
+      testedSha: 'abcdef1',
+      gateVerdict: 'green',
+      gateCandidate: 'abcdef123456',
+      lastGreenCommit: 'abcdef1234567890',
+      stagingHead: 'abcdef1234567890',
+      commitsBehindHead: 0,
+    });
+  });
+
+  it('returns the stale-pass sentinel with the gate red reason and failing tests', () => {
+    expect(
+      evaluateScorecardReleaseGateBinding({
+        testedSha: 'abcdef1',
+        snapshot: snapshot({
+          gate: { recordedVerdict: 'not-green', failingTests: ['lint:tsc'] },
+          deploy: { greenPinBehindStaging: 23 },
+        }),
+      }),
+    ).toMatchObject({
+      status: 'stale-pass-blocked',
+      reasonCode: 'gate-not-green',
+      commitsBehindHead: 23,
+      failingTests: ['lint:tsc'],
+      reason: expect.stringContaining('lint:tsc'),
+    });
+  });
+
+  it('blocks a green-tested commit once staging HEAD advances beyond it', () => {
+    expect(
+      evaluateScorecardReleaseGateBinding({
+        testedSha: 'abcdef1',
+        snapshot: snapshot({
+          deploy: {
+            greenPin: { sha: 'abcdef1234567890' },
+            stagingHead: { sha: '9999999fedcba' },
+            greenPinBehindStaging: 4,
+          },
+        }),
+      }),
+    ).toMatchObject({
+      status: 'stale-pass-blocked',
+      reasonCode: 'tested-sha-behind-head',
+      commitsBehindHead: 4,
+    });
+  });
+
+  it('blocks missing SHA bindings and no-verdict gate runs instead of trusting an older green', () => {
+    expect(
+      evaluateScorecardReleaseGateBinding({ testedSha: null, snapshot: snapshot() }),
+    ).toMatchObject({ status: 'stale-pass-blocked', reasonCode: 'tested-sha-required' });
+
+    expect(
+      evaluateScorecardReleaseGateBinding({
+        testedSha: 'abcdef1',
+        snapshot: snapshot({ gate: { consecutiveNoVerdict: 2 } }),
+      }),
+    ).toMatchObject({ status: 'stale-pass-blocked', reasonCode: 'gate-no-verdict' });
+  });
+
+  it('blocks an unmeasured gate even when its compatibility fields look green', () => {
+    expect(
+      evaluateScorecardReleaseGateBinding({
+        testedSha: 'abcdef1',
+        snapshot: snapshot({
+          gate: {
+            countersUnknown: { status: 'unknown', reason: 'not-measured' },
+            recordedVerdict: 'green',
+          },
+        }),
+      }),
+    ).toMatchObject({ status: 'stale-pass-blocked', reasonCode: 'gate-counters-unknown' });
   });
 });
 

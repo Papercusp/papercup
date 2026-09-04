@@ -994,16 +994,25 @@ export default defineTool({
     } | null = null;
     if (enabled && cfg.cooldownResource) {
       const cd = cfg.cooldownResource;
-      const cooldown = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-        tryAcquireResource(tx, {
-          coordinationDomain,
-          resource: cd,
-          mode: 'exclusive',
-          owner: ownerId,
-          ownerLabel,
-          reason: `${target} restart cooldown (WI-4221 / EI-10896)`,
-          ttlSec: cooldownSec,
-        }),
+      // EI-21998059463131681: the cooldown marker is the first staging
+      // mutation, so its workspace advisory-lock transaction is exposed
+      // directly to same-workspace contention. A single 57014/55P03 here
+      // used to abort the restart before it reached the resource drain,
+      // even though the contention was transient and the next attempt could
+      // proceed. Retry the whole transaction so every attempt gets a fresh
+      // connection/transaction after the failed one has rolled back.
+      const cooldown = await acquireWithContentionRetry(() =>
+        inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
+          tryAcquireResource(tx, {
+            coordinationDomain,
+            resource: cd,
+            mode: 'exclusive',
+            owner: ownerId,
+            ownerLabel,
+            reason: `${target} restart cooldown (WI-4221 / EI-10896)`,
+            ttlSec: cooldownSec,
+          }),
+        ),
       );
       if (!cooldown.ok) {
         const holder = cooldown.holders.find((h) => h.mode === 'exclusive');

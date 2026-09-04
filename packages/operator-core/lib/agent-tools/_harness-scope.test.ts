@@ -2,7 +2,7 @@
  * Unit tests for the explicit harness-scope resolver (_harness-scope.ts).
  * Pure function — covers the arg/ctx precedence + the '*'-as-no-choice rule.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { HarnessRequiredError } from '@papercusp/agent-mcp';
 import {
   harnessRequiredResult,
@@ -12,8 +12,16 @@ import {
   isEngineeringDocsSentinel,
   resolveConcreteHarnessSlug,
   resolveHarnessScope,
+  resolveInheritedHarnessScope,
   stripCallerOperatorScope,
 } from './_harness-scope';
+
+const emptyReaders = () => ({
+  claim: vi.fn(async () => ({})),
+  plan: vi.fn(async () => ({})),
+  fleet: vi.fn(async () => ({})),
+  brief: vi.fn(async () => ({})),
+});
 
 describe('isAllHarnessSentinel', () => {
   it('treats * and all (any case) as the sentinel', () => {
@@ -100,6 +108,71 @@ describe('resolveHarnessScope', () => {
 
   it('trims whitespace on the arg', () => {
     expect(resolveHarnessScope('  restart  ', null)).toEqual({ kind: 'harness', slug: 'restart' });
+  });
+});
+
+describe('resolveInheritedHarnessScope (P-006)', () => {
+  it('uses the canonical precedence and stops after the first usable binding', async () => {
+    const readers = emptyReaders();
+    readers.claim.mockResolvedValue({ harnesses: ['claimed'], refs: ['WI-1'] });
+    readers.plan.mockResolvedValue({ harnesses: ['planned'] });
+
+    const result = await resolveInheritedHarnessScope(
+      { ownerId: 'su-1', workspaceId: 'ws-1', sessionHarness: 'session' },
+      readers,
+    );
+
+    expect(result).toMatchObject({ kind: 'harness', slug: 'claimed', source: 'claim' });
+    expect(readers.claim).toHaveBeenCalledOnce();
+    expect(readers.plan).not.toHaveBeenCalled();
+    expect(readers.fleet).not.toHaveBeenCalled();
+  });
+
+  it('lets an explicit harness win without consulting durable readers', async () => {
+    const readers = emptyReaders();
+    const result = await resolveInheritedHarnessScope(
+      { explicitHarness: ' explicit ', sessionHarness: 'session' },
+      readers,
+    );
+    expect(result).toMatchObject({ kind: 'harness', slug: 'explicit', source: 'explicit' });
+    expect(readers.claim).not.toHaveBeenCalled();
+  });
+
+  it('falls through claim, plan, fleet, and brief before using session context', async () => {
+    const readers = emptyReaders();
+    const result = await resolveInheritedHarnessScope({ sessionHarness: 'session' }, readers);
+    expect(result).toMatchObject({ kind: 'harness', slug: 'session', source: 'session' });
+    expect(readers.claim).toHaveBeenCalledOnce();
+    expect(readers.plan).toHaveBeenCalledOnce();
+    expect(readers.fleet).toHaveBeenCalledOnce();
+    expect(readers.brief).toHaveBeenCalledOnce();
+  });
+
+  it('fails deterministically with every conflicting candidate instead of guessing', async () => {
+    const readers = emptyReaders();
+    readers.plan.mockResolvedValue({ harnesses: ['alpha', 'beta', 'alpha'], refs: ['plan-a'] });
+    const result = await resolveInheritedHarnessScope({}, readers);
+    expect(result).toMatchObject({ kind: 'none', reason: 'ambiguous', source: 'plan' });
+    expect(result.conflictingBindings.map((binding) => binding.harnessSlug)).toEqual(['alpha', 'beta']);
+    expect(result.candidates).toEqual(result.conflictingBindings);
+    expect(readers.fleet).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on stale bindings and reader errors instead of falling through', async () => {
+    const staleReaders = emptyReaders();
+    staleReaders.claim.mockResolvedValue({ harnesses: ['old'], stale: true, refs: ['WI-old'] });
+    await expect(resolveInheritedHarnessScope({ sessionHarness: 'session' }, staleReaders))
+      .resolves.toMatchObject({ kind: 'none', reason: 'stale', source: 'claim' });
+
+    const errorReaders = emptyReaders();
+    errorReaders.plan.mockRejectedValue(new Error('plan index unavailable'));
+    await expect(resolveInheritedHarnessScope({ sessionHarness: 'session' }, errorReaders))
+      .resolves.toMatchObject({ kind: 'none', reason: 'reader_error', source: 'plan', detail: 'plan index unavailable' });
+  });
+
+  it('keeps the explicit all sentinel distinct from one-harness inference', async () => {
+    const result = await resolveInheritedHarnessScope({ explicitHarness: 'all' }, emptyReaders());
+    expect(result).toEqual({ kind: 'all', source: 'explicit', candidates: [], conflictingBindings: [] });
   });
 });
 

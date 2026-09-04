@@ -106,7 +106,7 @@ test('C4 coordination-call measurement — counts inter-agent comms, NOT work-ac
   // counts: direct messaging (coord:*), broadcast (topics:*), hand-off, blackboard reads/writes
   // ('messages:send' dropped — work-item mail surface retired 2026-07-26, WI-6097.
   //  work_items:comment is its replacement and is already counted below.)
-  for (const t of ['coord:send', 'coord:ask', 'coord:emit', 'topics:feed', 'topics:subscribe', 'work_items:comment', 'work_items:amend', 'work_items:observe']) {
+  for (const t of ['coord:send', 'coord:message-agent', 'coord:emit', 'topics:feed', 'topics:subscribe', 'work_items:comment', 'work_items:amend', 'work_items:observe']) {
     assert.equal(isCoordinationToolCall(t), true, `${t} is coordination`);
   }
   // does NOT count: self-claim / work acquisition (present even in the no-coordination arm) + plain work

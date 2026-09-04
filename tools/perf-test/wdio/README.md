@@ -46,8 +46,9 @@ binary via WebDriver, and runs `specs/*.spec.ts`:
 - `smoke.spec.ts` — boots the app, waits for the operator UI to mount, injects
   `web-vitals`, and reports INP/LCP/CLS after 10s.
 - `plan-popup-open.perf.spec.ts` — drives the REAL "open a plan" interaction
-  (sidebar Plans face → row click → plan body rendered in Vditor) and asserts
-  the page-relative `plan-popup-open` `performance.measure` against its budget
+  (sidebar Plans face → row → dashboard → Open full plan → body rendered in
+  Vditor), requires the truth-gated Vditor/Lute warm-up mark, and asserts the
+  page-relative `plan-popup-open` `performance.measure` against its budget
   (mirrors `DESKTOP_PERF_BUDGETS`; the fresh-harness fix for
   EI-18128922194224210).
 

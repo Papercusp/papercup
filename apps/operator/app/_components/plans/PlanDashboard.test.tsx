@@ -40,7 +40,7 @@ const {
   },
   launchAgentSpy: vi.fn(async (_a?: unknown) => ({ ok: true as const })),
   beginInteractionSpy: vi.fn(),
-  preloadVditorSpy: vi.fn(() => Promise.resolve()),
+  preloadVditorSpy: vi.fn(() => Promise.resolve(true)),
   toastSpies: { success: vi.fn(), error: vi.fn() },
   cleanupFlag: { value: true },
 }));
@@ -295,10 +295,28 @@ afterEach(() => {
 });
 
 describe('PlanDashboard header', () => {
-  it('warms Vditor when the independently deep-linkable dashboard mounts', () => {
+  it('marks Vditor ready only after the independently deep-linkable dashboard warms it', async () => {
+    const mark = vi.fn();
+    const clearMarks = vi.fn();
+    vi.stubGlobal('performance', { mark, clearMarks });
     seed();
     renderDash();
     expect(preloadVditorSpy).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(clearMarks).toHaveBeenCalledWith('plan-dashboard-vditor-ready-success-v1');
+      expect(mark).toHaveBeenCalledWith('plan-dashboard-vditor-ready-success-v1');
+    });
+  });
+
+  it('does not publish warm readiness when the Vditor preload attempt fails', async () => {
+    const mark = vi.fn();
+    vi.stubGlobal('performance', { mark, clearMarks: vi.fn() });
+    preloadVditorSpy.mockResolvedValueOnce(false);
+    seed();
+    renderDash();
+    await waitFor(() => expect(preloadVditorSpy).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(mark).not.toHaveBeenCalled();
   });
 
   it('renders title, bucket, ✎/⚒ meta, progress and the needs-you line', () => {

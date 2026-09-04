@@ -770,7 +770,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   ],
 
   // ── Learning-tab push audit stragglers (WI-6182) ─────────────────
-  // These are low-churn content/state relations. Migration 1000 attaches the
+  // These are low-churn content/state relations. Migration 1108 attaches the
   // generic change trigger (with a learning-row predicate for routines), so a
   // raw-SQL or federated writer cannot bypass the same push contract.
   'harness_shared.scout_lens_weights': ['learning.retain'],

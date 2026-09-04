@@ -433,6 +433,49 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
 });
 
 /**
+ * WI-2144309 / design-to-code-coverage-seam P-027 — the persistent venue is
+ * deliberately expensive enough that it must be selected by a narrow guard,
+ * not folded into every operator-core run. The integration test proves the
+ * writer; these assertions prove the runner actually reaches it, and only for
+ * inputs capable of breaking attribution.
+ */
+const COVERAGE_ATTRIBUTION_VENUE_SCRIPT = 'test:coverage-attribution-venue';
+const COVERAGE_ATTRIBUTION_VENUE_TASK = `${HOST_WORKSPACE} :: ${COVERAGE_ATTRIBUTION_VENUE_SCRIPT}`;
+const COVERAGE_ATTRIBUTION_VENUE_PATH =
+  'packages/operator-core/lib/coverage-census/attribution/persistence-venue.integration.test.ts';
+const COVERAGE_ATTRIBUTION_UNRELATED_PATH = 'packages/operator-core/lib/why-chain.ts';
+
+describe('affected-tests: persistent coverage-attribution venue guard (WI-2144309)', () => {
+  it.each([COVERAGE_ATTRIBUTION_VENUE_PATH, 'scripts/affected-tests.mjs'])(
+    'attaches the venue for an owned input: %s',
+    (changedPath) => {
+      expect(
+        dryTasks(changedPath),
+        `${changedPath} can break the persistence venue or its selection; the dedicated ` +
+          'integration task must be present even when operator-core is already affected',
+      ).toContain(COVERAGE_ATTRIBUTION_VENUE_TASK);
+    },
+  );
+
+  it('does NOT attach the database venue to unrelated operator-core source', () => {
+    expect(
+      dryTasks(COVERAGE_ATTRIBUTION_UNRELATED_PATH),
+      'the venue has a measured database cost and must not become an all-operator-core tax',
+    ).not.toContain(COVERAGE_ATTRIBUTION_VENUE_TASK);
+  });
+
+  it('keeps the venue script defined, so selection cannot silently no-op', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    const script = pkg.scripts?.[COVERAGE_ATTRIBUTION_VENUE_SCRIPT];
+    expect(script, 'affected-tests only queues guards whose workspace script exists').toBeTruthy();
+    expect(script).toContain('PAPERCUSP_TEST_ATTRIBUTION=1');
+    expect(script).toContain('persistence-venue.integration.test.ts');
+  });
+});
+
+/**
  * EI-21618443971639284 — committed generated su.md projections must not silently
  * fall behind the canonical base persona. The guard is deliberately registered
  * without a hostSuiteRatchet: this exact-byte check is a repo-root artifact

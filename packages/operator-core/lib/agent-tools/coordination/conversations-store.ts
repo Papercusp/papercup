@@ -45,7 +45,7 @@ export const CONVERSATION_KINDS: readonly ConversationKind[] = ['question', 'dis
  * stay enumerable for the group-by this exists to serve. Names are the
  * USER-FACING tool names: note the coord-op internally registered as
  * `coord:ask` is exposed as the agent tool `coord:ask-owner`, and is distinct
- * from the agent-to-agent `coord:ask` in tools/ask.ts (coord-ops/agent-tools.ts:101).
+ * from the owner-UI-only `coord:ask` backend in tools/ask.ts.
  */
 export type ConversationProducer =
   | 'coord:ask-owner'

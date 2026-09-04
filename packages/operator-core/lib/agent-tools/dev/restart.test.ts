@@ -81,6 +81,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 });
 
 import { tryAcquireResource, tryReleaseResource } from '../locks/su-lock-store';
+import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { guardResource, type FenceToken, type GuardOutcome, type GuardSpec } from '../locks/resource-lock-guard';
 import { spawn } from 'node:child_process';
 import { probeServiceStart } from './systemd-service-probe';
@@ -99,6 +100,7 @@ import { mockImplementationTyped, mockResolvedOnceTyped, mockResolvedTyped } fro
 
 const acquireM = vi.mocked(tryAcquireResource);
 const releaseM = vi.mocked(tryReleaseResource);
+const workspaceTxnM = vi.mocked(inWorkspaceTxn);
 const guardM = vi.mocked(guardResource);
 const spawnM = vi.mocked(spawn);
 const probeM = vi.mocked(probeServiceStart);
@@ -1136,6 +1138,34 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     expect(auditUnsafeM).toHaveBeenCalledTimes(1);
     const details = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
     expect(details).toMatchObject({ target: 'staging', viaEnv: true, viaAuthorizeArg: false, reason: null });
+  });
+
+  it('retries transient workspace contention while acquiring the staging cooldown marker', async () => {
+    acquireM.mockResolvedValue({
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-RETRY',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 22,
+    } as never);
+    guardM.mockImplementation(runGuard(fenceOk(22)) as never);
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9999 });
+    workspaceTxnM.mockRejectedValueOnce(
+      Object.assign(new Error('workspace lock timed out'), {
+        name: 'WorkspaceContendedError',
+        pgCode: '57014',
+      }),
+    );
+
+    const b = body(await call({ confirm: true, target: 'staging' }));
+
+    expect(b).toMatchObject({ ok: true, target: 'staging', restarted: true, drained: true });
+    expect(workspaceTxnM).toHaveBeenCalledTimes(2);
+    expect(acquireM).toHaveBeenCalledTimes(1);
+    expect(guardM).toHaveBeenCalledTimes(1);
+    expect(spawnM).toHaveBeenCalledTimes(1);
   });
 
   it('staging restart bypasses the git-sync probe and workspace barrier', async () => {

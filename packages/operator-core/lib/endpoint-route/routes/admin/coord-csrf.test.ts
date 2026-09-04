@@ -120,6 +120,16 @@ describe('coordination proxy — CSRF backstop (WI-6486)', () => {
     } as never)) as Response;
     expect(res.status).not.toBe(404);
   });
+
+  it('still exposes coord:ask through the owner UI proxy', async () => {
+    // Missing required args fails at the tool schema (400), proving the proxy
+    // reached the UI-only handler instead of rejecting/omitting the verb.
+    const req = post('/admin/coordination/coord/ask', null, {});
+    const res = (await coordination.handler(req as never, {
+      params: { group: 'coord', verb: 'ask' },
+    } as never)) as Response;
+    expect(res.status).toBe(400);
+  });
 });
 
 /**

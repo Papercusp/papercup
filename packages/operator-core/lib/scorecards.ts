@@ -36,6 +36,7 @@ import {
   type ScorecardGradingAudit,
   type ScorecardProvisional,
   type ScorecardVetting,
+  type ScorecardReleaseGateBinding,
   type SpecTestAdequacyRerunRecipe,
 } from './harness/improvements/observation-types';
 import {
@@ -95,6 +96,7 @@ export function scorecardEvidenceFingerprint(input: {
   instrumentSnapshots?: Record<string, ScorecardInstrumentSnapshot>;
   acceptance?: ScorecardAcceptance;
   rerunRecipe?: SpecTestAdequacyRerunRecipe;
+  testedSha?: string;
 }): string {
   // Keep the pre-D-001 byte shape unchanged when no acceptance verdict exists,
   // so historical stored fingerprints remain comparable without a migration.
@@ -107,6 +109,10 @@ export function scorecardEvidenceFingerprint(input: {
   // Preserve every historical fingerprint when the optional replay contract is absent,
   // while making a persisted spec-test-adequacy recipe part of the scorecard identity.
   if (input.rerunRecipe) material.rerunRecipe = input.rerunRecipe;
+  // EI-18706603928993591: a release grade against a different tested commit is
+  // different evidence even when its prose ratings and instrument values match.
+  // Keep historical hashes byte-stable by adding the field only when supplied.
+  if (input.testedSha) material.testedSha = input.testedSha;
   return createHash('sha256').update(canonicalJson(material)).digest('hex');
 }
 
@@ -128,6 +134,178 @@ function expectedInstrumentVerdict(rating: string): ScorecardInstrumentSnapshot[
   if (['fail', 'broken', 'red', 'bad', 'no', 'severe'].includes(key)) return 'fail';
   if (key === 'unknown') return 'unknown';
   return null;
+}
+
+/** True when at least one criterion claims a positive/pass-like verdict. */
+export function scorecardRatingsClaimPass(ratings: ObservationRatings): boolean {
+  return Object.values(ratings).some((entry) => expectedInstrumentVerdict(entry.rating) === 'pass');
+}
+
+/** The small live-pipeline slice needed to bind a positive release scorecard. */
+export interface ScorecardReleaseGateSnapshot {
+  generatedAtMs: number;
+  gate: {
+    /**
+     * The pipeline writer distinguishes a measured zero-red state from a
+     * defaulted zero whose counters were absent. A release proof must preserve
+     * that distinction: an unmeasured gate is not green evidence.
+     */
+    countersUnknown?: unknown | null;
+    recordedVerdict: 'green' | 'not-green' | null;
+    verdictStale: boolean;
+    verdictStaleReason: string | null;
+    fireStale: boolean;
+    fireStaleReason: string | null;
+    consecutiveNoVerdict: number;
+    inconclusive: { status: string; detail: string | null } | null;
+    observedCandidate: string | null;
+    failingTests: string[];
+  };
+  deploy: {
+    greenPin: { sha: string } | null;
+    stagingHead: { sha: string } | null;
+    greenPinBehindStaging: number | null;
+  };
+}
+
+function scorecardShaMatches(a: string | null | undefined, b: string | null | undefined): boolean {
+  const left = a?.trim().toLowerCase() ?? '';
+  const right = b?.trim().toLowerCase() ?? '';
+  if (left.length < 7 || right.length < 7) return false;
+  return left.startsWith(right) || right.startsWith(left);
+}
+
+/**
+ * Bind a pass-claiming release scorecard to the exact commit the authoritative
+ * gate proved green. The current staging HEAD is part of the proof: a drill run
+ * against yesterday's green pin cannot paint today's release rubric green.
+ */
+export function evaluateScorecardReleaseGateBinding(input: {
+  testedSha?: string | null;
+  snapshot: ScorecardReleaseGateSnapshot;
+}): ScorecardReleaseGateBinding {
+  const testedSha = input.testedSha?.trim() || null;
+  const { gate, deploy } = input.snapshot;
+  const checkedAt = Number.isFinite(input.snapshot.generatedAtMs)
+    ? new Date(input.snapshot.generatedAtMs).toISOString()
+    : new Date().toISOString();
+  const base = {
+    checkedAt,
+    testedSha,
+    gateVerdict: gate.recordedVerdict,
+    gateCandidate: gate.observedCandidate,
+    lastGreenCommit: deploy.greenPin?.sha ?? null,
+    stagingHead: deploy.stagingHead?.sha ?? null,
+    commitsBehindHead: deploy.greenPinBehindStaging,
+    failingTests: gate.failingTests,
+  };
+  const blocked = (reasonCode: string, reason: string): ScorecardReleaseGateBinding => ({
+    status: 'stale-pass-blocked',
+    reasonCode,
+    reason,
+    ...base,
+  });
+
+  if (!testedSha) {
+    return blocked(
+      'tested-sha-required',
+      'positive ratings on a release-gating rubric require testedSha so the gate and drill can be bound to one commit',
+    );
+  }
+  if (gate.countersUnknown) {
+    return blocked(
+      'gate-counters-unknown',
+      'the release-gate counters are unmeasured; its displayed colour cannot authorize a scorecard pass',
+    );
+  }
+  if (gate.inconclusive) {
+    return blocked(
+      'gate-inconclusive',
+      `the latest gate run produced no code verdict (${gate.inconclusive.status})${
+        gate.inconclusive.detail ? `: ${gate.inconclusive.detail}` : ''
+      }`,
+    );
+  }
+  if (gate.consecutiveNoVerdict > 0) {
+    return blocked(
+      'gate-no-verdict',
+      `the gate has ${gate.consecutiveNoVerdict} consecutive run(s) without a verdict; its older colour cannot authorize a pass`,
+    );
+  }
+  if (gate.verdictStale) {
+    return blocked('gate-verdict-stale', gate.verdictStaleReason ?? 'the recorded gate verdict is stale');
+  }
+  if (gate.fireStale) {
+    return blocked('gate-fire-stale', gate.fireStaleReason ?? 'the green-checkpoint routine is stale');
+  }
+  if (gate.recordedVerdict !== 'green') {
+    const failures = gate.failingTests.length > 0 ? `; failing tests: ${gate.failingTests.join(', ')}` : '';
+    return blocked(
+      gate.recordedVerdict === 'not-green' ? 'gate-not-green' : 'gate-verdict-unavailable',
+      `the authoritative gate verdict is ${gate.recordedVerdict ?? 'unavailable'}, not green${failures}`,
+    );
+  }
+  if (!deploy.greenPin?.sha) {
+    return blocked('green-pin-unavailable', 'the gate is green but its last green commit is unavailable');
+  }
+  if (!deploy.stagingHead?.sha) {
+    return blocked('staging-head-unavailable', 'the current staging HEAD is unavailable');
+  }
+  if (!scorecardShaMatches(testedSha, deploy.greenPin.sha)) {
+    return blocked(
+      'tested-sha-not-green-pin',
+      `testedSha ${testedSha} does not match the last green commit ${deploy.greenPin.sha}`,
+    );
+  }
+  if (!scorecardShaMatches(testedSha, deploy.stagingHead.sha)) {
+    return blocked(
+      'tested-sha-behind-head',
+      `testedSha ${testedSha} is not current staging HEAD ${deploy.stagingHead.sha}`,
+    );
+  }
+  if (gate.observedCandidate && !scorecardShaMatches(testedSha, gate.observedCandidate)) {
+    return blocked(
+      'gate-candidate-mismatch',
+      `testedSha ${testedSha} does not match the gate candidate ${gate.observedCandidate}`,
+    );
+  }
+
+  return {
+    status: 'bound',
+    reasonCode: null,
+    reason: null,
+    ...base,
+  };
+}
+
+/** Live resolver shared by scorecards:evaluate and scorecards:emit. Fail closed. */
+export async function resolveScorecardReleaseGateBinding(
+  testedSha: string | null | undefined,
+  deps: { snapshot?: () => Promise<ScorecardReleaseGateSnapshot>; now?: () => number } = {},
+): Promise<ScorecardReleaseGateBinding> {
+  try {
+    const snapshot = await (deps.snapshot ?? (async () => {
+      const { gitPipelineSnapshot } = await import('./git-pipeline-stats');
+      return gitPipelineSnapshot();
+    }))();
+    return evaluateScorecardReleaseGateBinding({ testedSha, snapshot });
+  } catch (error) {
+    return {
+      status: 'stale-pass-blocked',
+      reasonCode: 'gate-state-unavailable',
+      reason: `the authoritative release gate could not be read: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      checkedAt: new Date((deps.now ?? Date.now)()).toISOString(),
+      testedSha: testedSha?.trim() || null,
+      gateVerdict: null,
+      gateCandidate: null,
+      lastGreenCommit: null,
+      stagingHead: null,
+      commitsBehindHead: null,
+      failingTests: [],
+    };
+  }
 }
 
 /**
@@ -266,6 +444,10 @@ export interface ScorecardRow {
   rubricRevision?: number;
   /** Per-criterion ratings, keyed by rubric criterion `key` (each {rating, evidence}). */
   ratings: ObservationRatings;
+  /** Commit the positive release-gating ratings tested, when gate-bound. */
+  testedSha?: string;
+  /** Server-stamped release-gate proof for `testedSha`, when gate-bound. */
+  releaseGateBinding?: ScorecardReleaseGateBinding;
   /** Deterministic instrument snapshots persisted alongside the ratings, when supplied. */
   instrumentSnapshots?: Record<string, ScorecardInstrumentSnapshot>;
   /** The acceptance-rubric author's post-independent-grading verdict, when recorded. */
@@ -987,6 +1169,10 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       rubricRef: observation.rubricRef,
       ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
       ratings,
+      ...(observation.testedSha ? { testedSha: observation.testedSha } : {}),
+      ...(observation.releaseGateBinding
+        ? { releaseGateBinding: observation.releaseGateBinding }
+        : {}),
       ...(observation.instrumentSnapshots
         ? {
             // scorecards:emit validates this shape before persistence; the read-side

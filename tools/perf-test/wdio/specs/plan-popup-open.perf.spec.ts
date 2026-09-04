@@ -1,7 +1,8 @@
 /**
  * Packaged-binary interaction-perf spec — drives the REAL "open a plan"
- * interaction (sidebar Plans face → row click → plan body rendered in Vditor)
- * and asserts the page-relative `plan-popup-open` measure against its budget.
+ * interaction (sidebar Plans face → row click → dashboard → Open full plan →
+ * plan body rendered in Vditor) and asserts the page-relative
+ * `plan-popup-open` measure against its budget.
  *
  * This is the FRESH-HARNESS half of desktop-performance-suite-2026-07-20 (P-007)
  * and the fix EI-18128922194224210 asked for: measuring this interaction by
@@ -30,6 +31,10 @@ const INTERACTION_NAME = "plan-popup-open";
 /** Mirrors perf-marks.ts STALE_START_MS — a start older than this is discarded. */
 const STALE_START_MS = 30_000;
 const MEASURE_WAIT_MS = 8_000;
+const DASHBOARD_WAIT_MS = 20_000;
+const PRELOAD_WAIT_MS = 30_000;
+/** Emitted only after PlanDashboard's Vditor/Lute preloader really succeeds. */
+const VDITOR_READY_MARK = "plan-dashboard-vditor-ready-success-v1";
 /** How many sidebar rows to try before declaring the environment unmeasurable. */
 const MAX_ROWS_TO_TRY = 5;
 // Budget MIRRORS DESKTOP_PERF_BUDGETS.interactions['plan-popup-open']
@@ -88,12 +93,8 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
       },
     );
 
-    // 4. The app idle-warms the Vditor/Lute stack ~600ms after the Plans face
-    //    mounts (WI-5547) so the first open is WARM. Give it a beat so we measure
-    //    the warm open, not the cold one-time WASM init.
-    await browser.pause(1500);
-
-    // 5. Pick a row we can actually OPEN, and measure THAT open.
+    // 4. Pick a row whose dashboard can open a real plan, and measure THAT
+    //    dashboard's "Open full plan" interaction.
     //
     //    WHY THIS IS NOT "click the first row" (WI-38449). The sidebar lists
     //    plans the popup cannot load: a row whose plan resolves to `not_found`
@@ -129,23 +130,16 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
     const attempts: string[] = [];
     let opened: { slug: string; harness: string | null } | null = null;
     let lastFailure: string | null = null;
+    let triggerFound = false;
+    let clickedAt = Date.now();
 
     for (const candidate of candidates) {
-      // The click is the interaction trigger. Re-establish the quiet baseline
-      // for every candidate because a failed/void attempt may have left work
-      // landing before the next row is tried.
+      // The August dashboard takeover changed a row click from the popup trigger
+      // into navigation. Exercise that real first hop and wait for the dashboard
+      // action that now owns beginInteraction(planPopupOpen).
       await waitForMainThreadQuietInPage();
-
-      // Clear the previous attempt's measure + any dangling start, so a later
-      // row can never be credited with an earlier row's timing.
-      const clicked = await browser.execute(
-        (name, slug) => {
-          try {
-            performance.clearMeasures?.(name);
-            performance.clearMarks?.(`${name}:start`);
-          } catch {
-            /* ignore */
-          }
+      const navigated = await browser.execute(
+        (slug) => {
           const row = document.querySelector<HTMLElement>(
             `[data-testid="plans-pane-row-${slug}"]`,
           );
@@ -153,11 +147,80 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
           row.click();
           return true;
         },
-        INTERACTION_NAME,
         candidate.slug,
       );
+      if (!navigated) {
+        lastFailure = "row vanished before dashboard navigation";
+        attempts.push(`${candidate.slug}: ${lastFailure}`);
+        continue;
+      }
+
+      const dashboardReady = await browser
+        .waitUntil(
+          async () =>
+            await browser.execute(() =>
+              Boolean(document.querySelector('[data-testid="plan-dash-open-full"]')),
+            ),
+          { timeout: DASHBOARD_WAIT_MS, timeoutMsg: "dashboard action not rendered" },
+        )
+        .then(() => true, () => false);
+      if (!dashboardReady) {
+        lastFailure = "dashboard action not rendered";
+        attempts.push(`${candidate.slug} [${candidate.harness ?? "?"}]: ${lastFailure}`);
+        continue;
+      }
+
+      // A fixed delay used to call this sample warm even when the best-effort
+      // preloader had failed. The truth-gated mark proves JS + CSS + Lute have
+      // actually completed before the timed click. A miss is an invalid warm
+      // precondition, not a slow popup verdict; try another dashboard so the
+      // preloader's retry path gets a chance to recover.
+      const warmed = await browser
+        .waitUntil(
+          async () =>
+            await browser.execute(
+              (mark) => performance.getEntriesByName(mark, "mark").length > 0,
+              VDITOR_READY_MARK,
+            ),
+          { timeout: PRELOAD_WAIT_MS, timeoutMsg: "Vditor warm-up did not succeed" },
+        )
+        .then(() => true, () => false);
+      if (!warmed) {
+        lastFailure = "Vditor warm-up did not succeed";
+        attempts.push(`${candidate.slug} [${candidate.harness ?? "?"}]: ${lastFailure}`);
+        await browser
+          .execute(() => {
+            document.querySelector<HTMLElement>('[data-testid="plan-dash-back"]')?.click();
+          })
+          .catch(() => undefined);
+        await browser.pause(250);
+        continue;
+      }
+
+      await waitForMainThreadQuietInPage();
+
+      // Clear the previous attempt's measure + any dangling start immediately
+      // before the CURRENT trigger, so a later plan can never be credited with
+      // an earlier plan's timing.
+      clickedAt = Date.now();
+      const clicked = await browser.execute((name) => {
+        try {
+          performance.clearMeasures?.(name);
+          performance.clearMarks?.(`${name}:start`);
+        } catch {
+          /* ignore */
+        }
+        const trigger = document.querySelector<HTMLElement>(
+          '[data-testid="plan-dash-open-full"]',
+        );
+        if (!trigger) return false;
+        trigger.click();
+        return true;
+      }, INTERACTION_NAME);
+      triggerFound ||= clicked;
       if (!clicked) {
-        attempts.push(`${candidate.slug}: row vanished before the click`);
+        lastFailure = "dashboard action vanished before the click";
+        attempts.push(`${candidate.slug} [${candidate.harness ?? "?"}]: ${lastFailure}`);
         continue;
       }
 
@@ -207,12 +270,28 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
         })
         .catch(() => undefined);
       await browser.pause(250);
+      // Narrow/sidebar layout replaces the list with the dashboard. Return to
+      // the list before trying the next candidate; in split layout this simply
+      // clears the selected dashboard and leaves the already-visible rows.
+      await browser
+        .execute(() => {
+          document.querySelector<HTMLElement>('[data-testid="plan-dash-back"]')?.click();
+        })
+        .catch(() => undefined);
+      await browser
+        .waitUntil(
+          async () =>
+            await browser.execute((slug) =>
+              Boolean(document.querySelector(`[data-testid="plans-pane-row-${slug}"]`)),
+              candidate.slug,
+            ),
+          { timeout: DASHBOARD_WAIT_MS, timeoutMsg: "plan list did not return" },
+        )
+        .catch(() => undefined);
     }
 
-    const triggerFound = candidates.length > 0;
     const trigger = opened ??
       candidates[0] ?? { slug: null as string | null, harness: null };
-    const clickedAt = Date.now();
 
     // 6. Wait for the measure to be emitted (endInteraction fires when the plan
     //    body renders in Vditor), then read it.
@@ -232,11 +311,12 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
     if (!opened) {
       throw new Error(
         [
-          `UNMEASURABLE: no openable plan among the first ${candidates.length} sidebar row(s) — ` +
+          `UNMEASURABLE: no dashboard plan opened from the first ${candidates.length} sidebar row(s) — ` +
             `this run never exercised "${INTERACTION_NAME}", so it is NOT a perf verdict`,
           `last outcome: ${lastFailure ?? "(no rows to try)"}`,
           ...attempts.map((a) => `  tried ${a}`),
-          `a row whose plan answers not_found renders PlanDetail's "Plan not found." empty state,`,
+          `the timed trigger is PlanDashboard's "Open full plan" action; the row click only navigates.`,
+          `A plan whose plans:get answers not_found renders PlanDetail's "Plan not found." empty state,`,
           `so Vditor never parses and endInteraction never fires. Check that the sidebar's plan`,
           `LIST and plans:get agree on workspace scope for these slugs.`,
         ].join("\n  "),

@@ -33,6 +33,7 @@ const getSessionBriefM = vi.hoisted(() => vi.fn(async () => null as {
   workspaceId?: string | null;
   harnessSlug?: string | null;
 } | null));
+const getActiveClaimForOwnerM = vi.hoisted(() => vi.fn(async () => null));
 // EI-16057: registry contents the harness-existence gate checks against — 'papercusp'
 // is the only registered slug by default so every pre-existing test (which all pass
 // `harness: 'papercusp'`) keeps resolving; the dedicated describe block below swaps
@@ -58,6 +59,10 @@ vi.mock('../coordination/identity', () => ({
 }));
 vi.mock('../../session-brief', () => ({
   getSessionBrief: getSessionBriefM,
+}));
+vi.mock('../../work-item-claims', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getActiveClaimForOwner: getActiveClaimForOwnerM,
 }));
 vi.mock('../../harness-registry', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -94,6 +99,7 @@ const buildClaimRecallBlockM = vi.hoisted(() => vi.fn(async () => null as string
 const planTerminalityInWorkspaceM = vi.hoisted(() =>
   vi.fn(async () => null as { status: string | null; hasOpenItems: boolean } | null),
 );
+const planHarnessesForSlugsM = vi.hoisted(() => vi.fn(async () => new Map<string, string[]>()));
 // PARTIAL mock, deliberately: this module also exports PRESENCE_STALE_MS, which
 // presence-wakeability.ts -> fleet-roster.ts imports transitively. A whole-module factory
 // drops it and the mock fails at import time rather than in a test.
@@ -112,6 +118,7 @@ vi.mock('../../memory/claim-port', () => ({
 vi.mock('../plans/source', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   planTerminalityInWorkspace: planTerminalityInWorkspaceM,
+  planHarnessesForSlugs: planHarnessesForSlugsM,
 }));
 vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../scheduler/claim-spec-store')>();

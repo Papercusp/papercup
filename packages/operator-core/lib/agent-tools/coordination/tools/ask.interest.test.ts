@@ -5,7 +5,11 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('../identity', () => ({
-  resolveAgentIdentity: () => ({ ownerId: 'asker-1', ownerLabel: 'Asker 1' }),
+  ADMIN_COORD_UI_OWNER: 'pc-admin-coord-ui',
+  resolveAgentIdentity: (ctx: { uiClientId?: string }) => ({
+    ownerId: ctx.uiClientId ?? 'asker-1',
+    ownerLabel: ctx.uiClientId ?? 'Asker 1',
+  }),
 }));
 vi.mock('../conversations', () => ({ openConversation: h.openConversation }));
 
@@ -18,10 +22,13 @@ const handle = {
   handle_note: 'captured requester wake handle',
 };
 
-const call = async () => {
+const call = async (ctx: Record<string, unknown> = {
+  transport: 'http',
+  uiClientId: 'pc-admin-coord-ui',
+}) => {
   const out = await (tool as any).handler(
     { question: 'Which invariant applies?', to: ['peer-1'] },
-    {},
+    ctx,
   );
   return JSON.parse(out.content[0].text);
 };
@@ -38,6 +45,15 @@ beforeEach(() => {
 });
 
 describe('coord:ask requester interest handle (P-024)', () => {
+  it('is hidden from every agent role and rejects direct agent/MCP invocation', async () => {
+    expect(tool.agentRoles).toEqual([]);
+    await expect(call({ transport: 'mcp', uiClientId: 'pc-admin-coord-ui' }))
+      .rejects.toThrow(/owner-UI-only/);
+    await expect(call({ transport: 'http', uiClientId: 'su-agent' }))
+      .rejects.toThrow(/owner-UI-only/);
+    expect(h.openConversation).not.toHaveBeenCalled();
+  });
+
   it('projects the question lifecycle cancel handle returned by openConversation', async () => {
     const out = await call();
     expect(out).toMatchObject({
@@ -47,7 +63,7 @@ describe('coord:ask requester interest handle (P-024)', () => {
       interest_watch: handle,
     });
     expect(h.openConversation).toHaveBeenCalledWith(
-      expect.objectContaining({ ownerId: 'asker-1' }),
+      expect.objectContaining({ ownerId: 'pc-admin-coord-ui' }),
       expect.objectContaining({ kind: 'question', direct_to: ['peer-1'] }),
     );
   });

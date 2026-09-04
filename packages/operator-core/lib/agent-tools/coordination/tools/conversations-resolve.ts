@@ -2,8 +2,8 @@
  * conversations:resolve — accept an answer and close one OR many questions. Sets
  * each conversation's Lifecycle state to resolved, records the accepted answer,
  * and CAPTURES it back into the knowledge layer (D-004 — the loop-closer) so the
- * NEXT asker gets a synchronous coord:ask hit and the answer is never lost if the
- * asker went idle. Notifies all subscribers (a resolution reaches even
+ * answer remains available to semantic recall after the asker goes idle. Notifies
+ * all subscribers (a resolution reaches even
  * mention-mode followers).
  *
  * Bulk by default (bulk-endpoint-standardization-2026-06-21): resolve ONE inline
@@ -28,13 +28,13 @@ const itemSpec = z.object({
   conversation_id: z.string().min(1).optional().describe('alias for id'),
   accepted_answer: hardText(8000).optional().describe('The accepted answer text (synthesized). Provide this OR accepted_post_id.'),
   accepted_post_id: z.number().int().positive().optional().describe('The coord_thread_posts id of the post to accept as the answer.'),
-  capture: z.enum(['mem0', 'none']).optional().describe('Where to write the answer back (D-004). mem0 (default) makes the next coord:ask find it; none skips capture.'),
+  capture: z.enum(['mem0', 'none']).optional().describe('Where to preserve the answer (D-004). mem0 (default) makes it available to semantic recall; none skips capture.'),
 });
 
 export default defineTool({
   name: 'conversations:resolve',
   description:
-    'Resolve one OR many questions: accept an answer (by text or by accepted_post_id) and close it. The accepted answer is captured to the knowledge layer (mem0 by default) so the next coord:ask finds it synchronously. Notifies subscribers. Single: { id, accepted_answer | accepted_post_id, capture? }. Many heterogeneous: items:[{ id, accepted_answer | accepted_post_id, capture? }] (each carries its own answer). Returns { ok, results:[{ ok, id, state? | error }], counts } — correlate by id; one item that lacks an answer or is not found never fails the rest.',
+    'Resolve one OR many questions: accept an answer (by text or by accepted_post_id) and close it. The accepted answer is preserved for semantic recall (mem0 by default). Notifies subscribers. Single: { id, accepted_answer | accepted_post_id, capture? }. Many heterogeneous: items:[{ id, accepted_answer | accepted_post_id, capture? }] (each carries its own answer). Returns { ok, results:[{ ok, id, state? | error }], counts } — correlate by id; one item that lacks an answer or is not found never fails the rest.',
   guidance: {
     when:
       'A question conversation has been answered satisfactorily. Accept the best answer here — this both closes it and feeds the answer back so nobody has to ask again. Resolve several at once via items:[…] (each item supplies its own accepted answer).',
@@ -56,7 +56,7 @@ export default defineTool({
       conversation_id: z.string().min(1).optional().describe('alias for id (single form)'),
       accepted_answer: hardText(8000).optional().describe('The accepted answer text (synthesized). Provide this OR accepted_post_id (single form).'),
       accepted_post_id: z.number().int().positive().optional().describe('The coord_thread_posts id of the post to accept as the answer (single form).'),
-      capture: z.enum(['mem0', 'none']).optional().describe('Where to write the answer back (D-004). mem0 (default) makes the next coord:ask find it; none skips capture (single form).'),
+      capture: z.enum(['mem0', 'none']).optional().describe('Where to preserve the answer (D-004). mem0 (default) makes it available to semantic recall; none skips capture (single form).'),
       items: z.array(itemSpec).min(1).max(200).optional().describe('resolve many conversations at once — each { id, accepted_answer | accepted_post_id, capture? }'),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id) || Boolean(a.conversation_id), {

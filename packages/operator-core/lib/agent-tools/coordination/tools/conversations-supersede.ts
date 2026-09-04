@@ -36,7 +36,7 @@ export default defineTool({
     when:
       'An open question was framed on a premise that is now false, stale, or otherwise not answerable; use this to replace the gate durably so the correction is visible in conversations and the old gate cannot continue to block work.',
     notWhen:
-      'You are merely notifying someone → coord:send. The original question is answered → conversations:resolve. The replacement is an unrelated new question → coord:ask-owner or coord:ask. An owner question may only be superseded by the agent that asked it; ask that agent to make a correction when it is not yours.',
+      'You are merely notifying someone → coord:send. The original question is answered → conversations:resolve. An unrelated new owner question → coord:ask-owner; a peer question → coord:send with expects:"answer". An owner question may only be superseded by the agent that asked it; ask that agent to make a correction when it is not yours.',
     chaining:
       'conversations:get → conversations:supersede → events:await { event: "conversation:answered:<replacement_id>" } or conversations:resolve on the replacement.',
     seeAlso: [
