@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { SHAPER_BUDGET_CHARS, shapeOrient } from './orient-shape';
-import { ORIENT_OPTIONAL_EVICTION_PRIORITY } from './orient-priority';
+import { ORIENT_FACTS_RECOVERY_VIA, ORIENT_OPTIONAL_EVICTION_PRIORITY } from './orient-priority';
 
 const row = (i: number) => ({
   id: `WI-${1000 + i}`,
@@ -289,7 +289,7 @@ describe('shapeOrient trimmed', () => {
     expect(out.factsTruncated).toMatchObject({
       total: 20,
       shown: 8,
-      more: 'facts:list { all:true }',
+      more: ORIENT_FACTS_RECOVERY_VIA,
     });
     // The drop is RANKED, not random, so the disclosure names the classes lost:
     // 12 workspace facts were dropped wholesale here.
@@ -328,7 +328,7 @@ describe('shapeOrient trimmed', () => {
       expect(shaped.factsFoldTruncated).toEqual(foldBound);
       // ...and is NOT the same object the shaper writes for its own, narrower cut.
       expect(shaped.factsTruncated).not.toEqual(foldBound);
-      expect(shaped.factsTruncated).toMatchObject({ more: 'facts:list { all:true }' });
+      expect(shaped.factsTruncated).toMatchObject({ more: ORIENT_FACTS_RECOVERY_VIA });
     });
 
     it('both keys ride the facts leg, so neither is evicted without the other', () => {
@@ -342,8 +342,19 @@ describe('shapeOrient trimmed', () => {
   it('discloses how many fact BODIES it clipped, not just how many facts it dropped', () => {
     // Distinct from factsTruncated: a fact can survive the COUNT cap and still be
     // delivered with most of its body gone. Both cuts are losses; both are named.
-    expect(out.factsBodiesTruncated).toMatchObject({ cap: 200, more: 'facts:list { all:true }' });
+    expect(out.factsBodiesTruncated).toMatchObject({ cap: 200, more: ORIENT_FACTS_RECOVERY_VIA });
     expect((out.factsBodiesTruncated as { facts: number }).facts).toBeGreaterThan(0);
+  });
+
+  it('uses valid selector-aware facts:list recovery calls for every folded scope', () => {
+    expect(ORIENT_FACTS_RECOVERY_VIA).toContain("scope:'workspace'");
+    expect(ORIENT_FACTS_RECOVERY_VIA).toContain("scope:'owner'");
+    expect(ORIENT_FACTS_RECOVERY_VIA).toContain("scopeRef:'<ownerId>'");
+    expect(ORIENT_FACTS_RECOVERY_VIA).toContain("scope:'harness'");
+    expect(ORIENT_FACTS_RECOVERY_VIA).toContain("scopeRef:'<harness>'");
+    expect(ORIENT_FACTS_RECOVERY_VIA.match(/all:true/g)).toHaveLength(3);
+    expect(ORIENT_FACTS_RECOVERY_VIA.match(/full:true/g)).toHaveLength(3);
+    expect(ORIENT_FACTS_RECOVERY_VIA).not.toBe('facts:list { all:true }');
   });
 
   describe('operative clauses in standing facts survive the body cap', () => {

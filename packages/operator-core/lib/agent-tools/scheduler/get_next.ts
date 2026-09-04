@@ -510,6 +510,46 @@ async function clearStaleTerminalPlanDeclaration(args: {
  * FAILS SOFT — a diagnosis is an annotation on a miss, never a new way for the claim path to
  * throw. Any error degrades to the original static message.
  */
+/**
+ * WI-7316: one row per work-item the claim path CLAIMED on this pull, found plan-lane-blocked,
+ * released and retried past — kept only when the blocking plan item carried a `staleBlockedHint`.
+ */
+export interface StaleBlockedLaneRow {
+  workItemId: string;
+  planSlug: string;
+  itemId: string;
+  hint: string;
+}
+
+/**
+ * WI-7316: the SOLO/LEADER rendering of those bounces — the counterpart to what
+ * `fleetScopedMiss` already renders for a fleet MEMBER (see its `staleBlockedLane` option).
+ *
+ * Exported for its own unit test rather than left inline in the handler: the handler's miss
+ * path needs a live claim + a fleet-scope reconciliation to reach at all, so the one thing
+ * worth pinning here — that a stale bounce turns a bare "nothing matched" into an actionable
+ * instruction, and that an ordinary block changes nothing — would otherwise be reachable only
+ * through a fixture far more elaborate than the string it is checking.
+ *
+ * Bounded to the first 3 rows plus a count: the structured `staleBlockedLane` field on the same
+ * payload carries the rest, and a miss message that grows with the lane is one nobody reads.
+ */
+export function renderStaleBlockedSoloNote(rows: readonly StaleBlockedLaneRow[]): string {
+  if (rows.length === 0) return '';
+  return (
+    ` ⚠ STALE PLAN-ITEM BLOCK, NOT A DRAINED LANE (WI-7316): ${rows.length} row(s) WERE claimed on this pull and ` +
+    `released again because their linked plan item reads 'blocked' while every one of its blocked-by dependencies ` +
+    `has ALREADY resolved. Nothing is gating them and nothing will lift — the stored token is sticky until a human ` +
+    `clears it, so re-polling this lane cannot help. Clear the plan item(s) with plans:set-status, then re-pull: ` +
+    rows
+      .slice(0, 3)
+      .map((b) => `${b.workItemId} (${b.planSlug}#${b.itemId} — ${b.hint})`)
+      .join('; ') +
+    (rows.length > 3 ? `; +${rows.length - 3} more (see staleBlockedLane)` : '') +
+    '.'
+  );
+}
+
 async function buildMissDiagnosis(args: {
   ownerId: string;
   workspaceId: string | null;
@@ -1414,10 +1454,43 @@ export default defineTool({
     // orphan — but that orphan is self-healing (reconcileFleetScopeClaims + the lease reclaim
     // run at the TOP of the very next get_next sweep it) AND it already existed under today's
     // 300s hang; we only fail faster. A real throw is re-surfaced loudly, never a silent miss.
+    // WI-7316: the post-claim plan-lane bounce is the ONE miss cause every other diagnosis on
+    // this path is structurally blind to. getNextForBee CLAIMS a row, runs planItemLaneBlockReason,
+    // finds it blocked, releases it and retries — so by the time we build a miss, the SQL floors
+    // have already counted that row as claimable and nothing anywhere records why it was refused.
+    // `onPlanLaneBlocked` (claim-spec-store.ts) hands us each bounce as it happens; we keep only
+    // the ones whose plan item carries a `staleBlockedHint` — a CONTRADICTION the resolver can
+    // see (canonically a sticky stored 'blocked' token whose every blocked-by dependency has
+    // already resolved) but cannot safely auto-clear. That distinction is what makes this worth
+    // reporting: an ordinary block self-clears when its blocker lifts, so "re-poll and wait" is
+    // correct advice for it; a stale token clears only when a human runs plans:set-status, so the
+    // same advice sends a member into an idle-park on a lane that can never clear itself.
+    //
+    // Collected across ALL THREE getNextForBee calls below (initial claim + the two recheck
+    // retries) — a bounce on a retry is the same evidence as one on the first pull.
+    const planLaneBounces: StaleBlockedLaneRow[] = [];
+    const onPlanLaneBlocked = (block: {
+      workItemId: string;
+      planSlug: string;
+      itemId: string;
+      staleBlockedHint: string | null;
+    }): void => {
+      if (!block.staleBlockedHint) return;
+      // De-dupe by work-item: the divergence recheck can legitimately re-claim and re-bounce the
+      // same row, and reporting it twice would inflate the count a caller reads as a row count.
+      if (planLaneBounces.some((b) => b.workItemId === block.workItemId)) return;
+      planLaneBounces.push({
+        workItemId: block.workItemId,
+        planSlug: block.planSlug,
+        itemId: block.itemId,
+        hint: block.staleBlockedHint,
+      });
+    };
     const claimBudgetMs = remainingBudgetMs();
     const claim = await withBoundedTimeout(
       getNextForBee({
         cupId: ident.ownerId,
+        onPlanLaneBlocked,
         // EI-21830839826880925: ordinary MCP reads can occupy every slot on the
         // process-wide org pool. Keep pickup on its own tiny transactional pool so a
         // fleet member does not spend the whole 30s claim budget waiting behind them.
@@ -1565,6 +1638,7 @@ export default defineTool({
         const retry = await withBoundedTimeout(
           getNextForBee({
             cupId: ident.ownerId,
+            onPlanLaneBlocked,
             workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
             harness: args.harness,
             heldPaths: args.heldPaths,
@@ -1617,6 +1691,7 @@ export default defineTool({
           const retry = await withBoundedTimeout(
             getNextForBee({
               cupId: ident.ownerId,
+              onPlanLaneBlocked,
               workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
               harness: args.harness,
               heldPaths: args.heldPaths,
@@ -2073,6 +2148,8 @@ export default defineTool({
     // DIFFERENT floors, and each took a manual payload dig to find while members idled.
     // FAILS SOFT: any error here degrades to exactly the old static message — a diagnosis must
     // never be able to break the claim path it is only annotating.
+    // WI-7316: every getNextForBee call has resolved by this point, so the list is final.
+    const staleBlockedSoloNote = renderStaleBlockedSoloNote(planLaneBounces);
     const missDiagnosis =
       res || reconciliation.scope || invalidHarnessKnownSlugs
         ? { error: '' as string, diagnosis: undefined, floors: undefined }
@@ -2204,12 +2281,25 @@ export default defineTool({
               leaderLiveness: leaderLivenessForMiss,
               divergenceRecheck,
               harness: args.harness,
+              // WI-7316: the bounces collected above. fleetScopedMiss turns a non-empty list
+              // into `reason: 'stale_plan_item_block'` AND — the part that changes behaviour
+              // rather than wording — `windDown: false`, so a member is never told to stand
+              // down over a lane that is one plans:set-status call from claimable.
+              staleBlockedLane: planLaneBounces,
             })
           : {
               ok: false,
-              error: missDiagnosis.error,
+              // WI-7316: appended HERE rather than inside buildMissDiagnosis on purpose — that
+              // call is wrapped in withBoundedTimeout, whose fallback is the bare STATIC string,
+              // so a diagnosis that times out would silently drop the one cause the caller most
+              // needs. This concatenation runs whichever way the diagnosis resolved. (The fleet
+              // MEMBER path gets the same evidence through fleetScopedMiss's staleBlockedLane
+              // above, where it also flips windDown off; this is the solo/leader counterpart,
+              // which has no windDown to flip.)
+              error: missDiagnosis.error + staleBlockedSoloNote,
               // WI-4413: the miss now EXPLAINS itself — aggregate POOL/READY split, plus
               // (when the spec names ids) the exact floor refusing each one.
+              ...(planLaneBounces.length > 0 ? { staleBlockedLane: planLaneBounces } : {}),
               ...(missDiagnosis.diagnosis ? { diagnosis: missDiagnosis.diagnosis } : {}),
               ...(missDiagnosis.floors ? { floors: missDiagnosis.floors } : {}),
               // P-006: teach the composed-await idle recipe exactly where the idle

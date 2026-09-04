@@ -16,7 +16,7 @@
 import { shapeFleetAssignments } from '../../fleet/assignments-shape';
 import { capPreservingOperativeDetailed } from '../../../operative-clause';
 import { workItemFetchHint } from '../../../work-item-fetch-hint';
-import { ORIENT_OPTIONAL_EVICTION_PRIORITY } from './orient-priority';
+import { ORIENT_FACTS_RECOVERY_VIA, ORIENT_OPTIONAL_EVICTION_PRIORITY } from './orient-priority';
 
 /** Per-tier caps. `standard` is a looser projection, not a different shape. */
 const CAPS = {
@@ -100,9 +100,11 @@ const factRank = (f: unknown): number => FACT_SCOPE_RANK[(f as { scope?: string 
 
 /** The fetch-pointer for standing facts. It names `full:true` deliberately:
  *  bare `facts:list` EXCERPTS bodies by default, so pointing a reader there to
- *  recover an excerpted body hands them a second excerpt. A recovery pointer
- *  that does not recover is worse than none — it closes the question. */
-const FACTS_MORE = 'facts:list { all:true }';
+ *  recover an excerpted body hands them a second excerpt. The shared pointer
+ *  enumerates every selector the orient fold can carry; a single unscoped
+ *  `all:true` call is rejected by the live facts:list contract, while one
+ *  concrete scope would under-recover the fold. */
+const FACTS_MORE = ORIENT_FACTS_RECOVERY_VIA;
 
 /** Population of a dropped fact set by scope, for the disclosure below. */
 const countByScope = (fs: readonly unknown[]): Record<string, number> => {

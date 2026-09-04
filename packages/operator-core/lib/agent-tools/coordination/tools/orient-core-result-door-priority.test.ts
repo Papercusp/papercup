@@ -42,7 +42,11 @@ import orientTool, {
   ORIENT_RESULT_PRIORITY_IS_EXHAUSTIVE,
 } from './orient';
 import { SHAPER_BUDGET_CHARS, shapeOrient } from './orient-shape';
-import { ORIENT_CORE_RESULT_KEYS, ORIENT_OPTIONAL_PRIORITY } from './orient-priority';
+import {
+  ORIENT_CORE_RESULT_KEYS,
+  ORIENT_FACTS_RECOVERY_VIA,
+  ORIENT_OPTIONAL_PRIORITY,
+} from './orient-priority';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 
@@ -193,6 +197,17 @@ describe('coord:orient declares ALL THREE uncapping legs (WI-37843)', () => {
 });
 
 describe('EI-20213176698128052: assembler and shaper share one priority ledger', () => {
+  it('keeps the facts recovery pointer scoped for every selector in the fold', () => {
+    const factsLeg = ORIENT_OPTIONAL_PRIORITY.tier4.find((leg) => leg.name === 'facts');
+    const evictionLeg = ORIENT_OPTIONAL_PRIORITY.tier4.find((leg) => leg.name === 'factEvictionDisclosures');
+
+    expect(factsLeg?.recoverVia).toBe(ORIENT_FACTS_RECOVERY_VIA);
+    expect(evictionLeg?.recoverVia).toBe(ORIENT_FACTS_RECOVERY_VIA);
+    expect(ORIENT_FACTS_RECOVERY_VIA).toContain("scope:'workspace'");
+    expect(ORIENT_FACTS_RECOVERY_VIA).toContain("scope:'owner'");
+    expect(ORIENT_FACTS_RECOVERY_VIA).toContain("scope:'harness'");
+  });
+
   it('emits the real assembled keys in the declared tier order', () => {
     const tier3 = Object.fromEntries(
       ORIENT_OPTIONAL_PRIORITY.tier3.flatMap((leg) => leg.fields.map((field) => [field, `${field}-value`])),

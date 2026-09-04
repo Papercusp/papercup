@@ -17,6 +17,15 @@ export interface OrientOptionalLeg {
   readonly recoverVia: string;
 }
 
+/**
+ * `facts:list` is scoped by the serving tool, so `all:true` is only useful when
+ * each selector is named. The orient fold currently reads workspace + owner and
+ * optionally harness facts; keep all three recovery calls in one shared pointer
+ * so the result shaper and omission disclosures cannot drift.
+ */
+export const ORIENT_FACTS_RECOVERY_VIA =
+  "facts:list { scope:'workspace', all:true, full:true }; facts:list { scope:'owner', scopeRef:'<ownerId>', all:true, full:true }; if a harness selector was folded, facts:list { scope:'harness', scopeRef:'<harness>', all:true, full:true }";
+
 /** Result fields that are never eligible for optional-leg eviction. */
 export const ORIENT_CORE_RESULT_KEYS = [
   'ok',
@@ -93,12 +102,12 @@ export const ORIENT_OPTIONAL_PRIORITY = {
         'factsTruncated',
         'factsBodiesTruncated',
       ],
-      recoverVia: 'facts:list { all:true }',
+      recoverVia: ORIENT_FACTS_RECOVERY_VIA,
     },
     {
       name: 'factEvictionDisclosures',
       fields: ['factEvictionDisclosures'],
-      recoverVia: 'facts:list { all:true }',
+      recoverVia: ORIENT_FACTS_RECOVERY_VIA,
     },
     { name: 'host', fields: ['host'], recoverVia: 'next coord:orient (host snapshot is always re-delivered)' },
     { name: 'memory', fields: ['memory'], recoverVia: 'memory:search { query }' },

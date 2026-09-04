@@ -20,6 +20,7 @@ import {
   setAutoloop,
   makeLoopProposalRecorder,
 } from '../control-plane';
+import { createCandidateVersionVerdict } from '../loop';
 
 let sql: postgres.Sql;
 let containerUri: string;
@@ -165,6 +166,17 @@ describe('gym control plane — loop recorder bridge', () => {
       costDelta: 0.0,
       probeStatus: 'pass',
       verdict: 'accept',
+      candidateVersion: createCandidateVersionVerdict({
+        candidateId: 'cand-rec-1',
+        parentId: 'p',
+        variant: { promptOverrides: { worker: 'new worker', validator: 'same val', reviewer: 'added' } },
+        parent: { promptOverrides: { worker: 'old worker', validator: 'same val' } },
+        // ONE measured, passing gate — not an empty list. Under P-003 an empty
+        // gate set derives 'inconclusive' (nothing was measured), which would
+        // contradict this record's own verdict:'accept'.
+        gateResults: [{ gate: 'dev-anchor', pass: true, status: 'pass', detail: 'fixture' }],
+        recordedAt: 0,
+      }),
     });
     const pending = await listProposals(sql, { workspaceId: WS, harnessSlug: 'rec', status: 'pending' });
     expect(pending.map((p) => p.role).sort()).toEqual(['reviewer', 'worker']); // validator unchanged → skipped

@@ -675,7 +675,12 @@ export async function probeEndpoint(
       // then the real fetch also failed" is a genuinely down/wedged listener;
       // an omitted note here (preflight === 'connected') is the plain fetch-
       // failed case unchanged from before.
-      note: [wedgeNote, preflightNote].filter(Boolean).join(' ') || undefined,
+      // WI-7329: the memory note goes LAST and is additive. It never replaces
+      // the wedge note — the accept queue is still the evidence that this is a
+      // wedge — it appends the alternative explanation for WHY the loop stalled,
+      // because the wedge note's own advice ("find what is blocking the loop")
+      // sends the reader hunting application code that may be blameless.
+      note: [wedgeNote, preflightNote, memoryNote].filter(Boolean).join(' ') || undefined,
     });
   } finally {
     clearTimeout(timer);
