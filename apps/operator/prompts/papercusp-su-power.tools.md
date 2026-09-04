@@ -132,10 +132,11 @@ work-item-scoped conversation threads).
   | packaging evidence for a reviewer or a model | `code:pack` — strictly POST-retrieval, never an authority for symbol truth |
 
   ⚠ **Two raw backends are deliberately NOT the route.** `gitnexus.query`
-  returns UNRANKED NOISE rather than an empty set — a nonsense symbol yields
-  ~20 confident-looking rows, and a wrong argument name yields byte-identical
-  output, proving the search term is never applied (measured, D-021); it is the
-  one intent whose failure looks exactly like success. Raw `repomix.pack` skips
+  is UNAVAILABLE: historical builds returned empty or unranked noise, and
+  current real-symbol probes SIGSEGV the shared GitNexus MCP process (D-065).
+  The bridge now refuses it before child dispatch so it cannot take down the
+  otherwise-working siblings. Use `gitnexus.context` for a known symbol,
+  `graph:query` for topology, or `rg` for keywords. Raw `repomix.pack` skips
   the pinned version and the secret-scanning rails `code:pack` enforces
   (D-040/D-041). ⚠ The gitnexus row reaches you through the plugin bridge, so
   test it rather than assuming: if a call answers `Unknown namespace(s):
@@ -143,8 +144,9 @@ work-item-scoped conversation threads).
   `rg` + `lsp:query` for that question class until it does, and do NOT read the
   absence as "no call chains exist".
 
-  📖 Versions, re-provisioning, crash-residue recovery, and the six failure
-  modes that return a CONFIDENT WRONG ANSWER (zero-indexed gitnexus lines, a
+  📖 Versions, re-provisioning, crash-residue recovery, and the six high-risk
+  failure modes (confident wrong answers OR a hard-crashed evidence channel;
+  zero-indexed gitnexus lines, a
   server queried before project load, a STALE gitnexus index, and
   `gitnexus.impact` silently answering CALLEES on an out-of-enum `direction` —
   ask `graph:query { op:'callers' }`): `/internal/docs/agent-insights/code-intelligence-backends-runbook`.
@@ -1043,6 +1045,8 @@ loop and is no longer emitted at all — treat any occurrence as stale data.
 
 <!-- PAPERCUSP-SU:WIRE-SCHEMAS -->
 
+<!-- PAPERCUSP-SU:RESULT-DOOR -->
+
 ## Named workflows
 
 **"What's the state of X" (a project):** `harness:list` → `harness:status
@@ -1090,6 +1094,8 @@ BM25) → `search:semantic` if paraphrased → read code at the cited paths
   needs one) a bound feature — launch it via `psu` (the picker has a role
   step) or `psu --role <role> [--feature F-NNN]`. It's interactive +
   tracked, so it's safe for exploration, unlike a raw spawn.
+
+<!-- PAPERCUSP-SU:SHARED-BASE-NOTES -->
 
 <!-- PAPERCUSP-SU:PROJECT-GUIDE -->
 
