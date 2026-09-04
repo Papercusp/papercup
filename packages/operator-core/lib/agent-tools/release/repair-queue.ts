@@ -153,7 +153,7 @@ export function assessFrozenRepairFixerAuthorization(
   return result(
     'authorized-delegate',
     true,
-    'Proceed only with the assigned repair inside repairQueue.worktreePath. A separate held-live LIVE_GATE_OPS owner is your delegator, not a competing fixer. Do not claim the gate, launch a checkpoint, mutate deployment, or work outside this queue identity.',
+    'Proceed only with the assigned repair: author on the shared staging checkout and land it with op:\'admit\' (path-exact; there is no repair worktree). A separate held-live LIVE_GATE_OPS owner is your delegator, not a competing fixer. Do not claim the gate, launch a checkpoint, mutate deployment, or work outside this queue identity.',
   );
 }
 

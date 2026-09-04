@@ -50,8 +50,6 @@ export interface FrozenRepairConvergenceRoutingInput {
   repairHead: string;
   /** The queue's current failing set (replaced each red, so this is the live round). */
   failingTests: readonly string[];
-  /** Gate-owned isolation checkout the repair is authored in. */
-  worktreePath?: string | null;
   /** The measured provider wall's own reset time, when the probe reported one. */
   capacityRetryAtMs?: number | null;
   /** The capacity probe's own words (e.g. "all codex accounts are usage-walled"). */
@@ -130,9 +128,9 @@ export function buildFrozenRepairConvergenceBroadcast(
     `CONVERGE ONTO (repairHead): ${input.repairHead}\n` +
     `HELD FOR: ${renderDuration(input.heldMs)} of ${renderDuration(input.convergenceHoldMs)} ` +
     `— ${renderDuration(remainingMs)} before the hold gives up and the candidate is retired.\n` +
-    (input.worktreePath
-      ? `REPAIR WORKTREE: ${input.worktreePath}\n`
-      : '') +
+    `ADMIT WITH: release:repair-queue { op: 'admit', paths: [<the paths you changed>] } — author on the ` +
+    `shared staging checkout, dry-run first, then confirm:true. An edit that is never admitted is ` +
+    `invisible to the gate (D-010: there is no repair worktree).\n` +
     `\nFAILING ON THE FROZEN CANDIDATE (${failing.length}):\n` +
     (named.length
       ? named.map((t) => `  · ${t}`).join('\n') +

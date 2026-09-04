@@ -7,7 +7,7 @@
  *
  * The item reads: "Auto-derive a draft spec clause per `covered` mapping ... the one
  * change that moves the spec triad off 0.6% adoption." The mechanism is right and the
- * metric is not, in two separate ways (D-041):
+ * metric is not, in two separate ways (D-047):
  *
  *   • 0.6% is CLAUSE adoption, not TRIAD adoption. Measured 2026-09-03 over the live
  *     corpus: 10 of 1,750 live non-legacy plans carry >= 1 `plan_spec_clauses` row
@@ -221,6 +221,73 @@ export function deriveDraftSpecClauses(
   }
 
   return { clauses, skipped };
+}
+
+/**
+ * The outcome of a derivation pass that actually WROTE. Every disposition is counted
+ * rather than thrown, because this runs alongside an activation audit that has already
+ * succeeded: a clause that cannot be written is a report, never a reason to fail the
+ * audit that produced it.
+ */
+export interface DerivedDraftPersistOutcome {
+  /** Clauses the derivation proposed (`skipped` explains everything it did not). */
+  attempted: number;
+  created: number;
+  /** Re-derived identically — the idempotency path, and the steady state on re-audit. */
+  unchanged: number;
+  /**
+   * Someone had already revised the clause at this id, so `expectedRevision: 0` refused
+   * and the derived draft was DISCARDED. This is the design working, not an error: it is
+   * the case the whole `expectedRevision: 0` choice exists to produce.
+   */
+  conflicted: number;
+  /** Any other store refusal, carried with its status so a caller can see WHY. */
+  refused: Array<{ specId: string; status: string }>;
+  skipped: SkippedDerivation[];
+}
+
+/**
+ * Derive and persist. The writer is INJECTED rather than imported so this is testable
+ * without a database — and so the pure derivation above stays genuinely pure.
+ *
+ * Writes are sequential on purpose: `setSpecClause` takes a per-identity advisory lock,
+ * and a derivation pass over one plan is a handful of rows, so there is nothing to win by
+ * racing them and a contended lock to lose.
+ */
+export async function persistDerivedDraftClauses(
+  input: DeriveDraftSpecClausesInput,
+  write: (clause: SpecClauseWrite) => Promise<{ status: string }>,
+): Promise<DerivedDraftPersistOutcome> {
+  const { clauses, skipped } = deriveDraftSpecClauses(input);
+  const outcome: DerivedDraftPersistOutcome = {
+    attempted: clauses.length,
+    created: 0,
+    unchanged: 0,
+    conflicted: 0,
+    refused: [],
+    skipped,
+  };
+
+  for (const clause of clauses) {
+    const result = await write(clause.write);
+    switch (result.status) {
+      case 'created':
+      case 'revised':
+        outcome.created += 1;
+        break;
+      case 'unchanged':
+        outcome.unchanged += 1;
+        break;
+      case 'conflict':
+        outcome.conflicted += 1;
+        break;
+      default:
+        outcome.refused.push({ specId: clause.specId, status: result.status });
+        break;
+    }
+  }
+
+  return outcome;
 }
 
 /** One-line-per-entry rendering for reporting what a derivation pass would do. */

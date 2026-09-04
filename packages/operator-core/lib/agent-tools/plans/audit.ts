@@ -51,6 +51,8 @@ import {
 import { activeWorkspaceId } from '../../workspace-registry';
 import { parseTurnRef, resolveSessionTurnRefs, SESSION_SOURCE_KINDS } from '../sessions/_shared';
 import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
+import { persistDerivedDraftClauses } from '../../derive-draft-spec-clauses';
+import { setSpecClause } from './spec-clauses-store';
 import { getPlanRow } from './source';
 import { parsePlan } from './parser';
 import { stagingFirstActivationProblems } from './staging-first-activation-guard';
@@ -410,6 +412,38 @@ export default defineTool({
         } };
       }
 
+      // P-019 / D-047: derive DRAFT spec clauses from the realizing mappings this audit
+      // just recorded, so the design→code contract exists BY DEFAULT rather than by
+      // opt-in. Safe to run unconditionally: a `draft` clause is outside the coverage
+      // gate's ENFORCEABLE_LIFECYCLE, and the DB constraint
+      // plan_spec_clause_revisions_acceptance_exact makes promotion impossible without a
+      // named accepter — so this can never refuse anyone's ship.
+      //
+      // NON-FATAL BY CONSTRUCTION. The audit is already durably recorded at this point.
+      // A derivation failure must therefore be REPORTED, never propagated: throwing here
+      // would turn a successful audit into a caller-visible failure and invite a retry
+      // that re-records nothing, which is strictly worse than deriving no clauses.
+      let derivedSpecClauses: Awaited<ReturnType<typeof persistDerivedDraftClauses>> | {
+        error: string;
+      };
+      try {
+        derivedSpecClauses = await persistDerivedDraftClauses(
+          {
+            planSlug: args.slug,
+            ...(harnessSlug ? { harnessSlug } : {}),
+            mappings,
+            // Liveness: an empty read is UNKNOWN, and the deriver fails open on it
+            // (D-040's rule) — `setSpecClause` is the backstop that refuses a target the
+            // plan does not actually have.
+            planItems: await getPlanItemStatuses(args.slug),
+            actorId: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
+          },
+          setSpecClause,
+        );
+      } catch (error) {
+        derivedSpecClauses = { error: error instanceof Error ? error.message : String(error) };
+      }
+
       await emitPlanEventForCaller(ctx as Parameters<typeof emitPlanEventForCaller>[0], {
         planSlug: args.slug,
         event: 'plan_audited',
@@ -434,6 +468,7 @@ export default defineTool({
         sourceRefsFromArchive: resolutions.filter((resolution) => resolution.source === 'archive').length,
         repairedOmissions: activation.repairedOmissions.length,
         rejectedOrSuperseded: activation.rejectedOrSuperseded.length,
+        derivedSpecClauses,
       } };
     }
 

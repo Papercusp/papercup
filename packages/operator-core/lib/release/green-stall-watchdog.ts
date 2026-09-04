@@ -1600,7 +1600,7 @@ async function recoverStaleGreenCheckpointStalls(
         // 4th positional is `repairQueue?: FrozenCandidateRepairQueue`, NOT checkpoint
         // evidence. Passing `parsed.checkpointEvidence` here was not merely a type error:
         // dispatchReleaseFixer dereferences `repairQueue.candidate.slice(0, 8)` and
-        // `.worktreePath`/`.repairHead`/`.attempts` when building the fixer's instructions,
+        // `.repairHead`/`.attempts` when building the fixer's instructions,
         // and CheckpointEvidence carries none of those — so a watchdog-driven recovery
         // dispatch would have thrown a TypeError on `undefined.slice` inside the very path
         // meant to rescue a stalled gate. The watchdog has no frozen repair queue to hand

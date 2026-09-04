@@ -52,9 +52,11 @@ export function stagingContainsFrozenRepairPatch(
   queue: FrozenCandidateRepairQueue,
   root = integrationRoot(),
 ): boolean {
+  // P-003 / D-010: there is no repair worktree; the frozen lineage (candidate and every
+  // admitted repairHead) lives as objects in the canonical repository itself.
   const patchResult = spawnSync('git', [
     '-C',
-    queue.worktreePath,
+    root,
     'diff',
     '--binary',
     queue.candidate,
