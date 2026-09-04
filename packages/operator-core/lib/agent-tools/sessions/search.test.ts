@@ -91,6 +91,15 @@ describe('sessions:search limit contract', () => {
     expect(argsSchema.safeParse({ query: 'needle', context: 5 }).success).toBe(true);
     expect(argsSchema.safeParse({ query: 'needle', context: 6 }).success).toBe(false);
   });
+
+  it('publishes the enforced context maximum in the caller-facing schema (EI-22053600590865118)', () => {
+    const contextField = (tool.args as unknown as {
+      shape: Record<string, { description?: string }>;
+    }).shape.context;
+
+    expect(contextField.description).toContain('default 2');
+    expect(contextField.description).toContain('maximum 5');
+  });
 });
 
 describe('sessions:search explicit session refresh scope (EI-21720673196644332)', () => {
