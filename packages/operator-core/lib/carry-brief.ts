@@ -150,9 +150,11 @@ export interface CarryBrief {
   checks?: CheckEntry[];
   /** Owner-scoped standing facts — the softer standing-context carrier (structured
    *  walls live in `walls` since P-006; facts remain for everything else).
-   *  `sourceRef`/`sourceProvenance` ride along (when the store has them) purely
-   *  as the input to {@link factsStaleness} — carried facts still render by
-   *  `key`/`body` everywhere else. */
+   *  `sourceRef`/`sourceProvenance` ride along (when the store has them) both
+   *  as the input to {@link factsStaleness} and as the verified source quote
+   *  rendered at cold-resume time. P-012: carrying a quote all the way to this
+   *  object and dropping it in the renderer is indistinguishable from never
+   *  having captured it. */
   facts: Array<{
     key: string;
     body: string;
@@ -201,6 +203,8 @@ export const CARRY_BRIEF_FOCUS_MAX = 600;
  *  not the whole state — the full checkpoint is re-injected on item pickup). */
 const COLD_CHECKPOINT_CAP = 500;
 const COLD_FACT_BODY_CAP = 240;
+/** A source quote is evidence, not a second fact body. Keep it useful but bounded. */
+const COLD_FACT_SOURCE_QUOTE_CAP = 320;
 const COLD_TITLE_CAP = 120;
 
 /**
@@ -1522,17 +1526,40 @@ export function renderCarryBriefColdExtras(
   if (brief.facts.length > 0) {
     // Same fix as the held-item checkpoint above — a fact body can carry a
     // later imperative/supersession clause past the excerpt cut too.
-    const lines = brief.facts.map(
-      (f) =>
-        `  • ${f.key}: ${capPreservingOperative(f.body, COLD_FACT_BODY_CAP, {
+    const lines = brief.facts.map((f) => {
+      const fetch = `facts:list { scope: 'owner', key: '${f.key}' }`;
+      const body = capPreservingOperative(f.body, COLD_FACT_BODY_CAP, {
           inlineNotice: true,
           // These rows come from listOwnerFactsFn, so preserve that selector in
           // the recovery handle. facts:list requires an explicit scope even for
           // a keyed lookup; the old key-only hint sent successors into a
           // guaranteed invalid_args retry at exactly the recovery boundary.
-          more: `facts:list { scope: 'owner', key: '${f.key}' }`,
-        })}`,
-    );
+          more: fetch,
+        });
+      const provenance = f.sourceProvenance;
+      let source = '';
+      if (provenance?.quoteRedacted) {
+        source =
+          `\n    source quote: ⚠ WITHHELD — credential-shaped content was redacted before storage; ` +
+          `inspect the fact metadata via ${fetch}`;
+      } else if (provenance?.quote?.trim()) {
+        const label = provenance.label?.trim() || provenance.kind;
+        const quote = capPreservingOperative(provenance.quote, COLD_FACT_SOURCE_QUOTE_CAP, {
+          inlineNotice: true,
+          more: fetch,
+        });
+        source = `\n    source quote [${provenance.verified ? 'verified' : 'unverified'}; ${label}]: ${quote}`;
+      } else if (provenance && !provenance.verified) {
+        source =
+          `\n    source provenance: ⚠ UNREADABLE — ${provenance.error?.trim() || 'source verification failed'}; ` +
+          `inspect via ${fetch}`;
+      } else if (provenance) {
+        source =
+          `\n    source provenance: ⚠ UNREADABLE — verified source metadata carried no quote; ` +
+          `inspect via ${fetch}`;
+      }
+      return `  • ${f.key}: ${body}${source}`;
+    });
     sections.push(
       `Your standing facts (owner-scoped; folded into every orient until retracted — walls/commitments live here):\n${lines.join('\n')}`,
     );

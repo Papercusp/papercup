@@ -773,6 +773,94 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     expect(out).toContain('re-claim');
   });
 
+  it('P-012 renders the verified source quote instead of dropping the answer one step from the reader', () => {
+    const candidate = '1f43e05ae7a88ebed626c84ff254a0b1508937d6';
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      loop: null,
+      heldItems: [],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [
+        {
+          key: 'freeze-directive',
+          body: 'Never cut a fresh candidate while a frozen repair is active.',
+          sourceRef: '[turn:owner@2026-09-03T22:31:00Z]',
+          sourceProvenance: {
+            kind: 'owner-turn',
+            verified: true,
+            quote: `The candidate that passed every test was ${candidate}. It never went green.`,
+            label: 'owner turn 2026-09-03T22:31Z',
+            verifiedAt: '2026-09-04T14:00:00Z',
+          },
+        },
+      ],
+      awaits: [],
+      fleet: null,
+    };
+
+    const out = renderCarryBriefColdExtras(brief);
+    // Permanent falsifier of the pre-fix renderer: before P-012 neither the
+    // quote prefix nor this SHA appeared anywhere in the rendered cold brief.
+    expect(out).toContain('source quote [verified; owner turn 2026-09-03T22:31Z]');
+    expect(out).toContain(candidate);
+    expect(out).toContain('It never went green.');
+  });
+
+  it('P-012 distinguishes withheld/unreadable provenance from provenance that is absent', () => {
+    const base: CarryBrief = {
+      ownerId: 'x',
+      loop: null,
+      heldItems: [],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [
+        { key: 'absent', body: 'no provenance was captured' },
+        {
+          key: 'redacted',
+          body: 'source carried a credential-shaped value',
+          sourceProvenance: {
+            kind: 'owner-turn',
+            verified: true,
+            quoteRedacted: true,
+            verifiedAt: '2026-09-04T14:00:00Z',
+          },
+        },
+        {
+          key: 'unverified',
+          body: 'source lookup failed',
+          sourceProvenance: {
+            kind: 'work-item',
+            verified: false,
+            error: 'not_found',
+            verifiedAt: '2026-09-04T14:00:00Z',
+          },
+        },
+        {
+          key: 'verified-without-quote',
+          body: 'legacy verified metadata',
+          sourceProvenance: {
+            kind: 'msg',
+            verified: true,
+            verifiedAt: '2026-09-04T14:00:00Z',
+          },
+        },
+      ],
+      awaits: [],
+      fleet: null,
+    };
+
+    const out = renderCarryBriefColdExtras(base);
+    const absentLine = out.split('\n').find((line) => line.includes('• absent:')) ?? '';
+    expect(absentLine).not.toMatch(/WITHHELD|UNREADABLE/);
+    expect(out).toContain('source quote: ⚠ WITHHELD');
+    expect(out).toContain('source provenance: ⚠ UNREADABLE — not_found');
+    expect(out).toContain('source provenance: ⚠ UNREADABLE — verified source metadata carried no quote');
+    expect(out).toContain("facts:list { scope: 'owner', key: 'verified-without-quote' }");
+  });
+
   it('returns "" when the brief carries nothing beyond the loop note', () => {
     const empty: CarryBrief = {
       ownerId: 'x',
