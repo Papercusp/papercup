@@ -5499,6 +5499,20 @@ export async function gitPipelinePosition(
   // Hoisting the local avoids either composer re-reading deploy state or the two
   // reader-facing answers deriving opposite polarities independently.
   const greenPinAtStagingHead = snap.deploy?.greenPinAtStagingHead ?? null;
+  const stagingHeadSha = snap.deploy?.stagingHead?.sha ?? null;
+  // D-013/P-011: promotion is a relationship between the exact sha THIS verdict judged
+  // and the main pin the WRITER recorded beside it. The ordinary staging buffer is a
+  // different axis. Resolve the three independent ancestry questions concurrently; a
+  // failed git read remains null and therefore cannot manufacture promotion or absorption.
+  const judgedSha = snap.gate.observedCandidate ?? null;
+  const verdictMainPin = snap.gate.lastMainPin ?? null;
+  const [mainContainsJudgedSha, stagingContainsMainPin, stagingContainsJudgedSha] = await Promise.all([
+    verdictMainPin && judgedSha ? refContains(git, root, verdictMainPin, judgedSha) : Promise.resolve(null),
+    stagingHeadSha && verdictMainPin
+      ? refContains(git, root, stagingHeadSha, verdictMainPin)
+      : Promise.resolve(null),
+    stagingHeadSha && judgedSha ? refContains(git, root, stagingHeadSha, judgedSha) : Promise.resolve(null),
+  ]);
   const gate = {
     stalled: snap.gate.stalled,
     consecutiveReds: snap.gate.consecutiveReds,
@@ -5591,6 +5605,15 @@ export async function gitPipelinePosition(
     failingTestsMeasured: gate.failingTestsMeasured,
     failingTestsProvenance: gate.failingTestsProvenance,
     mainBehindStaging: greenPinAtStagingHead === null ? null : !greenPinAtStagingHead,
+    promotion: {
+      judgedSha,
+      mainPin: verdictMainPin,
+      mainContainsJudgedSha,
+      stagingHead: stagingHeadSha,
+      stagingContainsMainPin,
+      stagingContainsJudgedSha,
+      stagingBufferPresent: greenPinAtStagingHead === null ? null : !greenPinAtStagingHead,
+    },
     lastGreenAtMs: gate.lastGreenAtMs,
     verdictObservedAtMs: gate.verdictObservedAtMs,
     fireStale: gate.fireStale,
@@ -5744,7 +5767,6 @@ export async function gitPipelinePosition(
   // all, and the range this walks is by definition the buffer itself. It lives here
   // rather than in devDeployState() because that one is behind the UI's poll storm
   // (see its cache note); this path is dev:pipeline_position's alone.
-  const stagingHeadSha = snap.deploy?.stagingHead?.sha ?? null;
   const stagingBufferAgeMs =
     greenPinAtStagingHead === false && ready && stagingHeadSha
       ? await oldestCommitAgeMs(git, root, ready.sha, stagingHeadSha)

@@ -1729,6 +1729,101 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.summary).not.toContain('WEDGED');
   });
 
+  it('D-013: exact judged-SHA promotion stays green while staging is ahead after absorption', async () => {
+    const judged = '1'.repeat(40);
+    const mainPin = '2'.repeat(40);
+    const stagingHead = '3'.repeat(40);
+    const pathCommit = '4'.repeat(40);
+    const git = fakeGit({
+      pathCommit,
+      contains: {
+        HEAD: [pathCommit],
+        'origin/staging': [pathCommit],
+        'origin/main': [pathCommit],
+        deployedsha0: [pathCommit],
+        [mainPin]: [judged],
+        [stagingHead]: [mainPin, judged],
+      },
+    });
+    const res = await gitPipelinePosition(
+      { path: 'packages/operator-core/lib/promoted.ts' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () =>
+          snap(
+            {
+              consecutiveReds: 0,
+              observedCandidate: judged,
+              lastMainPin: mainPin,
+              verdictObservedAtMs: Date.now() - 1_000,
+            },
+            'synced',
+            {
+              stagingHead: { sha: stagingHead } as DevDeployState['stagingHead'],
+              greenPinAtStagingHead: false,
+            },
+          ),
+      },
+    );
+
+    expect(res.verdictProvenance.mainBehindStaging).toBe(true);
+    expect(res.gate.ownerBrief?.answer).toBe('green');
+    expect(res.gate.ownerBrief?.promotion).toMatchObject({
+      judgedSha: judged,
+      mainPin,
+      mainContainsJudgedSha: true,
+      staging: {
+        headSha: stagingHead,
+        bufferPresent: true,
+        relation: 'ahead-after-absorption',
+      },
+    });
+  });
+
+  it('D-013: green-not-promoted follows exact ancestry even when no staging buffer exists', async () => {
+    const judged = '5'.repeat(40);
+    const mainPin = '6'.repeat(40);
+    const pathCommit = '7'.repeat(40);
+    const git = fakeGit({
+      pathCommit,
+      contains: {
+        HEAD: [pathCommit],
+        'origin/staging': [pathCommit],
+        'origin/main': [pathCommit],
+        deployedsha0: [pathCommit],
+        [mainPin]: [],
+      },
+    });
+    const res = await gitPipelinePosition(
+      { path: 'packages/operator-core/lib/unpromoted.ts' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () =>
+          snap(
+            {
+              consecutiveReds: 0,
+              observedCandidate: judged,
+              lastMainPin: mainPin,
+              verdictObservedAtMs: Date.now() - 1_000,
+            },
+            'synced',
+            {
+              greenPin: { sha: mainPin } as DevDeployState['greenPin'],
+              stagingHead: { sha: mainPin } as DevDeployState['stagingHead'],
+              greenPinAtStagingHead: true,
+            },
+          ),
+      },
+    );
+
+    expect(res.verdictProvenance.mainBehindStaging).toBe(false);
+    expect(res.gate.ownerBrief?.answer).toBe('green-not-promoted');
+    expect(res.gate.ownerBrief?.promotion.mainContainsJudgedSha).toBe(false);
+    expect(res.gate.ownerBrief?.promotion.staging.relation).toBe('equal');
+  });
+
   it('a submodule path is detected, annotated, and resolved against the nested repo while staging uses the superproject gitlink', async () => {
     const git = fakeGit({
       submodules: ['libs/papercusp'],
