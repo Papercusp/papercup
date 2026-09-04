@@ -27,8 +27,9 @@ import { detectHeadingOverlap, GENERATED_MARKER } from '@papercusp/orchestrator/
 /** Stable section headings the GENERATED su base / its splices own — an override that
  *  re-states one is duplicating, not adding. (Substring match on a `## ` heading line.) */
 const BASE_OWNED_HEADINGS: readonly string[] = [
-  'AUTO mode', // generated via PAPERCUSP-SU:AUTO-MODE (operating-modes-policy.ts)
-  'IDEATE mode', // generated via PAPERCUSP-SU:AUTO-MODE (operating-modes-policy.ts) — same section
+  'AUTO mode', // the su.mode-auto identity document (P-021) — attached by mode:set, never authored in an override
+  'IDEATE mode', // the su.mode-ideate identity document (P-021)
+  'Operating modes', // the KERNEL half spliced at PAPERCUSP-SU:AUTO-MODE (operating-modes-policy.ts): state · registration · implications · authority
   'Who you are',
   'Working in a shared environment',
   'Git — a background routine owns commit',

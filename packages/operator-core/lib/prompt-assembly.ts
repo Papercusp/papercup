@@ -75,6 +75,7 @@ import { renderCouplingNote } from './coupling-policy';
 import { renderStatePlaneNote } from './state-plane-policy';
 import { renderObservationRubricNudge } from './observation-rubric-policy';
 import { renderModesPolicy } from './operating-modes-policy';
+import { audienceIdentityDocument, resolveSuIdentityDocument } from '@papercusp/orchestrator/blueprint';
 import { renderResultDoorSection } from './result-door-prompt';
 import { renderWorkspaceMapSection } from './desktop-install/workspace-map';
 import { renderPromotionModelSection } from './desktop-install/promotion-model';
@@ -319,20 +320,30 @@ export function loadRoleToolsMd(role: Role): string | null {
 const modePersonaCache = new Map<string, string | null>();
 
 /**
- * Load `<role>.persona.<mode>-mode.md` — the audience-mode character
- * overlay. Injected as the first system section so it frames who the
- * user is before the shared persona rules apply.
+ * Load the AUDIENCE identity for a chat role + audience mode — the character overlay
+ * that frames who the user is (engineer / novice) before the shared persona rules apply.
+ * Injected as the first system section.
  *
- * Returns null when no file exists for the given mode (opt-in per role).
- * Throws when a file exists but is unreadable.
+ * identities-v1 P-021 (D-008 "unify the second axis"): the former
+ * `apps/operator/prompts/<role>.persona.<mode>-mode.md` files are identities on the
+ * exclusive `audience` slot — `blueprints/<role>.audience-<mode>/prompts/audience.md`
+ * (`AUDIENCE_IDENTITY_DOCUMENTS`) — resolved THROUGH THE PROMPT CHAIN (`identityRoots`:
+ * most specific tier first, the built-in harness last), so an installed override of an
+ * audience wins over the built-in copy. An identity has ONE home: the prompts-dir path is
+ * no longer consulted.
+ *
+ * Returns null for an unknown role/mode pair or an identity installed in no tier (opt-in
+ * per role). Throws when a document exists but is unreadable.
  */
-export function loadRoleModePersona(role: Role, mode: string): string | null {
-  const key = `${role}:${mode}`;
+export function loadRoleModePersona(role: Role, mode: string, identityRoots?: readonly string[]): string | null {
+  const key = `${role}:${mode}:${(identityRoots ?? []).join('|')}`;
   if (!shouldBypassCache() && modePersonaCache.has(key)) {
     return modePersonaCache.get(key)!;
   }
-  const path = join(promptsDir(), `${role}.persona.${mode}-mode.md`);
-  const text = existsSync(path) ? readFileSync(path, 'utf8') : null;
+  const doc = audienceIdentityDocument(role, mode);
+  const roots = identityRoots && identityRoots.length ? identityRoots : [harnessRoot()];
+  const hit = doc ? resolveSuIdentityDocument(doc, roots) : null;
+  const text = hit?.text ?? null;
   modePersonaCache.set(key, text);
   return text;
 }

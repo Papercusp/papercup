@@ -7,10 +7,12 @@
  *
  *   1. `stackRefsForRoute` — the binding is DERIVED, never a new table. The fleet posture
  *      a session runs is presence's `fleet_role` (already projected into the control
- *      anchor as `route.role`); the mode axes are `agent_modes` (already `modes`), with
- *      no mode-axis DOCUMENT in v1 (D-008; P-021 supplies them). This function projects
- *      those facts into the anchor's `stack` — bound-layer refs `slot:id` — so a posture
- *      change bumps the anchor generation exactly like a mode flip does.
+ *      anchor as `route.role`); the mode axes are `agent_modes` (already `modes`), each
+ *      ACTIVE mode binding its definition identity (`stackRefsForModes`, P-021 / D-008:
+ *      `auto` → `autonomy:su.mode-auto`, …). `stackRefsForSession` projects both facts
+ *      into the anchor's `stack` — bound-layer refs `slot:id` — so a posture change bumps
+ *      the anchor generation exactly like a mode flip does, and a mode flip now carries a
+ *      layer attach / detach through the same channel.
  *
  *   2. `renderStackTransitionContext` — at turn start the hook consumes the pending
  *      `⟦CTRL:transition⟧` (turn-start-memory.ts); this renders, as a SEPARATE context
@@ -37,12 +39,47 @@ export const SU_POSTURE_REFS = {
   leader: 'fleet-posture:su.fleet-leader',
 } as const;
 
-/** The bound-layer refs a session's route implies (v1: the fleet posture only). */
+/** The bound-layer refs a session's route implies (the fleet posture). */
 export function stackRefsForRoute(route: ControlAnchorState['route']): string[] {
   if (route.kind !== 'fleet') return [];
   const role = (route.role ?? '').trim().toLowerCase();
   if (role === 'leader' || role === 'member') return [SU_POSTURE_REFS[role]];
   return [];
+}
+
+/**
+ * P-021 (D-008 as amended): the mode-axis identity a registry mode binds — `agent_modes`
+ * rows are the STATE, these are the DEFINITION layers the state projects. Inlined for the
+ * same lazy-import reason as `SU_POSTURE_REFS` and PINNED to the orchestrator's
+ * `suModeLayer` / `SU_MODE_DOCUMENTS` by `stack-binding-channel.test.ts`. A registry mode
+ * with no definition document (goal / grade / test) has no row here and binds nothing.
+ */
+export const SU_MODE_REFS: Readonly<Record<string, string>> = {
+  auto: 'autonomy:su.mode-auto',
+  'cold-auto': 'autonomy:su.mode-auto',
+  ideate: 'ideation:su.mode-ideate',
+  drain: 'objective:su.mode-drain',
+  audit: 'audit:su.mode-audit',
+};
+
+/**
+ * The bound-layer refs a session's ACTIVE modes imply — one per axis (auto + cold-auto
+ * share the autonomy axis and the same document). The implication closure is not applied
+ * here: `setMode` already wrote the implied rows, so the `modes` read from `agent_modes`
+ * carries `drain` AND `auto`.
+ */
+export function stackRefsForModes(modes: readonly string[] | null | undefined): string[] {
+  const out: string[] = [];
+  for (const m of modes ?? []) {
+    const ref = SU_MODE_REFS[String(m).trim().toLowerCase()];
+    if (ref && !out.includes(ref)) out.push(ref);
+  }
+  return out;
+}
+
+/** The whole derived binding of a live session: fleet posture (route) + mode axes (agent_modes). */
+export function stackRefsForSession(input: { route: ControlAnchorState['route']; modes: readonly string[] | null | undefined }): string[] {
+  return [...stackRefsForRoute(input.route), ...stackRefsForModes(input.modes)];
 }
 
 function sameRefs(a: readonly string[], b: readonly string[]): boolean {

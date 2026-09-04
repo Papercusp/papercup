@@ -1737,6 +1737,20 @@ const post = defineTool({
     // Build the su launch spec: engineer playbook + per-launch scope/plan
     // addendum (promptText) + the superuser MCP url (codex consumes it). The
     // SAME builder roles use, at the superuser tier (D-001).
+    // identities-v1 P-012 / P-021: the fleet posture the session launches INTO and the modes
+    // it launches WITH, so the FIRST render carries their identity layers. Both are read from
+    // the same body fields `resolveFleet` / `syncLaunchModeToRegistry` consume below: a fresh
+    // `--fleet-name` leads, a `--fleet` slug joins as member unless `--fleet-role` says
+    // otherwise; `--mode=drain` ⇒ auto + drain, `--auto` ⇒ auto, and a fleet MEMBER is
+    // always AUTO (`ensureLaunchedWakeAuto` registers it). Resolution happens after this
+    // build, and a requested fleet that fails to resolve refuses the launch outright (the
+    // `fleetRequested` guard), so the render can never outlive a membership that did not
+    // happen — and the registry write that follows is the same set, so the kickoff prose
+    // and the live `agent_modes` rows agree from turn 1 (EI-11110 / WI-5976).
+    const launchFleetRole = body.fleet_name?.trim() ? 'leader' : body.fleet?.trim() ? body.fleet_role?.trim() || 'member' : null;
+    const launchDrain = (body.mode?.trim() || null) === 'drain';
+    const launchAuto = body.auto === true || launchDrain || launchFleetRole === 'member';
+    const launchModes: string[] | null = launchAuto ? (launchDrain ? ['auto', 'drain'] : ['auto']) : null;
     let spec;
     try {
       spec = await buildLaunchSpec({
@@ -1754,14 +1768,8 @@ const post = defineTool({
         planNow,
         // EI-996: null for a plain su launch ⇒ byte-identical prompt.
         roleAddendum,
-        // identities-v1 P-012: the fleet posture the session launches INTO, so the first
-        // render carries it. The REQUESTED role, read from the same body fields
-        // `resolveFleet` consumes below (a fresh `--fleet-name` leads; a `--fleet` slug
-        // joins as member unless `--fleet-role` says otherwise); resolution happens after
-        // this build, and a requested fleet that fails to resolve refuses the launch
-        // outright (the `fleetRequested` guard), so the render can never outlive a
-        // membership that did not happen.
-        fleetRole: body.fleet_name?.trim() ? 'leader' : body.fleet?.trim() ? body.fleet_role?.trim() || 'member' : null,
+        fleetRole: launchFleetRole,
+        modes: launchModes,
       });
     } catch (e: any) {
       return jsonRes({ status: 'error', error: e?.message ?? 'su launch spec build failed' }, 400);

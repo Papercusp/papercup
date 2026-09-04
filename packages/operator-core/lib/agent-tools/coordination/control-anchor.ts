@@ -17,7 +17,7 @@ import { latestFleetMembership } from '../../fleet-membership-store';
 import { getSessionBrief, type SessionBriefLifecycle } from '../../session-brief';
 import { notifyAgentOrdersChanged } from '../../agent-orders-notify';
 import { fetchSelfWake, type SelfWakeSignals, type SelfWakeSource } from './presence-selfwake';
-import { stackRefsForRoute } from '../../stack-binding-channel';
+import { stackRefsForSession } from '../../stack-binding-channel';
 import {
   readGoalHolderAuthority,
   type GoalHolderAuthority,
@@ -37,7 +37,7 @@ export interface ControlAnchorState {
    * identities-v1 P-012 — the session's STACK BINDING: the identity layers bound beyond
    * the kernel, as `slot:id` refs (`fleet-posture:su.fleet-leader`). DERIVED from the
    * same authorities this anchor already projects (`route.role` → the fleet posture;
-   * `modes` → the mode axes once P-021 supplies documents) by
+   * `modes` → one definition identity per mode axis, P-021) by
    * `stack-binding-channel.ts`, so a posture change bumps the generation exactly like a
    * mode flip; the turn-start hook then delivers the layer TEXT beside the `⟦CTRL⟧`
    * line. Present only when non-empty — costs nothing on the common unbound session.
@@ -687,8 +687,9 @@ export async function buildControlAnchorState(
       : { kind: 'self' };
   return normalizeControlAnchorState({
     modes: modes.map((m) => m.mode),
-    // P-012: the stack binding is a projection of the route (fleet posture) — no new leg.
-    stack: stackRefsForRoute(route),
+    // P-012 / P-021: the stack binding is a projection of the route (fleet posture) and of
+    // the active modes (one definition identity per mode axis) — no new leg.
+    stack: stackRefsForSession({ route, modes: modes.map((m) => m.mode) }),
     loop: { active: Boolean(loop?.active), intervalSec: loop?.intervalSec ?? null },
     wakeSource: selfWake.get(ownerId)?.selfWake,
     carry: loop?.carry ?? 'warm',

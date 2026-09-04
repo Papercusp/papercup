@@ -604,6 +604,14 @@ export interface BuildSuLaunchSpecInput {
    * through the control-anchor channel instead.
    */
   fleetRole?: string | null;
+  /**
+   * identities-v1 P-021: the registry modes this session launches WITH (`--auto` ⇒ auto,
+   * `--mode=drain` ⇒ auto + drain, a fleet member ⇒ auto — the same set bootstrap-su
+   * registers in `agent_modes`), so the FIRST render already carries each mode's definition
+   * identity on its axis slot (`suSessionBinding({ modes })`). Null / omitted ⇒ no mode
+   * layer bound; a later `mode:set` attaches through the control-anchor channel instead.
+   */
+  modes?: readonly string[] | null;
   /** Plan binding for the launch-context addendum (optional). */
   planSlug?: string | null;
   planTitle?: string | null;
@@ -768,10 +776,14 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
           // harness-path resolution) which this module otherwise never needs at import time.
           const { composeSuStackSource, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
           const harnessDir = path.resolve(suBaseSource, '..', '..', '..', '..'); // <root>/blueprints/base/prompts/su.md
-          // P-012: the launch-time stack binding — the fleet posture the session launches
-          // into — is part of the FIRST render (an inject-now layer also renders in place on
-          // every full render). Derived from the same fact presence carries (`fleet_role`).
-          suBaseText = composeSuStackSource({ harnessDir, binding: suSessionBinding({ fleetRole: input.fleetRole ?? null }) }).text;
+          // P-012 / P-021: the launch-time stack binding — the fleet posture the session
+          // launches into and the definition identity of each mode it launches with — is
+          // part of the FIRST render (an inject-now layer also renders in place on every
+          // full render). Derived from the same facts presence + agent_modes carry.
+          suBaseText = composeSuStackSource({
+            harnessDir,
+            binding: suSessionBinding({ fleetRole: input.fleetRole ?? null, modes: input.modes ?? null }),
+          }).text;
         } catch (e) {
           console.warn(`[role-launch-spec] su slot-stack compose failed — rendering su.md unsealed: ${e instanceof Error ? e.message : String(e)}`);
         }
