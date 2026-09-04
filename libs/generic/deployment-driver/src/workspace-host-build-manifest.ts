@@ -176,6 +176,8 @@ const SECRET_PARAMETER =
  */
 const GCP_IMMUTABLE_IMAGE_REFERENCE =
   /^projects\/[a-z][a-z0-9-]{4,28}[a-z0-9]\/global\/images\/[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$/;
+const OCI_IMAGE_REFERENCE =
+  /^[a-z0-9][a-z0-9._-]*(?::\d{1,5})?(?:\/[a-z0-9][a-z0-9._-]*)+(?::[A-Za-z0-9][A-Za-z0-9._-]{0,127})?$/;
 
 /**
  * Material paths that name secret key material. The manifest is published beside the artifact it
@@ -328,8 +330,17 @@ function normalizeTargets(
 function normalizeBaseImageReference(
   reference: string,
   targets: readonly WorkspaceHostBuildTarget[],
+  builderKind: WorkspaceHostBuilderKind,
 ): string {
   const normalized = requireText(reference, "baseImage.reference");
+  if (builderKind === WORKSPACE_HOST_BOOTC_BUILDER_KIND) {
+    if (!OCI_IMAGE_REFERENCE.test(normalized)) {
+      throw new WorkspaceHostBuildManifestError(
+        "baseImage.reference must be a registry-qualified OCI image reference for bootc-image-builder",
+      );
+    }
+    return normalized;
+  }
   if (
     targets.some((target) => target.provider === "gcp") &&
     !GCP_IMMUTABLE_IMAGE_REFERENCE.test(normalized)
@@ -398,6 +409,7 @@ export function normalizeWorkspaceHostBuildManifestInput(
       reference: normalizeBaseImageReference(
         input.baseImage.reference,
         normalizedTargets,
+        input.builder.kind,
       ),
       architecture: requireText(
         input.baseImage.architecture,
