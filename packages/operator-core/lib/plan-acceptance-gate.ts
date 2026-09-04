@@ -35,7 +35,10 @@ import {
   readRubricPlanRevision,
 } from './rubrics';
 import { listScorecards } from './scorecards';
-import { areAcceptanceLineageRelated } from './acceptance-author-identity';
+import {
+  areAcceptanceLineageRelated,
+  resolvePlanImplementerIdentities,
+} from './acceptance-author-identity';
 import { rubricVettingConsultHint } from './consult/selection-policies';
 import { gradingViaOf, pickAuthoritativeGrading, readGraderSelectionVia } from './acceptance-grading-authority';
 import {
@@ -948,20 +951,39 @@ export async function evaluatePlanAcceptanceGate(
   // agree, or a seat succession stamped against emit's author is not recognized
   // here and the plan stays unshippable for a different reason than before.
   const implementer = rubric.createdBy ?? rubric.proposedBy ?? null;
+  // `implementer` is the acceptance-author/seat identity and must stay separate
+  // from the principal identities that actually implemented the subject plan.
+  // The latter only widen the independent-grader exclusion population.
+  const principalImplementers = await resolvePlanImplementerIdentities(
+    rubric.subjectPlan ?? planSlug,
+    { workspaceId: rubric.workspaceId },
+  );
+  const principalImplementerIdentities = new Set(principalImplementers);
   const implementerIdentities = new Set<string>();
   if (implementer) {
     implementerIdentities.add(implementer);
-    const candidateIds = [...new Set(allComplete.map((s) => s.createdBy).filter((id): id is string => id != null))];
-    await Promise.all(
-      candidateIds.map(async (candidateId) => {
-        if (await areAcceptanceLineageRelated(implementer, candidateId, { workspaceId: rubric.workspaceId })) {
-          implementerIdentities.add(candidateId);
-        }
-      }),
-    );
   }
+  const candidateIds = [...new Set(allComplete.map((s) => s.createdBy).filter((id): id is string => id != null))];
+  await Promise.all(
+    candidateIds.map(async (candidateId) => {
+      if (
+        implementer &&
+        (await areAcceptanceLineageRelated(implementer, candidateId, { workspaceId: rubric.workspaceId }))
+      ) {
+        implementerIdentities.add(candidateId);
+      }
+      const principalRelated = await Promise.all(
+        principalImplementers.map((principal) =>
+          areAcceptanceLineageRelated(principal, candidateId, { workspaceId: rubric.workspaceId }),
+        ),
+      );
+      if (principalRelated.some(Boolean)) principalImplementerIdentities.add(candidateId);
+    }),
+  );
   const isImplementerScorecard = (scorecard: (typeof allComplete)[number]) =>
     scorecard.createdBy != null && implementerIdentities.has(scorecard.createdBy);
+  const isPlanImplementerScorecard = (scorecard: (typeof allComplete)[number]) =>
+    scorecard.createdBy != null && principalImplementerIdentities.has(scorecard.createdBy);
   /**
    * WI-2141007: a verdict recorded by a SUCCESSOR to a dead rubric author holds
    * author authority even though its `createdBy` is, by construction, outside the
@@ -997,7 +1019,8 @@ export async function evaluatePlanAcceptanceGate(
         // from manufacturing its own independent grader. A successor's verdict
         // counts as author-side here too (WI-2141007), or the same chain could be
         // manufactured one seat along.
-        !holdsAuthorAuthority(s)),
+        !holdsAuthorAuthority(s) &&
+        !isPlanImplementerScorecard(s)),
   );
   if (complete.length === 0) {
     return {
@@ -1026,7 +1049,9 @@ export async function evaluatePlanAcceptanceGate(
   // value (D-006), and a card with no cascade provenance ranks as floor rather
   // than being demoted — see acceptance-grading-authority.ts for both.
   const independentCards = complete.filter(
-    (s) => !implementer || (s.createdBy != null && !holdsAuthorAuthority(s)),
+    (s) =>
+      !isPlanImplementerScorecard(s) &&
+      (!implementer || (s.createdBy != null && !holdsAuthorAuthority(s))),
   );
   const graderVia = await readGraderSelectionVia(rubric.workspaceId, rubric.rubricId);
   const independent = pickAuthoritativeGrading(independentCards, (s) => gradingViaOf(s, graderVia));
@@ -1037,13 +1062,17 @@ export async function evaluatePlanAcceptanceGate(
         .map((criterion) => criterion.key)
     : [];
   if (!independent) {
+    const principalLabel =
+      principalImplementers.length > 0
+        ? ` or a principal plan implementer (${principalImplementers.join(', ')})`
+        : '';
     return {
       satisfied: false,
       code: 'self_graded_only',
       rubricId: rubric.rubricId,
       message:
         `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' is only graded by its ` +
-        `own author ('${implementer}') — grader ≠ implementer (plan D-005, the self-graded-homework guard). A ` +
+        `own author ('${implementer}')${principalLabel} — grader ≠ implementer (plan D-005, the self-graded-homework guard). A ` +
         `different agent or the owner must file the grading scorecard.`,
     };
   }
