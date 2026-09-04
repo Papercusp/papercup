@@ -382,6 +382,38 @@ describe('P-007: the four verdict cells', () => {
   });
 
   /**
+   * EI-22260078732220798. `repairs-outstanding` does not merely MENTION
+   * `stillBrokenNeedsRunCount` — it tells the reader to compare it against the headline
+   * ("when it equals `stillBrokenCount`, nothing here is confirmed work yet"). A qualifier
+   * the assessment INSTRUCTS you to read, but does not declare as evidence, is unreachable
+   * in practice: this cell's payload comes back force-trimmed, so the bare
+   * `stillBrokenCount` headline was the only number that survived and read as a confirmed
+   * repair queue — the exact misread the prose exists to prevent, and the one that costs
+   * an agent a round of re-fixing files that were already fixed.
+   *
+   * Asserted as a PAIR so the pin cannot rot into a bare literal: if the prose stops
+   * naming the qualifier the premise assertion fails and this test must be rewritten
+   * deliberately, rather than silently guarding a sentence nobody says any more.
+   */
+  it('declares the qualifier its own repairs-outstanding prose tells the reader to compare', () => {
+    registerBuiltinCells();
+    const failures = listCellsUnchecked().find(
+      (c) => c.cell === 'gate.greenCheckpoint.candidateFailures',
+    );
+
+    expect(failures).toBeDefined();
+    // Premise: the prose really does direct the reader at this qualifier.
+    expect(failures!.assessment!.codes['repairs-outstanding']!.meaning).toContain(
+      'stillBrokenNeedsRunCount',
+    );
+    // The point: therefore it must be reachable as evidence, beside the headline it qualifies.
+    expect(failures!.assessment!.evidence).toContain(
+      'gate.candidateFailures.stillBrokenNeedsRunCount',
+    );
+    expect(failures!.headline).toBe('gate.candidateFailures.stillBrokenCount');
+  });
+
+  /**
    * D-014, asserted rather than trusted: ownership stays a CELL with its own declared
    * semantics, and the pointer is only a route to it. If someone ever "simplifies" this
    * by folding ownership into the verdict cell as extra evidence, this fails.

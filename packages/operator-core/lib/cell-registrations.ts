@@ -734,6 +734,13 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
       },
     },
     evidence: [
+      // EI-22260078732220798: `repairs-outstanding` INSTRUCTS the reader to compare this
+      // against the headline ("when it equals `stillBrokenCount`, nothing here is confirmed
+      // work yet") — so it has to be reachable as evidence, not just named in prose. It was
+      // omitted, and because this cell's payload comes back force-trimmed the qualifier was
+      // unreachable without paging a scratch spill: the bare `stillBrokenCount` headline read
+      // as a confirmed repair queue, which is the exact misread the prose exists to prevent.
+      'gate.candidateFailures.stillBrokenNeedsRunCount',
       'gate.candidateFailures.distinctFailingFiles',
       'gate.candidateFailures.filesJudged',
       'gate.candidateFailures.scope',
@@ -748,6 +755,12 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
     // the counts they vouch for.
     measuredBy: {
       'gate.candidateFailures.stillBrokenCount': 'gate.candidateFailures.unavailable',
+      // EI-22260078732220798: the qualifier is a COUNT, so P-012 applies to it exactly as it
+      // does to the headline it qualifies — a 0 here is otherwise indistinguishable from "the
+      // hedge was never computed", which would reinstate the same false-confidence read one
+      // level down. Same flag as the count it modifies: both are unmeasured precisely when
+      // `unavailable` names why the failing-file set could not be read.
+      'gate.candidateFailures.stillBrokenNeedsRunCount': 'gate.candidateFailures.unavailable',
       'gate.candidateFailures.distinctFailingFiles': 'gate.candidateFailures.unavailable',
       'gate.candidateFailures.filesJudged': 'gate.candidateFailures.unavailable',
       'gate.candidateFailures.nonTestLegs.perLeg': 'gate.candidateFailures.nonTestLegsMeasured',
