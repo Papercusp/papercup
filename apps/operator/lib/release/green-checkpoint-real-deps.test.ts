@@ -88,7 +88,12 @@ import {
 // pushed commit's `[skip ci]` message means the plain `git push` above never actually
 // triggers GitHub's push-event listener). Mock the two dynamic-import seams
 // dispatchCiWorkflow uses so this is asserted without a real GitHub API call.
-const mockCreateWorkflowDispatch = vi.fn(async () => ({}) as unknown);
+// Declared WITH its argument: the real call site passes one (see the
+// `toHaveBeenCalledWith({ ... })` assertions below), and a zero-arg `vi.fn`
+// types `mock.calls` as the empty tuple `[]`, so reading `call[0]` to inspect
+// the dispatched payload is a TS2493 error against a call that genuinely
+// carries an argument at runtime.
+const mockCreateWorkflowDispatch = vi.fn(async (_args?: unknown) => ({}) as unknown);
 const mockGetOctokit = vi.fn(async () => ({
   rest: { actions: { createWorkflowDispatch: mockCreateWorkflowDispatch } },
 }));
@@ -826,7 +831,11 @@ describe("P-007/D-004: the real deps no longer wire a frozen-repair staging join
       // landed since the freeze. The fixture is kept: it proves the deps are real deps built on
       // a real repo, so `toBeUndefined` here is a measurement and not a vacuous pass.
       expect(
-        (deps as Record<string, unknown>).reconcileFrozenRepairIntoStaging,
+        // `as unknown as` is required, not cosmetic: CheckpointDeps and
+        // Record<string, unknown> do not sufficiently overlap for a direct
+        // assertion (TS2352). Probing for a key the type no longer declares is
+        // exactly the point of this assertion, so widen through `unknown`.
+        (deps as unknown as Record<string, unknown>).reconcileFrozenRepairIntoStaging,
       ).toBeUndefined();
       // POSITIVE CONTROL: these same deps DO carry the hooks the gate still uses, so an empty
       // or mis-built `deps` object cannot make the assertion above pass by accident.

@@ -1477,6 +1477,14 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     // and staging kept moving underneath it. Under P-005 that ancestry is irrelevant: the
     // repair head is judged at its own sha whether or not staging can see it.
     const converged = await commit("b", "fixed on staging", "peer fix converged");
+    // P-007/D-004: promotion is now fail-closed on the admission ledger ref — a repairHead may
+    // differ from the candidate ONLY because `admitPathsOntoRepairHead` produced it, and that
+    // CAS-advances this ref. This fixture predates that requirement: it modelled the pre-D-004
+    // convergence shape, which P-003 has since deleted, so nothing can reach this state by
+    // convergence any more. Model the one door a repair head can legitimately come through.
+    // The test's SUBJECT is unchanged — a mixed signature the narrow runners cannot re-run is
+    // judged by the full gate AT THE REPAIR HEAD, never at the moving tip.
+    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, converged]);
     const stagingTip = await commit("c", "3", "later staging work");
     const now = Date.now();
     let queue: FrozenCandidateRepairQueue | null = {
@@ -1865,8 +1873,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       reason: "repair-in-progress",
       from: ready,
     });
-    // The judged sha is on the frozen side of the fixture, never the moving staging tip.
-    expect(held.candidate).not.toBe(stagingTip);
+    // The judged sha is on the FROZEN side of the fixture, never the moving staging tip. The
+    // frozen side holds exactly two shas — the candidate and the impostor head it refused to
+    // promote — so naming both is exact, not a hedge, and it asserts strictly more than a bare
+    // `not.toBe(stagingTip)` while committing to nothing the fixture does not already fix.
+    expect([frozen, impostor]).toContain(held.candidate);
     // Fail-closed: nothing advanced, and the tip was NOT selected as a consolation candidate.
     expect(advancedCandidates).toEqual([]);
     expect(await revParse(repo, "ready")).toBe(ready);
