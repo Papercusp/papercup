@@ -944,6 +944,58 @@ describe("LearningTab — Improvements view (default)", () => {
     ).toBe(true);
   });
 
+  it("keeps every routed idea that targets the same work item", () => {
+    const olderIdea = {
+      ...scoutSnapshot.recent[0],
+      ideaId: "idea-shared-older",
+      lens: "risk-first",
+      rail: "improvement",
+      routedRef: "wi:EI-75",
+      title: "Older route to EI-75",
+      routedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    };
+    const newerIdea = {
+      ...olderIdea,
+      ideaId: "idea-shared-newer",
+      lens: "value-first",
+      title: "Newer route to EI-75",
+      routedAt: new Date(Date.now() - 60_000).toISOString(),
+    };
+    scoutResult = {
+      ...scoutResult,
+      data: [
+        {
+          ...scoutSnapshot,
+          recent: [newerIdea, olderIdea, ...scoutSnapshot.recent],
+        },
+      ],
+    };
+
+    render(<LearningTab />);
+
+    const sharedItemButtons = screen.getAllByRole("button", {
+      name: /Show where “cup:spawn children are coordination-MUTE” came from/,
+    });
+    expect(sharedItemButtons).toHaveLength(2);
+
+    nuqsState.itrace = "idea-shared-newer";
+    cleanup();
+    render(<LearningTab />);
+    expect(
+      screen.getByLabelText("Pipeline trace for Newer route to EI-75"),
+    ).toBeTruthy();
+
+    nuqsState.itrace = "idea-shared-older";
+    cleanup();
+    render(<LearningTab />);
+    expect(
+      screen.getByLabelText("Pipeline trace for Older route to EI-75"),
+    ).toBeTruthy();
+    expect(
+      screen.queryByLabelText("Pipeline trace for Newer route to EI-75"),
+    ).toBeNull();
+  });
+
   it("lists both lanes in the all view", () => {
     render(<LearningTab />);
     expect(

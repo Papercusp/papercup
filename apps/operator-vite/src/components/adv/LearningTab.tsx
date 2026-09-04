@@ -1854,15 +1854,16 @@ function ImprovementsView({
 
   // ── The join. An idea records the artifact it became as a typed ref, so a
   // work-item routing is "wi:EI-…" and the two halves key on the work-item id.
-  // An idea can be re-routed to the same item; keep the newest routing.
-  const ideaByItemId = useMemo(() => {
-    const byId = new Map<string, ScoutRoutedItem>();
+  // Multiple ideas can be routed to the same item; retain every routing so each
+  // idea keeps its own trace and grading control.
+  const ideasByItemId = useMemo(() => {
+    const byId = new Map<string, ScoutRoutedItem[]>();
     for (const idea of routed) {
       if (!idea.routedRef.startsWith("wi:")) continue;
       const id = idea.routedRef.slice("wi:".length);
-      const prev = byId.get(id);
-      if (!prev || (idea.routedAt ?? "") > (prev.routedAt ?? ""))
-        byId.set(id, idea);
+      const ideas = byId.get(id);
+      if (ideas) ideas.push(idea);
+      else byId.set(id, [idea]);
     }
     return byId;
   }, [routed]);
@@ -1876,11 +1877,17 @@ function ImprovementsView({
         : lane === "human"
           ? digest.humanQueue
           : [...digest.autoEligible, ...digest.humanQueue];
-    const workRows: LoopRow[] = base.map((item) => ({
-      key: item.id,
-      item,
-      idea: ideaByItemId.get(item.id) ?? null,
-    }));
+    const workRows: LoopRow[] = base.flatMap((item): LoopRow[] => {
+      const ideas = ideasByItemId.get(item.id) ?? [];
+      if (ideas.length === 0) {
+        return [{ key: item.id, item: item as SlimHumanQueueItem, idea: null }];
+      }
+      return ideas.map((idea) => ({
+        key: `${item.id}:${idea.ideaId}`,
+        item: item as SlimHumanQueueItem,
+        idea,
+      }));
+    });
     // Ideas with no work-item row of their own — routed to a plan/gym/benchmark
     // rail, or not yet filed at all. These are the loop's output BEFORE it
     // becomes work, and the owner named them explicitly as in scope.
@@ -1914,7 +1921,7 @@ function ImprovementsView({
       if (Math.abs(d) > 1e-9) return d;
       return idNum(b.item?.id ?? b.key) - idNum(a.item?.id ?? a.key);
     });
-  }, [digest, ideaByItemId, lane, routed]);
+  }, [digest, ideasByItemId, lane, routed]);
 
   // WI-471938: a filter control's OPTION SET is a claim about what EXISTS, so every source
   // it can answer must come from the CORPUS — never from the rows this read happened to
@@ -2008,11 +2015,17 @@ function ImprovementsView({
     ];
     const filed = new Set(items.map((item) => item.id));
     return [
-      ...items.map((item) => ({
-        key: item.id,
-        item,
-        idea: ideaByItemId.get(item.id) ?? null,
-      })),
+      ...items.flatMap((item): LoopRow[] => {
+        const ideas = ideasByItemId.get(item.id) ?? [];
+        if (ideas.length === 0) {
+          return [{ key: item.id, item: item as SlimHumanQueueItem, idea: null }];
+        }
+        return ideas.map((idea) => ({
+          key: `${item.id}:${idea.ideaId}`,
+          item: item as SlimHumanQueueItem,
+          idea,
+        }));
+      }),
       ...routed
         .filter((idea) => {
           if (!idea.routedRef.startsWith("wi:")) return true;
@@ -2020,7 +2033,7 @@ function ImprovementsView({
         })
         .map((idea) => ({ key: idea.ideaId, item: null, idea })),
     ];
-  }, [digest, ideaByItemId, routed]);
+  }, [digest, ideasByItemId, routed]);
   // Shared column filters + quick-search (owner ask 2026-07-19: mimic the
   // Working tab's Work Queue): the shared filter engine (`impf` param) over
   // the lane/source-scoped rows, plus a global substring quick-search
@@ -3001,14 +3014,16 @@ function ImproveGrid({
   ];
 
   // `?itrace=` holds an ideaId; the grid keys rows by `key` (the work-item id
-  // when filed, else the ideaId), so resolve the open trace to its row key.
+  // when an item has no routed idea, an item+idea pair when filed, else the
+  // ideaId), so resolve the open trace to its row key.
   const expandedRowKey = traceOpen
     ? (rows.find((r) => r.idea?.ideaId === traceOpen)?.key ?? null)
     : null;
   // The `?lsel` target only IF this list holds it — see the scroll note below.
-  // A work row's key is its item id, which is what `lsel` carries.
+  // `lsel` carries the work-item id; when that item has multiple idea rows,
+  // scroll to the first matching row.
   const selectedRowKey =
-    lsel != null && rows.some((r) => r.key === lsel) ? lsel : null;
+    lsel != null ? (rows.find((r) => r.item?.id === lsel)?.key ?? null) : null;
 
   return (
     // P-003: the bordered rounded frame the Retained ledger's grid sits in, so
