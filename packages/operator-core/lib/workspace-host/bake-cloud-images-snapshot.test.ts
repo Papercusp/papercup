@@ -5,9 +5,11 @@
  * during a long build can therefore splice a later function body into the running
  * interpreter even when the source parsed cleanly at launch. The real entrypoint
  * now copies + syntax-checks itself and re-execs the copy before setup. This test
- * mutates only a temporary fixture after the early `date` setup gate and proves the
- * run still completes from its startup snapshot. A permanent pre-fix control keeps
- * the behavioral assertion falsifiable without mutating the shared checkout.
+ * runs the real (non-dry-run) control flow against a temporary fake toolchain,
+ * rewrites the later `bake_one` function while the fake build is still sleeping,
+ * and proves the guarded run completes from its startup snapshot. A permanent
+ * pre-fix control keeps the behavioral assertion falsifiable without mutating the
+ * shared checkout.
  */
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -29,39 +31,131 @@ function withoutSnapshotGuard(): string {
   return SOURCE.slice(0, start) + SOURCE.slice(end);
 }
 
-function runFixture(script: string): { status: number; output: string; files: string[] } {
+function runFixture(script: string): {
+  status: number;
+  output: string;
+  files: string[];
+  outFiles: string[];
+} {
   const dir = mkdtempSync(join(tmpdir(), 'ei-223550-bake-'));
   const source = join(dir, 'bake-cloud-images.sh');
   const health = join(dir, 'p307-build-health.sh');
   const bin = join(dir, 'bin');
   const out = join(dir, 'out');
-  const marker = join(dir, 'source-mutated');
-  const date = join(bin, 'date');
+  const mutationMarker = join(dir, 'source-mutated');
+  const buildMarker = join(dir, 'build-started');
+  const supplyChainMarker = join(dir, 'supply-chain-ran');
+  const key = join(dir, 'release.key');
+  const pubkey = join(dir, 'release.pub');
 
   mkdirSync(bin, { recursive: true });
+  mkdirSync(out, { recursive: true });
   writeFileSync(source, script, { mode: 0o755 });
   copyFileSync(HEALTH, health);
   chmodSync(source, 0o755);
   chmodSync(health, 0o755);
-  writeFileSync(date, `#!/usr/bin/env bash
-if [ ! -e "$BAKE_TEST_MUTATION_MARKER" ]; then
-  : > "$BAKE_TEST_MUTATION_MARKER"
-  printf '\\nif (\\n' >> "$BAKE_TEST_SOURCE"
-fi
-exec /usr/bin/date "$@"
+  writeFileSync(key, 'temporary private key\n');
+  writeFileSync(pubkey, 'temporary public key\n');
+
+  // The build stub deliberately rewrites the later bake_one function while the
+  // parent shell is waiting. Rewrite the existing inode rather than replacing
+  // it, matching the real editor hazard without touching the shared checkout.
+  writeFileSync(join(bin, 'podman'), `#!/usr/bin/env bash
+set -euo pipefail
+subcommand="\${1:-}"
+shift || true
+
+case "$subcommand" in
+  info)
+    printf 'overlay\\n'
+    ;;
+  build)
+    : > "$BAKE_TEST_BUILD_MARKER"
+    sleep 0.15
+    mutation_tmp="$(mktemp "$BAKE_TEST_SOURCE.XXXXXX")"
+    sed '/^bake_one() {/a if (' "$BAKE_TEST_SOURCE" > "$mutation_tmp"
+    cat "$mutation_tmp" > "$BAKE_TEST_SOURCE"
+    rm -f "$mutation_tmp"
+    : > "$BAKE_TEST_MUTATION_MARKER"
+    sleep 0.15
+    ;;
+  push|pull)
+    ;;
+  image)
+    [ "\${1:-}" = "exists" ]
+    ;;
+  run)
+    is_skopeo=0
+    output_dir=""
+    for arg in "$@"; do
+      [ "$arg" = "skopeo" ] && is_skopeo=1
+    done
+    if [ "$is_skopeo" -eq 1 ]; then
+      printf 'sha256:%064d\\n' 1
+      exit 0
+    fi
+    previous=""
+    for arg in "$@"; do
+      if [ "$previous" = "-v" ]; then
+        output_dir="\${arg%%:/output}"
+        break
+      fi
+      previous="$arg"
+    done
+    [ -n "$output_dir" ]
+    mkdir -p "$output_dir/image"
+    printf 'fake rendered disk\\n' > "$output_dir/image/disk.raw"
+    ;;
+  *)
+    printf 'unexpected fake podman subcommand: %s\\n' "$subcommand" >&2
+    exit 1
+    ;;
+esac
 `, { mode: 0o755 });
-  chmodSync(date, 0o755);
+  chmodSync(join(bin, 'podman'), 0o755);
+  writeFileSync(join(bin, 'sudo'), `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "-n" ]; then shift; fi
+exec "$@"
+`, { mode: 0o755 });
+  chmodSync(join(bin, 'sudo'), 0o755);
+  for (const tool of ['syft', 'grype']) {
+    writeFileSync(join(bin, tool), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+    chmodSync(join(bin, tool), 0o755);
+  }
+  writeFileSync(join(dir, 'release-supply-chain.sh'), `#!/usr/bin/env bash
+set -euo pipefail
+: > "$BAKE_TEST_SUPPLY_CHAIN_MARKER"
+`, { mode: 0o755 });
+  chmodSync(join(dir, 'release-supply-chain.sh'), 0o755);
 
   const result = spawnSync(
     'bash',
-    [source, '--registry', 'localhost/test', '--clouds', 'gcp', '--dry-run', '--out', out],
+    [
+      source,
+      '--registry',
+      'localhost/test',
+      '--key',
+      key,
+      '--pubkey',
+      pubkey,
+      '--clouds',
+      'gcp',
+      '--out',
+      out,
+    ],
     {
       cwd: dir,
       env: {
         ...process.env,
         PATH: `${bin}:${process.env.PATH ?? ''}`,
         BAKE_TEST_SOURCE: source,
-        BAKE_TEST_MUTATION_MARKER: marker,
+        BAKE_TEST_MUTATION_MARKER: mutationMarker,
+        BAKE_TEST_BUILD_MARKER: buildMarker,
+        BAKE_TEST_SUPPLY_CHAIN_MARKER: supplyChainMarker,
+        RELEASE_STORAGE_DRIVER: 'overlay',
+        P307_BUILD_HEALTH_DISABLE: '1',
+        TMPDIR: dir,
       },
       encoding: 'utf8',
       timeout: 30_000,
@@ -72,16 +166,23 @@ exec /usr/bin/date "$@"
     status: result.status ?? -1,
     output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
     files: readdirSync(dir),
+    outFiles: readdirSync(out, { recursive: true }).map(String),
   };
 }
 
 describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
-  it('keeps a live dry-run on the startup bytes after the source is rewritten', () => {
+  it('keeps a live bake on the startup bytes after the source is rewritten', () => {
     const result = runFixture(SOURCE);
 
     expect(result.status).toBe(0);
     expect(result.output).toContain('BAKE_RESULT=PASS');
-    expect(result.output).toContain('DRY_RUN: would podman build');
+    expect(result.output).toContain('### 1/4 build (one image, all clouds)');
+    expect(result.output).toContain('gcp: ok');
+    expect(result.files).toContain('source-mutated');
+    expect(result.files).toContain('build-started');
+    expect(result.files).toContain('supply-chain-ran');
+    expect(result.outFiles).toContain('bake-manifest.json');
+    expect(result.outFiles).toContain('gcp/image/disk.raw');
     expect(result.files.some((name) => name.startsWith('papercusp-bake-cloud-images.'))).toBe(false);
   });
 
@@ -90,5 +191,6 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
 
     expect(result.status).not.toBe(0);
     expect(result.output).not.toContain('BAKE_RESULT=PASS');
+    expect(result.output).toMatch(/syntax error/i);
   });
 });
