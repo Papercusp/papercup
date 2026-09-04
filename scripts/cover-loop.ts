@@ -44,11 +44,17 @@
 // 0 — passing every generated test including the ones with no coverage gain.
 // D-048 records the measurement.
 
-import { execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  buildGovernedProcessDemand,
+  classifyGovernedTestProcessOutcome,
+  governedProcessIdempotencyKey,
+  runGovernedTestProcess,
+} from './lib/governed-test-process.mjs';
 import {
   describeCoverLoopVerdict,
   judgeCoverLoop,
@@ -59,21 +65,89 @@ import {
 import { parseLcov } from './lib/lcov-merge.ts';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const MAX_CAPTURE_BYTES = 64 * 1024 * 1024;
+const COVER_LOOP_PROCESS_TIMEOUT_MS = 30 * 60_000;
+let captureSequence = 0;
 
-/** Run a command for its output; a non-zero exit is a result here, not a throw. */
-function capture(command: string, args: string[]): { stdout: string; code: number } {
-  try {
-    const stdout = execFileSync(command, args, {
-      cwd: ROOT,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      maxBuffer: 64 * 1024 * 1024,
-    });
-    return { stdout, code: 0 };
-  } catch (err) {
-    const e = err as { stdout?: string; stderr?: string; status?: number };
-    return { stdout: `${e.stdout ?? ''}\n${e.stderr ?? ''}`, code: e.status ?? 1 };
-  }
+/**
+ * Run a command for its output; a non-zero exit is a result here, not a throw.
+ *
+ * The child must stay inside the governed callback until its `close` event.
+ * Returning immediately after `spawn()` would release the durable process
+ * receipt while npm/node and their descendants were still resident.
+ */
+async function capture(command: string, args: string[]): Promise<{ stdout: string; code: number }> {
+  const processIdentity = `${process.pid}:${captureSequence++}:${command}:${JSON.stringify(args)}`;
+  const demand = buildGovernedProcessDemand({
+    diskBytes: MAX_CAPTURE_BYTES,
+    fileDescriptors: 20,
+  });
+  const result = await runGovernedTestProcess(
+    {
+      workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE,
+      namespace: 'cover-loop-process',
+      owner: `cover-loop:${process.pid}`,
+      idempotencyKey: governedProcessIdempotencyKey('cover-loop', processIdentity),
+      payloadRef: 'cover-loop',
+      timeoutMs: COVER_LOOP_PROCESS_TIMEOUT_MS,
+      demand,
+      metadata: {
+        processKind: 'cover-loop-child',
+        command,
+        argv: args.join('\0'),
+      },
+      env: process.env,
+      settle: classifyGovernedTestProcessOutcome,
+    },
+    (_admissionContext: unknown, governedEnv: NodeJS.ProcessEnv) =>
+      new Promise<{
+        stdout: string;
+        stderr: string;
+        code: number;
+        signal: NodeJS.Signals | null;
+        spawnError?: string;
+      }>((resolveRun) => {
+        const stdout: Buffer[] = [];
+        const stderr: Buffer[] = [];
+        let spawnError: Error | null = null;
+        let child;
+        try {
+          child = spawn(command, args, {
+            cwd: ROOT,
+            env: governedEnv,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+        } catch (error) {
+          spawnError = error instanceof Error ? error : new Error(String(error));
+          resolveRun({
+            stdout: '',
+            stderr: spawnError.message,
+            code: 1,
+            signal: null,
+            spawnError: spawnError.message,
+          });
+          return;
+        }
+        child.stdout?.on('data', (chunk: Buffer | string) => stdout.push(Buffer.from(chunk)));
+        child.stderr?.on('data', (chunk: Buffer | string) => stderr.push(Buffer.from(chunk)));
+        child.once('error', (error) => {
+          spawnError = error instanceof Error ? error : new Error(String(error));
+        });
+        child.once('close', (code, signal) => {
+          resolveRun({
+            stdout: Buffer.concat(stdout).toString('utf8'),
+            stderr: Buffer.concat(stderr).toString('utf8'),
+            code: code ?? 1,
+            signal,
+            ...(spawnError ? { spawnError: spawnError.message } : {}),
+          });
+        });
+      }),
+  );
+  return {
+    stdout: `${result.stdout ?? ''}\n${result.stderr ?? ''}`,
+    code: result.code ?? 1,
+  };
 }
 
 /** Last occurrence of a `MARKER key=value ...` line, as a field map. */
@@ -95,8 +169,8 @@ function lastMarker(output: string, marker: string): Map<string, string> | null 
  * not a verdict about the candidate. An absent marker is undetermined, never a
  * failure — the gate not running is not evidence against the test.
  */
-function buildLeg(candidate: string): BuildLegResult {
-  const { stdout, code } = capture('node', ['scripts/lint-tsc.mjs', `--files=${candidate}`]);
+async function buildLeg(candidate: string): Promise<BuildLegResult> {
+  const { stdout, code } = await capture('node', ['scripts/lint-tsc.mjs', `--files=${candidate}`]);
   const marker = lastMarker(stdout, 'LINT_TSC_RESULT');
   const status = marker?.get('status');
 
@@ -123,8 +197,8 @@ function buildLeg(candidate: string): BuildLegResult {
  * executed nothing, precisely so a vacuous green cannot be read as a pass. An
  * absent marker is therefore undetermined here, matching that contract.
  */
-function testLeg(candidate: string): TestLegResult {
-  const { stdout } = capture('npm', ['run', '--silent', 'test:file', '--', candidate]);
+async function testLeg(candidate: string): Promise<TestLegResult> {
+  const { stdout } = await capture('npm', ['run', '--silent', 'test:file', '--', candidate]);
   const marker = lastMarker(stdout, 'TEST_FILE_RESULT');
   const status = marker?.get('status');
 
@@ -144,7 +218,7 @@ function snapshot(path: string | null): CoverageSnapshot {
   return parseLcov(readFileSync(abs, 'utf8'));
 }
 
-function main(): number {
+async function main(): Promise<number> {
   const args = process.argv.slice(2);
   const argValue = (flag: string): string | null => {
     const i = args.indexOf(flag);
@@ -170,10 +244,10 @@ function main(): number {
   const baselineLcov = argValue('--baseline-lcov');
   const candidateLcov = argValue('--candidate-lcov') ?? 'coverage/lcov.info';
 
-  const build = args.includes('--skip-build') ? { ok: null, detail: '--skip-build' } : buildLeg(candidate);
+  const build = args.includes('--skip-build') ? { ok: null, detail: '--skip-build' } : await buildLeg(candidate);
   const tests =
     build.ok === true && !args.includes('--skip-tests')
-      ? testLeg(candidate)
+      ? await testLeg(candidate)
       : { ok: null, detail: build.ok === true ? '--skip-tests' : 'not run: build leg did not pass' };
 
   const verdict = judgeCoverLoop({
@@ -217,4 +291,10 @@ function main(): number {
   return 2;
 }
 
-process.exit(main());
+main().then(
+  (code) => process.exit(code),
+  (error) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    process.exit(1);
+  },
+);
