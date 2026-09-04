@@ -148,6 +148,13 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'gitnexus-reindex', seedScript: 'seed-gitnexus-reindex-routine.ts' },
   { name: 'hive-canary', seedScript: 'seed-hive-canary-routine.ts', scope: 'hive-canary' },
   { name: 'hive-canary-sla', seedScript: 'seed-hive-canary-sla-routine.ts', scope: 'hive-canary' },
+  // WI-2143803. Added in the SAME change as the action, its import, its spend entry and its seed
+  // script — for the reason the dead-citation-sweep and durable-escalation-orphan-sweep entries
+  // above both record. This routine's entire subject IS an instrument that exists and never fires
+  // (`reconcileHostedLifecycleJobs` sat in the tree with zero production callers, so the whole
+  // workspace-host recovery state machine was dead code), which makes "landed a seed script the
+  // guard cannot see" the one omission it must not reproduce one level up.
+  { name: 'hosted-lifecycle-reconcile', seedScript: 'seed-hosted-lifecycle-reconcile-routine.ts' },
   { name: 'idle-backend-reaper', seedScript: 'seed-idle-backend-reaper-routine.ts' },
   { name: 'improvement-human-digest', seedScript: 'seed-human-digest-routine.ts' },
   { name: 'plan-drain-sweep', seedScript: 'seed-plan-drain-sweep-routine.ts' },
