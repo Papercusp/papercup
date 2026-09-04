@@ -2862,6 +2862,46 @@ export function createInferenceGateway(deps: GatewayDeps) {
       msSinceReadmit: (accountId, nowMs) => source.msSinceReadmit?.(accountId, nowMs),
     };
   };
+  /** Resolve a Codex SOFT pin before the first upstream attempt.
+   *
+   * `AccountPool.select()` is intentionally strict: it resolves the named account even while that
+   * account is paused, because HARD pins must never be substituted. Codex used that strict resolver
+   * for every pin, though, so a SOFT header/dynamic pin (and the implicit auto-affinity pin) bypassed
+   * the health-aware initial picker and burned one known-doomed upstream attempt before rotating.
+   *
+   * Keep the cache-affinity commitment whenever the pin is serviceable. Only an account that the
+   * pool has removed from rotation or whose shared health score is Infinity may yield. Re-running
+   * this on every request is the return-on-recovery mechanism: as soon as the pause/window/circuit
+   * clears, the original pin wins again without mutating it. The returned `yieldedFrom` stays attached
+   * to the request so response headers and owner telemetry report the divergence rather than hiding it.
+   */
+  const resolveCodexSoftPin = (
+    source: AccountPool | undefined,
+    pinned: ActiveAccount,
+    hardPin: boolean,
+  ): { selected: ActiveAccount; yieldedFrom: string | null } => {
+    if (!source || hardPin) return { selected: pinned, yieldedFrom: null };
+    const at = Date.now();
+    const inRotation = source.healthyCount ? source.healthyCount((id) => id === pinned.accountId) > 0 : true;
+    if (inRotation && accountHealthKey(pinned, at) < Infinity) {
+      return { selected: pinned, yieldedFrom: null };
+    }
+    try {
+      const selected = healthAwareCodexPool(source).active();
+      if (selected.accountId === pinned.accountId || accountHealthKey(selected, at) === Infinity) {
+        return { selected: pinned, yieldedFrom: null };
+      }
+      log(
+        'warn',
+        `inference-gateway: Codex pinned '${pinned.accountId}' UNSERVICEABLE → soft-pin failover to '${selected.accountId}' (pin resumes on recovery)`,
+      );
+      return { selected, yieldedFrom: pinned.accountId };
+    } catch {
+      // An all-unserviceable pool still needs the pinned account to render the truthful terminal
+      // response. Yielding without a demonstrably serviceable sibling would only move the failure.
+      return { selected: pinned, yieldedFrom: null };
+    }
+  };
   function recordRoute(
     ownerId: string | undefined,
     accountId: string,
@@ -5839,6 +5879,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // `event: error` has to stand in for the status code we can no longer set.
     let sseOpen = false;
     let keepalive: ManagedHandle | null = null;
+    const initialPinYieldedFrom =
+      routing.pinned && !routing.hardPin && routing.pinned.accountId !== cli.accountId
+        ? routing.pinned.accountId
+        : null;
     const stopKeepalive = () => {
       keepalive?.stop();
       keepalive = null;
@@ -5846,12 +5890,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const openSse = () => {
       if (sseOpen || res.headersSent) return;
       sseOpen = true;
-      res.writeHead(200, {
+      const headers: Record<string, string> = {
         'content-type': 'text/event-stream; charset=utf-8',
         'cache-control': 'no-cache',
         connection: 'keep-alive',
         [ROUTED_ACCOUNT_HEADER]: cli.accountId,
-      });
+      };
+      if (initialPinYieldedFrom) {
+        headers[PIN_YIELDED_HEADER] = `${initialPinYieldedFrom}->${cli.accountId}`;
+      }
+      res.writeHead(200, headers);
       // A Responses client waits on `response.created` before it will sit through a long turn;
       // the keepalive comments then hold the socket open until the real payload lands.
       res.write(
@@ -6328,7 +6376,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
         ipCooldownMaxMs: IP_COOLDOWN_MAX_MS,
         transportCooldownMs: IP_TRANSPORT_COOLDOWN_MS,
         resolveAccessToken: (home) => resolveCodexAccessToken(home),
-        refreshAccessToken: (home, current) => refreshCodexToken(home, current),
+        refreshAccessToken: (home, current, dispatcher) =>
+          refreshCodexToken(home, current, {
+            fetchImpl: (target, init) => {
+              const fetchInit: FetchInit = { ...init };
+              if (dispatcher) fetchInit.dispatcher = dispatcher as UndiciDispatcher;
+              return doFetch(target, fetchInit);
+            },
+          }),
         buildHeaders: buildCodexUpstreamHeaders,
         pickEgress: (account, at) => pickEgress(account, at),
         siblingEgressAvailable: (account, at, currentKey) => siblingEgressAvailable(account, at, currentKey),
@@ -6904,6 +6959,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         ? undefined
         : dynPin.accountId
       : wantAccountHeader;
+    const requestedHardPin =
+      wantAccount !== undefined &&
+      (dynPin ? dynPin.hard : (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard');
     // AUTO-ROUTE SESSION AFFINITY (WI-2140943) — codex CLI/OAuth-pool parity: an unpinned request from an
     // identifiable caller prefers the ChatGPT-subscription account that last served it (OpenAI's prompt
     // cache is per-org too), when the CLI pool still considers it selectable. SOFT: the bridge's yield-to-
@@ -6926,22 +6984,43 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // accounts keep priority when both exist (cheaper per call, streams supported).
     const cliList = codexCliAccounts();
     const pinnedCli = wantAccount ? (cliList.find((a) => a.accountId === wantAccount) ?? null) : null;
-    let cli: CodexCliAccount | null = pinnedCli;
+    let cli: CodexCliAccount | null = null;
+    let cliPin: CodexCliAccount | null = null;
+    let cliInitialPinYieldedFrom: string | null = null;
+    const applyCliPin = (pin: CodexCliAccount, hardPin: boolean, affinityPin: boolean): void => {
+      cliPin = pin;
+      const poolPin = codexCliPool?.select?.(pin.accountId) ?? null;
+      if (!poolPin) {
+        cli = pin;
+        return;
+      }
+      const resolved = resolveCodexSoftPin(codexCliPool, poolPin, hardPin);
+      const selected = cliList.find((account) => account.accountId === resolved.selected.accountId);
+      cli = selected ?? pin;
+      cliInitialPinYieldedFrom = selected ? resolved.yieldedFrom : null;
+      if (cliInitialPinYieldedFrom && affinityPin) autoAffinityTally.yields++;
+    };
+    if (pinnedCli) applyCliPin(pinnedCli, requestedHardPin, false);
     let pinnedBearer: ActiveAccount | null = null;
+    let bearerPinIsAffinity = false;
+    let bearerInitialPinYieldedFrom: string | null = null;
     // Definite-assignment assertion: every path below either assigns `active`, serves via
     // the CLI bridge and returns, or 503s and returns.
     let active!: ActiveAccount;
     if (!cli) {
       if (!adapter.pool || !adapter.upstreamBase) {
-        let selectedId: string | undefined = codexCliAffinityId(true) ?? undefined;
-        if (!selectedId) {
+        const affinityId = codexCliAffinityId(true);
+        const affinityCli = affinityId ? (cliList.find((account) => account.accountId === affinityId) ?? null) : null;
+        if (affinityCli) applyCliPin(affinityCli, false, true);
+        if (!cli) {
+          let selectedId: string | undefined;
           try {
             selectedId = codexCliPool ? healthAwareCodexPool(codexCliPool).active().accountId : undefined;
           } catch {
             /* unavailable pool; fall back to list */
           }
+          cli = (selectedId ? cliList.find((a) => a.accountId === selectedId) : undefined) ?? cliList[0] ?? null;
         }
-        cli = (selectedId ? cliList.find((a) => a.accountId === selectedId) : undefined) ?? cliList[0] ?? null;
         if (!cli) {
           req.resume();
           sendJson(res, 503, {
@@ -6956,29 +7035,44 @@ export function createInferenceGateway(deps: GatewayDeps) {
         }
       } else {
         try {
-          pinnedBearer = (wantAccount && adapter.pool.select?.(wantAccount)) || null;
+          const explicitPinnedBearer = (wantAccount && adapter.pool.select?.(wantAccount)) || null;
+          pinnedBearer = explicitPinnedBearer;
           // AUTO-ROUTE SESSION AFFINITY (WI-2140943) — codex parity: an unpinned request from an
           // identifiable caller prefers the bearer account that last served it (OpenAI's prompt cache is
           // per-org too). Soft: the kernel's rotate-don't-surface failover still moves off it on a 429.
-          let affinityBearer: ActiveAccount | null = null;
           if (!pinnedBearer && wantOwner && AUTO_AFFINITY_ENABLED) {
             const priorAccount = affinityPriorAccount(wantOwner, dynPin, wantAccount);
-            if (priorAccount) affinityBearer = adapter.pool.select?.(priorAccount) ?? null;
-            autoAffinityTally[affinityBearer ? 'hits' : 'cold']++;
+            if (priorAccount) pinnedBearer = adapter.pool.select?.(priorAccount) ?? null;
+            bearerPinIsAffinity = pinnedBearer !== null;
+            autoAffinityTally[pinnedBearer ? 'hits' : 'cold']++;
           } else if (!pinnedBearer) {
             autoAffinityTally.nokey++;
           }
-          active = pinnedBearer ?? affinityBearer ?? healthAwareCodexPool(adapter.pool).active();
+          if (pinnedBearer) {
+            const resolved = resolveCodexSoftPin(
+              adapter.pool,
+              pinnedBearer,
+              explicitPinnedBearer !== null && requestedHardPin,
+            );
+            active = resolved.selected;
+            bearerInitialPinYieldedFrom = resolved.yieldedFrom;
+            if (bearerInitialPinYieldedFrom && bearerPinIsAffinity) autoAffinityTally.yields++;
+          } else {
+            active = healthAwareCodexPool(adapter.pool).active();
+          }
         } catch (e) {
-          let selectedId: string | undefined = codexCliAffinityId(false) ?? undefined;
-          if (!selectedId) {
+          const affinityId = codexCliAffinityId(false);
+          const affinityCli = affinityId ? (cliList.find((account) => account.accountId === affinityId) ?? null) : null;
+          if (affinityCli) applyCliPin(affinityCli, false, true);
+          if (!cli) {
+            let selectedId: string | undefined;
             try {
               selectedId = codexCliPool ? healthAwareCodexPool(codexCliPool).active().accountId : undefined;
             } catch {
               /* unavailable pool; fall back to list */
             }
+            cli = (selectedId ? cliList.find((a) => a.accountId === selectedId) : undefined) ?? cliList[0] ?? null;
           }
-          cli = (selectedId ? cliList.find((a) => a.accountId === selectedId) : undefined) ?? cliList[0] ?? null;
           if (!cli) {
             req.resume();
             sendJson(res, 503, {
@@ -6999,26 +7093,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
       req.resume();
       totalRequests++;
       codexRequests++;
-      sendJson(res, 200, codexModelsResponse(), { [ROUTED_ACCOUNT_HEADER]: cli ? cli.accountId : active.accountId });
+      const routedAccount = cli ? cli.accountId : active.accountId;
+      const pinYieldedFrom = cli ? cliInitialPinYieldedFrom : bearerInitialPinYieldedFrom;
+      sendJson(res, 200, codexModelsResponse(), {
+        [ROUTED_ACCOUNT_HEADER]: routedAccount,
+        ...(pinYieldedFrom ? { [PIN_YIELDED_HEADER]: `${pinYieldedFrom}->${routedAccount}` } : {}),
+      });
       return;
     }
     if (cli) {
-      const hardPin =
-        pinnedCli !== null &&
-        (dynPin
-          ? dynPin.hard
-          : (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard');
+      const hardPin = pinnedCli !== null && requestedHardPin;
       const transport = codexOAuthProxyEnabled ? 'oauth-http' : 'cli-exec';
       await executeCodexLegacyTransport(
         legacyExecutorForGatewayTransport(adapter.lane, transport),
-        { req, res, cli, url, preBody, routing: { hardPin, pinned: pinnedCli, ownerId: wantOwner } },
+        { req, res, cli, url, preBody, routing: { hardPin, pinned: cliPin, ownerId: wantOwner } },
         kernelAdmission,
       );
       return;
     }
-    const hardPin =
-      pinnedBearer !== null &&
-      (dynPin ? dynPin.hard : (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard');
+    const hardPin = pinnedBearer !== null && !bearerPinIsAffinity && requestedHardPin;
     stageSpan?.setTransport('bearer-http');
 
     /*
@@ -7199,10 +7292,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // buffer (`preReadRequestBodies`). Iterating `req` directly here would
             // send an EMPTY body on every request the spool already drained.
             body: (async function* () {
-              yield preBody ?? await readBody(req);
+              yield preBody ?? (await readBody(req));
             })(),
             ownerId: wantOwner ?? null,
-            pin: pinnedBearer ? { accountId: pinnedBearer.accountId, mode: hardPin ? 'hard' : 'soft' } : null,
+            // A pin that already yielded at the request-selection seam must not be re-selected by
+            // the bearer adapter's strict `select()`. Its original identity remains in
+            // `bearerInitialPinYieldedFrom` for the response/telemetry below; subsequent attempts
+            // are intentionally unpinned because this request already chose liveness.
+            pin:
+              pinnedBearer && !bearerInitialPinYieldedFrom
+                ? { accountId: pinnedBearer.accountId, mode: hardPin ? 'hard' : 'soft' }
+                : null,
             signal: reqAbort.signal,
           },
           policy: {
@@ -7279,8 +7379,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
               for (const [key, value] of Object.entries(metadata.headers)) {
                 if (!STRIP_RESPONSE.has(key.toLowerCase())) outHeaders[key] = value;
               }
-              if (metadata.pinYieldedFrom) {
-                outHeaders[PIN_YIELDED_HEADER] = `${metadata.pinYieldedFrom}->${metadata.accountId}`;
+              const pinYieldedFrom =
+                metadata.pinYieldedFrom ??
+                (bearerInitialPinYieldedFrom !== metadata.accountId ? bearerInitialPinYieldedFrom : null);
+              if (pinYieldedFrom) {
+                outHeaders[PIN_YIELDED_HEADER] = `${pinYieldedFrom}->${metadata.accountId}`;
                 recordOwnerOutcome(wantOwner, 'pin_yield', {
                   account: metadata.accountId,
                   detail: outHeaders[PIN_YIELDED_HEADER],
@@ -7364,11 +7467,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // the rest of a long agent stream in memory.
               cacheProbe.on('data', () => undefined);
               cacheProbe.on('error', () => undefined);
-              observeOpenAiCacheUsage(
-                cacheProbe,
-                metadata.accountId,
-                attemptsSeen > 1 || metadata.pinYieldedFrom !== null,
-              );
+              observeOpenAiCacheUsage(cacheProbe, metadata.accountId, attemptsSeen > 1 || pinYieldedFrom !== null);
             },
             write: async (chunk) => {
               cacheProbe?.write(chunk);
