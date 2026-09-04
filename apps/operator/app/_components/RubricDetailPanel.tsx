@@ -18,6 +18,7 @@ import {
 import { useSyncQuery } from "@papercusp/sync";
 import type { CompanionListSummary } from "@papercusp/facets";
 import { readListMeta } from "@papercusp/operator-core/lib/sync-resolver/list-meta";
+import type { RubricCriterionCheck } from "@papercusp/operator-core/lib/agent-tools/plans/rubric-template";
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { ChevronDown, Minus, TrendingDown, TrendingUp, X } from "lucide-react";
 import { Table, type TableColumn } from "../harness/Table";
@@ -46,34 +47,6 @@ interface RubricCriterionWindow {
   ms?: number;
   watermarkRef?: string;
 }
-
-/**
- * ⚠ HAND-MAINTAINED SECOND COPY of `rubricCriterionCheckSchema`
- * (packages/operator-core/lib/agent-tools/plans/rubric-template.ts). It had already
- * drifted: kind:'cargo' shipped and was never added here, so a cargo check reaching this
- * component fell past every branch into the coverage renderer and threw on
- * `check.scope.surfaceKind`. Adding kind:'requirements' would have done the same.
- *
- * Both kinds are added below and both now have branches. The DUPLICATION is the real
- * defect (CLAUDE.md "derive, pin, or attest — never hand-maintain": the set of check
- * kinds is a value describing code, so a second copy drifts silently), and it is filed
- * rather than fixed here — deriving this from the zod schema is a change to how the
- * panel gets its types, not a rubric-check change.
- */
-type RubricCriterionCheck =
-  | { kind: "tests"; files: string[] }
-  | { kind: "instrument"; instrumentKey: string }
-  | { kind: "cargo"; manifestPath: string; sourceFiles: string[]; test?: string }
-  | { kind: "requirements" }
-  | {
-      kind: "coverage";
-      scope: {
-        surfaceKind?: string;
-        sourceFiles?: string[];
-        planTouched?: true;
-      };
-      floor: "l1" | "l2" | "l3" | "l4";
-    };
 
 interface RubricCriterionDefinition {
   key: string;
