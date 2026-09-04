@@ -39,12 +39,18 @@
 //                     server down, or a run that exercised nothing). NEVER
 //                     collapsed into 0.
 
-import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { accessSync, constants, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  buildGovernedProcessDemand,
+  classifyGovernedTestProcessOutcome,
+  governedProcessIdempotencyKey,
+  runGovernedTestProcess,
+} from './lib/governed-test-process.mjs';
 import {
   SCHEMATHESIS_PIN,
   buildSchemathesisArgv,
@@ -59,43 +65,173 @@ import {
 } from '../packages/operator-core/lib/schemathesis-http-routes.ts';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const MAX_CAPTURE_BYTES = 64 * 1024 * 1024;
+const SCHEMATHESIS_PROCESS_TIMEOUT_MS = 30 * 60_000;
+let processSequence = 0;
+
+type GovernedProcessResult = {
+  stdout: string;
+  stderr: string;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  spawnError?: string;
+  timedOut?: boolean;
+};
+
+/**
+ * Resolve binary presence without starting a shell solely to run `command -v`.
+ * The actual Python and Schemathesis processes still go through the governed
+ * process bridge below.
+ */
+function executableOnPath(bin: string): boolean {
+  const names =
+    process.platform === 'win32'
+      ? [bin, ...String(process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').map((ext) => `${bin}${ext}`)]
+      : [bin];
+  return String(process.env.PATH ?? '')
+    .split(delimiter)
+    .filter(Boolean)
+    .some((directory) =>
+      names.some((name) => {
+        try {
+          accessSync(join(directory, name), constants.X_OK);
+          return true;
+        } catch {
+          return false;
+        }
+      }),
+    );
+}
+
+/** Run one external process behind a durable, full-lifetime process receipt. */
+async function runProcess(
+  command: string,
+  args: string[],
+  { timeoutMs = SCHEMATHESIS_PROCESS_TIMEOUT_MS, processKind = 'schemathesis-child' } = {},
+): Promise<GovernedProcessResult> {
+  const processIdentity = `${process.pid}:${processSequence++}:${command}:${JSON.stringify(args)}`;
+  const demand = buildGovernedProcessDemand({
+    diskBytes: MAX_CAPTURE_BYTES,
+    fileDescriptors: 20,
+  });
+
+  try {
+    return await runGovernedTestProcess(
+      {
+        workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE,
+        namespace: 'schemathesis-process',
+        owner: `schemathesis:${process.pid}`,
+        idempotencyKey: governedProcessIdempotencyKey('schemathesis', processIdentity),
+        payloadRef: 'schemathesis-routes',
+        timeoutMs,
+        demand,
+        metadata: {
+          processKind,
+          command,
+          argv: args.join('\0'),
+        },
+        env: process.env,
+        settle: classifyGovernedTestProcessOutcome,
+      },
+      (_admissionContext: unknown, governedEnv: NodeJS.ProcessEnv) =>
+        new Promise<GovernedProcessResult>((resolveRun) => {
+          const stdout: Buffer[] = [];
+          const stderr: Buffer[] = [];
+          let spawnError: Error | null = null;
+          let timedOut = false;
+          let child;
+          try {
+            child = spawn(command, args, {
+              cwd: ROOT,
+              env: governedEnv,
+              stdio: ['ignore', 'pipe', 'pipe'],
+            });
+          } catch (error) {
+            spawnError = error instanceof Error ? error : new Error(String(error));
+            resolveRun({
+              stdout: '',
+              stderr: spawnError.message,
+              code: null,
+              signal: null,
+              spawnError: spawnError.message,
+            });
+            return;
+          }
+
+          const timeout =
+            timeoutMs > 0
+              ? setTimeout(() => {
+                  timedOut = true;
+                  child.kill('SIGTERM');
+                }, timeoutMs)
+              : null;
+          timeout?.unref?.();
+          child.stdout?.on('data', (chunk: Buffer | string) => stdout.push(Buffer.from(chunk)));
+          child.stderr?.on('data', (chunk: Buffer | string) => stderr.push(Buffer.from(chunk)));
+          child.once('error', (error) => {
+            spawnError = error instanceof Error ? error : new Error(String(error));
+          });
+          child.once('close', (code, signal) => {
+            if (timeout) clearTimeout(timeout);
+            resolveRun({
+              stdout: Buffer.concat(stdout).toString('utf8'),
+              stderr: Buffer.concat(stderr).toString('utf8'),
+              code,
+              signal,
+              ...(spawnError ? { spawnError: spawnError.message } : {}),
+              ...(timedOut ? { timedOut: true } : {}),
+            });
+          });
+        }),
+    );
+  } catch (error) {
+    return {
+      stdout: '',
+      stderr: error instanceof Error ? error.message : String(error),
+      code: null,
+      signal: null,
+      spawnError: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function processFailureDetail(result: GovernedProcessResult): string {
+  return result.spawnError ?? (result.stderr.trim() || `process exited with code ${result.code ?? 'null'}`);
+}
 
 /** Probe the host toolchain. Every failure here is an observation, not a throw. */
-function probeToolchain(): SchemathesisToolchainProbe {
-  const which = (bin: string): boolean => {
-    const r = spawnSync('command', ['-v', bin], { shell: true, encoding: 'utf8' });
-    return r.status === 0 && Boolean(r.stdout.trim());
-  };
-
-  const pythonPresent = which('python3');
-
+async function probeToolchain(): Promise<SchemathesisToolchainProbe> {
+  const pythonPresent = executableOnPath('python3');
   let moduleVersion: string | null = null;
   if (pythonPresent) {
-    const r = spawnSync(
+    const result = await runProcess(
       'python3',
       ['-c', 'import schemathesis, sys; sys.stdout.write(schemathesis.__version__)'],
-      { encoding: 'utf8', timeout: 30_000 },
+      { timeoutMs: 30_000, processKind: 'schemathesis-toolchain-probe' },
     );
-    if (r.status === 0 && r.stdout.trim()) moduleVersion = r.stdout.trim();
+    if (result.code === 0 && result.stdout.trim()) moduleVersion = result.stdout.trim();
   }
-
-  return { pythonPresent, moduleVersion, pipxPresent: which('pipx') };
+  return { pythonPresent, moduleVersion, pipxPresent: executableOnPath('pipx') };
 }
 
 /** Load the OpenAPI document from a URL or a local path. Null on any failure. */
-function loadSchema(location: string): { doc: unknown; detail: string } {
+async function loadSchema(location: string): Promise<{ doc: unknown; detail: string }> {
   if (/^https?:\/\//.test(location)) {
+    // curl rather than fetch: the document is multi-megabyte and this keeps
+    // the failure modes (DNS, refused, timeout) as one readable exit code.
+    const result = await runProcess(
+      'curl',
+      ['-sS', '--fail', '--max-time', '60', location],
+      { timeoutMs: 65_000, processKind: 'schemathesis-schema-fetch' },
+    );
+    if (result.code !== 0 || result.signal || result.spawnError) {
+      return { doc: null, detail: `could not fetch ${location}: ${processFailureDetail(result)}` };
+    }
+    const body = result.stdout;
     try {
-      // curl rather than fetch: the document is multi-megabyte and this keeps
-      // the failure modes (DNS, refused, timeout) as one readable exit code.
-      const body = execFileSync(
-        'curl',
-        ['-sS', '--fail', '--max-time', '60', location],
-        { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
-      );
       return { doc: JSON.parse(body), detail: `fetched ${body.length} bytes from ${location}` };
-    } catch (err) {
-      return { doc: null, detail: `could not fetch ${location}: ${(err as Error).message}` };
+    } catch (error) {
+      return { doc: null, detail: `could not parse ${location}: ${(error as Error).message}` };
     }
   }
 
@@ -129,7 +265,7 @@ function readNdjsonReport(dir: string): string {
   return '';
 }
 
-function main(): number {
+async function main(): Promise<number> {
   const args = process.argv.slice(2);
   const argValue = (flag: string): string | null => {
     const i = args.indexOf(flag);
@@ -143,8 +279,8 @@ function main(): number {
   const includePathRegex = argValue('--include-path-regex');
   const stateful = !args.includes('--no-stateful');
 
-  const toolchain = resolveSchemathesisToolchain(probeToolchain());
-  const { doc, detail: schemaDetail } = loadSchema(schemaLocation);
+  const toolchain = resolveSchemathesisToolchain(await probeToolchain());
+  const { doc, detail: schemaDetail } = await loadSchema(schemaLocation);
   const surface = summarizeOpenApiSurface(doc);
 
   let run: SchemathesisRunObservation | null = null;
@@ -167,18 +303,16 @@ function main(): number {
     } else {
       const reportDir = mkdtempSync(join(tmpdir(), 'schemathesis-report-'));
       try {
-        const r = spawnSync(built.command, [...built.args, '--report-dir', reportDir], {
-          cwd: ROOT,
-          encoding: 'utf8',
-          timeout: 30 * 60_000,
-          maxBuffer: 64 * 1024 * 1024,
+        const r = await runProcess(built.command, [...built.args, '--report-dir', reportDir], {
+          timeoutMs: SCHEMATHESIS_PROCESS_TIMEOUT_MS,
+          processKind: 'schemathesis-run',
         });
         const parsed = parseSchemathesisReport(readNdjsonReport(reportDir));
         run = {
-          exitCode: r.status,
+          exitCode: r.code,
           operationsTested: parsed.operationsTested,
           checksFailed: parsed.checksFailed,
-          detail: r.error ? `spawn failed: ${r.error.message}` : parsed.detail,
+          detail: r.spawnError ? `spawn failed: ${r.spawnError}` : parsed.detail,
         };
       } finally {
         rmSync(reportDir, { recursive: true, force: true });
@@ -212,4 +346,10 @@ function main(): number {
   return schemathesisExitCode(verdict);
 }
 
-process.exit(main());
+main().then(
+  (code) => process.exit(code),
+  (error) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    process.exit(1);
+  },
+);
