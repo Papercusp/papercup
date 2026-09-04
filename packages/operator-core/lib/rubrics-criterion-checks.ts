@@ -30,7 +30,12 @@ import { homedir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
-import { normalizeTestFilePaths, runTestFilesCore, type TestFilesCoreResult } from './agent-tools/testing/run';
+import {
+  checkoutRootForPath,
+  normalizeTestFilePaths,
+  runTestFilesCore,
+  type TestFilesCoreResult,
+} from './agent-tools/testing/run';
 import { selectUnambiguousEvidenceRoot } from './evidence-root-selection';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 import type { ActivationAuditMapping, EffectiveItemAudit, PlanItemStatus } from './plan-audits';
@@ -258,8 +263,17 @@ export function validateCriterionCheckPaths(
     const normalized: string[] = [];
     for (const f of resolution.files) {
       checked++;
-      const candidate = resolve(root, f);
-      if (!isRegularFileInsideRoot(root, candidate)) {
+      // normalizeTestFilePaths may promote a workspace-relative sibling spelling
+      // (`portal/tests/foo.test.ts`) to an absolute path in the admitted sibling
+      // checkout.  That path is intentionally outside the ambient root; validate
+      // it against its own workspace checkout so the check remains portable while
+      // runTestFilesCore can select the sibling's router at grading time.
+      const candidate = isAbsolute(f) ? resolve(f) : resolve(root, f);
+      const externalCheckout = isAbsolute(f) ? checkoutRootForPath(candidate) : undefined;
+      const resolves = externalCheckout
+        ? existsSync(candidate) && statSync(candidate).isFile()
+        : isRegularFileInsideRoot(root, candidate);
+      if (!resolves) {
         failures.push({ criterionKey: c.key, path: f, reason: 'does not resolve against the live tree' });
         continue;
       }
