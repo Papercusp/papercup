@@ -316,6 +316,7 @@ export function capPreservingOperativeDetailed(
         totalChars: t.length,
         withheldChars: t.length,
         operativeClausesKept: 0,
+        identifiersKept: 0,
         ...(opts.more ? { more: opts.more } : {}),
       }).length + 1
     : 0;
