@@ -178,9 +178,10 @@ RUN set -eux; \
 # the policy existed as an artifact and was installed nowhere.
 #
 # It is a TEMPLATE and it fails CLOSED: `<RELEASE_REGISTRY_NAMESPACE>` is P-307's
-# to establish and `/etc/pki/papercusp/release-signing.pub` is what P-308's
-# signing key populates. Neither placeholder can match, so an image built before
-# those land refuses to pull a release rather than accepting an unsigned one.
+# to establish and `/etc/pki/papercusp/release-signing.pub` is populated from the
+# public half of P-308's signing key. A specialised build refuses to proceed unless
+# both are present; an unspecialised build keeps the non-matching namespace and no
+# key, so it refuses a release rather than accepting an unsigned one.
 # ⛔ The policy is INERT WITHOUT the registries.d fragment beside it (D-287). On the
 # docker: transport containers/image does not LOOK for a cosign signature unless the
 # registry carries `use-sigstore-attachments: true`, and without it a correctly signed
@@ -212,11 +213,15 @@ RUN set -eux; \
 # would refuse every upgrade with that same unsigned-looking string. Checking it at BUILD
 # time turns an opaque runtime failure into a loud one.
 ARG RELEASE_REGISTRY_NAMESPACE=
+ARG RELEASE_STORAGE_DRIVER=
+ARG RELEASE_SIGNING_PUBKEY_B64=
 COPY release-signature-policy.json /etc/containers/policy.json
 COPY release-registries.d.yaml /etc/containers/registries.d/papercusp-release.yaml
 RUN set -eu; \
     POL=/etc/containers/policy.json; \
     RD=/etc/containers/registries.d/papercusp-release.yaml; \
+    PUB=/etc/pki/papercusp/release-signing.pub; \
+    install -d -m 0755 /etc/pki/papercusp; \
     if [ -n "${RELEASE_REGISTRY_NAMESPACE}" ]; then \
       case "${RELEASE_REGISTRY_NAMESPACE}" in \
         *'<'*|*'>'*|*' '*|*'"'*) \
@@ -225,7 +230,27 @@ RUN set -eu; \
         *.*|*:*|localhost*) ;; \
         *) echo "FATAL: RELEASE_REGISTRY_NAMESPACE='${RELEASE_REGISTRY_NAMESPACE}' has no registry host — a bare repository name is not a scope" >&2; exit 1;; \
       esac; \
+      case "${RELEASE_STORAGE_DRIVER}" in \
+        ''|*[!A-Za-z0-9_-]*) echo "FATAL: RELEASE_STORAGE_DRIVER is required and must name one containers/storage graph driver" >&2; exit 1;; \
+      esac; \
+      [ -n "${RELEASE_SIGNING_PUBKEY_B64}" ] || { \
+        echo "FATAL: RELEASE_SIGNING_PUBKEY_B64 is required when RELEASE_REGISTRY_NAMESPACE is set" >&2; exit 1; }; \
       sed -i "s|<RELEASE_REGISTRY_NAMESPACE>|${RELEASE_REGISTRY_NAMESPACE}|g" "$POL" "$RD"; \
+      CS_SCOPE="[${RELEASE_STORAGE_DRIVER}@/var/lib/containers/storage]${RELEASE_REGISTRY_NAMESPACE}"; \
+      POL_TMP="$(mktemp)"; \
+      jq --arg scope "$CS_SCOPE" \
+        '.transports["containers-storage"] = {($scope): [{"type":"insecureAcceptAnything"}]}' \
+        "$POL" > "$POL_TMP"; \
+      install -m 0644 "$POL_TMP" "$POL"; \
+      rm -f "$POL_TMP"; \
+      jq -e --arg scope "$CS_SCOPE" \
+        '.transports["containers-storage"][$scope][0].type == "insecureAcceptAnything"' \
+        "$POL" >/dev/null || { echo "FATAL: scoped containers-storage policy was not installed" >&2; exit 1; }; \
+      printf '%s' "${RELEASE_SIGNING_PUBKEY_B64}" | base64 -d > "$PUB" \
+        || { echo "FATAL: RELEASE_SIGNING_PUBKEY_B64 is not valid base64" >&2; exit 1; }; \
+      [ -s "$PUB" ] && openssl pkey -pubin -in "$PUB" -noout >/dev/null 2>&1 \
+        || { echo "FATAL: RELEASE_SIGNING_PUBKEY_B64 does not encode a valid public key" >&2; exit 1; }; \
+      chmod 0644 "$PUB"; \
       for f in "$POL" "$RD"; do \
         if grep -qF '<RELEASE_REGISTRY_NAMESPACE>' "$f"; then \
           echo "FATAL: placeholder survived substitution in $f" >&2; exit 1; \
@@ -237,13 +262,15 @@ RUN set -eu; \
       install -d -m 0755 /usr/lib/papercusp; \
       printf '%s\n' "${RELEASE_REGISTRY_NAMESPACE}" > /usr/lib/papercusp/release-registry-namespace; \
     else \
+      if [ -n "${RELEASE_STORAGE_DRIVER}" ] || [ -n "${RELEASE_SIGNING_PUBKEY_B64}" ]; then \
+        echo "FATAL: release storage driver/public key require RELEASE_REGISTRY_NAMESPACE" >&2; exit 1; \
+      fi; \
       for f in "$POL" "$RD"; do \
         grep -qF '<RELEASE_REGISTRY_NAMESPACE>' "$f" || { \
           echo "FATAL: $f lost its fail-closed placeholder without a substitution value" >&2; exit 1; }; \
       done; \
     fi; \
-    chmod 0644 "$POL" "$RD"; \
-    install -d -m 0755 /etc/pki/papercusp
+    chmod 0644 "$POL" "$RD"
 
 # ── Layer 4: firewall — ufw is NOT-IN-REPOS, nftables replaces it ─────────────
 #
