@@ -57,6 +57,13 @@ const PLAN_SLUG_PREFIX_RE = /\b([a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d{4}-\d{2}-\d{2})
 // safe to take separately; the redesign is not.
 const NOW_CLOSED_RE =
   /\b(?:done|complete(?:d)?|closed|shipped|dropped|finished|terminal|accepted|landed|merged|resolved)\b|\bno\s+longer\s+(?:active|open|pending|in\s+progress)\b/i;
+// A terminal item may also be reported through quantitative test evidence,
+// e.g. "P-013 passed 113/113 focused tests plus 9/9 migrated-Postgres tests".
+// Keep this narrower than the bare past-tense verb: "P-013 passed to the
+// worker" is historical routing, not completion, while an imperative
+// "pass P-013" must remain a contradiction.
+const NOW_PASSED_TEST_EVIDENCE_RE =
+  /\bpassed\s+(?:(?:\d+\s*\/\s*\d+|\d+)\s+)?(?:[\w-]+\s+){0,4}(?:tests?|checks?|cases?|verifications?|validations?)\b|\b(?:tests?|checks?|cases?|verifications?|validations?)\b[^.!?;:\n]{0,80}\bpassed\b/i;
 const NOW_NEGATED_OR_FUTURE_RE =
   /\b(?:not|never|still|yet|will|would|should|must|need(?:s)?(?:\s+to)?|to)\b/i;
 // EI-21987261152536728: P-002's completion can be narrated as a resulting
@@ -248,10 +255,14 @@ export function detectNowItemContradictions(
     const refOffset = start - clauseStart;
     const before = clause.slice(0, refOffset);
     const after = clause.slice(refOffset + id.length);
-    const closeAfter = NOW_CLOSED_RE.test(after) && !NOW_NEGATED_OR_FUTURE_RE.test(after);
+    const closeAfter =
+      (NOW_CLOSED_RE.test(after) || NOW_PASSED_TEST_EVIDENCE_RE.test(after)) &&
+      !NOW_NEGATED_OR_FUTURE_RE.test(after);
     const derivationCompletionAfter =
       NOW_DERIVATION_COMPLETION_RE.test(after) && !NOW_NEGATED_OR_FUTURE_RE.test(after);
-    const closeBefore = NOW_CLOSED_RE.test(before) && !NOW_NEGATED_OR_FUTURE_RE.test(before.slice(-120));
+    const closeBefore =
+      (NOW_CLOSED_RE.test(before) || NOW_PASSED_TEST_EVIDENCE_RE.test(before)) &&
+      !NOW_NEGATED_OR_FUTURE_RE.test(before.slice(-120));
     const stagingOnlyCompletion = isStagingOnlyCompletion(after);
     const clauseItemIds = [...clause.matchAll(PLAN_ITEM_REF_RE)].map((itemMatch) => itemMatch[0]);
     const sentenceEndCandidates = [

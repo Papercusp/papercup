@@ -90,6 +90,23 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   }),
 }));
 
+/**
+ * The curation exclusion below proves that the REAL state-of-pot tool is not
+ * wrapped in the retired actuator gate. Its corpus synthesis is a different
+ * contract with its own unit/integration suites, and running that whole graph
+ * here made this safety guard load-sensitive: the exclusion could spend the
+ * 60-second unit timeout in unrelated digest work and be reported as if
+ * curation had been retired. Stub only the two downstream seams; the actual
+ * tool module and handler still load and execute, so adding the retirement gate
+ * to that handler continues to fail this suite.
+ */
+vi.mock('../scout/corpus-digest', () => ({
+  synthesizeStateOfHive: async () => ({ friction: [], sinks: [], deferrals: [], gaps: [] }),
+}));
+vi.mock('../scout/corpus-digest-deps', () => ({
+  buildStateOfHiveReaders: () => ({}),
+}));
+
 import { refuseIfMugKettleRetired, MUG_KETTLE_RETIRED_ERROR } from './_mug-kettle-gate';
 
 /** Parse a tool result's single JSON text block. */

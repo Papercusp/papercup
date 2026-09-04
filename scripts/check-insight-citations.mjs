@@ -19,28 +19,31 @@
  * `symbol` refs are filesystem-checked; a `feature` ref (`F-NNN`/`WI-NNN`) and a
  * glob-bearing path entry are skipped (see insight-citations.ts doc comment).
  *
- * Scope: tracked .mdx/.md under
+ * Scope: tracked or nonignored-untracked .mdx/.md under
  * apps/operator-docs/src/content/docs/agent-insights/ (the corpus this WI
  * scoped the sweep to).
  */
-import { execSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findStaleInsightCitations, formatStaleCitations } from '../packages/operator-core/lib/content-lint/insight-citations';
 import { isInsightDoc } from '../packages/operator-core/lib/content-lint/insight-corpus';
+import { describeUnscanned, listFilesIncludingUntracked } from './lib/tracked-files.mjs';
 
 export { findStaleInsightCitations, formatStaleCitations };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function main() {
-  const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
-    .split('\n')
-    .filter(Boolean);
+  // EI-19372547555251881: a new insight is most vulnerable before git-sync has
+  // tracked it. A bare `git ls-files` gave that exact author a false green.
+  // Reuse the repository-wide enumerator so tracked + nonignored-untracked files
+  // are both checked, including checked-out submodules, with honest coverage for
+  // any submodule Git cannot enumerate.
+  const scan = listFilesIncludingUntracked(ROOT);
 
   const offenders = [];
-  for (const f of tracked) {
+  for (const f of scan.files) {
     if (!isInsightDoc(f)) continue; // shared corpus scope (insight-corpus.ts) — see that module
     let text;
     try {
@@ -54,7 +57,10 @@ function main() {
   }
 
   if (offenders.length === 0) {
-    console.log('✓ every agent-insights `documents:` citation resolves on disk.');
+    console.log(
+      '✓ every selected tracked/untracked-not-ignored agent-insights `documents:` citation resolves on disk.' +
+        describeUnscanned(scan, ROOT),
+    );
     process.exit(0);
   }
 

@@ -25,7 +25,6 @@
  * are shared modules (`insight-corpus.ts` / `insight-normative.ts`) so this
  * guard, the sibling citations guard, and the unit tests can never disagree.
  */
-import { execSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -34,20 +33,22 @@ import {
   formatNormativeViolations,
 } from '../packages/operator-core/lib/content-lint/insight-normative';
 import { isInsightDoc } from '../packages/operator-core/lib/content-lint/insight-corpus';
+import { describeUnscanned, listFilesIncludingUntracked } from './lib/tracked-files.mjs';
 
 export { findNormativeViolations, formatNormativeViolations };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function main() {
-  const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
-    .split('\n')
-    .filter(Boolean);
+  // EI-19372547555251881: validate a newly-authored insight before git-sync has
+  // tracked it. The shared enumerator preserves ignored-file semantics, descends
+  // into checked-out submodules, and reports any subtree it could not inspect.
+  const scan = listFilesIncludingUntracked(ROOT);
 
   const offenders = [];
   let scanned = 0;
   let normative = 0;
-  for (const f of tracked) {
+  for (const f of scan.files) {
     if (!isInsightDoc(f)) continue;
     let text;
     try {
@@ -63,7 +64,8 @@ function main() {
 
   if (offenders.length === 0) {
     console.log(
-      `✓ normative-insight frontmatter valid — ${normative} normative of ${scanned} agent-insight doc(s).`,
+      `✓ normative-insight frontmatter valid — ${normative} normative of ${scanned} selected tracked/untracked-not-ignored agent-insight doc(s).` +
+        describeUnscanned(scan, ROOT),
     );
     process.exit(0);
   }

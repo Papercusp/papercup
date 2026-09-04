@@ -60,7 +60,9 @@ import {
   fstatSync,
   lstatSync,
   openSync,
+  readSync,
   statSync,
+  writeSync,
 } from 'node:fs';
 import net from 'node:net';
 
@@ -68,6 +70,13 @@ import net from 'node:net';
  * ambient key that an application framework merges into NodeJS.ProcessEnv.
  * @typedef {Record<string, string | undefined>} EnvironmentMap
  */
+
+/**
+ * The environment key used by a headless spawn to give this host a separate,
+ * grep-safe copy of the child PTY stream. The ordinary stdout path remains
+ * byte-oriented/raw for the existing lifecycle and activity consumers.
+ */
+export const HEADLESS_NORMALIZED_LOG_ENV = 'PAPERCUSP_PSU_HEADLESS_NORMALIZED_LOG';
 
 const require = createRequire(import.meta.url);
 
@@ -961,6 +970,7 @@ export const HOST_HANDOFF_ENV_KEYS = Object.freeze([
   'PAPERCUSP_SID',
   'PAPERCUSP_AGENT',
   'PAPERCUSP_ADV_SESSION_ID',
+  HEADLESS_NORMALIZED_LOG_ENV,
   'PAPERCUSP_WORKSPACE',
   'PAPERCUSP_HARNESS_SLUG',
   'PAPERCUSP_PROFILE',
@@ -2661,6 +2671,275 @@ export function stripAnsi(s) {
 }
 
 /**
+ * Bounds for the diagnostic companion log. A PTY frame can contain an
+ * arbitrarily long carriage-return redraw, so line boundaries alone are not
+ * enough: a frame with no newline must be chunked before it reaches disk.
+ */
+export const HEADLESS_NORMALIZED_LOG_MAX_LINE_BYTES = 16 * 1024;
+export const HEADLESS_NORMALIZED_LOG_MAX_BYTES = 4 * 1024 * 1024;
+const HEADLESS_NORMALIZED_LOG_MAX_WRITE_BYTES = 64 * 1024;
+
+/**
+ * Normalize a PTY stream without making chunk boundaries observable.
+ *
+ * The Codex TUI emits ANSI paint sequences and carriage-return redraw frames.
+ * Applying {@link stripAnsi} independently to each `onData` chunk is not
+ * sufficient: an escape sequence or CRLF pair may be split across two chunks.
+ * This small state machine carries only those incomplete protocol fragments,
+ * strips terminal controls, turns CR redraws into physical lines, and chunks
+ * a line at a bounded UTF-8 byte size while preserving its visible text.
+ *
+ * @param {{maxLineBytes?: number}} [options]
+ * @returns {{push:(chunk?: any)=>string, flush:()=>string, reset:()=>void}}
+ */
+export function makeHeadlessLogNormalizer({
+  maxLineBytes = HEADLESS_NORMALIZED_LOG_MAX_LINE_BYTES,
+} = {}) {
+  const lineLimit =
+    Number.isFinite(Number(maxLineBytes)) && Number(maxLineBytes) > 0
+      ? Math.floor(Number(maxLineBytes))
+      : HEADLESS_NORMALIZED_LOG_MAX_LINE_BYTES;
+  let ansiState = 'normal';
+  let line = '';
+  let lineBytes = 0;
+  let suppressLf = false;
+  let emitted = [];
+
+  const emitLine = () => {
+    emitted.push(`${line}\n`);
+    line = '';
+    lineBytes = 0;
+  };
+
+  const appendVisible = (char) => {
+    const bytes = Buffer.byteLength(char, 'utf8');
+    if (lineBytes > 0 && lineBytes + bytes > lineLimit) emitLine();
+    line += char;
+    lineBytes += bytes;
+  };
+
+  const consume = (chunk) => {
+    for (const char of String(chunk ?? '')) {
+      const code = char.codePointAt(0) ?? 0;
+
+      if (ansiState === 'escape') {
+        if (char === '[' || char === '\u009b') ansiState = 'csi';
+        else if (char === ']' || char === '\u009d') ansiState = 'osc';
+        else ansiState = 'normal'; // simple ESC pair: drop both bytes
+        continue;
+      }
+      if (ansiState === 'csi') {
+        // CSI final bytes are in the inclusive @–~ range. Parameters and
+        // intermediates are all discarded until that final byte arrives.
+        if (code >= 0x40 && code <= 0x7e) ansiState = 'normal';
+        continue;
+      }
+      if (ansiState === 'osc') {
+        if (char === '\x07') ansiState = 'normal';
+        else if (char === '\x1b') ansiState = 'osc-escape';
+        continue;
+      }
+      if (ansiState === 'osc-escape') {
+        ansiState = char === '\\' ? 'normal' : 'osc';
+        continue;
+      }
+
+      // A CR is a logical frame boundary. Consume the LF in a subsequent CRLF
+      // pair exactly once, even when the pair straddles two PTY chunks.
+      if (suppressLf) {
+        suppressLf = false;
+        if (char === '\n') continue;
+      }
+      if (char === '\r') {
+        emitLine();
+        suppressLf = true;
+        continue;
+      }
+      if (char === '\n') {
+        emitLine();
+        continue;
+      }
+      if (char === '\x1b') {
+        ansiState = 'escape';
+        continue;
+      }
+      // Keep tabs for readable command output; discard all other C0/DEL
+      // controls. Visible Unicode is iterated by code point, so the byte bound
+      // never splits a surrogate pair.
+      if (char === '\t' || (code >= 0x20 && code !== 0x7f)) {
+        appendVisible(char);
+      }
+    }
+  };
+
+  const drain = () => {
+    const result = emitted.join('');
+    emitted = [];
+    return result;
+  };
+
+  return {
+    push(chunk) {
+      consume(chunk);
+      return drain();
+    },
+    flush() {
+      // A dangling escape/control sequence is not visible text. Flush the
+      // visible line at a child/recycle boundary, then reset all protocol state
+      // so a successor child cannot inherit a partial sequence.
+      ansiState = 'normal';
+      suppressLf = false;
+      if (line.length > 0) emitLine();
+      return drain();
+    },
+    reset() {
+      ansiState = 'normal';
+      line = '';
+      lineBytes = 0;
+      suppressLf = false;
+      emitted = [];
+    },
+  };
+}
+
+/**
+ * Open the normalized companion log for a headless PTY host.
+ *
+ * Writes are synchronous and bounded because this path is a diagnostic
+ * side-channel: a failed or full companion log must never interrupt the
+ * managed PTY. The file is retained as a tail-bounded, newline-delimited
+ * artifact; raw PTY bytes still travel through the original stdout fd.
+ *
+ * @param {string} path
+ * @param {{maxLineBytes?: number, maxBytes?: number, maxWriteBytes?: number}} [options]
+ * @returns {{path:string, enabled:boolean, push:(chunk?:any)=>void, flush:()=>void, close:()=>void}}
+ */
+export function createHeadlessNormalizedLogWriter(path, {
+  maxLineBytes = HEADLESS_NORMALIZED_LOG_MAX_LINE_BYTES,
+  maxBytes = HEADLESS_NORMALIZED_LOG_MAX_BYTES,
+  maxWriteBytes = HEADLESS_NORMALIZED_LOG_MAX_WRITE_BYTES,
+} = {}) {
+  const target = typeof path === 'string' ? path.trim() : '';
+  const maxFileBytes =
+    Number.isFinite(Number(maxBytes)) && Number(maxBytes) > 0
+      ? Math.floor(Number(maxBytes))
+      : HEADLESS_NORMALIZED_LOG_MAX_BYTES;
+  const maxChunkBytes =
+    Number.isFinite(Number(maxWriteBytes)) && Number(maxWriteBytes) > 0
+      ? Math.floor(Number(maxWriteBytes))
+      : HEADLESS_NORMALIZED_LOG_MAX_WRITE_BYTES;
+  const normalizer = makeHeadlessLogNormalizer({ maxLineBytes });
+  let fd = null;
+  let fileBytes = 0;
+
+  const disabled = {
+    path: target,
+    enabled: false,
+    push() {},
+    flush() {},
+    close() {},
+  };
+  if (!target) return disabled;
+
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    fd = openSync(target, 'a', 0o600);
+    try {
+      chmodSync(target, 0o600);
+    } catch {
+      /* best-effort permissions; the host still owns the diagnostic path */
+    }
+    fileBytes = fstatSync(fd).size;
+  } catch {
+    try {
+      if (fd != null) closeSync(fd);
+    } catch {
+      /* ignore */
+    }
+    return disabled;
+  }
+
+  const disable = () => {
+    try {
+      if (fd != null) closeSync(fd);
+    } catch {
+      /* ignore */
+    }
+    fd = null;
+  };
+
+  const trimFileIfNeeded = () => {
+    if (fd == null || fileBytes <= maxFileBytes + maxChunkBytes) return;
+    const keep = Math.min(fileBytes, maxFileBytes);
+    const buffer = Buffer.alloc(keep);
+    const read = readSync(fd, buffer, 0, keep, Math.max(0, fileBytes - keep));
+    let body = buffer.subarray(0, read);
+    if (fileBytes > keep) {
+      const firstLine = body.indexOf(0x0a);
+      if (firstLine >= 0) body = body.subarray(firstLine + 1);
+    }
+    const temporary = `${target}.${process.pid}.tmp`;
+    try {
+      writeFileSync(temporary, body, { mode: 0o600 });
+      chmodSync(temporary, 0o600);
+      renameSync(temporary, target);
+      closeSync(fd);
+      fd = openSync(target, 'a', 0o600);
+      fileBytes = body.length;
+    } catch {
+      try {
+        unlinkSync(temporary);
+      } catch {
+        /* ignore */
+      }
+      // Keep the existing fd if the atomic trim failed. A diagnostic side
+      // channel is allowed to grow until the next successful trim, but must
+      // never take down the pty host.
+    }
+  };
+
+  const writeBounded = (text) => {
+    if (fd == null || !text) return;
+    const bytes = Buffer.from(text, 'utf8');
+    let offset = 0;
+    while (offset < bytes.length) {
+      const length = Math.min(maxChunkBytes, bytes.length - offset);
+      const written = writeSync(fd, bytes, offset, length);
+      if (!(written > 0)) break;
+      offset += written;
+      fileBytes += written;
+    }
+    trimFileIfNeeded();
+  };
+
+  const writeNormalized = (text) => {
+    try {
+      writeBounded(text);
+    } catch {
+      disable();
+    }
+  };
+
+  return {
+    path: target,
+    enabled: true,
+    push(chunk) {
+      if (fd == null) return;
+      writeNormalized(normalizer.push(chunk));
+    },
+    flush() {
+      if (fd == null) return;
+      writeNormalized(normalizer.flush());
+    },
+    close() {
+      if (fd == null) return;
+      writeNormalized(normalizer.flush());
+      disable();
+    },
+  };
+}
+
+/**
  * Claude can still show its first-run wizard to a headless launch even when
  * the persisted config says onboarding is complete. A human can press Enter
  * through that wizard; a headless managed pty cannot. Keep the recovery
@@ -4169,6 +4448,8 @@ export function injectTurn(sock, text, ownerId) {
  * @param {(proof:any)=>Promise<void>} [o.onKickoffPersisted] lifecycle acknowledgement
  * @param {object} [o.signalSource]      process-like on/off signal source (tests)
  * @param {()=>object} [o.reapScopeResidue] exact-session-cgroup cleanup (tests)
+ * @param {string} [o.normalizedLogPath] optional headless grep-safe log path; normally
+ *   supplied through {@link HEADLESS_NORMALIZED_LOG_ENV} in `o.env`
  * @param {(args:string[])=>any} [o.mintRecycleArgs] mint argv for an ordinary recycle
  * @param {(args:string[])=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
@@ -4266,6 +4547,11 @@ export function hostThroughPty(o) {
   const stdout = o.io?.stdout ?? process.stdout;
   const onExit = o.onExit ?? ((code) => process.exit(code ?? 0));
   const bridgeTty = o.bridgeTty ?? !!(stdin.isTTY && typeof stdin.setRawMode === 'function');
+  const normalizedLogPath =
+    String(o.normalizedLogPath ?? env[HEADLESS_NORMALIZED_LOG_ENV] ?? '').trim() || null;
+  const normalizedLog = normalizedLogPath
+    ? createHeadlessNormalizedLogWriter(normalizedLogPath)
+    : null;
 
   let pty;
   try {
@@ -6376,6 +6662,11 @@ export function hostThroughPty(o) {
         );
       }
       activity.touchOutput();
+      // Headless launchers keep the original raw PTY bytes on stdout for the
+      // existing liveness/activity consumers, but also persist a bounded,
+      // ANSI-free, CR-split companion so grep cannot expand one TUI frame into
+      // an unbounded physical line.
+      if (normalizedLog) normalizedLog.push(raw);
       // Everything else — readiness above, the output taps below — keeps seeing
       // the RAW stream; only what reaches the owner's terminal is guarded.
       stdout.write(scrollbackGuard.filter(raw));
@@ -6965,6 +7256,9 @@ export function hostThroughPty(o) {
             new Promise((resolve) => setTimeout(resolve, RECYCLE_FORCE_KILL_WAIT_MS)),
           ]);
         }
+        // Finish any visible text and discard a dangling escape sequence before
+        // the successor child starts writing to the same companion artifact.
+        if (normalizedLog) normalizedLog.flush();
         // WI-1980: a RECYCLE is a HARD cold reset — mint a FRESH --session-id so
         // we don't re-declare the prior child's already-on-disk id (which claude
         // rejects → boot-retry storm). env (PAPERCUSP_SID) is untouched, so coord

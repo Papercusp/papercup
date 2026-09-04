@@ -8,6 +8,8 @@
  * `insight-citations.ts` ships (full behavior coverage lives there) and that the
  * CLI wiring itself doesn't silently diverge.
  */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
@@ -25,5 +27,18 @@ describe('check-insight-citations guard detector (WI-1576)', () => {
     const good = '---\ntitle: x\n---\n\nbody\n';
     expect(findStaleInsightCitations(good, process.cwd())).toEqual([]);
     expect(formatStaleCitations([])).toBeNull();
+  });
+
+  it('keeps both insight CLIs on the shared tracked + untracked enumerator', () => {
+    // The defect was in CLI enumeration, not either pure detector. Pin the wiring
+    // directly: reverting either script to bare `git ls-files` recreates the false
+    // green for a brand-new doc even while all detector unit tests remain green.
+    const root = resolve(import.meta.dirname, '../../../..');
+    for (const script of ['check-insight-citations.mjs', 'check-insight-normative.mjs']) {
+      const source = readFileSync(resolve(root, 'scripts', script), 'utf8');
+      expect(source).toContain('listFilesIncludingUntracked(ROOT)');
+      expect(source).not.toMatch(/execSync\(['"]git ls-files/);
+      expect(source).toContain('describeUnscanned(scan, ROOT)');
+    }
   });
 });

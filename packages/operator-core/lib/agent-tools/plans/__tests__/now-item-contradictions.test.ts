@@ -182,6 +182,29 @@ describe('detectNowItemContradictions', () => {
         expect.objectContaining({ id: 'P-001', status: 'done' }),
       ]);
     });
+
+    it('accepts quantitative test-pass evidence as completion narration', () => {
+      const proposed = parsePlan(
+        CURRENT.replace(
+          '**State:** P-001 is done.',
+          '**State:** P-001 passed 113/113 focused tests plus 9/9 migrated-Postgres tests.',
+        ),
+      );
+
+      expect(detectNowItemContradictions(proposed)).toEqual([]);
+    });
+
+    it.each([
+      'P-001 has not passed 113/113 focused tests yet.',
+      'P-001 will have passed 113/113 focused tests.',
+      'Pass P-001 focused tests before continuing.',
+    ])('still flags non-completion test-pass wording: %s', (state) => {
+      const proposed = parsePlan(CURRENT.replace('**State:** P-001 is done.', `**State:** ${state}`));
+
+      expect(detectNowItemContradictions(proposed)).toEqual([
+        expect.objectContaining({ id: 'P-001', status: 'done' }),
+      ]);
+    });
   });
 
   it('flags negated completion instead of treating it as closure', () => {
