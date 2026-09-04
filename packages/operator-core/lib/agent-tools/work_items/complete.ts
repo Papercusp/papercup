@@ -248,7 +248,7 @@ const completionSpec = z
   )
   .describe(
     // EI-39573: publish the same repair shape that the schema-level string refusal returns.
-    "Structured completion record: { summary, verification?: { filesChanged?: string[], testsRun?: string, testResult?: string, verifiedHow?: string, addedTests?: boolean, coverage?: { population: string[], checked?: string[], notChecked?: string[], notApplicable?: string[], residue?: string[] } }, testsRun?, testResult?, verifiedHow?, addedTests?, filesChanged?: string[], whatLanded?: string[], deferred?: string[], migrations?: string[], coordNotes?, coverage? }. `completion.verification` is strict: use only the listed evidence keys; put test/typecheck/diff details in `testsRun`/`testResult` (or top-level `tests`), not `verification.tests`, `verification.typecheck`, or `verification.diff`. `verifiedHow` accepts a concise free-text label; prefer 'unit'|'integration'|'live-drove-ui'|'live-service'|'manual'|'already-passing'` for coarse queryable modes. For a terminal close, `verifiedHow:'live-drove-ui'` requires a real artifact citation in `summary`, `testsRun`, `testResult`, or `filesChanged` (a screenshot/capture image path or a recorded `tauri-agent-tools` capture/screenshot/check invocation); inspect the captured image when applicable. `verifiedHow:'live-service'` requires `testsRun`/`testResult` to jointly name the concrete service/unit/process and a falsifiable runtime observation (`MainPID`, `NRestarts`, `ActiveState`, or an HTTP status). Use 'unit'/'manual'/'integration' when no live artifact or runtime process was inspected. Put structured evidence under `completion.verification`; the top-level evidence fields are legacy aliases. Keep `deferred` and `coordNotes` at the completion level, not inside `verification`. " +
+    "Structured completion record: { summary, verification?: { filesChanged?: string[], filesDeleted?: string[], testsRun?: string, testResult?: string, verifiedHow?: string, addedTests?: boolean, coverage?: { population: string[], checked?: string[], notChecked?: string[], notApplicable?: string[], residue?: string[] } }, testsRun?, testResult?, verifiedHow?, addedTests?, filesChanged?: string[], filesDeleted?: string[], whatLanded?: string[], deferred?: string[], migrations?: string[], coordNotes?, coverage? }. `completion.verification` is strict: use only the listed evidence keys; put test/typecheck/diff details in `testsRun`/`testResult` (or top-level `tests`), not `verification.tests`, `verification.typecheck`, or `verification.diff`. `verifiedHow` accepts a concise free-text label; prefer 'unit'|'integration'|'live-drove-ui'|'live-service'|'manual'|'already-passing'` for coarse queryable modes. For a terminal close, `verifiedHow:'live-drove-ui'` requires a real artifact citation in `summary`, `testsRun`, `testResult`, or `filesChanged` (a screenshot/capture image path or a recorded `tauri-agent-tools` capture/screenshot/check invocation); inspect the captured image when applicable. `verifiedHow:'live-service'` requires `testsRun`/`testResult` to jointly name the concrete service/unit/process and a falsifiable runtime observation (`MainPID`, `NRestarts`, `ActiveState`, or an HTTP status). Use 'unit'/'manual'/'integration' when no live artifact or runtime process was inspected. Put structured evidence under `completion.verification`; the top-level evidence fields are legacy aliases. Keep `deferred` and `coordNotes` at the completion level, not inside `verification`. " +
       // observation-and-recall-surface-honesty-2026-08-16 P-001: coordNotes is the second
       // input to checkpoint-harvest, so it carries the same first-line-is-the-title rule as
       // loop:checkpoint { insight }. Shared constant, never re-worded here — the guard test
@@ -1761,6 +1761,7 @@ export function completionEvidenceFromRecord(
   // legacy `testResult: "pass"` was also present, causing the live-UI close guard to
   // reject the evidence until the caller duplicated the path into the alias.
   const filesChanged = nested.filesChanged ?? rec.filesChanged;
+  const filesDeleted = nested.filesDeleted ?? rec.filesDeleted;
   const testsRun = nested.testsRun ?? rec.testsRun ?? rec.tests;
   const testResult = nested.testResult ?? rec.testResult;
   const verifiedHow = nested.verifiedHow ?? rec.verifiedHow;
@@ -1784,6 +1785,7 @@ export function completionEvidenceFromRecord(
   if (requirementDisposition?.length) evidence.requirementDisposition = requirementDisposition;
   if (claims?.length) evidence.claims = claims;
   if (filesChanged?.length) evidence.filesChanged = filesChanged;
+  if (filesDeleted?.length) evidence.filesDeleted = filesDeleted;
   if (testsRun?.trim()) evidence.testsRun = testsRun;
   if (testResult?.trim()) evidence.testResult = testResult;
   if (verifiedHow) evidence.verifiedHow = verifiedHow;
@@ -2860,7 +2862,10 @@ async function completeOne(
   // unresolvedPathsInCompletion intentionally stays silent for paths outside its candidate
   // root, so an absolute Hive path would otherwise skip this lookup and get Papercusp-stamped.
   const initialUnresolvedPaths = unresolvedPathsInCompletion(completionEvidenceForGate);
-  const declaredCompletionPaths = completionEvidenceForGate?.filesChanged ?? [];
+  const declaredCompletionPaths = [
+    ...(completionEvidenceForGate?.filesChanged ?? []),
+    ...(completionEvidenceForGate?.filesDeleted ?? []),
+  ];
   const hasAbsoluteCheckoutPath = declaredCompletionPaths.some(
     (path) => Boolean(completionCheckoutRootForPath(path) ?? checkoutRootForPath(path)),
   );
@@ -3119,7 +3124,10 @@ async function completeOne(
   const treeStamp = completionEvidenceBeforeStamp
     ? registeredRepoRoots
       ? completionTreeStampForEvidence(completionEvidenceBeforeStamp, registeredRepoRoots)
-      : completionTreeStamp({ filesChanged: completionEvidenceBeforeStamp.filesChanged })
+      : completionTreeStamp({
+          filesChanged: completionEvidenceBeforeStamp.filesChanged,
+          filesDeleted: completionEvidenceBeforeStamp.filesDeleted,
+        })
     : undefined;
   const completionEvidenceToPersist: PersistedCompletionEvidence | undefined = (() => {
     const base = withClaimBaseline(
@@ -3140,6 +3148,7 @@ async function completeOne(
     authorityWithFindings,
     completionEvidenceForGate?.filesChanged,
     treeStamp,
+    completionEvidenceForGate?.filesDeleted,
   );
   const completionAuthority = committedContentIdentityMissing ? 'proposed' : authorityWithFindings;
   // EI-20268156880922192: the completion record is durable, but a cited
@@ -3612,7 +3621,9 @@ async function completeOne(
     persisted: workItem?.completionAuthority ?? null,
     computed: completionAuthority,
     authorityByEvidence,
-    declaredFilesCount: completionEvidenceForGate?.filesChanged?.length ?? 0,
+    declaredFilesCount:
+      (completionEvidenceForGate?.filesChanged?.length ?? 0) +
+      (completionEvidenceForGate?.filesDeleted?.length ?? 0),
     inProcessContentIdentityMissing: committedContentIdentityMissing,
   });
   // The change is worthless if it is silent. An agent whose close just landed `proposed`
@@ -3630,7 +3641,8 @@ async function completeOne(
   // per-path identities behind that verdict are already computed; this only surfaces them.
   const contentIdentityDetail = describeUnprovenContentIdentity(
     unprovenContentIdentityPaths(treeStamp),
-    completionEvidenceForGate?.filesChanged?.length ?? 0,
+    (completionEvidenceForGate?.filesChanged?.length ?? 0) +
+      (completionEvidenceForGate?.filesDeleted?.length ?? 0),
   );
   const originAwareContentIdentityDetail = contentIdentityAdviceForOrigin(
     existing.origin,
@@ -3957,7 +3969,7 @@ export default defineTool({
   description:
     'Complete one or more work-items with structured evidence; renders and broadcasts it. For terminal closes use `passed`/`deprecated` (feature/chunk) or `resolved`/`closed` (issue); `done`/`dropped` aliases are accepted. `closed`/`deprecated` discard work. Pass terminal `state` plus `assumptions` (`"none"` or fact keys) to converge item, plan item, claim, and checkpoint; without `state` it only records. Check `finish.complete`/`stateWarning`.',
   guidance: {
-    when: 'After verification, pass `completion`, a family terminal state (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and required `assumptions` (`\"none\"` or fact keys) — terminal closes cannot omit it. Use `dropped`/`closed`/`deprecated` only for discard/wontfix. `specAdequacy`/`outputPayload` are top-level siblings of `completion` (nested placement is auto-hoisted). Universal-verification claims require a population partition in `completion.verification.coverage`: each entry exactly once in checked/notChecked/notApplicable; residue is a separate explicit array (`[]` or `["none"]` means zero). Keep `deferred`/`coordNotes` outside verification; put test/typecheck/diff details in top-level aliases; use `completion.duplicateOf` for duplicates.',
+    when: 'After verification, pass `completion`, a family terminal state (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and required `assumptions` (`\"none\"` or fact keys) — terminal closes cannot omit it. Use `dropped`/`closed`/`deprecated` only for discard/wontfix. `specAdequacy`/`outputPayload` are top-level siblings of `completion` (nested placement is auto-hoisted). Universal-verification claims require a population partition in `completion.verification.coverage`: each entry exactly once in checked/notChecked/notApplicable; residue is a separate explicit array (`[]` or `["none"]` means zero). Keep `deferred`/`coordNotes` outside verification; put test/typecheck/diff details in top-level aliases; use `filesDeleted` (top-level or nested under `verification`) for intentional removals, not `filesChanged`; use `completion.duplicateOf` for duplicates.',
     notWhen: 'Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.',
     chaining:
       'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',
