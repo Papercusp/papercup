@@ -72,6 +72,9 @@ import {
 // WI-38224: a plain constant, so a STATIC import is correct here even though this file otherwise
 // prefers dynamic ones — it must be evaluated in THIS process to describe THIS process.
 import { RUNNER_PROCESS_BOOTED_AT_MS } from "@papercusp/operator-core/lib/release/in-flight-retriage";
+// P-007 / D-004: the fail-closed predicate that replaced D-001's staging-join veto.
+import { assessFrozenLineagePromotion } from "@papercusp/operator-core/lib/release/frozen-lineage-promotion";
+import { frozenLineageRef } from "@papercusp/operator-core/lib/release/repair-head-admission";
 import {
   GREEN_CHECKPOINT_SIGKILL_GRACE_MS,
   GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
@@ -1129,16 +1132,11 @@ export interface CheckpointDeps {
     queue: FrozenCandidateRepairQueue,
     fired: { spawnId: string | null; runId: string | null } | null | undefined,
   ): Promise<FrozenCandidateRepairQueue | null>;
-  /** EI-21007486441633274 / WI-40081: publish an additive integration-history join only
-   * after the exact frozen repair passes its isolated verification. The returned SHA is an
-   * immutable CANONICAL candidate for a fresh full-gate run: it must be the integration head,
-   * descend from both the prior integration tip and `queue.repairHead`, and preserve the prior
-   * integration tree byte-for-byte. The isolated repair head is verification-only and must
-   * never advance the green release ref directly. Returning null (or throwing) keeps the
-   * ready-to-promote queue durable and `main` unchanged. */
-  reconcileFrozenRepairIntoStaging?(
-    queue: FrozenCandidateRepairQueue,
-  ): Promise<string | null>;
+  /* P-007 / D-004 retired `reconcileFrozenRepairIntoStaging` (EI-21007486441633274 / WI-40081).
+   * It published an additive integration-history join so a green isolated repair could re-enter
+   * the complete gate at the joined sha, because D-001 forbade the repair head from advancing
+   * the release ref. `main` now fast-forwards to the lineage commit itself, proven by
+   * `assessFrozenLineagePromotion`; P-008 owns folding the promoted lineage back into staging. */
   log(s: string): void;
   /** WI-4957: THIS run's own identity — independent of `candidate` (the sha it judges).
    *  Two runs can judge the exact same candidate (a re-fire after an infra hiccup, or the
@@ -9080,45 +9078,10 @@ async function runGreenCheckpointInner(
     }
   };
 
-  /**
-   * Convert a green isolated repair into the one thing D-001 permits promotion to judge: an
-   * immutable canonical staging SHA. The replacement ready-to-test queue is written BEFORE the
-   * old repair worktree is cleaned, so a crash either resumes the ready-to-promote join or the
-   * exact canonical full-gate candidate; it can never fall through to a moving tip.
-   */
-  const stageCanonicalRepairRetest = async (
-    queue: FrozenCandidateRepairQueue,
-  ): Promise<
-    | { ok: true; candidate: string; queue: FrozenCandidateRepairQueue }
-    | { ok: false; error: unknown }
-  > => {
-    try {
-      const reconciledHead =
-        await deps.reconcileFrozenRepairIntoStaging!(queue);
-      if (!reconciledHead) return { ok: false, error: null };
-      const canonicalCandidate = await revParse(
-        cfg.integrationRoot,
-        reconciledHead,
-      );
-      const canonicalQueue = createFrozenCandidateQueue({
-        candidate: canonicalCandidate,
-        qualificationAttemptId: queue.qualificationAttemptId ?? null,
-        base: lastReady,
-        // The isolated repair suite is proof about another SHA. Re-entry must execute the
-        // complete canonical gate and therefore cannot inherit that affected-task proof.
-        affectedTestProofGroup: null,
-        nowMs: Date.now(),
-      });
-      await deps.writeFrozenRepairQueue!(canonicalQueue);
-      return {
-        ok: true,
-        candidate: canonicalCandidate,
-        queue: canonicalQueue,
-      };
-    } catch (error) {
-      return { ok: false, error };
-    }
-  };
+  // P-007 / D-004: `stageCanonicalRepairRetest` lived here. It converted a green isolated repair
+  // into a joined staging sha so the whole gate could re-run there, because D-001 held that an
+  // isolated repair head was verification-only. D-004 promotes the lineage commit itself, so the
+  // join — and the second full suite it cost — is gone. See `assessFrozenLineagePromotion`.
   if (!diagnosticOnly && deps.readFrozenRepairQueue) {
     try {
       repairQueue = await deps.readFrozenRepairQueue();
@@ -9148,50 +9111,19 @@ async function runGreenCheckpointInner(
   // only the promotion path (`main` fast-forwarded to the lineage) or an explicit operator
   // `release:repair-queue { op: 'retire', confirm: true }` clears the row.
   if (repairQueue) {
-    // A process may die after proving the exact repair green or while publishing the additive
-    // staging-history join. The persisted ready-to-promote row resumes that idempotent join,
-    // then replaces itself with a ready-to-test queue pinned to the canonical joined SHA.
-    // `main` is untouched until that exact canonical SHA passes the full gate.
-    // Old/direct callers without both durable hooks retain the historical exact-head path.
+    // P-007 / D-004: a process may die after proving the exact repair green but before `main`
+    // fast-forwards to it. The old resume published an additive staging-history join and re-cut
+    // the gate at the joined sha; the lineage commit is now the promotion target itself, so the
+    // whole recovery is to re-enter verification AT THE REPAIR HEAD. That re-runs the signature
+    // selectively and, on green, the full canonical gate at that same sha before promoting —
+    // idempotent, and it can never fall through to a moving tip.
     if (repairQueue.phase === "ready-to-promote") {
-      if (
-        deps.reconcileFrozenRepairIntoStaging &&
-        deps.writeFrozenRepairQueue
-      ) {
-        const verifiedRepairHead = repairQueue.repairHead;
-        const staged = await stageCanonicalRepairRetest(repairQueue);
-        if (!staged.ok) {
-          const detail = staged.error
-            ? `: ${staged.error instanceof Error ? staged.error.message : staged.error}`
-            : "";
-          const summary =
-            `verified frozen repair ${verifiedRepairHead.slice(0, 8)} remains verification-only; ` +
-            `it could not be joined into current ${cfg.integrationBranch} history${detail}. ` +
-            `Keeping the ready-to-promote queue, leaving ${cfg.releaseRef} unchanged, and refusing ` +
-            `to select a moving integration tip`;
-          deps.log(summary);
-          return withRepairIdentity({
-            advanced: false,
-            candidate: verifiedRepairHead,
-            from: lastReady,
-            green: null,
-            reason: "repair-in-progress",
-            summary,
-            repairQueue,
-          });
-        }
-        repairQueue = staged.queue;
-        candidate = staged.candidate;
-        initialCandidateVerification = true;
-        deps.log(
-          `verified frozen repair ${verifiedRepairHead.slice(0, 8)} stayed verification-only; ` +
-            `joined it into ${cfg.integrationBranch} and re-entering the full gate on immutable ` +
-            `canonical candidate ${candidate.slice(0, 8)}`,
-        );
-      } else {
-        repairQueue = { ...repairQueue, phase: "ready-to-verify" };
-        await deps.writeFrozenRepairQueue?.(repairQueue);
-      }
+      repairQueue = { ...repairQueue, phase: "ready-to-verify" };
+      await deps.writeFrozenRepairQueue?.(repairQueue);
+      deps.log(
+        `resuming frozen repair ${repairQueue.repairHead.slice(0, 8)}: it proved green but never ` +
+          `advanced ${cfg.releaseRef}; re-verifying at its own sha before promotion`,
+      );
     }
     const fixerAlive = repairQueue.fixerSpawnId
       ? await deps
@@ -12075,62 +12007,63 @@ async function runGreenCheckpointInner(
   }
 
   if (repairVerification && repairQueue) {
-    // D-001: an isolated repair suite is verification-only. Join it into staging and re-enter
-    // the complete gate at that immutable canonical SHA before any push or release advance.
-    // Persist the isolated-green transition before the staging join. On success the helper
-    // atomically replaces this row with a ready-to-test queue pinned to the joined SHA; on any
-    // failure the ready-to-promote row remains the crash-safe resume journal and `main` stays put.
+    // P-007 / D-004 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03), RATIFIED by
+    // the owner 2026-09-03 ~22:58Z. The full canonical gate has just passed AT the repair head
+    // — the frozen candidate plus its admitted fix blobs, and nothing else.
+    //
+    // D-001 used to call that proof "verification-only": it joined the repair into the moving
+    // integration tip and re-ran the complete gate at the joined sha. That threw away the proof
+    // this run had just paid a full suite for and re-imported every commit landed since the
+    // freeze, so a candidate could never converge faster than the fleet broke it — the treadmill
+    // D-007 diagnosed. `main` is now allowed to fast-forward to the lineage commit itself.
+    //
+    // The veto is REPLACED, not removed: `assessFrozenLineagePromotion` is a fail-closed proof
+    // that the judged sha IS the repair head, descends from the frozen candidate, and is on that
+    // candidate's CAS-advanced admission ledger ref. Anything else — a tip cut, a commit no
+    // admission authored, an unreadable ancestry — holds the queue and leaves `main` untouched.
+    // P-008 folds the promoted lineage back into staging afterwards.
     repairQueue = markFrozenRepairVerificationGreen(repairQueue, {
       repairHead: candidate,
       nowMs: Date.now(),
     });
-    if (deps.reconcileFrozenRepairIntoStaging && deps.writeFrozenRepairQueue) {
-      await deps.writeFrozenRepairQueue(repairQueue);
-      const verifiedRepairHead = candidate;
-      const staged = await stageCanonicalRepairRetest(repairQueue);
-      if (!staged.ok) {
-        const detail = staged.error
-          ? `: ${staged.error instanceof Error ? staged.error.message : staged.error}`
-          : "";
-        const reconciliationSummary =
-          `exact frozen repair ${verifiedRepairHead.slice(0, 8)} passed isolated verification but ` +
-          `remains verification-only; its additive ${cfg.integrationBranch} history join did not ` +
-          `complete${detail}. The ready-to-promote queue will resume, ${cfg.releaseRef} remains ` +
-          `unchanged, and no moving tip may be selected`;
-        deps.log(reconciliationSummary);
-        stampPromotion(false, "repair-in-progress");
-        return {
-          advanced: false,
-          candidate: verifiedRepairHead,
-          from: lastReady,
-          green: null,
-          reason: "repair-in-progress",
-          summary: reconciliationSummary,
-          repairQueue,
-          ...(deps.runId ? { runId: deps.runId } : {}),
-          ...(logPath ? { logPath } : {}),
-          ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
-        };
-      }
-      const reconciliationSummary =
-        `exact frozen repair ${verifiedRepairHead.slice(0, 8)} passed isolated verification and ` +
-        `stayed off ${cfg.releaseRef}; it was joined into ${cfg.integrationBranch}, and the full ` +
-        `gate is now pinned to immutable canonical candidate ${staged.candidate.slice(0, 8)}`;
-      deps.log(reconciliationSummary);
+    await deps.writeFrozenRepairQueue?.(repairQueue);
+    const lineageRef = frozenLineageRef(repairQueue.candidate);
+    const promotion = assessFrozenLineagePromotion({
+      candidate: repairQueue.candidate,
+      repairHead: repairQueue.repairHead,
+      judged: candidate,
+      judgedDescendsFromCandidate: await isAncestor(
+        cfg.integrationRoot,
+        repairQueue.candidate,
+        candidate,
+      ).catch(() => null),
+      judgedOnLineageRef: (await refExists(cfg.integrationRoot, lineageRef).catch(() => false))
+        ? await isAncestor(cfg.integrationRoot, candidate, lineageRef).catch(() => null)
+        : null,
+    });
+    if (!promotion.promotable) {
+      const refusalSummary =
+        `frozen repair ${candidate.slice(0, 8)} passed the full canonical gate but may not ` +
+        `advance ${cfg.releaseRef}: ${promotion.summary} [${promotion.code}]. The ` +
+        `ready-to-promote queue is kept and no moving tip may be selected`;
+      deps.log(refusalSummary);
       stampPromotion(false, "repair-in-progress");
       return {
         advanced: false,
-        candidate: staged.candidate,
+        candidate,
         from: lastReady,
         green: null,
         reason: "repair-in-progress",
-        summary: reconciliationSummary,
-        repairQueue: staged.queue,
+        summary: refusalSummary,
+        repairQueue,
         ...(deps.runId ? { runId: deps.runId } : {}),
         ...(logPath ? { logPath } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
       };
     }
+    deps.log(
+      `frozen repair ${candidate.slice(0, 8)} may advance ${cfg.releaseRef}: ${promotion.summary}`,
+    );
   }
   if (!repairPromotionAdvance) {
     if (!opts.noPush) {
@@ -15442,56 +15375,6 @@ export function realCheckpointDeps(
               queue,
               fired,
             );
-          },
-          async reconcileFrozenRepairIntoStaging(
-            queue: FrozenCandidateRepairQueue,
-          ) {
-            const { bridgeContainedCommitIntoCurrentBranch } =
-              await import("@papercusp/operator-core/lib/harness/git-sync/run-git-sync");
-            const runGit = async (args: string[], cwd: string) =>
-              exec("git", ["-C", cwd, ...args], { allowNonZero: true });
-            const bridge = await bridgeContainedCommitIntoCurrentBranch(
-              runGit,
-              cfg.integrationRoot,
-              queue.repairHead,
-              { log },
-            );
-
-            let joinedSha: string | null = null;
-            if (bridge.status === "bridged") {
-              joinedSha = bridge.joinedSha;
-            } else if (bridge.status === "not-needed") {
-              const currentHead = await revParse(
-                cfg.integrationRoot,
-                cfg.integrationBranch,
-              );
-              if (
-                await isAncestor(
-                  cfg.integrationRoot,
-                  queue.repairHead,
-                  currentHead,
-                )
-              ) {
-                joinedSha = currentHead;
-              }
-            } else {
-              log(
-                `frozen repair ancestry bridge ${bridge.status}: ${"reason" in bridge ? bridge.reason : bridge.message}`,
-              );
-            }
-            if (!joinedSha) return null;
-
-            // The generic bridge owns only the local, content-proven join. Publication is
-            // part of the checkpoint transaction: a rejected staging push throws, leaves
-            // the queue ready-to-promote, and is retried without another exact suite.
-            await exec("git", [
-              "-C",
-              cfg.integrationRoot,
-              "push",
-              "origin",
-              `${joinedSha}:refs/heads/${cfg.integrationBranch}`,
-            ]);
-            return joinedSha;
           },
         }
       : {}),

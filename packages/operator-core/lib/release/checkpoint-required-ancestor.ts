@@ -42,35 +42,6 @@ type FrozenRepairQueueState = {
   fixerAlive: boolean | null;
 };
 
-/**
- * True only when canonical staging already contains the frozen repair's exact binary
- * patch. This is the same reverse-apply proof used by the detached writer; keeping it
- * here makes the request-side launch target and runtime queue reconciliation classify
- * a ready-to-verify queue from one implementation.
- */
-export function stagingContainsFrozenRepairPatch(
-  queue: FrozenCandidateRepairQueue,
-  root = integrationRoot(),
-): boolean {
-  // P-003 / D-010: there is no repair worktree; the frozen lineage (candidate and every
-  // admitted repairHead) lives as objects in the canonical repository itself.
-  const patchResult = spawnSync('git', [
-    '-C',
-    root,
-    'diff',
-    '--binary',
-    queue.candidate,
-    queue.repairHead,
-  ]);
-  if (patchResult.status !== 0 || !patchResult.stdout?.length) return false;
-  const check = spawnSync(
-    'git',
-    ['-C', root, 'apply', '--reverse', '--check', '--binary', '-'],
-    { input: patchResult.stdout },
-  );
-  return check.status === 0;
-}
-
 function currentQuietCutCandidate(predictedCandidate: string | null, root: string): string | null {
   if (predictedCandidate) return predictedCandidate;
   const execFn = (cmd: string, argv: string[]) => {
@@ -80,21 +51,20 @@ function currentQuietCutCandidate(predictedCandidate: string | null, root: strin
   return currentCheckpointCandidate(root, execFn).current_candidate;
 }
 
-function resolveRunnableCandidate(
+export function resolveRunnableCandidate(
   queueDecision: FrozenRepairQueueDecision,
-  repairQueue: FrozenCandidateRepairQueue | null,
+  /** Retained for call-site symmetry; the frozen branches now read the decision alone. */
+  _repairQueue: FrozenCandidateRepairQueue | null,
   predictedCandidate: string | null,
   root: string,
 ): { candidate: string | null; source: 'frozen-repair-queue' | 'current-quiet-cut' | 'unresolved' } | null {
   if (queueDecision.kind === 'verify-repair') {
-    const patchAlreadyOnStaging = Boolean(
-      repairQueue && stagingContainsFrozenRepairPatch(repairQueue, root),
-    );
-    if (patchAlreadyOnStaging) {
-      return { candidate: queueDecision.candidate, source: 'frozen-repair-queue' };
-    }
-    const candidate = currentQuietCutCandidate(predictedCandidate, root);
-    return { candidate, source: candidate ? 'current-quiet-cut' : 'unresolved' };
+    // P-007 / D-004: the repair head is judged AT ITS OWN SHA. This branch used to ask whether
+    // canonical staging already contained the repair's patch and fall back to a quiet cut at
+    // the moving tip when it did not — which inverted the freeze exactly when it mattered, on a
+    // lineage deliberately not yet folded into staging. The lineage is not required to be on
+    // staging to be judged; P-008 folds a PROMOTED lineage back into staging afterwards.
+    return { candidate: queueDecision.candidate, source: 'frozen-repair-queue' };
   }
   if (queueDecision.kind === 'test-candidate') {
     return { candidate: queueDecision.candidate, source: 'frozen-repair-queue' };

@@ -22,8 +22,10 @@ import {
   parseFrozenCandidateRepairQueue,
   type FrozenCandidateRepairPhase,
   type FrozenCandidateRepairQueue,
+  type FrozenRepairQueueDecision,
   type FrozenRepairQueueObservation,
 } from './frozen-candidate-repair-queue';
+import { resolveRunnableCandidate } from './checkpoint-required-ancestor';
 
 const C = '1111111111111111111111111111111111111111';
 const R = '2222222222222222222222222222222222222222';
@@ -137,6 +139,10 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..'
 const GATE_SOURCE_PATH =
   process.env.FROZEN_LINEAGE_GATE_SOURCE ?? join(REPO_ROOT, 'apps/operator/lib/release/green-checkpoint.ts');
 const GATE_SOURCE = readFileSync(GATE_SOURCE_PATH, 'utf8');
+const GATE_ANCESTOR_SOURCE = readFileSync(
+  join(REPO_ROOT, 'packages/operator-core/lib/release/checkpoint-required-ancestor.ts'),
+  'utf8',
+);
 
 describe('the ready-to-verify path verifies the repair head at its own sha, never the tip (P-005)', () => {
   it('the tip-proving predecessor is neither declared nor called', () => {
@@ -323,5 +329,109 @@ describe('retire is an actor-attributed operator verb with no automatic caller (
 
   it('the gate never calls retire itself', () => {
     expect(GATE_SOURCE).not.toMatch(RETIRE_CALL);
+  });
+});
+
+/**
+ * P-007 / D-004 falsifiers. Two independent holes let a frozen candidate lose its freeze at
+ * the very last hop, AFTER every fix had been admitted and proven:
+ *
+ *  1. the manual-run preflight resolved a `verify-repair` queue by asking whether canonical
+ *     staging already contained the repair's patch, and fell back to a TIP CUT when it did
+ *     not — so a repair deliberately not yet folded into staging was answered with the moving
+ *     tip, the exact object the freeze exists to refuse;
+ *  2. the gate treated a green isolated repair as VERIFICATION-ONLY (D-001) and joined it into
+ *     the moving tip to re-run the complete gate there, discarding the proof it had earned and
+ *     re-importing every commit landed since the freeze.
+ *
+ * D-004 replaces both with one rule: `main` may fast-forward to a commit of the frozen lineage
+ * that passed the full gate.
+ */
+describe('a verify-repair queue resolves to its own head, never a tip cut (P-007)', () => {
+  const NOT_A_REPO = '/nonexistent/definitely-not-a-git-repo';
+  const TIP = '3333333333333333333333333333333333333333';
+
+  it('CALIBRATION: a test-candidate decision already resolves to the frozen candidate', () => {
+    const resolved = resolveRunnableCandidate(
+      { kind: 'test-candidate', candidate: C } as FrozenRepairQueueDecision,
+      row('ready-to-test'),
+      TIP,
+      NOT_A_REPO,
+    );
+    expect(resolved).toEqual({ candidate: C, source: 'frozen-repair-queue' });
+  });
+
+  it('resolves the repair head even when staging does NOT contain the repair patch', () => {
+    // The point of the freeze is that the lineage need not be observable on staging. Answering
+    // "not on staging" with the tip is how a frozen candidate got swapped for a fresh cut at
+    // the last hop.
+    const resolved = resolveRunnableCandidate(
+      { kind: 'verify-repair', candidate: R } as FrozenRepairQueueDecision,
+      row('ready-to-verify'),
+      TIP,
+      NOT_A_REPO,
+    );
+    expect(resolved).toEqual({ candidate: R, source: 'frozen-repair-queue' });
+  });
+
+  it('never answers a verify-repair queue with the predicted tip, whatever the tip is', () => {
+    for (const predicted of [TIP, C, null]) {
+      const resolved = resolveRunnableCandidate(
+        { kind: 'verify-repair', candidate: R } as FrozenRepairQueueDecision,
+        row('ready-to-verify'),
+        predicted,
+        NOT_A_REPO,
+      );
+      expect(resolved?.candidate).toBe(R);
+      expect(resolved?.source).not.toBe('current-quiet-cut');
+      expect(resolved?.source).not.toBe('unresolved');
+    }
+  });
+
+  it('does not consult a moving tip for a verify-repair queue', () => {
+    // A pure branch cannot fall back to a moving object. If this decision ever needs git
+    // again, the fallback it reintroduces is the defect above.
+    expect(GATE_ANCESTOR_SOURCE).not.toMatch(
+      /kind === 'verify-repair'[\s\S]{0,600}?currentQuietCutCandidate/,
+    );
+  });
+
+  it('the patch-on-staging probe is gone entirely — it had no other honest caller', () => {
+    expect(GATE_ANCESTOR_SOURCE).not.toContain('stagingContainsFrozenRepairPatch');
+  });
+});
+
+describe('a green repair head promotes; it is never joined into the tip (P-007, replaces D-001)', () => {
+  it('the verification-only staging join has no declaration and no caller in the gate', () => {
+    // Scanned as CALL/DECLARATION shapes, not bare mentions: the prose explaining why D-001 was
+    // retired names both symbols on purpose, and a guard that forbade the explanation would push
+    // the next reader to delete the history instead of the code.
+    expect(GATE_SOURCE).not.toMatch(
+      /(?:deps\.|async\s+)reconcileFrozenRepairIntoStaging|reconcileFrozenRepairIntoStaging\s*[?(]/,
+    );
+    expect(GATE_SOURCE).not.toMatch(/stageCanonicalRepairRetest\s*[(=]/);
+  });
+
+  it('POSITIVE CONTROL: those same patterns DO match the shapes they are meant to catch', () => {
+    // Without this, a typo in either pattern above reads as "the join is gone".
+    const declaration = '  reconcileFrozenRepairIntoStaging?(\n    queue: Q,\n  ): Promise<string>;';
+    const call = 'const staged = await stageCanonicalRepairRetest(repairQueue);';
+    expect(declaration).toMatch(
+      /(?:deps\.|async\s+)reconcileFrozenRepairIntoStaging|reconcileFrozenRepairIntoStaging\s*[?(]/,
+    );
+    expect('await deps.reconcileFrozenRepairIntoStaging!(queue)').toMatch(
+      /(?:deps\.|async\s+)reconcileFrozenRepairIntoStaging|reconcileFrozenRepairIntoStaging\s*[?(]/,
+    );
+    expect(call).toMatch(/stageCanonicalRepairRetest\s*[(=]/);
+  });
+
+  it('the gate decides promotion through the frozen-lineage predicate', () => {
+    expect(GATE_SOURCE).toContain('assessFrozenLineagePromotion');
+  });
+
+  it('POSITIVE CONTROL: both sources really were read (these scans can fail)', () => {
+    expect(GATE_SOURCE.length).toBeGreaterThan(100_000);
+    expect(GATE_SOURCE).toContain('runGreenCheckpoint');
+    expect(GATE_ANCESTOR_SOURCE).toContain('resolveRunnableCandidate');
   });
 });
