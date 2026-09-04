@@ -11,7 +11,7 @@ import { composite, GYM_JUDGE_RUBRIC_V1 } from '../judge-scoring';
 import type { AbDeps } from '../ab-runner';
 import type { JudgeLlmCall } from '../judge';
 import type { GymLlmCall } from '../task-generator';
-import type { LoopProposalRecord } from '../loop';
+import { createCandidateVersionVerdict, type LoopProposalRecord } from '../loop';
 
 const PIPELINE_USD = 0.5;
 const JUDGE_USD = 0.1;
@@ -325,6 +325,17 @@ describe('buildLoopDeps — propose / persistCycle / recordProposal seams', () =
       costDelta: 0,
       probeStatus: 'pass',
       verdict: 'accept',
+      candidateVersion: createCandidateVersionVerdict({
+        candidateId: deps.newVariantId(1),
+        parentId: 'baseline',
+        variant: { promptOverrides: { worker: 'new' } },
+        parent: { promptOverrides: {} },
+        // ONE measured, passing gate — not an empty list. Under P-003 an empty
+        // gate set derives 'inconclusive' (nothing was measured), which would
+        // contradict this record's own verdict:'accept'.
+        gateResults: [{ gate: 'dev-anchor', pass: true, status: 'pass', detail: 'fixture' }],
+        recordedAt: 0,
+      }),
     });
     expect(proposals).toHaveLength(1);
     expect(proposals[0].candidateId).toBe('cand-fixedrun-c1');
