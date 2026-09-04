@@ -36,6 +36,8 @@ const EXACT_REPORTED_COMPLETIONS = [
   'P-002 (WI-1744270) made the `## Now` next-pointer DERIVED at read time',
   'P-002 landed, making the `## Now` next-pointer DERIVED at read time',
 ];
+const EXACT_REPORTED_PROVENANCE =
+  'P-001 and P-002 are done. Exact-plan launch path remains intentionally unused because the plan lacked promoted P-002 execution metadata.';
 const EXACT_REPRO_CURRENT = CURRENT.replace(`slug: ${SLUG}`, `slug: ${EXACT_REPRO_SLUG}`)
   .replace(
     '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
@@ -539,6 +541,37 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
       expect(result.value).toEqual({ ok: true });
     },
   );
+
+  it('accepts a terminal item in neutral historical promotion provenance', () => {
+    const result = evaluateNowUpdate(
+      EXACT_REPRO_CURRENT,
+      EXACT_REPORTED_PROVENANCE,
+      'Continue with acceptance review.',
+      EXACT_REPRO_SLUG,
+    );
+
+    expect(result.value).toEqual({ ok: true });
+  });
+
+  it.each([
+    'P-001 and P-002 are done. Exact-plan launch path remains intentionally unused because the plan lacks promoted P-002 execution metadata.',
+    'P-001 and P-002 are done. Exact-plan launch path remains intentionally unused because the plan will lack promoted P-002 execution metadata.',
+    'P-001 and P-002 are done. Exact-plan launch path remains intentionally unused because the plan lacked promoted P-002 execution metadata; revisit P-002.',
+  ])('still rejects non-historical or action-oriented promotion provenance: %s', (state) => {
+    const result = evaluateNowUpdate(
+      EXACT_REPRO_CURRENT,
+      state,
+      'Continue with acceptance review.',
+      EXACT_REPRO_SLUG,
+    );
+
+    expect(result.newBody).toBeNull();
+    expect(result.value).toEqual({
+      ok: false,
+      code: 'now_item_status_contradiction',
+      contradictions: [expect.objectContaining({ id: 'P-002', status: 'done' })],
+    });
+  });
 
   it.each([
     'P-002 did not make the `## Now` next-pointer DERIVED at read time',

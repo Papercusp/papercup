@@ -66,6 +66,13 @@ const NOW_NEGATED_OR_FUTURE_RE =
 // guarded, and require the same affirmative, non-future window checks below.
 const NOW_DERIVATION_COMPLETION_RE =
   /\bmade\s+(?:the\s+)?[^.!?;:\n]{0,120}\bderived\b/i;
+// EI-22023442425397379: a terminal item can appear in the plan's historical
+// launch/promotion explanation, e.g. "the plan lacked promoted P-002 execution
+// metadata". This describes why an exact-plan launch path was unused; it does
+// not direct current or future work at P-002. Keep the grammar past-tense and
+// metadata-specific so present/future/action wording remains guarded.
+const NOW_PROMOTION_PROVENANCE_REFERENCE_RE =
+  /\b(?:the|this|that)\s+plan\s+lacked\s+(?:promoted\s+)?P-\d{3,}\s+(?:execution|launch|promotion)\s+(?:metadata|record|provenance)\b/i;
 // Staging is the implementation/acceptance plane; a terminal item can be
 // truthfully complete there before its commit reaches main/deployed. Keep the
 // exemption tied to affirmative completion grammar and explicit release-plane
@@ -310,6 +317,14 @@ export function detectNowItemContradictions(
       !NOW_ACTIVE_RE.test(before) &&
       !NOW_ACTIVE_RE.test(after);
     const neutralResidueReference = hasNeutralResidueReference(before, after);
+    const neutralPromotionProvenanceReference =
+      NOW_PROMOTION_PROVENANCE_REFERENCE_RE.test(clause) &&
+      !NOW_ACTION_RE.test(before) &&
+      !NOW_ACTION_RE.test(after) &&
+      !NOW_NEGATED_OR_FUTURE_RE.test(before) &&
+      !NOW_NEGATED_OR_FUTURE_RE.test(after) &&
+      !NOW_ACTIVE_RE.test(before) &&
+      !NOW_ACTIVE_RE.test(after);
     // An explicit "<other-plan-slug> P-NNN" citation scopes the id to that
     // OTHER plan, never this one — see PLAN_SLUG_PREFIX_RE above. Tense/action
     // wording after the id is irrelevant here: the id itself does not name an
@@ -327,6 +342,7 @@ export function detectNowItemContradictions(
       crossLedgerReference ||
       neutralDecisionReference ||
       neutralResidueReference ||
+      neutralPromotionProvenanceReference ||
       explicitForeignPlanReference ||
       retrospectiveResolution ||
       neutralMetadataReference
