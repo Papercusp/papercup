@@ -646,6 +646,33 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     );
   });
 
+  it('moves canonical verified evidence to contested when explicit ok:false rejects the check', () => {
+    const repairs: CarryArgRepair[] = [];
+    expect(
+      coerceCarryRowShape(
+        {
+          claim: 'the gate exits 0',
+          ok: false,
+          verified: 'the gate exited 1',
+        },
+        'checks[3]',
+        repairs,
+      ),
+    ).toEqual({
+      claim: 'the gate exits 0',
+      contested: 'the gate exited 1',
+    });
+    expect(repairs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          field: 'checks[3].verified',
+          kind: 'downgraded',
+          detail: expect.stringContaining('ok:false'),
+        }),
+      ]),
+    );
+  });
+
   it('maps structured verification kind/command/result rows to claim/recheck/verified', () => {
     const repairs: CarryArgRepair[] = [];
     expect(

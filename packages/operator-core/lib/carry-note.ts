@@ -751,13 +751,26 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
   }
 
   if (booleanOk !== undefined) {
-    // Canonical `verified` wins when both vocabularies are supplied. Otherwise
-    // feed the boolean through the existing verified compatibility path below,
-    // which preserves accompanying evidence only for `true` and keeps
-    // evidence-free/false rows PREDICTED.
+    // Canonical `verified` wins when both vocabularies are supplied, except that
+    // an explicit `ok:false` is an authoritative negative verdict: affirmative
+    // canonical evidence cannot remain in the VERIFIED slot and render as `✓`.
+    // Move that evidence losslessly to `contested` so the failed verdict stays
+    // visible instead of silently discarding the only explanation.
     const hadCanonicalVerified = 'verified' in r;
+    const canonicalVerified = r.verified;
     delete r.ok;
     if (!hadCanonicalVerified) r.verified = booleanOk;
+    else if (!booleanOk && typeof canonicalVerified === 'string' && canonicalVerified.trim()) {
+      delete r.verified;
+      r.contested = canonicalVerified;
+      repairs.push({
+        field: `${path}.verified`,
+        kind: 'downgraded',
+        detail:
+          `explicit boolean \`ok:false\` is authoritative; canonical verified evidence was moved losslessly to ` +
+          `\`contested\` so the failed verdict cannot render as \`✓\`: ${canonicalVerified}`,
+      });
+    }
     repairs.push({
       field: `${path}.ok`,
       kind: 'renamed',
@@ -783,7 +796,7 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
     // the caller's verdict, so a malformed companion field must not override it.
     const was = r.verified;
     delete r.verified;
-    if (was && evidence) r.verified = evidence;
+    if (was && evidence && booleanOk !== false) r.verified = evidence;
     repairs.push({
       field: `${path}.verified`,
       kind: 'renamed',
@@ -799,7 +812,7 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
     // When a boolean was supplied, it is authoritative: only `true` with a real
     // evidence string above can become VERIFIED. Without the boolean compatibility
     // shape, retain the older lossless `{status, evidence}` repair.
-    if (r.verified === undefined && booleanVerified === undefined) {
+    if (r.verified === undefined && booleanVerified === undefined && booleanOk === undefined) {
       if (evidence) r.verified = evidence;
       else if (statusVerified) r.verified = status;
     }
