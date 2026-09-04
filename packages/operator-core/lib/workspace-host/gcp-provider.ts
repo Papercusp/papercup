@@ -7,6 +7,7 @@ import type {
   WorkspaceHostConnectionValidation,
   WorkspaceHostDesiredSpec,
   WorkspaceHostHealthAttestation,
+  WorkspaceHostHealthCheck,
   WorkspaceHostImage,
   WorkspaceHostObservation,
   WorkspaceHostPlan,
@@ -26,7 +27,12 @@ import type {
   WorkspaceHostSnapshotRef,
   WorkspaceHostTransportProfile,
 } from '@papercusp/deployment-driver';
-import { assertWorkspaceHostSecretIsolation, WORKSPACE_HOST_DATA_ROOT } from '@papercusp/deployment-driver';
+import {
+  assertWorkspaceHostSecretIsolation,
+  resolveWorkspaceHostHealthStatus,
+  unmeasuredHealthCheck,
+  WORKSPACE_HOST_DATA_ROOT,
+} from '@papercusp/deployment-driver';
 import {
   GCP_CLOUD_PLATFORM_SCOPE,
   createGcpWorkspaceHostAcquireAuth,
@@ -2444,7 +2450,15 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
 
   private lifecycleState(instance: GcpInstanceObservation | undefined): WorkspaceHostObservation['state'] {
     if (!instance) return 'absent';
-    if (instance.status === 'RUNNING') return instance.agentOnline === false ? 'degraded' : 'running';
+    // `agentOnline` is optional and currently has NO producer on the GCP path. The lifecycle
+    // state describes the VM, so an UNMEASURED agent leaves the host 'running' and only a
+    // MEASURED false demotes it. Written as an explicit three-way rather than a `=== false`
+    // coercion so the absent case is a deliberate decision here instead of an accident that
+    // silently disagrees with attestHealth's reading of the same field (WI-2143924).
+    if (instance.status === 'RUNNING') {
+      if (instance.agentOnline === false) return 'degraded';
+      return 'running';
+    }
     if (instance.status === 'SUSPENDED' || instance.status === 'TERMINATED') return 'stopped';
     if (instance.status === 'STOPPING') return 'destroying';
     if (instance.status === 'REPAIRING') return 'repairing';
@@ -2490,16 +2504,24 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       ? await this.client.getInstance(projectId, requireString(vm.zone, 'GCP VM zone'), vm.providerId)
       : undefined;
     const running = instance?.status === 'RUNNING';
-    const agentOnline = instance?.agentOnline === true;
+    // NOT `=== true`. Nothing on the GCP path writes `agentOnline` — gcp-api-client.ts never
+    // assigns it, and gcp-api-client.test.ts pins its absence — so coercing it to a boolean
+    // reported `degraded` for every healthy host and made `healthy` unreachable, which would
+    // hang any caller polling for it (WI-2143924). Propagate the absence instead; when a real
+    // producer lands, this same line starts carrying a real boolean with no other change.
+    const agentOnline = instance?.agentOnline ?? null;
+    const checks: WorkspaceHostHealthCheck[] = [
+      { name: 'compute-running', ok: running, detail: instance?.status ?? 'absent' },
+      agentOnline === null
+        ? unmeasuredHealthCheck('workspace-agent-online', 'no producer writes agentOnline on the GCP path')
+        : { name: 'workspace-agent-online', ok: agentOnline },
+    ];
     return {
       hostId: host.hostId,
       observedAt: this.now(),
-      status: !running ? 'unreachable' : agentOnline ? 'healthy' : 'degraded',
+      status: resolveWorkspaceHostHealthStatus({ reachable: running, checks }),
       ...(instance?.sourceImage ? { image: { id: instance.sourceImage } } : {}),
-      checks: [
-        { name: 'compute-running', ok: running, detail: instance?.status ?? 'absent' },
-        { name: 'workspace-agent-online', ok: agentOnline },
-      ],
+      checks,
     };
   }
 }
