@@ -1778,7 +1778,7 @@ impl OperatorClient {
         let env = self
             .post_json(
                 "/api/agent-tools/work_items/list",
-                serde_json::json!({ "limit": limit }),
+                work_items_list_args(limit),
             )
             .await?;
         let text = env
@@ -2798,6 +2798,17 @@ fn work_frontier_detail_args(ids: Vec<String>, harness: &str) -> serde_json::Val
     })
 }
 
+/// The Fleet backfill is a direct projected-tool HTTP call (rather than the
+/// loopback `run-tool` bridge), so it must opt into the same untrimmed target
+/// payload explicitly. Otherwise a large row array can be cut in the middle of
+/// `content[0].text` and the Fleet pane reports a JSON parse error.
+fn work_items_list_args(limit: u32) -> serde_json::Value {
+    serde_json::json!({
+        "limit": limit,
+        "payloadTier": "full",
+    })
+}
+
 /// IPC wraps `sys:http` status failures in anyhow text rather than exposing
 /// the HTTP error type. Keep the same auth classification on that transport.
 fn status_from_error_text(message: &str) -> Option<u16> {
@@ -3660,6 +3671,13 @@ mod tests {
         assert_eq!(detail["args"]["ids"][0], "WI-ready");
     }
 
+    #[test]
+    fn work_items_list_backfill_requests_full_payload_tier() {
+        let args = super::work_items_list_args(500);
+        assert_eq!(args["limit"], 500);
+        assert_eq!(args["payloadTier"], "full");
+    }
+
     #[tokio::test]
     #[ignore = "requires a running operator (endpoint-ipc socket present)"]
     async fn live_work_frontier_fetch_decodes_the_full_payload() {
@@ -3686,6 +3704,22 @@ mod tests {
             frontier.counts.total >= frontier.counts.terminal,
             "frontier totals must include its terminal bucket"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a running operator (endpoint-ipc socket present)"]
+    async fn live_work_items_list_backfill_decodes_the_full_payload() {
+        // The Fleet startup backfill uses the direct projected-tool route, not
+        // run-tool. Keep this acceptance leg separate so either transport's
+        // payload-tier contract can regress independently without hiding it.
+        let client = OperatorClient::from_discovery()
+            .await
+            .expect("connect via discovery");
+        let rows = client
+            .work_items_list_bounded(500)
+            .await
+            .expect("decode work_items:list backfill over the live wire");
+        eprintln!("live work-items list backfill: {} rows", rows.len());
     }
 
     #[test]

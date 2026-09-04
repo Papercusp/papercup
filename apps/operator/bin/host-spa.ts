@@ -21,8 +21,10 @@
  * under `apps/operator-vite/server/` and this resolve() shortens.
  */
 import { Hono } from 'hono';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
+import { Readable } from 'node:stream';
+import { isHashedAssetPath } from '../../operator-vite/dist-atomic-writes';
 // P-006: the destination invariant as a POLICY (the prevention leg), kept in one
 // place so this host, the vite dev server and the desktop cannot drift apart.
 // Imported from the LEAF module, not the '@papercusp/desktop-ipc' barrel: this
@@ -102,20 +104,37 @@ const TEXT_EXTS = new Set([
  * `max-age=31536000` and we were not, so the local mirror won the cold fetch
  * (~30ms vs ~225ms) but lost the warm one. This closes that last gap.
  */
-const IMMUTABLE_ASSET_PREFIX = '/vditor/';
-const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+const IMMUTABLE_ASSET_PREFIX = 'vditor/';
+export const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+
+/**
+ * A SPA asset is immutable when its URL carries a content hash (the Vite
+ * `assets/` naming contract) or when it belongs to the pinned Vditor mirror.
+ * Keep this predicate next to the response policy so a new route cannot
+ * accidentally make a mutable file long-lived in browser caches.
+ */
+export function isImmutableSpaAssetPath(relPath: string): boolean {
+  return relPath.startsWith(IMMUTABLE_ASSET_PREFIX) || isHashedAssetPath(relPath);
+}
 
 function serveFile(absPath: string, status = 200, cacheControl?: string): Response {
   const ext = extname(absPath).toLowerCase();
   const contentType = EXT_CONTENT_TYPE[ext] ?? 'application/octet-stream';
-  const body = TEXT_EXTS.has(ext)
-    ? readFileSync(absPath, 'utf-8')
-    : readFileSync(absPath);
+  // Do not read the whole bundle into the event-loop thread for every request.
+  // Node's stream-to-web adapter gives Hono a backpressured body, so a large
+  // chunk is bounded by the socket/high-water marks instead of multiplying its
+  // full byte length by the number of concurrent cold page loads. Text assets
+  // still decode correctly in Response.text() because their content type keeps
+  // the UTF-8 charset above.
+  const body = Readable.toWeb(createReadStream(absPath)) as ReadableStream<Uint8Array>;
+  const headers = new Headers({
+    'content-type': contentType,
+    'content-length': String(statSync(absPath).size),
+  });
+  if (cacheControl) headers.set('cache-control', cacheControl);
   return new Response(body, {
     status,
-    headers: cacheControl
-      ? { 'content-type': contentType, 'cache-control': cacheControl }
-      : { 'content-type': contentType },
+    headers,
   });
 }
 
@@ -304,7 +323,7 @@ export function createSpaRoutes(profile: SpaRouteProfile = { kind: 'local' }): H
         return serveFile(
           abs,
           200,
-          pathname.startsWith(IMMUTABLE_ASSET_PREFIX) ? IMMUTABLE_CACHE_CONTROL : undefined,
+          isImmutableSpaAssetPath(rel) ? IMMUTABLE_CACHE_CONTROL : undefined,
         );
       }
       return new Response('Not found', {

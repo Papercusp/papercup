@@ -11,7 +11,7 @@
  * `~/.papercusp/posthog.json`), `getAllFlags()` consults `resolveTestOverrides()`
  * first, so a forced flag round-trips through the real serve path.
  */
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, afterEach, describe, expect, it, vi } from 'vitest';
@@ -25,13 +25,17 @@ vi.mock('@papercusp/operator-core/lib/session', () => ({
 
 let spaRoutes: import('hono').Hono;
 let createSpaRoutes: typeof import('./host-spa').createSpaRoutes;
+let immutableCacheControl: typeof import('./host-spa').IMMUTABLE_CACHE_CONTROL;
 let distDir: string;
 
 beforeAll(async () => {
   distDir = mkdtempSync(join(tmpdir(), 'host-spa-dist-'));
   writeFileSync(join(distDir, 'index.html'), '<!doctype html><html><head></head><body>app</body></html>');
+  mkdirSync(join(distDir, 'assets'));
+  writeFileSync(join(distDir, 'assets', 'entry-AbCd1234.js'), 'export const entry = 1;');
+  writeFileSync(join(distDir, 'assets', 'runtime.js'), 'export const runtime = 1;');
   process.env.PAPERCUSP_SPA_DIST = distDir;
-  ({ spaRoutes, createSpaRoutes } = await import('./host-spa'));
+  ({ spaRoutes, createSpaRoutes, IMMUTABLE_CACHE_CONTROL: immutableCacheControl } = await import('./host-spa'));
 });
 
 afterEach(() => {
@@ -47,6 +51,7 @@ describe('SPA shell pre-hydration globals', () => {
   it('injects the active workspace id global before the module bundle', async () => {
     const res = await spaRoutes.request('/');
     expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store, max-age=0');
     const body = await res.text();
     expect(body).toContain('window.__PAPERCUSP_WS__=');
     // Injected inside <head> so it runs before the deferred module entry.
@@ -155,5 +160,19 @@ describe('SPA shell pre-hydration globals', () => {
   it('returns a real 404 for a missing extensioned asset (never shells a .js)', async () => {
     const res = await spaRoutes.request('/assets/does-not-exist.js');
     expect(res.status).toBe(404);
+  });
+
+  it('streams content-hashed assets with immutable caching while leaving mutable assets uncached', async () => {
+    const hashed = await spaRoutes.request('/assets/entry-AbCd1234.js');
+    expect(hashed.status).toBe(200);
+    expect(hashed.headers.get('cache-control')).toBe(immutableCacheControl);
+    expect(hashed.headers.get('content-length')).toBe(String('export const entry = 1;'.length));
+    expect(hashed.body).not.toBeNull();
+    expect(await hashed.text()).toBe('export const entry = 1;');
+
+    const mutable = await spaRoutes.request('/assets/runtime.js');
+    expect(mutable.status).toBe(200);
+    expect(mutable.headers.get('cache-control')).toBeNull();
+    expect(await mutable.text()).toBe('export const runtime = 1;');
   });
 });

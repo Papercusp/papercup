@@ -185,6 +185,11 @@ export default function HudView({
     parseAsBoolean.withDefault(false),
   );
   const [openOwner, setOpenOwner] = useQueryState('hudsession', parseAsString);
+  // `agentConversation` is the portal bridge's companion key for the same
+  // conversation. Both keys are written when a Portal inspector opens this
+  // popup, so closing it must clear both or a reload can resurrect a stale
+  // conversation target even though `hudsession` is gone.
+  const [, setConversation] = useQueryState('agentConversation', parseAsString);
   /* Which turn the modal should open ON — the text of the search match that
      put this card on screen (owner ask 2026-08-02, part b).
 
@@ -1285,6 +1290,7 @@ export default function HudView({
           // empty states rather than a stale "starting up".
           setPendingLaunch(null);
           void setOpenOwner(null);
+          void setConversation(null);
           void setOpenFocus(null);
           void setOpenFocusTs(null);
           void setOpenFocusQ(null);
