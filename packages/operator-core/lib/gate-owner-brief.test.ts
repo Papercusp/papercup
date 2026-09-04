@@ -390,13 +390,14 @@ describe('composeGateOwnerBrief', () => {
       repairQueue: redQueue({ updatedAtMs: NOW - 60_000 }),
     });
     expect(b.attestations.verdict).toBe('incoherent');
-    expect(b.attestations.staleLegs).toEqual(['mainGreen']);
-    expect(b.attestations.oldestLeg).toBe('mainGreen');
+    expect(b.attestations.staleLegs).toEqual(['mainGreen', 'promotion']);
+    expect(b.attestations.oldestLeg).toBe('promotion');
     // The stale leg is named in prose too — the reader should not have to convert ms.
     expect(b.attestations.summary).toContain('mainGreen');
-    // Newest first, so the tail IS the oldest leg.
+    // Newest first, so the tail IS an oldest leg. The verdict and promotion identity
+    // share one gate_health timestamp; stable input order leaves promotion at the tail.
     expect(b.attestations.legs[0]!.leg).toBe('ownership');
-    expect(b.attestations.legs.at(-1)!.leg).toBe('mainGreen');
+    expect(b.attestations.legs.at(-1)!.leg).toBe('promotion');
     expect(b.attestations.legs.at(-1)!.stale).toBe(true);
   });
 
@@ -418,10 +419,11 @@ describe('composeGateOwnerBrief', () => {
    * compare, and `coherent` there would be a verdict of agreement computed over an empty
    * comparison — the same false-green shape as a count over zero measurements. It must be
    * `not-knowable`, and it must say so.
-   */
+  */
   it('one stamped leg is NOT-KNOWABLE, never coherent — an empty comparison is not agreement', () => {
-    const b = composeGateOwnerBrief({ ...base, verdictObservedAtMs: null });
-    // ownership is stamped at `nowMs` by construction; the verdict leg is not.
+    const b = composeGateOwnerBrief({ ...base, verdictObservedAtMs: null, promotion: null });
+    // Ownership is stamped at `nowMs` by construction; verdict and promotion evidence
+    // are deliberately absent so this remains a real one-leg comparison.
     expect(b.attestations.legs.map((l) => l.leg)).toEqual(['ownership']);
     expect(b.attestations.spreadMs).toBeNull();
     expect(b.attestations.verdict).toBe('not-knowable');
