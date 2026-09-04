@@ -39,6 +39,26 @@ async function loadHook() {
   };
 }
 
+async function loadDetector() {
+  return (await import(`file://${DETECTOR}`)) as {
+    defaultGitGrep: (
+      root: string,
+      identifier: string,
+      run?: (...args: unknown[]) => string,
+    ) => string[] | { kind: 'unavailable'; status?: number; code?: string };
+    findCensusDrift: (
+      sourceText: string,
+      deps?: Record<string, unknown>,
+    ) => {
+      findings: unknown[];
+      registriesFound: number;
+      censusesCompared: number;
+      unavailable?: { kind: 'unavailable'; status?: number; code?: string };
+    };
+    formatReport: (sourceFile: string, result: unknown) => string;
+  };
+}
+
 const registrySrc = (ids: string[]) =>
   `export const DEFAULT_CONTENT_DETECTORS = [\n${ids.map((i) => `  { id: '${i}' },`).join('\n')}\n];\n`;
 const censusSrc = (ids: string[]) =>
@@ -59,9 +79,9 @@ beforeAll(() => {
   symlinkSync(DETECTOR, join(fixture, 'scripts/check-registry-census-drift.mjs'));
   registryPath = join(fixture, 'pkg/registry.ts');
   // The fixture MUST be a real git repo with these paths tracked: the detector finds
-  // candidate censuses via `git grep -l`, whose catch-all returns [] for BOTH "no match"
-  // and "not a git repo". Without this the fire case reports no drift and reads exactly
-  // like a pass — the same false-negative shape this whole guard exists to prevent.
+  // candidate censuses via `git grep -l`. A successful no-match returns [], while a
+  // non-repository root is now reported as NOT MEASURED; the fire case needs the former
+  // so it can reach the real census assertion.
   writeFileSync(registryPath, registrySrc(['a']));
   writeFileSync(join(fixture, 'pkg/registry.test.ts'), censusSrc(['a']));
   execFileSync('git', ['init', '-q', '.'], { cwd: fixture });
@@ -129,5 +149,46 @@ describe('posttooluse-registry-census-drift-nudge', () => {
     expect(isCandidateFile('packages/x/lib/a.integration.test.ts')).toBe(false);
     expect(isCandidateFile('packages/x/lib/registry.d.ts')).toBe(false);
     expect(isCandidateFile('node_modules/p/lib/registry.ts')).toBe(false);
+  });
+
+  it('preserves [] for a successful git grep no-match (exit 1)', async () => {
+    const { defaultGitGrep } = await loadDetector();
+    const noMatch = Object.assign(new Error('no matches'), { status: 1 });
+    const result = defaultGitGrep('/not-a-real-root', 'MISSING', () => {
+      throw noMatch;
+    });
+    expect(result).toEqual([]);
+  });
+
+  it('returns a discriminated unavailable result for git command errors', async () => {
+    const { defaultGitGrep } = await loadDetector();
+    const commandError = Object.assign(new Error('git failed'), { status: 128 });
+    const result = defaultGitGrep('/not-a-real-root', 'REGISTRY', () => {
+      throw commandError;
+    });
+    expect(result).toEqual({ kind: 'unavailable', status: 128 });
+
+    const spawnError = Object.assign(new Error('git missing'), { code: 'ENOENT' });
+    expect(
+      defaultGitGrep('/not-a-real-root', 'REGISTRY', () => {
+        throw spawnError;
+      }),
+    ).toEqual({ kind: 'unavailable', code: 'ENOENT' });
+  });
+
+  it('propagates an unavailable census lookup as NOT MEASURED, not clean', async () => {
+    const { findCensusDrift, formatReport } = await loadDetector();
+    const nonGitRoot = mkdtempSync(join(tmpdir(), 'census-drift-non-git-'));
+    try {
+      const result = findCensusDrift(registrySrc(['a']), { root: nonGitRoot });
+      expect(result.findings).toEqual([]);
+      expect(result.registriesFound).toBe(1);
+      expect(result.censusesCompared).toBe(0);
+      expect(result.unavailable).toMatchObject({ kind: 'unavailable' });
+      expect(formatReport('pkg/registry.ts', result)).toContain('NOT MEASURED');
+      expect(formatReport('pkg/registry.ts', result)).not.toContain('no drift');
+    } finally {
+      rmSync(nonGitRoot, { recursive: true, force: true });
+    }
   });
 });

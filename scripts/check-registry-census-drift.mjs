@@ -54,6 +54,7 @@
  * Exit codes:
  *   0 — no registries found / no census asserts them / no drift, or advisory mode
  *   1 — --check found a registry whose census list disagrees with its entries
+ *   2 — --check could not enumerate census tests, so the result is not measured
  */
 
 import { execFileSync } from 'node:child_process';
@@ -213,22 +214,44 @@ function escapeRe(s) {
 // The check
 // ---------------------------------------------------------------------------
 
-/** Tracked `*.test.ts` files that literally mention `identifier` (cheap, via git grep). */
+/**
+ * Tracked `*.test.ts` files that literally mention `identifier` (cheap, via git grep).
+ * Returns the paths, or `{ kind: 'unavailable', ... }` when git could not enumerate them.
+ */
 export function testFilesMentioning(identifier, deps = {}) {
   const { root = ROOT, grep = defaultGitGrep } = deps;
   return grep(root, identifier);
 }
 
-function defaultGitGrep(root, identifier) {
+/**
+ * A git search can fail without being a negative result. Keep that distinction
+ * explicit so callers cannot mistake "not a git repo" / spawn failures for a
+ * successful no-match search.
+ */
+function unavailableGitSearch(error) {
+  const result = { kind: 'unavailable' };
+  if (Number.isInteger(error?.status)) result.status = error.status;
+  if (typeof error?.code === 'string') result.code = error.code;
+  return result;
+}
+
+/**
+ * Run the tracked-test census lookup. `git grep` uses exit 1 for a successful
+ * no-match search; every other thrown result means the lookup was unavailable.
+ *
+ * The optional runner is a focused test seam for the status/error distinction.
+ */
+export function defaultGitGrep(root, identifier, run = execFileSync) {
   try {
-    const out = execFileSync(
+    const out = run(
       'git',
       ['grep', '-l', '--fixed-strings', identifier, '--', '*.test.ts', '*.test.tsx'],
       { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     );
     return out.split('\n').filter(Boolean);
-  } catch {
-    return []; // no match (git grep exits 1) or no git — both mean "nothing to check"
+  } catch (error) {
+    if (error?.status === 1) return []; // successful no-match
+    return unavailableGitSearch(error);
   }
 }
 
@@ -247,6 +270,7 @@ export function findCensusDrift(sourceText, deps = {}) {
   // falsifiable: `censusesCompared: 0` is NOT a pass, it is "did not measure".
   let registriesFound = 0;
   let censusesCompared = 0;
+  let unavailable = null;
 
   // Identifiers this file declares as array literals — the only ones it can drift.
   const declared = [...src.matchAll(/(?:export\s+)?(?:const|let|var)\s+([A-Z][A-Z0-9_]*)\s*(?::[^=]*?)?=\s*\[/g)].map(
@@ -259,6 +283,10 @@ export function findCensusDrift(sourceText, deps = {}) {
     registriesFound++;
 
     const candidates = testFiles ?? testFilesMentioning(identifier, { root });
+    if (candidates?.kind === 'unavailable') {
+      unavailable ??= candidates;
+      continue;
+    }
     for (const relPath of candidates) {
       const text = readFile(root, relPath);
       if (text === null) continue;
@@ -310,7 +338,7 @@ export function findCensusDrift(sourceText, deps = {}) {
       }
     }
   }
-  return { findings, registriesFound, censusesCompared };
+  return { findings, registriesFound, censusesCompared, ...(unavailable ? { unavailable } : {}) };
 }
 
 function defaultReadFile(root, relPath) {
@@ -326,11 +354,20 @@ function defaultReadFile(root, relPath) {
 // ---------------------------------------------------------------------------
 
 export function formatReport(sourceFile, result) {
-  const { findings, registriesFound = 0, censusesCompared = 0 } = result;
+  const { findings, registriesFound = 0, censusesCompared = 0, unavailable = null } = result;
+  const unavailableDetail = unavailable?.status
+    ? `git grep exited with status ${unavailable.status}`
+    : unavailable?.code
+      ? `git grep could not start (${unavailable.code})`
+      : 'git grep was unavailable';
   if (!findings.length) {
     // Never render a bare "✓ no drift" — see the ANTI-VACUITY note in findCensusDrift.
     // A reader must be able to tell a real pass from a check that compared nothing.
-    return censusesCompared === 0
+    return unavailable
+      ? `· ${sourceFile}: NOT MEASURED — ${registriesFound} registr${
+          registriesFound === 1 ? 'y' : 'ies'
+        } found, census test lookup unavailable (${unavailableDetail})`
+      : censusesCompared === 0
       ? `· ${sourceFile}: NOT MEASURED — ${registriesFound} registr${registriesFound === 1 ? 'y' : 'ies'} found, 0 exact-list censuses to compare against`
       : `✓ ${sourceFile}: ${censusesCompared} census comparison(s) checked, no drift`;
   }
@@ -350,6 +387,7 @@ export function formatReport(sourceFile, result) {
     '  (EI-19401978567233485): otherwise it reds the fleet green-checkpoint ~an hour',
     '  later, where it holds main for every agent and costs a ~55min re-run.',
   );
+  if (unavailable) lines.push('', `  Census test lookup was NOT MEASURED — ${unavailableDetail}.`);
   return lines.join('\n');
 }
 
@@ -367,12 +405,14 @@ async function main() {
 
   const results = [];
   let anyFindings = false;
+  let anyUnavailable = false;
   for (const f of files) {
     const abs = resolve(ROOT, f);
     if (!existsSync(abs)) continue;
     const relPath = relative(ROOT, abs).split(sep).join('/');
     const result = findCensusDrift(readFileSync(abs, 'utf8'));
     if (result.findings.length) anyFindings = true;
+    if (result.unavailable) anyUnavailable = true;
     results.push({ file: relPath, ...result });
     if (!json) console.log(formatReport(relPath, result));
   }
@@ -381,7 +421,7 @@ async function main() {
   // Set the status and let the program end naturally: process.exit() here would
   // truncate the unbounded --json dump above when stdout is a pipe
   // (lint:no-undrained-stdout-exit).
-  process.exitCode = check && anyFindings ? 1 : 0;
+  process.exitCode = check ? (anyFindings ? 1 : anyUnavailable ? 2 : 0) : 0;
 }
 
 /**
