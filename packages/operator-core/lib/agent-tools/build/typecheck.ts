@@ -741,8 +741,10 @@ export default defineTool({
     'Run `tsc --noEmit` for ONE project and return structured diagnostics — { ok, errorCount, errors:[{file,line,column,code,message}], byFile, syntaxBroken, semanticCheckIncomplete } — instead of a compiler log you pipe through grep/tail. In scopeToFiles mode, ok/errorCount/exitCode describe the requested files, while otherErrorCount/otherErrors preserve import-graph diagnostics separately. Parser/global/partial-scope failures remain incomplete, never green. When syntaxBroken is non-empty, semanticCheckIncomplete is true and the diagnostic counts are LOWER BOUNDS, not complete totals. REFUSES a run that checked nothing (TS5057/TS5058/TS18003) rather than reporting a clean zero: this repo has no root tsconfig.json, so `-p .` silently checks zero files. `files` filters diagnostics server-side. Runs with --incremental false so a warm tsbuildinfo cannot under-report.',
   guidance: {
     when: 'You edited TypeScript and want to know whether a project typechecks, and exactly which errors are where. Also the way to check a workspace OUTSIDE operator-core, which `npm run lint:tsc` does not cover.',
-    notWhen: 'You want the baseline VERDICT on whether your change added errors — that is `npm run lint:tsc -- --mine` (per-file ratchet, peer-drift aware), which this tool does not replace. Not for building/emitting, eslint, or cargo.',
-    chaining: 'build:typecheck { project, files } → fix → re-run scoped to the same `files`; then `npm run lint:tsc -- --mine` for the gate verdict.',
+    notWhen:
+      'You want the baseline VERDICT on whether your change added errors — that is `npm run lint:tsc -- --mine` (per-file ratchet, peer-drift aware), which this tool does not replace. Not for building/emitting, eslint, or cargo.',
+    chaining:
+      'build:typecheck { project, files } → fix → re-run scoped to the same `files`; then `npm run lint:tsc -- --mine` for the gate verdict.',
   },
   capability: 'operator:write',
   requirePrincipal: false,
@@ -764,21 +766,54 @@ export default defineTool({
   skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
-    project: z.string().min(1).max(400)
-      .describe('tsconfig path, or a directory containing one — repo-root-relative or absolute (e.g. "packages/operator-core" or "apps/operator/tsconfig.json"). REQUIRED and deliberately un-defaulted: this repo has no root tsconfig.json, so any default would be the exact silent no-op this tool exists to refuse.'),
-    files: z.array(z.string().min(1)).max(50).optional()
-      .describe('Return only diagnostics in these files (matched by path suffix). The server-side form of `| grep -E "myfile"` — the whole project is still checked, so counts stay honest; `errorCount` is the filtered count and `totalErrorCount` the project-wide one.'),
-    dirs: z.array(z.string().min(1)).max(20).optional()
-      .describe('Return only diagnostics whose file falls under one of these directories — a repo-relative PREFIX match anchored at a path-segment boundary ("apps/operator" cannot match "apps/operator-vite"). The server-side form of `grep -E "^dir/"`, for a directory-ATTRIBUTION question `files` (suffix match) cannot express, e.g. "does ANY error fall under apps/operator-vite/?" (EI-22050606808498557). Combines with `files` as an OR: a diagnostic matching either is kept. `errorCount` is the filtered count; `totalErrorCount` the project-wide one.'),
-    maxErrors: z.number().int().min(1).max(500).optional()
-      .describe(`Cap the returned errors list (default ${DEFAULT_MAX_ERRORS}). Counts stay complete; errorsTruncated and byFileTruncated flag bounded arrays.`),
-    timeoutMs: z.number().int().min(1000).max(MAX_TIMEOUT_MS).optional()
+    project: z
+      .string()
+      .min(1)
+      .max(400)
+      .describe(
+        'tsconfig path, or a directory containing one — repo-root-relative or absolute (e.g. "packages/operator-core" or "apps/operator/tsconfig.json"). REQUIRED and deliberately un-defaulted: this repo has no root tsconfig.json, so any default would be the exact silent no-op this tool exists to refuse.',
+      ),
+    files: z
+      .array(z.string().min(1))
+      .max(50)
+      .optional()
+      .describe(
+        'Return only diagnostics in these files (matched by path suffix). The server-side form of `| grep -E "myfile"` — the whole project is still checked, so counts stay honest; `errorCount` is the filtered count and `totalErrorCount` the project-wide one.',
+      ),
+    dirs: z
+      .array(z.string().min(1))
+      .max(20)
+      .optional()
+      .describe(
+        'Return only diagnostics whose file falls under one of these directories — a repo-relative PREFIX match anchored at a path-segment boundary ("apps/operator" cannot match "apps/operator-vite"). The server-side form of `grep -E "^dir/"`, for a directory-ATTRIBUTION question `files` (suffix match) cannot express, e.g. "does ANY error fall under apps/operator-vite/?" (EI-22050606808498557). Combines with `files` as an OR: a diagnostic matching either is kept. `errorCount` is the filtered count; `totalErrorCount` the project-wide one.',
+      ),
+    maxErrors: z
+      .number()
+      .int()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe(
+        `Cap the returned errors list (default ${DEFAULT_MAX_ERRORS}). Counts stay complete; errorsTruncated and byFileTruncated flag bounded arrays.`,
+      ),
+    timeoutMs: z
+      .number()
+      .int()
+      .min(1000)
+      .max(MAX_TIMEOUT_MS)
+      .optional()
       .describe(
         `Hard budget for the compile. Default ${DEFAULT_TIMEOUT_MS}ms, but a FOREGROUND run is clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms — below the ~55s MCP transport cap — so an over-long compile returns an actionable timeout instead of an opaque transport error. A project that needs longer (packages/operator-core is ~104s) must run detached via capability:inspect { run_in_background: true }.`,
       ),
-    incremental: z.boolean().optional()
-      .describe('Allow tsc to use a warm tsconfig.tsbuildinfo. Default false — EI-487: an incremental run UNDER-reports errors in files the cache has not reindexed, which read as green for days. Only set true when you want a fast re-check and already know the tree is warm.'),
-    scopeToFiles: z.boolean().optional()
+    incremental: z
+      .boolean()
+      .optional()
+      .describe(
+        'Allow tsc to use a warm tsconfig.tsbuildinfo. Default false — EI-487: an incremental run UNDER-reports errors in files the cache has not reindexed, which read as green for days. Only set true when you want a fast re-check and already know the tree is warm.',
+      ),
+    scopeToFiles: z
+      .boolean()
+      .optional()
       .describe(
         'Compile ONLY `files` + their import graph instead of the whole project, so a run still fits the foreground cap under fleet load. Requires `files`; each path may be repository-relative, relative to the selected project directory, or absolute. COST IS YOUR IMPORT GRAPH, NOT THE PROJECT — measured in operator-core: a leaf file (lib/tsc-diagnostics.ts) 2.6s vs a hub file (agent-tools/build/typecheck.ts) 63s, because a hub transitively pulls in most of the project. Great for a leaf, no help for a hub — a hub can still exceed the cap and time out. The primary ok/errorCount/errors/exitCode verdict is attributable to the requested files; diagnostics elsewhere in the loaded graph remain separately visible under otherErrorCount/otherErrors and the raw compiler status under compilerExitCode. Parser/global/partial-scope failures make scopedVerdict incomplete rather than green. ⚠ NARROWER GUARANTEE: it cannot see errors your change caused in files that do NOT import yours (the classic case: adding a required field to a shared interface breaks distant fixtures). For the gate verdict use the project-wide run or `npm run lint:tsc -- --files=...`.',
       ),
@@ -858,11 +893,9 @@ export default defineTool({
     if (args.incremental !== true) tscArgs.push('--incremental', 'false');
 
     const workspaceId =
-      (ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : undefined)
-      ?? (ctx.principal?.workspaceId && ctx.principal.workspaceId !== '*'
-        ? ctx.principal.workspaceId
-        : undefined)
-      ?? activeWorkspaceId();
+      (ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : undefined) ??
+      (ctx.principal?.workspaceId && ctx.principal.workspaceId !== '*' ? ctx.principal.workspaceId : undefined) ??
+      activeWorkspaceId();
     const execution = await beginGovernedExecution(
       {
         idempotencyKey: `build:typecheck:${ctx.principal?.slug ?? 'operator'}:${randomUUID()}`,
@@ -949,9 +982,7 @@ export default defineTool({
     }
 
     const errors = errorsOnly(diagnostics);
-    const scopedPartition = scoped
-      ? partitionScopedDiagnostics(errors, scoped.resolvedFiles)
-      : null;
+    const scopedPartition = scoped ? partitionScopedDiagnostics(errors, scoped.resolvedFiles) : null;
     // In scoped mode `files`/`dirs` defined the PROGRAM, so they must not also narrow the
     // OUTPUT: the scoped program deliberately includes the import graph, and an error your
     // change caused in a file you import is exactly what you need to see. Re-applying either
@@ -961,31 +992,24 @@ export default defineTool({
     const shown = scopedPartition
       ? scopedPartition.requested
       : hasFilter
-      ? [
-          ...new Set([
-            ...(args.files ? filterToFiles(errors, args.files) : []),
-            ...(args.dirs ? filterToDirs(errors, args.dirs) : []),
-          ]),
-        ]
-      : errors;
+        ? [
+            ...new Set([
+              ...(args.files ? filterToFiles(errors, args.files) : []),
+              ...(args.dirs ? filterToDirs(errors, args.dirs) : []),
+            ]),
+          ]
+        : errors;
     const maxErrors = args.maxErrors ?? DEFAULT_MAX_ERRORS;
     const byFile = summariseByFile(scopedPartition ? scopedPartition.requested : errors);
     const bounded = boundDiagnostics(shown, byFile, maxErrors);
     const reported = parseFoundSummary(outcome.output);
     const syntaxBroken = syntaxBrokenFiles(errors);
     const scopedVerdictIncomplete = Boolean(
-      scoped
-      && (
-        scoped.missing.length > 0
-        || (scopedPartition?.unattributed.length ?? 0) > 0
-        || syntaxBroken.length > 0
-      )
+      scoped &&
+      (scoped.missing.length > 0 || (scopedPartition?.unattributed.length ?? 0) > 0 || syntaxBroken.length > 0),
     );
     const scopedOk = Boolean(
-      scoped
-      && scopedPartition
-      && scopedPartition.requested.length === 0
-      && !scopedVerdictIncomplete
+      scoped && scopedPartition && scopedPartition.requested.length === 0 && !scopedVerdictIncomplete,
     );
     const otherErrorCapacity = Math.max(0, maxErrors - bounded.errors.length);
     const otherErrors = scopedPartition?.other ?? [];
@@ -1056,16 +1080,14 @@ export default defineTool({
             }
           : {}),
         durationMs,
-        exitCode: scoped
-          ? scopedOk
-            ? 0
-            : outcome.code || 2
-          : outcome.code,
+        exitCode: scoped ? (scopedOk ? 0 : outcome.code || 2) : outcome.code,
         // Cross-check against tsc's own tally: a mismatch means the diagnostic
         // grammar drifted (a compiler upgrade), and the caller is told rather
         // than handed a silently wrong number.
         ...(reported !== null && reported !== errors.length
-          ? { parseWarning: `tsc reported ${reported} errors but ${errors.length} were parsed — the diagnostic format may have changed; treat counts as approximate.` }
+          ? {
+              parseWarning: `tsc reported ${reported} errors but ${errors.length} were parsed — the diagnostic format may have changed; treat counts as approximate.`,
+            }
           : {}),
       },
     };
