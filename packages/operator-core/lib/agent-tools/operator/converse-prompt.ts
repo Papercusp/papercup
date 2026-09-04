@@ -167,7 +167,7 @@ export async function buildOperatorPrompt(
   if (modeOverlay) {
     systemSections.push(modeOverlay);
   } else {
-    console.warn(`[converse-prompt] No mode overlay found for audienceMode="${audienceMode}" — ${role}.persona.${audienceMode}-mode.md is missing or unreadable.`);
+    console.warn(`[converse-prompt] No audience identity found for role="${role}" audienceMode="${audienceMode}" — blueprints/${role}.audience-${audienceMode}/prompts/audience.md is installed in no tier of the prompt chain (identities-v1 P-021).`);
   }
 
   systemSections.push(loadRoleConverse(role));
