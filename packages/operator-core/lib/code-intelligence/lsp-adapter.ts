@@ -357,7 +357,28 @@ interface LspClient {
    * an open document ignores disk per the LSP spec, so without it a peer's
    * write is invisible and the server answers about text that is gone.
    */
-  openDocs: Map<string, { mtimeMs: number; size: number }>;
+  openDocs: Map<
+    string,
+    {
+      mtimeMs: number;
+      size: number;
+      /** The configured/inferred TypeScript project retaining this URI. */
+      typescriptProjectKey?: string;
+    }
+  >;
+  /**
+   * One foreground TypeScript project may use this client at a time.
+   *
+   * Same-project queries share the lease, preserving saturation throughput.
+   * A different project waits until those queries finish, then closes every
+   * URI retaining the old project before it opens its own. Optional fields
+   * keep pinned pre-WI-2142895 clients compatible until process restart.
+   */
+  typescriptProjectLease?: {
+    activeKey: string | null;
+    users: number;
+    waiters: Set<() => void>;
+  };
   health: BackendHealth;
   lastError: string | null;
   startedAt: number;
@@ -476,6 +497,19 @@ const PROJECT_READY_TIMEOUT_MS = 60_000;
  */
 const MAX_TSSERVER_MEMORY_MB: number | null =
   Number(process.env.PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB ?? '') || 6144;
+
+/**
+ * A workspace-wide tsserver may retain one foreground configured/inferred
+ * project (plus that project's own references) at a time (WI-2142895).
+ *
+ * This is intentionally one, not an unmeasured larger guess. The failure that
+ * prompted the bound was a second large program added to an already-loaded
+ * client: semantic tsserver reached 4314MB and aborted under node's default
+ * old-space ceiling. The 6144MB cap above makes that observed case survive,
+ * but only closing the previous project's documents prevents every project a
+ * long-lived agent touches from accumulating forever.
+ */
+const MAX_FOREGROUND_TYPESCRIPT_PROJECTS = 1;
 
 /**
  * How long the progress set must stay CONTINUOUSLY empty before a
