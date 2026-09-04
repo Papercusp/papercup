@@ -37,6 +37,13 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 // EI-11137: the systemd truth-check that decides genuine-vs-phantom coalesce.
 vi.mock('./systemd-service-probe', () => ({ probeServiceStart: vi.fn() }));
+// EI-21651903020639415: gateway restarts must prove the new PID owns the
+// listener before reporting restarted:true. Mock the shared HTTP probe so the
+// regression suite stays hermetic and can assert the PID-before-health order.
+vi.mock('../../escalating-http-probe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../escalating-http-probe')>();
+  return { ...actual, probeHttpReachable: vi.fn() };
+});
 // EI-18661647550414959: the pre-kill "can this tree actually boot?" check. Mocked so
 // the suite never shells out to systemctl; its own logic is covered in
 // restart-preflight.test.ts. The default (set in beforeEach) is a clean tree.
@@ -77,6 +84,7 @@ import { tryAcquireResource, tryReleaseResource } from '../locks/su-lock-store';
 import { guardResource, type FenceToken, type GuardOutcome, type GuardSpec } from '../locks/resource-lock-guard';
 import { spawn } from 'node:child_process';
 import { probeServiceStart } from './systemd-service-probe';
+import { probeHttpReachable } from '../../escalating-http-probe';
 import { preflightRestartTarget } from './restart-preflight';
 import { resolveDesktopDevListener, restartDesktopDev } from './desktop-dev-restart';
 import { getOrgPg } from '@papercusp/db-org';
@@ -87,13 +95,14 @@ import {
   checkGitSyncCollision,
 } from '../../release/gate-collision-guard';
 import { checkBgHostQuiesce } from './bg-host-quiesce-guard';
-import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
+import { mockImplementationTyped, mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
 
 const acquireM = vi.mocked(tryAcquireResource);
 const releaseM = vi.mocked(tryReleaseResource);
 const guardM = vi.mocked(guardResource);
 const spawnM = vi.mocked(spawn);
 const probeM = vi.mocked(probeServiceStart);
+const gatewayHealthM = vi.mocked(probeHttpReachable);
 const preflightM = vi.mocked(preflightRestartTarget);
 const desktopResolveM = vi.mocked(resolveDesktopDevListener);
 const desktopRestartM = vi.mocked(restartDesktopDev);
@@ -220,6 +229,7 @@ beforeEach(() => {
   // Benign default: no live main process to report. Individual tests that care
   // about the coalesce-truth check or the restartedFromPid surfacing override it.
   mockResolvedTyped(probeM, { ok: true, mainPid: 0 });
+  gatewayHealthM.mockResolvedValue({ reachable: true, detail: 'HTTP 200' });
   preflightM.mockResolvedValue(bootVerdict());
   desktopResolveM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
   desktopRestartM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
@@ -1420,6 +1430,103 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       resource: 'staging-server',
     });
     expect(releaseM).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ lockId: 'COOL3' }));
+  });
+});
+
+describe('dev:restart gateway readiness (EI-21651903020639415)', () => {
+  beforeEach(() => {
+    process.env.PAPERCUSP_ALLOW_DEV_RESTART = '1';
+  });
+
+  it('waits for a new MainPID before probing /healthz and only then reports restarted:true', async () => {
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-GATEWAY-READY',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 31,
+    } as never);
+    // The first probe is the pre-restart baseline; the next two model systemd
+    // still exposing the old process before the detached restart lands, then a
+    // new process. Health must not be probed against either old-PID observation.
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9999 } as never);
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9999 } as never);
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9998 } as never);
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 5252, secondsSinceStart: 1 } as never);
+    mockResolvedTyped(gatewayHealthM, { reachable: true, detail: 'HTTP 200' });
+    guardM.mockImplementation(runGuard(fenceOk(31)) as never);
+
+    const b = body(
+      await call({
+        confirm: true,
+        authorize: true,
+        target: 'gateway',
+        reason: 'verify the gateway restart readiness contract',
+      }),
+    );
+
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'gateway',
+      drained: true,
+      restarted: true,
+      restartedFromPid: 4242,
+      gatewayReadiness: {
+        ready: true,
+        pidChanged: true,
+        observedPid: 5252,
+        health: { reachable: true, detail: 'HTTP 200' },
+      },
+    });
+    expect(gatewayHealthM).toHaveBeenCalledTimes(1);
+    expect(gatewayHealthM.mock.calls[0]?.[0]).toMatch(/127\.0\.0\.1:\d+\/healthz$/);
+    expect(probeM.mock.invocationCallOrder.at(-1)).toBeLessThan(gatewayHealthM.mock.invocationCallOrder[0]!);
+    expect(b.verifyWith).toMatch(/healthz/);
+    expect(b.note).toMatch(/MainPID changed to 5252/);
+  });
+
+  it('returns a distinct scheduled/not-ready result when the new PID never answers /healthz', async () => {
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-GATEWAY-NOT-READY',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 32,
+    } as never);
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9999 } as never);
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9999 } as never);
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 5252, secondsSinceStart: 1 } as never);
+    mockResolvedTyped(gatewayHealthM, { reachable: false, detail: 'ConnectionRefused' });
+    guardM.mockImplementation(runGuard(fenceOk(32)) as never);
+
+    const b = body(
+      await call({
+        confirm: true,
+        authorize: true,
+        target: 'gateway',
+        reason: 'exercise the not-ready response',
+      }),
+    );
+
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'gateway',
+      drained: true,
+      restarted: false,
+      restartScheduled: true,
+      gatewayReadiness: {
+        ready: false,
+        pidChanged: true,
+        observedPid: 5252,
+        health: { reachable: false, detail: 'ConnectionRefused' },
+      },
+    });
+    expect(b.verifyWith).toMatch(/healthz/);
+    expect(b.note).toMatch(/readiness was NOT confirmed|Do not send requests yet/i);
   });
 });
 

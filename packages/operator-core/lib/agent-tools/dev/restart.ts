@@ -90,6 +90,7 @@ import {
 } from './bg-host-quiesce-guard';
 import { DESKTOP_DEV_RESOURCE, resolveDesktopDevListener, restartDesktopDev } from './desktop-dev-restart';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { probeHttpReachable, type HttpProbeResult } from '../../escalating-http-probe';
 import {
   acquireGitSyncRestartBarrier,
   GIT_SYNC_RESTART_BARRIER_DRAIN_SEC,
@@ -101,6 +102,15 @@ import {
 
 const MAX_DRAIN_SEC = 300;
 const DEFAULT_DRAIN_SEC = 120;
+/**
+ * The gateway restart is detached so the caller's transport survives the
+ * operator-side systemd bounce. A changed MainPID is still only process-start
+ * evidence: the gateway can take a moment longer before it binds :8788. Keep
+ * the PID-cycle wait bounded, then use the shared escalating HTTP probe for
+ * the listener contract.
+ */
+const GATEWAY_RESTART_PID_WAIT_MS = 20_000;
+const GATEWAY_RESTART_PID_POLL_MS = 250;
 type ExecFileP = (
   command: string,
   args: string[],
@@ -382,6 +392,83 @@ const holderJson = (h: ResourceHolder) => ({
   mode: h.mode,
   status: h.status,
 });
+
+export type GatewayRestartReadiness = {
+  ready: boolean;
+  pidChanged: boolean;
+  observedPid: number | null;
+  health: HttpProbeResult | null;
+  waitedMs: number;
+};
+
+const gatewayHealthUrl = () => `http://127.0.0.1:${Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788}/healthz`;
+
+function isLiveMainPid(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
+}
+
+/**
+ * Wait until the detached gateway restart has produced a new live process, then
+ * prove that the process actually owns its HTTP listener. MainPID and /healthz
+ * are deliberately separate phases: probing healthz before the PID transition
+ * could succeed against the OLD gateway and recreate the original false-green.
+ *
+ * The service probe is fail-soft in production, but keep the wait fail-soft
+ * around injectable/test implementations too. A readiness failure is returned
+ * as data so the caller can report "scheduled but not ready" without claiming
+ * `restarted:true`.
+ */
+async function waitForGatewayRestartReadiness(beforePid: number | null): Promise<GatewayRestartReadiness> {
+  const startedAt = Date.now();
+  const deadline = startedAt + GATEWAY_RESTART_PID_WAIT_MS;
+  const previousPidKnown = isLiveMainPid(beforePid);
+  let current: Awaited<ReturnType<typeof probeServiceStart>> | null = null;
+
+  const readCurrent = async (): Promise<Awaited<ReturnType<typeof probeServiceStart>> | null> => {
+    try {
+      return await probeServiceStart(RESTART_TARGET_UNITS.gateway);
+    } catch {
+      return null;
+    }
+  };
+
+  while (Date.now() <= deadline) {
+    current = await readCurrent();
+    const currentPid = current?.mainPid;
+    const pidChanged =
+      isLiveMainPid(currentPid) && (!previousPidKnown || currentPid !== beforePid);
+    if (pidChanged) {
+      let health: HttpProbeResult;
+      try {
+        health = await probeHttpReachable(gatewayHealthUrl());
+      } catch (error) {
+        health = {
+          reachable: false,
+          detail: error instanceof Error ? error.message : String(error),
+        };
+      }
+      return {
+        ready: health.reachable,
+        pidChanged: true,
+        observedPid: currentPid,
+        health,
+        waitedMs: Date.now() - startedAt,
+      };
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(GATEWAY_RESTART_PID_POLL_MS, remainingMs)));
+  }
+
+  return {
+    ready: false,
+    pidChanged: false,
+    observedPid: isLiveMainPid(current?.mainPid) ? current.mainPid : null,
+    health: null,
+    waitedMs: Date.now() - startedAt,
+  };
+}
 
 /**
  * EI-18198340374286980: this tool's own description has always claimed
@@ -1173,6 +1260,34 @@ export default defineTool({
         }
         child.unref();
         restartScheduled = true;
+        const gatewayReadiness =
+          target === 'gateway' ? await waitForGatewayRestartReadiness(before.mainPid ?? null) : null;
+        if (gatewayReadiness && !gatewayReadiness.ready) {
+          return json({
+            ok: false,
+            target,
+            drained: true,
+            restarted: false,
+            restartScheduled: true,
+            fence_seq: fence.seq,
+            restartedFromPid: before.mainPid ?? null,
+            enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
+            audited: true,
+            ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
+            ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
+            ...(gate.overridden ? { gateCollisionOverridden: { kind: gate.kind, ...gate.detail } } : {}),
+            ...(gitSync?.overridden ? { gitSyncCollisionOverridden: { kind: gitSync.kind, ...gitSync.detail } } : {}),
+            ...(quiesce?.overridden ? { quiesceOverridden: { marker: quiesce.marker } } : {}),
+            gatewayReadiness,
+            verifyWith: `GET ${gatewayHealthUrl()} after a NEW MainPID (bounded wait ~${GATEWAY_RESTART_PID_WAIT_MS / 1000}s)`,
+            note:
+              `Gateway restart was scheduled (~1s), but readiness was NOT confirmed within the bounded wait. ` +
+              `Do not send requests yet; probe ${gatewayHealthUrl()} directly and retry only after the service is ready.` +
+              (gatewayReadiness.pidChanged
+                ? ` MainPID changed to ${gatewayReadiness.observedPid}, but the listener probe failed: ${gatewayReadiness.health?.detail ?? 'unknown probe failure'}.`
+                : ` A new live MainPID was not observed (last observed: ${gatewayReadiness.observedPid ?? 'none'}).`),
+          });
+        }
         return json({
           ok: true,
           target,
@@ -1196,10 +1311,19 @@ export default defineTool({
                 },
               }
             : {}),
-          verifyWith: `systemctl --user show ${cfg.unit} -p MainPID --value  (expect a NEW pid${
-            before.mainPid ? ` ≠ ${before.mainPid}` : ''
-          } within ~3s)`,
-          note: `Restart scheduled (~1s)${
+          ...(gatewayReadiness ? { gatewayReadiness } : {}),
+          verifyWith: gatewayReadiness
+            ? `GET ${gatewayHealthUrl()} after a NEW MainPID (observed ${gatewayReadiness.observedPid}; bounded wait ~${
+                GATEWAY_RESTART_PID_WAIT_MS / 1000
+              }s)`
+            : `systemctl --user show ${cfg.unit} -p MainPID --value  (expect a NEW pid${
+                before.mainPid ? ` ≠ ${before.mainPid}` : ''
+              } within ~3s)`,
+          note: gatewayReadiness
+            ? `Gateway restart completed: MainPID changed to ${gatewayReadiness.observedPid}; ${gatewayHealthUrl()} responded ${
+                gatewayReadiness.health?.detail ?? 'successfully'
+              } after ${gatewayReadiness.waitedMs}ms.`
+            : `Restart scheduled (~1s)${
             resetFailedBeforeRestart
               ? ` — systemd reported start-limit-hit; reset-failed will clear the latched failure before restart.`
               : ''
