@@ -35,6 +35,20 @@ import type { ReplayTranscript } from '../replay/types';
 /** The governor registration id for this loop (migration 244 vocabulary). */
 export const TRANSFER_LOOP_ID = 'frontier:transfer-harness';
 
+/**
+ * What ONE distillation attempt reserves on the governor before it calls the
+ * distiller (P-005).
+ *
+ * The reservation has to be an up-front ASK, because its whole job is to be
+ * subtracted from headroom while the call is in flight — so it cannot be the
+ * measured cost, which only exists afterwards. This is that ask: a per-
+ * transcript ceiling generous enough that a normal distillation settles well
+ * under it (the remainder is released immediately on settlement, so an
+ * over-generous ask costs nothing but a brief hold), and small enough that a
+ * loop near its lifetime cap refuses the attempt instead of walking past it.
+ */
+export const TRANSFER_DISTILL_ATTEMPT_USD = 0.25;
+
 /** Every transfer-harness output is born with this origin (D-002). */
 export const TRANSFER_ORIGIN: SignalOrigin = 'replay';
 

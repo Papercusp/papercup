@@ -222,7 +222,14 @@ describe('autoDecideRunProposals — autonomous promotion (owner mandate 2026-07
            variant: { promptOverrides: { [AGENT_ROLE]: `P ${over.id}` } },
            parent: { promptOverrides: {} },
            hashes: { variantHash: 'variant', parentHash: 'parent', evaluatorHash: 'evaluator', rubricHash: 'rubric', taskHash: 'task', codeHash: 'code' },
-           gateResults: [{ gate: 'fixture', pass: over.devAnchorDelta != null && over.devAnchorDelta > 0, detail: 'fixture' }],
+           gateResults: [
+             {
+               gate: 'fixture',
+               pass: over.devAnchorDelta != null && over.devAnchorDelta > 0,
+               status: over.devAnchorDelta != null && over.devAnchorDelta > 0 ? ('pass' as const) : ('fail' as const),
+               detail: 'fixture',
+             },
+           ],
            verdict: over.devAnchorDelta != null && over.devAnchorDelta > 0 ? 'accept' : 'reject',
            recordedAt: over.createdAt,
          })}::text::jsonb, ${over.createdAt})`;
@@ -294,7 +301,7 @@ describe('autoDecideRunProposals — autonomous promotion (owner mandate 2026-07
         variant: { promptOverrides: { [AGENT_ROLE]: 'unsafe' } },
         parent: { promptOverrides: {} },
         hashes: { variantHash: 'variant', parentHash: 'parent', evaluatorHash: 'evaluator', rubricHash: 'rubric', taskHash: 'task', codeHash: 'code' },
-        gateResults: [{ gate: 'no-new-regressions', pass: false, detail: 'regression' }],
+        gateResults: [{ gate: 'no-new-regressions', pass: false, status: 'fail' as const, detail: 'regression' }],
         verdict: 'reject',
         recordedAt: RUN_START + 1,
       },

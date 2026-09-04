@@ -20,7 +20,7 @@ import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Sql } from 'postgres';
 import type { JudgeLlmCall } from '@papercusp/eval-battery';
-import { recordLearningSpend } from '../learning-governor/store';
+import { runGovernedSpendAttempt } from '../learning-governor/registrants';
 import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 import { getMemoryBackend } from '../memory/backend';
 import { harnessDir } from '../harness-core';
@@ -191,17 +191,24 @@ export function pgTransferStorePort(sql: Sql): TransferStorePort {
 export function defaultTransferTickDeps(sql: Sql, workspaceId: string): TransferTickDeps {
   return {
     store: pgTransferStorePort(sql),
-    recordSpend: async ({ costUsd, note, runRef }) => {
-      await recordLearningSpend(sql, {
+    // P-005: reserve → run → settle, so a distiller call that throws or costs
+    // nothing still closes an attempt on the governor ledger. `accumulate:true`
+    // as before — the governor is this loop's only spend store.
+    spendAttempt: (q) =>
+      runGovernedSpendAttempt({
         workspaceId,
         loopId: TRANSFER_LOOP_ID,
-        costUsd,
+        attemptKind: q.attemptKind,
+        requestedUsd: q.requestedUsd,
         signalOrigin: TRANSFER_ORIGIN,
-        runRef: runRef ?? null,
-        note,
+        runRef: q.runRef ?? null,
+        note: q.note,
         accumulate: true,
-      });
-    },
+        run: q.run,
+      },
+      // Hand the tick's already-open admin pool to the governor rather than
+      // letting it resolve a second one.
+      { getSql: async () => sql }),
     lister: fsTranscriptRefLister(workspaceId),
     source: fsTranscriptSource(),
     llm: learningDistillerLlm(),

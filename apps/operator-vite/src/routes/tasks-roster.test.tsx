@@ -4,8 +4,11 @@ import { cleanup, render, screen } from '@testing-library/react';
 
 const capture = vi.hoisted(() => ({ active: false }));
 
+// See inbox.test.tsx — the component moved to components/route-content/
+// behind `lazyRouteComponent` (WI-5502); mock both router entry points.
 vi.mock('@tanstack/react-router', () => ({
   createFileRoute: () => (options: Record<string, unknown>) => options,
+  lazyRouteComponent: (loader: unknown) => loader,
 }));
 
 vi.mock('../components/adv/TasksRosterPanel', () => ({
@@ -17,7 +20,7 @@ vi.mock('../components/adv/TasksRosterPanel', () => ({
 
 vi.mock('../components/adv/adv-header-pills.css', () => ({}));
 
-import { TasksRosterEmbedRoute } from './tasks-roster';
+import { TasksRosterEmbedRoute } from '../components/route-content/TasksRosterEmbedRoute';
 
 afterEach(cleanup);
 

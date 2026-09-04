@@ -393,7 +393,7 @@
     "@xterm/xterm": "^6.0.0",
     "@xyflow/react": "^12.10.2",
     "anser": "^2.3.5",
-    "astro": "^6.4.8",
+    "astro": "6.4.8",
     "astro-robots-txt": "^1.0.0",
     "better-sqlite3": "^12.9.0",
     "brace-expansion": "^1.1.18",

@@ -24,7 +24,13 @@ import {
 } from './gate';
 import { distillLessonsFromTranscript, lessonSignature } from './distill';
 import type { AdmitLessonInput, AdmitLessonResult } from './store';
+import type {
+  GovernedSpendAttemptOutcome,
+  SpendAttemptReport,
+} from '../learning-governor/registrants';
+import type { SpendAttemptKind } from '../learning-governor/spend';
 import {
+  TRANSFER_DISTILL_ATTEMPT_USD,
   TRANSFER_ORIGIN,
   type LessonDistillerLlm,
   type TranscriptRefLister,
@@ -50,10 +56,24 @@ export interface TransferStorePort {
 
 export interface TransferTickDeps {
   store: TransferStorePort;
-  /** Governor spend ledger for DISTILLATION spend only (battery spend is
-   *  ledgered by the governed replay path — see testLeg). Never throws
-   *  upward; the caller wraps. */
-  recordSpend: (q: { costUsd: number; note: string; runRef?: string }) => Promise<void>;
+  /**
+   * Governor spend ATTEMPT for DISTILLATION spend only (battery spend is
+   * ledgered by the governed replay path — see testLeg).
+   *
+   * P-005: the distiller call is a PROPOSER call — it can burn tokens and then
+   * throw on a bad parse, and it can legitimately return zero cost. The old
+   * `recordSpend` port ledgered only a positive cost on the happy path, so
+   * both of those cases were invisible. This port reserves before the call and
+   * settles after it whatever happens, so the attempt is the ledgered unit.
+   * Never throws upward; settlement failures are the governor's to log.
+   */
+  spendAttempt: <T>(q: {
+    attemptKind: SpendAttemptKind;
+    requestedUsd: number;
+    note: string;
+    runRef?: string;
+    run: (grant: { reservedUsd: number; clamped: boolean }) => Promise<SpendAttemptReport<T>>;
+  }) => Promise<GovernedSpendAttemptOutcome<T>>;
   lister: TranscriptRefLister;
   source: TransferTranscriptSource;
   llm: LessonDistillerLlm;
@@ -78,21 +98,6 @@ export interface TransferTickResult {
   costUsd: number;
 }
 
-async function ledgerSpend(
-  deps: TransferTickDeps,
-  costUsd: number,
-  note: string,
-  runRef?: string,
-): Promise<void> {
-  if (!(costUsd > 0)) return;
-  try {
-    await deps.recordSpend({ costUsd, note, ...(runRef ? { runRef } : {}) });
-  } catch (e) {
-    // Spend bookkeeping must never fail the tick; the governor's lifetime cap
-    // self-corrects next tick (under-counted spend only ever errs once).
-    deps.log(`spend ledger failed (${note}): ${e instanceof Error ? e.message : e}`);
-  }
-}
 
 /** The distillation leg: recent transcripts → probationary lessons. */
 async function distillLeg(
@@ -110,20 +115,41 @@ async function distillLeg(
   }
   for (const ref of refs) {
     result.transcriptsScanned += 1;
-    let lessons;
-    let costUsd = 0;
-    try {
-      const transcript = await deps.source.load(ref);
-      ({ lessons, costUsd } = await distillLessonsFromTranscript(transcript, deps.llm, {
-        maxLessons: opts.maxLessonsPerTranscript,
-      }));
-    } catch (e) {
+    // P-005: the whole proposer call — load + distil — runs INSIDE one governor
+    // reservation, so a throw settles as `failed` (with any tokens burned
+    // before it) instead of vanishing, and a zero-cost distillation still
+    // leaves an attempt on the ledger.
+    const attempt = await deps.spendAttempt({
+      attemptKind: 'proposer',
+      requestedUsd: TRANSFER_DISTILL_ATTEMPT_USD,
+      note: 'lesson distillation',
+      runRef: ref,
+      run: async () => {
+        const transcript = await deps.source.load(ref);
+        const distilled = await distillLessonsFromTranscript(transcript, deps.llm, {
+          maxLessons: opts.maxLessonsPerTranscript,
+        });
+        return { costUsd: distilled.costUsd, value: distilled.lessons };
+      },
+    });
+    if (!attempt.ok) {
+      if (attempt.reason === 'refused') {
+        // Out of budget (or unbudgeted) — every remaining transcript would
+        // refuse identically, so stop rather than burn the loop on refusals.
+        deps.log(`distillation refused by the governor (${attempt.refusal}) — stopping this leg`);
+        break;
+      }
       result.errors += 1;
-      deps.log(`distill failed for ${ref}: ${e instanceof Error ? e.message : e}`);
+      deps.log(
+        attempt.reason === 'failed'
+          ? `distill failed for ${ref}: ${attempt.error}`
+          : `distillation skipped for ${ref}: the learning governor is dark`,
+      );
+      if (attempt.reason === 'failed') result.costUsd += attempt.costUsd;
       continue;
     }
-    result.costUsd += costUsd;
-    await ledgerSpend(deps, costUsd, 'lesson distillation', ref);
+    const lessons = attempt.value;
+    result.costUsd += attempt.costUsd;
     result.lessonsDistilled += lessons.length;
 
     for (const lesson of lessons) {

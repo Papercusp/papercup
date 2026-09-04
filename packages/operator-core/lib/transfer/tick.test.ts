@@ -148,18 +148,54 @@ interface Harness {
   deps: TransferTickDeps;
   store: FakeStore;
   memory: FakeMemory;
-  spends: Array<{ costUsd: number; note: string }>;
+  spends: Array<{ costUsd: number; note: string; disposition: string }>;
+}
+
+/**
+ * A thin stand-in for the governor's attempt seam: it grants what is asked and
+ * records how each attempt CLOSED. Deliberately thin — the settle-on-every-path
+ * guarantee is the governor's own invariant and is tested against the real
+ * `runGovernedSpendAttempt` in learning-governor/registrants.test.ts; here we
+ * only care that the tick opens an attempt and reports the right disposition.
+ */
+function fakeSpendAttempt(
+  spends: Array<{ costUsd: number; note: string; disposition: string }>,
+): TransferTickDeps['spendAttempt'] {
+  return async (q) => {
+    try {
+      const report = await q.run({ reservedUsd: q.requestedUsd, clamped: false });
+      const disposition = report.cancelled ? 'cancelled' : 'used';
+      spends.push({ costUsd: report.costUsd, note: q.note, disposition });
+      return {
+        ok: true,
+        value: report.value,
+        costUsd: report.costUsd,
+        reservationId: 'res-fake',
+        clamped: false,
+        cancelled: report.cancelled === true,
+      };
+    } catch (e) {
+      const burned = (e as { costUsd?: unknown }).costUsd;
+      const costUsd = typeof burned === 'number' && burned > 0 ? burned : 0;
+      spends.push({ costUsd, note: q.note, disposition: 'failed' });
+      return {
+        ok: false,
+        reason: 'failed',
+        error: e instanceof Error ? e.message : String(e),
+        costUsd,
+        reservationId: 'res-fake',
+      };
+    }
+  };
 }
 
 function makeHarness(overrides: Partial<TransferTickDeps> = {}): Harness {
   const store = new FakeStore();
   const memory = new FakeMemory();
-  const spends: Array<{ costUsd: number; note: string }> = [];
+  const spends: Array<{ costUsd: number; note: string; disposition: string }> = [];
   const deps: TransferTickDeps = {
     store,
-    recordSpend: async ({ costUsd, note }) => {
-      spends.push({ costUsd, note });
-    },
+    spendAttempt: fakeSpendAttempt(spends),
     lister: async () => ['/logs/a.jsonl'],
     source: { load: async (ref) => transcriptOf(ref) },
     llm: async () => ({ text: '[{"title":"T","lesson":"Run tests before claiming done."}]', costUsd: 0.01 }),
@@ -200,7 +236,7 @@ describe('runTransferTick — distillation leg', () => {
       transfer_lesson_id: lesson.id,
     });
     // D-002: distillation spend ledgered (the battery leg ledgers elsewhere).
-    expect(spends).toEqual([{ costUsd: 0.01, note: 'lesson distillation' }]);
+    expect(spends).toEqual([{ costUsd: 0.01, note: 'lesson distillation', disposition: 'used' }]);
   });
 
   it('a re-distilled duplicate is a no-op (no second memory entry, no double row)', async () => {
@@ -303,5 +339,49 @@ describe('runTransferTick — testing leg (the student-transfer gate, D-006)', (
     const result = await runTransferTick('ws', h.deps, OPTS);
     expect(result.testingSkippedNoReplay).toBe(true);
     expect(result.tested).toBe(0);
+  });
+});
+
+/* ── distillation spend: the attempt is the ledgered unit (P-005) ────────── */
+
+describe('distillation spend closes every attempt', () => {
+  const OPTS: TransferTickOptions = { ...DEFAULT_TRANSFER_TICK, maxTranscriptsPerTick: 2 };
+
+  it('ledgers a FAILED proposer call, charged for the tokens it burned before throwing', async () => {
+    // Pre-P-005 this transcript produced `errors += 1` and NOTHING on the
+    // ledger: the distiller threw, so no cost was ever reported, so the
+    // `costUsd > 0` guard dropped a real charge on the floor.
+    const h = makeHarness({
+      llm: async () => {
+        throw Object.assign(new Error('model returned unparseable JSON'), { costUsd: 0.004 });
+      },
+    });
+    const result = await runTransferTick('ws', h.deps, OPTS);
+    expect(result.errors).toBe(1);
+    expect(result.lessonsDistilled).toBe(0);
+    expect(h.spends).toEqual([{ costUsd: 0.004, note: 'lesson distillation', disposition: 'failed' }]);
+    // The burned money still lands in the tick's own cost total.
+    expect(result.costUsd).toBeCloseTo(0.004);
+  });
+
+  it('ledgers a ZERO-COST distillation as an attempt rather than nothing at all', async () => {
+    const h = makeHarness({ llm: async () => ({ text: '[]', costUsd: 0 }) });
+    await runTransferTick('ws', h.deps, OPTS);
+    expect(h.spends).toEqual([{ costUsd: 0, note: 'lesson distillation', disposition: 'used' }]);
+  });
+
+  it('STOPS the leg when the governor refuses — no point retrying every transcript', async () => {
+    const attempted: string[] = [];
+    const h = makeHarness({
+      lister: async () => ['/logs/a.jsonl', '/logs/b.jsonl'],
+      spendAttempt: async (q) => {
+        attempted.push(q.runRef ?? '');
+        return { ok: false, reason: 'refused', refusal: 'no-headroom', headroomUsd: 0 };
+      },
+    });
+    const result = await runTransferTick('ws', h.deps, OPTS);
+    expect(attempted).toEqual(['/logs/a.jsonl']); // broke out; did not try the second
+    expect(result.errors).toBe(0); // exhaustion is a budget state, not an error
+    expect(result.lessonsDistilled).toBe(0);
   });
 });

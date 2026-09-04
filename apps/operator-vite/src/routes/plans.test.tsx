@@ -2,8 +2,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
+// See inbox.test.tsx — the component moved to components/route-content/
+// behind `lazyRouteComponent` (WI-5502); mock both router entry points.
 vi.mock('@tanstack/react-router', () => ({
   createFileRoute: () => (options: Record<string, unknown>) => options,
+  lazyRouteComponent: (loader: unknown) => loader,
 }));
 
 vi.mock('@/app/_components/plans/PlansPane', () => ({
@@ -17,7 +20,7 @@ vi.mock('@/app/_components/plans/PlansPane', () => ({
   ),
 }));
 
-import { PlansEmbedRoute } from './plans';
+import { PlansEmbedRoute } from '../components/route-content/PlansEmbedRoute';
 
 afterEach(cleanup);
 

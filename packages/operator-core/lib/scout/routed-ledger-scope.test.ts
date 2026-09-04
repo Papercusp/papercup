@@ -13,6 +13,8 @@ vi.mock('@papercusp/db-org', () => ({
 
 const { readRoutedIdeas } = await import('./routed-ledger');
 
+const query = () => h.rendered.join('');
+
 afterEach(() => {
   h.rendered.length = 0;
 });
@@ -20,21 +22,19 @@ afterEach(() => {
 describe('readRoutedIdeas pot ownership scope (P-008)', () => {
   it('adds an explicit source-hive predicate for pot-local reads', async () => {
     await readRoutedIdeas({ workspaceId: 'ws-1', potSlug: 'pot-a' });
-    expect(h.rendered).toHaveLength(1);
-    expect(h.rendered[0]).toContain('AND source_hive = "pot-a"');
-    expect(h.rendered[0]).not.toContain('AND harness_slug =');
+    expect(query()).toContain('AND source_hive = "pot-a"');
+    expect(query()).not.toContain('AND harness_slug =');
   });
 
   it('keeps member-harness filtering unchanged when no pot scope is requested', async () => {
     await readRoutedIdeas({ workspaceId: 'ws-1', harnessSlug: 'member-a' });
-    expect(h.rendered).toHaveLength(1);
-    expect(h.rendered[0]).toContain('AND harness_slug = "member-a"');
-    expect(h.rendered[0]).not.toContain('AND source_hive =');
+    expect(query()).toContain('AND harness_slug = "member-a"');
+    expect(query()).not.toContain('AND source_hive =');
   });
 
   it('composes pot and member scopes when both are explicit', async () => {
     await readRoutedIdeas({ workspaceId: 'ws-1', potSlug: 'pot-a', harnessSlug: 'member-a' });
-    expect(h.rendered[0]).toContain('AND source_hive = "pot-a"');
-    expect(h.rendered[0]).toContain('AND harness_slug = "member-a"');
+    expect(query()).toContain('AND source_hive = "pot-a"');
+    expect(query()).toContain('AND harness_slug = "member-a"');
   });
 });

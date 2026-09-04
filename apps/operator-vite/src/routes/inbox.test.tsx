@@ -2,8 +2,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
+// `routes/inbox.tsx` now only registers the route and points at
+// `components/route-content/InboxEmbedRoute` through `lazyRouteComponent`
+// (WI-5502 — a route module that also exports its component defeats
+// autoCodeSplitting). Mock both router entry points so importing the route
+// module stays safe, and assert against the component where it now lives.
 vi.mock('@tanstack/react-router', () => ({
   createFileRoute: () => (options: Record<string, unknown>) => options,
+  lazyRouteComponent: (loader: unknown) => loader,
 }));
 
 vi.mock('@/app/_components/inbox/InboxPane', () => ({
@@ -17,7 +23,7 @@ vi.mock('@/app/_components/inbox/InboxPane', () => ({
   ),
 }));
 
-import { InboxEmbedRoute } from './inbox';
+import { InboxEmbedRoute } from '../components/route-content/InboxEmbedRoute';
 
 afterEach(cleanup);
 

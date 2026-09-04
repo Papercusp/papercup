@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { decideAccept, selectParent, type VariantEval } from '../gate-engine';
+import { unmeasuredEvidence, type DeterministicEvidence, type GateStatus } from '../gates';
+
+/** P-003: deterministic evidence that WAS collected, and came out `status`. */
+const measured = (status: GateStatus): DeterministicEvidence => ({
+  status,
+  coverage: { measured: 1, required: 1, unmeasuredTaskIds: [] },
+  artifacts: ['trace://t1'],
+});
 
 /**
  * Accept/reject gate engine (P-018): assemble a candidate's eval results + the
@@ -8,7 +16,7 @@ import { decideAccept, selectParent, type VariantEval } from '../gate-engine';
  */
 const champion: VariantEval = {
   variantId: 'champ', trainAgg: 7.0, trainVector: [7, 7], devAnchorAgg: 7.3,
-  meanCost: 1.0, anyNewRegression: false, allProbesCaught: true,
+  meanCost: 1.0, regressionEvidence: measured('pass'), probeEvidence: measured('pass'),
 };
 const parent: VariantEval = { ...champion, variantId: 'parent', trainAgg: 7.0 };
 const thresholds = { epsilon: 0.3, delta: 0.2, costCeiling: 1.5 };
@@ -17,16 +25,26 @@ describe('decideAccept', () => {
   it('accepts a candidate that clears every gate', () => {
     const cand: VariantEval = {
       variantId: 'cand', trainAgg: 7.5, trainVector: [8, 7], devAnchorAgg: 7.2,
-      meanCost: 1.1, anyNewRegression: false, allProbesCaught: true,
+      meanCost: 1.1, regressionEvidence: measured('pass'), probeEvidence: measured('pass'),
     };
     const v = decideAccept(cand, parent, champion, 1.0, thresholds);
     expect(v.accept).toBe(true);
   });
 
+  it('P-003: a candidate whose guardrail was never measured is INCONCLUSIVE, not accepted', () => {
+    const cand: VariantEval = {
+      variantId: 'cand', trainAgg: 7.5, trainVector: [8, 7], devAnchorAgg: 7.2,
+      meanCost: 1.1, regressionEvidence: measured('pass'), probeEvidence: unmeasuredEvidence([]),
+    };
+    const v = decideAccept(cand, parent, champion, 1.0, thresholds);
+    expect(v.outcome).toBe('inconclusive');
+    expect(v.accept).toBe(false);
+  });
+
   it('rejects a candidate that regresses the dev-anchor beyond delta', () => {
     const cand: VariantEval = {
       variantId: 'cand', trainAgg: 8.0, trainVector: [8, 8], devAnchorAgg: 7.0, // < 7.3 - 0.2
-      meanCost: 1.0, anyNewRegression: false, allProbesCaught: true,
+      meanCost: 1.0, regressionEvidence: measured('pass'), probeEvidence: measured('pass'),
     };
     const v = decideAccept(cand, parent, champion, 1.0, thresholds);
     expect(v.accept).toBe(false);
