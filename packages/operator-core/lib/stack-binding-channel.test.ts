@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as blueprint from '@papercusp/orchestrator/blueprint';
-import { SU_POSTURE_REFS, renderStackTransitionContext, stackRefsForRoute } from './stack-binding-channel';
+import { SU_MODE_REFS, SU_POSTURE_REFS, renderStackTransitionContext, stackRefsForModes, stackRefsForRoute, stackRefsForSession } from './stack-binding-channel';
 import { normalizeControlAnchorState, type ControlAnchorState } from './agent-tools/coordination/control-anchor';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -36,6 +36,27 @@ describe('stackRefsForRoute (P-012)', () => {
     // The inlined refs are PINNED to the orchestrator's own posture layers (derived-truth rung 2).
     expect(SU_POSTURE_REFS.member).toBe(blueprint.bindingRef(blueprint.suPostureLayer('member')));
     expect(SU_POSTURE_REFS.leader).toBe(blueprint.bindingRef(blueprint.suPostureLayer('leader')));
+  });
+
+  it('P-021: the active modes project one definition layer per axis; the inlined refs are pinned to the orchestrator mode identities', () => {
+    expect(stackRefsForModes([])).toEqual([]);
+    expect(stackRefsForModes(['goal', 'grade', 'test', 'potato'])).toEqual([]);
+    expect(stackRefsForModes(['auto'])).toEqual(['autonomy:su.mode-auto']);
+    expect(stackRefsForModes(['cold-auto'])).toEqual(['autonomy:su.mode-auto']);
+    expect(stackRefsForModes(['IDEATE', 'auto'])).toEqual(['ideation:su.mode-ideate', 'autonomy:su.mode-auto']);
+    expect(stackRefsForModes(['drain', 'auto'])).toEqual(['objective:su.mode-drain', 'autonomy:su.mode-auto']);
+    for (const [mode, ref] of Object.entries(SU_MODE_REFS)) {
+      expect(ref, mode).toBe(blueprint.bindingRef(blueprint.suModeLayer(mode)!));
+    }
+    // every orchestrator mode identity is reachable from here, and nothing else is
+    const orchestrator = blueprint.SU_MODE_DOCUMENTS.flatMap((d) => d.modes.map((m) => [m, blueprint.bindingRef({ slot: d.slot, id: d.id })] as const));
+    expect(Object.entries(SU_MODE_REFS).sort()).toEqual([...orchestrator].sort());
+    // route + modes compose: a fleet member in AUTO carries both
+    expect(stackRefsForSession({ route: { kind: 'fleet', fleet: 'alpha', role: 'member' }, modes: ['auto'] })).toEqual([
+      SU_POSTURE_REFS.member,
+      'autonomy:su.mode-auto',
+    ]);
+    expect(stackRefsForSession({ route: { kind: 'self' }, modes: ['auto', 'ideate'] })).toEqual(['autonomy:su.mode-auto', 'ideation:su.mode-ideate']);
   });
 
   it('normalizeControlAnchorState carries `stack` only when non-empty, sorted + deduped', () => {
