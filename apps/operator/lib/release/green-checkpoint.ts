@@ -463,6 +463,40 @@ export interface RepairTickLegs {
   legs: RepairTickLegRecord[];
 }
 
+/** P-008: one admitted path whose promoted frozen-lineage entry is not the entry currently
+ * on staging. The mismatch is informational: staging deliberately keeps its own tree in the
+ * `ours` merge, and the next candidate judges whether that later edit is legitimate. */
+export interface StagingLineageBlobDifference {
+  path: string;
+  promotedBlob: string | null;
+  stagingBlob: string | null;
+}
+
+/** P-008: result of folding a successfully promoted frozen lineage back into staging history.
+ * `ok:false` keeps the ready-to-promote queue as a durable retry marker; it never rewinds main. */
+export type StagingLineageAbsorptionResult =
+  | {
+      ok: true;
+      status: "merged" | "already-descendant";
+      stagingBefore: string;
+      stagingAfter: string;
+      repairHead: string;
+      differences: StagingLineageBlobDifference[];
+      summary: string;
+    }
+  | {
+      ok: false;
+      status:
+        | "lock-busy"
+        | "checkout-mismatch"
+        | "index-dirty"
+        | "git-failed"
+        | "verification-failed";
+      repairHead: string;
+      differences: StagingLineageBlobDifference[];
+      summary: string;
+    };
+
 export interface CheckpointDeps {
   /**
    * Report forward progress from the real checkpoint process. This is deliberately
@@ -1093,6 +1127,15 @@ export interface CheckpointDeps {
   writeFrozenRepairQueue?(
     queue: FrozenCandidateRepairQueue | null,
   ): Promise<void>;
+  /**
+   * P-008: after main advances to a proven frozen repairHead, make staging descend from that
+   * exact lineage without changing staging's tree. The real dep holds `git-sync:<slug>` for
+   * the merge and records every admitted-path blob difference as an observation. Optional so
+   * historical unit stubs stay source-compatible; every recording production run wires it.
+   */
+  absorbPromotedLineageIntoStaging?(
+    queue: FrozenCandidateRepairQueue,
+  ): Promise<StagingLineageAbsorptionResult>;
   /**
    * P-013 / D-007 owner-visible off switch (FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT).
    * ABSENT ⇒ enabled, which keeps every existing stub and non-recording CLI run on the
@@ -4582,6 +4625,311 @@ export function admittedPathsOf(queue: FrozenCandidateRepairQueue): string[] {
     for (const p of admission.paths) out.add(p);
   }
   return [...out].sort();
+}
+
+export interface FoldPromotedLineageDeps {
+  /** Test seam. Production acquires the same workspace-scoped `git-sync:<slug>` resource
+   * as the auto-commit routine and releases it in a finally block. */
+  withGitSyncLock?: <T>(
+    run: () => Promise<T>,
+  ) => Promise<T | { busy: true; reason?: string }>;
+  /** Test seam over the existing async git primitive. */
+  runGit?: typeof git;
+  /** Test seam over the existing three-state-aware ancestry primitive. */
+  ancestor?: typeof isAncestor;
+}
+
+/**
+ * P-008 — make staging DESCEND FROM the frozen lineage main just promoted, while preserving
+ * staging's exact tree.
+ *
+ * The integration checkout is shared and may contain peers' unstaged edits. `git merge -s ours`
+ * is deliberately tree-preserving, but a staged index could still leak unrelated content into
+ * its merge commit, so the operation fails closed when the index is non-empty. It also verifies
+ * both parents and the tree after the merge; a zero exit alone is not the proof.
+ *
+ * The lock callback is injectable so the git semantics can be tested against a real temporary
+ * repository without touching the live resource store. Production reuses the canonical
+ * `inWorkspaceTxn` + `registerGitSyncResource` + `tryAcquireResource` primitives rather than
+ * inventing a parallel lock.
+ */
+export async function foldPromotedLineageIntoStaging(
+  input: {
+    integrationRoot: string;
+    integrationBranch: string;
+    repairHead: string;
+    admittedPaths: readonly string[];
+    workspaceId: string;
+    installSlug: string;
+  },
+  deps: FoldPromotedLineageDeps = {},
+): Promise<StagingLineageAbsorptionResult> {
+  const runGit = deps.runGit ?? git;
+  const ancestor = deps.ancestor ?? isAncestor;
+  const resource = `git-sync:${input.installSlug}`;
+
+  const withGitSyncLock =
+    deps.withGitSyncLock ??
+    (async <T>(run: () => Promise<T>): Promise<T | { busy: true; reason?: string }> => {
+      const [
+        { inWorkspaceTxn },
+        { tryAcquireResource, tryReleaseResource },
+        { registerGitSyncResource },
+      ] = await Promise.all([
+        import("@papercusp/operator-core/lib/agent-tools/locks/in-workspace-txn"),
+        import("@papercusp/operator-core/lib/agent-tools/locks/su-lock-store"),
+        import("@papercusp/operator-core/lib/harness/git-sync/git-sync-action"),
+      ]);
+      const owner =
+        `system:green-checkpoint:staging-absorption:${process.pid}:` +
+        randomUUID();
+      const acquired = await inWorkspaceTxn(
+        input.workspaceId,
+        owner,
+        async (tx: unknown) => {
+          await registerGitSyncResource(tx as never, input.installSlug);
+          return tryAcquireResource(tx as never, {
+            coordinationDomain: input.workspaceId,
+            resource,
+            mode: "exclusive",
+            owner,
+            ownerLabel: `green-checkpoint:${input.installSlug}`,
+            reason: `absorb promoted frozen lineage ${input.repairHead.slice(0, 12)} into ${input.integrationBranch}`,
+            ttlSec: 120,
+          });
+        },
+      );
+      if (!acquired?.ok) {
+        return {
+          busy: true,
+          ...(acquired?.reason ? { reason: acquired.reason } : {}),
+        };
+      }
+      try {
+        return await run();
+      } finally {
+        try {
+          await inWorkspaceTxn(input.workspaceId, owner, (tx: unknown) =>
+            tryReleaseResource(tx as never, {
+              coordinationDomain: input.workspaceId,
+              owner,
+              resource,
+            }),
+          );
+        } catch {
+          // Best effort only. The short TTL reaps a leaked lease; the ancestry commit has
+          // already been verified and must not be relabeled as failed by cleanup telemetry.
+        }
+      }
+    });
+
+  const differences: StagingLineageBlobDifference[] = [];
+  let locked: StagingLineageAbsorptionResult | { busy: true; reason?: string };
+  try {
+    locked = await withGitSyncLock(async () => {
+      try {
+        const resolveCommit = async (ref: string): Promise<string> => {
+          const sha = (
+            await runGit(input.integrationRoot, [
+              "rev-parse",
+              "--verify",
+              `${ref}^{commit}`,
+            ])
+          ).trim();
+          if (!/^[0-9a-f]{40,64}$/.test(sha)) {
+            throw new Error(`${ref} did not resolve to a commit`);
+          }
+          return sha;
+        };
+        const blobAt = async (
+          ref: string,
+          rel: string,
+        ): Promise<string | null> => {
+          const raw = await runGit(input.integrationRoot, [
+            "ls-tree",
+            "-z",
+            ref,
+            "--",
+            rel,
+          ]);
+          const line = raw.split("\0").find((entry) =>
+            entry.endsWith(`\t${rel}`),
+          );
+          if (!line) return null;
+          const match = /^(\d{6}) (?:blob|commit) ([0-9a-f]{40,64})\t/.exec(
+            line,
+          );
+          if (!match) {
+            throw new Error(
+              `unparseable ls-tree entry for ${rel}: ${JSON.stringify(line)}`,
+            );
+          }
+          return match[2];
+        };
+
+        const repairHead = await resolveCommit(input.repairHead);
+        const branchRef = input.integrationBranch.replace(
+          /^refs\/heads\//,
+          "",
+        );
+        const stagingBefore = await resolveCommit(branchRef);
+        const currentBranch = (
+          await runGit(input.integrationRoot, [
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "HEAD",
+          ])
+        ).trim();
+        const currentHead = await resolveCommit("HEAD");
+        if (currentBranch !== branchRef || currentHead !== stagingBefore) {
+          return {
+            ok: false as const,
+            status: "checkout-mismatch" as const,
+            repairHead,
+            differences,
+            summary:
+              `refusing staging-lineage absorption: checkout is ${currentBranch || "detached"} ` +
+              `at ${currentHead.slice(0, 12)}, but ${branchRef} is ${stagingBefore.slice(0, 12)}`,
+          };
+        }
+
+        const staged = (
+          await runGit(input.integrationRoot, [
+            "diff",
+            "--cached",
+            "--name-only",
+          ])
+        )
+          .split("\n")
+          .filter(Boolean);
+        if (staged.length > 0) {
+          return {
+            ok: false as const,
+            status: "index-dirty" as const,
+            repairHead,
+            differences,
+            summary:
+              `refusing staging-lineage absorption with ${staged.length} staged path(s): ` +
+              staged.slice(0, 8).join(", "),
+          };
+        }
+
+        for (const rel of [...new Set(input.admittedPaths)].sort()) {
+          const [promotedBlob, stagingBlob] = await Promise.all([
+            blobAt(repairHead, rel),
+            blobAt(stagingBefore, rel),
+          ]);
+          if (promotedBlob !== stagingBlob) {
+            differences.push({ path: rel, promotedBlob, stagingBlob });
+          }
+        }
+
+        if (await ancestor(input.integrationRoot, repairHead, stagingBefore)) {
+          return {
+            ok: true as const,
+            status: "already-descendant" as const,
+            stagingBefore,
+            stagingAfter: stagingBefore,
+            repairHead,
+            differences,
+            summary:
+              `${branchRef} ${stagingBefore.slice(0, 12)} already descends from promoted ` +
+              `frozen lineage ${repairHead.slice(0, 12)}; ${differences.length} admitted path blob(s) differ`,
+          };
+        }
+
+        const beforeTree = (
+          await runGit(input.integrationRoot, [
+            "rev-parse",
+            "--verify",
+            `${stagingBefore}^{tree}`,
+          ])
+        ).trim();
+        await runGit(input.integrationRoot, [
+          "merge",
+          "--strategy=ours",
+          "--no-ff",
+          "--no-edit",
+          "--no-verify",
+          "-m",
+          `green-checkpoint: absorb promoted frozen lineage ${repairHead.slice(0, 12)}`,
+          repairHead,
+        ]);
+        const stagingAfter = await resolveCommit("HEAD");
+        const afterTree = (
+          await runGit(input.integrationRoot, [
+            "rev-parse",
+            "--verify",
+            `${stagingAfter}^{tree}`,
+          ])
+        ).trim();
+        const [keptStagingParent, absorbedRepairParent, branchMoved] =
+          await Promise.all([
+            ancestor(input.integrationRoot, stagingBefore, stagingAfter),
+            ancestor(input.integrationRoot, repairHead, stagingAfter),
+            resolveCommit(branchRef).then((sha) => sha === stagingAfter),
+          ]);
+        if (
+          !keptStagingParent ||
+          !absorbedRepairParent ||
+          !branchMoved ||
+          beforeTree !== afterTree
+        ) {
+          return {
+            ok: false as const,
+            status: "verification-failed" as const,
+            repairHead,
+            differences,
+            summary:
+              `staging-lineage merge verification failed: keptStagingParent=${keptStagingParent} ` +
+              `absorbedRepairParent=${absorbedRepairParent} branchMoved=${branchMoved} ` +
+              `treePreserved=${beforeTree === afterTree}`,
+          };
+        }
+        return {
+          ok: true as const,
+          status: "merged" as const,
+          stagingBefore,
+          stagingAfter,
+          repairHead,
+          differences,
+          summary:
+            `${branchRef} absorbed promoted frozen lineage ${repairHead.slice(0, 12)} as ` +
+            `ours merge ${stagingAfter.slice(0, 12)}; tree preserved; ` +
+            `${differences.length} admitted path blob(s) differ`,
+        };
+      } catch (error) {
+        return {
+          ok: false as const,
+          status: "git-failed" as const,
+          repairHead: input.repairHead,
+          differences,
+          summary: `staging-lineage absorption failed: ${error instanceof Error ? error.message : error}`,
+        };
+      }
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      status: "git-failed",
+      repairHead: input.repairHead,
+      differences,
+      summary: `staging-lineage lock failed: ${error instanceof Error ? error.message : error}`,
+    };
+  }
+  if ("busy" in locked) {
+    return {
+      ok: false,
+      status: "lock-busy",
+      repairHead: input.repairHead,
+      differences,
+      summary:
+        `staging-lineage absorption is waiting on ${resource}` +
+        (locked.reason ? ` (${locked.reason})` : ""),
+    };
+  }
+  return locked;
 }
 
 function failingFileKey(f: FailingFile): string {
@@ -15331,6 +15679,85 @@ export function realCheckpointDeps(
             const { writeFrozenCandidateRepairQueue } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
             await writeFrozenCandidateRepairQueue(repairTarget, queue);
+          },
+          async absorbPromotedLineageIntoStaging(
+            queue: FrozenCandidateRepairQueue,
+          ) {
+            const outcome = await foldPromotedLineageIntoStaging({
+              integrationRoot: cfg.integrationRoot,
+              integrationBranch: cfg.integrationBranch,
+              repairHead: queue.repairHead,
+              admittedPaths: admittedPathsOf(queue),
+              workspaceId: repairTarget.workspaceId,
+              installSlug: repairTarget.installSlug,
+            });
+            log(`P-008 staging-lineage absorption: ${outcome.summary}`);
+            if (!outcome.ok || outcome.differences.length === 0) return outcome;
+
+            // The ours merge intentionally preserves staging's current tree. A mismatch on an
+            // admitted path can therefore be a legitimate later edit OR a regression/revert;
+            // record the raw blob comparison and let the next candidate's gate decide. Filing
+            // is best-effort observability and cannot relabel a verified ancestry bridge.
+            let captureImprovement:
+              | typeof import("@papercusp/operator-core/lib/harness/improvements/capture-core")["captureImprovement"]
+              | null = null;
+            try {
+              ({ captureImprovement } = await import(
+                "@papercusp/operator-core/lib/harness/improvements/capture-core"
+              ));
+            } catch (error) {
+              log(
+                `P-008 could not load the observation writer for ${outcome.differences.length} ` +
+                  `staging/promoted blob difference(s): ${error instanceof Error ? error.message : error}`,
+              );
+            }
+            for (const difference of outcome.differences) {
+              log(
+                `P-008 admitted-path difference: ${difference.path} ` +
+                  `promoted=${difference.promotedBlob ?? "absent"} ` +
+                  `staging=${difference.stagingBlob ?? "absent"}; staging kept its current blob`,
+              );
+              if (!captureImprovement) continue;
+              await captureImprovement({
+                title: `Promoted frozen-lineage path differs from staging: ${difference.path}`,
+                kind: "change",
+                lane: "observation",
+                severity: "nit",
+                body:
+                  `After main promoted frozen repairHead ${queue.repairHead}, P-008 folded that ` +
+                  `lineage into ${cfg.integrationBranch} with an ours merge. The admitted path ` +
+                  `${difference.path} differs: promoted=${difference.promotedBlob ?? "absent"}, ` +
+                  `staging=${difference.stagingBlob ?? "absent"}. Staging deliberately retained ` +
+                  `its current blob; a later edit may be legitimate, while a revert is a ` +
+                  `regression the next candidate gate must catch.`,
+                scope: `harness:${repairTarget.installSlug}`,
+                foundDuring:
+                  "frozen-candidate-stays-frozen-through-all-fixes-2026-09-03#P-008",
+                paths: [difference.path],
+                createdBy: "system:green-checkpoint",
+                workspaceId: repairTarget.workspaceId,
+                sourceRole: "system",
+                filedByRole: "green-checkpoint",
+                payloadExtra: {
+                  observation: {
+                    kind: "friction",
+                    candidate: queue.candidate,
+                    repairHead: queue.repairHead,
+                    stagingBefore: outcome.stagingBefore,
+                    stagingAfter: outcome.stagingAfter,
+                    path: difference.path,
+                    promotedBlob: difference.promotedBlob,
+                    stagingBlob: difference.stagingBlob,
+                  },
+                },
+              }).catch((error) => {
+                log(
+                  `P-008 observation filing failed for ${difference.path} (non-fatal): ` +
+                    `${error instanceof Error ? error.message : error}`,
+                );
+              });
+            }
+            return outcome;
           },
           async recordFreezeDisposition(
             disposition: FreezeAndConvergeDisposition,
