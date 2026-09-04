@@ -648,6 +648,14 @@ export function evictIfLanguageServiceDead(
  * unit run, only as an empty `definition` answer against a large package hours
  * later, which is precisely how this bug stayed unexplained for so long.
  *
+ * `tsserver.useSyntaxServer: 'never'` is equally deliberate. The wrapper's
+ * default is `auto`, which selects a dynamic syntax/semantic server pair for
+ * current TypeScript. Definition and reference requests can then be answered
+ * by the syntax server while the semantic project is still loading. That
+ * produced a plausible import-site answer followed by a repeatable ~5-second
+ * warm-query stall (WI-2142941). One semantic server keeps compiler truth and
+ * readiness in the same process.
+ *
  * `maxTsServerMemory` is the wrapper's own option name; it becomes
  * `--max-old-space-size=<N>` on the tsserver fork (`getExecArgv`). Passing null
  * omits the key entirely, so an explicit opt-out really does restore node's
@@ -656,9 +664,9 @@ export function evictIfLanguageServiceDead(
 export function typescriptInitializationOptions(
   tsserverPath: string,
   maxTsServerMemoryMb: number | null = MAX_TSSERVER_MEMORY_MB,
-): { tsserver: { path: string }; maxTsServerMemory?: number } {
+): { tsserver: { path: string; useSyntaxServer: 'never' }; maxTsServerMemory?: number } {
   return {
-    tsserver: { path: tsserverPath },
+    tsserver: { path: tsserverPath, useSyntaxServer: 'never' },
     ...(maxTsServerMemoryMb ? { maxTsServerMemory: maxTsServerMemoryMb } : {}),
   };
 }

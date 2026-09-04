@@ -924,7 +924,7 @@ describe('evictIfLanguageServiceDead (WI-2142693)', () => {
   });
 });
 
-describe('typescriptInitializationOptions — the tsserver memory ceiling (WI-2142840)', () => {
+describe('typescriptInitializationOptions — tsserver correctness and survival', () => {
   /**
    * MEASURED, same probe, one variable changed: at node's default old-space
    * tsserver reached 4314MB RSS and self-aborted (`Signal: SIGABRT`), taking
@@ -938,9 +938,26 @@ describe('typescriptInitializationOptions — the tsserver memory ceiling (WI-21
    */
   it('passes maxTsServerMemory, so tsserver does not run at the ceiling it dies at', () => {
     expect(typescriptInitializationOptions('/x/tsserver.js', 6144)).toEqual({
-      tsserver: { path: '/x/tsserver.js' },
+      tsserver: { path: '/x/tsserver.js', useSyntaxServer: 'never' },
       maxTsServerMemory: 6144,
     });
+  });
+
+  it('uses one semantic server so definition truth cannot race a syntax server (WI-2142941)', () => {
+    const opts = typescriptInitializationOptions('/x/tsserver.js');
+    expect(opts.tsserver.useSyntaxServer).toBe('never');
+  });
+
+  it('CONTROL: missing and auto syntax-server modes fail the semantic-only guard', () => {
+    const usesOnlySemanticServer = (useSyntaxServer: string | undefined) =>
+      useSyntaxServer === 'never';
+    expect(usesOnlySemanticServer(undefined)).toBe(false);
+    expect(usesOnlySemanticServer('auto')).toBe(false);
+    expect(
+      usesOnlySemanticServer(
+        typescriptInitializationOptions('/x/tsserver.js').tsserver.useSyntaxServer,
+      ),
+    ).toBe(true);
   });
 
   it('carries a default that clears the measured 4314MB abort point', () => {
@@ -952,7 +969,9 @@ describe('typescriptInitializationOptions — the tsserver memory ceiling (WI-21
 
   it('OMITS the key when null, so an opt-out restores node default rather than pinning another number', () => {
     const opts = typescriptInitializationOptions('/x/tsserver.js', null);
-    expect(opts).toEqual({ tsserver: { path: '/x/tsserver.js' } });
+    expect(opts).toEqual({
+      tsserver: { path: '/x/tsserver.js', useSyntaxServer: 'never' },
+    });
     expect('maxTsServerMemory' in opts).toBe(false);
   });
 
