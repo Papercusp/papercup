@@ -184,6 +184,35 @@ describe('normalizeSuspectedToolFailure — correlated probation identity (P-013
       expect(normalized.direct).toBe(true);
     },
   );
+
+  it.each(['reproduced', 'clearServerMismatch', 'hardInternal'] as const)(
+    'keeps a caller-input failure in probation when only legacy %s is supplied (EI-22142216567407511)',
+    (field) => {
+      const normalized = normalizeSuspectedToolFailure({
+        toolName: 'sessions:read',
+        errorCode: 'invalid_args',
+        message: 'invalid_args: tail too big — 20 over the 200 limit; use 200',
+        [field]: true,
+      });
+      expect(normalized.class).toBe('caller');
+      expect(normalized.direct).toBe(false);
+    },
+  );
+
+  it('lets inspectable expected/actual evidence override a caller classification', () => {
+    const normalized = normalizeSuspectedToolFailure({
+      toolName: 'sessions:read',
+      errorCode: 'invalid_args',
+      message: 'invalid_args: documented tail=220 rejected as greater than 200',
+      directEvidence: {
+        kind: 'server-contract-mismatch',
+        expected: 'the active schema documents tail <= 220',
+        actual: 'the server rejected tail=220 against a hidden maximum of 200',
+      },
+    });
+    expect(normalized.class).toBe('caller');
+    expect(normalized.direct).toBe(true);
+  });
 });
 
 describe('SQL generators are driven by the table (structural check; real-PG parity in the integration test)', () => {

@@ -301,6 +301,28 @@ export interface SuspectedToolFailure {
   reproduced?: boolean;
   clearServerMismatch?: boolean;
   hardInternal?: boolean;
+  /**
+   * Inspectable evidence that a caller-shaped refusal is actually a tool defect.
+   *
+   * The three legacy booleans above remain useful shorthand for non-caller
+   * classes, but a caller classification is itself evidence that the tool
+   * rejected its input. Overriding that classification therefore needs more
+   * than another boolean: it must state the expected and observed contracts so
+   * the next reader can check the claim instead of inheriting an assertion.
+   */
+  directEvidence?: ToolFailureDirectEvidence;
+}
+
+export const TOOL_FAILURE_DIRECT_EVIDENCE_KINDS = [
+  'valid-input-reproduction',
+  'server-contract-mismatch',
+  'hard-internal',
+] as const;
+
+export interface ToolFailureDirectEvidence {
+  kind: (typeof TOOL_FAILURE_DIRECT_EVIDENCE_KINDS)[number];
+  expected: string;
+  actual: string;
 }
 
 /**
@@ -444,6 +466,14 @@ function correlationSegment(value: string | null | undefined, fallback: string):
  * claimable duplicate of an investigation already closed four times. The report
  * still lands (non-claimable probation, doc citation attached) and the
  * invocation watchdog can still promote it on sustained repetition.
+ *
+ * EI-22142216567407511: a caller classification may no longer be overridden
+ * by one of the legacy booleans alone. `reproduced` only proves that an input
+ * rejection recurs, while `clearServerMismatch` / `hardInternal` were equally
+ * uninspectable assertions. A caller-shaped server defect still has an escape:
+ * structured `directEvidence` names expected versus actual behavior. The row
+ * otherwise remains in probation, where independent reporters and the
+ * invocation-ledger watchdog can still promote a recurring affordance defect.
  */
 export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): NormalizedToolFailure {
   const klass = classifyToolError(input.errorCode, input.status, input.message);
@@ -458,8 +488,10 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
     correlationSegment(messageFingerprint, 'message-unknown'),
   ].join('|');
   const knownExternal = matchKnownExternalToolFailure(input);
-  const attested =
+  const legacyAttested =
     input.reproduced === true || input.clearServerMismatch === true || input.hardInternal === true;
+  const structuredAttested = input.directEvidence !== undefined;
+  const attested = structuredAttested || (legacyAttested && klass !== 'caller');
   return {
     class: klass,
     watchdogKey: `repeated-tool-error:${signalKey}`,
