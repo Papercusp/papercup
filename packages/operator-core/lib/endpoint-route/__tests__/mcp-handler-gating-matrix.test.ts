@@ -150,6 +150,11 @@ const h = vi.hoisted(() => {
     verifyExplicitPlanHarness: vi.fn(
       async (_ctx: unknown, _explicitHarness: string, _args: unknown): Promise<boolean> => false,
     ),
+    /** EI-223466: transport-only seam for goal-authorized local placement. */
+    goalLocalPlacement: {
+      allow: false,
+      calls: [] as Array<Record<string, string>>,
+    },
   };
 });
 
@@ -329,6 +334,18 @@ vi.mock('../../harness-core', async (importOriginal) => {
 vi.mock('../../agent-tools/plans/slug-scope', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, verifyExplicitPlanHarness: h.verifyExplicitPlanHarness };
+});
+// EI-223466: keep the handler matrix focused on transport wiring; the helper's
+// authority/link/visibility proof is covered in goal-local-placement.test.ts.
+vi.mock('../routes/transport/goal-local-placement', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    goalHolderMayPlaceIntoLocalPot: async (input: Record<string, string>): Promise<boolean> => {
+      h.goalLocalPlacement.calls.push(input);
+      return h.goalLocalPlacement.allow;
+    },
+  };
 });
 // This matrix verifies transport authorization, not embedding-provider latency.
 // Keep the recall tools on their documented lexical fallback so the scoped-safe
@@ -709,6 +726,8 @@ beforeEach(() => {
   resetResultDoorAggregatesForTests();
   h.scopedClampFlag.value = false;
   h.verifyExplicitPlanHarness.mockResolvedValue(false);
+  h.goalLocalPlacement.allow = false;
+  h.goalLocalPlacement.calls.length = 0;
   invokeProbeSeen.length = 0;
   txlessRoleProbeSeen.length = 0;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
@@ -1859,6 +1878,45 @@ describe('scoped-superuser hive clamp', () => {
     const res = await callTool('gatingtest:scoped', { harness: 'hiveB-home' }, hiveScoped());
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  const GOAL_LOCAL_LAUNCH_TOOLS = [
+    'fleet:launch-on-plan',
+    'fleet:create',
+    'capability:launch-agent',
+  ] as const;
+
+  it('flag ON: keeps sibling-hive launch tools denied without goal-holder proof', async () => {
+    h.scopedClampFlag.value = true;
+    for (const name of GOAL_LOCAL_LAUNCH_TOOLS) {
+      const res = await callTool(name, { harness: 'hiveB-home' }, hiveScoped());
+      expect(res.isError, name).toBe(true);
+      expect(textOf(res), name).toContain('harness_forbidden');
+    }
+    expect(h.goalLocalPlacement.calls).toHaveLength(GOAL_LOCAL_LAUNCH_TOOLS.length);
+  });
+
+  it('flag ON: lets the elected goal holder reach sibling-hive launch validation for a local pot', async () => {
+    h.scopedClampFlag.value = true;
+    h.goalLocalPlacement.allow = true;
+    const extra = superuserExtra('&workspace=ws-test&harness=hiveA-home&client=goal-holder');
+
+    // Deliberately omit each launch door's required launch fields. Passing the
+    // transport clamp is the assertion; target validation must stop the call
+    // before a fleet/window/agent can be created in this matrix.
+    for (const name of GOAL_LOCAL_LAUNCH_TOOLS) {
+      const res = await callTool(name, { harness: 'hiveB-home' }, extra);
+      expect(textOf(res), name).not.toContain('harness_forbidden');
+    }
+
+    expect(h.goalLocalPlacement.calls).toEqual(
+      GOAL_LOCAL_LAUNCH_TOOLS.map(() => ({
+        workspaceId: 'ws-test',
+        callerOwnerId: 'goal-holder',
+        scopeHive: 'hiveA-home',
+        targetHarness: 'hiveB-home',
+      })),
+    );
   });
 
   it('flag ON: allows git-sync:run to name the canonical platform Pot explicitly (EI-22344259264889593)', async () => {
@@ -3036,6 +3094,50 @@ describe('tools:invoke re-dispatch inherits the scoped-superuser hive clamp (EI-
     );
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  const GOAL_LOCAL_LAUNCH_TOOLS = [
+    'fleet:launch-on-plan',
+    'fleet:create',
+    'capability:launch-agent',
+  ] as const;
+
+  it('flag ON: keeps sibling-hive launch tools denied without goal-holder proof via nested tools:invoke', async () => {
+    h.scopedClampFlag.value = true;
+    for (const name of GOAL_LOCAL_LAUNCH_TOOLS) {
+      const res = await callTool(
+        'tools:invoke',
+        { name, args: { harness: 'hiveB-home' } },
+        hiveScoped(),
+      );
+      expect(res.isError, name).toBe(true);
+      expect(textOf(res), name).toContain('harness_forbidden');
+    }
+    expect(h.goalLocalPlacement.calls).toHaveLength(GOAL_LOCAL_LAUNCH_TOOLS.length);
+  });
+
+  it('flag ON: lets the elected goal holder reach sibling-hive launch validation via nested tools:invoke', async () => {
+    h.scopedClampFlag.value = true;
+    h.goalLocalPlacement.allow = true;
+    const extra = superuserExtra('&workspace=ws-test&harness=hiveA-home&client=goal-holder');
+
+    for (const name of GOAL_LOCAL_LAUNCH_TOOLS) {
+      const res = await callTool(
+        'tools:invoke',
+        { name, args: { harness: 'hiveB-home' } },
+        extra,
+      );
+      expect(textOf(res), name).not.toContain('harness_forbidden');
+    }
+
+    expect(h.goalLocalPlacement.calls).toEqual(
+      GOAL_LOCAL_LAUNCH_TOOLS.map(() => ({
+        workspaceId: 'ws-test',
+        callerOwnerId: 'goal-holder',
+        scopeHive: 'hiveA-home',
+        targetHarness: 'hiveB-home',
+      })),
+    );
   });
 
   it('flag ON: allows nested git-sync:run to name the canonical platform Pot explicitly', async () => {
