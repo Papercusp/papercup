@@ -312,3 +312,51 @@ describe('sessions:search — a provenance-filtered zero must not read as a quer
     expect(parsed.zeroHitCaveat ?? '').not.toMatch(/owner_candidates/);
   });
 });
+
+/**
+ * EI-22100689099416717 — the `mode` enum is DELIBERATELY closed to two members.
+ *
+ * That item was filed as "live mode enum rejects DOCUMENTED semantic option",
+ * i.e. as a docs-vs-implementation divergence. It is not one: `mode:'semantic'`
+ * is documented nowhere in this tree (measured — zero hits for the literal
+ * across .ts/.tsx/.md/.mdx/.mjs, against 99 hits for the identical pattern with
+ * 'verbatim' as the positive control). The guess is a cross-surface NAME
+ * collision, not a missing feature: "semantic" is the name of a sibling TOOL
+ * (`search:semantic`, over other corpora), while at THIS door the meaning-based
+ * mode is spelled `hybrid`.
+ *
+ * The repair a future reader will be tempted to make — accept 'semantic' as an
+ * alias for 'hybrid' — is the one change that must not happen, which is why the
+ * decision is pinned here rather than left in the closed item's prose. The two
+ * words do not denote the same retrieval: on the sibling tool the mode axis is
+ * `embeddings` (pure vector) vs `hybrid` (BM25 + embeddings), so a caller who
+ * asks for "semantic" is asking for the pure-vector leg — and `sessions:search`
+ * has no pure-vector mode at all. Aliasing it to `hybrid` would silently serve a
+ * lexical+vector blend to a caller who asked for vector-only and report success,
+ * which is strictly worse than the current honest refusal: the refusal already
+ * names the entire valid space (both members), so recovery costs one hop.
+ *
+ * If a pure-vector leg is ever genuinely wanted here, ADD it under a name that
+ * says what it does (`embeddings`, matching the sibling) and delete this block —
+ * do not quietly widen the alias set.
+ */
+describe('sessions:search mode enum is closed (EI-22100689099416717)', () => {
+  it('rejects mode:"semantic" rather than aliasing it onto hybrid', () => {
+    expect(argsSchema.safeParse({ query: 'needle', mode: 'semantic' }).success).toBe(false);
+  });
+
+  it('still accepts both advertised modes — so the rejection above is not a broken schema', () => {
+    expect(argsSchema.safeParse({ query: 'needle', mode: 'hybrid' }).success).toBe(true);
+    expect(argsSchema.safeParse({ query: 'needle', mode: 'verbatim' }).success).toBe(true);
+    expect(argsSchema.safeParse({ query: 'needle' }).success).toBe(true);
+  });
+
+  it('keeps the meaning-based mode discoverable at the point of rejection', () => {
+    // The caller who guesses 'semantic' wants search-by-meaning. Whatever else
+    // changes, the surviving vocabulary must still name which member does that,
+    // or the refusal stops being one-hop recoverable.
+    const modeField = (tool.args as unknown as { shape: Record<string, { description?: string }> }).shape.mode;
+    expect(modeField.description ?? '').toMatch(/hybrid/);
+    expect(modeField.description ?? '').toMatch(/meaning/i);
+  });
+});
