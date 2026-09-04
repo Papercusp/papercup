@@ -67,6 +67,7 @@ import { readFleetWindDownLoopEndAuthorization } from "./continuation-gate";
 import { readPriorRespawnOutcome, lostRespawnAmbientLine } from "../../../carry-respawn-outcome";
 import { classifyStaleClaims, renderFlushGateLine, FLUSH_GATE_PCT } from "./inbox-flush-gate";
 import { currentContextTokensForOwner } from "../../../compaction-usage";
+import { getContextUsage } from "../../../system-health/context-usage-cache";
 import { selfCompactionAvailability } from "../../../events/await/psu-pty-discovery";
 import { listActiveClaimFreshnessForOwner } from "../../../work-item-claims";
 import { activeWorkspaceId } from "../../../workspace-registry";
@@ -744,6 +745,13 @@ export default defineTool({
         args: { q: '<substring>' },
         note: 'coord:inbox has no free-text search — it is a VIEW bounded by `limit`, not a query surface. coord:feed { q } searches summary/body/from/to/plan_slug across the whole coordination stream (add owner/since to scope it to your own recent traffic).',
       },
+      // EI-22006638872999372: retracted-message history belongs to the
+      // forensic coord:feed surface, not the bounded coord:inbox VIEW.
+      include_retracted: {
+        tool: 'coord:feed',
+        args: { include_retracted: true },
+        note: 'coord:inbox does not accept include_retracted; use coord:feed { include_retracted: true } for the forensic/audit view that includes messages withdrawn via coord:retract.',
+      },
     },
   },
   capability: "coord:read",
@@ -1312,6 +1320,11 @@ export default defineTool({
       // same sessions it was the only source for before).
       const live = await currentContextTokensForOwner(identity.ownerId);
       const tokens = live ?? pres?.contextTokens;
+      // WI-2143463: the watchdog mirrors the gateway's route-bound lowest
+      // observed prompt into the existing hot cache. It is evidence about the
+      // fixed-prefix ceiling / conservative usable runway, never a replacement
+      // for the total-prompt percent that still drives compaction.
+      const cachedUsage = getContextUsage(identity.ownerId);
       const pct = contextUsagePct(tokens, pres?.compactionLimit);
       // EI-20210946042796988: the ambient affordance must agree with the actual
       // request-compaction predicate. Headless/autonomous members have no supported
@@ -1340,6 +1353,7 @@ export default defineTool({
         pres?.compactionLimit,
         selfCompactionAvailable,
         fleetWindDownLoopEndAuthorized,
+        cachedUsage?.observedPromptFloor ?? null,
       );
       // flush-to-proceed-stretch-discipline-2026-07-04 P-002: near a compaction boundary,
       // surface any work-item claim whose checkpoint is stale (unflushed state) and NAME the
@@ -1353,6 +1367,7 @@ export default defineTool({
           pres?.compactionLimit,
           selfCompactionAvailable,
           fleetWindDownLoopEndAuthorized,
+          cachedUsage?.observedPromptFloor ?? null,
         );
       }
       if (pct != null && pct >= FLUSH_GATE_PCT) {
