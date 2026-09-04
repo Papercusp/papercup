@@ -1,4 +1,5 @@
 import type { Sql, TransactionSql } from 'postgres';
+import { createDedicatedOrgPg, withDbCallDeadline } from '@papercusp/db-org';
 
 /** Shared identity for the transaction-scoped advisory lock protecting one plan. */
 export const PLAN_ADVISORY_LOCK_NAMESPACE = 'harness_plans';
@@ -17,11 +18,107 @@ export const PLAN_LOCK_TIMEOUT_CODE = '55P03';
 /** Default acquisition budget for the plan advisory lock, in ms. */
 export const PLAN_ADVISORY_LOCK_BUDGET_MS = 5_000;
 
+/** Keep post-rollback diagnostics shorter than the lock acquisition budget. */
+export const PLAN_LOCK_SNAPSHOT_BUDGET_MS = 1_000;
+
+/**
+ * Point-in-time PostgreSQL metadata observed after a timed-out plan-lock
+ * transaction has rolled back. This is deliberately not a coordination owner
+ * record: the backend may disappear or change before the caller receives it.
+ */
+export interface PlanLockHolderSnapshot {
+  captured_at: string;
+  lock_key: string;
+  holders: Array<{
+    pid: number;
+    application_name: string | null;
+    state: string | null;
+    query_start: string | null;
+    wait_event_type: string | null;
+    wait_event: string | null;
+  }>;
+}
+
 /**
  * Either client that takes this lock: `withPlanLock` runs inside `withWorkspace`'s `Sql`, and the
  * dependency-admission wrapper accepts a `TransactionSql` (and test tagged-SQL shims).
  */
 export type PlanAdvisoryLockSql = Sql | TransactionSql;
+
+/**
+ * Best-effort, bounded holder diagnostics for a plan advisory key.
+ *
+ * This MUST run on a fresh admin client: the transaction that raised 55P03 is
+ * aborted and cannot safely execute another statement. The result is only a
+ * point-in-time `pg_locks`/`pg_stat_activity` observation; callers must retain
+ * the durable owner/expiry values as unknown/null.
+ */
+export async function readPlanAdvisoryLockSnapshot(
+  lockKey: string,
+  budgetMs: number = PLAN_LOCK_SNAPSHOT_BUDGET_MS,
+): Promise<PlanLockHolderSnapshot | null> {
+  const capMs = Math.max(1, Math.floor(budgetMs));
+  let client: ReturnType<typeof createDedicatedOrgPg> | null = null;
+  try {
+    client = createDedicatedOrgPg('plan-lock-snapshot', { max: 1 });
+    const rows = await withDbCallDeadline(
+      client.sql<
+        Array<{
+          pid: number | string;
+          application_name: string | null;
+          state: string | null;
+          query_start: string | null;
+          wait_event_type: string | null;
+          wait_event: string | null;
+        }>
+      >`
+        SELECT l.pid,
+               a.application_name,
+               a.state,
+               a.query_start::text AS query_start,
+               a.wait_event_type,
+               a.wait_event
+          FROM pg_locks AS l
+          LEFT JOIN pg_stat_activity AS a ON a.pid = l.pid
+         WHERE l.locktype = 'advisory'
+           AND l.classid::bigint = (hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE})::bigint & 4294967295)
+           AND l.objid::bigint = (hashtext(${lockKey})::bigint & 4294967295)
+           AND l.granted
+         ORDER BY l.pid
+      `,
+      { ms: capMs, label: 'plans:advisory-lock-snapshot' },
+    );
+
+    return {
+      captured_at: new Date().toISOString(),
+      lock_key: lockKey,
+      holders: rows.flatMap((row) => {
+        const pid = Number(row.pid);
+        return Number.isSafeInteger(pid)
+          ? [{
+              pid,
+              application_name: row.application_name ?? null,
+              state: row.state ?? null,
+              query_start: row.query_start ?? null,
+              wait_event_type: row.wait_event_type ?? null,
+              wait_event: row.wait_event ?? null,
+            }]
+          : [];
+      }),
+    };
+  } catch {
+    // Diagnostics are strictly best-effort. A failed fresh connection/query
+    // must never turn a safe busy response into a second failure.
+    return null;
+  } finally {
+    try {
+      await client?.sql.end({ timeout: 1 });
+    } catch {
+      // The diagnostic client is caller-owned and disposable; close failures
+      // must not mask the original busy result.
+    }
+  }
+}
 
 /**
  * The one way to take a plan's advisory lock — a BOUNDED BLOCKING acquire (WI-2143102).
