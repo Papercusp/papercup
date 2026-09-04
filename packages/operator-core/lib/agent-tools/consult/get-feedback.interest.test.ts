@@ -99,10 +99,14 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
     h.routeConsult.mockImplementation(
       async (
         _params: unknown,
-        deps: { getLiveness: (ownerIds: string[]) => Promise<Record<string, string | null>> },
+        deps: {
+          getLiveness: (
+            ownerIds: string[],
+          ) => Promise<Record<string, { sessionState: string | null; warmIdle?: boolean }>>;
+        },
       ) => {
         expect(await deps.getLiveness(['peer-host-live'])).toEqual({
-          'peer-host-live': 'recorded',
+          'peer-host-live': { sessionState: 'recorded' },
         });
         return {};
       },

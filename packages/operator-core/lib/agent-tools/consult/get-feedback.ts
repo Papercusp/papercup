@@ -194,8 +194,18 @@ export default defineTool({
                   psuHostPositiveAuthority: true,
                 },
               );
+              // Preserve the oracle's warmIdle signal alongside sessionState.
+              // The selector treats this as a non-fatal exclusion for stale
+              // parked minimum-fill candidates; dropping it recreates the
+              // hard-blocked rubric-vetting stall.
               return Object.fromEntries(
-                [...verdicts.values()].map((v) => [v.ownerId, v.sessionState]),
+                [...verdicts.values()].map((v) => [
+                  v.ownerId,
+                  {
+                    sessionState: v.sessionState,
+                    ...(typeof v.warmIdle === 'boolean' ? { warmIdle: v.warmIdle } : {}),
+                  },
+                ]),
               );
             },
           }),
