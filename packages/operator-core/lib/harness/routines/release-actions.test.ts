@@ -1930,13 +1930,47 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
         );
 
         expect(output).toContain('normal stdout');
-        expect(readFileSync(paths.logPath, 'utf8')).toMatchObject(expect.stringContaining('normal stdout'));
-        expect(readFileSync(paths.logPath, 'utf8')).toContain('normal stderr');
-        expect(JSON.parse(readFileSync(paths.terminalPath, 'utf8'))).toMatchObject({
+        const log = readFileSync(paths.logPath, 'utf8');
+        expect(log).toMatchObject(expect.stringContaining('normal stdout'));
+        expect(log).toContain('normal stderr');
+        expect(log).toContain('GREEN_CHECKPOINT_MEMORY_EVENTS ');
+        const terminal = JSON.parse(readFileSync(paths.terminalPath, 'utf8')) as {
+          runId: string;
+          logPath: string;
+          exitCode: number;
+          memoryEvents: null | {
+            subtree: {
+              low: number;
+              high: number;
+              max: number;
+              oom: number;
+              oomKill: number;
+              oomGroupKill: number;
+            };
+            local: Record<string, number> | null;
+            peakBytes: number | null;
+          };
+        };
+        expect(terminal).toMatchObject({
           runId: 'normal-run',
           logPath: paths.logPath,
           exitCode: 0,
         });
+        expect(terminal).toHaveProperty('memoryEvents');
+        if (terminal.memoryEvents !== null) {
+          expect(terminal.memoryEvents.subtree).toMatchObject({
+            low: expect.any(Number),
+            high: expect.any(Number),
+            max: expect.any(Number),
+            oom: expect.any(Number),
+            oomKill: expect.any(Number),
+            oomGroupKill: expect.any(Number),
+          });
+          expect(
+            terminal.memoryEvents.peakBytes === null ||
+              typeof terminal.memoryEvents.peakBytes === 'number',
+          ).toBe(true);
+        }
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
