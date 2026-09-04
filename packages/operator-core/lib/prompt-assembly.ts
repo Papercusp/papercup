@@ -3,14 +3,15 @@
  *
  * Builds the system prompt for an LLM call from four sources, in order:
  *
- *   1. `<role>.persona.md`        — character + behavior rules (filesystem)
+ *   1. `<role>.persona.md`        — character + behavior rules (the prompt
+ *                                   chain, then the prompts dir — see below)
  *   2. Tools catalog              — per-tool guidance from the projection
  *                                   registry (single source of truth for
  *                                   "when/notWhen/chaining"). Rendered only
  *                                   for the tools the caller passes.
  *   3. `<role>.tools.md`          — cross-tool patterns + named workflows
- *                                   (filesystem; optional — falls back to
- *                                   no playbook section when absent)
+ *                                   (optional — falls back to no playbook
+ *                                   section when absent)
  *   4. Runtime context            — caller-supplied blocks (history,
  *                                   trigger, [may_ask_active] marker, etc.)
  *
@@ -23,8 +24,22 @@
  *     about the AGENT's behavior pattern, not a tool's — they live in
  *     `<role>.persona.md`.
  *
+ * WHERE A ROLE DOCUMENT COMES FROM (identities-v1-2026-08-30 P-023): the
+ * persona / converse / tools documents of a chat-surface role resolve through
+ * the SAME prompt chain the spawn tier resolves `blueprints/<id>/prompts/<role>.md`
+ * with (`resolvePromptFile`): the blueprint extends-chain leaf-first with `base`
+ * last, and within one id the tiers local → installed → built-in harness. The
+ * chain form of a document is `blueprints/<id>/prompts/<role>.<kind>.md` — the
+ * same dotted-suffix naming as the generic-prefix `<role>.base.md`. The prompts
+ * dir (`apps/operator/prompts/<role>.<kind>.md`, `promptsDir()`) is retained as
+ * the LOWEST-precedence file tier, so with no chain copy installed a role renders
+ * byte-identical to the pre-P-023 direct file read, and an installed or hive-local
+ * override of a chat persona wins over the built-in file without a code change.
+ * The audience identities (`loadRoleModePersona`, P-021) resolve through the same
+ * chain and have no file tier (an identity has ONE home).
+ *
  * Caching:
- *   - Filesystem reads (persona.md, tools.md) memoized at module load.
+ *   - Resolved role documents memoized per (role, kind, resolve context).
  *   - Catalog rendering memoized per-role, invalidated when any tool is
  *     registered (catalog version bump in the projection registry).
  *   - `PAPERCUSP_RELOAD_PROMPTS=1` env var (default on in NODE_ENV=development)
@@ -36,7 +51,12 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { harnessRoot } from '@papercusp/harness/paths';
-import { resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
+import {
+  promptCandidates,
+  resolvePromptFile,
+  resolvePromptFiles,
+  type PromptResolveContext,
+} from '@papercusp/orchestrator/role-prompt';
 import {
   listAllProjectedTools,
   projectedToolCorrectiveCalls,
@@ -250,6 +270,13 @@ export interface AssembleOptions {
   /** Optional caller-supplied blocks rendered after the tools playbook. */
   runtime?: Array<{ heading: string; body: string }>;
   /**
+   * How the role's persona / tools documents resolve through the prompt chain
+   * (P-023): the blueprint whose extends-chain is walked and the tiers searched
+   * before the built-in harness. Omitted ⇒ the `base` chain over the built-in
+   * tier, then the prompts dir — the workspace-level chat-surface default.
+   */
+  resolve?: ChatRoleResolveContext;
+  /**
    * Alternate target profile. `pui-loop` uses the canonical su source and
    * generated sections while omitting client-only remediation before assembly.
    */
@@ -270,7 +297,7 @@ export interface AssembleOptions {
   toolCatalogText?: string;
 }
 
-/* ─── Filesystem reads (cached unless PAPERCUSP_RELOAD_PROMPTS=1) ─────── */
+/* ─── Role documents through the prompt chain (cached unless PAPERCUSP_RELOAD_PROMPTS=1) ── */
 
 function shouldBypassCache(): boolean {
   if (process.env.PAPERCUSP_RELOAD_PROMPTS === '1') return true;
@@ -278,34 +305,139 @@ function shouldBypassCache(): boolean {
   return process.env.NODE_ENV === 'development';
 }
 
-const personaCache = new Map<Role, string>();
-const toolsMdCache = new Map<Role, string | null>();
-const converseCache = new Map<Role, string>();
+/** The document kinds a chat-surface role composes from: `<role>.<kind>.md`. */
+export const CHAT_ROLE_DOCUMENT_KINDS = ['persona', 'converse', 'tools'] as const;
+export type ChatRoleDocumentKind = (typeof CHAT_ROLE_DOCUMENT_KINDS)[number];
 
-export function loadRolePersona(role: Role): string {
-  if (!shouldBypassCache() && personaCache.has(role)) {
-    return personaCache.get(role)!;
+/**
+ * How a chat-surface role's documents are resolved — the SAME shape the spawn tier
+ * resolves `blueprints/<id>/prompts/<role>.md` with (`PromptResolveContext`), minus
+ * the retired phase/dept axis: an optional blueprint (`blueprintId`, or a pre-resolved
+ * `extendsChain`) whose chain is walked leaf-first with `base` last, and the tiers
+ * (`blueprintRoots`: local → installed) searched before the built-in `harnessDir`.
+ * Omitted ⇒ `{ harnessDir: harnessRoot() }`: the `base` chain over the built-in tier —
+ * what every workspace-level chat surface (operator / oracle / papercup) resolves with.
+ */
+export type ChatRoleResolveContext = Partial<
+  Pick<PromptResolveContext, 'harnessDir' | 'blueprintRoots' | 'blueprintId' | 'extendsChain'>
+>;
+
+export interface ChatRoleDocumentHit {
+  /**
+   * `chain` — a `blueprints/<id>/prompts/<role>.<kind>.md` found through the
+   * extends-chain × tiers; `file` — the prompts-dir tier (`promptsDir()`), the
+   * lowest-precedence fallback P-023 retains.
+   */
+  tier: 'chain' | 'file';
+  /** Absolute path of the resolved document. */
+  path: string;
+  text: string;
+}
+
+function chatRoleResolveContext(ctx?: ChatRoleResolveContext): PromptResolveContext {
+  return {
+    harnessDir: ctx?.harnessDir ?? harnessRoot(),
+    phase: '',
+    dept: '',
+    ...(ctx?.blueprintRoots ? { blueprintRoots: ctx.blueprintRoots } : {}),
+    ...(ctx?.blueprintId ? { blueprintId: ctx.blueprintId } : {}),
+    ...(ctx?.extendsChain ? { extendsChain: ctx.extendsChain } : {}),
+  };
+}
+
+/** The prompts-dir (file tier) path of a chat-surface role document. */
+export function chatRoleDocumentFilePath(role: Role, kind: ChatRoleDocumentKind): string {
+  return join(promptsDir(), `${role}.${kind}.md`);
+}
+
+/**
+ * Every path a chat-surface role document is looked up at, most specific first: the
+ * chain candidates (`promptCandidates` — PURE: it walks `extendsChain`/`blueprintId`
+ * as given and does not read blueprint.yaml, exactly like the spawn tier's listing),
+ * then the file tier last. For diagnostics and tests; the resolver below is what
+ * reads.
+ */
+export function chatRoleDocumentCandidates(
+  role: Role,
+  kind: ChatRoleDocumentKind,
+  ctx?: ChatRoleResolveContext,
+): string[] {
+  return [
+    ...promptCandidates(chatRoleResolveContext(ctx), `${role}.${kind}`),
+    chatRoleDocumentFilePath(role, kind),
+  ];
+}
+
+/**
+ * Resolve ONE chat-surface role document through the prompt chain — the first
+ * `blueprints/<id>/prompts/<role>.<kind>.md` the spawn tier's `resolvePromptFile`
+ * finds (leaf-first across the extends-chain; within one id local → installed →
+ * built-in) — falling back to the prompts-dir file. Null when neither tier holds it;
+ * the caller decides whether that refuses (persona / converse) or is optional (tools).
+ * Uncached; `loadChatRoleDocument` is the memoized entry.
+ */
+export function resolveChatRoleDocument(
+  role: Role,
+  kind: ChatRoleDocumentKind,
+  ctx?: ChatRoleResolveContext,
+): ChatRoleDocumentHit | null {
+  const chain = resolvePromptFile(chatRoleResolveContext(ctx), `${role}.${kind}`);
+  if (chain) return { tier: 'chain', path: chain, text: readFileSync(chain, 'utf8') };
+  const file = chatRoleDocumentFilePath(role, kind);
+  if (existsSync(file)) return { tier: 'file', path: file, text: readFileSync(file, 'utf8') };
+  return null;
+}
+
+const roleDocumentCache = new Map<string, ChatRoleDocumentHit | null>();
+
+function roleDocumentCacheKey(role: Role, kind: ChatRoleDocumentKind, ctx?: ChatRoleResolveContext): string {
+  // The prompts dir is part of the key too: PAPERCUSP_PROMPTS_DIR / the integration
+  // root can change between calls in the same process (tests do exactly that).
+  return JSON.stringify([
+    role,
+    kind,
+    ctx?.harnessDir ?? null,
+    ctx?.blueprintRoots ?? null,
+    ctx?.blueprintId ?? null,
+    ctx?.extendsChain ?? null,
+    promptsDir(),
+  ]);
+}
+
+/** Memoized `resolveChatRoleDocument` (bypassed under PAPERCUSP_RELOAD_PROMPTS=1 / development). */
+export function loadChatRoleDocument(
+  role: Role,
+  kind: ChatRoleDocumentKind,
+  ctx?: ChatRoleResolveContext,
+): ChatRoleDocumentHit | null {
+  const key = roleDocumentCacheKey(role, kind, ctx);
+  if (!shouldBypassCache() && roleDocumentCache.has(key)) {
+    return roleDocumentCache.get(key)!;
   }
-  const path = join(promptsDir(), `${role}.persona.md`);
-  if (!existsSync(path)) {
+  const hit = resolveChatRoleDocument(role, kind, ctx);
+  roleDocumentCache.set(key, hit);
+  return hit;
+}
+
+function describeMiss(role: Role, kind: ChatRoleDocumentKind, ctx?: ChatRoleResolveContext): string {
+  const file = chatRoleDocumentFilePath(role, kind);
+  const chain = promptCandidates(chatRoleResolveContext(ctx), `${role}.${kind}`);
+  return `${role}.${kind}.md not found at ${file} (nor at any of the prompt-chain candidates: ${chain.join(', ')})`;
+}
+
+export function loadRolePersona(role: Role, ctx?: ChatRoleResolveContext): string {
+  const hit = loadChatRoleDocument(role, 'persona', ctx);
+  if (!hit) {
     throw new Error(
-      `prompt-assembly: ${role}.persona.md not found at ${path}. ` +
+      `prompt-assembly: ${describeMiss(role, 'persona', ctx)}. ` +
       `Every role must have a persona.md.`,
     );
   }
-  const text = readFileSync(path, 'utf8');
-  personaCache.set(role, text);
-  return text;
+  return hit.text;
 }
 
-export function loadRoleToolsMd(role: Role): string | null {
-  if (!shouldBypassCache() && toolsMdCache.has(role)) {
-    return toolsMdCache.get(role)!;
-  }
-  const path = join(promptsDir(), `${role}.tools.md`);
-  const text = existsSync(path) ? readFileSync(path, 'utf8') : null;
-  toolsMdCache.set(role, text);
-  return text;
+export function loadRoleToolsMd(role: Role, ctx?: ChatRoleResolveContext): string | null {
+  return loadChatRoleDocument(role, 'tools', ctx)?.text ?? null;
 }
 
 /**
@@ -348,20 +480,15 @@ export function loadRoleModePersona(role: Role, mode: string, identityRoots?: re
   return text;
 }
 
-export function loadRoleConverse(role: Role): string {
-  if (!shouldBypassCache() && converseCache.has(role)) {
-    return converseCache.get(role)!;
-  }
-  const path = join(promptsDir(), `${role}.converse.md`);
-  if (!existsSync(path)) {
+export function loadRoleConverse(role: Role, ctx?: ChatRoleResolveContext): string {
+  const hit = loadChatRoleDocument(role, 'converse', ctx);
+  if (!hit) {
     throw new Error(
-      `prompt-assembly: ${role}.converse.md not found at ${path}. ` +
+      `prompt-assembly: ${describeMiss(role, 'converse', ctx)}. ` +
       `Required for chat-mode roles.`,
     );
   }
-  const text = readFileSync(path, 'utf8');
-  converseCache.set(role, text);
-  return text;
+  return hit.text;
 }
 
 /**
@@ -821,7 +948,7 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   const sections: AssembledSection[] = [];
   const parts: string[] = [];
 
-  const persona = loadRolePersona(opts.role);
+  const persona = loadRolePersona(opts.role, opts.resolve);
   parts.push(persona);
   sections.push({ name: 'persona', chars: persona.length });
 
@@ -831,7 +958,7 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
     sections.push({ name: 'tools-catalog', chars: catalog.length });
   }
 
-  const playbook = loadRoleToolsMd(opts.role);
+  const playbook = loadRoleToolsMd(opts.role, opts.resolve);
   if (playbook) {
     parts.push(playbook);
     sections.push({ name: 'tools-playbook', chars: playbook.length });
