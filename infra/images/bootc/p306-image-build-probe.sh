@@ -131,6 +131,7 @@ done
 
 sect "5. shipped files and enabled units"
 for f in /etc/containers/policy.json \
+         /etc/containers/registries.d/papercusp-release.yaml \
          /etc/nftables/papercusp-workspace-host.nft \
          /usr/lib/sysusers.d/papercusp.conf \
          /usr/libexec/papercusp/host-prepare.sh \
