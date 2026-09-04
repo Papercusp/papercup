@@ -27,7 +27,7 @@ INPUT=$(cat)
 # Release is best-effort and the acquire TTL is the safety net.  A Python
 # failure must never turn PostToolBatch into a non-zero hook that stops Claude.
 python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$AGENT_ID" "$CACHE_DIR" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' || exit 0
-import json, os, re, sys, time, urllib.request, urllib.parse
+import json, os, re, subprocess, sys, time, urllib.request, urllib.parse
 
 urllib.request.install_opener(
     urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -123,6 +123,45 @@ owner = (
 def owner_marker_name(kind):
     safe = re.sub(r'[^A-Za-z0-9._-]', '_', owner)[:160] or 'unknown'
     return 'owner-' + safe + '-last-' + kind + '.json'
+
+
+def regenerate_declarations(state):
+    """Regenerate selected enrolled sources before releasing the batch union."""
+    root = state.get('coordination_domain')
+    paths = state.get('paths')
+    helper = os.path.join(hook_dir, 'regenerate-declaration-before-lock-release.mjs')
+    if (not isinstance(root, str) or not root
+            or not isinstance(paths, list) or not paths
+            or not all(isinstance(path, str) and path for path in paths)
+            or not os.path.isfile(helper)):
+        return
+    try:
+        result = subprocess.run(
+            ['node', helper, '--repo-root', root]
+            + [arg for path in paths for arg in ('--path', path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if result.returncode != 0:
+            value = {
+                'ts': now_iso(), 'handler': 'posttoolbatch',
+                'phase': 'declaration-regeneration',
+                'detail': (result.stderr or 'generator exited ' + str(result.returncode))[:200],
+                'operator_url': operator_url, 'owner': owner,
+            }
+            write_marker('last-error.json', value)
+            write_marker(owner_marker_name('error'), value)
+    except Exception as exc:
+        value = {
+            'ts': now_iso(), 'handler': 'posttoolbatch',
+            'phase': 'declaration-regeneration', 'detail': str(exc)[:200],
+            'operator_url': operator_url, 'owner': owner,
+        }
+        write_marker('last-error.json', value)
+        write_marker(owner_marker_name('error'), value)
 
 
 def read_json(path):
@@ -374,9 +413,11 @@ for batch_id in groups:
         # intentionally skip the network write and only clean local artifacts.
         if is_complete_granted(state, batch_id):
             proof = native_edit_batch_proof(state)
-            if proof is not None and release_batch(state, proof):
-                write_marker('last-success.json', {'ts': now_iso(), 'owner': owner})
-                write_marker(owner_marker_name('success'), {'ts': now_iso(), 'owner': owner})
+            if proof is not None:
+                regenerate_declarations(state)
+                if release_batch(state, proof):
+                    write_marker('last-success.json', {'ts': now_iso(), 'owner': owner})
+                    write_marker(owner_marker_name('success'), {'ts': now_iso(), 'owner': owner})
         # Cleanup occurs for every state we successfully claimed.  A failed
         # release is still safe: the server-side acquire TTL remains the guard.
     finally:

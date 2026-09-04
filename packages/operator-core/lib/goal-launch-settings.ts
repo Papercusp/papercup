@@ -70,10 +70,7 @@ import {
   GOAL_HOLDER_DEFAULTS,
   type GoalHolderOnLoss,
 } from './goal-launch-settings-shared';
-import {
-  isGoalHolderAuthorityError,
-  resolveGoalContext,
-} from './modes/goal-context';
+import { isGoalHolderAuthorityError, resolveGoalContext } from './modes/goal-context';
 // The fleet-shape vocabulary is owned by the fleet store; `fleetType` below
 // derives its accepted values from it rather than declaring them a second time.
 import { FLEET_TYPES } from './agent-fleets-store';
@@ -1246,8 +1243,7 @@ export async function readGoalPortfolioBrief(args: {
       priorities.push(`Restore delegated leadership and live coverage for drain fleet ${declaredFleet}.`);
     if (queue.needsHuman > 0) priorities.push(`Report ${queue.needsHuman} owner-walled queue item(s) with exact asks.`);
     const executablePlacement = worklist.find((plan) => plan.placement.reconciliation.toolCall !== null);
-    const repairPlan =
-      executablePlacement ?? worklist.find((plan) => plan.placement.reconciliation.action !== 'none');
+    const repairPlan = executablePlacement ?? worklist.find((plan) => plan.placement.reconciliation.action !== 'none');
     if (repairPlan) priorities.push(`Reconcile ${repairPlan.ref}: ${repairPlan.placement.reconciliation.reason}`);
     if ((claimable ?? 0) > 0)
       priorities.push(`Place ${claimable} goal-scoped claimable issue(s) without implementing them yourself.`);
@@ -1674,6 +1670,69 @@ export async function readGoalLaunchSettingsForLauncher(args: {
     drainFleetSlug,
     degraded: degradedReasons.length > 0,
     degradedReasons,
+  };
+}
+
+/**
+ * May a goal-scoped launcher place work in this harness?
+ *
+ * A `goal_pots.role='owner'` row is not sufficient on its own: terminal goals
+ * intentionally retain their relationship history, so a killed owner's live
+ * edge must not make the primary harness look permanently occupied.  The
+ * authority question is therefore the intersection of the live edge and an
+ * ACTIVE goal.  This is the shared read behind launch-time sovereignty checks;
+ * callers must not reimplement it against `goal_pots` alone.
+ */
+export interface GoalPotPlacementAuthority {
+  allowed: boolean;
+  reason: 'no-active-owner' | 'caller-goal-owns-pot' | 'different-active-goal-owns-pot';
+  ownerGoalId: string | null;
+  ownerGoalTitle: string | null;
+}
+
+export async function resolveGoalPotPlacementAuthority(args: {
+  workspaceId: string;
+  launcherGoalId: string;
+  harnessSlug: string;
+  sql?: Sql;
+}): Promise<GoalPotPlacementAuthority> {
+  const sql = pg(args.sql);
+  const rows = await sql<Array<{ owner_goal_id: string; owner_goal_title: string | null }>>`
+    SELECT gp.goal_id AS owner_goal_id, g.title AS owner_goal_title
+      FROM harness_shared.goal_pots gp
+      JOIN harness_shared.goals g
+        ON g.workspace_id = gp.workspace_id
+       AND g.id = gp.goal_id
+     WHERE gp.workspace_id = ${args.workspaceId}
+       AND gp.harness_slug = ${args.harnessSlug}
+       AND gp.role = 'owner'
+       AND gp.removed_at IS NULL
+       AND g.status = 'active'
+     ORDER BY gp.added_at DESC
+     LIMIT 2
+  `;
+  const owner = rows[0] ?? null;
+  if (!owner) {
+    return {
+      allowed: true,
+      reason: 'no-active-owner',
+      ownerGoalId: null,
+      ownerGoalTitle: null,
+    };
+  }
+  if (owner.owner_goal_id === args.launcherGoalId) {
+    return {
+      allowed: true,
+      reason: 'caller-goal-owns-pot',
+      ownerGoalId: owner.owner_goal_id,
+      ownerGoalTitle: owner.owner_goal_title,
+    };
+  }
+  return {
+    allowed: false,
+    reason: 'different-active-goal-owns-pot',
+    ownerGoalId: owner.owner_goal_id,
+    ownerGoalTitle: owner.owner_goal_title,
   };
 }
 

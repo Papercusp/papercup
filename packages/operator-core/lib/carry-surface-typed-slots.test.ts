@@ -160,6 +160,30 @@ describe('EI-19988500685566622: negation and third-party-subject suppression', (
     expect(lintOwnerQuestionSlots("waiting on the owner's build artifact").flagged).toBe(false);
   });
 
+  describe('quoted dev:why repair diagnostics (EI-22175896286054778)', () => {
+    const diagnostic =
+      'dev:why nextVerb — "wait for the owner of the in-flight repair to finish (repair-in-progress) — ' +
+      'there is nothing for you to clear, and a re-fire contends with them"';
+
+    it('does NOT flag a fully-marked peer-owned repair nextVerb quote', () => {
+      expect(lintOwnerQuestionSlots(diagnostic).flagged).toBe(false);
+    });
+
+    it('still flags the same quote without the dev:why nextVerb marker', () => {
+      const withoutMarker = diagnostic.replace('dev:why nextVerb — ', '');
+      expect(lintOwnerQuestionSlots(withoutMarker).flagged).toBe(true);
+    });
+
+    it('still flags a dev:why quote when a peer-owned repair clause is missing', () => {
+      const withoutPeerClause = diagnostic.replace(', and a re-fire contends with them', '');
+      expect(lintOwnerQuestionSlots(withoutPeerClause).flagged).toBe(true);
+    });
+
+    it('still flags an unquoted dev:why diagnostic', () => {
+      expect(lintOwnerQuestionSlots(diagnostic.replaceAll('"', '')).flagged).toBe(true);
+    });
+  });
+
   it('still flags a possessive owner when a human decision is awaited', () => {
     expect(lintOwnerQuestionSlots("waiting on the owner's approval before the force-push").flagged).toBe(true);
     expect(lintOwnerQuestionSlots("blocked on the owner's decision about the schema split").flagged).toBe(true);

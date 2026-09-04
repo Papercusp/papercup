@@ -47,7 +47,7 @@ INPUT=$(cat)
 # Fail-open backstop: release is best-effort (TTL covers a missed one), so
 # never let a Python error exit non-zero from this hook.
 python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$AGENT_ID" "$CACHE_DIR" "$(dirname "$0")" "$FALLBACK_OPERATOR_URL" 3<<<"$INPUT" <<'PYEOF' || exit 0
-import json, os, re, sys, time, urllib.request, urllib.parse
+import json, os, re, subprocess, sys, time, urllib.request, urllib.parse
 from pathlib import Path
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
@@ -183,6 +183,34 @@ def mark_release_error(phase, detail):
     }
     write_marker('last-error.json', value)
     write_marker(owner_marker_name('error'), value)
+
+
+def run_declaration_regenerator(args, input_text=None):
+    """Run the shared enrolled-.mjs filter while this edit's lock is held.
+
+    A generator failure is diagnostic only: callers continue to release so a
+    broken declaration emit never strands a source lock for its full TTL.
+    """
+    helper = os.path.join(hook_dir, 'regenerate-declaration-before-lock-release.mjs')
+    if not os.path.isfile(helper):
+        return
+    try:
+        result = subprocess.run(
+            ['node', helper] + list(args),
+            input=input_text,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            check=False,
+        )
+        if result.returncode != 0:
+            mark_release_error(
+                'declaration-regeneration',
+                (result.stderr or 'generator exited ' + str(result.returncode))[:200],
+            )
+    except Exception as exc:
+        mark_release_error('declaration-regeneration', exc)
 
 
 def tool_request(name, arguments, base_url):
@@ -388,6 +416,9 @@ def recover_failed_code_mode_edit(current_cache_path):
             cleanup_sidecars(base)
             continue
 
+        run_declaration_regenerator(
+            ['--repo-root', domain] + [arg for path in paths for arg in ('--path', path)]
+        )
         released, release_error = call_tool('locks:release', {
             'lock_id': lock_id,
             'paths': paths,
@@ -402,6 +433,11 @@ def recover_failed_code_mode_edit(current_cache_path):
         cleanup_sidecars(base)
         mark_release_success('parent-recovery')
 
+
+# Run before any direct release — including the deliberate-explicit-lock case,
+# where PreToolUse correctly wrote no release token because the caller's wider
+# lock must remain held. The helper classifies success + enrolled paths itself.
+run_declaration_regenerator(['--hook-payload'], raw)
 
 cache_path = os.path.join(cache_dir, tool_use_id + '.lock')
 if not os.path.exists(cache_path):

@@ -3,8 +3,9 @@
  * `tsconfig.declarations.json` (WI-6394). See that file for WHY these are
  * generated rather than hand-written.
  *
- *   npm run gen:declarations         # emit in place
- *   npm run gen:declarations:check   # verify the committed files are current
+ *   npm run gen:declarations                         # emit every enrolled output
+ *   npm run gen:declarations -- --files=a.mjs,b.mjs # emit selected enrolled outputs
+ *   npm run gen:declarations:check                   # verify every committed output
  *
  * Both modes compile into an isolated temp directory. `--check` compares that
  * output without publishing it; normal generation publishes only after the
@@ -81,6 +82,21 @@ function inputs(repoRoot: string, config: string): string[] {
 /** `scripts/foo.mjs` -> `scripts/foo.d.mts` */
 function declarationFor(mjs: string): string {
   return mjs.replace(/\.mjs$/, '.d.mts');
+}
+
+/** Resolve an optional publish selection against the config-owned input set. */
+function publishSelection(declaredInputs: string[], requestedInputs?: readonly string[]): string[] {
+  if (requestedInputs === undefined) return declaredInputs;
+  const requested = new Set(requestedInputs);
+  if (requested.size === 0) throw new Error('`--files` must name at least one enrolled .mjs input');
+  for (const input of requested) {
+    if (!declaredInputs.includes(input)) {
+      throw new Error(`cannot generate undeclared input: ${input}`);
+    }
+  }
+  // Preserve config order so logs and writes stay deterministic regardless of
+  // the order supplied by an edit hook.
+  return declaredInputs.filter((input) => requested.has(input));
 }
 
 type Compile = (repoRoot: string, config: string, outDir: string) => void;
@@ -189,15 +205,21 @@ function publish(outRoot: string, repoRoot: string, declaredInputs: string[]): v
  * test simulate a compiler that emitted partial output before failing without
  * touching this checkout. Production callers use `runTsc` (the default).
  */
-export function generate(repoRoot = REPO_ROOT, config = CONFIG, compile: Compile = runTsc): void {
+export function generate(
+  repoRoot = REPO_ROOT,
+  config = CONFIG,
+  compile: Compile = runTsc,
+  requestedInputs?: readonly string[],
+): void {
   const declaredInputs = inputs(repoRoot, config);
+  const selectedInputs = publishSelection(declaredInputs, requestedInputs);
   const out = mkdtempSync(join(tmpdir(), 'papercusp-decl-generate-'));
   try {
     compile(repoRoot, config, out);
     stamp(out, declaredInputs);
-    publish(out, repoRoot, declaredInputs);
+    publish(out, repoRoot, selectedInputs);
     console.log(
-      `✓ gen:declarations: emitted ${declaredInputs.length} declaration file(s) — compiler: ${COMPILER_LABEL}`,
+      `✓ gen:declarations: emitted ${selectedInputs.length} of ${declaredInputs.length} declaration file(s) — compiler: ${COMPILER_LABEL}`,
     );
   } finally {
     rmSync(out, { recursive: true, force: true });
@@ -280,6 +302,14 @@ export function check(repoRoot = REPO_ROOT, config = CONFIG): void {
 
 const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-  if (process.argv.includes('--check')) check();
-  else generate();
+  const filesArgs = process.argv.slice(2).filter((arg) => arg.startsWith('--files='));
+  const requestedInputs = filesArgs.flatMap((arg) =>
+    arg.slice('--files='.length).split(',').filter((input) => input.length > 0),
+  );
+  if (process.argv.includes('--check')) {
+    if (filesArgs.length > 0) throw new Error('`--files` is only valid for generation, not `--check`');
+    check();
+  } else {
+    generate(REPO_ROOT, CONFIG, runTsc, filesArgs.length > 0 ? requestedInputs : undefined);
+  }
 }

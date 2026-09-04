@@ -96,6 +96,50 @@ async function latestMeasure(name: string): Promise<number | null> {
 }
 
 /**
+ * Wait until the thin GUI has finished attaching to its Server. The shell and
+ * route tree intentionally mount while connection recovery is still in
+ * flight, so waitForAppMount alone is not a sufficient precondition for a
+ * native click: ServerConnectionGate owns the hit target until Rust emits the
+ * restored event. This wait is outside every interaction measure.
+ */
+async function waitForServerConnectionReady(): Promise<void> {
+  const ready = await browser.waitUntil(
+    async () =>
+      await browser.execute(
+        () =>
+          !document.querySelector('[data-testid="server-connection-reason"]'),
+      ),
+    {
+      timeout: 20_000,
+      timeoutMsg: "Papercusp Server connection did not become ready within 20s",
+    },
+  ).then(() => true, () => false);
+
+  if (ready) return;
+  const snapshot = await browser.execute(() => {
+    const w = window as Window & {
+      __papercuspBootError?: string;
+      __papercuspServerConnectionRequired?: string;
+      __papercuspServerConnectionRestored?: boolean;
+    };
+    return {
+      href: location.href,
+      restored: w.__papercuspServerConnectionRestored ?? null,
+      required: w.__papercuspServerConnectionRequired ?? null,
+      bootError: w.__papercuspBootError ?? null,
+      renderedReason:
+        document
+          .querySelector('[data-testid="server-connection-reason"]')
+          ?.textContent?.trim() ?? null,
+    };
+  });
+  throw new Error(
+    "Papercusp Server connection did not become ready; " +
+      `connection snapshot=${JSON.stringify(snapshot)}`,
+  );
+}
+
+/**
  * Focus a registered HarnessesDock panel even when the persisted layout does
  * not contain it. This mirrors requestDockPanelOpen without importing browser
  * application code into the out-of-workspace WDIO runner: the queue survives
@@ -307,6 +351,7 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     });
     await spaNavigate(learningUrl);
     await waitForAppMount(browser);
+    await waitForServerConnectionReady();
 
     await browser.waitUntil(
       async () =>
@@ -319,6 +364,20 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
       },
     );
     await waitForMainThreadQuietInPage();
+
+    // The page-local sync ledger records queue, resolver, transfer, and parse
+    // time independently from the interaction measure below.  Snapshot its
+    // cursor immediately before the click so a cold-budget failure identifies
+    // the stage that was actually slow instead of blaming the companion SQL by
+    // inference (WI-5502).
+    const syncQueryCursor = await browser.execute(() => {
+      const metrics = (
+        window as Window & {
+          __sync_metrics__?: { queries?: () => unknown[] };
+        }
+      ).__sync_metrics__;
+      return metrics?.queries?.().length ?? 0;
+    });
 
     // Clear any stale measure immediately before the real view-switch click.
     await browser.execute((name) => {
@@ -468,8 +527,45 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     }
 
     const measuredMs = await latestMeasure(NAME);
+    const learningQueryTimings = await browser.execute((cursor) => {
+      type SyncQueryTiming = {
+        name?: string;
+        waitMs?: number;
+        requestMs?: number;
+        bytes?: number;
+        outcome?: string;
+        traceId?: string;
+        stages?: {
+          schedulerWaitMs?: number;
+          resolverMs?: number;
+          transferMs?: number;
+          parseCacheMs?: number;
+        };
+      };
+      const metrics = (
+        window as Window & {
+          __sync_metrics__?: { queries?: () => SyncQueryTiming[] };
+        }
+      ).__sync_metrics__;
+      return (metrics?.queries?.() ?? [])
+        .slice(cursor)
+        .filter(
+          (event) =>
+            event.name === "learning.observations" ||
+            event.name === "learning.observations.summary",
+        );
+    }, syncQueryCursor);
+    console.log(
+      `[perf-sync] ${NAME} queries=${JSON.stringify(learningQueryTimings)}`,
+    );
     recordInteractionMs(NAME, measuredMs, LEARNING_VIEW_SWITCH_BUDGET_MS);
     expect(measuredMs).not.toBeNull();
+    if ((measuredMs as number) > LEARNING_VIEW_SWITCH_BUDGET_MS) {
+      throw new Error(
+        `${NAME} took ${measuredMs}ms (budget ${LEARNING_VIEW_SWITCH_BUDGET_MS}ms); ` +
+          `sync queries=${JSON.stringify(learningQueryTimings)}`,
+      );
+    }
     expect(measuredMs as number).toBeLessThanOrEqual(
       LEARNING_VIEW_SWITCH_BUDGET_MS,
     );
@@ -709,10 +805,13 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
       );
     }
 
-    // Persisted dock layouts are user-defined and need not contain the Work
-    // items panel. Queue + focus the registered panel explicitly so this spec
-    // measures conversation loading instead of depending on whoever last
-    // arranged the packaged app's dock.
+    // Persisted dock layouts are user-defined and need not contain either the
+    // Detail or Work items panel. Ensure Detail EXISTS first, then refocus Work
+    // items for row selection. When both were absent, dockview opens the first
+    // missing panel as a tab in the active group; the final focus order below
+    // therefore works for both the seeded split layout and a customised
+    // single-group layout.
+    await requestHarnessPanel("adv:detail", "Detail");
     await requestHarnessPanel("adv:work-items", "Work items");
 
     // Wait for at least one row in the Work items grid. RichGrid (grid-core)
@@ -781,9 +880,16 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
       rows[1]?.click();
     });
 
+    // If a customised layout placed Detail in the same tab group as Work
+    // items, it is intentionally inactive during the click above and its
+    // non-keepAlive React tree is unmounted. Focus it now so DetailPanel mounts
+    // against the freshly written ?sel value. In the seeded split layout this
+    // is a harmless focus of the already-visible bottom pane.
+    await requestHarnessPanel("adv:detail", "Detail");
+
     // Wait for the Detail pane to resolve that selection and render its Chat
     // action (WorkItemDetail, DetailPanel.tsx — every WI-* row gets one).
-    await browser.waitUntil(
+    const detailReady = await browser.waitUntil(
       async () =>
         await browser.execute(() =>
           Boolean(document.querySelector('[data-testid="wi-detail-chat"]')),
@@ -793,7 +899,34 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
         timeoutMsg:
           'no [data-testid="wi-detail-chat"] within 15s of selecting a work-item row',
       },
-    );
+    ).then(() => true, () => false);
+
+    if (!detailReady) {
+      const snapshot = await browser.execute(() => ({
+        href: location.href,
+        dockTabs: Array.from(
+          document.querySelectorAll<HTMLElement>(".dv-tab"),
+        ).map((tab) => ({
+          text: (tab.textContent ?? "").trim(),
+          active: tab.classList.contains("dv-active-tab"),
+        })),
+        workItemCount:
+          document.querySelector('[data-testid="wi-count"]')?.textContent?.trim() ??
+          null,
+        selectedRows: Array.from(
+          document.querySelectorAll<HTMLElement>('[role="row"][aria-selected="true"]'),
+        ).map((row) => ({
+          text: (row.textContent ?? "").trim().slice(0, 160),
+          itemId: row.dataset.itemId ?? null,
+        })),
+        detailPanels: document.querySelectorAll('[data-testid="wi-detail-chat"]')
+          .length,
+      }));
+      throw new Error(
+        'no [data-testid="wi-detail-chat"] after ensuring adv:detail and selecting a work item; ' +
+          `detail snapshot=${JSON.stringify(snapshot)}`,
+      );
+    }
 
     await waitForMainThreadQuietInPage();
 

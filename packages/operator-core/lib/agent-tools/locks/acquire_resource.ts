@@ -16,6 +16,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryAcquireResource, type ResourceHolder } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
+import { endedSessionOwners } from './ended-session-owners';
 import { acquireWithContentionRetry, isWorkspaceContended } from './contention-retry';
 import { resourceLockDomain } from './coordination-domain';
 import { ensureResourceDomainKindsFresh } from './resource-domain-kinds';
@@ -201,6 +202,11 @@ export default defineTool({
           // P-009: tell the shared holders to release when the drain begins.
           onDrainStart: (holders) =>
             broadcastResourceDrainStart({ source: coordId, resource: args.resource, holders, reason }),
+          // EI-22365267258322901: an exclusive held by an ended agent session
+          // must be reclaimed before reporting held_exclusive. The wait helper
+          // is fail-safe and only condemns owners that the shared liveness
+          // oracle identifies as definitively ended.
+          deadOwnerOracle: endedSessionOwners,
         }),
       );
     } catch (error) {

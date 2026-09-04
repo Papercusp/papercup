@@ -110,6 +110,7 @@ describe('auth.ts integration', () => {
     const session = await authMod!.login(name, 'sup3rsecret', {
       workspace_id: 'ws-remote',
       capabilities: ['*', 'operator:remote', 'operator:remote'],
+      remote: true,
     });
     expect(session.user.workspace_id).toBe('ws-remote');
     expect(session.user.capabilities).toEqual(['*', 'operator:remote']);
@@ -172,6 +173,27 @@ describe('auth.ts integration', () => {
     const session = await authMod!.login(name, null);
     expect(session.user.has_password).toBe(false);
     await authMod!.logout(session.token);
+  });
+
+  itPg('remote login rejects a nonempty password for a passwordless user', async () => {
+    const name = uname();
+    const user = await authMod!.signup(name, 'T', null);
+
+    await expect(authMod!.login(name, 'attacker-password', {
+      workspace_id: 'ws-remote',
+      capabilities: ['*', 'operator:remote'],
+    })).rejects.toMatchObject({ code: 'bad_password' });
+
+    const sessions = await db!.adminSql<{ token: string }[]>`
+      SELECT token
+        FROM harness_shared.user_sessions
+       WHERE user_id = ${user.id}
+    `;
+    expect(sessions).toEqual([]);
+
+    const localSession = await authMod!.login(name, null);
+    expect(localSession.user.has_password).toBe(false);
+    await authMod!.logout(localSession.token);
   });
 
   itPg('password-required user rejects null password', async () => {

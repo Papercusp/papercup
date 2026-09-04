@@ -28,6 +28,8 @@ import { stripSqlComments as sharedStripSqlComments } from '../../../scripts/lib
 const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
 
 export interface FreshPgDb {
+  /** Connection URL for the freshly-provisioned database. */
+  url: string;
   sql: postgres.Sql;
   cleanup: () => Promise<void>;
 }
@@ -562,5 +564,5 @@ export async function createFreshPgDb(prefix = 'eng'): Promise<FreshPgDb> {
     await db.drop();
   };
 
-  return { sql, cleanup };
+  return { url: db.url, sql, cleanup };
 }

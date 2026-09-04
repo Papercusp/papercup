@@ -18,9 +18,12 @@ const POST_HOOK = join(__dirname, '..', 'posttooluse-locks-release.sh');
 
 let home: string;
 let cache: string;
+let repo: string;
+let regenMarker: string;
 let server: Server;
 let operatorUrl: string;
 let releaseRequests: Array<Record<string, any>> = [];
+let releaseObservedAfterRegen: boolean[] = [];
 
 beforeAll(async () => {
   home = fs.mkdtempSync(join(os.tmpdir(), 'posttoolbatch-home-'));
@@ -28,6 +31,26 @@ beforeAll(async () => {
   fs.writeFileSync(join(home, '.papercusp', 'superuser-token'), 'test-token\n');
   fs.writeFileSync(join(home, '.papercusp', 'su-agent-id'), 'test-agent\n');
   cache = fs.mkdtempSync(join(os.tmpdir(), 'posttoolbatch-cache-'));
+  repo = fs.mkdtempSync(join(os.tmpdir(), 'posttoolbatch-repo-'));
+  regenMarker = join(repo, 'regen-marker.json');
+  fs.mkdirSync(join(repo, 'scripts'), { recursive: true });
+  fs.writeFileSync(join(repo, 'scripts', 'input.mjs'), 'export const input = true;\n');
+  fs.writeFileSync(join(repo, 'scripts', 'other.mjs'), 'export const other = true;\n');
+  fs.writeFileSync(join(repo, 'scripts', 'gen-declarations.ts'), '// helper presence marker\n');
+  fs.writeFileSync(
+    join(repo, 'tsconfig.declarations.json'),
+    JSON.stringify({ files: ['scripts/input.mjs', 'scripts/other.mjs'] }),
+  );
+  fs.writeFileSync(
+    join(repo, 'scripts', 'fake-gen.mjs'),
+    "import { writeFileSync } from 'node:fs';\n" +
+      "writeFileSync(process.env.PAPERCUSP_REGEN_TEST_MARKER, JSON.stringify(process.argv.slice(2)));\n" +
+      "if (process.env.PAPERCUSP_REGEN_TEST_FAIL === '1') process.exit(17);\n",
+  );
+  fs.writeFileSync(
+    join(repo, 'package.json'),
+    JSON.stringify({ scripts: { 'gen:declarations': 'node scripts/fake-gen.mjs' } }),
+  );
 
   server = createServer((req, res) => {
     let body = '';
@@ -35,6 +58,9 @@ beforeAll(async () => {
     req.on('end', () => {
       const parsed = JSON.parse(body) as Record<string, any>;
       releaseRequests.push(parsed);
+      if (parsed.params?.name === 'locks:release') {
+        releaseObservedAfterRegen.push(fs.existsSync(regenMarker));
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
         JSON.stringify({
@@ -52,6 +78,8 @@ beforeAll(async () => {
 
 afterEach(() => {
   releaseRequests = [];
+  releaseObservedAfterRegen = [];
+  fs.rmSync(regenMarker, { force: true });
   for (const name of fs.readdirSync(cache)) fs.rmSync(join(cache, name), { force: true });
 });
 
@@ -59,9 +87,14 @@ afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   fs.rmSync(home, { recursive: true, force: true });
   fs.rmSync(cache, { recursive: true, force: true });
+  fs.rmSync(repo, { recursive: true, force: true });
 });
 
-function runHook(script: string, input: Record<string, unknown>) {
+function runHook(
+  script: string,
+  input: Record<string, unknown>,
+  extraEnv: Record<string, string> = {},
+) {
   return runHookProcess('bash', [script], {
     input: JSON.stringify(input),
     env: {
@@ -69,8 +102,10 @@ function runHook(script: string, input: Record<string, unknown>) {
       HOME: home,
       PAPERCUSP_LOCKS_CACHE_DIR: cache,
       PAPERCUSP_OPERATOR_URL: operatorUrl,
+      PAPERCUSP_REGEN_TEST_MARKER: regenMarker,
       http_proxy: undefined,
       https_proxy: undefined,
+      ...extraEnv,
     },
   });
 }
@@ -79,7 +114,13 @@ function writeBatch(
   batchId: string,
   status: string,
   toolUseIds: string[],
-  options: { markerStatuses?: Record<string, string>; owner?: string } = {},
+  options: {
+    markerStatuses?: Record<string, string>;
+    owner?: string;
+    paths?: string[];
+    releasePaths?: string[];
+    coordinationDomain?: string;
+  } = {},
 ) {
   const owner = options.owner ?? 'batch-owner';
   fs.writeFileSync(
@@ -90,11 +131,11 @@ function writeBatch(
       status,
       transcript_path: '/tmp/claude-transcript.jsonl',
       tool_use_ids: toolUseIds,
-      paths: ['src/first.ts', 'src/second.ts'],
+      paths: options.paths ?? ['src/first.ts', 'src/second.ts'],
       owner,
       lock_id: 'batch-lock',
-      release_paths: ['src/first.ts', 'src/second.ts'],
-      coordination_domain: '/repo',
+      release_paths: options.releasePaths ?? options.paths ?? ['src/first.ts', 'src/second.ts'],
+      coordination_domain: options.coordinationDomain ?? '/repo',
     }),
   );
   for (const toolUseId of toolUseIds) {
@@ -155,6 +196,43 @@ describe('posttoolbatch-locks-release.sh', () => {
       },
     });
     expectClean('complete', ['tu-first', 'tu-second']);
+  });
+
+  it('regenerates only an enrolled edited source before releasing the batch union', async () => {
+    writeBatch('declaration', 'granted', ['tu-declaration'], {
+      paths: ['scripts/input.mjs', 'src/not-enrolled.mjs'],
+      releasePaths: ['scripts/input.mjs', 'src/not-enrolled.mjs'],
+      coordinationDomain: repo,
+    });
+
+    const out = await runHook(BATCH_HOOK, batchInput(['tu-declaration']));
+
+    expect(out.status).toBe(0);
+    expect(releaseRequests).toHaveLength(1);
+    expect(releaseObservedAfterRegen).toEqual([true]);
+    expect(JSON.parse(fs.readFileSync(regenMarker, 'utf8'))).toEqual([
+      '--files=scripts/input.mjs',
+    ]);
+  });
+
+  it('records a generator failure but still releases the batch union', async () => {
+    writeBatch('declaration-fail', 'granted', ['tu-declaration-fail'], {
+      paths: ['scripts/input.mjs'],
+      coordinationDomain: repo,
+    });
+
+    const out = await runHook(
+      BATCH_HOOK,
+      batchInput(['tu-declaration-fail']),
+      { PAPERCUSP_REGEN_TEST_FAIL: '1' },
+    );
+
+    expect(out.status).toBe(0);
+    expect(releaseRequests).toHaveLength(1);
+    expect(JSON.parse(fs.readFileSync(join(cache, 'last-error.json'), 'utf8'))).toMatchObject({
+      handler: 'posttoolbatch',
+      phase: 'declaration-regeneration',
+    });
   });
 
   it.each(['allowed', 'denied'])('does not release a terminal %s batch but cleans it', async (status) => {
@@ -285,6 +363,29 @@ describe('posttooluse-locks-release.sh batch deferral', () => {
         paths: ['src/first.ts'],
       },
     });
+  });
+
+  it('regenerates a successful Codex apply_patch before releasing its source lock', async () => {
+    const toolUseId = 'tu-codex-declaration';
+    fs.writeFileSync(join(cache, `${toolUseId}.lock`), 'codex-lock');
+    fs.writeFileSync(join(cache, `${toolUseId}.paths`), JSON.stringify(['scripts/input.mjs']));
+    fs.writeFileSync(join(cache, `${toolUseId}.domain`), repo);
+
+    const out = await runHook(POST_HOOK, {
+      tool_name: 'apply_patch',
+      tool_use_id: toolUseId,
+      session_id: 'codex-owner',
+      cwd: repo,
+      tool_input: '*** Begin Patch\n*** Update File: scripts/input.mjs\n*** End Patch',
+      tool_response: { success: true },
+    });
+
+    expect(out.status).toBe(0);
+    expect(releaseRequests).toHaveLength(1);
+    expect(releaseObservedAfterRegen).toEqual([true]);
+    expect(JSON.parse(fs.readFileSync(regenMarker, 'utf8'))).toEqual([
+      '--files=scripts/input.mjs',
+    ]);
   });
 
   it('does not attach proof for a failed native result', async () => {

@@ -67,6 +67,7 @@ import {
   parseGoalLaunchSettings,
   readGoalLaunchSettings,
   readGoalLaunchSettingsForLauncher,
+  resolveGoalPotPlacementAuthority,
   renderGoalPortfolioBrief,
   writeGoalLaunchSettings,
   resolveCeiling,
@@ -108,6 +109,9 @@ interface MockOpts {
   headcount?: Record<string, { total: number; fleet: number }>;
   /** P-012 canonical portfolio projection row by goal id. */
   portfolio?: Record<string, Record<string, unknown>>;
+  /** Active role='owner' goal for a target harness. Terminal historical owners
+   * are deliberately absent: the production query joins goals.status='active'. */
+  activePotOwner?: Record<string, { goalId: string; title?: string | null }>;
   /**
    * Holder-AUTHORITY election, by GOAL id — who currently holds the goal named
    * in `modeSubject`. Omitted ⇒ the owner that runs the goal is also its
@@ -198,6 +202,13 @@ function mockSql(opts: MockOpts = {}): Sql {
       const row = goalId ? opts.portfolio?.[goalId] : undefined;
       return Promise.resolve(row ? [row] : []);
     }
+    if (text.includes('FROM harness_shared.goal_pots gp') && text.includes("g.status = 'active'")) {
+      const harness = (vals as unknown[]).find(
+        (value) => typeof value === 'string' && value in (opts.activePotOwner ?? {}),
+      ) as string | undefined;
+      const owner = harness ? opts.activePotOwner?.[harness] : undefined;
+      return Promise.resolve(owner ? [{ owner_goal_id: owner.goalId, owner_goal_title: owner.title ?? null }] : []);
+    }
     if (text.includes('FROM harness_shared.session_briefs b')) {
       // Located by VALUE, not by index. A positional lookup here silently
       // returns the zero fixture if the query's parameter order ever changes,
@@ -219,6 +230,76 @@ const WS = 'ws-1';
 
 beforeEach(() => {
   goalHoldersMock.mockClear();
+});
+
+describe('resolveGoalPotPlacementAuthority', () => {
+  it('allows an unowned harness and proves terminal owner rows are excluded by goal status', async () => {
+    const seen: string[] = [];
+    const verdict = await resolveGoalPotPlacementAuthority({
+      workspaceId: WS,
+      launcherGoalId: 'goal-work-on-everything',
+      harnessSlug: 'papercusp',
+      sql: mockSql({ seen }),
+    });
+
+    expect(verdict).toEqual({
+      allowed: true,
+      reason: 'no-active-owner',
+      ownerGoalId: null,
+      ownerGoalTitle: null,
+    });
+    const query = seen.find((text) => text.includes('FROM harness_shared.goal_pots gp'));
+    expect(query).toContain("gp.role = 'owner'");
+    expect(query).toContain('gp.removed_at IS NULL');
+    expect(query).toContain("g.status = 'active'");
+  });
+
+  it('allows the active goal that owns the target harness', async () => {
+    await expect(
+      resolveGoalPotPlacementAuthority({
+        workspaceId: WS,
+        launcherGoalId: 'goal-owner',
+        harnessSlug: 'sidestage',
+        sql: mockSql({ activePotOwner: { sidestage: { goalId: 'goal-owner', title: 'SideStage release' } } }),
+      }),
+    ).resolves.toEqual({
+      allowed: true,
+      reason: 'caller-goal-owns-pot',
+      ownerGoalId: 'goal-owner',
+      ownerGoalTitle: 'SideStage release',
+    });
+  });
+
+  it('refuses placement when a different active goal owns the target harness', async () => {
+    await expect(
+      resolveGoalPotPlacementAuthority({
+        workspaceId: WS,
+        launcherGoalId: 'goal-work-on-everything',
+        harnessSlug: 'sidestage',
+        sql: mockSql({
+          activePotOwner: {
+            sidestage: { goalId: 'goal-sidestage-owner', title: 'SideStage release' },
+          },
+        }),
+      }),
+    ).resolves.toEqual({
+      allowed: false,
+      reason: 'different-active-goal-owns-pot',
+      ownerGoalId: 'goal-sidestage-owner',
+      ownerGoalTitle: 'SideStage release',
+    });
+  });
+
+  it('propagates an unreadable authority store so mutation doors can fail closed', async () => {
+    await expect(
+      resolveGoalPotPlacementAuthority({
+        workspaceId: WS,
+        launcherGoalId: 'goal-work-on-everything',
+        harnessSlug: 'sidestage',
+        sql: mockSql({ failOn: /FROM harness_shared\.goal_pots gp/ }),
+      }),
+    ).rejects.toThrow('boom');
+  });
 });
 
 describe('goalLaunchSettingsSchema', () => {

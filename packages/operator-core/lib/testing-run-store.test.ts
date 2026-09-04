@@ -430,7 +430,7 @@ describe('durable detached snapshot lifecycle', () => {
       await gate;
       return [];
     }) as unknown as Sql;
-    const snapshot = {
+    const snapshot: Parameters<Store['persistRunSnapshot']>[0] = {
       runId: 'race-run',
       kind: 'shell' as const,
       label: 'race',

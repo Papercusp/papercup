@@ -154,6 +154,7 @@ describe('POST /auth/login', () => {
     expect(login).toHaveBeenLastCalledWith('alice', 'pw', expect.objectContaining({
       workspace_id: 'ws-remote',
       capabilities: ['*', REMOTE_OPERATOR_CAPABILITY],
+      remote: true,
     }));
     expect(ok.headers.get('set-cookie') ?? '').toContain('Secure');
   });

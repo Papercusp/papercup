@@ -149,6 +149,7 @@ import {
   _resetHookOwnerIdForTests,
   _resetMidTurnCursorForTests,
   _resetToolCallCacheForTests,
+  setDeclarationRegeneratorForTests,
   _resetDegradedNotifiedForTests,
   _resetActivityReportDedupeForTests,
   extractOmpMessageText,
@@ -3735,6 +3736,82 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
         paths: ['a.ts', 'b.ts'],
       },
     });
+  });
+
+  it('regenerates an edited declaration source before releasing its OMP lock', async () => {
+    const order: string[] = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as {
+        params: { name: string; arguments: Record<string, unknown> };
+      };
+      if (body.params.name === 'locks:release') order.push('release');
+      const payload = body.params.name === 'locks:acquire'
+        ? { ok: true, lock_id: 'L-declaration', held: ['scripts/input.mjs'] }
+        : { ok: true };
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
+        }),
+      };
+    }) as unknown as typeof fetch;
+    const previous = setDeclarationRegeneratorForTests(async (root, paths) => {
+      order.push(`regenerate:${root}:${paths.join(',')}`);
+    });
+    try {
+      await onToolCall({
+        type: 'tool_call',
+        toolName: 'write',
+        toolCallId: 'tc-declaration',
+        input: { path: join(repo, 'scripts/input.mjs'), content: 'export const x = 1;' },
+      });
+      await onToolResult({
+        type: 'tool_result',
+        toolCallId: 'tc-declaration',
+        content: { success: true },
+      });
+      expect(order).toEqual([
+        `regenerate:${await fs.realpath(repo)}:scripts/input.mjs`,
+        'release',
+      ]);
+    } finally {
+      setDeclarationRegeneratorForTests(previous);
+    }
+  });
+
+  it('still releases the OMP lock when declaration regeneration fails', async () => {
+    const calls: string[] = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as { params: { name: string } };
+      calls.push(body.params.name);
+      const payload = body.params.name === 'locks:acquire'
+        ? { ok: true, lock_id: 'L-declaration-fail', held: ['scripts/input.mjs'] }
+        : { ok: true };
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          jsonrpc: '2.0', id: 1,
+          result: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
+        }),
+      };
+    }) as unknown as typeof fetch;
+    const previous = setDeclarationRegeneratorForTests(async () => {
+      throw new Error('synthetic declaration failure');
+    });
+    try {
+      await onToolCall({
+        type: 'tool_call', toolName: 'write', toolCallId: 'tc-declaration-fail',
+        input: { path: join(repo, 'scripts/input.mjs'), content: 'x' },
+      });
+      await onToolResult({
+        type: 'tool_result', toolCallId: 'tc-declaration-fail', content: { success: true },
+      });
+      expect(calls).toContain('locks:release');
+    } finally {
+      setDeclarationRegeneratorForTests(previous);
+    }
   });
 
   it('releases after a failed native result without attaching edit proof', async () => {

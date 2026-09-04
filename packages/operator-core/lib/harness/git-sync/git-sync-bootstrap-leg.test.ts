@@ -428,7 +428,20 @@ describe('runBootstrapLeg', () => {
     expect(convergencePatches).toHaveLength(1);
     const patched = routinePatchBodyStrict(convergencePatches[0]![0], convergencePatches[0]![1])
       .convergence as Record<string, unknown>;
-    expect(patched).toMatchObject({ converged: true, judged: 0 });
+    expect(patched).toMatchObject({
+      // Health has no judgeable observation, and exact release acceptance is
+      // independently fail-closed for the named peer rather than inheriting the
+      // legacy `converged:true` warm-up result.
+      converged: true,
+      healthState: 'unknown',
+      judged: 0,
+      releaseConsistency: {
+        state: 'unknown',
+        expectedDevicePubkeys: [PEER_DEVICE],
+        currentDevicePubkeys: [],
+        issues: [expect.objectContaining({ devicePubkeyBase64: PEER_DEVICE, code: 'missing-announcement' })],
+      },
+    });
   });
 
   /**
@@ -549,7 +562,8 @@ describe('runBootstrapLeg', () => {
         shallow: false,
       } as BootstrapOutcome));
       await runBootstrapLeg(SLUG, WS);
-      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('COLD JOIN COMPLETE'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('FETCH COMPLETE; RELEASE CONSISTENCY UNKNOWN'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('UNKNOWN: 0/1 expected peer(s) exact'));
       // The counts must be IN the line — a bare "it worked" would not have
       // settled the rig question either.
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('seeded 2 namespace(s) in 2 rung(s)'));

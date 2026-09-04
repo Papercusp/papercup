@@ -25,6 +25,7 @@ vi.mock('./in-workspace-txn', () => ({
 }));
 vi.mock('./su-lock-store', () => ({ tryAcquireResource: vi.fn() }));
 vi.mock('./resource-acquire-wait', () => ({ acquireResourceExclusiveWithWait: vi.fn() }));
+vi.mock('./ended-session-owners', () => ({ endedSessionOwners: vi.fn() }));
 vi.mock('./resource-broadcast', () => ({ broadcastResourceDrainStart: vi.fn() }));
 // WI-562584: the fail-closed cross-domain guard runs before either acquire
 // branch. Its own rules are covered in cross-domain-conflict.test.ts; here it
@@ -37,10 +38,12 @@ vi.mock('./cross-domain-conflict', () => ({
 
 import { tryAcquireResource, type ResourceAcquireResult } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
+import { endedSessionOwners } from './ended-session-owners';
 import { findCrossDomainResourceConflicts } from './cross-domain-conflict';
 import { inWorkspaceTxn } from './in-workspace-txn';
 const sharedM = vi.mocked(tryAcquireResource);
 const exclM = vi.mocked(acquireResourceExclusiveWithWait);
+const endedOwnersM = vi.mocked(endedSessionOwners);
 const crossM = vi.mocked(findCrossDomainResourceConflicts);
 const txnM = vi.mocked(inWorkspaceTxn);
 const tool = (await import('./acquire_resource')).default;
@@ -72,6 +75,7 @@ beforeEach(() => {
   txnM.mockImplementation(async (_d: string, _o: string, fn: (tx: Sql) => Promise<unknown>) => fn({} as Sql));
   sharedM.mockReset();
   exclM.mockReset();
+  endedOwnersM.mockReset();
   crossM.mockReset();
   crossM.mockResolvedValue([]);
 });
@@ -181,6 +185,16 @@ describe('locks:acquire_resource exclusive', () => {
     const b = body(await result);
     expect(b).toMatchObject({ ok: true, status: 'held', mode: 'exclusive', fence_seq: 8 });
     expect(exclM).toHaveBeenCalledTimes(2);
+  });
+
+  it('wires the ended-session oracle into the exclusive wait protocol', async () => {
+    exclM.mockResolvedValue({ ok: false, reason: 'held_exclusive', holders: [] } as never);
+
+    await callExcl();
+
+    expect(exclM).toHaveBeenCalledWith(
+      expect.objectContaining({ deadOwnerOracle: endedSessionOwners }),
+    );
   });
 });
 

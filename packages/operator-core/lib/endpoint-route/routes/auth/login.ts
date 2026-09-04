@@ -98,6 +98,7 @@ export default defineTool({
         ttl_ms,
         workspace_id: workspaceId ?? undefined,
         capabilities: remote ? ['*', REMOTE_OPERATOR_CAPABILITY] : ['*'],
+        remote,
       });
       // Refund the soft bucket so an earlier-failed typo isn't held
       // against the legitimate user. Reset the hard bucket so the

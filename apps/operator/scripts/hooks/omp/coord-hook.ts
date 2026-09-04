@@ -52,6 +52,7 @@
  */
 
 import { promises as fsp, existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
@@ -2009,6 +2010,35 @@ interface AcquiredLock {
 
 const acquiredLocks = new Map<string, AcquiredLock>();
 
+type DeclarationRegenerator = (repoRoot: string, paths: readonly string[]) => Promise<void>;
+
+const defaultDeclarationRegenerator: DeclarationRegenerator = async (repoRoot, paths) => {
+  const helper = resolve(
+    homedir(),
+    '.papercusp/hooks/cc/regenerate-declaration-before-lock-release.mjs',
+  );
+  if (!existsSync(helper)) return;
+  await new Promise<void>((resolveRun, rejectRun) => {
+    execFile(
+      process.execPath,
+      [helper, '--repo-root', repoRoot, ...paths.flatMap((path) => ['--path', path])],
+      { timeout: 120_000 },
+      (error) => (error ? rejectRun(error) : resolveRun()),
+    );
+  });
+};
+
+let declarationRegenerator: DeclarationRegenerator = defaultDeclarationRegenerator;
+
+/** Test seam for proving regeneration happens before release without spawning npm. */
+export function setDeclarationRegeneratorForTests(
+  next?: DeclarationRegenerator,
+): DeclarationRegenerator {
+  const previous = declarationRegenerator;
+  declarationRegenerator = next ?? defaultDeclarationRegenerator;
+  return previous;
+}
+
 // ── Fail-open health marker (file-locking #3) ────────────────────────
 
 /**
@@ -2039,7 +2069,7 @@ export interface HookErrorRecord {
    *  refused our arguments — a defect in the hook itself, never an
    *  outage. It is separated from `connect` because collapsing the two
    *  reported a deterministic schema bug as a transient transport miss. */
-  phase: 'connect' | 'http' | 'parse' | 'request';
+  phase: 'connect' | 'http' | 'parse' | 'request' | 'declaration-regeneration';
   /** One-line human-readable context. */
   detail: string;
   /** Operator URL the hook was trying to reach. */
@@ -4862,6 +4892,19 @@ export async function onToolResult(event: ToolResultEvent): Promise<void> {
   if (lock === undefined) return;
   acquiredLocks.delete(event.toolCallId);
   const proof = nativeEditProofForResult(lock.toolName, event.content, lock.paths);
+  if (proof && lock.coordinationDomain) {
+    try {
+      await declarationRegenerator(lock.coordinationDomain, lock.paths);
+    } catch (error) {
+      // Generation is a pre-release repair, never a reason to strand the source
+      // lock. Persist the failure and continue to the release below.
+      await recordHookError({
+        handler: 'tool_result',
+        phase: 'declaration-regeneration',
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   // Best-effort release. Missed releases are covered by the lock's
   // TTL (1200s) so a network blip does NOT leak a lock permanently.
   await callMcpTool('locks:release', {

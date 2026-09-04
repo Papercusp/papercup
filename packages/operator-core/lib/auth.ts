@@ -20,6 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { TtlMap } from './ttl-map';
 import { activeWorkspaceId } from './workspace-registry';
+import { REMOTE_OPERATOR_CAPABILITY } from './remote-auth-policy';
 
 export const SESSION_COOKIE = 'papercusp_session';
 export const DEFAULT_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -205,6 +206,7 @@ export async function login(
     ttl_ms?: number;
     workspace_id?: string;
     capabilities?: readonly string[];
+    remote?: boolean;
   },
 ): Promise<{ token: string; user: SessionUser; expires_at: Date }> {
   const { sql } = getOrgPg();
@@ -217,6 +219,18 @@ export async function login(
   if (rows.length === 0) throw Object.assign(new Error('unknown user'), { code: 'unknown_user' });
   const u = rows[0];
   if (!u.is_active) throw Object.assign(new Error('inactive'), { code: 'inactive' });
+
+  // Passwordless accounts are intentionally auto-loginable only through the
+  // local desktop path. A direct remote request must not be able to turn an
+  // arbitrary nonempty password into proof of identity just because the
+  // password hash is NULL. Keep the capability check as defense-in-depth for
+  // callers that identify the remote surface through session claims alone.
+  const remoteLogin =
+    meta?.remote === true ||
+    meta?.capabilities?.some((capability) => capability.trim() === REMOTE_OPERATOR_CAPABILITY) === true;
+  if (remoteLogin && u.password_hash === null) {
+    throw Object.assign(new Error('bad password'), { code: 'bad_password' });
+  }
 
   if (u.password_hash !== null) {
     if (!password) throw Object.assign(new Error('password required'), { code: 'bad_password' });

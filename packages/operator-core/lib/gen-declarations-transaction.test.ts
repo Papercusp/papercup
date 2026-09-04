@@ -61,4 +61,44 @@ describe('gen:declarations transactional publish', () => {
       expect(existsSync(join(root, 'transitive.d.mts'))).toBe(false);
     });
   });
+
+  it('publishes only the selected enrolled output while preserving every sibling', () => {
+    withFixture(({ root, declaration }) => {
+      const siblingSource = join(root, 'sibling.mjs');
+      const siblingDeclaration = join(root, 'sibling.d.mts');
+      writeFileSync(siblingSource, 'export const sibling = true;\n');
+      writeFileSync(siblingDeclaration, '// sibling last-good bytes\n');
+      writeFileSync(
+        join(root, 'tsconfig.declarations.json'),
+        JSON.stringify({ files: ['input.mjs', 'sibling.mjs'] }),
+      );
+
+      const compile: Compile = (_repoRoot, _config, outDir) => {
+        writeFileSync(join(outDir, 'input.d.mts'), 'export declare const answer: 42;\n');
+        writeFileSync(join(outDir, 'sibling.d.mts'), 'export declare const sibling: true;\n');
+      };
+
+      generate(root, 'tsconfig.declarations.json', compile, ['input.mjs']);
+
+      expect(readFileSync(declaration, 'utf8')).toContain('export declare const answer: 42;');
+      expect(readFileSync(siblingDeclaration, 'utf8')).toBe('// sibling last-good bytes\n');
+    });
+  });
+
+  it('refuses an unenrolled selection before compiling or changing an existing declaration', () => {
+    withFixture(({ root, declaration }) => {
+      const original = '// existing declaration\n';
+      let compiled = false;
+      writeFileSync(declaration, original);
+      const compile: Compile = () => {
+        compiled = true;
+      };
+
+      expect(() =>
+        generate(root, 'tsconfig.declarations.json', compile, ['not-enrolled.mjs']),
+      ).toThrow('cannot generate undeclared input: not-enrolled.mjs');
+      expect(compiled).toBe(false);
+      expect(readFileSync(declaration, 'utf8')).toBe(original);
+    });
+  });
 });

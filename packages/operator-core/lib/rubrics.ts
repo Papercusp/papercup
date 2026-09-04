@@ -924,9 +924,15 @@ export async function getRubricCriteriaHash(rubricId: string): Promise<string | 
  * SQL fixtures often return a wider row set than the query predicates describe.
  * Never throws — reads degrade to an empty result, matching the other rubric reads.
  */
-export async function getAcceptanceRubricsForPlan(planSlug: string): Promise<Rubric[]> {
+export async function getAcceptanceRubricsForPlan(
+  planSlug: string,
+  options: { limit?: number } = {},
+): Promise<Rubric[]> {
   try {
     const { sql } = getOrgPg();
+    const limit = options.limit == null
+      ? null
+      : Math.min(Math.max(Math.trunc(options.limit), 1), 500);
     const rows = await sql<RubricPlanRow[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
              version, owner, archived, template_data
@@ -938,7 +944,8 @@ export async function getAcceptanceRubricsForPlan(planSlug: string): Promise<Rub
          AND status IN ('active', 'ready')
          AND template_data->>'kind' = 'acceptance'
          AND template_data->>'subjectPlan' = ${planSlug}
-       ORDER BY updated_at DESC NULLS LAST, plan_slug ASC`;
+       ORDER BY updated_at DESC NULLS LAST, plan_slug ASC
+       ${limit == null ? sql`` : sql`LIMIT ${limit}`}`;
     return (await mapRubricPlanRows(rows)).filter(
       (r) => r.kind === 'acceptance' && r.subjectPlan === planSlug,
     );

@@ -534,11 +534,20 @@ export interface ListSpecClausesOptions {
   planItemIds?: string[];
   revision?: number;
   includeHistory?: boolean;
+  /** Optional SQL-side row cap. Filters are pushed down before the cap, so a
+   * bounded snapshot cannot lose a requested current row behind history. */
+  limit?: number;
 }
 
 /** Exact structured read; current-only unless includeHistory or revision is requested. */
 export async function listSpecClauses(options: ListSpecClausesOptions): Promise<SpecClauseRevision[]> {
   const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  const specIds = options.specIds ?? [];
+  const valIds = options.sourceValIds ?? [];
+  const itemIds = options.planItemIds ?? [];
+  const limit = options.limit == null
+    ? null
+    : Math.min(Math.max(Math.trunc(options.limit), 1), 5_000);
   const rows = await withWorkspace(
     scope.workspaceId,
     async (tx) => tx<RevisionRow[]>`
@@ -557,16 +566,27 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
      WHERE c.workspace_id = ${scope.workspaceId}
        AND c.harness_slug = ${scope.harnessSlug}
        AND c.plan_slug = ${options.planSlug}
-     ORDER BY c.spec_id, r.revision`,
+       AND (${specIds.length} = 0 OR c.spec_id = ANY(${specIds}::text[]))
+       AND (${valIds.length} = 0 OR c.source_val_id = ANY(${valIds}::text[]))
+       AND (${itemIds.length} = 0 OR r.plan_item_id = ANY(${itemIds}::text[]))
+       AND ${
+         options.revision !== undefined
+           ? tx`r.revision = ${options.revision}`
+           : options.includeHistory
+             ? tx`TRUE`
+             : tx`r.revision = c.current_revision`
+       }
+     ORDER BY c.spec_id, r.revision
+     ${limit == null ? tx`` : tx`LIMIT ${limit}`}`,
   );
 
-  const specIds = options.specIds ? new Set(options.specIds) : null;
-  const valIds = options.sourceValIds ? new Set(options.sourceValIds) : null;
-  const itemIds = options.planItemIds ? new Set(options.planItemIds) : null;
+  const specIdSet = options.specIds ? new Set(options.specIds) : null;
+  const valIdSet = options.sourceValIds ? new Set(options.sourceValIds) : null;
+  const itemIdSet = options.planItemIds ? new Set(options.planItemIds) : null;
   return rows
-    .filter((r) => !specIds || specIds.has(r.spec_id))
-    .filter((r) => !valIds || (r.source_val_id !== null && valIds.has(r.source_val_id)))
-    .filter((r) => !itemIds || itemIds.has(r.plan_item_id))
+    .filter((r) => !specIdSet || specIdSet.has(r.spec_id))
+    .filter((r) => !valIdSet || (r.source_val_id !== null && valIdSet.has(r.source_val_id)))
+    .filter((r) => !itemIdSet || itemIdSet.has(r.plan_item_id))
     .filter((r) =>
       options.revision !== undefined
         ? Number(r.revision) === options.revision

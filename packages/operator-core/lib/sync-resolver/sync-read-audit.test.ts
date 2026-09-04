@@ -31,7 +31,9 @@ describe('sync-read audit — registry coverage guard (P-008)', () => {
   it('EVERY arg-requiring query resolves to a fixture (default args OR an explicit entry)', () => {
     const missing: string[] = [];
     for (const name of names) {
-      const entry = getRegistryEntryV2(name) as { argsSchema?: { safeParse?: (v: unknown) => { success: boolean } } } | undefined;
+      const entry = getRegistryEntryV2(name) as
+        | { argsSchema?: { safeParse?: (v: unknown) => { success: boolean } } }
+        | undefined;
       if (!queryRequiresArgs(entry)) continue; // resolves with {} → no fixture needed
       const r = resolveFixture(name, entry);
       if ('needsExplicit' in r) missing.push(name);
@@ -48,7 +50,9 @@ describe('sync-read audit — registry coverage guard (P-008)', () => {
     const bad: string[] = [];
     for (const [name, fixture] of Object.entries(SYNC_QUERY_FIXTURES)) {
       if (fixture === null) continue;
-      const entry = getRegistryEntryV2(name) as { argsSchema?: { safeParse?: (v: unknown) => { success: boolean } } } | undefined;
+      const entry = getRegistryEntryV2(name) as
+        | { argsSchema?: { safeParse?: (v: unknown) => { success: boolean } } }
+        | undefined;
       const schema = entry?.argsSchema;
       // A query with no argsSchema accepts anything; only validate when one exists.
       if (schema?.safeParse && schema.safeParse(fixture).success === false) bad.push(name);
@@ -59,6 +63,12 @@ describe('sync-read audit — registry coverage guard (P-008)', () => {
   it('no fixture entry names an UNREGISTERED query (fixtures cannot drift ahead of the registry)', () => {
     const stale = Object.keys(SYNC_QUERY_FIXTURES).filter((n) => !isRegisteredV2(n));
     expect(stale, `SYNC_QUERY_FIXTURES names queries no longer in the registry: ${stale.join(', ')}`).toEqual([]);
+  });
+
+  it('does not let the periodic audit become the only consumer of demand-driven plans.lint (WI-7230)', () => {
+    expect(SYNC_QUERY_FIXTURES['plans.lint']).toBeNull();
+    const map = buildLiveFixtureMap(['plans.lint'], (name) => getRegistryEntryV2(name) as never);
+    expect(map).toEqual({ 'plans.lint': null });
   });
 });
 
@@ -83,16 +93,28 @@ describe('sync-read audit — allowlist hygiene (P-008)', () => {
 describe('sync-read audit — budget evaluation', () => {
   it('flags a non-allowlisted query over either ceiling, and says WHICH axis', () => {
     expect(evaluateBudget('some.unknownQuery', PAYLOAD_BUDGET_BYTES + 1, 10)).toEqual({
-      overBudget: true, allowlisted: false, overBytes: true, overMs: false,
-      byteCeil: PAYLOAD_BUDGET_BYTES, msCeil: LATENCY_BUDGET_MS,
+      overBudget: true,
+      allowlisted: false,
+      overBytes: true,
+      overMs: false,
+      byteCeil: PAYLOAD_BUDGET_BYTES,
+      msCeil: LATENCY_BUDGET_MS,
     });
     expect(evaluateBudget('some.unknownQuery', 10, LATENCY_BUDGET_MS + 1)).toEqual({
-      overBudget: true, allowlisted: false, overBytes: false, overMs: true,
-      byteCeil: PAYLOAD_BUDGET_BYTES, msCeil: LATENCY_BUDGET_MS,
+      overBudget: true,
+      allowlisted: false,
+      overBytes: false,
+      overMs: true,
+      byteCeil: PAYLOAD_BUDGET_BYTES,
+      msCeil: LATENCY_BUDGET_MS,
     });
     expect(evaluateBudget('some.unknownQuery', 10, 10)).toEqual({
-      overBudget: false, allowlisted: false, overBytes: false, overMs: false,
-      byteCeil: PAYLOAD_BUDGET_BYTES, msCeil: LATENCY_BUDGET_MS,
+      overBudget: false,
+      allowlisted: false,
+      overBytes: false,
+      overMs: false,
+      byteCeil: PAYLOAD_BUDGET_BYTES,
+      msCeil: LATENCY_BUDGET_MS,
     });
   });
 
@@ -181,12 +203,13 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
   it('an allowlisted read OVER ITS OWN ceiling is a ratchetRegression, not silence', async () => {
     const name = 'codeRecipes';
     const ceiling = SYNC_READ_ALLOWLIST[name].maxBytes!;
-    const fakeFetch = (async () => ({
-      ok: true,
-      status: 200,
-      // Deliberately PAST its raised ceiling — the rotted-ratchet case.
-      text: async () => 'X'.repeat(ceiling + 1),
-    }) as Response) as unknown as typeof fetch;
+    const fakeFetch = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        // Deliberately PAST its raised ceiling — the rotted-ratchet case.
+        text: async () => 'X'.repeat(ceiling + 1),
+      }) as Response) as unknown as typeof fetch;
 
     const report = await measureSyncReadPayloadsViaRest({
       baseUrl: 'http://x',
@@ -211,9 +234,7 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
       // workItems.stats: unallowlisted + fat → violation.
       // codeRecipes: allowlisted, and fat ENOUGH to clear its own
       // raised ceiling → ratchetRegression.
-      const body = name === 'workItems.stats'
-        ? fat
-        : 'X'.repeat(SYNC_READ_ALLOWLIST.codeRecipes.maxBytes! + 1);
+      const body = name === 'workItems.stats' ? fat : 'X'.repeat(SYNC_READ_ALLOWLIST.codeRecipes.maxBytes! + 1);
       return { ok: true, status: 200, text: async () => body } as Response;
     }) as unknown as typeof fetch;
 
@@ -227,7 +248,10 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
       fetchImpl: fakeFetch,
     });
 
-    const over = report.measured.filter((m) => m.overBudget).map((m) => m.name).sort();
+    const over = report.measured
+      .filter((m) => m.overBudget)
+      .map((m) => m.name)
+      .sort();
     const bucketed = [...report.violations, ...report.ratchetRegressions].map((m) => m.name).sort();
     expect(bucketed).toEqual(over); // nothing over-budget falls through the gap
     expect(over).toHaveLength(2);
@@ -237,7 +261,8 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
   });
 
   it('records a non-OK HTTP response as an error, not a false pass', async () => {
-    const fakeFetch = (async () => ({ ok: false, status: 500, text: async () => 'boom' }) as Response) as unknown as typeof fetch;
+    const fakeFetch = (async () =>
+      ({ ok: false, status: 500, text: async () => 'boom' }) as Response) as unknown as typeof fetch;
     const report = await measureSyncReadPayloadsViaRest({
       baseUrl: 'http://x',
       token: 't',
@@ -260,7 +285,8 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
    * reader discount the ms axis instead of chasing a ghost.
    */
   it('reports the host load the ms column was measured under', async () => {
-    const fakeFetch = (async () => ({ ok: true, status: 200, text: async () => '{"rows":[]}' }) as Response) as unknown as typeof fetch;
+    const fakeFetch = (async () =>
+      ({ ok: true, status: 200, text: async () => '{"rows":[]}' }) as Response) as unknown as typeof fetch;
     const report = await measureSyncReadPayloadsViaRest({
       baseUrl: 'http://x',
       token: 't',
@@ -279,7 +305,9 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
     // Every arg-requiring query is either present (default/explicit) or an
     // explicit null — never silently absent.
     for (const name of names) {
-      const entry = getRegistryEntryV2(name) as { argsSchema?: { safeParse?: (v: unknown) => { success: boolean } } } | undefined;
+      const entry = getRegistryEntryV2(name) as
+        | { argsSchema?: { safeParse?: (v: unknown) => { success: boolean } } }
+        | undefined;
       if (!queryRequiresArgs(entry)) continue;
       expect(Object.prototype.hasOwnProperty.call(map, name), `${name} unresolved in the live map`).toBe(true);
     }

@@ -92,6 +92,17 @@ describe('findTsParseError', () => {
     expect(findTsParseError('controller.ts', decorated)).toBeNull();
   });
 
+  it('does not flag valid CommonJS import-assignment syntax', () => {
+    const commonjs = [
+      "import cookieParser = require('cookie-parser');",
+      'export const parser = cookieParser;',
+    ].join('\n');
+    // The module kind is a project setting, not a property of this source text.
+    // The isolated grammar checker must not invent ESM and quarantine a valid
+    // CommonJS consumer over TS1202.
+    expect(findTsParseError('legacy-commonjs.ts', commonjs)).toBeNull();
+  });
+
   it('catches an unterminated construct in a .tsx file', () => {
     const brokenTsx = ['export function C() {', '  return <div>oops;', '}'].join('\n');
     expect(findTsParseError('C.tsx', brokenTsx)).not.toBeNull();

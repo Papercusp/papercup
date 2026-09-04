@@ -177,7 +177,16 @@ function findTsGrammarError(fileName: string, text: string, scriptKind: ts.Scrip
     // decorator syntax used by the projects this guard protects.
     const program = ts.createProgram(
       [fileName],
-      { noResolve: true, noLib: true, experimentalDecorators: true },
+      {
+        noResolve: true,
+        noLib: true,
+        experimentalDecorators: true,
+        // `import x = require("x")` is valid TypeScript for CommonJS consumers.
+        // Without an explicit module kind, TypeScript 6 resolves `ModuleKind.None`
+        // and reports TS1202 even though the source is valid under the project's
+        // CommonJS configuration.
+        module: ts.ModuleKind.CommonJS,
+      },
       host,
     );
     diagnostics = [...program.getSyntacticDiagnostics(sf), ...program.getSemanticDiagnostics(sf)];
