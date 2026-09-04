@@ -706,6 +706,67 @@ describe('fleet:status', () => {
       expect(out.degradedLegs).toBeUndefined();
     });
   });
+
+  describe('WI-7286 / EI-19381528967421062 — provider-wall backoff on the roster', () => {
+    const backoff = { reason: 'usage_limit', until: '2026-09-04T12:00:00.000Z', resumesInMs: 6_000_000 };
+
+    it('surfaces lifecycleBackoff for a member whose loop is walled', async () => {
+      h.getLoopStatuses.mockResolvedValueOnce(
+        new Map([['su-leader', { active: true, lifecycleBackoff: backoff }]]),
+      );
+      const out = parse(await invoke({ fleet: 'rocket' }));
+      expect(out.members[0].lifecycleBackoff).toEqual(backoff);
+      // The row still reads live — which is exactly why the backoff has to be on it.
+      expect(out.members[0].sessionState).toBe('live');
+      expect(out.degradedLegs).toBeUndefined();
+    });
+
+    it('reads the batch once, for exactly the roster owners', async () => {
+      await invoke({ fleet: 'rocket' });
+      expect(h.getLoopStatuses).toHaveBeenCalledTimes(1);
+      expect(h.getLoopStatuses).toHaveBeenCalledWith(['su-leader']);
+    });
+
+    it('omits lifecycleBackoff when the loop is armed but not backed off', async () => {
+      h.getLoopStatuses.mockResolvedValueOnce(
+        new Map([['su-leader', { active: true, lifecycleBackoff: null }]]),
+      );
+      const out = parse(await invoke({ fleet: 'rocket' }));
+      expect(out.members[0]).not.toHaveProperty('lifecycleBackoff');
+    });
+
+    it('does not report a disarmed loop as backed off', async () => {
+      // A stale backoff record on an INACTIVE loop is not a silenced member — mirrors
+      // decorateLoopMonitorStates, which gates every loop field on loop.active.
+      h.getLoopStatuses.mockResolvedValueOnce(
+        new Map([['su-leader', { active: false, lifecycleBackoff: backoff }]]),
+      );
+      const out = parse(await invoke({ fleet: 'rocket' }));
+      expect(out.members[0]).not.toHaveProperty('lifecycleBackoff');
+    });
+
+    it('reports a failed loop read as a degraded leg, never as a silent all-clear', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      h.getLoopStatuses.mockRejectedValueOnce(new Error('pg down'));
+      const out = parse(await invoke({ fleet: 'rocket' }));
+      // The absent field alone is ambiguous — "no backoff" and "unread" look identical.
+      // degradedLegs is what distinguishes them, so it must name this leg.
+      expect(out.members[0]).not.toHaveProperty('lifecycleBackoff');
+      expect(out.degraded).toBe(true);
+      expect(out.degradedLegs).toContain('loopStatuses');
+      // The roster itself still comes back — a backoff read must never fail the status.
+      expect(out.ok).toBe(true);
+      expect(out.members).toHaveLength(1);
+      warnSpy.mockRestore();
+    });
+
+    it('skips the batch entirely for an empty roster without degrading', async () => {
+      h.listFleetRosterDiagnosed.mockResolvedValueOnce({ entries: [], degradedLegs: [] });
+      const out = parse(await invoke({ fleet: 'rocket' }));
+      expect(h.getLoopStatuses).not.toHaveBeenCalled();
+      expect(out.degradedLegs).toBeUndefined();
+    });
+  });
 });
 
 describe('launch transaction unconfirmed presence classification', () => {
@@ -756,6 +817,28 @@ describe('fleet:status payload-tier shaping', () => {
     expect(out.members.map((m) => m.agentId)).toContain('su-ended');
     expect(out.members.at(-1)).toMatchObject({ agentId: '(truncated)' });
     expect(out.members_note).toContain('roster capped at');
+  });
+
+  it('carries lifecycleBackoff through every tier — the shaper is a whitelist (WI-7286)', () => {
+    const backoff = { reason: 'rate_limited', until: '2026-09-04T12:00:00.000Z', resumesInMs: 900_000 };
+    // `trimmed` is the DEFAULT read, so a member silenced by a provider wall has to be
+    // legible there — not only to a caller who asked for payloadTier:'full'.
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeFleetStatus(
+        {
+          members: [
+            { agentId: 'su-walled', sessionState: 'live', lifecycleBackoff: backoff },
+            { agentId: 'su-fine', sessionState: 'live' },
+            // A dead row takes the ended/suspect branch — it must not lose the field either.
+            { agentId: 'su-gone', sessionState: 'ended', lifecycleBackoff: backoff },
+          ],
+        },
+        tier,
+      ) as { members: Array<Record<string, unknown>> };
+      expect(out.members[0].lifecycleBackoff, tier).toEqual(backoff);
+      expect(out.members[1], tier).not.toHaveProperty('lifecycleBackoff');
+      expect(out.members[2].lifecycleBackoff, tier).toEqual(backoff);
+    }
   });
 
   it('retains the liveness decision core and exposes both tier registrations', () => {
