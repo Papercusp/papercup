@@ -5353,7 +5353,7 @@
           "POST"
         ]
       },
-      "description": "Read one OR many conversations in full: the seed, topic tags, the whole thread (posts oldest-first), the accepted answer if resolved, and follower count. Pass `id` for one or `ids` for several (1–100). Returns { ok, results:[{ ok, id, conversation? + topics/posts/subscriber_count | error }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. For a CONSULT conversation the result also carries `consult` (state, expires_at, closed_at, responder_id, wakes_used) — read THAT for whether the consult is still live: `conversation.state` stays \"open\" after a consult has expired and closed, and empty `posts` is not evidence of a stall (a cascade advance wakes the next responder instead of posting). Ids are minted as `<prefix>-<8charMs>-<4charSeq>-<32hexUuid>`; a request that passes only the leading truncated segment (looks like a complete short id, but is not) is resolved via a UNIQUE-prefix fallback and returns `warning` naming the real full id to cite going forward — an AMBIGUOUS or genuinely-nonexistent prefix still returns `not_found` (never guesses).",
+      "description": "Read one OR many conversations in full: the seed, topic tags, the whole thread (posts oldest-first), the accepted answer if resolved, and follower count. Pass `id` (or the single-item alias `conversation_id`) for one or `ids` for several (1–100); when both single-item keys are supplied, canonical `id` wins. Returns { ok, results:[{ ok, id, conversation? + topics/posts/subscriber_count | error }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. For a CONSULT conversation the result also carries `consult` (state, expires_at, closed_at, responder_id, wakes_used) — read THAT for whether the consult is still live: `conversation.state` stays \"open\" after a consult has expired and closed, and empty `posts` is not evidence of a stall (a cascade advance wakes the next responder instead of posting). Ids are minted as `<prefix>-<8charMs>-<4charSeq>-<32hexUuid>`; a request that passes only the leading truncated segment (looks like a complete short id, but is not) is resolved via a UNIQUE-prefix fallback and returns `warning` naming the real full id to cite going forward — an AMBIGUOUS or genuinely-nonexistent prefix still returns `not_found` (never guesses).",
       "capabilities": [
         "coord:read"
       ],
@@ -5377,7 +5377,7 @@
         "content-fixer"
       ],
       "guidance": {
-        "when": "You have one or more conversation_ids (from coord:ask, conversations:list, or an inbox notice) and want the full thread. Pass every id you need at once via `ids` instead of calling per id.",
+        "when": "You have one or more conversation ids (often named `conversation_id` by coord:ask, conversations:list, or an inbox notice) and want the full thread. Use `id` or its `conversation_id` alias for one; pass every id you need at once via `ids` instead of calling per id.",
         "notWhen": "Browsing many → conversations:list.",
         "chaining": "conversations:get { ids:[…] } → conversations:answer / conversations:post / conversations:join / conversations:resolve."
       }
@@ -30431,7 +30431,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your next wake) needs — what is done, left, current approach, gotchas. A digest, not a transcript. Declare `dependsOn` for a real freshness verdict.",
-        "notWhen": "Mid-task scratch the live transcript already holds; never dump file contents or tool output. Not an edit channel: use work_items:update for the body, work_items:comment for a note. Not for a peer's item — claim it, or comment instead.",
+        "notWhen": "Mid-task scratch the live transcript already holds; never dump file contents or tool output. Not an edit channel: use work_items:update for the body, work_items:comment for a note. The terminal-only `assumptions` declaration belongs to work_items:complete / work_items:set_state, not this checkpoint tool; passing it is invalid. Not for a peer's item — claim it, or comment instead.",
         "chaining": "Call before work_items:complete / on yield; clear with checkpoint:null or clear:true. Doubles as a liveness pulse — a claim held through long local-only tool use can go presence-stale and be reclaimed."
       }
     },

@@ -150,6 +150,87 @@ export const SHARED_BASE_NOTES_MARKER = '<!-- PAPERCUSP-SU:SHARED-BASE-NOTES -->
 export const COMPACTION_CLIENT_OVERLAY_MARKER = '<!-- PAPERCUSP-COMPACTION:CLIENT-OVERLAY -->';
 
 /**
+ * Every concrete splice token, keyed by the stable marker id carried in the
+ * comment. Runtime splicers keep their named exports above; tests and the
+ * repository-wide presence guard derive from this map so a rename cannot leave
+ * a second hand-maintained registry behind (identities-v1 P-024).
+ */
+export const SPLICE_MARKERS = {
+  'PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY': CLIENT_TOOLING_OVERLAY_MARKER,
+  'PAPERCUSP-SU:WIRE-SCHEMAS': WIRE_SCHEMAS_MARKER,
+  'PAPERCUSP-SU:COORD-LEGEND': COORD_LEGEND_MARKER,
+  'PAPERCUSP-SU:WORKSPACE-MAP': WORKSPACE_MAP_MARKER,
+  'PAPERCUSP-SU:PROMOTION-MODEL': PROMOTION_MODEL_MARKER,
+  'PAPERCUSP-SU:PROJECT-GUIDE': PROJECT_GUIDE_MARKER,
+  'PAPERCUSP-SU:AUTO-MODE': AUTO_MODE_MARKER,
+  'PAPERCUSP-SU:COMPACTION': COMPACTION_MARKER,
+  'PAPERCUSP-SU:RESULT-DOOR': RESULT_DOOR_MARKER,
+  'PAPERCUSP-SU:SHARED-BASE-NOTES': SHARED_BASE_NOTES_MARKER,
+  'PAPERCUSP-COMPACTION:CLIENT-OVERLAY': COMPACTION_CLIENT_OVERLAY_MARKER,
+} as const;
+
+export type SpliceMarkerId = keyof typeof SPLICE_MARKERS;
+
+/** The complete marker contract of a source/base SU playbook. */
+export const SU_PLAYBOOK_MARKER_IDS = [
+  'PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY',
+  'PAPERCUSP-SU:WIRE-SCHEMAS',
+  'PAPERCUSP-SU:COORD-LEGEND',
+  'PAPERCUSP-SU:WORKSPACE-MAP',
+  'PAPERCUSP-SU:PROMOTION-MODEL',
+  'PAPERCUSP-SU:PROJECT-GUIDE',
+  'PAPERCUSP-SU:AUTO-MODE',
+  'PAPERCUSP-SU:COMPACTION',
+  'PAPERCUSP-SU:RESULT-DOOR',
+  'PAPERCUSP-SU:SHARED-BASE-NOTES',
+] as const satisfies readonly SpliceMarkerId[];
+
+const SU_KERNEL_MARKER_IDS = [
+  'PAPERCUSP-SU:WIRE-SCHEMAS',
+  'PAPERCUSP-SU:COORD-LEGEND',
+  'PAPERCUSP-SU:WORKSPACE-MAP',
+  'PAPERCUSP-SU:PROMOTION-MODEL',
+  'PAPERCUSP-SU:AUTO-MODE',
+  'PAPERCUSP-SU:RESULT-DOOR',
+  'PAPERCUSP-SU:SHARED-BASE-NOTES',
+] as const satisfies readonly SpliceMarkerId[];
+
+export interface RequiredSpliceMarkerArtifact {
+  /** Repository-relative path. */
+  path: string;
+  markerIds: readonly SpliceMarkerId[];
+  /** Ignored build outputs are checked when present but are absent in clean CI trees. */
+  required: boolean;
+}
+
+/**
+ * Per-artifact presence contract. Every listed marker must occur EXACTLY ONCE.
+ * The ignored host/sidecar copies are optional-to-exist but never optional-to-be
+ * correct when a build materializes them. Tracked sources, derived part docs,
+ * the pinned baseline fixture, and the desktop staging projection fail closed.
+ */
+export const REQUIRED_SPLICE_MARKERS_BY_ARTIFACT: readonly RequiredSpliceMarkerArtifact[] = [
+  { path: 'libs/papercusp/packages/harness/blueprints/base/prompts/su.md', markerIds: SU_PLAYBOOK_MARKER_IDS, required: true },
+  { path: 'apps/operator/prompts/papercusp-su-engineer.tools.md', markerIds: SU_PLAYBOOK_MARKER_IDS, required: true },
+  { path: 'apps/operator/prompts/papercusp-su-power.tools.md', markerIds: SU_PLAYBOOK_MARKER_IDS, required: true },
+  { path: 'packages/operator-core/lib/desktop-install/__fixtures__/su-render-baseline/su.base.md', markerIds: SU_PLAYBOOK_MARKER_IDS, required: true },
+  { path: 'papercusp-desktop/src-tauri/env-sidecars/staging/harness/blueprints/base/prompts/su.md', markerIds: SU_PLAYBOOK_MARKER_IDS, required: true },
+  { path: 'libs/papercusp/packages/harness/blueprints/base/prompts/su.kernel.md', markerIds: SU_KERNEL_MARKER_IDS, required: true },
+  { path: 'libs/papercusp/packages/harness/blueprints/base/prompts/su.practice.md', markerIds: ['PAPERCUSP-SU:COMPACTION'], required: true },
+  { path: 'libs/papercusp/packages/harness/blueprints/base/prompts/su.instance.md', markerIds: ['PAPERCUSP-SU:PROJECT-GUIDE'], required: true },
+  { path: 'apps/operator/prompts/papercusp-compaction.base.md', markerIds: ['PAPERCUSP-COMPACTION:CLIENT-OVERLAY'], required: true },
+  { path: 'apps/operator/dist-host/blueprints/base/prompts/su.md', markerIds: SU_PLAYBOOK_MARKER_IDS, required: false },
+  { path: 'apps/operator/dist-host/blueprints/base/prompts/su.kernel.md', markerIds: SU_KERNEL_MARKER_IDS, required: false },
+  { path: 'apps/operator/dist-host/blueprints/base/prompts/su.practice.md', markerIds: ['PAPERCUSP-SU:COMPACTION'], required: false },
+  { path: 'apps/operator/dist-host/blueprints/base/prompts/su.instance.md', markerIds: ['PAPERCUSP-SU:PROJECT-GUIDE'], required: false },
+  { path: 'apps/operator/dist-sidecar/blueprints/base/prompts/su.md', markerIds: SU_PLAYBOOK_MARKER_IDS, required: false },
+  { path: 'papercusp-desktop/src-tauri/sidecar/harness/blueprints/base/prompts/su.md', markerIds: SU_PLAYBOOK_MARKER_IDS, required: false },
+  { path: 'papercusp-desktop/src-tauri/sidecar/harness/blueprints/base/prompts/su.kernel.md', markerIds: SU_KERNEL_MARKER_IDS, required: false },
+  { path: 'papercusp-desktop/src-tauri/sidecar/harness/blueprints/base/prompts/su.practice.md', markerIds: ['PAPERCUSP-SU:COMPACTION'], required: false },
+  { path: 'papercusp-desktop/src-tauri/sidecar/harness/blueprints/base/prompts/su.instance.md', markerIds: ['PAPERCUSP-SU:PROJECT-GUIDE'], required: false },
+];
+
+/**
  * Splice generated `content` into `base` at `marker`. Replaces ALL marker
  * occurrences; with an absent marker the content is appended (when non-empty);
  * an empty content with a present marker just removes it. Generalizes the

@@ -18,10 +18,10 @@
  * cutover (2026-05-07), leaving that WebSocket branch unreachable (the
  * browser silently fell through to `syncType="POLLING"`). The dead
  * `/api/runtime-config` endpoint and the `zeroServer` plumbing were removed
- * 2026-06-03. (The reusable WebSocket transport itself still lives in
- * `@papercusp/sync` for other apps — Papercusp simply no longer selects it.)
+ * 2026-06-03. (`@papercusp/sync` retains the legacy `WEBSOCKETS` type seam for
+ * source compatibility, but no WebSocket adapter is mounted by Papercusp.)
  *
- * POLLING is catastrophic here: the dashboard registers ~40 distinct Zero
+ * POLLING is catastrophic here: the dashboard registers ~40 distinct sync
  * queries, and the polling adapter re-fetches *every one of them* via
  * `/api/zero-harness/rest-query` on each interval. ~40 concurrent requests
  * against a browser's 6-connection-per-host HTTP/1.1 cap permanently

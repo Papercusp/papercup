@@ -107,6 +107,66 @@ describe('pc-heavy wait loops read the clock without forking (EI-218945205575497
       anchor: 'exclusive materializer intent cleared; starting retry',
       read: '_intent_now="${EPOCHSECONDS:-$(date +%s)}"',
     },
+    {
+      label: 'preempt child-pid wait (deadline initialization)',
+      anchor: '[ -n "${_preempt_wait_pid:-}" ] || return 1',
+      read: '_deadline=$(( ${EPOCHSECONDS:-$(date +%s)} + 1 ))',
+    },
+    {
+      label: 'preempt child-pid wait (per-tick deadline check)',
+      anchor: 'while [ -z "${_preempt_child_pid:-}" ] && kill -0 "${_preempt_wait_pid:-}" 2>/dev/null; do',
+      read: '[ "${EPOCHSECONDS:-$(date +%s)}" -ge "$_deadline" ]',
+    },
+    {
+      label: 'preempt group reap (deadline initialization)',
+      anchor: 'kill -TERM -- "-${_preempt_child_pid:-}" 2>/dev/null || true',
+      read: '_deadline=$(( ${EPOCHSECONDS:-$(date +%s)} + ${_preempt_term_grace:-30} ))',
+    },
+    {
+      label: 'preempt group reap (per-tick deadline check)',
+      anchor: '_deadline=$(( ${EPOCHSECONDS:-$(date +%s)} + ${_preempt_term_grace:-30} ))',
+      read: 'while _preempt_group_alive && [ "${EPOCHSECONDS:-$(date +%s)}" -lt "$_deadline" ]; do',
+    },
+    {
+      label: 'preempt child-start wait (deadline initialization)',
+      anchor: '_preempt_wait_pid=$!',
+      read: '_preempt_start_deadline=$(( ${EPOCHSECONDS:-$(date +%s)} + 5 ))',
+    },
+    {
+      label: 'preempt child-start wait (per-tick deadline check)',
+      anchor: 'if ! kill -0 "$_preempt_wait_pid" 2>/dev/null; then',
+      read: 'if [ "${EPOCHSECONDS:-$(date +%s)}" -ge "$_preempt_start_deadline" ]; then',
+    },
+    {
+      label: 'preempt monitor after-ready lease',
+      anchor: 'if _preempt_ready_is_published; then',
+      read: '_preempt_now="${EPOCHSECONDS:-$(date +%s)}"',
+    },
+    {
+      label: 'preempt monitor ordinary-holder grace',
+      anchor: '        continue\n      fi\n      _preempt_ready_seen_at=\'\'',
+      read: '_preempt_now="${EPOCHSECONDS:-$(date +%s)}"',
+    },
+    {
+      label: 'preempt monitor grace-clear hysteresis',
+      anchor: 'noise, not evidence the materializer left.',
+      read: '_preempt_now="${EPOCHSECONDS:-$(date +%s)}"',
+    },
+    {
+      label: 'coalescing leader-liveness fallback',
+      anchor: '_lm=$(stat -c %Y "$_c_lockdir" 2>/dev/null || echo 0)',
+      read: '[ $(( ${EPOCHSECONDS:-$(date +%s)} - _lm )) -le "$_coalesce_ttl" ]',
+    },
+    {
+      label: 'coalescing wait (deadline initialization)',
+      anchor: 'defeating coalescing for exactly the latecomers it exists to help,',
+      read: '_c_deadline=$(( ${EPOCHSECONDS:-$(date +%s)} + _c_max_wait ))',
+    },
+    {
+      label: 'coalescing wait (per-tick deadline check)',
+      anchor: '# Deliberately fall through to the deadline check + sleep rather than',
+      read: '[ "${EPOCHSECONDS:-$(date +%s)}" -ge "$_c_deadline" ]',
+    },
   ];
 
   for (const { label, anchor, read } of sites) {
@@ -121,10 +181,10 @@ describe('pc-heavy wait loops read the clock without forking (EI-218945205575497
     });
   }
 
-  it('never leaves an unguarded `_now=$(date +%s)`-style bare read at any of the 4 wait loops', () => {
+  it('never leaves an unguarded bare date read at any identified wait-loop site', () => {
     // Positive control for the assertions above: this exact bare pattern is
     // what the ORIGINAL bug looked like. Its absence here is not vacuous —
-    // grep confirms these 4 loops' specific variable names no longer appear
+    // grep confirms the identified loops' specific variable names no longer appear
     // paired with a bare (unguarded) date call.
     const bareForms = [
       '_exclusive_writer_now=$(date +%s)',
@@ -134,6 +194,16 @@ describe('pc-heavy wait loops read the clock without forking (EI-218945205575497
       '_intent_started=$(date +%s)',
       '_exclusive_writer_started=$(date +%s)',
       '_exclusive_started=$(date +%s)',
+      '_deadline=$(( $(date +%s) + 1 ))',
+      '[ "$(date +%s)" -ge "$_deadline" ]',
+      '_deadline=$(( $(date +%s) + ${_preempt_term_grace:-30} ))',
+      'while _preempt_group_alive && [ "$(date +%s)" -lt "$_deadline" ]; do',
+      '_preempt_start_deadline=$(( $(date +%s) + 5 ))',
+      'if [ "$(date +%s)" -ge "$_preempt_start_deadline" ]; then',
+      '_preempt_now=$(date +%s)',
+      '[ $(( $(date +%s) - _lm )) -le "$_coalesce_ttl" ]',
+      '_c_deadline=$(( $(date +%s) + _c_max_wait ))',
+      '[ "$(date +%s)" -ge "$_c_deadline" ]',
     ];
     for (const bare of bareForms) {
       expect(source, `must not contain the unguarded form: ${bare}`).not.toContain(bare);
@@ -340,11 +410,11 @@ describe('live: a contended waiter still heartbeats and honors its timeout with 
   // needing an external kill" test was deliberately NOT added here with
   // this suite's blanket-broken `date` fixture. That fixture breaks EVERY
   // `date +%s` call for the whole process tree, including the ~10 sites in
-  // the UNRELATED `_preempt_*` child-process-group monitor (lines ~655,
-  // 1065, 1121, 1194, 1212, 1229 — see the follow-up EI filed for those)
+  // the `_preempt_*` child-process-group monitor paths covered by the
+  // structural assertions above
   // that wrap the holder's own `sleep` command — so it was observed to
-  // perturb THAT machinery's own (unfixed) deadline math rather than
-  // exercising the 4 loops this fix actually touches. A narrower deadline
+  // perturb multiple monitor deadline paths rather than
+  // isolating one of the identified wait-loop sites. A narrower deadline
   // test belongs with the follow-up fix for those sites, where the fixture
-  // can be scoped without also touching code this pass never claims to fix.
+  // can be scoped to one monitor path if that coverage is needed later.
 });

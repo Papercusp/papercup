@@ -20,6 +20,7 @@
     "test:integration:prose-vector-dims": "vitest run --config vitest.integration.config.ts lib/search/prose-vector-dims.integration.test.ts",
     "lint:chunk-safe": "vitest run lib/child-output-guard.test.ts",
     "lint:prompt-projections": "node ../../scripts/check-prompt-projections.mjs",
+    "lint:su-splice-markers": "tsx ../../scripts/check-su-splice-markers.ts",
     "lint:federation-assert-nounset": "vitest run lib/federation-asserts-merge-probe-nounset.test.ts",
     "lint:mutation-probe-example": "vitest run lib/doc-claims/mutation-probe-example-is-runnable.test.ts",
     "lint:git-log-utc-claim": "vitest run lib/doc-claims/git-log-utc-timestamp.test.ts",

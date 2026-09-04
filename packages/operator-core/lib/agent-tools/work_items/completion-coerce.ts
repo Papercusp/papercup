@@ -367,6 +367,14 @@ export function coerceCompletionShape(raw: unknown): unknown {
     for (const f of ['findings', 'changedAsResult'] as const) {
       const value = selfReview[f];
       if (value == null || Array.isArray(value)) continue;
+      // `false` is a common compact spelling for "no findings/no change". Preserve
+      // that explicit zero as an empty array; wrapping it as `[false]` would still
+      // violate the self-review contract's array-of-strings shape. `true` remains
+      // invalid because it cannot provide the required review prose.
+      if (value === false) {
+        selfReview[f] = [];
+        continue;
+      }
       if (typeof value === 'string') {
         const s = value.trim();
         selfReview[f] = s ? [s] : undefined;

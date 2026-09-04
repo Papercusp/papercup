@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "plan": "identities-v1-2026-08-30",
   "item": "P-018",
-  "generatedAt": "2026-09-04T07:05:08.245Z",
+  "generatedAt": "2026-09-04T15:09:14.944Z",
   "inputs": {
     "base": {
       "path": "su.base.md",
-      "bytes": 75371,
-      "sha256": "ebd03474b957f705a343d7fcc5bf11a43587717c869250402e8a722a9a7a2ce2"
+      "bytes": 75559,
+      "sha256": "74e4a4a2ac7a38d198bcde692fae827a9b76795867a7ba0bfa183a1f75d6be94"
     },
     "overlay": {
       "path": "papercusp-su.claude.md",
@@ -25,21 +25,20 @@
       "CLIENT-TOOLING-OVERLAY",
       "WIRE-SCHEMAS",
       "COORD-LEGEND",
-      "AUTO-MODE",
-      "RESULT-DOOR"
-    ],
-    "absent": [
       "WORKSPACE-MAP",
       "PROMOTION-MODEL",
+      "PROJECT-GUIDE",
+      "AUTO-MODE",
       "COMPACTION",
-      "SHARED-BASE-NOTES",
-      "PROJECT-GUIDE"
-    ]
+      "RESULT-DOOR",
+      "SHARED-BASE-NOTES"
+    ],
+    "absent": []
   },
   "tiers": {
     "full": {
-      "totalBytes": 111678,
-      "sha256": "c323b4a6f4d855f381d7a7e03efcf3eb4771415eac5bca2aafc92b9def134baa",
+      "totalBytes": 115639,
+      "sha256": "40bf6bcf1705ca3bf9aa724a21c8a14855cab0e211f22c4d76514cbbcdcf8f92",
       "sections": [
         {
           "heading": "(preamble)",
@@ -68,8 +67,8 @@
         {
           "heading": "## Git — a background routine owns commit + push",
           "origin": "base",
-          "bytes": 1277,
-          "sha256": "20fc8037c754c75407d53789aac544437bdbd1d0b01bc79c9451e2e9c6dabd8c"
+          "bytes": 4374,
+          "sha256": "6656ac1ddac525499092d89a5039c287605077110990576a9e3785a1cbadabf1"
         },
         {
           "heading": "## Engineering discipline",
@@ -98,8 +97,8 @@
         {
           "heading": "## Operating modes — state in the registry, definitions as identity layers",
           "origin": "generated",
-          "bytes": 4024,
-          "sha256": "f9971c7b7c1d9f1d3672329fb8087f7eafe1e6775c22fbd5426c2edb93d40b18"
+          "bytes": 4026,
+          "sha256": "47edb8bba265b3a2e503a00b768c99f3f8d9f95a2eaaab6be48070c2a7a7c49c"
         },
         {
           "heading": "## Registering work is a SEPARATE discipline from asking approval — AUTO waives the ask, NOT the register",
@@ -140,8 +139,8 @@
         {
           "heading": "## Wire schemas",
           "origin": "base",
-          "bytes": 16,
-          "sha256": "229bf09375d32bbc0a968a4b1a5f03f67936ef3c0a3a3e38c7de07730ec38b2d"
+          "bytes": 18,
+          "sha256": "766f3f3d937780f9d9e3bed68270e0875c008f606a339b9e898d38db568c0c65"
         },
         {
           "heading": "## The deploy pipeline is ASYNC — don't babysit your OWN change, but a RED gate is EVERYONE's job to FIX (no owner-ask)",
@@ -172,12 +171,18 @@
           "origin": "generated",
           "bytes": 3783,
           "sha256": "815275e068ef6f66d93a4f28f9481070dfd6e38d65e1465682f6f17d40bd05e6"
+        },
+        {
+          "heading": "## Project guide — repo conventions",
+          "origin": "generated",
+          "bytes": 859,
+          "sha256": "3c57db5af2194bf0541d7aaa13dd0f6a35d27e6f156097b3d101658bbdf78ff0"
         }
       ]
     },
     "fleet": {
-      "totalBytes": 111678,
-      "sha256": "c323b4a6f4d855f381d7a7e03efcf3eb4771415eac5bca2aafc92b9def134baa",
+      "totalBytes": 115639,
+      "sha256": "40bf6bcf1705ca3bf9aa724a21c8a14855cab0e211f22c4d76514cbbcdcf8f92",
       "sections": [
         {
           "heading": "(preamble)",
@@ -206,8 +211,8 @@
         {
           "heading": "## Git — a background routine owns commit + push",
           "origin": "base",
-          "bytes": 1277,
-          "sha256": "20fc8037c754c75407d53789aac544437bdbd1d0b01bc79c9451e2e9c6dabd8c"
+          "bytes": 4374,
+          "sha256": "6656ac1ddac525499092d89a5039c287605077110990576a9e3785a1cbadabf1"
         },
         {
           "heading": "## Engineering discipline",
@@ -236,8 +241,8 @@
         {
           "heading": "## Operating modes — state in the registry, definitions as identity layers",
           "origin": "generated",
-          "bytes": 4024,
-          "sha256": "f9971c7b7c1d9f1d3672329fb8087f7eafe1e6775c22fbd5426c2edb93d40b18"
+          "bytes": 4026,
+          "sha256": "47edb8bba265b3a2e503a00b768c99f3f8d9f95a2eaaab6be48070c2a7a7c49c"
         },
         {
           "heading": "## Registering work is a SEPARATE discipline from asking approval — AUTO waives the ask, NOT the register",
@@ -278,8 +283,8 @@
         {
           "heading": "## Wire schemas",
           "origin": "base",
-          "bytes": 16,
-          "sha256": "229bf09375d32bbc0a968a4b1a5f03f67936ef3c0a3a3e38c7de07730ec38b2d"
+          "bytes": 18,
+          "sha256": "766f3f3d937780f9d9e3bed68270e0875c008f606a339b9e898d38db568c0c65"
         },
         {
           "heading": "## The deploy pipeline is ASYNC — don't babysit your OWN change, but a RED gate is EVERYONE's job to FIX (no owner-ask)",
@@ -310,6 +315,12 @@
           "origin": "generated",
           "bytes": 3783,
           "sha256": "815275e068ef6f66d93a4f28f9481070dfd6e38d65e1465682f6f17d40bd05e6"
+        },
+        {
+          "heading": "## Project guide — repo conventions",
+          "origin": "generated",
+          "bytes": 859,
+          "sha256": "3c57db5af2194bf0541d7aaa13dd0f6a35d27e6f156097b3d101658bbdf78ff0"
         }
       ]
     }

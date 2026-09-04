@@ -278,6 +278,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(() => parse({ id: 'WI-7', checkpoint: { did: 'progress', notAField: 'drop me' } })).toThrow();
   });
 
+  it('keeps terminal-only assumptions off the checkpoint contract', () => {
+    expect(() => parse({ id: 'WI-7', checkpoint: 'progress', assumptions: 'none' })).toThrow();
+  });
+
   it('renders a structured checkpoint before the handler persists it', async () => {
     getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
     setWorkItemCheckpoint.mockImplementation(async (_ref: unknown, text: string) => text);

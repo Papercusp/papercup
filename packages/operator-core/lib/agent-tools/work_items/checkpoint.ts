@@ -806,7 +806,9 @@ export default defineTool({
       'Declare `dependsOn` for a real freshness verdict.',
     notWhen:
       'Mid-task scratch the live transcript already holds; never dump file contents or tool output. Not an edit ' +
-      "channel: use work_items:update for the body, work_items:comment for a note. Not for a peer's item — claim it, or comment instead.",
+      "channel: use work_items:update for the body, work_items:comment for a note. The terminal-only `assumptions` " +
+      'declaration belongs to work_items:complete / work_items:set_state, not this checkpoint tool; passing it is invalid. ' +
+      "Not for a peer's item — claim it, or comment instead.",
     chaining:
       'Call before work_items:complete / on yield; clear with checkpoint:null or clear:true. ' +
       'Doubles as a liveness pulse — a claim held through long local-only tool use can go presence-stale and be reclaimed.',

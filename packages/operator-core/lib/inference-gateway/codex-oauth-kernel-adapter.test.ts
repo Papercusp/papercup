@@ -136,6 +136,7 @@ interface HarnessOverrides {
   refreshAccessToken?: CodexOAuthAdapterOptions['refreshAccessToken'];
   pickEgress?: CodexOAuthAdapterOptions['pickEgress'];
   siblingEgressAvailable?: CodexOAuthAdapterOptions['siblingEgressAvailable'];
+  dispatcherFor?: CodexOAuthAdapterOptions['dispatcherFor'];
   rateReset?: CodexOAuthAdapterOptions['rateReset'];
 }
 
@@ -186,7 +187,7 @@ function harness(fetchImpl: CodexOAuthAdapterOptions['fetch'], overrides: Harnes
     pickEgress: overrides.pickEgress ?? ((account) => ({ entry: undefined, key: `${account.accountId}:default` })),
     siblingEgressAvailable: overrides.siblingEgressAvailable ?? (() => false),
     coolIp: (key, ms) => cooled.push({ key, ms }),
-    dispatcherFor: () => undefined,
+    dispatcherFor: overrides.dispatcherFor ?? (() => undefined),
     fetch: fetchImpl,
     rateReset: overrides.rateReset ?? (() => ({ resetAt: null, retryAfterMs: null })),
   });
@@ -298,6 +299,33 @@ describe('codex OAuth kernel adapter — 401 refresh is a re-attempt, not a fail
     expect(result).toMatchObject({ status: 200, attempts: 2, failovers: 0 });
     expect(seen).toEqual(['Bearer chatgpt-a-tok', 'Bearer chatgpt-a-tok-refreshed']);
     expect(started[0]?.metadata.accountId).toBe('chatgpt-a');
+  });
+
+  it('passes the selected egress dispatcher into the OAuth refresh callback', async () => {
+    const dispatcher = { egress: 'chatgpt-a:ip1' };
+    const refreshDispatchers: unknown[] = [];
+    const { options } = harness(
+      async () =>
+        refreshDispatchers.length === 0
+          ? upstream(401, {}, sseBody('{"error":"expired"}'))
+          : upstream(200, {}, sseBody('{"ok":true}')),
+      {
+        pickEgress: () => ({ entry: 'egress-entry', key: 'chatgpt-a:ip1' }),
+        dispatcherFor: async (_account, entry) => {
+          expect(entry).toBe('egress-entry');
+          return dispatcher;
+        },
+        refreshAccessToken: async (_home, current, selectedDispatcher) => {
+          refreshDispatchers.push(selectedDispatcher);
+          return authFor('chatgpt-a', `${current.accessToken}-refreshed`);
+        },
+      },
+    );
+
+    const result = await executeGatewayRequestKernel(options);
+
+    expect(result).toMatchObject({ status: 200, attempts: 2, failovers: 0 });
+    expect(refreshDispatchers).toEqual([dispatcher]);
   });
 
   it('refreshes even when the account is HARD-pinned — a re-auth does not leave the account', async () => {

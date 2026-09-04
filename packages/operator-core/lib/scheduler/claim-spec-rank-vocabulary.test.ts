@@ -29,6 +29,7 @@
  * neutralize. An unknown rank head compiles to NEUTRAL in get-next.ts's compileRankExpr,
  * so "accept it and do nothing" is itself one of the silent failures, not a safe default.
  */
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_CLAIM_SPEC,
@@ -39,6 +40,20 @@ import {
   validateClaimSpec,
   type ClaimSpec,
 } from './claim-spec';
+
+const GET_NEXT_SOURCE = readFileSync(new URL('./get-next.ts', import.meta.url), 'utf8');
+
+function requiredSourceSpan(source: string, startMarker: string, endMarker: string): string {
+  const start = source.indexOf(startMarker);
+  if (start < 0) throw new Error(`missing source marker: ${startMarker}`);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  if (end <= start) throw new Error(`missing source marker after ${startMarker}: ${endMarker}`);
+  return source.slice(start, end);
+}
+
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+}
 
 function specWithRank(mode: 'lexicographic' | 'weighted', terms: unknown[], specId = 'rank-vocab'): ClaimSpec {
   return { ...DEFAULT_CLAIM_SPEC, specId, rank: { mode, terms } } as unknown as ClaimSpec;
@@ -143,6 +158,39 @@ describe('cluster_priority is the persisted resolver-cluster leverage term (P-00
 
   it('keeps the default policy unchanged until a drain-fleet leader authors the term', () => {
     expect(DEFAULT_CLAIM_SPEC.rank.terms.map((t) => t.expr)).not.toContain('cluster_priority');
+  });
+
+  it('reads the persisted payload projection without reconstructing cluster topology at claim time', () => {
+    const clusterSql = requiredSourceSpan(
+      GET_NEXT_SOURCE,
+      'function clusterPrioritySql',
+      '\nfunction specUsesRankTerm',
+    );
+    const compilerBranch = requiredSourceSpan(
+      GET_NEXT_SOURCE,
+      "if (head === 'cluster_priority')",
+      '// Descoped-but-validated function terms',
+    );
+
+    // Positive controls: the supported term and its SQL still exist and read the
+    // resolver-owned projection. Without these, every absence assertion below
+    // would pass if cluster_priority were simply deleted.
+    expect(compilerBranch).toContain('value: clusterPrioritySql(sql)');
+    expect(clusterSql).toContain("payload->'clusterPriority'");
+    expect(clusterSql).toContain("payload->>'clusterPriority'");
+
+    // D-004's architectural boundary is load-bearing: the scheduler consumes a
+    // number and never rebuilds the resolver's graph. Keep this guard local to
+    // clusterPrioritySql because get-next legitimately aggregates unrelated
+    // claimability diagnostics elsewhere in the same module.
+    expect(clusterSql).not.toMatch(/\b(?:SELECT|FROM|JOIN|GROUP\s+BY|HAVING)\b/i);
+    expect(clusterSql).not.toMatch(/\b(?:COUNT|SUM|AVG|MAX|MIN|array_agg|jsonb_agg)\s*\(/i);
+
+    // Catch a cluster-topology lookup moved outside the small rank helper while
+    // ignoring comments that merely explain why those concepts stay absent.
+    expect(withoutComments(GET_NEXT_SOURCE)).not.toMatch(
+      /\b(?:resolverCluster|clusterKey|suspectedGenerator|relates)\b/,
+    );
   });
 });
 
