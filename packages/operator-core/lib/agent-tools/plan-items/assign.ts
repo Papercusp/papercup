@@ -26,9 +26,11 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveStableAgentTarget } from '../coordination/actionable-work-item-dispatch';
 import {
   admitSubjectForFleetTarget,
+  admitWorkItemForFleetTarget,
   notifyFleetScopeRefusal,
   fleetScopeLeaderRemedy,
 } from '../../scheduler/fleet-scope-admission';
+import { findImplementingWorkItem } from '../../plan-items/convert';
 
 interface AssignSpecItem {
   plan: string;
@@ -120,7 +122,7 @@ export default defineTool({
       list,
       async (it): Promise<BulkItemResult> => {
         const { workspaceId, harnessSlug } = await resolvePlanScope({ harnessSlug: it.harness });
-        const admission = await admitSubjectForFleetTarget({
+        let admission = await admitSubjectForFleetTarget({
           target: it.assignee,
           workspaceId,
           subject: {
@@ -152,6 +154,33 @@ export default defineTool({
             goal: null,
           },
         });
+        // A converted plan item is represented by a plan-item subject before
+        // promotion, but its target's claim spec may be exact-work-item keyed.
+        // Re-check that linked execution record by its canonical ID so an
+        // in-scope assignment is not rejected merely because the pre-promotion
+        // subject has no matching `id`.
+        //
+        // Deliberately keep this fallback narrow and fail closed: only a
+        // fleet-scope violation can be repaired by proving the linked row is in
+        // scope. Missing links, lookup/admission errors, by-ID refusals, and
+        // other refusal codes retain the original decision.
+        if (!admission.allowed && admission.code === 'fleet_scope_violation') {
+          try {
+            const linkedWorkItem = await findImplementingWorkItem(it.plan, it.item);
+            if (linkedWorkItem) {
+              const linkedAdmission = await admitWorkItemForFleetTarget({
+                target: it.assignee,
+                workItemId: linkedWorkItem.id,
+                harness: linkedWorkItem.harness ?? harnessSlug,
+                workspaceId,
+              });
+              if (linkedAdmission.allowed) admission = linkedAdmission;
+            }
+          } catch {
+            // The original plan-item refusal is the safe result when the
+            // optional link lookup or re-admission cannot be established.
+          }
+        }
         if (!admission.allowed) {
           // WI-6326: reuse the SAME liveness read the leader notification just performed
           // (never a second lookup) so the caller-facing refusal's "route elsewhere"
