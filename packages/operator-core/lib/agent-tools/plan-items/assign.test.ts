@@ -2,7 +2,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StableAgentTargetState } from '../coordination/actionable-work-item-dispatch';
 
-const admission = vi.hoisted(() => ({ decision: { allowed: true, scoped: false } as any, notify: vi.fn() }));
+const admission = vi.hoisted(() => ({
+  decision: { allowed: true, scoped: false } as any,
+  linkedDecision: { allowed: false, scoped: true } as any,
+  notify: vi.fn(),
+  findLinked: vi.fn(async () => null),
+}));
 const agentNames = vi.hoisted(() => ({
   bestEffortOwnerUser: vi.fn(() => 'avi'),
   agentNameOwner: vi.fn(async () => 'avi' as string | null),
@@ -37,15 +42,23 @@ vi.mock('../plans/set-status', () => ({
 vi.mock('../coordination/actionable-work-item-dispatch', () => targetResolver);
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   admitSubjectForFleetTarget: vi.fn(async () => admission.decision),
+  admitWorkItemForFleetTarget: vi.fn(async () => admission.linkedDecision),
   notifyFleetScopeRefusal: admission.notify,
   fleetScopeLeaderRemedy: vi.fn(() => 'remedy: scheduler:set_claim_spec { … }'),
 }));
+vi.mock('../../plan-items/convert', () => ({
+  findImplementingWorkItem: admission.findLinked,
+}));
 
 import { assignItem, planItemEffectiveStatus } from '../../plan-items/assignments';
+import { admitWorkItemForFleetTarget } from '../../scheduler/fleet-scope-admission';
+import { findImplementingWorkItem } from '../../plan-items/convert';
 const assignM = vi.mocked(assignItem);
 const statusM = vi.mocked(planItemEffectiveStatus);
 const ownerM = vi.mocked(agentNames.agentNameOwner);
 const targetM = vi.mocked(targetResolver.resolveStableAgentTarget);
+const linkedAdmissionM = vi.mocked(admitWorkItemForFleetTarget);
+const findLinkedM = vi.mocked(findImplementingWorkItem);
 const tool = (await import('./assign')).default;
 
 type Out = { data: any };
@@ -54,6 +67,8 @@ const body = async (args: Record<string, unknown>) => (((await tool.handler(args
 beforeEach(() => {
   vi.clearAllMocks();
   admission.decision = { allowed: true, scoped: false };
+  admission.linkedDecision = { allowed: false, scoped: true };
+  admission.findLinked.mockResolvedValue(null);
   ownerM.mockResolvedValue('avi');
   targetM.mockImplementation(async ({ targetAgent }) => ({
     requested: targetAgent,
@@ -88,6 +103,51 @@ describe('plan_items:assign fleet admission', () => {
     // EI-18673501896258575: the caller sees the SAME concrete remedy the leader was
     // notified with, not just a bare refusal reason.
     expect(b.results[0].refused).toMatch(/remedy: scheduler:set_claim_spec/);
+  });
+
+  it('re-checks a linked execution work-item when the plan subject misses an exact-id member spec', async () => {
+    admission.decision = {
+      allowed: false,
+      scoped: true,
+      code: 'fleet_scope_violation',
+      reason: 'plan subject is outside the exact-id fleet scope',
+      scope: { fleetSlug: 'exact-id', ownerId: 'su-member', fleetRole: 'member', record: { spec: { specId: 'exact-id', revision: 3 } } },
+    };
+    admission.findLinked.mockResolvedValue({ id: 'WI-2024456', harness: 'papercusp' } as never);
+    admission.linkedDecision = { allowed: true, scoped: true, scope: admission.decision.scope };
+
+    const b = await body({ plan: 'ops', item: 'P-001', assignee: 'builder' });
+
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(assignM).toHaveBeenCalledOnce();
+    expect(findLinkedM).toHaveBeenCalledWith('ops', 'P-001');
+    expect(linkedAdmissionM).toHaveBeenCalledWith({
+      target: 'builder',
+      workItemId: 'WI-2024456',
+      harness: 'papercusp',
+      workspaceId: 'ws-1',
+    });
+    expect(admission.notify).not.toHaveBeenCalled();
+  });
+
+  it('does not use the linked-work-item fallback for other refusal codes', async () => {
+    admission.decision = {
+      allowed: false,
+      scoped: true,
+      code: 'fleet_scope_missing',
+      reason: 'member has no authored claim spec',
+      scope: { fleetSlug: 'unconfigured', ownerId: 'su-member', fleetRole: 'member', record: { spec: { specId: 'unconfigured', revision: 1 } } },
+    };
+    admission.findLinked.mockResolvedValue({ id: 'WI-2024456', harness: 'papercusp' } as never);
+    admission.linkedDecision = { allowed: true, scoped: true, scope: admission.decision.scope };
+
+    const b = await body({ plan: 'ops', item: 'P-001', assignee: 'builder' });
+
+    expect(b.results[0]).toMatchObject({ ok: false, plan: 'ops', item: 'P-001' });
+    expect(b.results[0].refused).toMatch(/fleet_scope_missing/);
+    expect(findLinkedM).not.toHaveBeenCalled();
+    expect(linkedAdmissionM).not.toHaveBeenCalled();
+    expect(assignM).not.toHaveBeenCalled();
   });
 
   // EI-2295 (push-assign leg): re-assigning an already-DONE/dropped item is a no-op
