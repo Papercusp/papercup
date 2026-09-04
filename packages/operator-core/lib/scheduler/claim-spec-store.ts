@@ -539,6 +539,29 @@ async function auditClaimAttempt(
   }
 }
 
+/**
+ * WI-7316: deliver one post-claim plan-lane bounce to the caller's `onPlanLaneBlocked` hook.
+ *
+ * Extracted from the bounce path — and exported — for one reason: the only claim this code makes
+ * that could be WRONG is that a caller-supplied callback cannot break the shared claim path. That
+ * matters because the release + audit that follow it are what keep a bounced row claimable by the
+ * next agent; a throw escaping here would strand the row claimed-but-unreleased for its whole
+ * lease. Inline in getNextForBee that claim is unreachable by any test that does not stand up a
+ * real claim against PG, so it would have shipped asserted-but-unverified. Here it is three lines
+ * and a unit test.
+ */
+export function notifyPlanLaneBlocked(
+  onPlanLaneBlocked: ((block: PlanItemLaneBlock & { workItemId: string }) => void) | undefined,
+  block: PlanItemLaneBlock,
+  workItemId: string,
+): void {
+  try {
+    onPlanLaneBlocked?.({ ...block, workItemId });
+  } catch {
+    /* observability only — never in the admission decision */
+  }
+}
+
 /** The bee's get_next: claim the next work-item per the bee's stored spec (the global floors always apply). */
 export async function getNextForBee(args: {
   cupId: string;
@@ -786,11 +809,7 @@ export async function getNextForBee(args: {
     // Defensive: a caller-supplied callback must never be able to break the shared claim path
     // (the audit + release below MUST still run), so a throw here is swallowed exactly like
     // every other observability call in this function.
-    try {
-      args.onPlanLaneBlocked?.({ ...blocked, workItemId: result.workItem.id });
-    } catch {
-      /* observability only — never in the admission decision */
-    }
+    notifyPlanLaneBlocked(args.onPlanLaneBlocked, blocked, result.workItem.id);
     await auditClaimAttempt({
       workspaceId: args.workspaceId,
       harnessSlug: args.harness,
