@@ -1,0 +1,9 @@
+{
+  "contractVersion": "papercusp-bootc-bake-v1",
+  "image": "127.0.0.1:5096/papercusp/workspace-host",
+  "tag": "papercusp-workspace-host-20260904",
+  "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "pinnedRef": "127.0.0.1:5096/papercusp/workspace-host@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "registryNamespace": "127.0.0.1:5096/papercusp",
+  "clouds": [{"cloud":"gcp","type":"gce","artifact":"./.bake-out/gcp/image/disk.raw"}, {"cloud":"aws","type":"ami","artifact":"./.bake-out/aws/image/disk.raw"}, {"cloud":"azure","type":"vhd","artifact":"./.bake-out/azure/vhd/disk.vhd"}]
+}
