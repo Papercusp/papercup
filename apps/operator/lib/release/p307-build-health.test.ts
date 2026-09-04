@@ -9,7 +9,7 @@
  * exited, zombie, and live-idle processes.
  */
 import { spawnSync } from 'node:child_process';
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -142,6 +142,55 @@ wait "$pid" 2>/dev/null || true
     );
 
     expectSuccessfulHarness(result);
+  });
+});
+
+describe('P-307 diagnostic mount ownership (EI-22359882088161242)', () => {
+  it('scans process owners once and does not infer ownership from a shared mount namespace', () => {
+    const root = tempRoot('p307-mount-owners-');
+    const proc = join(root, 'proc');
+    const bin = join(root, 'bin');
+    const reads = join(root, 'comm-reads');
+    mkdirSync(bin);
+    writeFileSync(reads, '');
+    writeFileSync(join(bin, 'cat'), `#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in "$PROC_FIXTURE"/*/comm) printf 'read\\n' >> "$COMM_READS";; esac
+done
+exec /bin/cat "$@"
+`, { mode: 0o755 });
+    for (let pid = 100; pid < 140; pid++) {
+      mkdirSync(join(proc, String(pid)), { recursive: true });
+      writeFileSync(join(proc, String(pid), 'comm'), 'unrelated\n');
+    }
+    writeFileSync(join(proc, '100', 'stat'), '100 (podman) S 0 0 0\n');
+    const targets = Array.from({ length: 8 }, (_, i) => `/var/lib/containers/storage/overlay/layer${i}/merged`);
+    const missing = '/var/lib/containers/storage/overlay/missing/merged';
+    const mountinfo = [...targets, missing].map((target, i) =>
+      `${i + 1} 0 0:1 / ${target} rw - fuse.fuse-overlayfs fuse-overlayfs rw`,
+    ).join('\n') + '\n';
+    writeFileSync(join(proc, '100', 'mountinfo'), mountinfo);
+    targets.forEach((target, i) => {
+      const dir = join(proc, String(900 + i));
+      mkdirSync(dir);
+      writeFileSync(join(dir, 'comm'), 'fuse-overlayfs\n');
+      writeFileSync(join(dir, 'cmdline'), ['fuse-overlayfs', '-o', 'lowerdir=/base', target, ''].join('\0'));
+      // All processes see all mounts; visibility alone is not proof of ownership.
+      writeFileSync(join(dir, 'mountinfo'), mountinfo);
+    });
+    const result = spawnSync('bash', [P307_SCRIPT, '--pid', '100', '--snapshot'], {
+      encoding: 'utf8', timeout: 20_000,
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PROC_FIXTURE: proc,
+        P307_BUILD_HEALTH_PROC_ROOT: proc, COMM_READS: reads },
+    });
+    const output = expectSuccessfulHarness(result);
+    targets.forEach((target, i) => {
+      const line = output.split('\n').find((entry) => entry.includes(`target=${target} `));
+      expect(line).toContain(`owner_pid=${900 + i} `);
+    });
+    expect(output.split('\n').find((entry) => entry.includes(`target=${missing} `))).toContain('owner_pid=unknown');
+    const externalReads = readFileSync(reads, 'utf8').split('\n').filter(Boolean).length;
+    expect(externalReads).toBeLessThanOrEqual(48);
   });
 });
 

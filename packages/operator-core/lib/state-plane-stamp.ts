@@ -89,18 +89,45 @@ import { canReadCell, type CellReader, type CellSpec } from './cell-registry';
  * missing; or the walk could not continue because a segment is not an object.
  *
  * `missingAt` names the first segment that failed, which is what makes a drifted
- * registration diagnosable instead of merely absent.
+ * registration diagnosable instead of merely absent. Callers that need to preserve
+ * nullable-cell semantics may opt into `nullTerminatedAt`, which distinguishes a
+ * path below an explicit null parent from a genuinely missing key without changing
+ * the default result shape.
  *
  * TOTAL — never throws. A getter that throws or a proxy that rejects reports as missing
  * at that segment, which is the safe direction: no stamp rather than a wrong one.
  */
-export function pathExists(obj: unknown, path: string): { exists: boolean; value: unknown; missingAt?: string } {
+export interface PathExistsOptions {
+  /** Report the explicit null parent that stopped an otherwise-present path walk. */
+  reportNullTermination?: boolean;
+}
+
+export interface PathExistsResult {
+  exists: boolean;
+  value: unknown;
+  missingAt?: string;
+  /** The present parent path whose explicit null value stopped this walk. */
+  nullTerminatedAt?: string;
+}
+
+export function pathExists(
+  obj: unknown,
+  path: string,
+  options: PathExistsOptions = {},
+): PathExistsResult {
   let cur: unknown = obj;
   const segs = path.split('.');
   for (let i = 0; i < segs.length; i++) {
     const seg = segs[i]!;
     if (cur === null || cur === undefined || (typeof cur !== 'object' && typeof cur !== 'function')) {
-      return { exists: false, value: undefined, missingAt: segs.slice(0, i + 1).join('.') };
+      return {
+        exists: false,
+        value: undefined,
+        missingAt: segs.slice(0, i + 1).join('.'),
+        ...(options.reportNullTermination && cur === null && i > 0
+          ? { nullTerminatedAt: segs.slice(0, i).join('.') }
+          : {}),
+      };
     }
     let has = false;
     try {

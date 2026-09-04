@@ -161,38 +161,34 @@ process_tree() {
   done
 }
 
-mount_owner_pid() {
-  local mountpoint="$1" comm_file owner_pid comm cmdline owner_mountinfo
-  # fuse-overlayfs normally receives its mountpoint as the final argv element.
-  # Matching that exact path is stronger than choosing an arbitrary process in
-  # the same namespace when several builds are concurrent.
+declare -A MOUNT_OWNER_BY_TARGET=()
+
+index_mount_owners() {
+  local comm_file owner_pid comm mountpoint
+  local -a owner_argv=()
+  MOUNT_OWNER_BY_TARGET=()
+  # Scan /proc once per snapshot, using shell reads instead of spawning one
+  # cat per process per mount. Only a fuse process's exact final argv element
+  # establishes ownership. Seeing a mount in its namespace does not: peers in
+  # the same namespace see each other's mounts too.
   for comm_file in "$PROC_ROOT"/*/comm; do
     [ -r "$comm_file" ] || continue
     owner_pid="${comm_file%/comm}"
     owner_pid="${owner_pid##*/}"
     is_uint "$owner_pid" || continue
-    comm="$(cat "$comm_file" 2>/dev/null || true)"
+    IFS= read -r comm 2>/dev/null < "$comm_file" || continue
     [ "$comm" = "fuse-overlayfs" ] || continue
-    cmdline="$(tr '\0' ' ' < "$(proc_file "$owner_pid" /cmdline)" 2>/dev/null || true)"
-    if [[ "$cmdline" == *"$mountpoint"* ]]; then
-      printf '%s\n' "$owner_pid"
-      return 0
-    fi
-    # Some fuse-overlayfs builds do not retain the mountpoint in argv.  A
-    # mountinfo match in the owner's namespace is the next-best exact match.
-    owner_mountinfo="$(proc_file "$owner_pid" /mountinfo)"
-    if [ -r "$owner_mountinfo" ] && grep -Fq " $mountpoint " "$owner_mountinfo" 2>/dev/null; then
-      printf '%s\n' "$owner_pid"
-      return 0
+    owner_argv=()
+    mapfile -d '' -t owner_argv 2>/dev/null < "$PROC_ROOT/$owner_pid/cmdline" || continue
+    [ "${#owner_argv[@]}" -gt 0 ] || continue
+    mountpoint="${owner_argv[${#owner_argv[@]}-1]}"
+    [[ "$mountpoint" = /* ]] || continue
+    if [ -n "${MOUNT_OWNER_BY_TARGET[$mountpoint]+present}" ]; then
+      MOUNT_OWNER_BY_TARGET["$mountpoint"]=unknown
+    else
+      MOUNT_OWNER_BY_TARGET["$mountpoint"]="$owner_pid"
     fi
   done
-  printf '%s\n' "unknown"
-}
-
-mount_owner_comm() {
-  local owner_pid="$1"
-  [ "$owner_pid" != "unknown" ] || { printf '%s\n' "unknown"; return 0; }
-  cat "$(proc_file "$owner_pid" /comm)" 2>/dev/null || printf '%s\n' "unknown"
 }
 
 report_mounts() {
@@ -203,6 +199,7 @@ report_mounts() {
     echo "P307_BUILD_HEALTH fuse_overlay_mounts=unavailable pid=$pid"
     return 0
   fi
+  index_mount_owners
 
   while IFS= read -r line; do
     [[ "$line" == *" - "* ]] || continue
@@ -218,8 +215,9 @@ report_mounts() {
       && [[ "$mountpoint" != "$STORAGE_ROOT"/overlay/*/merged ]]; then
       continue
     fi
-    owner_pid="$(mount_owner_pid "$mountpoint")"
-    owner_comm="$(mount_owner_comm "$owner_pid" | one_line)"
+    owner_pid="${MOUNT_OWNER_BY_TARGET[$mountpoint]:-unknown}"
+    owner_comm=unknown
+    [ "$owner_pid" = unknown ] || owner_comm=fuse-overlayfs
     echo "P307_BUILD_HEALTH fuse_overlay_mount mount_id=$mount_id target=$mountpoint fs=$fs_type source=$source owner_pid=$owner_pid owner_comm=$owner_comm"
     count=$((count + 1))
   done < "$mountinfo"

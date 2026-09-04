@@ -95,6 +95,12 @@ export type {
   CompletionTreeStampForEvidenceProbe,
 } from './completion-freshness';
 
+// EI-22361433147291495: completion validation + convergence legitimately took
+// 61.8s in the proxy continuation lane. Declare the established long-handler
+// budget so the MCP transport uses 125s (timeout + its 5s buffer) instead of
+// cutting the idempotent mutation off at the flat 55s boundary.
+export const WORK_ITEMS_COMPLETE_TIMEOUT_SEC = 120;
+
 /**
  * EI-22166138797743784: completion settlement is local-only. A proposed close whose
  * content identity is merely waiting for this install's git-sync can converge without
@@ -4006,6 +4012,7 @@ export default defineTool({
   // plans:set-status. Inert except in the dispatch abort-race branch (dispatch-stack.ts).
   idempotent: true,
   requirePrincipal: false,
+  timeoutSec: WORK_ITEMS_COMPLETE_TIMEOUT_SEC,
   // EI-20194230704550984: completion owns its workspace-scoped reads/writes and
   // does not use ctx.tx. Keeping the dispatcher's ambient transaction open while
   // the completion ledger and finish legs await can exhaust the org-app pool and

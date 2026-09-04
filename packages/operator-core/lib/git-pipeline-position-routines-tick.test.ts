@@ -89,6 +89,22 @@ describe('WI-6659: routinesTick-dispatched modules are classified bg-host', () =
     expect(owners![0].restartTarget).toBe('bg-host');
   });
 
+  it('classifies the fleet-control reconcile helper by its bg-host caller', () => {
+    // EI-22090053297465523: this helper is dynamically imported by the registered
+    // fleet-transition-sweep action, so it runs in bg-host even though its filename
+    // does not match the routine action/sweep naming conventions.
+    const owners = classifyRuntimeOwners(
+      'packages/operator-core/lib/harness/routines/fleet-control-reconcile.ts',
+    );
+    expect(owners).toHaveLength(1);
+    expect(owners![0]).toMatchObject({
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+    });
+    expect(owners![0].activation).toMatch(/dev:restart.*bg-host/s);
+  });
+
   it.each([
     'packages/operator-core/lib/harness/routines/loop-unreachable-guard.ts',
     'packages/operator-core/lib/harness/routines/pty-host-wedge-guard.ts',

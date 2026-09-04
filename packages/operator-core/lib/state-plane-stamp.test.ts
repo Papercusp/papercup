@@ -50,6 +50,26 @@ describe('pathExists — MISSING is not NULL', () => {
     expect(pathExists({ a: null }, 'a.b').missingAt).toBe('a.b');
   });
 
+  it('can distinguish an explicit null parent from a missing key on request', () => {
+    expect(pathExists({ a: null }, 'a.b', { reportNullTermination: true })).toEqual({
+      exists: false,
+      value: undefined,
+      missingAt: 'a.b',
+      nullTerminatedAt: 'a',
+    });
+    expect(pathExists({ a: {} }, 'a.b', { reportNullTermination: true })).toEqual({
+      exists: false,
+      value: undefined,
+      missingAt: 'a.b',
+    });
+    // Root null is a malformed/empty payload, not an explicit parent field.
+    expect(pathExists(null, 'a.b', { reportNullTermination: true })).toEqual({
+      exists: false,
+      value: undefined,
+      missingAt: 'a',
+    });
+  });
+
   it('does NOT see inherited properties — own-key only', () => {
     // `toString` resolves through the prototype chain; a stamp keyed on it would be a
     // phantom. This is why the walk uses hasOwnProperty rather than an `in` test.

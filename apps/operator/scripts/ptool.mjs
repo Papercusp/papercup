@@ -1151,11 +1151,12 @@ export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = 915_000;
 // cutoff — instead of pre-empting both.
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
-// work_items:complete can spend the full dispatcher/transport window validating
-// evidence and releasing the claim. Keep this client deadline above the 60s
-// foreground boundary so a committed completion returns its typed receipt
-// instead of becoming outcome-unknown at the client.
-export const PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS = 70_000;
+// EI-22361433147291495: work_items:complete declares a 120s server budget after
+// a legitimate proxy continuation took 61.8s. The MCP transport adds its 5s
+// handler buffer, so keep this client deadline above the effective 125s boundary
+// and let a committed completion return its typed receipt instead of becoming
+// outcome-unknown at the client.
+export const PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS = 130_000;
 
 // `work_items:create` performs deduplication, goal/fleet admission, the
 // create+claim transaction, links, and lifecycle emission before returning.

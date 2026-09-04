@@ -108,6 +108,7 @@ vi.mock('../../grading-integrity', () => ({
 
 import { z } from 'zod';
 import complete, {
+  WORK_ITEMS_COMPLETE_TIMEOUT_SEC,
   claimsUniversalVerification,
   contentIdentityAdviceForOrigin,
   hasEnumeratedVerificationCoverage,
@@ -366,6 +367,13 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
 describe('work_items:complete idempotent-completion opt-in (EI-11507)', () => {
   it('declares idempotent:true so a committed-but-slow completion surfaces success, not a false timeout', () => {
     expect((complete as { idempotent?: boolean }).idempotent).toBe(true);
+  });
+});
+
+describe('work_items:complete deadline budget (EI-22361433147291495)', () => {
+  it('declares the 120s server budget that the MCP transport extends to 125s', () => {
+    expect(WORK_ITEMS_COMPLETE_TIMEOUT_SEC).toBe(120);
+    expect((complete as { timeoutSec?: number }).timeoutSec).toBe(WORK_ITEMS_COMPLETE_TIMEOUT_SEC);
   });
 });
 
