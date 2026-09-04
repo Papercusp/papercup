@@ -138,9 +138,13 @@ describe('P-012: the guard is falsifiable — deliberately broken pairings again
 
   it('names EVERY unpaired count and list when the pairing is removed — the defect, by path', () => {
     const v = measurednessViolations(brokenPairing(undefined), MEASURED_EMPTY);
-    expect(v.map((x) => x.kind)).toEqual(['unpaired-count-or-list', 'unpaired-count-or-list', 'unpaired-count-or-list', 'unpaired-count-or-list', 'unpaired-count-or-list']);
+    expect(v.map((x) => x.kind)).toEqual(['unpaired-count-or-list', 'unpaired-count-or-list', 'unpaired-count-or-list', 'unpaired-count-or-list', 'unpaired-count-or-list', 'unpaired-count-or-list']);
     expect(v.map((x) => x.path)).toEqual([
       'gate.candidateFailures.stillBrokenCount',
+      // EI-22260078732220798: the qualifier is a count too, so removing the pairing must name
+      // it as well — otherwise the guard would go quiet on exactly the field whose silent
+      // zero this pairing exists to distinguish from "never measured".
+      'gate.candidateFailures.stillBrokenNeedsRunCount',
       'gate.candidateFailures.distinctFailingFiles',
       'gate.candidateFailures.filesJudged',
       'gate.candidateFailures.nonTestLegs.perLeg',
@@ -157,6 +161,7 @@ describe('P-012: the guard is falsifiable — deliberately broken pairings again
       MEASURED_EMPTY,
     );
     expect(v.map((x) => x.path)).toEqual([
+      'gate.candidateFailures.stillBrokenNeedsRunCount',
       'gate.candidateFailures.distinctFailingFiles',
       'gate.candidateFailures.filesJudged',
       'gate.candidateFailures.nonTestLegs.perLeg',
