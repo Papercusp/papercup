@@ -875,7 +875,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     };
     deps.frozenRepairFixerAlive = async () => false;
     deps.finalizeFrozenRepairWorktree = async () => null;
-    deps.stagingContainsFrozenRepair = async () => true;
     deps.prepareFrozenRepairWorktree = async () => {};
     deps.dispatchFrozenRepairFixer = async () => {
       calls.push("dispatch");
@@ -1284,31 +1283,34 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(renewals).toBe(renewalsAfterSettlement);
   });
 
-  it("requeues a queue-authorized fixer when the frozen patch mismatches staging, then promotes only the aligned head", async () => {
+  it("P-005: a repair head whose signature the runners cannot narrow is judged by the FULL gate at the repair head — never re-queued for staging alignment, never at tip", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "2", "frozen candidate");
     const repaired = await commit("b", "3", "forward repair");
-    const aligned = await commit("b", "4", "staging-aligned repair");
+    // The repair is NOT on staging: staging fixed nothing and moved on. Pre-P-005 this exact
+    // shape was re-queued as `repair-staging-mismatch` for an "alignment fixer" — the lineage
+    // was required to be observable on staging before it could be judged. It no longer is.
+    await git(repo, ["reset", "--hard", ready]);
+    const stagingTip = await commit("c", "4", "later staging work");
     const now = Date.now();
     let queue: FrozenCandidateRepairQueue | null = {
-      schemaVersion: 1,
-      phase: "awaiting-fixer",
+      schemaVersion: 3,
+      phase: "ready-to-verify",
       candidate: frozen,
       base: ready,
-      repairHead: frozen,
+      repairHead: repaired,
       affectedTestProofGroup: "initial-proof-run",
       worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 1,
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
       fixerSpawnId: "fixer-1",
+      // A bare file path with no workspace beside it: the file rescue cannot locate it, so
+      // nothing is selectively re-runnable and the full gate at the repair head decides.
       failingTests: ["lib/broken.test.ts"],
     };
-    let patchOnStaging = false;
     let cleanupCount = 0;
-    const finalizedHeads = [repaired, aligned];
-    const dispatchedHeads: string[] = [];
     let verificationExecution: Parameters<CheckpointDeps["runGreen"]>[2];
     const { deps, calls } = stubDeps(true);
     deps.runId = "verifier-run";
@@ -1322,95 +1324,42 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.finalizeFrozenRepairWorktree = async () =>
-      finalizedHeads.shift() ?? aligned;
-    deps.prepareFrozenRepairWorktree = async () => {};
-    deps.dispatchFrozenRepairFixer = async (next) => {
-      dispatchedHeads.push(next.repairHead);
-      return { spawnId: "fixer-2", runId: "fixer-run-2" };
-    };
-    deps.stagingContainsFrozenRepair = async () => patchOnStaging;
+    deps.resolveTip = async () => stagingTip;
     deps.cleanupFrozenRepairWorktree = async () => {
       cleanupCount += 1;
     };
 
-    const held = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
-    expect(held).toMatchObject({
-      green: null,
-      reason: "repair-staging-mismatch",
-      candidate: frozen,
-      frozenCandidate: frozen,
-      repairHead: repaired,
-      verdictProvenance: {
-        currentStatus: "no-suite",
-        frozenCandidateVerdict: "full-gate-red",
-        repairHeadVerdict: "not-judged",
-      },
-      repairQueue: {
-        candidate: frozen,
-        repairHead: repaired,
-        phase: "awaiting-fixer",
-        fixerSpawnId: null,
-        failingTests: ["repair-staging-mismatch", "lib/broken.test.ts"],
-      },
-    });
-    expect(queue).toMatchObject({
-      candidate: frozen,
-      repairHead: repaired,
-      phase: "awaiting-fixer",
-      fixerSpawnId: null,
-    });
-    expect(calls).not.toContain("runGreen");
-    expect(await revParse(repo, "ready")).toBe(ready);
-
-    const retry = await runGreenCheckpoint(cfg(), deps, { noPush: true });
-    expect(retry).toMatchObject({
-      green: null,
-      reason: "repair-in-progress",
-      candidate: frozen,
-      frozenCandidate: frozen,
-      repairHead: repaired,
-      verdictProvenance: {
-        currentStatus: "no-suite",
-        repairHeadVerdict: "not-judged",
-      },
-      repairQueue: {
-        phase: "awaiting-fixer",
-        repairHead: repaired,
-        attempts: 2,
-        fixerSpawnId: "fixer-2",
-      },
-    });
-    expect(dispatchedHeads).toEqual([repaired]);
-    expect(calls).not.toContain("runGreen");
-
-    patchOnStaging = true;
-    const promoted = await runGreenCheckpoint(cfg(), deps, { noPush: true });
-
-    expect(promoted).toMatchObject({
+    expect(result).toMatchObject({
       advanced: true,
       green: true,
       reason: "advanced",
-      candidate: aligned,
+      candidate: repaired,
       from: ready,
     });
+    expect(result.candidate).not.toBe(stagingTip);
+    expect(calls).toContain(`setup:${repaired.slice(0, 7)}`);
+    expect(calls).not.toContain(`setup:${stagingTip.slice(0, 7)}`);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
     expect(verificationExecution).toMatchObject({
-      candidate: aligned,
+      candidate: repaired,
       affectedTestProofGroup: "initial-proof-run",
     });
-    expect(await revParse(repo, "ready")).toBe(aligned);
+    expect(await revParse(repo, "ready")).toBe(repaired);
     expect(queue).toBeNull();
     expect(cleanupCount).toBe(1);
   });
 
-  it("clears a patch-mismatched queue only after every original failure passes on one stable staging tip", async () => {
+  it("P-005: every signature entry is re-run AT the repair head — never the tip — and a selective green proceeds to the full gate at that same head", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
     const repaired = await commit("b", "fixed", "isolated repair");
 
+    // Staging fixed the same thing independently and moved on. Pre-P-005 the queue's signature
+    // was re-run at THIS tip and, on a pass, the queue was retired and the gate re-cut at the
+    // tip — the treadmill. Now the tip is never even resolved on this path.
     await git(repo, ["reset", "--hard", ready]);
     await commit("b", "fixed independently", "canonical independent fix");
     const stagingTip = await commit("c", "3", "later staging work");
@@ -1441,19 +1390,23 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.stagingContainsFrozenRepair = async () => false;
-    deps.resolveTip = async () => stagingTip;
+    // FALSIFIER: the pre-P-005 path resolved the tip here (and its `.catch(() => null)` turned a
+    // throw into a `repair-staging-mismatch` re-queue), so this recorder is red on that code.
+    deps.resolveTip = async () => {
+      calls.push("resolveTip");
+      throw new Error("the frozen lineage never resolves the tip");
+    };
     deps.runTestsAtRef = async (ref, files) => {
       retestedRefs.push(ref);
       expect(files).toEqual([
         { workspace: "@papercusp/web", file: "lib/broken.test.ts" },
       ]);
-      return { pass: true, summary: "file failure resolved" };
+      return { pass: true, summary: "file passes at the repair head" };
     };
     deps.runGateAtRef = async (ref, gateIds) => {
       retestedRefs.push(ref);
       expect(gateIds).toEqual(["lint:identity-leak"]);
-      return { pass: true, summary: "gate failure resolved" };
+      return { pass: true, summary: "gate passes at the repair head" };
     };
     deps.cleanupFrozenRepairWorktree = async () => {
       cleanupCount += 1;
@@ -1465,17 +1418,21 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       advanced: true,
       green: true,
       reason: "advanced",
-      candidate: stagingTip,
+      candidate: repaired,
       from: ready,
     });
-    expect(retestedRefs).toEqual([stagingTip, stagingTip]);
+    expect(result.candidate).not.toBe(stagingTip);
+    expect(retestedRefs).toEqual([repaired, repaired]);
+    expect(calls.slice(0, calls.indexOf("runGreen"))).not.toContain("resolveTip");
+    expect(calls).toContain(`setup:${repaired.slice(0, 7)}`);
+    expect(calls).not.toContain(`setup:${stagingTip.slice(0, 7)}`);
     expect(queue).toBeNull();
     expect(cleanupCount).toBe(1);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
-    expect(await revParse(repo, "ready")).toBe(stagingTip);
+    expect(await revParse(repo, "ready")).toBe(repaired);
   });
 
-  it("keeps the transported quiet-cut candidate when an obsolete repair needs the full suite and staging tip is young", async () => {
+  it("P-005: an explicit transported candidate never displaces a ready-to-verify repair head — the full gate judges the repair head, not the quiet-cut target and not the tip", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
@@ -1505,9 +1462,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
       fixerSpawnId: "fixer-1",
-      // These are real full-gate task labels, but deliberately not eligible for the
-      // narrow file/gate rescue. Before EI-211596 they pinned the queue forever on an
-      // exact patch even though the only complete proof — the full suite — was available.
+      // Real full-gate task labels that the narrow file/gate runners cannot re-run: the full
+      // gate is the only complete proof — and it runs at the REPAIR HEAD. Pre-P-005 this shape
+      // retired the queue and judged the transported quiet-cut target instead.
       failingTests: [
         "@papercusp/desktop",
         "papercusp-desktop :: cargo test",
@@ -1521,7 +1478,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.stagingContainsFrozenRepair = async () => false;
     deps.resolveTip = async () => youngStagingTip;
     deps.cleanupFrozenRepairWorktree = async () => {
       cleanupCount += 1;
@@ -1536,23 +1492,26 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       advanced: true,
       green: true,
       reason: "advanced",
-      candidate: transportedQuietCut,
+      candidate: repaired,
       from: ready,
     });
+    expect(result.candidate).not.toBe(transportedQuietCut);
+    expect(result.candidate).not.toBe(youngStagingTip);
+    expect(calls).toContain(`setup:${repaired.slice(0, 7)}`);
+    expect(calls).not.toContain(`setup:${transportedQuietCut.slice(0, 7)}`);
     expect(queue).toBeNull();
     expect(cleanupCount).toBe(1);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
-    expect(await revParse(repo, "ready")).toBe(transportedQuietCut);
-    expect(result.candidate).not.toBe(youngStagingTip);
+    expect(await revParse(repo, "ready")).toBe(repaired);
   });
 
-  it("WI-2143595: when the repair needs the full suite and the repairHead is a CONVERGED staging commit, the full gate judges that head — not the moving tip", async () => {
+  it("P-005 (was WI-2143595): a mixed signature the runners cannot narrow runs the full gate at the repair head — not the moving tip", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
-    // `release:repair-queue converge` fast-forwarded the repairHead onto the judged lineage:
-    // the fix is a STAGING commit descending from the frozen candidate — and staging kept
-    // moving underneath it.
+    // The repair head happens to be a STAGING commit here (the pre-D-004 convergence shape) —
+    // and staging kept moving underneath it. Under P-005 that ancestry is irrelevant: the
+    // repair head is judged at its own sha whether or not staging can see it.
     const converged = await commit("b", "fixed on staging", "peer fix converged");
     const stagingTip = await commit("c", "3", "later staging work");
     const now = Date.now();
@@ -1568,9 +1527,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       openedAtMs: now - 1_000,
       updatedAtMs: now - 500,
       fixerSpawnId: "fixer-1",
-      // A MIXED red: one file plus one entry the narrow file/gate rescue cannot re-run, so the
-      // outcome proof is `full-suite-required` (the 2026-09-03T18:23Z shape: 13 files + a cargo
-      // and a seed-check entry).
+      // A MIXED red: one file plus one entry the narrow file/gate runners cannot re-run, so
+      // nothing selective is measured and the full gate at the repair head decides (the
+      // 2026-09-03T18:23Z shape: 13 files + a cargo and a seed-check entry).
       failingTests: ["lib/broken.test.ts", "papercusp-desktop :: cargo test"],
     };
     const { deps, calls } = stubDeps(true);
@@ -1582,7 +1541,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.stagingContainsFrozenRepair = async () => false;
     deps.resolveTip = async () => stagingTip;
     deps.cleanupFrozenRepairWorktree = async () => {
       cleanupCount += 1;
@@ -1590,9 +1548,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
 
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
-    // Pre-fix this was `stagingTip`: the queue was retired and a FRESH candidate cut at the
-    // tip, re-admitting every commit between the converged head and the tip (the D-007
-    // treadmill). The converged head is what the freeze was protecting; judge it.
+    // Pre-WI-2143595 this was `stagingTip`: the queue was retired and a FRESH candidate cut at
+    // the tip, re-admitting every commit between the repair head and the tip (the D-007
+    // treadmill). The repair head is what the freeze was protecting; judge it.
     expect(result).toMatchObject({
       advanced: true,
       green: true,
@@ -1604,26 +1562,26 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(calls).toContain(`setup:${converged.slice(0, 7)}`);
     expect(calls).not.toContain(`setup:${stagingTip.slice(0, 7)}`);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
-    // The exact-patch queue is still retired (its patch identity is obsolete either way).
     expect(queue).toBeNull();
     expect(cleanupCount).toBe(1);
     expect(await revParse(repo, "ready")).toBe(converged);
     expect(
       logs.some((l) =>
-        l.includes("full canonical gate at that converged head"),
+        l.includes("the full gate at repair head"),
       ),
     ).toBe(true);
   });
 
-  it("WI-2143595 CONTROL: an ISOLATED repair (not on staging) that needs the full suite still yields to the canonical tip — main may only fast-forward to a staging commit", async () => {
+  it("P-005 (inverts the WI-2143595 control): an ISOLATED repair head — not on staging — is judged at ITS OWN sha and never yields to the tip", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
     const repaired = await commit("b", "fixed", "isolated repair");
 
-    // The repair lives only in the isolated worktree lineage; canonical staging fixed the
-    // same thing independently and moved on. `repaired` descends from the frozen candidate
-    // but is NOT an ancestor of the tip, so it must not become the release candidate.
+    // The repair lives only on the frozen lineage; canonical staging fixed the same thing
+    // independently and moved on. `repaired` descends from the frozen candidate but is NOT an
+    // ancestor of the tip. Pre-P-005 that made it yield to the tip ("main may only fast-forward
+    // to a staging commit"); under D-004 the frozen lineage IS what main promotes.
     await git(repo, ["reset", "--hard", ready]);
     await commit("b", "fixed independently", "canonical independent fix");
     const stagingTip = await commit("c", "3", "later staging work");
@@ -1648,7 +1606,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.stagingContainsFrozenRepair = async () => false;
     deps.resolveTip = async () => stagingTip;
     deps.cleanupFrozenRepairWorktree = async () => {};
 
@@ -1658,17 +1615,17 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       advanced: true,
       green: true,
       reason: "advanced",
-      candidate: stagingTip,
+      candidate: repaired,
       from: ready,
     });
-    expect(result.candidate).not.toBe(repaired);
-    expect(calls).toContain(`setup:${stagingTip.slice(0, 7)}`);
-    expect(calls).not.toContain(`setup:${repaired.slice(0, 7)}`);
+    expect(result.candidate).not.toBe(stagingTip);
+    expect(calls).toContain(`setup:${repaired.slice(0, 7)}`);
+    expect(calls).not.toContain(`setup:${stagingTip.slice(0, 7)}`);
     expect(queue).toBeNull();
-    expect(await revParse(repo, "ready")).toBe(stagingTip);
+    expect(await revParse(repo, "ready")).toBe(repaired);
   });
 
-  it("keeps the transported quiet-cut candidate when staging moves during selective outcome proof", async () => {
+  it("P-005: a gate-only signature is re-run AT the repair head; a moving tip is never consulted, and an explicit transported candidate never displaces the repair head", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
@@ -1714,12 +1671,16 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.stagingContainsFrozenRepair = async () => false;
-    deps.resolveTip = async () => resolvedTips.shift() ?? proofTipAfter;
+    // A moving tip. Pre-P-005 the selective proof ran at `proofTipBefore` and the move to
+    // `proofTipAfter` was a `tip-moved` arm; now neither is ever resolved on this path.
+    deps.resolveTip = async () => {
+      calls.push("resolveTip");
+      return resolvedTips.shift() ?? proofTipAfter;
+    };
     deps.runGateAtRef = async (ref, gateIds) => {
       gateRefs.push(ref);
       expect(gateIds).toEqual(["lint:tsc"]);
-      return { pass: true, summary: "selective proof passed" };
+      return { pass: true, summary: "gate passes at the repair head" };
     };
     deps.cleanupFrozenRepairWorktree = async () => {
       cleanupCount += 1;
@@ -1734,14 +1695,16 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       advanced: true,
       green: true,
       reason: "advanced",
-      candidate: transportedQuietCut,
+      candidate: repaired,
       from: ready,
     });
-    expect(gateRefs).toEqual([proofTipBefore]);
+    expect(gateRefs).toEqual([repaired]);
+    expect(calls.slice(0, calls.indexOf("runGreen"))).not.toContain("resolveTip");
     expect(queue).toBeNull();
     expect(cleanupCount).toBe(1);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
-    expect(await revParse(repo, "ready")).toBe(transportedQuietCut);
+    expect(await revParse(repo, "ready")).toBe(repaired);
+    expect(result.candidate).not.toBe(transportedQuietCut);
     expect(result.candidate).not.toBe(proofTipBefore);
     expect(result.candidate).not.toBe(proofTipAfter);
   });
@@ -1841,7 +1804,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.stagingContainsFrozenRepair = async () => true;
     deps.cleanupFrozenRepairWorktree = async () => {};
     const pushedCandidates: string[] = [];
     const advancedCandidates: string[] = [];
@@ -1969,7 +1931,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.stagingContainsFrozenRepair = async () => true;
     deps.prepareFrozenRepairWorktree = async () => {};
     deps.dispatchFrozenRepairFixer = async (next) => {
       dispatchedHeads.push(next.repairHead);
@@ -2036,7 +1997,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.stagingContainsFrozenRepair = async () => true;
     deps.convergeRepairHeadWithStaging = async (next) => {
       order.push("converge");
       return { ...next, repairHead: repaired };
@@ -2096,7 +2056,6 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.stagingContainsFrozenRepair = async () => true;
     deps.commitRepairWorktreeProgress = async (next, label) => {
       order.push(`progress:${next.repairHead}:${label}`);
       // Fail-soft contract: even a throwing snapshot must not fail the dispatch.
