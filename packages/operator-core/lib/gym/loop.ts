@@ -11,8 +11,10 @@
  * pipeline, real agents, or PG. The bounded budget is the unattended-spend guard
  * (D-019): the loop never exceeds `budgetUsd`.
  */
+import { createHash } from 'node:crypto';
 import { paretoFrontier } from './frontier';
 import { decideAccept, selectParent, type AcceptThresholds, type VariantEval } from './gate-engine';
+import type { GateResult } from './gates';
 import { selectParentQD } from './qd-selection';
 import { appendChangelog } from './changelog';
 import { circuitBreakerTripped } from './circuit-breaker';
@@ -46,6 +48,79 @@ export interface LoopConfig {
    * novelty search.
    */
   qualityDiversity?: { noveltyWeight: number };
+  /** Hashes pinned to the candidate-version verdict (P-002). */
+  provenance?: {
+    evaluatorHash: string;
+    rubricHash: string;
+    taskHash: string;
+    codeHash: string;
+  };
+}
+
+export interface CandidateVersionVerdict {
+  schemaVersion: 1;
+  candidateId: string;
+  parentId: string;
+  /** Complete candidate and parent overlays, captured before promotion. */
+  variant: VariantOverlay;
+  parent: VariantOverlay;
+  hashes: {
+    variantHash: string;
+    parentHash: string;
+    evaluatorHash: string;
+    rubricHash: string;
+    taskHash: string;
+    codeHash: string;
+  };
+  gateResults: readonly GateResult[];
+  verdict: 'accept' | 'reject' | 'inconclusive';
+  recordedAt: number;
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+    .join(',')}}`;
+}
+
+function sha256(value: unknown): string {
+  return createHash('sha256').update(stableJson(value)).digest('hex');
+}
+
+/** Build the immutable, hash-pinned verdict persisted with each changed-role proposal. */
+export function createCandidateVersionVerdict(input: {
+  candidateId: string;
+  parentId: string;
+  variant: VariantOverlay;
+  parent: VariantOverlay;
+  gateResults: readonly GateResult[];
+  recordedAt: number;
+  provenance?: LoopConfig['provenance'];
+}): CandidateVersionVerdict {
+  return {
+    schemaVersion: 1,
+    candidateId: input.candidateId,
+    parentId: input.parentId,
+    variant: input.variant,
+    parent: input.parent,
+    hashes: {
+      variantHash: sha256(input.variant),
+      parentHash: sha256(input.parent),
+      // The gate engine is declarative and versioned by this contract. Callers pin
+      // the remaining subject-specific hashes when wiring the live loop.
+      evaluatorHash: input.provenance?.evaluatorHash ?? 'unresolved',
+      rubricHash: input.provenance?.rubricHash ?? 'unresolved',
+      taskHash: input.provenance?.taskHash ?? 'unresolved',
+      codeHash: input.provenance?.codeHash ?? 'unresolved',
+    },
+    gateResults: input.gateResults,
+    verdict: input.gateResults.length === 0 ? 'inconclusive' : input.gateResults.every((g) => g.pass) ? 'accept' : 'reject',
+    recordedAt: input.recordedAt,
+  };
 }
 
 /** One candidate's reviewable record, handed to deps.recordProposal (gym UI). */
@@ -64,6 +139,8 @@ export interface LoopProposalRecord {
   probeStatus: string;
   /** The loop's own gate verdict — advisory for the human reviewer. */
   verdict: 'accept' | 'reject';
+  /** Immutable candidate-version evidence used by the promotion authority. */
+  candidateVersion: CandidateVersionVerdict;
 }
 
 export interface EvaluateResult {
@@ -272,6 +349,15 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
         costDelta: evalRes.evalResult.meanCost - config.baselineMeanCost,
         probeStatus: evalRes.evalResult.allProbesCaught ? 'pass' : 'fail',
         verdict: verdict.accept ? 'accept' : 'reject',
+        candidateVersion: createCandidateVersionVerdict({
+          candidateId,
+          parentId,
+          variant: proposal.overlay,
+          parent: parent.overlay,
+          gateResults: verdict.results,
+          recordedAt: now(),
+          provenance: config.provenance,
+        }),
       });
     }
 

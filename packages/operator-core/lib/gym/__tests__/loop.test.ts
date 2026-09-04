@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { runOptimizationLoop, type LoopConfig, type LoopDeps, type LoopProposalRecord } from '../loop';
+import { createCandidateVersionVerdict, runOptimizationLoop, type LoopConfig, type LoopDeps, type LoopProposalRecord } from '../loop';
 import type { VariantEval } from '../gate-engine';
 import type { CandidateProposal } from '../proposer';
 import { LlmCallError } from '@papercusp/testing-shell/llm';
@@ -89,9 +89,33 @@ describe('runOptimizationLoop', () => {
     expect(recorded[0].overlay.promptOverrides.worker).toBe('improved');
     expect(recorded[0].parentOverlay).toBeDefined();
     expect(recorded[0].verdict).toBe('accept'); // improving candidates accept
+    expect(recorded[0].candidateVersion.verdict).toBe('accept');
+    expect(recorded[0].candidateVersion.gateResults).toHaveLength(5);
+    expect(recorded[0].candidateVersion.hashes.variantHash).toMatch(/^[0-9a-f]{64}$/);
     expect(typeof recorded[0].devAnchorDelta).toBe('number');
     expect(calls).not.toContain('promote'); // human-gated: no external harness write
     expect(res.championId).toBe('cand-3'); // internal champion still advances
+  });
+
+  it('builds a reject verdict when any gate fails, regardless of dev-anchor movement', () => {
+    const verdict = createCandidateVersionVerdict({
+      candidateId: 'cand-1',
+      parentId: 'baseline',
+      variant: { promptOverrides: { worker: 'candidate' } },
+      parent: { promptOverrides: {} },
+      gateResults: [{ gate: 'no-new-regressions', pass: false, detail: 'regression' }],
+      recordedAt: 1,
+      provenance: { evaluatorHash: 'e', rubricHash: 'r', taskHash: 't', codeHash: 'c' },
+    });
+    expect(verdict.verdict).toBe('reject');
+    expect(verdict.hashes).toEqual({
+      variantHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      parentHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      evaluatorHash: 'e',
+      rubricHash: 'r',
+      taskHash: 't',
+      codeHash: 'c',
+    });
   });
 
   it('still auto-promotes by default (autoPromote undefined) + records when the dep is present', async () => {
