@@ -351,6 +351,30 @@ describe('published launch args schema', () => {
     }
   });
 
+  it('accepts top-level carry for an existing-fleet plan launch only', () => {
+    const fresh = launchAgent.args.safeParse({
+      fleet: 'existing-fleet',
+      plan: 'existing-plan',
+      carry: 'cold',
+    });
+    expect(fresh.success).toBe(true);
+    if (fresh.success) {
+      expect(fresh.data).toMatchObject({
+        fleet: 'existing-fleet',
+        plan: 'existing-plan',
+        carry: 'cold',
+      });
+    }
+
+    expect(
+      launchAgent.args.safeParse({
+        resume: { agentId: 'su-a1a71' },
+        brief: 'continue the recovery',
+        carry: 'cold',
+      }).success,
+    ).toBe(false);
+  });
+
   it('does not impose a local agent-count ceiling before governed admission', () => {
     expect(launchAgent.args.safeParse({ brief: 'wide governed fan-out', count: 64 }).success).toBe(true);
     expect(
@@ -471,6 +495,31 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     await launchAgent.handler({ brief: 'run as reviewer', role: 'reviewer' }, ctx);
 
     expect(spawnedCommand()).toContain('--role=reviewer');
+  });
+
+  it('propagates flat carry to an existing-fleet plan launch with per-member precedence', async () => {
+    const res = await launchAgent.handler(
+      {
+        fleet: 'existing-fleet',
+        plan: 'existing-plan',
+        carry: 'cold',
+        count: 2,
+        members: [{ carry: 'warm' }],
+      },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(false);
+    const commands = spawnConsoleMock.mock.calls.map(
+      ([opts]) => (opts as { envelope: { greetingCmd: string } }).envelope.greetingCmd,
+    );
+    expect(commands).toHaveLength(2);
+    expect(commands[0]).toContain('--fleet=existing-fleet');
+    expect(commands[0]).toContain('--plan=existing-plan');
+    expect(commands[0]).toContain('--carry=warm');
+    expect(commands[1]).toContain('--fleet=existing-fleet');
+    expect(commands[1]).toContain('--plan=existing-plan');
+    expect(commands[1]).toContain('--carry=cold');
   });
 
   it('lets a per-member role override the flat persona role', async () => {

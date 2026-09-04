@@ -273,9 +273,10 @@ export default defineTool({
       .number()
       .int()
       .positive()
-      .max(100)
       .optional()
-      .describe(`Max facts (default ${FACTS_LIST_DEFAULT_LIMIT}; explicit values are capped at ${FACTS_LIST_MAX_LIMIT} for the result-door budget).`),
+      .describe(
+        `Max facts (default ${FACTS_LIST_DEFAULT_LIMIT}; positive values are clamped to ${FACTS_LIST_MAX_LIMIT} for ordinary result-door pages). With all:true, the complete-population cap of ${FACTS_LIST_ALL_LIMIT} applies.`,
+      ),
     full: z
       .boolean()
       .optional()

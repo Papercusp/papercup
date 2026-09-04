@@ -1,10 +1,9 @@
 // @vitest-environment jsdom
 /**
- * PlanItemPreview.test.tsx — the cross-plan item detail pane. Covers the pure
- * buildPlanItemAttention mapper (needs-human vs plain action sets, the id/title/
- * harness/status shape, undefined-selected fallback) and the component branches:
+ * PlanItemPreview.test.tsx — the cross-plan item detail pane's component branches:
  * the no-selection empty state, loading, error, no-content, the rendered plan
- * editor, and the toolbar's "View full plan" handoff.
+ * editor, and the toolbar's "View full plan" handoff. The pure
+ * buildPlanItemAttention mapper is covered once in PlanItemPreview.test.ts.
  *
  * Seams: usePlan controllable; PlanEditor / PlanChat / the chat cards /
  * QueueCardActions / attention-card / plan-renderers / Tooltip / toast all
@@ -30,35 +29,7 @@ vi.mock('./attention-card', () => ({
 vi.mock('./plan-renderers', () => ({ scrollPlanTarget: () => false, stripFrontmatter: (s: string) => s }));
 vi.mock('@/app/harness/Tooltip', () => ({ Tooltip: ({ children }: { children: ReactNode }) => <>{children}</> }));
 
-import PlanItemPreview, { buildPlanItemAttention } from './PlanItemPreview';
-
-describe('buildPlanItemAttention', () => {
-  it('gives a needs-human item the full Answer/Resolve/Drop/Chat action set', () => {
-    const a = buildPlanItemAttention({ planSlug: 'p1', itemId: 'P-1', harnessSlug: 'h', selected: { id: 'P-1', text: 'Do thing', storedStatus: 'needs-human' } as never });
-    expect(a.id).toBe('plan-item:p1:P-1');
-    expect(a.needsHuman).toBe(true);
-    expect(a.actions.map((x) => x.id)).toEqual(['answer', 'mark-done', 'drop', 'chat']);
-    expect(a.title).toBe('Do thing');
-    expect(a.harnessSlug).toBe('h');
-  });
-  it('gives a plain item just the Chat action', () => {
-    const a = buildPlanItemAttention({ planSlug: 'p1', itemId: 'P-2', selected: { id: 'P-2', text: 'X', storedStatus: 'todo' } as never });
-    expect(a.needsHuman).toBe(false);
-    expect(a.actions.map((x) => x.id)).toEqual(['chat']);
-    // `undefined`, NOT `null` — plans-api's wire `AttentionItem` declares
-    // absent-able fields `?: T` so `=== null` is a TS2367 error rather than
-    // silently always-false (WI-7039/D-025). Same rationale as the sibling
-    // assertion in PlanItemPreview.test.ts; don't revert to toBeNull().
-    expect(a.harnessSlug).toBeUndefined();
-  });
-  it('falls back to the itemId title + empty body when nothing is selected', () => {
-    const a = buildPlanItemAttention({ planSlug: 'p1', itemId: 'P-3', selected: undefined });
-    expect(a.title).toBe('P-3');
-    expect(a.body).toBe('');
-    expect(a.status).toBe('');
-    expect(a.actions.map((x) => x.id)).toEqual(['chat']);
-  });
-});
+import PlanItemPreview from './PlanItemPreview';
 
 describe('PlanItemPreview component', () => {
   const onViewFullPlan = vi.fn();

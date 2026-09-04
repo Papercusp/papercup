@@ -269,19 +269,13 @@ export default defineTool({
     ],
     // EI-22084251948568820 cluster (+ EI-22078751749824171, EI-21575773427457407,
     // EI-21723773357897744): four independent reports of a top-level `carry` being
-    // rejected with an opaque "full anyOf schema, no field pointer" error — carry is
-    // genuinely NOT a top-level arg here (it lives on `members[i].carry`, and even
-    // there is only honored when the launch resolves a fleet), but this tool's
-    // union-shaped args schema previously left `unknownArgHint` unable to say so (see
-    // the `mergedSchemaProperties`/`leafIssueSummary` fix in tooldef/define-tool.ts).
-    // This redirect makes the failure self-correcting instead of a repeated filing.
+    // rejected with an opaque "full anyOf schema, no field pointer" error. Carry is
+    // a valid flat setting for a FRESH launch; source launches preserve the target
+    // loop/profile carry, while `members[i].carry` overrides the fresh flat value.
     argRedirects: {
       carry:
-        "loop:arm { carry } — set on the LAUNCHED agent's own recurring wake once it starts. " +
-        'A bare ad-hoc capability:launch-agent call has no top-level `carry` (it launches once; ' +
-        "it isn't a loop). For a FLEET launch put it per-member via `members[i].carry`, honored " +
-        'only when this launch resolves a fleet (an explicit `fleet`, or a resume/fork whose ' +
-        'target already has one) — prefer fleet:launch-on-plan when carry is the point.',
+        "For a FRESH launch, pass top-level `carry:'warm'|'cold'`; `members[i].carry` overrides it for that member. " +
+        'For a RESUME/FORK, carry follows the target session/fleet loop profile; use loop:arm { carry } to retune the resumed agent.',
     },
   },
   capability: 'capability:terminal',
@@ -401,7 +395,7 @@ export default defineTool({
         .array(memberSpecSchema)
         .optional()
         .describe(
-          'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. `members[i].role` is a REGISTERED PERSONA ID resolved against the target harness (valid ids are harness-specific), never a lane/job label — put lane direction in `members[i].brief` or the shared `label`; invalid personas fail atomically before any terminal opens. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `carry`/`claimKinds` need a self-pulling fleet — use fleet:launch-on-plan for those.',
+          'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/carry/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. `members[i].role` is a REGISTERED PERSONA ID resolved against the target harness (valid ids are harness-specific), never a lane/job label — put lane direction in `members[i].brief` or the shared `label`; invalid personas fail atomically before any terminal opens. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `claimKinds` needs a self-pulling fleet — use fleet:launch-on-plan for that claim-lane behavior.',
         ),
       cwd: z
         .string()
@@ -452,6 +446,12 @@ export default defineTool({
     return z
       .union([
       base.extend({
+        carry: z
+          .enum(['warm', 'cold'])
+          .optional()
+          .describe(
+            "Warm/cold auto-mode carry for a FRESH launch. `members[i].carry` overrides this flat value; a resume/fork preserves the target session's loop/profile carry.",
+          ),
         resume: z
           .never()
           .optional()
@@ -466,6 +466,10 @@ export default defineTool({
           .never()
           .optional()
           .describe('Only valid for a FRESH launch; resumed and successor sessions keep their own context.'),
+        carry: z
+          .never()
+          .optional()
+          .describe('Only valid for a FRESH launch; a resume/fork preserves the target session or fleet loop carry.'),
       }),
       ])
       .superRefine((value, refinement) => {
@@ -998,6 +1002,7 @@ export default defineTool({
           args.headless ??= profile.headless ?? true;
           args.account ??= profile.account;
           args.model ??= composeModelSpec(profile.model, profile.effort);
+          args.carry ??= profile.carry;
           args.extraArgs ??= profile.extraArgs;
           notes.push(
             `✓ Applied persisted fleet launch profile from fleet:headcount-target ` +
@@ -1077,6 +1082,9 @@ export default defineTool({
       // any persisted fleet profile. This mirrors member > fleet precedence:
       // a saved role is only a fallback when the caller omitted the field.
       role: args.role ?? persistedHeadcountProfile?.config.role,
+      // A flat carry setting applies to every fresh member unless that member
+      // supplies its own override in `members[i].carry`.
+      carry: args.carry ?? undefined,
       launchContext: persistedHeadcountProfile?.config.launchContext,
       extraArgs: args.extraArgs ?? undefined,
     };
@@ -1203,7 +1211,7 @@ export default defineTool({
               model: folded.model ?? null,
               effort: folded.effort ?? null,
               headless: !!folded.headless,
-              carry: savedLaunchCarry ?? null,
+              carry: folded.carry ?? null,
               contextSize: folded.contextSize ?? null,
               compactionLimit: folded.compactionLimit ?? null,
               role: folded.role ?? null,
@@ -1270,12 +1278,11 @@ export default defineTool({
       };
     }
 
-    // Public member carry/claimKinds behavior stays unchanged. A respawn's
-    // INTERNAL savedLaunchCarry was resolved/audited before this handler and is
-    // emitted above; it is not the same as accepting a public member override.
-    if ((args.members ?? []).some((m) => m?.carry || m?.claimKinds?.length) && !savedLaunchCarry) {
+    // Public member claimKinds still needs fleet:launch-on-plan's claim-spec
+    // machinery. Carry is now a normal fresh command setting and is folded above.
+    if ((args.members ?? []).some((m) => m?.claimKinds?.length) && !savedLaunchCarry) {
       notes.push(
-        '⚠ `carry` / `claimKinds` on a member are only honored by fleet:launch-on-plan (they seed the member baseline + per-member claim spec); this general launch door opens raw agents, so those fields were IGNORED. Use fleet:launch-on-plan for a self-pulling fleet.',
+        '⚠ `claimKinds` on a member is only honored by fleet:launch-on-plan (it seeds the member claim spec); this general launch door opens raw agents, so that field was IGNORED. Use fleet:launch-on-plan for a self-pulling fleet.',
       );
     }
 
