@@ -1784,6 +1784,36 @@ const PROMPT_PROJECTION_TRIGGER_PATHS = new Set([
   "packages/operator-core/lib/__tests__/affected-tests-repo-wide-invariant-guards.test.ts",
 ]);
 
+// identities-v1 P-024 — the exact-once splice contract spans authored prompt
+// bases, derived identity/part documents, and packaged projections in different
+// workspace trees. Keep the runner independent of the guard module (the same
+// fail-safe import boundary as PROMPT_PROJECTION_TRIGGER_PATHS); the guard's
+// Vitest coverage pins this routing set against representative paths.
+const SU_SPLICE_MARKER_TRIGGER_PATHS = new Set([
+  "libs/papercusp",
+  "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+  "libs/papercusp/packages/harness/blueprints/base/prompts/su.kernel.md",
+  "libs/papercusp/packages/harness/blueprints/base/prompts/su.practice.md",
+  "libs/papercusp/packages/harness/blueprints/base/prompts/su.instance.md",
+  "libs/papercusp/packages/orchestrator/src/blueprint/su-decomposition.ts",
+  "apps/operator/prompts/papercusp-su-engineer.tools.md",
+  "apps/operator/prompts/papercusp-su-power.tools.md",
+  "apps/operator/prompts/papercusp-compaction.base.md",
+  "packages/operator-core/lib/desktop-install/splice-tooling-overlay.ts",
+  "packages/operator-core/lib/desktop-install/su-render-baseline.test.ts",
+  "packages/operator-core/lib/desktop-install/__fixtures__/su-render-baseline/su.base.md",
+  "packages/operator-core/lib/desktop-install/__fixtures__/su-render-baseline/baseline.json",
+  "papercusp-desktop",
+  "papercusp-desktop/src-tauri/env-sidecars/staging/harness/blueprints/base/prompts/su.md",
+  "apps/operator/bin/bundle-host.sh",
+  "papercusp-desktop/bin/build-desktop-sidecar.sh",
+  "papercusp-desktop/bin/stage-env-sidecars.sh",
+  "scripts/check-su-splice-markers.ts",
+  "scripts/affected-tests.mjs",
+  "packages/operator-core/package.json",
+  "packages/operator-core/lib/__tests__/affected-tests-repo-wide-invariant-guards.test.ts",
+]);
+
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
     // EI-22189589517637049 — a tool authoring `guidance.returns` without a
@@ -3641,6 +3671,18 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     workspace: "@papercusp/operator-core",
     script: "lint:prompt-projections",
     appliesTo: (f) => PROMPT_PROJECTION_TRIGGER_PATHS.has(f),
+  },
+  {
+    // identities-v1 P-024 — marker mismatches silently drop whole generated
+    // persona sections. This exact-once guard is deliberately repo-wide because
+    // its source and projections route to different workspaces/submodules.
+    // Measured GREEN over the real tree BEFORE registration (2026-09-04):
+    // 18 present artifacts checked, 0 violations, 0 skipped build outputs.
+    // No hostSuiteRatchet: the focused Vitest proves the detector falsifiable,
+    // but only this task evaluates every present artifact in the real tree.
+    workspace: "@papercusp/operator-core",
+    script: "lint:su-splice-markers",
+    appliesTo: (f) => SU_SPLICE_MARKER_TRIGGER_PATHS.has(f),
   },
   {
     // EI-19453217565223331 — `positions.deployed` is git ancestry, not proof that
