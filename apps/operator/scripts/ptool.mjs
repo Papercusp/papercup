@@ -1283,6 +1283,13 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // writes are still settling and surface MCP -32001/outcome-unknown. Keep
   // this write-side coordination call outside the MCP transport cap.
   ['work_items:request_release', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-22351729180562005: consult:get_feedback can spend most of the MCP
+  // transport window selecting/reviving a responder and durably routing the
+  // conversation. A live call completed successfully in 47.954s after ptool's
+  // ordinary 30s deadline had already reported its mutation outcome unknown.
+  // Keep direct and tools:invoke-wrapped calls outside the transport window so
+  // callers receive the typed consult receipt instead of reconciling by hand.
+  ['consult:get_feedback', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-21386877660531420: activity:tool-log scans and compacts the activity
   // ledger. In a concurrent projected batch that read can outlive ptool's
   // ordinary 30s deadline even though it is bounded and still progressing.
