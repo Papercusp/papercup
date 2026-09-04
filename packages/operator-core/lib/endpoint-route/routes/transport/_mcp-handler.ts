@@ -756,6 +756,36 @@ type ScopedSuperuserTransportClampResult =
   | { ok: false; result: McpCallResult };
 
 /**
+ * A loop carry-note READ is a recovery operation, not a cross-hive data escape:
+ * `loop:checkpoint` explicitly documents `harness` as the way to read a note that
+ * was stranded under another scope, while every WRITE is still forced to the
+ * active routine's authoritative scope by the handler itself.
+ *
+ * Keep this exception narrow. It requires a concrete harness and either an omitted
+ * ownerId (the normal self-read) or the transport caller's resolved identity. The
+ * wildcard/global harness spellings and another owner's note remain behind the
+ * regular hive clamp.
+ */
+function isSelfOwnedLoopCheckpointRead(
+  toolName: string,
+  callArgs: Record<string, unknown>,
+  spawnCtx: BuiltSpawnContext,
+): boolean {
+  if (toolName !== 'loop:checkpoint' || callArgs.read !== true) return false;
+
+  const requestedHarness = typeof callArgs.harness === 'string' ? callArgs.harness.trim() : '';
+  if (!requestedHarness || requestedHarness === '*' || requestedHarness.toLowerCase() === 'all') return false;
+
+  const requestedOwnerId = typeof callArgs.ownerId === 'string' ? callArgs.ownerId.trim() : '';
+  if (!requestedOwnerId) return true;
+
+  // The clamp runs only for scoped superuser contexts, and the same resolver is
+  // what loop:checkpoint uses in its handler. In particular, client-less SU calls
+  // resolve to the stable `su-loopback` identity rather than a per-request spawn id.
+  return requestedOwnerId === resolveAgentIdentity(spawnCtx).ownerId;
+}
+
+/**
  * Keep the goal-authorized local placement escape identical on the direct and
  * nested MCP paths. The session SID is the stable owner for superuser calls;
  * signed spawns have no SID and use their stable spawn id instead.
@@ -916,9 +946,11 @@ async function applyScopedSuperuserTransportClamp(
           requestedHarness,
           args,
         );
+        const isSelfOwnedCheckpointRead = isSelfOwnedLoopCheckpointRead(toolName, args, spawnCtx);
         const escapesHive =
           !isEngineeringDocsSurface &&
           !isPlatformPotGitSyncTarget &&
+          !isSelfOwnedCheckpointRead &&
           (requestedHarness === 'all' ||
             requestedHarness === '*' ||
             (await potHomeSlugForHarness(spawnCtx.workspaceId, requestedHarness)) !== scopeHive);
@@ -2848,9 +2880,15 @@ const handler = createMcpHandler(
                   argHarness,
                   args,
                 );
+                const isSelfOwnedCheckpointRead = isSelfOwnedLoopCheckpointRead(
+                  toolName,
+                  args,
+                  spawnRes.ctx,
+                );
                 const escapes =
                   !isEngineeringDocsSurface &&
                   !isPlatformPotGitSyncTarget &&
+                  !isSelfOwnedCheckpointRead &&
                   (argHarness === 'all' ||
                     argHarness === '*' ||
                     (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness)) !== scopeHive);
