@@ -15,11 +15,10 @@
  *       bare connect() is completed by the kernel from the listen backlog, so it
  *       stays true against a process whose event loop is fully blocked. It
  *       detects a DEAD or ABSENT socket (the Plans-tab "loading forever" bug),
- *       not a wedged one. Resolved via `resolveDesktopIpcDiscovery()` (below) —
- *       NOT the raw `~/.papercusp/endpoint-ipc.json` singleton, which is
- *       last-writer-wins across every operator on the box and can point at a
- *       different (possibly dead) operator than the one this desktop targets
- *       (EI-7760).
+ *       not a wedged one. For the recurring probe it is resolved per bridge:
+ *       authenticated `/health` supplies that bridge's live selected API port,
+ *       then `endpoint-ipc.<port>.json` supplies only that operator's socket.
+ *       The raw singleton is never used on this path (EI-7760 / EI-19357343092509867).
  *   (c) an application-level round-trip to the operator the desktop routes
  *       `/api/*` to (WI-7355) — the ONLY signal here that proves the sidecar can
  *       actually SERVE. (a) exercises the desktop app process and (b) only the
@@ -74,15 +73,20 @@ export interface DesktopSignals {
   /** A `/eval` round-trip through the webview succeeds (webview up + JS works). */
   bridgeEval(bridge: LiveBridge): Promise<boolean>;
   /**
-   * The operator IPC unix socket is connectable. NOTE: connectable ≠ serving —
-   * see `attemptIpcConnect`. Use `apiRoundTrip` for "can it actually answer".
+   * The live operator port THIS bridge routes `/api/*` to, read through the
+   * bridge's authenticated `/health` response. `null` means an older bridge or
+   * a failed health request; callers must abstain rather than guess globally.
    */
-  ipcConnectable(): Promise<boolean>;
+  bridgeApiPort(bridge: LiveBridge): Promise<number | null>;
   /**
-   * An application-level HTTP round-trip to the operator this desktop routes
-   * `/api/*` to (WI-7355). The only signal that a blocked event loop fails.
+   * The selected operator's PER-PORT IPC unix socket is connectable. NOTE:
+   * connectable ≠ serving — see `attemptIpcConnect`. Use `apiRoundTrip` for
+   * "can it actually answer". Missing strict per-port discovery is unresolved,
+   * never a reason to fall back to the last-writer-wins singleton.
    */
-  apiRoundTrip(): Promise<DesktopApiResult>;
+  ipcConnectable(apiPort: number): Promise<DesktopIpcResult>;
+  /** An application-level round-trip to the same bridge-local API port. */
+  apiRoundTrip(apiPort: number): Promise<DesktopApiResult>;
   /** Count of ERROR toasts in the last `windowMs`. */
   recentErrorCount(windowMs: number): Promise<number>;
 }
@@ -102,6 +106,13 @@ export type DesktopApiState = 'ok' | 'unreachable' | 'unresolved';
 export interface DesktopApiResult {
   state: DesktopApiState;
   /** The port probed (or that would have been probed, when `unresolved`). */
+  port: number;
+}
+
+export type DesktopIpcState = 'ok' | 'unreachable' | 'unresolved';
+
+export interface DesktopIpcResult {
+  state: DesktopIpcState;
   port: number;
 }
 
@@ -127,7 +138,8 @@ function pidAlive(pid: number): boolean {
  * transient webview hiccup could flip the SHARED desktop-health alarm to
  * DOWN even though the instance the health probe actually cares about (the
  * one `ipcConnectable()` resolves via `desktop-build-target.json`) was
- * perfectly fine — see `probeDesktop`'s any-bridge-eval-ok treatment below.
+ * perfectly fine. `probeDesktop` now keeps every eval/IPC/API result inside a
+ * bridge-local tuple before it aggregates them.
  */
 async function realLiveBridges(): Promise<LiveBridge[]> {
   let files: string[];
@@ -170,6 +182,38 @@ async function realBridgeEval(bridge: LiveBridge, timeoutMs = 4000): Promise<boo
     return j != null && 'result' in j && j.error == null;
   } catch {
     return false; // bridge process unreachable
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Ask THIS bridge which operator it routes `/api/*` to right now.
+ *
+ * EI-19357343092509867: bridge tokens are already per desktop process, while
+ * `desktop-build-target.json` is shared and last-writer-wins. The bridge's
+ * authenticated `/health` response is therefore the smallest existing seam
+ * that can correlate a live webview with its own mutable `SELECTED_API_PORT`.
+ */
+export async function realBridgeApiPort(bridge: LiveBridge, timeoutMs = 4000): Promise<number | null> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`http://127.0.0.1:${bridge.port}/health`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: bridge.token }),
+      signal: ctl.signal,
+    });
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return null;
+    }
+    const json = (await res.json().catch(() => null)) as { selected_api_port?: unknown } | null;
+    const port = json?.selected_api_port;
+    return typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65_535 ? port : null;
+  } catch {
+    return null;
   } finally {
     clearTimeout(timer);
   }
@@ -307,6 +351,29 @@ export async function realIpcConnectable(timeoutMs = 2000, retryDelayMs = RETRY_
   return attemptIpcConnect(disc.socketPath, timeoutMs);
 }
 
+/**
+ * Strict per-port IPC check for one bridge-local tuple.
+ *
+ * Unlike `realIpcConnectable`, this never consults the legacy singleton. A
+ * missing per-port advertisement is `unresolved`: using the singleton would
+ * silently attach another desktop/operator's socket to this bridge and
+ * recreate EI-19357343092509867.
+ */
+export async function realIpcConnectableForPort(
+  apiPort: number,
+  timeoutMs = 2000,
+  retryDelayMs = RETRY_DELAY_MS,
+): Promise<DesktopIpcResult> {
+  const disc = await readEndpointIpcDiscoveryForPort(apiPort).catch(() => null);
+  if (!disc?.socketPath) return { state: 'unresolved', port: apiPort };
+  if (await attemptIpcConnect(disc.socketPath, timeoutMs)) return { state: 'ok', port: apiPort };
+  await new Promise((r) => setTimeout(r, retryDelayMs));
+  return {
+    state: (await attemptIpcConnect(disc.socketPath, timeoutMs)) ? 'ok' : 'unreachable',
+    port: apiPort,
+  };
+}
+
 /** Delay before the single retry in {@link realIpcConnectable} — comfortably bridges a
  *  routine operator restart's stop→re-exec window without materially slowing a real-down verdict.
  *  Exported so tests can override it (via the `retryDelayMs` param) instead of sleeping for real. */
@@ -360,6 +427,15 @@ export async function realApiRoundTrip(
 ): Promise<DesktopApiResult> {
   const { apiPort, resolved } = await resolveDesktopApiPort();
   if (!resolved) return { state: 'unresolved', port: apiPort };
+  return realApiRoundTripForPort(apiPort, timeoutMs, retryDelayMs);
+}
+
+/** Application-level liveness check for one already-resolved bridge target. */
+export async function realApiRoundTripForPort(
+  apiPort: number,
+  timeoutMs = API_PROBE_TIMEOUT_MS,
+  retryDelayMs = RETRY_DELAY_MS,
+): Promise<DesktopApiResult> {
   if (await attemptApiRoundTrip(apiPort, timeoutMs)) return { state: 'ok', port: apiPort };
   await new Promise((r) => setTimeout(r, retryDelayMs));
   return {
@@ -377,33 +453,25 @@ async function realRecentErrorCount(windowMs: number): Promise<number> {
 export const realDesktopSignals: DesktopSignals = {
   liveBridges: realLiveBridges,
   bridgeEval: realBridgeEval,
-  ipcConnectable: realIpcConnectable,
-  apiRoundTrip: () => realApiRoundTrip(),
+  bridgeApiPort: realBridgeApiPort,
+  ipcConnectable: (apiPort) => realIpcConnectableForPort(apiPort),
+  apiRoundTrip: (apiPort) => realApiRoundTripForPort(apiPort),
   recentErrorCount: realRecentErrorCount,
 };
 
 /**
  * Probe the desktop. Returns a `ProbeResult` with `present` set:
  *   - present:false → no desktop running (skipped by diffHealth → no DOWN spam).
- *   - present:true, up:true → at least one live bridge's webview eval'd, the
- *     (globally-resolved) IPC socket is connectable, AND the desktop's `/api`
- *     target answered a request (or abstained — an unresolved target never
- *     flips the verdict, see DesktopApiState).
+ *   - present:true, up:true → at least one COMPLETE bridge-local tuple is
+ *     healthy, or a webview is healthy but its target metadata/checks are
+ *     unresolved (abstain rather than manufacture a false DOWN).
  *   - present:true, up:false → desktop is up but a liveness signal failed.
  * `recentErrors` + `note` carry the toastLog signal as informational detail.
  *
- * EI-15095 (multi-desktop false DOWN): `ipcConnectable()` resolves ONE
- * globally-shared target (`desktop-build-target.json`, last-writer-wins
- * across every desktop instance sharing this $HOME — see
- * `resolveDesktopIpcDiscovery`'s EI-7760 doc comment). There is no way from
- * here to know which of several concurrently-live bridges that target
- * "belongs to", so webview-eval health is checked across ALL live bridges and
- * treated as OK if ANY of them round-trips JS — this can't be fooled by one
- * unrelated ephemeral verification instance's transient bridge hiccup the way
- * checking a single arbitrarily (readdir-order) chosen bridge could. A true
- * "the desktop is actually down" still reports unhealthy: it means EVERY live
- * bridge failed its webview eval, or the resolved IPC socket itself is
- * unreachable.
+ * EI-19357343092509867: every eval/IPC/API decision stays inside the bridge
+ * tuple that supplied its live selected port. A passing eval from desktop A
+ * can never combine with desktop B's healthy operator to manufacture UP (and
+ * B's failing operator can never manufacture DOWN for A).
  */
 export async function probeDesktop(signals: DesktopSignals = realDesktopSignals): Promise<ProbeResult> {
   const start = Date.now();
@@ -419,34 +487,66 @@ export async function probeDesktop(signals: DesktopSignals = realDesktopSignals)
     };
   }
 
-  const [evalResults, ipcOk, api, recentErrors] = await Promise.all([
-    Promise.all(bridges.map((b) => signals.bridgeEval(b).catch(() => false))),
-    signals.ipcConnectable().catch(() => false),
-    signals
-      .apiRoundTrip()
-      // A THROWING signal must not manufacture a DOWN — degrade to "we don't
-      // know", the same posture as an unresolved target.
-      .catch((): DesktopApiResult => ({ state: 'unresolved', port: 0 })),
+  const [tuples, recentErrors] = await Promise.all([
+    Promise.all(
+      bridges.map(async (bridge) => {
+        const [evalOk, apiPort] = await Promise.all([
+          signals.bridgeEval(bridge).catch(() => false),
+          signals.bridgeApiPort(bridge).catch(() => null),
+        ]);
+        if (apiPort == null) {
+          return {
+            evalOk,
+            apiPort,
+            ipc: { state: 'unresolved', port: 0 } as DesktopIpcResult,
+            api: { state: 'unresolved', port: 0 } as DesktopApiResult,
+          };
+        }
+        const [ipc, api] = await Promise.all([
+          signals.ipcConnectable(apiPort).catch((): DesktopIpcResult => ({ state: 'unresolved', port: apiPort })),
+          signals.apiRoundTrip(apiPort).catch((): DesktopApiResult => ({ state: 'unresolved', port: apiPort })),
+        ]);
+        return { evalOk, apiPort, ipc, api };
+      }),
+    ),
     signals.recentErrorCount(DESKTOP_ERROR_WINDOW_MS).catch(() => 0),
   ]);
-  const evalOk = evalResults.some(Boolean);
-  const apiFailed = api.state === 'unreachable';
 
-  const up = evalOk && ipcOk && !apiFailed;
+  const healthy = tuples.some((t) => t.evalOk && t.ipc.state === 'ok' && t.api.state === 'ok');
+  // A healthy webview whose own target cannot be evaluated remains a plausible
+  // healthy desktop. Abstain instead of turning missing/rolling metadata into
+  // the fifth false-DOWN class in this probe's history.
+  const unresolvedHealthyCandidate = tuples.some(
+    (t) => t.evalOk && (t.apiPort == null || t.ipc.state === 'unresolved' || t.api.state === 'unresolved'),
+  );
+  const up = healthy || unresolvedHealthyCandidate;
   const errNote = recentErrors > 0 ? `${recentErrors} recent error toast${recentErrors === 1 ? '' : 's'}` : '';
-  // An unresolved target is worth SAYING (it means one of the three signals
-  // abstained) but never worth alarming on — see DesktopApiState.
-  const apiNote = api.state === 'unresolved' ? 'api target unresolved, not checked' : '';
+  const bridgeTargetUnresolved = tuples.some((t) => t.evalOk && t.apiPort == null);
+  const ipcTargetUnresolved = tuples.some((t) => t.evalOk && t.apiPort != null && t.ipc.state === 'unresolved');
+  const apiTargetUnresolved = tuples.some((t) => t.evalOk && t.apiPort != null && t.api.state === 'unresolved');
+  const unresolvedNote = [
+    bridgeTargetUnresolved && 'bridge target unresolved, not checked',
+    ipcTargetUnresolved && 'ipc target unresolved, not checked',
+    apiTargetUnresolved && 'api target unresolved, not checked',
+  ]
+    .filter(Boolean)
+    .join('; ');
   let note: string;
   if (up) {
-    const detail = [apiNote, errNote].filter(Boolean).join('; ');
+    const detail = [unresolvedNote, errNote].filter(Boolean).join('; ');
     note = detail ? `up (${detail})` : 'up';
   } else {
-    const fails = [!evalOk && 'webview eval', !ipcOk && 'ipc socket', apiFailed && `api :${api.port}`]
-      .filter(Boolean)
-      .join(' + ');
+    const fails = Array.from(
+      new Set(
+        tuples.flatMap((t) => [
+          ...(!t.evalOk ? ['webview eval'] : []),
+          ...(t.ipc.state === 'unreachable' ? [`ipc socket :${t.ipc.port}`] : []),
+          ...(t.api.state === 'unreachable' ? [`api :${t.api.port}`] : []),
+        ]),
+      ),
+    ).join(' + ');
     const bridgeNote = bridges.length > 1 ? ` (${bridges.length} bridges checked)` : '';
-    const detail = [apiNote, errNote].filter(Boolean).join('; ');
+    const detail = [unresolvedNote, errNote].filter(Boolean).join('; ');
     note = `unhealthy: ${fails} unreachable${bridgeNote}${detail ? `; ${detail}` : ''}`;
   }
 

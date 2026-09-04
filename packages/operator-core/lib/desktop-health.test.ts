@@ -28,7 +28,9 @@ import {
   resolveDesktopIpcDiscovery,
   resolveDesktopApiPort,
   realIpcConnectable,
+  realIpcConnectableForPort,
   realApiRoundTrip,
+  realBridgeApiPort,
   type DesktopSignals,
   type LiveBridge,
 } from './desktop-health';
@@ -40,8 +42,9 @@ function signals(over: Partial<DesktopSignals> = {}): DesktopSignals {
   return {
     liveBridges: async () => [BRIDGE],
     bridgeEval: async () => true,
-    ipcConnectable: async () => true,
-    apiRoundTrip: async () => ({ state: 'ok', port: 3270 }),
+    bridgeApiPort: async () => 3270,
+    ipcConnectable: async (port) => ({ state: 'ok', port }),
+    apiRoundTrip: async (port) => ({ state: 'ok', port }),
     recentErrorCount: async () => 0,
     ...over,
   };
@@ -85,7 +88,7 @@ describe('probeDesktop', () => {
   });
 
   it('is DOWN when the IPC socket is unreachable (the Plans-hang class) — names it', async () => {
-    const r = await probeDesktop(signals({ ipcConnectable: async () => false }));
+    const r = await probeDesktop(signals({ ipcConnectable: async (port) => ({ state: 'unreachable', port }) }));
     expect(r.up).toBe(false);
     expect(r.note).toMatch(/ipc socket/);
     expect(r.note).not.toMatch(/webview eval/);
@@ -95,7 +98,7 @@ describe('probeDesktop', () => {
     const r = await probeDesktop(
       signals({
         bridgeEval: async () => false,
-        ipcConnectable: async () => false,
+        ipcConnectable: async (port) => ({ state: 'unreachable', port }),
         recentErrorCount: async () => 2,
       }),
     );
@@ -129,13 +132,9 @@ describe('probeDesktop', () => {
     expect(r.up).toBe(false);
   });
 
-  // EI-15095: on this shared fleet dev box several concurrently-running
-  // desktop instances (the owner's + any agent's own headless verification
-  // shell) each hold their own live bridge under the same $HOME at once.
-  // `ipcConnectable()` resolves ONE globally-shared target with no way to
-  // correlate it to a specific bridge, so webview health is "any bridge OK",
-  // never "the arbitrarily-first-found bridge OK" — an unrelated instance's
-  // bridge hiccup must not flip the shared alarm to DOWN.
+  // EI-15095 + EI-19357343092509867: several desktops can share one HOME.
+  // Each bridge must now carry its own selected API port through the complete
+  // eval/IPC/API tuple; aggregate only after those tuple-local checks finish.
   it('is up when ONE of several live bridges evals OK, even if another fails', async () => {
     const otherBridge: LiveBridge = { port: 55555, token: 'tok2', pid: 9999 };
     const r = await probeDesktop(
@@ -147,6 +146,60 @@ describe('probeDesktop', () => {
     expect(r.present).toBe(true);
     expect(r.up).toBe(true);
     expect(r.note).toBe('up');
+  });
+
+  it('never combines bridge A eval with bridge B IPC/API to manufacture UP', async () => {
+    const bridgeA: LiveBridge = { port: 45551, token: 'a', pid: 1111 };
+    const bridgeB: LiveBridge = { port: 45552, token: 'b', pid: 2222 };
+    const r = await probeDesktop(
+      signals({
+        liveBridges: async () => [bridgeA, bridgeB],
+        bridgeEval: async (bridge) => bridge.pid === bridgeA.pid,
+        bridgeApiPort: async (bridge) => (bridge.pid === bridgeA.pid ? 3170 : 3070),
+        ipcConnectable: async (port) => ({
+          state: port === 3070 ? 'ok' : 'unreachable',
+          port,
+        }),
+        apiRoundTrip: async (port) => ({
+          state: port === 3070 ? 'ok' : 'unreachable',
+          port,
+        }),
+      }),
+    );
+
+    expect(r.up).toBe(false);
+    expect(r.note).toMatch(/ipc socket :3170/);
+    expect(r.note).toMatch(/api :3170/);
+  });
+
+  it('keeps the aggregate UP when one complete bridge-local tuple is healthy', async () => {
+    const bridgeA: LiveBridge = { port: 45551, token: 'a', pid: 1111 };
+    const bridgeB: LiveBridge = { port: 45552, token: 'b', pid: 2222 };
+    const r = await probeDesktop(
+      signals({
+        liveBridges: async () => [bridgeA, bridgeB],
+        bridgeEval: async () => true,
+        bridgeApiPort: async (bridge) => (bridge.pid === bridgeA.pid ? 3170 : 3070),
+        ipcConnectable: async (port) => ({
+          state: port === 3070 ? 'ok' : 'unreachable',
+          port,
+        }),
+        apiRoundTrip: async (port) => ({
+          state: port === 3070 ? 'ok' : 'unreachable',
+          port,
+        }),
+      }),
+    );
+
+    expect(r.up).toBe(true);
+    expect(r.note).toBe('up');
+  });
+
+  it('abstains instead of alarming when a healthy legacy bridge has no selected-port metadata', async () => {
+    const r = await probeDesktop(signals({ bridgeApiPort: async () => null }));
+
+    expect(r.up).toBe(true);
+    expect(r.note).toMatch(/bridge target unresolved, not checked/);
   });
 
   it('is DOWN only when EVERY live bridge fails its webview eval', async () => {
@@ -170,7 +223,7 @@ describe('probeDesktop', () => {
       const r = await probeDesktop(
         signals({
           bridgeEval: async () => true,
-          ipcConnectable: async () => true,
+          ipcConnectable: async (port) => ({ state: 'ok', port }),
           apiRoundTrip: async () => ({ state: 'unreachable', port: 3270 }),
         }),
       );
@@ -193,7 +246,7 @@ describe('probeDesktop', () => {
       const r = await probeDesktop(
         signals({
           bridgeEval: async () => false,
-          ipcConnectable: async () => false,
+          ipcConnectable: async (port) => ({ state: 'unreachable', port }),
           apiRoundTrip: async () => ({ state: 'unreachable', port: 3270 }),
         }),
       );
@@ -236,6 +289,54 @@ describe('probeDesktop', () => {
       expect(r.note).toMatch(/api target unresolved/);
       expect(r.note).toMatch(/2 recent error toasts/);
     });
+  });
+});
+
+describe('realBridgeApiPort (EI-19357343092509867 bridge-local target)', () => {
+  let servers: http.Server[] = [];
+
+  afterEach(async () => {
+    await Promise.all(servers.map((server) => new Promise((resolve) => server.close(() => resolve(undefined)))));
+    servers = [];
+  });
+
+  async function serveHealth(body: unknown, onRequest?: (req: http.IncomingMessage, raw: string) => void) {
+    const server = http.createServer((req, res) => {
+      let raw = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        onRequest?.(req, raw);
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(body));
+      });
+    });
+    servers.push(server);
+    return new Promise<number>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port));
+    });
+  }
+
+  it('reads selected_api_port from this bridge authenticated health response', async () => {
+    let received: { method?: string; path?: string; token?: string } = {};
+    const port = await serveHealth({ selected_api_port: 3170 }, (req, raw) => {
+      received = {
+        method: req.method,
+        path: req.url,
+        token: (JSON.parse(raw) as { token?: string }).token,
+      };
+    });
+
+    await expect(realBridgeApiPort({ port, token: 'bridge-secret', pid: process.pid }, 1000)).resolves.toBe(3170);
+    expect(received).toEqual({ method: 'POST', path: '/health', token: 'bridge-secret' });
+  });
+
+  it('rejects an invalid selected port instead of guessing', async () => {
+    const port = await serveHealth({ selected_api_port: 70_000 });
+    await expect(realBridgeApiPort({ port, token: 'bridge-secret', pid: process.pid }, 1000)).resolves.toBeNull();
   });
 });
 
@@ -398,6 +499,33 @@ describe('realIpcConnectable (EI-18131725582506957: restart-window false-DOWN)',
     const up = await realIpcConnectable(500, 5000); // huge retryDelayMs — must NOT be paid
     expect(up).toBe(true);
     expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('strict per-port mode connects only through the selected port advertisement', async () => {
+    const sockPath = join(h.home, 'per-port-live.sock');
+    await pointBuildTargetAt(sockPath, 3170);
+    servers.push(await listenOn(sockPath));
+
+    await expect(realIpcConnectableForPort(3170, 500, 20)).resolves.toEqual({
+      state: 'ok',
+      port: 3170,
+    });
+  });
+
+  it('strict per-port mode abstains when only the racy singleton exists', async () => {
+    const sockPath = join(h.home, 'singleton-only.sock');
+    servers.push(await listenOn(sockPath));
+    await mkdir(join(h.home, '.papercusp'), { recursive: true });
+    await writeFile(
+      endpointIpcDiscoveryPath(),
+      JSON.stringify({ socketPath: sockPath, pid: process.pid, startedAt: Date.now(), port: 3070 }),
+      'utf8',
+    );
+
+    await expect(realIpcConnectableForPort(3170, 100, 20)).resolves.toEqual({
+      state: 'unresolved',
+      port: 3170,
+    });
   });
 });
 
