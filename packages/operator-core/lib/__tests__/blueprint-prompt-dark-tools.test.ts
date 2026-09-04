@@ -136,15 +136,17 @@ function extendsChain(id: string): string[] {
   return chain;
 }
 
-/** Effective deps.tools — the leaf-most blueprint in the chain that declares a non-empty
- *  tools array wins (arrays replace wholesale child-over-parent, per the loader's mergeRaw). */
+/** Effective deps.tools — the UNION across the extends chain: `dependencies.tools` is a
+ *  declaration set under MERGE_RULES (identities-v1-2026-08-30 P-019 / D-020), so every layer
+ *  contributes and none wipes a parent's (it was leaf-most-wins under the pre-P-019 mergeRaw). */
 function effectiveDeps(id: string): Set<string> {
+  const out = new Set<string>();
   for (const bid of extendsChain(id)) {
     const y = readYaml(join(BP_DIR, bid, 'blueprint.yaml'));
     const tools = (y?.dependencies as { tools?: unknown } | undefined)?.tools;
-    if (Array.isArray(tools) && tools.length) return new Set(tools.map(String));
+    if (Array.isArray(tools)) for (const t of tools) out.add(String(t));
   }
-  return new Set();
+  return out;
 }
 
 /** The roles a blueprint declares (roles[].id + spine.decider + deciderAlternatives). */
