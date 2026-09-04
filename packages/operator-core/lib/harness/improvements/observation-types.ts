@@ -291,7 +291,8 @@ export interface StructuredObservation {
 export type ScorecardCheckRun =
   | ScorecardTestsCheckRun
   | ScorecardCargoCheckRun
-  | ScorecardCoverageCheckRun;
+  | ScorecardCoverageCheckRun
+  | ScorecardRequirementsCheckRun;
 
 export interface ScorecardTestsCheckRun {
   kind: 'tests';
@@ -370,6 +371,47 @@ export interface ScorecardCoverageCheckRun {
   /** BOUNDED sample of the surfaces below the floor, for the refusal message. */
   belowSurfaces?: string[];
   /** ISO instant the census was read (emit time). */
+  measuredAt: string;
+}
+
+/**
+ * One criterion's grading-time REQUIREMENT-REALIZATION measurement
+ * (design-to-code-coverage-seam P-026). Runs the same activation↔completion join the
+ * ship gate enforces as `requirement_unrealized`, but from inside the scorecard — so an
+ * independent grader, which cannot run Bash, still gets an executable answer to "which
+ * of this plan's stated requirements have no observable code".
+ *
+ * ⚠ The three REPORTED-not-violation populations are stored beside the verdict on
+ * purpose. `exemptMappings` (D-035) and `droppedTargets` (P-016) are legitimately not
+ * failures, but a pass whose population was mostly unjudged is a different fact from a
+ * pass over a fully judged one, and only these counts let a reader tell them apart.
+ */
+export interface ScorecardRequirementsCheckRun {
+  kind: 'requirements';
+  verdict: 'pass' | 'fail';
+  /** Realizing (covered/repaired) activation mappings this judgement covered. */
+  mappingsJudged: number;
+  /** `P-NNN` targets actually resolved and judged against the completion audit. */
+  checkedTargets: number;
+  /** Realizing mappings that reached no VERIFIED plan item — the fail condition (0 ⇒ pass). */
+  unrealized: number;
+  /**
+   * D-035: realizing mappings judged by NOTHING because every target is non-item
+   * (`D-NNN` / `section:`). Never a violation — these are conversational requirements
+   * whose honest home is a decision — but a pass earned largely from this population is
+   * weaker than one earned from `checkedTargets`, so it is reported rather than dropped.
+   */
+  exemptMappings: number;
+  /** P-016: realizing targets pointing at a plan item that is present but `dropped`. */
+  droppedTargets: number;
+  /**
+   * P-016's silent case: dropped targets STILL vouched by a folded pre-drop audit entry,
+   * so the coverage claim passes on evidence for work the plan then abandoned.
+   */
+  droppedTargetsVouchedByStaleAudit: number;
+  /** BOUNDED sample of unrealized requirement descriptions, for the refusal message. */
+  unrealizedRequirements?: string[];
+  /** ISO instant the join was computed (emit time). */
   measuredAt: string;
 }
 

@@ -415,10 +415,33 @@ export type CriterionCoverageRefusal =
       run: CoverageCheckRun;
     };
 
+export type CriterionRequirementsRefusal =
+  | {
+      ok: false;
+      error: 'requirements_no_plan_subject';
+      criterionKey: string;
+      detail: string;
+    }
+  | {
+      ok: false;
+      error: 'requirements_scope_empty';
+      criterionKey: string;
+      detail: string;
+    }
+  | {
+      ok: false;
+      error: 'requirements_contradicted';
+      criterionKey: string;
+      rating: string;
+      detail: string;
+      run: RequirementsCheckRun;
+    };
+
 export type CriterionCheckEvaluation =
   | { ok: true; checkRuns: Record<string, CriterionCheckRun> }
   | CriterionCheckRefusal
-  | CriterionCoverageRefusal;
+  | CriterionCoverageRefusal
+  | CriterionRequirementsRefusal;
 
 /** Injectable runner seam (tests stub this; production shells the real router). */
 export type CriterionCheckRunner = (opts: {

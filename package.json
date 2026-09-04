@@ -159,6 +159,8 @@
     "gen:doc-projections": "tsx scripts/gen-doc-projections.ts",
     "gen:doc-blueprint-catalog": "tsx scripts/gen-doc-blueprint-catalog.ts",
     "gen:doc-blueprint-catalog:check": "tsx scripts/gen-doc-blueprint-catalog.ts --check",
+    "gen:su-decomposition": "tsx libs/papercusp/packages/orchestrator/bin/gen-su-decomposition.ts",
+    "gen:su-decomposition:check": "tsx libs/papercusp/packages/orchestrator/bin/gen-su-decomposition.ts --check",
     "gen:doc-role-registry": "tsx scripts/gen-doc-role-registry.ts",
     "gen:doc-role-registry:check": "tsx scripts/gen-doc-role-registry.ts --check",
     "gen:doc-insights-index": "tsx scripts/gen-doc-insights-index.ts",

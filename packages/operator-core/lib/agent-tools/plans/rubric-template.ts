@@ -184,6 +184,15 @@ export function resolveCriterionWindow(
  *    (l1..l4); there is deliberately no second scale and no percentage threshold —
  *    "90% covered" invites a denominator argument, "these 3 surfaces are unproven"
  *    does not.
+ *  - kind:'requirements' → argless. Asserts that every requirement the subject plan's
+ *    ACTIVATION audit dispositioned `covered`/`repaired` actually reached a plan item the
+ *    COMPLETION audit verifies with a `code`/`test` citation — the same P-014 join the
+ *    ship gate runs, exposed as a criterion so an INDEPENDENT GRADER can execute it.
+ *    That is the whole point of the kind: the grader cannot run Bash, so a structured
+ *    check is the only executable evidence available to it (design-to-code-coverage-seam
+ *    P-026), and "which promises have no observable code" is precisely the question a
+ *    grader is otherwise forced to take on the implementer's word.
+ *    No scope argument: the subject plan IS the scope.
  *  - absent            → a fuzzy judgment criterion (today's behavior, still first-class).
  *
  * Fuzzy + deterministic criteria coexist in one rubric.
@@ -275,6 +284,14 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         ),
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal('requirements'),
+    })
+    .strict()
+    .describe(
+      "argless: asserts every requirement the subject plan's activation audit dispositioned covered/repaired reached a plan item the completion audit verifies with a code/test citation. The subject plan is the scope. Judged fresh at grading time; refuses when the plan has NO realizing mappings rather than passing vacuously.",
+    ),
 ]);
 
 /** The validated structured-check type — see {@link rubricCriterionCheckSchema}. */

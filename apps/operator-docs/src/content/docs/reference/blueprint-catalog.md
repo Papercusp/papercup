@@ -12,7 +12,7 @@ sidebar:
 
 A **blueprint** is a harness's declarative shape — its work-item kind, the role spine the engine routes work through (`deriveNext`), its dispatch/concurrency policy, and its finalize gates. Concrete blueprints `extends: base`. The operator instantiates a harness from one of these (`harness:create` / `blueprint:extend`).
 
-Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (43 concrete + 4 abstract).
+Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (43 concrete + 6 abstract).
 
 ## Built-in blueprints
 
@@ -68,7 +68,9 @@ Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (43 con
 |---|---|
 | `base` | Abstract base blueprint — common knobs + defaults. Not directly runnable; extended by concrete blueprints. |
 | `external-bench` | The full Papercusp arm of the impartial benchmark suite: the complete coding spine + coordination substrate run autonomously to DONE over one cloned public benchmark task, under an iso-budget cap, graded by the benchmark's OWN external harness. The spine-ON pole of the `coding-solo` causal-isolation pairing (arm 'papercusp'); we neither author nor grade. Spun by the `instantiateBenchHarness` port (./run-loop.ts). |
+| `papercusp-engineer` | IDENTITY (abstract — a layer, never runnable alone): the software-engineering profession. Fills the exclusive `domain` slot with su.md's engineering discipline, extracted verbatim by P-002; P-023 makes it the coding hive's domain document. |
 | `single-agent` | Abstract parent for single-role run-to-done launches — the shared single-role spine (one decider role + DONE/ESCALATE/IDLE edges + inline planner) plus the governed + durable launch contract. Not directly runnable; extended by implement / scan / merge-resolution / deploy. |
+| `su-collaborator` | IDENTITY (abstract — a layer, never runnable alone): the interactive su's collaborator stance toward the owner. Fills the exclusive `collaboration-stance` slot with su.md's Who-you-are address rule, Default-posture ask gate and Delivery discipline, extracted verbatim by P-002. |
 | `work` | A generic (non-coding) Hive — the Queen places research / analysis / deliberation work onto a fleet of bees that produce DELIVERABLES (reports, decisions, documents). "Done" is decided by an LLM judge against a rubric; output lands in the artifacts store; the Queen co-locates work by topic, not file. Repo-less. The non-coding counterpart of the coding `hive`. |
 
 ## Details
@@ -393,6 +395,13 @@ Launch one fleet WATCHER (the `papercup` role) — the read-mostly observer spli
 - **Spine decider:** `papercup` (maxTurns 40)
 - **Roles (1):** `papercup`
 
+### `papercusp-engineer`
+
+IDENTITY (abstract — a layer, never runnable alone): the software-engineering profession. Fills the exclusive `domain` slot with su.md's engineering discipline, extracted verbatim by P-002; P-023 makes it the coding hive's domain document.
+
+- **Extends:** `base`
+- **Version:** 0.1.0
+
 ### `pot-eval`
 
 Monthly Pot-run evaluation: when the code SHA changed, run one owner-budget-capped SCORED generation of the seeded scenario corpus (whole-Pot runs graded on outcome quality / efficiency / speed by the un-gameable gate) — the acceptance yardstick for whether mug-execution / wave-dispatch / autonomy made the Pot better.
@@ -483,6 +492,13 @@ Abstract parent for single-role run-to-done launches — the shared single-role 
 - **Extends:** `base`
 - **Version:** 0.1.0
 - **Planner:** inline
+
+### `su-collaborator`
+
+IDENTITY (abstract — a layer, never runnable alone): the interactive su's collaborator stance toward the owner. Fills the exclusive `collaboration-stance` slot with su.md's Who-you-are address rule, Default-posture ask gate and Delivery discipline, extracted verbatim by P-002.
+
+- **Extends:** `base`
+- **Version:** 0.1.0
 
 ### `transfer`
 
