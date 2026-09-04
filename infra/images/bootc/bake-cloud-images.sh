@@ -35,6 +35,9 @@
 #   --tag TAG            image tag to publish (default: papercusp-workspace-host-<date>).
 #   --clouds LIST        comma-separated subset of gcp,aws,azure (default: all three).
 #   --out DIR            artifact directory (default: ./.bake-out).
+#   --release-root DIR   extracted vm-release tree to bake into the optional P-305 image target.
+#   --release-version V  version directory name for --release-root (both options are required
+#                        together; omitting both preserves the P-306/P-307 OS-only image).
 #   --insecure-registry  plain-HTTP / self-signed registry (local testing only).
 #   --dry-run            resolve and PLAN every step, run no build and no bake. Prints the same
 #                        digest-pinned refs the real run would use.
@@ -91,6 +94,7 @@ declare -A CLOUD_FILE=( [gcp]=image/disk.raw [aws]=image/disk.raw [azure]=vhd/di
 declare -A CLOUD_SHA=() CLOUD_BYTES=()
 
 REGISTRY=""; KEY=""; PUBKEY=""; TAG=""; CLOUDS="gcp,aws,azure"; OUT="./.bake-out"
+RELEASE_ROOT=""; RELEASE_VERSION=""
 INSECURE=0; DRY_RUN=0
 BIB_IMG="${BOOTC_IMAGE_BUILDER:-quay.io/centos-bootc/bootc-image-builder:latest}"
 SKOPEO_IMG="${SKOPEO_IMAGE:-quay.io/centos-bootc/centos-bootc:stream9}"
@@ -105,6 +109,8 @@ while [ $# -gt 0 ]; do
     --tag) TAG="${2:-}"; shift 2;;
     --clouds) CLOUDS="${2:-}"; shift 2;;
     --out) OUT="${2:-}"; shift 2;;
+    --release-root) RELEASE_ROOT="${2:-}"; shift 2;;
+    --release-version) RELEASE_VERSION="${2:-}"; shift 2;;
     --insecure-registry) INSECURE=1; shift;;
     --dry-run) DRY_RUN=1; shift;;
     -h|--help) sed -n '1,45p' "$0"; exit 0;;
@@ -114,6 +120,22 @@ done
 
 [ -n "$REGISTRY" ] || die "--registry is required"
 [ "$DRY_RUN" -eq 1 ] || [ -n "$KEY" ] || die "--key is required (or use --dry-run)"
+if [ -n "$RELEASE_ROOT" ] || [ -n "$RELEASE_VERSION" ]; then
+  [ -n "$RELEASE_ROOT" ] && [ -n "$RELEASE_VERSION" ] \
+    || die "--release-root and --release-version must be supplied together"
+  [ -d "$RELEASE_ROOT" ] || die "--release-root is not a directory: $RELEASE_ROOT"
+  RELEASE_ROOT="$(cd "$RELEASE_ROOT" && pwd -P)" \
+    || die "cannot resolve --release-root: $RELEASE_ROOT"
+  case "$RELEASE_VERSION" in
+    [A-Za-z0-9]*) ;;
+    *) die "--release-version must start with an alphanumeric";;
+  esac
+  case "$RELEASE_VERSION" in
+    *[!A-Za-z0-9._+-]*) die "--release-version contains unsafe characters";;
+  esac
+  [ "${#RELEASE_VERSION}" -le 128 ] \
+    || die "--release-version must be at most 128 characters"
+fi
 case "$REGISTRY" in
   *' '*|*'<'*) die "--registry '$REGISTRY' is not a registry namespace";;
   */) die "--registry must not end in '/'";;
@@ -247,14 +269,27 @@ export SYFT_BIN="$SYFT_RESOLVED" GRYPE_BIN="$GRYPE_RESOLVED"
 # 3), all-or-nothing, so an image either names the real registry in both files or fails closed
 # in both. Passing it here is what makes the built image able to verify its own upgrades.
 if [ "$DRY_RUN" -eq 1 ]; then
+  if [ -n "$RELEASE_ROOT" ]; then
+    echo "DRY_RUN: would include release root=$RELEASE_ROOT version=$RELEASE_VERSION via target=workspace-host-release"
+  fi
   echo "DRY_RUN: would podman build with registry=$REGISTRY storage-driver=$STORAGE_DRIVER and the release public key -t $REPO:$TAG"
 else
   echo "### 1/4 build (one image, all clouds)"
-  run_monitored "$OUT/image-build.log" "${PODMAN[@]}" build \
+  build_args=(
     --build-arg "RELEASE_REGISTRY_NAMESPACE=$REGISTRY" \
     --build-arg "RELEASE_STORAGE_DRIVER=$STORAGE_DRIVER" \
     --build-arg "RELEASE_SIGNING_PUBKEY_B64=$PUBKEY_B64" \
-    -f "$HERE/workspace-host.Containerfile" -t "$REPO:$TAG" "$HERE"
+    -f "$HERE/workspace-host.Containerfile" -t "$REPO:$TAG"
+  )
+  if [ -n "$RELEASE_ROOT" ]; then
+    build_args+=(
+      --target workspace-host-release
+      --build-context "papercusp-release=$RELEASE_ROOT"
+      --build-arg "PAPERCUSP_RELEASE_VERSION=$RELEASE_VERSION"
+    )
+  fi
+  build_args+=("$HERE")
+  run_monitored "$OUT/image-build.log" "${PODMAN[@]}" build "${build_args[@]}"
   build_rc=$?
   if [ "$build_rc" -ne 0 ]; then
     echo "BAKE_RESULT=FAILED build"
