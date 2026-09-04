@@ -110,7 +110,7 @@ import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-to
 import { workspaceForCoordOwner } from '../../../adv-sessions';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loopPressure } from '../../../event-loop-lag-monitor';
-import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
+import { PLATFORM_POT_SLUG } from '../../../platform-pot-slug';
 import { isEngineeringDocsSentinel, resolveInheritedHarnessScope } from '../../../agent-tools/_harness-scope';
 import { verifyExplicitPlanHarness } from '../../../agent-tools/plans/slug-scope';
 import { withMcpAdmission, ADMISSION_CONTROL_ENABLED } from './mcp-admission';
@@ -628,25 +628,23 @@ export function crossHiveLaunchHint(toolName: string, scopeHive: string): string
 }
 
 /**
- * EI-22344259264889593: `git-sync:run` defaults to the workspace's operator-home
- * install when its target is omitted. The generic hive clamp nevertheless rejected
- * the byte-equivalent explicit spelling (`installSlug`, or the tool's documented
- * `harness` alias) from a session executing in another Hive. That made the manual
- * COMMIT lever unreachable exactly when an sb-devboard execution session needed to
- * commit the shared canonical staging checkout.
+ * EI-22344259264889593: a session may execute in a repo-less Hive while its
+ * canonical editable checkout remains the workspace's platform/self Pot. The
+ * generic Hive clamp rejected that exact explicit `git-sync:run` target
+ * (`installSlug`, or the tool's documented `harness` alias), leaving the manual
+ * COMMIT lever unable to sync the canonical staging checkout.
  *
- * This is deliberately NOT a general cross-hive exception. It admits only the one
- * tool, only its two target spellings, and only the exact configured home slug. An
- * arbitrary sibling target remains forbidden. Because the omitted call already
- * selects this same slug inside git-sync:run, accepting the explicit spelling adds
- * no authority; it only makes the transport agree with the handler's existing
- * default.
+ * This is deliberately NOT a general cross-Hive exception. It admits only this
+ * one tool, only its two target spellings, and only PLATFORM_POT_SLUG — the
+ * existing dependency-free SSOT for the canonical platform Pot. The runtime
+ * operator-home harness is a different concept and may legitimately be repo-less;
+ * arbitrary sibling targets remain forbidden.
  */
-function isExplicitOperatorHomeGitSyncTarget(toolName: string, arg: string, slug: string): boolean {
+function isExplicitPlatformPotGitSyncTarget(toolName: string, arg: string, slug: string): boolean {
   return (
     toolName === 'git-sync:run' &&
     (arg === 'installSlug' || arg === 'harness') &&
-    slug === operatorHomeHarnessSlug()
+    slug === PLATFORM_POT_SLUG
   );
 }
 
@@ -883,14 +881,14 @@ async function applyScopedSuperuserTransportClamp(
             toolName === 'docs:search' ||
             toolName === 'docs:outline' ||
             toolName === 'docs:author');
-        const isOperatorHomeGitSyncTarget = isExplicitOperatorHomeGitSyncTarget(
+        const isPlatformPotGitSyncTarget = isExplicitPlatformPotGitSyncTarget(
           toolName,
           'harness',
           requestedHarness,
         );
         const escapesHive =
           !isEngineeringDocsSurface &&
-          !isOperatorHomeGitSyncTarget &&
+          !isPlatformPotGitSyncTarget &&
           (requestedHarness === 'all' ||
             requestedHarness === '*' ||
             (await potHomeSlugForHarness(spawnCtx.workspaceId, requestedHarness)) !== scopeHive);
@@ -1010,7 +1008,7 @@ async function applyScopedSuperuserTransportClamp(
       }
 
       for (const { arg, slug } of collectHarnessSlugArgs(args, { toolName })) {
-        if (isExplicitOperatorHomeGitSyncTarget(toolName, arg, slug)) continue;
+        if (isExplicitPlatformPotGitSyncTarget(toolName, arg, slug)) continue;
         const escapesHive =
           slug === 'all' || slug === '*' || (await potHomeSlugForHarness(spawnCtx.workspaceId, slug)) !== scopeHive;
         if (escapesHive) {
@@ -2811,14 +2809,14 @@ const handler = createMcpHandler(
                     toolName === 'docs:search' ||
                     toolName === 'docs:outline' ||
                     toolName === 'docs:author');
-                const isOperatorHomeGitSyncTarget = isExplicitOperatorHomeGitSyncTarget(
+                const isPlatformPotGitSyncTarget = isExplicitPlatformPotGitSyncTarget(
                   toolName,
                   'harness',
                   argHarness,
                 );
                 const escapes =
                   !isEngineeringDocsSurface &&
-                  !isOperatorHomeGitSyncTarget &&
+                  !isPlatformPotGitSyncTarget &&
                   (argHarness === 'all' ||
                     argHarness === '*' ||
                     (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness)) !== scopeHive);
@@ -3024,7 +3022,7 @@ const handler = createMcpHandler(
               // but "the pot's home-harness slug" on pot:* — and pot:obliterate
               // is the sharp end of getting that wrong.
               for (const { arg, slug } of collectHarnessSlugArgs(args, { toolName })) {
-                if (isExplicitOperatorHomeGitSyncTarget(toolName, arg, slug)) continue;
+                if (isExplicitPlatformPotGitSyncTarget(toolName, arg, slug)) continue;
                 const escapesHive =
                   slug === 'all' ||
                   slug === '*' ||
