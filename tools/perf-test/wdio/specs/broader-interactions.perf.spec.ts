@@ -140,6 +140,25 @@ async function waitForServerConnectionReady(): Promise<void> {
 }
 
 /**
+ * The packaged shell hydrates the shared sync QueryClient from localStorage
+ * before the first panel mounts. A normal rerun therefore exercises a warm
+ * cache and can hide the first-fetch stage WI-5502 is diagnosing. Opt into a
+ * genuinely cold run with PERF_COLD_SYNC=1: remove only the sync-cache entry
+ * and reload the same app profile so module-eval hydration sees no snapshot.
+ */
+async function reloadWithoutPersistedSyncCache(): Promise<void> {
+  await browser.execute(() => {
+    try {
+      localStorage.removeItem("papercusp:sync-cache:v1");
+    } catch {
+      /* storage may be unavailable; the reload still gives a clean memory cache */
+    }
+    location.reload();
+  });
+  await waitForAppMount(browser);
+}
+
+/**
  * Focus a registered HarnessesDock panel even when the persisted layout does
  * not contain it. This mirrors requestDockPanelOpen without importing browser
  * application code into the out-of-workspace WDIO runner: the queue survives
@@ -335,6 +354,14 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
   it("switches Learning views within budget", async () => {
     const NAME = "learning-view-switch";
     await waitForAppMount(browser);
+
+    // Cold-sync diagnosis is opt-in so ordinary release runs retain their
+    // stable warm-cache acceptance semantics. Reload happens before the route
+    // transition, allowing RootSyncProvider's module-eval restore to observe
+    // the removed snapshot rather than a cache already hydrated in memory.
+    if (process.env.PERF_COLD_SYNC === "1") {
+      await reloadWithoutPersistedSyncCache();
+    }
 
     // Start on the Observe stage so the real Observations tab is visible. The
     // first LearningTab mount is intentionally excluded from this interaction;
