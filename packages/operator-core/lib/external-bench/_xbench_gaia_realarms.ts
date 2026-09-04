@@ -50,6 +50,7 @@ import { join } from 'node:path';
 import { bindSuIndependentBacklogDriver, SU_INDEPENDENT_ARM } from './su-independent-backlog';
 import { bindRealQueenBacklogDriver, dissolveBenchHive, HIVE_REALQUEEN_ARM } from './hive-backlog-realqueen';
 import { runHiveBacklog } from './hive-backlog';
+import { retireBenchDebris, type DebrisSql } from './bench-teardown';
 import { loadBenchTaskSet } from './task-sets';
 import { gradeGaia, coerceLevel, type GaiaPrediction, type GaiaLevel } from './grader/gaia';
 import { resolveBenchWorkspace } from './bench-workspace';
@@ -70,9 +71,12 @@ const CAP = Number(process.env.XBENCH_CAP ?? 5);
 // bench code + fixes live (the GREEN :3070 lags). Override-able.
 process.env.PAPERCUSP_OPERATOR_BASE ??= 'http://localhost:3170';
 
-// TEARDOWN-ON-EXIT. su-independent is hive-less (driver owns + cleans each per-task clone). hive-realqueen
-// creates a shared hive that MUST be dissolved on a SIGKILL-class exit to avoid an orphan re-spinning opus.
+// TEARDOWN-ON-EXIT. Both GAIA arms create a temporary shared hive: su-independent uses it for member
+// registration/FIFO placement, while hive-realqueen also runs the Queen. Register the slug immediately so
+// signal/fatal cleanup can dissolve the exact run's hive rather than leaving an orphan respinning opus.
 const createdHives = new Set<string>();
+let runPotSlug: string | null = null;
+let debrisRetired = false;
 let tearingDown = false;
 async function dissolveAllHives(reason: string): Promise<void> {
   if (createdHives.size === 0) return;
@@ -86,11 +90,28 @@ async function dissolveAllHives(reason: string): Promise<void> {
     }
   }
 }
+
+/** Retire only this su-independent run's benchmark items if a signal bypasses driver finalization. */
+async function retireSuRunDebris(reason: string): Promise<void> {
+  if (ARM !== SU_INDEPENDENT_ARM || debrisRetired || !runPotSlug) return;
+  debrisRetired = true;
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const retired = await retireBenchDebris(getOrgPg().sql as unknown as DebrisSql, Date.now(), {
+      slugPrefix: runPotSlug,
+    });
+    console.warn(`[gaia:${ARM}] retired ${retired} work-item(s) for hive '${runPotSlug}' at ${reason}`);
+  } catch (e) {
+    console.warn(`[gaia:${ARM}] debris retire (${reason}) failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 function installTeardownHandlers(): void {
   const onSignal = (sig: string) => {
     void (async () => {
       if (tearingDown) return;
       tearingDown = true;
+      await retireSuRunDebris(`signal ${sig}`);
       await dissolveAllHives(`signal ${sig}`);
       process.exit(sig === 'SIGINT' ? 130 : 143);
     })();
@@ -99,11 +120,25 @@ function installTeardownHandlers(): void {
   process.on('SIGINT', () => onSignal('SIGINT'));
   process.on('uncaughtException', (e) => {
     console.error(`[gaia:${ARM}] uncaughtException`, e);
-    void (async () => { if (!tearingDown) { tearingDown = true; await dissolveAllHives('uncaughtException'); } process.exit(1); })();
+    void (async () => {
+      if (!tearingDown) {
+        tearingDown = true;
+        await retireSuRunDebris('uncaughtException');
+        await dissolveAllHives('uncaughtException');
+      }
+      process.exit(1);
+    })();
   });
   process.on('unhandledRejection', (e) => {
     console.error(`[gaia:${ARM}] unhandledRejection`, e);
-    void (async () => { if (!tearingDown) { tearingDown = true; await dissolveAllHives('unhandledRejection'); } process.exit(1); })();
+    void (async () => {
+      if (!tearingDown) {
+        tearingDown = true;
+        await retireSuRunDebris('unhandledRejection');
+        await dissolveAllHives('unhandledRejection');
+      }
+      process.exit(1);
+    })();
   });
 }
 
@@ -159,6 +194,8 @@ async function main() {
   mkdirSync(outDir, { recursive: true });
   const partialPath = join(outDir, 'predictions.partial.jsonl');
   const answersPath = join(outDir, 'answers.partial.jsonl');
+  const manifestPath = join(outDir, `${ARM}.manifest.jsonl`);
+  writeFileSync(manifestPath, '', 'utf8');
 
   // DURABILITY: persist each answer the moment it is collected (a rate-limit kill keeps every gradeable
   // answer already gathered). The full predictions/report are (re)written from result.taskResults at the end.
@@ -187,6 +224,23 @@ async function main() {
       fleetTimeoutMs: Number(process.env.XBENCH_FLEET_TIMEOUT_MS ?? 120 * 60 * 1000),
       sampleIntervalMs: Number(process.env.XBENCH_SAMPLE_MS ?? 5_000),
       gaia: { enabled: true },
+      onHiveCreated: (hiveHome) => {
+        runPotSlug = hiveHome;
+        createdHives.add(hiveHome);
+        console.log(`[gaia:${ARM}] hive created + registered for teardown: ${hiveHome}`);
+      },
+      onEnrolled: (e) => {
+        appendFileSync(
+          manifestPath,
+          JSON.stringify({
+            arm: ARM,
+            instanceId: e.task.instanceId,
+            clonePath: e.clonePath,
+            baseCommit: e.checkout.baseCommit,
+            testFiles: (e.task.graderMeta?.['testFiles'] as string[] | undefined) ?? [],
+          }) + '\n',
+        );
+      },
       onTaskCollected,
     });
   } else {
@@ -195,8 +249,22 @@ async function main() {
       fleetTimeoutMs: Number(process.env.XBENCH_FLEET_TIMEOUT_MS ?? 120 * 60 * 1000),
       pollIntervalMs: Number(process.env.XBENCH_POLL_MS ?? 20_000),
       gaia: { enabled: true },
+      onEnrolled: (e) => {
+        appendFileSync(
+          manifestPath,
+          JSON.stringify({
+            arm: ARM,
+            instanceId: e.task.instanceId,
+            member: e.member,
+            clonePath: e.clonePath,
+            baseCommit: e.checkout.baseCommit,
+            testFiles: (e.task.graderMeta?.['testFiles'] as string[] | undefined) ?? [],
+          }) + '\n',
+        );
+      },
       onTaskCollected,
       onHiveCreated: (hiveHome) => {
+        runPotSlug = hiveHome;
         createdHives.add(hiveHome);
         console.log(`[gaia:${ARM}] hive created + registered for teardown: ${hiveHome}`);
       },
@@ -273,6 +341,7 @@ async function main() {
   console.log(`[gaia:${ARM}] compare vs single-opus L3 baseline 69.2% (18/26).`);
 
   void partialPath; // (reserved — checkpoint path; answers.partial.jsonl is the live durable stream)
+  await retireSuRunDebris('normal-exit');
   await dissolveAllHives('normal-exit');
   process.exit(0);
 }
