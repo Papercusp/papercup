@@ -357,6 +357,123 @@ export function judgeSchemathesisRun(input: JudgeSchemathesisInput): Schemathesi
 }
 
 /**
+ * What one NDJSON report yielded.
+ *
+ * `operationsTested` is deliberately "operations actually EXERCISED", not
+ * "operations selected": a run can select operations and then execute nothing
+ * (every scenario skipped), and reporting the selection there would walk the
+ * vacuous-green guard straight past its own check.
+ */
+export interface SchemathesisReportParse {
+  readonly operationsTested: number | null;
+  readonly operationsTotal: number | null;
+  readonly operationsSelected: number | null;
+  readonly scenariosExecuted: number;
+  readonly checksFailed: number | null;
+  readonly stopReason: string | null;
+  readonly detail: string;
+}
+
+/**
+ * Parse a Schemathesis 4.x NDJSON report.
+ *
+ * The shape below is MEASURED, not assumed — captured from schemathesis 4.25.2
+ * run against this operator's own document on 2026-09-04:
+ *
+ *   {"LoadingFinished":{...,"statistic":{"operations":{"total":1761,"selected":5}}}}
+ *   {"ScenarioFinished":{...,"status":"success"|"failure"|"skip",
+ *                        "recorder":{"label":"GET /api/health",
+ *                                    "checks":{"<caseId>":[{"name":...,"status":...}]}}}}
+ *   {"EngineFinished":{...,"stop_reason":"completed"}}
+ *
+ * (The first attempt used `--report=json`, which 4.25.2 rejects outright — its
+ * choices are junit, vcr, har, ndjson, allure. Hence a measured parser.)
+ *
+ * Every field is optional-by-construction: a report from a future version that
+ * no longer carries `statistic` yields `operationsTested: null`, which the
+ * judge treats as UNAVAILABLE. A format change therefore degrades to a
+ * refusal, never to a false pass.
+ */
+export function parseSchemathesisReport(ndjson: string): SchemathesisReportParse {
+  let operationsTotal: number | null = null;
+  let operationsSelected: number | null = null;
+  let scenariosExecuted = 0;
+  let checksFailed = 0;
+  let sawScenario = false;
+  let stopReason: string | null = null;
+  let malformed = 0;
+
+  for (const rawLine of ndjson.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      malformed += 1;
+      continue;
+    }
+    if (!isRecord(event)) continue;
+
+    const loading = event.LoadingFinished;
+    if (isRecord(loading)) {
+      const statistic = isRecord(loading.statistic) ? loading.statistic : null;
+      const operations = statistic && isRecord(statistic.operations) ? statistic.operations : null;
+      if (operations) {
+        if (typeof operations.total === 'number') operationsTotal = operations.total;
+        if (typeof operations.selected === 'number') operationsSelected = operations.selected;
+      }
+    }
+
+    const scenario = event.ScenarioFinished;
+    if (isRecord(scenario)) {
+      sawScenario = true;
+      if (scenario.status !== 'skip') scenariosExecuted += 1;
+
+      const recorder = isRecord(scenario.recorder) ? scenario.recorder : null;
+      const checks = recorder && isRecord(recorder.checks) ? recorder.checks : null;
+      if (checks) {
+        for (const perCase of Object.values(checks)) {
+          if (!Array.isArray(perCase)) continue;
+          for (const check of perCase) {
+            if (isRecord(check) && check.status !== 'success') checksFailed += 1;
+          }
+        }
+      }
+    }
+
+    const engine = event.EngineFinished;
+    if (isRecord(engine) && typeof engine.stop_reason === 'string') {
+      stopReason = engine.stop_reason;
+    }
+  }
+
+  // Selected-but-nothing-executed is zero exercised, not "selected many".
+  const operationsTested =
+    operationsSelected === null ? null : scenariosExecuted > 0 ? operationsSelected : 0;
+
+  const parts = [
+    operationsTotal === null ? 'no operation census in report' : `${operationsTotal} operations in schema`,
+    operationsSelected === null ? 'no selection count' : `${operationsSelected} selected`,
+    `${scenariosExecuted} scenario(s) executed`,
+    stopReason ? `stop_reason=${stopReason}` : 'no EngineFinished event',
+  ];
+  if (malformed > 0) parts.push(`${malformed} unparseable line(s)`);
+
+  return {
+    operationsTested,
+    operationsTotal,
+    operationsSelected,
+    scenariosExecuted,
+    // No scenario events at all means the count is unknown, not zero.
+    checksFailed: sawScenario ? checksFailed : null,
+    stopReason,
+    detail: parts.join('; '),
+  };
+}
+
+/**
  * Process exit code for a verdict.
  *
  * Three-valued, matching the sibling gates: 0 keep/pass, 1 a conclusive
@@ -413,10 +530,18 @@ export function buildSchemathesisArgv(options: {
     baseUrl,
     '--max-examples',
     String(maxExamples),
-    '--report=json',
+    // ndjson, NOT json: `--report=json` is rejected by 4.25.2 ("invalid
+    // choice(s): json. Choose from junit, vcr, har, ndjson, allure"). Measured,
+    // not assumed — the first draft of this line guessed `json` and the CLI
+    // refused it outright.
+    '--report=ndjson',
   ];
 
   if (includePathRegex) gateArgs.push('--include-path-regex', includePathRegex);
+  // Phases are examples, coverage, fuzzing, stateful. Stateful is the one that
+  // needs link definitions, and schemathesis self-skips it as `not_applicable`
+  // when the document declares no transitions — so leaving it ON by default
+  // costs nothing and picks it up for free if links are ever added.
   if (stateful === false) gateArgs.push('--phases=examples,coverage,fuzzing');
 
   if (toolchain.runner === 'pipx') {
@@ -426,5 +551,12 @@ export function buildSchemathesisArgv(options: {
     };
   }
 
-  return { command: 'python3', args: ['-m', 'schemathesis', ...gateArgs] };
+  // `-m schemathesis.cli`, NOT `-m schemathesis`: the package ships no
+  // __main__, so the bare form dies with "'schemathesis' is a package and
+  // cannot be directly executed" — a non-zero exit with no report written,
+  // which this gate correctly reports as UNAVAILABLE rather than a failure,
+  // but which is nonetheless a caller bug. Both declared console scripts
+  // (`schemathesis`, `st`) resolve to `schemathesis.cli:schemathesis`; using
+  // the module path avoids depending on either being on PATH.
+  return { command: 'python3', args: ['-m', 'schemathesis.cli', ...gateArgs] };
 }
