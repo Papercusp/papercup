@@ -83,10 +83,13 @@ describe('renderSuPlaybook tier threading (P-017)', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('full keeps tags inert (content present); fleet strips them + compacts AUTO', async () => {
+  it('full keeps tags inert (content present); fleet strips them; both splice the kernel modes stub (P-021)', async () => {
     const full = await renderSuPlaybook({ agent: 'claude', baseSource, projectGuideSource: '' });
     expect(full.text).toContain('Leader-only section');
-    expect(full.text).toContain('## IDEATE mode');
+    expect(full.text).toContain('## Operating modes');
+    // the definitions are identity layers bound by registry state — absent from a modes-off render
+    expect(full.text).not.toContain('## IDEATE mode');
+    expect(full.text).not.toContain('## AUTO mode — the owner');
     const fleet = await renderSuPlaybook({
       agent: 'claude',
       baseSource,
@@ -95,8 +98,8 @@ describe('renderSuPlaybook tier threading (P-017)', () => {
     });
     expect(fleet.text).toContain('Spine section');
     expect(fleet.text).not.toContain('Leader-only section');
-    expect(fleet.text).not.toContain('IDEATE');
-    expect(fleet.text).toContain('## AUTO mode — you are in it');
+    expect(fleet.text).toContain('## Operating modes');
+    expect(fleet.text).not.toContain('## AUTO mode — you are in it');
     expect(fleet.text).not.toContain('FULL-ONLY');
   });
 });

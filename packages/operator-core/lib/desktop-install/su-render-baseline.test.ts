@@ -131,10 +131,14 @@ describe('su render baseline — pinned fixture inputs (P-018)', () => {
     }
   });
 
-  it('fleet tier renders fewer bytes than full (compact AUTO clause, filtered wire legend)', async () => {
+  it('fleet tier never renders MORE bytes than full (FULL-ONLY sections stripped, wire legend filtered)', async () => {
+    // identities-v1 P-021 retired the fleet tier's compact AUTO clause — both tiers splice the
+    // same kernel modes stub, and a member's AUTO definition binds by registry state, not by
+    // tier — so the remaining fleet trims (FULL-ONLY sections, the wire-legend filter) are the
+    // only difference, and neither fires on this pinned fixture: equal is the honest reading.
     const full = measureSuRender(await renderPinned('full'), baseText);
     const fleet = measureSuRender(await renderPinned('fleet'), baseText);
-    expect(fleet.totalBytes).toBeLessThan(full.totalBytes);
+    expect(fleet.totalBytes).toBeLessThanOrEqual(full.totalBytes);
   });
 
   it('per-section bytes + hashes match baseline.json (BASELINE_UPDATE=1 re-pins)', async () => {
