@@ -1,5 +1,6 @@
 /** P-016: plan-item push assignment respects the target member's fleet scope. */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { StableAgentTargetState } from '../coordination/actionable-work-item-dispatch';
 
 const admission = vi.hoisted(() => ({ decision: { allowed: true, scoped: false } as any, notify: vi.fn() }));
 const agentNames = vi.hoisted(() => ({
@@ -8,13 +9,15 @@ const agentNames = vi.hoisted(() => ({
   registerAgentName: vi.fn(),
 }));
 const targetResolver = vi.hoisted(() => ({
-  resolveStableAgentTarget: vi.fn(async ({ targetAgent }: { targetAgent: string }) => ({
-    requested: targetAgent,
-    ownerId: targetAgent,
-    present: false,
-    sessionState: null as string | null,
-    wakeable: false as boolean | null,
-  })),
+  resolveStableAgentTarget: vi.fn(
+    async ({ targetAgent }: { targetAgent: string }): Promise<StableAgentTargetState> => ({
+      requested: targetAgent,
+      ownerId: targetAgent,
+      present: false,
+      sessionState: null,
+      wakeable: false,
+    }),
+  ),
 }));
 
 vi.mock('../coordination/identity', () => ({
