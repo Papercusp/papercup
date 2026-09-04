@@ -315,9 +315,27 @@ fi
 # one-shot is exactly what this call used to be, which is why 13 of this timer's
 # runs in 24h died on git_sync_barrier_/git_sync_collision_ refusals (ZERO of them
 # a build error, despite the filed title). Bounded well under both the tool's
-# GIT_SYNC_RESTART_BARRIER_DRAIN_SEC=120 ceiling and this timer's ~300s tick, and
-# the flock single-flight above means an overrun skips rather than stacking.
-GIT_SYNC_DRAIN_SEC="${PAPERCUSP_STAGING_SYNC_GIT_SYNC_DRAIN_SEC:-60}"
+# The currently deployed staging operator (build 6e898b6cf8, observed
+# 2026-09-04) accepts at most 45s for this argument, while newer source may
+# advertise a larger ceiling. Keep this automated caller within the smallest
+# live schema so a stale staging operator cannot reject the sync before it
+# restarts itself. User overrides are clamped to the compatibility ceiling.
+normalize_git_sync_drain_sec() {
+  local requested="${1:-45}"
+  case "$requested" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  requested=$((10#$requested))
+  if [ "$requested" -gt 45 ]; then
+    requested=45
+  fi
+  printf '%s\n' "$requested"
+}
+
+GIT_SYNC_DRAIN_SEC="$(normalize_git_sync_drain_sec "${PAPERCUSP_STAGING_SYNC_GIT_SYNC_DRAIN_SEC:-45}")" || {
+  log "FATAL: invalid PAPERCUSP_STAGING_SYNC_GIT_SYNC_DRAIN_SEC; expected a non-negative integer"
+  exit 1
+}
 
 log "requesting coordinated restart of $UNIT via dev:restart (git_sync_drain_sec=${GIT_SYNC_DRAIN_SEC})"
 restart_result="$({

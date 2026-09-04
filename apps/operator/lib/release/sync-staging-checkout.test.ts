@@ -497,7 +497,29 @@ describe('sync-staging-checkout.sh — transient git-sync refusals defer, they d
 
   it('the shipped script WAITS for the barrier instead of one-shotting the restart', () => {
     expect(script).toContain('"git_sync_drain_sec":${GIT_SYNC_DRAIN_SEC}');
-    expect(script).toMatch(/GIT_SYNC_DRAIN_SEC="\$\{PAPERCUSP_STAGING_SYNC_GIT_SYNC_DRAIN_SEC:-\d+\}"/);
+    expect(script).toContain('normalize_git_sync_drain_sec');
+    expect(script).toMatch(/PAPERCUSP_STAGING_SYNC_GIT_SYNC_DRAIN_SEC:-45/);
+  });
+
+  describe('the wire budget stays compatible with the oldest live staging schema', () => {
+    function normalize(value: string): { status: number | null; stdout: string; stderr: string } {
+      return runFn(['normalize_git_sync_drain_sec'], 'normalize_git_sync_drain_sec "$VALUE"', {
+        env: { VALUE: value },
+      });
+    }
+
+    it('preserves a valid short override', () => {
+      expect(normalize('7')).toMatchObject({ status: 0, stdout: '7\n' });
+    });
+
+    it('clamps the stale-runtime-incompatible default/override ceiling to 45s', () => {
+      expect(normalize('60')).toMatchObject({ status: 0, stdout: '45\n' });
+      expect(normalize('120')).toMatchObject({ status: 0, stdout: '45\n' });
+    });
+
+    it('rejects non-numeric values instead of emitting invalid JSON', () => {
+      expect(normalize('45s').status).toBe(1);
+    });
   });
 
   it('the deferral is BOUNDED — a stuck barrier still goes FATAL rather than hiding stale code', () => {
