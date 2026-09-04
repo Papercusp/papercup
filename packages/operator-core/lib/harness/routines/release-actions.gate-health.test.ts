@@ -460,13 +460,15 @@ describe('P-005: gateRedStreakBroadcast (pure)', () => {
     expect(body).not.toContain('behind staging');
   });
 
-  // ── P-007 (converge-frozen-candidate-by-fix-only-admission-2026-08-27) ──────────
+  // ── P-007 (converge-frozen-candidate-by-fix-only-admission-2026-08-27), re-based on
+  // D-010 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03) ──────────────
   // "Discoverability at the moment of failure": a responder reaching a red gate has to
   // learn WHERE the repair is authored and WHAT may be admitted before touching
-  // anything. Both previously lived only in a doc nobody opens mid-incident, and the
-  // two failure modes that produced are concrete: authoring the fix in the shared
-  // staging checkout, and `git add -A` sweeping peer/git-sync work into the candidate.
-  describe('P-007: names the repair worktree and the fix-only admission rule', () => {
+  // anything. Both previously lived only in a doc nobody opens mid-incident. Under D-010
+  // there is NO repair worktree: the fix is authored in the shared staging checkout and
+  // reaches the judged lineage ONLY through path-exact admission
+  // (`release:repair-queue { op: 'admit', paths }`), never by re-cutting at tip.
+  describe('P-007/D-010: names where to fix and the path-exact admission rule', () => {
     // FALSIFIABILITY CONTROL, kept permanently (CLAUDE.md: for a module subject, keep a
     // deliberately-wrong implementation in the test file rather than mutating the shared
     // tree). This is the pre-P-007 body verbatim-in-shape. Every assertion below must
@@ -486,24 +488,31 @@ describe('P-005: gateRedStreakBroadcast (pure)', () => {
         candidate: 'deadbeefcafe1234',
       }).body;
 
-    it('names the repair-worktree path SHAPE and the tool that reports the real one', () => {
+    it('says the fix is authored on staging (no repair worktree) and names the tool that reports the lineage', () => {
       const body = bodyOf();
-      // The shape, so a responder recognizes the directory when they see it...
-      expect(body).toContain('.papercusp/worktrees/green-candidate-<pipeline>-<sha12>');
-      // ...and the tool, because reconstructing the path by hand is how a responder ends
-      // up authoring in a tree the gate is not going to admit.
-      expect(body).toContain('release:repair-queue');
+      // D-010: the retired worktree must NOT be named — reconstructing that path by hand is
+      // how a responder ends up authoring in a tree the gate is never going to admit.
+      expect(body).not.toContain('.papercusp/worktrees/green-candidate-');
+      expect(body).toContain('NO repair worktree');
+      expect(body).toContain('shared staging checkout');
+      // ...and the tool, so the responder reads the real candidate/repairHead pair.
+      expect(body).toContain("release:repair-queue { op: 'get' }");
       expect(body).toContain('repairHead');
-      expect(preP007Body).not.toContain('.papercusp/worktrees/green-candidate-<pipeline>-<sha12>');
+      expect(preP007Body).not.toContain('repair worktree');
       expect(preP007Body).not.toContain('release:repair-queue');
     });
 
-    it('states the fix-only admission rule: forward-only, and NOT `git add -A`', () => {
+    it('states the path-exact admission rule: admit by path, diff-tree == allowlist, never a re-cut at tip', () => {
       const body = bodyOf();
-      expect(body).toContain('ancestor');
-      expect(body).toContain('git add -A');
+      expect(body).toContain("release:repair-queue { op: 'admit', paths: [...] }");
+      expect(body).toContain('dry-run first');
+      expect(body).toContain('confirm: true');
+      expect(body).toContain('diff-tree must equal the allowlist');
+      expect(body).toContain('no path ever re-cuts the candidate from tip');
       expect(body).toContain('/internal/docs/agent-insights/frozen-candidate-fix-only-admission');
-      expect(preP007Body).not.toContain('git add -A');
+      // The retired rule shapes must be gone with the worktree they described.
+      expect(body).not.toContain('git add -A');
+      expect(preP007Body).not.toContain("op: 'admit'");
       expect(preP007Body).not.toContain('frozen-candidate-fix-only-admission');
     });
 
@@ -516,7 +525,8 @@ describe('P-005: gateRedStreakBroadcast (pure)', () => {
         consecutiveReds: 1,
         heldHrs: null,
       }).body;
-      expect(bare).toContain('.papercusp/worktrees/green-candidate-<pipeline>-<sha12>');
+      expect(bare).toContain('NO repair worktree');
+      expect(bare).toContain("release:repair-queue { op: 'admit', paths: [...] }");
       expect(bare).toContain('frozen-candidate-fix-only-admission');
     });
   });
