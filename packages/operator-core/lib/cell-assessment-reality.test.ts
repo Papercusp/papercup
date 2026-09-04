@@ -614,7 +614,36 @@ const CONTROLS: Record<string, readonly Control[]> = {
   ],
   'gate.greenCheckpoint.ownerBrief': [
     { label: 'green gate', expect: OWNER_BRIEF() },
-    { label: 'green verdict with an unpromoted staging buffer', expect: OWNER_BRIEF({ mainBehindStaging: true }) },
+    {
+      label: 'green verdict with an ordinary post-absorption staging buffer',
+      expect: OWNER_BRIEF({
+        mainBehindStaging: true,
+        promotion: {
+          judgedSha: 'judged',
+          mainPin: 'main',
+          mainContainsJudgedSha: true,
+          stagingHead: 'staging',
+          stagingContainsMainPin: true,
+          stagingContainsJudgedSha: true,
+          stagingBufferPresent: true,
+        },
+      }),
+    },
+    {
+      label: 'green verdict whose exact judged SHA is absent from the writer-owned main pin',
+      expect: OWNER_BRIEF({
+        mainBehindStaging: false,
+        promotion: {
+          judgedSha: 'judged',
+          mainPin: 'main',
+          mainContainsJudgedSha: false,
+          stagingHead: 'main',
+          stagingContainsMainPin: true,
+          stagingContainsJudgedSha: false,
+          stagingBufferPresent: false,
+        },
+      }),
+    },
     { label: 'red with live remediation', expect: OWNER_BRIEF({ consecutiveReds: 1, repairQueue: { phase: 'awaiting-fixer', attempts: 1, updatedAtMs: 900, ageMs: 100, fixerSpawnId: 's-fixer', fixerAlive: true, zeroAttemptStalled: false } }) },
     { label: 'red with stalled remediation', expect: OWNER_BRIEF({ consecutiveReds: 1, repairQueue: { phase: 'awaiting-fixer', attempts: 1, updatedAtMs: 900, ageMs: 100, fixerSpawnId: 's-fixer', fixerAlive: false, zeroAttemptStalled: false } }) },
     { label: 'red with an unconfirmed holder and no fixer ever dispatched', expect: OWNER_BRIEF({ consecutiveReds: 1, ownership: { claimState: 'held', takenBy: 'su-stranded', workItem: 'WI-1', assessment: 'held-needs-confirmation' } as never, repairQueue: { phase: 'awaiting-fixer', attempts: 0, updatedAtMs: 900, ageMs: 100, fixerSpawnId: null, fixerAlive: null, zeroAttemptStalled: true } }) },
@@ -996,6 +1025,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     'non-test-leg-failing',
   ],
   'gate.greenCheckpoint.ownerBrief': [
+    'green',
     'green',
     'green-not-promoted',
     'red-owned-remediating',
