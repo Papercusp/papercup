@@ -1,4 +1,9 @@
-import type { WorkspaceHostBootstrapAttestation, WorkspaceHostImageArtifact } from '@papercusp/deployment-driver';
+import {
+  WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+  type WorkspaceHostBootstrapAttestation,
+  type WorkspaceHostBuilderKind,
+  type WorkspaceHostImageArtifact,
+} from '@papercusp/deployment-driver';
 
 import { evaluateImageScanPolicy, GCP_IMAGE_SCAN_POLICY } from './image-scan-policy';
 import {
@@ -6,6 +11,11 @@ import {
   type WorkspaceHostReleaseGateInput,
   type WorkspaceHostReleaseGateVerdict,
 } from './workspace-host-release-gate';
+import {
+  workspaceHostBootcCloudArtifact,
+  workspaceHostReleaseSubjectSha256,
+  type WorkspaceHostBootcCloudArtifact,
+} from './bootc-bake-manifest';
 
 export const GCP_IMAGE_FAMILY_RELEASE_CONTRACT_VERSION = 'papercusp-gcp-image-family-release-v1';
 
@@ -248,7 +258,10 @@ export interface GcpImageFamilyReleaseAdapter {
     candidateImageId?: string;
     /** Explicit post-build retry phase; scan/publish are both re-verified before publication. */
     resumePhase?: GcpImageFamilyReleaseResumePhase;
+    builderKind: WorkspaceHostBuilderKind;
     templatePath: string;
+    /** Present exactly for bootc builds: the already-rendered GCE disk to import. */
+    bootcArtifact?: WorkspaceHostBootcCloudArtifact;
     buildManifestIdentity: string;
     releaseVersion: string;
     releaseSha256: string;
@@ -394,7 +407,7 @@ function validateScan(scan: GcpImageScanEvidence, artifact: WorkspaceHostImageAr
   if (
     scan.imageId !== imageId ||
     scan.buildManifestIdentity !== artifact.buildManifest.manifestIdentity ||
-    scan.releaseSha256 !== artifact.release.bundleSha256
+    scan.releaseSha256 !== workspaceHostReleaseSubjectSha256(artifact)
   ) {
     fail('GCP image scan is not bound to the exact candidate, build manifest, and release digest');
   }
@@ -430,7 +443,7 @@ function validateInspection(
     inspection.architecture !== artifact.buildManifest.baseImage.architecture ||
     inspection.buildManifestIdentity !== artifact.buildManifest.manifestIdentity ||
     inspection.releaseVersion !== artifact.image.version ||
-    inspection.releaseSha256 !== artifact.release.bundleSha256
+    inspection.releaseSha256 !== workspaceHostReleaseSubjectSha256(artifact)
   ) {
     fail(`${expectedImageId} is not an active image bound to the canonical build and release`);
   }
@@ -475,23 +488,33 @@ function validateCleanBootProof(
   ) {
     fail('GCP clean-room boot must prove private boot, OS Login, confirmed teardown, and zero residue');
   }
-  // P-306: `artifact.release.bundleSha256` is the SIGNED TARBALL digest, so this comparison is
-  // only meaningful for an ubuntu-release-bundle host. A bootc attestation is refused here by its
-  // model rather than being compared against a field it does not carry — where the comparison
-  // would silently be `undefined !== <digest>`, i.e. always true, and the clean-room proof would
-  // fail with a message about the signed release instead of about the unsupported host model.
   if (
     !expectedAttestation ||
-    proof.attestation.hostModel !== 'ubuntu-release-bundle' ||
+    proof.attestation.hostModel !== (artifact.hostModel ?? 'ubuntu-release-bundle') ||
     proof.attestation.status !== 'healthy' ||
     !proof.attestation.release.signatureVerified ||
     proof.attestation.release.version !== artifact.image.version ||
-    proof.attestation.release.bundleSha256 !== artifact.release.bundleSha256 ||
     proof.attestation.migration.applied !== true ||
     proof.attestation.migration.id !== expectedAttestation.migration.id ||
     proof.attestation.service.active !== true
   ) {
     fail('GCP clean-room attestation must prove the exact signed release, migration, and healthy service');
+  }
+  if (proof.attestation.hostModel === 'bootc-image') {
+    if (
+      artifact.hostModel !== 'bootc-image' ||
+      proof.attestation.bootcBaseImage !== artifact.bootc.baseImage ||
+      proof.attestation.release.source !== artifact.bootc.image ||
+      proof.attestation.release.imageDigest !== artifact.bootc.imageDigest ||
+      proof.attestation.release.signaturePolicyPath !== artifact.bootc.signaturePolicyPath
+    ) {
+      fail('GCP clean-room attestation must prove the exact bootc image identity and signature policy');
+    }
+  } else if (
+    proof.attestation.release.bundleSha256 !== artifact.release.bundleSha256 ||
+    proof.attestation.release.signingKeySha256 !== artifact.release.signingKeySha256
+  ) {
+    fail('GCP clean-room attestation must prove the exact signed bundle identity');
   }
   requireTimestamp(proof.observedAt, 'cleanBootProof.observedAt');
 }
@@ -596,10 +619,19 @@ export async function executeGcpImageFamilyRelease(
     candidateImageName: candidateName(artifactImage.imageName),
     ...(candidateImageId ? { candidateImageId } : {}),
     ...(resumePhase ? { resumePhase } : {}),
+    builderKind: artifact.buildManifest.builder.kind,
     templatePath: artifact.buildManifest.builder.templatePath,
+    ...(artifact.buildManifest.builder.kind === WORKSPACE_HOST_BOOTC_BUILDER_KIND
+      ? {
+          bootcArtifact: workspaceHostBootcCloudArtifact(
+            request.releaseGate.bootcBakeManifest!,
+            'gcp',
+          ),
+        }
+      : {}),
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
     releaseVersion: artifact.image.version,
-    releaseSha256: artifact.release.bundleSha256,
+    releaseSha256: workspaceHostReleaseSubjectSha256(artifact),
     architecture: artifact.buildManifest.baseImage.architecture,
     requiredGuestTools: GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS,
   });
@@ -612,7 +644,7 @@ export async function executeGcpImageFamilyRelease(
     subnetwork: request.cleanRoom.subnetwork,
     imageId: candidate.imageId,
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
-    releaseSha256: artifact.release.bundleSha256,
+    releaseSha256: workspaceHostReleaseSubjectSha256(artifact),
   });
   validateScan(scan, artifact, candidate.imageId);
   validateInspection(await adapter.inspectImage(projectId, candidate.imageId), artifact, candidate.imageId, undefined);
@@ -623,7 +655,7 @@ export async function executeGcpImageFamilyRelease(
     imageId: candidate.imageId,
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
     releaseVersion: artifact.image.version,
-    releaseSha256: artifact.release.bundleSha256,
+    releaseSha256: workspaceHostReleaseSubjectSha256(artifact),
   });
   validateCleanBootProof(cleanBootProof, request, artifact, candidate.imageId);
 
@@ -634,7 +666,7 @@ export async function executeGcpImageFamilyRelease(
     sourceCandidateImageId: candidate.imageId,
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
     releaseVersion: artifact.image.version,
-    releaseSha256: artifact.release.bundleSha256,
+    releaseSha256: workspaceHostReleaseSubjectSha256(artifact),
   });
   const active = normalizePin(published, 'publishFamilyVersion', projectId, family);
   if (
