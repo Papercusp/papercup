@@ -212,3 +212,80 @@ describe('pickHiveGitActor — never signs as a device that does not serve the p
     );
   });
 });
+
+/**
+ * WI-2142873 follow-on — THE OWNER-RESTART BOOT WINDOW.
+ *
+ * The first fix refused only when the owner POSITIVELY reported a booted handle
+ * (`ownerReportsBooted === true`). But the advertisement's reader nulls out a
+ * row older than 30s, which reports UNKNOWN, and UNKNOWN keeps the gh fallback.
+ * On the tower one process is BOTH substrate owner and git-sync host, so its own
+ * restart guarantees that window — and each pass through it minted exactly one
+ * announcement signed under a device that does not serve the pot (measured
+ * 2026-09-04: coord_event_log 18359971 at start+32s). Restarts (~1-5h) outran
+ * the 500-row announcement window (~12-25h), so the bar never aged out and
+ * P-203 Leg A stayed RED with the identity fix already running.
+ *
+ * The discriminator: a STALE advertisement and a NEVER-MADE one are different
+ * facts. Stale is weak evidence about whether that device is still UP, and
+ * strong evidence about WHICH device serves the pot.
+ */
+describe('pickHiveGitActor (stale advertisement during the owner-restart boot window)', () => {
+  const SERVING_DEVICE = 'XPAsvso1-aviynw-tower';
+  const GH = { githubUserId: 279242982, devicePubkey: 'IXfGu216-papercupai' };
+
+  it('REFUSES when the advertisement is stale but names a DIFFERENT device as serving the pot', () => {
+    const actor = pickHiveGitActor(null, GH, keychain, {
+      // too old to trust as liveness ⇒ the reader reported UNKNOWN...
+      ownerReportsBooted: undefined,
+      // ...but it still said WHO serves this pot, and it is not us.
+      lastAdvertisedServingDevicePubkey: SERVING_DEVICE,
+    });
+    expect(actor).toBeNull();
+    expect(
+      explainHiveGitActorAbsence(null, GH, {
+        ownerReportsBooted: undefined,
+        lastAdvertisedServingDevicePubkey: SERVING_DEVICE,
+      }),
+    ).toBe('refused-stale-advertisement-names-another-device');
+  });
+
+  it('PRESERVES the gh fallback on a single-account box — nothing was ever advertised', () => {
+    // The case the whole guard must not break: no substrate owner has ever
+    // named a device for this pot, so the gh actor is the honest best effort.
+    const actor = pickHiveGitActor(null, GH, keychain, {
+      ownerReportsBooted: undefined,
+      lastAdvertisedServingDevicePubkey: undefined,
+    });
+    expect(actor?.devicePubkey).toBe(GH.devicePubkey);
+    expect(actor?.source).toBe('gh-login');
+  });
+
+  it('PRESERVES the gh fallback when the stale advertisement names US as the serving device', () => {
+    const actor = pickHiveGitActor(null, GH, keychain, {
+      ownerReportsBooted: undefined,
+      lastAdvertisedServingDevicePubkey: GH.devicePubkey,
+    });
+    expect(actor?.devicePubkey).toBe(GH.devicePubkey);
+    expect(actor?.source).toBe('gh-login');
+  });
+
+  it('CONTROL: the same inputs WITHOUT the stale-advertisement evidence still sign — so the guard is what changes the outcome', () => {
+    // Calibration for the refusal above: identical booted/gh inputs, minus the
+    // one new fact. If this also refused, the test would be proving nothing.
+    const actor = pickHiveGitActor(null, GH, keychain, { ownerReportsBooted: undefined });
+    expect(actor?.devicePubkey).toBe(GH.devicePubkey);
+    expect(actor?.source).toBe('gh-login');
+  });
+
+  it('a positively-reported booted handle still outranks the stale-advertisement path', () => {
+    // Both refusal reasons can apply at once; the stronger, first-fix one wins
+    // so its operator repair (fix the identity plumbing) is the one reported.
+    expect(
+      explainHiveGitActorAbsence(null, GH, {
+        ownerReportsBooted: true,
+        lastAdvertisedServingDevicePubkey: SERVING_DEVICE,
+      }),
+    ).toBe('refused-owner-booted-identity-unavailable');
+  });
+});

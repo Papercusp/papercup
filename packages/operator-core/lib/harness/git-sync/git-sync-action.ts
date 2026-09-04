@@ -3630,16 +3630,31 @@ async function resolveHiveGitActor(
   // (EI-20438405483051865) — that leg taught the dial about relocation while
   // this one kept silently downgrading the IDENTITY.
   let ownerReportsBooted: boolean | undefined;
+  let lastAdvertisedServingDevicePubkey: string | undefined;
   if (!booted) {
     const owner = await resolveOwnerAnnounceIdentity(workspaceId, installSlug, potHomeSlug);
     booted = owner.identity;
     ownerReportsBooted = owner.ownerReportsBooted;
+    // WI-2142873 follow-on: `ownerReportsBooted` is UNKNOWN whenever the
+    // advertisement is merely too OLD, and UNKNOWN keeps the gh-login fallback.
+    // On a host where one process is BOTH substrate owner and git-sync host,
+    // its own restart guarantees that window — so read WHO the owner last said
+    // serves this pot, ignoring freshness, and let the decision refuse rather
+    // than sign as a device we can see is not the one.
+    if (!booted) {
+      lastAdvertisedServingDevicePubkey = await resolveLastAdvertisedServingDevice(
+        workspaceId,
+        installSlug,
+        potHomeSlug,
+      );
+    }
   }
 
   const ghActor = booted ? null : await resolveUsageActor();
-  const actor = pickHiveGitActor(booted, ghActor, resolveDeviceKeychainId, { ownerReportsBooted });
+  const evidence = { ownerReportsBooted, lastAdvertisedServingDevicePubkey };
+  const actor = pickHiveGitActor(booted, ghActor, resolveDeviceKeychainId, evidence);
   if (!actor) {
-    const reason = explainHiveGitActorAbsence(booted, ghActor, { ownerReportsBooted });
+    const reason = explainHiveGitActorAbsence(booted, ghActor, evidence);
     if (reason === 'refused-owner-booted-identity-unavailable') {
       console.warn(
         `[git-sync] ${installSlug}: REFUSING to act as the gh-login device for pot ${potHomeSlug} — ` +
@@ -3647,9 +3662,44 @@ async function resolveHiveGitActor(
           `(likely a pre-WI-2142873 substrate owner). Signing under a device that does not serve ` +
           `this pot's topic would mint announcements no peer can dial; skipping this leg instead.`,
       );
+    } else if (reason === 'refused-stale-advertisement-names-another-device') {
+      console.warn(
+        `[git-sync] ${installSlug}: REFUSING to act as the gh-login device for pot ${potHomeSlug} — ` +
+          `the substrate owner's advertisement is too stale to read as liveness, but it names ` +
+          `${lastAdvertisedServingDevicePubkey?.slice(0, 8)} as the device serving this pot, which is not us. ` +
+          `This is the boot window after the owner restarts; signing here mints one unfetchable ` +
+          `announcement per restart and re-arms every peer's convergence bar. Skipping this leg; ` +
+          `the next tick announces once the owner re-advertises.`,
+      );
     }
   }
   return actor;
+}
+
+/**
+ * WHO the substrate owner last said serves this pot, ignoring how old that
+ * claim is (WI-2142873 follow-on). Never throws and returns `undefined` when
+ * nothing was ever advertised — which is the genuine single-account box, and
+ * must keep the historical gh-login fallback.
+ */
+async function resolveLastAdvertisedServingDevice(
+  workspaceId: string,
+  installSlug: string,
+  potHomeSlug: string,
+): Promise<string | undefined> {
+  try {
+    const { getPgLastKnownHarnessAnnounceDevice } = await import(
+      '../../sync/hyperbee/substrate-booted-handles-pg'
+    );
+    const slugs = installSlug === potHomeSlug ? [installSlug] : [installSlug, potHomeSlug];
+    for (const slug of slugs) {
+      const answer = await getPgLastKnownHarnessAnnounceDevice(workspaceId, slug);
+      if (answer?.devicePubkeyBase64) return answer.devicePubkeyBase64;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
