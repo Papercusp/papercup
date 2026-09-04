@@ -156,9 +156,9 @@
 #
 #   --in-tree REFUSES to run until you say what you did about the sweep, because
 #   the sweep race is the one hazard this script cannot close on its own:
-#       --sweep-lock-held    you hold git-sync:<slug> (the incantation is in the
-#                            refusal message) — git-sync's tick takes that same
-#                            lock and SKIPS while you hold it
+#       --sweep-lock-held    you hold a file lock for each mutated path (the
+#                            incantation is in the refusal message) — git-sync
+#                            excludes those paths from its staging sweep
 #       --accept-sweep-race  you consciously accept it (an unswept checkout, or
 #                            a run short enough that you have judged the risk)
 #   The choice is echoed into MUTATION_PROBE_RESULT, so an accepted race is
@@ -251,11 +251,18 @@ SANDBOX_ROOT=""
 FAKE_BIN=""
 DESTRUCTIVE_LOG=""
 
-# The resource git-sync's own tick holds for this checkout. Resolved from the
-# repo root rather than hardcoded, so a submodule (which git-sync sweeps under
-# its OWN slug) names its own lock instead of the superproject's.
-sweep_lock_resource() {
-  printf 'git-sync:%s' "$(basename "$(git rev-parse --show-toplevel 2>/dev/null || echo papercusp)")"
+# The file lock that protects this probe's tracked subject. Resolved from the
+# subject's repo root rather than hardcoded, so a submodule or scratch checkout
+# gets the path git-sync will exclude in that repo's coordinate space.
+sweep_lock_path() {
+  local root
+  root="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "$root" ]; then
+    case "$FILE" in
+      "$root"/*) printf '%s' "${FILE#"$root"/}"; return 0 ;;
+    esac
+  fi
+  printf '<repo-relative-mutated-file>'
 }
 
 while [ $# -gt 0 ]; do
@@ -387,14 +394,24 @@ if [ "$IN_TREE" -eq 1 ] && [ -z "$SWEEP_ACK" ]; then
       deploys until someone notices. The trap in this script closes the DEATH
       race (a kill mid-run), not this one.
 
-      PREFERRED — hold the sweep off, then pass --sweep-lock-held:
+      PREFERRED — hold only the mutated file off the sweep, then pass
+      --sweep-lock-held:
 
-          locks:acquire_resource { resource: '$(sweep_lock_resource)',
-                                   mode: 'exclusive', ttl_sec: 600,
-                                   reason: 'mutation probe' }
+          locks:acquire { paths: ['$(sweep_lock_path)'],
+                          ttl_sec: 600, intent: 'mutation probe' }
 
-      git-sync's own tick takes that same lock and SKIPS while you hold it, and
-      the TTL auto-releases it if you die holding it.
+      git-sync excludes actively file-locked paths from its staging pathspecs,
+      so unrelated files and probes on disjoint paths keep moving. For a
+      multi-file mutation, include every mutated path in paths. Keep the
+      returned lock_id for the probe, heartbeat it before half the TTL, and
+      release it when done:
+
+          locks:heartbeat { lock_id: '<returned lock_id>', ttl_sec: 600 }
+          locks:release  { lock_id: '<returned lock_id>' }
+
+      A probe that genuinely mutates a subtree or whole checkout may still
+      require the global git-sync:<slug> resource, but that is not the normal
+      one-file case.
 
       OR --accept-sweep-race, if this checkout is not swept (a scratch repo, a
       fork) or you have judged the exposure yourself. Either choice is recorded
@@ -1005,7 +1022,7 @@ if [ "$IN_TREE" = "1" ]; then
   log ""
   log "⚠️  --in-tree: the TRACKED file will be mutated in place."
   if [ "$SWEEP_ACK" = "lock-held" ]; then
-    log "⚠️  Sweep: you declared $(sweep_lock_resource) HELD — git-sync's tick will skip."
+    log "⚠️  Sweep: you declared a file lock on $(sweep_lock_path) HELD — git-sync will exclude that path."
     log "⚠️  That lock is NOT verified from here; if you did not actually take it,"
     log "⚠️  or its ttl_sec expires mid-run, the mutant can still be swept."
   else

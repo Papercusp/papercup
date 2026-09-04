@@ -45,7 +45,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -70,8 +70,8 @@ let subject: string;
 
 /**
  * Run the probe inside the scratch repo. `cwd` matters: the script resolves the
- * git-sync lock resource from the repo root it is standing in, so running here
- * also proves that name is DERIVED rather than hardcoded to this checkout.
+ * file-lock path from the repo root it is standing in, so running here also
+ * proves that path is DERIVED rather than hardcoded to this checkout.
  */
 function runProbe(args: string[], extraEnv: Record<string, string> = {}) {
   const r = spawnSync('bash', [PROBE, ...args], {
@@ -174,11 +174,14 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     // Exit 2 is the script's documented "misuse / could not run soundly" code.
     expect(status).toBe(2);
     expect(out).toContain('SWEEP race');
-    // The refusal must be ACTIONABLE: the resource name is resolved from the
-    // repo it is standing in, not copied from a doc that can drift.
-    expect(out).toContain(`git-sync:${basename(scratch)}`);
-    expect(out).toContain('locks:acquire_resource');
-    expect(out).toContain("mode: 'exclusive'");
+    // The refusal must be ACTIONABLE: the repo-relative file path is resolved
+    // from the repo it is standing in, not copied from a doc that can drift.
+    expect(out).toContain("paths: ['subject.txt']");
+    expect(out).toContain('locks:acquire');
+    expect(out).not.toContain('locks:acquire_resource');
+    expect(out).toContain("intent: 'mutation probe'");
+    expect(out).toContain('locks:heartbeat');
+    expect(out).toContain('locks:release');
     // Both escapes must be named, or the gate is a dead end rather than a fork.
     expect(out).toContain('--sweep-lock-held');
     expect(out).toContain('--accept-sweep-race');
