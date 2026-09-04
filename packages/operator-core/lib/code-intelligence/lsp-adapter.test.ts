@@ -701,6 +701,24 @@ describe('workspace_symbols search scope', () => {
     expect(body).toContain("const intent: CodeIntelIntent = 'symbol-search'");
     expect(body.length).toBeGreaterThan(500);
   });
+
+  it('keeps the project lease release in the outer finally path', () => {
+    const source = readFileSync(new URL('./lsp-adapter.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('export async function lspWorkspaceSymbols');
+    expect(start, 'lspWorkspaceSymbols not found — rename the guard with it').toBeGreaterThan(-1);
+    const end = source.indexOf('\nexport ', start + 1);
+    const body = source.slice(start, end === -1 ? undefined : end);
+
+    // The lease callback must be assigned directly in the anchored branch.
+    // Keeping that assignment out of Promise.then preserves TypeScript's
+    // narrowing through the finally block and guarantees error-path cleanup.
+    expect(body).toMatch(
+      /if\s*\(scope\.anchor\)\s*\{\s*const leased = await getLeasedClient\(/,
+    );
+    expect(body).toContain('releaseProjectLease = leased.release;');
+    expect(body).toMatch(/finally\s*\{[\s\S]*releaseProjectLease\?\.\(\);/);
+    expect(body).not.toContain('.then((leased) =>');
+  });
 });
 
 describe('readinessVerdict — only the server may certify; silence is never proof (WI-2142382)', () => {

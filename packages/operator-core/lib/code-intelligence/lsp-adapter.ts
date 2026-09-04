@@ -2043,13 +2043,19 @@ export async function lspWorkspaceSymbols(query: {
   if (scope.error) return fail(scope.error, 'unknown');
 
   let releaseProjectLease: (() => void) | null = null;
+  let client: LspClient;
   try {
-    const client = scope.anchor
-      ? await getLeasedClient(query.language, scope.root, scope.anchor).then((leased) => {
-          releaseProjectLease = leased.release;
-          return leased.client;
-        })
-      : await getClient(query.language, scope.root);
+    // Keep the lease assignment in this function's control-flow graph. An
+    // assignment inside a Promise.then callback is not observed by
+    // TypeScript's finally analysis, which narrows the initialized-null
+    // variable to `never` at the optional call below (TS2349).
+    if (scope.anchor) {
+      const leased = await getLeasedClient(query.language, scope.root, scope.anchor);
+      releaseProjectLease = leased.release;
+      client = leased.client;
+    } else {
+      client = await getClient(query.language, scope.root);
+    }
     // Opening the anchor is what CREATES the tsserver project this search runs
     // against; for rust it merely warms a crate graph the root already implies.
     if (scope.anchor) await ensureOpen(client, scope.anchor);
