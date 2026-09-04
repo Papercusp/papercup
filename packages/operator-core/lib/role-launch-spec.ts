@@ -595,6 +595,15 @@ export interface BuildSuLaunchSpecInput {
    * so the persona + catalog + repo guide fit; a [1m] model gets 'full'.
    */
   personaTier?: 'full' | 'fleet' | null;
+  /**
+   * identities-v1 P-012: the fleet role this session launches INTO (`member` for a
+   * `psu --fleet=<slug>` join, `leader` for a fresh `--fleet-name`), so the FIRST render
+   * already carries the bound fleet-posture layer (`suSessionBinding`) — the "inclusion
+   * in the next full render" half of an inject-now attach. Null / omitted ⇒ no posture
+   * bound (a plain su launch); take-leadership mid-session attaches the leader posture
+   * through the control-anchor channel instead.
+   */
+  fleetRole?: string | null;
   /** Plan binding for the launch-context addendum (optional). */
   planSlug?: string | null;
   planTitle?: string | null;
@@ -757,9 +766,12 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
         try {
           // Loaded lazily, like the flags above: the blueprint barrel pulls the loader (and its
           // harness-path resolution) which this module otherwise never needs at import time.
-          const { composeSuStackSource } = await import('@papercusp/orchestrator/blueprint');
+          const { composeSuStackSource, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
           const harnessDir = path.resolve(suBaseSource, '..', '..', '..', '..'); // <root>/blueprints/base/prompts/su.md
-          suBaseText = composeSuStackSource({ harnessDir }).text;
+          // P-012: the launch-time stack binding — the fleet posture the session launches
+          // into — is part of the FIRST render (an inject-now layer also renders in place on
+          // every full render). Derived from the same fact presence carries (`fleet_role`).
+          suBaseText = composeSuStackSource({ harnessDir, binding: suSessionBinding({ fleetRole: input.fleetRole ?? null }) }).text;
         } catch (e) {
           console.warn(`[role-launch-spec] su slot-stack compose failed — rendering su.md unsealed: ${e instanceof Error ? e.message : String(e)}`);
         }

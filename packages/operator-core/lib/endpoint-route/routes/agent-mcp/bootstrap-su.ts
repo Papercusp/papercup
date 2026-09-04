@@ -1754,6 +1754,14 @@ const post = defineTool({
         planNow,
         // EI-996: null for a plain su launch ⇒ byte-identical prompt.
         roleAddendum,
+        // identities-v1 P-012: the fleet posture the session launches INTO, so the first
+        // render carries it. The REQUESTED role, read from the same body fields
+        // `resolveFleet` consumes below (a fresh `--fleet-name` leads; a `--fleet` slug
+        // joins as member unless `--fleet-role` says otherwise); resolution happens after
+        // this build, and a requested fleet that fails to resolve refuses the launch
+        // outright (the `fleetRequested` guard), so the render can never outlive a
+        // membership that did not happen.
+        fleetRole: body.fleet_name?.trim() ? 'leader' : body.fleet?.trim() ? body.fleet_role?.trim() || 'member' : null,
       });
     } catch (e: any) {
       return jsonRes({ status: 'error', error: e?.message ?? 'su launch spec build failed' }, 400);

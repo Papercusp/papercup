@@ -169,7 +169,20 @@ const turnStartMemory = defineTool({
             '../../../agent-tools/coordination/control-anchor'
           );
           const transition = await consumePendingControlTransition(owner, workspaceId);
-          return transition ? renderControlTransitionContext(transition) : '';
+          if (!transition) return '';
+          const ctrl = renderControlTransitionContext(transition);
+          // identities-v1 P-012: a stack mutation (a fleet posture attached / swapped /
+          // detached; mode-axis layers once P-021 lands) rides THIS transition. The
+          // layer text is a SEPARATE block after the `⟦CTRL⟧` line — outside the
+          // anchor's 384-token budget — and degrades to nothing on any failure.
+          let stack = '';
+          try {
+            const { renderStackTransitionContext } = await import('../../../stack-binding-channel');
+            stack = await renderStackTransitionContext(transition);
+          } catch {
+            /* the CTRL line is never lost to a stack-render fault */
+          }
+          return stack ? `${ctrl}\n\n${stack}` : ctrl;
         } catch {
           return ''; // migration/operator skew must never block the prompt
         }

@@ -17,6 +17,7 @@ import { latestFleetMembership } from '../../fleet-membership-store';
 import { getSessionBrief, type SessionBriefLifecycle } from '../../session-brief';
 import { notifyAgentOrdersChanged } from '../../agent-orders-notify';
 import { fetchSelfWake, type SelfWakeSignals, type SelfWakeSource } from './presence-selfwake';
+import { stackRefsForRoute } from '../../stack-binding-channel';
 import {
   readGoalHolderAuthority,
   type GoalHolderAuthority,
@@ -32,6 +33,16 @@ const MAX_ID_CHARS = 120;
 
 export interface ControlAnchorState {
   modes: string[];
+  /**
+   * identities-v1 P-012 — the session's STACK BINDING: the identity layers bound beyond
+   * the kernel, as `slot:id` refs (`fleet-posture:su.fleet-leader`). DERIVED from the
+   * same authorities this anchor already projects (`route.role` → the fleet posture;
+   * `modes` → the mode axes once P-021 supplies documents) by
+   * `stack-binding-channel.ts`, so a posture change bumps the generation exactly like a
+   * mode flip; the turn-start hook then delivers the layer TEXT beside the `⟦CTRL⟧`
+   * line. Present only when non-empty — costs nothing on the common unbound session.
+   */
+  stack?: string[];
   loop: { active: boolean; intervalSec: number | null };
   /**
    * WI-7302 part 2 — will ANYTHING wake this session unprompted?
@@ -112,6 +123,13 @@ export interface ControlTransition {
   previousGeneration: number;
   generation: number;
   state: ControlAnchorState;
+  /**
+   * P-012: the `stack` refs of the generation this transition REPLACES (stamped by
+   * `persistControlAnchor` from the previous row), so the turn-start hook can diff
+   * before → after into attach / detach payloads. ABSENT on a full-resync (unknown
+   * predecessor) — the channel then re-delivers every bound layer.
+   */
+  stackBefore?: string[];
   provenance: ControlTransitionProvenance;
   resync: {
     verb: 'coord:orient';
@@ -232,8 +250,11 @@ export function normalizeControlAnchorState(input: ControlAnchorState): ControlA
         standDown: true as const,
       }
     : undefined;
+  const stack = [...new Set((input.stack ?? []).map(String))].sort().map((v) => v.slice(0, MAX_ID_CHARS));
   return {
     modes: [...new Set(input.modes.map(String))].sort().map((v) => v.slice(0, 40)),
+    // P-012: spread-when-present — an unbound session carries no `stack` key at all.
+    ...(stack.length ? { stack } : {}),
     loop: {
       active: Boolean(input.loop.active),
       intervalSec: input.loop.intervalSec == null ? null : Math.max(0, Math.floor(input.loop.intervalSec)),
@@ -443,6 +464,9 @@ export async function persistControlAnchor(
     previousGeneration: 0,
     generation: 1,
     state,
+    // P-012: a first generation replaces nothing; on conflict the SQL below overwrites
+    // this with the PREVIOUS row's `stack` so the hook can diff the binding.
+    stackBefore: [],
     provenance,
     resync: TRANSITION_RESYNC,
   };
@@ -461,8 +485,11 @@ export async function persistControlAnchor(
       control_transition = CASE
         WHEN harness_shared.session_briefs.control_state IS DISTINCT FROM EXCLUDED.control_state
           THEN jsonb_set(
-            jsonb_set(EXCLUDED.control_transition, '{previousGeneration}', to_jsonb(harness_shared.session_briefs.control_generation), true),
-            '{generation}', to_jsonb(harness_shared.session_briefs.control_generation + 1), true
+            jsonb_set(
+              jsonb_set(EXCLUDED.control_transition, '{previousGeneration}', to_jsonb(harness_shared.session_briefs.control_generation), true),
+              '{generation}', to_jsonb(harness_shared.session_briefs.control_generation + 1), true
+            ),
+            '{stackBefore}', COALESCE(harness_shared.session_briefs.control_state->'stack', '[]'::jsonb), true
           )
         ELSE harness_shared.session_briefs.control_transition
       END,
@@ -660,6 +687,8 @@ export async function buildControlAnchorState(
       : { kind: 'self' };
   return normalizeControlAnchorState({
     modes: modes.map((m) => m.mode),
+    // P-012: the stack binding is a projection of the route (fleet posture) — no new leg.
+    stack: stackRefsForRoute(route),
     loop: { active: Boolean(loop?.active), intervalSec: loop?.intervalSec ?? null },
     wakeSource: selfWake.get(ownerId)?.selfWake,
     carry: loop?.carry ?? 'warm',
