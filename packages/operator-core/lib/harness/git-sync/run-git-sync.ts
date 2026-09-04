@@ -1377,6 +1377,45 @@ const remoteDefaultBranch = async (runGit: RunGit, repo: string, remote: string)
   return ref.startsWith(`${remote}/`) ? ref.slice(remote.length + 1) : ref;
 };
 
+/** Remote-tracking branches whose tip is exactly the checked-out HEAD.
+ *
+ * A detached submodule can be intentionally preserved on a non-default branch
+ * (for example `origin/restart-pin-<sha>`), while its dormant local `main` has
+ * unrelated work. Exact-tip proof lets git-sync continue the preserved branch
+ * without moving or merging either history. `origin/HEAD` is a symbolic alias,
+ * not a branch target, and is deliberately excluded.
+ */
+const remoteBranchesPointingAtHead = async (
+  runGit: RunGit,
+  repo: string,
+  remote: string,
+): Promise<string[]> => {
+  const refs = await runGit(
+    ['for-each-ref', '--format=%(refname:strip=3)', '--points-at=HEAD', `refs/remotes/${remote}/`],
+    repo,
+  );
+  if (refs.code !== 0) return [];
+  return [
+    ...new Set(
+      refs.stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((branch) => branch.length > 0 && branch !== 'HEAD'),
+    ),
+  ].sort();
+};
+
+/** Choose only a proved-unambiguous exact-tip branch. The remote default wins
+ * when it is one of several aliases; otherwise multiple candidates are a real
+ * direction fork and must retain the existing fail-closed path. */
+const preferredRemoteBranchAtHead = (
+  branches: readonly string[],
+  remoteDefault: string | null,
+): string | null => {
+  if (remoteDefault && branches.includes(remoteDefault)) return remoteDefault;
+  return branches.length === 1 ? branches[0] : null;
+};
+
 type BranchAttachmentResult = { branch: string } | { error: string };
 
 /**
@@ -1399,9 +1438,18 @@ const ensureBranchAttachedForCommit = async (
   const attached = await currentBranch(runGit, repo);
   if (attached) return { branch: attached };
 
-  const branch = (await remoteDefaultBranch(runGit, repo, remote)) ?? defaultBranch;
+  const remoteDefault = await remoteDefaultBranch(runGit, repo, remote);
+  const exactRemoteBranches = await remoteBranchesPointingAtHead(runGit, repo, remote);
+  const preservedRemoteBranch = preferredRemoteBranchAtHead(exactRemoteBranches, remoteDefault);
+  const branch = preservedRemoteBranch ?? remoteDefault ?? defaultBranch;
   if (!branch) {
     return { error: `${repo}: detached HEAD has no branch target to attach before commit` };
+  }
+  if (preservedRemoteBranch && preservedRemoteBranch !== remoteDefault) {
+    log(
+      `[git-sync] ${repo}: detached HEAD is already preserved at ${remote}/${preservedRemoteBranch}; ` +
+        `attaching that exact-tip branch instead of default '${remoteDefault ?? defaultBranch}'`,
+    );
   }
 
   const head = await runGit(['rev-parse', 'HEAD'], repo);
@@ -1698,6 +1746,25 @@ export function addFailureIgnoredPaths(output: string): string[] {
         .filter(Boolean),
     ),
   ];
+}
+
+/** Protected exclusion pathspecs made redundant by an ignored-path add failure.
+ *
+ * Git may report the ignored directory ancestor rather than each explicitly
+ * mentioned descendant (for example `apps/shop/.astro` for protected files
+ * beneath that directory). Map that report back to only the exact protected
+ * path or its descendants; unrelated protections must stay in the retry.
+ */
+export function ignoredProtectedExclusions(output: string, excludePaths: readonly string[]): string[] {
+  const ignoredPaths = addFailureIgnoredPaths(output)
+    .map((path) => path.replace(/^\.\/+/, '').replace(/\/+$/, ''))
+    .filter(Boolean);
+  return excludePaths.filter((excludePath) => {
+    const normalizedExclude = excludePath.replace(/^\.\/+/, '').replace(/\/+$/, '');
+    return ignoredPaths.some(
+      (ignoredPath) => normalizedExclude === ignoredPath || normalizedExclude.startsWith(`${ignoredPath}/`),
+    );
+  });
 }
 
 /** The stable fatal emitted when a pathspec tries to traverse a symlink.
@@ -3305,9 +3372,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       // negative pathspec as an explicit ignored-path mention and aborts the
       // entire add. The ignore rule already excludes it, so remove only those
       // redundant pathspecs and retry; never force-add the ignored file.
-      const ignored = addFailureIgnoredPaths(`${addRes.stdout}\n${addRes.stderr}`).filter((path) =>
-        excludePaths.includes(path),
-      );
+      const ignored = ignoredProtectedExclusions(`${addRes.stdout}\n${addRes.stderr}`, excludePaths);
       if (ignored.length > 0) {
         omittedIgnoredExcludes = ignored;
         o.log(
@@ -3581,8 +3646,35 @@ async function reconcileAndPushOneRepo(
   // P-011: HEAD's branch → the remote default (origin/HEAD) → the per-repo last-resort
   // default. If we reach the last resort the branch is a GUESS — make it LOUD (a wrong
   // guess would otherwise surface only as an opaque "push failed" escalation).
-  const resolvedBranch =
-    (await currentBranch(runGit, repoPath)) ?? (await remoteDefaultBranch(runGit, repoPath, remote));
+  const attachedBranch = await currentBranch(runGit, repoPath);
+  const ownRemoteDefault = await remoteDefaultBranch(runGit, repoPath, remote);
+  const exactRemoteBranches = await remoteBranchesPointingAtHead(runGit, repoPath, remote);
+  const preservedRemoteBranch = preferredRemoteBranchAtHead(exactRemoteBranches, ownRemoteDefault);
+  let resolvedBranch = attachedBranch ?? preservedRemoteBranch ?? ownRemoteDefault;
+
+  // A clean attached branch can be a local, task-specific name whose exact HEAD
+  // was deliberately published under a preservation branch. Fetching the absent
+  // same-name branch falsely reports the already-safe gitlink as unpushed. Use
+  // the exact remote proof only before this pass creates a new local commit; a
+  // newly advanced branch still has to publish under its attached name.
+  if (attachedBranch && !committedLocal && preservedRemoteBranch && preservedRemoteBranch !== attachedBranch) {
+    const attachedRemoteRef = await runGit(
+      ['show-ref', '--verify', '--quiet', `refs/remotes/${remote}/${attachedBranch}`],
+      repoPath,
+    );
+    if (attachedRemoteRef.code === 1) {
+      resolvedBranch = preservedRemoteBranch;
+      o.log(
+        `[git-sync] ${repoPath}: local branch '${attachedBranch}' has no ${remote} tracking ref, but HEAD is ` +
+          `already preserved at ${remote}/${preservedRemoteBranch}; reconciling the proved remote branch`,
+      );
+    }
+  } else if (!attachedBranch && preservedRemoteBranch && preservedRemoteBranch !== ownRemoteDefault) {
+    o.log(
+      `[git-sync] ${repoPath}: detached HEAD is already preserved at ${remote}/${preservedRemoteBranch}; ` +
+        'reconciling that exact-tip remote branch',
+    );
+  }
   const branch = resolvedBranch ?? o.defaultBranch;
   if (!resolvedBranch) {
     o.log(

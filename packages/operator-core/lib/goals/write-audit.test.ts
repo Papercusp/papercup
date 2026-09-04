@@ -38,7 +38,7 @@ describe('appendGoalWriteAudit', () => {
     const missingAuditLog = Object.assign(new Error('relation "harness_shared.audit_log" does not exist'), {
       code: '42P01',
     });
-    const sql = (() => Promise.reject(missingAuditLog)) as GoalSqlTag;
+    const sql = (() => Promise.reject(missingAuditLog)) as unknown as GoalSqlTag;
 
     await expect(appendGoalWriteAudit(sql, {
       workspaceId: 'ws-test',
@@ -53,7 +53,7 @@ describe('appendGoalWriteAudit', () => {
 
   it('propagates real audit failures for the caller to report', async () => {
     const failure = new Error('connection terminated');
-    const sql = (() => Promise.reject(failure)) as GoalSqlTag;
+    const sql = (() => Promise.reject(failure)) as unknown as GoalSqlTag;
     await expect(appendGoalWriteAudit(sql, {
       workspaceId: 'ws-test',
       goalId: 'goal-test',

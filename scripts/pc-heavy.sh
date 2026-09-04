@@ -2586,15 +2586,114 @@ if [ "$_coalesce_enabled" = 1 ]; then
   # vs 441ms for `=normal` vs 309ms for `=no` (a single sample says the opposite;
   # it is noise). So `=all` is both the sound choice and the fast one: +89ms on a
   # wrapper whose whole purpose is guarding 150s+ compiles.
-  # Fail-open: git/stat unavailable just yields an empty token, degrading to
-  # the previous cwd+argv-only behavior rather than erroring — coalescing
-  # was already best-effort, this doesn't change that contract.
+  # Fail-open: an unreadable Git tree or filesystem scan just yields an empty
+  # token, degrading to the previous cwd+argv-only behavior rather than
+  # erroring — coalescing was already best-effort, this doesn't change that
+  # contract. A valid non-Git export gets a bounded content identity below:
+  # `git status` is empty there, but the export's source files are still the
+  # result's inputs.
   #
   # Skipped entirely when the caller supplied a freshness barrier: the token
   # would then be both redundant (the barrier answers the same question, per
   # file) and harmful (it re-fragments the key so the barrier never gets a
   # chance to match). Skipping also drops the `git status` call from those
   # callers' hot path.
+  # Enumerate a non-Git export without following symlinks or generated/runtime
+  # trees. Historical typecheck exports are often unpacked without `.git`, so
+  # their `head=unknown` marker is not a stable identity: two different exports
+  # at the same cwd+argv otherwise share one coalescing entry and a later run
+  # replays the earlier verdict. Keep this bounded and fail open rather than
+  # returning a partial identity; a partial scan would make the stale replay
+  # hazard worse.
+  _pc_heavy_non_git_tree_token() {
+    local _root="$_pwd_for_key" _cache_root="${_dir:-}" _paths_file="" _digest_file=""
+    local _path="" _rel="" _digest="" _tree_hash="" _count=0
+    local _max_entries=100000
+    local _skip_dirs=(
+      ".git" ".next" ".next-build-cache" ".next-prod" ".papercusp"
+      ".tmp-claude" ".turbo" ".vitest-tmp" ".vite" ".astro"
+      "build" "coverage" "dist" "dist-host" "dist-preview"
+      "dist-sidecar" "node_modules" "out" "target" "test-results"
+      "vitest-tmp"
+    )
+
+    case "$_cache_root" in
+      /*) ;;
+      *) _cache_root="$_root/$_cache_root" ;;
+    esac
+    [ "$_root" = "/" ] || _root="${_root%/}"
+    [ "$_cache_root" = "/" ] || _cache_root="${_cache_root%/}"
+
+    # The test harness and a few callers deliberately put the slot directory
+    # in the cwd. In that shape there is no safe generic way to distinguish a
+    # user file from pc-heavy's own sidecars, so preserve the old fail-open
+    # behavior rather than hashing a self-mutating directory.
+    [ "$_cache_root" != "$_root" ] || return 1
+    command -v find >/dev/null 2>&1 || return 1
+    command -v sort >/dev/null 2>&1 || return 1
+    command -v sha1sum >/dev/null 2>&1 || return 1
+
+    _paths_file="$(mktemp "$_coalesce_dir/.tree-token.XXXXXX" 2>/dev/null)" || return 1
+    _digest_file="$(mktemp "$_coalesce_dir/.tree-token.XXXXXX" 2>/dev/null)" || {
+      rm -f "$_paths_file" 2>/dev/null || true
+      return 1
+    }
+
+    local _skip_args=()
+    local _name=""
+    for _name in "${_skip_dirs[@]}"; do
+      _skip_args+=("-name" "$_name" "-o")
+    done
+    # Drop the final `-o`; the expression is otherwise equivalent to
+    # `-name a -o -name b ...`, and the explicit array keeps names shell-safe.
+    unset '_skip_args[${#_skip_args[@]}-1]'
+
+    # `-P` keeps symlinked aliases from escaping the export, `-xdev` avoids
+    # traversing a mounted dependency tree, and `sort -z` makes the digest
+    # independent of filesystem directory order. `find`'s status is retained
+    # through pipefail; any unreadable subtree invalidates the whole scan.
+    if ! find -P "$_root" -xdev \
+      \( -type d \( "${_skip_args[@]}" \) -prune \) -o \
+      \( -type d -path "$_cache_root" -prune \) -o \
+      -type f -print0 2>/dev/null | sort -z > "$_paths_file"; then
+      rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
+      return 1
+    fi
+
+    while IFS= read -r -d '' _path; do
+      _count=$(( _count + 1 ))
+      if [ "$_count" -gt "$_max_entries" ]; then
+        rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
+        return 1
+      fi
+      if [ "$_root" = "/" ]; then
+        _rel="${_path#/}"
+      else
+        _rel="${_path#$_root/}"
+      fi
+      if ! _digest="$(sha1sum < "$_path" 2>/dev/null)"; then
+        rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
+        return 1
+      fi
+      _digest="${_digest%% *}"
+      if [ -z "$_digest" ] ||
+         ! printf '%s\0%s\0' "$_rel" "$_digest" >> "$_digest_file"; then
+        rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
+        return 1
+      fi
+    done < "$_paths_file"
+
+    if ! _tree_hash="$(sha1sum < "$_digest_file" 2>/dev/null)"; then
+      rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
+      return 1
+    fi
+    _tree_hash="${_tree_hash%% *}"
+    rm -f "$_paths_file" "$_digest_file" 2>/dev/null || true
+    [ -n "$_tree_hash" ] || return 1
+    printf '%s' "$_tree_hash"
+  }
+
+  _pwd_for_key="$PWD"
   _tree_token=""
   if [ -z "$_fresh_after" ]; then
     for _a in "$@"; do
@@ -2602,12 +2701,20 @@ if [ "$_coalesce_enabled" = 1 ]; then
         _tree_token="$_tree_token|$(stat -c '%Y:%s' "$_a" 2>/dev/null)"
       fi
     done
-    if command -v git >/dev/null 2>&1; then
-      _git_state=$({
-        git status --porcelain=v2 --branch --untracked-files=all 2>/dev/null
-        git diff --no-ext-diff --binary HEAD -- 2>/dev/null
-      } | sha1sum | cut -d' ' -f1)
-      [ -n "$_git_state" ] && _tree_token="$_tree_token|$(printf '%s' "$_git_state" | sha1sum | cut -d' ' -f1)"
+    _git_is_worktree=0
+    if command -v git >/dev/null 2>&1 &&
+       _git_probe="$(git rev-parse --is-inside-work-tree 2>/dev/null)" &&
+       [ "$_git_probe" = "true" ]; then
+      _git_is_worktree=1
+      if _git_status="$(git status --porcelain=v2 --branch --untracked-files=all 2>/dev/null)" &&
+         _git_diff="$(git diff --no-ext-diff --binary HEAD -- 2>/dev/null)"; then
+        _git_state="$(printf '%s\0%s' "$_git_status" "$_git_diff" | sha1sum | cut -d' ' -f1)"
+        [ -n "$_git_state" ] && _tree_token="$_tree_token|git:$_git_state"
+      fi
+    fi
+    if [ "$_git_is_worktree" = 0 ]; then
+      _fs_state="$(_pc_heavy_non_git_tree_token 2>/dev/null || true)"
+      [ -n "$_fs_state" ] && _tree_token="$_tree_token|fs:$_fs_state"
     fi
   fi
 

@@ -22,6 +22,11 @@
       "types": "./src/server.ts",
       "import": "./src/server.ts",
       "default": "./src/server.ts"
+    },
+    "./process-environment": {
+      "types": "./src/process-environment.ts",
+      "import": "./src/process-environment.ts",
+      "default": "./src/process-environment.ts"
     }
   },
   "scripts": {

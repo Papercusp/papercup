@@ -19,7 +19,11 @@ import {
 } from '../su-lock-store';
 import { inWorkspaceTxn } from '../in-workspace-txn';
 import { _resetListenersForTests } from '../workspace-listener';
-import { acquireResourceExclusiveWithWait, type StaleHolderReclaimedInfo } from '../resource-acquire-wait';
+import {
+  acquireResourceExclusiveWithWait,
+  workspaceTxnOptionsForExclusiveWait,
+  type StaleHolderReclaimedInfo,
+} from '../resource-acquire-wait';
 
 /** Spawn + reap a throwaway child process so we have a REAL pid guaranteed to
  *  be dead by the time it resolves — not a made-up large number that might
@@ -87,6 +91,19 @@ const exclusiveWait = (ws: string, owner: string, maxWaitSec: number) =>
     ttlSec: 60,
     maxWaitSec,
   });
+
+describe('workspace transaction budget for an exclusive drain (WI-2140648)', () => {
+  it('keeps a waiting acquire in the PG advisory FIFO for its declared budget', () => {
+    expect(workspaceTxnOptionsForExclusiveWait(120)).toEqual({
+      minLockTimeoutMs: 120_000,
+      minStatementTimeoutMs: 120_000,
+    });
+  });
+
+  it('does not widen the no-wait path', () => {
+    expect(workspaceTxnOptionsForExclusiveWait(0)).toEqual({});
+  });
+});
 
 describe('acquireResourceExclusiveWithWait (drain wait loop)', async () => {
   const live = await dbLive();

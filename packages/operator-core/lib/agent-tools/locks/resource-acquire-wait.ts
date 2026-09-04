@@ -32,12 +32,27 @@ import {
   tryReleaseResource,
   type ResourceHolder,
 } from './su-lock-store';
-import { inWorkspaceTxn } from './in-workspace-txn';
+import { inWorkspaceTxn, type WorkspaceTxnOptions } from './in-workspace-txn';
 import { subscribeWorkspace } from './workspace-listener';
 
 /** Per-iteration ceiling: re-poll status at least this often even if the
  *  LISTEN connection silently dropped a wake. */
 const WAIT_CEILING_MS = 5_000;
+
+/**
+ * WI-2140648: a caller that opted into a bounded drain wait must keep its
+ * PostgreSQL advisory-lock FIFO position for that same budget. The generic
+ * workspace transaction defaults to 5s; retrying after that timeout requeues
+ * the caller behind every new git-sync fire and can starve forever under a
+ * steady fan-out. These are floors, so a wider live db:txn-timeouts setting is
+ * never narrowed. The no-wait path keeps the ordinary short transaction.
+ */
+export function workspaceTxnOptionsForExclusiveWait(maxWaitSec: number): WorkspaceTxnOptions {
+  const waitMs = Math.max(0, Math.trunc(maxWaitSec * 1_000));
+  return waitMs > 0
+    ? { minLockTimeoutMs: waitMs, minStatementTimeoutMs: waitMs }
+    : {};
+}
 
 /**
  * EI-18674647773291145: is `pid` DEFINITIVELY dead on THIS host? `process.kill(pid,
@@ -243,18 +258,23 @@ export async function acquireResourceExclusiveWithWait(
     onStaleHolderReclaimed,
   } = params;
   const startedAt = Date.now();
+  const workspaceTxnOptions = workspaceTxnOptionsForExclusiveWait(maxWaitSec);
 
   const doAcquire = () =>
-    inWorkspaceTxn(cd, owner, (tx) =>
-      tryAcquireResource(tx, {
-        coordinationDomain: cd,
-        resource,
-        mode: 'exclusive',
-        owner,
-        ownerLabel,
-        reason,
-        ttlSec,
-      }),
+    inWorkspaceTxn(
+      cd,
+      owner,
+      (tx) =>
+        tryAcquireResource(tx, {
+          coordinationDomain: cd,
+          resource,
+          mode: 'exclusive',
+          owner,
+          ownerLabel,
+          reason,
+          ttlSec,
+        }),
+      workspaceTxnOptions,
     );
 
   /**

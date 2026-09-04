@@ -14,13 +14,11 @@
  * sweep from committing a mutant.
  */
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error — .mjs guard script, no type declarations by design
-import {
-  buildSeamConsumptionIndex,
-  findWiringParityGaps,
-  objectLiteralPropertyNames,
-} from '../../../../scripts/check-deps-wiring-parity.mjs';
+// @ts-expect-error — the executable .mjs guard intentionally has no declaration file.
+import * as wiringParity from '../../../../scripts/check-deps-wiring-parity.mjs';
 import * as ts from 'typescript';
+
+const { buildSeamConsumptionIndex, findWiringParityGaps, objectLiteralPropertyNames } = wiringParity;
 
 /**
  * The shared orchestrator's deps interface, in the shape the real one takes — plus the

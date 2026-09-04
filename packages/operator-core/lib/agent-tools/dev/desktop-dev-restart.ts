@@ -15,6 +15,10 @@
 
 import { promises as fsp } from 'node:fs';
 import {
+  inspectProcessEnvironment,
+  parseNulSeparatedEnvironment,
+} from '@papercusp/host-platform/process-environment';
+import {
   listListeningSockets,
   type ListeningSocket,
   type ListeningSocketsResult,
@@ -95,10 +99,6 @@ function defaultReadCmdline(pid: number): Promise<string> {
   return fsp.readFile(`/proc/${pid}/cmdline`, 'utf8');
 }
 
-function defaultReadEnviron(pid: number): Promise<string> {
-  return fsp.readFile(`/proc/${pid}/environ`, 'utf8');
-}
-
 function defaultReadStat(pid: number): Promise<string> {
   return fsp.readFile(`/proc/${pid}/stat`, 'utf8');
 }
@@ -121,16 +121,8 @@ function normalizeCmdline(raw: string): string {
   return raw.replaceAll('\0', ' ').trim();
 }
 
-export function parseProcessEnvironment(raw: string): Readonly<Record<string, string>> {
-  const env: Record<string, string> = {};
-  for (const entry of raw.split('\0')) {
-    const separator = entry.indexOf('=');
-    if (separator <= 0) continue;
-    const key = entry.slice(0, separator);
-    if (!(key in env)) env[key] = entry.slice(separator + 1);
-  }
-  return env;
-}
+/** Compatibility export for the focused restart tests and existing callers. */
+export const parseProcessEnvironment = parseNulSeparatedEnvironment;
 
 function isHonoHostCommand(cmdline: string): boolean {
   return /(?:^|[\s/])hono-host\.ts(?:$|[\s])/.test(cmdline);
@@ -194,8 +186,15 @@ function listenerFailure(
 export async function resolveDesktopDevListener(deps: DesktopDevRestartDeps = {}): Promise<DesktopDevListenerResult> {
   const listSockets = deps.listSockets ?? listListeningSockets;
   const readCmdline = deps.readCmdline ?? defaultReadCmdline;
-  const readEnviron = deps.readEnviron ?? defaultReadEnviron;
   const readStat = deps.readStat ?? defaultReadStat;
+  const readEnvironment = deps.readEnviron
+    ? async (pid: number): Promise<Readonly<Record<string, string>>> =>
+        parseProcessEnvironment(await deps.readEnviron!(pid))
+    : async (pid: number): Promise<Readonly<Record<string, string>>> => {
+        const inspected = await inspectProcessEnvironment(pid);
+        if (!inspected.ok) throw new Error(inspected.detail);
+        return inspected.environment;
+      };
 
   let sockets: ListeningSocket[];
   try {
@@ -227,16 +226,15 @@ export async function resolveDesktopDevListener(deps: DesktopDevRestartDeps = {}
 
   const pid = visiblePids[0]!;
   let rawCmdline: string;
-  let rawEnviron: string;
+  let env: Readonly<Record<string, string>>;
   let rawStat: string;
   try {
-    [rawCmdline, rawEnviron, rawStat] = await Promise.all([readCmdline(pid), readEnviron(pid), readStat(pid)]);
+    [rawCmdline, env, rawStat] = await Promise.all([readCmdline(pid), readEnvironment(pid), readStat(pid)]);
   } catch {
     return listenerFailure('desktop_dev_listener_unreadable', `Could not read the process identity for listener pid ${pid}.`, pid);
   }
 
   const cmdline = normalizeCmdline(rawCmdline);
-  const env = parseProcessEnvironment(rawEnviron);
   const stat = parseProcStat(rawStat);
   if (!stat) {
     return listenerFailure('desktop_dev_listener_unreadable', `Could not parse the process identity for listener pid ${pid}.`, pid);

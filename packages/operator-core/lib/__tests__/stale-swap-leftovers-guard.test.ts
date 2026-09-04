@@ -9,11 +9,19 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  findStaleSwapLeftovers,
-  formatBytes,
-  formatStaleSwapProblems,
-} from '../../../../scripts/lib/stale-swap-leftovers.mjs';
+// @ts-expect-error — the executable .mjs guard intentionally has no declaration file.
+import * as staleSwapLeftovers from '../../../../scripts/lib/stale-swap-leftovers.mjs';
+
+const { findStaleSwapLeftovers, formatBytes, formatStaleSwapProblems } = staleSwapLeftovers;
+
+interface StaleSwapProblem {
+  path: string;
+  liveSibling: {
+    path: string;
+    state: string;
+    looksPopulated: boolean;
+  };
+}
 
 const NOW_MS = Date.UTC(2026, 6, 28, 12, 0, 0);
 let root: string;
@@ -42,7 +50,8 @@ function makeTree(
   return dir;
 }
 
-const find = (maxAgeMinutes = 30) => findStaleSwapLeftovers({ repoRoot: root, maxAgeMinutes, nowMs: NOW_MS });
+const find = (maxAgeMinutes = 30): StaleSwapProblem[] =>
+  findStaleSwapLeftovers({ repoRoot: root, maxAgeMinutes, nowMs: NOW_MS }) as StaleSwapProblem[];
 
 describe('findStaleSwapLeftovers', () => {
   it('flags only backups older than the configured threshold', () => {

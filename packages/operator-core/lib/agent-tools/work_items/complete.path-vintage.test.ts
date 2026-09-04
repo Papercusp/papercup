@@ -215,6 +215,57 @@ describe('preExistingChangedPathsInCompletion', () => {
     ).toBeUndefined();
   });
 
+  it('does not treat a target path cited only in test or coordination evidence as changed', () => {
+    expect(
+      preExistingChangedPathsInCompletion(
+        item,
+        {
+          summary: 'fixed the completion advisory',
+          filesChanged: ['packages/new.ts'],
+          testsRun: 'npm run test:file -- packages/old.ts',
+          testResult: 'packages/old.ts passed',
+          coordNotes: 'Used packages/old.ts as the falsification probe.',
+        },
+        {
+          repoRoot: ROOT,
+          lastCommitAt: (path) => (path.endsWith('new.ts') ? AFTER : BEFORE),
+        },
+      ),
+    ).toBeUndefined();
+  });
+
+  it('does not widen the target population from nested verification evidence', () => {
+    expect(
+      preExistingChangedPathsInCompletion(
+        item,
+        {
+          verification: {
+            testsRun: 'vitest packages/old.ts',
+            testResult: 'packages/old.ts passed',
+            verifiedHow: 'manual probe of packages/old.ts',
+          },
+        },
+        { repoRoot: ROOT, lastCommitAt: () => BEFORE },
+      ),
+    ).toBeUndefined();
+  });
+
+  it('still honors an explicit target path in the change-facing completion headline', () => {
+    const result = preExistingChangedPathsInCompletion(
+      item,
+      {
+        summary: 'Updated packages/old.ts and verified the focused behavior',
+        filesChanged: ['packages/new.ts'],
+      },
+      {
+        repoRoot: ROOT,
+        lastCommitAt: (path) => (path.endsWith('new.ts') ? AFTER : BEFORE),
+      },
+    );
+
+    expect(result?.paths).toEqual([{ path: 'packages/old.ts', lastCommitAt: BEFORE }]);
+  });
+
   it('fails open for absent metadata, unknown history, and a throwing probe', () => {
     expect(
       preExistingChangedPathsInCompletion(

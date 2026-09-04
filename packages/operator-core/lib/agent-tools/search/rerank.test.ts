@@ -10,9 +10,11 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 
 import {
   PROSE_RERANK_TIMEOUT_MS,
+  PROSE_RERANK_ENGINE_DECISION_TTL_MS,
   RERANK_MAX_CANDIDATES,
   RERANK_OVERFETCH,
   _resetLocalRerankScorerForTests,
+  _resetProseRerankEngineDecisionForTests,
   rerankCandidateCount,
   rerankPageHead,
   rerankProseHits,
@@ -45,12 +47,14 @@ const savedEnv = process.env.ZEROENTROPY_API_KEY;
 beforeEach(() => {
   vi.clearAllMocks();
   _resetLocalRerankScorerForTests();
+  _resetProseRerankEngineDecisionForTests();
   delete process.env.ZEROENTROPY_API_KEY;
   vi.mocked(readCredentials).mockResolvedValue({});
   vi.mocked(buildSidecarAwareReranker).mockResolvedValue(scorer);
   vi.mocked(getFlag).mockResolvedValue(true); // FLAGS.LOCAL_RERANK default ON
 });
 afterEach(() => {
+  vi.useRealTimers();
   if (savedEnv === undefined) delete process.env.ZEROENTROPY_API_KEY;
   else process.env.ZEROENTROPY_API_KEY = savedEnv;
 });
@@ -117,6 +121,7 @@ describe('rerankProseHits — engine selection', () => {
     await rerankProseHits('q', HITS, 5); // local (no key configured)
     expect(vi.mocked(rankWithReranker).mock.calls[0][2].rerankTimeoutMs).toBe(PROSE_RERANK_TIMEOUT_MS);
 
+    _resetProseRerankEngineDecisionForTests();
     vi.mocked(readCredentials).mockResolvedValue({ zeroentropy_api_key: 'ze_test' });
     await rerankProseHits('q', HITS, 5); // hosted
     expect(vi.mocked(rankWithReranker).mock.calls[1][2].rerankTimeoutMs).toBe(PROSE_RERANK_TIMEOUT_MS);
@@ -174,6 +179,68 @@ describe('rerankProseHits — engine selection', () => {
     expect(opts.engine).toBeUndefined();
     expect(opts.scorer).toBeUndefined();
     expect(buildSidecarAwareReranker).not.toHaveBeenCalled();
+  });
+
+  it('reuses the hosted-vs-local decision instead of reading credentials per search', async () => {
+    vi.mocked(rankWithReranker).mockResolvedValue(HITS);
+
+    await rerankProseHits('q', HITS, 5);
+    await rerankProseHits('q2', HITS, 5);
+
+    expect(readCredentials).toHaveBeenCalledTimes(1);
+    // The credential optimization must not latch the independent feature flag.
+    expect(getFlag).toHaveBeenCalledTimes(2);
+  });
+
+  it('coalesces concurrent cold searches onto one credential read', async () => {
+    let releaseCredentials!: (value: Awaited<ReturnType<typeof readCredentials>>) => void;
+    const pendingCredentials = new Promise<Awaited<ReturnType<typeof readCredentials>>>((resolve) => {
+      releaseCredentials = resolve;
+    });
+    vi.mocked(readCredentials).mockReturnValue(pendingCredentials);
+    vi.mocked(rankWithReranker).mockResolvedValue(HITS);
+
+    const first = rerankProseHits('q', HITS, 5);
+    const second = rerankProseHits('q2', HITS, 5);
+    await vi.waitFor(() => expect(readCredentials).toHaveBeenCalledTimes(1));
+    releaseCredentials({});
+    await Promise.all([first, second]);
+
+    expect(readCredentials).toHaveBeenCalledTimes(1);
+    expect(rankWithReranker).toHaveBeenCalledTimes(2);
+  });
+
+  it('refreshes the decision after its TTL so a newly added key needs no restart', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-02T00:00:00Z'));
+    vi.mocked(rankWithReranker).mockResolvedValue(HITS);
+
+    await rerankProseHits('local-1', HITS, 5);
+    vi.mocked(readCredentials).mockResolvedValue({ zeroentropy_api_key: 'ze_added' });
+
+    vi.advanceTimersByTime(PROSE_RERANK_ENGINE_DECISION_TTL_MS - 1);
+    await rerankProseHits('local-2', HITS, 5);
+    expect(readCredentials).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(rankWithReranker).mock.calls[1][2].engine).toBe('local');
+
+    vi.advanceTimersByTime(1);
+    await rerankProseHits('hosted', HITS, 5);
+    expect(readCredentials).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(rankWithReranker).mock.calls[2][2].rerankApiKey).toBe('ze_added');
+  });
+
+  it('does not negative-cache a failed credential read', async () => {
+    vi.mocked(readCredentials)
+      .mockRejectedValueOnce(new Error('credentials PG unavailable'))
+      .mockResolvedValue({ zeroentropy_api_key: 'ze_recovered' });
+    vi.mocked(rankWithReranker).mockResolvedValue(HITS);
+
+    await rerankProseHits('degraded-read', HITS, 5);
+    await rerankProseHits('recovered-read', HITS, 5);
+
+    expect(readCredentials).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(rankWithReranker).mock.calls[0][2].engine).toBe('local');
+    expect(vi.mocked(rankWithReranker).mock.calls[1][2].rerankApiKey).toBe('ze_recovered');
   });
 
   it('FLAGS.LOCAL_RERANK off + no key → the pre-P-007 dark seam, byte-identically', async () => {

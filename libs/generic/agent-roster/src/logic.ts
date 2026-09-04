@@ -22,7 +22,7 @@ import { LIVE_MS, LIVE_TURN_MS, type FleetGroup, type Liveness, type MachineTab,
  *  before its windowId is resolved. A resolution miss surfaces as a graceful
  *  "focus failed", never a crash. pid alone is NOT enough (sibling terminals
  *  share one server pid). Pure — exported for tests. */
-export function canFocusWindow(a: Pick<RosterAgent, 'windowId' | 'advSessionId'>): boolean {
+export function canFocusWindow<T extends Partial<Pick<RosterAgent, 'windowId' | 'advSessionId'>>>(a: T): boolean {
   return Boolean(a.windowId) || a.advSessionId != null;
 }
 
@@ -32,7 +32,7 @@ export function canFocusWindow(a: Pick<RosterAgent, 'windowId' | 'advSessionId'>
  *  than passing an id that would silently fail. null ⇒ no Fork/Resume action
  *  shown (never a dead button). Pure — exported for tests. */
 export function resumableSessionId(
-  a: Pick<RosterAgent, 'agent' | 'sessionId' | 'ompThreadId'>,
+  a: Partial<Pick<RosterAgent, 'agent' | 'sessionId' | 'ompThreadId'>>,
 ): string | null {
   if (a.agent === 'codex') return null;
   return a.sessionId ?? a.ompThreadId ?? null;
@@ -43,7 +43,7 @@ export function resumableSessionId(
  *  and inactive sessions: forking BRANCHES a fresh session from the transcript,
  *  safe whether or not the source is still running. Resume-in-place (no fork)
  *  remains available for any non-codex backend regardless. Pure. */
-export function canForkSession(a: Pick<RosterAgent, 'agent'>): boolean {
+export function canForkSession(a: Partial<Pick<RosterAgent, 'agent'>>): boolean {
   return a.agent === 'claude';
 }
 

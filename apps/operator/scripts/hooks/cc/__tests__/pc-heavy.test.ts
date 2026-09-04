@@ -339,10 +339,9 @@ function heldSlotCount(slotsDir: string, slots: number): number {
 
 function runSync(args: string[], env: Record<string, string> = {}, cwd?: string) {
   // cwd: dir — a fresh, non-git tmpdir per test, so the tree-state token's
-  // git-status probe (EI-18688348461605365) naturally no-ops unless a test
-  // deliberately `git init`s it. Keeps the suite hermetic and avoids paying
-  // for (or racing against concurrent edits to) this repo's own live git
-  // status on every spawn.
+  // Git probe naturally no-ops unless a test deliberately `git init`s it.
+  // Non-Git identity tests use a subdirectory: the fallback must not hash
+  // pc-heavy's own cache sidecars when PC_HEAVY_DIR is the fixture root.
   //
   // A test that `git init`s MUST pass an explicit `cwd` pointing at a SUBDIR of
   // `dir` rather than initing `dir` itself (EI-19424611266793426). The cache lives
@@ -3474,6 +3473,35 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       const second = runSync(['cat', script], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' });
       expect(second.stderr).not.toContain('coalesced:'); // must NOT replay the stale version-one result
       expect(second.stdout).toContain('version-two-longer');
+    });
+
+    it('a same-length edit in a non-Git export busts the cache when the source is only in cwd', () => {
+      const exportDir = join(dir, 'historical-export');
+      mkdirSync(exportDir, { recursive: true });
+      const source = join(exportDir, 'src.txt');
+      writeFileSync(source, 'v1');
+
+      // This mirrors the historical-export typecheck shape: the command only
+      // names a shell string, so no source file appears as a literal argv
+      // token, and there is no Git HEAD for the old key to distinguish.
+      const first = runSync(
+        ['bash', '-c', 'cat src.txt'],
+        { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' },
+        exportDir,
+      );
+      expect(first.stderr).not.toContain('coalesced:');
+      expect(first.stdout).toBe('v1');
+
+      // Keep the byte length identical so mtime/size proxies cannot make this
+      // pass accidentally. The fallback must hash file contents.
+      writeFileSync(source, 'v2');
+      const second = runSync(
+        ['bash', '-c', 'cat src.txt'],
+        { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' },
+        exportDir,
+      );
+      expect(second.stderr).not.toContain('coalesced:');
+      expect(second.stdout).toBe('v2');
     });
 
     it('a git-tracked source file changing between runs busts the cache, even when the command does not name it directly', () => {

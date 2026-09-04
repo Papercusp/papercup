@@ -159,6 +159,18 @@ export const RERANK_MAX_CANDIDATES = 24;
 export const PROSE_RERANK_TIMEOUT_MS = 4_000;
 
 /**
+ * How long one process may reuse the hosted-vs-local engine decision.
+ *
+ * `operator_credentials` is intentionally excluded from the generic operator-
+ * state cache because it is encrypted secret material. Reading it for every
+ * prose search nevertheless turns an almost-static engine choice into a PG
+ * round-trip on the hot path. Keep that optimization at this narrow seam: a
+ * newly added or removed ZeroEntropy key is observed within one minute, while
+ * unrelated credential consumers retain their existing freshness semantics.
+ */
+export const PROSE_RERANK_ENGINE_DECISION_TTL_MS = 60_000;
+
+/**
  * How many hits to RETRIEVE so the reranker has a real pool to choose from.
  * Never returns fewer than `limit` (an over-fetch must never under-fetch).
  */
@@ -192,16 +204,74 @@ export function rerankText(hit: SearchHit): string {
   return `${highlight} … ${excerpt}`;
 }
 
-/** Read the rerank key from operator_credentials, falling back to the env var. */
-async function rerankApiKey(): Promise<string | undefined> {
+type HostedRerankDecision = { apiKey: string } | null;
+
+let hostedRerankDecisionCache: {
+  decision: HostedRerankDecision;
+  expiresAtMs: number;
+} | null = null;
+let hostedRerankDecisionPromise: Promise<HostedRerankDecision> | null = null;
+
+const envHostedRerankDecision = (): HostedRerankDecision => {
+  const apiKey = process.env.ZEROENTROPY_API_KEY || undefined;
+  return apiKey ? { apiKey } : null;
+};
+
+/**
+ * Resolve the hosted half of the engine choice behind a short process-local
+ * TTL. Concurrent cold searches share one credential read.
+ *
+ * A failed credential read is deliberately not negative-cached: the current
+ * query still falls back to the environment, but the next query may recover as
+ * soon as PG does. Successful positive and negative reads are safe to cache for
+ * the bounded interval above.
+ */
+async function hostedRerankDecision(): Promise<HostedRerankDecision> {
+  const cached = hostedRerankDecisionCache;
+  if (cached && Date.now() < cached.expiresAtMs) return cached.decision;
+  if (hostedRerankDecisionPromise) return hostedRerankDecisionPromise;
+
+  const pending = (async (): Promise<HostedRerankDecision> => {
+    try {
+      const { readCredentials } = await import('../../credentials');
+      const creds = await readCredentials();
+      const decision = creds.zeroentropy_api_key
+        ? { apiKey: creds.zeroentropy_api_key }
+        : envHostedRerankDecision();
+      hostedRerankDecisionCache = {
+        decision,
+        expiresAtMs: Date.now() + PROSE_RERANK_ENGINE_DECISION_TTL_MS,
+      };
+      return decision;
+    } catch {
+      const decision = envHostedRerankDecision();
+      if (decision) {
+        hostedRerankDecisionCache = {
+          decision,
+          expiresAtMs: Date.now() + PROSE_RERANK_ENGINE_DECISION_TTL_MS,
+        };
+      }
+      return decision;
+    }
+  })();
+  hostedRerankDecisionPromise = pending;
   try {
-    const { readCredentials } = await import('../../credentials');
-    const creds = await readCredentials();
-    if (creds.zeroentropy_api_key) return creds.zeroentropy_api_key;
-  } catch {
-    /* fall through to env */
+    return await pending;
+  } finally {
+    if (hostedRerankDecisionPromise === pending) hostedRerankDecisionPromise = null;
   }
-  return process.env.ZEROENTROPY_API_KEY || undefined;
+}
+
+/** Test seam: drop the engine-decision memo without changing process env. */
+export function _resetProseRerankEngineDecisionForTests(): void {
+  hostedRerankDecisionCache = null;
+  hostedRerankDecisionPromise = null;
+}
+
+/** Read the rerank key from the seam-local decision cache. */
+async function rerankApiKey(): Promise<string | undefined> {
+  const decision = await hostedRerankDecision();
+  return decision?.apiKey;
 }
 
 let localScorerPromise: Promise<RerankScoreFn> | null = null;

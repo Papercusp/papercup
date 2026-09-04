@@ -202,6 +202,13 @@ describe('operator:multi_workspace', () => {
 });
 
 describe('operator:credentials_status', () => {
+  it('accepts explicit null for the optional integration name', async () => {
+    const { default: tool } = await import('../credentials_status');
+
+    expect(tool.args.safeParse({ integration_name: null }).success).toBe(true);
+    expect(tool.args.safeParse({}).success).toBe(true);
+  });
+
   it('returns masked-only status for each provider', async () => {
     vi.doMock('../../../voice-credentials', () => ({
       maskKey: vi.fn((k: string | null) => (k ? `masked:${k.slice(-4)}` : null)),

@@ -256,6 +256,7 @@ import tool, {
   memberLaunchCommand,
   defaultMemberAccountRouting,
   gatewayCapacityProviderForFleetAgent,
+  resolveFleetAgent,
   composeMemberLaunchContext,
   renderMemberBaseline,
   clampFleetTopUpToCapacity,
@@ -584,6 +585,25 @@ describe('gatewayCapacityProviderForFleetAgent', () => {
   it('falls back to the Claude projection for local or unknown OMP model ids', () => {
     expect(gatewayCapacityProviderForFleetAgent('omp', 'ollama-cc/ornith-valid')).toBe('claude');
     expect(gatewayCapacityProviderForFleetAgent('omp', 'future-provider/model-1')).toBe('claude');
+  });
+});
+
+describe('resolveFleetAgent — explicit Codex launch defaults', () => {
+  it('materializes the managed Codex model when agent is explicit but model is omitted', () => {
+    expect(
+      resolveFleetAgent({
+        argAgent: 'codex',
+        callerAgent: 'claude',
+        callerModel: 'opus:xhigh',
+      }),
+    ).toEqual({ agent: 'codex', model: 'gpt-5.6-sol' });
+  });
+
+  it('normalizes an explicit Codex alias while preserving its effort suffix', () => {
+    expect(resolveFleetAgent({ argAgent: 'codex', argModel: 'sol:high' })).toEqual({
+      agent: 'codex',
+      model: 'gpt-5.6-sol:high',
+    });
   });
 });
 

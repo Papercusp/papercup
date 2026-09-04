@@ -321,18 +321,10 @@ const WIDE_SELECT_ALLOW: Array<{ file: string; why: string }> = [];
  * ⚠ SHRINK-ONLY, same convention as KNOWN_OFFENDERS above: the high-watermark
  * assertion FAILS if this list grows.
  */
-const WIDE_SELECT_KNOWN_OFFENDERS: string[] = [
-  // sessions:digest's `scoped` CTE is SELECT * on session_turns (823 MB toast)
-  // with all-optional filters, referenced 4× so PG materializes it — a
-  // no-filter call detoasts `text` for every workspace turn. Naming columns
-  // alone is no fix (text IS used by the kickoff/closing legs); the real fix
-  // is a narrow CTE + join-back for the two DISTINCT ON winners' text, which
-  // needs its own measured pass (D-006). Tracked as a WI-6125 follow-up.
-  'packages/operator-core/lib/agent-tools/sessions/digest.ts',
-];
+const WIDE_SELECT_KNOWN_OFFENDERS: string[] = [];
 
 /** The count at the time this guard was written. May only go DOWN. */
-const WIDE_SELECT_HIGH_WATERMARK = 1;
+const WIDE_SELECT_HIGH_WATERMARK = 0;
 
 const WIDE_SELECT_RE = new RegExp(
   `SELECT\\s+\\*\\s+FROM\\s+(?:harness_shared\\.)?(${WIDE_TOAST_TABLES.join('|')})\\b`,

@@ -162,11 +162,17 @@ export default defineTool({
 
     // One pass: per-session aggregates + the FIRST user turn (the kickoff — what the
     // session was for) + the LAST assistant turn (where it got to / how it died).
-    // DISTINCT ON gives both ends without a second round-trip per session, which is
+    //
+    // `session_turns.text` is wide/TOASTed. Keep the shared CTE narrow so its three
+    // consumers do not materialize every matching transcript body. The endpoint
+    // selectors run only for the result window, retain the table's full primary
+    // key, then fetch `text` only for those winning kickoff/closing rows. DISTINCT
+    // ON still gives both ends without a second round-trip per session, which is
     // the whole point: the old pattern cost one read PER SESSION.
     const rows: DigestRow[] = await tx<DigestRow[]>`
       WITH scoped AS (
-        SELECT *
+        SELECT workspace_id, source_kind, session_id, turn_idx, speaker,
+               ts, ingested_at, owner, harness_slug, cwd
           FROM harness_shared.session_turns
          WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
            AND (${sessionFilter}::text IS NULL OR session_id = ${sessionFilter})
@@ -183,15 +189,31 @@ export default defineTool({
           FROM scoped
          GROUP BY source_kind, session_id
       ),
-      kickoff AS (
-        SELECT DISTINCT ON (source_kind, session_id) source_kind, session_id, text
-          FROM scoped WHERE speaker = 'user'
-         ORDER BY source_kind, session_id, turn_idx ASC
+      selected AS (
+        SELECT agg.*, count(*) OVER ()::int AS total_matching
+          FROM agg
+         ORDER BY last_ts_raw DESC NULLS LAST
+         LIMIT ${limit}
       ),
-      closing AS (
-        SELECT DISTINCT ON (source_kind, session_id) source_kind, session_id, text
-          FROM scoped WHERE speaker = 'assistant'
-         ORDER BY source_kind, session_id, turn_idx DESC
+      kickoff_key AS (
+        SELECT DISTINCT ON (t.source_kind, t.session_id)
+               t.workspace_id, t.source_kind, t.session_id, t.turn_idx
+          FROM scoped t
+          JOIN selected a
+            ON a.source_kind = t.source_kind
+           AND a.session_id = t.session_id
+         WHERE t.speaker = 'user'
+         ORDER BY t.source_kind, t.session_id, t.turn_idx ASC
+      ),
+      closing_key AS (
+        SELECT DISTINCT ON (t.source_kind, t.session_id)
+               t.workspace_id, t.source_kind, t.session_id, t.turn_idx
+          FROM scoped t
+          JOIN selected a
+            ON a.source_kind = t.source_kind
+           AND a.session_id = t.session_id
+         WHERE t.speaker = 'assistant'
+         ORDER BY t.source_kind, t.session_id, t.turn_idx DESC
       ),
       state_agg AS (
         SELECT source_kind, session_id, sum(tool_call_count)::int AS tool_call_count
@@ -205,15 +227,32 @@ export default defineTool({
              to_json(a.last_ts_raw)  #>> '{}' AS last_ts,
              (extract(epoch from a.last_ts_raw) * 1000)::bigint::text AS last_ts_ms,
              s.tool_call_count,
-             k.text AS kickoff_text,
-             c.text AS closing_text,
-             count(*) OVER ()::int AS total_matching
-        FROM agg a
-        LEFT JOIN kickoff k USING (source_kind, session_id)
-        LEFT JOIN closing c USING (source_kind, session_id)
-        LEFT JOIN state_agg s USING (source_kind, session_id)
+             kt.text AS kickoff_text,
+             ct.text AS closing_text,
+             a.total_matching
+        FROM selected a
+        LEFT JOIN kickoff_key k
+          ON k.source_kind = a.source_kind
+         AND k.session_id = a.session_id
+        LEFT JOIN closing_key c
+          ON c.source_kind = a.source_kind
+         AND c.session_id = a.session_id
+        LEFT JOIN harness_shared.session_turns kt
+          ON kt.workspace_id = k.workspace_id
+         AND kt.source_kind = k.source_kind
+         AND kt.session_id = k.session_id
+         AND kt.turn_idx = k.turn_idx
+         AND (kt.workspace_id = ${workspaceId} OR kt.workspace_id = 'default')
+        LEFT JOIN harness_shared.session_turns ct
+          ON ct.workspace_id = c.workspace_id
+         AND ct.source_kind = c.source_kind
+         AND ct.session_id = c.session_id
+         AND ct.turn_idx = c.turn_idx
+         AND (ct.workspace_id = ${workspaceId} OR ct.workspace_id = 'default')
+        LEFT JOIN state_agg s
+          ON s.source_kind = a.source_kind
+         AND s.session_id = a.session_id
        ORDER BY a.last_ts_raw DESC NULLS LAST
-       LIMIT ${limit}
     `;
 
     const total = rows[0]?.total_matching ?? 0;

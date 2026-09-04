@@ -13,6 +13,12 @@ const INPUT: GoalLocalPlacementInput = {
   targetHarness: 'sidestage',
 };
 
+type GoalHolderAuthority = Awaited<ReturnType<GoalLocalPlacementDeps['readAuthority']>>;
+
+function authority(value: GoalHolderAuthority): GoalHolderAuthority {
+  return value;
+}
+
 function link(harnessSlug: string, role: 'owner' | 'contributing' = 'contributing'): GoalPotLink {
   return {
     id: `link-${harnessSlug}`,
@@ -28,7 +34,7 @@ function link(harnessSlug: string, role: 'owner' | 'contributing' = 'contributin
 
 function deps(overrides: Partial<GoalLocalPlacementDeps> = {}): GoalLocalPlacementDeps {
   return {
-    readAuthority: vi.fn(async () => ({
+    readAuthority: vi.fn(async () => authority({
       status: 'elected',
       goalId: 'goal-1',
       electedOwnerId: 'goal-holder',
@@ -61,7 +67,7 @@ describe('goalHolderMayPlaceIntoLocalPot', () => {
 
   it('rejects inherited/non-holder goal context', async () => {
     const d = deps({
-      readAuthority: vi.fn(async () => ({
+      readAuthority: vi.fn(async () => authority({
         status: 'none',
         goalId: null,
         electedOwnerId: null,
@@ -75,7 +81,7 @@ describe('goalHolderMayPlaceIntoLocalPot', () => {
 
   it('accepts a live handoff predecessor but not a superseded holder', async () => {
     const handoff = deps({
-      readAuthority: vi.fn(async () => ({
+      readAuthority: vi.fn(async () => authority({
         status: 'handoff',
         goalId: 'goal-1',
         electedOwnerId: 'new-holder',
@@ -86,7 +92,7 @@ describe('goalHolderMayPlaceIntoLocalPot', () => {
     await expect(goalHolderMayPlaceIntoLocalPot(INPUT, handoff)).resolves.toBe(true);
 
     const superseded = deps({
-      readAuthority: vi.fn(async () => ({
+      readAuthority: vi.fn(async () => authority({
         status: 'superseded',
         goalId: 'goal-1',
         electedOwnerId: 'new-holder',

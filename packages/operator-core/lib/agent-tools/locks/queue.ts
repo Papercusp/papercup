@@ -14,11 +14,11 @@ import { holderContextReader, resolveHolderAdvisoryMap } from '../coordination/h
 export default defineTool({
   name: 'locks:queue',
   description:
-    'Read the active locks and pending waiters for a workspace. Active lock rows include lock_id, the handle needed by locks:release. This is a workspace-global diagnostic: omit harness. Optionally filter by paths (overlap): omit paths for an unfiltered scan, while an explicit paths:[] matches nothing. Pass absolute home-directory files via external_paths (mapped to the same @external/home/* reserved keys locks:acquire uses, then merged into the paths filter). Filter by owner as needed. Pass include_completed=true to also return terminal waiters from the last 24h (diagnostics). Accepted arguments are paths, external_paths, owner, and include_completed.',
+    'Read the active locks and pending waiters for a workspace. Active lock rows include lock_id, the handle needed by locks:release. This is a workspace-global diagnostic: omit harness. By default, the read spans every coordination domain; pass coordination_domain to scope it to a physical repository root when inspecting a specific checkout. Optionally filter by paths (overlap): omit paths for an unfiltered scan, while an explicit paths:[] matches nothing. Pass absolute home-directory files via external_paths (mapped to the same @external/home/* reserved keys locks:acquire uses, then merged into the paths filter). Filter by owner as needed. Pass include_completed=true to also return terminal waiters from the last 24h (diagnostics). Accepted arguments are coordination_domain, paths, external_paths, owner, and include_completed.',
   guidance: {
     when: 'Diagnostics — "what are the other agents doing?" or "why am I blocked?". Cheap, MVCC read.',
     notWhen: 'Before every acquire — locks:acquire already returns busy context. Use queue when the user asks.',
-    chaining: 'Workspace-global diagnostic — omit harness; omit paths for all rows or pass exact paths (paths:[] is intentionally empty), plus owner?/include_completed?. To inspect a home-directory file locked via locks:acquire\'s external_paths, pass the same absolute path back as external_paths here — it is mapped to the identical @external/home/* key and merged into the paths filter. To release a held row, use its returned lock_id with locks:release; paths is not a standalone release selector.',
+    chaining: 'Workspace-global diagnostic — omit harness; omit coordination_domain for every checkout or pass the physical repository root to scope one checkout; omit paths for all rows or pass exact paths (paths:[] is intentionally empty), plus owner?/include_completed?. To inspect a home-directory file locked via locks:acquire\'s external_paths, pass the same absolute path back as external_paths here — it is mapped to the identical @external/home/* key and merged into the paths filter. To release a held row, use its returned lock_id with locks:release; paths is not a standalone release selector.',
     seeAlso: [
       'locks:list (named-resource holders, not file-lock contention)',
       'coord:roster { view:"live" } (what the other agents are doing overall)',
@@ -37,6 +37,12 @@ export default defineTool({
   skipResultDoor: 'programmatic-caller',
   agentRoles: [...AGENT_ROLES],
   args: z.object({
+    coordination_domain: z
+      .string()
+      .min(1)
+      .max(4096)
+      .optional()
+      .describe('physical repository root used to scope the diagnostic read to one checkout'),
     paths: z.array(z.string()).optional(),
     external_paths: z
       .array(z.string().min(1))
@@ -90,7 +96,11 @@ export default defineTool({
         // domain silently turns a held path into an empty result. The store's
         // null domain spans those namespaces and returns each row's domain for
         // attribution; acquire/release paths remain domain-scoped.
-        coordinationDomain: null,
+        // Omit the filter for the workspace-global diagnostic default; callers
+        // that need one checkout can pass the same physical root used by
+        // locks:acquire. This keeps the cross-checkout read available without
+        // rejecting a valid coordination_domain argument.
+        coordinationDomain: args.coordination_domain ?? null,
         paths,
         owner: args.owner,
         includeCompleted: args.include_completed,

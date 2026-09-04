@@ -103,6 +103,7 @@ beforeEach(() => {
     status: 'active',
     parent_id: null,
     budget_cents: '50000',
+    budget_window_sec: 604800,
     kill_criterion: 'no paying user after 2 weeks',
     tripwires: null,
     metadata: {},
@@ -348,6 +349,7 @@ describe('goals:update — unrestricted amendments are always reversible from hi
       status: 'achieved',
       parent_id: 'parent-goal',
       budget_cents: '75000',
+      budget_window_sec: 86400,
       kill_criterion: 'no repeat purchase after 30 days',
       tripwires: nextTripwires,
       metadata: {
@@ -366,6 +368,7 @@ describe('goals:update — unrestricted amendments are always reversible from hi
         status: 'achieved',
         parentId: 'parent-goal',
         budgetCents: 75000,
+        budgetWindowSec: 86400,
         spentCents: 1234,
         killCriterion: 'no repeat purchase after 30 days',
         tripwires: nextTripwires,
@@ -396,6 +399,7 @@ describe('goals:update — unrestricted amendments are always reversible from hi
       'status',
       'parentId',
       'budgetCents',
+      'budgetWindowSec',
       'killCriterion',
       'tripwires',
       'metadata',
@@ -458,6 +462,42 @@ describe('goals:update — unrestricted amendments are always reversible from hi
       before: ['old-blocker'],
       after: ['new-blocker'],
     });
+  });
+});
+
+describe('goals:update — budget windows', () => {
+  const writtenBudgetWindow = (): unknown => setParam('budget_window_sec');
+
+  it('accepts positive integer windows and an explicit null lifetime reset', () => {
+    expect(tool.args.safeParse({ id: 'g1', budgetWindowSec: 604800 }).success).toBe(true);
+    expect(tool.args.safeParse({ id: 'g1', budgetWindowSec: null }).success).toBe(true);
+  });
+
+  it('rejects zero, negative, and fractional windows', () => {
+    expect(tool.args.safeParse({ id: 'g1', budgetWindowSec: 0 }).success).toBe(false);
+    expect(tool.args.safeParse({ id: 'g1', budgetWindowSec: -1 }).success).toBe(false);
+    expect(tool.args.safeParse({ id: 'g1', budgetWindowSec: 1.5 }).success).toBe(false);
+  });
+
+  it('writes a revised window', async () => {
+    await tool.handler(
+      tool.args.parse({ id: 'g1', budgetWindowSec: 86400 }) as never,
+      CTX() as never,
+    );
+    expect(writtenBudgetWindow()).toBe(86400);
+  });
+
+  it('clears the window only when null is explicit', async () => {
+    await tool.handler(
+      tool.args.parse({ id: 'g1', budgetWindowSec: null }) as never,
+      CTX() as never,
+    );
+    expect(writtenBudgetWindow()).toBeNull();
+  });
+
+  it('preserves the existing window when omitted', async () => {
+    await tool.handler(tool.args.parse({ id: 'g1', title: 'Renamed goal' }) as never, CTX() as never);
+    expect(writtenBudgetWindow()).toBe(604800);
   });
 });
 

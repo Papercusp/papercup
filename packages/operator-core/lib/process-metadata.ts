@@ -4,6 +4,7 @@
  * agent prompts are part of argv. Only this allowlisted projection crosses out.
  */
 import { readFileSync, readlinkSync } from 'node:fs';
+import { parseNulSeparatedEnvironment } from '@papercusp/host-platform/process-environment';
 
 export type StableProcessMetadata = {
   executable: string | null;
@@ -47,12 +48,9 @@ function firstArg(cmdline: string | null | undefined): string | null {
 export function parseAllowlistedProcessEnv(environ: string | null | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   if (!environ) return out;
-  for (const entry of environ.split('\0')) {
-    const equals = entry.indexOf('=');
-    if (equals <= 0) continue;
-    const key = entry.slice(0, equals);
+  for (const [key, rawValue] of Object.entries(parseNulSeparatedEnvironment(environ))) {
     if (!ALLOWED_ENV_KEYS.has(key)) continue;
-    const value = safeValue(entry.slice(equals + 1));
+    const value = safeValue(rawValue);
     if (value !== null) out[key] = value;
   }
   return out;

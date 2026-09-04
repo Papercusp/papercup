@@ -13082,7 +13082,7 @@
           "POST"
         ]
       },
-      "description": "Move a GOAL record's standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, spentCents?, parentId?, installSlug?, launchSettings?, drainFleet? }. Partial — omitted fields stay untouched. status:\"killed\" when the kill criterion trips, \"achieved\" when the outcome is met. status FANS OUT: \"paused\"|\"killed\"|\"achieved\" gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it; \"active\" re-opens placement on those same projects (nothing else can — the pause is marked deliberate so no watchdog undoes it). Read `stop` and `degraded` either way.",
+      "description": "Move a GOAL record's standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, budgetWindowSec?, spentCents?, parentId?, installSlug?, launchSettings?, drainFleet? }. Partial — omitted fields stay untouched. status:\"killed\" when the kill criterion trips, \"achieved\" when the outcome is met. status FANS OUT: \"paused\"|\"killed\"|\"achieved\" gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it; \"active\" re-opens placement on those same projects (nothing else can — the pause is marked deliberate so no watchdog undoes it). Read `stop` and `degraded` either way.",
       "capabilities": [
         "goals:write"
       ],
@@ -13097,7 +13097,7 @@
         "curator"
       ],
       "guidance": {
-        "when": "Recording a verified child-fleet spend snapshot against a goal's declared ceiling, revising its statement or kill criterion, or CLOSING it (achieved / killed). A spend snapshot is accepted only when it exactly matches the measured goals:pots rollup.",
+        "when": "Recording a verified child-fleet spend snapshot against a goal's declared ceiling, revising its statement, kill criterion, or budget window, or CLOSING it (achieved / killed). A spend snapshot is accepted only when it exactly matches the measured goals:pots rollup.",
         "notWhen": "For per-pot progress or measured spend use goals:pots { goalId } and the pot/plan/work-item beneath the goal — this row carries the goal-level state only. Do not invent interactive-session cost. To read current state first, goals:get { id, detail:\"full\" }.",
         "chaining": "goals:get → goals:pots → goals:update only when writing a verified measured snapshot. Pausing/killing winds the projects down FOR you (placement gate + loop disarm); a degraded spend result means no snapshot was written and the tripwire remains unmeasured — chase it with goals:pots, then fleet:assignments / loop:status on the reported projects."
       }

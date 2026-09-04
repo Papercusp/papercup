@@ -2044,6 +2044,85 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     expect(git(repo, 'rev-parse', 'HEAD:libs/sub')).toBe(git(subRepo, 'rev-parse', 'HEAD'));
   });
 
+  it('WI-2144358: continues a unique exact-tip remote preservation branch instead of divergent local main', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    const originMain = git(subRepo, 'rev-parse', 'origin/main');
+
+    git(subRepo, 'switch', '--detach', 'HEAD');
+    writeFileSync(join(subRepo, 'pin-basis.txt'), 'preserved remotely\n');
+    git(subRepo, 'add', '-A');
+    git(subRepo, 'commit', '--no-verify', '-m', 'preserved detached work');
+    const preservedHead = git(subRepo, 'rev-parse', 'HEAD');
+    git(subRepo, 'push', 'origin', 'HEAD:refs/heads/restart-pin-fixture');
+
+    git(subRepo, 'switch', 'main');
+    writeFileSync(join(subRepo, 'local-main-only.txt'), 'must not be moved\n');
+    git(subRepo, 'add', '-A');
+    git(subRepo, 'commit', '--no-verify', '-m', 'divergent local main work');
+    const divergentMain = git(subRepo, 'rev-parse', 'main');
+
+    git(subRepo, 'switch', '--detach', preservedHead);
+    writeFileSync(join(subRepo, 'dirty-after-pin.txt'), 'must continue on the preserved branch\n');
+
+    const out = await runGitSync('test', { repoPath: repo });
+
+    expect(out.status, JSON.stringify(out)).toBe('synced');
+    expect(git(subRepo, 'branch', '--show-current')).toBe('restart-pin-fixture');
+    expect(git(subRepo, 'rev-parse', 'main')).toBe(divergentMain);
+    expect(git(subOrigin, 'rev-parse', 'main')).toBe(originMain);
+    expect(git(subOrigin, 'show', 'restart-pin-fixture:pin-basis.txt')).toBe('preserved remotely');
+    expect(git(subOrigin, 'show', 'restart-pin-fixture:dirty-after-pin.txt')).toBe(
+      'must continue on the preserved branch',
+    );
+  });
+
+  it('WI-2144358: a clean local branch can reconcile through another exact-tip remote branch', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    git(subRepo, 'switch', '--create', 'merge-local');
+    writeFileSync(join(subRepo, 'preserved-local-head.txt'), 'reachable on the remote pin\n');
+    git(subRepo, 'add', '-A');
+    git(subRepo, 'commit', '--no-verify', '-m', 'local named branch preserved remotely');
+    git(subRepo, 'push', 'origin', 'HEAD:restart-pin-fixture');
+    const preservedHead = git(subRepo, 'rev-parse', 'HEAD');
+
+    const out = await runGitSync('test', { repoPath: repo });
+
+    expect(out.status, JSON.stringify(out)).toBe('synced');
+    expect(git(subRepo, 'branch', '--show-current')).toBe('merge-local');
+    expect(git(subOrigin, 'rev-parse', 'restart-pin-fixture')).toBe(preservedHead);
+    expect(git(repo, 'rev-parse', 'HEAD:libs/sub')).toBe(preservedHead);
+  });
+
+  it('WI-2144358: ambiguous exact-tip preservation branches keep divergent attachment fail-closed', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    git(subRepo, 'switch', '--detach', 'HEAD');
+    writeFileSync(join(subRepo, 'ambiguous-pin-basis.txt'), 'two possible continuation branches\n');
+    git(subRepo, 'add', '-A');
+    git(subRepo, 'commit', '--no-verify', '-m', 'ambiguous preserved detached work');
+    const preservedHead = git(subRepo, 'rev-parse', 'HEAD');
+    git(subRepo, 'push', 'origin', 'HEAD:refs/heads/restart-pin-a');
+    git(subRepo, 'push', 'origin', 'HEAD:refs/heads/restart-pin-b');
+
+    git(subRepo, 'switch', 'main');
+    writeFileSync(join(subRepo, 'ambiguous-local-main.txt'), 'must stay untouched\n');
+    git(subRepo, 'add', '-A');
+    git(subRepo, 'commit', '--no-verify', '-m', 'ambiguous divergent main work');
+    const divergentMain = git(subRepo, 'rev-parse', 'main');
+    git(subRepo, 'switch', '--detach', preservedHead);
+    writeFileSync(join(subRepo, 'ambiguous-dirty.txt'), 'must not choose arbitrarily\n');
+
+    const out = await runGitSync('test', { repoPath: repo });
+
+    expect(out.status).toBe('error');
+    if (out.status === 'error') {
+      expect(out.errors.map((error) => error.message).join('\n')).toMatch(/divergent local branch 'main'/i);
+    }
+    expect(git(subRepo, 'branch', '--show-current')).toBe('');
+    expect(git(subRepo, 'rev-parse', 'main')).toBe(divergentMain);
+    expect(git(subOrigin, 'rev-parse', 'restart-pin-a')).toBe(preservedHead);
+    expect(git(subOrigin, 'rev-parse', 'restart-pin-b')).toBe(preservedHead);
+  });
+
   it('EI-20611320499473924: refuses a detached submodule whose local default branch diverges', async () => {
     const subRepo = join(repo, 'libs/sub');
     git(subRepo, 'branch', '-f', 'main', 'HEAD');
@@ -2852,6 +2931,61 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
         `The following paths are ignored by one of your .gitignore files:\n${ignoredPath}\nhint: Use -f`,
       ),
     ).toEqual([ignoredPath]);
+  });
+
+  it('WI-2144346: an ignored ancestor drops only protected descendant exclusions and retries', async () => {
+    const ignoredAncestor = 'apps/shop/.astro';
+    const ignoredDescendants = [
+      `${ignoredAncestor}/collections/blog.schema.json`,
+      `${ignoredAncestor}/content-modules.mjs`,
+    ];
+    const unrelatedProtectedPath = 'apps/shop/src/content/config.ts';
+    const addCalls: string[][] = [];
+    const logs: string[] = [];
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' };
+      if (j.startsWith('check-ignore --')) return { code: 1, stdout: '' };
+      if (j.startsWith('add')) {
+        addCalls.push(args);
+        if (addCalls.length === 1) {
+          return {
+            code: 1,
+            stderr:
+              'The following paths are ignored by one of your .gitignore files:\n' +
+              `${ignoredAncestor}/\n` +
+              'hint: Use -f if you really want to add them.\n',
+          };
+        }
+        return { code: 0 };
+      }
+      if (j.startsWith('commit')) return { code: 0 };
+      if (j.startsWith('fetch')) return { code: 0 };
+      if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
+      if (j.startsWith('rev-list --count')) return { code: 0, stdout: '0' };
+      return { code: 0, stdout: '' };
+    });
+
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      excludePaths: [...ignoredDescendants, unrelatedProtectedPath],
+      config: { pushSubmodules: false },
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    expect(addCalls).toHaveLength(2);
+    for (const path of ignoredDescendants) {
+      expect(addCalls[0]).toContain(`:(exclude,literal)${path}`);
+      expect(addCalls[1]).not.toContain(`:(exclude,literal)${path}`);
+    }
+    expect(addCalls[1]).toContain(`:(exclude,literal)${unrelatedProtectedPath}`);
+    expect(logs.join('\n')).toContain(`[${ignoredDescendants.join(', ')}]`);
+    expect(logs.join('\n')).toContain('retrying without force-adding ignored files');
   });
 
   it('EI-21025874195651806: filters an ignored untracked protected path before the first add', async () => {

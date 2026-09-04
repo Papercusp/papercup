@@ -40,6 +40,7 @@ export default defineTool({
     integration_name: z
       .string()
       .regex(INTEGRATION_KEY_NAME_RE, 'integration_name must be SCREAMING_SNAKE_CASE')
+      .nullable()
       .optional()
       .describe('Optional setup:save_integration_key name to inspect without returning its raw value.'),
   }),

@@ -44,9 +44,12 @@ describe('locks:queue tool metadata', () => {
     expect((tool.guidance?.when ?? '').length).toBeGreaterThan(0);
     expect(tool.description).toContain('workspace-global diagnostic: omit harness');
     expect(tool.description).toContain('paths:[] matches nothing');
+    expect(tool.description).toContain('coordination_domain');
     expect(tool.guidance?.chaining).toContain('omit harness');
     expect(tool.guidance?.chaining).toContain('paths:[] is intentionally empty');
     expect(tool.args.safeParse({}).success).toBe(true);
+    expect(tool.args.safeParse({ coordination_domain: '/repo' }).success).toBe(true);
+    expect(tool.args.safeParse({ coordination_domain: '' }).success).toBe(false);
     expect(tool.args.safeParse({ paths: ['a.ts'], owner: 'su-1', include_completed: true }).success).toBe(true);
     expect(tool.args.safeParse({ paths: 'a.ts' }).success).toBe(false);
   });
@@ -73,6 +76,16 @@ describe('locks:queue handler', () => {
       paths: ['x.ts'],
       owner: 'su-9',
       includeCompleted: true,
+    });
+  });
+
+  it('EI-22019812538150428: accepts and forwards an explicit coordination_domain scope', async () => {
+    await tool.handler({ coordination_domain: '/external/checkout', paths: ['x.ts'] }, ctx);
+    expect(H.readQueue).toHaveBeenCalledWith(expect.anything(), {
+      coordinationDomain: '/external/checkout',
+      paths: ['x.ts'],
+      owner: undefined,
+      includeCompleted: undefined,
     });
   });
 

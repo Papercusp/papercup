@@ -3,12 +3,10 @@
  * choices are computed live from the session's roster/session-resolve data
  * (gui-chat-session-controls-2026-07-25 P-006).
  *
- * The availability rules are LIFTED verbatim from
- * apps/operator-vite/src/components/adv/AgentsRunningPill.tsx
- * (`resumableSessionId`, `canForkSession`, `canFocusWindow`) — that app is a
- * separate bundle from apps/operator (this one), so the three pure
- * predicates are reproduced here rather than imported cross-app. Keep them in
- * sync if the source rules change:
+ * The availability rules (`resumableSessionId`, `canForkSession`,
+ * `canFocusWindow`) come from the host-free `@papercusp/agent-roster/logic`
+ * subpath. The roster UI and this server bundle therefore consume ONE pure
+ * implementation without importing either app from the other:
  *   - resume/fork need a session id: codex is EXCLUDED (its rollout-resume is
  *     a different mechanism than `<cli> -r <id>`; passing its id would
  *     silently fail) — claude's `sessionId` or an omp `ompThreadId`.
@@ -26,6 +24,9 @@
  */
 import { registerChatAction } from './registry';
 import type { ChatActionContext } from './types';
+import { canFocusWindow, canForkSession, resumableSessionId } from '@papercusp/agent-roster/logic';
+
+export { canFocusWindow, canForkSession, resumableSessionId };
 
 /** Extra ctx fields this action reads — supplied by SessionChatModal from the
  *  SAME advRoster.list entry (P-012) + the resolved Claude session id it
@@ -44,24 +45,6 @@ export interface SessionActionCtx extends ChatActionContext {
   /** Direct X11 window handle, when already resolved. */
   windowId?: string | null;
   pid?: number | null;
-}
-
-/** The session id to fork/resume into a new terminal. null ⇒ neither action
- *  offered. Exported for tests. */
-export function resumableSessionId(ctx: SessionActionCtx): string | null {
-  if (ctx.agent === 'codex') return null;
-  return ctx.sessionId ?? ctx.ompThreadId ?? null;
-}
-
-/** Whether this session can be FORKED (`--fork-session`, claude-only).
- *  Exported for tests. */
-export function canForkSession(ctx: SessionActionCtx): boolean {
-  return ctx.agent === 'claude';
-}
-
-/** Whether this session's terminal window can be focused. Exported for tests. */
-export function canFocusWindow(ctx: SessionActionCtx): boolean {
-  return Boolean(ctx.windowId) || ctx.advSessionId != null;
 }
 
 const postText = (url: string, payload: unknown) =>

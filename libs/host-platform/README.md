@@ -13,6 +13,7 @@ logic) stays host-clean and takes a `HostPlatform` when it needs the host.
 | `@papercusp/host-platform` | The `HostPlatform` interface + the registry (`getHostPlatform` / `registerHostPlatform`). Safe in any environment. |
 | `@papercusp/host-platform/desktop` | Node impl: `node:fs` + `~/.papercusp/embedded-pg.json` + env fallback. The default for Tauri and the `npm run dev` operator. |
 | `@papercusp/host-platform/server` | Env-only stub. Throws on any filesystem call — the answer for a future host that genuinely cannot do sync fs. |
+| `@papercusp/host-platform/process-environment` | Internal PID-environment inspection: exact owning-spawn/procfs sources plus an explicitly best-effort macOS `ps eww` fallback. Raw results may contain credentials and must be allowlisted or redacted before crossing a diagnostic boundary. |
 
 ## Design
 

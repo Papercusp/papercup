@@ -34,6 +34,7 @@ import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS, setEntityE
 import { _resetVerifiedSpawns } from '../../spawn-signing';
 import { resetResultDoorAggregatesForTests } from '../../result-door';
 import { MAX_PICK_PATHS, NAMED_VIEWS } from '../../result-projection';
+import { PLATFORM_POT_SLUG } from '../../platform-pot-slug';
 import type { BuiltSpawnContext, McpCallResult } from '../routes/transport/_mcp-handler';
 
 const h = vi.hoisted(() => {
@@ -1860,17 +1861,23 @@ describe('scoped-superuser hive clamp', () => {
     expect(textOf(res)).toContain('harness_forbidden');
   });
 
-  it('flag ON: allows git-sync:run to name the configured operator-home install explicitly (EI-22344259264889593)', async () => {
+  it('flag ON: allows git-sync:run to name the canonical platform Pot explicitly (EI-22344259264889593)', async () => {
     h.scopedClampFlag.value = true;
-    const operatorHome = process.env.PAPERCUSP_POT_HOME_SLUG?.trim() || 'papercusp';
-    const res = await callTool('git-sync:run', { installSlug: operatorHome, dryRun: true }, hiveScoped());
+    const res = await callTool(
+      'git-sync:run',
+      { installSlug: PLATFORM_POT_SLUG, dryRun: true },
+      hiveScoped(),
+    );
     expect(textOf(res)).not.toContain('harness_forbidden');
   });
 
-  it('flag ON: allows git-sync:run\'s documented `harness` alias for the exact operator home', async () => {
+  it('flag ON: allows git-sync:run\'s documented `harness` alias for the exact platform Pot', async () => {
     h.scopedClampFlag.value = true;
-    const operatorHome = process.env.PAPERCUSP_POT_HOME_SLUG?.trim() || 'papercusp';
-    const res = await callTool('git-sync:run', { harness: operatorHome, dryRun: true }, hiveScoped());
+    const res = await callTool(
+      'git-sync:run',
+      { harness: PLATFORM_POT_SLUG, dryRun: true },
+      hiveScoped(),
+    );
     expect(textOf(res)).not.toContain('harness_forbidden');
   });
 
@@ -3031,12 +3038,11 @@ describe('tools:invoke re-dispatch inherits the scoped-superuser hive clamp (EI-
     expect(textOf(res)).toContain('harness_forbidden');
   });
 
-  it('flag ON: allows nested git-sync:run to name the configured operator-home install explicitly', async () => {
+  it('flag ON: allows nested git-sync:run to name the canonical platform Pot explicitly', async () => {
     h.scopedClampFlag.value = true;
-    const operatorHome = process.env.PAPERCUSP_POT_HOME_SLUG?.trim() || 'papercusp';
     const res = await callTool(
       'tools:invoke',
-      { name: 'git-sync:run', args: { installSlug: operatorHome, dryRun: true } },
+      { name: 'git-sync:run', args: { installSlug: PLATFORM_POT_SLUG, dryRun: true } },
       hiveScoped(),
     );
     expect(textOf(res)).not.toContain('harness_forbidden');

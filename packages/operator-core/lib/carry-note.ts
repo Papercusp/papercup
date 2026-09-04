@@ -947,7 +947,7 @@ function inferNestedProbeKind(row: unknown, source: Record<string, unknown>): un
   if (!canInferKind && !canLiftLegacyRevision) return row;
 
   const normalized = { ...source };
-  const normalizedProbe = {
+  const normalizedProbe: Record<string, unknown> = {
     ...(canInferKind ? { kind: hasTool ? 'tool' : 'state-cell' } : {}),
     ...nested,
   };
