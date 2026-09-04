@@ -1,27 +1,33 @@
+import { Suspense } from 'react';
 import { createFileRoute } from '@tanstack/react-router';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
+import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-retry';
 import AdvShell, { ADV_TABS, portalEmbedAdvTab, useAdvScope, type AdvScope, type AdvTabId } from '../../components/adv/AdvShell';
 import { isPortalEmbedLocation } from '@papercusp/operator-core/lib/portal-embed';
 import AdvPotBar from '../../components/adv/AdvPotBar';
 import { potBarModeForTab } from '../../components/adv/adv-pot-bar-tabs';
 import AdvTabErrorBoundary from '../../components/adv/AdvTabErrorBoundary';
-import AdvOverviewTab from '../../components/adv/AdvOverviewTab';
-import AdvStatsTab from '../../components/adv/AdvStatsTab';
-import AdvConversationsTab from '../../components/adv/AdvConversationsTab';
-import LearningTab from '../../components/adv/LearningTab';
-import AdvFramesTab from '../../components/adv/AdvFramesTab';
-import AdvEvalsTab from '../../components/adv/AdvEvalsTab';
-import ScheduledCalendarTab from '../../components/adv/ScheduledCalendarTab';
-import HealthTab from '../../components/adv/HealthTab';
-import AdvHistoryTab from '../../components/adv/AdvHistoryTab';
-import AdvHarnessPanelPage from '../../components/adv/AdvHarnessPanelPage';
-import HarnessesWorkspace from '@/app/adv/harnesses/HarnessesWorkspace';
-import AdvCreateDock from '@/app/adv/create/AdvCreateDock';
-import HudView from '@/app/adv/hud/HudView';
-import AdvWorkflowsTab from '../../components/adv/AdvWorkflowsTab';
-// plans.css is still needed: the Create dock's panels (PlansListPanel,
-// PreviewPanel, …) reuse the `pc-plans__*` classes from PlansClient.
-import '@/app/admin/plans/plans.css';
+
+// Keep the landing route's startup graph lean: every tab body is a separate
+// retryable chunk, so Overview does not pull the heavyweight workspaces,
+// dashboards, or their noncritical styles into the first visit. The shell,
+// selector, scope provider, and error boundary stay eager so navigation remains
+// available while a tab chunk is loading (application-performance-implementation
+// P-002).
+const AdvOverviewTab = lazy(() => import('../../components/adv/AdvOverviewTab'));
+const AdvStatsTab = lazy(() => import('../../components/adv/AdvStatsTab'));
+const AdvConversationsTab = lazy(() => import('../../components/adv/AdvConversationsTab'));
+const LearningTab = lazy(() => import('../../components/adv/LearningTab'));
+const AdvFramesTab = lazy(() => import('../../components/adv/AdvFramesTab'));
+const AdvEvalsTab = lazy(() => import('../../components/adv/AdvEvalsTab'));
+const ScheduledCalendarTab = lazy(() => import('../../components/adv/ScheduledCalendarTab'));
+const HealthTab = lazy(() => import('../../components/adv/HealthTab'));
+const AdvHistoryTab = lazy(() => import('../../components/adv/AdvHistoryTab'));
+const AdvHarnessPanelPage = lazy(() => import('../../components/adv/AdvHarnessPanelPage'));
+const HarnessesWorkspace = lazy(() => import('@/app/adv/harnesses/HarnessesWorkspace'));
+const AdvCreateDock = lazy(() => import('@/app/adv/create/AdvCreateDock'));
+const HudView = lazy(() => import('@/app/adv/hud/HudView'));
+const AdvWorkflowsTab = lazy(() => import('../../components/adv/AdvWorkflowsTab'));
 
 const ADV_TAB_IDS = ADV_TABS.map((tab) => tab.id) as [AdvTabId, ...AdvTabId[]];
 
@@ -73,7 +79,9 @@ function AdvScopedTabBody({ activeTab }: { activeTab: AdvTabId }) {
           navigation. */}
       <div className="pc-advshell__tabbody">
         <AdvTabErrorBoundary key={activeTab} tab={activeTab}>
-          {renderAdvTab(activeTab, potScope)}
+          <Suspense fallback={<div className="pc-advshell__tab-loading" role="status">Loading…</div>}>
+            {renderAdvTab(activeTab, potScope)}
+          </Suspense>
         </AdvTabErrorBoundary>
       </div>
     </>
