@@ -54,4 +54,17 @@ describe('renderCompactionStrategy (Claude compaction floor)', () => {
     expect(source).toContain('Missing, unrecognized, or `unknown` origin is UNKNOWN');
     expect(source).toContain('never infer');
   });
+
+  it('keeps owner-facing obligations outside the active task as a distinct carry class', async () => {
+    const source = await fs.readFile(
+      new URL('../../../../apps/operator/prompts/papercusp-compaction.base.md', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain('**Owner-facing open threads**');
+    expect(source).toContain('even when it is unrelated to the active task');
+    expect(source).toContain('answered,\n  withdrawn, or superseded');
+    expect(source).toContain('label these under `left`');
+    expect(source).toContain('use `walls` only when the next action belongs to');
+  });
 });

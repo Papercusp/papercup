@@ -60,7 +60,18 @@ straight from the tool when they'd otherwise read as silent confirmation of
   SOURCE-TAGGED per "Directive provenance" below.
 - Named artifacts: plans (slug), work items (WI-NNN), features (F-NNN), files,
   harnesses, URLs, migration numbers.
-- Open questions, in-flight work, and the next concrete action.
+- **Owner-facing open threads** — before finalizing, scan the complete source
+  available to this fold (the existing summary plus new turns, or the live
+  transcript for self-compaction) for every still-unanswered owner question and
+  every investigation/result this session promised the owner. Preserve each as
+  its own compact bullet even when it is unrelated to the active task. Include
+  its owner-source tag or turn ref, the exact answer/work still owed, and a
+  retrieval pointer. Drop one only when a later turn shows it was answered,
+  withdrawn, or superseded; absence from the active-task narrative is never
+  closure. On a loop carry surface, label these under `left` as
+  `Owner-facing open threads`; use `walls` only when the next action belongs to
+  the owner rather than the agent.
+- Other open questions, in-flight work, and the next concrete action.
 
 ## Directive provenance — never manufacture an owner directive
 Attribution is the first metadata to rot under repeated compaction, and each

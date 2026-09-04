@@ -52,12 +52,15 @@ describe('buildCompactionPrompt', () => {
     const p = buildCompactionPrompt('S', [{ role: 'user', text: 'hi' }], 'PRESERVE_THE_XYZ_MARKER');
     expect(p).toContain('PRESERVE_THE_XYZ_MARKER');
     expect(p).not.toContain('decisions made, and why'); // default block replaced
+    expect(p).not.toContain('owner-facing open threads outside the active task');
   });
 
   it('falls back to DEFAULT_COMPACTION_PRIORITIES when priorities omitted', () => {
     const p = buildCompactionPrompt('S', [{ role: 'user', text: 'hi' }]);
     expect(p).toContain(DEFAULT_COMPACTION_PRIORITIES);
     expect(p).toContain('decisions made, and why');
+    expect(p).toContain('owner-facing open threads outside the active task');
+    expect(p).toContain('until answered, withdrawn, or superseded');
   });
 });
 

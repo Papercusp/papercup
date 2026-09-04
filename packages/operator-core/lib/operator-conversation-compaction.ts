@@ -92,6 +92,7 @@ export const DEFAULT_COMPACTION_PRIORITIES =
   `- decisions made, and why\n` +
   `- preferences / standing instructions the user stated\n` +
   `- named artifacts: plans, features (F-NNN), work items, files, harnesses, URLs\n` +
+  `- owner-facing open threads outside the active task: each unanswered user question or promised investigation, until answered, withdrawn, or superseded\n` +
   `- open questions, commitments, unfinished work\n` +
   `Compress or drop: greetings, transient status chatter, superseded states.`;
 
