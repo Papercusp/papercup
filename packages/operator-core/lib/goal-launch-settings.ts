@@ -77,6 +77,7 @@ import {
 // The fleet-shape vocabulary is owned by the fleet store; `fleetType` below
 // derives its accepted values from it rather than declaring them a second time.
 import { FLEET_TYPES } from './agent-fleets-store';
+import { GOAL_KICKOFF_REQUIRED_READS } from './goals/kickoff-evidence';
 
 function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
@@ -902,6 +903,9 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
     `Pending: Blender=${brief.pending.blenderIdeas ?? 'unknown'}; rubric=${brief.pending.acceptanceRubric ? `${brief.pending.acceptanceRubric.id}:${brief.pending.acceptanceRubric.status ?? 'unknown'}` : 'none'}`,
     `Continuity: checkpoint=${brief.continuity.checkpoint ? `${brief.continuity.checkpoint.workItemId}@${brief.continuity.checkpoint.updatedAt}` : 'none'}; last-owner-report=${brief.continuity.lastOwnerReportAt ?? 'none'}`,
     ...(brief.degradedReasons.length ? [`DEGRADED — ${brief.degradedReasons.join('; ')}`] : []),
+    'GOAL KICKOFF EVIDENCE — REQUIRED BEFORE ANY PORTFOLIO MUTATION',
+    `In the current GOAL window, successfully run ${GOAL_KICKOFF_REQUIRED_READS.join(', ')} on the goal's terms; then send an owner-facing report AFTER those reads (coord:send to ["human"] or coord:escalate) that names the exact goal id "${brief.goal.id}".`,
+    'Only after those reads and the owner-facing report may you create, launch, or place portfolio work.',
     ...(mandatoryPlacement && mandatoryToolCall
       ? [
           'MANDATORY NEXT PLAN PLACEMENT',
