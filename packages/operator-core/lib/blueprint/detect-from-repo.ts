@@ -29,7 +29,7 @@
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 /**
  * Shell-metacharacter guard for the verify step (audit P-030): test commands
@@ -97,7 +97,7 @@ export interface HarvestedDoc {
 }
 
 export interface TestCommandDetection {
-  /** The command string (run via `sh -c`). */
+  /** The command string (split into an argv and run without a shell). */
   command: string;
   /** Where the command came from. */
   source: 'package.json' | 'cargo' | 'go' | 'pytest' | 'makefile' | (typeof HARVEST_FILES)[number];
@@ -134,6 +134,15 @@ export interface DetectOptions {
   runTests?: boolean;
   /** Budget for the verify run. Default DEFAULT_TEST_TIMEOUT_MS. */
   testTimeoutMs?: number;
+}
+
+interface TestProcessResult {
+  status: number | null;
+  error: NodeJS.ErrnoException | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  durationMs: number;
 }
 
 function readJsonSafe(path: string): Record<string, unknown> | null {
@@ -260,10 +269,135 @@ function harvestDocs(repoPath: string): HarvestedDoc[] {
 }
 
 /**
- * Deterministically detect the blueprint seed for a repo. Pure fs except for the
- * single test-verify child process (gated by `opts.runTests`).
+ * Apply the D-023 verify result to the detected command and notes.
  */
-export function detectFromRepo(repoPath: string, opts: DetectOptions = {}): DetectionResult {
+function applyTestVerification(
+  testCommand: TestCommandDetection,
+  notes: string[],
+  timeoutMs: number,
+  result: TestProcessResult,
+): void {
+  testCommand.durationMs = result.durationMs;
+  testCommand.timedOut = result.timedOut;
+  testCommand.exitCode = result.status;
+  testCommand.verified = result.status === 0;
+  if (!testCommand.verified) {
+    const spawnErr = result.error && !result.timedOut ? `\n[spawn error] ${result.error.message}` : '';
+    const combined = `${result.stdout}\n${result.stderr}${spawnErr}`.trim();
+    testCommand.output = combined.slice(-OUTPUT_TAIL);
+    notes.push(
+      result.timedOut
+        ? `test command timed out after ${timeoutMs}ms: ${testCommand.command}`
+        : `test command did not pass (exit ${testCommand.exitCode}): ${testCommand.command}`,
+    );
+  }
+}
+
+/**
+ * Prepare the detected command for the D-023 verify step. Commands that need a
+ * shell remain deliberately unverified; harvested instruction text must never
+ * be handed to a shell.
+ */
+function prepareTestVerification(
+  detection: DetectionResult,
+  opts: DetectOptions,
+): { testCommand: TestCommandDetection; argv: string[]; timeoutMs: number } | null {
+  const testCommand = detection.testCommand;
+  if (!testCommand) return null;
+  if (opts.runTests === false) {
+    detection.notes.push('test command not verified (runTests:false)');
+    return null;
+  }
+  const argv = splitTestCommandArgv(testCommand.command);
+  if (!argv) {
+    detection.notes.push(
+      `test command not auto-verified (shell metacharacters; harvested commands run without a shell): ${testCommand.command}`,
+    );
+    return null;
+  }
+  return {
+    testCommand,
+    argv,
+    timeoutMs: opts.testTimeoutMs ?? DEFAULT_TEST_TIMEOUT_MS,
+  };
+}
+
+/** Run a verify command synchronously for the backwards-compatible API. */
+function verifyTestCommandSync(
+  repoPath: string,
+  verification: { testCommand: TestCommandDetection; argv: string[]; timeoutMs: number },
+  notes: string[],
+): void {
+  const startedAt = Date.now();
+  const result = spawnSync(verification.argv[0], verification.argv.slice(1), {
+    cwd: repoPath,
+    timeout: verification.timeoutMs,
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  applyTestVerification(verification.testCommand, notes, verification.timeoutMs, {
+    status: typeof result.status === 'number' ? result.status : null,
+    error: (result.error as NodeJS.ErrnoException | undefined) ?? null,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    timedOut: result.error != null && (result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT',
+    durationMs: Date.now() - startedAt,
+  });
+}
+
+/** Run a verify command without blocking the event loop. */
+function verifyTestCommandAsync(
+  repoPath: string,
+  verification: { testCommand: TestCommandDetection; argv: string[]; timeoutMs: number },
+  notes: string[],
+): Promise<void> {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const child = spawn(verification.argv[0], verification.argv.slice(1), {
+      cwd: repoPath,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, verification.timeoutMs);
+
+    const finish = (status: number | null, error: NodeJS.ErrnoException | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      applyTestVerification(verification.testCommand, notes, verification.timeoutMs, {
+        status,
+        error,
+        stdout,
+        stderr,
+        timedOut,
+        durationMs: Date.now() - startedAt,
+      });
+      resolve();
+    };
+
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk: Buffer | string) => {
+      stderr += chunk.toString();
+    });
+    child.once('error', (error) => finish(null, error as NodeJS.ErrnoException));
+    child.once('close', (status) => finish(status, null));
+  });
+}
+
+/**
+ * Deterministically detect the blueprint seed for a repo without running its
+ * test command. The returned result is completed by either the synchronous or
+ * asynchronous verifier below.
+ */
+function detectFromRepoBase(repoPath: string): DetectionResult {
   const notes: string[] = [];
   const isGitRepo = existsSync(join(repoPath, '.git'));
   if (!isGitRepo) notes.push('no .git directory — not a git repo (proceeding with path as-is)');
@@ -342,45 +476,6 @@ export function detectFromRepo(repoPath: string, opts: DetectOptions = {}): Dete
   }
   if (!testCommand) notes.push('no test command detected from ecosystem or instruction docs');
 
-  // ── VERIFY the test command by running it once (D-023) ─────────────────────
-  // The command can be doc-HARVESTED (arbitrary README text), so it runs
-  // WITHOUT a shell as a plain argv (audit P-030). Ecosystem-detected commands
-  // (`npm test`, `cargo test`, …) split cleanly; anything needing shell syntax
-  // is left unverified rather than handed to /bin/sh.
-  const runTests = opts.runTests !== false;
-  const argv = testCommand && runTests ? splitTestCommandArgv(testCommand.command) : null;
-  if (testCommand && runTests && !argv) {
-    notes.push(
-      `test command not auto-verified (shell metacharacters; harvested commands run without a shell): ${testCommand.command}`,
-    );
-  } else if (testCommand && runTests && argv) {
-    const timeoutMs = opts.testTimeoutMs ?? DEFAULT_TEST_TIMEOUT_MS;
-    const startedAt = Date.now();
-    const res = spawnSync(argv[0], argv.slice(1), {
-      cwd: repoPath,
-      timeout: timeoutMs,
-      encoding: 'utf8',
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    testCommand.durationMs = Date.now() - startedAt;
-    const timedOut = res.error != null && (res.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
-    testCommand.timedOut = timedOut;
-    testCommand.exitCode = typeof res.status === 'number' ? res.status : null;
-    testCommand.verified = res.status === 0;
-    if (!testCommand.verified) {
-      const spawnErr = res.error && !timedOut ? `\n[spawn error] ${res.error.message}` : '';
-      const combined = `${res.stdout ?? ''}\n${res.stderr ?? ''}${spawnErr}`.trim();
-      testCommand.output = combined.slice(-OUTPUT_TAIL);
-      notes.push(
-        timedOut
-          ? `test command timed out after ${timeoutMs}ms: ${testCommand.command}`
-          : `test command did not pass (exit ${testCommand.exitCode}): ${testCommand.command}`,
-      );
-    }
-  } else if (testCommand) {
-    notes.push('test command not verified (runTests:false)');
-  }
-
   // ── structural flags ───────────────────────────────────────────────────────
   const monorepo = detectMonorepo(repoPath, pkg, cargoToml);
   const frontend = detectFrontend(repoPath, pkg);
@@ -395,6 +490,33 @@ export function detectFromRepo(repoPath: string, opts: DetectOptions = {}): Dete
     harvestedDocs,
     notes,
   };
+}
+
+/**
+ * Deterministically detect the blueprint seed for a repo. This compatibility
+ * API retains the historical synchronous verify behavior; async request paths
+ * should use {@link detectFromRepoAsync} so a test command cannot block the
+ * operator event loop.
+ */
+export function detectFromRepo(repoPath: string, opts: DetectOptions = {}): DetectionResult {
+  const detection = detectFromRepoBase(repoPath);
+  if (detection.skip) return detection;
+  const verification = prepareTestVerification(detection, opts);
+  if (verification) verifyTestCommandSync(repoPath, verification, detection.notes);
+  return detection;
+}
+
+/**
+ * Async counterpart for request handlers. Detection remains deterministic and
+ * filesystem-based, while the one D-023 verify child is supervised through
+ * non-blocking spawn events.
+ */
+export async function detectFromRepoAsync(repoPath: string, opts: DetectOptions = {}): Promise<DetectionResult> {
+  const detection = detectFromRepoBase(repoPath);
+  if (detection.skip) return detection;
+  const verification = prepareTestVerification(detection, opts);
+  if (verification) await verifyTestCommandAsync(repoPath, verification, detection.notes);
+  return detection;
 }
 
 function detectMonorepo(
