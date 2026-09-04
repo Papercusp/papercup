@@ -1337,19 +1337,14 @@ describe('code-search pattern boundaries (WI-6445)', () => {
     expect(claims('grep -rn "export type SessionState" --include=*.ts packages/operator-core/lib')).toBe(false);
   });
 
-  /**
-   * The pair is pinned to `observe` because the code graph it names has no
-   * refresh owner. That hold must live in the DATA — a promotion selecting on
-   * `equivalence_verdict` alone cannot read a decision body (D-042).
-   */
-  it('is held at observe despite an equivalent verdict, and says why', () => {
+  /** WI-6457: a one-time index build was never enough to lift the hold. The
+   * durable routine has now produced real scheduled analyze successes plus
+   * healthy graph canaries, so the pair is eligible for ordinary promotion. */
+  it('is promotion-eligible after the verified scheduled refresh owner landed', () => {
     expect(gitnexusDefinitionLookup.expectedVerdict).toBe('equivalent');
-    expect(gitnexusDefinitionLookup.holdAtObserve).toBeTruthy();
-    expect(gitnexusDefinitionLookup.holdAtObserve).toMatch(/re-index|refresh/i);
+    expect(gitnexusDefinitionLookup.holdAtObserve).toBeUndefined();
     expect(assertPolicyTier(gitnexusDefinitionLookup)).toBe('observe');
-    // The hold is only honest while nobody owns the refresh; when a scheduled
-    // re-index lands, THIS is the assertion that should fail and force the
-    // hold to be re-decided rather than quietly outlived.
-    expect(GITNEXUS_INDEX_FINDING.refreshOwner).toBeNull();
+    expect(GITNEXUS_INDEX_FINDING.refreshOwner).toContain('system:gitnexus-reindex');
+    expect(GITNEXUS_INDEX_FINDING.note).toMatch(/scheduled analyze completions|graph canaries/i);
   });
 });

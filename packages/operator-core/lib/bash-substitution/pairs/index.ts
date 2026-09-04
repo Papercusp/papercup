@@ -62,10 +62,9 @@ export const ALL_PAIRS: SubstitutionPair[] = [
   // already rides on coord:orient's `host` block, so the advisory says "read what
   // you already have" rather than naming a verb to call.
   ...AMBIENT_CONTEXT_PAIRS,
-  // WI-6445. The only pair pinned by `holdAtObserve`: its verdict is honest, but
-  // gitnexus has not indexed this repo, so the tool it names is envelope-faithful
-  // and DATA-EMPTY. The hold is carried here, in data, because a promotion
-  // selecting on `equivalence_verdict` alone cannot read a decision body (D-042).
+  // WI-6445/WI-6457. The narrow definition-lookup pair is backed by the local
+  // GitNexus graph. Its temporary hold was retired only after the durable hourly
+  // re-index routine produced repeated successful analyze runs and graph canaries.
   ...CODE_SEARCH_PAIRS,
   // P-028. Blocks rather than teaches, on the PREFIX route: its intent IS the
   // violation (a bare install corrupts other agents' trees), so there is nothing

@@ -24613,13 +24613,13 @@
           "POST"
         ]
       },
-      "description": "Send SIGTERM (or SIGKILL) in ONE call via `taskId`/`taskIds`, `scopeUnit`/`scopeUnits`, or legacy `pid`/`pids`. PREFER task ids from `processes:list`: they kill the whole cgroup subtree and cannot hit a recycled pid. Scope units are for live unaccounted Papercusp scopes from `processes:list { live:true }`; they are re-probed before signalling. Pids are limited to managed agent kinds (`run.sh | omp | claude | codex`); Codex requires an exact argv[0] basename match, and host services such as `hono-host.ts` have guarded controls.",
+      "description": "Send SIGTERM (or SIGKILL) in ONE call via `taskId`/`taskIds`, `scopeUnit`/`scopeUnits`, or legacy `pid`/`pids`. PREFER task ids from `processes:list`: they kill the whole cgroup subtree and cannot hit a recycled pid. Scope units are for live unaccounted Papercusp scopes from `processes:list { live:true }`; they are re-probed before signalling. Pids are limited to managed agent kinds (`run.sh | omp | claude | codex`); bare or otherwise-unclassified Claude/Codex commands require an exact argv[0] basename match, and host services such as `hono-host.ts` have guarded controls.",
       "capabilities": [
         "processes:kill"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "End a named task. Prefer `taskId` from `processes:list`: it kills the whole subtree. Use `pid` only for a managed AGENT process (`run.sh | omp | claude | codex`); Codex is accepted only when the raw PID probe sees an exact `codex` argv[0].",
+        "when": "End a named task. Prefer `taskId` from `processes:list`: it kills the whole subtree. Use `pid` only for a managed AGENT process (`run.sh | omp | claude | codex`); bare or otherwise-unclassified Claude/Codex commands are accepted only when the raw PID probe sees an exact `claude`/`codex` argv[0].",
         "notWhen": "NEVER pattern-match names to build a kill list (`pkill -f` can kill the owner's desktop window or peers' tests). For runaway BUILD/TEST jobs, `pid` returns `unsupported_kind`; start them with `capability:bash { run_in_background: true }` for a real handle. Host services such as `hono-host.ts` (including desktop :3270) require guarded `dev:restart { target: \"desktop-dev\" }` (or the matching server target). To PAUSE, use `processes:freeze`.",
         "chaining": "`processes:list` -> `taskId` or `live.unaccountedGroups[].scopeUnit` -> here. In taskId mode, `includeSubtree:true` also signals logically nested tasks with their own scopes."
       }
@@ -26203,7 +26203,7 @@
           "POST"
         ]
       },
-      "description": "Propose a shared rubric → status \"proposed\". ⚠ WHOLE-DOCUMENT REPLACE: re-proposing an existing rubricRef replaces ALL content; call rubrics:get first, then resubmit EVERY criterion with full method/replication text and structured check (a partial list deletes the rest). Loss-guards require dropKeys for dropped keys; removing a stored structured check, shrinking method+replication >40%, or losing its REPLICATION DRILL marker requires allowMethodShrink + shrinkReason.",
+      "description": "Propose a shared rubric → status \"proposed\". ⚠ WHOLE-DOCUMENT REPLACE: re-proposing an existing rubricRef replaces ALL content; call rubrics:get first, then resubmit EVERY criterion with full method/replication text and structured check (a partial list deletes the rest). Standard criteria require model/method/driftMarkers; acceptance criteria may omit model/method only when their outcome remains concrete and falsifiable, but every bespoke criterion requires a non-empty driftMarkers falsifier and the rubric requires at least one structured check. Loss-guards require dropKeys for dropped keys; removing a stored structured check, shrinking method+replication >40%, or losing its REPLICATION DRILL marker requires allowMethodShrink + shrinkReason.",
       "capabilities": [
         "coord:write"
       ],
@@ -26228,7 +26228,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Use when a recurring characteristic lacks a rubric, or when revising one (rubrics:get first; resubmit ALL criteria and stored structured checks). Each criterion needs model, method, driftMarkers, and its own copy-runnable replication drill; methodRef names the rubric runbook. Omitting a stored structured check requires allowMethodShrink:true + shrinkReason because it weakens deterministic enforcement to fuzzy judgment.",
+        "when": "Use when a recurring characteristic lacks a rubric, or when revising one (rubrics:get first; resubmit ALL criteria and stored structured checks). Standard criteria need model, method, and driftMarkers. Acceptance criteria are a light profile only for model/method: each bespoke criterion still needs an outcome-shaped title, a non-empty driftMarkers falsifier, traceability to the plan goal/Decisions, failure/regression-mode coverage, and non-overlap with its peers; include at least one structured check for the rubric (and bind every objectively checkable outcome where possible). Each criterion should also carry its own copy-runnable replication drill; methodRef names the rubric runbook. Omitting a stored structured check requires allowMethodShrink:true + shrinkReason because it weakens deterministic enforcement to fuzzy judgment.",
         "notWhen": "One-off finding → free-text observation; activating a proposed rubric → rubrics:ratify. Search first to avoid duplicates.",
         "chaining": "rubrics:search (dedup) → rubrics:get (revision source; never memory) → rubrics:propose → independent reviewer: rubrics:ratify. Preserve every stored structured check; intentional removal requires allowMethodShrink:true + shrinkReason. Review `completeness` (missing replication drills/methodRef) and `replicationSqlCheck` (read `summary`; `findings` excludes bind-placeholder noise); fix gaps first."
       }
@@ -31505,7 +31505,7 @@
           "POST"
         ]
       },
-      "description": "Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary FUSED (RRF) with a semantic (embedding cosine) leg, so differently-worded matches surface too (semantic:false for lexical-only). Filter by harness or kind. Use to dedup before creating. Returns compact match rows in { ok, count, items, legs, retryable, retry? } — use work_items:get { id } for full state; NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`). READ `legs` before concluding \"no duplicate exists\": legs.degraded:true means a ranking leg did not contribute (legs.warning says why, e.g. the embedder is down), so a short list may be a degraded search rather than an absence. When `retryable:true`, retry before treating the result as a verified-empty or creating a new item. A cold query-embedder warmup includes a stable `retry.token` shared by concurrent calls and `retry.afterMs` guidance.",
+      "description": "Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary FUSED (RRF) with a semantic (embedding cosine) leg, so differently-worded matches surface too (semantic:false for lexical-only). Filter by harness or kind. The required free-text argument is `query` — `q` is not an alias. Use to dedup before creating. Returns compact match rows in { ok, count, items, legs, retryable, retry? } — use work_items:get { id } for full state; NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`). READ `legs` before concluding \"no duplicate exists\": legs.degraded:true means a ranking leg did not contribute (legs.warning says why, e.g. the embedder is down), so a short list may be a degraded search rather than an absence. When `retryable:true`, retry before treating the result as a verified-empty or creating a new item. A cold query-embedder warmup includes a stable `retry.token` shared by concurrent calls and `retry.afterMs` guidance.",
       "capabilities": [
         "work_items:read"
       ],

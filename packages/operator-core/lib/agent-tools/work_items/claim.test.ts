@@ -429,6 +429,12 @@ describe('work_items:claim handler (keyed-array)', () => {
         harness: undefined,
         fromHolder: 'me',
         expectedAssignee: 'peer',
+        forceTakeoverAdmission: expect.objectContaining({
+          itemId: 'WI-DEAD',
+          target: 'me',
+          expectedAssignee: 'peer',
+          workspaceId: 'ws-1',
+        }),
       });
       expect(b.results[0]).toMatchObject({
         ok: true,
@@ -485,6 +491,12 @@ describe('work_items:claim handler (keyed-array)', () => {
         harness: undefined,
         fromHolder: 'me',
         expectedAssignee: 'peer',
+        forceTakeoverAdmission: expect.objectContaining({
+          itemId: 'WI-EXPIRED',
+          target: 'me',
+          expectedAssignee: 'peer',
+          workspaceId: 'ws-1',
+        }),
       });
       expect(resolveReleaseRequestM).toHaveBeenCalledWith('WI-EXPIRED', {
         harness: 'papercusp',
@@ -553,11 +565,23 @@ describe('work_items:claim handler (keyed-array)', () => {
         harness: undefined,
         fromHolder: 'me',
         expectedAssignee: 'peer-a',
+        forceTakeoverAdmission: expect.objectContaining({
+          itemId: 'WI-A',
+          target: 'me',
+          expectedAssignee: 'peer-a',
+          workspaceId: 'ws-1',
+        }),
       });
       expect(claimM).toHaveBeenNthCalledWith(2, 'WI-B', 'me', {
         harness: undefined,
         fromHolder: 'me',
         expectedAssignee: 'peer-b',
+        forceTakeoverAdmission: expect.objectContaining({
+          itemId: 'WI-B',
+          target: 'me',
+          expectedAssignee: 'peer-b',
+          workspaceId: 'ws-1',
+        }),
       });
       const reasons = forceAuditM.mock.calls.map((call) => (call[3] as { reason: string }).reason).sort();
       expect(reasons).toEqual(['batch takeover reason', 'item-specific reason']);
@@ -577,13 +601,11 @@ describe('work_items:claim handler (keyed-array)', () => {
       expect(assessForceM).not.toHaveBeenCalled();
     });
 
-    // EI-22074465800337362: liveness/authority authorization is NOT the only gate a claim
-    // UPDATE applies — the admittedWhereSql/autoPickableWhereSql floor runs unconditionally
-    // and force:true mints no bypass for it. Both the pre-read and the post-claim re-read
-    // resolve through the SAME getWorkItem mock, so returning an unchanged row from both
-    // reproduces exactly what a silently-refused CAS looks like: claimWorkItem resolves null
-    // while the holder never moved.
-    it('reports force_blocked_by_claim_floor — not claim_conflict — when the authorized CAS still matched 0 rows', async () => {
+    // EI-22345414208647835: keep the defensive diagnosis honest if a force-authorized
+    // holder-CAS still matches 0 rows for an independent floor/race. The admission
+    // capability is passed to the writer above; this branch must not relabel the
+    // unchanged holder as a live peer conflict.
+    it('reports force_blocked_by_claim_floor — not claim_conflict — when the authorized CAS still matches 0 rows', async () => {
       // `issueItem` is declared below (readiness-floor section) but in the SAME enclosing
       // describe scope; by the time this `it` body actually runs (test-execution phase,
       // strictly after the whole file's synchronous collection phase) it is fully assigned.

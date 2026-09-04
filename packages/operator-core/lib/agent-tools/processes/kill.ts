@@ -29,9 +29,9 @@ export default defineTool({
   name: 'processes:kill',
   profile: 'engineer',
   description:
-    'Send SIGTERM (or SIGKILL) in ONE call via `taskId`/`taskIds`, `scopeUnit`/`scopeUnits`, or legacy `pid`/`pids`. PREFER task ids from `processes:list`: they kill the whole cgroup subtree and cannot hit a recycled pid. Scope units are for live unaccounted Papercusp scopes from `processes:list { live:true }`; they are re-probed before signalling. Pids are limited to managed agent kinds (`run.sh | omp | claude | codex`); Codex requires an exact argv[0] basename match, and host services such as `hono-host.ts` have guarded controls.',
+    'Send SIGTERM (or SIGKILL) in ONE call via `taskId`/`taskIds`, `scopeUnit`/`scopeUnits`, or legacy `pid`/`pids`. PREFER task ids from `processes:list`: they kill the whole cgroup subtree and cannot hit a recycled pid. Scope units are for live unaccounted Papercusp scopes from `processes:list { live:true }`; they are re-probed before signalling. Pids are limited to managed agent kinds (`run.sh | omp | claude | codex`); bare or otherwise-unclassified Claude/Codex commands require an exact argv[0] basename match, and host services such as `hono-host.ts` have guarded controls.',
   guidance: {
-    when: 'End a named task. Prefer `taskId` from `processes:list`: it kills the whole subtree. Use `pid` only for a managed AGENT process (`run.sh | omp | claude | codex`); Codex is accepted only when the raw PID probe sees an exact `codex` argv[0].',
+    when: 'End a named task. Prefer `taskId` from `processes:list`: it kills the whole subtree. Use `pid` only for a managed AGENT process (`run.sh | omp | claude | codex`); bare or otherwise-unclassified Claude/Codex commands are accepted only when the raw PID probe sees an exact `claude`/`codex` argv[0].',
     notWhen:
       'NEVER pattern-match names to build a kill list (`pkill -f` can kill the owner\'s desktop window or peers\' tests). For runaway BUILD/TEST jobs, `pid` returns `unsupported_kind`; start them with `capability:bash { run_in_background: true }` for a real handle. Host services such as `hono-host.ts` (including desktop :3270) require guarded `dev:restart { target: "desktop-dev" }` (or the matching server target). To PAUSE, use `processes:freeze`.',
     chaining:

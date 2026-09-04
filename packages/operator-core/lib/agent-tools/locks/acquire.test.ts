@@ -70,7 +70,7 @@ vi.mock('../../authority/file-lock-authority-ops', () => ({
 vi.mock('../../authority/lock-event-stream', () => ({ recordLockEvent: vi.fn() }));
 
 import { normalizePaths, tryInsertWaiter, readWaiterStatus, pokeWorkspace, expireWaiter, tryAcquire } from './su-lock-store';
-import { WorkspaceContendedError } from './in-workspace-txn';
+import { inWorkspaceTxn, WorkspaceContendedError } from './in-workspace-txn';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import { recordLockEvent } from '../../authority/lock-event-stream';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
@@ -78,6 +78,7 @@ import { readAgentStateStamp } from '../../agent-state-stamp';
 import { MAX_LOCK_TTL_SEC } from './lock-config';
 const normM = vi.mocked(normalizePaths);
 const insertM = vi.mocked(tryInsertWaiter);
+const txnM = vi.mocked(inWorkspaceTxn);
 const routeM = vi.mocked(routeFileLockOp);
 const recordEventM = vi.mocked(recordLockEvent);
 const statusM = vi.mocked(readWaiterStatus);
@@ -370,6 +371,34 @@ describe('locks:acquire — outcome branches', () => {
     insertM.mockResolvedValue({ ok: false, reason: 'waiter_cap_exceeded' });
     const b = body(await call({ wake_on_grant: true }));
     expect(b).toMatchObject({ ok: false, reason: 'waiter_cap_exceeded' });
+  });
+
+  it('wake_on_grant retries transient workspace contention around the waiter insert', async () => {
+    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] }, via: 'local-authority' });
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-retry', wait_until: new Date(Date.now() - 1000) });
+    txnM.mockRejectedValueOnce(
+      Object.assign(new WorkspaceContendedError('dom', '57014', new Error('advisory lock timeout')), {
+        name: 'WorkspaceContendedError',
+        pgCode: '57014',
+      }),
+    );
+
+    vi.useFakeTimers();
+    try {
+      const p = call({ wake_on_grant: true });
+      await vi.runAllTimersAsync();
+      const b = body(await p);
+
+      expect(b).toMatchObject({
+        ok: false,
+        queued_for_wake: true,
+        ticket_id: 'T-retry',
+      });
+      expect(txnM).toHaveBeenCalledTimes(2);
+      expect(insertM).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

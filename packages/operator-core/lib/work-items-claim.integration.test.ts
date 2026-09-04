@@ -484,47 +484,86 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
       expect(row.taken_by).toBeNull();
     });
 
-    // EI-22074465800337362: a force-reclaim (work_items:claim { force:true }) already proved
-    // the dead holder is not live via assessForceRelease/release-force-guard.ts, then calls
-    // claimWorkItem with expectedAssignee = that exact holder. The `expectedAssignee` disjunct
-    // only widens the `assignee = …` leg of the WHERE clause — it does NOT bypass the
-    // unconditional `admittedWhereSql` gate below it (claimIssue has no expectedAssignee
-    // exception clause the way it has leaderDispatchAdmission/selfFiledFalloutAdmission). So a
-    // WIP item whose holder died BEFORE the admission promoter's tick admitted it (still
-    // admission='pending') is UNRECLAIMABLE by force, even though liveness authorization
-    // succeeded — the CAS silently matches 0 rows, claimWorkItem returns null, and the caller
-    // (work_items:claim) re-reads + reclassifies the unchanged row as an ordinary
-    // claim_conflict, masking the true cause (admission gate, not holder liveness).
-    it('EI-22074465800337362: expectedAssignee does NOT bypass the admission-pending gate (issue-family)', async () => {
+    // EI-22345414208647835: the force handler has already proved the dead holder
+    // reclaimable. Its opaque capability carries that authorization to the core writer,
+    // which may bypass ONLY the born-pending floor while retaining the exact holder CAS.
+    it('EI-22345414208647835: an authorized force capability bypasses the admission-pending gate (issue-family)', async () => {
       await seedIssue('EI-dead-holder-pending', { admission: 'pending', takenBy: 'dead-holder' });
+      const issues = await import('./issues-engineer');
+      const forceTakeoverAdmission = issues.mintForceTakeoverAdmission({
+        itemId: 'EI-dead-holder-pending',
+        target: 'rescuer',
+        expectedAssignee: 'dead-holder',
+        workspaceId: 'default',
+      });
 
       const claimed = await wi.claimWorkItem('EI-dead-holder-pending', 'rescuer', {
         harness: H,
         expectedAssignee: 'dead-holder',
+        forceTakeoverAdmission,
       });
 
-      // Documents the CURRENT (buggy) behavior: the force-authorized reclaim is silently
-      // refused. If/when this is fixed to bypass admittedWhereSql for a proven expectedAssignee
-      // match, this assertion is the one to flip.
-      expect(claimed).toBeNull();
+      expect(claimed?.assignee).toBe('rescuer');
       const row = (await db.sql<{ taken_by: string | null; admission: string | null }[]>`
         SELECT taken_by, admission FROM harness_shared.work_items WHERE feature_id = 'EI-dead-holder-pending'`)[0];
-      expect(row).toEqual({ taken_by: 'dead-holder', admission: 'pending' });
+      expect(row).toEqual({ taken_by: 'rescuer', admission: 'pending' });
     });
 
-    it('EI-22074465800337362: expectedAssignee does NOT bypass the admission-pending gate (feature-family)', async () => {
+    it('EI-22345414208647835: an authorized force capability bypasses the admission-pending gate (feature-family)', async () => {
       await seedFeature('F-dead-holder-pending', { admission: 'pending', takenBy: 'dead-holder' });
+      const issues = await import('./issues-engineer');
+      const forceTakeoverAdmission = issues.mintForceTakeoverAdmission({
+        itemId: 'F-dead-holder-pending',
+        target: 'rescuer',
+        expectedAssignee: 'dead-holder',
+        workspaceId: 'default',
+      });
 
       const claimed = await wi.claimWorkItem('F-dead-holder-pending', 'rescuer', {
         harness: H,
         expectedAssignee: 'dead-holder',
+        forceTakeoverAdmission,
       });
 
-      expect(claimed).toBeNull();
+      expect(claimed?.assignee).toBe('rescuer');
       const row = (await db.sql<{ taken_by: string | null; admission: string | null }[]>`
         SELECT taken_by, admission
           FROM harness_shared.harness_features_consolidated
          WHERE feature_id = 'F-dead-holder-pending'`)[0];
+      expect(row).toEqual({ taken_by: 'rescuer', admission: 'pending' });
+    });
+
+    it('rejects a forged or mismatched force capability and preserves the pending holder', async () => {
+      await seedIssue('EI-forged-force-pending', { admission: 'pending', takenBy: 'dead-holder' });
+      const forged = {
+        itemId: 'EI-forged-force-pending',
+        target: 'rescuer',
+        expectedAssignee: 'dead-holder',
+        workspaceId: 'default',
+      };
+
+      expect(
+        await wi.claimWorkItem('EI-forged-force-pending', 'rescuer', {
+          harness: H,
+          expectedAssignee: 'dead-holder',
+          forceTakeoverAdmission: forged,
+        }),
+      ).toBeNull();
+      let row = (await db.sql<{ taken_by: string | null; admission: string | null }[]>`
+        SELECT taken_by, admission FROM harness_shared.work_items WHERE feature_id = 'EI-forged-force-pending'`)[0];
+      expect(row).toEqual({ taken_by: 'dead-holder', admission: 'pending' });
+
+      const issues = await import('./issues-engineer');
+      const valid = issues.mintForceTakeoverAdmission({ ...forged });
+      expect(
+        await wi.claimWorkItem('EI-forged-force-pending', 'rescuer', {
+          harness: H,
+          expectedAssignee: 'different-holder',
+          forceTakeoverAdmission: valid,
+        }),
+      ).toBeNull();
+      row = (await db.sql<{ taken_by: string | null; admission: string | null }[]>`
+        SELECT taken_by, admission FROM harness_shared.work_items WHERE feature_id = 'EI-forged-force-pending'`)[0];
       expect(row).toEqual({ taken_by: 'dead-holder', admission: 'pending' });
     });
 

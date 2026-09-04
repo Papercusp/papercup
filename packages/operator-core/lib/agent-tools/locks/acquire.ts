@@ -449,19 +449,25 @@ export default defineTool({
     // the grant NOTIFY (or the sweep's waiter-truth read) into the wake.
     if (args.wake_on_grant) {
       startAwaitSweeper();
-      const inserted = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
-        tryInsertWaiter(tx, {
-          coordinationDomain,
-          owner: ownerId,
-          ownerLabel,
-          paths,
-          intent: args.intent,
-          ttlSec,
-          maxWaitSec: WAKE_QUEUE_WINDOW_SEC,
-          goalRef,
-          pendingEdit,
-        }),
-        { paths },
+      // The wake queue's waiter INSERT takes the same workspace advisory
+      // transaction lock as the fast acquire path. Under concurrent workspace
+      // activity that lock can transiently time out (57014/55P03), so retry
+      // the whole transaction before surfacing a false wake-queue failure.
+      const inserted = await acquireWithContentionRetry(() =>
+        inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
+          tryInsertWaiter(tx, {
+            coordinationDomain,
+            owner: ownerId,
+            ownerLabel,
+            paths,
+            intent: args.intent,
+            ttlSec,
+            maxWaitSec: WAKE_QUEUE_WINDOW_SEC,
+            goalRef,
+            pendingEdit,
+          }),
+          { paths },
+        ),
       );
       if (!inserted.ok) {
         return jsonResult({ ok: false, reason: inserted.reason, busy: await enrichBusy(first.busy, { ownerId }) });

@@ -49,10 +49,9 @@
  * index, a cache, a projection — needs a liveness probe that the equivalence
  * harness does not supply.
  *
- * The index has since been built (see {@link GITNEXUS_INDEX_FINDING}), so the
- * original blocker is resolved. The pair stays pinned to `observe` for a
- * DIFFERENT and still-open reason — index staleness with no owner. See
- * `holdAtObserve` below.
+ * The index has since been built and gained a durable refresh owner (see
+ * {@link GITNEXUS_INDEX_FINDING}). WI-6457 observed repeated scheduled analyze
+ * successes plus graph canaries, so the temporary `holdAtObserve` is retired.
  *
  * ── The kinds this claims, and the ones it deliberately does not ─────────────
  * Only `function` / `class` / `interface`. gitnexus's own `context` schema names
@@ -68,13 +67,10 @@
 import type { CoverageResult, BashSubstitutionPair } from '../types';
 
 /**
- * The blocker that pins this pair to `observe`, recorded as DATA rather than
- * prose — the same role `NO_OP_TYPECHECK_FINDING` plays for the typecheck
- * family, and for the sharper reason spelled out in `holdAtObserve`'s docblock:
- * a constraint that lives only in a plan decision gets swept into `advise` by a
- * promotion selecting on `equivalence_verdict` alone, because no code reads
- * decision prose. That already happened once here (D-011 / D-042, the git-read
- * row). So the condition is carried where the promotion can see it.
+ * The backing-index liveness finding, recorded as DATA rather than prose. The
+ * initial build and its former ownership gap are retained alongside the durable
+ * refresh owner that closed the gap, so a future regression test can distinguish
+ * "indexed once" from "kept fresh by a verified scheduled producer."
  */
 export const GITNEXUS_INDEX_FINDING = {
   /** Before: `list_repos` returned exactly one, unrelated, checkout. */
@@ -95,12 +91,12 @@ export const GITNEXUS_INDEX_FINDING = {
    * SOURCES spliced into every agent's context — and CLAUDE.md additionally holds
    * the generated routing table this very registry owns.
    */
-  refreshOwner: null,
+  refreshOwner: 'system:gitnexus-reindex — durable hourly routine, cron 0 35 * * * *',
   note:
-    'The index is a LOCAL, MANUALLY-BUILT artifact under <repo>/.gitnexus (gitignored). Nothing re-indexes it: ' +
-    'on a tree where git-sync commits every few minutes it starts decaying immediately, and gitnexus reports ' +
-    'this only as an advisory `commitsBehind` on list_repos. That unowned decay — not the original empty index — ' +
-    'is what now pins this pair to `observe`.',
+    'The index is a LOCAL artifact under <repo>/.gitnexus (gitignored). The durable system:gitnexus-reindex ' +
+    'routine now owns refreshes; WI-6457 verified repeated scheduled analyze completions and healthy graph ' +
+    'canaries on 2026-09-03/04, then re-probed managedSetInterval through gitnexus.context. commitsBehind can ' +
+    'still rise between gated hourly runs, but the former unowned-decay blocker is closed.',
 } as const;
 
 /**
@@ -421,11 +417,9 @@ export const gitnexusDefinitionLookup: BashSubstitutionPair = {
     want: 'to find where a symbol is DEFINED (and who calls it)',
     use: '`gitnexus.context { name: "managedSetInterval", kind: "Function" }`',
     insteadOf:
-      '`grep -rn "export function managedSetInterval" --include=*.ts libs packages` (grep gives one matching line; the graph gives the definition plus callers/callees). ⚠ the index is refreshed by hand (`npx gitnexus analyze`) so it can lag new code; exhaustive exact-text search is still grep\'s job',
+      '`grep -rn "export function managedSetInterval" --include=*.ts libs packages` (grep gives one matching line; the graph gives the definition plus callers/callees). The durable hourly re-index is cadence/load-gated, so very new code can briefly lag; exhaustive exact-text search is still grep\'s job',
   },
   expectedVerdict: 'equivalent',
-  holdAtObserve:
-    'The code graph has NO REFRESH OWNER. The index this pair depends on was built by hand on 2026-07-27 (`npx gitnexus analyze`, 234,905 nodes) and nothing re-indexes it — on a tree where git-sync commits every few minutes it decays from the moment it is written, and a definition lookup against a stale graph answers with a symbol that has moved or misses one that is new. Promote only once a scheduled re-index exists (the two-tier scheduler: a `tier:durable` routine or a `tier:ephemeral` blueprint schedule — never a bare setInterval) AND a fresh probe resolves a symbol added since the last analyze. The ORIGINAL blocker — no index at all — is resolved and verified for both claimed kinds; see GITNEXUS_INDEX_FINDING.',
   cover(atom: string): CoverageResult {
     return coverDefinitionLookup(parseGrepAtom(atom));
   },
