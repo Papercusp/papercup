@@ -45,6 +45,26 @@ describe('gateClaimCarryLint (P-007)', () => {
     expect(gateClaimCarryLint(text, { marker })).toBeUndefined();
   });
 
+  it('is silent on the original RED/conditional false-positive examples', () => {
+    const text = [
+      'WI-212675 is OPEN; remedy lifts itself when the gate greens. Gate ownership is held-live.',
+      'Do not re-send the owner report before 18:44Z; await escalation:resolved.',
+      'Two items are deferred until the gate greens during a non-repair freeze. Gate ops NOT mine.',
+      'Four filings remain open and all are deferred until the gate greens.',
+    ].join('\n');
+    expect(gateClaimCarryLint(text, { marker })).toBeUndefined();
+  });
+
+  it('reports the mutable admitted repairHead separately from the immutable candidate', () => {
+    const admitted = { ...marker, repairHead: 'a'.repeat(40) };
+    const lint = gateClaimCarryLint('Fixed 1 gate red', { marker: admitted });
+    expect(lint).toMatchObject({
+      candidate: marker.candidate,
+      judgedSha: admitted.repairHead,
+    });
+    expect(lint?.judgedSha).not.toBe(lint?.candidate);
+  });
+
   it('is silent on empty or blank text', () => {
     expect(gateClaimCarryLint('', { marker })).toBeUndefined();
     expect(gateClaimCarryLint('   \n  ', { marker })).toBeUndefined();
