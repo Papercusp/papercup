@@ -405,27 +405,33 @@ export function validateWorkspaceHostImageArtifact(
   const buildManifest = hasManifest
     ? (artifact.buildManifest as unknown as Record<string, unknown>)
     : undefined;
-  const hasReleaseArtifact =
-    buildManifest !== undefined &&
-    section(buildManifest.releaseArtifact, "buildManifest.releaseArtifact");
-  const hasBaseImage =
-    buildManifest !== undefined &&
-    section(buildManifest.baseImage, "buildManifest.baseImage");
-  const hasMaterials =
-    buildManifest !== undefined &&
-    listSection(buildManifest.materials, "buildManifest.materials");
-  const hasTargets =
-    buildManifest !== undefined &&
-    listSection(buildManifest.targets, "buildManifest.targets");
-  if (hasMaterials) {
-    buildManifest.materials.forEach((material, index) => {
+  const releaseArtifactValue = buildManifest?.releaseArtifact;
+  const baseImageValue = buildManifest?.baseImage;
+  const materialsValue = buildManifest?.materials;
+  const targetsValue = buildManifest?.targets;
+  section(releaseArtifactValue, "buildManifest.releaseArtifact");
+  section(baseImageValue, "buildManifest.baseImage");
+  listSection(materialsValue, "buildManifest.materials");
+  listSection(targetsValue, "buildManifest.targets");
+  const releaseArtifact = isRecord(releaseArtifactValue)
+    ? releaseArtifactValue
+    : undefined;
+  const baseImage = isRecord(baseImageValue) ? baseImageValue : undefined;
+  const materials = Array.isArray(materialsValue)
+    ? (materialsValue as readonly unknown[])
+    : undefined;
+  const targets = Array.isArray(targetsValue)
+    ? (targetsValue as readonly unknown[])
+    : undefined;
+  if (materials !== undefined) {
+    materials.forEach((material: unknown, index: number) => {
       if (!isRecord(material)) {
         errors.push(`buildManifest.materials[${index}] must be an object`);
       }
     });
   }
-  if (hasTargets) {
-    buildManifest.targets.forEach((target, index) => {
+  if (targets !== undefined) {
+    targets.forEach((target: unknown, index: number) => {
       if (!isRecord(target)) {
         errors.push(`buildManifest.targets[${index}] must be an object`);
       }
@@ -434,8 +440,8 @@ export function validateWorkspaceHostImageArtifact(
   if (
     hasImage &&
     hasManifest &&
-    hasReleaseArtifact &&
-    artifact.image.version !== artifact.buildManifest.releaseArtifact.version
+    releaseArtifact !== undefined &&
+    artifact.image.version !== releaseArtifact.version
   ) {
     errors.push(
       "image.version must equal buildManifest.releaseArtifact.version",
@@ -461,15 +467,10 @@ export function validateWorkspaceHostImageArtifact(
   // have the runtime shapes it reads (`sha256.toLowerCase()` and `materials.find(...)`). The
   // manifest verifier reports malformed values, but deliberately catches its own exceptions;
   // do not call the lower-level verifier until these two nested sections are safe to traverse.
-  const releaseArtifact = hasReleaseArtifact
-    ? buildManifest.releaseArtifact
-    : undefined;
-  const materials = hasMaterials ? buildManifest.materials : undefined;
   const release = artifact.release as unknown as Record<string, unknown>;
   const canVerifyReleaseProvenance =
-    hasReleaseArtifact &&
-    hasMaterials &&
-    isRecord(releaseArtifact) &&
+    releaseArtifact !== undefined &&
+    materials !== undefined &&
     typeof releaseArtifact.sha256 === "string" &&
     typeof releaseArtifact.version === "string" &&
     materials.every(isRecord) &&
@@ -603,7 +604,7 @@ export function validateWorkspaceHostImageArtifact(
     errors.push("compatibility must contain at least one matrix row");
   }
   const targetProviders = new Set(
-    (hasTargets ? buildManifest.targets : []).map((target) =>
+    (targets ?? []).map((target: unknown) =>
       isRecord(target) ? target.provider : undefined,
     ),
   );
@@ -628,7 +629,7 @@ export function validateWorkspaceHostImageArtifact(
     }
     if (
       rule.architecture !==
-      (hasBaseImage ? buildManifest.baseImage.architecture : undefined)
+      (baseImage !== undefined ? baseImage.architecture : undefined)
     ) {
       errors.push(
         `compatibility[${index}].architecture must equal buildManifest.baseImage.architecture`,

@@ -535,4 +535,27 @@ describe("validateWorkspaceHostImageArtifact structural robustness", () => {
     // And it must refuse BEFORE spending a real cloud boot on it.
     expect(booted).toBe(false);
   });
+
+  it("reports malformed manifest subsections without crashing while validating their contents", () => {
+    const candidate = artifact();
+    const malformed = {
+      ...candidate,
+      buildManifest: {
+        ...candidate.buildManifest,
+        baseImage: null,
+        materials: [null],
+        targets: [null],
+      },
+    } as unknown as WorkspaceHostImageArtifact;
+
+    expect(() => validateWorkspaceHostImageArtifact(malformed)).not.toThrow();
+    const errors = validateWorkspaceHostImageArtifact(malformed);
+    expect(errors).toEqual(
+      expect.arrayContaining([
+        "buildManifest.baseImage must be an object",
+        "buildManifest.materials[0] must be an object",
+        "buildManifest.targets[0] must be an object",
+      ]),
+    );
+  });
 });
