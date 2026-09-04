@@ -17,6 +17,7 @@ const queue = {
 const NEW_HEAD = 'd'.repeat(40);
 const mocks = vi.hoisted(() => ({
   read: vi.fn(),
+  readState: vi.fn(),
   retire: vi.fn(),
   write: vi.fn(),
   alive: vi.fn(),
@@ -27,6 +28,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('../../harness/routines/release-actions', () => ({
   readFrozenCandidateRepairQueue: mocks.read,
+  readFrozenCandidateRepairQueueState: mocks.readState,
   retireFrozenCandidateRepairQueue: mocks.retire,
   writeFrozenCandidateRepairQueue: mocks.write,
 }));
@@ -78,6 +80,7 @@ const body = (value: unknown) => JSON.parse((value as Out).content[0]!.text);
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.read.mockResolvedValue(queue);
+  mocks.readState.mockResolvedValue({ status: 'value', queue });
   mocks.alive.mockResolvedValue(false);
   mocks.retire.mockResolvedValue({ retired: true, current: null });
   mocks.audit.mockResolvedValue([]);
@@ -127,6 +130,58 @@ describe('release:repair-queue', () => {
       status: 'not-applicable',
       authorized: null,
     });
+  });
+
+  it('P-025: get renders a newer-schema queue as unreadable instead of null/none', async () => {
+    mocks.readState.mockResolvedValue({
+      status: 'unreadable',
+      reason: 'schema-newer-than-reader',
+      schemaVersion: 5,
+    });
+    const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
+    expect(result).toMatchObject({
+      ok: true,
+      op: 'get',
+      repairQueue: {
+        status: 'unreadable',
+        reason: 'schema-newer-than-reader',
+        schemaVersion: 5,
+      },
+      repairQueueRead: { status: 'unreadable' },
+      callerAuthorization: { status: 'queue-unreadable', authorized: false },
+    });
+  });
+
+  it.each([
+    ['admit', { op: 'admit', paths: ['lib/red.test.ts'], confirm: true }],
+    [
+      'retire',
+      {
+        op: 'retire',
+        expectedCandidate: queue.candidate,
+        expectedRepairHead: queue.repairHead,
+        expectedUpdatedAtMs: queue.updatedAtMs,
+        reason: 'owner-authorized retirement',
+        confirm: true,
+      },
+    ],
+  ] as const)('P-025: %s refuses an unreadable queue without mutating anything', async (op, args) => {
+    mocks.readState.mockResolvedValue({
+      status: 'unreadable',
+      reason: 'schema-newer-than-reader',
+      schemaVersion: 5,
+    });
+    const result = body(await tool.handler(args as never, { role: 'su' } as never));
+    expect(result).toMatchObject({
+      ok: false,
+      op,
+      refused: true,
+      reason: 'repair-queue-unreadable',
+      repairQueue: { status: 'unreadable', schemaVersion: 5 },
+    });
+    expect(mocks.admit).not.toHaveBeenCalled();
+    expect(mocks.write).not.toHaveBeenCalled();
+    expect(mocks.retire).not.toHaveBeenCalled();
   });
 
   it('authorizes only the exact verified signed fixer delegated by the queue', async () => {
@@ -183,7 +238,7 @@ describe('release:repair-queue', () => {
   });
 
   it('admit reports no-frozen-queue when nothing is frozen, and builds nothing', async () => {
-    mocks.read.mockResolvedValue(null);
+    mocks.readState.mockResolvedValue({ status: 'absent' });
     const result = body(
       await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never),
     );
