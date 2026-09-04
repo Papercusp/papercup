@@ -18,9 +18,9 @@ export default defineTool({
   name: 'computer:list_desktops',
   profile: 'engineer',
   description:
-    'List desktop sessions for this workspace from the registry — every kind (local Xvfb, frame slot, VM guest), with display/geometry, state, measured capabilities, and whether THIS process holds the live handle. Use to confirm computer:provision_desktop landed or to spot a leaked lease.',
+    'List desktop sessions for this workspace from the registry — every kind (local Xvfb, frame slot, VM guest), with display/geometry, state, measured capabilities, and whether THIS process holds the live handle. Use to confirm computer:provision_desktop landed or to spot a leaked lease. Scope belongs to the outer operator envelope (for example ptool --workspace/--harness), not these tool args; pass {} as the tool arguments.',
   guidance: {
-    when: 'Checking which desktops exist — after provisioning, before a VNC view, or auditing for leaks. liveHandleInThisProcess:false means the row is not backed here; it is not proof the desktop is dead.',
+    when: 'Checking which desktops exist — after provisioning, before a VNC view, or auditing for leaks. Pass an empty tool-args object; provide workspace/harness through the outer operator envelope. liveHandleInThisProcess:false means the row is not backed here; it is not proof the desktop is dead.',
     notWhen: 'Driving a desktop (capability:computer) or standing one up (computer:provision_desktop).',
     chaining: 'computer:provision_desktop → computer:list_desktops (verify) → computer:release_desktop.',
     seeAlso: [

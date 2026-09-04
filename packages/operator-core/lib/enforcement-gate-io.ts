@@ -140,6 +140,12 @@ export async function writeFlushFallback(input: {
 export interface FlushGateOutcome {
   verdict: FlushGateVerdict;
   tripwires: FlushTripwire[];
+  /**
+   * Held-item tripwire subjects that the live terminal-state re-check removed.
+   * Omitted when the gate was disabled or its bounded wrapper failed open, so
+   * callers can preserve their pre-gate advisory warnings in those cases.
+   */
+  droppedTerminalHeldItemIds?: string[];
   /** Present on `refuse` — the actionable flush instruction. */
   refusalText?: string;
   /** Present on `mechanical-fallback` — what the system wrote. */
@@ -254,11 +260,16 @@ export type GetWorkItemStateFn = (
 
 const defaultGetWorkItemState: GetWorkItemStateFn = (id, harness) => getWorkItem(id, harness);
 
+interface TerminalHeldTripwireResult {
+  tripwires: FlushTripwire[];
+  droppedTerminalHeldItemIds: string[];
+}
+
 async function dropTerminalHeldTripwires(
   tripwires: readonly FlushTripwire[],
   heldItemHarness: ReadonlyMap<string, string | null>,
   getWorkItemStateFn: GetWorkItemStateFn,
-): Promise<FlushTripwire[]> {
+): Promise<TerminalHeldTripwireResult> {
   const subjects = [
     ...new Set(
       tripwires
@@ -266,7 +277,9 @@ async function dropTerminalHeldTripwires(
         .map((t) => t.subject),
     ),
   ];
-  if (subjects.length === 0) return [...tripwires];
+  if (subjects.length === 0) {
+    return { tripwires: [...tripwires], droppedTerminalHeldItemIds: [] };
+  }
   const terminal = new Set<string>();
   await Promise.all(
     subjects.map(async (id) => {
@@ -278,10 +291,18 @@ async function dropTerminalHeldTripwires(
       }
     }),
   );
-  if (terminal.size === 0) return [...tripwires];
-  return tripwires.filter(
-    (t) => !(t.kind === 'missing-checkpoint' || t.kind === 'stale-checkpoint') || !terminal.has(t.subject),
-  );
+  return {
+    tripwires:
+      terminal.size === 0
+        ? [...tripwires]
+        : tripwires.filter(
+            (t) =>
+              !(t.kind === 'missing-checkpoint' || t.kind === 'stale-checkpoint') ||
+              !terminal.has(t.subject),
+          ),
+    // Keep the snapshot's subject order stable for callers and tests.
+    droppedTerminalHeldItemIds: subjects.filter((id) => terminal.has(id)),
+  };
 }
 
 async function runFlushGateInner(input: {
@@ -321,25 +342,32 @@ async function runFlushGateInner(input: {
   const heldItemHarness = new Map<string, string | null>(
     (brief?.heldItems ?? []).map((h) => [h.id, h.harness ?? null]),
   );
-  const tripwires =
+  const terminalCheck =
     rawTripwires.length === 0
-      ? rawTripwires
+      ? { tripwires: rawTripwires, droppedTerminalHeldItemIds: [] }
       : await dropTerminalHeldTripwires(
           rawTripwires,
           heldItemHarness,
           input.getWorkItemStateFn ?? defaultGetWorkItemState,
         );
+  const tripwires = terminalCheck.tripwires;
+  const droppedTerminalHeldItemIds = terminalCheck.droppedTerminalHeldItemIds;
   const alreadyRefused = await wasRecentlyRefused(input.boundary, input.ownerId, nowMs);
   const verdict = decideFlushGate({ tripwires, alreadyRefused });
 
   if (verdict === 'clear') {
     // A clean boundary retires any stale marker so the next real one starts fresh.
     if (alreadyRefused) await clearRefused(input.boundary, input.ownerId);
-    return { verdict, tripwires };
+    return { verdict, tripwires, droppedTerminalHeldItemIds };
   }
   if (verdict === 'refuse') {
     await markRefused(input.boundary, input.ownerId, nowMs);
-    return { verdict, tripwires, refusalText: renderFlushRefusal(input.boundary, tripwires) };
+    return {
+      verdict,
+      tripwires,
+      droppedTerminalHeldItemIds,
+      refusalText: renderFlushRefusal(input.boundary, tripwires),
+    };
   }
   // mechanical-fallback: write durable state, then let the caller proceed.
   const fallback = await writeFlushFallback({
@@ -353,5 +381,5 @@ async function runFlushGateInner(input: {
     nowMs,
   });
   await clearRefused(input.boundary, input.ownerId);
-  return { verdict, tripwires, fallback };
+  return { verdict, tripwires, droppedTerminalHeldItemIds, fallback };
 }

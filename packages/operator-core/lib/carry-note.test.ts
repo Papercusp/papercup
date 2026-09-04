@@ -853,6 +853,18 @@ describe('normalizeFlattenedContinuityProbeRow — the nested-probe discriminato
     expect(out).toMatchObject({ claim: 'gate is green' });
   });
 
+  it('EI-21989135403192173: lifts a legacy check-level schemaRevision into a nested probe', () => {
+    const out = normalizeFlattenedContinuityProbeRow({
+      claim: 'gate is green',
+      schemaRevision: 'live',
+      probe: { tool: 'work_items:get', args: { id: 'WI-7' }, expect: EXPECT },
+    });
+    expect(out).toEqual({
+      claim: 'gate is green',
+      probe: { kind: 'tool', tool: 'work_items:get', args: { id: 'WI-7' }, schemaRevision: 'live', expect: EXPECT },
+    });
+  });
+
   it('infers kind:"state-cell" for a nested probe carrying `cell`', () => {
     const out = normalizeFlattenedContinuityProbeRow({
       claim: 'deploy sha moved',

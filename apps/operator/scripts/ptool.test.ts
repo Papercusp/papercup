@@ -311,6 +311,15 @@ describe('ptool call deadlines', () => {
       args: { kind: 'task', title: 'timeout mapping regression' },
     })).toBe(PTOOL_WORK_ITEMS_CREATE_TIMEOUT_MS);
     expect(PTOOL_WORK_ITEMS_CREATE_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    // EI-22347167277704688: request_release has a minimum announced
+    // deadlineSec of 30s, but its durable request/comment/notification write
+    // can still outlive ptool's ordinary 30s client cutoff. Cover direct and
+    // tools:invoke-wrapped calls so the MCP result is not outcome-unknown.
+    expect(timeoutForTool('work_items:request_release')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'work_items:request_release',
+      args: { id: 'WI-1', deadlineSec: 30, onSilence: 'reclaim', reason: 'timeout mapping regression' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('activity:tool-log')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('sessions:search')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('release:deploy')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);

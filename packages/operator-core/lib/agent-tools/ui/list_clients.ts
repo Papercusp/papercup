@@ -41,6 +41,7 @@ export default defineTool({
     const sinceSec = args.since_seconds ?? 60;
     const limit = args.limit ?? 50;
     const ws = args.workspace ?? null;
+    const workspacePredicate = ws === null ? true : sql`workspace_id = ${ws}`;
     const rows = await sql<Array<{
       client_id: string;
       workspace_id: string | null;
@@ -52,7 +53,7 @@ export default defineTool({
       SELECT client_id, workspace_id, url, title, opened_at, last_seen_at
       FROM harness_shared.ui_clients
       WHERE last_seen_at > now() - (${sinceSec}::int * interval '1 second')
-        AND (${ws}::text IS NULL OR workspace_id = ${ws})
+        AND ${workspacePredicate}
       ORDER BY last_seen_at DESC
       LIMIT ${limit}
     `;

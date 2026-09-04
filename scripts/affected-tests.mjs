@@ -1816,6 +1816,37 @@ const SU_SPLICE_MARKER_TRIGGER_PATHS = new Set([
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // design-to-code-coverage-seam-2026-09-02 P-027 / WI-2143001 — the ordinary
+    // gate lane is unit-only: it can drive HTTP/MCP observers but deliberately
+    // cannot open real PG, while the broad integration lane can persist but may
+    // never exercise either chokepoint. This one-file integration venue joins the
+    // real route stack + projected-tool dispatcher to the canonical evidence store
+    // and asserts both rows raise testing_surface_depth above zero.
+    //
+    // COST measured before registration on 2026-09-04: 21.53s through the canonical
+    // test:file integration router (8.18s assertions, cached baseline schema). That
+    // is far too expensive for an all-source predicate, so the trigger is limited
+    // to the attribution subsystem, its two observer chokepoints, its two stable
+    // probe definitions, and the runner/configuration that makes the venue reachable.
+    // It deliberately has no hostSuiteRatchet: operator-core's ordinary host suite
+    // is unit-only and therefore cannot substitute for this persistence proof.
+    workspace: "@papercusp/operator-core",
+    script: "test:coverage-attribution-venue",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "packages/operator-core/package.json" ||
+      f === "packages/operator-core/vitest.integration.config.ts" ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "packages/operator-core/lib/endpoint-route/define-route.ts" ||
+      f === "packages/operator-core/lib/endpoint-route/route-stack.ts" ||
+      f === "packages/operator-core/lib/endpoint-route/routes/misc/health.ts" ||
+      f === "packages/operator-core/lib/projected-tool-deps.ts" ||
+      f === "packages/operator-core/lib/agent-tools/facts/list.ts" ||
+      f.startsWith(
+        "packages/operator-core/lib/coverage-census/attribution/",
+      ),
+  },
+  {
     // EI-22189589517637049 — a tool authoring `guidance.returns` without a
     // registered `result:` schema was caught ONLY by the fleet green-checkpoint,
     // hours later and by a different agent. Measured 2026-09-02: the violation

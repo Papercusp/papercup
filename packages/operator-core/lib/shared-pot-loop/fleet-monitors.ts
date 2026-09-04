@@ -278,13 +278,18 @@ export async function scanOutboxHealth(
   // perpetual-false-positive class the outbox-drain-quarantine-runbook
   // documents, just reached through this monitor's own independent query
   // instead of `loadSubstrateDrainStats`'s.
+  // WI-6055: keep optional scopes out of nullable-parameter OR predicates so a
+  // postgres.js GENERIC plan retains direct equality conditions for both
+  // leading scope columns. TRUE is the exact unscoped identity predicate.
+  const workspacePredicate = opts.workspaceId === undefined ? true : sql`workspace_id = ${opts.workspaceId}`;
+  const harnessPredicate = opts.harness === undefined ? true : sql`harness_slug = ${opts.harness}`;
   const rows = await sql<Array<{ depth: number; oldest_ts: number | null }>>`
     SELECT COUNT(*)::int AS depth, MIN(ts) AS oldest_ts
       FROM harness_shared.substrate_outbox
      WHERE drained_at IS NULL
        AND quarantined_at IS NULL
-       AND (${opts.workspaceId ?? null}::text IS NULL OR workspace_id = ${opts.workspaceId ?? null})
-       AND (${opts.harness ?? null}::text IS NULL OR harness_slug = ${opts.harness ?? null})`;
+       AND ${workspacePredicate}
+       AND ${harnessPredicate}`;
   const depth = Number(rows[0]?.depth ?? 0);
   const oldest = rows[0]?.oldest_ts == null ? null : Number(rows[0].oldest_ts);
   const age = oldest == null ? null : Math.max(0, nowMs - oldest);

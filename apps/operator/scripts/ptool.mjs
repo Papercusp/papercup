@@ -1277,6 +1277,12 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // but the old 30s ptool client cutoff could win after the control mutation
   // started and leave its outcome unknown.
   ['fleet:wind-down', PTOOL_FLEET_WIND_DOWN_TIMEOUT_MS],
+  // EI-22347167277704688: work_items:request_release records a durable release
+  // request, comment, and holder notification. With the minimum announced
+  // deadlineSec of 30s, the ordinary 30s ptool cutoff can win while those
+  // writes are still settling and surface MCP -32001/outcome-unknown. Keep
+  // this write-side coordination call outside the MCP transport cap.
+  ['work_items:request_release', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-21386877660531420: activity:tool-log scans and compacts the activity
   // ledger. In a concurrent projected batch that read can outlive ptool's
   // ordinary 30s deadline even though it is bounded and still progressing.

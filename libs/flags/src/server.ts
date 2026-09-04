@@ -80,6 +80,13 @@ export type FlagOverrideStore = {
 // pinModuleState call per module body also keeps `evaluations` an honest count
 // of module RECORDS.
 const STATE_KEY = '@papercusp/flags.server';
+interface OverrideCacheEntry {
+  flags: Partial<Record<FlagKey, boolean>>;
+  ts: number;
+  /** Monotonic only within this process. Useful for proving a cache refill occurred. */
+  generation: number;
+}
+
 interface FlagsServerState {
   /** The installed override store (null until installOverrideStore runs). */
   store: FlagOverrideStore | null;
@@ -87,11 +94,14 @@ interface FlagsServerState {
    * Keyed by the store's cacheKey() (e.g. workspace id) so one process serving
    * many workspaces never bleeds one workspace's overrides into another's reads.
    */
-  overrideCache: Map<string, { flags: Partial<Record<FlagKey, boolean>>; ts: number }>;
+  overrideCache: Map<string, OverrideCacheEntry>;
+  /** Incremented whenever this process installs a fresh override-map cache entry. */
+  cacheGeneration: number;
 }
 const state = pinModuleState<FlagsServerState>(STATE_KEY, () => ({
   store: null,
   overrideCache: new Map(),
+  cacheGeneration: 0,
 }));
 type StoreSlot = Pick<FlagsServerState, 'store'>;
 function storeSlot(): StoreSlot {
@@ -100,6 +110,47 @@ function storeSlot(): StoreSlot {
 const overrideCache = state.overrideCache;
 const DEFAULT_OVERRIDE_CACHE_TTL_MS = 5_000;
 const DEFAULT_FLAG_BACKEND_TIMEOUT_MS = 2_000;
+
+export type FlagResolutionSource =
+  | 'env-override'
+  | 'platform-mode-override'
+  | 'test-override'
+  | 'override-store'
+  | 'process-cache'
+  | 'posthog'
+  | 'compiled-default';
+
+export type FlagOverrideReadKind =
+  | 'not-read'
+  | 'unconfigured'
+  | 'cache-hit'
+  | 'store-load'
+  | 'stale-cache-fallback'
+  | 'store-error';
+
+/** Process-local evidence for the override layer consulted by one flag read. */
+export interface FlagOverrideReadAttestation {
+  kind: FlagOverrideReadKind;
+  storeConfigured: boolean;
+  cacheKey: string;
+  /** Monotonic only within this process; compare repeated reads of the SAME process. */
+  cacheGeneration: number | null;
+  cacheLoadedAtMs: number | null;
+  cacheAgeMs: number | null;
+  ttlMs: number;
+  ttlRemainingMs: number;
+}
+
+/** What this exact process resolved, through the same precedence path as getFlag(). */
+export interface FlagAttestation {
+  key: FlagKey;
+  resolvedValue: boolean;
+  compiledDefault: boolean;
+  source: FlagResolutionSource;
+  overrideRead: FlagOverrideReadAttestation;
+  backendConfigured: boolean;
+  observedAtMs: number;
+}
 
 // How long a loaded override map is served from the per-cacheKey cache before a
 // re-read. The default 5s is the cross-process propagation fallback for a
@@ -200,17 +251,66 @@ function warnOverrideStoreMissingOnce(): void {
   );
 }
 
-async function loadStoredOverrides(): Promise<Partial<Record<FlagKey, boolean>>> {
+interface StoredOverrideRead {
+  flags: Partial<Record<FlagKey, boolean>>;
+  attestation: FlagOverrideReadAttestation;
+}
+
+function nextCacheGeneration(): number {
+  // A hot-reloaded process can retain a state object created by an older build
+  // without this field. Coerce that shape forward instead of reporting NaN.
+  state.cacheGeneration = Number.isFinite(state.cacheGeneration) ? state.cacheGeneration + 1 : 1;
+  return state.cacheGeneration;
+}
+
+function overrideReadAttestation(
+  kind: FlagOverrideReadKind,
+  cacheKey: string,
+  entry: OverrideCacheEntry | undefined,
+  now: number,
+): FlagOverrideReadAttestation {
+  const ttlMs = overrideCacheTtlMs();
+  const ageMs = entry ? Math.max(0, now - entry.ts) : null;
+  return {
+    kind,
+    storeConfigured: storeSlot().store !== null,
+    cacheKey,
+    cacheGeneration: entry?.generation ?? null,
+    cacheLoadedAtMs: entry?.ts ?? null,
+    cacheAgeMs: ageMs,
+    ttlMs,
+    ttlRemainingMs: ageMs === null ? 0 : Math.max(0, ttlMs - ageMs),
+  };
+}
+
+function inspectOverrideReadWithoutLoading(now: number = Date.now()): FlagOverrideReadAttestation {
+  const ck = currentCacheKey();
+  const entry = overrideCache.get(ck);
+  return overrideReadAttestation(
+    storeSlot().store ? 'not-read' : 'unconfigured',
+    ck,
+    entry,
+    now,
+  );
+}
+
+async function loadStoredOverridesWithAttestation(): Promise<StoredOverrideRead> {
   const overrideStore = storeSlot().store;
   if (!overrideStore) {
     warnOverrideStoreMissingOnce();
-    return {};
+    return {
+      flags: {},
+      attestation: inspectOverrideReadWithoutLoading(),
+    };
   }
   const ck = currentCacheKey();
   const t = Date.now();
   const hit = overrideCache.get(ck);
   if (hit && t - hit.ts < overrideCacheTtlMs()) {
-    return hit.flags;
+    return {
+      flags: hit.flags,
+      attestation: overrideReadAttestation('cache-hit', ck, hit, t),
+    };
   }
   try {
     // Bounded like every other flag-backend call in this file. The override store
@@ -221,13 +321,34 @@ async function loadStoredOverrides(): Promise<Partial<Record<FlagKey, boolean>>>
     // session and no log line to attribute it to. Same helper, same fallback, so a
     // hung store now degrades exactly like an unreachable one (EI-21733487918833986).
     const flags = await withFlagBackendTimeout(overrideStore.load());
-    overrideCache.set(ck, { flags, ts: t });
-    return flags;
+    const entry: OverrideCacheEntry = {
+      flags,
+      ts: t,
+      generation: nextCacheGeneration(),
+    };
+    overrideCache.set(ck, entry);
+    return {
+      flags,
+      attestation: overrideReadAttestation('store-load', ck, entry, Date.now()),
+    };
   } catch {
     // Store unreachable OR too slow — serve the last good map for THIS scope (or
     // none); never block flag evaluation on the override layer.
-    return overrideCache.get(ck)?.flags ?? {};
+    const stale = overrideCache.get(ck);
+    return {
+      flags: stale?.flags ?? {},
+      attestation: overrideReadAttestation(
+        stale ? 'stale-cache-fallback' : 'store-error',
+        ck,
+        stale,
+        Date.now(),
+      ),
+    };
   }
+}
+
+async function loadStoredOverrides(): Promise<Partial<Record<FlagKey, boolean>>> {
+  return (await loadStoredOverridesWithAttestation()).flags;
 }
 
 export async function setFlagOverride(
@@ -341,22 +462,62 @@ function resolvePlatformModeOverride(key: FlagKey): boolean | undefined {
   return undefined;
 }
 
-export async function getFlag(
+/**
+ * Resolve one flag and retain enough provenance to explain the answer.
+ *
+ * This is deliberately the implementation behind BOTH getFlag() and the
+ * runtime-attestation surface. A diagnostic that reimplemented precedence in
+ * parallel would be able to disagree with the value it claims to explain.
+ */
+export async function getFlagAttestation(
   key: FlagKey,
   distinctId: string,
-): Promise<boolean> {
+): Promise<FlagAttestation> {
+  const observedAtMs = Date.now();
+  const compiledDefault = FLAG_DEFAULTS[key];
+  const done = (
+    resolvedValue: boolean,
+    source: FlagResolutionSource,
+    overrideRead: FlagOverrideReadAttestation,
+  ): FlagAttestation => ({
+    key,
+    resolvedValue,
+    compiledDefault,
+    source,
+    overrideRead,
+    backendConfigured: client !== null,
+    observedAtMs,
+  });
+
   const envOverride = resolveEnvOverride(key);
-  if (envOverride !== undefined) return envOverride;
+  if (envOverride !== undefined) {
+    return done(envOverride, 'env-override', inspectOverrideReadWithoutLoading(observedAtMs));
+  }
   // Coarse deployment-mode lever (P-070): PAPERCUSP_PLATFORM_MODE=off forces the
   // platform-improvement flag off on a release build. The per-flag PAPERCUSP_FLAG_*
   // override above still wins (explicit owner opt-in beats the build-wide var).
   const platformMode = resolvePlatformModeOverride(key);
-  if (platformMode !== undefined) return platformMode;
+  if (platformMode !== undefined) {
+    return done(
+      platformMode,
+      'platform-mode-override',
+      inspectOverrideReadWithoutLoading(observedAtMs),
+    );
+  }
   const overrides = resolveTestOverrides();
-  if (overrides) return overrides[key];
-  const stored = await loadStoredOverrides();
-  if (stored[key] !== undefined) return stored[key] as boolean;
-  if (!client) return FLAG_DEFAULTS[key];
+  if (overrides) {
+    return done(overrides[key], 'test-override', inspectOverrideReadWithoutLoading(observedAtMs));
+  }
+  const stored = await loadStoredOverridesWithAttestation();
+  if (stored.flags[key] !== undefined) {
+    const source: FlagResolutionSource =
+      stored.attestation.kind === 'cache-hit' ||
+      stored.attestation.kind === 'stale-cache-fallback'
+        ? 'process-cache'
+        : 'override-store';
+    return done(stored.flags[key] as boolean, source, stored.attestation);
+  }
+  if (!client) return done(compiledDefault, 'compiled-default', stored.attestation);
   try {
     // posthog-node v5 deprecated isFeatureEnabled in favor of evaluateFlags (one /flags request,
     // scoped via flagKeys) — and its deprecation console.warn trips vitest-fail-on-console in ANY
@@ -368,13 +529,24 @@ export async function getFlag(
     if (typeof c.evaluateFlags === "function") {
       const flags = await withFlagBackendTimeout(c.evaluateFlags(distinctId, { flagKeys: [key] }));
       const v = flags.isEnabled(key);
-      return typeof v === "boolean" ? v : FLAG_DEFAULTS[key];
+      return typeof v === "boolean"
+        ? done(v, 'posthog', stored.attestation)
+        : done(compiledDefault, 'compiled-default', stored.attestation);
     }
     const v = await withFlagBackendTimeout(client.isFeatureEnabled(key, distinctId));
-    return typeof v === "boolean" ? v : FLAG_DEFAULTS[key];
+    return typeof v === "boolean"
+      ? done(v, 'posthog', stored.attestation)
+      : done(compiledDefault, 'compiled-default', stored.attestation);
   } catch {
-    return FLAG_DEFAULTS[key];
+    return done(compiledDefault, 'compiled-default', stored.attestation);
   }
+}
+
+export async function getFlag(
+  key: FlagKey,
+  distinctId: string,
+): Promise<boolean> {
+  return (await getFlagAttestation(key, distinctId)).resolvedValue;
 }
 
 /**

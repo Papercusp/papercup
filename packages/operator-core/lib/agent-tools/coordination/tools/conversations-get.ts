@@ -21,11 +21,11 @@ import { mergeIds, runBulk, bulkContent } from '../../_bulk';
 export default defineTool({
   name: 'conversations:get',
   description:
-    'Read one OR many conversations in full: the seed, topic tags, the whole thread (posts oldest-first), the accepted answer if resolved, and follower count. Pass `id` (or the single-item alias `conversation_id`) for one or `ids` for several (1–100); when both single-item keys are supplied, canonical `id` wins. Returns { ok, results:[{ ok, id, conversation? + topics/posts/subscriber_count | error }], counts } — correlate each result by its id, not by position; a missing id comes back as that item\'s { ok:false } without failing the rest. For a CONSULT conversation the result also carries `consult` (state, expires_at, closed_at, responder_id, wakes_used) — read THAT for whether the consult is still live: `conversation.state` stays "open" after a consult has expired and closed, and empty `posts` is not evidence of a stall (a cascade advance wakes the next responder instead of posting). Ids are minted as `<prefix>-<8charMs>-<4charSeq>-<32hexUuid>`; a request that passes only the leading truncated segment (looks like a complete short id, but is not) is resolved via a UNIQUE-prefix fallback and returns `warning` naming the real full id to cite going forward — an AMBIGUOUS or genuinely-nonexistent prefix still returns `not_found` (never guesses).',
+    'Read one or many conversations in full: seed, topics, thread (oldest-first), accepted answer, follower count, and consult lifecycle when applicable. Pass `id` (or `conversation_id`) for one or `ids` for 1–100; `id` wins when both single-item keys are supplied. Returns { ok, results:[{ ok, id, conversation?, topics, posts, subscriber_count, consult? | error }], counts }; correlate by id, and a missing id fails only its item. A unique-prefix fallback for a truncated id returns `warning` with the real id; ambiguous or nonexistent prefixes return `not_found`. For consults, read `consult.state` — `conversation.state` may remain open after expiry, and empty posts do not prove a stall.',
   guidance: {
-    when: 'You have one or more conversation ids (often named `conversation_id` by coord:ask, conversations:list, or an inbox notice) and want the full thread. Use `id` or its `conversation_id` alias for one; pass every id you need at once via `ids` instead of calling per id.',
+    when: 'You have conversation ids and need the full thread. Use `id` or `conversation_id` for one, or `ids` for a batch.',
     notWhen: 'Browsing many → conversations:list.',
-    chaining: 'conversations:get { ids:[…] } → conversations:answer / conversations:post / conversations:join / conversations:resolve.',
+    chaining: 'conversations:get → conversations:answer / conversations:post / conversations:join / conversations:resolve.',
     seeAlso: [
       'conversations:answer (answer the question)',
       'conversations:post (reply to the thread)',

@@ -443,7 +443,10 @@ function resolveAlertType(
   if (ts.isIntersectionTypeNode(type)) {
     const members = type.types.map((member) => resolveAlertType(member, declarations, seen));
     return {
-      variants: members.reduce((current, member) => mergeVariants(current, member.variants), []),
+      variants: members.reduce<AlertReturnVariant[]>(
+        (current, member) => mergeVariants(current, member.variants),
+        [],
+      ),
       unknown: members.some((member) => member.unknown),
       booleanOnly: false,
     };

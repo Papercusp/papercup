@@ -930,14 +930,32 @@ function inferNestedProbeKind(row: unknown, source: Record<string, unknown>): un
   if (!probe || typeof probe !== 'object' || Array.isArray(probe)) return row;
 
   const nested = probe as Record<string, unknown>;
-  if (Object.prototype.hasOwnProperty.call(nested, 'kind')) return row;
-
+  const hasKind = Object.prototype.hasOwnProperty.call(nested, 'kind');
   const hasTool = Object.prototype.hasOwnProperty.call(nested, 'tool');
   const hasCell = Object.prototype.hasOwnProperty.call(nested, 'cell');
   // Equal means both or neither: ambiguous, or nothing to run. Refuse either way.
-  if (hasTool === hasCell) return row;
+  const canInferKind = !hasKind && hasTool !== hasCell;
+  const hasNestedRevision = Object.prototype.hasOwnProperty.call(nested, 'schemaRevision');
+  const hasLegacyRevision = Object.prototype.hasOwnProperty.call(source, 'schemaRevision');
+  // EI-21989135403192173: callers that already used the nested `probe` envelope
+  // still sometimes put the revision on the surrounding check row. Move that
+  // legacy field into the probe before continuityProbeSchema validates it; this
+  // is lossless because the surrounding field is only the compatibility spelling
+  // and the probe is the canonical owner. Do not repair ambiguous/no-op probes —
+  // their rejection should still name the missing/ambiguous executable target.
+  const canLiftLegacyRevision = !hasNestedRevision && hasLegacyRevision && (hasKind || canInferKind);
+  if (!canInferKind && !canLiftLegacyRevision) return row;
 
-  return { ...source, probe: { kind: hasTool ? 'tool' : 'state-cell', ...nested } };
+  const normalized = { ...source };
+  const normalizedProbe = {
+    ...(canInferKind ? { kind: hasTool ? 'tool' : 'state-cell' } : {}),
+    ...nested,
+  };
+  if (canLiftLegacyRevision) {
+    normalizedProbe.schemaRevision = source.schemaRevision;
+    delete normalized.schemaRevision;
+  }
+  return { ...normalized, probe: normalizedProbe };
 }
 
 /** Fixed legend rendered under the `## Checks` heading so a cold successor reads the

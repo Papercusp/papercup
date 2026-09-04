@@ -15,7 +15,11 @@
  */
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — .mjs guard script, no type declarations by design
-import { findWiringParityGaps, objectLiteralPropertyNames } from '../../../../scripts/check-deps-wiring-parity.mjs';
+import {
+  buildSeamConsumptionIndex,
+  findWiringParityGaps,
+  objectLiteralPropertyNames,
+} from '../../../../scripts/check-deps-wiring-parity.mjs';
 import * as ts from 'typescript';
 
 /**
@@ -127,6 +131,41 @@ describe('findWiringParityGaps', () => {
     const wide = findWiringParityGaps(sources(iface, a, b), { includeObservers: true });
     expect(wide).toHaveLength(1);
     expect(wide[0].missing).toEqual(['onProgress']);
+  });
+
+  it('classifies differently named observers by consumption, while retaining gate semantics', () => {
+    const iface = `
+      export interface EngineCtx {
+        run: Runner;
+        metadata?: (data: Record<string, unknown>) => void;
+        progress?: (pct: number, msg: string) => void;
+        gate?: typeof realGate;
+      }
+      export function runEngine(ctx: EngineCtx) {
+        ctx.metadata?.({});
+        ctx.progress?.(10, 'searching');
+        if (ctx.gate) return realGate();
+        return null;
+      }
+    `;
+    const full = `runEngine({ run, metadata, progress, gate });`;
+    const partial = `runEngine({ run, metadata });`;
+    const fixtureSources = sources(iface, full, partial);
+
+    // Consumption, not the member name, excludes the progress notifier while
+    // preserving a conditionally-consumed gate.
+    const consumption = buildSeamConsumptionIndex(fixtureSources);
+    expect(consumption.get('EngineCtx|progress')).toEqual({ observer: true, gate: false });
+    expect(consumption.get('EngineCtx|gate')).toEqual({ observer: false, gate: true });
+    const findings = findWiringParityGaps(fixtureSources);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].missing).toEqual(['gate']);
+
+    // The wider diagnostic population still exposes observers on request,
+    // aggregated with the gate omission at the same partial site.
+    const wide = findWiringParityGaps(fixtureSources, { includeObservers: true });
+    expect(wide).toHaveLength(1);
+    expect(wide[0].missing).toEqual(['gate', 'progress']);
   });
 
   it('ignores an option-bag with fewer than two injectable seams', () => {

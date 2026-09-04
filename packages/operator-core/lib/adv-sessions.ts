@@ -430,6 +430,7 @@ export async function listPendingWorkbenchLaunches(
   const ws = opts.workspaceId ?? null;
   try {
     const { sql } = getOrgPg();
+    const workspacePredicate = ws === null ? true : sql`workspace_id = ${ws}`;
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
@@ -438,7 +439,7 @@ export async function listPendingWorkbenchLaunches(
        WHERE display = 'workbench'
          AND launched_at IS NULL
          AND ended_at IS NULL
-         AND (${ws}::text IS NULL OR workspace_id = ${ws})
+         AND ${workspacePredicate}
        ORDER BY started_at DESC
        LIMIT ${limit}
     `;
@@ -611,6 +612,7 @@ export async function listStartingTerminalLaunches(
   const ws = opts.workspaceId ?? null;
   try {
     const { sql } = getOrgPg();
+    const workspacePredicate = ws === null ? true : sql`workspace_id = ${ws}`;
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
@@ -619,7 +621,7 @@ export async function listStartingTerminalLaunches(
        WHERE display = ${DISPLAY_TERMINAL_LAUNCH}
          AND (ended_at IS NULL OR session_id IS NULL)
          AND started_at > now() - (${withinSec}::int * interval '1 second')
-         AND (${ws}::text IS NULL OR workspace_id = ${ws})
+         AND ${workspacePredicate}
        ORDER BY started_at DESC
        LIMIT ${limit}
     `;
@@ -1821,6 +1823,7 @@ export async function readAdvSessionLaunchRecordByOwner(
   const scope = workspaceId?.trim() || null;
   try {
     const { sql } = getOrgPg();
+    const workspacePredicate = scope === null ? true : sql`workspace_id = ${scope}`;
     const rows = await sql<{
       workspace_id: string;
       agent: string | null;
@@ -1835,7 +1838,7 @@ export async function readAdvSessionLaunchRecordByOwner(
              to_jsonb(a)->'launch_argv' AS launch_argv
         FROM harness_shared.adv_sessions a
        WHERE coord_owner_id = ${coordOwnerId}
-         AND (${scope}::text IS NULL OR workspace_id = ${scope})
+         AND ${workspacePredicate}
        ORDER BY started_at DESC
        LIMIT 1
     `;
@@ -2296,6 +2299,7 @@ export async function listRecordedLiveSessions(
   const ownerIds = [...new Set((opts.ownerIds ?? []).filter((ownerId) => ownerId.length > 0))];
   try {
     const { sql } = getOrgPg();
+    const workspacePredicate = ws === null ? true : sql`workspace_id = ${ws}`;
     // Targeted presence reads must not scan the recent-session population just
     // to discard every row except one owner. Exact owner ids can use the
     // coord_owner_id index; the remaining selector clauses preserve the public
@@ -2324,7 +2328,7 @@ export async function listRecordedLiveSessions(
        WHERE ended_at IS NULL
          AND coord_owner_id IS NOT NULL
          AND started_at > now() - make_interval(secs => ${maxAgeSec})
-         AND (${ws}::text IS NULL OR workspace_id = ${ws})
+         AND ${workspacePredicate}
          ${ownerFilter}
        ORDER BY coord_owner_id, started_at DESC
        LIMIT ${limit}
@@ -2680,6 +2684,7 @@ export async function listEndedAdvSessions(
   const before = opts.before ?? null;
   try {
     const { sql } = getOrgPg();
+    const workspacePredicate = ws === null ? true : sql`workspace_id = ${ws}`;
     const rows = await sql<
       Array<{
         id: number;
@@ -2714,7 +2719,7 @@ export async function listEndedAdvSessions(
            OR NULLIF(BTRIM(omp_thread_id), '') IS NOT NULL
            OR agent = 'codex'
          )
-         AND (${ws}::text IS NULL OR workspace_id = ${ws})
+         AND ${workspacePredicate}
          AND (${before}::timestamptz IS NULL OR ended_at < ${before}::timestamptz)
        ORDER BY ended_at DESC
        LIMIT ${limit}
@@ -2771,6 +2776,7 @@ export async function listPlanSessions(
   if (!planSlug) return [];
   try {
     const { sql } = getOrgPg();
+    const workspacePredicate = ws === null ? true : sql`s.workspace_id = ${ws}`;
     const rows = await sql<
       Array<{
         coord_owner_id: string;
@@ -2802,7 +2808,7 @@ export async function listPlanSessions(
           FROM harness_shared.adv_sessions s
          WHERE s.plan_slug = ${planSlug}
            AND s.coord_owner_id IS NOT NULL
-           AND (${ws}::text IS NULL OR s.workspace_id = ${ws})
+           AND ${workspacePredicate}
         UNION ALL
         SELECT s.coord_owner_id, s.session_id, s.omp_thread_id, s.agent, s.mode,
                s.role, s.label, s.started_at, s.ended_at, 'claim'::text AS via
@@ -2810,7 +2816,7 @@ export async function listPlanSessions(
           JOIN claim_owners c ON c.owner = s.coord_owner_id
          WHERE s.plan_slug IS NULL
            AND s.coord_owner_id IS NOT NULL
-           AND (${ws}::text IS NULL OR s.workspace_id = ${ws})
+           AND ${workspacePredicate}
       ),
       deduped AS (
         SELECT DISTINCT ON (coord_owner_id)

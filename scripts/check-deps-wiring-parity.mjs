@@ -113,18 +113,12 @@ function isSeamTypeNode(typeNode) {
 }
 
 /**
- * An `on<Event>`-named seam is an OBSERVER, not a concern — and the distinction is the
- * difference between signal and noise here.
+ * Legacy fallback for an optional callback whose consumer cannot be resolved.
  *
- * The bug this guard exists for is "a cross-cutting concern that must run on every path
- * silently doesn't". A gate/resolver/loader left unwired means THIS PATH SKIPS THE
- * CONCERN — the failure. An `onProgress` / `onReply` / `onEnrolled` left unwired means
- * "this caller does not care to observe", which is the intended semantics of an optional
- * callback and is correct at the majority of call sites. Measured over the tree at
- * authoring time, observer callbacks were the single largest noise class.
- *
- * They stay MEASURABLE (`--include-observers`) so this narrowing is a stated bound on
- * the population, never a silent one.
+ * The authoritative observer/gate classification is consumption-based (see
+ * `buildSeamConsumptionIndex`). Keeping this narrow fallback preserves the old
+ * `on<Event>` behavior for unresolved consumers without letting a known consumer's
+ * name override its actual use.
  */
 function isObserverName(name) {
   return /^on[A-Z]/.test(name);
@@ -132,7 +126,7 @@ function isObserverName(name) {
 
 /**
  * Deps-interface descriptors declared in one source file.
- * [{ name, members:Set, required:Set, optionalSeams:Set, file, line }]
+ * [{ name, members:Set, required:Set, injectableSeams:Set, optionalSeams:Set, file, line }]
  */
 export function findDepsInterfacesInSource(sourceText, fileName = 'f.ts', opts = {}) {
   const sf = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
@@ -141,22 +135,29 @@ export function findDepsInterfacesInSource(sourceText, fileName = 'f.ts', opts =
   function record(name, members, node) {
     const all = new Set();
     const required = new Set();
+    const injectableSeams = new Set();
     const optionalSeams = new Set();
     for (const m of members) {
       if (!ts.isPropertySignature(m) || !m.name || !ts.isIdentifier(m.name)) continue;
       const key = m.name.text;
       all.add(key);
       if (m.questionToken) {
-        if (isSeamTypeNode(m.type) && (opts.includeObservers || !isObserverName(key))) optionalSeams.add(key);
+        if (isSeamTypeNode(m.type)) injectableSeams.add(key);
+        const usage = opts.seamConsumption?.get(`${name}|${key}`);
+        const semanticallyObserver = usage?.observer === true && usage.gate !== true;
+        const unresolvedObserver = usage === undefined && isObserverName(key);
+        if (isSeamTypeNode(m.type) && (opts.includeObservers || !(semanticallyObserver || unresolvedObserver))) {
+          optionalSeams.add(key);
+        }
       } else {
         required.add(key);
       }
     }
     // A deps seam needs at least two optional injectables — one is not a pattern,
     // and requiring two keeps ordinary option-bags out of the population.
-    if (optionalSeams.size < 2) return;
+    if (injectableSeams.size < 2) return;
     const { line } = sf.getLineAndCharacterOfPosition(node.getStart(sf));
-    found.push({ name, members: all, required, optionalSeams, file: fileName, line: line + 1 });
+    found.push({ name, members: all, required, injectableSeams, optionalSeams, file: fileName, line: line + 1 });
   }
 
   function isExported(node) {
@@ -288,6 +289,109 @@ export function findCalleeParamTypesInSource(sourceText, fileName = 'f.ts') {
   }
   visit(sf);
   return found;
+}
+
+/** Return the parameters/body for function-like nodes with a traversable body. */
+function functionLikeParts(node) {
+  if (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isMethodSignature(node) ||
+    ts.isConstructorDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node)
+  ) {
+    return { parameters: node.parameters, body: node.body };
+  }
+  return null;
+}
+
+/** Bind directly-typed identifier parameters to the interface they name. */
+function typedParameterBindings(parameters) {
+  const bindings = new Map();
+  for (const parameter of parameters) {
+    if (!ts.isIdentifier(parameter.name)) continue;
+    const typeName = typeRefName(parameter.type);
+    if (typeName) bindings.set(parameter.name.text, typeName);
+  }
+  return bindings;
+}
+
+/**
+ * A callback is an observer only when its optional call is a discarded expression
+ * statement. Any other consumption is conservatively treated as a gate/capability use.
+ */
+function isDiscardedOptionalCall(memberAccess) {
+  const call = memberAccess.parent;
+  if (!ts.isCallExpression(call) || call.expression !== memberAccess || !call.questionDotToken) return false;
+  let parent = call.parent;
+  while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+  return ts.isExpressionStatement(parent);
+}
+
+/**
+ * Record direct `ctx.member` uses for one typed function parameter.
+ * Nested functions inherit outer bindings unless they shadow the parameter name.
+ */
+function collectSeamConsumption(body, bindings, out) {
+  const visit = (node, activeBindings, isRoot = false) => {
+    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && ts.isIdentifier(node.name)) {
+      const interfaceName = activeBindings.get(node.expression.text);
+      if (interfaceName) {
+        const key = `${interfaceName}|${node.name.text}`;
+        const usage = out.get(key) ?? { observer: false, gate: false };
+        if (isDiscardedOptionalCall(node)) usage.observer = true;
+        else usage.gate = true;
+        out.set(key, usage);
+      }
+    }
+
+    // Do not attribute a shadowing nested parameter to the outer function, but do
+    // continue through closures that capture the outer parameter.
+    if (!isRoot) {
+      const nested = functionLikeParts(node);
+      if (nested) {
+        if (!nested.body) return;
+        const nestedBindings = new Map(activeBindings);
+        for (const parameter of nested.parameters) {
+          if (ts.isIdentifier(parameter.name)) nestedBindings.delete(parameter.name.text);
+        }
+        visit(nested.body, nestedBindings, true);
+        return;
+      }
+    }
+
+    ts.forEachChild(node, (child) => visit(child, activeBindings));
+  };
+
+  visit(body, bindings, true);
+}
+
+/**
+ * Index how directly-typed context/deps parameters consume their members across
+ * modules. A member is an observer only when every observed use is a discarded
+ * optional call; any condition, argument, assignment, return, or awaited use makes
+ * it a gate/capability.
+ *
+ * Returns Map<`${interfaceName}|${memberName}`, { observer:boolean, gate:boolean }>.
+ */
+export function buildSeamConsumptionIndex(sources) {
+  const out = new Map();
+  for (const { fileName, text } of sources) {
+    const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
+    const visit = (node) => {
+      const fn = functionLikeParts(node);
+      if (fn?.body) {
+        const bindings = typedParameterBindings(fn.parameters);
+        if (bindings.size > 0) collectSeamConsumption(fn.body, bindings, out);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+  }
+  return out;
 }
 
 /**
@@ -427,9 +531,10 @@ export function resolveLiteralInterface(site, interfacesByName, calleeParamTypes
  * one finding per construction site that omits a seam another site wires.
  */
 export function findWiringParityGaps(sources, opts = {}) {
+  const seamConsumption = buildSeamConsumptionIndex(sources);
   const interfaces = [];
   for (const { fileName, text } of sources) {
-    for (const iface of findDepsInterfacesInSource(text, fileName, opts)) interfaces.push(iface);
+    for (const iface of findDepsInterfacesInSource(text, fileName, { ...opts, seamConsumption })) interfaces.push(iface);
   }
   if (interfaces.length === 0) return [];
 
@@ -451,7 +556,7 @@ export function findWiringParityGaps(sources, opts = {}) {
       if (!iface) continue;
       // A literal wiring no optional seam at all is an option-bag, not a deps object.
       let wiresASeam = false;
-      for (const n of site.names) if (iface.optionalSeams.has(n)) wiresASeam = true;
+      for (const n of site.names) if (iface.injectableSeams.has(n)) wiresASeam = true;
       if (!wiresASeam) continue;
       const key = `${iface.file}:${iface.name}`;
       if (!sitesByInterface.has(key)) sitesByInterface.set(key, { iface, sites: [] });

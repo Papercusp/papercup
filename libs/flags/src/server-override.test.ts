@@ -13,6 +13,7 @@ import {
   clearAllFlagOverrides,
   getAllFlags,
   getFlag,
+  getFlagAttestation,
   initFlagBackend,
   initFlagOverrideStore,
   isOverrideStoreConfigured,
@@ -142,6 +143,75 @@ describe('flag override store', () => {
     await getFlag(KEY, 'u');
     await getFlag(KEY, 'u');
     expect(loads()).toBe(1);
+  });
+
+  it('attests the exact override resolution path and process-local cache generation', async () => {
+    const { store, loads } = makeFakeStore({ [KEY]: !FLAG_DEFAULTS[KEY] });
+    initFlagOverrideStore(store);
+
+    const loaded = await getFlagAttestation(KEY, 'u');
+    expect(loaded).toMatchObject({
+      key: KEY,
+      resolvedValue: !FLAG_DEFAULTS[KEY],
+      compiledDefault: FLAG_DEFAULTS[KEY],
+      source: 'override-store',
+      overrideRead: {
+        kind: 'store-load',
+        storeConfigured: true,
+        cacheGeneration: expect.any(Number),
+      },
+    });
+    expect(loaded.overrideRead.ttlRemainingMs).toBeGreaterThan(0);
+
+    const cached = await getFlagAttestation(KEY, 'u');
+    expect(cached).toMatchObject({
+      resolvedValue: loaded.resolvedValue,
+      source: 'process-cache',
+      overrideRead: {
+        kind: 'cache-hit',
+        cacheGeneration: loaded.overrideRead.cacheGeneration,
+      },
+    });
+    expect(loads()).toBe(1);
+
+    bustOverrideReadCache();
+    const reloaded = await getFlagAttestation(KEY, 'u');
+    expect(reloaded.source).toBe('override-store');
+    expect(reloaded.overrideRead.kind).toBe('store-load');
+    expect(reloaded.overrideRead.cacheGeneration).toBeGreaterThan(
+      loaded.overrideRead.cacheGeneration ?? 0,
+    );
+  });
+
+  it('attests a missing store as a compiled default instead of implying a live override read', async () => {
+    initFlagOverrideStore(null);
+    const attestation = await getFlagAttestation(KEY, 'u');
+    expect(attestation).toMatchObject({
+      resolvedValue: FLAG_DEFAULTS[KEY],
+      compiledDefault: FLAG_DEFAULTS[KEY],
+      source: 'compiled-default',
+      backendConfigured: false,
+      overrideRead: {
+        kind: 'unconfigured',
+        storeConfigured: false,
+        cacheGeneration: null,
+        ttlRemainingMs: 0,
+      },
+    });
+  });
+
+  it('attests an env override without pretending the override store was read', async () => {
+    const { store, loads } = makeFakeStore({ [KEY]: false });
+    initFlagOverrideStore(store);
+    process.env[ENV_KEY] = '1';
+
+    const attestation = await getFlagAttestation(KEY, 'u');
+    expect(attestation).toMatchObject({
+      resolvedValue: true,
+      source: 'env-override',
+      overrideRead: { kind: 'not-read', storeConfigured: true },
+    });
+    expect(loads()).toBe(0);
   });
 
   it('the read-cache TTL is env-configurable — TTL=0 disables caching so every getFlag re-reads (WI-3800: lets a high-throughput process tune down its override-read churn)', async () => {

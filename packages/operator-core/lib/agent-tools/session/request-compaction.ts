@@ -603,7 +603,7 @@ export default defineTool({
     // calls before this pass).
     const brief = await loadCarryBrief(identity.ownerId, identity.workspaceId);
     const focus = (args.focus ?? '').trim() || (await carryBriefFocus(brief));
-    const staleCheckpoints = staleCheckpointWarnings(brief);
+    const rawStaleCheckpoints = staleCheckpointWarnings(brief);
     // P-016 enforcement gate: the WARN above becomes teeth. Unflushed state
     // (missing/stale held checkpoint, or an armed loop with no carry-note) HOLDS
     // the boundary ONCE, naming the flush; a retry that still hasn't flushed
@@ -620,6 +620,15 @@ export default defineTool({
       brief,
       nowMs: gateNowMs,
     });
+    // The gate's terminal-state re-check is authoritative when it completed:
+    // do not warn the caller to checkpoint an item that is already terminal.
+    // If the gate was disabled or its bounded wrapper failed open, the
+    // provenance field is absent and the original best-effort advisory survives.
+    const staleCheckpoints = gate.droppedTerminalHeldItemIds
+      ? rawStaleCheckpoints.filter(
+          (warning) => !gate.droppedTerminalHeldItemIds!.includes(warning.id),
+        )
+      : rawStaleCheckpoints;
     if (gate.verdict === 'refuse') {
       return {
         content: [

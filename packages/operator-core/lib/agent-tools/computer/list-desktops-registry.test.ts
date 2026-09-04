@@ -101,6 +101,12 @@ describe('computer:list_desktops — enumerating the DesktopSession registry (A-
     expect(new Set((r.desktops as Listed).map((d) => d.kind))).toEqual(new Set(kinds));
   });
 
+  it('keeps workspace/harness scope in the outer envelope, not tool args', () => {
+    const args = (listTool as unknown as { args: { safeParse: (value: unknown) => { success: boolean } } }).args;
+    expect(args.safeParse({}).success).toBe(true);
+    expect(args.safeParse({ workspace: 'papercusp-workspace', harness: 'papercusp' }).success).toBe(false);
+  });
+
   it('marks a registry row this process holds no handle for as registered but NOT live', async () => {
     // D-004's invariant, made checkable: a row is a CLAIM about a process, not proof of
     // one. A frame-slot lives in another process by construction, so reporting it as live

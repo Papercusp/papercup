@@ -152,6 +152,13 @@ vi.mock('../../carry-brief', async () => {
   return { ...actual, buildCarryBrief: (...a: unknown[]) => buildCarryBrief(...a) };
 });
 const emptyBrief = { ownerId: 'su-caller', loop: null, heldItems: [], walls: [], facts: [], awaits: [], fleet: null };
+// The flush gate re-checks held-item state immediately before refusing. Keep the
+// request-compaction handler test hermetic while exercising that real wiring.
+const getWorkItem = vi.hoisted(() => vi.fn());
+vi.mock('../../work-items', async () => {
+  const actual = await vi.importActual<typeof import('../../work-items')>('../../work-items');
+  return { ...actual, getWorkItem: (...a: unknown[]) => getWorkItem(...a) };
+});
 
 // P-018: the deterministic successor spec. Mocked so tests drive firstPrompt /
 // openOwnerQuestion / null-assembly branches without a real transcript.
@@ -224,9 +231,11 @@ beforeEach(async () => {
   vi.clearAllMocks();
   await __resetRefusalMarkers(); // P-016 durable marker — isolate each test
   void __resetRespawnExpectedMarkers(); // EI-18676518990229124 — same module-level isolation
+  delete process.env.PAPERCUSP_FLUSH_GATE;
   injectIntoHost.mockResolvedValue(true);
   readPriorRespawnOutcome.mockResolvedValue({ outcome: 'none' });
   buildCarryBrief.mockResolvedValue(emptyBrief);
+  getWorkItem.mockResolvedValue({ state: 'wip' });
   buildOwnerRespawnLaunchSpec.mockResolvedValue(closedSpec);
   contextWindowForOwner.mockResolvedValue(null);
   getLoopStatus.mockResolvedValue(null);
@@ -968,6 +977,41 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(b.staleCheckpoints).toEqual([]);
     expect(b.note).not.toContain('NO checkpoint');
     expect(b.ok).toBe(true);
+  });
+
+  it('terminal held item filtered by the gate re-check → no dead-end checkpoint warning', async () => {
+    const id = 'EI-21934531959724440';
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      heldItems: [{ id, title: 'already done', body: null, harness: 'papercusp', checkpoint: null }],
+    });
+    getWorkItem.mockResolvedValue({ id, state: 'done' });
+
+    const b = body(await call({ focus: 'x' }));
+
+    expect(getWorkItem).toHaveBeenCalledWith(id, 'papercusp');
+    expect(b).toMatchObject({ ok: true, requested: true, staleCheckpoints: [] });
+    expect(b.note).not.toContain('flush-integrity');
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
+  });
+
+  it('disabled gate preserves the advisory and still proceeds fail-open', async () => {
+    const id = 'EI-21934531959724440';
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      heldItems: [{ id, title: 'gate disabled', body: null, harness: 'papercusp', checkpoint: null }],
+    });
+    process.env.PAPERCUSP_FLUSH_GATE = 'off';
+
+    const b = body(await call({ focus: 'x' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      requested: true,
+      staleCheckpoints: [{ id, title: 'gate disabled', reason: 'missing' }],
+    });
+    expect(b.note).toContain(id);
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
   });
 
   it('a held item WITH a checkpoint → not flagged', async () => {

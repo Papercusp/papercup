@@ -205,6 +205,36 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
   });
 
+  it('EI-21989135403192173: lifts a legacy check-level schemaRevision into a nested probe before validation', () => {
+    const revision = continuityProbeRevision(WORK_ITEM_CONTINUITY_TEST_TOOL)!;
+    const parsed = parse({
+      id: 'WI-7',
+      checks: [
+        {
+          claim: 'gate is green',
+          schemaRevision: 'live',
+          probe: {
+            tool: WORK_ITEM_CONTINUITY_TEST_TOOL,
+            args: { value: 'green' },
+            expect: { path: '$.value', op: 'eq' as const, value: 'green' },
+          },
+        },
+      ],
+    }) as { checks: Array<Record<string, unknown>> };
+
+    expect(parsed.checks[0]).toEqual({
+      claim: 'gate is green',
+      probe: {
+        kind: 'tool',
+        tool: WORK_ITEM_CONTINUITY_TEST_TOOL,
+        args: { value: 'green' },
+        schemaRevision: revision,
+        expect: { path: '$.value', op: 'eq', value: 'green' },
+      },
+    });
+    expect(parsed.checks[0]).not.toHaveProperty('schemaRevision');
+  });
+
   it('accepts the structured carry-note checkpoint shape in both shorthand forms', () => {
     const checkpointBody = {
       did: 'implemented the compatibility path',

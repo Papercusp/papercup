@@ -124,14 +124,16 @@ export async function recentFailingFiles(deps: WhyChainDeps = {}): Promise<strin
   } catch {
     return [];
   }
-  // Plain-value interpolation (no nested `sql` fragment tags): a scoping filter
-  // is expressed as `(<value> IS NULL OR col = <value>)` so every substitution
-  // is an ordinary parameter, not a fragment the outer template must recognize
-  // — this stays correct under a real postgres-js client AND a simplistic
-  // test-mock sql function alike (a nested `sql`` fragment used as a plain
-  // async call in a mock produces its own untracked promise).
-  const harnessFilter = deps.harnessSlug ?? null;
-  const workspaceFilter = deps.harnessSlug ? null : deps.workspaceId ?? null;
+  // WI-6055: choose the scope predicate before preparing the statement. A
+  // parameterized-null OR (`$1 IS NULL OR workspace_id = $1`) cannot expose an
+  // index equality to a GENERIC plan. The unscoped branch binds a plain TRUE so
+  // injectable one-call SqlLike test doubles do not have to manufacture an
+  // empty postgres.js fragment.
+  const scopePredicate = deps.harnessSlug
+    ? sql`harness_slug = ${deps.harnessSlug}`
+    : deps.workspaceId
+      ? sql`workspace_id = ${deps.workspaceId}`
+      : true;
   try {
     const rows = (await sql`
       SELECT DISTINCT ON (file_path) file_path, status, finished_at
@@ -140,8 +142,7 @@ export async function recentFailingFiles(deps: WhyChainDeps = {}): Promise<strin
          AND finished_at > now() - interval '2 hours'
          AND status IN ('fail', 'error')
          AND file_path NOT LIKE ${RESTORED_CHECKOUT_PREFIX + '%'}
-         AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
-         AND (${workspaceFilter}::text IS NULL OR workspace_id = ${workspaceFilter})
+         AND ${scopePredicate}
        ORDER BY file_path ASC, finished_at DESC
     `) as unknown as Array<{ file_path: string; finished_at: string }>;
     return rows
@@ -259,8 +260,13 @@ export async function ledgerFilesForCandidate(candidateShort: string | null, dep
   } catch {
     return [];
   }
-  const harnessFilter = deps.harnessSlug ?? null;
-  const workspaceFilter = deps.harnessSlug ? null : deps.workspaceId ?? null;
+  // WI-6055: keep the prepared statement's scope arm as a direct equality;
+  // see recentFailingFiles for why the nullable-parameter OR is not used.
+  const scopePredicate = deps.harnessSlug
+    ? sql`harness_slug = ${deps.harnessSlug}`
+    : deps.workspaceId
+      ? sql`workspace_id = ${deps.workspaceId}`
+      : true;
   try {
     const rows = (await sql`
       SELECT DISTINCT file_path
@@ -270,8 +276,7 @@ export async function ledgerFilesForCandidate(candidateShort: string | null, dep
          AND source = 'ci'
          AND file_path NOT LIKE ${RESTORED_CHECKOUT_PREFIX + '%'}
          AND worktree_dirty = false
-         AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
-         AND (${workspaceFilter}::text IS NULL OR workspace_id = ${workspaceFilter})
+         AND ${scopePredicate}
        LIMIT 50
     `) as unknown as Array<{ file_path: string }>;
     return rows.map((r) => r.file_path);

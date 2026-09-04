@@ -79,13 +79,14 @@ export default defineTool({
     if (args.recent) {
       const limit = args.limit ?? 50;
       const { sql } = getOrgPg();
+      const workspacePredicate = ctx.workspaceId == null ? true : sql`workspace_id = ${ctx.workspaceId}`;
       // Every reaction is fired under spawn_id='event-reaction' and audited with
       // metadata_json.reaction = { depth, chain, ruleId, rootRunId } (D-010).
       const rows = await sql<ReactionAuditRow[]>`
         SELECT tool_name, status, invoked_at, duration_ms, metadata_json -> 'reaction' AS reaction
         FROM harness_shared.tool_invocations
         WHERE spawn_id = 'event-reaction'
-          AND (${ctx.workspaceId ?? null}::text IS NULL OR workspace_id = ${ctx.workspaceId ?? null})
+          AND ${workspacePredicate}
         ORDER BY invoked_at DESC
         LIMIT ${limit}
       `;

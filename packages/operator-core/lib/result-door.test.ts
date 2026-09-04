@@ -580,7 +580,7 @@ describe('applyResultDoor', () => {
     const parsed = parseProjection({ pick: ['results[].detail'] });
     if (!parsed.ok) throw new Error(parsed.error);
     const projected = applyResultProjection(
-      { content: [{ type: 'text' as const, text: original }] },
+      { content: [{ type: 'text' as const, text: original }] } as DoorableResult,
       parsed.spec,
       { toolName: 'work_items:list', effect: 'read' },
     );
