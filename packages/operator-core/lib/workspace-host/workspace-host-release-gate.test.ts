@@ -3,8 +3,12 @@ import { createHash } from 'node:crypto';
 import {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+  WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+  WORKSPACE_HOST_BUILDER_KINDS,
+  WORKSPACE_HOST_BUILDER_TEMPLATE_SHAPES,
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
+  WORKSPACE_HOST_IMAGE_FAMILY_BUILDER_KINDS,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
   WORKSPACE_HOST_SIDECAR_BUILDER_KIND,
   buildWorkspaceHostBuildManifest,
@@ -12,6 +16,7 @@ import {
   workspaceHostRequiredReleaseMaterialFixtures,
   buildWorkspaceHostCleanRoomInstallFixture,
   workspaceHostCleanRoomFixtureAttestation,
+  type WorkspaceHostBuilderKind,
   type WorkspaceHostCleanRoomAcceptanceReport,
   type WorkspaceHostCleanRoomInstallSpec,
   type WorkspaceHostImageArtifact,
@@ -27,8 +32,10 @@ const SIGNING_PUBLIC_KEY = 'untrusted comment: Papercusp workspace-host release 
 const SIGNING_KEY_DIGEST = createHash('sha256').update(SIGNING_PUBLIC_KEY, 'utf8').digest('hex');
 const SBOM_DIGEST = 'b'.repeat(64);
 
+// Taken from the contract's own kind union rather than restated: a builder kind added there
+// without a case here would otherwise be untestable without a compile error to say so.
 type BuilderOverride = Partial<{
-  kind: typeof WORKSPACE_HOST_SHARED_BUILDER_KIND | typeof WORKSPACE_HOST_SIDECAR_BUILDER_KIND;
+  kind: WorkspaceHostBuilderKind;
   templatePath: string;
 }>;
 
@@ -272,6 +279,138 @@ describe('evaluateWorkspaceHostReleaseGate', () => {
 
     expect(verdict.failures.filter((entry) => entry.code === 'unsupported-builder')).toEqual([]);
     expect(verdict.accepted).toBe(true);
+  });
+
+  // P-307: the bake collapses onto bootc-image-builder, so a second builder kind has to be
+  // legal here. The point of the change is that kind and template stay PAIRED — the gate did
+  // not become a looser allowlist that accepts either extension from either builder.
+  describe('the bootc builder (P-307)', () => {
+    const CONTAINERFILE = 'infra/images/bootc/workspace-host.Containerfile';
+
+    it('accepts the bootc builder kind paired with a Containerfile', () => {
+      const candidate = artifact('2026.8.22-1', {
+        kind: WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+        templatePath: CONTAINERFILE,
+      });
+      const verdict = evaluateWorkspaceHostReleaseGate({
+        artifact: candidate,
+        trustReport: trustReport(),
+        compatibilityRequest: compatibilityRequest(),
+        cleanRoomReport: cleanRoomReport(candidate),
+      });
+
+      expect(verdict.failures.filter((entry) => entry.code === 'unsupported-builder')).toEqual([]);
+      expect(verdict.accepted).toBe(true);
+    });
+
+    it('rejects the bootc builder kind pointed at a Packer template', () => {
+      const candidate = artifact('2026.8.22-1', {
+        kind: WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+        templatePath: 'infra/images/workspace-host.pkr.hcl',
+      });
+      const verdict = evaluateWorkspaceHostReleaseGate({
+        artifact: candidate,
+        trustReport: trustReport(),
+        compatibilityRequest: compatibilityRequest(),
+        cleanRoomReport: cleanRoomReport(candidate),
+      });
+
+      expect(verdict.accepted).toBe(false);
+      const failure = verdict.failures.find((entry) => entry.code === 'unsupported-builder');
+      expect(failure?.message).toContain('Containerfile');
+    });
+
+    // The falsifier for the whole design. A "just allow both extensions" implementation passes
+    // every other case here and fails this one: it would hand a Containerfile to `packer build`
+    // and reproduce EI-21750653220169836 with a different file.
+    it('rejects the Packer builder kind pointed at a Containerfile', () => {
+      const candidate = artifact('2026.8.22-1', {
+        kind: WORKSPACE_HOST_SHARED_BUILDER_KIND,
+        templatePath: CONTAINERFILE,
+      });
+      const verdict = evaluateWorkspaceHostReleaseGate({
+        artifact: candidate,
+        trustReport: trustReport(),
+        compatibilityRequest: compatibilityRequest(),
+        cleanRoomReport: cleanRoomReport(candidate),
+      });
+
+      expect(verdict.accepted).toBe(false);
+      const failure = verdict.failures.find((entry) => entry.code === 'unsupported-builder');
+      expect(failure?.message).toContain('Packer template');
+    });
+
+    // Two different repairs must not wear one message: an ineligible KIND is a routing mistake,
+    // a wrong template EXTENSION is a manifest-authoring mistake, and a reader told the wrong
+    // one goes to the wrong file. This is the same distinguishability discipline D-287/D-288
+    // imposed on the signature refusals.
+    it('distinguishes an ineligible builder kind from a mismatched template', () => {
+      const ineligible = artifact('2026.8.22-1', {
+        kind: WORKSPACE_HOST_SIDECAR_BUILDER_KIND,
+        templatePath: 'papercusp-desktop/bin/build-desktop-sidecar.sh',
+      });
+      const mismatched = artifact('2026.8.22-1', {
+        kind: WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+        templatePath: 'infra/images/workspace-host.pkr.hcl',
+      });
+      const messageFor = (candidate: WorkspaceHostImageArtifact) =>
+        evaluateWorkspaceHostReleaseGate({
+          artifact: candidate,
+          trustReport: trustReport(),
+          compatibilityRequest: compatibilityRequest(),
+          cleanRoomReport: cleanRoomReport(candidate),
+        }).failures.find((entry) => entry.code === 'unsupported-builder')?.message;
+
+      const ineligibleMessage = messageFor(ineligible);
+      const mismatchedMessage = messageFor(mismatched);
+      expect(ineligibleMessage).toContain('cannot produce an image-family release');
+      expect(mismatchedMessage).toContain('is not a Containerfile');
+      expect(ineligibleMessage).not.toEqual(mismatchedMessage);
+    });
+
+    // FALSIFIABILITY CONTROL, kept permanently rather than proven once by mutating the tree.
+    // The tempting wrong implementation of P-307 is "allow either extension for either kind" —
+    // a single union pattern instead of a per-kind table. It passes the accept case and both
+    // wrong-extension cases above, so those alone do not discriminate. Here the loosened table
+    // is built explicitly and shown to accept the pairing the real table refuses, which is what
+    // makes the assertions above evidence rather than decoration. The calibration half — the
+    // real table accepting its own legitimate pairing — runs alongside it, so a table broken
+    // outright cannot make this pass by refusing everything.
+    it('discriminates against a loosened any-extension table', () => {
+      const loosened = new RegExp(
+        Object.values(WORKSPACE_HOST_BUILDER_TEMPLATE_SHAPES)
+          .map((shape) => shape.pattern.source)
+          .join('|'),
+      );
+      const CONTAINERFILE_PATH = CONTAINERFILE;
+      const PACKER_PATH = 'infra/images/workspace-host.pkr.hcl';
+
+      // The wrong implementation would accept every pairing…
+      expect(loosened.test(CONTAINERFILE_PATH)).toBe(true);
+      expect(loosened.test(PACKER_PATH)).toBe(true);
+
+      // …while the real, per-kind table keeps them apart in BOTH directions.
+      const packerShape = WORKSPACE_HOST_BUILDER_TEMPLATE_SHAPES[WORKSPACE_HOST_SHARED_BUILDER_KIND];
+      const bootcShape = WORKSPACE_HOST_BUILDER_TEMPLATE_SHAPES[WORKSPACE_HOST_BOOTC_BUILDER_KIND];
+      expect(packerShape.pattern.test(PACKER_PATH)).toBe(true); // calibration
+      expect(bootcShape.pattern.test(CONTAINERFILE_PATH)).toBe(true); // calibration
+      expect(packerShape.pattern.test(CONTAINERFILE_PATH)).toBe(false);
+      expect(bootcShape.pattern.test(PACKER_PATH)).toBe(false);
+    });
+
+    // The eligible-kinds list is DERIVED from the shape table. Restating it by hand is how the
+    // gate and the contract come to disagree about which builders may cut an image.
+    it('derives the image-family kinds from the shape table', () => {
+      for (const kind of WORKSPACE_HOST_BUILDER_KINDS) {
+        expect(WORKSPACE_HOST_IMAGE_FAMILY_BUILDER_KINDS.includes(kind)).toBe(
+          WORKSPACE_HOST_BUILDER_TEMPLATE_SHAPES[kind].imageFamilyEligible,
+        );
+      }
+      expect(WORKSPACE_HOST_IMAGE_FAMILY_BUILDER_KINDS).toContain(WORKSPACE_HOST_BOOTC_BUILDER_KIND);
+      expect(WORKSPACE_HOST_IMAGE_FAMILY_BUILDER_KINDS).not.toContain(
+        WORKSPACE_HOST_SIDECAR_BUILDER_KIND,
+      );
+    });
   });
 
   it('rejects a trust report for different release bytes', () => {

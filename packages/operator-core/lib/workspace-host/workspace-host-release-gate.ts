@@ -1,10 +1,14 @@
 import {
+  WORKSPACE_HOST_BUILDER_KINDS,
+  WORKSPACE_HOST_BUILDER_TEMPLATE_SHAPES,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
-  WORKSPACE_HOST_PACKER_BUILDER_KIND,
+  WORKSPACE_HOST_IMAGE_FAMILY_BUILDER_KINDS,
   evaluateWorkspaceHostImageCompatibility,
   validateWorkspaceHostImageArtifact,
   verifyWorkspaceHostBuildManifest,
   type WorkspaceHostBuildManifestVerification,
+  type WorkspaceHostBuilderKind,
+  type WorkspaceHostBuilderTemplateShape,
   type WorkspaceHostCleanRoomAcceptanceCheck,
   type WorkspaceHostCleanRoomAcceptanceReport,
   type WorkspaceHostImageArtifact,
@@ -27,11 +31,18 @@ const SHA256 = /^[a-f0-9]{64}$/;
 
 /**
  * Every image-family release path (GCP, AWS, Azure) feeds
- * `buildManifest.builder.templatePath` straight into `packer init` / `packer build`.
- * A Packer template is `.pkr.hcl` or `.pkr.json`; anything else cannot be a template
- * no matter what digest it carries.
+ * `buildManifest.builder.templatePath` straight into the named builder — `packer init` /
+ * `packer build` for Packer, `podman build` + `bootc-image-builder` for bootc. A template
+ * that does not have that builder's shape cannot be built no matter what digest it carries.
+ *
+ * P-307 replaced a hardcoded packer-only pair of checks with the shared
+ * WORKSPACE_HOST_BUILDER_TEMPLATE_SHAPES table so a second builder could exist without this
+ * gate and the manifest contract disagreeing about which kinds are legal. The eligibility
+ * question and the shape question stay SEPARATE below, because they have different repairs:
+ * a kind that may not cut an image at all is a routing mistake, while a wrong template
+ * extension is a manifest-authoring mistake, and one message for both sends readers to the
+ * wrong file.
  */
-const PACKER_TEMPLATE_PATH = /\.pkr\.(hcl|json)$/;
 
 export type WorkspaceHostReleaseGateFailureCode =
   | 'clean-room-rejected'
@@ -109,14 +120,20 @@ export function evaluateWorkspaceHostReleaseGate(
   // (EI-21750653220169836; the r8 workspace-host artifact shipped exactly that way).
   const builder = input.artifact.buildManifest.builder;
   const builderErrors: string[] = [];
-  if (builder.kind !== WORKSPACE_HOST_PACKER_BUILDER_KIND) {
+  const shape = WORKSPACE_HOST_BUILDER_TEMPLATE_SHAPES[
+    builder.kind as WorkspaceHostBuilderKind
+  ] as WorkspaceHostBuilderTemplateShape | undefined;
+  if (!shape) {
     builderErrors.push(
-      `builder.kind must be '${WORKSPACE_HOST_PACKER_BUILDER_KIND}' for an image-family release, got '${builder.kind}'`,
+      `builder.kind '${builder.kind}' is not a known workspace-host builder (expected one of ${WORKSPACE_HOST_BUILDER_KINDS.join(', ')})`,
     );
-  }
-  if (!PACKER_TEMPLATE_PATH.test(builder.templatePath)) {
+  } else if (!shape.imageFamilyEligible) {
     builderErrors.push(
-      `builder.templatePath '${builder.templatePath}' is not a Packer template (expected a .pkr.hcl or .pkr.json path)`,
+      `builder.kind '${builder.kind}' cannot produce an image-family release (eligible kinds: ${WORKSPACE_HOST_IMAGE_FAMILY_BUILDER_KINDS.join(', ')})`,
+    );
+  } else if (!shape.pattern.test(builder.templatePath)) {
+    builderErrors.push(
+      `builder.templatePath '${builder.templatePath}' is not ${shape.description}, which is what builder.kind '${builder.kind}' builds`,
     );
   }
   if (builderErrors.length > 0) {

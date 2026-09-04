@@ -10,9 +10,21 @@ export const WORKSPACE_HOST_BUILD_MANIFEST_SCHEMA_VERSION = 1;
 export const WORKSPACE_HOST_PACKER_BUILDER_KIND = "hashicorp-packer";
 export const WORKSPACE_HOST_SIDECAR_BUILDER_KIND =
   "papercusp-desktop-sidecar";
+/**
+ * P-307 / D-254 — the bootc producer. One OCI image is built once, then
+ * `bootc-image-builder` renders it to each cloud's disk format (gce / ami / vhd), so the
+ * per-cloud BAKE paths collapse to one while the per-cloud PUBLISH adapters stay as they
+ * are (each cloud's image registry genuinely differs, and D-253 keeps them).
+ *
+ * Its `templatePath` names a Containerfile, not a `.pkr.hcl` — see
+ * WORKSPACE_HOST_BUILDER_TEMPLATE_SHAPES, which is what keeps a builder kind and the
+ * template file it is handed from drifting apart.
+ */
+export const WORKSPACE_HOST_BOOTC_BUILDER_KIND = "bootc-image-builder";
 export const WORKSPACE_HOST_BUILDER_KINDS = [
   WORKSPACE_HOST_PACKER_BUILDER_KIND,
   WORKSPACE_HOST_SIDECAR_BUILDER_KIND,
+  WORKSPACE_HOST_BOOTC_BUILDER_KIND,
 ] as const;
 export type WorkspaceHostBuilderKind =
   (typeof WORKSPACE_HOST_BUILDER_KINDS)[number];
@@ -20,6 +32,63 @@ export type WorkspaceHostBuilderKind =
 /** Backward-compatible name for the D-047 VM-image builder. */
 export const WORKSPACE_HOST_SHARED_BUILDER_KIND =
   WORKSPACE_HOST_PACKER_BUILDER_KIND;
+
+/**
+ * What a given builder kind's `templatePath` must LOOK like, and which kinds may produce a
+ * VM image at all. Kept beside the kinds themselves so the two cannot drift: adding a kind
+ * without deciding its template shape is a type error, not a runtime surprise.
+ *
+ * This table exists because the field used to be stored and never read. A manifest naming
+ * the desktop-sidecar builder — whose "template" is a bash script — passed every gate and
+ * died later at `packer init`, with an error naming Packer rather than the manifest field
+ * that chose the file (EI-21750653220169836; the r8 workspace-host artifact shipped exactly
+ * that way). The point is to refuse the manifest BEFORE anything billable runs, naming the
+ * field that is actually wrong.
+ *
+ * `imageFamilyEligible: false` still gets a shape, deliberately: the sidecar bundle is a
+ * real builder with a real template, it simply may not cut a VM image. Encoding that as a
+ * missing entry would make "unknown kind" and "known kind, wrong job" indistinguishable —
+ * the same collapse-two-causes-into-one-message defect this table is here to prevent.
+ */
+export interface WorkspaceHostBuilderTemplateShape {
+  /** Matches the templatePath a build of this kind is handed. */
+  readonly pattern: RegExp;
+  /** Human description of the accepted shape, for the refusal message. */
+  readonly description: string;
+  /** Whether this kind may produce a workspace-host VM image release. */
+  readonly imageFamilyEligible: boolean;
+}
+
+export const WORKSPACE_HOST_BUILDER_TEMPLATE_SHAPES: Readonly<
+  Record<WorkspaceHostBuilderKind, WorkspaceHostBuilderTemplateShape>
+> = {
+  [WORKSPACE_HOST_PACKER_BUILDER_KIND]: {
+    pattern: /\.pkr\.(hcl|json)$/,
+    description: "a Packer template (.pkr.hcl or .pkr.json)",
+    imageFamilyEligible: true,
+  },
+  [WORKSPACE_HOST_BOOTC_BUILDER_KIND]: {
+    // bootc-image-builder consumes an OCI image built from a Containerfile; the manifest
+    // pins the Containerfile because that is the in-repo, content-addressable input.
+    pattern: /(^|\/)[^/]*Containerfile$/,
+    description: "a Containerfile",
+    imageFamilyEligible: true,
+  },
+  [WORKSPACE_HOST_SIDECAR_BUILDER_KIND]: {
+    pattern: /\.(sh|mjs|ts)$/,
+    description: "a sidecar build script (.sh, .mjs or .ts)",
+    imageFamilyEligible: false,
+  },
+};
+
+/**
+ * The builder kinds that may cut a workspace-host VM image release, derived from the table
+ * above rather than restated — a second hand-maintained list is how the two disagree.
+ */
+export const WORKSPACE_HOST_IMAGE_FAMILY_BUILDER_KINDS: readonly WorkspaceHostBuilderKind[] =
+  WORKSPACE_HOST_BUILDER_KINDS.filter(
+    (kind) => WORKSPACE_HOST_BUILDER_TEMPLATE_SHAPES[kind].imageFamilyEligible,
+  );
 
 export type WorkspaceHostBuildParameterValue = string | number | boolean;
 

@@ -20,9 +20,23 @@
 # Direction of failure: FAIL-CLOSED. Omitting this file never admits an unsigned image; it
 # makes every upgrade fail instead. Safe, and completely opaque — hence this comment.
 #
-# `<RELEASE_REGISTRY_NAMESPACE>` is the same placeholder the policy uses and is P-307's to
-# establish. The registry key here is a HOST[:PORT], not a repository path, so when P-307
-# substitutes it, this file takes only the host part of that namespace.
+# `<RELEASE_REGISTRY_NAMESPACE>` is the same placeholder the policy uses. P-307 substitutes it
+# at BUILD time from the `RELEASE_REGISTRY_NAMESPACE` build arg (workspace-host.Containerfile
+# layer 3), in this file and the policy together — never one without the other.
+#
+# ⚠ CORRECTED 2026-09-04 (P-307). This comment previously claimed "the registry key here is a
+# HOST[:PORT], not a repository path, so this file takes only the host part". That is FALSE, and
+# `p307-registries-d-scope-probe.sh` measured it: containers-registries.d(5) keys take the SAME
+# scope ladder policy.json uses, and the probe accepted a full repository path (A), a repository
+# namespace (A2) and a bare host (B) alike. So both files carry the SAME substituted string;
+# splitting the value across two shapes was never necessary and only invited them to diverge.
+#
+# ⛔ THE PORT IS PART OF THE SCOPE, and this is the trap that IS real. containers-registries.d(5):
+# "if a registry is accessed using a hostname+port configuration, the port-less hostname is not
+# used as parent scope." Probe D confirmed it on the real implementation — a port-less key
+# matched nothing, and the refusal was BYTE-IDENTICAL to the unsigned-image message. Dropping a
+# non-default port here yields an image that cannot pull its own release while blaming the
+# signature. Substitute the port whenever the release registry uses one.
 docker:
   <RELEASE_REGISTRY_NAMESPACE>:
     use-sigstore-attachments: true

@@ -186,10 +186,64 @@ RUN set -eux; \
 # registry carries `use-sigstore-attachments: true`, and without it a correctly signed
 # image is refused with the SAME message an unsigned one gets ("A signature was
 # required, but no signature exists"). Fail-closed, and totally opaque. Ship both.
+#
+# P-307 substitutes `<RELEASE_REGISTRY_NAMESPACE>` HERE, at build time, from a build arg —
+# the files stay templates in the repo so the DEFAULT build still fails closed exactly as
+# D-262 condition 1 requires (and `p306-image-build-probe.sh` still asserts the placeholder
+# survives an unparameterised build).
+#
+# MEASURED by `p307-registries-d-scope-probe.sh` (2026-09-04), which decides the two rules
+# below. Both were open questions this layer used to get wrong:
+#
+#   * ONE STRING SERVES BOTH FILES. containers-registries.d(5) keys accept the same scope
+#     ladder policy.json uses — the probe accepted a repository path (A), a repository
+#     namespace (A2) and a bare host (B). The claim previously carried in
+#     release-registries.d.yaml, that this file "takes only the host part", is FALSE, and
+#     acting on it would have split one value across two files for no reason.
+#   * THE PORT IS PART OF THE SCOPE. A port-less hostname does NOT match a registry reached
+#     on an explicit port (probe D) — and the resulting refusal is BYTE-IDENTICAL to the
+#     unsigned-image message ("A signature was required, but no signature exists"). So a
+#     value that drops a non-default port produces an image that cannot pull its own
+#     release and blames the signature for it. Pass the port if the registry uses one.
+#
+# The substitution is all-or-nothing across BOTH files. A half-substituted image is the
+# worst outcome available here: the policy would name the real registry while registries.d
+# still named the placeholder, so containers/image would never look for the attachment and
+# would refuse every upgrade with that same unsigned-looking string. Checking it at BUILD
+# time turns an opaque runtime failure into a loud one.
+ARG RELEASE_REGISTRY_NAMESPACE=
 COPY release-signature-policy.json /etc/containers/policy.json
 COPY release-registries.d.yaml /etc/containers/registries.d/papercusp-release.yaml
-RUN chmod 0644 /etc/containers/policy.json /etc/containers/registries.d/papercusp-release.yaml \
-    && install -d -m 0755 /etc/pki/papercusp
+RUN set -eu; \
+    POL=/etc/containers/policy.json; \
+    RD=/etc/containers/registries.d/papercusp-release.yaml; \
+    if [ -n "${RELEASE_REGISTRY_NAMESPACE}" ]; then \
+      case "${RELEASE_REGISTRY_NAMESPACE}" in \
+        *'<'*|*'>'*|*' '*|*'"'*) \
+          echo "FATAL: RELEASE_REGISTRY_NAMESPACE='${RELEASE_REGISTRY_NAMESPACE}' is not a registry scope" >&2; exit 1;; \
+        */) echo "FATAL: RELEASE_REGISTRY_NAMESPACE must not end in '/'" >&2; exit 1;; \
+        *.*|*:*|localhost*) ;; \
+        *) echo "FATAL: RELEASE_REGISTRY_NAMESPACE='${RELEASE_REGISTRY_NAMESPACE}' has no registry host — a bare repository name is not a scope" >&2; exit 1;; \
+      esac; \
+      sed -i "s|<RELEASE_REGISTRY_NAMESPACE>|${RELEASE_REGISTRY_NAMESPACE}|g" "$POL" "$RD"; \
+      for f in "$POL" "$RD"; do \
+        if grep -qF '<RELEASE_REGISTRY_NAMESPACE>' "$f"; then \
+          echo "FATAL: placeholder survived substitution in $f" >&2; exit 1; \
+        fi; \
+        if ! grep -qF "${RELEASE_REGISTRY_NAMESPACE}" "$f"; then \
+          echo "FATAL: $f does not name the release registry after substitution" >&2; exit 1; \
+        fi; \
+      done; \
+      install -d -m 0755 /usr/lib/papercusp; \
+      printf '%s\n' "${RELEASE_REGISTRY_NAMESPACE}" > /usr/lib/papercusp/release-registry-namespace; \
+    else \
+      for f in "$POL" "$RD"; do \
+        grep -qF '<RELEASE_REGISTRY_NAMESPACE>' "$f" || { \
+          echo "FATAL: $f lost its fail-closed placeholder without a substitution value" >&2; exit 1; }; \
+      done; \
+    fi; \
+    chmod 0644 "$POL" "$RD"; \
+    install -d -m 0755 /etc/pki/papercusp
 
 # ── Layer 4: firewall — ufw is NOT-IN-REPOS, nftables replaces it ─────────────
 #
