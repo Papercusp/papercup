@@ -317,6 +317,34 @@ describe('locks:acquire — outcome branches', () => {
     }
   });
 
+  it('a raw PostgreSQL 57014 after contention retries also degrades structurally — EI-22355580114287046', async () => {
+    // A raw postgres-js error can cross a package/transport boundary without
+    // the @papercusp/locks class identity. The handler must classify its SQLSTATE
+    // structurally after the shared retry budget, not leak handler_error.
+    routeM.mockRejectedValue(
+      Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }),
+    );
+    vi.useFakeTimers();
+    try {
+      const p = call({});
+      await vi.runAllTimersAsync();
+      const b = body(await p);
+
+      expect(b).toMatchObject({
+        ok: false,
+        reason: 'workspace_contended',
+        transient: true,
+        holder: 'unknown',
+        busy: [],
+      });
+      expect(String(b.advice)).toMatch(/retry/i);
+      expect(String(b.advice)).toMatch(/do NOT queue wake_on_grant/i);
+      expect(routeM).toHaveBeenCalledTimes(4); // initial attempt + 3 backoffs
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('EI-13189: a TRANSIENT contention that clears on retry acquires normally (no user-visible failure)', async () => {
     let n = 0;
     routeM.mockImplementation(async () => {

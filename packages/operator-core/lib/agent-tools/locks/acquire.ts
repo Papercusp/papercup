@@ -32,7 +32,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readFileLockIdentity } from './identity';
 import { enrichBusy } from './enrich-busy';
 import { inWorkspaceTxn, WorkspaceContendedError } from './in-workspace-txn';
-import { acquireWithContentionRetry } from './contention-retry';
+import { acquireWithContentionRetry, isWorkspaceContended } from './contention-retry';
 import {
   expireWaiter,
   getTxPool,
@@ -380,7 +380,12 @@ export default defineTool({
       // caller's OWN parallel edit, or a starved pool). A bare `busy: []` made
       // the edit hook fabricate a foreign-holder denial; return an explicit
       // transient reason instead so callers retry rather than queue a wake.
-      if (err instanceof WorkspaceContendedError) return workspaceContended();
+      // `WorkspaceContendedError` normally comes from @papercusp/locks, but
+      // transport/package boundaries can preserve only its discriminating
+      // name/pgCode (or expose the original postgres `code`). Use the shared
+      // structural classifier so a final raw 57014/55P03 is never leaked as
+      // handler_error merely because `instanceof` crossed a module boundary.
+      if (isWorkspaceContended(err)) return workspaceContended();
       // Defensive fallback: a fault in the authority-routing layer must never break the
       // live per-edit lock path — degrade to the raw local acquire (pre-cutover behavior),
       // itself contention-retried for the same reason as the primary path above.
@@ -389,7 +394,7 @@ export default defineTool({
       try {
         first = await acquireWithContentionRetry(localAcquire);
       } catch (err2) {
-        if (err2 instanceof WorkspaceContendedError) return workspaceContended();
+        if (isWorkspaceContended(err2)) return workspaceContended();
         throw err2;
       }
     }
