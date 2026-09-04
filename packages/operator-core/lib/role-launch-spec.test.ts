@@ -782,7 +782,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const real = (await importOriginal()) as Record<string, unknown>;
   return {
     ...real,
-    getOrgPg: () => ({ unsafe: (_q: string, params: unknown[]) => addressedReadMock.fn(params) }),
+    // The handle shape: `getOrgPg().sql` is the postgres `Sql` the reader calls `unsafe` on.
+    getOrgPg: () => ({ sql: { unsafe: (_q: string, params: unknown[]) => addressedReadMock.fn(params) } }),
   };
 });
 

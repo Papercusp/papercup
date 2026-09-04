@@ -73,7 +73,7 @@ export interface ReadAddressedGuidePartsInput {
  */
 export async function readAddressedGuideParts(input: ReadAddressedGuidePartsInput): Promise<AddressedGuidePart[]> {
   if (input.tokens.length === 0) return [];
-  const s = input.sql ?? getOrgPg();
+  const s = input.sql ?? getOrgPg().sql;
   const rows = (await s.unsafe(
     `SELECT part_key, body, ordinal, target_section, stack_scope
        FROM harness_shared.harness_doc_parts

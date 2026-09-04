@@ -630,6 +630,7 @@ async function main(): Promise<void> {
             client_scope: merged.clientScope,
             target_section: merged.targetSection,
             project_rank: merged.projectRank,
+            stack_scope: merged.stackScope,
           }
         : null,
     );
@@ -745,7 +746,7 @@ async function main(): Promise<void> {
     // the thing the author just spelled out.
     const narrowedToAudience =
       merged.stackScope.length > 0 && merged.clientScope.length > 0;
-    if (narrowedToAudience && impacts.some((i) => i.deprojected)) {
+    if (narrowedToAudience && (!existing || impacts.some((i) => i.deprojected))) {
       console.log(
         `\n  ⓘ '${partKey}' is ADDRESSED (${merged.stackScope.join(", ")}): it leaves the default\n` +
           `    ${impacts.filter((i) => i.deprojected).map((i) => i.file).join(" / ")} and is spliced at launch only into a\n` +
