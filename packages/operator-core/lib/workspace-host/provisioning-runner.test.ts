@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import type {
-  WorkspaceHostApplyResult,
-  WorkspaceHostDesiredSpec,
-  WorkspaceHostPlan,
-  WorkspaceHostPlanStep,
-  WorkspaceHostProvider,
-  WorkspaceHostProviderConnection,
-  WorkspaceHostResourceCheckpoint,
+import {
+  makeFakeWorkspaceHostProvider,
+  type WorkspaceHostApplyResult,
+  type WorkspaceHostDesiredSpec,
+  type WorkspaceHostPlan,
+  type WorkspaceHostPlanStep,
+  type WorkspaceHostProvider,
+  type WorkspaceHostProviderConnection,
+  type WorkspaceHostResourceCheckpoint,
 } from '@papercusp/deployment-driver';
 import {
   assertProviderConnectionUsable,
@@ -70,25 +71,13 @@ function providerHarness(steps: readonly WorkspaceHostPlanStep[]) {
     observedAt: '2026-08-25T00:00:10Z',
     drift: [],
   }));
-  const provider = {
+  // WI-40474 (bb2c68cd) added the hostBootstrap gate at
+  // input.provider.capabilities.lifecycle.hostBootstrap. The builder's all-false defaults
+  // preserve this suite's pre-existing behavior (no bootstrap render/consume), and being a
+  // real WorkspaceHostProviderCapabilities they cannot go silently stale the way the
+  // hand-written literal that used to sit here did (WI-2144032).
+  const provider = makeFakeWorkspaceHostProvider({
     target: 'gcp',
-    capabilities: {
-      // WI-40474 (bb2c68cd) added the hostBootstrap gate at
-      // input.provider.capabilities.lifecycle.hostBootstrap — lifecycle is a REQUIRED field on
-      // WorkspaceHostProviderCapabilities, so a mock provider must always declare it. `false`
-      // preserves this suite's pre-existing behavior (no bootstrap render/consume).
-      lifecycle: {
-        start: false,
-        stop: false,
-        restart: false,
-        snapshot: false,
-        restore: false,
-        upgrade: false,
-        repair: false,
-        confirmedDestroy: false,
-        hostBootstrap: false,
-      },
-    },
     validateConnection: vi.fn(async () => ({
       ok: true,
       checkedAt: '2026-08-25T00:00:00Z',
@@ -99,7 +88,7 @@ function providerHarness(steps: readonly WorkspaceHostPlanStep[]) {
     apply,
     reconcile,
     observe,
-  } as unknown as WorkspaceHostProvider;
+  });
   return { provider, apply, reconcile, observe };
 }
 

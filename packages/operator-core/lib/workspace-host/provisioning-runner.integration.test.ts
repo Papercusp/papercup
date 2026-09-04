@@ -13,7 +13,10 @@ import type {
   WorkspaceHostProviderConnection,
   WorkspaceHostResourceRef,
 } from '@papercusp/deployment-driver';
-import { WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION } from '@papercusp/deployment-driver';
+import {
+  WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
+  makeFakeWorkspaceHostProvider,
+} from '@papercusp/deployment-driver';
 import type { OrgTestDb } from '../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ appSql: null as any }));
@@ -71,9 +74,10 @@ function step(id: string, dependsOn: readonly string[] = []): WorkspaceHostPlanS
 function providerHarness(steps: readonly WorkspaceHostPlanStep[], operationId: string, hostId: string) {
   const apply = vi.fn<WorkspaceHostProvider['apply']>();
   const reconcile = vi.fn<WorkspaceHostProvider['reconcile']>();
-  const provider = {
+  // Capabilities default to all-false, which is what this suite exercises: the runner reads
+  // `capabilities.lifecycle.hostBootstrap` and must take the no-bootstrap path.
+  const provider = makeFakeWorkspaceHostProvider({
     target: 'gcp',
-    capabilities: {},
     validateConnection: vi.fn(async () => ({
       ok: true,
       checkedAt: '2026-08-25T00:00:00Z',
@@ -83,7 +87,7 @@ function providerHarness(steps: readonly WorkspaceHostPlanStep[], operationId: s
     plan: vi.fn(async () => ({
       planId: `plan:${operationId}`,
       operationId,
-      target: 'gcp',
+      target: 'gcp' as const,
       hostId,
       generatedAt: '2026-08-25T00:00:00Z',
       steps,
@@ -91,14 +95,14 @@ function providerHarness(steps: readonly WorkspaceHostPlanStep[], operationId: s
     })),
     apply,
     reconcile,
-    observe: vi.fn(async (host) => ({
+    observe: vi.fn<WorkspaceHostProvider['observe']>(async (host) => ({
       host,
       state: 'running' as const,
       resources: host.resources,
       observedAt: '2026-08-25T00:00:10Z',
       drift: [],
     })),
-  } as unknown as WorkspaceHostProvider;
+  });
   return { provider, apply, reconcile };
 }
 
@@ -118,9 +122,8 @@ function destroyProviderHarness(operationId: string, hostId: string, resources: 
       input: { op: `delete-${kind}`, resourceName: resource.providerId },
     };
   });
-  const provider = {
+  const provider = makeFakeWorkspaceHostProvider({
     target: 'gcp',
-    capabilities: {},
     validateConnection: vi.fn(async () => ({ ok: true, checkedAt: NOW, warnings: [], errors: [] })),
     plan: vi.fn(async () => ({
       planId: `plan:${operationId}`,
@@ -188,9 +191,7 @@ function destroyProviderHarness(operationId: string, hostId: string, resources: 
         },
       ],
     })),
-  } as unknown as WorkspaceHostProvider & {
-    inventoryManagedResources: () => Promise<unknown>;
-  };
+  });
   return provider;
 }
 

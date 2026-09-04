@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   WORKSPACE_HOST_CHAOS_CLASSES,
+  makeFakeWorkspaceHostProvider,
   type WorkspaceHostApplyResult,
   type WorkspaceHostPlan,
   type WorkspaceHostProvider,
@@ -60,9 +61,8 @@ function providerHarness() {
   };
   const apply = vi.fn<WorkspaceHostProvider['apply']>();
   const reconcile = vi.fn<WorkspaceHostProvider['reconcile']>();
-  const provider = {
+  const provider = makeFakeWorkspaceHostProvider({
     target: 'gcp',
-    capabilities: {},
     validateConnection: vi.fn(async () => ({
       ok: true,
       checkedAt: '2026-08-27T00:00:00Z',
@@ -72,14 +72,14 @@ function providerHarness() {
     plan: vi.fn(async () => plan),
     apply,
     reconcile,
-    observe: vi.fn(async (host) => ({
+    observe: vi.fn<WorkspaceHostProvider['observe']>(async (host) => ({
       host,
       state: 'running' as const,
       resources: host.resources,
       observedAt: '2026-08-27T00:00:10Z',
       drift: [],
     })),
-  } as unknown as WorkspaceHostProvider;
+  });
   return { provider, apply, reconcile };
 }
 
