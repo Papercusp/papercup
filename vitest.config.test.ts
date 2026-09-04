@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import {
+  DEFAULT_UNIT_TEST_TIMEOUT_MS,
+  sharedHostWorkerCap,
+} from '@papercusp/test-config/vitest-config';
 import rootConfig, { ROOT_VITEST_TSCONFIG_PROJECTS } from './vitest.config.ts';
 
 describe('repository-root Vitest discovery', () => {
@@ -19,5 +23,24 @@ describe('repository-root Vitest discovery', () => {
     expect(rootConfig.plugins).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: 'vite-tsconfig-paths' })]),
     );
+  });
+
+  it('uses the shared unit deadline and worker cap for direct root runs', () => {
+    const test = rootConfig.test as {
+      pool?: string;
+      testTimeout?: number;
+      maxWorkers?: number;
+      minWorkers?: number;
+    };
+    const expectedCap = sharedHostWorkerCap('forks');
+
+    expect(test.pool).toBe('forks');
+    expect(test.testTimeout).toBe(
+      Number(process.env.VITEST_UNIT_TIMEOUT_MS) || DEFAULT_UNIT_TEST_TIMEOUT_MS,
+    );
+    expect({ maxWorkers: test.maxWorkers, minWorkers: test.minWorkers }).toEqual({
+      maxWorkers: expectedCap.maxWorkers,
+      minWorkers: expectedCap.minWorkers,
+    });
   });
 });
