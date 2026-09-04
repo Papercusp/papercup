@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { rubricsProposeArgs } from './propose';
+import proposeTool, { rubricsProposeArgs } from './propose';
 
 const base = {
   rubricRef: 'release-readiness',
@@ -88,5 +88,19 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
 
     expect(parsed.success).toBe(true);
     if (parsed.success) expect(parsed.data.methodRef).toBeNull();
+  });
+
+  it('documents the acknowledgement needed when a revision removes a stored structured check', () => {
+    const parsed = rubricsProposeArgs.safeParse({
+      ...base,
+      allowMethodShrink: true,
+      shrinkReason: 'the deterministic check is intentionally retired with its test suite',
+    });
+
+    expect(parsed.success).toBe(true);
+    expect(proposeTool.description).toMatch(/removing a stored structured check/i);
+    expect(proposeTool.description).toMatch(/allowMethodShrink \+ shrinkReason/);
+    expect(proposeTool.guidance?.when).toMatch(/stored structured check/i);
+    expect(proposeTool.guidance?.chaining).toMatch(/structured check/i);
   });
 });

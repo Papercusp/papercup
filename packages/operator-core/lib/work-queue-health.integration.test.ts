@@ -206,6 +206,63 @@ describe('readWorkQueueHealth — stuck-items metric (P-008)', () => {
   });
 });
 
+describe('readWorkQueueHealth — settlement authority failures (WI-1338072)', () => {
+  const settlementProof = {
+    _completionEvidence: {
+      settlementManifest: {
+        residualPaths: [],
+      },
+    },
+  };
+
+  async function seedCompletion(
+    id: string,
+    opts: {
+      status?: string;
+      authority?: string | null;
+      payload?: unknown;
+      workspaceId?: string;
+    } = {},
+  ): Promise<void> {
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, authority, payload)
+      VALUES (
+        ${opts.workspaceId ?? WS}, ${H}, ${id}, ${id}, ${opts.status ?? 'done'}, 'bug',
+        ${opts.authority ?? 'proposed'},
+        ${opts.payload == null ? null : JSON.stringify(opts.payload)}::text::jsonb
+      )`;
+  }
+
+  it('counts a terminal proposed completion with an explicit empty residualPaths proof', async () => {
+    await seedCompletion('WI-settled-proposed', { payload: settlementProof });
+    const h = await readWorkQueueHealth(sql, { workspaceId: WS });
+    expect(h.settlementAuthorityFailures).toBe(1);
+  });
+
+  it('excludes ordinary proposed rows, non-terminal rows, and committed rows', async () => {
+    await seedCompletion('WI-missing-proof', { payload: { _completionEvidence: { settlementManifest: {} } } });
+    await seedCompletion('WI-residual', {
+      payload: {
+        _completionEvidence: {
+          settlementManifest: { residualPaths: [{ path: 'src/fix.ts', reason: 'missing-from-commit' }] },
+        },
+      },
+    });
+    await seedCompletion('WI-open', { status: 'open', payload: settlementProof });
+    await seedCompletion('WI-committed', { authority: 'committed', payload: settlementProof });
+    const h = await readWorkQueueHealth(sql, { workspaceId: WS });
+    expect(h.settlementAuthorityFailures).toBe(0);
+  });
+
+  it('scopes settlement failures to the requested workspace', async () => {
+    await seedCompletion('WI-local', { payload: settlementProof, workspaceId: WS });
+    await seedCompletion('WI-other', { payload: settlementProof, workspaceId: 'other-workspace' });
+    const h = await readWorkQueueHealth(sql, { workspaceId: WS });
+    expect(h.settlementAuthorityFailures).toBe(1);
+  });
+});
+
 describe('readWorkQueueHealth — reaper liveness (P-009)', () => {
   it('reaperStale=true and age null when the sweep has never recorded a run', async () => {
     const h = await readWorkQueueHealth(sql, { workspaceId: WS });

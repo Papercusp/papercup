@@ -617,6 +617,7 @@ async function collectWorkItems(ctx: HealthCtx): Promise<HealthPanel<WorkItemsHe
         deadHeldClaims: recovery.deadHeldFeatures,
         deadAssignedIssues: recovery.deadAssignedIssues,
         deadHeldAssignments: recovery.deadHeldAssignments,
+        settlementAuthorityFailures: recovery.settlementAuthorityFailures,
         reaperAgeSec: recovery.reaperAgeMs == null ? null : Math.round(recovery.reaperAgeMs / 1000),
         reaperStale: recovery.reaperStale,
       } : {}),
@@ -634,9 +635,10 @@ async function collectWorkItems(ctx: HealthCtx): Promise<HealthPanel<WorkItemsHe
       reaperAgeSec: data.reaperAgeSec,
       stuckTotal,
     });
+    const settlementAuthorityFailures = data.settlementAuthorityFailures ?? 0;
     return {
       status,
-      summary: `${data.total} items — ${data.todo} todo, ${inProgress} in-flight, ${data.blocked} blocked${data.needsHuman > 0 ? `, ${data.needsHuman} need human` : ''}${stuckTotal > 0 ? `, ${stuckTotal} stuck` : ''}${reaperWedged ? ' — REAPER WEDGED' : ''}`,
+      summary: `${data.total} items — ${data.todo} todo, ${inProgress} in-flight, ${data.blocked} blocked${data.needsHuman > 0 ? `, ${data.needsHuman} need human` : ''}${stuckTotal > 0 ? `, ${stuckTotal} stuck` : ''}${settlementAuthorityFailures > 0 ? `, ${settlementAuthorityFailures} settlement authority failure(s)` : ''}${reaperWedged ? ' — REAPER WEDGED' : ''}`,
       data,
       link: { label: 'Work', href: '/adv?tab=harnesses' },
       metrics: [
@@ -647,6 +649,7 @@ async function collectWorkItems(ctx: HealthCtx): Promise<HealthPanel<WorkItemsHe
         m('done', data.done),
         ...(recovery ? [
           m('stuck', stuckTotal, stuckTotal > 0 ? 'warn' : undefined),
+          m('settlement failures', settlementAuthorityFailures, settlementAuthorityFailures > 0 ? 'crit' : undefined),
           m('reaper age', data.reaperAgeSec == null ? '—' : `${data.reaperAgeSec}s`, reaperWedged ? 'crit' : data.reaperStale ? 'warn' : undefined),
         ] : []),
       ],

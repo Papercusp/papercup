@@ -1,6 +1,8 @@
 # Tool catalog
 URL: /internal/docs/endpoint-system/tool-catalog
 
+Every projected tool — built-in (defineTool) and plugin-contributed — exposed across HTTP and MCP transports. Counts in this page are approximate snapshots; agents should use agent_tools:list for the live, role-filtered view.
+
 Every projected tool — built-in (defineTool) and plugin-contributed — exposed across HTTP and MCP transports. Counts in this page are approximate snapshots; agents should use `agent_tools:list` for the live, role-filtered view.
 
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
@@ -117,21 +119,21 @@ In-repo plugins under `libs/papercusp/plugins/<name>/`. They run without a princ
 
 Code-graph queries proxied to a long-lived `gitnexus mcp` subprocess. Tools registered dynamically via `getDynamicTools()`.
 
-| Tool                      | What                                                                        |
-| ------------------------- | --------------------------------------------------------------------------- |
-| `gitnexus.list_repos`     | List indexed repos with stats (files, nodes, edges, communities, processes) |
-| `gitnexus.context`        | Repo overview + entrypoints                                                 |
-| `gitnexus.query`          | Natural-language query → ranked processes + symbols + timing                |
-| `gitnexus.cypher`         | Raw Cypher against the graph                                                |
-| `gitnexus.detect_changes` | Diff vs last index, surface impacted regions                                |
-| `gitnexus.impact`         | Find downstream impact of a symbol/file                                     |
-| `gitnexus.api_impact`     | API-surface change impact                                                   |
-| `gitnexus.route_map`      | HTTP routes + handlers                                                      |
-| `gitnexus.tool_map`       | MCP tools + handlers                                                        |
-| `gitnexus.shape_check`    | Validate input/output shapes against types                                  |
-| `gitnexus.rename`         | Symbol-aware rename plan (read-only suggestion)                             |
-| `gitnexus.group_list`     | List logical code groups                                                    |
-| `gitnexus.group_sync`     | Re-sync a group's membership                                                |
+| Tool                      | What                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gitnexus.list_repos`     | List indexed repos with stats (files, nodes, edges, communities, processes)                                                                                                                                                                                                                                                                                            |
+| `gitnexus.context`        | Repo overview + entrypoints                                                                                                                                                                                                                                                                                                                                            |
+| `gitnexus.query`          | **UNAVAILABLE / fail-closed before dispatch.** Historical builds returned empty or unranked noise; current real-symbol probes SIGSEGV the shared GitNexus MCP process (D-065). The bridge refuses this call locally so it cannot take down sibling tools. Use `rg` for keywords, `gitnexus.context` for a known symbol, or `graph:query` for callers/callees/topology. |
+| `gitnexus.cypher`         | Raw Cypher against the graph                                                                                                                                                                                                                                                                                                                                           |
+| `gitnexus.detect_changes` | Diff vs last index, surface impacted regions                                                                                                                                                                                                                                                                                                                           |
+| `gitnexus.impact`         | Find downstream impact of a symbol/file — an unrecognized `direction` silently falls back to `downstream` and self-reports `epistemic:"exact"` (WI-2142910); for "who calls this" use `graph:query { op:'callers' }` instead.                                                                                                                                          |
+| `gitnexus.api_impact`     | API-surface change impact                                                                                                                                                                                                                                                                                                                                              |
+| `gitnexus.route_map`      | HTTP routes + handlers                                                                                                                                                                                                                                                                                                                                                 |
+| `gitnexus.tool_map`       | MCP tools + handlers                                                                                                                                                                                                                                                                                                                                                   |
+| `gitnexus.shape_check`    | Validate input/output shapes against types                                                                                                                                                                                                                                                                                                                             |
+| `gitnexus.rename`         | Symbol-aware rename plan (read-only suggestion)                                                                                                                                                                                                                                                                                                                        |
+| `gitnexus.group_list`     | List logical code groups                                                                                                                                                                                                                                                                                                                                               |
+| `gitnexus.group_sync`     | Re-sync a group's membership                                                                                                                                                                                                                                                                                                                                           |
 
 ### `@papercupai/orchestrator-spawn` — **retired (2026-06-06)**
 

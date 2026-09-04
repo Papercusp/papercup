@@ -227,6 +227,10 @@ export interface WorkItemsHealth {
   deadAssignedIssues?: number;
   /** Active plan-item reservations past grace still held by a dead holder (EI-2535). */
   deadHeldAssignments?: number;
+  /** Terminal proposed completions whose settlement proof has no residual paths.
+   * The close proved its declared files were settled, but the authority upgrade
+   * was rejected or reverted, so the completion is not retained as committed. */
+  settlementAuthorityFailures?: number;
   /** Age of the stale-claim reaper's last recorded run, in seconds; null if never
    *  recorded (fresh boot / unknown). */
   reaperAgeSec?: number | null;

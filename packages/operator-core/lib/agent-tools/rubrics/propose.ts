@@ -66,7 +66,7 @@ const criterion = z.object({
         "kind:'tests' { files:[...] } = deterministic must-pass — paths must resolve against the live tree or " +
         "THIS PROPOSE IS REFUSED, and scorecards:emit actually RUNS the files at grading time (a contradicted " +
         "pass-rating refuses the emit); kind:'instrument' { instrumentKey } = the generalized instrument binding. " +
-        'Omitted = fuzzy judgment criterion',
+        'Omitted = fuzzy judgment criterion; when revising, intentionally removing a stored check requires allowMethodShrink:true plus shrinkReason',
     ),
 });
 
@@ -142,14 +142,14 @@ export const rubricsProposeArgs = z.object({
     .boolean()
     .optional()
     .describe(
-      "loss-guard ack: allow a criterion's method+replication procedure text to shrink >40% or lose its REPLICATION DRILL marker. Requires shrinkReason",
+      "loss-guard ack: allow a criterion's method+replication procedure text to shrink >40%, lose its REPLICATION DRILL marker, or intentionally remove its stored structured check (reverting deterministic enforcement to fuzzy judgment). Requires shrinkReason",
     ),
   shrinkReason: z
     .string()
     .min(1)
     .max(2000)
     .optional()
-    .describe('why the procedure shrink is intentional (required with allowMethodShrink)'),
+    .describe('why the procedure shrink or structured-check removal is intentional (required with allowMethodShrink)'),
   classDowngradeReason: z
     .string()
     .min(1)
@@ -178,11 +178,11 @@ export default defineTool({
   name: 'rubrics:propose',
   profile: 'engineer',
   description:
-    'Propose a rubric (the shared standard for a system characteristic) → status "proposed". ⚠ WHOLE-DOCUMENT REPLACE: re-proposing an existing rubricRef replaces ALL of its content — rubrics:get it first, edit, and resubmit EVERY criterion with its full method/replication text (a partial criteria list deletes the rest). Loss-guards enforce this: dropping a stored criterion key needs a dropKeys ack; shrinking a criterion\'s method+replication procedure >40% (or losing its REPLICATION DRILL marker) needs allowMethodShrink + shrinkReason.',
+    'Propose a rubric (the shared standard for a system characteristic) → status "proposed". ⚠ WHOLE-DOCUMENT REPLACE: re-proposing an existing rubricRef replaces ALL of its content — rubrics:get it first, edit, and resubmit EVERY criterion with its full method/replication text and structured check (a partial criteria list deletes the rest). Loss-guards enforce this: dropping a stored criterion key needs a dropKeys ack; removing a stored structured check or shrinking a criterion\'s method+replication procedure >40% (or losing its REPLICATION DRILL marker) needs allowMethodShrink + shrinkReason.',
   guidance: {
-    when: 'You see a recurring characteristic worth grading consistently and no rubric covers it — or you are REVISING an existing rubric (rubrics:get first; resubmit ALL criteria). Author each criterion: model + method + driftMarkers + its own replication drill (the copy-runnable testing procedure); methodRef points at the rubric-level long-form runbook.',
+    when: 'You see a recurring characteristic worth grading consistently and no rubric covers it — or you are REVISING an existing rubric (rubrics:get first; resubmit ALL criteria, including each stored structured check). Author each criterion: model + method + driftMarkers + its own replication drill (the copy-runnable testing procedure); methodRef points at the rubric-level long-form runbook. Omitting a stored structured check intentionally uses allowMethodShrink:true + shrinkReason because it weakens deterministic enforcement back to fuzzy judgment.',
     notWhen: 'A one-off finding — file a free-text observation instead. Activating an existing proposed rubric — rubrics:ratify. Check rubrics:search first to avoid a duplicate.',
-    chaining: 'rubrics:search (dedup) → rubrics:get (when revising — edit from the stored document, never from memory) → rubrics:propose → an independent reviewer calls rubrics:ratify. The result reports `completeness` (criteria lacking a replication drill; missing methodRef) and `replicationSqlCheck` (drill SQL that fails against live PG — read its `summary`; `findings` is REAL defects only, bind-placeholder noise split out) — fill/fix the gaps first.',
+    chaining: 'rubrics:search (dedup) → rubrics:get (when revising — edit from the stored document, never from memory) → rubrics:propose → an independent reviewer calls rubrics:ratify. Preserve every stored structured check; an intentional check removal uses allowMethodShrink:true + shrinkReason. The result reports `completeness` (criteria lacking a replication drill; missing methodRef) and `replicationSqlCheck` (drill SQL that fails against live PG — read its `summary`; `findings` is REAL defects only, bind-placeholder noise split out) — fill/fix the gaps first.',
     returns:
       "{ ok, rubric, completeness, replicationSqlCheck, statusOverride }. statusOverride is non-null ONLY for kind:'acceptance' when the requested activation was silently discarded because that rubricRef is already retired against its shipped plan — content still lands (ok:true, statusOverride.contentApplied:true) but the rubric stays retired; your submitted criteria/description/title DID overwrite the retired document (recoverable via plans:revision-diff, not rubrics:get). A retired-with-the-ship rubric IS the shipped plan's validation record — a NEW acceptance rubric for a shipped subjectPlan is REFUSED (subject_plan_shipped); only a goal subject takes a new rubricRef.",
     seeAlso: [

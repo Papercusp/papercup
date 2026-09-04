@@ -159,6 +159,9 @@ describe('workItemsStatus', () => {
   it('ok otherwise (backlog alone is not unhealthy)', () => {
     expect(workItemsStatus(wi({ blocked: 50 }))).toBe('ok');
   });
+  it('crit when a settled completion remains proposed (authority upgrade failed/reverted)', () => {
+    expect(workItemsStatus(wi({ settlementAuthorityFailures: 1 }))).toBe('crit');
+  });
   // Stuck-items recovery (work-queue-stuck-item-recovery P-008 / P-009), as
   // RECALIBRATED by fleet-lead-instrumentation-audit-2026-08-09 D-010 / P-016.
   it('crit when the reaper is WEDGED (recorded but aged-out) AND rows are actually rotting', () => {

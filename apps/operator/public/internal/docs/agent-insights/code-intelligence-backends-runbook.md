@@ -1,6 +1,8 @@
 # Code intelligence: which backend answers which question, and how to operate them
 URL: /internal/docs/agent-insights/code-intelligence-backends-runbook
 
+The operator runbook for code-intelligence backends (rg, LSP, GitNexus, ast-grep, packers): the ratified routing contract, pinned versions, six high-risk failure modes (including the fail-closed raw query path), and automatic GitNexus crash-residue recovery.
+
 The operator runbook for the code-intelligence backends (rg, LSP, GitNexus, ast-grep, packers): the ratified routing contract, the exact pinned versions and where they live, the SIX failure modes that return a CONFIDENT WRONG ANSWER rather than an error, and the crash-residue mode that once killed GitNexus fleet-wide while it still advertised 17 working tools. Re-verified against source at HEAD 2026-09-03 under plan code-intelligence-routing-lsp-gitnexus-2026-08-20.
 
 > Authored as P-019 of `code-intelligence-routing-lsp-gitnexus-2026-08-20`. The
@@ -91,18 +93,28 @@ npm install --prefix ~/.papercusp/vendor/lsp \
 npm install --prefix ~/.papercusp/vendor/gitnexus gitnexus@1.6.9
 ```
 
-## 3. The six failure modes that return a confident wrong answer
+## 3. Six high-risk failure modes: confident wrong answers or a hard-crashed evidence channel
 
-This is the section worth reading before you trust a result. Every entry fails
-*toward* a plausible answer, so nothing throws and nothing looks broken.
+This is the section worth reading before you trust a result. Five entries fail
+*toward* a plausible answer, so nothing looks broken. The raw natural-language
+query path is worse: current builds can crash the shared MCP child, so the bridge
+now fails it closed before dispatch.
 
-### 3.1 `gitnexus.query` returns unranked noise, not an empty set
+### 3.1 `gitnexus.query` is unavailable and fails closed before dispatch
 
-A nonsense symbol yields \~20 confident-looking rows, and a wrong argument name
-yields byte-identical output — proving the search term is never applied
-(measured, D-021). It is the one intent whose failure looks exactly like success.
-Use `gitnexus.context` / `gitnexus.impact`. Guidance that puts `gitnexus.query`
-in recommendation position is a lint failure (D-042).
+This path has never had a stable trustworthy result contract. D-021 measured
+\~20 unranked rows whose content ignored the query; WI-35557 later measured empty
+results. At P-019 acceptance on 2026-09-04, two independent real-symbol probes
+instead killed the shared GitNexus MCP process with SIGSEGV (D-065). That crash
+also removes the sibling `context` / `impact` / `trace` evidence channel until the
+child restarts.
+
+The bridge therefore refuses `gitnexus.query` locally **before** spawning or
+calling the child. Do not probe it to discover which historical outcome a runtime
+has. Use `rg` for keywords, `gitnexus.context` for an exact symbol already known by
+name/uid, and `graph:query` for callers/callees/topology. Guidance that puts
+`gitnexus.query` in recommendation position is a lint failure (D-042); guidance
+that asserts one absolute row outcome is stale (D-065).
 
 ### 3.2 A language server queried before project load returns the WRONG location
 

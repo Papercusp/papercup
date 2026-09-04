@@ -277,6 +277,13 @@ export function workItemsStatus(d: WorkItemsHealth): PanelStatus {
     (d.deadAssignedIssues ?? 0) +
     (d.deadHeldAssignments ?? 0);
 
+  // WI-1338072: a terminal proposed row with an explicit empty settlement
+  // residualPaths array has already proved its declared files against a commit.
+  // Remaining proposed authority therefore means the upgrade was rejected or
+  // reverted, not that the item is merely waiting for git-sync. This is a
+  // completion-integrity failure and must be red independently of reaper health.
+  if ((d.settlementAuthorityFailures ?? 0) > 0) return 'crit';
+
   // P-009: a recorded-but-aged-out reaper is WEDGED — the most severe work-queue
   // failure (stuck items accumulate silently). A null age = never recorded (fresh
   // boot / unknown) → warn, not crit, to avoid alarming on the ~1 boot interval
