@@ -13,8 +13,8 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 302
-  corpus-blocks: 262
+  corpus-parts: 303
+  corpus-blocks: 263
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 
@@ -2805,3 +2805,8 @@ scenarios** `packages/operator-core/lib/llm-testing/scenarios/<role>/`. **Never*
 fires for a new subsystem, widen a domain in
 `packages/operator-core/lib/testing-domains-registry.ts` then `npm run
 gen:contract` (root). See `/internal/docs/testing` §1.0a.
+
+## Fleet leaders — the Project guide is per-stack
+
+**Fleet leaders: your members read this repo's Project guide BY THEIR STACK, not by harness.** A doc part with a `stack_scope` (identities-v1 P-022) leaves the default `CLAUDE.md` and is spliced at launch only into a session whose stack matches — `blueprint:su.fleet-member`, `slot:autonomy`, `role:su`, …. Before you brief a lane, see what its members actually receive: `node scripts/project-doc-parts.mjs` prints the addressed inventory on every run, and `--audience=blueprint:su.fleet-member,slot:autonomy` previews a member-under-AUTO guide. A leader-only or member-only repo rule is authored once with `npm run set-doc-part -- --part-key <key> --stack-scope <tokens> --client-scope all …` — never as a per-member kickoff paragraph, which no successor can find. (This part is itself addressed to `blueprint:su.fleet-leader`: a member never sees it.)
+
