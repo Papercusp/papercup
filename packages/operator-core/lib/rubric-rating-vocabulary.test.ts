@@ -1,0 +1,123 @@
+import { describe, expect, it } from 'vitest';
+import {
+  assertRubricRatingVocabulary,
+  extractRubricRatingInstructions,
+  validateRubricRatingVocabulary,
+} from './rubric-rating-vocabulary';
+import { proposeRubric, type ProposeRubricCriterion } from './rubrics';
+
+const criterion = (over: Partial<ProposeRubricCriterion> & { key: string }): ProposeRubricCriterion => {
+  const { key, title, model, method, driftMarkers, ...rest } = over;
+  return {
+    key,
+    title: title ?? `Criterion ${key}`,
+    model: model ?? 'How it should work.',
+    method: method ?? 'How to investigate it.',
+    driftMarkers: driftMarkers ?? 'What failure looks like.',
+    ...rest,
+  };
+};
+
+describe('rubric rating-vocabulary validation (WI-835208)', () => {
+  it('extracts only explicit grade/rate instructions, not ordinary state prose', () => {
+    const instructions = extractRubricRatingInstructions(
+      'c1',
+      'method',
+      'The observed state may be partial. Grade `broken` if the probe fails. ' +
+        'The rate limit response is recorded separately.',
+    );
+
+    expect(instructions).toHaveLength(1);
+    expect(instructions[0]).toMatchObject({
+      criterionKey: 'c1',
+      field: 'method',
+      rating: 'broken',
+    });
+  });
+
+  it('finds quoted and unquoted explicit directives while ignoring ambiguous prose', () => {
+    const result = validateRubricRatingVocabulary(
+      [
+        criterion({
+          key: 'c1',
+          method: 'Grade fail if the check fails.',
+          replication: 'rate `partial` when only some consumers comply.',
+        }),
+        criterion({
+          key: 'c2',
+          method: 'A partial result is possible; use the evidence to decide.',
+          replication: 'Discuss the rate limit behavior without prescribing a grade.',
+        }),
+      ],
+      ['pass', 'partial', 'fail', 'unknown'],
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.instructions.map((instruction) => instruction.rating)).toEqual(['fail', 'partial']);
+    expect(result.violations).toEqual([]);
+  });
+
+  it('uses a criterion ratingScale override instead of the rubric default', () => {
+    const result = validateRubricRatingVocabulary(
+      [
+        criterion({
+          key: 'override',
+          ratingScale: ['pass', 'partial', 'fail'],
+          method: 'Grade `partial` if the partial path is observed.',
+        }),
+        criterion({
+          key: 'default',
+          method: 'Grade `partial` if the partial path is observed.',
+        }),
+      ],
+      ['healthy', 'degraded', 'broken', 'unknown'],
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.violations).toHaveLength(1);
+    expect(result.violations[0]).toMatchObject({
+      criterionKey: 'default',
+      field: 'method',
+      rating: 'partial',
+      allowedRatings: ['healthy', 'degraded', 'broken', 'unknown'],
+    });
+  });
+
+  it('matches rating labels case-insensitively', () => {
+    expect(
+      validateRubricRatingVocabulary(
+        [criterion({ key: 'c1', method: 'GRADE HEALTHY IF the probe passes.' })],
+        ['healthy', 'degraded', 'broken', 'unknown'],
+      ).ok,
+    ).toBe(true);
+  });
+
+  it('assertion names the criterion, field, offending value, and effective scale', () => {
+    expect(() =>
+      assertRubricRatingVocabulary(
+        [criterion({ key: 'c2', replication: 'Grade `partial` if a consumer re-projects its own view.' })],
+        ['healthy', 'degraded', 'broken', 'unknown'],
+        { rubricId: 'acceptance-rubric' },
+      ),
+    ).toThrow(
+      /rubric 'acceptance-rubric'.*criterion 'c2' replication.*'partial'.*healthy \| degraded \| broken \| unknown/,
+    );
+  });
+
+  it('rubrics:propose rejects an off-scale explicit instruction before any store access', async () => {
+    await expect(
+      proposeRubric({
+        rubricId: 'rating-vocabulary-wiring',
+        characteristic: 'rating-vocabulary',
+        title: 'Rating vocabulary wiring',
+        criteria: [
+          criterion({
+            key: 'c1',
+            method: 'Grade `partial` if the check is only partially satisfied.',
+          }),
+        ],
+        ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
+      }),
+    ).rejects.toThrow(/off-scale rating instructions.*partial/);
+  });
+});

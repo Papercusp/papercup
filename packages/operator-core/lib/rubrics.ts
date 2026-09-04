@@ -47,6 +47,7 @@ import {
 import { isConversationAuditRequiredValue } from './agent-tools/plans/plan-activation-gate';
 import { assertCriterionCheckPathsResolve } from './rubrics-criterion-checks';
 import { assertAcceptanceRubricCitationPathsResolve } from './rubrics-citation-checks';
+import { assertRubricRatingVocabulary } from './rubric-rating-vocabulary';
 
 // Structured criterion grading-window (EI-12146): schema + the pure resolver live in
 // rubric-template.ts (dependency-free, so instruments can import them without this
@@ -1331,6 +1332,7 @@ function buildRubricTemplateData(
     input.ratingScale ?? stored?.ratingScale ?? [...DEFAULT_RATING_SCALE],
   );
   const criteria = normalized.criteria;
+  assertRubricRatingVocabulary(criteria, normalized.ratingScale, { rubricId: input.rubricId });
   const data = {
     // Kind + acceptance links (acceptance-rubrics-on-every-plan-2026-08-11) — the schema's
     // per-kind superRefine validates the combination (subjectPlan/classRef acceptance-only,
