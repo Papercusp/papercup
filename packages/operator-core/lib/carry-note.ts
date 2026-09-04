@@ -433,7 +433,7 @@ function verificationConflictRelatesToClaim(
  * claim so a claim about a completed/healthy state keeps the fail-safe warning.
  */
 const CLAIM_UNRESOLVED_STATUS_PATTERN =
-  /\b(?:remain(?:s)?|is|are|was|were|stay(?:s)?|currently|still)\s+(?:queued|running|pending|outstanding|awaiting|in[-\s]?flight|unverified)\b/i;
+  /\b(?:remain(?:s)?|is|are|was|were|stay(?:s)?|currently|still)\s+(?:blocked|queued|running|pending|outstanding|awaiting|in[-\s]?flight|unverified)\b/i;
 const CLAIM_NEGATION_PREFIX =
   /\b(?:not|never|no|without|none|neither|zero|completed?|finished?|done|green|healthy|inactive|clear(?:ed)?|resolved?)\s+(?:[\w./:=()-]+\s+){0,5}$/i;
 
@@ -442,7 +442,7 @@ function claimAffirmsUnresolvedStatus(claim: string | null | undefined): boolean
   if (typeof claim !== 'string' || !claim.trim()) return false;
   const match = CLAIM_UNRESOLVED_STATUS_PATTERN.exec(claim);
   if (!match) return false;
-  const status = /(?:queued|running|pending|outstanding|awaiting|in[-\s]?flight|unverified)\b/i.exec(match[0]);
+  const status = /(?:blocked|queued|running|pending|outstanding|awaiting|in[-\s]?flight|unverified)\b/i.exec(match[0]);
   if (!status) return false;
   const statusOffset = match.index + match[0].indexOf(status[0]);
   const prefix = claim.slice(0, statusOffset);
@@ -500,6 +500,30 @@ function isNegatedVerificationConflict(text: string, match: RegExpExecArray): bo
   return /^\s*(?:=|:)\s*(?:false|0|null|none|inactive|no)\b/i.test(after);
 }
 
+/**
+ * A transition note can mention the state it just left without claiming that
+ * the state is still live. Keep standalone past-tense measurements such as
+ * "the exact rerun was pending" conservative, but ignore an explicitly
+ * historical parenthetical or the left side of an arrow transition.
+ */
+function isHistoricalVerificationTransition(text: string, match: RegExpExecArray): boolean {
+  const before = text.slice(0, match.index);
+  const after = text.slice(match.index + match[0].length);
+
+  const lastOpening = Math.max(before.lastIndexOf('('), before.lastIndexOf('['));
+  const lastClosing = Math.max(before.lastIndexOf(')'), before.lastIndexOf(']'));
+  if (lastOpening > lastClosing && /^(?:was|were)\b/i.test(match[0])) return true;
+
+  const arrow = after.match(/^[^.!?;\n]{0,160}(?:->|→)/);
+  if (!arrow) return false;
+  const arrowInMatch = /(?:->|→)/.exec(arrow[0]);
+  if (!arrowInMatch) return false;
+  const rightSide = after.slice((arrow.index ?? 0) + arrowInMatch.index + arrowInMatch[0].length);
+  return !/\b(?:blocked|queued|running|pending|outstanding|awaiting|in[-\s]?flight|unverified)\b/i.test(
+    rightSide.split(/[.!?;\n]/, 1)[0] ?? '',
+  );
+}
+
 /** Return the exact contradiction phrase found in verification evidence, if any. */
 export function findVerificationConflict(evidence: string | null | undefined, claim?: string | null): string | null {
   const text = typeof evidence === 'string' ? evidence : '';
@@ -511,6 +535,7 @@ export function findVerificationConflict(evidence: string | null | undefined, cl
     if (
       match?.[0] &&
       !isNegatedVerificationConflict(text, match) &&
+      !isHistoricalVerificationTransition(text, match) &&
       !isHealthyPendingRegistration(text, match) &&
       !claimAffirmsUnresolvedStatus(claim) &&
       verificationConflictRelatesToClaim(text, match, claim)

@@ -389,6 +389,39 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     }
   });
 
+  it('keeps a blocked-state claim VERIFIED when its evidence affirms the blocked state', () => {
+    const claim = 'P-005 remains blocked while the blocker is progressing';
+    const evidence = 'P-005 remains blocked; blocker is progressing';
+
+    expect(findVerificationConflict(evidence, claim)).toBeNull();
+    const [row] = normalizeCheckEntries(
+      [{ claim, recheck: 'inspect the blocker and its progress', verified: evidence }],
+      [],
+      Date.parse('2026-09-04T20:00:00.000Z'),
+    );
+    expect(row).toMatchObject({ claim, verified: expect.stringContaining(evidence) });
+    expect(row).not.toHaveProperty('contested');
+  });
+
+  it('does not downgrade evidence that records a transition out of a pending state', () => {
+    const transitions = [
+      'repair phase ready-to-test (was awaiting-fixer)',
+      'repair status: pending -> ready-to-test',
+    ];
+    const claim = 'the repair phase is ready-to-test';
+
+    for (const evidence of transitions) {
+      expect(findVerificationConflict(evidence, claim), evidence).toBeNull();
+      const [row] = normalizeCheckEntries(
+        [{ claim, recheck: 'read the repair phase', verified: evidence }],
+        [],
+        Date.parse('2026-09-04T20:00:00.000Z'),
+      );
+      expect(row, evidence).toMatchObject({ claim, verified: expect.stringContaining(evidence) });
+      expect(row, evidence).not.toHaveProperty('contested');
+    }
+  });
+
   it('keeps a pending rerun VERIFIED when it supports an explicit non-admission assertion', () => {
     const nonAdmissionEvidence = [
       'Stable C remains non-admitting; exact rerun was pending.',
