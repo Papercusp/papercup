@@ -467,6 +467,18 @@ describe('evaluatePlanAcceptanceGate', () => {
     });
   });
 
+  it('fails closed with a named refusal when the full implementer/auditor lineage is unreadable', async () => {
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockPlanImplementers.mockRejectedValueOnce(new Error('worked_by_history is not an array'));
+    mockScorecards.mockResolvedValue([scorecard({ createdBy: 'su-grader' })]);
+
+    await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+      satisfied: false,
+      code: 'acceptance_lineage_unreadable',
+      rubricId: 'ar-some-plan',
+    });
+  });
+
   it('satisfies the process gate but reports criteria rated UNKNOWN by the authoritative grader', async () => {
     mockRubric.mockResolvedValue(acceptanceRubric());
     mockScorecards.mockResolvedValue([

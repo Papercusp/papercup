@@ -332,6 +332,33 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     );
   });
 
+  it('treats omitted fields as forbidden only for closed union branches', () => {
+    const closedBranches = [
+      {
+        additionalProperties: false,
+        required: ['op', 'expectedCandidate'],
+        properties: {
+          op: { const: 'retire' },
+          expectedCandidate: { type: 'string' },
+        },
+      },
+      {
+        additionalProperties: false,
+        required: ['op'],
+        properties: {
+          op: { const: 'get' },
+        },
+      },
+    ];
+
+    expect(unionConditionalHint(closedBranches)).toBe(
+      'when op=retire => expectedCandidate required; when op!=retire => expectedCandidate forbidden',
+    );
+
+    const openBranches = closedBranches.map(({ additionalProperties: _closed, ...branch }) => branch);
+    expect(unionConditionalHint(openBranches)).toBe('');
+  });
+
   describe('EI-13181: numeric/length bounds (same lossy-discovery class as EI-13164 — a min/max is dropped just like an enum was)', () => {
     it('a min+max integer (sessions:digest\'s real z.number().int().min(1).max(100)) renders the inclusive range', () => {
       // zod's toJSONSchema for `z.number().int().min(1).max(100).optional().describe('Default 30.')`

@@ -485,7 +485,11 @@ export const UNION_CONDITIONAL_HINT_MAX_CHARS = 320;
 const UNION_CONDITIONAL_HINT_MAX_VALUES = 8;
 const UNION_CONDITIONAL_HINT_MAX_RELATIONS = 4;
 
-type UnionSchemaBranch = { properties?: unknown; required?: unknown };
+type UnionSchemaBranch = {
+  properties?: unknown;
+  required?: unknown;
+  additionalProperties?: unknown;
+};
 type UnionScalarValue = string | number | boolean | null;
 
 function explicitlyForbiddenSchema(raw: unknown): boolean {
@@ -514,8 +518,9 @@ function unionConditionText(name: string, values: UnionScalarValue[], negate = f
  * Render explicit required/forbidden relationships in a root union.
  *
  * This deliberately needs a scalar discriminator in every branch and an
- * explicit target classification in every branch (`required` or `not:{}`).
- * Missing JSON-schema properties are not treated as forbidden: omission may
+ * explicit target classification in every branch (`required`, `not:{}`, or
+ * omitted from a closed `additionalProperties:false` object). Missing
+ * JSON-schema properties are forbidden only for a closed object: omission may
  * still be allowed by an open object schema. The result is bounded and emits
  * whole relations only, so a verbose or ambiguous union fails open.
  */
@@ -529,7 +534,7 @@ export function unionConditionalHint(branches: readonly UnionSchemaBranch[]): st
     const required = new Set<string>(
       Array.isArray(branch.required) ? branch.required.filter((value): value is string => typeof value === 'string') : [],
     );
-    return { properties, required };
+    return { properties, required, closed: branch.additionalProperties === false };
   });
   if (branchData.some((branch) => !branch.properties)) return '';
 
@@ -564,7 +569,8 @@ export function unionConditionalHint(branches: readonly UnionSchemaBranch[]): st
         const properties = branch.properties as Record<string, unknown>;
         const status = branch.required.has(target)
           ? 'required'
-          : explicitlyForbiddenSchema(properties[target])
+          : explicitlyForbiddenSchema(properties[target]) ||
+              (branch.closed && !Object.prototype.hasOwnProperty.call(properties, target))
             ? 'forbidden'
             : null;
         if (!status) {

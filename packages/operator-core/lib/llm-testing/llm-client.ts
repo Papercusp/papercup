@@ -172,7 +172,10 @@ async function llmCallViaCodexGateway(
   };
   if (opts.system?.trim()) body.instructions = opts.system;
   if (opts.maxTokens !== undefined) body.max_output_tokens = opts.maxTokens;
-  if (opts.temperature !== undefined) body.temperature = opts.temperature;
+  // The Codex reasoning transport rejects sampling temperature, including 0.
+  // Sim-user and judge calls share this adapter and supply it by default;
+  // forwarding that logical knob prevents either role from producing a turn.
+  // Keep it on the Anthropic path, which handles model-specific support.
   if (opts.responseFormat === 'json') body.text = { format: { type: 'json_object' } };
 
   const res = await loopbackFetch(

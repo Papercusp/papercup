@@ -17,6 +17,7 @@ import {
   resolveCriterionWindow,
   rubricKindOf,
   isUnknownRatingEquivalent,
+  isForbiddenMandatoryPassRating,
   UNKNOWN_RATING_EQUIVALENTS,
   DEFAULT_CRITERION_WINDOW_MS,
   RUBRIC_TEMPLATE,
@@ -143,7 +144,7 @@ describe('rubric template schema', () => {
       role: 'outcome' as const,
       mandatory: true,
       requiredScope: ['cohort:post-epoch', 'surface:coverage-row'],
-      passRatings: ['pass', 'healthy'],
+      passRatings: ['pass'],
       barProvenance: {
         lifecycle: 'pre-implementation' as const,
         declaredAt: '2026-09-04T12:00:00.000Z',
@@ -209,6 +210,51 @@ describe('rubric template schema', () => {
         ],
       }).success,
     ).toBe(false);
+  });
+
+  it('requires mandatory outcome passRatings to be positive members of the rubric scale', () => {
+    const criterion = {
+      key: 'outcome',
+      title: 'Outcome',
+      model: 'The outcome exists.',
+      driftMarkers: 'The outcome is absent.',
+      barKey: 'R-1',
+      barHash: 'a'.repeat(64),
+      role: 'outcome' as const,
+      mandatory: true,
+    };
+    const acceptance = {
+      kind: 'acceptance' as const,
+      subjectPlan: 'some-plan-2026-09-04',
+      characteristic: 'plan-acceptance',
+      ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
+    };
+
+    expect(
+      rubricTemplateDataAuthoringSchema.safeParse({ ...acceptance, criteria: [criterion] }).success,
+    ).toBe(false);
+    for (const forbidden of ['degraded', 'broken', 'unknown', 'not-applicable', 'waived']) {
+      expect(isForbiddenMandatoryPassRating(forbidden)).toBe(true);
+      expect(
+        rubricTemplateDataAuthoringSchema.safeParse({
+          ...acceptance,
+          ratingScale: [...acceptance.ratingScale, forbidden],
+          criteria: [{ ...criterion, passRatings: [forbidden] }],
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      rubricTemplateDataAuthoringSchema.safeParse({
+        ...acceptance,
+        criteria: [{ ...criterion, passRatings: ['pass'] }],
+      }).success,
+    ).toBe(false); // pass is positive but absent from this rubric's scale.
+    expect(
+      rubricTemplateDataAuthoringSchema.safeParse({
+        ...acceptance,
+        criteria: [{ ...criterion, passRatings: ['healthy'] }],
+      }).success,
+    ).toBe(true);
   });
 });
 

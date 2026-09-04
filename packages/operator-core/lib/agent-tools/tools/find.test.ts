@@ -326,6 +326,55 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain('reason?:string');
   });
 
+  it('keeps closed repair-queue branch conditions while retaining all CAS field shapes', () => {
+    const compact = compactSchemaForResult({
+      oneOf: [
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['op'],
+          properties: { op: { const: 'get' } },
+        },
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['op', 'paths'],
+          properties: {
+            op: { const: 'admit' },
+            paths: { type: 'array', maxItems: 50, items: { type: 'string' } },
+          },
+        },
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['op', 'paths'],
+          properties: {
+            op: { const: 'converge' },
+            paths: { type: 'array', maxItems: 50, items: { type: 'string' } },
+          },
+        },
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['op', 'expectedCandidate', 'expectedRepairHead', 'expectedUpdatedAtMs'],
+          properties: {
+            op: { const: 'retire' },
+            expectedCandidate: { type: 'string', pattern: '^[0-9a-fA-F]{40,64}$' },
+            expectedRepairHead: { type: 'string', pattern: '^[0-9a-fA-F]{40,64}$' },
+            expectedUpdatedAtMs: { type: 'integer', minimum: 0, maximum: 9007199254740991 },
+          },
+        },
+      ],
+    });
+
+    expect(compact).toContain(
+      'when op=retire => expectedCandidate required; when op!=retire => expectedCandidate forbidden',
+    );
+    expect(compact).toContain('expectedCandidate?:string~/^[0-9a-fA-F]{40,64}$/');
+    expect(compact).toContain('expectedRepairHead?:string~/^[0-9a-fA-F]{40,64}$/');
+    expect(compact).toContain('expectedUpdatedAtMs?:integer(0-9007199254740991)');
+  });
+
   it('preserves explicit discriminator-dependent required and forbidden fields in compact results', () => {
     const compact = compactSchemaForResult({
       anyOf: [

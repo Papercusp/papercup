@@ -180,6 +180,11 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
         source_plan_slug: 'split-role-plan',
         terminal_owner: 'su-plan-terminal-owner',
         taken_by: 'su-plan-current-owner',
+        last_released_by: 'su-plan-released-owner',
+        worked_by_history: [
+          { owner: 'su-plan-prior-owner', at: '2026-09-04T10:00:00.000Z' },
+          'su-plan-string-history-owner',
+        ],
       },
       {
         workspace_id: workspaceId,
@@ -222,7 +227,22 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
         taken_by: null,
       },
     ];
-    await db.adminSql`INSERT INTO harness_shared.work_items ${db.adminSql(planWorkItems)}`;
+    await db.adminSql`INSERT INTO harness_shared.work_items ${db.adminSql(
+      planWorkItems.map((row) => ({ last_released_by: null, worked_by_history: [], ...row })),
+    )}`;
+    await db.adminSql`
+      INSERT INTO harness_shared.plan_audits
+        (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind,
+         activation, audited_plan_revision_id, audited_plan_revision_seq,
+         audited_plan_content_hash)
+      VALUES
+        (${workspaceId}, 'h-a', 'split-role-plan', 1, 'su-plan-activation-auditor',
+         'activation', '{}'::jsonb, 1, 1, ${'a'.repeat(64)}),
+        (${workspaceId}, 'h-a', 'split-role-plan', 2, 'su-plan-completion-auditor',
+         'completion', NULL, NULL, NULL, NULL),
+        ('different-workspace', 'h-a', 'split-role-plan', 1, 'su-cross-tenant-auditor',
+         'completion', NULL, NULL, NULL, NULL)
+    `;
   }, 180_000);
 
   afterAll(async () => {
@@ -239,16 +259,43 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
     await expect(isAcceptanceAuthorIdentity('su-author', 'su-cross-tenant', opts)).resolves.toBe(false);
   });
 
-  it('resolves split-role plan owners from terminal_owner and taken_by, workspace-scoped', async () => {
+  it('resolves current, historical, released, terminal, and audit owners, workspace-scoped', async () => {
     const opts = { sql: db.adminSql, workspaceId };
     await expect(resolvePlanImplementerIdentities('split-role-plan', opts)).resolves.toEqual([
+      'su-plan-activation-auditor',
+      'su-plan-completion-auditor',
       'su-plan-current-owner',
       'su-plan-current-owner-2',
+      'su-plan-prior-owner',
+      'su-plan-released-owner',
+      'su-plan-string-history-owner',
       'su-plan-terminal-owner',
     ]);
     await expect(resolvePlanImplementerIdentities('other-plan', opts)).resolves.toEqual(['su-other-plan-owner']);
     await expect(resolvePlanImplementerIdentities('missing-plan', opts)).resolves.toEqual([]);
     await expect(resolvePlanImplementerIdentities(' ', opts)).resolves.toEqual([]);
+  });
+
+  it('fails closed when append-only worker history has an unreadable shape', async () => {
+    const opts = { sql: db.adminSql, workspaceId };
+    await db.adminSql`
+      UPDATE harness_shared.work_items
+         SET worked_by_history = '{}'::jsonb
+       WHERE workspace_id = ${workspaceId}
+         AND feature_id = 'WI-split-current'
+    `;
+    try {
+      await expect(resolvePlanImplementerIdentities('split-role-plan', opts)).rejects.toThrow(
+        /acceptance_lineage_unreadable/,
+      );
+    } finally {
+      await db.adminSql`
+        UPDATE harness_shared.work_items
+           SET worked_by_history = '[]'::jsonb
+         WHERE workspace_id = ${workspaceId}
+           AND feature_id = 'WI-split-current'
+      `;
+    }
   });
 
   it('treats descendants, ancestors, and rebind successors as related but keeps siblings and tenants separate', async () => {

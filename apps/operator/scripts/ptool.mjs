@@ -135,6 +135,7 @@ export function parseArgs(argv = []) {
     '--token-file': 'tokenFile',
   };
   const stdinValueFlags = new Set(['--json', '--args', '--script']);
+  let pendingStdinCapableValueFlag = null;
   let sawList = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -166,6 +167,14 @@ export function parseArgs(argv = []) {
         continue;
       }
       if (nextLooksLikeFlag) {
+        // Source flags may be followed by transport flags before their
+        // inline value. Defer the value until the next non-flag token so
+        // `--json --workspace ws --projection <spec> <json>` is equivalent
+        // to the conventional `--json <json> --workspace ws` ordering.
+        if (stdinValueFlags.has(a)) {
+          pendingStdinCapableValueFlag = a;
+          continue;
+        }
         throw new Error(`--${a.slice(2)} requires a value`);
       }
       out[valueFlags[a]] = argv[++i];
@@ -176,6 +185,11 @@ export function parseArgs(argv = []) {
         `unknown flag ${a}; tool-specific arguments must be supplied in the JSON payload via --json, --json-file, or --json -`,
       );
     }
+    if (pendingStdinCapableValueFlag && !a.startsWith('-')) {
+      out[valueFlags[pendingStdinCapableValueFlag]] = a;
+      pendingStdinCapableValueFlag = null;
+      continue;
+    }
     // A bare positional: the tool name first, then (if --list was given) a
     // catalog filter term.
     if (!a.startsWith('-')) {
@@ -183,6 +197,9 @@ export function parseArgs(argv = []) {
       else if (sawList && !out.listFilter) out.listFilter = a;
       else if (!out.tool) out.tool = a;
     }
+  }
+  if (pendingStdinCapableValueFlag) {
+    throw new Error(`--${pendingStdinCapableValueFlag.slice(2)} requires a value`);
   }
   return out;
 }

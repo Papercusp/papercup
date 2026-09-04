@@ -12172,7 +12172,7 @@
           "POST"
         ]
       },
-      "description": "Read a spawn subtree (the nursery): every descendant with its status, owner, role, and the work it serves, plus whether the root can complete (no live child).",
+      "description": "Read a spawn subtree (the nursery): every descendant with its status, owner, role, and the work it serves, plus whether the root can complete (no live child). This is spawn-scoped, not fleet-scoped: `fleet` is not an accepted argument; use `fleet:assignments { fleet }` for a named-fleet state view.",
       "capabilities": [
         "work_items:read"
       ],
@@ -12198,6 +12198,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Before fleet:cancel (see what would be torn down) or before completing a nursery (the completion gate refuses while a child lives).",
+        "notWhen": "Reading every member of a named fleet — use `fleet:assignments { fleet }` instead; this tool requires a nursery `spawn_id` root.",
         "chaining": "fleet:tree → fleet:cancel { spawn_id }."
       }
     },

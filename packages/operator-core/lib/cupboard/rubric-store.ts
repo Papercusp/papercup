@@ -264,7 +264,15 @@ export interface ExistingRubricRow {
 type SeedComparableSource = Pick<
   SeedableTemplateData,
   'characteristic' | 'criteria' | 'ratingScale' | 'methodRef' | 'description'
->;
+> & {
+  /**
+   * Acceptance rubrics may delegate their criteria to a standard class. These
+   * fields are omitted from first-party seed hashes, but are included when the
+   * rubric read path asks for a delegated-class-aware criteria hash.
+   */
+  delegatedClassRef?: string | null;
+  delegatedClassRevision?: number | null;
+};
 
 function comparableSeedFields(f: SeedComparableSource): Record<string, unknown> {
   return {
@@ -273,6 +281,10 @@ function comparableSeedFields(f: SeedComparableSource): Record<string, unknown> 
     ratingScale: f.ratingScale,
     ...(f.methodRef ? { methodRef: f.methodRef } : {}),
     ...(f.description ? { description: f.description } : {}),
+    ...(f.delegatedClassRef !== undefined ? { delegatedClassRef: f.delegatedClassRef } : {}),
+    ...(f.delegatedClassRevision !== undefined
+      ? { delegatedClassRevision: f.delegatedClassRevision }
+      : {}),
   };
 }
 

@@ -140,6 +140,57 @@ describe('llmCall backend selection', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     vi.unstubAllGlobals();
   });
+
+  it.each([
+    { model: 'gpt-5.6-sol', temperature: 0 },
+    { model: 'gpt-5.6-sol', temperature: 0.4 },
+    { model: 'gpt-6-astra', temperature: 0.4 },
+  ])('completes $model calls when the caller supplies temperature=$temperature', async ({ model, temperature }) => {
+    // Reproduce the gateway refusal that stopped the live SU canary before
+    // its first turn (WI-2144435), rather than accepting any request body.
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      if (Object.hasOwn(body, 'temperature')) {
+        return new Response(JSON.stringify({ error: { message: 'Unsupported parameter: temperature' } }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      expect(body).toMatchObject({ model, instructions: 'Return JSON.', text: { format: { type: 'json_object' } } });
+      return new Response(JSON.stringify({ output_text: '{"ok":true}' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const { llmCall } = await import('../llm-client');
+      const result = await llmCall({
+        model,
+        temperature,
+        system: 'Return JSON.',
+        messages: [{ role: 'user', content: 'give json' }],
+        responseFormat: 'json',
+      });
+      expect(result.json).toEqual({ ok: true });
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('preserves caller temperature on the Anthropic transport', async () => {
+    events.length = 0;
+    events.push({ type: 'result', finalText: 'ok', tokensIn: 1, tokensOut: 1, costUsd: 0 });
+    lastRunAgentChatOpts = undefined;
+    const { llmCall } = await import('../llm-client');
+    await llmCall({
+      model: 'claude-haiku-4-5',
+      temperature: 0.4,
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+    expect((lastRunAgentChatOpts as Record<string, unknown> | undefined)?.temperature).toBe(0.4);
+  });
 });
 
 describe('llmCall subprocess error surfacing', () => {

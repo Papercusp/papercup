@@ -14,6 +14,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
+import { parseWorkedByHistory } from './work-item-prior-work';
 
 export interface AcceptanceAuthorIdentityOpts {
   sql?: Sql;
@@ -175,11 +176,19 @@ export async function isAcceptanceAuthorIdentity(
  * subject plan.
  *
  * `Rubric.createdBy` is the acceptance-author/seat identity, not necessarily the
- * person who implemented the plan. Plan-linked work-items retain the principal
- * implementation identities in the base table: `terminal_owner` is the durable
- * terminal owner and `taken_by` is the current/last claimant. Union both columns
- * so a split author/implementer plan cannot admit one of its implementers as the
- * independent grader.
+ * person who implemented the plan. The principal population is deliberately read
+ * from BOTH the current row and its append-only history:
+ *
+ *   - `taken_by`, `terminal_owner`, and `last_released_by` cover the current/final
+ *     row projections;
+ *   - `worked_by_history` covers every recorded claimant transition, including an
+ *     implementer who handed the item off before completion;
+ *   - `plan_audits.created_by` covers the activation/completion auditors who shaped
+ *     or certified the subject plan.
+ *
+ * Reading only the two mutable owner columns made a former implementer eligible to
+ * grade after a handoff. Treat an unrecognisable non-null history shape as a hard
+ * read error: silently shrinking an independence population is a fail-open gate.
  *
  * This is deliberately workspace-scoped and returns only nonblank identities.
  * Query failures propagate to callers, which must not silently convert an
@@ -194,25 +203,51 @@ export async function resolvePlanImplementerIdentities(
 
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const sql = opts.sql ?? getOrgPg().sql;
-  const rows = await sql<Array<{ owner: string | null }>>`
-    SELECT DISTINCT btrim(owner) AS owner
-      FROM (
-        SELECT terminal_owner AS owner
-          FROM harness_shared.work_items
-         WHERE workspace_id = ${workspaceId}
-           AND source_plan_slug = ${planSlug}
-        UNION ALL
-        SELECT taken_by AS owner
-          FROM harness_shared.work_items
-         WHERE workspace_id = ${workspaceId}
-           AND source_plan_slug = ${planSlug}
-      ) AS plan_owners
-     WHERE NULLIF(btrim(owner), '') IS NOT NULL
-     ORDER BY owner
-  `;
-  return rows
-    .map((row) => row.owner?.trim() ?? '')
-    .filter((owner, index, owners) => owner !== '' && owners.indexOf(owner) === index);
+  const [workItems, audits] = await Promise.all([
+    sql<
+      Array<{
+        terminal_owner: string | null;
+        taken_by: string | null;
+        last_released_by: string | null;
+        worked_by_history: unknown;
+      }>
+    >`
+      SELECT terminal_owner, taken_by, last_released_by, worked_by_history
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         AND source_plan_slug = ${planSlug}
+       ORDER BY feature_id
+    `,
+    sql<Array<{ created_by: string | null }>>`
+      SELECT created_by
+        FROM harness_shared.plan_audits
+       WHERE workspace_id = ${workspaceId}
+         AND plan_slug = ${planSlug}
+         AND audit_kind IN ('activation', 'completion')
+       ORDER BY audit_seq
+    `,
+  ]);
+
+  const identities = new Set<string>();
+  const add = (value: string | null | undefined) => {
+    const owner = value?.trim() ?? '';
+    if (owner) identities.add(owner);
+  };
+
+  for (const row of workItems) {
+    add(row.taken_by);
+    add(row.terminal_owner);
+    add(row.last_released_by);
+    if (row.worked_by_history != null && !Array.isArray(row.worked_by_history)) {
+      throw new Error(
+        `acceptance_lineage_unreadable: work item history for plan '${planSlug}' is not an array`,
+      );
+    }
+    for (const owner of parseWorkedByHistory(row.worked_by_history)) add(owner);
+  }
+  for (const row of audits) add(row.created_by);
+
+  return [...identities].sort();
 }
 
 /**

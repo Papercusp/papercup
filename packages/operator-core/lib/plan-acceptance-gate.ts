@@ -80,6 +80,7 @@ export type PlanAcceptanceGateCode =
   | 'acceptance_rubric_vetted_after_grading'
   | 'acceptance_ungraded'
   | 'self_graded_only'
+  | 'acceptance_lineage_unreadable'
   | 'acceptance_bar_not_met'
   | 'acceptance_not_recorded'
   | 'acceptance_rejected'
@@ -955,10 +956,24 @@ export async function evaluatePlanAcceptanceGate(
   // `implementer` is the acceptance-author/seat identity and must stay separate
   // from the principal identities that actually implemented the subject plan.
   // The latter only widen the independent-grader exclusion population.
-  const principalImplementers = await resolvePlanImplementerIdentities(
-    rubric.subjectPlan ?? planSlug,
-    { workspaceId: rubric.workspaceId },
-  );
+  let principalImplementers: string[];
+  try {
+    principalImplementers = await resolvePlanImplementerIdentities(
+      rubric.subjectPlan ?? planSlug,
+      { workspaceId: rubric.workspaceId },
+    );
+  } catch (error) {
+    return {
+      satisfied: false,
+      code: 'acceptance_lineage_unreadable',
+      rubricId: rubric.rubricId,
+      message:
+        `plan '${planSlug}' cannot be marked shipped: the complete implementer/auditor lineage for ` +
+        `acceptance rubric '${rubric.rubricId}' could not be read ` +
+        `(${error instanceof Error ? error.message : String(error)}). The gate refuses rather than ` +
+        'shrinking the exclusion set and admitting a related grader; repair/retry the lineage read.',
+    };
+  }
   const principalImplementerIdentities = new Set(principalImplementers);
   const implementerIdentities = new Set<string>();
   if (implementer) {

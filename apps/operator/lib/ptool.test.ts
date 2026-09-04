@@ -154,6 +154,23 @@ describe('ptool parseArgs', () => {
     });
   });
 
+  it('keeps an inline JSON value when transport flags are interleaved before it', () => {
+    expect(parseArgs([
+      'coord:presence',
+      '--json',
+      '--workspace=ws1',
+      '--harness=h',
+      '--projection={"pick":["[].ownerId"]}',
+      '{"scope":"workspace"}',
+    ])).toMatchObject({
+      tool: 'coord:presence',
+      json: '{"scope":"workspace"}',
+      workspace: 'ws1',
+      harness: 'h',
+      projection: '{"pick":["[].ownerId"]}',
+    });
+  });
+
   it('applies the same interleaved-scope rule to code:run stdin scripts', () => {
     expect(parseArgs(['code:run', '--script', '--workspace=ws1', '-'])).toMatchObject({
       tool: 'code:run',
