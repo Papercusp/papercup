@@ -1139,6 +1139,24 @@ function describeUncleanDestroyCensus(
     note('provider.labelMismatches', providerCensus.labelMismatches);
     if (providerCensus.missing.length > 0)
       parts.push(`provider.missing=[${providerCensus.missing.map(resourceLabel).join(', ')}]`);
+    // WI-2143626: the census does not merely OBSERVE the survivors, it plans their RECLAMATION.
+    // `reaperPlan` carries, per resource, whether it is reclaimable now (`eligible`) or still inside
+    // the orphan grace window (`quarantine`, stamped with the instant it becomes eligible). The
+    // destroy census runs with `expected: []`, so at a failed destroy that plan is exactly the set of
+    // still-live managed resources — and this throw is the LAST moment it exists: nothing persists or
+    // consumes `reaperPlan` anywhere in production. Dropping it here is why p046-canary-04..07 left
+    // networks, subnets, Cloud NAT routers and 4x100GiB disks billing for days, discoverable only by a
+    // by-hand six-kind census. Naming it makes a failed destroy state what is still reclaimable, and
+    // from when — which is the input any sweep or alert needs and could not previously recover.
+    const reapEligible = providerCensus.reaperPlan.filter((step) => step.state === 'eligible');
+    const reapQuarantined = providerCensus.reaperPlan.filter((step) => step.state === 'quarantine');
+    note('provider.reapEligible', reapEligible);
+    if (reapQuarantined.length > 0)
+      parts.push(
+        `provider.reapQuarantined=[${reapQuarantined
+          .map((step) => `${resourceLabel(step.resource)}@${step.notBefore}`)
+          .join(', ')}]`,
+      );
   }
   if (!orphanCensus.clean) {
     note('orphan.stillLive', orphanCensus.stillLive);
