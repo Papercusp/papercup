@@ -866,9 +866,7 @@ export function assembleSchedulerClaimResult(legs: {
     // Stale-path hints join the prefix block: a caller that loses the response tail must
     // still know which stored paths are fossils before it starts work (EI-21267393427094356).
     ...(legs.pathHints ? { pathHints: legs.pathHints, pathHintsNote: legs.pathHintsNote } : {}),
-    ...(legs.stalePathRefs
-      ? { stalePathRefs: legs.stalePathRefs, stalePathRefsNote: legs.stalePathRefsNote }
-      : {}),
+    ...(legs.stalePathRefs ? { stalePathRefs: legs.stalePathRefs, stalePathRefsNote: legs.stalePathRefsNote } : {}),
     workItem: legs.workItem,
     claimedUnder: legs.claimedUnder,
     ...(legs.freshness ? { freshness: legs.freshness } : {}),
@@ -945,11 +943,11 @@ export type SchedulerDispositionMetadata =
   | ({ kind: 'no-claim'; reason: string } & Partial<SchedulerDispositionSpecHead>);
 
 function compactSchedulerNoClaimReason(payload: Record<string, unknown>): string {
-  const diagnosis = payload.diagnosis && typeof payload.diagnosis === 'object'
-    ? payload.diagnosis as Record<string, unknown>
-    : null;
-  const candidate = [payload.reason, payload.error, diagnosis?.reason, diagnosis?.error, payload.message]
-    .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  const diagnosis =
+    payload.diagnosis && typeof payload.diagnosis === 'object' ? (payload.diagnosis as Record<string, unknown>) : null;
+  const candidate = [payload.reason, payload.error, diagnosis?.reason, diagnosis?.error, payload.message].find(
+    (value): value is string => typeof value === 'string' && value.trim().length > 0,
+  );
   return (candidate?.trim() || 'no_claimable_work_item').slice(0, 500);
 }
 
@@ -962,10 +960,15 @@ function compactSchedulerNoClaimReason(payload: Record<string, unknown>): string
  * whole reason `scheduler:pull_ledger` can be a cheap read over `tool_invocations` instead of
  * a live re-resolution per row.
  */
-function specHeadFrom(source: {
-  specId?: string | null;
-  revision?: number | null;
-} | null | undefined): SchedulerDispositionSpecHead | undefined {
+function specHeadFrom(
+  source:
+    | {
+        specId?: string | null;
+        revision?: number | null;
+      }
+    | null
+    | undefined,
+): SchedulerDispositionSpecHead | undefined {
   const specId = source?.specId?.trim();
   return specId ? { specId, revision: source?.revision ?? null } : undefined;
 }
@@ -976,9 +979,7 @@ export function schedulerDispositionMetadata(
   payload: Record<string, unknown>,
   specHead?: { specId?: string | null; revision?: number | null } | null,
 ): SchedulerDispositionMetadata {
-  const workItemRecord = workItem && typeof workItem === 'object'
-    ? workItem as { id?: unknown }
-    : null;
+  const workItemRecord = workItem && typeof workItem === 'object' ? (workItem as { id?: unknown }) : null;
   const workItemId = typeof workItemRecord?.id === 'string' ? workItemRecord.id.trim() : '';
   const head = specHeadFrom(specHead);
   return workItemId
@@ -1762,9 +1763,7 @@ export default defineTool({
     // EI-22283949842250645: the measured source axis for the freshness verdict above.
     // Lives in the bounded tail because it costs one `git log` per cited path; a
     // timeout leaves the verdict at its honest "unmeasured" rather than affirming.
-    let sourceGenerationSignal = null as
-      | import('../../work-item-claim-freshness').SourceGenerationSignal
-      | null;
+    let sourceGenerationSignal = null as import('../../work-item-claim-freshness').SourceGenerationSignal | null;
 
     const enrichSuccessfulClaim = async (): Promise<void> => {
       // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
@@ -1775,7 +1774,9 @@ export default defineTool({
       if (res?.workItem) {
         const wi = res.workItem as { id?: string; title?: string; summary?: string; harness?: string | null };
         memory = await import('../../memory/claim-port')
-          .then((m) => m.buildClaimRecallBlock({ sessionId: ident.ownerId, workspaceId: ident.workspaceId, items: [wi] }))
+          .then((m) =>
+            m.buildClaimRecallBlock({ sessionId: ident.ownerId, workspaceId: ident.workspaceId, items: [wi] }),
+          )
           .catch(() => null);
       }
       // EI-529: this is the primary self-pull surface (every fleet member / cup claims
@@ -1857,151 +1858,159 @@ export default defineTool({
           sourcePlanSlug?: string | null;
           sourcePlanItemIds?: string[] | null;
         };
-        [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint, behaviorContractHint, pathHintsHint, planItemLandedHint, siblingPathOverlapHint, sourceCitationHint, sourceGenerationSignal] =
-          await Promise.all([
-            import('../../plan-decisions-claim-port')
-              .then(async (m) => {
-                const brief = await m.getClaimTimePlanDecisions({
-                  workItem: { payload: wi.payload },
-                  harness: wi.harness ?? args.harness,
-                  workspaceId: ident.workspaceId ?? undefined,
-                });
-                return [brief, brief ? m.renderPlanDecisionsNote(brief) : null] as const;
-              })
-              .catch(() => [null, null] as const),
-            import('../../prior-attempt-context')
-              .then((m) =>
-                m.getClaimTimePriorAttemptBrief({
-                  workItem: {
-                    ...(wi.id ? { id: wi.id } : {}),
-                    payload: wi.payload,
-                    harness: wi.harness,
-                    sourcePlanSlug: wi.sourcePlanSlug,
-                    sourcePlanItemIds: wi.sourcePlanItemIds,
-                  },
-                  harness: wi.harness ?? args.harness,
-                }),
-              )
-              .catch(() => null),
-            import('../../premises-claim-port')
-              .then((m) =>
-                m.getClaimTimePremises({
-                  workItem: { id: wi.id, payload: wi.payload, title: wi.title, summary: wi.summary },
-                  harness: wi.harness ?? args.harness,
-                  workspaceId: ident.workspaceId,
-                }),
-              )
-              .catch(() => null),
-            getClaimTimeRetractionAdvisory(wi, wi.harness ?? args.harness)
-              .then((advisory) => advisory?.retractionWarning ?? null)
-              .catch(() => null),
-            import('../../work-item-prior-work')
-              .then(async (m) => {
-                const authorshipRevalidation = await m.getClaimTimeAuthorshipRevalidationHint({
-                  harness: wi.harness ?? args.harness,
-                  workItemId: wi.id ?? '',
-                  workspaceId: ident.workspaceId ?? undefined,
-                });
-                const authorshipRevalidationWarning = m.authorshipRevalidationWarning(authorshipRevalidation);
-                return authorshipRevalidation && authorshipRevalidationWarning
-                  ? { authorshipRevalidation, authorshipRevalidationWarning }
-                  : null;
-              })
-              .catch(() => null),
-            import('../../work-item-plan-contradiction')
-              .then(async (m) => {
-                const hint = await m.getClaimTimePlanItemContradiction({
-                  workItemId: wi.id ?? '',
+        [
+          [planDecisions, planDecisionsNote],
+          priorAttemptBrief,
+          premises,
+          retractionWarning,
+          authorshipRevalidationHint,
+          planContradictionHint,
+          behaviorContractHint,
+          pathHintsHint,
+          planItemLandedHint,
+          siblingPathOverlapHint,
+          sourceCitationHint,
+          sourceGenerationSignal,
+        ] = await Promise.all([
+          import('../../plan-decisions-claim-port')
+            .then(async (m) => {
+              const brief = await m.getClaimTimePlanDecisions({
+                workItem: { payload: wi.payload },
+                harness: wi.harness ?? args.harness,
+                workspaceId: ident.workspaceId ?? undefined,
+              });
+              return [brief, brief ? m.renderPlanDecisionsNote(brief) : null] as const;
+            })
+            .catch(() => [null, null] as const),
+          import('../../prior-attempt-context')
+            .then((m) =>
+              m.getClaimTimePriorAttemptBrief({
+                workItem: {
+                  ...(wi.id ? { id: wi.id } : {}),
                   payload: wi.payload,
-                });
-                const warning = m.planItemContradictionWarning(hint, wi.id ?? '');
-                return hint && warning ? { planItemContradiction: hint, planItemContradictionWarning: warning } : null;
-              })
-              .catch(() => null),
-            wi.id
-              ? import('../../behavior-contract-claim-port')
-                  .then((m) =>
-                    m.getClaimTimeBehaviorContract(
-                      {
-                        id: wi.id as string,
-                        payload: wi.payload,
-                        harness: wi.harness,
-                        sourcePlanSlug: wi.sourcePlanSlug,
-                        sourcePlanItemIds: wi.sourcePlanItemIds,
-                      },
-                      wi.harness ?? args.harness,
-                    ),
-                  )
-                  .catch(() => null)
-              : Promise.resolve(null),
-            wi.payload || wi.title || wi.summary
-              ? import('../../stale-path-hints-claim-port')
-                  .then(async (m) => {
-                    return m.getClaimTimeStalePathAdvisory({ workItem: wi });
-                  })
-                  .catch(() => null)
-              : Promise.resolve(null),
-            wi.id
-              ? import('../../work-item-plan-item-landed')
-                  .then(async (m) => {
-                    const hint = await m.getClaimTimePlanItemLanded({
-                      workItemId: wi.id as string,
+                  harness: wi.harness,
+                  sourcePlanSlug: wi.sourcePlanSlug,
+                  sourcePlanItemIds: wi.sourcePlanItemIds,
+                },
+                harness: wi.harness ?? args.harness,
+              }),
+            )
+            .catch(() => null),
+          import('../../premises-claim-port')
+            .then((m) =>
+              m.getClaimTimePremises({
+                workItem: { id: wi.id, payload: wi.payload, title: wi.title, summary: wi.summary },
+                harness: wi.harness ?? args.harness,
+                workspaceId: ident.workspaceId,
+              }),
+            )
+            .catch(() => null),
+          getClaimTimeRetractionAdvisory(wi, wi.harness ?? args.harness)
+            .then((advisory) => advisory?.retractionWarning ?? null)
+            .catch(() => null),
+          import('../../work-item-prior-work')
+            .then(async (m) => {
+              const authorshipRevalidation = await m.getClaimTimeAuthorshipRevalidationHint({
+                harness: wi.harness ?? args.harness,
+                workItemId: wi.id ?? '',
+                workspaceId: ident.workspaceId ?? undefined,
+              });
+              const authorshipRevalidationWarning = m.authorshipRevalidationWarning(authorshipRevalidation);
+              return authorshipRevalidation && authorshipRevalidationWarning
+                ? { authorshipRevalidation, authorshipRevalidationWarning }
+                : null;
+            })
+            .catch(() => null),
+          import('../../work-item-plan-contradiction')
+            .then(async (m) => {
+              const hint = await m.getClaimTimePlanItemContradiction({
+                workItemId: wi.id ?? '',
+                payload: wi.payload,
+              });
+              const warning = m.planItemContradictionWarning(hint, wi.id ?? '');
+              return hint && warning ? { planItemContradiction: hint, planItemContradictionWarning: warning } : null;
+            })
+            .catch(() => null),
+          wi.id
+            ? import('../../behavior-contract-claim-port')
+                .then((m) =>
+                  m.getClaimTimeBehaviorContract(
+                    {
+                      id: wi.id as string,
                       payload: wi.payload,
+                      harness: wi.harness,
                       sourcePlanSlug: wi.sourcePlanSlug,
                       sourcePlanItemIds: wi.sourcePlanItemIds,
-                      workspaceId: ident.workspaceId ?? undefined,
-                    });
-                    const warning = m.planItemLandedWarning(hint, wi.id as string);
-                    return hint && warning ? { planItemLanded: hint, planItemLandedWarning: warning } : null;
-                  })
-                  .catch(() => null)
-              : Promise.resolve(null),
-            // EI-19329513980117751: a DIFFERENT work-item shares this one's stored paths
-            // and has already landed. Reaches the sibling WITHOUT a plan, unlike every
-            // other sibling-finding leg here — the measured duplicate-filing instances
-            // are all plan-less, so those legs are structurally silent for exactly the
-            // population that suffers this. Same fail-soft seam as every leg above.
-            wi?.id
-              ? import('../../sibling-path-overlap-claim-port')
-                  .then(async (m) => {
-                    const hint = await m.getClaimTimeSiblingPathOverlap({
-                      workItemId: wi.id as string,
-                      payload: wi.payload,
-                      workspaceId: ident.workspaceId ?? undefined,
-                    });
-                    const warning = m.siblingPathOverlapWarning(hint, wi.id as string);
-                    return hint && warning
-                      ? { siblingPathOverlap: hint, siblingPathOverlapWarning: warning }
-                      : null;
-                  })
-                  .catch(() => null)
-              : Promise.resolve(null),
-            // EI-19418245218824265: the only leg that reads the TREE. Needs nothing but
-            // the id, so it still fires for an item implemented by an agent who never
-            // claimed the row — the shape all ten row-based legs are silent for.
-            wi?.id
-              ? import('../../source-citation-claim-port')
-                  .then(async (m) => {
-                    const hint = await m.getClaimTimeSourceCitation({
-                      workItemId: wi.id as string,
-                    });
-                    const warning = m.sourceCitationWarning(hint, wi.id as string);
-                    return hint && warning
-                      ? { sourceCitation: hint, sourceCitationWarning: warning }
-                      : null;
-                  })
-                  .catch(() => null)
-              : Promise.resolve(null),
-            // EI-22283949842250645: measure the freshness verdict's source axis —
-            // "do this item's own paths carry commits newer than the generation it
-            // was observed against?". Only meaningful for the bug family, which is
-            // the only family that carries a freshness envelope.
-            wi?.kind === 'bug'
-              ? import('../../source-generation-claim-port')
-                  .then((m) => m.getClaimTimeSourceGenerationSignal({ workItem: wi }))
-                  .catch(() => null)
-              : Promise.resolve(null),
-          ]);
+                    },
+                    wi.harness ?? args.harness,
+                  ),
+                )
+                .catch(() => null)
+            : Promise.resolve(null),
+          wi.payload || wi.title || wi.summary
+            ? import('../../stale-path-hints-claim-port')
+                .then(async (m) => {
+                  return m.getClaimTimeStalePathAdvisory({ workItem: wi });
+                })
+                .catch(() => null)
+            : Promise.resolve(null),
+          wi.id
+            ? import('../../work-item-plan-item-landed')
+                .then(async (m) => {
+                  const hint = await m.getClaimTimePlanItemLanded({
+                    workItemId: wi.id as string,
+                    payload: wi.payload,
+                    sourcePlanSlug: wi.sourcePlanSlug,
+                    sourcePlanItemIds: wi.sourcePlanItemIds,
+                    workspaceId: ident.workspaceId ?? undefined,
+                  });
+                  const warning = m.planItemLandedWarning(hint, wi.id as string);
+                  return hint && warning ? { planItemLanded: hint, planItemLandedWarning: warning } : null;
+                })
+                .catch(() => null)
+            : Promise.resolve(null),
+          // EI-19329513980117751: a DIFFERENT work-item shares this one's stored paths
+          // and has already landed. Reaches the sibling WITHOUT a plan, unlike every
+          // other sibling-finding leg here — the measured duplicate-filing instances
+          // are all plan-less, so those legs are structurally silent for exactly the
+          // population that suffers this. Same fail-soft seam as every leg above.
+          wi?.id
+            ? import('../../sibling-path-overlap-claim-port')
+                .then(async (m) => {
+                  const hint = await m.getClaimTimeSiblingPathOverlap({
+                    workItemId: wi.id as string,
+                    payload: wi.payload,
+                    workspaceId: ident.workspaceId ?? undefined,
+                  });
+                  const warning = m.siblingPathOverlapWarning(hint, wi.id as string);
+                  return hint && warning ? { siblingPathOverlap: hint, siblingPathOverlapWarning: warning } : null;
+                })
+                .catch(() => null)
+            : Promise.resolve(null),
+          // EI-19418245218824265: the only leg that reads the TREE. Needs nothing but
+          // the id, so it still fires for an item implemented by an agent who never
+          // claimed the row — the shape all ten row-based legs are silent for.
+          wi?.id
+            ? import('../../source-citation-claim-port')
+                .then(async (m) => {
+                  const hint = await m.getClaimTimeSourceCitation({
+                    workItemId: wi.id as string,
+                  });
+                  const warning = m.sourceCitationWarning(hint, wi.id as string);
+                  return hint && warning ? { sourceCitation: hint, sourceCitationWarning: warning } : null;
+                })
+                .catch(() => null)
+            : Promise.resolve(null),
+          // EI-22283949842250645: measure the freshness verdict's source axis —
+          // "do this item's own paths carry commits newer than the generation it
+          // was observed against?". Only meaningful for the bug family, which is
+          // the only family that carries a freshness envelope.
+          wi?.kind === 'bug'
+            ? import('../../source-generation-claim-port')
+                .then((m) => m.getClaimTimeSourceGenerationSignal({ workItem: wi }))
+                .catch(() => null)
+            : Promise.resolve(null),
+        ]);
       }
       // EI-10541: a successful self-pull means this agent is transitioning idle -> working, so
       // cancel its standing `work-item:claimable` idle-park await(s) — holding a claim and waiting
@@ -2215,8 +2224,9 @@ export default defineTool({
     // provenance (`res.claimedUnder`, the resolver's exact record) when one landed, else the
     // fleet-scoped miss's resolved spec record. Both are already-computed values on this hot
     // path (see specHeadFrom's doc comment) — no extra read.
-    const dispositionSpecHead = res?.claimedUnder
-      ?? (reconciliation.scope
+    const dispositionSpecHead =
+      res?.claimedUnder ??
+      (reconciliation.scope
         ? { specId: reconciliation.scope.record.spec?.specId, revision: reconciliation.scope.record.revision }
         : null);
     ctx.metadata?.({
