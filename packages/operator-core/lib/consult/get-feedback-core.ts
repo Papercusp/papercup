@@ -386,10 +386,15 @@ async function rubricGraderExclusions(
     SELECT DISTINCT payload -> '_ei' ->> 'created_by' AS owner_id
      FROM harness_shared.work_items
      WHERE workspace_id = ${workspaceId}
-       -- Match migration 842's expression exactly so the tiny partial
-       -- work_items_obs_rubric_ref_idx is usable; a plain payload traversal is
-       -- semantically equal but structurally misses the index after unification.
-       AND (payload - '_ei') -> 'observation' ->> 'rubricRef' = ANY(${refs}::text[])
+       -- Match migration 1103's expression exactly so the tiny partial
+       -- work_items_obs_rubric_ref_v2_idx is usable. The accessor is LOAD-BEARING,
+       -- not cosmetic: an expression index is matched structurally, so the
+       -- semantically-equal _ei-subtracting traversal silently misses it and this
+       -- becomes a full scan of a 173k-row / 4.5GB table. That subtracting form was
+       -- correct against migration 842, until 1096 stopped the engineer_issues view
+       -- subtracting _ei and thereby orphaned both 842 indexes (WI-2143953).
+       -- Keep this accessor identical to 1103's index expression.
+       AND payload -> 'observation' ->> 'rubricRef' = ANY(${refs}::text[])
        AND payload -> '_ei' ->> 'created_by' IS NOT NULL
   ORDER BY owner_id
   `) as unknown as Array<{ owner_id: string }>;
