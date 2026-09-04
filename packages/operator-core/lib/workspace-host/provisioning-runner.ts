@@ -34,6 +34,7 @@ import {
   type WorkspaceHostProviderContext,
   type WorkspaceHostResourceCheckpoint,
   type WorkspaceHostResourceRef,
+  type WorkspaceHostSpendSettlement,
 } from '@papercusp/deployment-driver';
 import type { GcpWorkspaceHostInventoryRequest, GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
 import {
@@ -201,10 +202,17 @@ interface WorkspaceHostDestroyCanaryEvidenceBase {
   budgetEvidenceRef: string;
   /** A provider read establishing the cumulative project baseline before this run mutated anything. */
   preRunZeroBaseline: WorkspaceHostCanaryCostEvidence;
-  /** Cumulative, named cost entries known when teardown begins. Empty only under failedRunTeardown. */
+  /** Cumulative, named cost entries known when teardown begins. Empty only under spendSettlement. */
   costEvidence: readonly WorkspaceHostCanaryCostEvidence[];
   /** Provider-delayed billing entries learned after the initial settle. */
   lateObservedSpend?: readonly WorkspaceHostCanaryCostEvidence[];
+  /**
+   * SETTLEMENT (D-274) — present when the provider's billing has NOT settled at teardown time, which
+   * for a short-lived canary is the normal case: GCP billing lags hours, and `lateObservedSpend` is
+   * by definition learned only AFTER the initial settle, so it cannot exist when teardown is wanted.
+   * Orthogonal to the authorization below — either may carry it.
+   */
+  spendSettlement?: WorkspaceHostSpendSettlement;
   /**
    * Audit context for an emergency/manual teardown. Confirmations are intentionally absent here:
    * the runner creates them only from provider-produced post-delete reads.
@@ -224,7 +232,8 @@ interface WorkspaceHostDestroyCanaryEvidenceBase {
  *
  * The normal route cites an approved provider-contract report and the settled economics of a run
  * that completed. A run that FAILED can produce none of that by construction, so it cites an
- * audited `failedRunTeardown` instead, which relaxes the economic family — and only that family.
+ * audited `failedRunTeardown` instead. That authorizes the teardown ONLY; whether the spend is
+ * knowable yet is the separate, orthogonal `spendSettlement` axis (D-274).
  * Identity evidence (the immutable canary labels and the controller-independent pre-delete census)
  * is unchanged on both routes: the product will still not delete a resource it cannot prove is ours.
  */
@@ -340,16 +349,16 @@ function validateDestroyCanaryEvidence(evidence: WorkspaceHostDestroyCanaryEvide
     problems.push('canary.preRunZeroBaseline must be passive provider evidence, not a reservation settlement');
   }
   const failedRunTeardown = evidence.failedRunTeardown;
-  if (failedRunTeardown) {
-    // The ECONOMIC family — settled cumulative cost and provider-delayed observed spend — is what a
-    // failed run cannot produce, so this is the only place the audited path relaxes anything. The
-    // zero baseline above stays mandatory: it is read BEFORE the run mutates anything, so a failed
-    // run still has it. Identity is resolved separately in resolveDestroyCanaryLabels and is
-    // untouched by this branch.
-    if (failedRunTeardown.failedOperationIds.length === 0) {
-      problems.push('canary.failedRunTeardown must name at least one failed operation');
-    }
-  } else {
+  if (failedRunTeardown && failedRunTeardown.failedOperationIds.length === 0) {
+    problems.push('canary.failedRunTeardown must name at least one failed operation');
+  }
+  // SETTLEMENT (D-274) is ORTHOGONAL to the authorization above: it asks only whether the provider's
+  // billing is knowable YET, so either authorization may defer it — a failed run spends money too,
+  // and that money settles on the provider's clock exactly like a successful run's. Deferring never
+  // relaxes the spend ceiling (teardown REDUCES spend) and never drops the accounting: it records a
+  // dated obligation to reconcile against the cost signal, which survives on the discarded host row.
+  // The zero baseline stays mandatory either way — it is read BEFORE the run mutates anything.
+  if (!evidence.spendSettlement) {
     if (evidence.costEvidence.length === 0) {
       problems.push('canary requires at least one named cumulative cost entry');
     }
@@ -378,6 +387,13 @@ function validateDestroyCanaryEvidence(evidence: WorkspaceHostDestroyCanaryEvide
       nonEmpty(operationId, `canary.failedRunTeardown.failedOperationIds[${index}]`);
     }
   }
+  if (evidence.spendSettlement) {
+    nonEmpty(evidence.spendSettlement.actorId, 'canary.spendSettlement.actorId');
+    nonEmpty(evidence.spendSettlement.reason, 'canary.spendSettlement.reason');
+    externalEvidenceRef(evidence.spendSettlement.procedureRef, 'canary.spendSettlement.procedureRef');
+    // A deferral with no date is an obligation nobody can ever be shown to have missed.
+    isoTimestamp(evidence.spendSettlement.reconcileAfter, 'canary.spendSettlement.reconcileAfter');
+  }
   assertWorkspaceHostSecretIsolation(evidence, 'workspaceHost.destroy.canary');
 }
 
@@ -398,6 +414,7 @@ function destroyCanaryLedgerSpec(
     cloudCredentialRef: input.connection.cloudCredentialRef,
     ...(input.canary.maxSpendCents !== undefined ? { maxSpendCents: input.canary.maxSpendCents } : {}),
     teardownDeadlineAt: input.canary.teardownDeadlineAt,
+    ...(input.canary.spendSettlement ? { spendSettlement: input.canary.spendSettlement } : {}),
   };
   const failedRunTeardown = input.canary.failedRunTeardown;
   return failedRunTeardown
@@ -1323,6 +1340,10 @@ async function finalizeDestroyEvidence(
         cumulative: input.canary.costEvidence,
         lateObservedSpend: input.canary.lateObservedSpend ?? [],
         completion: completionReceipt,
+        // D-274: hoisted out of the receipt so a reconciliation sweep can FIND the hosts that owe
+        // one. This row survives teardown — discard sets recoverability_kind='none', it does not
+        // delete the host — so the obligation outlives the resources it accounts for.
+        ...(input.canary.spendSettlement ? { spendSettlement: input.canary.spendSettlement } : {}),
       },
     ],
   });
@@ -1441,10 +1462,21 @@ export async function runWorkspaceHostDestroy(
         ? {
             evidenceAdmission: {
               mode: 'failed-run-teardown',
-              waives: 'economic-evidence-only',
+              waives: 'approved-contract-report-only',
               actorId: input.canary.failedRunTeardown.actorId,
               procedureRef: input.canary.failedRunTeardown.procedureRef,
               failedOperationIds: [...input.canary.failedRunTeardown.failedOperationIds],
+            },
+          }
+        : {}),
+      ...(input.canary.spendSettlement
+        ? {
+            spendAdmission: {
+              mode: 'deferred-settlement',
+              waives: 'settled-cost-evidence-only',
+              actorId: input.canary.spendSettlement.actorId,
+              procedureRef: input.canary.spendSettlement.procedureRef,
+              reconcileAfter: input.canary.spendSettlement.reconcileAfter,
             },
           }
         : {}),

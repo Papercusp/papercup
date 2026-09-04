@@ -10,6 +10,7 @@ import type {
   WorkspaceHostCanaryOrphanCensus,
   WorkspaceHostContractApproval,
   WorkspaceHostFailedRunTeardown,
+  WorkspaceHostSpendSettlement,
 } from "./workspace-host-test-harness";
 
 interface WorkspaceHostDestroyCanaryEvidenceContractBase {
@@ -21,6 +22,12 @@ interface WorkspaceHostDestroyCanaryEvidenceContractBase {
   preRunZeroBaseline: WorkspaceHostCanaryCostEvidence;
   costEvidence: readonly WorkspaceHostCanaryCostEvidence[];
   lateObservedSpend?: readonly WorkspaceHostCanaryCostEvidence[];
+  /**
+   * SETTLEMENT (D-274), orthogonal to the authorization below. Absent means the provider's billing
+   * has settled and both cost fields above must be populated; present means it has not, so they may
+   * be empty and a dated reconciliation obligation is recorded instead.
+   */
+  spendSettlement?: WorkspaceHostSpendSettlement;
 }
 
 /**

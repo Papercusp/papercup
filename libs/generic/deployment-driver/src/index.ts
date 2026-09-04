@@ -205,6 +205,7 @@ export type {
   WorkspaceHostFaultHistoryEntry,
   WorkspaceHostContractApproval,
   WorkspaceHostFailedRunTeardown,
+  WorkspaceHostSpendSettlement,
   WorkspaceHostLiveCanarySpec,
   WorkspaceHostCanarySpendReservation,
   WorkspaceHostCanaryCostEvidence,

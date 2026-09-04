@@ -144,6 +144,16 @@ function requireFailedRunTeardown(
   }
 }
 
+function requireSpendSettlement(
+  settlement: WorkspaceHostSpendSettlement,
+): void {
+  requireNonEmpty(settlement.actorId, "spendSettlement.actorId");
+  requireNonEmpty(settlement.reason, "spendSettlement.reason");
+  requireNonEmpty(settlement.procedureRef, "spendSettlement.procedureRef");
+  // A deferral with no date is an obligation nobody can ever be shown to have missed.
+  requireTimestamp(settlement.reconcileAfter, "spendSettlement.reconcileAfter");
+}
+
 function validatePlanShape(
   checks: WorkspaceHostProviderContractCheck[],
   plan: WorkspaceHostPlan,
@@ -655,18 +665,22 @@ export interface WorkspaceHostContractApproval {
 }
 
 /**
- * Authorization to tear down a canary host whose run FAILED.
+ * AUTHORIZATION to tear down a canary host whose run FAILED (D-273, revised by D-274).
  *
- * A failed run cannot produce the economic evidence a completed one does: there is no approved
- * contract report to cite, no settled cumulative cost, and no provider-delayed observed spend.
- * Demanding them anyway makes the hosts most likely to need teardown exactly the ones that cannot
- * be torn down. This authorization waives that economic family and nothing else — the immutable
- * canary labels and the controller-independent census still have to hold, because those are what
- * prove the resources being deleted are ours.
+ * A failed run can never produce the approved contract report a completed one does, because that
+ * report IS the completion artifact of a passing canary. Demanding it anyway makes the hosts most
+ * likely to need teardown exactly the ones that cannot be torn down.
  *
- * It is deliberately NOT the same hatch as an emergency manual destroy, which waives the LABEL
- * requirement for a host provisioned before the canary tag contract existed. The two waive disjoint
- * evidence families; merging them would let one request drop both proofs at once.
+ * It authorizes the teardown and NOTHING else. In particular it says nothing about spend: a failed
+ * run still provisioned resources and still cost money, and that money settles with the provider on
+ * its own clock, exactly like a successful run's. Whether the spend is known yet is the separate
+ * question `WorkspaceHostSpendSettlement` answers — D-273 let this type stand in for that one, and
+ * D-274 separated them.
+ *
+ * It is also deliberately NOT the same hatch as an emergency manual destroy, which waives the LABEL
+ * requirement for a host provisioned before the canary tag contract existed. Identity — the
+ * immutable canary labels and the controller-independent census — is waived by neither, because it
+ * is what proves the resources being deleted are ours.
  */
 export interface WorkspaceHostFailedRunTeardown {
   actorId: string;
@@ -674,6 +688,30 @@ export interface WorkspaceHostFailedRunTeardown {
   procedureRef: string;
   /** The failed operation(s) this teardown cleans up after; at least one. */
   failedOperationIds: readonly string[];
+}
+
+/**
+ * SETTLEMENT — has the provider's billing for this run settled at the moment of teardown? (D-274)
+ *
+ * Orthogonal to authorization: any of the four combinations can occur, including a failed-run
+ * teardown whose spend HAS since settled because the host was retired days later.
+ *
+ * Supplying this means the spend is genuinely not knowable yet. `lateObservedSpend` is BY
+ * DEFINITION "learned after the initial settle", so at the moment teardown is wanted it cannot
+ * exist — and provider billing lags hours, so for a short-lived canary neither can the settled
+ * cumulative cost. Requiring them regardless is not a gate but an outage of the delete path.
+ *
+ * This does not waive the spend ceiling — deleting sooner reduces spend, not increases it — and it
+ * does not drop the accounting: it records a dated obligation to reconcile against the persisted
+ * cost signal, which survives teardown on the discarded host row.
+ */
+export interface WorkspaceHostSpendSettlement {
+  status: "deferred";
+  actorId: string;
+  reason: string;
+  procedureRef: string;
+  /** When the provider's billing is expected to have settled, so the obligation can be chased. */
+  reconcileAfter: string;
 }
 
 interface WorkspaceHostLiveCanarySpecBase {
@@ -685,6 +723,12 @@ interface WorkspaceHostLiveCanarySpecBase {
   /** May be lower than D-020's cap, never higher. Defaults to USD 25. */
   maxSpendCents?: number;
   teardownDeadlineAt: string;
+  /**
+   * Present when provider billing has NOT settled yet (D-274). Orthogonal to the authorization
+   * below — either authorization may carry it. Its only effect on the ledger is to mark the
+   * completion receipt's spend as provisional; it never relaxes the spend ceiling.
+   */
+  spendSettlement?: WorkspaceHostSpendSettlement;
 }
 
 /**
@@ -758,10 +802,20 @@ interface WorkspaceHostCanaryCompletionReceiptBase {
   runId: string;
   target: WorkspaceHostProviderTarget;
   completedAt: string;
+  /**
+   * What the ledger observed. ⚠ When `spendSettlement` is present this is PROVISIONAL — provider
+   * billing had not settled when the host was torn down, so the real cost is higher and arrives
+   * later. A reader must not report it as the final cost without checking that field.
+   */
   spentCents: number;
   maxSpendCents: number;
   resourceCount: number;
   costEvidence: readonly WorkspaceHostCanaryCostEvidence[];
+  /**
+   * Present when the spend was unsettled at teardown (D-274): carries the dated obligation to
+   * reconcile this receipt against the provider's later billing.
+   */
+  spendSettlement?: WorkspaceHostSpendSettlement;
 }
 
 /**
@@ -845,9 +899,11 @@ export class WorkspaceHostLiveCanaryHarness {
         "Live canary requires a non-empty typed cloudCredentialRef",
       );
     }
+    if (spec.spendSettlement) requireSpendSettlement(spec.spendSettlement);
     if (spec.failedRunTeardown) {
-      // Teardown-only authorization: it stands in for the economic evidence a failed run can never
-      // produce, never for provider work. Nothing below this branch creates or mutates a resource.
+      // Teardown-only authorization: it stands in for the approved contract report a failed run can
+      // never produce, never for provider work. Nothing below this branch creates or mutates a
+      // resource. It says nothing about spend — that is spendSettlement's question (D-274).
       requireFailedRunTeardown(spec.failedRunTeardown);
     } else {
       const approval = spec.contractApproval;
@@ -1171,6 +1227,9 @@ export class WorkspaceHostLiveCanaryHarness {
       runId: spec.runId,
       target: spec.target,
       ...authorization,
+      ...(spec.spendSettlement
+        ? { spendSettlement: { ...spec.spendSettlement } }
+        : {}),
       completedAt,
       spentCents: this.spentCents(),
       maxSpendCents: this.maxSpendCents,

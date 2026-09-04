@@ -462,15 +462,32 @@ describe('runWorkspaceHostDestroy', () => {
   });
 });
 
-// WI-2143805: a host whose canary run FAILED could not be destroyed through the product route at
-// all. Destroy admission demanded an approved contract report, settled cumulative cost, and a
-// provider-delayed observed-spend entry — evidence only a run that COMPLETED can produce — so the
-// hosts most in need of teardown were exactly the ones the product refused to tear down, leaving
-// the operator to reach around it with a script. `failedRunTeardown` relaxes that economic family
-// and nothing else: identity still has to hold, which is what these four cases pin, in both
-// directions. A test that only proves the new path works would equally pass if the requirement had
-// simply been deleted.
-describe('runWorkspaceHostDestroy failed-run teardown', () => {
+// WI-2143805: a canary host could not be destroyed through the product route at all — destroy
+// admission demanded an approved contract report, settled cumulative cost, and a provider-delayed
+// observed-spend entry, so the hosts most in need of teardown were exactly the ones the product
+// refused to tear down and the operator had to reach around it with a script.
+//
+// D-274 splits that into two ORTHOGONAL axes, and these cases pin both, in both directions:
+//   AUTHORIZATION — contractApproval (run completed) XOR failedRunTeardown (run failed, so the
+//     approved contract report cannot exist).
+//   SETTLEMENT    — absent means provider billing has settled and both cost fields are required;
+//     spendSettlement means it has not, which for a short-lived canary is the NORMAL case.
+// Neither axis may be inferred from the other: a failed run still spends money, and that money
+// settles on the provider's clock exactly like a successful run's.
+//
+// Identity (canary labels + pre-delete census) is waived by neither. A test that only proved the
+// new paths work would pass equally against a build that simply deleted the requirements, so every
+// admitting case below is paired with the refusal that calibrates it.
+describe('runWorkspaceHostDestroy evidence axes (D-274)', () => {
+  const deferredSettlement = {
+    status: 'deferred' as const,
+    actorId: 'operator:test',
+    reason: 'provider billing has not settled; GCP lags hours behind teardown',
+    procedureRef: 'runbook://workspace-host/gcp/deferred-spend-reconciliation-v1',
+    reconcileAfter: '2026-08-26T00:00:00.000Z',
+  };
+
+  // A failed run: no approved contract report (never will be) AND no settled spend (not yet).
   const failedRunCanary = (): WorkspaceHostDestroyCanaryEvidence => ({
     runId: RUN_ID,
     workspaceId: WORKSPACE_ID,
@@ -478,14 +495,109 @@ describe('runWorkspaceHostDestroy failed-run teardown', () => {
     teardownDeadlineAt: '2099-01-01T00:00:00.000Z',
     budgetEvidenceRef: 'gcp://billing/budgets/workspace-host-canary',
     preRunZeroBaseline: { cents: 0, observedAt: NOW, providerEvidenceRef: 'gcp://billing/baseline-zero' },
-    // Exactly what a failed run has: the baseline read before it mutated anything, and nothing else.
     costEvidence: [],
+    spendSettlement: deferredSettlement,
     failedRunTeardown: {
       actorId: 'operator:test',
       reason: 'canary run failed during bootstrap; the host must still be torn down',
       procedureRef: 'runbook://workspace-host/gcp/failed-run-teardown-v1',
       failedOperationIds: ['op-run-1'],
     },
+  });
+
+  // canary-15's case: the run SUCCEEDED — provisioned, upgraded, SSH serving — so it HAS an approved
+  // contract report. It was undestroyable purely because the spend had not settled yet, and
+  // `lateObservedSpend` is by definition learned only AFTER the settle. This is what part 2 fixes.
+  const settledLaterCanary = (): WorkspaceHostDestroyCanaryEvidence => ({
+    runId: RUN_ID,
+    workspaceId: WORKSPACE_ID,
+    contractApproval: {
+      status: 'approved',
+      suiteVersion: WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
+      reportRef: 'report://gcp/fake-contract',
+      approvedBy: 'operator:test',
+      approvedAt: NOW,
+    },
+    maxSpendCents: 2_500,
+    teardownDeadlineAt: '2099-01-01T00:00:00.000Z',
+    budgetEvidenceRef: 'gcp://billing/budgets/workspace-host-canary',
+    preRunZeroBaseline: { cents: 0, observedAt: NOW, providerEvidenceRef: 'gcp://billing/baseline-zero' },
+    costEvidence: [],
+    spendSettlement: deferredSettlement,
+  });
+
+  it('destroys a host whose run SUCCEEDED but whose spend has not settled (canary-15)', async () => {
+    const { provider, apply } = providerHarness();
+    const { store, updateHostState } = storeHarness();
+
+    const result = await runWorkspaceHostDestroy({ ...runInput(provider, store), canary: settledLaterCanary() });
+
+    expect(result.status).toBe('succeeded');
+    expect(apply).toHaveBeenCalledTimes(resources.length);
+    expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'absent', discard: true }));
+    // The receipt still cites the approved contract report — the run DID complete — and additionally
+    // marks its spend provisional, so no reader reports spentCents:0 as this host's final cost.
+    expect(result.evidence?.completionReceipt).toMatchObject({
+      contractReportRef: 'report://gcp/fake-contract',
+      spentCents: 0,
+      spendSettlement: { status: 'deferred', reconcileAfter: '2026-08-26T00:00:00.000Z' },
+    });
+    // The obligation is hoisted onto the persisted signal so a sweep can FIND who owes one.
+    expect(store.recordSignals).toHaveBeenCalledWith(
+      expect.objectContaining({
+        costSignals: [expect.objectContaining({ spendSettlement: expect.objectContaining({ status: 'deferred' }) })],
+      }),
+    );
+    expect(store.beginOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: expect.objectContaining({
+          spendAdmission: {
+            mode: 'deferred-settlement',
+            waives: 'settled-cost-evidence-only',
+            actorId: 'operator:test',
+            procedureRef: 'runbook://workspace-host/gcp/deferred-spend-reconciliation-v1',
+            reconcileAfter: '2026-08-26T00:00:00.000Z',
+          },
+        }),
+      }),
+    );
+  });
+
+  // Calibration for the case above: authorization alone does NOT waive the economics. Without the
+  // settlement attestation the identical payload is still refused — so the axes really are separate,
+  // and part 2 is not just "the cost requirement was deleted".
+  it('still refuses a successful-run payload with empty economics and no settlement attestation', async () => {
+    const { provider, apply } = providerHarness();
+    const { store } = storeHarness();
+    const { spendSettlement: _deferred, ...withoutSettlement } = settledLaterCanary();
+
+    await expect(
+      runWorkspaceHostDestroy({ ...runInput(provider, store), canary: withoutSettlement }),
+    ).rejects.toMatchObject({
+      problems: expect.arrayContaining([
+        expect.stringContaining('at least one named cumulative cost entry'),
+        expect.stringContaining('provider-delayed observed spend entry'),
+      ]),
+    });
+    expect(provider.plan).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  // The deferral is an obligation, not a hole: it must name who deferred it and when it comes due.
+  it('refuses a settlement deferral that names no reconciliation date', async () => {
+    const { provider, apply } = providerHarness();
+    const { store } = storeHarness();
+    const canary = {
+      ...settledLaterCanary(),
+      spendSettlement: { ...deferredSettlement, reconcileAfter: 'whenever' },
+    } satisfies WorkspaceHostDestroyCanaryEvidence;
+
+    await expect(
+      runWorkspaceHostDestroy({ ...runInput(provider, store), canary }),
+    ).rejects.toMatchObject({
+      problems: [expect.stringContaining('canary.spendSettlement.reconcileAfter')],
+    });
+    expect(apply).not.toHaveBeenCalled();
   });
 
   it('destroys a failed-canary host on evidence a failed run can actually produce', async () => {
@@ -497,7 +609,7 @@ describe('runWorkspaceHostDestroy failed-run teardown', () => {
     expect(result.status).toBe('succeeded');
     expect(apply).toHaveBeenCalledTimes(resources.length);
     expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'absent', discard: true }));
-    // The receipt cites the audited procedure, and carries NO contract report ref — a reader of the
+    // The receipt cites the audited procedure and carries NO contract report ref — a reader of the
     // persisted signal can tell a failed-run teardown from a completed canary without guessing.
     expect(result.evidence?.completionReceipt).toMatchObject({
       spentCents: 0,
@@ -508,44 +620,40 @@ describe('runWorkspaceHostDestroy failed-run teardown', () => {
     expect(store.beginOperation).toHaveBeenCalledWith(
       expect.objectContaining({
         request: expect.objectContaining({
+          // D-274: this authorization waives the approved contract report and NOTHING about spend —
+          // the failed run's own spend is deferred by the separate settlement axis, recorded beside
+          // it. Before D-274 this row claimed 'economic-evidence-only', conflating the two.
           evidenceAdmission: {
             mode: 'failed-run-teardown',
-            waives: 'economic-evidence-only',
+            waives: 'approved-contract-report-only',
             actorId: 'operator:test',
             procedureRef: 'runbook://workspace-host/gcp/failed-run-teardown-v1',
             failedOperationIds: ['op-run-1'],
           },
+          spendAdmission: expect.objectContaining({ mode: 'deferred-settlement' }),
         }),
       }),
     );
   });
 
-  // The calibration case. Without it the test above would pass just as well against a build that
-  // dropped the economic requirement outright, which is the failure this whole item is about.
-  it('still refuses the identical evidence when failedRunTeardown is absent', async () => {
+  // Calibration for the AUTHORIZATION axis, mirroring the settlement one above. A settled-spend
+  // attestation does not stand in for the missing contract report: strip the authorization and the
+  // ledger still refuses, so neither axis silently covers for the other.
+  it('still refuses when the run produced no contract report and no failed-run authorization', async () => {
     const { provider, apply } = providerHarness();
     const { store } = storeHarness();
-    const { failedRunTeardown: _waiver, ...withoutWaiver } = failedRunCanary();
-    const canary = {
-      ...withoutWaiver,
-      contractApproval: {
-        status: 'approved' as const,
-        suiteVersion: WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
-        reportRef: 'report://gcp/fake-contract',
-        approvedBy: 'operator:test',
-        approvedAt: NOW,
-      },
-    } satisfies WorkspaceHostDestroyCanaryEvidence;
+    const { failedRunTeardown: _authorization, ...withoutAuthorization } = failedRunCanary();
 
     await expect(
-      runWorkspaceHostDestroy({ ...runInput(provider, store), canary }),
+      runWorkspaceHostDestroy({
+        ...runInput(provider, store),
+        // Cast: the union forbids this shape at compile time, which is the point — this asserts the
+        // RUNTIME gate holds too, for a caller reaching the route with untyped JSON.
+        canary: withoutAuthorization as unknown as WorkspaceHostDestroyCanaryEvidence,
+      }),
     ).rejects.toMatchObject({
-      problems: expect.arrayContaining([
-        expect.stringContaining('at least one named cumulative cost entry'),
-        expect.stringContaining('provider-delayed observed spend entry'),
-      ]),
+      problems: [expect.stringContaining('contract report is approved')],
     });
-    expect(provider.plan).not.toHaveBeenCalled();
     expect(apply).not.toHaveBeenCalled();
   });
 

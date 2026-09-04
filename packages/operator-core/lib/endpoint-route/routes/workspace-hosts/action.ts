@@ -75,6 +75,22 @@ function isFailedRunTeardown(value: unknown): boolean {
   );
 }
 
+/**
+ * The spend has not settled with the provider yet (D-274). Orthogonal to authorization: it answers
+ * "is the cost knowable at teardown time", which for a short-lived canary is normally NO.
+ */
+function isSpendSettlement(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    value.status === 'deferred' &&
+    typeof value.actorId === 'string' &&
+    typeof value.reason === 'string' &&
+    typeof value.procedureRef === 'string' &&
+    typeof value.reconcileAfter === 'string' &&
+    Number.isFinite(Date.parse(value.reconcileAfter))
+  );
+}
+
 function parseCanaryEvidence(value: unknown): WorkspaceHostDestroyCanaryEvidence | null {
   if (!isRecord(value) || !isCostEvidence(value.preRunZeroBaseline)) return null;
   if (!Array.isArray(value.costEvidence) || !value.costEvidence.every(isCostEvidence)) return null;
@@ -94,6 +110,7 @@ function parseCanaryEvidence(value: unknown): WorkspaceHostDestroyCanaryEvidence
     return null;
   }
   if (value.failedRunTeardown !== undefined && !isFailedRunTeardown(value.failedRunTeardown)) return null;
+  if (value.spendSettlement !== undefined && !isSpendSettlement(value.spendSettlement)) return null;
   if (value.failedRunTeardown !== undefined) {
     // The two authorizations are mutually exclusive: a request may not present an approved contract
     // report AND claim the run failed. Accepting both would make the audit record ambiguous about
