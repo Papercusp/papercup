@@ -136,6 +136,25 @@ def _is_conn_refused(exc):
     return 'Connection refused' in text or 'Errno 111' in text
 
 
+def _coordination_domain_rejection(value):
+    """Return a short detail when an older operator rejects the new arg.
+
+    A release can reach an operator that predates ``coordination_domain`` while
+    the matching PreToolUse hook already cached that field. Treat only a
+    narrow invalid/unrecognized-key response as a compatibility signal; other
+    release errors must retain the normal fail-open behavior.
+    """
+    try:
+        text = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+    except Exception:
+        text = str(value)
+    if 'coordination_domain' not in text:
+        return None
+    if not re.search(r'invalid[_ -]?args|unrecognized key|unknown key|unexpected key', text, re.I):
+        return None
+    return text[:300]
+
+
 RETRY_BACKOFFS = (0.4, 0.8, 1.2)
 
 
@@ -466,7 +485,22 @@ if proof is not None:
 # confirm the selected paths were released, and retain the cache token on an
 # unconfirmed outcome so a parent exec completion can recover it.
 released, release_error = call_tool('locks:release', release_args)
-if release_error is None and release_confirmed(released, release_paths or []):
+compatibility_error = _coordination_domain_rejection(release_error)
+if compatibility_error is None:
+    compatibility_error = _coordination_domain_rejection(released)
+if compatibility_error and coordination_domain:
+    # A stale operator may reject the domain field even though it can still
+    # release the lock. Retry the same scoped release without that field, and
+    # keep every recovery sidecar unless this compatibility retry is confirmed.
+    compatibility_args = dict(release_args)
+    del compatibility_args['coordination_domain']
+    released, release_error = call_tool('locks:release', compatibility_args)
+    if release_error is None and release_confirmed(released, release_paths or []):
+        mark_release_success('posttooluse-compatibility-fallback')
+        cleanup_sidecars(cache_path[:-len('.lock')])
+    else:
+        mark_release_error('release', release_error or released or 'release not confirmed')
+elif release_error is None and release_confirmed(released, release_paths or []):
     mark_release_success()
     cleanup_sidecars(cache_path[:-len('.lock')])
 else:

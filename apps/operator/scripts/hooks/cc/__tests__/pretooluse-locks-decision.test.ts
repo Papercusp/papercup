@@ -528,6 +528,83 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     }
   });
 
+  it("PostToolUse retries a stale release without coordination_domain and cleans sidecars only after confirmation", async () => {
+    const toolUseId = "tu-legacy-release";
+    const paths = ["sub/legacy-release.ts"];
+    fs.writeFileSync(join(cache, `${toolUseId}.lock`), "legacy-release-lock");
+    fs.writeFileSync(join(cache, `${toolUseId}.paths`), JSON.stringify(paths));
+    fs.writeFileSync(join(cache, `${toolUseId}.domain`), fs.realpathSync(repo));
+    rejectCoordinationDomain = true;
+    recoveryReleaseInner = { ok: true, released: paths, held_before: 1 };
+
+    const post = await runPost(
+      {
+        tool_name: "Edit",
+        tool_use_id: toolUseId,
+        session_id: "s",
+        tool_response: { ok: true },
+      },
+    );
+
+    expect(post.status).toBe(0);
+    expect(requests).toHaveLength(2);
+    expect(requests[0].body.params.arguments).toMatchObject({
+      lock_id: "legacy-release-lock",
+      paths,
+      coordination_domain: fs.realpathSync(repo),
+    });
+    expect(requests[1].body.params.arguments).toMatchObject({
+      lock_id: "legacy-release-lock",
+      paths,
+    });
+    expect(requests[1].body.params.arguments).not.toHaveProperty(
+      "coordination_domain",
+    );
+    for (const suffix of ["lock", "paths", "domain"]) {
+      expect(fs.existsSync(join(cache, `${toolUseId}.${suffix}`))).toBe(false);
+    }
+    expect(
+      JSON.parse(fs.readFileSync(join(cache, "last-success.json"), "utf8")),
+    ).toMatchObject({
+      mode: "posttooluse-compatibility-fallback",
+    });
+  });
+
+  it("PostToolUse retains sidecars when the stale-release compatibility retry is unconfirmed", async () => {
+    const toolUseId = "tu-legacy-release-unconfirmed";
+    const paths = ["sub/legacy-release-unconfirmed.ts"];
+    fs.writeFileSync(
+      join(cache, `${toolUseId}.lock`),
+      "legacy-release-unconfirmed-lock",
+    );
+    fs.writeFileSync(join(cache, `${toolUseId}.paths`), JSON.stringify(paths));
+    fs.writeFileSync(join(cache, `${toolUseId}.domain`), fs.realpathSync(repo));
+    rejectCoordinationDomain = true;
+    recoveryReleaseInner = { ok: true, released: [], held_before: 1 };
+
+    const post = await runPost({
+      tool_name: "Edit",
+      tool_use_id: toolUseId,
+      session_id: "s",
+      tool_response: { ok: true },
+    });
+
+    expect(post.status).toBe(0);
+    expect(requests).toHaveLength(2);
+    expect(requests[1].body.params.arguments).not.toHaveProperty(
+      "coordination_domain",
+    );
+    for (const suffix of ["lock", "paths", "domain"]) {
+      expect(fs.existsSync(join(cache, `${toolUseId}.${suffix}`))).toBe(true);
+    }
+    expect(
+      JSON.parse(fs.readFileSync(join(cache, "last-error.json"), "utf8")),
+    ).toMatchObject({
+      handler: "posttooluse",
+      phase: "release",
+    });
+  });
+
   it("PostToolUse falls back to the stable operator when the staging authority times out", async () => {
     const toolUseId = "tu-staging-timeout-fallback";
     const lockId = "staging-timeout-lock";
