@@ -75,6 +75,18 @@ export type WorkspaceHostUpdateMode =
 
 export const WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX =
   'PAPERCUSP_WORKSPACE_HOST_ATTESTATION=';
+/**
+ * Emitted by the bootc model INSTEAD of an attestation when the run staged a new deployment and
+ * rebooted (P-306).
+ *
+ * A distinct prefix rather than a `status` field inside the attestation, because the two
+ * documents make incompatible claims: an attestation asserts observed properties of a running
+ * host, and a host that is rebooting into a deployment it has never executed can assert none of
+ * them. Folding "staged" into the attestation would produce a document claiming `status:
+ * 'healthy'` about a system that does not yet exist.
+ */
+export const WORKSPACE_HOST_BOOTSTRAP_STAGED_PREFIX =
+  'PAPERCUSP_WORKSPACE_HOST_STAGED=';
 export const DEFAULT_WORKSPACE_HOST_SERVICE_USER = 'papercusp';
 export const DEFAULT_WORKSPACE_HOST_WORKSPACE_USER = 'papercusp-workspace';
 /**
@@ -651,10 +663,43 @@ export interface WorkspaceHostAgentRuntimeInstall {
   args: readonly string[];
 }
 
+/**
+ * What the bootc model needs that the tarball model does not (P-306 half B).
+ *
+ * REQUIRED whenever `hostModel: 'bootc-image'`, enforced in `validateInput`. The typed
+ * discriminated union lives on the ATTESTATION, which is the trust boundary D-262 condition 2 is
+ * about; the input keeps one shape with a runtime requirement, so the ~40 existing call sites
+ * and fixtures that construct an Ubuntu input keep compiling untouched.
+ */
+export interface WorkspaceHostBootcRelease {
+  /** Registry-qualified product image ref, e.g. `registry/papercusp/workspace-host:2026.9.4-1`. */
+  image: string;
+  /** Manifest digest to pin (`sha256:…`). The pull is by digest; the tag is provenance only. */
+  imageDigest: string;
+  /** Base the product image was built FROM. Defaults to `WORKSPACE_HOST_BOOTC_BASE_IMAGE`. */
+  baseImage?: string;
+  /**
+   * Absolute path of the containers signature policy the host must be running under.
+   *
+   * NOT a policy this script writes: an image whose signature is only checked by a policy the
+   * same run installed has a window in which it was checked by nothing. The policy belongs to
+   * the image (P-308), and this render ASSERTS it is present and requires a signature for the
+   * release repository — a read, which is the strongest honest claim from inside the host.
+   */
+  signaturePolicyPath: string;
+}
+
 export interface WorkspaceHostBootstrapInput {
   contractVersion: typeof WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION;
   action: 'install' | 'upgrade' | 'rollback';
   hostId: string;
+  /**
+   * Which host model this render targets. Omitted means `ubuntu-release-bundle` — the shipped
+   * model — so every existing caller keeps its current behaviour verbatim (P-306).
+   */
+  hostModel?: WorkspaceHostModel;
+  /** Required when `hostModel` is `'bootc-image'`; rejected otherwise. */
+  bootc?: WorkspaceHostBootcRelease;
   release: WorkspaceHostBootstrapRelease;
   /** Durable migration identity expected after the bundled migration command succeeds. */
   migrationId: string;
@@ -721,13 +766,6 @@ export interface WorkspaceHostBootstrapAttestationShape<
   hostModel: M;
   observedAt: string;
   status: 'healthy';
-  release: {
-    version: string;
-    source: string;
-    bundleSha256: string;
-    signingKeySha256: string;
-    signatureVerified: true;
-  };
   migration: {
     id: string;
     applied: true;
@@ -840,13 +878,39 @@ export interface WorkspaceHostBootstrapAttestationShape<
 export type WorkspaceHostBootstrapAttestation =
   | (WorkspaceHostBootstrapAttestationShape<'ubuntu-release-bundle'> & {
       ubuntuVersion: typeof WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION;
+      /**
+       * The signed-tarball trust chain. `signatureVerified` here means MINISIGN verified a
+       * detached signature over the downloaded bundle, using a public key pinned by digest.
+       */
+      release: {
+        version: string;
+        source: string;
+        bundleSha256: string;
+        signingKeySha256: string;
+        signatureVerified: true;
+      };
     })
   | (WorkspaceHostBootstrapAttestationShape<'bootc-image'> & {
-      bootcImage: {
-        /** The base the product image was built FROM, as the booted deployment reports it. */
-        baseImage: string;
-        /** The pinned digest of the image this deployment actually booted. */
-        digest: string;
+      /** The base the product image was built FROM, as the booted deployment reports it. */
+      bootcBaseImage: string;
+      /**
+       * The image trust chain — a DIFFERENT chain, named differently on purpose.
+       *
+       * `signatureVerified` here means the pull went through a containers `sigstoreSigned`
+       * policy that D-279 proved is enforced and fails closed. There is no bundle digest and no
+       * minisign key: the transport verified the image before bootc ever staged it, and there is
+       * no later moment at which this host could re-check that signature itself. Reporting the
+       * policy PATH is what makes the claim auditable rather than merely asserted.
+       */
+      release: {
+        version: string;
+        /** Registry-qualified image ref this deployment booted. */
+        source: string;
+        /** Manifest digest the booted deployment is pinned to (`sha256:…`). */
+        imageDigest: string;
+        /** The containers policy file that gated the pull (D-279). */
+        signaturePolicyPath: string;
+        signatureVerified: true;
       };
     });
 
@@ -861,6 +925,20 @@ const SAFE_LINUX_NAME = /^[a-z_][a-z0-9_-]{0,30}$/;
 const SAFE_SERVICE = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$/;
 const SAFE_ENTRYPOINT = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/;
 const SHA256 = /^[a-fA-F0-9]{64}$/;
+/**
+ * A REGISTRY-QUALIFIED image reference — the leading `(?:\/…)+` makes at least one slash
+ * mandatory, which is the point rather than a side effect. A bare `centos-bootc:stream9`
+ * resolves against whatever unqualified-search registries the host happens to have configured,
+ * so the ref that gets pulled is decided by host config rather than by us; on a machine whose
+ * search list leads somewhere else that is a silent substitution of the entire OS.
+ */
+const SAFE_IMAGE_REF =
+  /^[a-z0-9][a-z0-9._-]*(?::\d{1,5})?(?:\/[a-z0-9][a-z0-9._-]*)+(?::[A-Za-z0-9][A-Za-z0-9._-]{0,127})?$/;
+/** A pinned manifest digest. Tags move; this does not. */
+const SAFE_IMAGE_DIGEST = /^sha256:[a-f0-9]{64}$/;
+/** Absolute, traversal-free, shell-safe: every segment must OPEN with an alphanumeric, so
+ * neither `..` nor an empty segment can appear anywhere in the path. */
+const SAFE_ABSOLUTE_PATH = /^(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}){1,16}$/;
 
 function requireCondition(
   condition: unknown,
@@ -962,6 +1040,10 @@ function normalizedEntrypoints(
 }
 
 interface ValidatedBootstrapInput {
+  hostModel: WorkspaceHostModel;
+  /** Present exactly when `hostModel === 'bootc-image'`, with `baseImage` defaulted. */
+  bootc?: Required<Pick<WorkspaceHostBootcRelease, 'baseImage'>> &
+    WorkspaceHostBootcRelease;
   entrypoints: WorkspaceHostBootstrapEntrypoints;
   serviceUser: string;
   serviceGroup: string;
@@ -985,6 +1067,47 @@ function validateInput(
     `Unsupported bootstrap action '${input.action}'`,
   );
   requireSafeId(input.hostId, 'hostId');
+  const hostModel = input.hostModel ?? DEFAULT_WORKSPACE_HOST_MODEL;
+  requireCondition(
+    (WORKSPACE_HOST_MODELS as readonly string[]).includes(hostModel),
+    `Unsupported workspace-host model '${hostModel}'`,
+  );
+  // Both directions are refused, and the second one matters as much as the first. A `bootc`
+  // block on an Ubuntu render is an image ref and digest that NOTHING in that script reads — the
+  // caller believes it pinned an image and pinned nothing, which is the quiet half of this
+  // failure and the one no error message would otherwise ever mention.
+  requireCondition(
+    hostModel === 'bootc-image' ? input.bootc !== undefined : true,
+    "hostModel 'bootc-image' requires a bootc release descriptor",
+  );
+  requireCondition(
+    hostModel === 'bootc-image' || input.bootc === undefined,
+    `bootc release descriptor is only valid with hostModel 'bootc-image', not '${hostModel}'`,
+  );
+  const bootc = input.bootc
+    ? {
+        ...input.bootc,
+        baseImage: input.bootc.baseImage ?? WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      }
+    : undefined;
+  if (bootc) {
+    requireCondition(
+      SAFE_IMAGE_REF.test(bootc.image),
+      'bootc.image must be a registry-qualified image reference',
+    );
+    requireCondition(
+      SAFE_IMAGE_REF.test(bootc.baseImage),
+      'bootc.baseImage must be a registry-qualified image reference',
+    );
+    requireCondition(
+      SAFE_IMAGE_DIGEST.test(bootc.imageDigest),
+      "bootc.imageDigest must be a 'sha256:<64 hex>' manifest digest",
+    );
+    requireCondition(
+      SAFE_ABSOLUTE_PATH.test(bootc.signaturePolicyPath),
+      'bootc.signaturePolicyPath must be an absolute path',
+    );
+  }
   requireCondition(
     SAFE_RELEASE.test(input.release.version),
     'release.version must be shell-safe',
@@ -1093,6 +1216,8 @@ function validateInput(
     'bootstrap.publicMetadata',
   );
   return {
+    hostModel,
+    bootc,
     entrypoints: normalizedEntrypoints(input.entrypoints),
     serviceUser,
     serviceGroup,
@@ -1470,16 +1595,191 @@ function localInferenceRuntimeInstallLines(
 }
 
 /**
+ * `validate-host` — prove the machine is the host model this render was built for.
+ *
+ * The bootc arm reads `bootc status --format=json --format-version 1` (SPELLING VERIFIED against
+ * bootc 1.16.6 in the base image: it is `--format=json`, not `--json`) and refuses to continue
+ * unless the document actually yielded a ref and a digest. That guard is not ceremony: every
+ * extraction here is `// empty`-defaulted, so a renamed field would otherwise leave both
+ * variables empty, and an empty-vs-empty digest comparison SUCCEEDS — a schema change would
+ * present as a host that passed its pinning check while nothing was pinned.
+ */
+function hostModelValidateLines(v: ValidatedBootstrapInput): string[] {
+  if (v.hostModel === 'ubuntu-release-bundle') {
+    return [
+      '# shellcheck disable=SC1091',
+      'source /etc/os-release',
+      `[[ "${'${ID:-}'}" == 'ubuntu' && "${'${VERSION_ID:-}'}" == '${WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION}' ]] || die "Ubuntu ${WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION} is required"`,
+    ];
+  }
+  const bootc = v.bootc as NonNullable<ValidatedBootstrapInput['bootc']>;
+  return [
+    'command -v bootc >/dev/null 2>&1 || die "bootc is required on a bootc-image host"',
+    'command -v jq >/dev/null 2>&1 || die "jq is required to read bootc status"',
+    'BOOTC_STATUS="$(bootc status --format=json --format-version 1)"',
+    'BOOTC_HOST_TYPE="$(printf "%s" "$BOOTC_STATUS" | jq -r ".status.type // empty")"',
+    '[[ -n "$BOOTC_HOST_TYPE" ]] || die "host is not a bootc deployment (bootc status reports no booted type)"',
+    'BOOTED_IMAGE_REF="$(printf "%s" "$BOOTC_STATUS" | jq -r ".status.booted.image.image.image // empty")"',
+    'BOOTED_IMAGE_DIGEST="$(printf "%s" "$BOOTC_STATUS" | jq -r ".status.booted.image.imageDigest // empty")"',
+    '[[ -n "$BOOTED_IMAGE_REF" && -n "$BOOTED_IMAGE_DIGEST" ]] || die "bootc status reported no booted image ref and digest — the status schema may have changed"',
+    // The base the image was built FROM is not derivable from `bootc status`, which reports what
+    // the host booted and never what that image derives from. The image records it under /usr
+    // (workspace-host.Containerfile), which is image content: replaced atomically by an upgrade
+    // and not writable on the running host.
+    assignment('BOOTC_BASE_IMAGE', bootc.baseImage),
+    'BOOTED_BASE_IMAGE="$(cat /usr/lib/papercusp/base-image 2>/dev/null || true)"',
+    '[[ -n "$BOOTED_BASE_IMAGE" ]] || die "booted image does not record its base at /usr/lib/papercusp/base-image"',
+    'if [[ "$BOOTC_BASE_IMAGE" != "$BOOTED_BASE_IMAGE" ]]; then die "booted image was built from $BOOTED_BASE_IMAGE, not the expected $BOOTC_BASE_IMAGE"; fi',
+  ];
+}
+
+/**
+ * `harden-os` — the package/firewall/auto-update third of the phase. The identity creation and
+ * sshd hardening that follow are model-invariant and stay in the main render.
+ *
+ * The bootc arm ASSERTS instead of installing, and that is a design consequence rather than an
+ * optimisation. Installing would write to a read-only `/usr`; more importantly a firewall
+ * enabled by a bootstrap is a firewall that was ABSENT for every boot preceding it, whereas one
+ * shipped in the image is up before anything can reach the host. So the checks here observe
+ * that the image did its job — each `die` names a host that must not proceed.
+ */
+function hostModelHardenLines(
+  v: ValidatedBootstrapInput,
+): { head: string[]; tail: string[] } {
+  if (v.hostModel === 'ubuntu-release-bundle') {
+    return {
+      head: ['export DEBIAN_FRONTEND=noninteractive', 'apt-get update -qq'],
+      tail: [
+        'ufw default deny incoming',
+        'ufw default allow outgoing',
+        'ufw allow 22/tcp',
+        'ufw --force enable',
+        'systemctl enable --now unattended-upgrades.service',
+      ],
+    };
+  }
+  return {
+    head: [
+      // Positive control on the package set: the image's own build probe already asserts every
+      // mapped package, so re-listing them here would duplicate a check without strengthening
+      // it. What the IMAGE cannot prove is that this booted host is running that image, and
+      // validate-host has just established exactly that by digest.
+      'log "package set supplied by the image (see infra/images/bootc/RPM-EQUIVALENCE.md); nothing to install"',
+    ],
+    tail: [
+      // `nft list table` and not `systemctl is-active nftables.service`: a unit can be active
+      // having loaded an empty or partial ruleset, and an unfiltered host is indistinguishable
+      // from a filtered one until someone connects to a port that should be closed.
+      'nft list table inet papercusp_workspace_host >/dev/null 2>&1 || die "firewall table \'inet papercusp_workspace_host\' is not loaded — the host is UNFILTERED"',
+      // Download-only (D-281). Asserting `apply_updates = no` matters more than the timer:
+      // applying in place writes to a read-only /usr and desynchronizes the running system from
+      // the image it attests to be, which is what `bootc upgrade` exists to do properly.
+      'systemctl is-enabled --quiet dnf-automatic.timer || die "dnf-automatic.timer is not enabled"',
+      'grep -Fxq "apply_updates = no" /etc/dnf/automatic.conf || die "dnf-automatic is not download-only; in-place updates would desynchronize the deployment from its image"',
+    ],
+  };
+}
+
+/**
+ * `verify-release` + `install-runtime` for the bootc model — the update path this port exists to
+ * build (D-262's second surviving argument for bootc).
+ *
+ * What replaces `curl + sha256 + minisign + extract + symlink-swap`:
+ *
+ * - **Verification moves EARLIER and OUT of this script.** The image was checked by a containers
+ *   `sigstoreSigned` policy during the pull, by skopeo, before bootc staged anything — D-279
+ *   proved that path is enforced and fails closed, and proved the base's SHIPPED default policy
+ *   accepts unsigned images, which is why the policy's PRESENCE is asserted rather than assumed.
+ *   There is no later moment at which a booted host could re-verify that signature itself, so
+ *   the honest claim is a read of the policy that gated the pull, reported by path.
+ * - **The swap is a REBOOT, not a symlink move.** `ln -sfn` could switch a live process tree in
+ *   place; an image swap cannot, and pretending otherwise is where a port like this goes wrong.
+ *   When the booted digest already matches, there is nothing to do and the run proceeds to
+ *   attest. When it does not, the run stages and reboots — and does NOT attest.
+ * - **`bootc rollback` retains the previous deployment**, which is why no `restore_previous` trap
+ *   is rendered here: the undo is a property of the deployment slots, not of this script's
+ *   error handling, and it survives the script being killed mid-run.
+ */
+function bootcReleaseLines(
+  v: ValidatedBootstrapInput,
+  action: WorkspaceHostBootstrapInput['action'],
+  hostId: string,
+): string[] {
+  const bootc = v.bootc as NonNullable<ValidatedBootstrapInput['bootc']>;
+  // Pull BY DIGEST. The tag rides along as provenance only: a tag is mutable, so switching to
+  // `image:tag` and then attesting the digest that arrived would attest whatever the registry
+  // happened to be serving, which is a description of the outcome rather than a constraint on it.
+  const pinnedImage = `${bootc.image.split(':')[0]}@${bootc.imageDigest}`;
+  return [
+    assignment('EXPECTED_IMAGE', bootc.image),
+    assignment('EXPECTED_IMAGE_DIGEST', bootc.imageDigest),
+    assignment('EXPECTED_IMAGE_PINNED', pinnedImage),
+    assignment('SIGNATURE_POLICY_PATH', bootc.signaturePolicyPath),
+    '[[ -s "$SIGNATURE_POLICY_PATH" ]] || die "containers signature policy is missing at $SIGNATURE_POLICY_PATH"',
+    // The repository key, not the full ref: containers policy is scoped by repository, and a
+    // tag-qualified lookup silently matches nothing and falls through to `default`.
+    'EXPECTED_IMAGE_REPO="${EXPECTED_IMAGE%%:*}"',
+    // `jq -e` exits non-zero on a false/null result, so a policy that has no entry for this
+    // repository, or one whose entry is `insecureAcceptAnything`, both fail here rather than
+    // reading as verified. The `default` fallback is deliberately NOT consulted: the base ships
+    // a permissive default (D-279 probe C), so falling back to it is the trap, not the answer.
+    `jq -e --arg repo "$EXPECTED_IMAGE_REPO" '((.transports.docker[$repo] // []) | map(select(.type == "sigstoreSigned")) | length) > 0' "$SIGNATURE_POLICY_PATH" >/dev/null || die "containers-policy does not require a signature for $EXPECTED_IMAGE_REPO"`,
+    '',
+    `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[3]}'`,
+    'if [[ "$BOOTED_IMAGE_DIGEST" != "$EXPECTED_IMAGE_DIGEST" ]]; then',
+    '  log "booted deployment is $BOOTED_IMAGE_DIGEST; pinned image is $EXPECTED_IMAGE_DIGEST"',
+    ...(action === 'rollback'
+      ? [
+          // `bootc rollback` swaps the boot order back to the retained deployment. It takes no
+          // image argument by design — the previous deployment is whatever the host actually ran
+          // before, which is the only thing a rollback can honestly mean.
+          '  bootc rollback',
+          '  STAGED_REF="$(bootc status --format=json --format-version 1 | jq -r ".status.rollback.image.image.image // empty")"',
+        ]
+      : [
+          // `--retain` keeps the current deployment bootable, which is what makes the rollback
+          // above possible on the next run. Without it a bad upgrade has nothing to fall back to.
+          '  bootc switch --retain "$EXPECTED_IMAGE_PINNED"',
+          '  STAGED_REF="$EXPECTED_IMAGE_PINNED"',
+        ]),
+    `  printf '%s{"hostId":"%s","action":"%s","stagedImage":"%s","rebooting":true}\\n' ${shellQuote(WORKSPACE_HOST_BOOTSTRAP_STAGED_PREFIX)} ${shellQuote(hostId)} ${shellQuote(action)} "$STAGED_REF"`,
+    '  log "staged; rebooting into the new deployment. The attestation is produced by the NEXT run, after the reboot."',
+    '  systemctl reboot',
+    // `systemctl reboot` returns as soon as the job is queued, so without this the script would
+    // keep running against the deployment it just replaced and emit an attestation for it.
+    '  exit 0',
+    'fi',
+    'RELEASE_DIR="$RUNTIME_ROOT/releases/$RELEASE_VERSION"',
+    // No extract, no chown, no chmod, no setfacl. The release tree is image content on this
+    // model, and its ACLs are (re)applied on EVERY boot by papercusp-host-prepare.service —
+    // which is also the unit that fails closed on D-283's open question of whether /opt survives
+    // as image content on a booted host. Re-applying them here would either duplicate that work
+    // or, if /opt is genuinely read-only, fail for a reason that has nothing to do with the
+    // release.
+    '[[ -d "$RELEASE_DIR" ]] || die "release $RELEASE_VERSION is not present in the booted image at $RELEASE_DIR"',
+    'systemctl is-active --quiet papercusp-host-prepare.service || die "papercusp-host-prepare.service did not complete on this boot — runtime ACLs and machine-local roots are unverified"',
+  ];
+}
+
+/**
  * Emit a deterministic, replay-safe root bootstrap for install, upgrade, or
  * rollback. The release bundle supplies Node, embedded Postgres tooling and psu, plus the psu
  * WRAPPERS named after the agent CLIs; the vendor agent runtimes themselves are installed at
  * provision time from `input.agentRuntimeInstalls` (D-259). apt installs only host
  * security/verification prerequisites.
+ *
+ * ⚠ On the bootc model an `upgrade` or `rollback` that must change the booted deployment STAGES
+ * it and REBOOTS, emitting `WORKSPACE_HOST_BOOTSTRAP_STAGED_PREFIX` instead of an attestation.
+ * That is not an incomplete run: an atomic image swap cannot be observed by the kernel that is
+ * being replaced, so the attestation is necessarily produced by the NEXT run, after the reboot.
+ * Callers must treat a staged marker as "converging", never as a failure and never as success.
  */
 export function buildWorkspaceHostBootstrap(
   input: WorkspaceHostBootstrapInput,
 ): string {
+  const validated = validateInput(input);
   const {
+    hostModel,
     entrypoints,
     serviceUser,
     serviceGroup,
@@ -1489,7 +1789,8 @@ export function buildWorkspaceHostBootstrap(
     agentGroup,
     workspaceAuthorizedKeys,
     agentRuntimeInstalls,
-  } = validateInput(input);
+  } = validated;
+  const harden = hostModelHardenLines(validated);
   const digest = input.release.bundleSha256.toLowerCase();
   const signingKeyDigest = input.release.signingKeySha256.toLowerCase();
   const checksJson = JSON.stringify(
@@ -1594,13 +1895,10 @@ export function buildWorkspaceHostBootstrap(
     "",
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[0]}'`,
     '[[ "${EUID}" -eq 0 ]] || die "bootstrap must run as root"',
-    "# shellcheck disable=SC1091",
-    "source /etc/os-release",
-    `[[ "${"${ID:-}"}" == 'ubuntu' && "${"${VERSION_ID:-}"}" == '${WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION}' ]] || die "Ubuntu ${WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION} is required"`,
+    ...hostModelValidateLines(validated),
     "",
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[1]}'`,
-    "export DEBIAN_FRONTEND=noninteractive",
-    "apt-get update -qq",
+    ...harden.head,
     // Native runtime packages are distinct from build tooling. The exported apt contract above
     // is the source of truth for every mapped external SONAME; keep this rendered install line
     // derived from it so publication and a clean Ubuntu host cannot drift. The initially
@@ -1613,7 +1911,13 @@ export function buildWorkspaceHostBootstrap(
     // reported as a missing ADDON FILE — while the file is present, correctly sized, correctly
     // owned and readable by the service user. Do not remove these without re-running the readelf
     // union over the bundle's *.node files; --no-install-recommends means nothing pulls them in.
-    `apt-get install -y --no-install-recommends ${WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES.join(" ")}`,
+    // …and on the bootc model this install does not happen at all: the same package set is a
+    // dnf layer in the image, traced name-by-name in infra/images/bootc/RPM-EQUIVALENCE.md.
+    ...(hostModel === 'ubuntu-release-bundle'
+      ? [
+          `apt-get install -y --no-install-recommends ${WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES.join(" ")}`,
+        ]
+      : []),
     'getent group "$SERVICE_GROUP" >/dev/null || groupadd --system "$SERVICE_GROUP"',
     'id -u "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --gid "$SERVICE_GROUP" --home-dir "$STATE_ROOT" --create-home --shell /usr/sbin/nologin "$SERVICE_USER"',
     'usermod --lock --shell /usr/sbin/nologin "$SERVICE_USER"',
@@ -1718,14 +2022,12 @@ export function buildWorkspaceHostBootstrap(
     // `systemctl reload` of a stopped unit FAILS — which under `set -euo pipefail` would abort
     // here, one line past the trap above, for the same underlying reason.
     "systemctl reload-or-restart ssh 2>/dev/null || systemctl reload-or-restart sshd",
-    "ufw default deny incoming",
-    "ufw default allow outgoing",
-    "ufw allow 22/tcp",
-    "ufw --force enable",
-    "systemctl enable --now unattended-upgrades.service",
+    ...harden.tail,
     "",
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[2]}'`,
-    'WORK_DIR="$(mktemp -d /var/tmp/papercusp-bootstrap.XXXXXX)"',
+    ...(hostModel === 'bootc-image'
+      ? bootcReleaseLines(validated, input.action, input.hostId)
+      : bundleReleaseLines()),
     'BUNDLE_PATH="$WORK_DIR/server-bundle.tgz"',
     'SIGNATURE_PATH="$WORK_DIR/server-bundle.tgz.minisig"',
     'PUBLIC_KEY_PATH="$WORK_DIR/bootstrap-public.key"',
