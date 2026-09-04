@@ -340,6 +340,12 @@ bake_one() { # $1 cloud  $2 pinned ref
     CLOUD_BYTES[$cloud]=0
     return 0
   fi
+  # Output belongs to one render. Refuse an earlier disk/archive so an exit-0
+  # renderer that emits nothing cannot accidentally validate stale artifacts.
+  if [ -e "$dest/${CLOUD_FILE[$cloud]}" ] || [ -e "$dest/gce/image.tar.gz" ]; then
+    echo "  $cloud: REFUSED — output already contains an artifact; use a fresh --out directory"
+    return 1
+  fi
   # No `-it`: this runs unattended from the release pipeline and from probes, where there is no
   # TTY and `-t` fails outright.
   run_monitored "$dest/build.log" "${PODMAN[@]}" run --rm --privileged --pull=newer \
@@ -351,9 +357,20 @@ bake_one() { # $1 cloud  $2 pinned ref
     echo "  $cloud: FAILED (exit $rc) — see $dest/build.log"
     return 1
   fi
+  # The GCE exporter writes gce/image.tar.gz with a sparse disk.raw member.
+  # Normalize only that member to the raw path consumed by the publish adapter.
+  if [ "$cloud" = gcp ] && [ -s "$dest/gce/image.tar.gz" ]; then
+    mkdir -p "$dest/image" || return 1
+    tar --extract --gzip --sparse --file "$dest/gce/image.tar.gz" \
+      --directory "$dest/image" --no-same-owner --no-same-permissions -- disk.raw || {
+      echo "  $cloud: FAILED — GCE archive did not yield disk.raw"
+      return 1
+    }
+  fi
   # An exit 0 from a renderer that wrote nothing is the empty-SBOM defect in another costume:
   # a confident success whose artifact does not exist. Assert the disk before believing it.
-  if [ ! -s "$dest/${CLOUD_FILE[$cloud]}" ]; then
+  if [ ! -s "$dest/${CLOUD_FILE[$cloud]}" ] || [ ! -f "$dest/${CLOUD_FILE[$cloud]}" ] \
+    || [ -L "$dest/${CLOUD_FILE[$cloud]}" ]; then
     echo "  $cloud: FAILED — exited 0 but produced no disk at ${CLOUD_FILE[$cloud]}"
     return 1
   fi

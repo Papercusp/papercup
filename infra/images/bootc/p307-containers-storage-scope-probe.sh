@@ -23,7 +23,7 @@
 # just in appearance. A scoped entry that silently matched everything, or that matched nothing,
 # would look exactly like a careful choice while behaving like (a) or like no fix at all.
 #
-# Four arms, because two would not settle it:
+# Seven arms, because a passing render alone would not settle either scope boundary:
 #   A  shipped policy (docker: only)      + OUR image      => expect REJECT
 #      The positive control. Without it, B "passing" could just mean the probe cannot observe a
 #      rejection at all — the failure mode that made an earlier attempt at this measurement
@@ -37,6 +37,13 @@
 #   D  blanket containers-storage entry   + that same FOREIGN image => expect ACCEPT
 #      Proves C's rejection is attributable to the SCOPE and not to something incidental about
 #      the foreign image (unreadable layers, a storage quirk). Without D, C is unfalsifiable.
+#   E  bare namespace scope                + OUR image       => expect LOAD_ERROR
+#      Proves the store specifier is structural, not optional decoration.
+#   F  exact osbuild storage2 graph root   + OUR image ID    => expect ACCEPT
+#      Reproduces osbuild's private-store/additional-store reference shape. The repository name
+#      is deliberately absent because osbuild hands bootc only a local image ID.
+#   G  a different private graph root      + that same ID    => expect REJECT
+#      Proves F is attributable to the exact graph root, not an accidental transport default.
 #
 # `transports.docker` keeps its sigstoreSigned rule UNCHANGED in every arm — that is the upgrade
 # path and the whole point of D-262; this probe must not be read as relaxing it.
@@ -117,6 +124,16 @@ case "$STORAGE_DRIVER" in
   ''|*[!A-Za-z0-9_-]*) echo "SETUP FAILED: invalid storage driver '$STORAGE_DRIVER'"; exit 2;;
 esac
 STORE_SPEC="${P307_STORE_SPEC:-[$STORAGE_DRIVER@/var/lib/containers/storage]}"
+OSBUILD_STORE_SPEC='[overlay@/run/osbuild/containers/storage2]'
+OSBUILD_WRONG_STORE_SPEC='[overlay@/run/osbuild/containers/not-storage2]'
+OURS_ID="$("${PODMAN[@]}" image inspect --format '{{.Id}}' "$OURS" 2>/dev/null | sed 's/^sha256://')"
+case "$OURS_ID" in
+  *[!0-9a-f]*|'') echo "SETUP FAILED: invalid image ID '$OURS_ID' for $OURS"; exit 2;;
+esac
+if [ "${#OURS_ID}" -ne 64 ]; then
+  echo "SETUP FAILED: image ID for $OURS has ${#OURS_ID} characters, expected 64"
+  exit 2
+fi
 { echo '{'; echo '  "default": [{ "type": "reject" }],'; echo '  "transports": {'; docker_block
   echo '    ,"containers-storage": {'
   echo "      \"$STORE_SPEC$NAMESPACE\": [ { \"type\": \"insecureAcceptAnything\" } ]"
@@ -132,6 +149,22 @@ STORE_SPEC="${P307_STORE_SPEC:-[$STORAGE_DRIVER@/var/lib/containers/storage]}"
   echo '    }'
   echo '  }'; echo '}'; } > "$P/bare-scope.json"
 
+# F: the exact full-store scope containers/image derives from osbuild's full reference. The
+# runroot and additionalimagestore option are intentionally absent from the POLICY key:
+# PolicyConfigurationIdentity canonicalizes them away and retains driver + graph root.
+{ echo '{'; echo '  "default": [{ "type": "reject" }],'; echo '  "transports": {'; docker_block
+  echo '    ,"containers-storage": {'
+  echo "      \"$OSBUILD_STORE_SPEC\": [ { \"type\": \"insecureAcceptAnything\" } ]"
+  echo '    }'
+  echo '  }'; echo '}'; } > "$P/osbuild-scoped.json"
+
+# G: valid policy, wrong graph root. It must reject the identical osbuild-shaped reference.
+{ echo '{'; echo '  "default": [{ "type": "reject" }],'; echo '  "transports": {'; docker_block
+  echo '    ,"containers-storage": {'
+  echo "      \"$OSBUILD_WRONG_STORE_SPEC\": [ { \"type\": \"insecureAcceptAnything\" } ]"
+  echo '    }'
+  echo '  }'; echo '}'; } > "$P/osbuild-wrong-root.json"
+
 # D: option (a) — blanket containers-storage.
 { echo '{'; echo '  "default": [{ "type": "reject" }],'; echo '  "transports": {'; docker_block
   echo '    ,"containers-storage": {'
@@ -139,7 +172,7 @@ STORE_SPEC="${P307_STORE_SPEC:-[$STORAGE_DRIVER@/var/lib/containers/storage]}"
   echo '    }'
   echo '  }'; echo '}'; } > "$P/blanket.json"
 
-for f in shipped scoped blanket bare-scope; do
+for f in shipped scoped blanket bare-scope osbuild-scoped osbuild-wrong-root; do
   python3 -c "import json,sys; json.load(open('$P/$f.json'))" \
     || { echo "SETUP FAILED: $f.json is not valid JSON"; exit 2; }
 done
@@ -159,6 +192,26 @@ run_arm() {
     -v "$STORAGE":/var/lib/containers/storage \
     --entrypoint skopeo "$BASE" \
     --policy "/p/$policy" copy "containers-storage:$image" "dir:/tmp/out-$name" \
+    >"$log" 2>&1
+  echo $?
+}
+
+# Match the reference bootc-image-builder emitted in the real failed render. The primary graph
+# root is osbuild's empty private storage2 directory; the already-verified image is found by ID
+# through its read-only additional store. That separation is why the earlier repository-scoped
+# /var/lib rule cannot match this second handoff.
+run_osbuild_arm() {
+  local name="$1" policy="$2"
+  local log="$P/$name.log"
+  local graphroot=/run/osbuild/containers/storage2
+  local runroot=/run/containers/storage
+  local additional=/run/osbuild/containers/storage
+  local ref="[overlay@$graphroot+$runroot:additionalimagestore=$additional]$OURS_ID"
+  "${PODMAN[@]}" run --rm --privileged \
+    -v "$P":/p:ro \
+    -v "$STORAGE":"$additional":ro \
+    --entrypoint skopeo "$BASE" \
+    --policy "/p/$policy" copy "containers-storage:$ref" "dir:/tmp/out-$name" \
     >"$log" 2>&1
   echo $?
 }
@@ -191,9 +244,13 @@ echo "### D  blanket containers-storage         + FOREIGN  — expect ACCEPT"
 rc=$(run_arm D blanket.json "$FOREIGN"); D=$(verdict "$P/D.log" "$rc"); check D ACCEPT "$D"
 echo "### E  BARE namespace scope (no store spec) + OURS — expect LOAD_ERROR"
 rc=$(run_arm E bare-scope.json "$OURS"); E=$(verdict "$P/E.log" "$rc"); check E LOAD_ERROR "$E"
+echo "### F  exact osbuild storage2 scope          + OUR ID — expect ACCEPT"
+rc=$(run_osbuild_arm F osbuild-scoped.json); F=$(verdict "$P/F.log" "$rc"); check F ACCEPT "$F"
+echo "### G  wrong osbuild graph root              + OUR ID — expect REJECT"
+rc=$(run_osbuild_arm G osbuild-wrong-root.json); G=$(verdict "$P/G.log" "$rc"); check G REJECT "$G"
 
 echo
-echo "A_VERDICT=$A B_VERDICT=$B C_VERDICT=$C D_VERDICT=$D E_VERDICT=$E"
+echo "A_VERDICT=$A B_VERDICT=$B C_VERDICT=$C D_VERDICT=$D E_VERDICT=$E F_VERDICT=$F G_VERDICT=$G"
 if [ "$B" = ACCEPT ] && [ "$C" = REJECT ] && [ "$D" = ACCEPT ]; then
   echo "SCOPED_IS_NARROWER=YES   — option (b) admits ours and refuses a foreign image the blanket admits"
 else
@@ -203,6 +260,11 @@ if [ "$E" = LOAD_ERROR ]; then
   echo "BARE_SCOPE_USABLE=NO     — the docker: string cannot be reused verbatim; a store specifier is mandatory"
 else
   echo "BARE_SCOPE_USABLE=YES    — a bare namespace scope loads after all; revisit the decision"
+fi
+if [ "$F" = ACCEPT ] && [ "$G" = REJECT ]; then
+  echo "OSBUILD_SCOPE_EXACT=YES — storage2 admits the ID handoff and a different graph root does not"
+else
+  echo "OSBUILD_SCOPE_EXACT=NO — the private-store exception is not proven exact; do not ship it"
 fi
 [ "$FAIL" -eq 0 ] && { echo "PROBE_RESULT=PASS"; exit 0; }
 echo "PROBE_RESULT=FAIL"; exit 1

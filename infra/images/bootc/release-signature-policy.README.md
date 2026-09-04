@@ -44,15 +44,23 @@ is the correct direction for an unfinished supply chain.
 
 `bootc-image-builder` installs its source through `containers-storage:`. The supply-chain gate
 has already signed and verified one registry digest before that step, then the bake pulls that
-exact digest into local storage and asserts it exists. A specialised build therefore adds one
-local rule at `[<graph-driver>@/var/lib/containers/storage]<RELEASE_REGISTRY_NAMESPACE>` with
-`insecureAcceptAnything`, so the renderer can install only our digest-pinned repository.
+exact digest into local storage and asserts it exists. A specialised build therefore adds two
+local rules with `insecureAcceptAnything`:
 
-This is deliberately not a transport default: a five-arm probe proved the scoped rule accepts
-our image and rejects a foreign local image that a blanket rule accepts. The `docker:` rule is
-unchanged and remains `sigstoreSigned`; upgrades from the release registry still require the
-baked public key. The rule is injected by `workspace-host.Containerfile`, rather than written
-into this template, so an unspecialised image carries no local-storage allowance at all.
+- `[<graph-driver>@/var/lib/containers/storage]<RELEASE_REGISTRY_NAMESPACE>` admits only our
+  digest-pinned repository from the caller's mounted store.
+- `[overlay@/run/osbuild/containers/storage2]` admits the second, name-less image-ID handoff from
+  osbuild's private graph root. containers/image deliberately canonicalizes the longer live
+  reference (which also carries a runroot and `additionalimagestore` option) to driver + graph
+  root for policy matching; neither a repository scope nor the `/var/lib` store can match it.
+
+These are deliberately not a transport default: a seven-arm probe proves the repository-scoped
+rule rejects a foreign local image that a blanket rule accepts, and separately proves the exact
+`storage2` graph root accepts osbuild's image-ID reference while a different graph root rejects
+that same reference. The `docker:` rule is unchanged and remains `sigstoreSigned`; upgrades from
+the release registry still require the baked public key. Both local rules are injected by
+`workspace-host.Containerfile`, rather than written into this template, so an unspecialised image
+carries no local-storage allowance at all.
 
 ## Coupling (D-262 condition 3)
 
