@@ -1420,7 +1420,13 @@ export class AzureWorkspaceHostProvider implements WorkspaceHostProvider {
 
   private lifecycleState(vm: AzureArmResourceObservation | undefined): WorkspaceHostObservation['state'] {
     if (!vm) return 'absent';
-    if (vm.powerState === 'running') return vm.agentOnline === false ? 'degraded' : 'running';
+    // Explicit three-way, not a `=== false` coercion: an UNMEASURED agent leaves the VM
+    // 'running' (the lifecycle state describes the VM) and only a MEASURED false demotes it,
+    // so this no longer silently disagrees with attestHealth about the same field (WI-2143924).
+    if (vm.powerState === 'running') {
+      if (vm.agentOnline === false) return 'degraded';
+      return 'running';
+    }
     if (vm.powerState === 'stopped' || vm.powerState === 'deallocated') return 'stopped';
     if (vm.powerState === 'deleting' || vm.provisioningState === 'Deleting') return 'destroying';
     if (vm.powerState === 'repairing') return 'repairing';
@@ -1460,17 +1466,23 @@ export class AzureWorkspaceHostProvider implements WorkspaceHostProvider {
     const vm = vmRef ? await this.client.getResource(vmRef.providerId) : undefined;
     const running = vm?.powerState === 'running';
     const provisioned = vm?.provisioningState === 'Succeeded';
-    const agentOnline = vm?.agentOnline === true;
+    // NOT `=== true`. `agentOnline` is optional and no Azure ARM client in this tree writes
+    // it, so coercing it to a boolean made `healthy` unreachable and reported `degraded` for
+    // hosts nothing had actually measured — the GCP defect in WI-2143924, same shape.
+    const agentOnline = vm?.agentOnline ?? null;
+    const checks: WorkspaceHostHealthCheck[] = [
+      { name: 'azure-vm-running', ok: running, detail: vm?.powerState ?? 'absent' },
+      { name: 'azure-provisioning-succeeded', ok: provisioned, detail: vm?.provisioningState ?? 'absent' },
+      agentOnline === null
+        ? unmeasuredHealthCheck('azure-vm-agent-online', 'no producer writes agentOnline on the Azure path')
+        : { name: 'azure-vm-agent-online', ok: agentOnline },
+    ];
     return {
       hostId: host.hostId,
       observedAt: this.now(),
-      status: !running ? 'unreachable' : provisioned && agentOnline ? 'healthy' : 'degraded',
+      status: resolveWorkspaceHostHealthStatus({ reachable: running, checks }),
       ...(vm?.imageId ? { image: { id: vm.imageId } } : {}),
-      checks: [
-        { name: 'azure-vm-running', ok: running, detail: vm?.powerState ?? 'absent' },
-        { name: 'azure-provisioning-succeeded', ok: provisioned, detail: vm?.provisioningState ?? 'absent' },
-        { name: 'azure-vm-agent-online', ok: agentOnline },
-      ],
+      checks,
     };
   }
 }

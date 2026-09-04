@@ -81,6 +81,7 @@ export type {
   WorkspaceHostLifecycleState,
   WorkspaceHostObservation,
   WorkspaceHostHealthCheck,
+  WorkspaceHostHealthStatus,
   WorkspaceHostHealthAttestation,
   WorkspaceHostLogLevel,
   WorkspaceHostProviderContext,
@@ -88,6 +89,7 @@ export type {
   WorkspaceHostProvider,
 } from "./workspace-host-types";
 export { WORKSPACE_HOST_LIFECYCLE_ACTIONS } from "./workspace-host-types";
+export { resolveWorkspaceHostHealthStatus, unmeasuredHealthCheck } from "./workspace-host-health";
 export type {
   WorkspaceHostTransportRequirementObservation,
   WorkspaceHostTransportClientEnvironment,
