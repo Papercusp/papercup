@@ -101,6 +101,18 @@ read_process_state() {
   printf '%s\n' "${stat_line##*) }" | awk '{print $1}'
 }
 
+root_is_live() {
+  local state
+  state="$(read_process_state "$PID" 2>/dev/null || true)"
+  # `kill -0` succeeds for a zombie, and a process can disappear between the
+  # loop guard and the first sample after sleep. Neither state is a live build
+  # that can become stalled, so stop without emitting a false finding.
+  case "$state" in
+    ""|Z|X) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 read_io() {
   local pid="$1" io_file
   io_file="$(proc_file "$pid" /io)"
@@ -259,8 +271,11 @@ last_progress_epoch="$(date +%s)"
 last_report_epoch=0
 declare -A previous_io=()
 
-while kill -0 "$PID" 2>/dev/null; do
+while kill -0 "$PID" 2>/dev/null && root_is_live; do
   sleep "$INTERVAL_SEC"
+  # Re-check after sleeping: the monitored process may have exited (or become
+  # a zombie that still passes `kill -0`) during the sampling interval.
+  root_is_live || break
   now="$(date +%s)"
   activity=0
   mapfile -t current_pids < <(process_tree "$PID")
