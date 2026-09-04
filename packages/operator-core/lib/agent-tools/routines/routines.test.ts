@@ -1455,6 +1455,41 @@ describe('routines:set', () => {
     expect(b).toMatchObject({ dryRun: true, applied: false });
   });
 
+  it('dryRun previews trigger_config current and proposed values for an ephemeral interval retune', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        trigger_config: { interval_sec: 600, batch_size: 25 },
+        active: true,
+        next_fire_at: null,
+      },
+    ]);
+    const b = body(
+      await setTool.handler(
+        {
+          name: 'acceptance-grading-sweep',
+          installSlug: 'papercusp',
+          triggerConfig: { interval_sec: 60 },
+          dryRun: true,
+        } as never,
+        { role: 'operator' } as never,
+      ),
+    );
+
+    expect(b).toMatchObject({
+      dryRun: true,
+      applied: false,
+      preview: {
+        current: {
+          triggerConfig: { interval_sec: 600, batch_size: 25 },
+        },
+        proposed: {
+          triggerConfig: { interval_sec: 60, batch_size: 25 },
+        },
+      },
+    });
+    expect(sqlMock).toHaveBeenCalledTimes(1);
+  });
+
   it('blocks a peer green-checkpoint resume while the serializer hold is active', async () => {
     serializerM.mockResolvedValue({
       status: 'held',

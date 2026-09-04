@@ -65,6 +65,25 @@ function deepMergePlain(
   return out;
 }
 
+type TriggerConfigPatchArgs = {
+  cron?: string;
+  triggerConfig?: Record<string, unknown>;
+};
+
+/** Merge the validated cron argument and trigger_config patch into a routine snapshot. */
+function mergeTriggerConfig(prev: RoutineSnap, args: TriggerConfigPatchArgs): Record<string, unknown> {
+  const triggerConfig = { ...prev.triggerConfig };
+  if (args.cron !== undefined) {
+    triggerConfig.cron = args.cron;
+  }
+  if (args.triggerConfig !== undefined) {
+    // `cron` is only accepted through the validated top-level argument.
+    const { cron: _ignoredCron, ...patch } = args.triggerConfig;
+    Object.assign(triggerConfig, patch);
+  }
+  return triggerConfig;
+}
+
 /**
  * A resume is a control-plane write, even when the caller asks for a dry-run. The
  * scheduled green-checkpoint path has two durable fences that a peer must not clear:
@@ -271,18 +290,11 @@ export default defineTool({
         capturePrev: readSnap,
         apply: async () => {
           const prev = await readSnap();
-          const triggerConfig = { ...prev.triggerConfig };
+          const triggerConfig = mergeTriggerConfig(prev, args);
           let nextIso = prev.nextFireAtIso;
           if (args.cron !== undefined) {
-            triggerConfig.cron = args.cron;
             const computed = computeNextFireAt(args.cron, new Date());
             nextIso = computed ? computed.toISOString() : null;
-          }
-          if (args.triggerConfig !== undefined) {
-            // P-017: merge the config patch, but NEVER let it set `cron` here — cron only flows
-            // through the validated `cron` arg above (else a typo'd cron could silently kill the routine).
-            const { cron: _ignoredCron, ...patch } = args.triggerConfig;
-            Object.assign(triggerConfig, patch);
           }
           const payloadTemplate =
             args.payloadTemplate !== undefined
@@ -368,12 +380,18 @@ export default defineTool({
             cron: (prev.triggerConfig as { cron?: string }).cron ?? null,
             active: prev.active,
             group: prev.groupSlug,
+            // P-017: include the complete current config when a trigger_config patch is
+            // requested, so a dry-run can prove the interval/cap values it will change.
+            ...(args.triggerConfig !== undefined ? { triggerConfig: prev.triggerConfig } : {}),
             ...(args.payloadTemplate !== undefined ? { payloadTemplate: prev.payloadTemplate } : {}),
           },
           proposed: {
             cron: args.cron ?? ((prev.triggerConfig as { cron?: string }).cron ?? null),
             active: args.active ?? prev.active,
             group: args.group !== undefined ? args.group : prev.groupSlug,
+            ...(args.triggerConfig !== undefined
+              ? { triggerConfig: mergeTriggerConfig(prev, args) }
+              : {}),
             ...(args.payloadTemplate !== undefined
               ? { payloadTemplate: deepMergePlain(prev.payloadTemplate, args.payloadTemplate) }
               : {}),
