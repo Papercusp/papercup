@@ -314,6 +314,24 @@ export type RubricCriterionCheck = z.infer<typeof rubricCriterionCheckSchema>;
 export const acceptanceCriterionRoleSchema = z.enum(['outcome', 'disclosure']);
 export type AcceptanceCriterionRole = z.infer<typeof acceptanceCriterionRoleSchema>;
 
+/** Evidence plane an acceptance BAR promises to prove. This is structural rather
+ * than prose so tree-only evidence cannot accidentally satisfy a deployed/live BAR. */
+export const acceptanceEvidencePlaneSchema = z.enum(['tree', 'deployed', 'live']);
+export type AcceptanceEvidencePlane = z.infer<typeof acceptanceEvidencePlaneSchema>;
+
+/** Server-owned pin from a subject plan's activation seed to its rubric revision. */
+export const acceptanceBarContractSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    adoptionEpoch: z.number().int().positive(),
+    cohort: z.enum(['post-epoch', 'legacy-backfilled']),
+    subjectPlanRevision: z.number().int().positive(),
+    seededAt: z.string().datetime({ offset: true }),
+    seededBy: z.string().trim().min(1),
+  })
+  .strict();
+export type AcceptanceBarContract = z.infer<typeof acceptanceBarContractSchema>;
+
 /** Lifecycle provenance for a canonical acceptance BAR. Historical criteria omit it;
  * post-adoption writers distinguish true predeclaration from honest legacy backfill. */
 export const acceptanceBarProvenanceSchema = z
@@ -365,6 +383,9 @@ export const rubricCriterionSchema = z
       .max(200)
       .optional()
       .describe('acceptance-kind only: stable scope tokens the BAR promises to cover'),
+    evidencePlane: acceptanceEvidencePlaneSchema
+      .optional()
+      .describe('acceptance-kind only: where this BAR must be evidenced (tree, deployed, or live)'),
     passRatings: z
       .array(z.string().trim().min(1))
       .min(1)
@@ -491,6 +512,14 @@ export const rubricTemplateDataSchema = z
           '(feature-ship / bugfix / migration / investigation) — it carries the shared invariants so bespoke ' +
           'criteria stay short. With classRef an acceptance rubric may carry ZERO bespoke criteria (plan D-009)',
       ),
+    barSetHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional()
+      .describe('acceptance-kind only: server-derived hash of the complete sorted (barKey,barHash) set'),
+    barContract: acceptanceBarContractSchema
+      .optional()
+      .describe('acceptance-kind only: server-owned cohort and subject-revision pin for the seeded BAR set'),
     characteristic: z
       .string()
       .min(1)
@@ -626,6 +655,13 @@ export const rubricTemplateDataSchema = z
             "classRef is acceptance-kind only — a standard rubric IS the class; it cannot reference one. Set kind:'acceptance' if this rubric builds on a class rubric",
         });
       }
+      if (d.barSetHash !== undefined || d.barContract !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['barSetHash'],
+          message: 'barSetHash/barContract are acceptance-kind only server-owned lifecycle pins',
+        });
+      }
       if (d.criteria.length === 0) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -649,6 +685,7 @@ export const rubricTemplateDataSchema = z
           'role',
           'mandatory',
           'requiredScope',
+          'evidencePlane',
           'passRatings',
           'coversBarKeys',
           'barProvenance',
@@ -688,6 +725,13 @@ export const rubricTemplateDataSchema = z
           path: ['criteria'],
           message:
             'an acceptance rubric needs bespoke criteria OR a classRef (plan D-009: only a class-rubric reference may stand alone, e.g. investigation-only plans referencing the investigation class rubric)',
+        });
+      }
+      if ((d.barSetHash === undefined) !== (d.barContract === undefined)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['barContract'],
+          message: 'barSetHash and barContract are one server-owned pin and must appear together',
         });
       }
       if (d.releaseGating) {
@@ -796,6 +840,7 @@ export const rubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.superR
       criterion.role !== undefined ||
       criterion.mandatory !== undefined ||
       criterion.requiredScope !== undefined ||
+      criterion.evidencePlane !== undefined ||
       criterion.passRatings !== undefined ||
       criterion.coversBarKeys !== undefined ||
       criterion.barProvenance !== undefined;
@@ -816,6 +861,15 @@ export const rubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.superR
         message:
           `acceptance BAR '${criterion.barKey ?? criterion.key}' requires its server-derived barHash; ` +
           'write through rubrics:propose/amend rather than hand-authoring partial template_data',
+      });
+    }
+    if (!criterion.evidencePlane) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['criteria', index, 'evidencePlane'],
+        message:
+          `acceptance BAR '${criterion.barKey ?? criterion.key}' requires a structural evidencePlane ` +
+          '(tree, deployed, or live)',
       });
     }
     if (criterion.role === 'outcome' && criterion.mandatory === true) {

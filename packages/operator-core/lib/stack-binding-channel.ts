@@ -14,14 +14,16 @@
  *      the anchor generation exactly like a mode flip does, and a mode flip now carries a
  *      layer attach / detach through the same channel.
  *
- *   2. `renderStackTransitionContext` — at turn start the hook consumes the pending
+ *   2. `renderStackTransitionContext` — at turn start the hook prepares the pending
  *      `⟦CTRL:transition⟧` (turn-start-memory.ts); this renders, as a SEPARATE context
  *      block outside the anchor's 384-token budget, the inject-now payloads for every
  *      mutation between the transition's `stackBefore` and its `state.stack`, over the
  *      REAL su stack (`composeSuStackMutation`: the next render is composed under the
  *      seal first, so a layer that would BLOCK is never injected). A transition without
  *      `stackBefore` (a full-resync) re-delivers every bound layer — the anchor's
- *      replace-full-never-merge-behind rule applied to the stack.
+ *      replace-full-never-merge-behind rule applied to the stack. The result-bearing
+ *      companion lets the endpoint acknowledge the generation only after this render
+ *      succeeds, so a fail-soft render does not consume the pending transition.
  *
  * The orchestrator barrel is imported LAZILY (it pulls the blueprint loader and its
  * harness-path resolution), and every failure degrades to an EMPTY block: a broken
@@ -100,21 +102,28 @@ export interface StackTransitionContextOptions {
   warn?: (message: string) => void;
 }
 
+export interface StackTransitionContextResult {
+  /** The inject-now context, empty when the stack did not move. */
+  text: string;
+  /** False only when rendering threw and the caller should retain the transition. */
+  rendered: boolean;
+}
+
 /**
  * The inject-now context for a control transition — '' when the stack did not move
  * (or nothing is bound on a full-resync). Never throws.
  */
-export async function renderStackTransitionContext(
+export async function renderStackTransitionContextResult(
   delivery: Partial<Pick<ControlTransition, 'state' | 'stackBefore'>> | null | undefined,
   opts: StackTransitionContextOptions = {},
-): Promise<string> {
+): Promise<StackTransitionContextResult> {
   const warn = opts.warn ?? ((m: string) => console.warn(m));
   // Read defensively: a transition shaped by an older operator (or a test double) may
   // carry no `state` at all — that is "nothing bound", never a throw past the CTRL line.
   const after = Array.isArray(delivery?.state?.stack) ? delivery!.state!.stack!.map(String) : [];
   const before = Array.isArray(delivery?.stackBefore) ? delivery!.stackBefore!.map(String) : undefined;
-  if (before == null && after.length === 0) return '';
-  if (before != null && sameRefs(before, after)) return '';
+  if (before == null && after.length === 0) return { text: '', rendered: true };
+  if (before != null && sameRefs(before, after)) return { text: '', rendered: true };
   try {
     const bp = opts.blueprint ?? (await import('@papercusp/orchestrator/blueprint'));
     const harnessDir = opts.harnessDir ?? (await import('@papercusp/harness/paths')).harnessRoot();
@@ -127,9 +136,21 @@ export async function renderStackTransitionContext(
       if (applied.injection) parts.push(applied.injection);
       cursor = applied.runtimeBinding;
     }
-    return parts.join('\n\n');
+    return { text: parts.join('\n\n'), rendered: true };
   } catch (e) {
     warn(`[stack-binding-channel] stack transition not delivered (${JSON.stringify(before ?? null)} → ${JSON.stringify(after)}): ${e instanceof Error ? e.message : String(e)}`);
-    return '';
+    return { text: '', rendered: false };
   }
+}
+
+/**
+ * Compatibility wrapper for callers that only need the fail-soft text.
+ * Turn-start delivery uses renderStackTransitionContextResult so it can defer
+ * the CTRL acknowledgement when this renderer fails.
+ */
+export async function renderStackTransitionContext(
+  delivery: Partial<Pick<ControlTransition, 'state' | 'stackBefore'>> | null | undefined,
+  opts: StackTransitionContextOptions = {},
+): Promise<string> {
+  return (await renderStackTransitionContextResult(delivery, opts)).text;
 }

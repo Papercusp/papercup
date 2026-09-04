@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveProjectRoot } from './lsp-adapter.ts';
 
 import {
+  AST_GREP_BENCH_CASE,
   BENCH_PROBES,
   CORPUS_GROUND_TRUTH_INTENTS,
   KNOWN_DIVERGENCES,
@@ -44,13 +45,20 @@ import {
   emptyAnswerBanner,
   lspClientIdentity,
   startedNewClient,
+  runAstGrepFacadeLeg,
+  runGitnexusFacadeLeg,
+  runPackerFacadeLeg,
 } from './code-intel-bench.ts';
 import { corpusCase } from './acceptance-corpus.ts';
 import {
   DEFAULT_RESOURCE_BUDGET,
   isMutatingToolName,
+  type CodeIntelAnswer,
+  type CodeIntelBackend,
+  type CodeIntelIntent,
   type SymbolSite,
 } from './contracts.ts';
+import type { PackerEngine, PackerResult } from './packer-facade.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..', '..', '..');
@@ -1165,5 +1173,166 @@ describe('serverWasCold is read from the ADAPTER, not guessed from the extension
       lspClientIdentity({ language: 'rust', rootPath: '/repo', taskId: 'task-9' }),
     ];
     expect(startedNewClient(before, after)).toBe(true);
+  });
+});
+
+const facadeAnswer = (
+  backend: CodeIntelBackend,
+  intent: CodeIntelIntent,
+  query: string,
+  sites: readonly SymbolSite[],
+  error: string | null = null,
+): CodeIntelAnswer => ({
+  backend,
+  intent,
+  query,
+  sites,
+  truncation: { truncated: false, totalAvailable: sites.length, continuation: null },
+  freshness: {
+    health: error === null ? 'healthy' : 'unknown',
+    indexedAt: null,
+    staleVsDisk: false,
+    indexedCommit: null,
+  },
+  latencyMs: 1,
+  error,
+});
+
+describe('facade-backed acceptance legs (WI-2143023)', () => {
+  it('GitNexus invokes supported site cases, declines unsupported intents, and labels properties unmeasured', async () => {
+    const calls: Array<{ op: string; name: string | undefined }> = [];
+    const sitesByQuery: Record<string, readonly SymbolSite[]> = {
+      pinModuleState: corpusCase('definition-cross-package-bare-specifier')!.expectedSites.map((pinned) =>
+        site(pinned.path, pinned.line1),
+      ),
+      managedSetInterval: corpusCase('shadowed-symbol-no-cross-contamination')!.expectedSites.map((pinned) =>
+        site(pinned.path, pinned.line1),
+      ),
+      managedSpawn: corpusCase('callers-of-managed-spawn')!.expectedSites.map((pinned) =>
+        site(pinned.path, pinned.line1),
+      ),
+    };
+
+    const report = await runGitnexusFacadeLeg({}, async (op, args) => {
+      const name = args?.name;
+      calls.push({ op, name });
+      return facadeAnswer(
+        'gitnexus',
+        op === 'callers' ? 'callers' : 'definition',
+        name ?? '',
+        sitesByQuery[name ?? ''] ?? [],
+      );
+    });
+
+    expect(calls).toEqual([
+      { op: 'symbol', name: 'pinModuleState' },
+      { op: 'symbol', name: 'managedSetInterval' },
+      { op: 'callers', name: 'managedSpawn' },
+    ]);
+    expect(report.measurements.filter((measurement) => measurement.invoked)).toHaveLength(3);
+    expect(
+      report.measurements
+        .filter((measurement) => measurement.disposition === 'declined')
+        .map((measurement) => measurement.intent)
+        .sort(),
+    ).toEqual(['implementations', 'references']);
+    expect(
+      report.measurements.filter((measurement) => measurement.invoked).every((measurement) => measurement.correct),
+    ).toBe(true);
+    expect(report.unmeasuredCases.map((measurement) => measurement.caseId)).toContain(
+      'resource-budget-measured-from-runtime',
+    );
+    expect(report.unmeasuredCases.every((measurement) => /no GitNexus-specific/.test(measurement.reason))).toBe(true);
+  });
+
+  it('ast-grep runs search and rewrite preview against one self-verifying structural pin', async () => {
+    const calls: string[] = [];
+    const expected = AST_GREP_BENCH_CASE.expectedSites.map((pinned) => site(pinned.path, pinned.line1));
+    const report = await runAstGrepFacadeLeg({ repoRoot: REPO_ROOT }, async (op, args) => {
+      calls.push(op);
+      return facadeAnswer('ast-grep', 'structural-search', args.pattern, expected);
+    });
+
+    expect(calls).toEqual(['search', 'rewrite_preview']);
+    expect(report.searchGrade.correct).toBe(true);
+    expect(report.previewGrade.correct).toBe(true);
+    expect(report.sourceByteIdentical).toBe(true);
+    expect(report.correct).toBe(true);
+  });
+
+  it('ast-grep leg fails closed when a structural answer contains an extra site', async () => {
+    const expected = AST_GREP_BENCH_CASE.expectedSites.map((pinned) => site(pinned.path, pinned.line1));
+    const report = await runAstGrepFacadeLeg({ repoRoot: REPO_ROOT }, async (_op, args) =>
+      facadeAnswer('ast-grep', 'structural-search', args.pattern, [
+        ...expected,
+        site('packages/operator-core/lib/not-a-real-match.ts', 1),
+      ]),
+    );
+
+    expect(report.searchGrade.correct).toBe(false);
+    expect(report.previewGrade.correct).toBe(false);
+    expect(report.correct).toBe(false);
+  });
+
+  const packerResult = (
+    engine: PackerEngine,
+    rootPath: string,
+    include: readonly string[],
+    error: string | null = null,
+  ): PackerResult => ({
+    answer: facadeAnswer(engine, 'pack', `${engine}:${include.join(',')}`, [site('alpha.ts', null)], error),
+    artifact:
+      error === null
+        ? {
+            path: `/tmp/${engine}-bench.md`,
+            preview: 'alpha',
+            provenance: {
+              engine,
+              engineVersion: engine === 'repomix' ? '1.18.0' : '4.2.0',
+              rootPath,
+              commit: '0123456789abcdef0123456789abcdef01234567',
+              dirty: true,
+              baseRef: null,
+              baseCommit: null,
+              include: [...include],
+              ignore: [],
+              denyGlobs: [],
+              template: 'none',
+              fileCount: 1,
+              bytes: 5,
+              chars: 5,
+              securityScan: engine === 'repomix' ? 'secretlint+deny-set' : 'deny-set-only',
+              capturedAt: '2026-09-04T00:00:00.000Z',
+            },
+          }
+        : null,
+  });
+
+  it('packer leg invokes both engines and grades their observable artifact boundaries', async () => {
+    const calls: string[] = [];
+    const include = ['packages/operator-core/lib/code-intelligence/contracts.ts'];
+    const report = await runPackerFacadeLeg({ repoRoot: REPO_ROOT, include }, async (op, args) => {
+      calls.push(op);
+      return packerResult(op === 'pack' ? 'repomix' : 'code2prompt', args.rootPath, args.include);
+    });
+
+    expect(calls).toEqual(['pack', 'diff']);
+    expect(report.measurements.map((measurement) => measurement.engine)).toEqual(['repomix', 'code2prompt']);
+    expect(report.correct).toBe(true);
+  });
+
+  it('packer leg reports a loud engine refusal as a failed measurement, never a pass', async () => {
+    const report = await runPackerFacadeLeg({ repoRoot: REPO_ROOT, include: ['alpha.ts'] }, async (op, args) =>
+      packerResult(
+        op === 'pack' ? 'repomix' : 'code2prompt',
+        args.rootPath,
+        args.include,
+        op === 'diff' ? 'code2prompt not provisioned' : null,
+      ),
+    );
+
+    expect(report.correct).toBe(false);
+    expect(report.measurements[1]?.grade.reasons).toContain('code2prompt not provisioned');
+    expect(report.measurements[1]?.grade.reasons).toContain('no artifact was produced');
   });
 });

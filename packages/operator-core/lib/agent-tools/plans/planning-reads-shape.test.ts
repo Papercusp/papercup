@@ -42,7 +42,18 @@ function listRow(i: number, overrides: Record<string, unknown> = {}) {
 
 describe("shapePlansList (P-021)", () => {
   it("projects rows to uniform keys and flattens itemCounts to open/done", () => {
-    const out = shapePlansList({ plans: [listRow(1)] }, "trimmed") as {
+    const lifecycle = {
+      verdict: "active",
+      disposition: "contradicted",
+      contradiction: {
+        claim: "status: shipped",
+        evidence: "one item is still live",
+      },
+    };
+    const out = shapePlansList(
+      { plans: [listRow(1, { lifecycle })] },
+      "trimmed",
+    ) as {
       plans: Record<string, unknown>[];
     };
     expect(out.plans).toHaveLength(1);
@@ -52,13 +63,20 @@ describe("shapePlansList (P-021)", () => {
     expect(r).not.toHaveProperty("itemCounts");
     expect(r).not.toHaveProperty("owner");
     expect(r.triggered).toBe(false);
+    expect(r.lifecycleVerdict).toBe("active");
+    expect(r.lifecycleDisposition).toBe("contradicted");
+    expect(r.lifecycleContradiction).toBe("one item is still live");
     // standard keeps the wider field set + done count
-    const std = shapePlansList({ plans: [listRow(1)] }, "standard") as {
+    const std = shapePlansList(
+      { plans: [listRow(1, { lifecycle })] },
+      "standard",
+    ) as {
       plans: Record<string, unknown>[];
     };
     expect(std.plans[0].done).toBe(11); // done 9 + dropped 2
     expect(std.plans[0].owner).toBe("avi@example.com");
     expect(std.plans[0].triggerSources).toEqual([]);
+    expect(std.plans[0].lifecycleDisposition).toBe("contradicted");
   });
 
   it("over-cap without an explicit order keeps the most-recently-updated rows + a notice row", () => {

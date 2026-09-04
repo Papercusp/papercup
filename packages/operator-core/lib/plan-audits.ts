@@ -68,6 +68,13 @@ import {
   type ActivationAuditRepairFiling,
   type ActivationAuditRepairReconciliation,
 } from './agent-tools/plans/activation-audit-repair';
+import {
+  AcceptanceBarSeedAbort,
+  seedAcceptanceBarsInTransaction,
+  type AcceptanceBarSeedCode,
+  type AcceptanceBarSeedProblem,
+  type TransactionalAcceptanceBarSeedSuccess,
+} from './acceptance-bar-seed';
 
 // ── the record ────────────────────────────────────────────────────────────────
 
@@ -1518,12 +1525,21 @@ export type RecordCurrentActivationAuditResult =
        * caller instead of only to the log.
        */
       repairReconciliation?: ActivationAuditRepairReconciliation;
+      /** Atomic post-epoch seed result. Historical cohorts omit it and retain the
+       * legacy non-fatal draft-clause derivation path. */
+      barSeed?: TransactionalAcceptanceBarSeedSuccess | null;
     }
   | {
       ok: false;
-      error: 'plan_busy' | 'plan_not_found' | 'activation_blocked' | 'plan_targets_invalid' | 'plan_revision_unavailable';
+      error:
+        | 'plan_busy'
+        | 'plan_not_found'
+        | 'activation_blocked'
+        | 'plan_targets_invalid'
+        | 'plan_revision_unavailable'
+        | AcceptanceBarSeedCode;
       message: string;
-      problems?: ActivationAuditPlanTargetProblem[];
+      problems?: Array<ActivationAuditPlanTargetProblem | AcceptanceBarSeedProblem>;
       repairWorkItem?: string | null;
       repairFiling?: ActivationAuditRepairFiling;
     };
@@ -1738,7 +1754,9 @@ export async function recordCurrentActivationAudit(
 
   const lockKey = planAdvisoryLockKey(input.workspaceId, input.harnessSlug, input.planSlug);
   const { sql } = getOrgPg();
-  const recorded = (await sql.begin(async (tx) => {
+  let recorded: RecordCurrentActivationAuditResult;
+  try {
+    recorded = (await sql.begin(async (tx) => {
     const executor = tx as unknown as AuditSql;
     const lock = await executor<Array<{ ok: boolean }>>`
       SELECT pg_try_advisory_xact_lock(
@@ -1752,8 +1770,17 @@ export async function recordCurrentActivationAudit(
       };
     }
 
-    const plans = await executor<Array<{ content: string; content_hash: string }>>`
-      SELECT content, content_hash
+    const plans = await executor<Array<{
+      content: string;
+      content_hash: string;
+      title: string | null;
+      status: string | null;
+      version: number | string;
+      acceptance_bar_epoch: number | string | null;
+      acceptance_bar_cohort: 'post-epoch' | 'legacy-backfilled' | null;
+    }>>`
+      SELECT content, content_hash, title, status, version,
+             acceptance_bar_epoch, acceptance_bar_cohort
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${input.workspaceId}
          AND harness_slug = ${input.harnessSlug}
@@ -1805,6 +1832,25 @@ export async function recordCurrentActivationAudit(
       seq: Number(revision.seq),
       contentHash: revision.content_hash,
     };
+    let barSeed: TransactionalAcceptanceBarSeedSuccess | null = null;
+    if (current.acceptance_bar_epoch != null) {
+      const seeded = await seedAcceptanceBarsInTransaction({
+        executor,
+        workspaceId: input.workspaceId,
+        harnessSlug: input.harnessSlug,
+        planSlug: input.planSlug,
+        planContent: current.content,
+        planTitle: current.title,
+        planStatus: current.status,
+        planVersion: Number(current.version),
+        adoptionEpoch: Number(current.acceptance_bar_epoch),
+        cohort: current.acceptance_bar_cohort ?? 'post-epoch',
+        actorId: input.createdBy,
+        now: new Date(),
+      });
+      if (!seeded.ok) return seeded;
+      barSeed = seeded;
+    }
     const audit = await insertPlanAudit(
       {
         auditKind: 'activation',
@@ -1818,8 +1864,12 @@ export async function recordCurrentActivationAudit(
       executor,
       input.workspaceId,
     );
-    return { ok: true as const, audit, auditedPlanRevision };
-  })) as RecordCurrentActivationAuditResult;
+    return { ok: true as const, audit, auditedPlanRevision, barSeed };
+    })) as RecordCurrentActivationAuditResult;
+  } catch (error) {
+    if (error instanceof AcceptanceBarSeedAbort) return error.result;
+    throw error;
+  }
   if (!recorded.ok) return recorded;
 
   // POST-COMMIT on purpose, and only on the clean path. This audit landing IS

@@ -533,8 +533,16 @@ export async function persistControlAnchor(
   };
 }
 
-/** Atomically consume the newest undelivered generation for the turn-start hook. */
-export async function consumePendingControlTransition(
+/**
+ * Read the newest undelivered generation for the turn-start hook.
+ *
+ * This is intentionally the first phase of delivery, not the acknowledgement:
+ * stack rendering happens after this query and can fail softly. The caller must
+ * acknowledge the returned generation only after it has assembled the complete
+ * prompt block; otherwise a render failure would advance the watermark while
+ * the stack layer was never delivered.
+ */
+export async function preparePendingControlTransition(
   ownerId: string,
   workspaceId: string,
   sql: Sql = getOrgPg().sql,
@@ -546,22 +554,13 @@ export async function consumePendingControlTransition(
     control_transition: ControlTransition | null;
     delivered_generation: number | string;
   }>>`
-    WITH candidate AS (
-      SELECT owner_id, control_generation, control_state, control_updated_at,
-             control_transition, control_delivered_generation
-        FROM harness_shared.session_briefs
-       WHERE owner_id = ${ownerId} AND workspace_id = ${workspaceId}
-         AND control_state IS NOT NULL
-         AND control_generation > control_delivered_generation
-       FOR UPDATE
-    )
-    UPDATE harness_shared.session_briefs brief
-       SET control_delivered_generation = candidate.control_generation
-      FROM candidate
-     WHERE brief.owner_id = candidate.owner_id
-    RETURNING candidate.control_generation, candidate.control_state,
-              candidate.control_updated_at, candidate.control_transition,
-              candidate.control_delivered_generation AS delivered_generation
+    SELECT owner_id, control_generation, control_state, control_updated_at,
+           control_transition, control_delivered_generation AS delivered_generation
+      FROM harness_shared.session_briefs
+     WHERE owner_id = ${ownerId} AND workspace_id = ${workspaceId}
+       AND control_state IS NOT NULL
+       AND control_generation > control_delivered_generation
+     FOR UPDATE
   `;
   const row = rows[0];
   if (!row) return null;
@@ -575,6 +574,44 @@ export async function consumePendingControlTransition(
       ? new Date(row.control_updated_at).toISOString()
       : new Date().toISOString(),
   });
+}
+
+/**
+ * Backwards-compatible name for callers that still use the original
+ * one-shot-delivery vocabulary. The operation is now deliberately a
+ * prepare/read; pair it with {@link acknowledgeControlTransition} after the
+ * prompt has been assembled.
+ */
+export const consumePendingControlTransition = preparePendingControlTransition;
+
+/**
+ * Phase two of CTRL delivery: acknowledge one generation after the complete
+ * prompt has been assembled successfully.
+ *
+ * The update is conditional and monotonic. If a newer generation appeared
+ * while the caller was rendering, only the generation that this caller
+ * actually prepared is acknowledged; the newer one remains pending for the
+ * next turn. If the process dies before this call, the same generation is
+ * returned again, preserving at-least-once delivery instead of losing a stack
+ * mutation.
+ */
+export async function acknowledgeControlTransition(
+  ownerId: string,
+  workspaceId: string,
+  generation: number,
+  sql: Sql = getOrgPg().sql,
+): Promise<boolean> {
+  if (!Number.isSafeInteger(generation) || generation < 0) return false;
+  const rows = await sql<Array<{ control_delivered_generation: number | string }>>`
+    UPDATE harness_shared.session_briefs
+       SET control_delivered_generation = GREATEST(control_delivered_generation, ${generation})
+     WHERE owner_id = ${ownerId}
+       AND workspace_id = ${workspaceId}
+       AND control_generation >= ${generation}
+       AND control_delivered_generation < ${generation}
+    RETURNING control_delivered_generation
+  `;
+  return rows.length > 0;
 }
 
 export function renderControlTransitionContext(delivery: ControlTransitionDelivery): string {

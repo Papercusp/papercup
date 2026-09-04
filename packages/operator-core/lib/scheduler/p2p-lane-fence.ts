@@ -232,9 +232,9 @@ export const P2P_LANE_REJECTED_ANTI_TERMS = [
 
 /**
  * Build the `not: { any: [...] } }` FilterNode excluding every
- * {@link P2P_LANE_EXCLUSION_TERMS} TITLE-or-SUMMARY match. Compose this into a
+ * {@link P2P_LANE_EXCLUSION_TERMS} TITLE, SUMMARY, or source-PLAN match. Compose this into a
  * spec's `view.filter` `all: [...]` array alongside the kind/state/plan
- * clauses, instead of hand-typing a title/summary glob/word exclusion per term
+ * clauses, instead of hand-typing a title/summary/plan glob/word exclusion per term
  * — that hand-typing is exactly the drift this module exists to stop.
  *
  * EI-20240035377782004: checks `summary` as well as `title` — title-ONLY was
@@ -248,6 +248,15 @@ export const P2P_LANE_REJECTED_ANTI_TERMS = [
  * shape stays `not: { any: [...] } }`), so a term hit in EITHER field excludes
  * the item — never a false admission just because the leak happened to be
  * worded into summary instead of title.
+ *
+ * WI-5280: source-plan provenance is the structural third leg. A P2P plan can
+ * deliberately use neutral item titles and summaries (the live recurrence was
+ * four consecutive F2/F4/F5/F6 items from
+ * `p2p-public-release-endgame-2026-09-01`), so content-only matching cannot
+ * describe a non-P2P lane. The claim-spec `plan` field resolves the indexed
+ * `source_plan_slug` plus its legacy payload fallbacks in both evaluators. Apply
+ * the same whole-word terms there: `p2p-public-*` is excluded, while
+ * `nonp2p-*` remains admitted because `word` requires an alphanumeric boundary.
  */
 export function buildP2pLaneFence(): FilterNode {
   return {
@@ -255,6 +264,7 @@ export function buildP2pLaneFence(): FilterNode {
       any: P2P_LANE_EXCLUSION_TERMS.flatMap((value) => [
         { field: 'title', op: 'word', value } as const,
         { field: 'summary', op: 'word', value } as const,
+        { field: 'plan', op: 'word', value } as const,
       ]),
     },
   };

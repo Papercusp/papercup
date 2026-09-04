@@ -39,6 +39,7 @@ import {
 } from './gitnexus-facade.ts';
 import { isTrustworthyEmpty } from './contracts.ts';
 import { ACCEPTANCE_CORPUS } from './acceptance-corpus.ts';
+import { runGitnexusFacadeLeg } from './code-intel-bench.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -255,4 +256,19 @@ describe.skipIf(!AVAILABLE)('gitnexus facade — live backend', () => {
     },
     180_000,
   );
+
+  it('runs the GitNexus acceptance leg and distinguishes calls, declines, and unmeasured properties', async () => {
+    const report = await runGitnexusFacadeLeg();
+    const invoked = report.measurements.filter((measurement) => measurement.invoked);
+    const declined = report.measurements.filter((measurement) => measurement.disposition === 'declined');
+
+    expect(invoked.map((measurement) => measurement.caseId)).toEqual([
+      'definition-cross-package-bare-specifier',
+      'shadowed-symbol-no-cross-contamination',
+      'callers-of-managed-spawn',
+    ]);
+    expect(declined.map((measurement) => measurement.intent).sort()).toEqual(['implementations', 'references']);
+    expect(report.unmeasuredCases.length).toBeGreaterThan(0);
+    expect(report.measurements.every((measurement) => measurement.trustworthyEmpty)).toBe(true);
+  }, 180_000);
 });

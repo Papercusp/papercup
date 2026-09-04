@@ -210,6 +210,51 @@ describe('plans:list — groupBy aggregates', () => {
     ]);
   });
 
+  it('makes lifecycle contradictions filterable/groupable without misclassifying superseded plans', async () => {
+    const liveItem = {
+      id: 'P-001',
+      text: 'still live',
+      status: 'todo',
+      importance: 'normal',
+      blockedBy: [],
+      decisionRefs: [],
+      phase: null,
+    };
+    M.listPlanIndexRows.mockResolvedValue([
+      row({ planSlug: 'superseded-abandonment', status: 'superseded', items: [liveItem] }),
+      row({ planSlug: 'shipped-debt', status: 'shipped', items: [liveItem] }),
+    ]);
+
+    const filtered = await run({ compact: true, lifecycleDisposition: 'contradicted', limit: 1 });
+    expect(filtered.plans).toEqual([
+      expect.objectContaining({
+        slug: 'shipped-debt',
+        lifecycle: expect.objectContaining({
+          verdict: 'active',
+          disposition: 'contradicted',
+          contradiction: expect.objectContaining({ evidence: expect.stringContaining('1 of 1 items are still live') }),
+        }),
+      }),
+    ]);
+    // lifecycleDisposition is a JS post-filter: a SQL-side limit here would
+    // inspect only the leading agreed row and fabricate an empty debt queue.
+    expect(M.listPlanIndexRows.mock.calls[0]?.[0]).not.toHaveProperty('limit');
+
+    const grouped = await run({ groupBy: 'lifecycleDisposition' });
+    expect(grouped.groups).toEqual([
+      { key: 'agreed', count: 1 },
+      { key: 'contradicted', count: 1 },
+    ]);
+    expect(grouped.plans).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          slug: 'superseded-abandonment',
+          lifecycle: expect.objectContaining({ disposition: 'agreed' }),
+        }),
+      ]),
+    );
+  });
+
   it('`limit` bounds the returned ROWS but never the aggregate', async () => {
     M.listPlanIndexRows.mockResolvedValue([
       row({ planSlug: 'a', status: 'active' }),

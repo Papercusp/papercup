@@ -683,6 +683,7 @@ Preserve this plan body.
           role: 'outcome',
           mandatory: true,
           requiredScope: ['surface:coverage-row', 'cohort:post-epoch', 'surface:coverage-row'],
+          evidencePlane: 'tree',
           passRatings: ['PASS', 'pass'],
           driftMarkers: 'No coverage-evidence row exists for the activation path.',
           check: { kind: 'instrument', instrumentKey: 'none' },

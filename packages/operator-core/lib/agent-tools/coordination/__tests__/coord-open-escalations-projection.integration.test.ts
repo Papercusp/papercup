@@ -16,7 +16,7 @@
  * fold.)
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PgCoordLog } from '@papercusp/coordination/event-log';
@@ -52,6 +52,11 @@ const MIG_1094 = readFileSync(
   join(repoRoot, 'libs/papercusp/libs/db/sql/1094-coord-open-escalations-trigger-update-fix.sql'),
   'utf8',
 );
+const MIG_1112_BASE = join(
+  repoRoot,
+  'libs/papercusp/libs/db/sql/1112-prevent-resolved-escalation-projection-resurrection.sql',
+);
+const MIG_1112 = readFileSync(existsSync(MIG_1112_BASE) ? MIG_1112_BASE : `${MIG_1112_BASE}.DRAFT`, 'utf8');
 
 let db: FreshPgDb;
 
@@ -63,6 +68,12 @@ async function insertOpen(msgId: string, ws = 'default'): Promise<void> {
 }
 async function insertResolve(msgId: string, relatedTo: string, ws = 'default'): Promise<void> {
   const body = { msg_id: msgId, kind: 'escalation_resolved', related_msg_id: relatedTo };
+  await db.sql`
+    INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, workspace_id)
+    VALUES ('escalations', ${msgId}, ${db.sql.json(body)}, ${ws})`;
+}
+async function insertReopen(msgId: string, relatedTo: string, ws = 'default'): Promise<void> {
+  const body = { msg_id: msgId, kind: 'escalation_reopened', related_msg_id: relatedTo };
   await db.sql`
     INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, workspace_id)
     VALUES ('escalations', ${msgId}, ${db.sql.json(body)}, ${ws})`;
@@ -210,6 +221,66 @@ describe('coord_open_escalations projection trigger (migration 355)', () => {
     // was silently swallowed before.
     await upsertViaPutEventShape(4, 'goal idle for <dur>');
     expect((await projectionBody())?.repeatCount).toBe(4);
+  });
+
+  // EI-22364876614483312: migration 1094's UPDATE trigger fixed stale open
+  // metadata, but it treated an update of the original escalation as if it were
+  // a new open. A later resolve was therefore undone whenever putEvent refreshed
+  // the original. The latest lifecycle sibling -- not the row that happened to
+  // fire the trigger -- must govern projection membership.
+  it('an UPDATE of a resolved original cannot resurrect it, and stale sibling updates cannot override the latest lifecycle event (EI-22364876614483312)', async () => {
+    // Establish the exact pre-fix trigger, independent of test order.
+    await db.sql.unsafe(MIG_1094).simple();
+    await insertOpen('e1');
+    await insertResolve('r1', 'e1');
+    expect(await openMsgIds()).toEqual([]);
+
+    // Updating the immutable original after its resolve fires migration 1094's
+    // unconditional escalation upsert and reproduces the live zombie row.
+    await db.sql`
+      UPDATE harness_shared.coord_event_log
+         SET body = body || ${db.sql.json({ repeatCount: 2 })}
+       WHERE workspace_id = 'default'
+         AND surface = 'escalations'
+         AND msg_id = 'e1'`;
+    expect(await openMsgIds()).toEqual(['e1']);
+
+    // Applying 1112 cleans the already-resurrected row immediately.
+    await db.sql.unsafe(MIG_1112).simple();
+    expect(await openMsgIds()).toEqual([]);
+
+    // The same original UPDATE shape stays closed after the trigger repair.
+    await db.sql`
+      UPDATE harness_shared.coord_event_log
+         SET body = body || ${db.sql.json({ repeatCount: 3 })}
+       WHERE workspace_id = 'default'
+         AND surface = 'escalations'
+         AND msg_id = 'e1'`;
+    expect(await openMsgIds()).toEqual([]);
+
+    // A genuine later reopen makes it open. Updating the older resolve must not
+    // close it again, because the newer reopen remains authoritative.
+    await insertReopen('o1', 'e1');
+    expect(await openMsgIds()).toEqual(['e1']);
+    await db.sql`
+      UPDATE harness_shared.coord_event_log
+         SET body = body || ${db.sql.json({ note: 'old resolve refreshed' })}
+       WHERE workspace_id = 'default'
+         AND surface = 'escalations'
+         AND msg_id = 'r1'`;
+    expect(await openMsgIds()).toEqual(['e1']);
+
+    // Symmetrically, a newer resolve closes it, and updating the older reopen
+    // cannot resurrect it.
+    await insertResolve('r2', 'e1');
+    expect(await openMsgIds()).toEqual([]);
+    await db.sql`
+      UPDATE harness_shared.coord_event_log
+         SET body = body || ${db.sql.json({ note: 'old reopen refreshed' })}
+       WHERE workspace_id = 'default'
+         AND surface = 'escalations'
+         AND msg_id = 'o1'`;
+    expect(await openMsgIds()).toEqual([]);
   });
 
   it('listEscalations(status=open) reads the projection instead of replaying the event log', async () => {

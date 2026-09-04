@@ -59,7 +59,7 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, relative } from 'node:path';
+import { isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { promisify } from 'node:util';
 
 import { getFlag } from '@papercusp/flags/server';
@@ -189,8 +189,15 @@ export function parseAstGrepMatches(stdout: string, rootPath: string): SymbolSit
   for (const raw of parsed as AstGrepMatch[]) {
     if (!raw || typeof raw !== 'object' || typeof raw.file !== 'string') continue;
     const line0 = raw.range?.start?.line;
+    // ast-grep preserves the caller's path shape: an absolute input produces
+    // an absolute `file`, while a repo-relative input produces a repo-relative
+    // one. Relativizing the latter against an absolute root invents a chain of
+    // `../../..` segments and corrupts an otherwise-correct citation. Normalize
+    // both branches into the shared repo-relative POSIX convention.
+    const pathFromRoot = isAbsolute(raw.file) ? relative(rootPath, raw.file) : raw.file;
+    const normalizedPath = normalize(pathFromRoot).split(sep).join('/').replace(/^\.\//, '');
     sites.push({
-      path: relative(rootPath, raw.file) || raw.file,
+      path: normalizedPath || raw.file,
       line1: toOneIndexed('ast-grep', typeof line0 === 'number' ? line0 : null),
       kind: 'match',
       // For a rewrite preview this is what the site WOULD become; for a search

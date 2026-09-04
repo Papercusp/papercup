@@ -1556,6 +1556,23 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   // the expensive analyzer, so record it before the cadence gates (including skips).
   await trackGitnexusDbCapacity(ctx, root, dbAlertRatio);
 
+  // Crash residue is a READ-AVAILABILITY fault, not an analyze-admission concern.
+  // Clean it before cadence/load/memory gates: a skipped analyze is legitimate,
+  // but leaving an orphan shadow or WAL in place makes every read-only GitNexus
+  // query fail until some future tick happens to elect a full rebuild.
+  const residue = cleanCrashResidue(root);
+  if (residue.cleaned) {
+    const why =
+      residue.kind === 'orphan-shadow'
+        ? 'shadow present, no database — a prior analyze died BEFORE promoting it'
+        : residue.kind === 'dead-shadow-wal'
+          ? 'an EMPTY, stale shadow beside a real database — a prior analyze was SIGKILLed mid-build (the 20-minute timeout does this). The empty shadow used to make this state match neither residue arm, so nothing cleaned it and every read-only open segfaulted on WAL replay'
+          : 'pending WAL beside a real database with no shadow — a prior analyze was killed AFTER promoting it; every read-only open was segfaulting on WAL replay';
+    console.warn(
+      `[gitnexus-reindex] cleaned ${residue.kind.toUpperCase()} residue (${why}): ${residue.removed.join(', ')}`,
+    );
+  }
+
   const entry = readRegistryEntry(registryPath(), repoName);
   const commitsBehind = entry?.lastCommit ? await countCommitsBehind(root, entry.lastCommit) : null;
   const indexedAtMs = entry?.indexedAt ? Date.parse(entry.indexedAt) : Number.NaN;
@@ -1597,21 +1614,6 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
     return;
   }
 
-  // Clean crash residue BEFORE spawning. Two arms, both self-perpetuating wedges left by
-  // a killed writer: orphan-shadow blocks `analyze` from starting (WI-35532), orphan-wal
-  // segfaults every READ while `analyze` still appears fine (D-016). No-ops on a healthy
-  // tree or a build genuinely in progress.
-  const residue = cleanCrashResidue(root);
-  if (residue.cleaned) {
-    const why =
-      residue.kind === 'orphan-shadow'
-        ? 'shadow present, no database — a prior analyze died BEFORE promoting it'
-        : residue.kind === 'dead-shadow-wal'
-          ? 'an EMPTY, stale shadow beside a real database — a prior analyze was SIGKILLed mid-build (the 20-minute timeout does this). The empty shadow used to make this state match neither residue arm, so nothing cleaned it and every read-only open segfaulted on WAL replay'
-          : 'pending WAL beside a real database with no shadow — a prior analyze was killed AFTER promoting it; every read-only open was segfaulting on WAL replay';
-    console.warn(`[gitnexus-reindex] cleaned ${residue.kind.toUpperCase()} residue (${why}): ${residue.removed.join(', ')}`);
-  }
-
   const timeoutMs = num(cfg, 'timeout_ms', GITNEXUS_ANALYZE_TIMEOUT_MS);
   const startedAt = Date.now();
   console.log(`[gitnexus-reindex] running analyze (${decision.reason}) — root=${root} name=${repoName}`);
@@ -1626,7 +1628,9 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   let canary: CanaryVerdict | null = null;
   if (ranClean) {
     try {
-      const after = readRegistryEntry(registryPath(), repoName) as (GitnexusRegistryEntry & { stats?: { files?: number; embeddings?: number } }) | null;
+      const after = readRegistryEntry(registryPath(), repoName) as
+        | (GitnexusRegistryEntry & { stats?: { files?: number; embeddings?: number } })
+        | null;
       canary = await runCanary(root, after?.stats?.files ?? null, after?.stats?.embeddings ?? null);
       console.log(`[gitnexus-reindex] ${canary.healthy ? 'canary OK' : 'CANARY FAILED'} — ${canary.summary}`);
     } catch (e) {
@@ -1683,7 +1687,7 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
         (recovered?.cleaned
           ? `Crash residue (D-016) recovered IMMEDIATELY (${recovered.kind}): ${recovered.removed.join(', ')} — ` +
             'reads stay answerable instead of segfaulting until the next tick.'
-          : 'No crash residue was present to recover; the next tick\'s cleanCrashResidue() preflight remains the backstop.') +
+          : "No crash residue was present to recover; the next tick's cleanCrashResidue() preflight remains the backstop.") +
         livenessNote,
     );
   } else if (r.code !== 0) {

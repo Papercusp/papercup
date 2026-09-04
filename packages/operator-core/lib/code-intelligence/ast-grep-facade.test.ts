@@ -148,6 +148,21 @@ describe('line-base conversion — ast-grep is ZERO-indexed', () => {
     expect(sites.map((s) => s.path)).toEqual(['probe.ts', 'probe.ts']);
   });
 
+  it('preserves a repo-relative file emitted for a repo-relative input', () => {
+    const payload = JSON.stringify([
+      {
+        text: "managedSetInterval('pty-idle-reaper')",
+        range: { start: { line: 168, column: 2 } },
+        file: 'packages/operator-core/lib/pty-bridge.ts',
+      },
+    ]);
+    const site = parseAstGrepMatches(payload, '/repo')[0];
+
+    expect(site.path).toBe('packages/operator-core/lib/pty-bridge.ts');
+    expect(site.path).not.toMatch(/^\.\.\//);
+    expect(site.line1).toBe(169);
+  });
+
   it('CONTROL: reading the raw value would cite line 0, which no editor has', () => {
     const raw = JSON.parse(REAL_PAYLOAD) as Array<{ range: { start: { line: number } } }>;
     expect(raw[0].range.start.line).toBe(0);

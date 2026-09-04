@@ -20,6 +20,10 @@
   color: var(--fg);
 }
 
+.hud__heading { flex: none; padding: 12px 20px 4px; background: var(--bg); }
+.hud__heading h1 { margin: 0; font-size: 21px; font-weight: 650; line-height: 1.3; }
+.hud__heading p { margin: 4px 0 0; font-size: 12px; color: var(--fg-mute); }
+
 /* Keep both tab panels mounted so switching away from Sessions does not
    unmount every card (WI-6755). `contents` preserves the existing direct-child
    flex layout; the selected panel's children remain the HUD's flex items. */
@@ -42,7 +46,7 @@
      rhythm (it is rendered whenever there is a launcher). Keeping a few px means
      the strip still isn't flush against whatever sits above it when there is no
      launch row at all. */
-  padding: 4px 14px 0;
+  padding: 8px 20px 0;
   border-bottom: 1px solid var(--border);
   background: var(--bg-2);
   flex-wrap: wrap;
@@ -136,7 +140,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 14px;
+  padding: 14px 20px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-2);
   flex-wrap: wrap;
@@ -356,8 +360,8 @@
   justify-content: flex-start;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 8px 14px 6px;
-  background: var(--bg-2);
+  padding: 10px 20px 14px;
+  background: var(--bg);
   flex: none;
 }
 
@@ -375,8 +379,19 @@
      This is the mechanism the live check should verify. */
   justify-content: flex-start;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
 }
+
+.hud__launchrow .h-combobox__box { min-height: 34px; border-radius: 7px; background: var(--bg-2); }
+.hud__launchrow .h-combobox__input { font-size: 12px; }
+.hud__launchrow .h-button { min-height: 34px; border-radius: 7px; }
+.hud__launchrow .pc-new-session-launcher__select--plan { max-width: 180px; }
+.hud__launchrow :is(.pc-new-session-launcher__select--model, .pc-new-session-launcher__select--effort, .pc-new-session-launcher__select--fleet) { max-width: 110px; }
+.hud__launchrow .pc-new-session-launcher__select--account { max-width: 125px; }
+.hud__launchrow .pc-new-session-launcher__select--context { max-width: 130px; }
+.hud__launchrow .pc-new-session-launcher__select--mode { max-width: 88px; }
+.hud__top .hud__searchwrap { flex-basis: 260px; }
+.hud__top .h-combobox { max-width: 190px; }
 
 /* Widths are a CEILING, not a fixed size — the text box ellipsizes its
    contents (.h-combobox__input), while the dropdown panel sizes itself
@@ -602,10 +617,10 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 9px;
+  padding: 11px 12px;
   border: 1px solid var(--border);
   border-bottom: 0;
-  border-radius: 4px 4px 0 0;
+  border-radius: 10px 10px 0 0;
   background: var(--bg-2);
   /* Sentence-case header, matching .pc-auto__section-title in the left sidebar.
      The previous uppercase + letter-spacing:0.09em treatment was off-family and
@@ -613,8 +628,8 @@
      app-UI primitive). `c.label` is already sentence case and is what aria-label
      reads, so dropping text-transform also makes the visible text match the
      accessible name. Weight carries the header now that tracking cannot. */
-  font-size: 11px;
-  font-weight: 760;
+  font-size: 12px;
+  font-weight: 650;
   color: var(--fg-mute);
 }
 
@@ -622,6 +637,10 @@
   margin-left: auto;
   color: var(--fg);
   font-variant-numeric: tabular-nums;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: var(--bg);
+  font-size: 11px;
 }
 
 /* The two columns that justify the surface get their own colour so an operator
@@ -639,12 +658,12 @@
   flex: 1 1 auto;
   min-height: 0;
   border: 1px solid var(--border);
-  border-radius: 0 0 4px 4px;
+  border-radius: 0 0 10px 10px;
   background: var(--bg-2);
-  padding: 7px;
+  padding: 9px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 9px;
   overflow-y: auto;
 }
 
@@ -1103,9 +1122,9 @@
      bottom edge. Also why the track survives overflow:hidden below — it sits
      INSIDE the border box, not past it. */
   position: relative;
-  padding: 8px;
+  padding: 12px;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 8px;
   background: var(--bg);
   text-align: left;
   font: inherit;
@@ -1135,6 +1154,7 @@
      flex-shrink:0 makes cards render at their true content height and pushes
      the (correct, already-present) column scrollbar to do its job. */
   flex-shrink: 0;
+  transition: border-color 120ms ease, background 120ms ease;
 }
 
 .hud__card-row {
@@ -1505,6 +1525,13 @@
   .hud__cols:not(.hud__cols--weighted) {
     grid-template-columns: repeat(5, minmax(170px, 1fr));
   }
+}
+
+@media (max-width: 900px) {
+  .hud__heading { padding: 12px 14px 4px; }
+  .hud__heading h1 { font-size: 18px; }
+  .hud__launchrow { padding: 8px 14px; max-height: 130px; overflow-y: auto; }
+  .hud__launchrow .h-combobox { flex: 1 1 120px; min-width: 100px; }
 }
 
 /* ── P-009: the goal-packages rail (work-on-everything-goal-2026-08-23) ─────

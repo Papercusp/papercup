@@ -644,13 +644,15 @@ describe('LadybugDB capacity telemetry (EI-21044385125018758)', () => {
     expect(decideGitnexusDbHealthUpdate({ ...GITNEXUS_HEALTH_DEFAULT, ...low.next }, high, 0.6).shouldAlert).toBe(true);
   });
 
-  it('wires capacity tracking before cadence skips and refreshes it after a successful analyze', () => {
+  it('wires capacity and crash recovery before cadence skips, then refreshes capacity after analyze', () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'gitnexus-reindex-action.ts'), 'utf8');
     const first = src.indexOf('await trackGitnexusDbCapacity(ctx, root, dbAlertRatio);');
+    const cleanup = src.indexOf('const residue = cleanCrashResidue(root);', first);
     const decision = src.indexOf('const decision = decideReindex(', first);
     const second = src.indexOf('await trackGitnexusDbCapacity(ctx, root, dbAlertRatio);', first + 1);
     expect(first).toBeGreaterThan(0);
-    expect(decision).toBeGreaterThan(first);
+    expect(cleanup).toBeGreaterThan(first);
+    expect(decision).toBeGreaterThan(cleanup);
     expect(second).toBeGreaterThan(decision);
   });
 });

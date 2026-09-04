@@ -38,6 +38,8 @@ import {
   type RubricKind,
   type RubricCriterionWindow,
   type RubricCriterionCheck,
+  type AcceptanceEvidencePlane as TemplateAcceptanceEvidencePlane,
+  type AcceptanceBarContract as TemplateAcceptanceBarContract,
 } from './agent-tools/plans/rubric-template';
 import {
   collectRubricLossViolations,
@@ -94,6 +96,8 @@ export type CriterionClass = 'settle-once' | 'violatable';
  * disclosure ABOUT that thing. The distinction is structural so prose cannot
  * game coverage or substitute an accurate post-hoc report for the outcome. */
 export type AcceptanceCriterionRole = 'outcome' | 'disclosure';
+export type AcceptanceEvidencePlane = TemplateAcceptanceEvidencePlane;
+export type AcceptanceBarContract = TemplateAcceptanceBarContract;
 
 /** When an acceptance BAR entered the subject plan's lifecycle. Historical rows
  * omit this; every post-adoption writer supplies it before the lifecycle gates
@@ -125,6 +129,8 @@ export interface RubricCriterion {
   mandatory?: boolean;
   /** Stable scope tokens the BAR promises to cover (surfaces, cohorts, or subjects). */
   requiredScope?: string[];
+  /** Structural evidence plane; tree proof cannot satisfy deployed/live promises. */
+  evidencePlane?: AcceptanceEvidencePlane;
   /** Ratings that satisfy this BAR. Empty/absent remains legacy/unbound. */
   passRatings?: string[];
   /** Disclosure-only mapping to the outcome BAR keys it reports on. */
@@ -180,6 +186,9 @@ export interface Rubric {
   subjectGoal?: string | null;
   /** acceptance-kind only: the standard-kind CLASS rubric it builds on (plan D-006/D-009). */
   classRef?: string | null;
+  /** Server-derived complete BAR-set identity and the cohort/revision pin that produced it. */
+  barSetHash?: string;
+  barContract?: AcceptanceBarContract;
   /** Umbrella domain, e.g. 'hive-coordination' — Scout's digest groups by this. */
   characteristic: string;
   title: string;
@@ -378,6 +387,8 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
     ...(d.subjectPlan ? { subjectPlan: d.subjectPlan } : {}),
     ...(d.subjectGoal ? { subjectGoal: d.subjectGoal } : {}),
     ...(d.classRef ? { classRef: d.classRef } : {}),
+    ...(d.barSetHash ? { barSetHash: d.barSetHash } : {}),
+    ...(d.barContract ? { barContract: d.barContract } : {}),
     characteristic: d.characteristic,
     title: row.title ?? row.plan_slug,
     description: d.description ?? '',
@@ -393,6 +404,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
         role?: AcceptanceCriterionRole;
         mandatory?: boolean;
         requiredScope?: string[];
+        evidencePlane?: AcceptanceEvidencePlane;
         passRatings?: string[];
         coversBarKeys?: string[];
         barProvenance?: AcceptanceBarProvenance;
@@ -410,6 +422,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
         ...(barFields.role ? { role: barFields.role } : {}),
         ...(barFields.mandatory !== undefined ? { mandatory: barFields.mandatory } : {}),
         ...(barFields.requiredScope ? { requiredScope: barFields.requiredScope } : {}),
+        ...(barFields.evidencePlane ? { evidencePlane: barFields.evidencePlane } : {}),
         ...(barFields.passRatings ? { passRatings: barFields.passRatings } : {}),
         ...(barFields.coversBarKeys ? { coversBarKeys: barFields.coversBarKeys } : {}),
         ...(barFields.barProvenance ? { barProvenance: barFields.barProvenance } : {}),
@@ -1044,6 +1057,7 @@ type AcceptanceBarHashInput = Pick<
   | 'barKey'
   | 'driftMarkers'
   | 'requiredScope'
+  | 'evidencePlane'
   | 'role'
   | 'mandatory'
   | 'passRatings'
@@ -1084,12 +1098,37 @@ export function computeAcceptanceBarHash(criterion: AcceptanceBarHashInput): str
     ['bar', canonicalBar],
     ['falsifier', normalizedBarText(criterion.driftMarkers)],
     ['requiredScope', normalizedBarSet(criterion.requiredScope)],
+    ...(criterion.evidencePlane ? ([['evidencePlane', criterion.evidencePlane]] as const) : []),
     ['role', criterion.role ?? null],
     ['mandatory', criterion.mandatory ?? false],
     ['passRatings', normalizedBarSet(criterion.passRatings, true)],
     ['coversBarKeys', normalizedBarSet(criterion.coversBarKeys)],
   ] as const;
   return hashPlanContent(JSON.stringify(material));
+}
+
+/** Exact complete-set identity. Order-independent, duplicate-key refusing, and
+ * deliberately composed only from each criterion's stable BAR identity/hash. */
+export function computeAcceptanceBarSetHash(
+  criteria: ReadonlyArray<Pick<ProposeRubricCriterion, 'key' | 'barKey' | 'barHash'>>,
+): string {
+  if (criteria.length === 0) {
+    throw new Error('invalid_args: cannot derive barSetHash from an empty BAR set');
+  }
+  const pairs = criteria.map((criterion) => {
+    const barKey = criterion.barKey?.trim() || criterion.key.trim();
+    const barHash = criterion.barHash?.trim() ?? '';
+    if (!barKey || !/^[a-f0-9]{64}$/.test(barHash)) {
+      throw new Error(`invalid_args: BAR '${barKey || criterion.key}' lacks a valid server-derived barHash`);
+    }
+    return [barKey, barHash] as const;
+  });
+  const keys = pairs.map(([key]) => key);
+  if (new Set(keys).size !== keys.length) {
+    throw new Error('invalid_args: duplicate barKey values cannot form a complete barSetHash');
+  }
+  pairs.sort(([a], [b]) => a.localeCompare(b));
+  return hashPlanContent(JSON.stringify(pairs));
 }
 
 /**
@@ -1107,6 +1146,7 @@ export function normalizeAcceptanceBarCriterion(
     criterion.role !== undefined ||
     criterion.mandatory !== undefined ||
     criterion.requiredScope !== undefined ||
+    criterion.evidencePlane !== undefined ||
     criterion.passRatings !== undefined ||
     criterion.coversBarKeys !== undefined ||
     criterion.barProvenance !== undefined;
@@ -1159,6 +1199,10 @@ export interface ProposeRubricInput {
   subjectGoal?: string;
   /** acceptance-kind only: the standard-kind class rubric it builds on (validated to exist). */
   classRef?: string;
+  /** Internal/server-owned BAR-set pin. Agent-facing propose schemas do not expose it. */
+  barSetHash?: string;
+  /** Internal/server-owned cohort/subject-revision pin. */
+  barContract?: AcceptanceBarContract;
   characteristic: string;
   title: string;
   description?: string;
@@ -1572,6 +1616,8 @@ function buildRubricTemplateData(
     ...(input.subjectPlan ? { subjectPlan: input.subjectPlan } : {}),
     ...(input.subjectGoal ? { subjectGoal: input.subjectGoal } : {}),
     ...(input.classRef ? { classRef: input.classRef } : {}),
+    ...(input.barSetHash ? { barSetHash: input.barSetHash } : {}),
+    ...(input.barContract ? { barContract: input.barContract } : {}),
     characteristic: input.characteristic,
     criteria,
     ratingScale: normalized.ratingScale,
@@ -1807,7 +1853,7 @@ async function assertAcceptanceSubjectPlanAvailable(
  *  structured fields live in `template_data` (written separately); the body is narrative
  *  context. Mirrors the Scout rubric-rail draft shape so the plan parses + derives the
  *  `template` column. */
-function buildRubricPlanBody(args: {
+export function buildRubricPlanBody(args: {
   slug: string;
   title: string;
   planStatus: string;
@@ -2288,6 +2334,8 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     ...(stored.subjectPlan ? { subjectPlan: stored.subjectPlan } : {}),
     ...(stored.subjectGoal ? { subjectGoal: stored.subjectGoal } : {}),
     ...(stored.classRef ? { classRef: stored.classRef } : {}),
+    ...(stored.barSetHash ? { barSetHash: stored.barSetHash } : {}),
+    ...(stored.barContract ? { barContract: stored.barContract } : {}),
     characteristic: stored.characteristic,
     title: stored.title,
     description: stored.description,

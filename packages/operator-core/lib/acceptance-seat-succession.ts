@@ -38,6 +38,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import type { AcceptanceSeatSuccession } from './harness/improvements/observation-types';
+import { acceptanceDrainPlanRef } from './agent-tools/plans/acceptance-drain-filing';
 
 /** A session-state verdict, structurally matching the liveness oracle's. */
 type SessionStateLike = string;
@@ -61,7 +62,15 @@ export type AcceptanceSeatResolution =
   | { eligible: false; reason: AcceptanceSeatIneligibleReason; authorSessionState?: SessionStateLike };
 
 /**
- * Whether `callerId` currently holds a work-item belonging to `subjectPlan`.
+ * Whether `callerId` currently holds either:
+ *
+ *   1. a work-item belonging to `subjectPlan`; or
+ *   2. the canonical acceptance-drain work-item filed for that plan.
+ *
+ * The second leg is deliberately keyed by `payload.acceptanceDrainPlan`, not
+ * the plan's own `source_plan_slug`. Acceptance-drain work is an independent
+ * ceremony item: the plan's implementation rows are terminal by the time this
+ * seat is needed, and therefore cannot provide a live accountability lease.
  *
  * `taken_by` is the accountability signal on purpose: it is CLEARED when a
  * session dies or releases (session-death-claim-release-2026-07-11), so a match
@@ -85,16 +94,30 @@ export async function resolveAcceptanceSeatBasis(
   const sql = opts.sql ?? getOrgPg().sql;
   const workspaceId = opts.workspaceId || activeWorkspaceId();
   const harness = typeof opts.harness === 'string' && opts.harness.trim() ? opts.harness.trim() : null;
+  // Keep this marker in lockstep with acceptanceDrainPlanRef(), the canonical
+  // filer-side identity. Without the harness context there is no safe way to
+  // choose one tenant's acceptance-drain item when plan slugs collide.
+  const acceptanceDrainRef = harness
+    ? acceptanceDrainPlanRef({ workspaceId, harnessSlug: harness, planSlug })
+    : null;
+  const planWorkItemMatch = sql`
+    (
+      (
+        source_plan_slug = ${planSlug}
+        OR payload -> 'plan_item' ->> 'plan_slug' = ${planSlug}
+      )
+      ${harness ? sql`AND harness_slug = ${harness}` : sql``}
+    )
+  `;
+  const acceptanceDrainWorkItemMatch = acceptanceDrainRef
+    ? sql`payload ->> 'acceptanceDrainPlan' = ${acceptanceDrainRef}`
+    : sql`FALSE`;
   const rows = (await sql`
     SELECT feature_id
       FROM harness_shared.work_items
      WHERE workspace_id = ${workspaceId}
        AND taken_by = ${callerId}
-       AND (
-             source_plan_slug = ${planSlug}
-          OR payload -> 'plan_item' ->> 'plan_slug' = ${planSlug}
-           )
-       ${harness ? sql`AND harness_slug = ${harness}` : sql``}
+       AND (${planWorkItemMatch} OR ${acceptanceDrainWorkItemMatch})
      ORDER BY feature_id
      LIMIT 1
   `) as Array<{ feature_id: string | null }>;
@@ -113,7 +136,8 @@ export async function resolveAcceptanceSeatBasis(
  *     so a live/parked/draining author's seat can never be taken out from under
  *     them. An UNKNOWN verdict (probe fault) is refused, not assumed dead:
  *     silence must never widen authority.
- *  3. the caller currently holds a work-item for the rubric's subject plan.
+ *  3. the caller currently holds a work-item for the rubric's subject plan,
+ *     including the independent acceptance-drain work-item filed for it.
  *
  * Never throws — a probe or query fault degrades to ineligible, so a fault can
  * only ever DENY the transfer.
@@ -201,8 +225,9 @@ export function acceptanceSeatRefusalHint(
       return (
         ` — the recorded author's session has ended (sessionState: '${resolution.authorSessionState}'), so the ` +
         `seat MAY be inherited, but only by a session accountable for the plan: claim the plan's work-item ` +
-        `(work_items:claim on an item whose source plan is '${subjectPlan ?? 'this rubric’s subject plan'}') ` +
-        `and re-emit. If you ARE that author under a new sid (a relaunch/carry-respawn changed your ` +
+        `or its independent acceptance-drain work-item (work_items:claim; the latter is filed with ` +
+        `payload.acceptanceDrainPlan for '${subjectPlan ?? 'this rubric’s subject plan'}') and re-emit. ` +
+        `If you ARE that author under a new sid (a relaunch/carry-respawn changed your ` +
         `PAPERCUSP_SID), coord:rebind-identity { from: '${authorId ?? 'the author'}' } remains the correct ` +
         `recovery and this guard walks its audited trail. Do NOT reach for it as an unrelated PEER just to pass ` +
         `this check: it migrates the dead author's whole owner-keyed surface set (armed loops, claims, file ` +

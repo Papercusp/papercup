@@ -13,11 +13,7 @@ import { describe, it, expect } from 'vitest';
 import type { WorkItem } from '../work-items';
 import type { ClaimSpec } from './claim-spec';
 import { matchesWorkItemClaimSpec } from './claim-spec-match';
-import {
-  buildP2pLaneFence,
-  P2P_LANE_EXCLUSION_TERMS,
-  P2P_LANE_REJECTED_ANTI_TERMS,
-} from './p2p-lane-fence';
+import { buildP2pLaneFence, P2P_LANE_EXCLUSION_TERMS, P2P_LANE_REJECTED_ANTI_TERMS } from './p2p-lane-fence';
 
 function issueItem(overrides: Partial<WorkItem> & Pick<WorkItem, 'id' | 'title'>): WorkItem {
   return {
@@ -90,7 +86,7 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
     // that leaked — genuine wire work (replicate()/protomux core pairing) that NO
     // transport term above matched. Asserting these here is what proves the newly
     // added terms actually fence, rather than merely sitting in the array.
-    'Shared peer socket + per-harness Corestores: the 2nd store\'s replicate() clobbers the 1st\'s protomux hypercore/alpha pairing, making its COLD cores permanently unservable',
+    "Shared peer socket + per-harness Corestores: the 2nd store's replicate() clobbers the 1st's protomux hypercore/alpha pairing, making its COLD cores permanently unservable",
     'hyperblobs range read returns a short buffer past the snapshot boundary',
     'hyperdrive mirror stalls when the source core is sparse',
     'autobase linearization diverges after a writer is removed',
@@ -129,33 +125,33 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
    * are the expensive, rare, usually-wrong edit — so pin those and only those.
    */
   const BASELINE_TERMS_MUST_REMAIN = [
-        'p2p',
-        'shared-hive',
-        'federation',
-        // EI-13285 — added by a peer concurrently with WI-6995. `word` matches
-        // exact words, not stems, so 'federation' never matched the inflected
-        // "Federated"; measured against the live backlog, every hit is genuine
-        // federation-lane work, so this is a widening of the SAME term rather
-        // than a new homonym risk (contrast the anti-terms below).
-        'federated',
-        // WI-7184 — the verb inflections. EI-13285 named this class and stopped
-        // one inflection short, so it re-opened for "federate" and leaked
-        // EI-19328707367010003 into a single-box drain fleet. All three land
-        // together so the federat- stem is CLOSED, not widened a fourth time;
-        // pinning each individually means a partial revert fails loudly.
-        'federate',
-        'federates',
-        'federating',
-        'holepunch',
-        'steering lease',
-        'replication',
-        'swarm',
-        'hyperswarm',
-        'hyperdht',
-        'hyperbee',
-        'dht',
-        'udx',
-        'relay',
+    'p2p',
+    'shared-hive',
+    'federation',
+    // EI-13285 — added by a peer concurrently with WI-6995. `word` matches
+    // exact words, not stems, so 'federation' never matched the inflected
+    // "Federated"; measured against the live backlog, every hit is genuine
+    // federation-lane work, so this is a widening of the SAME term rather
+    // than a new homonym risk (contrast the anti-terms below).
+    'federated',
+    // WI-7184 — the verb inflections. EI-13285 named this class and stopped
+    // one inflection short, so it re-opened for "federate" and leaked
+    // EI-19328707367010003 into a single-box drain fleet. All three land
+    // together so the federat- stem is CLOSED, not widened a fourth time;
+    // pinning each individually means a partial revert fails loudly.
+    'federate',
+    'federates',
+    'federating',
+    'holepunch',
+    'steering lease',
+    'replication',
+    'swarm',
+    'hyperswarm',
+    'hyperdht',
+    'hyperbee',
+    'dht',
+    'udx',
+    'relay',
     'pot-git',
     'ref-announce',
     'duplex',
@@ -185,33 +181,81 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
    * fleet that needs it.
    */
   const mustStayAdmitted: Array<[string, string]> = [
-    ['rig — a perf test rig, not the federation rig', 'perf-regression-rig.test.ts TS2345 PerfRegressionMetrics arg mismatch'],
-    ['rig — a desktop build rig', 'Desktop/rig builds report sha:null at /api/health — nothing asserts a test rig runs a real build'],
-    ['tower — the local box, the most on-lane subject there is', 'Tower load rising unbounded (142→190→240 on 112 cores) — heavy-command admission now rejecting agents'],
-    ['announce — publish-guard, not the p2p announce leg', "publish-guard's G-10 secrets scan is unbounded in memory AND spawns one git per blob"],
-    ['announce — identity resolution, not the wire', 'A transient identity-resolution failure permanently disables presence announce for the whole process'],
+    [
+      'rig — a perf test rig, not the federation rig',
+      'perf-regression-rig.test.ts TS2345 PerfRegressionMetrics arg mismatch',
+    ],
+    [
+      'rig — a desktop build rig',
+      'Desktop/rig builds report sha:null at /api/health — nothing asserts a test rig runs a real build',
+    ],
+    [
+      'tower — the local box, the most on-lane subject there is',
+      'Tower load rising unbounded (142→190→240 on 112 cores) — heavy-command admission now rejecting agents',
+    ],
+    [
+      'announce — publish-guard, not the p2p announce leg',
+      "publish-guard's G-10 secrets scan is unbounded in memory AND spawns one git per blob",
+    ],
+    [
+      'announce — identity resolution, not the wire',
+      'A transient identity-resolution failure permanently disables presence announce for the whole process',
+    ],
     // WI-7184 — `hive` is the most tempting anti-term and the most damaging: this
     // pot runs a LOCAL coding hive as well as the federated shared-hive.
-    ['hive — the local coding hive, not the federated one', 'generic-hive bee completes + posts a completion but never calls work_items:complete'],
-    ['hive — a mem0 recall scope, not the wire', 'initialize/harness recall pool: harness-scoped memories are systematically outranked by hive+user memories'],
+    [
+      'hive — the local coding hive, not the federated one',
+      'generic-hive bee completes + posts a completion but never calls work_items:complete',
+    ],
+    [
+      'hive — a mem0 recall scope, not the wire',
+      'initialize/harness recall pool: harness-scoped memories are systematically outranked by hive+user memories',
+    ],
     // EI-19928699840338901 / P-008 — the SUBSTRATE tranche. Every title below is a
     // REAL open item measured on 2026-08-09 that the proposed widening would have
     // hidden. They are here because this repo bundles a corestore seed into the
     // desktop release, so the storage vocabulary also names ordinary single-box
     // release-engineering work.
-    ['corestore — a git-history purge, not the wire', 'papercusp-desktop submodule: 77 seed corestore blobs (~1.5GB, 50–99MB each) were git-TRACKED — untracked+gitignored 2026-07-05; history purge still needed'],
-    ['corestore — a single-process advisory lock, executable on one box', 'Add single-instance advisory lock to own-log Corestore (prevents concurrent-process key contention)'],
-    ['corestore — the item\'s OWN motivating critical, and it is a LOCAL deadlock', 'Sparse seed cuts are PERMANENTLY deadlocked: bg-host holds the corestore WRITE lock while getBootedHarness reports booted:false for that same hive, so the cut can neither open the store itself nor find anyone to ask'],
-    ['seed cut — the release pipeline, not the wire', 'P-014: take a REAL release seed cut with the DEFAULTS and MEASURE coreSparseFrom > 0 + the size drop toward ~40MB'],
+    [
+      'corestore — a git-history purge, not the wire',
+      'papercusp-desktop submodule: 77 seed corestore blobs (~1.5GB, 50–99MB each) were git-TRACKED — untracked+gitignored 2026-07-05; history purge still needed',
+    ],
+    [
+      'corestore — a single-process advisory lock, executable on one box',
+      'Add single-instance advisory lock to own-log Corestore (prevents concurrent-process key contention)',
+    ],
+    [
+      "corestore — the item's OWN motivating critical, and it is a LOCAL deadlock",
+      'Sparse seed cuts are PERMANENTLY deadlocked: bg-host holds the corestore WRITE lock while getBootedHarness reports booted:false for that same hive, so the cut can neither open the store itself nor find anyone to ask',
+    ],
+    [
+      'seed cut — the release pipeline, not the wire',
+      'P-014: take a REAL release seed cut with the DEFAULTS and MEASURE coreSparseFrom > 0 + the size drop toward ~40MB',
+    ],
     // `peer` is the worst of the tranche: 3 of its 4 critical/major hits are ordinary
     // single-box bugs whose titles just use the word for ANOTHER AGENT.
-    ['peer — another AGENT, not a network peer', "`WHERE attempts = 0` silently excludes the 99.8% of rows where attempts IS NULL — a peer's committed drop rested on 30 of 17,318 rows and inverted its conclusion"],
-    ['peer — another AGENT, not a network peer', "facts:assert cap-eviction reports the loss to the EVICTOR (who cannot fix it) and never to the fact's AUTHOR (who can) — a peer's verified fact silently vanishes"],
-    ['peer — another AGENT, not a network peer', 'PEER agents\' session turns crowd the durable answer out of the corpus injection budget'],
+    [
+      'peer — another AGENT, not a network peer',
+      "`WHERE attempts = 0` silently excludes the 99.8% of rows where attempts IS NULL — a peer's committed drop rested on 30 of 17,318 rows and inverted its conclusion",
+    ],
+    [
+      'peer — another AGENT, not a network peer',
+      "facts:assert cap-eviction reports the loss to the EVICTOR (who cannot fix it) and never to the fact's AUTHOR (who can) — a peer's verified fact silently vanishes",
+    ],
+    [
+      'peer — another AGENT, not a network peer',
+      "PEER agents' session turns crowd the durable answer out of the corpus injection budget",
+    ],
     // `replicate` is the DEBUGGING VERB here — the stem-closing analogy to federate
     // does not transfer, because unlike "federate" this word has two meanings.
-    ['replicate — the debugging verb, not the transport', 'A fleet-scoped windDown:true miss is NOT necessarily a spec bug — before assuming so, replicate the floor set'],
-    ['replicates — the debugging verb, not the transport', "[verified] the '~1s first-arm spike replicates 2/2 BOOTS' claim was wrong as stated"],
+    [
+      'replicate — the debugging verb, not the transport',
+      'A fleet-scoped windDown:true miss is NOT necessarily a spec bug — before assuming so, replicate the floor set',
+    ],
+    [
+      'replicates — the debugging verb, not the transport',
+      "[verified] the '~1s first-arm spike replicates 2/2 BOOTS' claim was wrong as stated",
+    ],
   ];
 
   it.each(mustStayAdmitted)('does NOT over-fence (%s)', (_why, title) => {
@@ -245,9 +289,18 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
   // pin the stem CLOSED — a partial revert of any one inflection fails here with
   // the title that actually leaked, not an abstract assertion.
   it.each([
-    ['federate (EI-19328707367010003, the reported leak)', 'Remote work-offers federate with HOURS of latency and arrive in bursts, so they are DOA against the 60-minute spawn-request honor window'],
-    ['federate (WI-5631)', 'Rig frames federate the REAL papercusp home-harness backlog → frame-internal event-loop starvation'],
-    ['federates (EI-19333624101736074)', "A delegated spawn's SUCCESS never federates — local_disposition is host-local and no receipt is emitted"],
+    [
+      'federate (EI-19328707367010003, the reported leak)',
+      'Remote work-offers federate with HOURS of latency and arrive in bursts, so they are DOA against the 60-minute spawn-request honor window',
+    ],
+    [
+      'federate (WI-5631)',
+      'Rig frames federate the REAL papercusp home-harness backlog → frame-internal event-loop starvation',
+    ],
+    [
+      'federates (EI-19333624101736074)',
+      "A delegated spawn's SUCCESS never federates — local_disposition is host-local and no receipt is emitted",
+    ],
     ['federating (WI-183)', 'Hive peer silently stops federating after restart: swarm re-peers but state diverges'],
   ])('fences the %s inflection', (_why, title) => {
     expect(matchesWorkItemClaimSpec(issueItem({ id: 'WI-fed', title }), specWithFence())).toBe(false);
@@ -257,6 +310,59 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
     const { validateClaimSpec } = await import('./claim-spec');
     const v = validateClaimSpec(specWithFence());
     expect(v.ok, `spec invalid: ${v.errors.join('; ')}`).toBe(true);
+  });
+});
+
+describe('WI-5280 — buildP2pLaneFence also fences structural source-plan provenance', () => {
+  it('excludes a neutral-title item from the exact P2P source-plan family that leaked through revision 12', () => {
+    const item = issueItem({
+      id: 'WI-2144476',
+      title: 'F4 — Make unapplied writes durably recoverable',
+      summary: 'Replace retry exhaustion with a durable recovery path.',
+      sourcePlanSlug: 'p2p-public-release-endgame-2026-09-01',
+    });
+
+    expect(matchesWorkItemClaimSpec(item, specWithFence())).toBe(false);
+  });
+
+  it.each(P2P_LANE_EXCLUSION_TERMS.filter((term) => !term.includes(' ')))(
+    'excludes a neutral item whose source-plan slug carries the vetted term %s',
+    (term) => {
+      const item = issueItem({
+        id: 'WI-plan-term',
+        title: 'Implement the next approved milestone',
+        summary: 'The acceptance criteria are already recorded on the plan.',
+        sourcePlanSlug: `release-${term}-lane-2026-09-04`,
+      });
+
+      expect(matchesWorkItemClaimSpec(item, specWithFence())).toBe(false);
+    },
+  );
+
+  it.each([
+    ['unplanned work', null],
+    ['the current non-P2P fleet naming convention', 'nonp2p-feature-change-drain-2026-09-04-v3'],
+    ['an unrelated local plan', 'operator-dashboard-pagination-2026-09-04'],
+  ])('still admits %s', (_label, sourcePlanSlug) => {
+    const item = issueItem({
+      id: 'WI-plan-control',
+      title: 'Fix dashboard pagination off-by-one',
+      summary: 'The final row is skipped when the page is full.',
+      sourcePlanSlug,
+    });
+
+    expect(matchesWorkItemClaimSpec(item, specWithFence())).toBe(true);
+  });
+
+  it('does not promote rejected anti-terms into structural plan exclusions', () => {
+    const item = issueItem({
+      id: 'WI-plan-antiterm',
+      title: 'Fix local agent lifecycle accounting',
+      summary: 'The local coding session is otherwise healthy.',
+      sourcePlanSlug: 'local-hive-agent-lifecycle-2026-09-04',
+    });
+
+    expect(matchesWorkItemClaimSpec(item, specWithFence())).toBe(true);
   });
 });
 
@@ -308,7 +414,8 @@ describe('EI-20240035377782004 — buildP2pLaneFence also fences on SUMMARY, not
       // NOTE: deliberately avoids the real exclusion term "federated" (unlike "hive",
       // which is a REJECTED anti-term) — this is testing the anti-term, not accidentally
       // tripping a genuine one.
-      summary: 'harness-scoped memories are systematically outranked by hive+user memories — a local coding hive issue.',
+      summary:
+        'harness-scoped memories are systematically outranked by hive+user memories — a local coding hive issue.',
     });
     expect(matchesWorkItemClaimSpec(item, specWithFence())).toBe(true);
   });

@@ -18,7 +18,8 @@
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
@@ -27,9 +28,11 @@ import {
   resolveAstGrepBin,
 } from './ast-grep-facade.ts';
 import { isTrustworthyEmpty } from './contracts.ts';
+import { runAstGrepFacadeLeg } from './code-intel-bench.ts';
 
 const provisioned = resolveAstGrepBin() !== null;
 const maybe = provisioned ? describe : describe.skip;
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 let dir: string;
 let file: string;
@@ -172,4 +175,17 @@ maybe('rewrite PREVIEW leaves the file byte-identical', () => {
     // A refusal must never read as "no matches".
     expect(isTrustworthyEmpty(answer)).toBe(true);
   });
+});
+
+maybe('ast-grep acceptance bench leg', () => {
+  it('grades a real repository structural call and a byte-identical rewrite preview', async () => {
+    const report = await runAstGrepFacadeLeg({ repoRoot: REPO_ROOT });
+
+    expect(report.search.error).toBeNull();
+    expect(report.searchGrade.correct).toBe(true);
+    expect(report.preview.error).toBeNull();
+    expect(report.previewGrade.correct).toBe(true);
+    expect(report.sourceByteIdentical).toBe(true);
+    expect(report.correct).toBe(true);
+  }, 120_000);
 });

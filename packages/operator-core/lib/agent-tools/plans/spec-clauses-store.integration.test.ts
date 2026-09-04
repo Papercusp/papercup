@@ -48,6 +48,10 @@ const MIGRATION_930 = path.resolve(
   here,
   '../../../../../libs/papercusp/libs/db/sql/930-spec-clause-falsifier-null-safe.sql',
 );
+const MIGRATION_1111 = path.resolve(
+  here,
+  '../../../../../libs/papercusp/libs/db/sql/1111-acceptance-bar-contract-seed.sql',
+);
 const CTX = {
   isSuperuser: true,
   uiClientId: 'su-spec-integration',
@@ -89,6 +93,7 @@ beforeAll(async () => {
       workspace_id text NOT NULL,
       harness_slug text NOT NULL,
       plan_slug text NOT NULL,
+      template text,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
     );
     CREATE TABLE harness_shared.plan_items (
@@ -125,6 +130,8 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, MIGRATION_929);
   await applyMigrationForTest(db.sql, MIGRATION_930);
   await applyMigrationForTest(db.sql, MIGRATION_930);
+  await applyMigrationForTest(db.sql, MIGRATION_1111);
+  await applyMigrationForTest(db.sql, MIGRATION_1111);
 }, 90_000);
 
 afterAll(async () => {

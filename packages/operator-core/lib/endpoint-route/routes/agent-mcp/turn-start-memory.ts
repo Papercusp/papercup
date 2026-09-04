@@ -165,24 +165,43 @@ const turnStartMemory = defineTool({
 
       const controlPromise = (async (): Promise<string> => {
         try {
-          const { consumePendingControlTransition, renderControlTransitionContext } = await import(
+          const {
+            preparePendingControlTransition,
+            acknowledgeControlTransition,
+            renderControlTransitionContext,
+          } = await import(
             '../../../agent-tools/coordination/control-anchor'
           );
-          const transition = await consumePendingControlTransition(owner, workspaceId);
+          const transition = await preparePendingControlTransition(owner, workspaceId);
           if (!transition) return '';
           const ctrl = renderControlTransitionContext(transition);
           // identities-v1 P-012: a stack mutation (a fleet posture attached / swapped /
           // detached; mode-axis layers once P-021 lands) rides THIS transition. The
           // layer text is a SEPARATE block after the `⟦CTRL⟧` line — outside the
           // anchor's 384-token budget — and degrades to nothing on any failure.
+          // The CTRL generation is acknowledged only after this block has rendered;
+          // a failed layer render therefore remains pending for the next turn.
           let stack = '';
+          let stackRendered = true;
           try {
-            const { renderStackTransitionContext } = await import('../../../stack-binding-channel');
-            stack = await renderStackTransitionContext(transition);
+            const { renderStackTransitionContextResult } = await import('../../../stack-binding-channel');
+            const rendered = await renderStackTransitionContextResult(transition);
+            stack = rendered.text;
+            stackRendered = rendered.rendered;
           } catch {
             /* the CTRL line is never lost to a stack-render fault */
+            stackRendered = false;
           }
-          return stack ? `${ctrl}\n\n${stack}` : ctrl;
+          const text = stack ? `${ctrl}\n\n${stack}` : ctrl;
+          if (stackRendered && Number.isSafeInteger(transition.generation)) {
+            try {
+              await acknowledgeControlTransition(owner, workspaceId, transition.generation);
+            } catch {
+              // Preserve the assembled prompt even if the watermark write fails.
+              // The pending generation will be retried on the next turn.
+            }
+          }
+          return text;
         } catch {
           return ''; // migration/operator skew must never block the prompt
         }

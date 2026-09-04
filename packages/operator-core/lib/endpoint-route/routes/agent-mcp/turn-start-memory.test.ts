@@ -21,7 +21,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const {
   buildMemoryContextBlockMock,
-  consumePendingControlTransitionMock,
+  preparePendingControlTransitionMock,
+  acknowledgeControlTransitionMock,
+  renderStackTransitionContextResultMock,
   detectHarnessSlugSyncMock,
   resolveAgentSignalsMock,
   recordInjectionCoverageMock,
@@ -30,7 +32,9 @@ const {
   buildTurnStartOrientationBlockMock,
 } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
-  consumePendingControlTransitionMock: vi.fn(),
+  preparePendingControlTransitionMock: vi.fn(),
+  acknowledgeControlTransitionMock: vi.fn(),
+  renderStackTransitionContextResultMock: vi.fn(),
   detectHarnessSlugSyncMock: vi.fn(),
   resolveAgentSignalsMock: vi.fn(),
   recordInjectionCoverageMock: vi.fn(),
@@ -47,8 +51,12 @@ vi.mock('../../../memory/injection', () => ({
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'u-1' }) }));
 vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
-  consumePendingControlTransition: consumePendingControlTransitionMock,
+  preparePendingControlTransition: preparePendingControlTransitionMock,
+  acknowledgeControlTransition: acknowledgeControlTransitionMock,
   renderControlTransitionContext: (t: unknown) => `CTRL:${String((t as { kind?: string }).kind)}`,
+}));
+vi.mock('../../../stack-binding-channel', () => ({
+  renderStackTransitionContextResult: renderStackTransitionContextResultMock,
 }));
 vi.mock('../../../memory/detect-harness-slug', () => ({
   detectHarnessSlugSync: detectHarnessSlugSyncMock,
@@ -87,7 +95,9 @@ const post = async (body: unknown): Promise<{ ok: boolean; text: string }> => {
 
 beforeEach(() => {
   buildMemoryContextBlockMock.mockReset().mockResolvedValue('MEM-BLOCK');
-  consumePendingControlTransitionMock.mockReset().mockResolvedValue(null);
+  preparePendingControlTransitionMock.mockReset().mockResolvedValue(null);
+  acknowledgeControlTransitionMock.mockReset().mockResolvedValue(true);
+  renderStackTransitionContextResultMock.mockReset().mockResolvedValue({ text: '', rendered: true });
   detectHarnessSlugSyncMock.mockReset().mockReturnValue({ slug: null, source: null });
   resolveAgentSignalsMock.mockReset().mockResolvedValue(undefined);
   recordInjectionCoverageMock.mockReset().mockResolvedValue(undefined);
@@ -177,10 +187,39 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
   it('CTRL is delivered even for a prompt carrying no recall signal at all', async () => {
     // A mode/loop/carry/route transition must take effect at the very next
     // boundary, so it is deliberately NOT subject to any prompt gating.
-    consumePendingControlTransitionMock.mockResolvedValue({ kind: 'mode' });
+    preparePendingControlTransitionMock.mockResolvedValue({ kind: 'mode', generation: 1 });
     buildMemoryContextBlockMock.mockResolvedValue(null);
     const out = await post({ owner: 'sess-1', prompt: 'ok' });
     expect(out.text).toBe('CTRL:mode');
+  });
+
+  it('retries a failed stack render, then acknowledges the generation exactly once after recovery', async () => {
+    buildMemoryContextBlockMock.mockResolvedValue(null);
+    const transition = { kind: 'mode', generation: 7 };
+    let pending = true;
+    preparePendingControlTransitionMock.mockImplementation(async () => (pending ? transition : null));
+    renderStackTransitionContextResultMock
+      .mockResolvedValueOnce({ text: '', rendered: false })
+      .mockResolvedValueOnce({ text: 'STACK-RECOVERED', rendered: true });
+    acknowledgeControlTransitionMock.mockImplementation(async () => {
+      pending = false;
+      return true;
+    });
+
+    const failed = await post({ owner: 'sess-1', prompt: 'first attempt' });
+    expect(failed.ok).toBe(true);
+    expect(failed.text).toBe('CTRL:mode');
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+
+    const recovered = await post({ owner: 'sess-1', prompt: 'retry' });
+    expect(recovered.text).toBe('CTRL:mode\n\nSTACK-RECOVERED');
+    expect(acknowledgeControlTransitionMock).toHaveBeenCalledTimes(1);
+    expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith('sess-1', 'ws-test', 7);
+
+    const settled = await post({ owner: 'sess-1', prompt: 'after recovery' });
+    expect(settled.text).toBe('');
+    expect(preparePendingControlTransitionMock).toHaveBeenCalledTimes(3);
+    expect(renderStackTransitionContextResultMock).toHaveBeenCalledTimes(2);
   });
 
   it('fail-soft: a throwing memory pipeline never surfaces an error into the turn', async () => {

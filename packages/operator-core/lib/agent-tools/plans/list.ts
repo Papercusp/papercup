@@ -30,10 +30,14 @@ import {
   IMPORTANCE_LEVELS,
   ITEM_STATUSES,
   PLAN_STATUSES,
+  derivePlanLifecycle,
   parsePlan,
+  reconcilePlanLifecycle,
   type Importance,
   type ItemStatus,
   type PlanItem,
+  type PlanLifecycleDisposition,
+  type PlanLifecycleVerdict,
 } from './parser';
 import { reconcileStartStatus } from './plan-start-state';
 import { shapePlansList } from './list-shape';
@@ -64,6 +68,7 @@ const PLANS_LIST_SOFT_TTL_MS = 45_000;
  */
 const GROUP_BY_KEYS = [
   'status',
+  'lifecycleDisposition',
   'harness',
   'template',
   'owner',
@@ -79,7 +84,14 @@ type GroupByKey = (typeof GROUP_BY_KEYS)[number];
 
 /** Dimensions that need per-plan item resolution — everything else can run
  *  compact (no itemCounts pass) when the caller wants counts only. */
-const GROUP_KEYS_NEEDING_ITEMS = new Set<GroupByKey>(['importance']);
+const GROUP_KEYS_NEEDING_ITEMS = new Set<GroupByKey>(['importance', 'lifecycleDisposition']);
+
+const LIFECYCLE_DISPOSITIONS = [
+  'abstained',
+  'agreed',
+  'contradicted',
+  'unrecognized',
+] as const satisfies readonly PlanLifecycleDisposition[];
 
 const argsSchema = z.object({
   status: z
@@ -87,6 +99,12 @@ const argsSchema = z.object({
     .optional()
     .describe(
       'Filter by plan-level status. Legacy plans (no frontmatter) report status "draft"; use includeLegacy + the isLegacy flag to find them.',
+    ),
+  lifecycleDisposition: z
+    .enum([...LIFECYCLE_DISPOSITIONS])
+    .optional()
+    .describe(
+      'Filter by the read-time reconciliation between stored plan status and the item graph. `contradicted` is the terminal-debt queue (for example shipped with live items). Forces item resolution even with compact:true.',
     ),
   includeArchived: z.boolean().optional().describe('Include plans under docs/plans/archive/. Default false.'),
   includeLegacy: z.boolean().optional().describe('Include plans without valid frontmatter. Default true.'),
@@ -169,13 +187,13 @@ const argsSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      'Skip per-plan item-state resolution — omit itemCounts + maxImportance for a smaller, cheaper result (keeps slug/title/status/updated/created/owner/template/nextAction/harness). Use for a fast directory scan; drop it when you need effective item counts.',
+      'Skip per-plan item-state resolution — omit itemCounts + maxImportance + lifecycle for a smaller, cheaper result (keeps slug/title/status/updated/created/owner/template/nextAction/harness). Use for a fast directory scan; lifecycleDisposition filters/groups override compact because they need the item graph.',
     ),
   groupBy: z
     .enum([...GROUP_BY_KEYS] as [GroupByKey, ...GroupByKey[]])
     .optional()
     .describe(
-      'Aggregate the matched plans into { key, count } groups (returned as `groups`, alongside the rows) — the counts/group-by read that otherwise gets hand-written as raw SQL. Dimensions: status, harness, template, owner, initiative, origin, startStatus, scheduled, importance (hottest OPEN item), createdDay/updatedDay (UTC day buckets). Aggregates over EVERY row the other filters matched; `limit` then bounds only the returned rows, never the counts.',
+      'Aggregate the matched plans into { key, count } groups (returned as `groups`, alongside the rows) — the counts/group-by read that otherwise gets hand-written as raw SQL. Dimensions: status, lifecycleDisposition (stored status vs item graph), harness, template, owner, initiative, origin, startStatus, scheduled, importance (hottest OPEN item), createdDay/updatedDay (UTC day buckets). Aggregates over EVERY row the other filters matched; `limit` then bounds only the returned rows, never the counts.',
     ),
   aggregateOnly: z
     .boolean()
@@ -217,6 +235,12 @@ type ListRow = {
   archived: boolean;
   isLegacy: boolean;
   itemCounts: Partial<Record<(typeof ITEM_STATUSES)[number] | 'unknown', number>> | null;
+  /** Compact read-time reconciliation. Null only for compact or legacy rows. */
+  lifecycle: {
+    verdict: PlanLifecycleVerdict;
+    disposition: PlanLifecycleDisposition;
+    contradiction: { claim: string; evidence: string } | null;
+  } | null;
   nextAction: string | null;
   /**
    * Resolved harness slug per
@@ -278,6 +302,7 @@ export type PlanGroup = { key: string | null; count: number };
 function groupValue(
   row: {
     status: string;
+    lifecycle: ListRow['lifecycle'];
     harness: string;
     template: string | null;
     owner: string | null;
@@ -294,6 +319,8 @@ function groupValue(
   switch (key) {
     case 'status':
       return row.status;
+    case 'lifecycleDisposition':
+      return row.lifecycle?.disposition ?? null;
     case 'harness':
       return row.harness;
     case 'template':
@@ -402,9 +429,9 @@ export async function resolveFanOutPlanScopes(
 export default defineTool({
   name: 'plans:list',
   description:
-    'List SU plans from the PG-canonical plan store. One row per plan with title, status, item counts by effectiveStatus, and the ## Now next-action line; groupBy returns { key, count } aggregates instead of hand-written SQL. Legacy plans (no frontmatter) surface as status="draft" (flagged via isLegacy).',
+    'List SU plans from the PG-canonical plan store. One row per plan with title, stored status, read-time lifecycle reconciliation, item counts by effectiveStatus, and the ## Now next-action line; groupBy returns { key, count } aggregates instead of hand-written SQL. Legacy plans (no frontmatter) surface as status="draft" (flagged via isLegacy).',
   guidance: {
-    when: 'A directory of plans — "what plans exist / are active", or the entry point before plans:get. For RECENT plans, pass updatedSince/createdSince (ISO or "4d") + order:"updated" + limit — these filter SERVER-SIDE (PG), so do NOT fetch every plan and post-filter (that returns a huge result). For COUNTS ("how many plans by status / per harness / created per day"), pass groupBy (+ aggregateOnly for counts only) rather than hand-writing SQL over harness_plans — this read always applies the workspace+harness scope a raw predicate silently omits. For a fast scan that skips item-count resolution, add compact:true.',
+    when: 'A directory of plans — "what plans exist / are active", the terminal-debt queue (`lifecycleDisposition:"contradicted"`), or the entry point before plans:get. For RECENT plans, pass updatedSince/createdSince (ISO or "4d") + order:"updated" + limit — these filter SERVER-SIDE (PG), so do NOT fetch every plan and post-filter (that returns a huge result). For COUNTS ("how many plans by status / lifecycle disposition / harness / created per day"), pass groupBy (+ aggregateOnly for counts only) rather than hand-writing SQL over harness_plans — this read always applies the workspace+harness scope a raw predicate silently omits. For a fast scan that skips item-count and lifecycle resolution, add compact:true.',
     notWhen:
       'You already know the plan slug and want full contents — call plans:get directly. For a plan-shaped aggregate use groupBy here; drop to dev:pg_query only for a genuinely ad-hoc read this tool exposes no arg for (a join across other tables, an item-level roll-up). No free-text `q`/`query` filter here — use plans:search { query } for keyword search.',
     chaining:
@@ -435,7 +462,7 @@ export default defineTool({
     itemKeyField: 'slug',
     orderKey: 'updated',
     scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? '',
-    schemaVersion: 'plans-list-v1',
+    schemaVersion: 'plans-list-v2',
     maxDeltaAge: 5 * 60_000,
   },
   // context-trimming-tiers P-021: trimmed/standard sessions get projected rows
@@ -454,9 +481,14 @@ export default defineTool({
     // P-005 aggregate path: `aggregateOnly` is only meaningful with a dimension.
     const groupBy = args.groupBy;
     const aggregateOnly = args.aggregateOnly === true && !!groupBy;
+    const needsLifecycle = Boolean(args.lifecycleDisposition || groupBy === 'lifecycleDisposition');
     // A counts-only read skips the (expensive) per-plan item-state pass unless the
-    // dimension itself is item-derived.
-    const compact = args.compact === true || (aggregateOnly && !(groupBy && GROUP_KEYS_NEEDING_ITEMS.has(groupBy)));
+    // dimension/filter itself is item-derived. A lifecycle request wins over an
+    // explicit compact:true because filtering without deriving would fabricate
+    // an empty result.
+    const compact = needsLifecycle
+      ? false
+      : args.compact === true || (aggregateOnly && !(groupBy && GROUP_KEYS_NEEDING_ITEMS.has(groupBy)));
     // EI-19932192274787948: `status` (and `includeLegacy:false`) are filtered
     // in JS AFTER the SQL fetch (below — the `draft` status must also match a
     // NULL column for legacy plans, which the SQL `status = $1` filter used by
@@ -467,7 +499,7 @@ export default defineTool({
     // well-formed, plausible, WRONG "complete" answer. Skip the limit pushdown
     // whenever a JS-side post-filter could still drop rows; `limited` below
     // (computed AFTER the JS filters run) re-applies the cap correctly.
-    const hasJsPostFilter = Boolean(args.status) || !includeLegacy;
+    const hasJsPostFilter = Boolean(args.status || args.lifecycleDisposition) || !includeLegacy;
     // Server-side recency/order/limit (pushed into the SQL, not post-filtered).
     // With `groupBy`, `limit` is NOT pushed down: the aggregate must see every
     // matched row, so the cap applies to the returned rows only (below).
@@ -511,6 +543,7 @@ export default defineTool({
     // two `4d` calls share one entry within the TTL window).
     const cacheKey = {
       status: args.status ?? null,
+      lifecycleDisposition: args.lifecycleDisposition ?? null,
       includeArchived,
       includeLegacy,
       includeInstances,
@@ -684,11 +717,15 @@ export default defineTool({
 
             const slug = row.planSlug;
             const triggerSources = derivePlanTriggerSources(row);
+            // No projected status (incl. legacy/unparseable plans) → 'draft'.
+            const status = row.status ?? 'draft';
 
             let itemCounts: ListRow['itemCounts'] = null;
             let maxImportance: Importance | null = null;
+            let lifecycle: ListRow['lifecycle'] = null;
             if (!compact && !row.isLegacy) {
-              const { items } = applyPlanItemBlocks(resolveEffectiveStatusForItems(itemsForRow(row)).items, (id) =>
+              const planItems = itemsForRow(row);
+              const { items } = applyPlanItemBlocks(resolveEffectiveStatusForItems(planItems).items, (id) =>
                 allBlocked.get(planItemRef(slug, id)),
               );
               const counts: Record<string, number> = {};
@@ -704,11 +741,21 @@ export default defineTool({
                 }
               }
               itemCounts = counts;
+
+              // The directory now exposes the same pure item-graph/status
+              // reconciliation as plans:get. Keep this list payload compact:
+              // counts already ride in itemCounts, while the full explanatory
+              // text and signal provenance remain available from plans:get.
+              const reconciled = reconcilePlanLifecycle(status, derivePlanLifecycle(planItems));
+              lifecycle = {
+                verdict: reconciled.derived.verdict,
+                disposition: reconciled.disposition,
+                contradiction: reconciled.contradiction,
+              };
             }
 
-            // No projected status (incl. legacy/unparseable plans) → 'draft'.
-            const status = row.status ?? 'draft';
             if (args.status && status !== args.status) continue;
+            if (args.lifecycleDisposition && lifecycle?.disposition !== args.lifecycleDisposition) continue;
 
             const dedupKey = `${harnessSlug}:${slug}`;
             if (seenRowKeys.has(dedupKey)) continue;
@@ -727,6 +774,7 @@ export default defineTool({
               archived: row.archived,
               isLegacy: row.isLegacy,
               itemCounts,
+              lifecycle,
               nextAction: row.nowNext,
               harness: harnessSlug,
               // Self-heal the started/terminal invariant on read: a terminal plan

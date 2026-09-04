@@ -36,10 +36,12 @@ import {
   resolveCode2PromptBin,
   resolveRepomixBin,
 } from './packer-facade.ts';
+import { runPackerFacadeLeg } from './code-intel-bench.ts';
 
 const repomixProvisioned = resolveRepomixBin() !== null;
 const code2promptProvisioned = resolveCode2PromptBin() !== null;
 const maybeRepomix = repomixProvisioned ? describe : describe.skip;
+const maybePackers = repomixProvisioned && code2promptProvisioned ? describe : describe.skip;
 
 let dir: string;
 
@@ -148,4 +150,20 @@ maybeRepomix('a real pack carries real provenance', () => {
     // the absence above is a real exclusion and not an empty/failed pack.
     expect(full).toContain('alpha');
   }, 120_000);
+});
+
+maybePackers('Repomix + Code2Prompt acceptance bench leg', () => {
+  it('invokes both maintained engines and grades their real artifacts', async () => {
+    writeFileSync(join(dir, 'beta.ts'), 'export const beta = 222; // bench diff\n');
+    try {
+      const report = await runPackerFacadeLeg({ repoRoot: dir, include: ['*.ts'] });
+
+      expect(report.measurements.map((measurement) => measurement.engine)).toEqual(['repomix', 'code2prompt']);
+      expect(report.measurements.every((measurement) => measurement.result.artifact)).toBe(true);
+      expect(report.measurements.every((measurement) => measurement.grade.correct)).toBe(true);
+      expect(report.correct).toBe(true);
+    } finally {
+      git(['checkout', '--', 'beta.ts']);
+    }
+  }, 240_000);
 });

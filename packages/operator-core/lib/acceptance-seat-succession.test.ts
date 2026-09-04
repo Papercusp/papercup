@@ -27,13 +27,15 @@ const PLAN = 'portal-universal-bar-and-agent-roster-2026-08-31';
  */
 function fakeSql(rows: Array<{ feature_id: string | null }>) {
   const seen: string[] = [];
+  const seenFragments: string[] = [];
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
+    seenFragments.push(text);
     if (!text.includes('SELECT')) return { fragment: text, values };
     seen.push(text);
     return Promise.resolve(rows);
   }) as unknown as NonNullable<Parameters<typeof resolveAcceptanceSeatBasis>[2]>['sql'];
-  return { sql, seen };
+  return { sql, seen, seenFragments };
 }
 
 const endedAuthor = async () => 'ended';
@@ -71,6 +73,21 @@ describe('resolveAcceptanceSeatBasis', () => {
     await resolveAcceptanceSeatBasis(CALLER, PLAN, { sql, workspaceId: WORKSPACE });
     expect(seen[0]).toContain('workspace_id');
     expect(seen[0]).toContain('taken_by');
+  });
+
+  it('recognizes the canonical acceptance-drain work-item marker when plan rows are terminal', async () => {
+    const { sql, seenFragments } = fakeSql([{ feature_id: 'WI-acceptance-drain' }]);
+    await expect(
+      resolveAcceptanceSeatBasis(CALLER, PLAN, {
+        sql,
+        workspaceId: WORKSPACE,
+        harness: 'papercusp',
+      }),
+    ).resolves.toEqual({
+      workItemId: 'WI-acceptance-drain',
+      planSlug: PLAN,
+    });
+    expect(seenFragments.some((text) => text.includes("payload ->> 'acceptanceDrainPlan'"))).toBe(true);
   });
 
   it('returns the held item and its plan when one matches', async () => {

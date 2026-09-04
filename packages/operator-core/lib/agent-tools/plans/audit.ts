@@ -186,11 +186,11 @@ function resolveHeadSha(repoRoot: string): string | null {
 export default defineTool({
   name: 'plans:audit',
   description:
-    "Record one of two plan-audit phases. `completion` (default) checks changed items against resolving code/test citations; prior entries retain provenance. `activation` maps canonical session_turn refs to current P-NNN/D-NNN/sections, resolves every ref, refuses open gaps, and records the exact current revision. No parallel review tool exists.",
+    "Record one of two plan-audit phases. `completion` (default) checks changed items against resolving code/test citations; prior entries retain provenance. `activation` maps canonical session_turn refs to current P-NNN/D-NNN/sections, resolves every ref, and records the exact current revision. For post-epoch plans it also transactionally seeds one acceptance BAR per `## Requirements` R-N using the existing `### Bar-to-work map for this plan`; any parse/map/projection failure rolls the audit back. No parallel review tool exists.",
   guidance: {
-    when: "Before ready/active, read the COMPLETE source conversation (never memory/summary), map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions, then use `activation`. Before shipped, use `completion` and compare items to ACTUAL CODE.",
+    when: "Before ready/active, read the COMPLETE source conversation (never memory/summary), map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions; ensure every `## Requirements` R-N has exactly one row in Design's Bar-to-work map (optional third column: tree|deployed|live); then use `activation`. Before shipped, use `completion` and compare items to ACTUAL CODE.",
     returns:
-      "Activation returns { ok, phase:'activation', auditSeq, auditedPlanRevision:{id,seq,contentHash}, mappings, sourceRefsResolved }. Completion returns { ok, auditSeq, itemsAuditedThisPass, itemsCarriedForward, coverage, uncoveredItems }; when item-scoped validation problems occur in a mixed batch, valid entries are recorded and the result adds partial:true, problems, and rejectedItemIds so the caller can retry only those items. Batch-wide problems remain no-record.",
+      "Activation returns { ok, phase:'activation', auditSeq, auditedPlanRevision:{id,seq,contentHash}, mappings, sourceRefsResolved, barSeed? }. barSeed names the active rubric revision, barSetHash, BAR count, and projection-edge count; a named bar_* refusal means audit/rubric/projection writes all rolled back. Completion returns { ok, auditSeq, itemsAuditedThisPass, itemsCarriedForward, coverage, uncoveredItems }; when item-scoped validation problems occur in a mixed batch, valid entries are recorded and the result adds partial:true, problems, and rejectedItemIds so the caller can retry only those items. Batch-wide problems remain no-record.",
     notWhen:
       "Using completion phase mid-implementation. Grading against an acceptance rubric — scorecards:emit. Recording a decision — plans:add-decision. Activation auditing with unresolved/open mappings — repair the plan first.",
     chaining:
@@ -452,23 +452,30 @@ export default defineTool({
       // that re-records nothing, which is strictly worse than deriving no clauses.
       let derivedSpecClauses: Awaited<ReturnType<typeof persistDerivedDraftClauses>> | {
         error: string;
-      };
-      try {
-        derivedSpecClauses = await persistDerivedDraftClauses(
-          {
-            planSlug: args.slug,
-            ...(harnessSlug ? { harnessSlug } : {}),
-            mappings,
-            // Liveness: an empty read is UNKNOWN, and the deriver fails open on it
-            // (D-040's rule) — `setSpecClause` is the backstop that refuses a target the
-            // plan does not actually have.
-            planItems: await getPlanItemStatuses(args.slug),
-            actorId: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
-          },
-          setSpecClause,
-        );
-      } catch (error) {
-        derivedSpecClauses = { error: error instanceof Error ? error.message : String(error) };
+      } | null = null;
+      // Post-epoch plans already persisted their BAR-derived clause projections in
+      // recordCurrentActivationAudit's SAME transaction. Running the legacy mapper
+      // again would create a competing projection family from source-conversation
+      // M-NNN rows. Historical plans retain the old non-fatal behavior until P-010
+      // gives them an explicit cohort.
+      if (!recorded.barSeed) {
+        try {
+          derivedSpecClauses = await persistDerivedDraftClauses(
+            {
+              planSlug: args.slug,
+              ...(harnessSlug ? { harnessSlug } : {}),
+              mappings,
+              // Liveness: an empty read is UNKNOWN, and the deriver fails open on it
+              // (D-040's rule) — `setSpecClause` is the backstop that refuses a target the
+              // plan does not actually have.
+              planItems: await getPlanItemStatuses(args.slug),
+              actorId: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
+            },
+            setSpecClause,
+          );
+        } catch (error) {
+          derivedSpecClauses = { error: error instanceof Error ? error.message : String(error) };
+        }
       }
 
       // P-017: the UNDER-READ detector. Independently re-extracts requirement-shaped
@@ -582,6 +589,7 @@ export default defineTool({
         repairedOmissions: activation.repairedOmissions.length,
         rejectedOrSuperseded: activation.rejectedOrSuperseded.length,
         derivedSpecClauses,
+        ...(recorded.barSeed ? { barSeed: recorded.barSeed } : {}),
         underRead,
         sourceSpan,
       } };

@@ -114,6 +114,21 @@ function spec(filter: FilterNode): ClaimSpec {
   return s;
 }
 
+/** The raw MCP-authored form: validation expands the named macro into the exact
+ * filter persisted by scheduler:set_claim_spec and executed by get_next. */
+function p2pLaneMacroSpec(): ClaimSpec {
+  const v = validateClaimSpec({
+    specVersion: '1.0',
+    specId: 'p2p-lane-macro-structural-plan',
+    revision: 1,
+    view: { fence: 'p2p-lane' },
+    rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+  });
+  expect(v.ok, `spec invalid: ${v.errors.join('; ')}`).toBe(true);
+  if (!v.spec?.view.filter) throw new Error('p2p-lane macro did not expand into a filter');
+  return v.spec;
+}
+
 /** The JS-evaluator subject for a row with NO plan — the mirror of seedFeature({plan:null}). */
 function nullPlanSubject(id: string): ClaimSpecSubject {
   return {
@@ -153,9 +168,13 @@ beforeAll(async () => {
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
-  await db.sql.unsafe(`
+  await db.sql
+    .unsafe(
+      `
     ALTER TABLE harness_shared.work_items
-      ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`).simple();
+      ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`,
+    )
+    .simple();
 }, 90_000);
 afterAll(async () => {
   await db?.cleanup();
@@ -224,6 +243,33 @@ describe('EI-13306 — a `not`/`!=` fence over a NULLABLE field admits NULL rows
   });
 });
 
+describe('WI-5280 — raw p2p-lane macro fences source-plan provenance in both evaluators', () => {
+  it('excludes a neutral-title p2p-* plan while preserving NULL and nonp2p plan controls', async () => {
+    const p2pPlan = 'p2p-public-release-endgame-2026-09-01';
+    const nonP2pPlan = 'nonp2p-feature-change-drain-2026-09-04-v3';
+    await seedFeature('F-p2p-neutral', { plan: p2pPlan, createdTs: 10 });
+    await seedFeature('F-unplanned-control', { plan: null, createdTs: 20 });
+    await seedFeature('F-nonp2p-control', { plan: nonP2pPlan, createdTs: 30 });
+
+    const s = p2pLaneMacroSpec();
+
+    // Engine 1: the real SQL compiler. The oldest row is the leaked P2P item,
+    // so selecting both controls and then returning null proves it was fenced.
+    const first = await getNextWorkItem(s, BEE, { harness: H });
+    const second = await getNextWorkItem(s, { assignee: 'bee-2' }, { harness: H });
+    const third = await getNextWorkItem(s, { assignee: 'bee-3' }, { harness: H });
+    expect([first?.workItem.id, second?.workItem.id]).toEqual(['F-unplanned-control', 'F-nonp2p-control']);
+    expect(third).toBeNull();
+
+    // Engine 2: assignment-admission's JS evaluator must make the same three
+    // decisions from the expanded raw macro, not merely from a hand-built leaf.
+    const filter = s.view.filter!;
+    expect(matchesClaimSpecFilter({ ...nullPlanSubject('F-p2p-neutral'), plan: p2pPlan }, filter)).toBe(false);
+    expect(matchesClaimSpecFilter(nullPlanSubject('F-unplanned-control'), filter)).toBe(true);
+    expect(matchesClaimSpecFilter({ ...nullPlanSubject('F-nonp2p-control'), plan: nonP2pPlan }, filter)).toBe(true);
+  });
+});
+
 // ────────────────────────────────────────────────────────────────────────────
 // Parity: the SQL compiler and the JS evaluator must agree on a NULL subject.
 // ────────────────────────────────────────────────────────────────────────────
@@ -241,10 +287,7 @@ describe('EI-13306 — SQL compiler and JS evaluator agree on NULL subjects', ()
     {
       name: 'all:[kind in [feature], not:{plan = X}]',
       filter: {
-        all: [
-          { field: 'kind', op: 'in', value: ['feature'] },
-          { not: { field: 'plan', op: '=', value: PEER_PLAN } },
-        ],
+        all: [{ field: 'kind', op: 'in', value: ['feature'] }, { not: { field: 'plan', op: '=', value: PEER_PLAN } }],
       },
       admits: true,
     },
@@ -360,7 +403,9 @@ describe('EI-18654360178824151 — SQL FIELD_MAP and JS evaluator agree when pla
     );
 
     expect(jsAdmits, 'sanity: the JS evaluator was already admitting this shape pre-fix').toBe(true);
-    expect(sqlAdmits, 'SQL FIELD_MAP must COALESCE the payload-derived tags, mirroring staticTagsOfWorkItem').toBe(true);
+    expect(sqlAdmits, 'SQL FIELD_MAP must COALESCE the payload-derived tags, mirroring staticTagsOfWorkItem').toBe(
+      true,
+    );
     expect(sqlAdmits, `ENGINE DIVERGENCE: SQL=${sqlAdmits} JS=${jsAdmits}`).toBe(jsAdmits);
   });
 

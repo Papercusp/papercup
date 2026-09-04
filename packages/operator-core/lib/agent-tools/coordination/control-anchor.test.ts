@@ -5,9 +5,11 @@ import {
   CONTROL_ANCHOR_MAX_TOKENS,
   CONTROL_TRANSITION_MAX_TOKENS,
   CONTROL_TRANSITION_SCHEMA,
+  acknowledgeControlTransition,
   decideControlTransitionDelivery,
   estimateControlAnchorTokens,
   normalizeControlAnchorState,
+  preparePendingControlTransition,
   projectGoalHolderAuthority,
   persistControlAnchor,
   renderControlAnchor,
@@ -50,6 +52,15 @@ function inMemoryPersistSql() {
     }];
   }) as unknown as Sql;
   return sql;
+}
+
+function sqlReturning<T>(rows: T[]) {
+  const calls: Array<{ statement: string; values: unknown[] }> = [];
+  const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    calls.push({ statement: strings.join(' '), values });
+    return rows;
+  }) as unknown as Sql;
+  return { sql, calls };
 }
 
 describe('CTRL anchor wakeSource (WI-7302 part 2)', () => {
@@ -210,6 +221,47 @@ describe('compact durable CTRL anchor', () => {
       provenance: { origin: 'owner', actorId: 'su-x', ownerDirected: true },
     });
     expect(delivery.budget.estimatedTokens).toBeLessThanOrEqual(CONTROL_TRANSITION_MAX_TOKENS);
+  });
+
+  it('separates prepare from acknowledgement so a render failure leaves the generation pending', async () => {
+    const transition = {
+      schemaVersion: CONTROL_TRANSITION_SCHEMA,
+      targetOwnerId: 'su-x',
+      previousGeneration: 4,
+      generation: 5,
+      state: state({ carry: 'cold' }),
+      provenance: {
+        origin: 'owner' as const,
+        actorId: 'su-x',
+        source: 'mode:set' as const,
+        ownerDirected: true,
+        recordedAt: '2026-07-13T18:01:00.000Z',
+      },
+      resync: {
+        verb: 'coord:orient' as const,
+        args: { afterCompaction: true as const },
+        rule: 'replace-full-never-merge-behind' as const,
+      },
+    };
+    const read = sqlReturning([{
+      owner_id: 'su-x',
+      control_generation: 5,
+      control_state: transition.state,
+      control_updated_at: transition.provenance.recordedAt,
+      control_transition: transition,
+      delivered_generation: 4,
+    }]);
+
+    const prepared = await preparePendingControlTransition('su-x', 'ws-test', read.sql);
+    expect(prepared).toMatchObject({ generation: 5, previousGeneration: 4, kind: 'transition' });
+    expect(read.calls).toHaveLength(1);
+    expect(read.calls[0]!.statement).toMatch(/SELECT/);
+    expect(read.calls[0]!.statement).not.toMatch(/^\s*UPDATE/);
+
+    const ack = sqlReturning([{ control_delivered_generation: 5 }]);
+    await expect(acknowledgeControlTransition('su-x', 'ws-test', 5, ack.sql)).resolves.toBe(true);
+    expect(ack.calls[0]!.statement).toMatch(/UPDATE/);
+    expect(ack.calls[0]!.values).toContain(5);
   });
 
   it('rejects generation-behind payloads and full-resyncs from current anchor state', () => {

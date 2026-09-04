@@ -44,6 +44,17 @@ export interface SpecClauseFalsifierWrite {
   probeMethod?: string | null;
 }
 
+/** Immutable provenance/pin proving this clause is a projection of one canonical
+ * acceptance BAR revision, not an independently editable promise. */
+export interface SpecClauseBarPin {
+  barKey: string;
+  barHash: string;
+  barSetHash: string;
+  rubricSlug: string;
+  rubricRevision: number;
+  evidencePlane: 'tree' | 'deployed' | 'live';
+}
+
 export interface SpecClauseWrite {
   harnessSlug?: string;
   /**
@@ -75,6 +86,7 @@ export interface SpecClauseWrite {
   exemption?: Record<string, unknown> | null;
   falsifier?: SpecClauseFalsifierWrite | null;
   acceptanceRef?: string | null;
+  sourceBar?: SpecClauseBarPin | null;
   actorId: string;
 }
 
@@ -101,6 +113,8 @@ export interface SpecClauseRevision {
   acceptedBy: string | null;
   acceptedAt: string | null;
   acceptanceRef: string | null;
+  /** Absent/null for historical rows written before the BAR projection pin. */
+  sourceBar?: SpecClauseBarPin | null;
 }
 
 export type SetSpecClauseResult =
@@ -116,6 +130,7 @@ export type SetSpecClauseResult =
       conflictingSpecId: string;
     }
   | { status: 'falsifier_invalid'; specId: string; reason: FalsifierIssue }
+  | { status: 'bar_pin_invalid'; specId: string; reason: string }
   | { status: 'plan_not_found'; specId: string; planSlug: string }
   | { status: 'plan_item_not_found'; specId: string; planItemId: string }
   | { status: 'supersedes_not_found'; specId: string; supersedes: { specId: string; revision: number } };
@@ -168,6 +183,17 @@ function normalizedFalsifier(value: SpecClauseWrite['falsifier']): SpecClauseFal
   return probeMethod ? { observation, probeMethod } : { observation };
 }
 
+function barPinIssueOf(value: SpecClauseWrite['sourceBar']): string | null {
+  if (value === undefined || value === null) return null;
+  if (!value.barKey.trim()) return 'bar_key_blank';
+  if (!/^[a-f0-9]{64}$/.test(value.barHash)) return 'bar_hash_invalid';
+  if (!/^[a-f0-9]{64}$/.test(value.barSetHash)) return 'bar_set_hash_invalid';
+  if (!value.rubricSlug.trim()) return 'rubric_slug_blank';
+  if (!Number.isInteger(value.rubricRevision) || value.rubricRevision <= 0) return 'rubric_revision_invalid';
+  if (!['tree', 'deployed', 'live'].includes(value.evidencePlane)) return 'evidence_plane_invalid';
+  return null;
+}
+
 function canonicalWrite(input: SpecClauseWrite) {
   const falsifier = normalizedFalsifier(input.falsifier);
   return {
@@ -188,6 +214,18 @@ function canonicalWrite(input: SpecClauseWrite) {
     // mutating a standing promise in place.
     ...(falsifier ? { falsifier } : {}),
     acceptanceRef: input.acceptanceRef?.trim() || null,
+    ...(input.sourceBar
+      ? {
+          sourceBar: {
+            barKey: input.sourceBar.barKey.trim(),
+            barHash: input.sourceBar.barHash.trim(),
+            barSetHash: input.sourceBar.barSetHash.trim(),
+            rubricSlug: input.sourceBar.rubricSlug.trim(),
+            rubricRevision: input.sourceBar.rubricRevision,
+            evidencePlane: input.sourceBar.evidencePlane,
+          },
+        }
+      : {}),
   };
 }
 
@@ -207,23 +245,43 @@ interface AliasIdentityRow {
   spec_id: string;
 }
 
+export type SpecClauseSql = <T = unknown>(
+  strings: TemplateStringsArray,
+  ...values: unknown[]
+) => Promise<T>;
+
+/** Existing-transaction seam used by activation seeding/amendment so rubric,
+ * projection, audit, and subject-plan pins commit or roll back together. */
+export interface SetSpecClauseTransaction {
+  executor: SpecClauseSql;
+  workspaceId: string;
+  harnessSlug: string;
+}
+
 /** Append one immutable revision under an optimistic expectedRevision CAS. */
-export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClauseResult> {
+export async function setSpecClause(
+  input: SpecClauseWrite,
+  transaction?: SetSpecClauseTransaction,
+): Promise<SetSpecClauseResult> {
   const falsifierIssue = falsifierIssueOf(input.falsifier);
   if (falsifierIssue) {
     return { status: 'falsifier_invalid', specId: input.specId, reason: falsifierIssue };
   }
-  const scope = await resolvePlanScope({ harnessSlug: input.harnessSlug });
+  const barPinIssue = barPinIssueOf(input.sourceBar);
+  if (barPinIssue) {
+    return { status: 'bar_pin_invalid', specId: input.specId, reason: barPinIssue };
+  }
+  const scope = transaction ?? await resolvePlanScope({ harnessSlug: input.harnessSlug });
   const normalized = canonicalWrite(input);
   const falsifier = normalizedFalsifier(input.falsifier);
   const contentHash = specClauseContentHash(input);
 
-  return withWorkspace(scope.workspaceId, async (tx) => {
+  const write = async (tx: SpecClauseSql): Promise<SetSpecClauseResult> => {
     // P-022 / D-018: a clause for a work-item that belongs to no plan is authored into the
     // harness's shared ad-hoc spec scope. Resolved BEFORE the lock and the ownership check
     // below, because that check is exactly what the scope has to exist to satisfy.
     const planSlug = await resolveSpecScopeSlug(
-      tx,
+      tx as never,
       scope.workspaceId,
       scope.harnessSlug,
       input.planSlug,
@@ -385,7 +443,9 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
         workspace_id, harness_slug, plan_slug, spec_id, revision, plan_item_id,
         behavior, behavior_class, required_evidence, required_test_layers,
         mutation_required, lifecycle_status, supersedes_spec_id, supersedes_revision,
-        exemption, falsifier, content_hash, created_by, accepted_by, accepted_at, acceptance_ref
+        exemption, falsifier, content_hash, created_by, accepted_by, accepted_at, acceptance_ref,
+        source_bar_key, source_bar_hash, source_bar_set_hash, source_rubric_slug,
+        source_rubric_revision, evidence_plane
       ) VALUES (
         ${scope.workspaceId}, ${scope.harnessSlug}, ${planSlug}, ${input.specId}, ${revision},
         ${normalized.planItemId}, ${normalized.behavior}, ${normalized.behaviorClass},
@@ -394,7 +454,10 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
         ${normalized.supersedes?.revision ?? null}, ${exemptionJson}::text::jsonb,
         ${falsifierJson}::text::jsonb, ${contentHash},
         ${input.actorId}, ${accepted ? input.actorId : null}, ${accepted ? new Date() : null},
-        ${normalized.acceptanceRef}
+        ${normalized.acceptanceRef}, ${normalized.sourceBar?.barKey ?? null},
+        ${normalized.sourceBar?.barHash ?? null}, ${normalized.sourceBar?.barSetHash ?? null},
+        ${normalized.sourceBar?.rubricSlug ?? null}, ${normalized.sourceBar?.rubricRevision ?? null},
+        ${normalized.sourceBar?.evidencePlane ?? null}
       )`;
 
     await tx`
@@ -426,7 +489,10 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
     }
 
     return { status: actualRevision === 0 ? 'created' : 'revised', specId: input.specId, revision, contentHash };
-  });
+  };
+  return transaction
+    ? write(transaction.executor)
+    : withWorkspace(scope.workspaceId, async (tx) => write(tx as unknown as SpecClauseSql));
 }
 
 interface RevisionRow {
@@ -452,6 +518,12 @@ interface RevisionRow {
   accepted_by: string | null;
   accepted_at: Date | string | null;
   acceptance_ref: string | null;
+  source_bar_key: string | null;
+  source_bar_hash: string | null;
+  source_bar_set_hash: string | null;
+  source_rubric_slug: string | null;
+  source_rubric_revision: number | string | null;
+  evidence_plane: 'tree' | 'deployed' | 'live' | null;
 }
 
 export interface ListSpecClausesOptions {
@@ -475,7 +547,9 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
            r.required_evidence, r.required_test_layers, r.mutation_required,
            r.lifecycle_status, r.supersedes_spec_id, r.supersedes_revision,
            r.exemption, r.falsifier, r.content_hash, r.created_by, r.created_at,
-           r.accepted_by, r.accepted_at, r.acceptance_ref
+           r.accepted_by, r.accepted_at, r.acceptance_ref,
+           r.source_bar_key, r.source_bar_hash, r.source_bar_set_hash,
+           r.source_rubric_slug, r.source_rubric_revision, r.evidence_plane
       FROM harness_shared.plan_spec_clauses c
       JOIN harness_shared.plan_spec_clause_revisions r
         ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
@@ -523,5 +597,17 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
       acceptedBy: r.accepted_by,
       acceptedAt: pgTimestampToIsoOrNull(r.accepted_at),
       acceptanceRef: r.acceptance_ref,
+      sourceBar:
+        r.source_bar_key && r.source_bar_hash && r.source_bar_set_hash &&
+        r.source_rubric_slug && r.source_rubric_revision != null && r.evidence_plane
+          ? {
+              barKey: r.source_bar_key,
+              barHash: r.source_bar_hash,
+              barSetHash: r.source_bar_set_hash,
+              rubricSlug: r.source_rubric_slug,
+              rubricRevision: Number(r.source_rubric_revision),
+              evidencePlane: r.evidence_plane,
+            }
+          : null,
     }));
 }

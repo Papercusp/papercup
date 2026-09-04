@@ -262,7 +262,7 @@ describe('SessionChatModal', () => {
     expect(container.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it('resolves the owner’s claude session via sessions:list, then opens the live stream at it', async () => {
+  it('resolves the owner’s newest native session without assuming the backend is Claude', async () => {
     mockFetchOnce(200, {
       sessions: [
         { source_kind: 'omp', session_id: 'omp-1', last_ts: null },
@@ -281,7 +281,7 @@ describe('SessionChatModal', () => {
     );
 
     await waitFor(() => expect(captured).not.toBeNull());
-    expect(captured!.url).toBe('/api/adv/session/thinking?sessionId=claude-abc&owner=su-live-1');
+    expect(captured!.url).toBe('/api/adv/session/thinking?ompThreadId=omp-1');
     expect(screen.getByText('Chat — su · live-1')).toBeTruthy();
   });
 
@@ -315,11 +315,11 @@ describe('SessionChatModal', () => {
     expect(captured!.url).not.toContain('ended=');
   });
 
-  it('shows a not-found state when the owner has no indexed claude session', async () => {
-    mockFetchOnce(200, { sessions: [{ source_kind: 'omp', session_id: 'omp-1', last_ts: null }] });
+  it('shows a not-found state when the owner has no native transcript', async () => {
+    mockFetchOnce(200, { sessions: [] });
     render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
     await waitFor(() =>
-      expect(screen.getByText('No recent Claude session found for this agent.')).toBeTruthy(),
+      expect(screen.getByText('No recent session found for this agent.')).toBeTruthy(),
     );
     expect(captured).toBeNull(); // never opened a stream with no session id
   });
@@ -481,11 +481,11 @@ describe('SessionChatModal', () => {
       await waitFor(() => expect(screen.getByTestId('fleet-launch-row-stub')).toBeTruthy());
     });
 
-    it('renders when the owner has NO indexed claude session (no action bar to sit beside)', async () => {
-      mockFetchOnce(200, { sessions: [{ source_kind: 'omp', session_id: 'omp-1', last_ts: null }] });
+    it('renders when the owner has no native transcript (no action bar to sit beside)', async () => {
+      mockFetchOnce(200, { sessions: [] });
       render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
       await waitFor(() =>
-        expect(screen.getByText('No recent Claude session found for this agent.')).toBeTruthy(),
+        expect(screen.getByText('No recent session found for this agent.')).toBeTruthy(),
       );
       expect(screen.getByTestId('fleet-launch-row-stub')).toBeTruthy();
     });
@@ -1482,7 +1482,7 @@ describe('SessionChatModal', () => {
     mockFetchOnce(200, { sessions: [] });
     const onClose = vi.fn();
     render(<SessionChatModal sessionOwnerId="su-live-1" onClose={onClose} />);
-    await waitFor(() => expect(screen.getByText('No recent Claude session found for this agent.')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('No recent session found for this agent.')).toBeTruthy());
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
@@ -1544,7 +1544,7 @@ describe('SessionChatModal', () => {
       const shelf = screen.getByTestId('session-chat-pending-escalations');
       // With no resolved session the transcript slot renders this banner, so it
       // stands in for "where the conversation goes" without needing a live stream.
-      const transcriptSlot = screen.getByText('No recent Claude session found for this agent.');
+      const transcriptSlot = screen.getByText('No recent session found for this agent.');
 
       expect(
         transcriptSlot.compareDocumentPosition(shelf) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -1681,7 +1681,7 @@ describe('SessionChatModal', () => {
       mockFetchOnce(200, { sessions: [] });
       render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
 
-      await waitFor(() => expect(screen.getByText('No recent Claude session found for this agent.')).toBeTruthy());
+      await waitFor(() => expect(screen.getByText('No recent session found for this agent.')).toBeTruthy());
       expect(screen.queryByTestId('session-chat-pending-escalations')).toBeNull();
     });
 
@@ -1690,7 +1690,7 @@ describe('SessionChatModal', () => {
       mockFetchOnce(200, { sessions: [] });
       render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
 
-      await waitFor(() => expect(screen.getByText('No recent Claude session found for this agent.')).toBeTruthy());
+      await waitFor(() => expect(screen.getByText('No recent session found for this agent.')).toBeTruthy());
       expect(screen.queryByTestId('session-chat-pending-escalations')).toBeNull();
     });
 
@@ -1723,7 +1723,7 @@ describe('SessionChatModal', () => {
       mockFetchOnce(200, { sessions: [] });
       render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
 
-      await waitFor(() => expect(screen.getByText('No recent Claude session found for this agent.')).toBeTruthy());
+      await waitFor(() => expect(screen.getByText('No recent session found for this agent.')).toBeTruthy());
       expect(screen.queryByTestId('session-chat-pending-escalations')).toBeNull();
     });
 
@@ -1855,7 +1855,26 @@ describe('SessionChatModal', () => {
       };
     }
 
-    it('mounts the dossier rail by default (nuqs default open) once a session resolves', async () => {
+    it('leaves room for the conversation on a laptop and keeps the side-panel toggles reachable', async () => {
+      vi.stubGlobal('matchMedia', (query: string) => ({
+        matches: ['(max-width: 1400px)', '(max-width: 1760px)', '(max-width: 2100px)'].includes(query),
+        media: query, onchange: null, addEventListener() {}, removeEventListener() {},
+        addListener() {}, removeListener() {}, dispatchEvent: () => true,
+      }));
+      seedRoster([{ ownerId: 'su-live-1' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      expect(screen.queryByTestId('session-chat-dossier-rail')).toBeNull();
+      expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
+      expect(screen.getByTestId('session-chat-dossier-toggle')).toBeTruthy();
+      expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();
+      expect(screen.getByText('Launch a fleet').closest('details')?.open).toBe(false);
+      fireEvent.click(screen.getByText('Launch a fleet'));
+      expect(nuqsSetters.chatLaunchFleet).toHaveBeenCalledWith(true);
+    });
+
+    it('mounts the dossier rail by default when the viewport has room for it', async () => {
       seedRoster([{ ownerId: 'su-live-1', fleetColor: null, fleetRole: 'member' }]);
       mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
       render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
@@ -2114,7 +2133,7 @@ describe('SessionChatModal', () => {
        It must be installed BEFORE render(): the hook seeds its state from
        matchMedia synchronously on first render precisely so a narrow window
        never mounts the panel (and fires the gather) for one frame. */
-    const NARROW_ORDERS_MQ = '(max-width: 1180px)';
+    const NARROW_ORDERS_MQ = '(max-width: 1760px)';
     function stubViewportMatching(query: string) {
       vi.stubGlobal('matchMedia', (q: string) => ({
         matches: q === query,
@@ -2299,7 +2318,7 @@ describe('SessionChatModal', () => {
   // WI-6363 postmortem was exactly a test that checked a callback had fired
   // without ever checking what it fired with.
   describe('WI-6367 starting-up state for a just-launched session', () => {
-    const GONE = 'No recent Claude session found for this agent.';
+    const GONE = 'No recent session found for this agent.';
     const STARTING = /Starting up — waiting for this session to come online/;
     const FAILED = /This session hasn't come online/;
 
@@ -2470,7 +2489,7 @@ describe('SessionChatModal', () => {
   // concurrently calling the same session "Fresh session — launched, not started
   // yet". Every case below passes NO pendingLaunch — that is the point.
   describe('WI-6440 starting-up survives a reload (durable `starting` tier)', () => {
-    const GONE = 'No recent Claude session found for this agent.';
+    const GONE = 'No recent session found for this agent.';
     const UNKNOWN = /No agent with this id was found in the current roster or session history/;
     const STARTING = /Starting up — waiting for this session to come online/;
     const FAILED = /This session hasn't come online/;

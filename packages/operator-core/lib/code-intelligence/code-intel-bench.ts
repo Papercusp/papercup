@@ -55,6 +55,9 @@ import {
   shutdownAllLspClients,
   type LspLanguage,
 } from './lsp-adapter.ts';
+import { astGrepFacade } from './ast-grep-facade.ts';
+import { gitnexusFacade, gitnexusOpForIntent, gitnexusRefusal, type GitnexusDispatch } from './gitnexus-facade.ts';
+import { packerFacade, type PackerEffects, type PackerEngine, type PackerResult } from './packer-facade.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Probes
@@ -1326,6 +1329,294 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
     measurements,
     resources: sampleLspResources(),
     declinedIntents,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Facade-backed acceptance legs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One site-set corpus case as observed through a non-LSP facade.
+ *
+ * `invoked:false` is not a euphemism for a skip: it is paired with an explicit
+ * decline answer. That distinction keeps an unsupported intent from looking
+ * like a backend that ran and returned no sites.
+ */
+export interface FacadeCaseMeasurement {
+  readonly caseId: string;
+  readonly backend: CodeIntelBackend;
+  readonly intent: CodeIntelIntent;
+  readonly invoked: boolean;
+  readonly disposition: 'graded' | 'declined';
+  readonly answer: CodeIntelAnswer;
+  readonly grade: GradeResult | null;
+  readonly correct: boolean | null;
+  readonly trustworthyEmpty: boolean;
+}
+
+/** A property-shaped corpus case for which this leg has no executable grader. */
+export interface UnmeasuredFacadeCase {
+  readonly caseId: string;
+  readonly intent: CodeIntelIntent;
+  readonly reason: string;
+}
+
+export interface GitnexusLegOptions {
+  /** Real bridge dispatch. Omit only when the host configured the facade globally. */
+  readonly dispatch?: GitnexusDispatch | null;
+  /** Restrict a diagnostic run to named corpus cases. */
+  readonly only?: readonly string[];
+}
+
+export interface GitnexusLegReport {
+  readonly backend: 'gitnexus';
+  readonly measurements: readonly FacadeCaseMeasurement[];
+  readonly unmeasuredCases: readonly UnmeasuredFacadeCase[];
+}
+
+/**
+ * Exercise GitNexus against every corpus case that names it as eligible.
+ *
+ * Site-set cases are either invoked and graded, or declined through the
+ * facade's authoritative routing table. Property cases remain visible in the
+ * report as UNMEASURED until a subject-specific runner and grader exist. Merely
+ * iterating `eligibleBackends` must never turn metadata into acceptance.
+ */
+export async function runGitnexusFacadeLeg(
+  opts: GitnexusLegOptions = {},
+  facade: typeof gitnexusFacade = gitnexusFacade,
+): Promise<GitnexusLegReport> {
+  const selected = ACCEPTANCE_CORPUS.filter(
+    (kase) =>
+      kase.eligibleBackends.includes('gitnexus') &&
+      (!opts.only || opts.only.includes(kase.id)),
+  );
+  const measurements: FacadeCaseMeasurement[] = [];
+  const unmeasuredCases: UnmeasuredFacadeCase[] = [];
+
+  for (const kase of selected) {
+    if (kase.gradeMode === 'property') {
+      unmeasuredCases.push({
+        caseId: kase.id,
+        intent: kase.intent,
+        reason:
+          'property case has no GitNexus-specific executable subject and grader; ' +
+          'eligibility metadata alone is not an acceptance measurement',
+      });
+      continue;
+    }
+
+    const op = gitnexusOpForIntent(kase.intent);
+    if (op === null) {
+      const answer = gitnexusRefusal(kase.intent, kase.query);
+      if (answer === null) {
+        throw new Error(
+          `gitnexus corpus case '${kase.id}' has neither a routable op nor a reasoned refusal`,
+        );
+      }
+      measurements.push({
+        caseId: kase.id,
+        backend: 'gitnexus',
+        intent: kase.intent,
+        invoked: false,
+        disposition: 'declined',
+        answer,
+        grade: null,
+        correct: null,
+        trustworthyEmpty: isTrustworthyEmpty(answer),
+      });
+      continue;
+    }
+
+    const answer = await facade(op, { name: kase.query }, opts.dispatch);
+    const grade = gradeSites(kase, answer.sites);
+    measurements.push({
+      caseId: kase.id,
+      backend: 'gitnexus',
+      intent: kase.intent,
+      invoked: true,
+      disposition: 'graded',
+      answer,
+      grade,
+      correct: grade.correct,
+      trustworthyEmpty: isTrustworthyEmpty(answer),
+    });
+  }
+
+  return { backend: 'gitnexus', measurements, unmeasuredCases };
+}
+
+/**
+ * The structural probe is intentionally outside ACCEPTANCE_CORPUS: ast-grep
+ * answers an AST-pattern question, not a symbol-definition question. Giving it
+ * a symbol case merely because both produce sites would compare unlike things.
+ */
+export const AST_GREP_BENCH_CASE: CorpusCase = Object.freeze({
+  id: 'structural-managed-interval-call',
+  planCase: 10,
+  intent: 'structural-search',
+  title: 'Structural search finds the real managedSetInterval call and rewrite preview is read-only',
+  query: 'managedSetInterval($$$ARGS)',
+  gradeMode: 'exact-set',
+  expectedSites: [
+    {
+      path: 'packages/operator-core/lib/pty-bridge.ts',
+      line1: 169,
+      symbolOnLine: "managedSetInterval('pty-idle-reaper'",
+    },
+  ],
+  eligibleBackends: ['ast-grep'] as const,
+  falsifies:
+    'A text-shaped or mutating implementation either misses the multiline call, ' +
+    'returns non-AST matches, or changes the source while claiming to preview.',
+});
+
+export interface AstGrepLegOptions {
+  readonly repoRoot: string;
+  /** Replacement used only for the preview call. */
+  readonly rewrite?: string;
+}
+
+export interface AstGrepLegReport {
+  readonly backend: 'ast-grep';
+  readonly search: CodeIntelAnswer;
+  readonly searchGrade: GradeResult;
+  readonly preview: CodeIntelAnswer;
+  readonly previewGrade: GradeResult;
+  readonly sourceByteIdentical: boolean;
+  readonly correct: boolean;
+}
+
+/** Run and grade the real structural-search and read-only preview surfaces. */
+export async function runAstGrepFacadeLeg(
+  opts: AstGrepLegOptions,
+  facade: typeof astGrepFacade = astGrepFacade,
+): Promise<AstGrepLegReport> {
+  const expected = AST_GREP_BENCH_CASE.expectedSites[0];
+  if (!expected) throw new Error('ast-grep bench case has no expected site');
+
+  // Resolve the pin before calling the backend. A moved fixture is a broken
+  // question, not evidence that ast-grep answered incorrectly.
+  const probe: BenchProbe = {
+    caseId: AST_GREP_BENCH_CASE.id,
+    file: expected.path,
+    line1: expected.line1,
+    symbol: expected.symbolOnLine,
+    rationale: AST_GREP_BENCH_CASE.falsifies,
+  };
+  const cursor = resolveProbeCursor(probe, opts.repoRoot);
+  const before = readFileSync(cursor.file, 'utf8');
+  const args = {
+    pattern: AST_GREP_BENCH_CASE.query,
+    language: 'ts' as const,
+    paths: [expected.path],
+    rootPath: opts.repoRoot,
+  };
+
+  const search = await facade('search', args);
+  const searchGrade = gradeSites(AST_GREP_BENCH_CASE, search.sites);
+  const preview = await facade('rewrite_preview', {
+    ...args,
+    rewrite: opts.rewrite ?? 'managedSetTimeout($$$ARGS)',
+  });
+  const previewGrade = gradeSites(AST_GREP_BENCH_CASE, preview.sites);
+  const sourceByteIdentical = readFileSync(cursor.file, 'utf8') === before;
+
+  return {
+    backend: 'ast-grep',
+    search,
+    searchGrade,
+    preview,
+    previewGrade,
+    sourceByteIdentical,
+    correct:
+      search.error === null &&
+      preview.error === null &&
+      searchGrade.correct &&
+      previewGrade.correct &&
+      sourceByteIdentical,
+  };
+}
+
+export interface PackerLegOptions {
+  readonly repoRoot: string;
+  /** Explicit include set shared by the pack and diff calls. */
+  readonly include: readonly string[];
+  readonly ignore?: readonly string[];
+  readonly baseRef?: string;
+  readonly effects?: PackerEffects;
+}
+
+export interface PackerLegGrade {
+  readonly correct: boolean;
+  readonly reasons: readonly string[];
+}
+
+export interface PackerLegMeasurement {
+  readonly engine: PackerEngine;
+  readonly op: 'pack' | 'diff';
+  readonly result: PackerResult;
+  readonly grade: PackerLegGrade;
+}
+
+export interface PackerLegReport {
+  readonly backend: 'packers';
+  readonly measurements: readonly PackerLegMeasurement[];
+  readonly correct: boolean;
+}
+
+function gradePackerResult(result: PackerResult, engine: PackerEngine): PackerLegGrade {
+  const reasons: string[] = [];
+  if (result.answer.backend !== engine) {
+    reasons.push(`answer named backend '${result.answer.backend}', expected '${engine}'`);
+  }
+  if (result.answer.error !== null) reasons.push(result.answer.error);
+  if (result.artifact === null) reasons.push('no artifact was produced');
+  if (result.artifact?.provenance.engine !== engine) {
+    reasons.push(
+      `artifact named engine '${result.artifact?.provenance.engine ?? 'none'}', expected '${engine}'`,
+    );
+  }
+  if (result.artifact?.path === null) reasons.push('artifact has no durable scratch path');
+  if (!isTrustworthyEmpty(result.answer)) {
+    reasons.push('empty answer was neither healthy nor a loud refusal');
+  }
+  return { correct: reasons.length === 0, reasons };
+}
+
+/**
+ * Invoke both maintained packer facades on one explicit scope.
+ *
+ * This grades the observable output boundary (honest answer, real artifact,
+ * matching provenance). It deliberately does NOT claim to grade a selector:
+ * WI-2143024 records that no packer-selection subject exists.
+ */
+export async function runPackerFacadeLeg(
+  opts: PackerLegOptions,
+  facade: typeof packerFacade = packerFacade,
+): Promise<PackerLegReport> {
+  const common = {
+    include: opts.include,
+    ignore: opts.ignore,
+    rootPath: opts.repoRoot,
+    baseRef: opts.baseRef,
+  };
+  const pack = await facade('pack', { ...common, format: 'xml' }, opts.effects);
+  const diff = await facade('diff', { ...common, format: 'markdown' }, opts.effects);
+  const measurements: PackerLegMeasurement[] = [
+    { engine: 'repomix', op: 'pack', result: pack, grade: gradePackerResult(pack, 'repomix') },
+    {
+      engine: 'code2prompt',
+      op: 'diff',
+      result: diff,
+      grade: gradePackerResult(diff, 'code2prompt'),
+    },
+  ];
+  return {
+    backend: 'packers',
+    measurements,
+    correct: measurements.every((measurement) => measurement.grade.correct),
   };
 }
 

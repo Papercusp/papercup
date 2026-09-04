@@ -130,6 +130,7 @@ import '@/app/admin/plans/plans.css';
 // hud__handle / hud__chip / hud__chip--accent — reused by the identity chip
 // (P-012) below, rather than re-declaring the same look under a new class.
 import '../../adv/hud/hud.css';
+import './session-chat.css';
 // pc-dossier__* — hud-first-nav-and-dossier-2026-07-26 P-003: the right rail
 // below reuses AgentDossier verbatim (no forked dossier), so its stylesheet
 // rides along the same way hud.css/plans.css already do for their own reused
@@ -257,7 +258,7 @@ const DOSSIER_RAIL_OVERLAY_STYLE: React.CSSProperties = {
  *  side-by-side and becomes a collapsible overlay drawer instead — same
  *  matchMedia + useEffect pattern BrainstormFull.tsx already uses for its own
  *  compact-layout switch. */
-const DOSSIER_NARROW_MEDIA_QUERY = '(max-width: 860px)';
+const DOSSIER_NARROW_MEDIA_QUERY = '(max-width: 1400px)';
 
 /* ── chat-popup-fleet-peers-rail-2026-08-09: the FLEET rail ──────────────────
    The fourth zone, one column further out than Activity, so the popup reads
@@ -293,7 +294,7 @@ const PEERS_RAIL_OVERLAY_STYLE: React.CSSProperties = {
    + 300 dossier + 272 orders + ~510 conversation — so below 1400 there is no
    honest way to seat this one as a column. Activity survives longest because it
    changes every turn; this rail is the most situational. */
-const PEERS_NARROW_MEDIA_QUERY = '(max-width: 1400px)';
+const PEERS_NARROW_MEDIA_QUERY = '(max-width: 2100px)';
 
 /* ── session-chat-popup-direction-d-2026-08-02 P-015: the ORDERS panel ───────
    The second panel [owner 2026-08-02: "Two panels: told on the left, did on
@@ -317,7 +318,7 @@ const ORDERS_RAIL_SIDE_STYLE: React.CSSProperties = {
    when space runs out the left panel goes first. It is the more static of the
    two — orders change when a mode flips or a fact is asserted, activity changes
    every turn — so losing it costs the reader least. */
-const ORDERS_NARROW_MEDIA_QUERY = '(max-width: 1180px)';
+const ORDERS_NARROW_MEDIA_QUERY = '(max-width: 1760px)';
 
 /* Below that breakpoint Orders overlays instead of taking a column — the same
    trade the dossier already makes. Overlaying rather than simply not rendering
@@ -1690,8 +1691,10 @@ export default function SessionChatModal({
   // conversation opened from the HUD should carry the dossier unless the
   // viewer collapses it (or the viewport is too narrow to show it side-by-
   // side, handled separately by isNarrow below).
-  const [dossierOpen, setDossierOpen] = useQueryState('chatDossier', parseAsBoolean.withDefault(true));
+  const [dossierParam, setDossierOpen] = useQueryState('chatDossier', parseAsBoolean);
   const isNarrow = useIsNarrowViewport(DOSSIER_NARROW_MEDIA_QUERY);
+  const dossierOpen = dossierParam ?? !isNarrow;
+  const [fleetLaunchOpen, setFleetLaunchOpen] = useQueryState('chatLaunchFleet', parseAsBoolean.withDefault(false));
 
   /* ── chat-popup-fleet-peers-rail-2026-08-09: the FLEET rail ────────────────
      Derived HERE rather than inside the rail because the answer is load-bearing
@@ -2075,7 +2078,10 @@ export default function SessionChatModal({
               // both-open → dossier-only → bare, so opening Orders widens the
               // popup rather than crushing the transcript between two panels.
               width: `min(${720 + railColumns}px, ${railColumns > 0 ? 97 : 92}vw)`,
-              height: 'min(80vh, 820px)',
+              height: 'min(88dvh, 960px)',
+              borderRadius: 16,
+              overflowX: 'hidden',
+              overflowY: 'hidden',
               padding: 0,
               display: 'flex',
               flexDirection: 'column',
@@ -2084,6 +2090,7 @@ export default function SessionChatModal({
     >
       <div
         ref={popupRef}
+        className="session-chat"
         style={{
           flex: 1,
           minHeight: 0,
@@ -2403,13 +2410,7 @@ export default function SessionChatModal({
           </div>
         ) : !resolved ? (
           <div style={BANNER_STYLE}>
-            No recent{' '}
-            {actionRosterEntry?.agent === 'codex'
-              ? 'Codex'
-              : actionRosterEntry?.agent === 'omp'
-                ? 'OMP'
-                : 'Claude'}{' '}
-            session found for this agent.
+            No recent session found for this agent.
           </div>
         ) : streamUrl && sessionOwnerId ? (
           <>
@@ -2445,7 +2446,7 @@ export default function SessionChatModal({
               sendError={sendError}
               focusAnchor={focusAnchor}
               focusTerm={focusTerm}
-              projectionTarget={resolved ? {
+              projectionTarget={resolved && (focusSessionId || resolved.stream_key !== 'codexSessionKey') ? {
                 sourceKind: resolved.source_kind,
                 sessionId: focusSessionId || resolved.session_id,
                 harness: actionRosterEntry?.harnessSlug ?? null,
@@ -2571,7 +2572,13 @@ export default function SessionChatModal({
             is now literally true, which is what WI-6505 wanted in the first
             place. (Deck item 5 proposes moving this row to the Sessions board
             entirely; that is P-007 and is owner-gated — see D-003.) */}
-        <FleetLaunchRow />
+        <details className="session-chat__fleet-setup" open={fleetLaunchOpen}>
+          <summary onClick={(event) => {
+            event.preventDefault();
+            void setFleetLaunchOpen(!fleetLaunchOpen);
+          }}>Launch a fleet</summary>
+          <FleetLaunchRow />
+        </details>
       </div>
         {/* The RIGHT panel. A SIBLING of the conversation region — which since
             D-007 means it is INSIDE the fullscreen target (the popup container

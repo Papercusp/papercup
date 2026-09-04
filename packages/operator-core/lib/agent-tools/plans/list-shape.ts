@@ -78,10 +78,21 @@ export function shapePlansList(
   const project = (row: unknown): Record<string, unknown> => {
     const r = (row ?? {}) as Record<string, unknown>;
     const { open, done } = openDoneCounts(r.itemCounts);
+    const lifecycle =
+      r.lifecycle && typeof r.lifecycle === "object"
+        ? (r.lifecycle as Record<string, unknown>)
+        : null;
+    const contradiction =
+      lifecycle?.contradiction && typeof lifecycle.contradiction === "object"
+        ? (lifecycle.contradiction as Record<string, unknown>)
+        : null;
     const base = {
       slug: r.slug ?? null,
       title: clip(r.title, c.title),
       status: r.status ?? null,
+      lifecycleVerdict: lifecycle?.verdict ?? null,
+      lifecycleDisposition: lifecycle?.disposition ?? null,
+      lifecycleContradiction: clip(contradiction?.evidence, c.next),
       harness: r.harness ?? null,
       updated: r.updated ?? null,
       next: clip(r.nextAction, c.next),

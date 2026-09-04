@@ -144,6 +144,7 @@ describe('rubric template schema', () => {
       role: 'outcome' as const,
       mandatory: true,
       requiredScope: ['cohort:post-epoch', 'surface:coverage-row'],
+      evidencePlane: 'tree' as const,
       passRatings: ['pass'],
       barProvenance: {
         lifecycle: 'pre-implementation' as const,
@@ -222,6 +223,7 @@ describe('rubric template schema', () => {
       barHash: 'a'.repeat(64),
       role: 'outcome' as const,
       mandatory: true,
+      evidencePlane: 'tree' as const,
     };
     const acceptance = {
       kind: 'acceptance' as const,
