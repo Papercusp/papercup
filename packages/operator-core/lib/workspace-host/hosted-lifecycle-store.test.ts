@@ -121,6 +121,68 @@ describe('hosted lifecycle store', () => {
     ]);
   });
 
+  // WI-2143803. The BYOC case is the one that motivated the sweep and the one it could not see:
+  // an operation created through /api/workspace-hosts/action has customer_workspace_id NULL, so
+  // the reconciler's former INNER JOIN to customer_workspaces eliminated it. Measured on a live
+  // rig DB: 38 of 38 operations had a NULL customer_workspace_id and customer_workspaces held 0
+  // rows, so the inner join matched NOTHING at all. This fixture is deliberately a row with every
+  // customer-derived column absent — it must still classify.
+  it('classifies a BYOC operation that has NO customer_workspaces row (customer_workspace_id NULL)', async () => {
+    const notify = vi.fn(async (_input: { dedupeKey: string; title: string; body: string }) => ({
+      recordId: 1, deduped: false, mobileDelivered: true, desktopDelivered: true,
+    }));
+    setHostedLifecycleStoreHooks({
+      notify,
+      transaction: fakeTransaction((text) => {
+        if (text.includes('FOR UPDATE OF operation')) {
+          return [{
+            operation_id: 'byoc-orphan-1',
+            host_id: 'p046-canary-14',
+            action: 'restart',
+            status: 'running',
+            heartbeat_at: null,
+            operation_updated_at: '2026-08-28T00:00:00Z',
+            recovery_attempts: 0,
+            customer_workspace_id: null,
+            provider_target: 'gcp',
+          }];
+        }
+        return [];
+      }),
+    });
+    const result = await reconcileHostedLifecycleJobs('control-a', new Date('2026-08-28T02:00:00Z'));
+    expect(result.orphaned).toEqual(['byoc-orphan-1']);
+    // The notice must name SOMETHING identifiable. Before the fix the body interpolated
+    // job.customer_workspace_id directly, so a BYOC row would have read "restart on undefined".
+    const [notice] = notify.mock.calls.map(([input]) => input);
+    expect(notice.body).toContain('p046-canary-14');
+    expect(notice.body).not.toContain('undefined');
+    expect(notice.body).not.toContain('null');
+  });
+
+  // Guard the JOIN itself, not just the outcome: the fake transaction returns whatever rows the
+  // test hands it regardless of the SQL, so the behavioural test above would keep passing even if
+  // someone restored the inner join. This asserts on the emitted query text, which is the only
+  // thing that decides whether a real BYOC row is reachable.
+  it('does not INNER JOIN customer_workspaces — a BYOC operation has no such row', async () => {
+    const queries: string[] = [];
+    setHostedLifecycleStoreHooks({
+      transaction: fakeTransaction((text) => {
+        queries.push(text);
+        return [];
+      }),
+    });
+    await reconcileHostedLifecycleJobs('control-a', new Date('2026-08-28T02:00:00Z'));
+    const sweep = queries.find((query) => query.includes('FOR UPDATE OF operation'));
+    expect(sweep).toBeDefined();
+    expect(sweep).toContain('LEFT JOIN harness_shared.customer_workspaces');
+    expect(sweep).not.toMatch(/(?<!LEFT )JOIN harness_shared\.customer_workspaces/);
+    // The host is joined on the OPERATION's own host_id; keying it through
+    // customer.workspace_host_id reintroduces the customer row as a hidden requirement.
+    expect(sweep).toContain('host.id = operation.host_id');
+    expect(sweep).not.toContain('customer.workspace_host_id');
+  });
+
   it('no longer issues an idle-stop query against customer_workspaces (the sweep was retired)', async () => {
     const queries: string[] = [];
     setHostedLifecycleStoreHooks({

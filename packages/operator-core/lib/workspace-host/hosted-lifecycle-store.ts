@@ -294,7 +294,15 @@ export async function heartbeatHostedLifecycleJob(
   });
 }
 
-interface ReconciliationRow extends DirectoryRow {
+/**
+ * One row of the reconciliation sweep.
+ *
+ * Deliberately NOT `extends DirectoryRow`. Reconciliation covers BYOC-connection operations as
+ * well as hosted ones, and a BYOC operation has no `customer_workspaces` row at all — so every
+ * customer-derived column is genuinely nullable here. Inheriting DirectoryRow typed them as
+ * non-null strings, which is a claim the data cannot honour once the join is OUTER.
+ */
+interface ReconciliationRow {
   operation_id: string;
   host_id: string;
   action: HostedLifecycleAction;
@@ -302,6 +310,41 @@ interface ReconciliationRow extends DirectoryRow {
   heartbeat_at: Date | string | null;
   operation_updated_at: Date | string;
   recovery_attempts: number;
+  /** NULL for a BYOC-connection operation, which has no `customer_workspaces` row. */
+  customer_workspace_id: string | null;
+  /** NULL if the host row has since been deleted — the sweep still classifies the operation. */
+  provider_target: string | null;
+}
+
+/**
+ * The policy reconciliation actually consults.
+ *
+ * `classifyHostedLifecycleJob` reads ONLY `maxRecoveryAttempts`, `stuckAfterMs` and
+ * `orphanAfterMs`; every tenant/concurrency/budget/idle field on `HostedLifecyclePolicy` belongs
+ * to ADMISSION, which is a different function on a different code path. `policyFrom` already
+ * hard-codes these same three values and reconciliation never passed it an override, so hosted
+ * rows classify EXACTLY as before — but sourcing them from constants is what lets the sweep
+ * classify an operation that has no customer row, and it removes the only reason reconciliation
+ * ever had to join `customer_workspaces` at all.
+ *
+ * The admission-only fields are present solely to satisfy the shared shape. Do not start reading
+ * one here without first deciding what it should mean for a BYOC operation, which has no tenant
+ * or budget row to answer with.
+ */
+const RECONCILIATION_POLICY: HostedLifecyclePolicy = {
+  tenantConcurrencyLimit: 0,
+  providerConcurrencyLimit: 0,
+  monthlyBudgetCents: null,
+  idleStopAfterMinutes: null,
+  approvalRequiredAt: 'high',
+  stuckAfterMs: 5 * 60_000,
+  orphanAfterMs: 20 * 60_000,
+  maxRecoveryAttempts: 3,
+};
+
+/** What a notice names as the subject: the customer workspace when there is one, else the host. */
+function reconciliationSubject(job: ReconciliationRow): string {
+  return job.customer_workspace_id ?? `host ${job.host_id}`;
 }
 
 export interface HostedLifecycleReconciliationResult {
@@ -312,7 +355,32 @@ export interface HostedLifecycleReconciliationResult {
 }
 
 /**
- * Classify stale work and emit replay-safe owner notices.
+ * Classify stale work and emit replay-safe owner notices, for EVERY workspace-host lifecycle
+ * operation — BYOC-connection operations included, not only hosted/customer ones.
+ *
+ * ⛔ THE JOINS ARE `LEFT` ON PURPOSE. THEY WERE `JOIN`, AND THAT MADE THIS SWEEP BLIND TO THE
+ * EXACT FAILURE IT EXISTS FOR (WI-2143803). An operation created through the BYOC
+ * `/api/workspace-hosts/action` route carries `customer_workspace_id = NULL`, so an inner join to
+ * `customer_workspaces` eliminated every one of them. Measured on a live rig DB 2026-09-04: an
+ * operation orphaned by controller termination sat at `running|99` with `recovery_state='none'`
+ * and `heartbeat_at` NULL; 38 of 38 operations had a NULL `customer_workspace_id`; and
+ * `customer_workspaces` held 0 rows. DBOS recovery-on-relaunch does not cover for it either — the
+ * host process was fully restarted and the row's `updated_at` never moved.
+ *
+ * That made the defect two-layered, and only the outer layer was obvious: the function had no
+ * production caller, AND it could not have recovered the row even when called. Scheduling it
+ * without widening the join would have produced a sweep that runs, passes, and matches nothing —
+ * the same inert shape retired from this very file below.
+ *
+ * The host join keys on `operation.host_id` rather than `customer.workspace_host_id` for the same
+ * reason: the operation itself is the thing being reconciled, so its own identity is what the
+ * predicate must be anchored to. It is LEFT too, so an operation whose host row has already been
+ * deleted is still classified rather than silently skipped.
+ *
+ * Every column this sweep does not read was dropped from the SELECT. `organization_id`,
+ * `billing_owner_*`, `state` and the tenant/budget limits are ADMISSION inputs
+ * (`admitHostedLifecycleJob`); reconciliation never consulted them, and continuing to select them
+ * would only re-create the impression that a customer row is required here.
  *
  * NOTE: this reconciler used to also queue idle-stop jobs by reading
  * `customer_workspaces.idle_stop_after_minutes` / `.last_activity_at`. Those two columns have no
@@ -337,19 +405,13 @@ export async function reconcileHostedLifecycleJobs(
         operation.id AS operation_id, operation.host_id, operation.action, operation.status,
         operation.heartbeat_at, operation.updated_at AS operation_updated_at,
         operation.recovery_attempts,
-        customer.organization_id, customer.id AS customer_workspace_id,
-        customer.workspace_host_id, host.target AS provider_target, customer.state,
-        customer.tenant_concurrency_limit, customer.provider_concurrency_limit,
-        customer.monthly_lifecycle_budget_cents,
-        customer.lifecycle_budget_period_started_at,
-        customer.billing_owner_kind, customer.billing_owner_id,
-        customer.idle_stop_after_minutes
+        customer.id AS customer_workspace_id, host.target AS provider_target
       FROM harness_shared.workspace_host_operations operation
-      JOIN harness_shared.customer_workspaces customer
+      LEFT JOIN harness_shared.customer_workspaces customer
         ON customer.workspace_id = operation.workspace_id
        AND customer.id = operation.customer_workspace_id
-      JOIN harness_shared.workspace_hosts host
-        ON host.workspace_id = customer.workspace_id AND host.id = customer.workspace_host_id
+      LEFT JOIN harness_shared.workspace_hosts host
+        ON host.workspace_id = operation.workspace_id AND host.id = operation.host_id
       WHERE operation.workspace_id = ${workspaceId}
         AND operation.status IN ('queued', 'running')
       ORDER BY operation.updated_at, operation.id
@@ -361,7 +423,7 @@ export async function reconcileHostedLifecycleJobs(
         heartbeatAt: job.heartbeat_at == null ? null : String(job.heartbeat_at),
         updatedAt: String(job.operation_updated_at),
         recoveryAttempts: job.recovery_attempts,
-      }, policyFrom(job), now.getTime());
+      }, RECONCILIATION_POLICY, now.getTime());
       if (health === 'healthy' || health === 'terminal') continue;
       if (health === 'stuck') {
         await tx`
@@ -383,8 +445,8 @@ export async function reconcileHostedLifecycleJobs(
         notices.push({
           key: `hosted-lifecycle:${workspaceId}:${job.operation_id}:orphaned`,
           operationId: job.operation_id,
-          title: 'Hosted workspace lifecycle operation orphaned',
-          body: `${job.action} on ${job.customer_workspace_id} stopped heartbeating; provider reconciliation is required.`,
+          title: 'Workspace-host lifecycle operation orphaned',
+          body: `${job.action} on ${reconciliationSubject(job)} stopped heartbeating; provider reconciliation is required.`,
         });
         continue;
       }
@@ -399,8 +461,8 @@ export async function reconcileHostedLifecycleJobs(
       notices.push({
         key: `hosted-lifecycle:${workspaceId}:${job.operation_id}:exhausted`,
         operationId: job.operation_id,
-        title: 'Hosted workspace lifecycle recovery exhausted',
-        body: `${job.action} on ${job.customer_workspace_id} exhausted its bounded recovery attempts.`,
+        title: 'Workspace-host lifecycle recovery exhausted',
+        body: `${job.action} on ${reconciliationSubject(job)} exhausted its bounded recovery attempts.`,
       });
     }
 
