@@ -309,7 +309,10 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('activity:recent')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('events:status')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('work_items:complete')).toBe(PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS);
-    expect(PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS).toBeGreaterThan(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // The tool declares 120s and MCP adds a 5s handler buffer. Keep the client
+    // outside that effective server deadline so the typed receipt wins the race.
+    expect(PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS).toBe(130_000);
+    expect(PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS).toBeGreaterThan(125_000);
     // EI-21832411975767034: cover direct and tools:invoke-wrapped create calls
     // so the client deadline cannot drift back to the flat 30s cutoff.
     expect(timeoutForTool('work_items:create')).toBe(PTOOL_WORK_ITEMS_CREATE_TIMEOUT_MS);
