@@ -128,6 +128,15 @@ const LOCAL_ORIGIN_HOSTS = new Set([
 const SCANNED_EXTENSIONS = ['.js', '.mjs', '.cjs', '.css', '.html'];
 
 /**
+ * Docs publication swaps the live mirror through `docs.old.<pid>` while a
+ * concurrent reader finishes walking the previous tree. These directories are
+ * stale, gitignored swap leftovers rather than served output; Vite can copy
+ * one into a temporary dist before the grace-period reaper removes it. Do not
+ * let a dead copy create a second, PID-dependent baseline namespace.
+ */
+const DOCS_SWAP_LEFTOVER_RE = /(^|\/)docs\.old\.\d+(\/|$)/;
+
+/**
  * A path shaped like a fetchable asset. Either it ends in an asset extension,
  * or it is a versioned package path (`/name@1.2.3`, `/@scope/name@latest`) —
  * the shape every CDN base URL takes, including ones with no extension at all
@@ -169,10 +178,16 @@ function normalizePath(relPath) {
   );
 }
 
-function walk(dir, out = []) {
+function walk(dir, out = [], relativeDir = '') {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
-    if (entry.isDirectory()) walk(full, out);
+    const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      // The active docs mirror lives at `internal/docs`. A `docs.old.<pid>`
+      // sibling is an atomic-publish handoff tree and is never served.
+      if (DOCS_SWAP_LEFTOVER_RE.test(relativePath)) continue;
+      walk(full, out, relativePath);
+    }
     else if (entry.isFile() && SCANNED_EXTENSIONS.some((e) => entry.name.toLowerCase().endsWith(e))) {
       out.push(full);
     }
