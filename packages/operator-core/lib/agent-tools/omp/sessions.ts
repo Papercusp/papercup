@@ -39,9 +39,21 @@ export default defineTool({
   name: 'omp:sessions',
   profile: 'engineer',
   guidance: {
-    when: `Inspect local OMP session history: op='list' to find a session id, op='state'/'get' to read it — for continuing a compacted/handed-off session or debugging an overnight OMP agent. For CONTENT search prefer sessions:search (indexed, ranked, cross-client, with context windows); op='search' here is a raw substring grep over the local OMP JSONL archive, for the un-indexed tail or when the index is off.`,
-    notWhen: `Searching transcript CONTENT across clients → sessions:search / search:* (indexed), not op='search'. For Papercusp harness runs stored in Postgres, use the harness/agent_chats/plans tools first. omp:sessions is specifically the local OMP JSONL transcript archive on this workstation.`,
-    chaining: `op='list' → op='state' (compact structured state) or op='get' (bounded raw entries). For content search use sessions:search { query } (indexed) rather than op='search'.`,
+    when: `Inspect local OMP session history: op='list'` +
+      ` to find a session id, op='state'/'get'` +
+      ` to read it (op='get' accepts sessionId/filePath and limit only)` +
+      ` — for continuing a compacted/handed-off session or debugging an overnight OMP agent.` +
+      ` For CONTENT search prefer sessions:search (indexed, ranked, cross-client, with context windows);` +
+      ` op='search' here is a raw substring grep over the local OMP JSONL archive, for the un-indexed tail or when the index is off.` +
+      ` For indexed context-window reads use sessions:read, not omp:sessions op='get'.`,
+    notWhen: `Searching transcript CONTENT across clients → sessions:search / search:* (indexed), not op='search'.` +
+      ` For Papercusp harness runs stored in Postgres, use the harness/agent_chats/plans tools first.` +
+      ` omp:sessions is specifically the local OMP JSONL transcript archive on this workstation.` +
+      ` Do not pass context to op='get' or op='state'; context is supported here only by op='search'.` +
+      ` For indexed surrounding turns use sessions:read.`,
+    chaining: `op='list' → op='state' (compact structured state) or op='get' (bounded raw entries).` +
+      ` For content search use sessions:search { query } (indexed) rather than op='search'.` +
+      ` To read indexed surrounding turns, chain sessions:search → sessions:read { ref, context? }.`,
     seeAlso: [
       'sessions:search (indexed cross-client content search — prefer for CONTENT)',
       'sessions:list (unified enumeration)',
