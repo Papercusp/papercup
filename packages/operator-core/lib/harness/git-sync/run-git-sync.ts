@@ -1219,6 +1219,14 @@ export type GitSyncOutcome = {
    *  the caller escalates. Present on every status ('nothing' included: an
    *  oversized-only dirty tree commits nothing but still reports). */
   oversized: ScopedOversized[];
+  /**
+   * Dirty files excluded by the cumulative commit-size guard. This is a
+   * compatibility-preserving view of `oversized`: the latter still carries the
+   * complete quarantine set used by the commit/escalation pipeline, while this
+   * field lets metadata readers distinguish individually oversized blobs from
+   * individually-valid files peeled to keep one commit under the total budget.
+   */
+  bulkExcluded?: ScopedOversized[];
   /** Dirty files EXCLUDED from this pass's auto-commits because a content detector
    *  flagged them (EI-438 — e.g. an .mdx that won't compile). Like `oversized`, the
    *  rest of the tree still commits (D-001 quarantine-don't-stall); the action layer
@@ -4045,6 +4053,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       merged: [],
       mergeCompleted: [],
       oversized: [],
+      bulkExcluded: [],
       contentErrors: [],
       // No repo to inspect: nothing was measured, so null (never []) — an all-clear we
       // did not earn would retire a live strand escalation.
@@ -4073,6 +4082,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       merged: [],
       mergeCompleted: [],
       oversized: [],
+      bulkExcluded: [],
       contentErrors: [],
       strandedSubmodules: null,
     };
@@ -4473,6 +4483,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const merged = [...sub.merged, ...supr.merged];
   const mergeCompleted = [...sub.mergeCompleted, ...supr.mergeCompleted];
   const oversized = [...sub.oversized, ...supr.oversized];
+  const bulkExcluded = oversized.filter((f) => f.exclusionReason === 'cumulative-limit');
   const contentErrors = [...sub.contentErrors, ...supr.contentErrors];
   // Older in-flight checkpoints predate the skipped-path census. Replay must
   // reconstruct those phase outputs as an empty census rather than throwing or
@@ -4483,19 +4494,67 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const didSomething = sub.didSomething || supr.didSomething;
 
   if (conflicts.length > 0)
-    return { status: 'conflict', dirtyPathCount, committedCount, conflicts, errors, pushed, merged, mergeCompleted, oversized, contentErrors, skippedPaths, strandedSubmodules };
+    return {
+      status: 'conflict',
+      dirtyPathCount,
+      committedCount,
+      conflicts,
+      errors,
+      pushed,
+      merged,
+      mergeCompleted,
+      oversized,
+      bulkExcluded,
+      contentErrors,
+      skippedPaths,
+      strandedSubmodules,
+    };
   if (errors.length > 0)
-    return { status: 'error', dirtyPathCount, committedCount, errors, pushed, merged, mergeCompleted, oversized, contentErrors, skippedPaths, strandedSubmodules };
+    return {
+      status: 'error',
+      dirtyPathCount,
+      committedCount,
+      errors,
+      pushed,
+      merged,
+      mergeCompleted,
+      oversized,
+      bulkExcluded,
+      contentErrors,
+      skippedPaths,
+      strandedSubmodules,
+    };
   // A live lock is a partial exclusion, not a fleet-wide stop. Report the legacy
   // skipped verdict only when every visible dirty path was protected and the pass
   // made no progress anywhere. A pass that committed/pushed an unlocked sibling is
   // `synced` and still carries skippedPaths for observability + the next retry.
   if (skippedPaths.length > 0 && !didSomething)
-    return { status: 'skipped-locked', dirtyPathCount, committedCount, skippedPaths, mergeCompleted, oversized, contentErrors, strandedSubmodules };
+    return {
+      status: 'skipped-locked',
+      dirtyPathCount,
+      committedCount,
+      skippedPaths,
+      mergeCompleted,
+      oversized,
+      bulkExcluded,
+      contentErrors,
+      strandedSubmodules,
+    };
   // NOTE 'nothing' carries the census too. A tick that commits nothing is the MOST likely
   // one to be stranding work — the visible tree is clean precisely because the dirty repo
   // is invisible — so this is the last status that should omit it.
-  if (!didSomething) return { status: 'nothing', dirtyPathCount, committedCount, skippedPaths, mergeCompleted, oversized, contentErrors, strandedSubmodules };
+  if (!didSomething)
+    return {
+      status: 'nothing',
+      dirtyPathCount,
+      committedCount,
+      skippedPaths,
+      mergeCompleted,
+      oversized,
+      bulkExcluded,
+      contentErrors,
+      strandedSubmodules,
+    };
   // superHeadSha comes from the push step's checkpoint; a 'synced' verdict implies that
   // step ran (blocked/commit-error passes return above). Fallback read for safety only.
   return {
@@ -4507,6 +4566,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     merged,
     mergeCompleted,
     oversized,
+    bulkExcluded,
     contentErrors,
     skippedPaths,
     strandedSubmodules,

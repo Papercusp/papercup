@@ -722,7 +722,14 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     const rowsReady = await browser.waitUntil(
       async () =>
         await browser.execute(
-          () => document.querySelectorAll('[role="row"]').length > 1,
+          () => {
+            const workItemsPanel = document
+              .querySelector('[data-testid="wi-count"]')
+              ?.closest('.pc-advpanel');
+            return (
+              (workItemsPanel?.querySelectorAll('[role="row"]').length ?? 0) > 1
+            );
+          },
         ),
       {
         timeout: 20_000,
@@ -745,7 +752,11 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
           dockTabs: Array.from(
             document.querySelectorAll<HTMLElement>(".dv-tab"),
           ).map((tab) => (tab.textContent ?? "").trim()).filter(Boolean),
-          rowCount: document.querySelectorAll('[role="row"]').length,
+          rowCount:
+            document
+              .querySelector('[data-testid="wi-count"]')
+              ?.closest('.pc-advpanel')
+              ?.querySelectorAll('[role="row"]').length ?? 0,
           workItemCount:
             document.querySelector('[data-testid="wi-count"]')?.textContent?.trim() ??
             null,
@@ -763,7 +774,10 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     // Click the first data row — RichGrid's onRowClick → WorkItemsPanel's
     // setSelectedId → the `?sel` nuqs param the Detail pane follows.
     await browser.execute(() => {
-      const rows = document.querySelectorAll<HTMLElement>('[role="row"]');
+      const rows = document
+        .querySelector('[data-testid="wi-count"]')
+        ?.closest('.pc-advpanel')
+        ?.querySelectorAll<HTMLElement>('[role="row"]');
       rows[1]?.click();
     });
 

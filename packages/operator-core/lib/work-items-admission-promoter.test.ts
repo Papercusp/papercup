@@ -162,6 +162,26 @@ describe('planPromoterDispositions', () => {
     expect(new Set(plan.adjudications.map((a) => a.canonical))).toEqual(new Set(['WI-1']));
   });
 
+  it('adds live non-pending losers from a transitive merge component', () => {
+    const canonical = item('WI-canonical', { admission: 'admitted', createdAtMs: 1 });
+    const legacyLoser = item('WI-legacy-loser', { admission: null, createdAtMs: 2 });
+    const pendingBridge = item('WI-pending-bridge', { admission: 'pending', createdAtMs: 3 });
+    const pairs = [
+      pair(pendingBridge, legacyLoser, [pendingBridge.id]),
+      pair(pendingBridge, canonical, [pendingBridge.id]),
+    ];
+    const plan = planPromoterDispositions(
+      [pendingBridge],
+      pairs,
+      pairs.map((p) => judgement(p, 'r-finding-merge')),
+    );
+
+    expect(plan.dispositions).toEqual([
+      { itemId: 'WI-legacy-loser', action: 'merge', canonicalId: 'WI-canonical' },
+      { itemId: 'WI-pending-bridge', action: 'merge', canonicalId: 'WI-canonical' },
+    ]);
+  });
+
   it('preserves and links an R-remedy pair while admitting both items', () => {
     const a = item('WI-1', { summary: 'Fix with an intake lease.' });
     const b = item('WI-2', { summary: 'Fix with a refractory window.' });

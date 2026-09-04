@@ -410,16 +410,52 @@ function stringList(raw: unknown): string[] {
  */
 export function deriveGitSyncExclusions(
   metadata: Record<string, unknown> | null,
+  freshness: Record<string, unknown> | null = null,
+  nowMs: number = Date.now(),
 ): Record<string, unknown> {
   const skipped = stringList(metadata?.last_skipped_paths);
   const oversized = stringList(metadata?.last_oversized);
+  const bulkExcluded = stringList(metadata?.last_bulk_excluded);
   const skippedAtMs = epochMs(metadata?.last_skipped_at);
+  const exclusionAtMs = epochMs(metadata?.last_exclusions_at);
+  const lastSyncedAtMs = epochMs(metadata?.last_synced_at);
+  const hasByteExclusions = oversized.length > 0 || bulkExcluded.length > 0;
+  const exclusionStampMatchesSweep =
+    exclusionAtMs !== null && lastSyncedAtMs !== null && exclusionAtMs === lastSyncedAtMs;
+  const sweepStale =
+    hasByteExclusions &&
+    (!exclusionStampMatchesSweep || freshness?.status === 'degraded');
   const parts: string[] = [];
+  const remedies: string[] = [];
   if (skipped.length > 0) {
     const reason = typeof metadata?.last_skip_reason === 'string' ? metadata.last_skip_reason : 'unknown';
     parts.push(`${skipped.length} path(s) excluded from the last completed sweep (${reason})`);
+    remedies.push('release the corresponding file lock(s)');
   }
-  if (oversized.length > 0) parts.push(`${oversized.length} oversized file(s) excluded`);
+  if (hasByteExclusions) {
+    if (sweepStale) {
+      parts.push(
+        'byte-exclusion data is from a stale or unknown sweep vintage; do not treat these paths as current',
+      );
+    } else {
+      if (oversized.length > 0) {
+        parts.push(`${oversized.length} per-file oversized blob(s) excluded`);
+        remedies.push('gitignore or remove the per-file oversized blob(s)');
+      }
+      if (bulkExcluded.length > 0) {
+        parts.push(`${bulkExcluded.length} file(s) excluded by the cumulative commit-size limit`);
+        remedies.push('raise the cumulative limit or reduce/split the dirty set');
+      }
+      parts.push(
+        `${oversized.length + bulkExcluded.length} byte-excluded path(s) are in no commit and therefore in no ` +
+          'green-checkpoint candidate',
+      );
+    }
+  }
+  const warningParts = [...parts];
+  if (hasByteExclusions && !sweepStale) {
+    warningParts.push(remedies.join('; '));
+  }
   return {
     skip_reason: typeof metadata?.last_skip_reason === 'string' ? metadata.last_skip_reason : null,
     skipped_at: isoAt(skippedAtMs),
@@ -429,13 +465,20 @@ export function deriveGitSyncExclusions(
     oversized_count: oversized.length,
     oversized_sample: oversized.slice(0, GIT_SYNC_EXCLUSION_SAMPLE),
     oversized_sample_truncated: oversized.length > GIT_SYNC_EXCLUSION_SAMPLE,
+    bulk_excluded_count: bulkExcluded.length,
+    bulk_excluded_sample: bulkExcluded.slice(0, GIT_SYNC_EXCLUSION_SAMPLE),
+    bulk_excluded_sample_truncated: bulkExcluded.length > GIT_SYNC_EXCLUSION_SAMPLE,
+    sweep_at: isoAt(exclusionAtMs),
+    sweep_age_ms: exclusionAtMs === null ? null : Math.max(0, nowMs - exclusionAtMs),
+    sweep_stale: sweepStale,
     warning:
-      parts.length === 0
+      warningParts.length === 0
         ? null
-        : `${parts.join('; ')}. An excluded path is in no commit and therefore in no ` +
-          'green-checkpoint candidate, so work_items:complete on it can land ' +
-          "completionAuthority:'proposed'. Release the lock (or gitignore/remove the oversized " +
-          'file) and let the next sweep pick it up.',
+        : `${warningParts.join('; ')}${
+            hasByteExclusions && sweepStale
+              ? '. Wait for a fresh completed sweep before taking byte-exclusion action'
+              : ', so work_items:complete on it can land completionAuthority:\'proposed\''
+          }.`,
   };
 }
 
@@ -491,7 +534,7 @@ export default defineTool({
       '`paused` — non-null means a DELIBERATE hold, carrying { reason, by, at }. Read it before calling a routine stalled; a bare active:false with paused:null is the one worth investigating.',
       '`health` — the operational half of the routine row, null when the row carries none of it. Includes `gate_health` on the green-checkpoint routine (the live in-flight-retriage marker, observed candidate and consecutive-red count), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_freshness` is the read-time verdict derived from last_synced_at, the in-flight fire and the cron cadence: degraded means either no completed outcome for more than three scheduled intervals, or one fire in flight longer than that same window. `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
       '⚠ git-sync `health.last_status` is DERIVED-OVERRIDDEN, not raw (EI-21807573331912223). When git_sync_freshness is degraded it reads `degraded (derived — see git_sync_freshness; raw: <writer value>)`, because the writer-backed headline reported `synced` on every tick for ~35 minutes while committing nothing — a skipped tick deliberately does not overwrite the last real outcome. The writer value is preserved at `git_sync_freshness.raw_last_status`; the `harness_shared.routines.metadata.last_status` column is untouched.',
-      '⚠ `health.git_sync_exclusions` — what the last completed sweep LEFT OUT (EI-21900560691158244): { skip_reason, skipped_at, skipped_count, skipped_sample, oversized_count, oversized_sample, +_truncated markers, warning }. git-sync excludes every actively file-locked path and every oversized blob, so `last_status:"synced"` can be truthful while YOUR file was never committed. Counts are true totals; the samples are bounded and say so. Always present on a git-sync row, so `skipped_count:0` is a measurement, not a missing field. A non-null `warning` means an excluded path is in no green-checkpoint candidate, which is why work_items:complete on it can land completionAuthority:"proposed".',
+      '⚠ `health.git_sync_exclusions` — what the last completed sweep LEFT OUT (EI-21900560691158244/WI-2141747): { skip_reason, skipped_at, skipped_count, skipped_sample, oversized_count, oversized_sample, bulk_excluded_count, bulk_excluded_sample, +_truncated markers, sweep_at, sweep_age_ms, sweep_stale, warning }. `oversized_*` is only the per-file blob guard; `bulk_excluded_*` is the cumulative commit-size guard and has a different remedy. Counts are true totals; samples are bounded. `sweep_stale:true` (including legacy rows with no stamp, or a degraded git-sync freshness verdict) suppresses byte-exclusion action advice until a fresh completed sweep is measured. Always present on a git-sync row, so zero counts are measurements, not missing fields.',
       '`health.git_sync_freshness.in_flight` — the wedged-fire decomposition: { active, phase, started_at, age_ms, stuck }, null when the row carries no git_sync_activity. `stuck:true` means one fire has been running longer than three scheduled intervals, which is a DIFFERENT incident from ticks being skipped (there is a live process to look at) even though both read `degraded`.',
       '`health.gate_health.readAttestation` — read-time provenance for the cached verdict: snapshotObservedAt, snapshotAge/snapshotAgeMs, the judged candidate, candidateCommittedAt, candidateAgeAtObservationMs, and commitsBehindTip. The raw gate-health fields remain unchanged; null attestation fields mean the older writer did not provide that evidence.',
       '`health.gate_health.failingTestsAttestation` — candidate-bound provenance for the raw `failingTests` array: the terminal-verdict candidate, the live in-flight candidate (when the run published one), `staleAgainstInFlight`, and a warning when the arrays belong to a prior candidate. A null stale marker means the comparison was unavailable; never read it as false.',
@@ -775,7 +818,7 @@ export default defineTool({
             // holder can tell their file is stranded; the healthOf allowlist dropped
             // every one of those fields. Always present on a git-sync row, so zero is
             // an affirmative measurement rather than an absent field.
-            git_sync_exclusions: deriveGitSyncExclusions(r.metadata),
+            git_sync_exclusions: deriveGitSyncExclusions(r.metadata, freshness),
           },
           freshness,
         );
