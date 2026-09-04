@@ -70,7 +70,10 @@ import {
   GOAL_HOLDER_DEFAULTS,
   type GoalHolderOnLoss,
 } from './goal-launch-settings-shared';
-import { isGoalHolderAuthorityError, resolveGoalContext } from './modes/goal-context';
+import {
+  isGoalHolderAuthorityError,
+  resolveGoalContext,
+} from './modes/goal-context';
 // The fleet-shape vocabulary is owned by the fleet store; `fleetType` below
 // derives its accepted values from it rather than declaring them a second time.
 import { FLEET_TYPES } from './agent-fleets-store';
@@ -1243,7 +1246,8 @@ export async function readGoalPortfolioBrief(args: {
       priorities.push(`Restore delegated leadership and live coverage for drain fleet ${declaredFleet}.`);
     if (queue.needsHuman > 0) priorities.push(`Report ${queue.needsHuman} owner-walled queue item(s) with exact asks.`);
     const executablePlacement = worklist.find((plan) => plan.placement.reconciliation.toolCall !== null);
-    const repairPlan = executablePlacement ?? worklist.find((plan) => plan.placement.reconciliation.action !== 'none');
+    const repairPlan =
+      executablePlacement ?? worklist.find((plan) => plan.placement.reconciliation.action !== 'none');
     if (repairPlan) priorities.push(`Reconcile ${repairPlan.ref}: ${repairPlan.placement.reconciliation.reason}`);
     if ((claimable ?? 0) > 0)
       priorities.push(`Place ${claimable} goal-scoped claimable issue(s) without implementing them yourself.`);

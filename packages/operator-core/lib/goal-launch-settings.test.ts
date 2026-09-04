@@ -207,7 +207,9 @@ function mockSql(opts: MockOpts = {}): Sql {
         (value) => typeof value === 'string' && value in (opts.activePotOwner ?? {}),
       ) as string | undefined;
       const owner = harness ? opts.activePotOwner?.[harness] : undefined;
-      return Promise.resolve(owner ? [{ owner_goal_id: owner.goalId, owner_goal_title: owner.title ?? null }] : []);
+      return Promise.resolve(
+        owner ? [{ owner_goal_id: owner.goalId, owner_goal_title: owner.title ?? null }] : [],
+      );
     }
     if (text.includes('FROM harness_shared.session_briefs b')) {
       // Located by VALUE, not by index. A positional lookup here silently

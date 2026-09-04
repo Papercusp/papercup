@@ -33,15 +33,13 @@ const listLiveTasksMock = vi.fn(
 const totalmemMock = vi.fn((..._args: unknown[]) => 256 * 1024 ** 3);
 const agentSpawnScopeMemoryMaxGMock = vi.fn((..._args: unknown[]) => 6);
 const launchTransaction = vi.hoisted(() => ({
-  verify: vi.fn(
-    async (..._args: unknown[]): Promise<any> => ({
-      agentStarted: true as boolean | null,
-      workerReady: false,
-      waitedMs: 1,
-      sessions: [],
-      note: 'verified',
-    }),
-  ),
+  verify: vi.fn(async (..._args: unknown[]): Promise<any> => ({
+    agentStarted: true as boolean | null,
+    workerReady: false,
+    waitedMs: 1,
+    sessions: [],
+    note: 'verified',
+  })),
   persist: vi.fn(async (..._args: unknown[]): Promise<boolean | null> => null),
 }));
 const goalLaunchReadMock = vi.hoisted(() => vi.fn());
@@ -299,7 +297,9 @@ const invokeLaunchHandler = (
   defaultHeadless: boolean | null = false,
 ) =>
   tool.handler(
-    (defaultHeadless !== null && args.headless === undefined ? { ...args, headless: defaultHeadless } : args) as never,
+    (defaultHeadless !== null && args.headless === undefined
+      ? { ...args, headless: defaultHeadless }
+      : args) as never,
     context as never,
   );
 
@@ -430,10 +430,9 @@ describe('sanitizePersistedGoalLaunchRole', () => {
   });
 
   it('preserves explicit roles and ordinary persisted personas', () => {
-    expect(sanitizePersistedGoalLaunchRole({ persistedRole: 'drain-fleet-leader', explicitRole: 'builder' })).toEqual({
-      role: 'builder',
-      ignoredRoles: [],
-    });
+    expect(
+      sanitizePersistedGoalLaunchRole({ persistedRole: 'drain-fleet-leader', explicitRole: 'builder' }),
+    ).toEqual({ role: 'builder', ignoredRoles: [] });
     expect(sanitizePersistedGoalLaunchRole({ persistedRole: 'su' })).toEqual({ role: 'su', ignoredRoles: [] });
   });
 });
@@ -911,7 +910,9 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       },
     ]);
     expect(command).not.toContain('--role=drain-fleet-leader');
-    expect(assembleRolePromptMock).not.toHaveBeenCalledWith(expect.objectContaining({ role: 'drain-fleet-leader' }));
+    expect(assembleRolePromptMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'drain-fleet-leader' }),
+    );
     expect(payload.message).toContain('ignored persisted GOAL launch slot role(s)');
   });
 
@@ -941,7 +942,9 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
 
     expect(payload.ok).toBe(true);
     expect(command).not.toContain('--role=member');
-    expect(assembleRolePromptMock).not.toHaveBeenCalledWith(expect.objectContaining({ role: 'member' }));
+    expect(assembleRolePromptMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'member' }),
+    );
     expect(payload.headcountProfile.config).not.toHaveProperty('role');
   });
 
@@ -1236,7 +1239,12 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     expect(setFleetLeaderMock.mock.invocationCallOrder[0]).toBeLessThan(
       setPresenceFleetMock.mock.invocationCallOrder[0],
     );
-    expect(setPresenceFleetMock).toHaveBeenCalledWith('ws-1', payload.spawnedLeader.ownerId, 'spawn-led', 'leader');
+    expect(setPresenceFleetMock).toHaveBeenCalledWith(
+      'ws-1',
+      payload.spawnedLeader.ownerId,
+      'spawn-led',
+      'leader',
+    );
     expect(setPresenceFleetMock.mock.invocationCallOrder[0]).toBeLessThan(
       ensureFleetLeaderControlMock.mock.invocationCallOrder[0],
     );
@@ -1277,7 +1285,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     });
   });
 
-  it("protects a confirmed-live leader when leader:'spawn' is requested on an existing fleet", async () => {
+  it('protects a confirmed-live leader when leader:\'spawn\' is requested on an existing fleet', async () => {
     createFleetIfAbsentMock.mockResolvedValueOnce({
       record: {
         owner: 'other-caller',
@@ -1421,13 +1429,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       created: false,
     });
     getPresenceMock.mockResolvedValueOnce(null);
-    spawnConsoleMock.mockImplementationOnce(() => ({
-      status: 'error',
-      terminal: '',
-      pid: null,
-      error: 'boot failed',
-      code: 500,
-    }));
+    spawnConsoleMock.mockImplementationOnce(() => ({ status: 'error', terminal: '', pid: null, error: 'boot failed', code: 500 }));
 
     const res = await invokeLaunchHandler(
       { name: 'Failed Recovery', plan: 'my-plan', harness: 'papercusp', count: 1, leader: 'spawn' } as never,
@@ -2707,7 +2709,9 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
     // Admission can fail before spawnConsole returns any SpawnConsoleResult. The
     // rejection must still occupy the attempted member's slot so the transaction
     // is durable and the remaining cohort is eligible for a later retry.
-    spawnGovernedAgentProcessMock.mockRejectedValueOnce(new Error('durable admission record could not be persisted'));
+    spawnGovernedAgentProcessMock.mockRejectedValueOnce(
+      new Error('durable admission record could not be persisted'),
+    );
 
     const res = await invokeLaunchHandler(
       { name: 'Admission Fail Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
@@ -2726,13 +2730,11 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
     ]);
     expect(payload.launchTransaction).toMatchObject({
       state: 'partial',
-      failed: [
-        {
-          ownerId: payload.launchTransaction.requestedMemberIds[0],
-          phase: 'spawn',
-          reason: 'governed spawn failed: durable admission record could not be persisted',
-        },
-      ],
+      failed: [{
+        ownerId: payload.launchTransaction.requestedMemberIds[0],
+        phase: 'spawn',
+        reason: 'governed spawn failed: durable admission record could not be persisted',
+      }],
       recovery: { retryOwnerIds: payload.launchTransaction.requestedMemberIds },
     });
     expect(payload.launchTransaction.waves).toHaveLength(1);
@@ -2817,11 +2819,9 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       {} as never,
     );
     const payload = parseHandlerPayload(res);
-    const command = (
-      spawnConsoleMock.mock.calls[0]?.[0] as {
-        envelope?: { greetingCmd?: string };
-      }
-    )?.envelope?.greetingCmd;
+    const command = (spawnConsoleMock.mock.calls[0]?.[0] as {
+      envelope?: { greetingCmd?: string };
+    })?.envelope?.greetingCmd;
 
     expect(payload.launchTransaction.launcherOwnerId).toBe('owner-1');
     expect(command).toContain('--launched-by=owner-1');
@@ -2842,11 +2842,9 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
 
     expect((res as any).isError).toBe(true);
     expect(responseText).toContain('changed concurrently');
-    expect(launchTransaction.persist).toHaveBeenCalledWith(
-      expect.objectContaining({
-        expectedRevision: null,
-      }),
-    );
+    expect(launchTransaction.persist).toHaveBeenCalledWith(expect.objectContaining({
+      expectedRevision: null,
+    }));
     expect(spawnConsoleMock).not.toHaveBeenCalled();
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
     expect(releaseSlot).toHaveBeenCalledWith({ workspaceId: 'ws-1', fleetSlug: 'cas-loss-fleet', at: 1 });
@@ -2862,38 +2860,34 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
         agentStarted: true,
         workerReady: ready,
         waitedMs: 1,
-        sessions: [
-          {
-            advSessionId: verificationCall,
+        sessions: [{
+          advSessionId: verificationCall,
+          ownerId,
+          successfulCalls: 1,
+          msSinceLastSignal: 1,
+          hasPresence: true,
+          attestationDiffs: [],
+          workerAttestation: {
+            version: 1 as const,
             ownerId,
-            successfulCalls: 1,
-            msSinceLastSignal: 1,
-            hasPresence: true,
-            attestationDiffs: [],
-            workerAttestation: {
-              version: 1 as const,
-              ownerId,
-              ready,
-              stages: {
-                agentCall: { status: 'satisfied' as const, successfulCalls: 1 },
-                durableWake: ready
-                  ? { status: 'satisfied' as const, wakeSource: 'loop' }
-                  : { status: 'missing' as const, wakeSource: null },
-                schedulerPull: { status: 'satisfied' as const, calls: 1, successfulCalls: 1 },
-                disposition: { status: 'satisfied' as const, kind: 'no-claim' as const, reason: 'lane_drained' },
-              },
-              failures: ready
-                ? []
-                : [
-                    {
-                      stage: 'durableWake' as const,
-                      code: 'durable-wake-missing' as const,
-                      detail: 'No durable wake.',
-                    },
-                  ],
+            ready,
+            stages: {
+              agentCall: { status: 'satisfied' as const, successfulCalls: 1 },
+              durableWake: ready
+                ? { status: 'satisfied' as const, wakeSource: 'loop' }
+                : { status: 'missing' as const, wakeSource: null },
+              schedulerPull: { status: 'satisfied' as const, calls: 1, successfulCalls: 1 },
+              disposition: { status: 'satisfied' as const, kind: 'no-claim' as const, reason: 'lane_drained' },
             },
+            failures: ready
+              ? []
+              : [{
+                  stage: 'durableWake' as const,
+                  code: 'durable-wake-missing' as const,
+                  detail: 'No durable wake.',
+                }],
           },
-        ],
+        }],
         note: 'verified',
       };
     });
@@ -2939,11 +2933,9 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     expect(payload.launchTransaction.verifiedMemberIds).toHaveLength(4);
     // Both initial probes target only the canary; then the remaining pre-pinned waves open.
     expect(launchTransaction.verify).toHaveBeenCalledTimes(4);
-    expect(
-      launchTransaction.verify.mock.calls.map(
-        (call) => (call[0] as { expectedOwnerIds: string[] }).expectedOwnerIds.length,
-      ),
-    ).toEqual([1, 1, 3, 1]);
+    expect(launchTransaction.verify.mock.calls.map(
+      (call) => (call[0] as { expectedOwnerIds: string[] }).expectedOwnerIds.length,
+    )).toEqual([1, 1, 3, 1]);
     // The unconfirmed canary is the THIRD state — reported as unverified, never
     // absorbed into failed[] as a 502 (that false refusal is the measured bug).
     expect(payload.launchTransaction.failed).toEqual([]);
@@ -3250,7 +3242,9 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
-    expect(admissionMocks.preflight).toHaveBeenCalledWith(expect.objectContaining({ requestedSeats: 1 }));
+    expect(admissionMocks.preflight).toHaveBeenCalledWith(
+      expect.objectContaining({ requestedSeats: 1 }),
+    );
     expect(claimFleetLaunchSlot).toHaveBeenCalledWith(
       expect.objectContaining({
         count: 2,
@@ -3765,7 +3759,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
   // clobbering a correctly-scoped prior spec (harness_slug='papercusp') even though nothing
   // about the launch's own harness scope changed. That stranded a live canary member whose
   // scheduler:get_next filters by harness_slug: the spec existed, but scoped to nothing.
-  it("EI-21177728511242093: threads the launch's resolved harness through as the claim-spec potSlug — never a hardcoded null", async () => {
+  it('EI-21177728511242093: threads the launch\'s resolved harness through as the claim-spec potSlug — never a hardcoded null', async () => {
     const res = await invokeLaunchHandler(
       { name: 'Drain Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['bug'] } as never,
       {} as never,
@@ -4141,22 +4135,22 @@ describe('fleet:launch-on-plan handler — plan→work-item promotion failsafe (
   });
 
   /**
-   * EI-21574373783224719: the reservation contract as a single predicate, so the assertion and
-   * its falsifiability controls are provably the SAME check. A promoted lane is reserved for the
-   * launching fleet only when the promotion call carries a non-blank `fleetSlug` naming the same
-   * fleet the handler admitted against — that value becomes `payload.fleet_slug`, which is leg 1
-   * of `reservedPlanLaneExclusionSql` and the only thing that keeps a non-fleet agent's
-   * self-select off the lane.
-   */
-  function reservesLaneForLaunchingFleet(
-    promoteArgs: { fleetSlug?: unknown },
-    preflightArgs: { fleetSlug?: unknown },
-  ): boolean {
-    const slug = promoteArgs.fleetSlug;
-    return typeof slug === 'string' && slug.length > 0 && slug === preflightArgs.fleetSlug;
-  }
+ * EI-21574373783224719: the reservation contract as a single predicate, so the assertion and
+ * its falsifiability controls are provably the SAME check. A promoted lane is reserved for the
+ * launching fleet only when the promotion call carries a non-blank `fleetSlug` naming the same
+ * fleet the handler admitted against — that value becomes `payload.fleet_slug`, which is leg 1
+ * of `reservedPlanLaneExclusionSql` and the only thing that keeps a non-fleet agent's
+ * self-select off the lane.
+ */
+function reservesLaneForLaunchingFleet(
+  promoteArgs: { fleetSlug?: unknown },
+  preflightArgs: { fleetSlug?: unknown },
+): boolean {
+  const slug = promoteArgs.fleetSlug;
+  return typeof slug === 'string' && slug.length > 0 && slug === preflightArgs.fleetSlug;
+}
 
-  // EI-21574373783224719: promoting is only HALF the failsafe's job — what it mints must also be
+// EI-21574373783224719: promoting is only HALF the failsafe's job — what it mints must also be
   // RESERVED for the fleet it was minted for. The failsafe deliberately does not flip
   // op_status='started' (that would hand a fleet-driven plan a second dispatcher via the DBOS
   // orchestrator frontier), so without a fleet stamp the minted rows carry NO reservation signal
@@ -4196,7 +4190,9 @@ describe('fleet:launch-on-plan handler — plan→work-item promotion failsafe (
     // weakens the predicate cannot leave this test passing vacuously.
     expect(reservesLaneForLaunchingFleet({}, preflightArgs)).toBe(false); // pre-fix: arg omitted
     expect(reservesLaneForLaunchingFleet({ fleetSlug: '' }, preflightArgs)).toBe(false); // blank
-    expect(reservesLaneForLaunchingFleet({ fleetSlug: 'a-different-fleet' }, preflightArgs)).toBe(false); // wrong fleet — reserves the lane AWAY from the fleet about to work it
+    expect(reservesLaneForLaunchingFleet({ fleetSlug: 'a-different-fleet' }, preflightArgs)).toBe(
+      false,
+    ); // wrong fleet — reserves the lane AWAY from the fleet about to work it
   });
 
   it('warns in the message when it had to backstop a missing plans:start (promoted > 0)', async () => {
@@ -4280,16 +4276,14 @@ describe('fleet:launch-on-plan handler — plan→work-item promotion failsafe (
       promotionFailsafe: { ran: true, promoted: 0, skipped: 3 },
       admission: { ready: false, reason: 'family-disagreement' },
     });
-    expect(admissionMocks.preflight).toHaveBeenCalledWith(
-      expect.objectContaining({
-        workspaceId: 'ws-1',
-        harnessSlug: 'papercusp',
-        planSlug: 'my-plan',
-        actor: 'owner-1',
-        specId: 'fleet-launch-refused-admission-plan',
-        fleetSlug: 'refused-admission',
-      }),
-    );
+    expect(admissionMocks.preflight).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      planSlug: 'my-plan',
+      actor: 'owner-1',
+      specId: 'fleet-launch-refused-admission-plan',
+      fleetSlug: 'refused-admission',
+    }));
     expect(admissionMocks.preflight.mock.calls[0][0]).not.toHaveProperty('claimant');
     expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
     expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
