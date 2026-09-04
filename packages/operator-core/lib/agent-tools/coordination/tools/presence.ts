@@ -70,6 +70,11 @@ export default defineTool({
         args: { owner: '<agent-id>' },
         note: 'the full stale-roster dump was REMOVED, not renamed — `owner` (or `owners:[...]` for a bounded set) is its replacement and returns the row even when that agent is `ended`. Use it to inspect or wake ONE known-dead agent; there is no supported way to expand the whole stale roster',
       },
+      includeEnded: {
+        tool: 'coord:presence',
+        args: { owner: '<agent-id>' },
+        note: '`includeEnded` is not a supported filter — targeted `owner`/`owners` lookups already include ended rows. Pass `owner:<agent-id>` (or `owners:[...]`) without `includeEnded`',
+      },
       limit: {
         tool: 'coord:roster',
         args: { view: 'live', project: 'ids' },

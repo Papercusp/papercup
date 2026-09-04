@@ -71,6 +71,15 @@ describe('coord:presence guidance.argRedirects', () => {
     });
   });
 
+  it('routes `includeEnded` callers to targeted lookups that already include ended rows', () => {
+    const redirect = presenceTool.guidance?.argRedirects?.includeEnded;
+    expect(redirect).toEqual({
+      tool: 'coord:presence',
+      args: { owner: '<agent-id>' },
+      note: expect.stringContaining('already include ended rows'),
+    });
+  });
+
   it('routes the paging and cross-surface keys to the tools that own them', () => {
     const redirects = presenceTool.guidance?.argRedirects ?? {};
     expect(redirects.limit).toMatchObject({ tool: 'coord:roster' });
