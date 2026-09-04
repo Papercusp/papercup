@@ -22,6 +22,57 @@ import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harnes
 export const WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION =
   'papercusp-workspace-host-bootstrap-v2';
 export const WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION = '24.04';
+
+/**
+ * The two host models that coexist through the bootc port (P-306; D-280 ordered the PORT before
+ * D-262 condition 2 for exactly this reason).
+ *
+ * `ubuntu-release-bundle` is the shipped model: an Ubuntu 24.04 VM, `apt-get install` for host
+ * prerequisites, and a release delivered as a signed tarball that is downloaded, digest-checked,
+ * minisign-verified, extracted, and swapped in by moving a symlink.
+ *
+ * `bootc-image` is the ported model: the host BOOTS the product image, so the package set and
+ * the release are already in `/usr` before the first line of this script runs, and an update is
+ * `bootc upgrade` — pull, stage into the inactive deployment slot, atomic reboot, `bootc
+ * rollback` to undo.
+ *
+ * ⛔ Neither member may be collapsed away to quiet the types. They describe two hosts that are
+ * genuinely both live during the transition, and the whole hazard this union exists to prevent
+ * is one model attesting the other's properties.
+ */
+export const WORKSPACE_HOST_MODELS = [
+  'ubuntu-release-bundle',
+  'bootc-image',
+] as const;
+export type WorkspaceHostModel = (typeof WORKSPACE_HOST_MODELS)[number];
+export const DEFAULT_WORKSPACE_HOST_MODEL: WorkspaceHostModel =
+  'ubuntu-release-bundle';
+
+/**
+ * The bootc base the product image is built FROM (`infra/images/bootc/workspace-host.Containerfile`,
+ * P-306 half A). Pinned here because the attested `bootc-base-image` check compares the booted
+ * deployment's origin against it.
+ */
+export const WORKSPACE_HOST_BOOTC_BASE_IMAGE =
+  'quay.io/centos-bootc/centos-bootc:stream9';
+
+/**
+ * The update path each model actually performs — declared as a PAIRING, not as two independent
+ * unions, and this is the load-bearing part.
+ *
+ * A bare `updateMode: 'signed-atomic-release-swap' | 'bootc-atomic-image-swap'` union accepts a
+ * bootc host that reports `signed-atomic-release-swap`: a claim to have verified a minisign
+ * signature over a tarball it never downloaded. That is D-262's trap in miniature — an attested
+ * property no code performs — so the union is expressed as a map keyed by model and the
+ * validator checks the PAIR, never mere membership.
+ */
+export const WORKSPACE_HOST_UPDATE_MODE_BY_MODEL = {
+  'ubuntu-release-bundle': 'signed-atomic-release-swap',
+  'bootc-image': 'bootc-atomic-image-swap',
+} as const satisfies Record<WorkspaceHostModel, string>;
+export type WorkspaceHostUpdateMode =
+  (typeof WORKSPACE_HOST_UPDATE_MODE_BY_MODEL)[WorkspaceHostModel];
+
 export const WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX =
   'PAPERCUSP_WORKSPACE_HOST_ATTESTATION=';
 export const DEFAULT_WORKSPACE_HOST_SERVICE_USER = 'papercusp';
@@ -333,10 +384,15 @@ export const WORKSPACE_HOST_BOOTSTRAP_PHASES = [
 export type WorkspaceHostBootstrapPhase =
   (typeof WORKSPACE_HOST_BOOTSTRAP_PHASES)[number];
 
-export const WORKSPACE_HOST_BOOTSTRAP_CHECKS = [
-  "ubuntu-24.04",
-  "bundle-digest",
-  "bundle-signature",
+/**
+ * Checks EVERY host model must attest, whatever delivered the bits.
+ *
+ * Membership here is a claim that the property is model-invariant, not that the observation is:
+ * `node-runtime` is established by execing the bundled Node on an Ubuntu host and the image's
+ * Node on a bootc host, but the attested property — "the Node that will run the operator meets
+ * the floor" — is the same property, and a host that fails it is broken under either model.
+ */
+export const WORKSPACE_HOST_BOOTSTRAP_SHARED_CHECKS = [
   "node-runtime",
   "embedded-postgres-migration",
   "agent-cli-prerequisites",
@@ -355,8 +411,75 @@ export const WORKSPACE_HOST_BOOTSTRAP_CHECKS = [
   // the document that asserts the host is fine (EI-22185970114422986).
   "workspace-ssh-authorized-keys",
 ] as const;
+
+/**
+ * The checks that exist ONLY on one host model, because only that model performs the
+ * observation. This is the split D-262 condition 2 could not be written without.
+ *
+ * The Ubuntu three are the release-tarball trust chain: an OS-release assertion, a sha256 over a
+ * downloaded file, and a minisign verification of a detached signature. NONE of the three has a
+ * bootc analogue that this script performs — the release IS the booted image, and its signature
+ * was checked by the containers policy during the pull, by skopeo, before any code of ours ran
+ * (D-279 proved that policy is enforced and fails closed).
+ *
+ * So a bootc host that attested `bundle-signature: true` would be asserting a minisign check no
+ * line of its bootstrap executes. It gets `image-signature` instead — a DIFFERENT name for a
+ * different observation — precisely so the two can never be confused for one another.
+ */
+export const WORKSPACE_HOST_BOOTSTRAP_MODEL_CHECKS = {
+  'ubuntu-release-bundle': [
+    "ubuntu-24.04",
+    "bundle-digest",
+    "bundle-signature",
+  ],
+  'bootc-image': [
+    "bootc-base-image",
+    "image-digest",
+    "image-signature",
+    // D-283's open risk, made observable. Whether `/opt` is image content on a BOOTED host could
+    // not be settled inside a container, so `papercusp-host-prepare.service` asserts it at boot
+    // and fails closed. That unit is also what re-applies the `/opt/papercusp` ACLs on EVERY
+    // boot — they live in the deployment root, which `bootc upgrade` REPLACES, while `/var`
+    // persists. An upgraded host whose unit did not run has the right files and the wrong
+    // access, and reports healthy throughout unless this check names it.
+    "host-prepare-unit",
+  ],
+} as const satisfies Record<WorkspaceHostModel, readonly string[]>;
+
+/**
+ * Every check name in the contract — the NAME SPACE, deliberately not "the checks to attest".
+ *
+ * It is spelled `_CHECK_NAMES` because its predecessor was called `WORKSPACE_HOST_BOOTSTRAP_CHECKS`
+ * and two call sites mapped it wholesale to `{ name, ok: true }`. Under one host model that was
+ * merely optimistic; under two it is a correctness bug, because the union of both models' names
+ * is a set no single host can establish. Anything that needs the list a HOST must attest calls
+ * `workspaceHostBootstrapChecks(model)` — which is the only function that returns one.
+ */
+export const WORKSPACE_HOST_BOOTSTRAP_CHECK_NAMES = [
+  ...WORKSPACE_HOST_BOOTSTRAP_SHARED_CHECKS,
+  ...WORKSPACE_HOST_BOOTSTRAP_MODEL_CHECKS['ubuntu-release-bundle'],
+  ...WORKSPACE_HOST_BOOTSTRAP_MODEL_CHECKS['bootc-image'],
+] as const;
 export type WorkspaceHostBootstrapCheckName =
-  (typeof WORKSPACE_HOST_BOOTSTRAP_CHECKS)[number];
+  (typeof WORKSPACE_HOST_BOOTSTRAP_CHECK_NAMES)[number];
+
+/**
+ * The EXACT set of checks a host of this model must attest — no more, no less.
+ *
+ * "No more" is not pedantry. The validator's old check loop required each expected name to be
+ * present and `ok`, and separately rejected duplicates and malformed entries — but it never
+ * rejected an EXTRA well-formed name. With one model that was harmless; with two it is the hole
+ * a bootc host walks through carrying `bundle-signature: true`. `validateWorkspaceHost-
+ * BootstrapAttestation` therefore asserts set EQUALITY against this function's result.
+ */
+export function workspaceHostBootstrapChecks(
+  hostModel: WorkspaceHostModel,
+): readonly WorkspaceHostBootstrapCheckName[] {
+  return [
+    ...WORKSPACE_HOST_BOOTSTRAP_SHARED_CHECKS,
+    ...WORKSPACE_HOST_BOOTSTRAP_MODEL_CHECKS[hostModel],
+  ];
+}
 
 /**
  * The host-side observation that ESTABLISHES each attested check (EI-22185970114422986).
@@ -385,6 +508,14 @@ export const WORKSPACE_HOST_BOOTSTRAP_CHECK_EVIDENCE: Readonly<
   "ubuntu-24.04": `|| die "Ubuntu ${WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION} is required"`,
   "bundle-digest": '"$BUNDLE_SHA256" "$BUNDLE_PATH" | sha256sum --check --strict -',
   "bundle-signature": 'minisign -Vm "$BUNDLE_PATH" -x "$SIGNATURE_PATH"',
+  // The bootc four. Each fragment is the narrowest line that would DISAPPEAR if its guard were
+  // removed — same rule as the Ubuntu three above, applied to a render whose observations are
+  // reads of the booted deployment rather than checks over a downloaded file.
+  "bootc-base-image": '"$BOOTC_BASE_IMAGE" != "$BOOTED_BASE_IMAGE"',
+  "image-digest": '"$BOOTED_IMAGE_DIGEST" != "$EXPECTED_IMAGE_DIGEST"',
+  "image-signature": 'containers-policy does not require a signature for',
+  "host-prepare-unit":
+    'systemctl is-active --quiet papercusp-host-prepare.service',
   "node-runtime": "bundled Node runtime is below the required floor",
   "embedded-postgres-migration": '"$RELEASE_DIR/$MIGRATE_ENTRYPOINT" --database-root',
   "agent-cli-prerequisites": '"$CLAUDE_ENTRYPOINT" "$CODEX_ENTRYPOINT" "$OMP_ENTRYPOINT"',
@@ -572,11 +703,22 @@ export interface WorkspaceHostBootstrapAttestationCheck {
   ok: true;
 }
 
-export interface WorkspaceHostBootstrapAttestation {
+/**
+ * The attested document, parameterised by host model (P-306).
+ *
+ * Generic rather than two hand-written interfaces so the ~30 model-invariant properties are
+ * declared ONCE — the point of the port is that a bootc host proves the same isolation
+ * properties, not fewer. What varies is threaded through `M`: the update mode is resolved from
+ * the pairing map, and the model-specific provenance field is attached by the union below.
+ */
+export interface WorkspaceHostBootstrapAttestationShape<
+  M extends WorkspaceHostModel,
+> {
   contractVersion: typeof WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION;
   hostId: string;
   action: WorkspaceHostBootstrapInput['action'];
-  ubuntuVersion: typeof WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION;
+  /** The discriminant. Which host model produced this document (P-306). */
+  hostModel: M;
   observedAt: string;
   status: 'healthy';
   release: {
@@ -682,10 +824,31 @@ export interface WorkspaceHostBootstrapAttestation {
     sudo: false;
     serviceGroupMember: false;
     operatorIngress: 'ssh-local-forward';
-    updateMode: 'signed-atomic-release-swap';
+    /** Resolved from the PAIRING map, so a model can only ever claim its own update path. */
+    updateMode: (typeof WORKSPACE_HOST_UPDATE_MODE_BY_MODEL)[M];
   };
   checks: readonly WorkspaceHostBootstrapAttestationCheck[];
 }
+
+/**
+ * ⛔ Do NOT flatten these back into one interface with two optional fields. The whole reason
+ * `ubuntuVersion` and `bootcImage` are attached per-member is that each is REQUIRED on its own
+ * model and MEANINGLESS on the other: an Ubuntu host has no image digest to report, and
+ * "24.04" is not a fact about a CentOS-Stream-9 bootc deployment. Two optionals would make both
+ * absences legal and hand every reader an `undefined` to guess at.
+ */
+export type WorkspaceHostBootstrapAttestation =
+  | (WorkspaceHostBootstrapAttestationShape<'ubuntu-release-bundle'> & {
+      ubuntuVersion: typeof WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION;
+    })
+  | (WorkspaceHostBootstrapAttestationShape<'bootc-image'> & {
+      bootcImage: {
+        /** The base the product image was built FROM, as the booted deployment reports it. */
+        baseImage: string;
+        /** The pinned digest of the image this deployment actually booted. */
+        digest: string;
+      };
+    });
 
 export interface WorkspaceHostBootstrapAttestationValidation {
   ok: boolean;
