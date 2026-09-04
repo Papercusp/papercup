@@ -1492,6 +1492,49 @@ export async function reconcileLoopRoutines(
           });
           if (guard.breach) {
             await terminateDeadLoop(row, guard.reason ?? 'unreachable dead-owner loop (armed, EI-11407 sweep)');
+            continue;
+          }
+        }
+        // EI-21910891361619900: the armed branch used to continue after the reachability
+        // check without recording a successful loop-origin turn. A pure loop is armed again
+        // (finite next_fire_at) as soon as its previous turn settles, so that turn never
+        // reaches the parked branch below; a stale `consecutive_errors` streak consequently
+        // survived indefinitely and the fire gate's backoff ratcheted on an otherwise healthy
+        // owner-loop.
+        //
+        // `last_loop_turn_at` is the strict per-fire completion proof. Only reset when the
+        // fire-state watermark is older than that proof, so repeated reconcile ticks are
+        // idempotent after the first successful write. Re-read the state before writing to
+        // avoid clearing an error that raced in after this SELECT snapshot. Missing
+        // discriminator fields are legacy/unit-test evidence-unavailable and fail open.
+        const armedLoopTurnAt = loopTurnCompletionAt(row, lastFiredMs);
+        if (
+          armedLoopTurnAt != null &&
+          Object.prototype.hasOwnProperty.call(row, 'fire_state_last_fired_at')
+        ) {
+          const snapshotFireStateAt = tsMs(row.fire_state_last_fired_at);
+          if (snapshotFireStateAt == null || snapshotFireStateAt < armedLoopTurnAt) {
+            const currentFireState = await runWithWorkspace(row.routine_workspace_id, () =>
+              readFireState(row.install_slug, row.name),
+            ).catch((e) => {
+              console.warn(
+                `[loop-reconcile] armed-loop fire-state read failed for '${row.id}' — leaving the streak untouched: ${e instanceof Error ? e.message : e}`,
+              );
+              return null;
+            });
+            const currentFireStateAt = tsMs(currentFireState?.lastFiredAt);
+            if (
+              (currentFireState?.consecutiveErrors ?? 0) > 0 &&
+              (currentFireStateAt == null || currentFireStateAt < armedLoopTurnAt)
+            ) {
+              await runWithWorkspace(row.routine_workspace_id, () =>
+                recordFire(row.install_slug, row.name, 'loop-armed-settle', 'ok'),
+              ).catch((e) =>
+                console.warn(
+                  `[loop-reconcile] armed-loop recordFire('ok') failed for '${row.id}': ${e instanceof Error ? e.message : e}`,
+                ),
+              );
+            }
           }
         }
         continue; // armed pure loop: nothing to rebase either way (see comment above)

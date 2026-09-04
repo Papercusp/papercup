@@ -2039,6 +2039,72 @@ describe('reconcileLoopRoutines — ARMED-loop reachability sweep (EI-11407)', (
     expect(res.terminated).toEqual([]);
     expect(res.rearmed).toBe(0);
   });
+
+  it('an armed pure loop resets a stale fire-error streak from its strict loop-origin completion', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const readFireState = vi.fn(async () => ({
+      lastFiredAt: new Date(T0 + 1_000),
+      consecutiveErrors: 7,
+    }));
+    const sql = fakeSql(
+      [
+        armedRow({
+          fire_state_last_fired_at: pgString(T0 + 1_000),
+          fire_state_last_withheld_at: null,
+          last_wake_at: null,
+          last_loop_turn_at: pgString(T0 + 5_000),
+        }),
+      ],
+      updates,
+    );
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 10_000,
+      recordFire,
+      readFireState,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+
+    expect(res.rearmed).toBe(0);
+    expect(res.terminated).toEqual([]);
+    expect(readFireState).toHaveBeenCalledWith('papercusp', 'loop-su-armed');
+    expect(recordFire).toHaveBeenCalledTimes(1);
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-armed', 'loop-armed-settle', 'ok');
+  });
+
+  it('does not re-record an armed settle after the fire-state watermark already covers the loop turn', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const readFireState = vi.fn(async () => ({
+      lastFiredAt: new Date(T0 + 6_000),
+      consecutiveErrors: 7,
+    }));
+    const sql = fakeSql(
+      [
+        armedRow({
+          fire_state_last_fired_at: pgString(T0 + 6_000),
+          fire_state_last_withheld_at: null,
+          last_wake_at: null,
+          last_loop_turn_at: pgString(T0 + 5_000),
+        }),
+      ],
+      updates,
+    );
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 10_000,
+      recordFire,
+      readFireState,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+
+    expect(res.rearmed).toBe(0);
+    expect(readFireState).not.toHaveBeenCalled();
+    expect(recordFire).not.toHaveBeenCalled();
+  });
 });
 
 /**
