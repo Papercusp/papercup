@@ -134,10 +134,25 @@ for f in /etc/containers/policy.json \
          /etc/nftables/papercusp-workspace-host.nft \
          /usr/lib/sysusers.d/papercusp.conf \
          /usr/libexec/papercusp/host-prepare.sh \
-         /usr/lib/systemd/system/papercusp-host-prepare.service; do
+         /usr/lib/systemd/system/papercusp-host-prepare.service \
+         /usr/lib/papercusp/base-image; do
   if [[ "$(in_image "test -e $f && echo y")" == "y" ]]; then pass "present: $f"
   else fail "MISSING: $f"; fi
 done
+# P-306 half B / D-284: the attested `bootc-base-image` check compares the booted host's
+# recorded base against the expected one, and a BOOTED host cannot answer that question any
+# other way — `bootc status` reports the ref the host booted, never what that image derives
+# from, and image LABELs need a local copy of the image to inspect. So the file is the only
+# source, and it must contain the ref this Containerfile actually built FROM. Compared against
+# the FROM line rather than a literal, so the two cannot drift apart silently.
+want_base="$(awk '/^FROM /{print $2; exit}' "$HERE/workspace-host.Containerfile")"
+got_base="$(in_image "cat /usr/lib/papercusp/base-image 2>/dev/null")"
+if [[ -n "$want_base" && "$got_base" == "$want_base" ]]; then
+  pass "base-image provenance records the FROM base ($got_base)"
+else
+  fail "base-image provenance is '$got_base' but the Containerfile builds FROM '$want_base' —"\
+       "the attested bootc-base-image check would compare against the wrong base"
+fi
 # D-262 condition 1: the policy must be the fail-closed template, not a stub.
 if [[ -n "$(in_image "grep -F '<RELEASE_REGISTRY_NAMESPACE>' /etc/containers/policy.json")" ]]; then
   pass "policy.json is the fail-closed template (placeholder namespace intact)"
