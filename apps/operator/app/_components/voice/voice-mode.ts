@@ -16,7 +16,7 @@
  * via the public methods.
  */
 
-import { stripWakeWordAndPrefix, matchWakePhrase } from '@papercusp/operator-core/lib/wake-word';
+import { matchWakePhrase } from '@papercusp/operator-core/lib/wake-word';
 import { getBrowserWorkspaceId, wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { createOperatorVoiceTagObserver } from '@papercusp/operator-core/lib/operator-converse-voice';
 import { persistOperatorVoiceTurn } from '@papercusp/operator-core/lib/operator-conversation-client';
@@ -1967,6 +1967,117 @@ export function isSelfEchoCapture(capture: CaptureWindow): boolean {
   return playoutLedger.overlaps(capture);
 }
 
+// Web Speech recognition does not expose a CaptureWindow, so its self-audio
+// guard cannot use the capture-time PlayoutLedger without muting legitimate
+// barge-in. Keep a short, bounded history of the text that actually entered
+// the TTS playout queue instead, and reject only transcripts that substantially
+// reproduce one of those recent utterances.
+export const RECENT_SPOKEN_TTS_TTL_MS = 15_000;
+export const RECENT_SPOKEN_TTS_MAX_ENTRIES = 8;
+export const RECENT_SPOKEN_TTS_MIN_TOKENS = 3;
+export const RECENT_SPOKEN_TTS_OVERLAP_THRESHOLD = 0.75;
+
+function normalizeSpokenTokens(text: string): string[] {
+  return text
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function orderedTokenMatchLength(left: readonly string[], right: readonly string[]): number {
+  if (!left.length || !right.length) return 0;
+  // Longest common subsequence: punctuation/casing differences are removed by
+  // normalizeSpokenTokens, while token order still distinguishes a real
+  // barge-in from a transcript that merely shares the brand or one verb.
+  const row = new Array<number>(right.length + 1).fill(0);
+  for (const leftToken of left) {
+    let diagonal = 0;
+    for (let j = 1; j <= right.length; j++) {
+      const above = row[j];
+      row[j] = leftToken === right[j - 1]
+        ? diagonal + 1
+        : Math.max(row[j], row[j - 1]);
+      diagonal = above;
+    }
+  }
+  return row[right.length];
+}
+
+/**
+ * Return the fraction of the longer normalized token sequence that is shared
+ * in order. A max-length denominator is intentional: a short user barge-in
+ * must not be rejected merely because it shares two common words with a much
+ * longer reply.
+ */
+export function orderedTokenOverlap(left: string, right: string): number {
+  const leftTokens = normalizeSpokenTokens(left);
+  const rightTokens = normalizeSpokenTokens(right);
+  if (!leftTokens.length || !rightTokens.length) return 0;
+  return orderedTokenMatchLength(leftTokens, rightTokens) /
+    Math.max(leftTokens.length, rightTokens.length);
+}
+
+interface RecentSpokenTtsEntry {
+  spokenAtMs: number;
+  tokens: string[];
+}
+
+class RecentSpokenTtsLedger {
+  private entries: RecentSpokenTtsEntry[] = [];
+
+  record(text: string, spokenAtMs: number = Date.now()): void {
+    const tokens = normalizeSpokenTokens(text);
+    if (!tokens.length) return;
+    this.prune(spokenAtMs);
+    this.entries.push({ spokenAtMs, tokens });
+    if (this.entries.length > RECENT_SPOKEN_TTS_MAX_ENTRIES) {
+      this.entries = this.entries.slice(-RECENT_SPOKEN_TTS_MAX_ENTRIES);
+    }
+  }
+
+  matches(text: string, nowMs: number = Date.now()): boolean {
+    const tokens = normalizeSpokenTokens(text);
+    if (tokens.length < RECENT_SPOKEN_TTS_MIN_TOKENS) return false;
+    this.prune(nowMs);
+    return this.entries.some((entry) => {
+      if (entry.tokens.length < RECENT_SPOKEN_TTS_MIN_TOKENS) return false;
+      return orderedTokenMatchLength(tokens, entry.tokens) /
+        Math.max(tokens.length, entry.tokens.length) >= RECENT_SPOKEN_TTS_OVERLAP_THRESHOLD;
+    });
+  }
+
+  reset(): void {
+    this.entries = [];
+  }
+
+  private prune(nowMs: number): void {
+    this.entries = this.entries.filter(
+      (entry) => nowMs - entry.spokenAtMs < RECENT_SPOKEN_TTS_TTL_MS,
+    );
+  }
+}
+
+const recentSpokenTtsLedger = new RecentSpokenTtsLedger();
+
+/** True when a transcript substantially repeats a recent TTS utterance. */
+export function isRecentSpokenTtsEcho(
+  text: string,
+  nowMs: number = Date.now(),
+): boolean {
+  return recentSpokenTtsLedger.matches(text, nowMs);
+}
+
+/** Test seam for seeding the recent-spoken ledger with deterministic times. */
+export function __recordSpokenTts(
+  text: string,
+  spokenAtMs: number = Date.now(),
+): void {
+  recentSpokenTtsLedger.record(text, spokenAtMs);
+}
+
 /** Test seam: mark playout as just-ended (drives the cooldown branch). */
 export function __markSynthPlayoutEnded(atMs: number = Date.now()): void {
   synthQuietSince = atMs;
@@ -2032,9 +2143,37 @@ export function resetWakeConversationWindow(): void {
   wakeConversationUntil = 0;
   synthQuietSince = 0;
   playoutLedger.reset();
+  recentSpokenTtsLedger.reset();
 }
 
-function dispatchAlwaysOnUtterance(text: string, capture?: CaptureWindow): void {
+type AlwaysOnDispatchOptions = {
+  /**
+   * Web Speech already performed an anchored wake match and supplies the
+   * normalized dispatch text. Other engines should leave this false so the
+   * shared P-004 conversation-window gate runs here.
+   */
+  preGated?: boolean;
+  /**
+   * Original Web Speech transcript used for recent-TTS comparison. The
+   * normalized dispatch text may have an added "operator" prefix.
+   */
+  sourceText?: string;
+  /**
+   * Capture-window paths use the audio-span ledger. The Web Speech path has no
+   * span, so it uses recent spoken text and keeps barge-in available.
+   */
+  selfAudioGuard?: 'capture-or-clock' | 'recent-spoken-tts';
+  /** Cancel current playout only after this utterance passes all guards. */
+  cancelSpeechOnAccept?: boolean;
+  /** Pulse the wake indicator after this utterance passes self-audio guards. */
+  signalWake?: boolean;
+};
+
+function dispatchAlwaysOnUtterance(
+  text: string,
+  capture?: CaptureWindow,
+  options: AlwaysOnDispatchOptions = {},
+): boolean {
   // HALF-DUPLEX GATE (WI-4500, repaired WI-954890): never act on the mic while
   // papercup's own voice is in the recording. Otherwise a spoken reply is re-heard,
   // re-dispatched, and refreshes the conversation window — an unbreakable self-talk
@@ -2045,22 +2184,32 @@ function dispatchAlwaysOnUtterance(text: string, capture?: CaptureWindow): void 
   // arrives 1.5-3.8s after the audio it describes, so a dispatch-time cooldown was
   // structurally unable to see the overlap it existed to catch. A caller with no
   // capture window falls back to the old check — weaker, but fail-closed.
-  if (capture ? isSelfEchoCapture(capture) : isSelfAudioLikely()) return;
+  const selfAudioText = options.sourceText ?? text;
+  const selfAudioDetected = capture
+    ? isSelfEchoCapture(capture)
+    : options.selfAudioGuard === 'recent-spoken-tts'
+      ? isRecentSpokenTtsEcho(selfAudioText)
+      : isSelfAudioLikely();
+  if (selfAudioDetected) return false;
   // HALLUCINATION GUARD (WI-4500): whisper emits stable real-word hallucinations on
   // non-speech audio ("omid", "you", "thank you", …) that sail past isBlankTranscript
   // (it only catches bracketed markers). Drop them in always-on; PTT stays unfiltered.
-  if (isLikelyWhisperHallucination(text)) return;
-  const gated = gateAlwaysOnTranscript(text);
+  if (isLikelyWhisperHallucination(text)) return false;
+  const gated = options.preGated
+    ? { dispatch: text, bareWake: false }
+    : gateAlwaysOnTranscript(text);
   if (gated.bareWake) {
     // Bare "hey papercup" — acknowledge audibly; the follow-up window is open.
     signalWakeDetected();
     speak('Yes?', 'system:operator', 'polite', { force: true });
-    return;
+    return true;
   }
-  if (gated.dispatch == null) return; // ambient speech outside a wake window — dropped
-  if (gated.dispatch !== text) signalWakeDetected(); // wake-prefixed → flash the indicator
+  if (gated.dispatch == null) return false; // ambient speech outside a wake window — dropped
+  if (options.signalWake || gated.dispatch !== text) signalWakeDetected();
+  if (options.cancelSpeechOnAccept) cancelAllSpeech();
   setState({ lastTranscript: gated.dispatch });
   onUtteranceFinal(gated.dispatch);
+  return true;
 }
 
 /**
@@ -2118,6 +2267,73 @@ function stopWhisperCaptureIfRunning(): void {
   setWakeListening(false);
 }
 
+interface ConfiguredWakePhraseMatch {
+  matched: boolean;
+  trailing: string;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Web Speech keeps the configured wake word, while the default wake phrase
+ * also benefits from the shared fuzzy matcher used by local Whisper. Both
+ * paths are anchored at the beginning; unlike stripWakeWordAndPrefix, a
+ * sentence that merely mentions the wake phrase cannot activate the mic.
+ */
+function matchConfiguredWakePhrase(transcript: string): ConfiguredWakePhraseMatch {
+  const configured = config.wakeWord.trim().replace(/\s+/g, ' ');
+  if (!configured || configured.toLowerCase() === DEFAULT_CONFIG.wakeWord) {
+    return matchWakePhrase(transcript);
+  }
+  const phrase = configured
+    .split(' ')
+    .filter(Boolean)
+    .map(escapeRegExp)
+    .join('\\s+');
+  const matcher = new RegExp(`^[\\s"'([{-]*${phrase}[\\s,.!?;:-]*`, 'i');
+  const match = matcher.exec(transcript);
+  if (!match) return { matched: false, trailing: '' };
+  return {
+    matched: true,
+    trailing: transcript.slice(match[0].length).trim(),
+  };
+}
+
+function wakeDispatchText(trailing: string): string {
+  const trimmed = trailing.trim();
+  return /^operator\s+/i.test(trimmed) ? trimmed : `operator ${trimmed}`;
+}
+
+/** Exported so the Web Speech anchoring contract is directly testable. */
+export function __matchWebSpeechWakePhrase(transcript: string): ConfiguredWakePhraseMatch {
+  return matchConfiguredWakePhrase(transcript);
+}
+
+/**
+ * Dispatch a final Web Speech wake+command after the anchored match. This
+ * uses the recent-spoken-TTS guard instead of the capture-less cooldown guard:
+ * matching our own sentence is rejected, while a different command can still
+ * barge in and cancel the current reply.
+ */
+function dispatchWebSpeechWakeCommand(transcript: string, trailing: string): boolean {
+  return dispatchAlwaysOnUtterance(wakeDispatchText(trailing), undefined, {
+    preGated: true,
+    sourceText: transcript,
+    selfAudioGuard: 'recent-spoken-tts',
+    cancelSpeechOnAccept: true,
+    signalWake: true,
+  });
+}
+
+/** Test seam for the final Web Speech wake+command callback path. */
+export function __simulateWebSpeechFinalWake(transcript: string): boolean {
+  const wake = matchConfiguredWakePhrase(transcript);
+  if (!wake.matched || !wake.trailing) return false;
+  return dispatchWebSpeechWakeCommand(transcript, wake.trailing);
+}
+
 function startWakeWordListening(): void {
   if (typeof window === 'undefined' || !state.hasWebSpeechSTT) {
     // No Web Speech on this runtime — NOTHING can hear the wake phrase.
@@ -2138,23 +2354,21 @@ function startWakeWordListening(): void {
       transcript += event.results[i][0].transcript;
       if (event.results[i].isFinal) sawFinal = true;
     }
-    const wake = stripWakeWordAndPrefix(transcript, config.wakeWord);
+    const wake = matchConfiguredWakePhrase(transcript);
     if (wake.matched) {
-      signalWakeDetected();
       // Single-utterance fast path: wake word + command spoken together
       // and the recognizer has already marked the utterance final. Dispatch
       // immediately instead of opening a fresh recognizer that would wait
       // for the no-speech timeout (~5s) before firing onend.
-      if (sawFinal && wake.dispatchText) {
-        cancelAllSpeech();
-        setState({ status: 'idle', lastTranscript: wake.dispatchText });
-        onUtteranceFinal(wake.dispatchText);
+      if (sawFinal && wake.trailing) {
+        dispatchWebSpeechWakeCommand(transcript, wake.trailing);
         if (state.mode === 'always-on') {
           setTimeout(() => startWakeWordListening(), 200);
         }
         try { recognition?.stop(); } catch { /* ignore */ }
         return;
       }
+      signalWakeDetected();
       activateListening(wake.trailing);
     }
   };
@@ -2627,6 +2841,11 @@ function processSynthQueue(): void {
   }
   isSynthSpeaking = true;
   playoutLedger.open(); // our voice is audible from here until the queue drains
+  // Record only after all speak() gates have passed and this utterance is
+  // selected for playout. Web Speech has no capture window, so it compares
+  // later transcripts against this bounded recent-text ledger instead of
+  // muting every barge-in while TTS is active.
+  recentSpokenTtsLedger.record(next.text);
   if (!next.preserveAwaitingResponse) endAwaitingResponse();
   setState({ status: 'speaking', speakingRole: next.role });
 

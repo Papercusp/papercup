@@ -501,3 +501,116 @@ describe('always-on self-feedback guards (WI-4500)', () => {
     ).toBe(false);
   });
 });
+
+// WI-964738: Web Speech does not expose a CaptureWindow. It must reject an
+// echo by comparing the final transcript with recently-started TTS text, not
+// by muting every utterance while papercup is speaking (which breaks barge-in).
+describe('Web Speech self-echo guard (WI-964738)', () => {
+  const T0 = 5_000_000;
+
+  it('normalizes punctuation and rejects high ordered-token overlap', async () => {
+    const mod = await import('./voice-mode');
+    mod.resetWakeConversationWindow();
+    mod.__recordSpokenTts(
+      'Okay, Papercup has completed the release check.',
+      T0,
+    );
+
+    expect(mod.orderedTokenOverlap(
+      'okay papercup has completed the release check',
+      'Okay, Papercup has completed the release check.',
+    )).toBe(1);
+    expect(mod.isRecentSpokenTtsEcho(
+      'okay papercup has completed the release check',
+      T0 + 100,
+    )).toBe(true);
+    // Shared wake/brand words are not enough to suppress a real command.
+    expect(mod.isRecentSpokenTtsEcho(
+      'hey papercup stop the reply',
+      T0 + 100,
+    )).toBe(false);
+  });
+
+  it('expires entries and keeps only the bounded recent history', async () => {
+    const mod = await import('./voice-mode');
+    mod.resetWakeConversationWindow();
+    mod.__recordSpokenTts('alpha zero green report', T0);
+    for (let i = 1; i <= mod.RECENT_SPOKEN_TTS_MAX_ENTRIES; i++) {
+      mod.__recordSpokenTts(`token${i} unique phrase ready`, T0 + i);
+    }
+
+    // The oldest entry was evicted by the hard cap; the newest remains.
+    expect(mod.isRecentSpokenTtsEcho('alpha zero green report', T0 + 100)).toBe(false);
+    expect(mod.isRecentSpokenTtsEcho(
+      `token${mod.RECENT_SPOKEN_TTS_MAX_ENTRIES} unique phrase ready`,
+      T0 + 100,
+    )).toBe(true);
+    // The TTL is exclusive at its boundary.
+    expect(mod.isRecentSpokenTtsEcho(
+      `token${mod.RECENT_SPOKEN_TTS_MAX_ENTRIES} unique phrase ready`,
+      T0 + mod.RECENT_SPOKEN_TTS_MAX_ENTRIES + mod.RECENT_SPOKEN_TTS_TTL_MS,
+    )).toBe(false);
+  });
+
+  it('anchors the Web Speech wake match, including configured wake-word fallback', async () => {
+    const mod = await import('./voice-mode');
+    mod.resetWakeConversationWindow();
+    mod.updateVoiceConfig({ wakeWord: 'hey papercup' });
+    expect(mod.__matchWebSpeechWakePhrase('I said hey papercup open the dashboard')).toEqual({
+      matched: false,
+      trailing: '',
+    });
+    expect(mod.__matchWebSpeechWakePhrase('Hey, Papercup. open the dashboard')).toEqual({
+      matched: true,
+      trailing: 'open the dashboard',
+    });
+
+    mod.updateVoiceConfig({ wakeWord: 'hello operator' });
+    expect(mod.__matchWebSpeechWakePhrase('hello operator open the dashboard')).toEqual({
+      matched: true,
+      trailing: 'open the dashboard',
+    });
+    expect(mod.__matchWebSpeechWakePhrase('please hello operator open the dashboard')).toEqual({
+      matched: false,
+      trailing: '',
+    });
+    mod.updateVoiceConfig({ wakeWord: 'hey papercup' });
+  });
+
+  it('routes final wake+command through the guard without muting barge-in', async () => {
+    vi.useFakeTimers({ now: T0 });
+    try {
+      const mod = await import('./voice-mode');
+      mod.resetWakeConversationWindow();
+      mod.updateVoiceConfig({ wakeWord: 'hey papercup' });
+      mod.__recordSpokenTts(
+        'Okay, Papercup has completed the release check.',
+        T0,
+      );
+      const cancelSpy = (globalThis as any).window.speechSynthesis.cancel;
+      cancelSpy.mockClear();
+      const received: string[] = [];
+      const unsubscribe = mod.onFinalUtterance((text) => received.push(text));
+      try {
+        // Echo is dropped before cancelAllSpeech(), so the reply keeps playing.
+        expect(mod.__simulateWebSpeechFinalWake(
+          'Okay, Papercup has completed the release check.',
+        )).toBe(false);
+        expect(received).toEqual([]);
+        expect(cancelSpy).not.toHaveBeenCalled();
+
+        // A different command still interrupts TTS and reaches the listener.
+        expect(mod.__simulateWebSpeechFinalWake(
+          'hey papercup stop the reply',
+        )).toBe(true);
+        expect(received).toEqual(['operator stop the reply']);
+        expect(cancelSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        unsubscribe();
+      }
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+});
