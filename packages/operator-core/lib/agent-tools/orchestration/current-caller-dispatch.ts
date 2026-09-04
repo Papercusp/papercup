@@ -14,6 +14,7 @@ import {
   type WrapDispatch,
 } from '@papercusp/agent-mcp';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
+import { runWithoutAmbientArgPeeling } from '../ambient-args-scope';
 import {
   dispatchNeedsTx,
   effectiveDispatchWorkspace,
@@ -30,7 +31,7 @@ import {
  * recipe script. Every path gets code-mode, full-payload, transport-cap-exempt
  * semantics because intermediate values stay inside the script runtime.
  */
-export const bindCurrentCallerDispatch: WrapDispatch = async (tool, _toolName, args, ctx, next) => {
+const rebindCurrentCallerDispatch: WrapDispatch = async (tool, _toolName, args, ctx, next) => {
   const spawnCtxLike = {
     workspaceId: ctx.workspaceId ?? '',
     role: ctx.role ?? '',
@@ -108,3 +109,19 @@ export const bindCurrentCallerDispatch: WrapDispatch = async (tool, _toolName, a
     }),
   );
 };
+
+/**
+ * The wrapper every nested orchestration call actually enters.
+ *
+ * Adds one fact to the rebinding above: this dispatch peels NO ambient dispatch-level
+ * args (EI-22295290349236847). Only the MCP transport strips `projection`/`view`, so a
+ * nested call reaches the target schema with both intact and an invalid-args rejection
+ * here must not advertise them as accepted — see `../ambient-args-scope.ts`.
+ *
+ * The scope wraps the WHOLE rebinding rather than each `next(...)` because that function
+ * has seven return paths and a per-path wrap is one refactor away from silently missing
+ * one. Argument validation runs inside `next` (orchestrate.ts's `call` → `realDispatch`),
+ * so it is covered by this scope.
+ */
+export const bindCurrentCallerDispatch: WrapDispatch = (tool, toolName, args, ctx, next) =>
+  runWithoutAmbientArgPeeling(() => rebindCurrentCallerDispatch(tool, toolName, args, ctx, next));

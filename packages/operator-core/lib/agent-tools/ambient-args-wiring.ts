@@ -31,5 +31,19 @@
 
 import { setAmbientArgKeysResolver } from '@papercusp/agent-mcp';
 import { PROJECTION_ARG, VIEW_ARG } from '../result-projection';
+import { dispatchPeelsAmbientArgs } from './ambient-args-scope';
 
-setAmbientArgKeysResolver((): readonly string[] => [PROJECTION_ARG, VIEW_ARG]);
+// EI-22295290349236847: the keys are what THIS HOST'S TRANSPORT strips, and only the MCP
+// transport (`_mcp-handler.ts`) strips them — so the honest answer is per-dispatch, not a
+// process-wide constant. A dispatch running beneath that transport (`runToolOrchestration`,
+// which is what a `code:run` / `recipes:run` script calls) peels neither key, and returning
+// them there told a caller that `projection`/`view` were "also accepted" on a path that
+// rejects both. Reporting `[]` there is not a narrowing of the resolver's contract but a
+// faithful reading of it: "the keys the transport strips before dispatch", of which an
+// orchestration dispatch strips none. See `ambient-args-scope.ts` for who marks the scope.
+//
+// `payloadTier` is deliberately NOT part of this: it is tooldef's OWN framework-reserved
+// arg, stripped inside `defineTool` itself on every path, so `unknownArgHint` names it
+// directly and it stays universally true.
+setAmbientArgKeysResolver((): readonly string[] =>
+  dispatchPeelsAmbientArgs() ? [PROJECTION_ARG, VIEW_ARG] : []);
