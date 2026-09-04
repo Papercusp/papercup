@@ -26,16 +26,9 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { renderSuPlaybook } from './papercusp-files';
 import {
-  AUTO_MODE_MARKER,
-  CLIENT_TOOLING_OVERLAY_MARKER,
-  COMPACTION_MARKER,
-  COORD_LEGEND_MARKER,
-  PROJECT_GUIDE_MARKER,
-  PROMOTION_MODEL_MARKER,
-  RESULT_DOOR_MARKER,
-  SHARED_BASE_NOTES_MARKER,
-  WIRE_SCHEMAS_MARKER,
-  WORKSPACE_MAP_MARKER,
+  REQUIRED_SPLICE_MARKERS_BY_ARTIFACT,
+  SPLICE_MARKERS,
+  SU_PLAYBOOK_MARKER_IDS,
 } from './splice-tooling-overlay';
 import {
   formatScoreTable,
@@ -45,6 +38,7 @@ import {
   type SuRenderBaseline,
   type SuRenderMeasurement,
 } from './su-render-baseline';
+import { checkSuSpliceMarkers } from '../../../../scripts/check-su-splice-markers';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = join(HERE, '__fixtures__', 'su-render-baseline');
@@ -57,18 +51,9 @@ const INPUTS = {
 /** Every splice target `renderSuPlaybook` knows. A marker the base lacks is a generated
  *  section that silently does not render (`spliceGeneratedSection` drops on a missing
  *  marker) — recorded in the baseline so P-024's presence assertion has a reference. */
-const KNOWN_MARKERS: Record<string, string> = {
-  'CLIENT-TOOLING-OVERLAY': CLIENT_TOOLING_OVERLAY_MARKER,
-  'WIRE-SCHEMAS': WIRE_SCHEMAS_MARKER,
-  'COORD-LEGEND': COORD_LEGEND_MARKER,
-  'WORKSPACE-MAP': WORKSPACE_MAP_MARKER,
-  'PROMOTION-MODEL': PROMOTION_MODEL_MARKER,
-  'AUTO-MODE': AUTO_MODE_MARKER,
-  'RESULT-DOOR': RESULT_DOOR_MARKER,
-  COMPACTION: COMPACTION_MARKER,
-  'SHARED-BASE-NOTES': SHARED_BASE_NOTES_MARKER,
-  'PROJECT-GUIDE': PROJECT_GUIDE_MARKER,
-};
+const KNOWN_MARKERS: Record<string, string> = Object.fromEntries(
+  SU_PLAYBOOK_MARKER_IDS.map((id) => [id.slice('PAPERCUSP-SU:'.length), SPLICE_MARKERS[id]]),
+);
 const TIERS = ['full', 'fleet'] as const;
 const UPDATE = process.env.BASELINE_UPDATE === '1';
 const DUMP_DIR = process.env.SU_RENDER_BASELINE_DUMP;
@@ -108,6 +93,39 @@ function loadBaseline(): SuRenderBaseline | null {
 
 describe('su render baseline — pinned fixture inputs (P-018)', () => {
   const baseText = read(INPUTS.base);
+
+  it('every required source/projection carries each declared splice marker exactly once (P-024)', () => {
+    const repoRoot = resolve(HERE, '../../../..');
+    for (const artifact of REQUIRED_SPLICE_MARKERS_BY_ARTIFACT) {
+      let text: string;
+      try {
+        text = read(join(repoRoot, artifact.path));
+      } catch (error) {
+        if (!artifact.required && (error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+      for (const id of artifact.markerIds) {
+        const marker = SPLICE_MARKERS[id];
+        expect(text.split(marker).length - 1, `${artifact.path} :: ${id}`).toBe(1);
+      }
+    }
+  });
+
+  it('the P-024 guard is falsifiable for both a missing and a duplicated marker', () => {
+    const markerId = SU_PLAYBOOK_MARKER_IDS[0];
+    const marker = SPLICE_MARKERS[markerId];
+    const artifact = [{ path: 'synthetic.md', markerIds: [markerId], required: true }] as const;
+    const read = ((path: string) => {
+      if (path.endsWith('missing/synthetic.md')) return '# no seam\n';
+      return `${marker}\n${marker}\n`;
+    }) as typeof readFileSync;
+    expect(checkSuSpliceMarkers({ root: '/missing', artifacts: artifact, read }).problems).toEqual([
+      { path: 'synthetic.md', markerId, count: 0, reason: 'wrong-count' },
+    ]);
+    expect(checkSuSpliceMarkers({ root: '/duplicate', artifacts: artifact, read }).problems).toEqual([
+      { path: 'synthetic.md', markerId, count: 2, reason: 'wrong-count' },
+    ]);
+  });
 
   it('renders each tier deterministically (two renders are byte-identical)', async () => {
     for (const tier of TIERS) {
