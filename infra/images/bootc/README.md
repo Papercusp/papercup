@@ -1,4 +1,4 @@
-# bootc host image — proven artifacts for the D-254 migration (not yet the product image)
+# bootc host image — the product image, plus the proven artifacts behind it
 
 Working artifacts for the bootc host-image phase (P-303..P-309) of plan
 `byoc-cloud-workspaces-gcp-aws-azure-2026-08-22`. Everything here was **proven before it was
@@ -12,6 +12,52 @@ any of them without re-proving them.
 | `verify-rpm-equivalents.sh` | P-304 | the probe that produced that table — re-run it, don't trust it |
 | `release-signature-policy.json` | P-306 / D-262 | the signature policy the image must ship |
 | `p306-signature-policy-probe.sh` | P-306 / D-262 | proof that policy is enforced and fails closed |
+| **`workspace-host.Containerfile`** | **P-306** | **the PRODUCT image — the port itself (D-281)** |
+| `papercusp-sysusers.conf` | P-306 | the three identities, with PINNED uid/gid (D-282) |
+| `papercusp-firewall.nft` | P-306 | the nftables ruleset that replaces ufw |
+| `papercusp-host-prepare.{sh,service}` | P-306 | what cannot be baked: roots + ACLs, applied every boot |
+| `p306-image-build-probe.sh` | P-306 | the falsifier for all of the above — 44 assertions |
+
+## ⛔ `Containerfile` and `workspace-host.Containerfile` are different files, on purpose
+
+`Containerfile` is **P-303's frozen gate spike** — the image that booted on real GCP. It installs
+four packages and is deliberately NOT built from the RPM table. Leave it byte-identical; the boot
+proof is only worth something while the artifact matches what booted.
+
+`workspace-host.Containerfile` is **the product image (P-306)**: the full package set derived from
+`RPM-EQUIVALENCE.md`, the three identities, the signature policy, the firewall, and the per-boot
+unit. The port was written *alongside* the spike rather than by editing it. `p306-image-build-probe.sh`
+§8 fails if anyone collapses the two.
+
+## The product image: run the falsifier, don't trust the table
+
+```bash
+sudo -n bash infra/images/bootc/p306-image-build-probe.sh   # expect PROBE_RESULT=PASS
+```
+
+It builds the image and asserts 44 properties. Three things about it are worth knowing before you
+read a `PASS`:
+
+- **The lint verdict is a COMPARISON, not an absolute.** The bare base ships its own warning, so the
+  probe lints the base in the same run as a control and fails only if this image *adds* warnings or
+  *loses* checks. Measured 2026-09-04: warnings base=1 ours=1, checks passed base=12 ours=12.
+- **The firewall ruleset check carries a negative control.** A malformed ruleset must be rejected;
+  a syntax checker that accepts everything would pass the positive case and prove nothing.
+- **`host-prepare.sh` is executed, and its last guard is EXPECTED to fail there.** A container has no
+  nftables table loaded, so the firewall assertion fires — which is the paired control for the one
+  guard that protects against an *open* host.
+
+⚠ **What a `PASS` does NOT establish** — all three are the same shape, a property that looks present
+in the layer and may not be there at the far end:
+
+1. **That `/opt` survives as image content on a booted host (D-283).** The base's own tmpfiles dropin
+   says it "implements the old model", where `/opt` is a link to `/var/opt`. If that is what the
+   deployed host does, a baked release tree is simply absent and every container-level signal still
+   reads healthy. `papercusp-host-prepare.sh` asserts it at boot; **P-305 owes the booted run.**
+2. **That ACLs apply on the real image filesystem.** They are applied at boot precisely because they
+   do not survive a container commit (WI-2143115).
+3. **That a booted `bootc upgrade` refuses a mis-signed image.** D-279 proved the enforcement path;
+   the booted hop is still an inference.
 
 > ⚠ **Every artifact in this directory was rescued from `~/.papercusp/` scratch directories, in two
 > separate incidents two days apart** (P-303's spike files on 2026-09-04, P-304's table and probe

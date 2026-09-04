@@ -84,6 +84,26 @@ say "runtime-root-is-image-content PASS ($RUNTIME_ROOT present, /opt is a real d
 # ── 1. Machine-local roots ────────────────────────────────────────────────────
 # Baked equivalents would be discarded: /var is machine-local state on a bootc
 # host and /srv + /home are symlinks into it.
+
+# ⚠ Materialize those symlink TARGETS before anything writes through them.
+#
+# `/srv -> /var/srv` and `/home -> /var/home`, and on a fresh deployment the
+# targets need not exist yet. `install -d` does not treat a dangling symlink as a
+# directory to descend: for an intermediate component it calls mkdir(), gets
+# EEXIST from the symlink itself, and fails hard with "cannot create directory
+# '/srv': File exists". `mkdir -p` fails the same way, because it then stats a
+# path that does not resolve.
+#
+# Measured, running this script in the built image: without these two lines the
+# unit dies at the first `install -d` on EVERY boot, so the host comes up with no
+# workspace root at all — and the failure names /srv, which reads like a
+# filesystem problem rather than an ordering one.
+for link in /srv /home; do
+  if [[ -L "$link" ]]; then
+    mkdir -p -- "$(readlink -f "$link")"
+  fi
+done
+
 install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0750 "$STATE_ROOT" "$STATE_ROOT/embedded-pg"
 install -d -o root -g "$SERVICE_GROUP" -m 0750 /etc/papercusp
 install -d -o root -g root -m 0711 /srv/papercusp
