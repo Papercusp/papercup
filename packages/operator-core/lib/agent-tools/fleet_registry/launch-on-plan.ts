@@ -88,7 +88,7 @@ import {
 import { getPresence, heartbeatPresence, setPresenceFleet, PRESENCE_STALE_MS } from '../coordination/presence';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { resolveHarnessPlansDir, readPlanBySlug, resolvePlanHarnessSlug } from '../plans/source';
-import { startVerdictForRow } from '../plans/plan-start-gate';
+import { checkPlanStartable } from '../plans/plan-start-gate';
 import {
   buildExactPlanClaimSpec,
   claimableStatesForKinds as exactPlanClaimableStatesForKinds,
@@ -151,11 +151,7 @@ import {
   readGoalLaunchSettingsForLauncher,
   resolveGoalPotPlacementAuthority,
 } from '../../goal-launch-settings';
-import {
-  GOAL_LAUNCH_ROLES,
-  isGoalLaunchRole,
-  type GoalLaunchRole,
-} from '../../goal-launch-settings-shared';
+import { GOAL_LAUNCH_ROLES, isGoalLaunchRole, type GoalLaunchRole } from '../../goal-launch-settings-shared';
 import {
   applyGoalLaunchOverlay,
   goalFleetLaunchOverlay,
@@ -387,9 +383,7 @@ async function liveLaunchMemberIdsForSizing(args: {
     const federatedSeats = federated
       .filter((member) => occupiesLaunchMemberSeat(member.fleetRole))
       .map((member) => member.ownerId);
-    return [...new Set([...localLive, ...federatedSeats])].filter(
-      (id) => id !== args.launcherOwnerId,
-    );
+    return [...new Set([...localLive, ...federatedSeats])].filter((id) => id !== args.launcherOwnerId);
   } catch {
     return localLive;
   }
@@ -785,17 +779,14 @@ export function clampHeadlessLaunchToHostMemory(
   const usableMemoryBytes = Math.max(0, total - reservedMemoryBytes);
   const maxProtectedAgentScopes = Math.floor(usableMemoryBytes / perScope);
   const observedProtectedMemoryBytes =
-    typeof opts.observedProtectedMemoryBytes === 'number' &&
-    Number.isFinite(opts.observedProtectedMemoryBytes)
+    typeof opts.observedProtectedMemoryBytes === 'number' && Number.isFinite(opts.observedProtectedMemoryBytes)
       ? Math.max(0, opts.observedProtectedMemoryBytes)
       : 0;
   const unmeasuredProtectedAgentScopes =
-    typeof opts.unmeasuredProtectedAgentScopes === 'number' &&
-    Number.isFinite(opts.unmeasuredProtectedAgentScopes)
+    typeof opts.unmeasuredProtectedAgentScopes === 'number' && Number.isFinite(opts.unmeasuredProtectedAgentScopes)
       ? Math.max(0, Math.min(active, Math.floor(opts.unmeasuredProtectedAgentScopes)))
       : active;
-  const reservedProtectedMemoryBytes =
-    observedProtectedMemoryBytes + unmeasuredProtectedAgentScopes * perScope;
+  const reservedProtectedMemoryBytes = observedProtectedMemoryBytes + unmeasuredProtectedAgentScopes * perScope;
   const availableProtectedMemoryBytes = Math.max(0, usableMemoryBytes - reservedProtectedMemoryBytes);
   const availableProtectedAgentScopes = Math.floor(availableProtectedMemoryBytes / perScope);
   const openCount = Math.min(requested, availableProtectedAgentScopes);
@@ -2041,9 +2032,7 @@ export default defineTool({
       }
     }
     const existingFleetHasLiveClaimLane = Boolean(
-      existingFleet &&
-        existingFleetClaimSpec &&
-        existingFleetClaimSpec.specId !== DEFAULT_CLAIM_SPEC.specId,
+      existingFleet && existingFleetClaimSpec && existingFleetClaimSpec.specId !== DEFAULT_CLAIM_SPEC.specId,
     );
 
     // P-006 / D-004: the goal's SETTINGS ONLY — no ceilings, no budget gate, no
@@ -2104,7 +2093,7 @@ export default defineTool({
       goalLaunchNotes.push(
         goalOverlay.slots.type === 'paired'
           ? `goal ${goalOverlay.goalId} launch profile applied — slots \`${goalOverlay.slots.director}\` / ` +
-            `\`${goalOverlay.slots.implementer}\`${goalOverlay.typeSource === 'goal' ? " (fleetType:'paired' from the goal)" : ''}`
+              `\`${goalOverlay.slots.implementer}\`${goalOverlay.typeSource === 'goal' ? " (fleetType:'paired' from the goal)" : ''}`
           : `goal ${goalOverlay.goalId} launch profile applied — slot \`${goalOverlay.slots.member}\``,
       );
     }
@@ -2437,13 +2426,11 @@ export default defineTool({
         );
       }
       if (!placementAuthority.allowed) {
-        const ownerTitle = placementAuthority.ownerGoalTitle
-          ? ` (\`${placementAuthority.ownerGoalTitle}\`)`
-          : '';
+        const ownerTitle = placementAuthority.ownerGoalTitle ? ` (\`${placementAuthority.ownerGoalTitle}\`)` : '';
         return err(
           `goal_placement_sovereignty_refusal: GOAL \`${goalSettings.goalId}\` cannot launch into harness ` +
             `\`${planHarnessSlug}\` because active goal \`${placementAuthority.ownerGoalId}\`${ownerTitle} owns that pot. ` +
-            'Route the finding/work to that goal\'s holder or drain leader instead. NO fleet was created and NO terminals were opened.',
+            "Route the finding/work to that goal's holder or drain leader instead. NO fleet was created and NO terminals were opened.",
         );
       }
     }
@@ -2462,9 +2449,12 @@ export default defineTool({
     // `found.row` undefined, and the resulting TypeError was reported as a
     // resolution failure in 40 tests at once (EI-19310192267009629).
     if (planSlug && planRow) {
-      let gate: ReturnType<typeof startVerdictForRow>;
+      let gate: Awaited<ReturnType<typeof checkPlanStartable>>;
       try {
-        gate = startVerdictForRow(planRow, planSlug);
+        gate = await checkPlanStartable(planSlug, {
+          workspaceId: planRow.workspaceId,
+          harnessSlug: planRow.harnessSlug,
+        });
       } catch (e: any) {
         // Name the component that actually failed. Anything thrown here is a
         // defect in the start gate itself, NOT a plan-resolution problem — say
@@ -2774,9 +2764,7 @@ export default defineTool({
       // The audience population intentionally keeps `recorded` owners for durable
       // delivery; launch sizing needs the narrower runnable-state population so a
       // warm-dead recorded session cannot suppress its replacement (EI-21406488340926352).
-      const localLive = (await liveFleetMemberIds(fleetSlug, workspaceId, 'launch')).filter(
-        (id) => id !== ownerId,
-      );
+      const localLive = (await liveFleetMemberIds(fleetSlug, workspaceId, 'launch')).filter((id) => id !== ownerId);
       let live = localLive;
       if (remotePlacement) {
         // WI-5211: remote members never register in LOCAL coord_presence — they announce
@@ -2914,7 +2902,12 @@ export default defineTool({
           // any non-default live lane, including a tool-generated fleet spec. The
           // old authored-only branch treated generated lanes as disposable and
           // then tried to build a kind spec from undefined args.
-          if (existingFleet && !planSlug && !args.claimKinds?.length && existingSpec.specId !== DEFAULT_CLAIM_SPEC.specId) {
+          if (
+            existingFleet &&
+            !planSlug &&
+            !args.claimKinds?.length &&
+            existingSpec.specId !== DEFAULT_CLAIM_SPEC.specId
+          ) {
             claimSpecApplied = {
               ok: true,
               revision: existingSpec.revision,
@@ -3449,8 +3442,7 @@ export default defineTool({
         const reservedForSpawnedLeader = spawningLeader ? 1 : 0;
         hostMemoryClamp = clampHeadlessLaunchToHostMemory(openCount, {
           hostTotalMemoryBytes: totalmem(),
-          activeProtectedAgentScopes:
-            protectedAgentMemory.activeProtectedAgentScopes + reservedForSpawnedLeader,
+          activeProtectedAgentScopes: protectedAgentMemory.activeProtectedAgentScopes + reservedForSpawnedLeader,
           perScopeMemoryBytes: agentSpawnScopeMemoryMaxG() * 1024 ** 3,
           observedProtectedMemoryBytes: protectedAgentMemory.observedProtectedMemoryBytes,
           unmeasuredProtectedAgentScopes:
@@ -4188,7 +4180,7 @@ export default defineTool({
         agent: (fleetDefaults.agent ?? effAgent) as FleetHeadcountConfig['agent'],
         ...(split.model ? { model: split.model } : {}),
         ...(split.effort ? { effort: split.effort } : {}),
-        ...(fleetDefaults.account ?? effAccount ? { account: fleetDefaults.account ?? effAccount } : {}),
+        ...((fleetDefaults.account ?? effAccount) ? { account: fleetDefaults.account ?? effAccount } : {}),
         headless: args.headless ?? true,
         ...(args.role?.trim() ? { role: args.role.trim() } : {}),
         ...(args.brief?.trim() ? { brief: args.brief.trim() } : {}),
@@ -4393,9 +4385,7 @@ export default defineTool({
         expectedRevision: persistedLaunchRevision,
       });
       if (persisted === false) {
-        throw new Error(
-          'the durable launch transaction changed concurrently; re-read fleet:status before retrying',
-        );
+        throw new Error('the durable launch transaction changed concurrently; re-read fleet:status before retrying');
       }
       persistedLaunchRevision = {
         transactionId: launchTransaction.transactionId,
@@ -4491,15 +4481,18 @@ export default defineTool({
         // Losing the brief is survivable; losing the leader is not.
         leaderCtxPath = undefined;
       }
-      const leaderCommand = injectLaunchedByArg(memberLaunchCommand({
-        ...fleetDefaults,
-        fleetSlug,
-        harness,
-        plan: planSlug ?? undefined,
-        // The pre-pin. This is what makes the fleet row written above name a REAL agent.
-        ownerId: spawnedLeaderOwnerId,
-        launchContext: leaderCtxPath,
-      }), ownerId).command;
+      const leaderCommand = injectLaunchedByArg(
+        memberLaunchCommand({
+          ...fleetDefaults,
+          fleetSlug,
+          harness,
+          plan: planSlug ?? undefined,
+          // The pre-pin. This is what makes the fleet row written above name a REAL agent.
+          ownerId: spawnedLeaderOwnerId,
+          launchContext: leaderCtxPath,
+        }),
+        ownerId,
+      ).command;
       const leaderLabel = `${fleetSlug} · LEADER (${planSlug ?? 'claim-spec'})`;
       const leaderResult = await spawnGovernedAgentProcess(
         {
@@ -4562,7 +4555,13 @@ export default defineTool({
       let installedLeader: Awaited<ReturnType<typeof setFleetLeader>> = null;
       try {
         installedLeader = delegatedSpawnReplacement
-          ? await setFleetLeader(workspaceId, fleetSlug, spawnedLeaderOwnerId, undefined, delegatedSpawnReplacementExpectedLeader)
+          ? await setFleetLeader(
+              workspaceId,
+              fleetSlug,
+              spawnedLeaderOwnerId,
+              undefined,
+              delegatedSpawnReplacementExpectedLeader,
+            )
           : await setFleetLeader(workspaceId, fleetSlug, spawnedLeaderOwnerId);
         // A null CAS result means another actor changed leadership after our preflight;
         // never claim registration or overwrite that concurrent leader.
