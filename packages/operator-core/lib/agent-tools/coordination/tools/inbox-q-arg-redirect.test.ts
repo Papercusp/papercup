@@ -30,4 +30,14 @@ describe('coord:inbox guidance.argRedirects', () => {
       note: expect.stringContaining('coord:feed'),
     });
   });
+
+  it('redirects rejected `include_retracted` to coord:feed for forensic history', () => {
+    expect(Object.keys(inboxTool.args.shape)).not.toContain('include_retracted');
+    const redirect = inboxTool.guidance?.argRedirects?.include_retracted;
+    expect(redirect).toEqual({
+      tool: 'coord:feed',
+      args: { include_retracted: true },
+      note: expect.stringContaining('coord:feed'),
+    });
+  });
 });

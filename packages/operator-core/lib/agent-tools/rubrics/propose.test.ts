@@ -5,7 +5,22 @@ const base = {
   rubricRef: 'release-readiness',
   characteristic: 'release-health',
   title: 'Release health',
-  criteria: [{ key: 'tests', title: 'Required tests pass' }],
+  criteria: [
+    {
+      key: 'tests',
+      title: 'Required tests pass',
+      model: 'The required tests pass.',
+      method: 'Run the focused test suite and inspect its result.',
+      driftMarkers: 'Any required test fails or cannot be run.',
+    },
+  ],
+};
+
+const lightAcceptanceCriterion = {
+  key: 'tests',
+  title: 'Required tests pass for the shipped behavior',
+  driftMarkers: 'A required test fails or the shipped behavior is absent.',
+  check: { kind: 'instrument', instrumentKey: 'none' },
 };
 
 describe('rubrics:propose args — releaseGating kind contract', () => {
@@ -33,6 +48,7 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
       ...base,
       kind: 'acceptance',
       subjectPlan: 'release-plan',
+      criteria: [lightAcceptanceCriterion],
       releaseGating: true,
     });
 
@@ -64,6 +80,7 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
       ...base,
       kind: 'acceptance',
       subjectPlan: 'release-plan',
+      criteria: [lightAcceptanceCriterion],
       releaseGating: false,
     });
 
@@ -75,6 +92,7 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
       ...base,
       kind: 'acceptance',
       subjectGoal: 'goal-123',
+      criteria: [lightAcceptanceCriterion],
     });
 
     expect(parsed.success).toBe(true);
@@ -90,6 +108,61 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
     if (parsed.success) expect(parsed.data.methodRef).toBeNull();
   });
 
+  it('accepts the light acceptance profile only with a falsifier and structured check', () => {
+    const parsed = rubricsProposeArgs.safeParse({
+      ...base,
+      kind: 'acceptance',
+      subjectPlan: 'release-plan',
+      criteria: [lightAcceptanceCriterion],
+    });
+
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.criteria[0]?.model).toBeUndefined();
+      expect(parsed.data.criteria[0]?.method).toBeUndefined();
+      expect(parsed.data.criteria[0]?.driftMarkers).toBeTruthy();
+      expect(parsed.data.criteria[0]?.check).toEqual({ kind: 'instrument', instrumentKey: 'none' });
+    }
+  });
+
+  it('rejects acceptance criteria that omit the meta-rubric falsifier or structured-check floor', () => {
+    const missingFalsifier = rubricsProposeArgs.safeParse({
+      ...base,
+      kind: 'acceptance',
+      subjectPlan: 'release-plan',
+      criteria: [{ ...lightAcceptanceCriterion, driftMarkers: undefined }],
+    });
+    expect(missingFalsifier.success).toBe(false);
+    if (!missingFalsifier.success) {
+      expect(missingFalsifier.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['criteria', 0, 'driftMarkers'],
+            message: expect.stringContaining('requires non-empty driftMarkers'),
+          }),
+        ]),
+      );
+    }
+
+    const missingCheck = rubricsProposeArgs.safeParse({
+      ...base,
+      kind: 'acceptance',
+      subjectPlan: 'release-plan',
+      criteria: [{ ...lightAcceptanceCriterion, check: undefined }],
+    });
+    expect(missingCheck.success).toBe(false);
+    if (!missingCheck.success) {
+      expect(missingCheck.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['criteria'],
+            message: expect.stringContaining('require at least one structured check'),
+          }),
+        ]),
+      );
+    }
+  });
+
   it('documents the acknowledgement needed when a revision removes a stored structured check', () => {
     const parsed = rubricsProposeArgs.safeParse({
       ...base,
@@ -100,7 +173,12 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
     expect(parsed.success).toBe(true);
     expect(proposeTool.description).toMatch(/removing a stored structured check/i);
     expect(proposeTool.description).toMatch(/allowMethodShrink \+ shrinkReason/);
+    expect(proposeTool.description).toMatch(/acceptance criteria may omit model\/method/i);
+    expect(proposeTool.description).toMatch(/non-empty driftMarkers falsifier/i);
+    expect(proposeTool.description).toMatch(/at least one structured check/i);
     expect(proposeTool.guidance?.when).toMatch(/stored structured check/i);
+    expect(proposeTool.guidance?.when).toMatch(/acceptance criteria are a light profile/i);
+    expect(proposeTool.guidance?.when).toMatch(/traceability to the plan goal\/Decisions/i);
     expect(proposeTool.guidance?.chaining).toMatch(/structured check/i);
   });
 });
