@@ -41,7 +41,14 @@ const GIT_ENV = {
 };
 
 function git(root: string, args: string[]): string {
-  return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', env: GIT_ENV }).trim();
+  // WI-41180 pure-lane ratchet: a sync spawn with no `timeout:` blocks the shared pure-lane
+  // fork past vitest's reach; bound it so a wedged git cannot take the whole lane down.
+  return execFileSync('git', ['-C', root, ...args], {
+    encoding: 'utf8',
+    env: GIT_ENV,
+    timeout: 30_000,
+    killSignal: 'SIGKILL',
+  }).trim();
 }
 function write(root: string, rel: string, content: string): void {
   mkdirSync(dirname(join(root, rel)), { recursive: true });
