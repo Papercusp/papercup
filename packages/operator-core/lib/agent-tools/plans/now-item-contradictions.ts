@@ -21,6 +21,11 @@ export interface NowItemOmission {
 type TerminalStatus = NowItemContradiction['status'];
 
 const PLAN_ITEM_REF_RE = /\bP-\d{3,}\b/g;
+// A range names a span of plan items, not an individual item's status. Keep
+// the terminal-item guard from treating each endpoint in a compact range
+// (e.g. `P-092–P-100`) as a current-work claim.
+const PLAN_ITEM_RANGE_RE =
+  /\bP-\d{3,}\s*(?:[-–—]|\.{2,}|\b(?:to|through|thru)\b)\s*P-\d{3,}\b/gi;
 // EI-21900747713795768: a plan slug immediately preceding a P-NNN mention
 // scopes that id to a DIFFERENTLY-NAMED plan explicitly — e.g. "Audited
 // under pui-tui-ship-drive-2026-08-30 P-001" is a citation of THAT plan's
@@ -173,6 +178,15 @@ function hasNeutralResidueReference(before: string, after: string): boolean {
   );
 }
 
+function isPlanItemRangeReference(text: string, start: number, end: number): boolean {
+  for (const match of text.matchAll(PLAN_ITEM_RANGE_RE)) {
+    const rangeStart = match.index ?? -1;
+    const rangeEnd = rangeStart + match[0].length;
+    if (rangeStart <= start && end <= rangeEnd) return true;
+  }
+  return false;
+}
+
 /**
  * PURE: find terminal plan items that the cold-resume Now block still presents
  * as current/future work. Explicit completion prose ("P-001 is done") is
@@ -202,6 +216,7 @@ export function detectNowItemContradictions(
 
     const start = match.index ?? 0;
     const end = start + id.length;
+    if (isPlanItemRangeReference(nowText, start, end)) continue;
     // Keep the window local to a sentence/clause. This makes a completion note
     // for one item unable to excuse a later action over another item.
     const leftBoundary = Math.max(

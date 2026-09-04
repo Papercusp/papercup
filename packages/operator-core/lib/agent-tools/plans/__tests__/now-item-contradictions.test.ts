@@ -104,6 +104,20 @@ describe('detectNowItemContradictions', () => {
     expect(detectNowItemContradictions(parsed)).toEqual([]);
   });
 
+  it.each(['P-001–P-002', 'P-001-P-002', 'P-001 to P-002'])(
+    'does not treat a plan-item range reference as an individual terminal claim: %s',
+    (range) => {
+      const proposed = parsePlan(
+        CURRENT.replace(
+          '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
+          `**State:** On each AUTO wake, re-read latest ${range}.\n\n**Next:** Continue with P-002.`,
+        ),
+      );
+
+      expect(detectNowItemContradictions(proposed)).toEqual([]);
+    },
+  );
+
   it('allows an item completed on staging while absent from main/deployed', () => {
     const proposed = parsePlan(
       CURRENT.replace(
@@ -499,6 +513,17 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
 
     expect(result.value).toEqual({ ok: true });
     expect(result.newBody).toContain('**Next:** Continue with P-002.');
+  });
+
+  it('accepts a structured Now write that references an item range', () => {
+    const result = evaluateNowUpdate(
+      CURRENT,
+      'On each AUTO wake, re-read latest P-001–P-002.',
+      'Continue with P-002.',
+      SLUG,
+    );
+
+    expect(result.value).toEqual({ ok: true });
   });
 
   it.each(EXACT_REPORTED_COMPLETIONS)(
