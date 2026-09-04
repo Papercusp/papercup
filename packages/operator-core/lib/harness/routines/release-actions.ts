@@ -2174,15 +2174,16 @@ export function gateRedStreakBroadcast(opts: {
       // only in a doc nobody reads mid-incident. Naming them here puts them in front of the claimant
       // at the one moment they are load-bearing, and (via the condition state's `latest_body` fold)
       // on the owning work-item itself.
-      `\n\nWHERE TO FIX IT: a frozen candidate is repaired in an ISOLATED repair worktree at ` +
-      `\`<integrationRoot>/.papercusp/worktrees/green-candidate-<pipeline>-<sha12>\` — never in the ` +
-      `shared staging checkout. \`release:repair-queue\` reports the exact \`worktreePath\`, ` +
-      `\`candidate\` and \`repairHead\` for this red; use those, do not reconstruct the path by hand.` +
-      `\n\nWHAT MAY BE ADMITTED (fix-only): author in that worktree starting at \`repairHead\`, then ` +
-      `admit by git plumbing. A new head is accepted ONLY when the old \`repairHead\` is an ancestor — ` +
-      `a non-forward move is a hard stop to diagnose, never a licence to re-cut the candidate from ` +
-      `tip. \`git add -A\` in the shared checkout is NOT an admission mechanism: it sweeps up peer and ` +
-      `git-sync work that was never part of the frozen candidate. Full rule: ` +
+      `\n\nWHERE TO FIX IT: author the fix in the shared staging checkout like any other edit ` +
+      `(D-010: there is NO repair worktree). \`release:repair-queue { op: 'get' }\` reports the exact ` +
+      `\`candidate\` and \`repairHead\` for this red; \`git show <repairHead>:<path>\` is the blob you ` +
+      `are fixing.` +
+      `\n\nWHAT MAY BE ADMITTED (path-exact): \`release:repair-queue { op: 'admit', paths: [...] }\` — ` +
+      `dry-run first (it returns the blobs and the diff-tree proof), then \`confirm: true\`. The ` +
+      `admission commits ONLY the named paths' current staging blobs onto \`repairHead\` (P-001: the ` +
+      `diff-tree must equal the allowlist, a stray file is refused) and the gate re-verifies every ` +
+      `failing leg AT that new head. Nothing else reaches the judged lineage: an un-admitted edit is ` +
+      `invisible to the gate, and no path ever re-cuts the candidate from tip. Full rule: ` +
       `/internal/docs/agent-insights/frozen-candidate-fix-only-admission.`,
   };
 }
@@ -4405,11 +4406,14 @@ export function buildReleaseFixerKickoff(input: {
       `directly against your own PAPERCUSP_SPAWN_ID: if they still match and repairQueue.phase is still ` +
       `'awaiting-fixer', you remain the delegated fixer and may proceed (this tool independently ` +
       `authorizes an operator-role caller to converge); if they do not match, or the phase moved on, the ` +
-      `queue was reassigned or closed — stop. Once authorized, work ONLY from ${queue.worktreePath}, ` +
-      `starting at ${queue.repairHead}. ` +
-      `Repair forward there, run focused tests, and apply the identical source edits to the canonical ` +
-      `staging checkout under its normal file locks. Do NOT claim the gate, launch a checkpoint, mutate ` +
-      `deployment, commit, or push — the gate finalizer owns those steps.`
+      `queue was reassigned or closed — stop. Once authorized, author the fix in the canonical ` +
+      `staging checkout under its normal file locks (D-010: there is NO repair worktree). The frozen ` +
+      `lineage is at repairHead ${queue.repairHead}; \`git show ${queue.repairHead}:<path>\` is the blob ` +
+      `you are fixing. Run focused tests, then ADMIT exactly the paths you changed with ` +
+      `release:repair-queue { op: 'admit', paths: [...] } — dry-run first, then confirm: true. That ` +
+      `admission is the ONLY way your fix reaches the judged lineage; an un-admitted edit is invisible ` +
+      `to the gate. Do NOT claim the gate, launch a checkpoint, mutate deployment, commit, or push — ` +
+      `git-sync and the gate finalizer own those steps.`
     : `green-checkpoint held \`main\`: candidate ${input.candidate.slice(0, 8)} failed the gate suite. ` +
       `Read the exact supplied checkpoint artifact, reproduce the failing test(s) locally to classify ` +
       `regression-vs-flake, then fix the code or de-flake (hermetic > tier-out > accountable quarantine). ` +
@@ -5201,7 +5205,6 @@ export async function dispatchReleaseFixer(
             ? {
                 frozenCandidate: repairQueue.candidate,
                 repairHead: repairQueue.repairHead,
-                repairWorktree: repairQueue.worktreePath,
                 repairAttempt: repairQueue.attempts + 1,
               }
             : {}),
