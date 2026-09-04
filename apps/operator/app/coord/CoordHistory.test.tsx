@@ -23,16 +23,39 @@ vi.mock('@papercusp/sync', () => ({
   },
 }));
 
+/**
+ * WI-7297: payloads are served PER ROW from /api/coord/history/:source/:msg_id,
+ * never inline in the list feed. This stub answers that route only, so a test
+ * asserting an expanded payload is really asserting the on-demand fetch.
+ */
+const PAYLOADS: Record<string, unknown> = {
+  'escalation/m1': { detail: 'x' },
+  'message/m2': { body: 'the body' },
+};
+
+const fetchSpy = vi.hoisted(() => vi.fn());
+
 function stubHistory() {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () => ({ ok: true, json: async () => feed })) as unknown as typeof fetch,
-  );
+  fetchSpy.mockImplementation(async (url: unknown) => {
+    const m = /\/api\/coord\/history\/([^/]+)\/([^/]+)$/.exec(String(url));
+    if (!m) return { ok: true, status: 200, json: async () => feed };
+    const payload = PAYLOADS[`${decodeURIComponent(m[1])}/${decodeURIComponent(m[2])}`];
+    return payload === undefined
+      ? { ok: false, status: 404, json: async () => ({ error: 'history item not found' }) }
+      : { ok: true, status: 200, json: async () => ({ payload }) };
+  });
+  vi.stubGlobal('fetch', fetchSpy as unknown as typeof fetch);
 }
 
+/**
+ * ⚠ Deliberately NO `payload` key — this mirrors what the sync feed actually
+ * delivers after WI-7297. A fixture that still carried one would let the
+ * component read it off the list row and every test here would pass while the
+ * live screen showed nothing.
+ */
 const ITEMS = [
-  { ts: '2026-01-01T00:00:00Z', msg_id: 'm1', source: 'escalation', kind: 'blocked', from: 'agent-a', summary: 'needs a human', plan_slug: 'plan-x', payload: { detail: 'x' } },
-  { ts: '2026-01-01T00:01:00Z', msg_id: 'm2', source: 'message', kind: 'note', to: ['human'], summary: 'fyi', payload: {} },
+  { ts: '2026-01-01T00:00:00Z', msg_id: 'm1', source: 'escalation', kind: 'blocked', from: 'agent-a', summary: 'needs a human', plan_slug: 'plan-x' },
+  { ts: '2026-01-01T00:01:00Z', msg_id: 'm2', source: 'message', kind: 'note', to: ['human'], summary: 'fyi' },
 ];
 
 beforeEach(() => {

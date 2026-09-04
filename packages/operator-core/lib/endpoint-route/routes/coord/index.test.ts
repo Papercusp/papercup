@@ -31,6 +31,10 @@ const {
   listHandoffsPaginatedMock,
   readAllPlansMock,
   readPlanBySlugMock,
+  getMessageByIdMock,
+  getPlanEventByIdMock,
+  getEscalationMock,
+  getHandoffMock,
 } = vi.hoisted(() => ({
   readLinesBoundedMock: vi.fn(async () => [] as CoordEnvelope[]),
   listEscalationsMock: vi.fn(async () => [] as EscalationRecord[]),
@@ -49,6 +53,15 @@ const {
   readAllPlansMock: vi.fn(async () => [] as any[]),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   readPlanBySlugMock: vi.fn(async () => null as any),
+  // WI-7297 — the four per-source by-id reads the on-demand payload route
+  // dispatches to.
+  // All four are typed to the ENVELOPE the route actually consumes, so a
+  // fixture can be installed without an `as any` escape — which would silence
+  // the one check these doubles exist to give (lint:mock-cast-escape).
+  getMessageByIdMock: vi.fn(async (_id: string) => null as CoordEnvelope | null),
+  getPlanEventByIdMock: vi.fn(async (_id: string) => null as CoordEnvelope | null),
+  getEscalationMock: vi.fn(async (_id: string) => null as CoordEnvelope | null),
+  getHandoffMock: vi.fn(async (_id: string) => null as CoordEnvelope | null),
 }));
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
@@ -63,12 +76,18 @@ vi.mock('../../../agent-tools/coordination/log', () => ({
 vi.mock('../../../agent-tools/coordination/escalations', () => ({
   listEscalations: listEscalationsMock,
   listEscalationsPaginated: listEscalationsPaginatedMock,
+  getEscalation: getEscalationMock,
 }));
 vi.mock('../../../agent-tools/coordination/handoffs', () => ({
   listHandoffs: listHandoffsMock,
   listHandoffsPaginated: listHandoffsPaginatedMock,
+  getHandoff: getHandoffMock,
 }));
-vi.mock('../../../agent-tools/coordination/plan-events', () => ({ readPlanEvents: vi.fn(async () => []) }));
+vi.mock('../../../agent-tools/coordination/plan-events', () => ({
+  readPlanEvents: vi.fn(async () => []),
+  getPlanEventById: getPlanEventByIdMock,
+}));
+vi.mock('../../../agent-tools/coordination/messages', () => ({ getMessageById: getMessageByIdMock }));
 vi.mock('../../../agent-tools/plans/source', () => ({
   readAllPlans: readAllPlansMock,
   readPlanBySlug: readPlanBySlugMock,
@@ -77,10 +96,20 @@ vi.mock('node:fs/promises', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:fs/promises')>()),
   readFile: vi.fn(async () => 'mock markdown') }));
 
-import routesDefault, { loadCoordInbox, loadCoordPlans, loadCoordHistory, preWarmCoordPlans } from './index';
+import routesDefault, {
+  loadCoordInbox,
+  loadCoordPlans,
+  loadCoordHistory,
+  loadCoordHistoryPayload,
+  preWarmCoordPlans,
+} from './index';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const planBySlugRoute = (routesDefault as any[]).find((r) => r.path === '/coord/plans/:slug');
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const historyPayloadRoute = (routesDefault as any[]).find(
+  (r) => r.path === '/coord/history/:source/:msg_id',
+);
 
 function msg(p: Partial<CoordEnvelope> = {}): CoordEnvelope {
   return { ts: '2026-07-20T00:00:00.000Z', msg_id: 'm0', from: 'alice', to: ['bob'], kind: 'message', ...p };
@@ -91,6 +120,87 @@ beforeEach(() => {
   readLinesBoundedMock.mockResolvedValue([]);
   listEscalationsPaginatedMock.mockResolvedValue({ escalations: [], truncated: false, total: 0 });
   listHandoffsPaginatedMock.mockResolvedValue({ handoffs: [], truncated: false, total: 0 });
+});
+
+// ── WI-7297: on-demand per-row payload ───────────────────────────────────────
+//
+// The list feed no longer carries `payload` (76% of the read, to render at most
+// one of them, on click). These pin the replacement: a SOURCE-AWARE point
+// lookup, dispatched to the surface's own by-id read — never a re-scan of the
+// bounded history window, which would answer a confident `null` for any row
+// older than the bound, i.e. exactly the older row a user scrolls back to.
+describe('loadCoordHistoryPayload — per-row on-demand fetch (WI-7297)', () => {
+  const cases = [
+    { source: 'message' as const, mock: () => getMessageByIdMock },
+    { source: 'plan_event' as const, mock: () => getPlanEventByIdMock },
+    { source: 'escalation' as const, mock: () => getEscalationMock },
+    { source: 'handoff' as const, mock: () => getHandoffMock },
+  ];
+
+  it.each(cases)('$source dispatches to its own by-id read, never a history scan', async ({ source, mock }) => {
+    mock().mockResolvedValueOnce(
+      msg({ msg_id: 'x1', detail: 'full detail', body: 'the body' } as Partial<CoordEnvelope>),
+    );
+    const payload = await loadCoordHistoryPayload(source, 'x1');
+    expect(mock()).toHaveBeenCalledWith('x1');
+    // Never falls back to the bounded window reads.
+    expect(readLinesBoundedMock).not.toHaveBeenCalled();
+    expect(listEscalationsPaginatedMock).not.toHaveBeenCalled();
+    expect(listHandoffsPaginatedMock).not.toHaveBeenCalled();
+    // Content the expand pane needs survives...
+    expect(payload).toMatchObject({ detail: 'full detail', body: 'the body' });
+    // ...and the 7 columns already projected onto the row are stripped, exactly
+    // as the list's own payload strips them — one definition of "the payload",
+    // so the expanded view cannot disagree with the row it expanded from.
+    for (const k of ['ts', 'msg_id', 'kind', 'from', 'to', 'plan_slug', 'harness_slug']) {
+      expect(payload).not.toHaveProperty(k);
+    }
+  });
+
+  it('returns null for an id the surface does not have (a 404, not an empty payload)', async () => {
+    getMessageByIdMock.mockResolvedValueOnce(null);
+    expect(await loadCoordHistoryPayload('message', 'nope')).toBeNull();
+  });
+
+  it('returns null for a blank id without touching storage', async () => {
+    expect(await loadCoordHistoryPayload('message', '')).toBeNull();
+    expect(getMessageByIdMock).not.toHaveBeenCalled();
+  });
+
+  it('the route 404s a missing item and 400s an unknown source', async () => {
+    getMessageByIdMock.mockResolvedValueOnce(null);
+    const missing = await historyPayloadRoute.handler(new Request('http://x/api/coord/history/message/nope'), {
+      params: { source: 'message', msg_id: 'nope' },
+    });
+    expect(missing.status).toBe(404);
+
+    // An unknown source must be REFUSED, not silently dispatched: the switch is
+    // exhaustive over the four real sources, so an unchecked value would fall
+    // through and return undefined — a 200 with no payload, indistinguishable
+    // from a genuinely empty one.
+    const bad = await historyPayloadRoute.handler(new Request('http://x/api/coord/history/bogus/x1'), {
+      params: { source: 'bogus', msg_id: 'x1' },
+    });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toMatchObject({ error: 'unknown source' });
+  });
+
+  it('the route returns the payload alongside the identity the caller asked for', async () => {
+    getHandoffMock.mockResolvedValueOnce(
+      msg({ msg_id: 'h1', kind: 'handoff_accepted', detail: 'd' } as Partial<CoordEnvelope>),
+    );
+    const res = await historyPayloadRoute.handler(new Request('http://x/api/coord/history/handoff/h1'), {
+      params: { source: 'handoff', msg_id: 'h1' },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ source: 'handoff', msg_id: 'h1', payload: { detail: 'd' } });
+  });
+
+  it('is registered as a public GET route', () => {
+    expect(historyPayloadRoute).toBeTruthy();
+    expect(historyPayloadRoute.method).toBe('GET');
+    expect(historyPayloadRoute.auth).toBe('public');
+  });
 });
 
 describe('loadCoordInbox — bounded reads (EI-18138089781782660 follow-up)', () => {
@@ -456,7 +566,9 @@ describe('loadCoordHistory — `payload` never re-ships a projected column (WI-7
         // what a stored v2 row still looks like, and the contrast with v3 is
         // the whole point of the version key.
         2: 'obj{from:string,harness_slug:string,kind:string,msg_id:string,payload:obj{body:string,detail:string},plan_slug:string,source:string,summary:string,to:arr<string>,ts:string}',
-        3: 'PLACEHOLDER_CAPTURE_ME',
+        // v3 is v2 with exactly the `payload:` member removed and nothing else
+        // moved — which is the property the WI-7297 cut claims.
+        3: 'obj{from:string,harness_slug:string,kind:string,msg_id:string,plan_slug:string,source:string,summary:string,to:arr<string>,ts:string}',
       },
     });
   });
