@@ -92,6 +92,7 @@ vi.mock("../../plan-audits", () => ({
 }));
 
 import tool from "./get";
+import { dispatchProjectedTool, lookupByMcpName } from "@papercusp/agent-mcp";
 import { resetOperatorCacheForTests, resetCachedReadStatsForTests, __setCachedReadEnabledForTests } from "../../cache";
 import { _refreshCacheLayerForTests } from "../../cache/instance";
 
@@ -154,6 +155,73 @@ describe("plans:get — `include` alias for `includeRaw`", () => {
   it("`include:true` and `includeRaw:true` for the same slug share ONE cache entry", async () => {
     await run({ slug: "alpha", mode: "full", include: true });
     await run({ slug: "alpha", mode: "full", includeRaw: true });
+    expect(M.readPlanBySlug).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("plans:get — `detail` compatibility alias (EI-21905561475819210)", () => {
+  it("accepts boolean and summary/full spellings, while rejecting unrelated values", () => {
+    expect(tool.args.safeParse({ slug: "alpha", detail: true }).success).toBe(true);
+    expect(tool.args.safeParse({ slug: "alpha", detail: false }).success).toBe(true);
+    expect(tool.args.safeParse({ slug: "alpha", detail: "full" }).success).toBe(true);
+    expect(tool.args.safeParse({ slug: "alpha", detail: "summary" }).success).toBe(true);
+    expect(tool.args.safeParse({ slug: "alpha", detail: "all" }).success).toBe(false);
+  });
+
+  it("maps detail:true/full to the full payload and false/summary to default sections", async () => {
+    const full = await run({ slug: "alpha", detail: true });
+    expect(full.results[0]).toMatchObject({ ok: true, prose: "## Now\nbody\n" });
+
+    const summary = await run({ slug: "beta", detail: false });
+    expect(summary.results[0]).not.toHaveProperty("prose");
+
+    const fullString = await run({ slug: "gamma", detail: "full" });
+    expect(fullString.results[0]).toMatchObject({ ok: true, prose: "## Now\nbody\n" });
+
+    const summaryString = await run({ slug: "delta", detail: "summary" });
+    expect(summaryString.results[0]).not.toHaveProperty("prose");
+  });
+
+  it("explicit mode wins over detail and projected dispatch accepts detail:true", async () => {
+    const meta = await run({ slug: "alpha", mode: "meta", detail: true });
+    expect(meta.results[0]).not.toHaveProperty("prose");
+
+    const projected = lookupByMcpName("plans:get");
+    expect(projected, "plans:get must be registered").toBeTruthy();
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      "plans:get",
+      { slug: "projected-detail", detail: true },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: "ws-get-include",
+        harnessSlug: "papercup",
+        runId: "plans-get-detail-dispatch",
+        role: "su",
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: "mcp",
+        requestedFormat: "json",
+        requestedStructured: true,
+      } as never,
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(dispatched.result?.structuredContent).toMatchObject({ ok: true });
+    // The projected serializer may canonicalize a bare Markdown line while
+    // preserving the full body; the contract under test is that detail:true
+    // reaches the full-payload branch through the real dispatch path.
+    expect(
+      (dispatched.result?.structuredContent as { prose?: unknown } | undefined)?.prose,
+    ).toEqual(expect.stringContaining("body"));
+  });
+
+  it("normalizes detail:true and mode:'full' to one cache entry", async () => {
+    await run({ slug: "cached-detail", detail: true });
+    await run({ slug: "cached-detail", mode: "full" });
     expect(M.readPlanBySlug).toHaveBeenCalledTimes(1);
   });
 });

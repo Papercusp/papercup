@@ -195,6 +195,17 @@ const argsSchema = z
       .describe(
         "How much to return. 'meta' = frontmatter + ## Now + counts + a section index (headings only). 'sections' (DEFAULT) = meta + structured items/decisions (items WITHOUT rawLine; long decision bodies are EXCERPTED to keep the default read bounded — each carries body_truncated + body_full_chars, and decisionBodiesTruncated flags when any were cut — use mode:'full' for complete bodies), still WITHOUT the markdown body. 'full' = everything incl. the whole markdown body as `prose`, per-item rawLine, and full decision bodies (a big blueprint can be 90KB+ — only when you actually need the prose; exact raw file bytes live behind plans:export).",
       ),
+    // EI-21905561475819210: several generic plan readers use `detail` as the
+    // read-depth control. Keep that established spelling executable here while
+    // retaining `mode` as the canonical selector. `true`/`'full'` request the
+    // full payload; `false`/`'summary'` retain plans:get's default sections
+    // payload. When both are supplied, the explicit mode wins.
+    detail: z
+      .union([z.boolean(), z.enum(["summary", "full"])])
+      .optional()
+      .describe(
+        "Compatibility alias for `mode`: true or 'full' maps to mode:'full'; false or 'summary' maps to the default mode:'sections'. Explicit `mode` wins when both are supplied.",
+      ),
     heading: z
       .string()
       .optional()
@@ -657,6 +668,12 @@ export default defineTool({
     // EI-21913230259449717: resolve the `include` compatibility alias into the
     // canonical `includeRaw`; an explicit `includeRaw` always wins.
     const includeRaw = args.includeRaw ?? args.include ?? false;
+    // EI-21905561475819210: normalize the generic `detail` compatibility
+    // alias before cache-key construction and every output branch. Keeping one
+    // canonical mode prevents alias/mode reads from diverging in cache.
+    const mode =
+      args.mode ??
+      (args.detail === true || args.detail === "full" ? "full" : "sections");
     // EI-21194994217912029: exact-slug scope recovery. A recovery call often
     // carries an exact plan slug but NO resolvable harness; instead of failing
     // bare `harness_required`, resolve the owning harness from the slug itself
@@ -741,7 +758,7 @@ export default defineTool({
             key: {
               slug,
               harness: opts.harnessSlug,
-              mode: args.mode ?? "sections",
+              mode,
               heading: args.heading ?? null,
               includeRaw,
               items: requestedItemIds,
@@ -802,7 +819,7 @@ export default defineTool({
                   args.heading,
                   findSection(sections, args.heading),
                 );
-              } else if ((args.mode ?? "sections") === "full") {
+              } else if (mode === "full") {
                 // Legacy plans are prose-only — full includes the body; meta/sections omit it.
                 // (Raw is byte-identical to prose for a legacy plan; only surfaced when the
                 // caller opts in via includeRaw — see the non-legacy branch below.)
@@ -1134,7 +1151,6 @@ export default defineTool({
               };
             }
 
-            const mode = args.mode ?? "sections";
             if (mode === "meta") {
               return { ok: true as const, ...base };
             }
