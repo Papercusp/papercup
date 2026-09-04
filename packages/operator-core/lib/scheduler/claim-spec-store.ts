@@ -18,7 +18,7 @@ import { DEFAULT_CLAIM_SPEC, validateClaimSpec, isIdOnlySelector, type ClaimSpec
 import { buildP2pLaneFence } from './p2p-lane-fence';
 import { getNextWorkItem, type GetNextResult } from './get-next';
 import { releaseWorkItem, type OrgSql, type WorkItem } from '../work-items';
-import { planItemLaneBlockReason } from './plan-item-lane-guard';
+import { planItemLaneBlockReason, type PlanItemLaneBlock } from './plan-item-lane-guard';
 import { maybeEmitFleetIdleDrain } from './fleet-idle-drain';
 import { matchesWorkItemClaimSpec } from './claim-spec-match';
 import { resolveClaimSpecWorkspace } from './claim-spec-workspace';
@@ -570,6 +570,23 @@ export async function getNextForBee(args: {
    * injected/shared-client behavior they had before.
    */
   useDedicatedClaimPool?: boolean;
+  /**
+   * WI-7316: observe each row this loop claimed, found plan-lane-blocked, and released.
+   *
+   * That bounce is deliberately invisible in the RETURN value — the row is never served —
+   * so a caller that ends up at the `return null` below cannot tell an honestly-drained
+   * lane from one where every candidate was bounced by a plan item stuck on a sticky
+   * `blocked` token whose blocked-by edges have all resolved. The audit row added by P-011
+   * records the bounce durably, but a durable ledger cannot answer the caller in the
+   * response it is reading RIGHT NOW, which is where the wind-down decision is made.
+   *
+   * Callback rather than a widened return type: the miss is `null` at three call sites and
+   * a hundred tests, and none of them should have to change to let ONE caller
+   * (scheduler:get_next) annotate its own miss. Invoked at most MAX_PLAN_LANE_ATTEMPTS
+   * times, synchronously, before the release; throwing from it must never break the claim
+   * path, so it is called defensively.
+   */
+  onPlanLaneBlocked?: (block: PlanItemLaneBlock & { workItemId: string }) => void;
 }): Promise<(GetNextResult & { specSource: ClaimSpecRecord['source'] }) | null> {
   const claimSql = args.useDedicatedClaimPool
     ? (getLongLivedAdminPool('scheduler-claim', { max: 2, prepare: false }) as unknown as OrgSql)
@@ -764,6 +781,16 @@ export async function getNextForBee(args: {
     // fleet-scope refusal above) — this is not a race that was lost to another claimer, so
     // `reason` is what distinguishes it. Best-effort and swallow-on-error like every other
     // call here: pure observability, never in the admission decision.
+    // WI-7316: tell the CALLER about the bounce, not just the ledger. Same verdict the audit
+    // row below records, delivered in time to annotate the miss this loop is about to return.
+    // Defensive: a caller-supplied callback must never be able to break the shared claim path
+    // (the audit + release below MUST still run), so a throw here is swallowed exactly like
+    // every other observability call in this function.
+    try {
+      args.onPlanLaneBlocked?.({ ...blocked, workItemId: result.workItem.id });
+    } catch {
+      /* observability only — never in the admission decision */
+    }
     await auditClaimAttempt({
       workspaceId: args.workspaceId,
       harnessSlug: args.harness,

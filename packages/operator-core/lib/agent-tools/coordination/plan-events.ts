@@ -18,6 +18,7 @@ import {
   type ReadPlanEventsOpts,
 } from '@papercusp/coordination/core';
 import { coordLog } from './log';
+import { getLineEnvelopeById } from './line-event-by-id';
 import {
   resolveAgentIdentity,
   type AgentIdentity,
@@ -112,4 +113,20 @@ export async function readPlanEvents(
     ...(singlePlan ? { planSlug: singlePlan } : {}),
   });
   return filterPlanEvents(bounded, opts);
+}
+
+/**
+ * Look up a SINGLE plan-event envelope by its `msg_id`.
+ *
+ * `readPlanEvents` above is a bounded newest-N window, so scanning it for one
+ * id answers a confident `null` for anything older than the bound — the wrong
+ * answer, not a slow one. This is the targeted read instead (WI-7297): the
+ * /coord history viewer fetches one row's payload on demand when a user
+ * expands it, and any row visible in that list must resolve regardless of how
+ * far back it sits.
+ *
+ * Returns null when no such plan-event exists.
+ */
+export async function getPlanEventById(msgId: string): Promise<CoordEnvelope | null> {
+  return getLineEnvelopeById('plan-events', msgId);
 }

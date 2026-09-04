@@ -641,12 +641,31 @@ registerDerivedRead({
   // accepts any stored row at the SAME producerVersion, so a shape change without
   // one keeps serving the old fat rows forever and ships INERT (WI-7275/WI-7279
   // burned exactly that way — green tests, clean types, unchanged live bytes).
-  producerVersion: 2,
+  // v3 (WI-7297): `payload` is dropped from the snapshot entirely. WI-7295's v2
+  // cut removed the REDUNDANT bytes inside it; what remained (`body`,
+  // `sections`, `fieldProvenance`, `basedOn` — 75.95% of the read, 159,523 B
+  // live on 2026-08-03) is real content, so no further projection of its
+  // contents was available. The waste was per-VIEW instead: CoordHistory holds
+  // `expanded` as one `useState<string | null>`, so at most ONE row's payload is
+  // ever rendered, after a click. The expanded row now fetches its own payload
+  // from /api/coord/history/:source/:msg_id (an indexed point lookup), and this
+  // snapshot stops storing and serving 200 of them to render zero.
+  //
+  // The bump is LOAD-BEARING, exactly as v2's was: the reader accepts any stored
+  // row at the SAME producerVersion, so without it the already-stored v2
+  // snapshots keep passing the version check and serve the old fat rows forever
+  // — the cut ships INERT with green tests and clean types (WI-7275/WI-7279
+  // burned that way; WI-7289's shape-guard in routes/coord/index.test.ts now
+  // fails when this shape moves without a bump).
+  producerVersion: 3,
   scope: 'workspace',
   compute: async () => {
-    const { loadCoordHistory } = await import('../endpoint-route/routes/coord');
+    const [{ loadCoordHistory }, { projectCoordHistoryForUi }] = await Promise.all([
+      import('../endpoint-route/routes/coord'),
+      import('../sync-resolver/coord-ui-projection'),
+    ]);
     // DEFAULT variant only: no filters, default limit (200) — the /coord mount.
-    return (await loadCoordHistory({})).items;
+    return projectCoordHistoryForUi((await loadCoordHistory({})).items) as unknown[];
   },
 });
 

@@ -17,12 +17,12 @@
   "dependencies": {
     "@papercusp/artifact-registry": "*",
     "@papercusp/deployment-driver": "*",
-    "hono": "^4.12.21"
+    "hono": "^4.13.7"
   },
   "devDependencies": {
-    "@typescript/native": "npm:typescript@7.0.2",
     "@cloudflare/workers-types": "^4.20250101.0",
     "@papercusp/test-config": "*",
+    "@typescript/native": "npm:typescript@7.0.2",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "vitest": "^4.1.4",
     "wrangler": "^4.0.0"

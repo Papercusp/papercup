@@ -6,7 +6,8 @@
  * remains the containment backstop (D-006).
  */
 
-import { createWriteStream } from 'node:fs';
+import { once } from 'node:events';
+import { createWriteStream, type WriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -16,6 +17,89 @@ import { heuristicScreener, labelExternalContent } from '../../external-content'
 const DEFAULT_MAX_BYTES = 100_000;
 const HARD_MAX_BYTES = 10 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+type BoundedBody = {
+  body: string;
+  truncated: boolean;
+  logPath?: string;
+};
+
+/**
+ * Read a response without materializing an unbounded body in memory. The first
+ * maxBytes are retained for the inline result; once the cap is crossed, the
+ * complete stream is written to a scratch file with backpressure and only the
+ * bounded prefix remains in memory.
+ */
+export async function readResponseBody(
+  response: Response,
+  maxBytes: number,
+  stateDir: string | undefined,
+): Promise<BoundedBody> {
+  if (!response.body) return { body: '', truncated: false };
+
+  const reader = response.body.getReader();
+  const prefix: Uint8Array[] = [];
+  let prefixBytes = 0;
+  let totalBytes = 0;
+  let truncated = false;
+  let stream: WriteStream | undefined;
+  let logPath: string | undefined;
+
+  const writeChunk = async (chunk: Uint8Array): Promise<void> => {
+    if (!stream) return;
+    if (stream.write(chunk)) return;
+    await once(stream, 'drain');
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+      totalBytes += chunk.byteLength;
+
+      if (!truncated && totalBytes <= maxBytes) {
+        prefix.push(chunk);
+        prefixBytes += chunk.byteLength;
+        continue;
+      }
+
+      if (!truncated) {
+        truncated = true;
+        logPath = join(scratchDir(stateDir), `fetch-${crypto.randomUUID().slice(0, 12)}.txt`);
+        stream = createWriteStream(logPath, { flags: 'w' });
+        // The chunks retained before the threshold are also part of the full
+        // spill, so write them before the chunk that crossed the threshold.
+        for (const prior of prefix) await writeChunk(prior);
+        const remaining = Math.max(0, maxBytes - prefixBytes);
+        if (remaining > 0) {
+          prefix.push(chunk.subarray(0, remaining));
+          prefixBytes += remaining;
+        }
+      }
+
+      await writeChunk(chunk);
+    }
+
+    if (stream) {
+      await new Promise<void>((resolve, reject) => {
+        stream!.once('error', reject);
+        stream!.once('finish', resolve);
+        stream!.end();
+      });
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const inlineLimit = Math.min(maxBytes, INLINE_OUTPUT_CAP);
+  const inline = Buffer.concat(prefix.map((chunk) => Buffer.from(chunk))).subarray(0, inlineLimit);
+  return {
+    body: inline.toString('utf8'),
+    truncated,
+    ...(logPath ? { logPath } : {}),
+  };
+}
 
 export default defineTool({
   name: 'capability:fetch',
@@ -56,15 +140,8 @@ export default defineTool({
         body: args.body,
         signal: ac.signal,
       });
-      const full = await res.text();
-      const truncated = Buffer.byteLength(full, 'utf8') > maxBytes;
-      let bodyOut = full;
-      let logPath: string | undefined;
-      if (truncated) {
-        logPath = join(scratchDir(ctx.stateDir), `fetch-${crypto.randomUUID().slice(0, 12)}.txt`);
-        try { createWriteStream(logPath, { flags: 'w' }).end(full); } catch { /* ignore */ }
-        bodyOut = full.slice(0, Math.min(maxBytes, INLINE_OUTPUT_CAP));
-      }
+      const bounded = await readResponseBody(res, maxBytes, ctx.stateDir);
+      const { body: bodyOut, truncated, logPath } = bounded;
       const headers: Record<string, string> = {};
       res.headers.forEach((v, k) => { headers[k] = v; });
 

@@ -44,6 +44,42 @@ export function projectCoordInboxForUi(rows: unknown): unknown {
 }
 
 /**
+ * Drop the heavy `payload` (the envelope minus its projected columns) from each
+ * history row — WI-7297.
+ *
+ * ## Why dropping it is not the same call as for coord.inbox above
+ *
+ * CoordDashboard never renders the inbox `payload` at all, so that one is a
+ * plainly-unread field. CoordHistory DOES render this one — but through a
+ * single `expanded` useState, so AT MOST ONE row's payload is ever displayed,
+ * and only after a click. Measured live 2026-08-03: `payload` was 75.95% of the
+ * read (159,523 B of 210,029 B) to display, in the common case, zero of them.
+ * The waste is per-VIEW rather than per-row, which is why no further projection
+ * of payload's CONTENTS could have fixed it — WI-7295 had already removed the
+ * last redundant bytes, and everything left (`body`, `sections`,
+ * `fieldProvenance`, `basedOn`) is real content that the expand pane needs.
+ *
+ * Nothing becomes unreachable: the expanded row fetches its own payload from
+ * `/api/coord/history/:source/:msg_id` (an indexed point lookup, not a scan),
+ * and the unprojected `/api/coord/history` HTTP route (pui TUI) still serves
+ * every payload inline. The `source` + `msg_id` the client keys on — and which
+ * that fetch is addressed by — are both kept, as is every other scalar.
+ *
+ * Applied to BOTH resolver branches (snapshot and live-scan fallback) so a
+ * filtered view and the default view carry the SAME shape; `coord.history` rows
+ * are keyed and diffed by the sync layer, and a shape that changed when a user
+ * toggled a filter would churn deltas for unchanged data.
+ */
+export function projectCoordHistoryForUi(rows: unknown): unknown {
+  if (!Array.isArray(rows)) return rows;
+  return rows.map((row) => {
+    if (!row || typeof row !== 'object') return row;
+    const { payload: _payload, ...rest } = row as Record<string, unknown>;
+    return rest;
+  });
+}
+
+/**
  * Drop `now_state` (carried but never rendered), clip `now_next` (rendered as a
  * truncated preview), and drop FINISHED plan-run snapshot rows (WI-7256) from
  * each coord.plans row. Everything else — slug, title, status, updated,

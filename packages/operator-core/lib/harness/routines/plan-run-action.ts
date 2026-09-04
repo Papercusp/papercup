@@ -28,6 +28,7 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { planScheduleRoutineName } from './materialize-plan-schedule';
 import { ACTIVE_FEATURE_FAMILY_KINDS, type ActiveFeatureFamilyKind } from '../../work-items';
 import { evaluatePlanStartReadiness, type PlanStartReadiness } from '../../agent-tools/plans/plan-input-validation';
+import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 import { routineStorageSlug } from '../../pot-membership';
 import { setFrontmatterScalar } from '../../agent-tools/plans/transfer-owner';
 import { planRunInstanceSlug } from '../../agent-tools/plans/run-instance-slug';
@@ -136,8 +137,7 @@ interface PreparedPlanRun {
 
 /** Resolve stale schedule config onto the forward-active work-item kind set. */
 export function resolvePlanRunItemKind(rawKind: unknown): ActiveFeatureFamilyKind {
-  return typeof rawKind === 'string' &&
-    (ACTIVE_FEATURE_FAMILY_KINDS as readonly string[]).includes(rawKind)
+  return typeof rawKind === 'string' && (ACTIVE_FEATURE_FAMILY_KINDS as readonly string[]).includes(rawKind)
     ? (rawKind as ActiveFeatureFamilyKind)
     : 'feature';
 }
@@ -208,9 +208,11 @@ async function runScheduledPlanFireTx(
       template: string | null;
       template_data: unknown;
       input_schema: unknown;
+      acceptance_bar_epoch: number | string | null;
     }>
   >`
-    SELECT content, content_hash, title, items, decisions, schedule, template, template_data, input_schema
+    SELECT content, content_hash, title, items, decisions, schedule, template, template_data, input_schema,
+           acceptance_bar_epoch
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${planStorageSlug}
        AND plan_slug = ${templateSlug}
@@ -233,6 +235,28 @@ async function runScheduledPlanFireTx(
     };
   }
   const template = tpl[0];
+  if (template.acceptance_bar_epoch != null) {
+    const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(templateSlug, 'pre-start', {
+      expectedApplicable: true,
+    });
+    if (!lifecycle.satisfied) {
+      const detail = lifecycle.message ?? 'acceptance BAR contract is not ready for scheduled start';
+      console.warn(`[plan-run] template '${templateSlug}' BAR contract is not startable — skip. ${detail}`);
+      return {
+        started: false,
+        instanceSlug: '',
+        runId: -1,
+        runSeq: -1,
+        minted: 0,
+        workItemIds: [],
+        actionableWorkItemIds: [],
+        replayed: false,
+        reason: 'not-startable',
+        detail,
+        retryable: false,
+      };
+    }
+  }
   const execution = parseAgenticPlanExecutionTarget(
     opts.execution !== undefined ? opts.execution : template.schedule?.execution,
   );
@@ -254,9 +278,7 @@ async function runScheduledPlanFireTx(
   if (!readiness.ready) {
     const retryable = readiness.code === 'missing_required';
     const detail =
-      readiness.issues.length > 0
-        ? `${readiness.hint} Issues: ${readiness.issues.join('; ')}`
-        : readiness.hint;
+      readiness.issues.length > 0 ? `${readiness.hint} Issues: ${readiness.issues.join('; ')}` : readiness.hint;
     console.warn(
       `[plan-run] template '${templateSlug}' in ${installSlug} is not startable ` +
         `(${readiness.code}${readiness.missing.length > 0 ? `: missing ${readiness.missing.join(', ')}` : ''}) — skip. ${readiness.hint}`,
@@ -388,9 +410,7 @@ async function runScheduledPlanFireTx(
         replayed: false,
         skippedForConcurrency: true,
         reason: 'concurrency-skip',
-        detail:
-          `prior plan run ${inFlight[0].id} of '${templateSlug}' is still running ` +
-          `(concurrency='skip')`,
+        detail: `prior plan run ${inFlight[0].id} of '${templateSlug}' is still running ` + `(concurrency='skip')`,
         retryable: false,
         priorRunId: Number(inFlight[0].id),
         ...(execution ? { execution } : {}),
@@ -489,7 +509,17 @@ async function runScheduledPlanFireTx(
   // transaction commits, runScheduledPlanFire invokes promotePlanItems with
   // the run context. That one implementation owns identity, provenance,
   // blocker edges, lane gating, idempotency, and replay repair.
-  return { started: true, instanceSlug, runId, runSeq, replayed: false, itemKind, runInputs, appHarnessSlug, execution };
+  return {
+    started: true,
+    instanceSlug,
+    runId,
+    runSeq,
+    replayed: false,
+    itemKind,
+    runInputs,
+    appHarnessSlug,
+    execution,
+  };
 }
 
 /**

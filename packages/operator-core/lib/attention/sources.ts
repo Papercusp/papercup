@@ -173,6 +173,47 @@ export function dropDuplicateBlockedWorkItems(items: readonly AttentionItem[]): 
 }
 
 /**
+ * EI-19401034233741994 — the coord:ask-owner counterpart of the two dedupes
+ * above, same canonicalization convention.
+ *
+ * `coord:ask-owner` writes ONE owner question as TWO attention rows: a
+ * `coord_conversations` row (source #9 → `conversation`, ALERT tier) and a
+ * `severity='question'` escalation (source #2 → `coord-escalation`, DECISION
+ * tier). Both render, so the owner sees every ask twice, in two tiers, in two
+ * groups — and the Alert copy lands hundreds deep among the alerts, which is
+ * pure noise given the Decision copy is the one carrying the resolve action.
+ *
+ * EI-19399318647145782 fixed the ROT (the legs are linked via
+ * `meta.conversationId`, so answering clears both) but deliberately did not
+ * change what renders. This is that render fix: the DECISION framing wins and
+ * the Alert-tier twin is dropped — one card per real question.
+ *
+ * Deliberately gated on the covering escalation being `tier === 'decision'`.
+ * A `question` escalation is Decision-tier in every live path, but an
+ * operational/downgraded one is not, and in that case dropping the
+ * conversation would remove the owner's ONLY card for a still-open question —
+ * strictly worse than the double-render this fixes. Same fail-open direction
+ * as `dropConvertedPlanItems` (a decision is never silently hidden). Matching
+ * is an EXACT stamped-id match, inheriting `selectEscalationsForConversation`'s
+ * reasoning: a prefix heuristic would silently hide an unrelated question.
+ * PURE.
+ */
+export function dropDuplicateQuestionConversations(items: readonly AttentionItem[]): AttentionItem[] {
+  const coveredConversationIds = new Set<string>();
+  for (const it of items) {
+    if (it.kind !== 'coord-escalation' || it.ref.kind !== 'coord-escalation') continue;
+    if (it.tier !== 'decision') continue;
+    const linked = it.ref.conversationId;
+    if (typeof linked === 'string' && linked.trim()) coveredConversationIds.add(linked.trim());
+  }
+  if (coveredConversationIds.size === 0) return [...items];
+  return items.filter((it) => {
+    if (it.kind !== 'conversation' || it.ref.kind !== 'conversation') return true;
+    return !coveredConversationIds.has(it.ref.conversationId.trim());
+  });
+}
+
+/**
  * Map recent report-carrying operator turns to AttentionItems — the
  * operator-report source (report-cards-inbox-reconciliation-2026-06-05,
  * P-003 / D-003). The stored jsonb is re-validated through the shared

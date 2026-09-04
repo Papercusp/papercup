@@ -20,6 +20,7 @@ import {
   type InboxOptions,
 } from '@papercusp/coordination/core';
 import { coordLog, coordWorkspaceId, coordSql, coordHasPgFastPath } from './log';
+import { getLineEnvelopeById } from './line-event-by-id';
 import { expandAudienceDetailed, hasAudienceSelector, type UnreachableAudience } from './audience';
 import { hostAudienceResolvers, audienceMode, deriveAudienceKey } from './audience-host';
 import { deliverFleetDigests } from './fleet-delivery';
@@ -1330,7 +1331,7 @@ export async function readInvolvingOwner(
  * `getEvent('messages', …)` always returned null there) — only PgCoordLog's
  * `getEvent` happened to work by accident, since `handoffs`/`escalations`/
  * `messages` all share the one `coord_event_log` table and its `msg_id` column.
- * Implemented directly here instead of widening `EventSurface` (which would let
+ * Implemented outside `EventSurface` rather than by widening it (which would let
  * `putEvent`/`putEvents` be miscalled on `messages` too — its ON CONFLICT target
  * is a partial index scoped to `handoffs`/`escalations` only, so a stray
  * `putEvent('messages', …)` would silently insert a duplicate row instead of
@@ -1340,37 +1341,13 @@ export async function readInvolvingOwner(
  * msg_id = $2` shape); the readLines fallback covers the test/dev backends
  * (small in-memory datasets, a scan is fine) and is now also the CORRECT
  * behavior there, not just the compiling one.
+ *
+ * WI-7297: the read itself now lives in `line-event-by-id.ts`, surface-
+ * parameterised, so `plan-events` could get the same correct by-id lookup
+ * without a second copy of this query. Behaviour here is unchanged.
  */
 export async function getMessageById(msgId: string): Promise<CoordEnvelope | null> {
-  if (!msgId) return null;
-  if (coordHasPgFastPath()) {
-    try {
-      const sql = coordSql();
-      const rows = await sql<{ body: unknown; harness_slug: string | null }[]>`
-        SELECT body, harness_slug
-          FROM harness_shared.coord_event_log
-         WHERE workspace_id = ${coordWorkspaceId()}
-           AND surface = 'messages'
-           AND msg_id = ${msgId}
-         LIMIT 1
-      `;
-      if (rows.length) {
-        const row = rows[0];
-        const envelope = (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as CoordEnvelope;
-        // The normalized column is the federation source of truth. In
-        // particular, a NULL column must erase a stale body.harness_slug so
-        // a local message cannot be accidentally federated by an old blob.
-        if (row.harness_slug == null) delete envelope.harness_slug;
-        else envelope.harness_slug = row.harness_slug;
-        return envelope;
-      }
-      return null;
-    } catch {
-      // Fall through to the authoritative full-surface read below.
-    }
-  }
-  const lines = await coordLog.readLines('messages');
-  return lines.find((l) => l.msg_id === msgId) ?? null;
+  return getLineEnvelopeById('messages', msgId);
 }
 
 /**

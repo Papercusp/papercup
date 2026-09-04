@@ -9,9 +9,16 @@
 
 import { describe, it, expect } from 'vitest';
 import { parsePlan } from '@papercusp/plan-parser';
-import { planItemsToAttention, dropConvertedPlanItems, reportTurnsToAttention, toIsoOrNull } from './sources';
+import {
+  planItemsToAttention,
+  dropConvertedPlanItems,
+  dropDuplicateQuestionConversations,
+  reportTurnsToAttention,
+  toIsoOrNull,
+} from './sources';
 import { buildAttentionGroups } from './group';
-import { smokeFailToAttention } from './adapters';
+import { smokeFailToAttention, coordEscalationToAttention, conversationToAttention } from './adapters';
+import type { AttentionItem } from './types';
 import { planItemRef } from '../issue-blocks-merge';
 import { buildItemLine } from '../agent-tools/plans/add-item';
 import { setImportanceInBody } from '../agent-tools/plans/set-importance';
@@ -219,6 +226,149 @@ describe('toIsoOrNull', () => {
     expect(toIsoOrNull(null)).toBeNull();
     expect(toIsoOrNull(undefined)).toBeNull();
     expect(toIsoOrNull('not-a-date')).toBeNull();
+  });
+});
+
+/**
+ * EI-19401034233741994 — one coord:ask-owner question must render ONE card.
+ *
+ * Driven through the REAL adapters (not hand-built fixtures) so the test also
+ * covers the wiring the fix depends on: that `coordEscalationToAttention`
+ * actually carries `conversationId` onto the ref, and that a `question`
+ * escalation actually lands Decision-tier. A fixture-only test would keep
+ * passing if either of those regressed.
+ */
+describe('dropDuplicateQuestionConversations (EI-19401034233741994)', () => {
+  /** The two rows one `coord:ask-owner` writes: Decision escalation + Alert conversation. */
+  function askOwnerPair(conversationId: string, msgId = `esc-${conversationId}`) {
+    return {
+      escalation: coordEscalationToAttention({
+        msgId,
+        severity: 'question',
+        summary: 'ok to proceed?',
+        from: 'su-asker',
+        conversationId,
+      }),
+      conversation: conversationToAttention({ conversationId, title: 'ok to proceed?', askerId: 'su-asker' }),
+    };
+  }
+
+  it('drops the Alert-tier conversation twin when a Decision escalation links it', () => {
+    const { escalation, conversation } = askOwnerPair('conv-1');
+    // Precondition: the two legs really are the two tiers this dedupe is about.
+    expect(escalation.tier).toBe('decision');
+    expect(conversation.tier).toBe('alert');
+
+    const kept = dropDuplicateQuestionConversations([escalation, conversation]);
+
+    expect(kept).toHaveLength(1);
+    expect(kept[0]!.kind).toBe('coord-escalation');
+    // The surviving card is the one carrying the resolve action.
+    expect(kept[0]!.actions.some((a) => a.id === 'resolve')).toBe(true);
+  });
+
+  it('keeps a conversation nothing links — an unpaired question is the owner’s only card', () => {
+    const lone = conversationToAttention({ conversationId: 'conv-lonely', title: 'unpaired?' });
+    const other = coordEscalationToAttention({
+      msgId: 'esc-unrelated',
+      severity: 'blocker',
+      summary: 'unrelated blocker',
+      from: 'su-x',
+    });
+
+    const kept = dropDuplicateQuestionConversations([other, lone]);
+
+    expect(kept).toHaveLength(2);
+    expect(kept.map((i) => i.id)).toContain(lone.id);
+  });
+
+  it('fails OPEN: an Alert-tier escalation does not cover its conversation', () => {
+    // A system-emitted escalation with no options is operational → Alert tier.
+    // Dropping the conversation there would leave the owner ZERO cards for a
+    // still-open question — strictly worse than the double-render.
+    const operational = coordEscalationToAttention({
+      msgId: 'esc-op',
+      severity: 'question',
+      summary: 'ok to proceed?',
+      from: 'system',
+      conversationId: 'conv-op',
+    });
+    const conversation = conversationToAttention({ conversationId: 'conv-op', title: 'ok to proceed?' });
+    expect(operational.tier).toBe('alert');
+
+    const kept = dropDuplicateQuestionConversations([operational, conversation]);
+
+    expect(kept).toHaveLength(2);
+  });
+
+  it('matches the stamped id EXACTLY — a shared prefix never hides another question', () => {
+    // Conversations and their escalations are minted ms apart, so real ids share
+    // long base36 prefixes; a prefix heuristic would silently hide a live ask.
+    const { escalation } = askOwnerPair('conv-msbkhoir-aaaa');
+    const neighbour = conversationToAttention({ conversationId: 'conv-msbkhoir-bbbb', title: 'different question' });
+
+    const kept = dropDuplicateQuestionConversations([escalation, neighbour]);
+
+    expect(kept).toHaveLength(2);
+    expect(kept.map((i) => i.id)).toContain(neighbour.id);
+  });
+
+  it('drops only the matching twin when several asks are open at once', () => {
+    const a = askOwnerPair('conv-a');
+    const b = askOwnerPair('conv-b');
+    const orphan = conversationToAttention({ conversationId: 'conv-c', title: 'still open' });
+
+    const kept = dropDuplicateQuestionConversations([a.escalation, a.conversation, b.escalation, b.conversation, orphan]);
+
+    expect(kept.map((i) => i.id).sort()).toEqual([a.escalation.id, b.escalation.id, orphan.id].sort());
+  });
+
+  it('CONTROL: the exact-match assertion is load-bearing — a prefix matcher fails it', () => {
+    // A deliberately-wrong implementation kept permanently as a control (the
+    // repo's falsifiability discipline for an imported module). Prefix matching
+    // is the plausible-looking mistake — it is how the original zombies were
+    // FOUND — and this proves the neighbour case above would actually catch it,
+    // rather than passing because the selector never matches anything.
+    const dropByPrefix = (items: readonly AttentionItem[]): AttentionItem[] => {
+      const linked: string[] = [];
+      for (const it of items) {
+        if (it.kind === 'coord-escalation' && it.ref.kind === 'coord-escalation' && it.tier === 'decision') {
+          const id = it.ref.conversationId;
+          if (typeof id === 'string' && id.trim()) linked.push(id.trim().slice(0, 12));
+        }
+      }
+      return items.filter(
+        (it) =>
+          !(it.kind === 'conversation' && it.ref.kind === 'conversation') ||
+          !linked.some((p) => it.ref.kind === 'conversation' && it.ref.conversationId.startsWith(p)),
+      );
+    };
+
+    const { escalation } = askOwnerPair('conv-msbkhoir-aaaa');
+    const neighbour = conversationToAttention({ conversationId: 'conv-msbkhoir-bbbb', title: 'different question' });
+    const feed = [escalation, neighbour];
+
+    // The wrong implementation silently hides an unrelated open question…
+    expect(dropByPrefix(feed)).toHaveLength(1);
+    // …where the real one keeps it. Same input, opposite outcome.
+    expect(dropDuplicateQuestionConversations(feed)).toHaveLength(2);
+  });
+
+  it('is a no-op (copy) when no escalation carries a link, and passes other kinds through', () => {
+    const unlinked = coordEscalationToAttention({
+      msgId: 'esc-plain',
+      severity: 'blocker',
+      summary: 'plain blocker',
+      from: 'su-x',
+    });
+    const conversation = conversationToAttention({ conversationId: 'conv-z', title: 'q' });
+    const smoke = smokeFailToAttention({ harnessSlug: 'h', failing: 1, total: 3 });
+    const items = [unlinked, conversation, smoke];
+
+    const kept = dropDuplicateQuestionConversations(items);
+
+    expect(kept).toEqual(items);
+    expect(kept).not.toBe(items); // copy, never the caller's array
   });
 });
 

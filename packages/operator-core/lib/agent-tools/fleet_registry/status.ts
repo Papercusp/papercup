@@ -34,6 +34,7 @@ import { crossCheckLaunchVerification, buildOwnerActivityReader } from '../../fl
 import { fleetEverMembers } from '../../fleet-membership-store';
 import { buildFleetPopulationLifecycle } from '../fleet/fleet-population';
 import { getLoopStatuses } from '../../harness/routines/loop';
+import type { LifecycleBackoffInfo, LoopStatus } from '../../harness/routines/loop';
 
 /**
  * WI-3818: bound the two OPTIONAL legs — completionStats (harness-scoped
@@ -96,6 +97,16 @@ export function shapeFleetStatus(data: unknown, tier: FleetStatusTier): unknown 
       lastActiveSecAgo: typeof r.lastActiveSecAgo === 'number' ? r.lastActiveSecAgo : null,
       doing: clipFleetStatus(r.doing, caps.doing),
       load: typeof r.load === 'number' ? r.load : null,
+      // WI-7286: the shaper is a WHITELIST, so a field the handler emits but this
+      // projection omits is dropped silently at both non-full tiers — and `trimmed`
+      // is the DEFAULT read, so omitting it here would leave the backoff signal
+      // visible only to a caller who thought to ask for payloadTier:'full'. That is
+      // the opposite of the point: a silenced member matters most on the cheap
+      // monitor read. Kept in both tiers (three small scalars) and, like the
+      // handler, spread only when present so healthy rows are unchanged.
+      ...(r.lifecycleBackoff && typeof r.lifecycleBackoff === 'object'
+        ? { lifecycleBackoff: r.lifecycleBackoff }
+        : {}),
     };
 
     if (sessionState === 'ended' || sessionState === 'suspect') {
@@ -462,8 +473,35 @@ export default defineTool({
         label: 'fleet:status:headcountExecuting',
       },
     );
+    // EI-19381528967421062 / WI-7286: a member whose engine loop backed off from a
+    // provider wall (rate-limit / usage-cap) reads as an ordinary live row here —
+    // `sessionState:'live'` with a stale `lastActiveSecAgo` — and NOTHING on this
+    // surface distinguishes "healthy, next tick in 60s" from "silenced for the next
+    // 100 minutes". fleet:assignments and fleet:leader-brief already carry the
+    // derivation (decorateLoopMonitorStates → loop.lifecycleBackoff), but both build
+    // their rows from the assignments path; fleet:status builds its roster from
+    // fleet-roster.ts's sessionState/wakeability oracle and had no per-member loop
+    // read at all. This is that batch read — the SAME computeLifecycleBackoff output,
+    // not a second derivation.
+    //
+    // It depends on the roster (it needs the owner ids), so it cannot join the
+    // Promise.all above; it runs after, bounded like every other optional leg.
+    // `null` is the honest degraded value: an unread loop table must never render as
+    // "no member is backed off", which is the false all-clear this exists to prevent.
+    const loopStatusesResult = await withBoundedTimeout<Map<string, LoopStatus> | null>(
+      roster.length === 0
+        ? Promise.resolve(new Map<string, LoopStatus>())
+        : getLoopStatuses(roster.map((m) => m.agentId)),
+      {
+        fallback: null,
+        timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
+        label: 'fleet:status:loopStatuses',
+      },
+    );
+    const loopStatuses = loopStatusesResult.value;
     const degradedLegs: string[] = [
       ...rosterResult.degradedLegs.map((leg: FleetRosterDegradedLeg) => `roster.${leg}`),
+      ...(loopStatusesResult.degraded || loopStatuses == null ? ['loopStatuses'] : []),
       ...(completionStatsResult.degraded ? ['completionStats'] : []),
       ...(runningBeesResult.degraded ? ['runningBees'] : []),
       ...(beeCountResult.degraded ? ['beeCount'] : []),
@@ -655,6 +693,19 @@ export default defineTool({
         lastActiveSecAgo: m.lastActiveSecAgo,
         doing: m.doing,
         load: m.load,
+        // WI-7286: present ONLY when this member's loop is actually backed off, so a
+        // healthy fleet's payload stays byte-identical (the same convention degraded/
+        // degradedLegs follows). Absent therefore means one of two things, and
+        // `degradedLegs` is what tells them apart: no backoff (leg read fine), or the
+        // loop read degraded (leg named there). Mirrors decorateLoopMonitorStates:
+        // an INACTIVE loop reports no backoff, because a disarmed loop is not silenced.
+        ...(() => {
+          const loop = loopStatuses?.get(m.agentId);
+          const backoff: LifecycleBackoffInfo | null = loop?.active
+            ? (loop.lifecycleBackoff ?? null)
+            : null;
+          return backoff ? { lifecycleBackoff: backoff } : {};
+        })(),
         // P-006: only on the dead — what a leader needs to decide whether (and how) to
         // bring this one back. `resumable:true` ⇒ `capability:launch-agent { resume:
         // { agentId }, fleet, brief }` restores it mid-thread with its context intact.

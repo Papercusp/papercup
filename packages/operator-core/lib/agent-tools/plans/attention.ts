@@ -58,6 +58,7 @@ import {
   dropConvertedPlanItems,
   dropDuplicateNeedsHumanWorkItems,
   dropDuplicateBlockedWorkItems,
+  dropDuplicateQuestionConversations,
 } from '../../attention/sources';
 import { buildAttentionGroups } from '../../attention/group';
 import { MAX_ATTENTION_OFFSET, MAX_ATTENTION_PAGE_SIZE, paginateAttentionGroups } from '../../attention/window';
@@ -354,6 +355,16 @@ export default defineTool({
                     goalRef:
                       typeof (e as { goalRef?: unknown }).goalRef === 'string'
                         ? ((e as { goalRef?: unknown }).goalRef as string)
+                        : null,
+                    // EI-19401034233741994: `openEscalation` spreads its `meta`
+                    // bag FLAT onto the envelope, so an ask-owner escalation
+                    // carries its conversation twin's id right here (the same
+                    // seam `selectEscalationsForConversation` reads). Carrying
+                    // it onto the item lets step 9a drop the Alert-tier
+                    // conversation card rendering the SAME question.
+                    conversationId:
+                      typeof (e as { conversationId?: unknown }).conversationId === 'string'
+                        ? ((e as { conversationId?: unknown }).conversationId as string)
                         : null,
                   }),
                   occurredAt: toIsoOrNull(tsOf((e as { ts?: unknown }).ts)),
@@ -852,6 +863,17 @@ export default defineTool({
         //      11a so it sees the post-dedupe needs-human set.
         {
           const kept = dropDuplicateBlockedWorkItems(items);
+          items.length = 0;
+          items.push(...kept);
+        }
+
+        // 9a. EI-19401034233741994: one coord:ask-owner question renders as BOTH
+        //     a Decision-tier escalation (source #2) and an Alert-tier
+        //     conversation (source #9). Same canonicalization as 11a/15a — the
+        //     Decision framing wins, its Alert twin is dropped, so the owner
+        //     sees ONE card per real question.
+        {
+          const kept = dropDuplicateQuestionConversations(items);
           items.length = 0;
           items.push(...kept);
         }

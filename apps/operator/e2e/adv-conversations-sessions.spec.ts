@@ -332,7 +332,10 @@ test.describe('/adv Conversations + Sessions e2e', () => {
 
     await row.click();
     const detail = page.getByRole('complementary', { name: 'Agent detail' });
-    await expect(detail.locator('.pc-dossier__id')).toHaveAttribute('title', AGENT_ID);
+    // WI-7310: the pane title, not the machine-text `__id` role. `.pc-dossier__id`
+    // matches every inline id/event-key in the body too, so this locator was one
+    // subscriptions-bearing fixture away from a strict-mode multi-match.
+    await expect(detail.locator('.pc-dossier__title')).toHaveAttribute('title', AGENT_ID);
     await expect(detail.getByText('su · e2e worker')).toBeVisible();
     await expect(detail.getByText('Cover the sessions roster with a real browser test')).toBeVisible();
     await expect(detail.getByText('WI-3238')).toBeVisible();

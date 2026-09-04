@@ -644,6 +644,10 @@ describe('summarizeOrphan — WI-5975', () => {
       effectiveStatus: 'done',
       reason:
         'plan-item p#P-007 is already done — its work-item is stale residue of completed/abandoned work, not open work',
+      // WI-7316 added this required field; the tripwire above worked exactly as intended.
+      // null is the honest value for THIS fixture: a cleanly-terminal item with no
+      // unresolved blocked-by edge carries no contradiction for the resolver to report.
+      staleBlockedHint: null,
     };
 
     // The OUTPUT is deliberately NARROWER than the input: summarizeOrphan projects the

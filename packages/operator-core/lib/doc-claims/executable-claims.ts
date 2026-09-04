@@ -47,15 +47,55 @@
  * "unsupported".
  *
  * Measured, on the su prompt artifacts (`apps/operator/prompts/…`): this
- * extractor finds ZERO prescriptions in all three, because they prescribe in a
- * declarative voice instead — ``docs don't hot-reload — `cd apps/operator-docs
- * && npm run build` regenerates the served mirror`` names no imperative before
- * the span. That file contains a REAL instance of this very defect (`npm run
- * build` is refused by the same gate), so running this check against it would
- * have returned a confident all-clear over a known-bad line — the "checked zero
- * files, therefore green" shape CLAUDE.md warns about for `tsc -p .`.
+ * extractor originally found ZERO prescriptions in all three, because they
+ * prescribe in a declarative voice instead — ``docs don't hot-reload — `cd
+ * apps/operator-docs && npm run build` regenerates the served mirror`` names no
+ * imperative before the span. That file contained a REAL instance of this very
+ * defect (`npm run build` is refused by the same gate), so running this check
+ * against it would have returned a confident all-clear over a known-bad line —
+ * the "checked zero files, therefore green" shape CLAUDE.md warns about for
+ * `tsc -p .`.
  *
- * So: a new target document needs its own measured site set, and a
+ * ── The declarative voice, measured (WI-7300, 2026-09-04) ────────────────────
+ *
+ * Two more sites were added for that voice, and a third candidate was REJECTED
+ * by measurement. All three were measured against BOTH the su instance prompt
+ * (`apps/operator/prompts/pot-instances/papercup-pot.su.md`) and the live
+ * corpus, because a new site's cost is paid on the corpus, where a false
+ * positive reds the fleet gate:
+ *
+ *   ADDED  `bullet:lead`     the FIRST invocation-shaped span in a list item
+ *                            opening with a bolded lead-in (`- **Write/update
+ *                            docs:** … `cmd` regenerates …`). Catches the
+ *                            historical known-bad line verbatim. su 1/1
+ *                            genuine; corpus 1 hit, placeholder-skipped, so
+ *                            the blast radius on `prescribed` is ZERO.
+ *   ADDED  `emphasis:bold`   a bold-WRAPPED span (`**\`cmd\`**`) — this repo's
+ *                            convention for "this is the one to run", and how
+ *                            the su prompt's fixed line is now written. su 1/1
+ *                            (`npm run docs:rebuild`); corpus 2 hits, both
+ *                            genuine — `npm run install:safe` (gate: allow)
+ *                            and one placeholder-skipped.
+ *   REJECTED `effect verb`   a span followed by a third-person effect verb
+ *                            ("`cmd` regenerates/prints/deploys …"). It DOES
+ *                            catch the known-bad line, but measured 9 corpus
+ *                            hits at roughly HALF precision: it fires on
+ *                            ``pgrep -qf X && echo ALIVE || echo gone` prints
+ *                            **`gone`**` and on `a bare `npm install` prints
+ *                            "up to date"` — both anti-pattern EXHIBITS. That
+ *                            is exactly the inversion this module's site
+ *                            whitelist exists to prevent, so the verb leg is
+ *                            not here and should not be re-added without a
+ *                            fresh measurement that contradicts this one.
+ *
+ * Both new sites decline inside a `| … | use | not |` table (the `not` column
+ * would otherwise be prescribed through the emphasis leg), and `bullet:lead`
+ * declines when the bold lead-in itself is a proscription ("Never …", ⛔).
+ * Neither guard changes any verdict on today's corpus — both measured zero
+ * collisions — so they are forward protection for a corpus that is edited
+ * continuously, in the fail-OPEN direction D-001 constraint 2 requires.
+ *
+ * So: a new target document still needs its own measured site set, and a
  * `prescribed.length === 0` result on a non-trivial doc should be read as "the
  * voice is unsupported", never as "the doc is clean". The npm-run leg has no
  * such dependency — it keys on command text alone and travels fine.
@@ -68,7 +108,21 @@ export type PrescriptionSite =
   /** an explicit imperative immediately before the span: `**Run** \`cmd\`` */
   | 'imperative:run'
   /** the prescribed column of a `| you want | use | not |` routing table */
-  | 'table:use';
+  | 'table:use'
+  /**
+   * A bold-WRAPPED span: `**\`npm run docs:rebuild\`**`. The declarative voice's
+   * emphasis convention for "this is the one to run" — it names no imperative,
+   * so `imperative:run` cannot see it.
+   */
+  | 'emphasis:bold'
+  /**
+   * The FIRST invocation-shaped span in a list item that opens with a bolded
+   * lead-in (`- **Write/update docs:** … `cmd` regenerates the served mirror`).
+   * The lead-in IS the imperative; the command follows declaratively. Only the
+   * first, because a bullet that prescribes routinely goes on to name the form
+   * it is steering you AWAY from ("Use this, never a raw `…`").
+   */
+  | 'bullet:lead';
 
 export interface PrescribedCommand {
   /** 1-based line in the source markdown. */
@@ -142,9 +196,29 @@ interface Atom {
   tableCell: number | null;
   tableUseCell: number | null;
   precededByRun: boolean;
+  /** the span is wrapped in emphasis: `**\`cmd\`**` */
+  boldWrapped: boolean;
+  /** this is the FIRST invocation-shaped span in a prescribing bullet */
+  bulletLeadFirst: boolean;
   fenceLang: string | null;
   isExhibit: boolean;
 }
+
+/**
+ * A list item whose bolded lead-in acts as the imperative for a declaratively
+ * written command: `- **Write/update docs:** … \`cmd\` regenerates …`.
+ */
+const BULLET_LEAD = /^\s*[-*]\s+\*\*([^*]{2,80})\*\*/;
+
+/**
+ * A lead-in that declares the bullet PROSCRIPTIVE. This is the one place a
+ * negation cue carries real signal — it is the bullet's declared subject, not
+ * an incidental "not" somewhere in dense prose (which this module measured as
+ * useless in both directions, see the header). Fail-open: an unrecognised
+ * proscription costs one unchecked claim, a fabricated prescription reds the
+ * fleet gate.
+ */
+const PROSCRIPTIVE_LEAD = /never|don'?t|do not|⛔|🚨|⚠|refus|forbid|retired/i;
 
 interface TableGeometry {
   /** index of the `not` column; the prescribed column is the one before it */
@@ -211,6 +285,8 @@ function atoms(markdown: string): Atom[] {
         tableCell: null,
         tableUseCell: null,
         precededByRun: false,
+        boldWrapped: false,
+        bulletLeadFirst: false,
         fenceLang,
         isExhibit: EXHIBIT.test(raw),
       });
@@ -218,14 +294,25 @@ function atoms(markdown: string): Atom[] {
     }
 
     const geo = geometry.get(i + 1) ?? null;
+    const lead = raw.match(BULLET_LEAD);
+    // A bullet prescribes only while its lead-in is not itself a proscription.
+    let bulletLeadOpen = Boolean(lead) && !PROSCRIPTIVE_LEAD.test(lead![1]);
     for (const m of raw.matchAll(/`([^`]+)`/g)) {
-      const before = raw.slice(0, m.index ?? 0);
+      const start = m.index ?? 0;
+      const before = raw.slice(0, start);
+      const text = m[1].trim();
+      // Claim the bullet's ONE prescription slot for the first invocation-shaped
+      // span; every later span in the same bullet is left to the other sites.
+      const claimsBullet = bulletLeadOpen && isInvocation(text);
+      if (claimsBullet) bulletLeadOpen = false;
       out.push({
         line: i + 1,
-        text: m[1].trim(),
-        tableCell: geo ? cellIndexOf(raw, m.index ?? 0) : null,
+        text,
+        tableCell: geo ? cellIndexOf(raw, start) : null,
         tableUseCell: geo ? geo.useCell : null,
         precededByRun: /(?:^|[\s>*_(])(?:\*\*)?[Rr]un(?:\*\*)?:?\s*$/.test(before),
+        boldWrapped: before.endsWith('**') && raw.slice(start + m[0].length).startsWith('**'),
+        bulletLeadFirst: claimsBullet,
         fenceLang: null,
         isExhibit: false,
       });
@@ -242,7 +329,14 @@ function siteOf(a: Atom): PrescriptionSite | null {
     return a.isExhibit ? null : 'fence:bash';
   }
   if (a.precededByRun) return 'imperative:run';
-  if (a.tableUseCell !== null && a.tableCell === a.tableUseCell) return 'table:use';
+  if (a.tableUseCell !== null) {
+    // Inside a routing table the COLUMN is the whole signal: the `not` column is
+    // full of emphasised commands the doc is steering you away from, so the
+    // declarative sites must not reach in and prescribe them.
+    return a.tableCell === a.tableUseCell ? 'table:use' : null;
+  }
+  if (a.boldWrapped) return 'emphasis:bold';
+  if (a.bulletLeadFirst) return 'bullet:lead';
   return null;
 }
 

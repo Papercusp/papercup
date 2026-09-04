@@ -145,6 +145,10 @@ export interface CoordEscalationInput {
   fromLabel?: string | null;
   /** Authoritative held goal stamped by coord:escalate (D-015). */
   goalRef?: string | null;
+  /** EI-19401034233741994: the conversation twin this escalation is the
+   * Decision-tier leg of (`meta.conversationId`, stamped by `coord:ask-owner`).
+   * Only ask-owner escalations carry it; everything else leaves it undefined. */
+  conversationId?: string | null;
 }
 
 /**
@@ -263,7 +267,13 @@ export function coordEscalationToAttention(e: CoordEscalationInput): AttentionIt
     // Resolve always (coord:resolve, with the escalation's named options).
     // Discuss routes to the escalating agent or a fresh harness chat (DiscussPanel).
     actions: [{ id: 'resolve', label: 'Resolve', primary: true }, DISCUSS],
-    ref: { kind: 'coord-escalation', msgId: e.msgId, options, goalRef: e.goalRef ?? null },
+    ref: {
+      kind: 'coord-escalation',
+      msgId: e.msgId,
+      options,
+      goalRef: e.goalRef ?? null,
+      conversationId: e.conversationId ?? null,
+    },
   };
 }
 

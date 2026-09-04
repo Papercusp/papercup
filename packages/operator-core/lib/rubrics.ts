@@ -515,8 +515,7 @@ async function mapRubricPlanRows(rows: RubricPlanRow[]): Promise<Rubric[]> {
 const RUBRIC_STATUS_ORDER: Record<RubricStatus, number> = { active: 0, proposed: 1, retired: 2 };
 function sortRubrics(rubrics: Rubric[]): Rubric[] {
   return rubrics.sort(
-    (a, b) =>
-      RUBRIC_STATUS_ORDER[a.status] - RUBRIC_STATUS_ORDER[b.status] || b.updatedAt.localeCompare(a.updatedAt),
+    (a, b) => RUBRIC_STATUS_ORDER[a.status] - RUBRIC_STATUS_ORDER[b.status] || b.updatedAt.localeCompare(a.updatedAt),
   );
 }
 
@@ -646,10 +645,7 @@ async function existingRubricPlanRows(): Promise<ExistingRubricRow[]> {
  * carries (releaseGating, ratifiedBy, status) survive the whole-document replace instead
  * of being silently dropped.
  */
-function buildSeedProposeInput(
-  r: LocalRubric,
-  upgrading: Rubric | null,
-): ProposeRubricInput {
+function buildSeedProposeInput(r: LocalRubric, upgrading: Rubric | null): ProposeRubricInput {
   return {
     rubricId: r.rubricId,
     characteristic: r.characteristic,
@@ -665,9 +661,7 @@ function buildSeedProposeInput(
     // automatic content sync.
     status: upgrading?.status ?? 'active',
     ...(upgrading?.releaseGating !== undefined ? { releaseGating: upgrading.releaseGating } : {}),
-    ...(upgrading?.stalenessWatched !== undefined
-      ? { stalenessWatched: upgrading.stalenessWatched }
-      : {}),
+    ...(upgrading?.stalenessWatched !== undefined ? { stalenessWatched: upgrading.stalenessWatched } : {}),
     // D-015: a declared contract-generation boundary is governance state, not content —
     // a content sync that silently dropped it would re-blend a retired contract's
     // gradings into the live trend, which is exactly what declaring it prevented.
@@ -930,9 +924,7 @@ export async function getAcceptanceRubricsForPlan(
 ): Promise<Rubric[]> {
   try {
     const { sql } = getOrgPg();
-    const limit = options.limit == null
-      ? null
-      : Math.min(Math.max(Math.trunc(options.limit), 1), 500);
+    const limit = options.limit == null ? null : Math.min(Math.max(Math.trunc(options.limit), 1), 500);
     const rows = await sql<RubricPlanRow[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
              version, owner, archived, template_data
@@ -946,9 +938,7 @@ export async function getAcceptanceRubricsForPlan(
          AND template_data->>'subjectPlan' = ${planSlug}
        ORDER BY updated_at DESC NULLS LAST, plan_slug ASC
        ${limit == null ? sql`` : sql`LIMIT ${limit}`}`;
-    return (await mapRubricPlanRows(rows)).filter(
-      (r) => r.kind === 'acceptance' && r.subjectPlan === planSlug,
-    );
+    return (await mapRubricPlanRows(rows)).filter((r) => r.kind === 'acceptance' && r.subjectPlan === planSlug);
   } catch {
     return [];
   }
@@ -1019,9 +1009,7 @@ export async function getAcceptanceRubricForGoal(goalId: string): Promise<Rubric
          AND template_data->>'subjectGoal' = ${goalId}
        ORDER BY updated_at DESC
        LIMIT 5`;
-    const mapped = (await mapRubricPlanRows(rows)).filter(
-      (r) => r.kind === 'acceptance' && r.subjectGoal === goalId,
-    );
+    const mapped = (await mapRubricPlanRows(rows)).filter((r) => r.kind === 'acceptance' && r.subjectGoal === goalId);
     return mapped[0] ?? null;
   } catch {
     return null;
@@ -1034,11 +1022,7 @@ export async function getAcceptanceRubricForGoal(goalId: string): Promise<Rubric
  * in-process scan over the rubric-template plans is as fast as a table FTS. Standard-kind
  * only unless `kind` opts in.
  */
-export async function searchRubrics(
-  query: string,
-  limit = 50,
-  kind: RubricKindFilter = 'standard',
-): Promise<Rubric[]> {
+export async function searchRubrics(query: string, limit = 50, kind: RubricKindFilter = 'standard'): Promise<Rubric[]> {
   const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return [];
   const matched = (await loadAllRubrics(kind)).filter((r) => {
@@ -1143,9 +1127,7 @@ export function computeAcceptanceBarSetHash(
  * it is removed before persistence, and a mismatching model+bar pair is refused.
  * Caller-supplied barHash is discarded and recomputed from normalized meaning.
  */
-export function normalizeAcceptanceBarCriterion(
-  criterion: ProposeRubricCriterion,
-): ProposeRubricCriterion {
+export function normalizeAcceptanceBarCriterion(criterion: ProposeRubricCriterion): ProposeRubricCriterion {
   const carriesBarContract =
     criterion.bar !== undefined ||
     criterion.barHash !== undefined ||
@@ -1176,15 +1158,9 @@ export function normalizeAcceptanceBarCriterion(
     ...rest,
     ...(model || alias ? { model: model || alias } : {}),
     ...(criterion.barKey?.trim() ? { barKey: criterion.barKey.trim() } : {}),
-    ...(criterion.requiredScope
-      ? { requiredScope: normalizedBarSet(criterion.requiredScope) }
-      : {}),
-    ...(criterion.passRatings
-      ? { passRatings: normalizedBarSet(criterion.passRatings, true) }
-      : {}),
-    ...(criterion.coversBarKeys
-      ? { coversBarKeys: normalizedBarSet(criterion.coversBarKeys) }
-      : {}),
+    ...(criterion.requiredScope ? { requiredScope: normalizedBarSet(criterion.requiredScope) } : {}),
+    ...(criterion.passRatings ? { passRatings: normalizedBarSet(criterion.passRatings, true) } : {}),
+    ...(criterion.coversBarKeys ? { coversBarKeys: normalizedBarSet(criterion.coversBarKeys) } : {}),
   };
   if (!normalized.model) return normalized;
   return { ...normalized, barHash: computeAcceptanceBarHash(normalized) };
@@ -1334,13 +1310,9 @@ export {
 function rubricLossAckOf(input: ProposeRubricInput): RubricLossAck {
   return {
     ...(input.dropKeys ? { dropKeys: input.dropKeys } : {}),
-    ...(input.allowMethodShrink !== undefined
-      ? { allowMethodShrink: input.allowMethodShrink }
-      : {}),
+    ...(input.allowMethodShrink !== undefined ? { allowMethodShrink: input.allowMethodShrink } : {}),
     ...(input.shrinkReason !== undefined ? { shrinkReason: input.shrinkReason } : {}),
-    ...(input.classDowngradeReason !== undefined
-      ? { classDowngradeReason: input.classDowngradeReason }
-      : {}),
+    ...(input.classDowngradeReason !== undefined ? { classDowngradeReason: input.classDowngradeReason } : {}),
   };
 }
 
@@ -1362,11 +1334,7 @@ function rubricLossAckOf(input: ProposeRubricInput): RubricLossAck {
 export function assertNoSilentRubricLoss(stored: Rubric | null, input: ProposeRubricInput): void {
   if (!stored) return;
 
-  const violations = collectRubricLossViolations(
-    stored.criteria,
-    input.criteria,
-    rubricLossAckOf(input),
-  );
+  const violations = collectRubricLossViolations(stored.criteria, input.criteria, rubricLossAckOf(input));
 
   if (violations.length > 0) {
     // EI-10148: this is a CALLER error (the proposal args would silently lose stored
@@ -1402,9 +1370,11 @@ export interface RubricCompleteness {
 
 /** Backward-compatible instrument binding: the structured check first (P-011 / D-006 —
  *  the generalized slot), then the criterion-level field, then the legacy model token. */
-export function effectiveCriterionInstrumentKey(
-  criterion: { model?: string; instrumentKey?: string; check?: RubricCriterionCheck },
-): string | null {
+export function effectiveCriterionInstrumentKey(criterion: {
+  model?: string;
+  instrumentKey?: string;
+  check?: RubricCriterionCheck;
+}): string | null {
   if (criterion.check?.kind === 'instrument' && criterion.check.instrumentKey.trim()) {
     return criterion.check.instrumentKey.trim();
   }
@@ -1436,11 +1406,13 @@ export function rubricInstrumentContract(
     .filter((criterion) => !bindings[criterion.key])
     .map((criterion) => criterion.key);
   const seen = new Set<string>();
-  const duplicateInstrumentKeys = [...new Set(
-    Object.values(bindings)
-      .filter((key): key is string => Boolean(key) && key !== 'none')
-      .filter((key) => (seen.has(key) ? true : (seen.add(key), false))),
-  )];
+  const duplicateInstrumentKeys = [
+    ...new Set(
+      Object.values(bindings)
+        .filter((key): key is string => Boolean(key) && key !== 'none')
+        .filter((key) => (seen.has(key) ? true : (seen.add(key), false))),
+    ),
+  ];
   return {
     valid: criteriaWithoutInstrument.length === 0 && duplicateInstrumentKeys.length === 0,
     bindings,
@@ -1562,9 +1534,7 @@ export function normalizeAcceptanceRubricProposal(
   return {
     criteria: normalizedCriteria,
     ratingScale: normalizedRatingScale,
-    ...(upgrades.length > 0
-      ? { compatibility: { source: 'legacy-acceptance-read-projection', upgrades } }
-      : {}),
+    ...(upgrades.length > 0 ? { compatibility: { source: 'legacy-acceptance-read-projection', upgrades } } : {}),
   };
 }
 
@@ -1610,8 +1580,7 @@ function buildRubricTemplateData(
       (input.kind === 'acceptance' && input.criteria.length === 0 && input.classRef && delegatedClass
         ? delegatedClass.ratingScale
         : undefined) ??
-      stored?.ratingScale ??
-      [...DEFAULT_RATING_SCALE],
+      stored?.ratingScale ?? [...DEFAULT_RATING_SCALE],
   );
   const criteria = normalized.criteria;
   assertRubricRatingVocabulary(criteria, normalized.ratingScale, { rubricId: input.rubricId });
@@ -1648,10 +1617,7 @@ function buildRubricTemplateData(
   // Reads/re-projection stay permissive for legacy acceptance rows, but every
   // direct propose/amend write uses the stricter acceptance authoring profile
   // (EI-218268): no-verdict rating + concrete falsifier per bespoke criterion.
-  const schema =
-    rubricKindOf(data) === 'acceptance'
-      ? rubricTemplateDataAuthoringSchema
-      : rubricTemplateDataSchema;
+  const schema = rubricKindOf(data) === 'acceptance' ? rubricTemplateDataAuthoringSchema : rubricTemplateDataSchema;
   const parsed = schema.safeParse(data);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ');
@@ -1914,9 +1880,7 @@ by parsing this markdown.
 /** Resolve the (workspace, harness) PK scope for a rubric-template plan write. Reuses an
  *  EXISTING plan's own harness so a re-propose/ratify targets the same PK row; falls back
  *  to the operator-home harness for a brand-new rubric. */
-async function resolveRubricWriteScope(
-  rubricId: string,
-): Promise<{ workspaceId: string; harnessSlug: string }> {
+async function resolveRubricWriteScope(rubricId: string): Promise<{ workspaceId: string; harnessSlug: string }> {
   const workspaceId = rubricsScopeWorkspace();
   try {
     const { sql } = getOrgPg();
@@ -2024,12 +1988,7 @@ function rubricRevisionSnapshot(writtenBody: string, templateData: unknown): str
   if (serialized === undefined) return writtenBody;
   const separator = writtenBody.endsWith('\n') ? '\n' : '\n\n';
   return (
-    writtenBody +
-    separator +
-    '## Structured rubric data (`template_data`)\n\n' +
-    '~~~json\n' +
-    serialized +
-    '\n~~~\n'
+    writtenBody + separator + '## Structured rubric data (`template_data`)\n\n' + '~~~json\n' + serialized + '\n~~~\n'
   );
 }
 
@@ -2115,14 +2074,29 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   // P-013: the structured-check floor. Pure and cheap, so it refuses BEFORE any link
   // resolution or store read — an acceptance rubric made entirely of prose gates nothing.
   if (acceptanceRubricLacksStructuredCheck({ kind, criteria: input.criteria })) {
-    throw new Error(
-      structuredCheckFloorRefusal({ rubricId: input.rubricId, criteriaCount: input.criteria.length }),
-    );
+    throw new Error(structuredCheckFloorRefusal({ rubricId: input.rubricId, criteriaCount: input.criteria.length }));
   }
   // Acceptance links must RESOLVE before anything persists (plan P-003): a dangling
   // subjectPlan would never gate anything, silently.
   const links = kind === 'acceptance' ? await assertAcceptanceLinksResolve(input) : null;
   const stored = await getRubric(input.rubricId);
+  // P-003: once a subject plan has adopted the BAR contract, the canonical
+  // rubric writer also consults the shared snapshot before replacing it. The
+  // pre-start phase intentionally permits METHOD-empty bars; it still refuses
+  // a stored contract whose identity, provenance, mapping, or bounded source
+  // state is already divergent. New activation seeds have no existing rubric
+  // yet and are validated by seedAcceptanceBarsInTransaction instead.
+  if (kind === 'acceptance' && stored?.barContract?.adoptionEpoch != null && input.subjectPlan) {
+    const { readAndEvaluateAcceptanceBarLifecycle } = await import('./acceptance-bar-lifecycle-evaluator');
+    const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(input.subjectPlan, 'pre-start');
+    if (!lifecycle.satisfied) {
+      throw new Error(
+        `invalid_args: proposeRubric: acceptance_bar_contract_not_ready — ${
+          lifecycle.message ?? lifecycle.codes.join(', ')
+        }`,
+      );
+    }
+  }
   // EI-22078741539479611: a NEW acceptance contract for an already-shipped plan re-opens a
   // settled gate. Decided by the pure predicate so the rule is testable without PG; the
   // retired-rubric lookup runs only on the refusal path, to name the record it protects.
@@ -2355,8 +2329,8 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     // would silently un-watch the rubric, and an un-watched health rubric fails EXACTLY
     // as quietly as the gap this flag was added to close.
     ...(stored.stalenessWatched !== undefined ? { stalenessWatched: stored.stalenessWatched } : {}),
-    ...(input.methodRef ?? stored.methodRef ? { methodRef: (input.methodRef ?? stored.methodRef)! } : {}),
-    ...(input.by ?? stored.createdBy ? { by: (input.by ?? stored.createdBy)! } : {}),
+    ...((input.methodRef ?? stored.methodRef) ? { methodRef: (input.methodRef ?? stored.methodRef)! } : {}),
+    ...((input.by ?? stored.createdBy) ? { by: (input.by ?? stored.createdBy)! } : {}),
     status: stored.status,
     // EI-10751: an amendment preserves the rubric's status, so it must also preserve the
     // ratifier of record — otherwise amending an active rubric leaves it active with the
@@ -2493,8 +2467,7 @@ export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubri
   // lock, so the window is a propose racing this exact ratify — a governance conflict
   // that re-proposing resolves regardless (a re-propose resets status to proposed).
   const rawData = await readRawRubricTemplateData(rubricId);
-  const persistedProposer =
-    rawData && typeof rawData.proposedBy === 'string' ? rawData.proposedBy : null;
+  const persistedProposer = rawData && typeof rawData.proposedBy === 'string' ? rawData.proposedBy : null;
   if (by && persistedProposer && persistedProposer === by) {
     throw new Error(
       `ratifyRubric: '${rubricId}' was proposed by ${by} — the proposer cannot ratify their own proposal (D-012 author ≠ ratifier); a different reviewer must ratify it`,
@@ -2595,11 +2568,7 @@ export async function retireAcceptanceRubricForPlan(planSlug: string, by?: strin
  * first post-rewrite grading, so the boundary is normally the ratification instant of
  * the new revision.
  */
-export async function setRubricHistoryReset(
-  rubricId: string,
-  at: string,
-  by?: string,
-): Promise<Rubric | null> {
+export async function setRubricHistoryReset(rubricId: string, at: string, by?: string): Promise<Rubric | null> {
   const existing = await getRubric(rubricId);
   if (!existing) return null;
   const parsed = Date.parse(at);
@@ -2618,12 +2587,10 @@ export async function setRubricHistoryReset(
       slug: rubricId,
       intent: `rubrics:set-history-reset ${rubricId}`,
       ...scope,
-      afterWrite: rubricRevisionAfterWrite(
-        rubricId,
-        by,
-        `rubrics:set-history-reset → ${iso}`,
-        { ...rawData, historyResetAt: iso },
-      ),
+      afterWrite: rubricRevisionAfterWrite(rubricId, by, `rubrics:set-history-reset → ${iso}`, {
+        ...rawData,
+        historyResetAt: iso,
+      }),
     },
     async (current) => {
       if (current === null) return { newBody: null, value: false };
@@ -2660,10 +2627,7 @@ export async function setRubricHistoryReset(
  * scorecard against it retries the auto-ratify. A scorecard write must never fail
  * because its side-effect ratification hit a lock.
  */
-export async function autoRatifyRubricOnFirstScorecard(
-  rubricId: string,
-  graderId: string,
-): Promise<Rubric | null> {
+export async function autoRatifyRubricOnFirstScorecard(rubricId: string, graderId: string): Promise<Rubric | null> {
   try {
     const rubric = await getRubric(rubricId);
     if (!rubric || rubric.status !== 'proposed') return null; // only a still-proposed rubric is "adopted" by grading

@@ -23,6 +23,7 @@
 
 import { getPlanRow, type PlanRow, type PlanSourceOpts } from './source';
 import { evaluatePlanStartReadiness, type PlanStartReadiness } from './plan-input-validation';
+import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 
 /**
  * Every verb that can set a plan running. The P-007 guard test asserts each of these
@@ -55,7 +56,7 @@ export const PLAN_START_GATE_ENTRYPOINTS = [
  *  re-derive anything: what is missing, why, and what to do about it. */
 export interface PlanStartRefusal {
   error: 'plan_inputs_not_ready';
-  code: Exclude<PlanStartReadiness, { ready: true }>['code'];
+  code: Exclude<PlanStartReadiness, { ready: true }>['code'] | 'acceptance_bar_contract_not_ready';
   slug: string;
   /** Declared-required fields that were not supplied. */
   missing: string[];
@@ -109,7 +110,29 @@ export async function checkPlanStartable(
   const row = await getPlanRow(slug, opts);
   // Absent plan: not this gate's error to report (see the module header).
   if (!row) return { ok: true, row: null, inputs: overrides ?? null };
-  return startVerdictForRow(row, slug, overrides);
+  const verdict = startVerdictForRow(row, slug, overrides);
+  if (!verdict.ok) return verdict;
+
+  // P-003: every start/promotion door funnels through this function. A post-epoch
+  // BAR contract may be METHOD-empty, but its identity/falsifier/provenance,
+  // revision, mapping, and bounded-source invariants must already be complete.
+  const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(slug, 'pre-start');
+  if (!lifecycle.satisfied) {
+    return {
+      ok: false,
+      row,
+      refusal: {
+        error: 'plan_inputs_not_ready',
+        code: 'acceptance_bar_contract_not_ready',
+        slug,
+        missing: lifecycle.codes,
+        issues: lifecycle.blockingBars.flatMap((bar) => bar.codes.map((code) => `${bar.barKey}: ${code}`)),
+        source: 'acceptance-bar-contract',
+        hint: lifecycle.message ?? 'repair the acceptance BAR contract before starting this plan',
+      },
+    };
+  }
+  return verdict;
 }
 
 /**
@@ -124,10 +147,7 @@ export function startVerdictForRow(
   overrides?: Record<string, unknown> | null,
 ): PlanStartGateResult {
   const inputs = mergePlanInputs(row.templateData, overrides ?? null);
-  const verdict = evaluatePlanStartReadiness(
-    { template: row.template, inputSchema: row.inputSchema },
-    inputs,
-  );
+  const verdict = evaluatePlanStartReadiness({ template: row.template, inputSchema: row.inputSchema }, inputs);
   if (verdict.ready) return { ok: true, row, inputs };
 
   return {

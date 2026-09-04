@@ -15,10 +15,21 @@
  */
 
 import { useQueryState, parseAsArrayOf, parseAsString } from 'nuqs';
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import styles from './coord.module.css';
 
+/**
+ * A history row as the SYNC feed carries it.
+ *
+ * ⚠ `payload` is deliberately ABSENT (WI-7297). It is 76% of this read, and
+ * this screen renders at most ONE of them — `expanded` is a single
+ * `useState<string | null>`, so a payload is displayed only after a click, and
+ * in the common case zero are. It is fetched per-row on expand from
+ * /api/coord/history/:source/:msg_id instead. Do not re-declare it here to
+ * "read it off the list": it is not in the payload, and a field declared but
+ * never delivered is the D-023 trap this change exists to remove.
+ */
 interface HistoryItem {
   ts: string;
   msg_id: string;
@@ -29,7 +40,6 @@ interface HistoryItem {
   plan_slug?: string;
   harness_slug?: string;
   summary?: string;
-  payload: Record<string, unknown>;
 }
 
 const ALL_SOURCES: HistoryItem['source'][] = [
@@ -74,6 +84,46 @@ export default function CoordHistory() {
   const [planSlug, setPlanSlug] = useQueryState('plan_slug', parseAsString.withDefault(''));
   const [owner, setOwner] = useQueryState('owner', parseAsString.withDefault(''));
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [payload, setPayload] = useState<unknown>(null);
+  const [payloadLoading, setPayloadLoading] = useState(false);
+  const [payloadError, setPayloadError] = useState<string | null>(null);
+  // Guards the out-of-order response: clicking row A then row B can land A's
+  // slower reply last and render A's payload under B's header. Only the reply
+  // whose key is still the expanded one is allowed to write state.
+  const inFlightKey = useRef<string | null>(null);
+
+  const toggleExpanded = useCallback(
+    async (key: string, source: HistoryItem['source'], msgId: string) => {
+      if (expanded === key) {
+        setExpanded(null);
+        inFlightKey.current = null;
+        setPayload(null);
+        setPayloadError(null);
+        setPayloadLoading(false);
+        return;
+      }
+      setExpanded(key);
+      inFlightKey.current = key;
+      setPayload(null);
+      setPayloadError(null);
+      setPayloadLoading(true);
+      try {
+        const r = await fetch(
+          `/api/coord/history/${encodeURIComponent(source)}/${encodeURIComponent(msgId)}`,
+        );
+        const j = (await r.json()) as { payload?: unknown; error?: string };
+        if (inFlightKey.current !== key) return;
+        if (!r.ok || j.error) setPayloadError(j.error ?? `HTTP ${r.status}`);
+        else setPayload(j.payload ?? null);
+      } catch (e) {
+        if (inFlightKey.current !== key) return;
+        setPayloadError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (inFlightKey.current === key) setPayloadLoading(false);
+      }
+    },
+    [expanded],
+  );
 
   const historySync = useSyncQuery<HistoryItem>({
     queryName: 'coord.history',
@@ -174,7 +224,7 @@ export default function CoordHistory() {
               className={styles.cardRow}
             >
               <button
-                onClick={() => setExpanded(isOpen ? null : key)}
+                onClick={() => void toggleExpanded(key, it.source, it.msg_id)}
                 className={styles.eventButton}
               >
                 <span
@@ -202,7 +252,11 @@ export default function CoordHistory() {
               </button>
               {isOpen && (
                 <pre className={cx(styles.payloadPre, styles.historyPayload)}>
-{JSON.stringify(it.payload, null, 2)}
+{payloadLoading
+  ? 'Loading payload…'
+  : payloadError
+    ? `Error loading payload: ${payloadError}`
+    : JSON.stringify(payload, null, 2)}
                 </pre>
               )}
             </li>

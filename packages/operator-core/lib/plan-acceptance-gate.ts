@@ -35,10 +35,7 @@ import {
   readRubricPlanRevision,
 } from './rubrics';
 import { listScorecards, ratingVerdict } from './scorecards';
-import {
-  areAcceptanceLineageRelated,
-  resolvePlanImplementerIdentities,
-} from './acceptance-author-identity';
+import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from './acceptance-author-identity';
 import { rubricVettingConsultHint } from './consult/selection-policies';
 import { gradingViaOf, pickAuthoritativeGrading, readGraderSelectionVia } from './acceptance-grading-authority';
 import {
@@ -65,6 +62,7 @@ import {
 } from './plan-requirement-realization';
 import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
 import { citationDeploymentForPaths, type CitationDeployment } from './deployment-position';
+import { readAndEvaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
 
 export type { CitationDeployment };
 
@@ -82,6 +80,7 @@ export type PlanAcceptanceGateCode =
   | 'self_graded_only'
   | 'acceptance_lineage_unreadable'
   | 'acceptance_bar_not_met'
+  | 'acceptance_bar_contract_not_ready'
   | 'acceptance_not_recorded'
   | 'acceptance_rejected'
   // plan-completion-audit-and-acceptance-verdict-2026-08-13 — the code-truth family.
@@ -390,9 +389,10 @@ export async function evaluatePlanAcceptanceGate(
         template_slug: string | null;
         content: string | null;
         status: string | null;
+        acceptance_bar_epoch: number | string | null;
       }[]
     >`
-      SELECT plan_slug, harness_slug, template, template_slug, content, status
+        SELECT plan_slug, harness_slug, template, template_slug, content, status, acceptance_bar_epoch
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${activeWorkspaceId()}
          AND plan_slug = ${planSlug}
@@ -432,6 +432,24 @@ export async function evaluatePlanAcceptanceGate(
           `pending. To re-validate deliberately, move the plan off shipped first (plans:set-plan-status); ` +
           `the gate then applies again in full.`,
       };
+    }
+
+    // P-003: the terminal ship door consumes the same bounded BAR snapshot used
+    // by start and scorecard grading. Keep this before the legacy family joins so
+    // a post-epoch BAR-only, divergent, unreadable, or wrong-plane contract cannot
+    // be mistaken for an ordinary rubric/acceptance verdict.
+    if (rubricGate) {
+      const barLifecycle = await readAndEvaluateAcceptanceBarLifecycle(planSlug, 'ship', {
+        expectedApplicable: rows.some((r) => r.plan_slug === planSlug && r.acceptance_bar_epoch != null),
+      });
+      if (!barLifecycle.satisfied) {
+        return {
+          satisfied: false,
+          code: 'acceptance_bar_contract_not_ready',
+          message:
+            barLifecycle.message ?? `plan '${planSlug}' cannot be marked shipped: acceptance BAR contract is not ready`,
+        };
+      }
     }
   } catch {
     /* not exempt — fall through to the rubric check */
@@ -485,8 +503,7 @@ export async function evaluatePlanAcceptanceGate(
     const unfinished = items.filter((i) => (UNFINISHED_ITEM_STATUSES as readonly string[]).includes(i.status));
     if (unfinished.length > 0) {
       const recruitmentTail =
-        opts.gradingRecruitment &&
-        unfinishedItemsAreAuditedNonCode(unfinished, await getEffectiveItemAudits(planSlug));
+        opts.gradingRecruitment && unfinishedItemsAreAuditedNonCode(unfinished, await getEffectiveItemAudits(planSlug));
       if (recruitmentTail) {
         for (const item of unfinished) gradingRecruitmentTail.add(item.itemId);
       }
@@ -550,9 +567,8 @@ export async function evaluatePlanAcceptanceGate(
             effectiveAudits.flatMap(({ entry }) => entry.citations),
           )
         : null;
-      const citationContext = citationContextResult && !isCitationContextFailure(citationContextResult)
-        ? citationContextResult
-        : null;
+      const citationContext =
+        citationContextResult && !isCitationContextFailure(citationContextResult) ? citationContextResult : null;
 
       if (hasVerifyingCitations && !citationContext) {
         if (isCitationContextFailure(citationContextResult)) {
@@ -791,8 +807,8 @@ export async function evaluatePlanAcceptanceGate(
         `classRef:'<plan-class-feature-ship|plan-class-bugfix|plan-class-migration|plan-class-investigation>', ` +
         `criteria:[3–7 outcomes tracing to the plan's goal + Decisions — never merely describing the diff] } ` +
         `(a pure investigation may pass classRef:'plan-class-investigation' with criteria:[] — D-009). ` +
-      `It activates immediately (no ratification); then a ` +
-      `NON-implementer grades it (scorecards:emit) and the ship succeeds.`,
+        `It activates immediately (no ratification); then a ` +
+        `NON-implementer grades it (scorecards:emit) and the ship succeeds.`,
     };
   }
   if (rubrics.length > 1) {
@@ -876,9 +892,9 @@ export async function evaluatePlanAcceptanceGate(
         // while the gate correctly found no card bound to this rubric. Keep the
         // note explicitly unattributed rather than guessing which rubric the
         // malformed card intended to attest.
-        const unboundMetaCards = (
-          await listScorecards({ rubricRef: META_ACCEPTANCE_RUBRIC_ID, limit: 50 })
-        ).filter((s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized && !s.subject);
+        const unboundMetaCards = (await listScorecards({ rubricRef: META_ACCEPTANCE_RUBRIC_ID, limit: 50 })).filter(
+          (s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized && !s.subject,
+        );
         const unboundIds = unboundMetaCards.slice(0, 3).map((s) => s.issueId);
         const unboundDiagnostic =
           unboundIds.length > 0
@@ -958,10 +974,9 @@ export async function evaluatePlanAcceptanceGate(
   // The latter only widen the independent-grader exclusion population.
   let principalImplementers: string[];
   try {
-    principalImplementers = await resolvePlanImplementerIdentities(
-      rubric.subjectPlan ?? planSlug,
-      { workspaceId: rubric.workspaceId },
-    );
+    principalImplementers = await resolvePlanImplementerIdentities(rubric.subjectPlan ?? planSlug, {
+      workspaceId: rubric.workspaceId,
+    });
   } catch (error) {
     return {
       satisfied: false,
@@ -1065,9 +1080,7 @@ export async function evaluatePlanAcceptanceGate(
   // value (D-006), and a card with no cascade provenance ranks as floor rather
   // than being demoted — see acceptance-grading-authority.ts for both.
   const independentCards = complete.filter(
-    (s) =>
-      !isPlanImplementerScorecard(s) &&
-      (!implementer || (s.createdBy != null && !holdsAuthorAuthority(s))),
+    (s) => !isPlanImplementerScorecard(s) && (!implementer || (s.createdBy != null && !holdsAuthorAuthority(s))),
   );
   const graderVia = await readGraderSelectionVia(rubric.workspaceId, rubric.rubricId);
   const independent = pickAuthoritativeGrading(independentCards, (s) => gradingViaOf(s, graderVia));
@@ -1079,9 +1092,7 @@ export async function evaluatePlanAcceptanceGate(
     : [];
   if (!independent) {
     const principalLabel =
-      principalImplementers.length > 0
-        ? ` or a principal plan implementer (${principalImplementers.join(', ')})`
-        : '';
+      principalImplementers.length > 0 ? ` or a principal plan implementer (${principalImplementers.join(', ')})` : '';
     return {
       satisfied: false,
       code: 'self_graded_only',
@@ -1109,9 +1120,7 @@ export async function evaluatePlanAcceptanceGate(
     if (policy.role !== 'outcome' || policy.mandatory !== true) return [];
 
     const rating = independent.ratings[criterion.key]?.rating?.trim() ?? null;
-    const explicitPassRatings = (policy.passRatings ?? [])
-      .map((value) => value.trim().toLowerCase())
-      .filter(Boolean);
+    const explicitPassRatings = (policy.passRatings ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean);
     const passes =
       rating != null &&
       (explicitPassRatings.length > 0

@@ -426,7 +426,15 @@ describe('loadCoordHistory — `payload` never re-ships a projected column (WI-7
   // require it to match the shape recorded for the producer's LIVE
   // registered version — see shape-fingerprint.ts's module doc.
   it('shape-guard: the real history-item shape matches the shape recorded for its LIVE registered producerVersion (WI-7289)', async () => {
-    const row = await onlyRow();
+    // WI-7297: fingerprint what the producer actually STORES, which is no longer
+    // loadCoordHistory's row verbatim — the producer runs it through
+    // projectCoordHistoryForUi to drop `payload` before the snapshot is written.
+    // Sampling the unprojected loader row here would pin a shape the snapshot
+    // never has, which is the guard answering confidently about the wrong
+    // object: the v3 payload cut could then regress back in with the guard
+    // still green.
+    const { projectCoordHistoryForUi } = await import('../../../sync-resolver/coord-ui-projection');
+    const row = (projectCoordHistoryForUi([await onlyRow()]) as unknown[])[0];
 
     const registry = await import('../../../derived-reads/registry');
     registry.__clearDerivedReadRegistryForTest();
@@ -442,7 +450,13 @@ describe('loadCoordHistory — `payload` never re-ships a projected column (WI-7
         // Captured from a real loadCoordHistory() call against the `rich()`
         // fixture above (not hand-typed) — regenerate after a DELIBERATE
         // shape change, per shape-fingerprint.ts's module doc.
+        //
+        // v2 was the pre-WI-7297 shape, when the snapshot still carried
+        // `payload:obj{body:string,detail:string}`. Kept for the record: it is
+        // what a stored v2 row still looks like, and the contrast with v3 is
+        // the whole point of the version key.
         2: 'obj{from:string,harness_slug:string,kind:string,msg_id:string,payload:obj{body:string,detail:string},plan_slug:string,source:string,summary:string,to:arr<string>,ts:string}',
+        3: 'PLACEHOLDER_CAPTURE_ME',
       },
     });
   });

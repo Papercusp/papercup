@@ -10,6 +10,7 @@
  * tighten auth).
  *
  *   GET /api/coord/history      merged feed (plan-events/messages/escalations/handoffs)
+ *   GET /api/coord/history/:source/:msg_id  one row's payload, on demand
  *   GET /api/coord/presence     active + stale presence records
  *   GET /api/coord/inbox        human-facing inbox
  *   GET /api/coord/plans        plan directory
@@ -72,6 +73,18 @@ function envSummary(e: CoordEnvelope): string {
   return e.kind;
 }
 
+/**
+ * The envelope minus the fields already projected onto the row — the exact
+ * value a history row's `payload` carries. Shared by `toHistoryItem` (the list)
+ * and `loadCoordHistoryPayload` (the per-row on-demand fetch, WI-7297) so the
+ * two can never disagree about what "the payload" is.
+ */
+function toHistoryPayload(e: CoordEnvelope): HistoryPayload {
+  const payload = { ...e } as Record<string, unknown>;
+  for (const k of PROJECTED_ENVELOPE_FIELDS) delete payload[k];
+  return payload as HistoryPayload;
+}
+
 function toHistoryItem(source: HistoryItem['source'], e: CoordEnvelope): HistoryItem {
   const plan_slug = typeof (e as { plan_slug?: unknown }).plan_slug === 'string'
     ? ((e as { plan_slug?: string }).plan_slug as string)
@@ -79,8 +92,7 @@ function toHistoryItem(source: HistoryItem['source'], e: CoordEnvelope): History
   const harness_slug = typeof (e as { harness_slug?: unknown }).harness_slug === 'string'
     ? ((e as { harness_slug?: string }).harness_slug as string)
     : undefined;
-  const payload = { ...e } as Record<string, unknown>;
-  for (const k of PROJECTED_ENVELOPE_FIELDS) delete payload[k];
+  const payload = toHistoryPayload(e);
   return {
     ts: e.ts,
     msg_id: e.msg_id,
@@ -167,6 +179,76 @@ export async function loadCoordHistory(args: {
   filtered.sort((a, b) => b.ts.localeCompare(a.ts) || b.msg_id.localeCompare(a.msg_id));
   const truncated = filtered.length > limit;
   return { items: truncated ? filtered.slice(0, limit) : filtered, total: filtered.length, truncated };
+}
+
+/** The four history sources, as the list rows label them. */
+export const HISTORY_SOURCES: readonly HistoryItem['source'][] = [
+  'plan_event',
+  'message',
+  'escalation',
+  'handoff',
+] as const;
+
+export function isHistorySource(v: unknown): v is HistoryItem['source'] {
+  return typeof v === 'string' && (HISTORY_SOURCES as readonly string[]).includes(v);
+}
+
+/**
+ * Fetch ONE history row's `payload` on demand (WI-7297).
+ *
+ * ## Why this route exists at all
+ *
+ * `/coord`'s viewer holds `expanded` as a single `useState<string | null>`, so
+ * AT MOST ONE row's payload is ever rendered — and only after a click. The list
+ * nonetheless shipped all 200: measured live 2026-08-03, `payload` was 75.95%
+ * of the read (159,523 B of 210,029 B) to display, in the common case, zero of
+ * them. That is a per-VIEW waste, not a per-row one, so no further projection
+ * could fix it (WI-7295 had already removed the last redundant bytes) — only
+ * moving the fetch to the click could.
+ *
+ * ## Why it is a direct read and not a filtered `loadCoordHistory`
+ *
+ * Derived-read snapshots have no arg dimension, so an args-bearing variant
+ * falls through to `loadCoordHistory`'s full inline scan — the 0.1-0.8s
+ * variable-latency path the P-004 precompute exists to avoid. Paying that per
+ * deliberate user click would be defensible, but it is also unnecessary: each
+ * source already has a targeted by-id read, so this is an indexed point lookup
+ * instead. It is additionally CORRECT where a scan is not — `loadCoordHistory`
+ * is a bounded newest-N window, so a scan would answer `null` for any row older
+ * than the bound, which is precisely the older-row case a user scrolls to.
+ *
+ * Returns null when no envelope with that id exists on that surface.
+ */
+export async function loadCoordHistoryPayload(
+  source: HistoryItem['source'],
+  msgId: string,
+): Promise<HistoryPayload | null> {
+  if (!msgId) return null;
+  const envelope = await (async (): Promise<CoordEnvelope | null> => {
+    switch (source) {
+      case 'message': {
+        const { getMessageById } = await import('../../../agent-tools/coordination/messages');
+        return getMessageById(msgId);
+      }
+      case 'plan_event': {
+        const { getPlanEventById } = await import('../../../agent-tools/coordination/plan-events');
+        return getPlanEventById(msgId);
+      }
+      case 'escalation': {
+        const { getEscalation } = await import('../../../agent-tools/coordination/escalations');
+        return getEscalation(msgId);
+      }
+      case 'handoff': {
+        // Covers the acceptance/expiry/re-ping siblings too: the list pushes
+        // `h.accepted_by` as its own row, and each is stored under its own
+        // msg_id on the same event surface (isHandoffRecord admits all four
+        // handoff-family kinds).
+        const { getHandoff } = await import('../../../agent-tools/coordination/handoffs');
+        return getHandoff(msgId);
+      }
+    }
+  })();
+  return envelope ? toHistoryPayload(envelope) : null;
 }
 
 // EI-18138089781782660: same anti-pattern as loadCoordHistory before it was
@@ -283,6 +365,29 @@ const history = defineTool({
   },
 });
 
+// WI-7297: one row's payload, fetched when the viewer expands it. Source-aware
+// because `msg_id` is only unique WITHIN a surface, and each surface has its own
+// targeted by-id read — see loadCoordHistoryPayload for why this is a point
+// lookup rather than a filtered history scan.
+const historyPayload = defineTool({
+  method: 'GET',
+  path: '/coord/history/:source/:msg_id',
+  auth: 'public',
+  async handler(_req, ctx) {
+    const source = ctx.params.source;
+    const msgId = ctx.params.msg_id;
+    if (!isHistorySource(source)) {
+      return Response.json(
+        { error: 'unknown source', expected: HISTORY_SOURCES },
+        { status: 400 },
+      );
+    }
+    const payload = await loadCoordHistoryPayload(source, msgId);
+    if (payload === null) return Response.json({ error: 'history item not found' }, { status: 404 });
+    return Response.json({ source, msg_id: msgId, payload });
+  },
+});
+
 const presence = defineTool({
   method: 'GET',
   path: '/coord/presence',
@@ -395,6 +500,7 @@ const planEvents = defineTool({
 
 export default [
   history,
+  historyPayload,
   presence,
   inbox,
   inboxSse,

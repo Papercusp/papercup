@@ -285,6 +285,25 @@ describe('AgentDossier', () => {
     expect(getByText('dbos-retire')).toBeTruthy(); // plan meta
   });
 
+  // WI-7310 regression guard. The pane title renders `agentDisplayLabel(...)` —
+  // HUMAN text — whenever the agent has a label, so it must NOT wear the
+  // machine-text role. It was originally named `.pc-dossier__id` (P-007), and
+  // when this pane later defined `.pc-dossier__id` as "machine text -> MONO"
+  // the two collided by name: the role block, being the later rule, won the
+  // cascade and silently set this title in a mono face at weight 500. Nothing
+  // failed — the regression was invisible to every test, because both roles
+  // resolve through the same class. Asserting the title does not carry the
+  // machine role is what makes a future re-collision fail here instead of
+  // shipping as a styling surprise.
+  it('renders the pane title in the title role, never the machine-text role', () => {
+    const { getByText } = render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
+    const titleEl = getByText('worker-188');
+    expect(titleEl.className).toContain('pc-dossier__title');
+    expect(titleEl.className).not.toContain('pc-dossier__id');
+    // The id stays reachable as the tooltip even when a label is displayed.
+    expect(titleEl.getAttribute('title')).toBe('su-1');
+  });
+
   it('loads the dossier keyed by owner id', async () => {
     render(<AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />);
     await waitFor(() =>

@@ -885,7 +885,7 @@ export default function AgentDossier({
         </button>
       </header>
 
-      <div className="pc-dossier__id" title={ownerId}>
+      <div className="pc-dossier__title" title={ownerId}>
         {entry?.label ? agentDisplayLabel(entry.label, lex) : ownerId}
       </div>
 

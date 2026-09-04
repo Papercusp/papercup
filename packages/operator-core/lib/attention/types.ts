@@ -340,6 +340,12 @@ export type AttentionRef =
       /** Unambiguous agent-state-plane goal inherited when the escalation was
        * opened. Drives source-terminal reconciliation; null means fail closed. */
       goalRef?: string | null;
+      /** EI-19401034233741994: the `coord_conversations` twin this escalation is
+       * the Decision-tier leg of, when it was opened by `coord:ask-owner`
+       * (stamped as `meta.conversationId` — see conversation-escalation-link).
+       * Carried onto the ref so the feed can drop the Alert-tier conversation
+       * card that renders the SAME question. Absent on every other escalation. */
+      conversationId?: string | null;
     }
   | { kind: 'coord-message'; msgId: string }
   | { kind: 'smoke-fail'; harnessSlug: string }

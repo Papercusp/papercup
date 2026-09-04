@@ -604,12 +604,23 @@
   outline: 1px solid var(--accent);
   outline-offset: -1px;
 }
-.pc-dossier__id {
+/* WI-7310: this is the pane TITLE, not the machine-text role. It renders
+   `agentDisplayLabel(entry.label)` — HUMAN text — whenever the agent has a
+   label, and falls back to the raw ownerId only when it has none; the id is
+   always carried by the `title` attribute either way. It was named
+   `.pc-dossier__id` before the text ROLES existed (P-007, 2026-06-02), so when
+   this file later defined `.pc-dossier__id` as "machine text -> MONO" the two
+   silently collided: being the later rule, the role block won the cascade and
+   restyled this title to mono at weight 500 — a human label set in a machine
+   face, and a pane title lighter than a section heading. Renamed so each role
+   owns its own selector. Title treatment is size + weight + brightest ink; the
+   machine/human family split below governs INLINE body text only. */
+.pc-dossier__title {
   font-size: 14px;
   font-weight: 700;
   line-height: 1.35;
   color: var(--pc-dossier-text);
-  word-break: break-all;
+  word-break: break-word;
 }
 .pc-dossier__intent {
   font-size: 12.5px;

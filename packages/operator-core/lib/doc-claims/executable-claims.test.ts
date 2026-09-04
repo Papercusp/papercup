@@ -193,21 +193,99 @@ describe('extractExecutableClaims — prescription detection', () => {
     expect(got.skipped.map((s) => s.reason)).toEqual(['placeholder']);
   });
 
-  it('KNOWN LIMIT: a declarative prescription voice yields zero sites — read that as unsupported, not clean', () => {
-    // Verbatim shape from apps/operator/prompts/pot-instances/papercup-pot.su.md,
-    // which contains a REAL instance of this defect (`npm run build` is refused
-    // by the same gate) that this extractor cannot see: no imperative precedes
-    // the span, no fence, no table. Pinned so that pointing this check at
-    // another document cannot quietly return a confident all-clear.
+  it('POSITIVE CONTROL: catches the su prompt\'s historical declarative known-bad line (WI-7300)', () => {
+    // Verbatim shape from apps/operator/prompts/pot-instances/papercup-pot.su.md
+    // BEFORE EI-19389924161930888 was fixed. It is a REAL instance of this defect
+    // (`npm run build` is refused by the same gate) that the original three sites
+    // could not see: no imperative precedes the span, no fence, no table — the
+    // bolded bullet lead-in IS the imperative, and the command follows
+    // declaratively. This test is the acceptance criterion for the declarative
+    // sites: the extended extractor must catch the line that motivated them.
     const fixture =
       "- **Write/update docs:** docs don't hot-reload — `cd apps/operator-docs && npm run build` regenerates the served mirror.\n";
+    const got = extractExecutableClaims(fixture);
+    expect(got.prescribed).toHaveLength(1);
+    expect(got.prescribed[0].site).toBe('bullet:lead');
+    expect(got.prescribed[0].command).toBe('cd apps/operator-docs && npm run build');
+    expect(got.npmRun.map((n) => n.script)).toEqual(['build']);
+    // and the oracle must actually refuse it, or the catch proves nothing: this
+    // guard would have gone RED on the line, which is the whole point.
+    expect(askAdmissionGate(got.prescribed[0].command)).toBe('deny');
+  });
+
+  it('a bullet prescribes its FIRST invocation only — the form it steers you AWAY from is not a claim', () => {
+    // The su prompt's line as it reads AFTER the fix. One bullet carries both the
+    // prescription and the proscription, so a bullet site that took every span
+    // would prescribe `npm run build` — the exact command the fix removed — and
+    // red the fleet gate on a corrected doc. Measured on the live file: 1
+    // prescription, and it is the right one.
+    const fixture =
+      '- **Write/update docs:** docs don\'t hot-reload — **`npm run docs:rebuild`** (root entrypoint) ' +
+      'regenerates the served mirror. Use this, never a raw `cd apps/operator-docs && npm run build` — ' +
+      'the heavy-command admission gate DENIES a bare `npm run build` under fleet load.\n';
+    const got = extractExecutableClaims(fixture);
+    expect(got.prescribed).toHaveLength(1);
+    expect(got.prescribed[0].command).toBe('npm run docs:rebuild');
+    // the bold-wrapped span reports the emphasis site; either declarative site
+    // would have been correct here, and only the FIRST span is claimed at all.
+    expect(got.prescribed[0].site).toBe('emphasis:bold');
+    // the gate admits the prescribed form, and still refuses the proscribed one —
+    // so the single claim is also the CORRECT one to have made.
+    expect(askAdmissionGate('npm run docs:rebuild')).toBe('allow');
+    expect(askAdmissionGate('cd apps/operator-docs && npm run build')).toBe('deny');
+  });
+
+  it('a PROSCRIPTIVE bullet lead-in prescribes nothing', () => {
+    // The one place a negation cue carries real signal: the bold lead-in is the
+    // bullet's declared subject, not an incidental "not" in dense prose.
+    const fixture = [
+      "- **Never kill by name or pattern:** `pkill -f papercusp-desktop` has twice killed the owner's window.",
+      "- **⛔ Do not run this:** `git reset --hard HEAD` discards every peer's uncommitted work.",
+    ].join('\n');
+    expect(extractExecutableClaims(fixture).prescribed).toEqual([]);
+  });
+
+  it('the declarative sites decline inside a routing table — the "not" column stays unprescribed', () => {
+    // Emphasis is used on both sides of a `| use | not |` row, so without the
+    // table guard the emphasis leg would reach in and prescribe the wrong column.
+    const fixture = [
+      '| you want | use | not |',
+      '| --- | --- | --- |',
+      '| install deps | **`npm run install:safe`** | **`npm ci --force`** |',
+    ].join('\n');
+    const got = extractExecutableClaims(fixture);
+    expect(got.prescribed.map((p) => `${p.site}:${p.command}`)).toEqual([
+      'table:use:npm run install:safe',
+    ]);
+  });
+
+  it('REJECTED CANDIDATE: an effect verb after a span is NOT a prescription site', () => {
+    // Measured on the corpus during WI-7300: keying on a third-person effect verb
+    // ("`cmd` regenerates/prints/…") DOES catch the known-bad line, but at roughly
+    // half precision — it fires on these two anti-pattern EXHIBITS, which is the
+    // inversion the site whitelist exists to prevent. Pinned so the verb leg
+    // cannot be re-added without a measurement that contradicts this one.
+    const fixture = [
+      "`pgrep -qf X && echo ALIVE || echo gone` prints **`gone`** on the usage error.",
+      '',
+      'a bare `npm install` prints "up to date" while rewriting `node_modules/.bin`.',
+      '',
+      '`git status --porcelain papercusp-desktop/src` prints NOTHING whether the file is committed or not.',
+    ].join('\n');
+    expect(extractExecutableClaims(fixture).prescribed).toEqual([]);
+  });
+
+  it('KNOWN LIMIT: a bare declarative span with no lead-in, emphasis, fence or table is still unsupported', () => {
+    // The declarative sites cover the voice as this repo's prompt artifacts
+    // actually write it. An un-emphasised command in running prose remains
+    // invisible, and a `prescribed.length === 0` result on a non-trivial doc
+    // still means "the voice is unsupported", never "the doc is clean".
+    const fixture =
+      "Docs don't hot-reload; `cd apps/operator-docs && npm run build` regenerates the served mirror.\n";
     const got = extractExecutableClaims(fixture);
     expect(got.prescribed).toEqual([]);
     // …while the npm-run leg, which keys on command text alone, travels fine.
     expect(got.npmRun.map((n) => n.script)).toEqual(['build']);
-    // and the command really is one the gate refuses — i.e. the miss is a miss,
-    // not a case that would have passed anyway.
-    expect(askAdmissionGate('cd apps/operator-docs && npm run build')).toBe('deny');
   });
 
   it('collects npm-run mentions from BOTH columns — a missing script is a defect either way', () => {

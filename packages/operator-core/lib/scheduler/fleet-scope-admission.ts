@@ -1765,6 +1765,23 @@ export function fleetScopedMiss(
      * defensive) degrades to the pre-fix unscoped-by-harness derivation, never a hard failure.
      */
     harness?: string;
+    /**
+     * WI-7316: rows the claim path DID claim this pull, found plan-lane-blocked, released, and
+     * retried past — narrowed to those whose blocking plan item carries a `staleBlockedHint`
+     * (see PlanItemLaneBlock.staleBlockedHint). Empty/absent ⇒ no change from the pre-existing
+     * behavior.
+     *
+     * This is the one miss shape where every OTHER diagnosis here is structurally blind. The
+     * bounce happens AFTER the claim, so the SQL floors never see it: the issue-family
+     * breakdown counts the row as claimable, and the caller is handed either the generic
+     * "no claimable work-item matched fleet scope" or — worse — the `floorGated` message, whose
+     * advice is "it very likely self-clears once the gating condition lifts, with no spec change
+     * required". For a stale token that advice is precisely backwards: nothing is gating it and
+     * nothing will lift, because every blocked-by dependency ALREADY resolved and the stored
+     * token is deliberately sticky until a human clears it. A member that believes it re-polls
+     * a lane that can never clear itself, then stands down reporting a drained queue.
+     */
+    staleBlockedLane?: Array<{ workItemId: string; planSlug: string; itemId: string; hint: string }> | null;
   },
 ) {
   const paused = opts?.pausedReason !== undefined;
@@ -1830,6 +1847,15 @@ export function fleetScopedMiss(
   // with `specEmpty` by construction (both require the same `matchedByFilter === 0` base).
   const featureFamilyMiss =
     !paused && breakdown != null && breakdown.matchedByFilter === 0 && !!(opts?.featureFamilyMatched && opts.featureFamilyMatched > 0);
+  // WI-7316: rows bounced this pull by a plan item stuck on a STALE block. Ranked below the
+  // claim-path signals above (divergence/unconfirmed survivors are statements about the claim
+  // path itself and must keep precedence) but ABOVE every "your spec is done/broken/gated"
+  // verdict below, because those are all inferred from SQL-floor counts that structurally
+  // cannot see a post-claim bounce — so on this miss they are confidently wrong, not merely
+  // incomplete. Suppressed while paused, like every other diagnosis here: the pause message
+  // already fully explains the miss.
+  const staleBlockedRows = !paused ? (opts?.staleBlockedLane ?? []) : [];
+  const staleBlockedLane = staleBlockedRows.length > 0;
   // EI-20260781488788952: a plan-level terminality read closes the family blind spot in the
   // row-level exhaustion check. Only an explicitly positive all-terminal result is trusted;
   // false/null/absent leaves the old miss diagnosis in place.
@@ -1983,6 +2009,20 @@ export function fleetScopedMiss(
             'nothing — it only means "nothing in the issue family". This is NOT a drained lane and NOT a spec-authoring ' +
             'problem: it is either a transient race (pull again) or a genuine claim-path defect in the tier-1 (feature-family) ' +
             'narrowing. windDown is deliberately NOT set: do not stand down, and do not re-author the claim spec on this alone.'
+        : staleBlockedLane
+          ? `STALE PLAN-ITEM BLOCK, NOT A DRAINED LANE (WI-7316): ${staleBlockedRows.length} row(s) matched your scope and were ` +
+            'CLAIMED on this pull, then released because their linked plan item is effectively `blocked` — while every one of that ' +
+            "item's blocked-by dependencies has ALREADY resolved. The stored `blocked` token is deliberately sticky (it is reserved " +
+            'for external blockers the graph cannot see), so it does NOT self-clear and re-polling will not help: ' +
+            `${staleBlockedRows
+              .slice(0, 3)
+              .map((r) => `${r.workItemId} → ${r.planSlug}#${r.itemId}`)
+              .join('; ')}` +
+            `${staleBlockedRows.length > 3 ? `; +${staleBlockedRows.length - 3} more` : ''}. ` +
+            'FIX (one call, not a wait): if the block really was blocked-by-derived, clear it with `plans:set-status` and pull again; ' +
+            'if the item is deliberately still blocked for a reason the graph cannot see, record that in a plan Decision so the next ' +
+            'member reads a cause instead of rediscovering this. windDown is deliberately NOT set: this lane is NOT drained — it is ' +
+            'one status write away from claimable, so standing down here abandons real work.'
         : planComplete
           ? `PLAN COMPLETE (EI-20260781488788952): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)} ` +
             `is bound to plan predicate(s) ${opts!.planTerminality!.terminalPlanSlugs.join(', ')} and every bound plan is terminal. ` +
@@ -2040,7 +2080,13 @@ export function fleetScopedMiss(
     // windDown off the back of it is the same harmful call, reached by a different route.
     // WI-7151: same for a confirmed tier-1 (feature-family) match the issue-family breakdown
     // could not see — a real candidate exists, so a member must not stand down off this miss.
-    windDown: !divergent && !unconfirmedSurvivors && !featureFamilyMiss,
+    // WI-7316: same call, third route. A lane whose candidates were bounced by a STALE plan-item
+    // block is not drained — the rows exist, matched, and were claimable enough to claim; a
+    // sticky token that will never self-clear is all that stands between the member and them.
+    // Certifying a drain here is the most harmful variant of the three, because unlike a
+    // transient divergence it never resolves on its own: every member re-pulls, re-bounces, and
+    // stands down in turn, and the fleet goes quiet with work still on the board.
+    windDown: !divergent && !unconfirmedSurvivors && !featureFamilyMiss && !staleBlockedLane,
     // EI-15185: the ready-made payload_filter derived from THIS member's own claim
     // spec — present only when the spec can be narrowed over the claimable payload's
     // fields (id/kind/title/plan/tags/goal). Copy it verbatim into the idle-park await below.
@@ -2062,6 +2108,13 @@ export function fleetScopedMiss(
       ? { reason: 'plan_complete' as const, planTerminality: opts?.planTerminality }
       : {}),
     ...(specEmpty ? { reason: 'spec_matches_nothing' as const } : {}),
+    // WI-7316: named, top-level reason + the offending rows, so a caller (or a leader reading a
+    // relayed report) can branch on this WITHOUT parsing the error prose — and so the remedy is
+    // addressable: each entry names the exact plan item to clear. Deliberately distinct from
+    // `all_matches_gated`, whose whole point is "wait, it self-clears"; this one is its opposite.
+    ...(staleBlockedLane
+      ? { reason: 'stale_plan_item_block' as const, staleBlockedLane: staleBlockedRows }
+      : {}),
     // WI-7151 (EI-19318364531323846): named, top-level reason for the issue-family-diagnosis
     // blind spot — a caller (or a leader reading a relayed report) can branch on this WITHOUT
     // digging into excludedBreakdown, and it is DELIBERATELY DISTINCT from `spec_matches_nothing`

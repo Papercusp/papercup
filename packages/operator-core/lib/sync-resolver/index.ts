@@ -7200,13 +7200,21 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         !a.owner &&
         !a.sinceTs &&
         (a.limit === undefined || a.limit === 200);
+      // UI-only slim (WI-7297): `payload` is 76% of this read and the viewer
+      // renders AT MOST ONE of them (a single `expanded` useState), on click —
+      // so it is dropped here and fetched per-row from
+      // /api/coord/history/:source/:msg_id. Applied to BOTH branches so the
+      // default and filtered views carry one shape; the producer already strips
+      // it at compute time, making the snapshot pass idempotent (and keeping
+      // the guarantee if a stored row ever predates that).
+      const { projectCoordHistoryForUi } = await import('./coord-ui-projection');
       if (isDefaultVariant) {
         const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
         await import('../derived-reads/producers');
-        return readDerivedSnapshotRows('coord.history');
+        return projectCoordHistoryForUi(await readDerivedSnapshotRows('coord.history')) as unknown[];
       }
       const { loadCoordHistory } = await import('../endpoint-route/routes/coord');
-      return (await loadCoordHistory(a as never)).items;
+      return projectCoordHistoryForUi((await loadCoordHistory(a as never)).items) as unknown[];
     },
   },
   'coord.inbox': {

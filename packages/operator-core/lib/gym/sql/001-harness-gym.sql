@@ -9,6 +9,18 @@
 
 CREATE SCHEMA IF NOT EXISTS harness_gym;
 
+-- The dedicated gym database applies the shared control-plane migrations before
+-- this gym-owned file, but older test/provision paths may stop before the
+-- additive provenance columns. Converge those paths here as well so every
+-- proposal written by the loop has the same candidate-verdict surface.
+DO $control_plane$ BEGIN
+  IF to_regclass('harness_shared.gym_proposals') IS NOT NULL THEN
+    ALTER TABLE harness_shared.gym_proposals
+      ADD COLUMN IF NOT EXISTS task_corpus text NOT NULL DEFAULT 'synthetic',
+      ADD COLUMN IF NOT EXISTS candidate_verdict jsonb;
+  END IF;
+END $control_plane$;
+
 -- Synthetic feature tasks, by pool (D-013/D-014).
 CREATE TABLE IF NOT EXISTS harness_gym.gym_tasks (
   task_id      TEXT PRIMARY KEY,

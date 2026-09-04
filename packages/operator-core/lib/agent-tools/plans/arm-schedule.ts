@@ -17,17 +17,19 @@ import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getPlanRow } from './source';
-import { startVerdictForRow } from './plan-start-gate';
+import { checkPlanStartable } from './plan-start-gate';
 import { armPlanSchedule } from '../../harness/routines/arm-plan-schedule';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
-const argsSchema = z.object({
-  harness: harnessArg,
-  slug: z.string().min(1).optional().describe('Plan slug (the scheduled template) to arm.'),
-  slugs: z.array(z.string().min(1)).min(1).max(200).optional().describe('Scheduled plan slugs to arm in one call.'),
-}).refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
-  message: 'pass `slug` or `slugs`',
-});
+const argsSchema = z
+  .object({
+    harness: harnessArg,
+    slug: z.string().min(1).optional().describe('Plan slug (the scheduled template) to arm.'),
+    slugs: z.array(z.string().min(1)).min(1).max(200).optional().describe('Scheduled plan slugs to arm in one call.'),
+  })
+  .refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
+    message: 'pass `slug` or `slugs`',
+  });
 
 export default defineTool({
   name: 'plans:arm-schedule',
@@ -36,7 +38,8 @@ export default defineTool({
   guidance: {
     when: 'Activating a plan you already scheduled (plans:set-schedule) so it begins firing runs.',
     notWhen: 'Authoring/editing the cadence (plans:set-schedule). Firing one run by hand (plans:run-now).',
-    chaining: 'plans:set-schedule → plans:arm-schedule → the routine fires system:plan-run on cadence. plans:disarm-schedule stops it.',
+    chaining:
+      'plans:set-schedule → plans:arm-schedule → the routine fires system:plan-run on cadence. plans:disarm-schedule stops it.',
     seeAlso: [
       'plans:set-schedule (author the schedule to arm)',
       'plans:disarm-schedule (pause the armed schedule)',
@@ -69,12 +72,17 @@ export default defineTool({
         const plan = await getPlanRow(slug, opts);
         if (!plan) return { ok: false as const, slug, error: 'not_found' };
         if (!plan.schedule && !plan.scheduledAt) {
-          return { ok: false as const, slug, error: 'not_scheduled', detail: 'author a schedule with plans:set-schedule first' };
+          return {
+            ok: false as const,
+            slug,
+            error: 'not_scheduled',
+            detail: 'author a schedule with plans:set-schedule first',
+          };
         }
         // P-006/P-008 start gate. Arming runs nothing itself, which is exactly why it
         // is checked here: an armed plan whose required inputs are unset would fail in
         // an unattended 03:00 routine instead of in front of whoever armed it.
-        const gate = startVerdictForRow(plan, slug);
+        const gate = await checkPlanStartable(slug, opts);
         // The refusal already carries `slug` — spreading it is the whole result.
         if (!gate.ok) return { ok: false as const, ...gate.refusal };
         const res = await armPlanSchedule({

@@ -14,7 +14,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { getPlanRow } from './source';
-import { startVerdictForRow, planStartRefusalContent } from './plan-start-gate';
+import { checkPlanStartable, planStartRefusalContent } from './plan-start-gate';
 import { runScheduledPlanFire } from '../../harness/routines/plan-run-action';
 
 const argsSchema = z.object({
@@ -59,7 +59,7 @@ export default defineTool({
     }
     // P-006 start gate — with any per-invocation overrides merged in FIRST, so what is
     // validated is exactly what the run will execute with, not the stored values.
-    const gate = startVerdictForRow(plan, args.slug, args.inputs ?? null);
+    const gate = await checkPlanStartable(args.slug, opts, args.inputs ?? null);
     if (!gate.ok) return planStartRefusalContent(gate.refusal);
 
     const { sql } = getOrgPg();

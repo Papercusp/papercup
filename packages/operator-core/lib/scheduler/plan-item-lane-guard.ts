@@ -66,6 +66,27 @@ export interface PlanItemLaneBlock {
   planSlug: string;
   itemId: string;
   effectiveStatus: string;
+  /**
+   * WI-7316: the `staleBlockedHint` `resolveEffectiveStatusForItems` already derived for
+   * the SPECIFIC plan item that produced this block — passed straight through, never
+   * re-derived (the resolve call above computes it in the same pass, so this costs nothing).
+   *
+   * Non-null names a CONTRADICTION the resolver can see but cannot safely auto-clear: most
+   * often a plan item whose stored token is `blocked` while every one of its blocked-by
+   * dependencies has already resolved (the token is deliberately sticky — reserved for
+   * external blockers — so it holds until a human clears it with `plans:set-status`).
+   *
+   * EI-19397307303043951 added the field and surfaced it on `plans:get-item` / `plans:lint`
+   * only. That closed the diagnosis for someone who thinks to run those — but a fleet member
+   * polling by claim-spec calls neither, and this guard is exactly what turns such an item
+   * into an invisible miss: the row is claimed, blocked here, released, retried, and the
+   * caller is handed a bare empty queue. Carrying the hint on the block lets the two
+   * self-select surfaces (`scheduler:get_next`, `work_items:claimable`) tell a genuinely
+   * drained lane apart from one that is one `plans:set-status` call away from claimable.
+   *
+   * Null whenever the resolver found no contradiction — i.e. an ordinary, honest block.
+   */
+  staleBlockedHint: string | null;
 }
 
 /**
@@ -459,6 +480,13 @@ export async function planItemLaneBlockReason(
         planSlug: stamp.plan_slug,
         itemId: blocked.id,
         effectiveStatus: blocked.effectiveStatus,
+        // WI-7316: the headline case. `blockers` above is EMPTY exactly when every
+        // blocked-by dependency has resolved — i.e. the block is a sticky stored token
+        // with nothing actually blocking it — and that is precisely when the resolver
+        // populates staleBlockedHint. Without carrying it here the caller sees "is
+        // effectively blocked" with no blocked-by list and no way to tell that the
+        // remedy is a one-call `plans:set-status`, not a wait.
+        staleBlockedHint: blocked.staleBlockedHint,
       };
     }
     const needsHuman = linked.find((i) => i.needsHuman);
@@ -468,6 +496,7 @@ export async function planItemLaneBlockReason(
         planSlug: stamp.plan_slug,
         itemId: needsHuman.id,
         effectiveStatus: needsHuman.effectiveStatus,
+        staleBlockedHint: needsHuman.staleBlockedHint,
       };
     }
     // Already-terminal lane (EI-13337/13352/13267/14693): the plan item(s) are
@@ -482,6 +511,11 @@ export async function planItemLaneBlockReason(
         planSlug: stamp.plan_slug,
         itemId: terminal.id,
         effectiveStatus: terminal.effectiveStatus,
+        // Deliberately `terminal`'s own hint, not "any linked item's": the hint must
+        // describe the SAME item as `itemId` or it reads as evidence about the wrong row.
+        // For a terminal item the resolver populates it when a blocked-by edge is still
+        // unresolved (a likely-stale edge, or an item closed early).
+        staleBlockedHint: terminal.staleBlockedHint,
       };
     }
     // EI-13780: a plan can mark a still-`todo` item owner-gated/hard-deferred
@@ -506,6 +540,7 @@ export async function planItemLaneBlockReason(
           planSlug: stamp.plan_slug,
           itemId: li.id,
           effectiveStatus: li.effectiveStatus,
+          staleBlockedHint: li.staleBlockedHint,
         };
       }
     }

@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
   fleetEverMembers: vi.fn(),
   resolveAgentIdentity: vi.fn(),
   executingOwnersSince: vi.fn(),
+  getLoopStatuses: vi.fn(),
 }));
 
 vi.mock('../../agent-fleets-store', async () => {
@@ -50,6 +51,17 @@ vi.mock('../../fleet/assignments', async () => {
 vi.mock('../../work-items', () => ({
   getCompletionIntegrityStats: (...a: unknown[]) => h.getCompletionIntegrityStats(...a),
 }));
+// WI-7286: the per-member engine-loop batch read is its own IO seam. Spread the real
+// module so the rest of loop.ts (imported transitively) keeps its real behavior — only
+// the batch fetch is stubbed.
+vi.mock('../../harness/routines/loop', async () => {
+  const actual =
+    await vi.importActual<typeof import('../../harness/routines/loop')>('../../harness/routines/loop');
+  return {
+    ...actual,
+    getLoopStatuses: (...a: unknown[]) => h.getLoopStatuses(...a),
+  };
+});
 vi.mock('../../fleet-membership-store', () => ({
   fleetEverMembers: (...a: unknown[]) => h.fleetEverMembers(...a),
 }));
@@ -143,6 +155,9 @@ beforeEach(() => {
     gateJudged: 4,
   });
   h.fleetEverMembers.mockResolvedValue(new Set(['su-leader']));
+  // An empty map is a MEASURED "no loop rows for these owners", not a failed read —
+  // so the healthy-payload tests above stay byte-identical (no degraded leg).
+  h.getLoopStatuses.mockResolvedValue(new Map());
 });
 
 describe('fleet:status', () => {

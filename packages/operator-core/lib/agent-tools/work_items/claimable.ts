@@ -328,7 +328,13 @@ export default defineTool({
     // column was added (migration 1059) to let a SQL floor avoid; that floor is not wired up yet
     // (tracked separately), so this is the safe, additive fix available without touching the hot
     // claim-candidate SQL every fleet's get_next depends on.
-    const ownerGateExcluded: Array<{ id: string; plan: string; reason: string }> = [];
+    // WI-7316: `staleBlockedHint` rides along per-row when the lane guard's resolver found a
+    // CONTRADICTION on the plan item that excluded it — canonically a stored `blocked` token
+    // whose every blocked-by dependency has already resolved. Without it this list says a row
+    // was excluded but not that the exclusion is self-inflicted and one `plans:set-status`
+    // call from clearing, which is the difference between "wait for the lane" and "fix the
+    // lane". Omitted per-row when null, so an ordinary block reads exactly as it does today.
+    const ownerGateExcluded: Array<{ id: string; plan: string; reason: string; staleBlockedHint?: string }> = [];
     const claimable: typeof claimableRows = [];
     for (const row of claimableRows) {
       if (!row.plan) {
@@ -341,7 +347,12 @@ export default defineTool({
         () => null,
       );
       if (block) {
-        ownerGateExcluded.push({ id: row.id, plan: row.plan, reason: block.reason });
+        ownerGateExcluded.push({
+          id: row.id,
+          plan: row.plan,
+          reason: block.reason,
+          ...(block.staleBlockedHint ? { staleBlockedHint: block.staleBlockedHint } : {}),
+        });
       } else {
         claimable.push(row);
       }
