@@ -24,6 +24,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import type { PapercuspToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
 // The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
 // barrel (see features/get.ts for why: ESM circular-init + node-moduleResolution).
 import { runBulk, bulkContent } from '../../_bulk';
@@ -73,7 +74,8 @@ export default defineTool({
     .refine((a) => Boolean(a.items?.length) || (Boolean(a.slug) && Boolean(a.feature_id)), {
       message: 'pass `{ slug, feature_id }` (one) or `items:[{ slug, feature_id }]` (many)',
     }),
-  async handler(args, ctx) {
+  async handler(args, ctx: PapercuspToolContext) {
+    const tx = ctx.tx!;
     const items: RelatedItem[] =
       args.items?.length
         ? args.items
@@ -87,7 +89,7 @@ export default defineTool({
         }
 
         // Source feature lookup — need its tags + see_also to drive the join.
-        const src = await ctx.tx<Array<{ tags: unknown; see_also: string[] | null }>>`
+        const src = await tx<Array<{ tags: unknown; see_also: string[] | null }>>`
           SELECT tags, see_also
             FROM harness_shared.harness_features_consolidated
            WHERE harness_slug = ${slug} AND feature_id = ${feature_id}
@@ -111,7 +113,7 @@ export default defineTool({
 
         let rows: RelatedRow[] = [];
         try {
-          rows = await ctx.tx<RelatedRow[]>`
+          rows = await tx<RelatedRow[]>`
             SELECT feature_id, title, status,
                    (SELECT array_agg(value) FROM jsonb_array_elements_text(COALESCE(tags, '[]'::jsonb))) AS tags,
                    updated_ts,

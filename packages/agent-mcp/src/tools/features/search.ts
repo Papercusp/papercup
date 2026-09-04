@@ -11,6 +11,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import type { PapercuspToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
 
 const SLUG_RE = /^[a-z0-9._-]+$/i;
 
@@ -43,7 +44,8 @@ export default defineTool({
     status: z.string().optional(),
     limit: z.number().int().positive().max(100).default(25),
   }),
-  async handler(args, ctx) {
+  async handler(args, ctx: PapercuspToolContext) {
+    const tx = ctx.tx!;
     if (!SLUG_RE.test(args.slug)) {
       return { data: [], degraded: true, degradedReasons: [`invalid slug ${JSON.stringify(args.slug)}`] };
     }
@@ -55,7 +57,7 @@ export default defineTool({
     let rows: FeatureRow[] = [];
     try {
       if (args.query && args.query.trim().length > 0) {
-        rows = await ctx.tx<FeatureRow[]>`
+        rows = await tx<FeatureRow[]>`
           SELECT feature_id, title, summary, status,
                  (SELECT array_agg(value) FROM jsonb_array_elements_text(COALESCE(tags, '[]'::jsonb))) AS tags,
                  updated_ts,
@@ -69,7 +71,7 @@ export default defineTool({
            LIMIT ${args.limit}
         `;
       } else {
-        rows = await ctx.tx<FeatureRow[]>`
+        rows = await tx<FeatureRow[]>`
           SELECT feature_id, title, summary, status,
                  (SELECT array_agg(value) FROM jsonb_array_elements_text(COALESCE(tags, '[]'::jsonb))) AS tags,
                  updated_ts,

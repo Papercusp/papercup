@@ -11,6 +11,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import type { PapercuspToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
 
 const SLUG_RE = /^[a-z0-9._-]+$/i;
 
@@ -33,7 +34,8 @@ export default defineTool({
     /** Hard cap on the returned list. Default 100. */
     limit: z.number().int().positive().max(500).default(100),
   }),
-  async handler(args, ctx) {
+  async handler(args, ctx: PapercuspToolContext) {
+    const tx = ctx.tx!;
     if (!SLUG_RE.test(args.slug)) {
       return { data: [], degraded: true, degradedReasons: [`invalid slug ${JSON.stringify(args.slug)}`] };
     }
@@ -41,7 +43,7 @@ export default defineTool({
     let rows: Array<{ tag: string; count: bigint }> = [];
     try {
       // Unnest tags JSONB to text rows, group, count.
-      rows = await ctx.tx<Array<{ tag: string; count: bigint }>>`
+      rows = await tx<Array<{ tag: string; count: bigint }>>`
         SELECT tag, COUNT(*)::bigint AS count
           FROM harness_shared.harness_features_consolidated,
                jsonb_array_elements_text(COALESCE(tags, '[]'::jsonb)) AS tag

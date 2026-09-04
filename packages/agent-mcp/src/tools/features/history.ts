@@ -20,6 +20,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import type { PapercuspToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
 // The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
 // barrel (see features/get.ts for why: ESM circular-init + node-moduleResolution).
 import { runBulk, bulkContent } from '../../_bulk';
@@ -75,7 +76,8 @@ export default defineTool({
     .refine((a) => Boolean(a.items?.length) || (Boolean(a.slug) && Boolean(a.feature_id)), {
       message: 'pass `{ slug, feature_id }` (one) or `items:[{ slug, feature_id }]` (many)',
     }),
-  async handler(args, ctx) {
+  async handler(args, ctx: PapercuspToolContext) {
+    const tx = ctx.tx!;
     const items: HistoryItem[] =
       args.items?.length
         ? args.items
@@ -100,19 +102,19 @@ export default defineTool({
           return { ok: false as const, slug, feature_id, error: `invalid slug ${JSON.stringify(slug)}` };
         }
         const [notesRows, debugRows, auditList] = await Promise.all([
-          ctx.tx<Array<{ content: string }>>`
+          tx<Array<{ content: string }>>`
             SELECT content
               FROM harness_shared.harness_feature_notes
              WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND feature_id = ${feature_id}
              LIMIT 1
           `.catch(() => [] as Array<{ content: string }>),
-          ctx.tx<Array<{ content: string }>>`
+          tx<Array<{ content: string }>>`
             SELECT content
               FROM harness_shared.harness_feature_debug_notes
              WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND feature_id = ${feature_id}
              LIMIT 1
           `.catch(() => [] as Array<{ content: string }>),
-          ctx.tx<AuditRow[]>`
+          tx<AuditRow[]>`
             SELECT ts, field, old_value, new_value, actor
               FROM harness_shared.feature_audit_consolidated
              WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND feature_id = ${feature_id}

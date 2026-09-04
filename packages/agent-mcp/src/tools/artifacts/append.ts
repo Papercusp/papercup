@@ -18,6 +18,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import type { PapercuspUnifiedToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
 import { SLUG_RE, slugRequires, resolveSlug } from './_slug-requires';
 import { SU_WRITE_ROLES } from '../../role-config';
 // The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
@@ -71,7 +72,8 @@ export default defineTool({
   // the former in-handler slug guards, lifted — see ./_slug-requires. The bulk
   // (`items`) path re-asserts per-item slug presence/validity in the handler.
   requires: slugRequires('artifacts:append'),
-  async handler(args, ctx) {
+  async handler(args, ctx: PapercuspUnifiedToolContext) {
+    const tx = ctx.tx!;
     const items: AppendItem[] = args.items?.length
       ? args.items
       : [{ slug: args.slug, rel_path: args.rel_path!, suffix: args.suffix! }];
@@ -89,7 +91,7 @@ export default defineTool({
           return { ok: false as const, slug: item.slug ?? null, rel_path: key, error: r.error };
         }
         const { slug } = r;
-        const rows = await ctx.tx<{ content: string }[]>`
+        const rows = await tx<{ content: string }[]>`
           INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at, workspace_id)
           VALUES (${slug}, ${key}, ${item.suffix}, ${now},
                   COALESCE(NULLIF(current_setting('app.workspace_id', true), ''), ${wsFallback}))

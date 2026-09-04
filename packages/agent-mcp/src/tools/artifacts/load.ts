@@ -21,6 +21,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import type { PapercuspUnifiedToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
 import { SLUG_RE, slugRequires, resolveSlug } from './_slug-requires';
 import { SU_ROLES } from '../../role-config';
 // The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
@@ -82,7 +83,8 @@ export default defineTool({
   // the former in-handler slug guards, lifted — see ./_slug-requires. The bulk
   // (`items`) path re-asserts per-item slug presence/validity in the handler.
   requires: slugRequires('artifacts:load'),
-  async handler(args, ctx) {
+  async handler(args, ctx: PapercuspUnifiedToolContext) {
+    const tx = ctx.tx!;
     const items: LoadItem[] = args.items?.length ? args.items : [{ slug: args.slug, rel_path: args.rel_path! }];
     const env = await runBulk(
       items,
@@ -95,7 +97,7 @@ export default defineTool({
         const { slug } = r;
         // ctx.tx, NOT getOrgPg() — the workspace-scoped handle keeps reads
         // inside the caller's workspace via RLS (audit P-012, see save.ts).
-        const rows = await ctx.tx<{ content: string; updated_at: string }[]>`
+        const rows = await tx<{ content: string; updated_at: string }[]>`
           SELECT content, updated_at
             FROM harness_shared.harness_text_artifacts
            WHERE harness_slug = ${slug} AND rel_path = ${key}

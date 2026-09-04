@@ -11,6 +11,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import type { PapercuspToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
 
 const KINDS = ['tasks', 'goals', 'projects', 'audit'] as const;
 type Kind = (typeof KINDS)[number];
@@ -75,7 +76,8 @@ export default defineTool({
     kinds: z.array(z.enum(KINDS)).optional(),
     limit: z.number().int().positive().max(100).default(25),
   }),
-  async handler(args, ctx) {
+  async handler(args, ctx: PapercuspToolContext) {
+    const tx = ctx.tx!;
     const wantKind = (k: Kind) => !args.kinds || args.kinds.includes(k);
     const hits: SearchHit[] = [];
     const degradedReasons: string[] = [];
@@ -92,7 +94,7 @@ export default defineTool({
         hits,
         degradedReasons,
         async () => {
-          const rows = await ctx.tx<Array<TaskSearchRow>>`
+          const rows = await tx<Array<TaskSearchRow>>`
             SELECT harness_slug, feature_id, title, summary,
                    ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
               FROM harness_shared.harness_features_consolidated
@@ -108,7 +110,7 @@ export default defineTool({
           }));
         },
         async () => {
-          const rows = await ctx.tx<Array<TaskFallbackRow>>`
+          const rows = await tx<Array<TaskFallbackRow>>`
             SELECT harness_slug, feature_id, title, summary
               FROM harness_shared.harness_features_consolidated
              WHERE title ILIKE ${q} OR summary ILIKE ${q}
@@ -130,7 +132,7 @@ export default defineTool({
         hits,
         degradedReasons,
         async () => {
-          const rows = await ctx.tx<Array<{ id: string; title: string; rank: number }>>`
+          const rows = await tx<Array<{ id: string; title: string; rank: number }>>`
             SELECT id, title, ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
               FROM harness_shared.goals
              WHERE _search @@ plainto_tsquery('english', ${args.query})
@@ -140,7 +142,7 @@ export default defineTool({
           return rows.map((r: GoalSearchRow) => ({ kind: 'goals', id: r.id, snippet: r.title, score: Number(r.rank) }));
         },
         async () => {
-          const rows = await ctx.tx<Array<{ id: string; title: string; body: string }>>`
+          const rows = await tx<Array<{ id: string; title: string; body: string }>>`
             SELECT id, title, body FROM harness_shared.goals
              WHERE title ILIKE ${q} OR body ILIKE ${q}
              LIMIT ${args.limit}
@@ -156,7 +158,7 @@ export default defineTool({
         hits,
         degradedReasons,
         async () => {
-          const rows = await ctx.tx<Array<{ id: string; slug: string; name: string; rank: number }>>`
+          const rows = await tx<Array<{ id: string; slug: string; name: string; rank: number }>>`
             SELECT id, slug, name, ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
               FROM harness_shared.projects
              WHERE _search @@ plainto_tsquery('english', ${args.query})
@@ -166,7 +168,7 @@ export default defineTool({
           return rows.map((r: ProjectSearchRow) => ({ kind: 'projects', id: r.slug ?? r.id, snippet: r.name, score: Number(r.rank) }));
         },
         async () => {
-          const rows = await ctx.tx<Array<{ id: string; slug: string; name: string }>>`
+          const rows = await tx<Array<{ id: string; slug: string; name: string }>>`
             SELECT id, slug, name FROM harness_shared.projects
              WHERE name ILIKE ${q} OR slug ILIKE ${q}
              LIMIT ${args.limit}
@@ -182,7 +184,7 @@ export default defineTool({
         hits,
         degradedReasons,
         async () => {
-          const rows = await ctx.tx<Array<{ id: string; subject: string; action: string; rank: number }>>`
+          const rows = await tx<Array<{ id: string; subject: string; action: string; rank: number }>>`
             SELECT id, subject, action,
                    ts_rank_cd(_search, plainto_tsquery('simple', ${args.query})) AS rank
               FROM harness_shared.audit_log
@@ -193,7 +195,7 @@ export default defineTool({
           return rows.map((r: AuditSearchRow) => ({ kind: 'audit', id: r.id, snippet: `${r.action}: ${r.subject}`, score: Number(r.rank) }));
         },
         async () => {
-          const rows = await ctx.tx<Array<{ id: string; subject: string; action: string }>>`
+          const rows = await tx<Array<{ id: string; subject: string; action: string }>>`
             SELECT id, subject, action FROM harness_shared.audit_log
              WHERE subject ILIKE ${q} OR action ILIKE ${q}
              LIMIT ${args.limit}
