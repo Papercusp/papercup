@@ -581,23 +581,10 @@ const post = defineTool({
       process.stderr.write(`[bootstrap-role] saved-prompts materialize failed (non-fatal): ${e?.message}\n`);
     }
 
-    // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE — its DEFAULT is
-    // FLAG_DEFAULTS in libs/flags/src/types.ts, ON since 2026-06-18; never restate it here, the
-    // restated "default-off" drifted — identities-v1 D-018): resolve server-side + thread via
-    // envelopeEnv (same env the fleet + su paths read) so an interactive role session's prompt
-    // REPLACES the Claude base when armed (coherent with suLaunchArgs). Fail-soft ⇒ off (the
-    // launcher uses --append). D-018 retires the append branch once P-003 renders the stack.
-    let replaceClaudeBase = false;
-    try {
-      replaceClaudeBase = await getFlag(FLAGS.REPLACE_CLAUDE_BASE, workspace);
-    } catch {
-      /* flag miss ⇒ replace-base stays off */
-    }
-
     // code-intelligence-routing-lsp-gitnexus-2026-08-20 P-021 (D-013): may this omp
-    // role session KEEP its native `lsp` builtin? Same resolve-server-side/thread-via-
-    // envelopeEnv shape as REPLACE_CLAUDE_BASE above (psu-launcher.mjs is bare node and
-    // cannot read a TS flag). The decision itself — including the local-model TIER
+    // role session KEEP its native `lsp` builtin? Resolve server-side and thread
+    // via envelopeEnv because psu-launcher.mjs is bare node and cannot read a TS
+    // flag. The decision itself — including the local-model TIER
     // GATE that is what makes OMP_NATIVE_LSP_BUILTIN safe to ship default-ON — lives
     // in ONE place, mayKeepOmpNativeLsp, shared with bootstrap-su. Read its header
     // before changing anything here. Fail-soft ⇒ off ⇒ the launcher strips the
@@ -642,7 +629,6 @@ const post = defineTool({
         // session's calls + hooks share one owner and concurrent sessions
         // don't collide. Same value recorded as adv_sessions.coord_owner_id.
         PAPERCUSP_SID: sid,
-        ...(replaceClaudeBase ? { PAPERCUSP_REPLACE_CLAUDE_BASE: '1' } : {}),
         // P-021/D-013 — see the ompNativeLsp resolution above. Set-when-true, so
         // ABSENT is the safe reading: the launcher strips omp's native `lsp`
         // builtin unless this explicitly says it may keep it.

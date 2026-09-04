@@ -374,22 +374,6 @@ export async function spawnInvokeOnce(
     /* flag lookup failure ⇒ cutover stays off (current behavior) */
   }
 
-  // domain-generic-agent-personas-2026-06-17 P-013: resolve the papercusp-replace-claude-base
-  // flag PER-SPAWN and thread it to the invoke-once child as PAPERCUSP_REPLACE_CLAUDE_BASE.
-  // invoke() reads it (replaceClaudeBaseEnabled) to REPLACE the Claude coding base with our
-  // neutral preamble (+ blueprint overlay) via --system-prompt-file; the assembled prompt
-  // still rides stdin. The flag's DEFAULT is FLAG_DEFAULTS in libs/flags/src/types.ts (ON since
-  // 2026-06-18 — this comment once restated "default-off" and drifted; identities-v1 D-018).
-  // A THROWN lookup degrades to off (the Claude default stands) so a flag hiccup can never
-  // silently swap the fleet's base. D-018 retires the off branch once P-003 renders the stack.
-  try {
-    if (await getFlag(FLAGS.REPLACE_CLAUDE_BASE, 'system')) {
-      resolvedExtraEnv = { ...resolvedExtraEnv, PAPERCUSP_REPLACE_CLAUDE_BASE: '1' };
-    }
-  } catch {
-    /* flag lookup failure ⇒ replace-base stays off (Claude default stands) */
-  }
-
   // A release-fixer has a generous overall timeout for diagnosis, but a
   // process that never reaches its first agent stream must fail sooner. Keep
   // the guard at the shared subprocess chokepoint so both the /invoke route
