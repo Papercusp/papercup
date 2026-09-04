@@ -215,7 +215,11 @@ describe("plans:get — `detail` compatibility alias (EI-21905561475819210)", ()
     // preserving the full body; the contract under test is that detail:true
     // reaches the full-payload branch through the real dispatch path.
     expect(
-      (dispatched.result?.structuredContent as { prose?: unknown } | undefined)?.prose,
+      (
+        dispatched.result?.structuredContent as
+          | { results?: Array<{ prose?: unknown }> }
+          | undefined
+      )?.results?.[0]?.prose,
     ).toEqual(expect.stringContaining("body"));
   });
 
