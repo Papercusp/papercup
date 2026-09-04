@@ -61,6 +61,19 @@ const TASKS: LoopTask[] = [
   { taskId: 't-probe', pool: 'probe', repoUrl: 'r', repoCommit: 'c', spec: 's', intent: 'score:5', projectContext: 'p' },
 ];
 
+/**
+ * Signals for a FULLY INSTRUMENTED run: every task reports `regressions`, and the probe
+ * task reports `planted_bug_caught`. P-003 made this explicit — under three-state
+ * evidence an absent key is `not-measured`, so a fixture that omits a signal is
+ * asserting "this run never reported it", which is a different scenario from a clean run.
+ */
+const ALL_MEASURED: Record<string, unknown> = {
+  't-train-lo': { regressions: false },
+  't-train-hi': { regressions: false },
+  't-dev': { regressions: false },
+  't-probe': { regressions: false, planted_bug_caught: true },
+};
+
 /** A tagged-template Sql stub recording the statements persistCycle issues,
  *  and (WI-5799) their interpolated values so id-shape can be asserted. */
 function fakeSql(sink: string[], valueSink?: unknown[][]): Sql {
@@ -110,7 +123,7 @@ function makeDeps(over: Partial<Parameters<typeof buildLoopDeps>[0]> = {}, signa
 
 describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
   it('rolls per-pool composites into trainAgg/devAnchorAgg/trainVector + meanCost', async () => {
-    const { deps } = makeDeps({}, { 't-train-lo': { regressions: true }, 't-probe': { planted_bug_caught: true } });
+    const { deps } = makeDeps({}, { ...ALL_MEASURED, 't-train-lo': { regressions: true } });
     const { evalResult, worstTraces, costUsd } = await deps.evaluate('baseline', { promptOverrides: {} });
 
     // trainVector is in task order (lo, hi); trainAgg is their mean.
@@ -122,9 +135,9 @@ describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
     expect(evalResult.meanCost).toBeCloseTo(PIPELINE_USD + JUDGE_USD, 6);
     expect(costUsd).toBeCloseTo(4 * (PIPELINE_USD + JUDGE_USD), 6);
 
-    // un-gameable signals from the injected per-task signals.
-    expect(evalResult.anyNewRegression).toBe(true);
-    expect(evalResult.allProbesCaught).toBe(true);
+    // un-gameable signals from the injected per-task signals, as typed evidence.
+    expect(evalResult.regressionEvidence.status).toBe('fail');
+    expect(evalResult.probeEvidence.status).toBe('pass');
 
     // worst train trace first (lowest composite), carries the judge rationale.
     expect(worstTraces[0].taskId).toBe('t-train-lo');
@@ -132,16 +145,64 @@ describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
     expect(worstTraces.map((w) => w.taskId)).toEqual(['t-train-lo', 't-train-hi']);
   });
 
-  it('allProbesCaught is false when a probe task does not catch its planted bug', async () => {
-    const { deps } = makeDeps({}, { 't-probe': { planted_bug_caught: false } });
+  it('probe evidence FAILS when a probe task does not catch its planted bug', async () => {
+    const { deps } = makeDeps({}, { ...ALL_MEASURED, 't-probe': { regressions: false, planted_bug_caught: false } });
     const { evalResult } = await deps.evaluate('baseline', { promptOverrides: {} });
-    expect(evalResult.allProbesCaught).toBe(false);
+    expect(evalResult.probeEvidence.status).toBe('fail');
   });
 
-  it('allProbesCaught is vacuously true when there are no probe tasks', async () => {
-    const { deps } = makeDeps({ tasks: TASKS.filter((t) => t.pool !== 'probe') });
+  /**
+   * P-003 — this case used to assert `allProbesCaught === true`. That was the bug: with
+   * no probe tasks the loop reported an affirmative "all planted bugs caught" for a pool
+   * that never ran, and a candidate could clear the guardrail on evidence nobody gathered.
+   */
+  it('probe evidence is NOT-MEASURED when there are no probe tasks (never a vacuous pass)', async () => {
+    const { deps } = makeDeps({ tasks: TASKS.filter((t) => t.pool !== 'probe') }, ALL_MEASURED);
     const { evalResult } = await deps.evaluate('baseline', { promptOverrides: {} });
-    expect(evalResult.allProbesCaught).toBe(true);
+    expect(evalResult.probeEvidence.status).toBe('not-measured');
+    expect(evalResult.probeEvidence.coverage).toEqual({ measured: 0, required: 0, unmeasuredTaskIds: [] });
+  });
+
+  it('regression evidence is NOT-MEASURED when a run never reports the signal at all', async () => {
+    // No injected signals ⇒ rawSignals is `{}` ⇒ the key is ABSENT, which a boolean
+    // could not distinguish from a reported `false`.
+    const { deps } = makeDeps({}, {});
+    const { evalResult } = await deps.evaluate('baseline', { promptOverrides: {} });
+    expect(evalResult.regressionEvidence.status).toBe('not-measured');
+    expect(evalResult.regressionEvidence.coverage.measured).toBe(0);
+    expect(evalResult.regressionEvidence.coverage.required).toBe(4);
+    expect(evalResult.regressionEvidence.coverage.unmeasuredTaskIds).toEqual([
+      't-train-lo',
+      't-train-hi',
+      't-dev',
+      't-probe',
+    ]);
+  });
+
+  it('a reported `regressions: false` is a measured PASS, distinct from the absent key', async () => {
+    const { deps } = makeDeps({}, ALL_MEASURED);
+    const { evalResult } = await deps.evaluate('baseline', { promptOverrides: {} });
+    expect(evalResult.regressionEvidence.status).toBe('pass');
+    expect(evalResult.regressionEvidence.coverage).toEqual({ measured: 4, required: 4, unmeasuredTaskIds: [] });
+  });
+
+  it('names only the tasks that went unreported when coverage is partial', async () => {
+    const { deps } = makeDeps({}, { 't-train-lo': { regressions: false }, 't-dev': { regressions: false } });
+    const { evalResult } = await deps.evaluate('baseline', { promptOverrides: {} });
+    expect(evalResult.regressionEvidence.status).toBe('not-measured');
+    expect(evalResult.regressionEvidence.coverage.unmeasuredTaskIds).toEqual(['t-train-hi', 't-probe']);
+  });
+
+  it('carries each contributing run trace ref as an artifact reference', async () => {
+    const { deps } = makeDeps({}, ALL_MEASURED);
+    const { evalResult } = await deps.evaluate('baseline', { promptOverrides: {} });
+    expect(evalResult.regressionEvidence.artifacts).toEqual([
+      'ref-t-train-lo',
+      'ref-t-train-hi',
+      'ref-t-dev',
+      'ref-t-probe',
+    ]);
+    expect(evalResult.probeEvidence.artifacts).toEqual(['ref-t-probe']);
   });
 
   it('P-025: per-task composite is the MEAN over repeats, cost is summed, worst rationale kept', async () => {

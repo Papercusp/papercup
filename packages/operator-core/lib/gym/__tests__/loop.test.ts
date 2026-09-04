@@ -23,8 +23,19 @@ const config: LoopConfig = {
   proposerModel: 'claude-sonnet-4-6',
 };
 
+/**
+ * P-003: a deterministic guardrail that WAS collected and passed. These suites are about
+ * loop orchestration, so every variant is fully instrumented — the not-measured paths are
+ * covered in gates.test.ts and loop-deps.test.ts.
+ */
+const MEASURED_PASS = {
+  status: 'pass' as const,
+  coverage: { measured: 1, required: 1, unmeasuredTaskIds: [] },
+  artifacts: ['trace://t1'],
+};
+
 function evalOf(id: string, agg: number): VariantEval {
-  return { variantId: id, trainAgg: agg, trainVector: [agg], devAnchorAgg: agg, meanCost: 1.0, anyNewRegression: false, allProbesCaught: true };
+  return { variantId: id, trainAgg: agg, trainVector: [agg], devAnchorAgg: agg, meanCost: 1.0, regressionEvidence: MEASURED_PASS, probeEvidence: MEASURED_PASS };
 }
 
 function baseDeps(over: Partial<LoopDeps> = {}): { d: LoopDeps; calls: string[] } {
@@ -103,7 +114,7 @@ describe('runOptimizationLoop', () => {
       parentId: 'baseline',
       variant: { promptOverrides: { worker: 'candidate' } },
       parent: { promptOverrides: {} },
-      gateResults: [{ gate: 'no-new-regressions', pass: false, detail: 'regression' }],
+      gateResults: [{ gate: 'no-new-regressions', pass: false, status: 'fail' as const, detail: 'regression' }],
       recordedAt: 1,
       provenance: { evaluatorHash: 'e', rubricHash: 'r', taskHash: 't', codeHash: 'c' },
     });
@@ -204,11 +215,11 @@ describe('runOptimizationLoop', () => {
         baseline: { variantId: 'baseline', overlay: { promptOverrides: {} } },
         async evaluate(variantId) {
           if (variantId === 'baseline') {
-            return { evalResult: { variantId, trainAgg: 7.0, trainVector: [7, 7], devAnchorAgg: 7.0, meanCost: 1.0, anyNewRegression: false, allProbesCaught: true }, worstTraces: [], costUsd: 1.0 };
+            return { evalResult: { variantId, trainAgg: 7.0, trainVector: [7, 7], devAnchorAgg: 7.0, meanCost: 1.0, regressionEvidence: MEASURED_PASS, probeEvidence: MEASURED_PASS }, worstTraces: [], costUsd: 1.0 };
           }
           // higher trainAgg (clears the improvement gate) but a trade-off vector so it
           // does not dominate baseline → the frontier keeps both members.
-          return { evalResult: { variantId, trainAgg: 7.5, trainVector: [9, 5], devAnchorAgg: 7.2, meanCost: 1.0, anyNewRegression: false, allProbesCaught: true }, worstTraces: [], costUsd: 1.0 };
+          return { evalResult: { variantId, trainAgg: 7.5, trainVector: [9, 5], devAnchorAgg: 7.2, meanCost: 1.0, regressionEvidence: MEASURED_PASS, probeEvidence: MEASURED_PASS }, worstTraces: [], costUsd: 1.0 };
         },
         async propose() { return { overlay: { promptOverrides: { worker: 'v' } }, rationale: 'x', diffFromParent: 'worker' } as CandidateProposal; },
         async promote() {},
