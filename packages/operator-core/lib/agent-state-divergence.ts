@@ -79,6 +79,7 @@
  * constant. This is the one place the item's literal wording had to yield to its
  * stated purpose (MAST FM-2.6), and it yielded on measurement, not taste.
  */
+import { isDispatchWrapperMetadata } from './agent-tools/sessions/automatic-tool-names';
 
 /** How an agent's actions diverged from its declaration. */
 export const DIVERGENCE_KINDS = [
@@ -237,6 +238,9 @@ export interface DivergenceCall {
   /** Raw args; digested internally. Absent is fine — the retry leg then cannot
    *  fire for that call, which is reported, not guessed at. */
   args?: unknown;
+  /** Raw telemetry metadata. Explicit dispatch-wrapper rows are deliberate
+   *  negative controls for retry sampling; the stamped goal leg still sees them. */
+  metadataJson?: unknown;
   /** Hydrated only when telemetry matches the fleet's persisted launch transaction. */
   launchOutcome?: LaunchOutcomeEvidence;
 }
@@ -677,6 +681,11 @@ export function detectIntentActionDivergence(
   let launchOutcomeCalls = 0;
   let launchFailuresReconciled = 0;
   for (const owned of byOwner.values()) {
+    // A dispatch wrapper is an outer telemetry row for a deliberate schema
+    // probe. Its invalid-input status is expected negative-control evidence,
+    // not an agent retry. Keep it in `rows` above so stamped goal evidence
+    // remains intact; exclude it only from this sampling leg.
+    const samplingOwned = owned.filter((c) => !isDispatchWrapperMetadata(c.metadataJson));
     // Calls of ONE tool, in time order — SUCCESSES INCLUDED. Grouping by tool
     // before running the window is what makes "the same call keeps failing"
     // distinguishable from "this agent had a bad minute across five different
@@ -688,7 +697,7 @@ export function detectIntentActionDivergence(
     // negative it structurally could not see, and paged agents for runs that had
     // already succeeded on the very next call (EI-18824142520274965).
     const callsByTool = new Map<string, DivergenceCall[]>();
-    for (const c of owned) {
+    for (const c of samplingOwned) {
       const isFailure = isFailureStatus(c.status);
       const committedLaunch = hasCommittedLaunchOutcome(c);
       if (c.launchOutcome) launchOutcomeCalls += 1;
@@ -785,7 +794,7 @@ export function detectIntentActionDivergence(
             const lastAt = timeOf(run[run.length - 1]);
             const fallbackObserved =
               ns !== '' &&
-              owned.some(
+              samplingOwned.some(
                 (c) =>
                   c.toolName !== toolName &&
                   toolNamespace(c.toolName) === ns &&

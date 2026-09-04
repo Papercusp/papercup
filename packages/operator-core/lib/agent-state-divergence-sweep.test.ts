@@ -69,7 +69,7 @@ describe('loadRecentCalls', () => {
     expect(sql).toHaveBeenCalledTimes(1);
     const [template] = sql.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
     const query = Array.from(template).join(' ');
-    expect(query).toContain('i.args_json, i.call_origin');
+    expect(query).toContain('i.args_json, i.metadata_json, i.call_origin');
     expect(query).toContain("e.body->>'plan_slug' AS declared_plan_slug");
     expect(query).toContain("e.body->'declared_plan_items' AS declared_plan_items");
     expect(query).toContain("e.body->'declared_goal_refs' AS declared_goal_refs");
@@ -113,6 +113,7 @@ describe('loadRecentCalls', () => {
         declared_plan_items: ['P-016'],
         declared_goal_refs: ['WI-1', 'WI-2'],
         args_json: { source: 'test' },
+        metadata_json: { dispatchWrapper: true },
         call_origin: null,
       },
     ]);
@@ -131,6 +132,7 @@ describe('loadRecentCalls', () => {
       declaredPlanSlug: 'shared-plan',
       declaredPlanItems: ['P-016'],
       declaredGoalRefs: ['WI-1', 'WI-2'],
+      metadataJson: { dispatchWrapper: true },
     });
   });
 
@@ -148,6 +150,7 @@ describe('loadRecentCalls', () => {
         declared_plan_items: null,
         declared_goal_refs: null,
         args_json: { count: 1 },
+        metadata_json: null,
         call_origin: null,
         launch_fleet: 'fleet-a',
         launch_transaction: {

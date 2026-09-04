@@ -453,6 +453,46 @@ describe('the sampling leg — live without any stamp', () => {
     expect(out.divergences[0].detail).toContain('IDENTICAL args');
   });
 
+  it('suppresses explicitly marked dispatch-wrapper failures from retry sampling', () => {
+    const out = detectIntentActionDivergence(
+      flail(RETRY_THRASH_THRESHOLD).map((c) => ({
+        ...c,
+        metadataJson: { dispatchWrapper: true },
+      })),
+    );
+    expect(out.divergences).toEqual([]);
+    expect(out.coverage.failuresSeen).toBe(0);
+    expect(out.coverage.thrashRuns).toBe(0);
+  });
+
+  it('retains direct invalid-input failures as retry evidence', () => {
+    const out = detectIntentActionDivergence(flail(RETRY_THRASH_THRESHOLD));
+    expect(out.divergences).toHaveLength(1);
+    expect(out.coverage.failuresSeen).toBe(RETRY_THRASH_THRESHOLD);
+    expect(out.coverage.thrashRuns).toBe(1);
+  });
+
+  it('keeps marked dispatch-wrapper rows in the stamped goal-drift leg', () => {
+    const out = detectIntentActionDivergence([
+      call({
+        id: 1,
+        intentEventId: 100,
+        goalRef: 'WI-1',
+        metadataJson: { dispatchWrapper: true },
+      }),
+      call({
+        id: 2,
+        intentEventId: 100,
+        goalRef: 'WI-2',
+        metadataJson: { dispatchWrapper: true },
+      }),
+    ]);
+    expect(out.divergences).toHaveLength(1);
+    expect(out.divergences[0].kind).toBe('goal-drift-within-intent');
+    expect(out.coverage.stampedCalls).toBe(2);
+    expect(out.coverage.goalStampedCalls).toBe(2);
+  });
+
   it('records a same-namespace fallback inside the run — the second named trigger', () => {
     const calls = flail(3);
     calls.splice(

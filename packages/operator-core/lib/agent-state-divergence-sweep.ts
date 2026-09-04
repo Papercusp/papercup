@@ -212,6 +212,7 @@ interface CallRow {
   declared_plan_items: unknown;
   declared_goal_refs: unknown;
   args_json: unknown;
+  metadata_json: unknown;
   call_origin: string | null;
   launch_fleet: string | null;
   launch_transaction: unknown;
@@ -272,7 +273,7 @@ export async function loadRecentCalls(opts: {
            i.intent_event_id, i.goal_ref, e.body->>'plan_slug' AS declared_plan_slug,
            e.body->'declared_plan_items' AS declared_plan_items,
            e.body->'declared_goal_refs' AS declared_goal_refs,
-           i.args_json, i.call_origin,
+           i.args_json, i.metadata_json, i.call_origin,
            f.fleet_slug AS launch_fleet,
            f.last_launch_transaction AS launch_transaction
       FROM harness_shared.tool_invocations AS i
@@ -341,10 +342,11 @@ export async function loadRecentCalls(opts: {
     declaredPlanItems: Array.isArray(r.declared_plan_items)
       ? r.declared_plan_items.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
       : undefined,
-    declaredGoalRefs: Array.isArray(r.declared_goal_refs)
+      declaredGoalRefs: Array.isArray(r.declared_goal_refs)
       ? r.declared_goal_refs.filter((ref): ref is string => typeof ref === 'string' && ref.length > 0)
       : undefined,
     args: r.args_json ?? undefined,
+    metadataJson: r.metadata_json ?? undefined,
     launchOutcome: launchOutcomeFromRow(r.launch_fleet, r.launch_transaction),
   }));
 }
