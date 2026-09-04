@@ -207,6 +207,74 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('healthy');
   });
 
+  it('yields a projection-walled bearer SOFT pin before the first attempt, then returns when it recovers', async () => {
+    const routed: string[] = [];
+    await bootCodex(
+      (req, res) => {
+        routed.push(String(req.headers.authorization ?? ''));
+        ok(req, res);
+      },
+      [codexAcct('pinned'), codexAcct('healthy')],
+    );
+    const resetAt = Date.now() + 86_400_000;
+    gw!.setAccountRateHints([
+      { accountId: 'pinned', utilization7d: 1, windowResetAt7d: resetAt },
+      { accountId: 'healthy', utilization7d: 0.2, windowResetAt7d: resetAt },
+    ]);
+
+    const yielded = await postResponses(
+      { model: 'gpt-5.6-sol', input: 'route around the known wall' },
+      { [ACCOUNT_HEADER]: 'pinned' },
+    );
+    expect(yielded.status).toBe(200);
+    expect(routed).toEqual(['Bearer healthy-tok']);
+    expect(yielded.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('healthy');
+    expect(yielded.headers.get(PIN_YIELDED_HEADER)).toBe('pinned->healthy');
+
+    // The resolver runs per request and never mutates the pin. Clearing the liveness wall
+    // therefore returns the very next turn to the original warm credential.
+    gw!.setAccountRateHints([]);
+    const recovered = await postResponses(
+      { model: 'gpt-5.6-sol', input: 'resume the warm pin' },
+      { [ACCOUNT_HEADER]: 'pinned' },
+    );
+    expect(recovered.status).toBe(200);
+    expect(routed).toEqual(['Bearer healthy-tok', 'Bearer pinned-tok']);
+    expect(recovered.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('pinned');
+    expect(recovered.headers.get(PIN_YIELDED_HEADER)).toBeNull();
+  });
+
+  it('keeps a projection-walled bearer HARD pin strict', async () => {
+    await bootCodex(ok, [codexAcct('pinned'), codexAcct('healthy')]);
+    gw!.setAccountRateHints([{ accountId: 'pinned', utilization7d: 1, windowResetAt7d: Date.now() + 86_400_000 }]);
+
+    const res = await postResponses(
+      { model: 'gpt-5.6-sol', input: 'operator accepts the wall' },
+      { [ACCOUNT_HEADER]: 'pinned', [ACCOUNT_PIN_HEADER]: 'hard' },
+    );
+    expect(res.status).toBe(200);
+    expect(openaiUpstream!.last.headers.authorization).toBe('Bearer pinned-tok');
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('pinned');
+    expect(res.headers.get(PIN_YIELDED_HEADER)).toBeNull();
+  });
+
+  it('reports a liveness yield from an implicit Codex auto-affinity pin', async () => {
+    await bootCodex(ok, [codexAcct('warm'), codexAcct('healthy')]);
+    const headers = { [OWNER_HEADER]: 'su-affinity-yield' };
+    const warm = await postResponses({ model: 'gpt-5.6-sol', input: 'warm this account' }, headers);
+    expect(warm.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('warm');
+
+    gw!.setAccountRateHints([
+      { accountId: 'warm', utilization7d: 1, windowResetAt7d: Date.now() + 86_400_000 },
+      { accountId: 'healthy', utilization7d: 0.1, windowResetAt7d: Date.now() + 86_400_000 },
+    ]);
+    const yielded = await postResponses({ model: 'gpt-5.6-sol', input: 'stay alive' }, headers);
+    expect(yielded.status).toBe(200);
+    expect(yielded.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('healthy');
+    expect(yielded.headers.get(PIN_YIELDED_HEADER)).toBe('warm->healthy');
+    expect(gw!.stats().cache.affinity.yields).toBe(1);
+  });
+
   it('forwards the method, path+query, and body verbatim to the OpenAI upstream', async () => {
     await bootCodex(ok);
     const res = await ask('/v1/responses?stream=false&trace=9', {
@@ -479,6 +547,48 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     expect(calls).toEqual(['/tmp/chatgpt-a', '/tmp/chatgpt-b']);
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-b');
     expect(res.headers.get(PIN_YIELDED_HEADER)).toBe('chatgpt-a->chatgpt-b');
+  });
+
+  it('yields a projection-walled ChatGPT CLI SOFT pin before launch and returns after recovery', async () => {
+    const cliAccounts = [
+      { accountId: 'chatgpt-a', home: '/tmp/chatgpt-a' },
+      { accountId: 'chatgpt-b', home: '/tmp/chatgpt-b' },
+    ];
+    const calls: string[] = [];
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((a) => ({ accountId: a.accountId, token: async () => '' }))),
+      codexCliRun: async (opts) => {
+        calls.push(opts.home);
+        return { text: `served by ${opts.home}`, inputTokens: 5, outputTokens: 3 };
+      },
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+    gw.setAccountRateHints([{ accountId: 'chatgpt-a', utilization7d: 1, windowResetAt7d: Date.now() + 86_400_000 }]);
+
+    const yielded = await postResponses(
+      { model: 'gpt-5.5', input: 'avoid the wall', stream: true },
+      { [ACCOUNT_HEADER]: 'chatgpt-a' },
+    );
+    expect(yielded.status).toBe(200);
+    await yielded.text();
+    expect(calls).toEqual(['/tmp/chatgpt-b']);
+    expect(yielded.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-b');
+    expect(yielded.headers.get(PIN_YIELDED_HEADER)).toBe('chatgpt-a->chatgpt-b');
+
+    gw.setAccountRateHints([]);
+    const recovered = await postResponses(
+      { model: 'gpt-5.5', input: 'resume the warm account', stream: true },
+      { [ACCOUNT_HEADER]: 'chatgpt-a' },
+    );
+    expect(recovered.status).toBe(200);
+    await recovered.text();
+    expect(calls).toEqual(['/tmp/chatgpt-b', '/tmp/chatgpt-a']);
+    expect(recovered.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-a');
+    expect(recovered.headers.get(PIN_YIELDED_HEADER)).toBeNull();
   });
 
   it.each(['credential', 'transport', '429', '503'] as const)(
@@ -1315,6 +1425,56 @@ describe('proxyOpenAi — ChatGPT OAuth initial account selection (D-010 catcher
     expect(res.status).toBe(200);
     expect(routed).toEqual(['chatgpt-healthy']);
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-healthy');
+  });
+
+  it('uses the same preflight SOFT-pin liveness resolver on the transparent OAuth transport', async () => {
+    const homeA = await makeCodexHome('chatgpt-a');
+    const homeB = await makeCodexHome('chatgpt-b');
+    const cliAccounts = [
+      { accountId: 'chatgpt-a', home: homeA },
+      { accountId: 'chatgpt-b', home: homeB },
+    ];
+    const routed: string[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      routed.push(new Headers(init?.headers).get('chatgpt-account-id') ?? '');
+      return new Response(
+        `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_pin_health', output: [] } })}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as typeof fetch;
+
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((a) => ({ accountId: a.accountId, token: async () => '' }))),
+      codexOAuthProxy: true,
+      fetchImpl,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+    gw.setAccountRateHints([{ accountId: 'chatgpt-a', utilization7d: 1, windowResetAt7d: Date.now() + 86_400_000 }]);
+
+    const yielded = await postResponses(
+      { model: 'gpt-5.6-sol', input: 'avoid the OAuth wall', stream: true },
+      { [ACCOUNT_HEADER]: 'chatgpt-a' },
+    );
+    expect(yielded.status).toBe(200);
+    await yielded.text();
+    expect(routed).toEqual(['chatgpt-b']);
+    expect(yielded.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-b');
+    expect(yielded.headers.get(PIN_YIELDED_HEADER)).toBe('chatgpt-a->chatgpt-b');
+
+    gw.setAccountRateHints([]);
+    const recovered = await postResponses(
+      { model: 'gpt-5.6-sol', input: 'resume the OAuth pin', stream: true },
+      { [ACCOUNT_HEADER]: 'chatgpt-a' },
+    );
+    expect(recovered.status).toBe(200);
+    await recovered.text();
+    expect(routed).toEqual(['chatgpt-b', 'chatgpt-a']);
+    expect(recovered.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-a');
+    expect(recovered.headers.get(PIN_YIELDED_HEADER)).toBeNull();
   });
 });
 

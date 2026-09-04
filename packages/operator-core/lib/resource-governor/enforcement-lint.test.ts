@@ -109,11 +109,48 @@ describe('resource governor enforcement lint', () => {
     ['static capacity defaults', `const maxConcurrent = 4;`, 'hidden-or-static-capacity'],
     ['hidden semaphores', `const gate = new Semaphore(4);`, 'hidden-or-static-capacity'],
     ['resident queues', `pendingQueue.push(work);`, 'unbounded-resident-queue'],
-    ['receipt retries', `if (receipt.state === 'queued') retryAgain();`, 'retry-around-receipt'],
+    [
+      'receipt retries',
+      `await acquireWithContentionRetry(() => this.store.enqueue(candidate), { backoffsMs });`,
+      'retry-around-receipt',
+    ],
     ['missing lineage/release', `await governor.admit(input);`, 'missing-admission-context-or-release'],
     ['dishonest metrics', `const age = oldestAgeMs ?? 0;`, 'undefined-partial-or-stale-metric-coerced-to-zero'],
   ])('rejects %s', (_name, source, expected) => {
     expect(inspectGovernorSource(source)).toContain(expected);
+  });
+
+  it('requires a retry callback around the receipt-producing operation', () => {
+    const declarationOnly = `
+      type Options = {
+        admissionRetryBackoffsMs?: readonly number[];
+        sleep?: (ms: number) => Promise<void>;
+        onActualDemand?: (input: { readonly receiptId: string }) => void;
+      };
+    `;
+    expect(inspectGovernorSource(declarationOnly)).not.toContain('retry-around-receipt');
+    expect(
+      inspectGovernorSource(`await retry(async () => { await receiptStore.enqueue(candidate); });`),
+    ).toContain('retry-around-receipt');
+    expect(inspectGovernorSource(`await retry(async () => { await performWork(); }, { receiptId });`)).not.toContain(
+      'retry-around-receipt',
+    );
+  });
+
+  it('matches the real queue retry site and not its adjacent option declarations', () => {
+    const queueSource = readFileSync(ROOT + 'packages/operator-core/lib/resource-governor/queue.ts', 'utf8');
+    const declarationStart = queueSource.indexOf('private readonly onActualDemand:');
+    const admitStart = queueSource.indexOf('async admit(');
+    const retryStart = queueSource.indexOf('stored = await acquireWithContentionRetry(');
+    expect(declarationStart).toBeGreaterThanOrEqual(0);
+    expect(admitStart).toBeGreaterThan(declarationStart);
+    expect(retryStart).toBeGreaterThan(admitStart);
+    expect(inspectGovernorSource(queueSource.slice(declarationStart, admitStart))).not.toContain(
+      'retry-around-receipt',
+    );
+    expect(inspectGovernorSource(queueSource.slice(retryStart, retryStart + 220))).toContain(
+      'retry-around-receipt',
+    );
   });
 
   it('does not treat pending diagnostic IDs as a resident queue', () => {

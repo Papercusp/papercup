@@ -1875,7 +1875,7 @@ export const BYPASS_REGISTRY = new Map([
     {
       disposition: "semantic",
       reason:
-        "The one retry in this file wraps store.enqueue — the write that CREATES the receipt — via acquireWithContentionRetry, and is keyed by idempotencyKey: a pg lock/statement timeout aborts its transaction so nothing is committed, and if an earlier attempt HAD committed, the retry returns that same row and the requestFingerprint check still raises a genuine idempotency conflict. Non-contention faults propagate on the first attempt. Admission is PRE-execution, so dropping the record would mean running ungoverned; the retry is the correct lever. NOTE: the detector's text-proximity heuristic does not actually match that call site — it matches the adjacent `admissionRetryBackoffsMs` / `receiptId` option-type declarations at lines 367-370. That precision gap is tracked separately; this row dispositions the file's real, reviewed retry.",
+        "The one retry in this file wraps store.enqueue — the write that CREATES the receipt — via acquireWithContentionRetry, and is keyed by idempotencyKey: a pg lock/statement timeout aborts its transaction so nothing is committed, and if an earlier attempt HAD committed, the retry returns that same row and the requestFingerprint check still raises a genuine idempotency conflict. Non-contention faults propagate on the first attempt. Admission is PRE-execution, so dropping the record would mean running ungoverned; the retry is the correct lever. The detector recognizes the retry callback and receipt-producing enqueue operation rather than unrelated option-type fields.",
     },
   ],
 ]);
@@ -1972,10 +1972,49 @@ const DURABLE = /\b(?:work_items|durable|receipt|postgres|DBOS)\b/i;
 // IDs, tokens, and targets do not look like resident work.
 const RESIDENT_QUEUE =
   /\b(?:queue|backlog|pending|[A-Za-z_$][\w$]*(?:Queue|Backlog))\.(?:push|set|add)\s*\(/;
-const RETRY_RECEIPT =
-  /(?:receipt[\s\S]{0,180}(?:retry|again)|(?:retry|again)[\s\S]{0,180}receipt)/i;
+const RECEIPT_WRITE =
+  /\b(?:[A-Za-z_$][\w$]*\.)*(?:enqueue|enqueueReceipt|createReceipt|persistReceipt|insertReceipt|saveReceipt|writeReceipt|storeReceipt)\s*\(/i;
 const DISHONEST_METRIC =
   /\b(?:oldestAgeMs|arrivalRatePerSec|drainRatePerSec|confidence)\b[^\n]{0,80}\?\?\s*0\b/;
+
+/**
+ * Return the closing parenthesis for a call whose opening parenthesis is at
+ * `openIndex`. The source has already gone through stripCommentsAndStrings, so
+ * parentheses in comments, strings, and regex literals cannot perturb this
+ * small structural walk.
+ */
+function matchingCallEnd(code, openIndex) {
+  let depth = 0;
+  for (let index = openIndex; index < code.length; index += 1) {
+    if (code[index] === "(") {
+      depth += 1;
+    } else if (code[index] === ")") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Detect a retry construct only when it invokes a callback that performs a
+ * receipt-producing operation. Identifier proximity is not enough: unrelated
+ * fields such as `admissionRetryBackoffsMs` and `receiptId` can sit next to
+ * each other in a type declaration without any retry or write taking place.
+ */
+function hasRetryAroundReceipt(code) {
+  for (const match of code.matchAll(
+    /\b(?:retry|again|[A-Za-z_$][\w$]*(?:retry|again)[A-Za-z_$\d]*)\s*\(/gi,
+  )) {
+    const openIndex = match.index + match[0].lastIndexOf("(");
+    const closeIndex = matchingCallEnd(code, openIndex);
+    if (closeIndex < 0) continue;
+    const args = code.slice(openIndex + 1, closeIndex);
+    if (!/(?:=>|\bfunction\s*\()/i.test(args)) continue;
+    if (RECEIPT_WRITE.test(args)) return true;
+  }
+  return false;
+}
 
 export function inspectGovernorSource(source) {
   const code = stripCommentsAndStrings(source, "fixture.ts");
@@ -1993,7 +2032,7 @@ export function inspectGovernorSource(source) {
   }
   if (RESIDENT_QUEUE.test(code) && !DURABLE.test(code))
     findings.push("unbounded-resident-queue");
-  if (RETRY_RECEIPT.test(code)) findings.push("retry-around-receipt");
+  if (hasRetryAroundReceipt(code)) findings.push("retry-around-receipt");
   if (
     /\bgovernor\.admit\s*\(/.test(code) &&
     (!/\bAdmissionContext\b/.test(code) || !RELEASE.test(code))

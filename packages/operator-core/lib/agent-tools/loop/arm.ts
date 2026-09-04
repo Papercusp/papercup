@@ -42,6 +42,10 @@ import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { hasLiveExactAwaitForSubscriberKey, listWakeAwaitsForSubscriber } from '../../events/await/store';
 import { probeWakeReachability, type WakeReachabilityVerdict } from '../../events/await/wake-reachability';
+import {
+  readEventConditionReachability,
+  type ExternalConditionReachability,
+} from '../../external-condition-reachability';
 import { softText, clampText } from '../limits';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 import { getSessionBrief } from '../../session-brief';
@@ -75,11 +79,12 @@ const MAX_LOOP_INTERVAL_SEC = 60 * 60 * 24 * 7; // 7 days — beyond this, use a
  * requires a wake, and the wake is precisely what was postponed.
  *
  * The fix makes the persona's own push-beats-polling rule enforceable, via an INCENTIVE
- * rather than a refusal — name the blocker's event and keep your long interval (the clear
- * pushes a wake); name no event and the interval is CAPPED, because an agent that cannot
- * be pushed must at least poll often enough to notice. Either way the premise is written
- * into the KICKOFF, which is re-delivered on every wake, so the next wake re-checks the
- * specific condition instead of silently inheriting it.
+ * rather than a refusal — name the blocker's event and keep your long interval only when
+ * the event authority proves that key reachable (the clear can then push a wake); an
+ * unknown or impossible key is treated like no event and the interval is CAPPED, because
+ * an agent that cannot be pushed must at least poll often enough to notice. Either way
+ * the premise is written into the KICKOFF, which is re-delivered on every wake, so the
+ * next wake re-checks the specific condition instead of silently inheriting it.
  */
 const BLOCKED_INTERVAL_CAP_SEC = 15 * 60;
 
@@ -94,6 +99,8 @@ export interface BlockedBackoffResolution {
   intervalSec: number;
   /** True when the cap was applied (i.e. the requested interval was reduced). */
   clamped: boolean;
+  /** Arm-time evidence for a named clearing event, or null when none was named. */
+  eventReachability: ExternalConditionReachability | null;
   /** Advisory line for the response, or null when nothing needs saying. */
   note: string | null;
   /**
@@ -120,6 +127,29 @@ export type LivePushChannels =
   | { status: 'found'; count: number; sample: readonly string[] }
   | { status: 'unknown' };
 
+function unmeasuredEventReachability(): ExternalConditionReachability {
+  return {
+    verdict: 'unknown',
+    basis: 'unmeasured',
+    authoritative: false,
+    evidence: 'event reachability was not measured at arm time',
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+function eventReachabilityEvidence(
+  event: string,
+  reachability: ExternalConditionReachability,
+): string {
+  const verdict =
+    reachability.verdict === 'reachable'
+      ? 'reachable'
+      : reachability.verdict === 'impossible'
+        ? 'proven unreachable'
+        : 'not proven reachable';
+  return `Reachability check for \`${event}\`: ${verdict} (${reachability.basis}) — ${reachability.evidence}.`;
+}
+
 /**
  * PURE: resolve a blocker-motivated interval. Omitting `blockedOn` preserves the exact
  * pre-existing BEHAVIOUR (no cap, no premise, interval untouched) — since P-006/D-098 it
@@ -128,11 +158,16 @@ export type LivePushChannels =
  * `livePush` (EI-19447204017443244) is an OPTIONAL arm-time observation supplied by the
  * handler; omitting it yields `unknown`, which is why every pre-existing caller and test
  * is untouched by this parameter.
+ *
+ * `eventReachability` (EI-22323707896569406) is required for a named event to bypass the
+ * cap. Missing or failed reachability is deliberately represented as `unknown`, never
+ * treated as proof that the caller can be pushed.
  */
 export function resolveBlockedBackoff(
   requestedIntervalSec: number,
   blockedOn?: LoopBlockedOn | null,
   livePush: LivePushChannels = { status: 'unknown' },
+  eventReachability?: ExternalConditionReachability | null,
 ): BlockedBackoffResolution {
   if (!blockedOn) {
     // P-006 / D-098 — SURFACE THE AFFORDANCE AT THE ONE MOMENT IT IS ACTIONABLE.
@@ -162,33 +197,76 @@ export function resolveBlockedBackoff(
       return {
         intervalSec: requestedIntervalSec,
         clamped: false,
+        eventReachability: null,
         note:
           `⏸ ${requestedIntervalSec}s is a WIDE interval. If you widened it because you are waiting on something, ` +
-          `say so: loop:arm { blockedOn: { reason, event } }. Naming the clearing event (events:catalog lists them) ` +
-          `keeps your interval AND re-checks the premise on every wake; naming only a reason caps the interval at ` +
-          `${BLOCKED_INTERVAL_CAP_SEC}s so a cleared blocker cannot leave you asleep (EI-19395290807657827). ` +
+          `say so: loop:arm { blockedOn: { reason, event } }. A clearing event whose reachability is proven at arm time ` +
+          `(events:catalog lists the known families) keeps your interval AND re-checks the premise on every wake; ` +
+          `an unknown or impossible event, or naming only a reason, caps the interval at ${BLOCKED_INTERVAL_CAP_SEC}s ` +
+          `so a cleared blocker cannot leave you asleep (EI-19395290807657827). ` +
           `⚠ Park on the event IN ADDITION to this loop, never instead of it — a parked await suppresses these ` +
           `fires, so an await on an event that never fires (a gate that goes red, say) removes your only way back ` +
           `(WI-6595). If the cadence is simply slow by design, ignore this.`,
         wakePremise: null,
       };
     }
-    return { intervalSec: requestedIntervalSec, clamped: false, note: null, wakePremise: null };
-  }
-
-  // A named event means the CLEAR can push a wake, so a long interval is no longer
-  // self-sealing — the timer is a backstop, not the only way back. Honour it as passed.
-  if (blockedOn.event) {
     return {
       intervalSec: requestedIntervalSec,
       clamped: false,
+      eventReachability: null,
+      note: null,
+      wakePremise: null,
+    };
+  }
+
+  // A named event is safe only when the event authority proves it reachable. A plausible
+  // string, a missing registration, or a failed lookup is not enough to remove the timer
+  // backstop — that was the exact self-sealing failure this item measured.
+  if (blockedOn.event) {
+    const resolvedEventReachability = eventReachability ?? unmeasuredEventReachability();
+    const reachabilityText = eventReachabilityEvidence(blockedOn.event, resolvedEventReachability);
+    if (resolvedEventReachability.verdict !== 'reachable') {
+      const capped = Math.min(requestedIntervalSec, BLOCKED_INTERVAL_CAP_SEC);
+      const clamped = capped < requestedIntervalSec;
+      const capReason =
+        resolvedEventReachability.verdict === 'impossible'
+          ? `the named clearing event is proven unreachable, so it cannot push a wake and the timer is the only way back`
+          : `the named clearing event was not proven reachable, so the timer is the only backstop this arm can trust`;
+      return {
+        intervalSec: capped,
+        clamped,
+        eventReachability: resolvedEventReachability,
+        note: clamped
+          ? `⏸ Backoff recorded: blocked on "${blockedOn.reason}". Interval CAPPED ${requestedIntervalSec}s → ${capped}s ` +
+            `${reachabilityText} ${capReason} — a wider interval could leave you asleep after the blocker clears. ` +
+            `Use a catalogued, reachable clearing key before re-arming a longer interval, and park on it with ` +
+            `events:await { event: '${blockedOn.event}', timeout_sec, on_timeout: 'wake' }.` +
+            ` (EI-22323707896569406)`
+          : `⏸ Backoff recorded: blocked on "${blockedOn.reason}". Interval ${capped}s is within the ` +
+            `${BLOCKED_INTERVAL_CAP_SEC}s cap because ${reachabilityText.toLowerCase()} ${capReason}.`,
+        wakePremise:
+          `You widened this loop's interval because you were BLOCKED ON: "${blockedOn.reason}". ` +
+          `RE-CHECK THAT PREMISE FIRST, before anything else — it may have cleared while you slept. ` +
+          `${reachabilityText} Do not rely on \`${blockedOn.event}\` as the only wake until it is proven reachable. ` +
+          `If the blocker has cleared, RESTORE your normal cadence immediately (re-arm without blockedOn).`,
+      };
+    }
+
+    // The named event is backed by a catalogued/live/fired authority, so the clear can
+    // push a wake and the long interval is no longer self-sealing. The timer remains a
+    // backstop, not the only way back.
+    return {
+      intervalSec: requestedIntervalSec,
+      clamped: false,
+      eventReachability: resolvedEventReachability,
       note:
-        `⏸ Backoff recorded: blocked on "${blockedOn.reason}" — interval honoured as ${requestedIntervalSec}s because you named the clearing event \`${blockedOn.event}\`. ` +
+        `⏸ Backoff recorded: blocked on "${blockedOn.reason}" — interval honoured as ${requestedIntervalSec}s because ` +
+        `${reachabilityText} ` +
         `NOW ACTUALLY PARK ON IT: events:await { event: '${blockedOn.event}', timeout_sec, on_timeout: 'wake' } — naming the event here does NOT register the await, and an unparked long interval is the self-sealing backoff this field exists to prevent (EI-19395290807657827).`,
       wakePremise:
         `You widened this loop's interval because you were BLOCKED ON: "${blockedOn.reason}". ` +
         `RE-CHECK THAT PREMISE FIRST, before anything else — it may have cleared while you slept. ` +
-        `It should push a wake via \`${blockedOn.event}\`; if it has cleared, RESTORE your normal cadence immediately (re-arm without blockedOn) rather than continuing at the widened interval.`,
+        `${reachabilityText} It should push a wake via \`${blockedOn.event}\`; if it has cleared, RESTORE your normal cadence immediately (re-arm without blockedOn) rather than continuing at the widened interval.`,
     };
   }
 
@@ -224,6 +302,7 @@ export function resolveBlockedBackoff(
   return {
     intervalSec: capped,
     clamped,
+    eventReachability: null,
     note: clamped
       ? `⏸ Backoff recorded: blocked on "${blockedOn.reason}". Interval CAPPED ${requestedIntervalSec}s → ${capped}s ` +
         capReason +
@@ -452,12 +531,12 @@ export default defineTool({
           .max(200)
           .optional()
           .describe(
-            "The events:catalog key that fires when this blocker CLEARS. Name it and your interval is honoured as-passed, because the clear PUSHES a wake instead of you waiting out the timer — then actually park on it (events:await { event, timeout_sec, on_timeout:'wake' }). Omit it and the interval is CAPPED to 15min: an agent that cannot be pushed must poll often enough to notice.",
+            "The events:catalog key that fires when this blocker CLEARS. The key is checked against event authority at arm time: only a proven reachable key bypasses the 15min cap; unknown or impossible keys remain capped with evidence in the result. Naming it does not register the await — actually park on it with events:await { event, timeout_sec, on_timeout:'wake' }. Omit it and the interval is CAPPED to 15min.",
           ),
       })
       .optional()
       .describe(
-        'Pass this WHENEVER you are lengthening the interval because you are BLOCKED (rather than because the work is genuinely slow-moving) — EI-19395290807657827. It records WHY the interval was widened so the premise is re-checked on the next wake instead of silently inherited, caps a blocker-motivated interval that has no push channel, and lets a fleet leader see "N members backed off for X, which cleared M minutes ago".',
+        'Pass this WHENEVER you are lengthening the interval because you are BLOCKED (rather than because the work is genuinely slow-moving) — EI-19395290807657827. It records WHY the interval was widened so the premise is re-checked on the next wake instead of silently inherited, caps a blocker-motivated interval whose clearing event is not proven reachable, and lets a fleet leader see "N members backed off for X, which cleared M minutes ago".',
       ),
     goal: softText(4000, { min: 1 })
       .optional()
@@ -963,10 +1042,32 @@ export default defineTool({
       }
     }
 
+    // EI-22323707896569406 — a named event is a PUSH CHANNEL CLAIM, not proof. Resolve
+    // it through the shared event authority before allowing it to lift the backoff cap.
+    // The resolver itself fails soft to `unknown`; this catch protects the arm if an
+    // import/dispatch seam fails before the resolver can return its evidence.
+    let eventReachability: ExternalConditionReachability | null = null;
+    if (args.blockedOn?.event) {
+      try {
+        eventReachability = await readEventConditionReachability(args.blockedOn.event);
+      } catch (e) {
+        eventReachability = {
+          verdict: 'unknown',
+          basis: 'unmeasured',
+          authoritative: false,
+          evidence: `reachability resolver failed: ${e instanceof Error ? e.message : String(e)}`,
+          checkedAt: new Date().toISOString(),
+        };
+        console.warn(
+          `[loop:arm] blockedOn.event reachability lookup failed (arm still proceeds with cap): ${eventReachability.evidence}`,
+        );
+      }
+    }
+
     // EI-19395290807657827 — resolve a blocker-motivated interval BEFORE it is threaded
     // into the kickoff / overwrite-note / materializeLoop, so every downstream consumer
     // sees the interval that is actually armed rather than the one that was requested.
-    const backoff = resolveBlockedBackoff(intervalSecArg, args.blockedOn ?? null, livePush);
+    const backoff = resolveBlockedBackoff(intervalSecArg, args.blockedOn ?? null, livePush, eventReachability);
     const intervalSec = backoff.intervalSec;
     // EI-18792078711601844 — read the prior loop this arm is about to UPSERT over
     // EI-21424742792137469: an unspecified carry on a FRESH arm always defaults
@@ -1339,6 +1440,9 @@ export default defineTool({
                     reason: args.blockedOn.reason,
                     event: args.blockedOn.event ?? null,
                     intervalCapped: backoff.clamped,
+                    ...(backoff.eventReachability
+                      ? { eventReachability: backoff.eventReachability }
+                      : {}),
                   }
                 : null,
               goal,

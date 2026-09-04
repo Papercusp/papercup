@@ -109,6 +109,19 @@ vi.mock('../../events/await/wake-reachability', () => ({
     wouldBeChannel: null,
   })),
 }));
+vi.mock('../../external-condition-reachability', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../external-condition-reachability')>();
+  return {
+    ...actual,
+    readEventConditionReachability: vi.fn(async () => ({
+      verdict: 'reachable',
+      basis: 'live-resolver',
+      authoritative: true,
+      evidence: 'test event is reachable',
+      checkedAt: '2026-09-04T00:00:00.000Z',
+    })),
+  };
+});
 // EI-6878: @papercusp/db-org is a big package (transitively required by other
 // bootstrap code in this import graph via @papercusp/agent-mcp) — partial-mock it
 // via importOriginal so only isParkedNextFire is overridden and everything else
@@ -135,6 +148,7 @@ import { claimWorkItem, classifyClaimFailure, getWorkItem, type WorkItem } from 
 import { admitWorkItemForFleetTarget, admitWorkItemForLoopTarget } from '../../scheduler/fleet-scope-admission';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { probeWakeReachability } from '../../events/await/wake-reachability';
+import { readEventConditionReachability, type ExternalConditionReachability } from '../../external-condition-reachability';
 import { resolveHomePotSlug } from '../pot/_resolve';
 import { admitMonitorArm, prepareMonitorConfig } from '../../harness/routines/monitor-policy';
 import { computeLoopOverwriteNote, resolveBlockedBackoff } from './arm';
@@ -163,6 +177,7 @@ const briefM = vi.mocked((await import('../../session-brief')).getSessionBrief);
 const potHomeM = vi.mocked((await import('../../pot/wake')).resolvePotHomeSlug);
 const wakeAwaitsM = vi.mocked((await import('../../events/await/store')).listWakeAwaitsForSubscriber);
 const exactAwaitM = vi.mocked((await import('../../events/await/store')).hasLiveExactAwaitForSubscriberKey);
+const eventReachabilityM = vi.mocked(readEventConditionReachability);
 // EI-19966210024116714: hoisted to module scope — `await import` is illegal inside a
 // (non-async) describe callback, and this file's describes are synchronous.
 const resolveWsM = vi.mocked((await import('../../harness-core')).resolveWorkspaceForHarnessSlugIn);
@@ -246,6 +261,13 @@ beforeEach(() => {
   priorLoopM.mockResolvedValue(null as never);
   // EI-19447204017443244: default no live wake-awaits (the 'none' rendering).
   wakeAwaitsM.mockResolvedValue({ totalCount: 0, sample: [] } as never);
+  eventReachabilityM.mockResolvedValue({
+    verdict: 'reachable',
+    basis: 'live-resolver',
+    authoritative: true,
+    evidence: 'test event is reachable',
+    checkedAt: '2026-09-04T00:00:00.000Z',
+  } as ExternalConditionReachability);
   homePotM.mockResolvedValue('papercusp');
   briefM.mockResolvedValue(null);
   potHomeM.mockReturnValue('papercusp');
@@ -1612,6 +1634,7 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
       expect(resolveBlockedBackoff(60, null)).toEqual({
         intervalSec: 60,
         clamped: false,
+        eventReachability: null,
         note: null,
         wakePremise: null,
       });
@@ -1670,14 +1693,77 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
       expect(r.clamped).toBe(false);
     });
 
+    it('CAPS a named event when reachability was not measured — a plausible key is not proof', () => {
+      const r = resolveBlockedBackoff(7200, { reason: 'gate red', event: 'invented:key' });
+      expect(r.intervalSec).toBe(900);
+      expect(r.clamped).toBe(true);
+      expect(r.eventReachability).toMatchObject({
+        verdict: 'unknown',
+        basis: 'unmeasured',
+        authoritative: false,
+      });
+      expect(r.note).toContain('not proven reachable');
+      expect(r.wakePremise).toContain('invented:key');
+    });
+
+    it('CAPS a named event when the authority proves it unreachable', () => {
+      const r = resolveBlockedBackoff(
+        7200,
+        { reason: 'gate red', event: 'cancelled:key' },
+        { status: 'unknown' },
+        {
+          verdict: 'impossible',
+          basis: 'cancelled-registration',
+          authoritative: true,
+          evidence: 'the producer registration was cancelled',
+          checkedAt: '2026-09-04T00:00:00.000Z',
+        },
+      );
+      expect(r.intervalSec).toBe(900);
+      expect(r.clamped).toBe(true);
+      expect(r.eventReachability).toMatchObject({
+        verdict: 'impossible',
+        basis: 'cancelled-registration',
+        authoritative: true,
+      });
+      expect(r.note).toContain('proven unreachable');
+    });
+
     it('HONOURS a long interval when a clearing event is named — the push channel makes it safe', () => {
-      const r = resolveBlockedBackoff(7200, { reason: 'gate red', event: 'green-gate-verdict' });
+      const r = resolveBlockedBackoff(
+        7200,
+        { reason: 'gate red', event: 'green-gate-verdict' },
+        { status: 'unknown' },
+        {
+          verdict: 'reachable',
+          basis: 'live-resolver',
+          authoritative: true,
+          evidence: 'catalogued producer is live',
+          checkedAt: '2026-09-04T00:00:00.000Z',
+        },
+      );
       expect(r.intervalSec).toBe(7200);
       expect(r.clamped).toBe(false);
+      expect(r.eventReachability).toMatchObject({
+        verdict: 'reachable',
+        basis: 'live-resolver',
+        authoritative: true,
+      });
     });
 
     it('warns that naming an event is NOT the same as parking on it', () => {
-      const r = resolveBlockedBackoff(7200, { reason: 'gate red', event: 'green-gate-verdict' });
+      const r = resolveBlockedBackoff(
+        7200,
+        { reason: 'gate red', event: 'green-gate-verdict' },
+        { status: 'unknown' },
+        {
+          verdict: 'reachable',
+          basis: 'live-resolver',
+          authoritative: true,
+          evidence: 'catalogued producer is live',
+          checkedAt: '2026-09-04T00:00:00.000Z',
+        },
+      );
       expect(r.note).toContain('events:await');
       expect(r.note).toMatch(/does NOT register the await/i);
     });
@@ -1814,6 +1900,35 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
         expect(wakeAwaitsM).not.toHaveBeenCalled();
       });
 
+      it('CAPS an unknown named event and surfaces the failed reachability premise', async () => {
+        eventReachabilityM.mockResolvedValue({
+          verdict: 'unknown',
+          basis: 'missing-registration',
+          authoritative: false,
+          evidence: 'no producer registration or catalogued resolver was found',
+          checkedAt: '2026-09-04T00:00:00.000Z',
+        });
+        const b = body(
+          await call({
+            intervalSec: 7200,
+            blockedOn: { reason: 'waiting on a deploy', event: 'invented:key' },
+          }),
+        );
+        expect(b.loop.intervalSec).toBe(900);
+        expect(b.loop.requestedIntervalSec).toBe(7200);
+        expect(b.loop.blockedOn).toMatchObject({
+          reason: 'waiting on a deploy',
+          event: 'invented:key',
+          intervalCapped: true,
+          eventReachability: {
+            verdict: 'unknown',
+            basis: 'missing-registration',
+            authoritative: false,
+          },
+        });
+        expect(b.note).toContain('not proven reachable');
+      });
+
       it('a FAILED lookup still arms, and claims NEITHER way', async () => {
         // Best-effort contract: advisory reads must not fail the arm, and must not
         // degrade into a fabricated "I checked and found nothing".
@@ -1854,6 +1969,13 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
         reason: 'gate red',
         event: 'green-gate-verdict',
         intervalCapped: false,
+        eventReachability: {
+          verdict: 'reachable',
+          basis: 'live-resolver',
+          authoritative: true,
+          evidence: 'test event is reachable',
+          checkedAt: '2026-09-04T00:00:00.000Z',
+        },
       });
       expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ intervalSec: 7200 }));
     });

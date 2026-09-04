@@ -4,7 +4,7 @@
  *
  * The cross-SERVICE leg: a fake PG-backed `operator_state` row stands in for
  * the real table (this module is a thin wrapper over readOperatorState /
- * writeOperatorState, whose own round-trip is exercised elsewhere) so these
+ * updateOperatorState, whose own transaction is exercised elsewhere) so these
  * tests stay unit-level and deterministic via fake timers, mirroring
  * cluster-booted-handles-sync.test.ts's PRIMARY-side conventions.
  */
@@ -12,18 +12,35 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const H = vi.hoisted(() => {
   const state: {
-    booted: Array<{ workspaceId: string; harnessSlug: string }>;
+    booted: Array<{
+      workspaceId: string;
+      harnessSlug: string;
+      announceIdentity?: {
+        devicePubkeyBase64: string;
+        githubUserId: number;
+        githubLogin: string;
+        keychainId: string;
+      } | null;
+    }>;
     relocated: Array<{ workspaceId: string; harnessSlug: string }>;
     row: unknown;
   } = { booted: [], relocated: [], row: null };
+  const applyUpdateOperatorState = async (
+    _table: string,
+    defaultValue: unknown,
+    mutator: (current: unknown) => unknown,
+  ) => {
+    const next = mutator(state.row ?? defaultValue);
+    state.row = next;
+    return next;
+  };
   return {
     state,
     listBootedHandles: () => state.booted,
     listRelocatedBootedHandles: () => state.relocated,
     readOperatorState: vi.fn(async () => state.row),
-    writeOperatorState: vi.fn(async (_table: string, payload: unknown) => {
-      state.row = payload;
-    }),
+    applyUpdateOperatorState,
+    updateOperatorState: vi.fn(applyUpdateOperatorState),
   };
 });
 vi.mock('./boot-all', () => ({
@@ -36,13 +53,14 @@ vi.mock('./boot-all', () => ({
 vi.mock('./substrate-socket-path', () => ({ resolveSubstrateSocketPath: () => '/tmp/substrate-owner.sock' }));
 vi.mock('../../operator-state-pg', () => ({
   readOperatorState: H.readOperatorState,
-  writeOperatorState: H.writeOperatorState,
+  updateOperatorState: H.updateOperatorState,
 }));
 
 import {
   startBootedHandlesPgPublisher,
   getPgBootedHandlesSnapshotFallback,
   getPgBootedHarnessAnnounceIdentity,
+  getPgLastKnownHarnessAnnounceDevice,
   getPgRelocatedHarnessEndpoint,
 } from './substrate-booted-handles-pg';
 import { getManaged } from '@papercusp/scheduled-registry';
@@ -52,7 +70,8 @@ beforeEach(() => {
   H.state.relocated = [];
   H.state.row = null;
   H.readOperatorState.mockClear();
-  H.writeOperatorState.mockClear();
+  H.updateOperatorState.mockReset();
+  H.updateOperatorState.mockImplementation(H.applyUpdateOperatorState);
 });
 
 describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
@@ -64,10 +83,11 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
       // beat() runs SYNCHRONOUSLY once at start (mirrors startBootedHandlesBroadcaster) —
       // no timer needs to fire yet; advancing here would double-count the interval's own
       // first (10s-later) tick since fake timers treat any pending timer as immediately due.
-      expect(H.writeOperatorState).toHaveBeenCalledTimes(1);
-      expect(H.writeOperatorState).toHaveBeenLastCalledWith('substrate_booted_handles_status', {
+      expect(H.updateOperatorState).toHaveBeenCalledTimes(1);
+      expect(H.state.row).toEqual({
         handles: [{ workspaceId: 'ws1', harnessSlug: 'a' }],
         sentAt: 1_000,
+        lastKnownAnnounceDevices: [],
         // EI-20575137548097507: published alongside the handles so a non-owner
         // reader can ASSESS them. Present-but-empty here (nothing registered in
         // this fixture) is meaningfully different from absent: absent means the
@@ -84,11 +104,11 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
         { workspaceId: 'ws1', harnessSlug: 'b' },
       ];
       await vi.advanceTimersByTimeAsync(10_000);
-      expect(H.writeOperatorState).toHaveBeenCalledTimes(2);
-      expect((H.writeOperatorState.mock.calls[1]![1] as { handles: unknown[] }).handles).toHaveLength(2);
+      expect(H.updateOperatorState).toHaveBeenCalledTimes(2);
+      expect((H.state.row as { handles: unknown[] }).handles).toHaveLength(2);
       h.stop();
       await vi.advanceTimersByTimeAsync(50_000);
-      expect(H.writeOperatorState).toHaveBeenCalledTimes(2); // stopped — no further writes
+      expect(H.updateOperatorState).toHaveBeenCalledTimes(2); // stopped — no further writes
     } finally {
       vi.useRealTimers();
     }
@@ -109,7 +129,7 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
       const h = startBootedHandlesPgPublisher({ intervalMs: 10_000, ownsSubstrate: false });
       await vi.runOnlyPendingTimersAsync();
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(H.writeOperatorState).not.toHaveBeenCalled();
+      expect(H.updateOperatorState).not.toHaveBeenCalled();
       h.stop();
     } finally {
       vi.useRealTimers();
@@ -120,10 +140,10 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      H.writeOperatorState.mockRejectedValueOnce(new Error('pg hiccup'));
+      H.updateOperatorState.mockRejectedValueOnce(new Error('pg hiccup'));
       const h = startBootedHandlesPgPublisher({ intervalMs: 1_000, ownsSubstrate: true });
       await expect(vi.advanceTimersByTimeAsync(3_000)).resolves.not.toThrow();
-      expect(H.writeOperatorState.mock.calls.length).toBeGreaterThan(1);
+      expect(H.updateOperatorState.mock.calls.length).toBeGreaterThan(1);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('initial publish failed'));
       h.stop();
     } finally {
@@ -136,7 +156,7 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      H.writeOperatorState.mockRejectedValue(new Error('pg unavailable'));
+      H.updateOperatorState.mockRejectedValue(new Error('pg unavailable'));
       const h = startBootedHandlesPgPublisher({ intervalMs: 1_000, ownsSubstrate: true });
 
       await vi.advanceTimersByTimeAsync(1_000);
@@ -146,7 +166,7 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
         running: false,
       });
 
-      H.writeOperatorState.mockResolvedValue(undefined);
+      H.updateOperatorState.mockImplementation(H.applyUpdateOperatorState);
       await vi.advanceTimersByTimeAsync(1_000);
       expect(getManaged('booted-handles-pg-publish')).toMatchObject({
         fires: 2,
@@ -168,9 +188,10 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
     H.state.relocated = [{ workspaceId: 'ws1', harnessSlug: 'relocated' }];
 
     const h = startBootedHandlesPgPublisher({ ownsSubstrate: true, now: () => 5_000 });
-    expect(H.writeOperatorState).toHaveBeenLastCalledWith('substrate_booted_handles_status', {
+    expect(H.state.row).toEqual({
       handles: H.state.booted,
       sentAt: 5_000,
+      lastKnownAnnounceDevices: [],
       healthInputs: {
         replicationLiveness: [],
         ownLogForks: [],
@@ -183,6 +204,67 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
       },
     });
     h.stop();
+  });
+
+  it('D-013 preserves a legacy serving identity when the first fresh post-restart snapshot omits that pot', async () => {
+    vi.useFakeTimers();
+    try {
+      const identity = {
+        devicePubkeyBase64: 'XPAsvso1-aviynw-tower',
+        githubUserId: 1567022,
+        githubLogin: 'aviynw',
+        keychainId: '1567022:tower',
+      };
+      // Legacy row: it predates lastKnownAnnounceDevices but still contains the
+      // decisive fact. The pre-D-013 whole-row write erased it here.
+      H.state.row = {
+        handles: [{ workspaceId: 'ws1', harnessSlug: 'papercusp', announceIdentity: identity }],
+        sentAt: 1_000,
+      };
+      H.state.booted = []; // exact owner-restart window: fresh, but not booted yet
+
+      const h = startBootedHandlesPgPublisher({
+        intervalMs: 10_000,
+        ownsSubstrate: true,
+        now: () => 2_000,
+      });
+
+      expect(H.state.row).toMatchObject({
+        handles: [],
+        sentAt: 2_000,
+        lastKnownAnnounceDevices: [
+          {
+            workspaceId: 'ws1',
+            harnessSlug: 'papercusp',
+            devicePubkeyBase64: identity.devicePubkeyBase64,
+            advertisedAt: 1_000,
+          },
+        ],
+      });
+      await expect(
+        getPgLastKnownHarnessAnnounceDevice('ws1', 'papercusp', {
+          now: () => 40_000,
+          maxAgeMs: 30_000,
+        }),
+      ).resolves.toEqual({
+        devicePubkeyBase64: identity.devicePubkeyBase64,
+        advertisedAt: 1_000,
+        stale: true,
+      });
+      h.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the gh-fallback discriminator honest for a pot that was never advertised', async () => {
+    H.state.row = {
+      handles: [],
+      sentAt: 2_000,
+      lastKnownAnnounceDevices: [],
+    };
+
+    await expect(getPgLastKnownHarnessAnnounceDevice('ws1', 'never-seen', { now: () => 2_500 })).resolves.toBeNull();
   });
 });
 
@@ -237,15 +319,12 @@ describe('getPgRelocatedHarnessEndpoint (cross-process dial discovery)', () => {
       },
     };
 
-    await expect(
-      getPgRelocatedHarnessEndpoint('ws1', 'relocated', { now: () => 1_500 }),
-    ).resolves.toEqual({ socketPath: '/tmp/substrate-owner.sock', advertisedAt: 1_000 });
-    await expect(
-      getPgRelocatedHarnessEndpoint('ws1', 'in-process', { now: () => 1_500 }),
-    ).resolves.toBeNull();
-    await expect(
-      getPgRelocatedHarnessEndpoint('other-ws', 'relocated', { now: () => 1_500 }),
-    ).resolves.toBeNull();
+    await expect(getPgRelocatedHarnessEndpoint('ws1', 'relocated', { now: () => 1_500 })).resolves.toEqual({
+      socketPath: '/tmp/substrate-owner.sock',
+      advertisedAt: 1_000,
+    });
+    await expect(getPgRelocatedHarnessEndpoint('ws1', 'in-process', { now: () => 1_500 })).resolves.toBeNull();
+    await expect(getPgRelocatedHarnessEndpoint('other-ws', 'relocated', { now: () => 1_500 })).resolves.toBeNull();
 
     await expect(
       getPgRelocatedHarnessEndpoint('ws1', 'relocated', { now: () => 31_001, maxAgeMs: 30_000 }),
@@ -257,9 +336,7 @@ describe('getPgRelocatedHarnessEndpoint (cross-process dial discovery)', () => {
         handles: [{ workspaceId: 'ws1', harnessSlug: 'relocated' }],
       },
     };
-    await expect(
-      getPgRelocatedHarnessEndpoint('ws1', 'relocated', { now: () => 1_500 }),
-    ).resolves.toBeNull();
+    await expect(getPgRelocatedHarnessEndpoint('ws1', 'relocated', { now: () => 1_500 })).resolves.toBeNull();
   });
 });
 
@@ -296,12 +373,16 @@ describe('getPgBootedHarnessAnnounceIdentity (WI-2142873 cross-process identity)
 
     // Deliberately BOTH: scoping this reader to relocated handles would fix one
     // process split and leave the other signing undialable announcements.
-    await expect(
-      getPgBootedHarnessAnnounceIdentity('ws1', 'relocated', { now: () => 1_500 }),
-    ).resolves.toEqual({ booted: true, identity, advertisedAt: 1_000 });
-    await expect(
-      getPgBootedHarnessAnnounceIdentity('ws1', 'in-process', { now: () => 1_500 }),
-    ).resolves.toEqual({ booted: true, identity, advertisedAt: 1_000 });
+    await expect(getPgBootedHarnessAnnounceIdentity('ws1', 'relocated', { now: () => 1_500 })).resolves.toEqual({
+      booted: true,
+      identity,
+      advertisedAt: 1_000,
+    });
+    await expect(getPgBootedHarnessAnnounceIdentity('ws1', 'in-process', { now: () => 1_500 })).resolves.toEqual({
+      booted: true,
+      identity,
+      advertisedAt: 1_000,
+    });
   });
 
   it('reports booted-with-NO-identity distinctly from not-booted — the caller must refuse on one and not the other', async () => {
@@ -313,9 +394,11 @@ describe('getPgBootedHarnessAnnounceIdentity (WI-2142873 cross-process identity)
       sentAt: 1_000,
     };
 
-    await expect(
-      getPgBootedHarnessAnnounceIdentity('ws1', 'legacy-owner', { now: () => 1_500 }),
-    ).resolves.toEqual({ booted: true, identity: null, advertisedAt: 1_000 });
+    await expect(getPgBootedHarnessAnnounceIdentity('ws1', 'legacy-owner', { now: () => 1_500 })).resolves.toEqual({
+      booted: true,
+      identity: null,
+      advertisedAt: 1_000,
+    });
 
     // Absent from the list = the owner reports nothing serving this pot.
     await expect(
@@ -335,9 +418,7 @@ describe('getPgBootedHarnessAnnounceIdentity (WI-2142873 cross-process identity)
     ).resolves.toBeNull();
 
     H.state.row = null;
-    await expect(
-      getPgBootedHarnessAnnounceIdentity('ws1', 'a', { now: () => 1_500 }),
-    ).resolves.toBeNull();
+    await expect(getPgBootedHarnessAnnounceIdentity('ws1', 'a', { now: () => 1_500 })).resolves.toBeNull();
   });
 
   it('treats an identity with no device pubkey as no identity', async () => {
@@ -352,9 +433,11 @@ describe('getPgBootedHarnessAnnounceIdentity (WI-2142873 cross-process identity)
       sentAt: 1_000,
     };
 
-    await expect(
-      getPgBootedHarnessAnnounceIdentity('ws1', 'half', { now: () => 1_500 }),
-    ).resolves.toEqual({ booted: true, identity: null, advertisedAt: 1_000 });
+    await expect(getPgBootedHarnessAnnounceIdentity('ws1', 'half', { now: () => 1_500 })).resolves.toEqual({
+      booted: true,
+      identity: null,
+      advertisedAt: 1_000,
+    });
   });
 
   it('scopes by workspace — another tenant’s handle is not this pot’s identity', async () => {
@@ -363,8 +446,10 @@ describe('getPgBootedHarnessAnnounceIdentity (WI-2142873 cross-process identity)
       sentAt: 1_000,
     };
 
-    await expect(
-      getPgBootedHarnessAnnounceIdentity('ws1', 'a', { now: () => 1_500 }),
-    ).resolves.toEqual({ booted: false, identity: null, advertisedAt: 1_000 });
+    await expect(getPgBootedHarnessAnnounceIdentity('ws1', 'a', { now: () => 1_500 })).resolves.toEqual({
+      booted: false,
+      identity: null,
+      advertisedAt: 1_000,
+    });
   });
 });

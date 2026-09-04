@@ -138,27 +138,30 @@ describe('formatInvalidArgs — invalid_union branch selection', () => {
   });
 
   it('counts unrecognized_keys at the depth of the key they identify', () => {
-    const message = formatInvalidArgs([
-      {
-        message: 'Invalid input',
-        code: 'invalid_union',
-        path: [],
-        errors: [
-          [
-            { message: 'Required', path: ['harness'] },
-            { message: 'Invalid input: expected true', path: ['shareable'] },
+    const message = formatInvalidArgs(
+      [
+        {
+          message: 'Invalid input',
+          code: 'invalid_union',
+          path: [],
+          errors: [
+            [
+              { message: 'Required', path: ['harness'] },
+              { message: 'Invalid input: expected true', path: ['shareable'] },
+            ],
+            [
+              {
+                message: 'Unrecognized key: "ttlDays"',
+                code: 'unrecognized_keys',
+                keys: ['ttlDays'],
+                path: [],
+              },
+            ],
           ],
-          [
-            {
-              message: 'Unrecognized key: "ttlDays"',
-              code: 'unrecognized_keys',
-              keys: ['ttlDays'],
-              path: [],
-            },
-          ],
-        ],
-      },
-    ]);
+        },
+      ],
+      { ttlDays: 7 },
+    );
 
     expect(message).toBe('Unrecognized key: "ttlDays"');
     expect(message).not.toContain('harness');
