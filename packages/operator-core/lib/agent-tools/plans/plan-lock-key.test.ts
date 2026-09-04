@@ -1,12 +1,55 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const dbMocks = vi.hoisted(() => {
+  type SnapshotRow = {
+    pid: number | string;
+    application_name: string | null;
+    state: string | null;
+    query_start: string | null;
+    wait_event_type: string | null;
+    wait_event: string | null;
+  };
+
+  const state: {
+    rows: SnapshotRow[];
+    calls: Array<{ text: string; values: unknown[] }>;
+    fail: boolean;
+  } = { rows: [], calls: [], fail: false };
+
+  const end = vi.fn(async () => {});
+  const sql = vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => {
+    state.calls.push({
+      text: strings.raw.join(' ? ').replace(/\s+/g, ' ').trim(),
+      values,
+    });
+    return state.fail
+      ? Promise.reject(new Error('snapshot query unavailable'))
+      : Promise.resolve(state.rows);
+  });
+  const client = { sql: Object.assign(sql, { end }) };
+
+  return {
+    state,
+    end,
+    createDedicatedOrgPg: vi.fn(() => client),
+    withDbCallDeadline: vi.fn((promise: Promise<unknown>) => promise),
+  };
+});
+
+vi.mock('@papercusp/db-org', () => ({
+  createDedicatedOrgPg: dbMocks.createDedicatedOrgPg,
+  withDbCallDeadline: dbMocks.withDbCallDeadline,
+}));
+
 import {
   PLAN_ADVISORY_LOCK_BUDGET_MS,
   PLAN_ADVISORY_LOCK_NAMESPACE,
   PLAN_LOCK_TIMEOUT_CODE,
   acquirePlanAdvisoryLock,
   planAdvisoryLockKey,
+  readPlanAdvisoryLockSnapshot,
 } from './plan-lock-key';
 
 interface Statement {
@@ -101,6 +144,77 @@ describe('acquirePlanAdvisoryLock (WI-2143102)', () => {
     });
     // And it must not try to keep talking to an aborted transaction.
     expect(statements.filter((s) => s.text.includes('set_config'))).toHaveLength(1);
+  });
+});
+
+describe('readPlanAdvisoryLockSnapshot (EI-22341502784159350)', () => {
+  beforeEach(() => {
+    dbMocks.state.rows = [];
+    dbMocks.state.calls.length = 0;
+    dbMocks.state.fail = false;
+    dbMocks.createDedicatedOrgPg.mockClear();
+    dbMocks.withDbCallDeadline.mockClear();
+    dbMocks.end.mockClear();
+  });
+
+  it('reads granted holders through a fresh bounded client and normalizes backend metadata', async () => {
+    dbMocks.state.rows = [
+      {
+        pid: '42',
+        application_name: 'papercusp-staging',
+        state: 'active',
+        query_start: '2026-09-04 20:00:00+00',
+        wait_event_type: null,
+        wait_event: null,
+      },
+      {
+        pid: 'not-a-pid',
+        application_name: 'discard-me',
+        state: 'idle',
+        query_start: null,
+        wait_event_type: 'Client',
+        wait_event: 'ClientRead',
+      },
+    ];
+
+    const result = await readPlanAdvisoryLockSnapshot('ws:harness:a-plan', 17.9);
+
+    expect(result).toMatchObject({
+      lock_key: 'ws:harness:a-plan',
+      holders: [
+        {
+          pid: 42,
+          application_name: 'papercusp-staging',
+          state: 'active',
+          query_start: '2026-09-04 20:00:00+00',
+          wait_event_type: null,
+          wait_event: null,
+        },
+      ],
+    });
+    expect(Number.isNaN(Date.parse(result!.captured_at))).toBe(false);
+    expect(dbMocks.createDedicatedOrgPg).toHaveBeenCalledWith('plan-lock-snapshot', { max: 1 });
+    expect(dbMocks.withDbCallDeadline).toHaveBeenCalledWith(expect.anything(), {
+      ms: 17,
+      label: 'plans:advisory-lock-snapshot',
+    });
+    expect(dbMocks.state.calls[0]?.text).toContain('pg_locks');
+    expect(dbMocks.state.calls[0]?.text).toContain('pg_stat_activity');
+    expect(dbMocks.state.calls[0]?.text).toContain('l.objsubid = 2');
+    expect(dbMocks.state.calls[0]?.text).toContain('l.database');
+    expect(dbMocks.state.calls[0]?.values).toEqual([
+      PLAN_ADVISORY_LOCK_NAMESPACE,
+      'ws:harness:a-plan',
+    ]);
+    expect(dbMocks.end).toHaveBeenCalledWith({ timeout: 1 });
+  });
+
+  it('returns null when post-rollback diagnostics fail and still closes the disposable client', async () => {
+    dbMocks.state.fail = true;
+
+    await expect(readPlanAdvisoryLockSnapshot('ws:harness:a-plan')).resolves.toBeNull();
+
+    expect(dbMocks.end).toHaveBeenCalledWith({ timeout: 1 });
   });
 });
 

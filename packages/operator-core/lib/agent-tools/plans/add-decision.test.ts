@@ -581,6 +581,64 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
     });
   });
 
+  it('preserves safe busy metadata and the nullable holder snapshot in the item result', async () => {
+    const ctx = handlerContext();
+    const holderSnapshot = {
+      captured_at: '2026-09-04T20:00:00.000Z',
+      lock_key: 'ws-add-decision:explicit-harness:handler-plan',
+      holders: [
+        {
+          pid: 1234,
+          application_name: 'papercusp-staging',
+          state: 'active',
+          query_start: '2026-09-04 20:00:00+00',
+          wait_event_type: null,
+          wait_event: null,
+        },
+      ],
+    };
+    handlerMocks.withPlanLock.mockResolvedValueOnce({
+      kind: 'busy',
+      busy: [
+        {
+          path: 'handler-plan.md',
+          owner: 'unknown',
+          owner_label: null,
+          intent: 'another plans write is in progress',
+          expires_ts: null,
+          holder_snapshot: holderSnapshot,
+        },
+      ],
+    });
+
+    const result = await handlerBody(
+      {
+        harness: 'explicit-harness',
+        slug: 'handler-plan',
+        title: 'Busy metadata',
+        body: 'Preserve the diagnostic snapshot.',
+      },
+      ctx,
+    );
+
+    expect(result).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(result.results[0]).toEqual({
+      ok: false,
+      slug: 'handler-plan',
+      error: 'busy',
+      busy: [
+        {
+          path: 'handler-plan.md',
+          owner: 'unknown',
+          owner_label: null,
+          intent: 'another plans write is in progress',
+          expires_ts: null,
+          holder_snapshot: holderSnapshot,
+        },
+      ],
+    });
+  });
+
   it('EI-21915372335188454: neutralizes stray tool-call-lookalike markup in both title and body, without dropping the rest of the text', async () => {
     // Reproduces the reported failure shape: a client-side tool-call serializer
     // mis-closes `<parameter name="body">` (e.g. with `</body>` instead of
