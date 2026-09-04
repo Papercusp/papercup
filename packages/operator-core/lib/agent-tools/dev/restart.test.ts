@@ -175,7 +175,11 @@ const clearGitSyncCollision = () => ({
 const restartModule = await import('./restart');
 const tool = restartModule.default;
 const { RESTART_TARGETS } = restartModule;
-const { configureBgHostRestartFreshnessReaderForTests, evaluateBgHostRestartFreshness } = restartModule;
+const {
+  configureBgHostRestartFreshnessReaderForTests,
+  evaluateBgHostRestartFreshness,
+  restartVerificationHint,
+} = restartModule;
 
 type Out = { content: { text: string }[] };
 type Fence = {
@@ -1116,7 +1120,9 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       enabledVia: 'env',
       audited: true,
     });
-    expect(b.verifyWith).toMatch(/MainPID/);
+    expect(b.verifyWith).toMatch(/dev:listening_ports \{ port: 3170 \}/);
+    expect(b.verifyWith).toMatch(/ownerVisible:true/);
+    expect(b.verifyWith).toMatch(/MainPID=0.*ActiveState=activating|ActiveState=activating.*MainPID=0/);
     expect(b).not.toHaveProperty('phantomCoalesceBroken');
     expect(spawnM).toHaveBeenCalledWith(
       'sh',
@@ -1535,6 +1541,16 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
     process.env.PAPERCUSP_ALLOW_DEV_RESTART = '1';
   });
 
+  it('uses bounded startup polling for the portless bg-host and labels MainPID=0/activating as transient', () => {
+    const hint = restartVerificationHint('bg-host', 'papercusp-bg-host.service', 7777);
+    expect(hint).toContain('Bounded poll (up to ~30s)');
+    expect(hint).toMatch(/MainPID.*nonzero/);
+    expect(hint).toMatch(/ActiveState/);
+    expect(hint).toContain('MainPID=0 with ActiveState=activating means still starting, NOT failed');
+    expect(hint).toContain('differs from 7777');
+    expect(hint).not.toContain('dev:listening_ports');
+  });
+
   it('claims the bg-host cooldown marker with the WIDENED ~13min TTL (780s), not the generic 120s one', async () => {
     acquireM.mockResolvedValue({
       ok: true,
@@ -1628,6 +1644,19 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
 describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:dev (unaffected by the debounce)', () => {
   beforeEach(() => {
     process.env.PAPERCUSP_ALLOW_DEV_RESTART = '1';
+  });
+
+  it('uses the :3070 listener as the restart readiness contract instead of a one-shot MainPID read', async () => {
+    guardM.mockImplementation(runGuard(fenceOk(3)) as never);
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9999 });
+
+    const b = body(await call({ confirm: true }));
+
+    expect(b).toMatchObject({ ok: true, target: 'dev', restarted: true, restartedFromPid: 4242 });
+    expect(b.verifyWith).toMatch(/dev:listening_ports \{ port: 3070 \}/);
+    expect(b.verifyWith).toMatch(/ownerVisible:true/);
+    expect(b.verifyWith).toMatch(/different from 4242/);
+    expect(b.verifyWith).not.toMatch(/systemctl --user show/);
   });
 
   it('never touches the cooldown machinery for dev', async () => {

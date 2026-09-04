@@ -312,6 +312,59 @@ const BG_HOST_COOLDOWN_SEC = 13 * 60; // 780s
 type RestartTarget = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar' | 'mcp-proxy' | 'desktop-dev';
 
 /**
+ * Fixed listener ports for restart targets whose useful readiness contract is
+ * "something is serving", not "systemd has finished assigning MainPID".
+ *
+ * Keep this local to the restart tool rather than teaching the systemd probe
+ * about application ports: the probe answers service-manager state, while this
+ * guidance points callers at the instrument that answers the question they
+ * actually have after a restart.
+ */
+const RESTART_TARGET_PORTS: Partial<Record<RestartTarget, number>> = {
+  dev: 3070,
+  staging: 3170,
+  'embed-sidecar': 3384,
+  'mcp-proxy': 9071,
+};
+
+/**
+ * Return verification guidance that matches the target's real readiness
+ * contract. In particular, MainPID=0 while ActiveState=activating is a valid
+ * transient startup state; recommending a one-shot MainPID comparison turns
+ * that bookkeeping lag into a false failed-restart report.
+ */
+export function restartVerificationHint(target: RestartTarget, unit: string, beforePid: number | null): string {
+  const port = RESTART_TARGET_PORTS[target];
+  if (port !== undefined) {
+    return (
+      `dev:listening_ports { port: ${port} } (expect ownerVisible:true and a listener pid${
+        beforePid ? ` different from ${beforePid}` : ''
+      }; compare pid/pids to restartedFromPid. A listener is authoritative while systemd starts — MainPID=0 with ` +
+      `ActiveState=activating means still starting, NOT failed; no listener row means unbound.)`
+    );
+  }
+
+  if (target === 'bg-host') {
+    return (
+      `Bounded poll (up to ~30s): \`systemctl --user show ${unit} -p MainPID --value\` until MainPID is nonzero${
+        beforePid ? ` and differs from ${beforePid}` : ''
+      }, while checking \`systemctl --user show ${unit} -p ActiveState --value\`. ` +
+      `MainPID=0 with ActiveState=activating means still starting, NOT failed — do not trigger a second restart ` +
+      `while this startup poll is in progress.`
+    );
+  }
+
+  // Keep a safe, explicit fallback for a future portless target added to the
+  // union before its dedicated readiness contract is registered.
+  return (
+    `Bounded poll (up to ~30s): \`systemctl --user show ${unit} -p MainPID --value\` and ` +
+    `\`systemctl --user show ${unit} -p ActiveState --value\` until MainPID is nonzero${
+      beforePid ? ` and differs from ${beforePid}` : ''
+    }; MainPID=0 with ActiveState=activating means still starting, NOT failed.`
+  );
+}
+
+/**
  * Exported for the registry-parity regression test. A target added here is
  * not operable until its resource (and optional cooldown marker) is seeded by
  * a locks-package migration — WI-4780 was the production miss this prevents.
@@ -1316,9 +1369,7 @@ export default defineTool({
             ? `GET ${gatewayHealthUrl()} after a NEW MainPID (observed ${gatewayReadiness.observedPid}; bounded wait ~${
                 GATEWAY_RESTART_PID_WAIT_MS / 1000
               }s)`
-            : `systemctl --user show ${cfg.unit} -p MainPID --value  (expect a NEW pid${
-                before.mainPid ? ` ≠ ${before.mainPid}` : ''
-              } within ~3s)`,
+            : restartVerificationHint(target, cfg.unit, before.mainPid ?? null),
           note: gatewayReadiness
             ? `Gateway restart completed: MainPID changed to ${gatewayReadiness.observedPid}; ${gatewayHealthUrl()} responded ${
                 gatewayReadiness.health?.detail ?? 'successfully'
