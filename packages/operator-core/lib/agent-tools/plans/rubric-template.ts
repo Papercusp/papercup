@@ -745,6 +745,17 @@ export function isUnknownRatingEquivalent(value: string): boolean {
   return (UNKNOWN_RATING_EQUIVALENTS as readonly string[]).includes(normalizeRatingVocabularyToken(value));
 }
 
+/** Ratings that can never satisfy a mandatory outcome BAR. The BAR author may
+ * choose a domain-specific positive label, but cannot redefine a known failure,
+ * no-verdict, or waiver label as success and thereby make the ship floor vacuous. */
+export function isForbiddenMandatoryPassRating(value: string): boolean {
+  const token = normalizeRatingVocabularyToken(value);
+  return (
+    isUnknownRatingEquivalent(token) ||
+    ['broken', 'degraded', 'fail', 'failed', 'failing', 'error', 'waived'].includes(token)
+  );
+}
+
 /**
  * The WRITE-TIME acceptance-rubric profile.
  *
@@ -805,6 +816,38 @@ export const rubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.superR
         message:
           `acceptance BAR '${criterion.barKey ?? criterion.key}' requires its server-derived barHash; ` +
           'write through rubrics:propose/amend rather than hand-authoring partial template_data',
+      });
+    }
+    if (criterion.role === 'outcome' && criterion.mandatory === true) {
+      const passRatings = criterion.passRatings ?? [];
+      if (passRatings.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['criteria', index, 'passRatings'],
+          message:
+            `mandatory outcome BAR '${criterion.barKey ?? criterion.key}' requires non-empty passRatings; ` +
+            'the ship floor cannot infer a waivable default',
+        });
+      }
+      const scale = new Set(d.ratingScale.map(normalizeRatingVocabularyToken));
+      passRatings.forEach((rating, ratingIndex) => {
+        const token = normalizeRatingVocabularyToken(rating);
+        if (!scale.has(token)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['criteria', index, 'passRatings', ratingIndex],
+            message: `mandatory outcome pass rating '${rating}' is not present in the rubric ratingScale`,
+          });
+        }
+        if (isForbiddenMandatoryPassRating(rating)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['criteria', index, 'passRatings', ratingIndex],
+            message:
+              `mandatory outcome pass rating '${rating}' is failure/no-verdict/waiver shaped and cannot ` +
+              'satisfy the non-waivable acceptance floor',
+          });
+        }
       });
     }
   });

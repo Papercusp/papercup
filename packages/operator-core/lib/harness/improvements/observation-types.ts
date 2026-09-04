@@ -1,3 +1,5 @@
+import { continuityProbeShapeSchema, type ContinuityProbe } from '../../continuity-probes';
+
 /**
  * observation-types.ts — the canonical structured-observation v2 shape
  * (rubric-driven-observations-2026-06-20 P-001 / D-003).
@@ -321,6 +323,7 @@ export interface StructuredObservation {
  */
 export type ScorecardCheckRun =
   | ScorecardTestsCheckRun
+  | ScorecardProbeCheckRun
   | ScorecardCargoCheckRun
   | ScorecardCoverageCheckRun
   | ScorecardRequirementsCheckRun;
@@ -339,6 +342,30 @@ export interface ScorecardTestsCheckRun {
   measuredAt: string;
   /** Bounded failing-test names ("file: test"), only on a 'fail' verdict. */
   failures?: string[];
+}
+
+/**
+ * One criterion's grading-time ContinuityProbe result. Probe checks are the
+ * criterion-level bridge to the existing typed, read-only probe infrastructure:
+ * the rubric stores the concrete probe, while scorecards:emit stores the
+ * platform-executed predicate result. Only fresh/stale runs are persisted;
+ * unknown/error results refuse the emit rather than becoming an unjudgeable
+ * scorecard.
+ */
+export interface ScorecardProbeCheckRun {
+  kind: 'probe';
+  /** The schema-versioned probe that was executed. */
+  probe: ContinuityProbe;
+  /** A fresh predicate match is pass; a stale predicate match is fail. */
+  verdict: 'pass' | 'fail';
+  /** The ContinuityProbe status before mapping to the scorecard verdict. */
+  status: 'fresh' | 'stale';
+  /** Persisted probe runs are always executed; unexecuted probes refuse emit. */
+  executed: true;
+  /** Scalar observation returned by the probe, when the predicate exposed one. */
+  observed?: string | number | boolean | null;
+  /** ISO instant the scorecard recorded this live result. */
+  measuredAt: string;
 }
 
 /**
@@ -1180,6 +1207,42 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         ? r.files.filter((x): x is string => typeof x === 'string' && x.trim() !== '')
         : [];
       if (
+        r.kind === 'probe' &&
+        (r.verdict === 'pass' || r.verdict === 'fail') &&
+        (r.status === 'fresh' || r.status === 'stale') &&
+        r.executed === true &&
+        typeof r.measuredAt === 'string' &&
+        r.measuredAt.trim() !== ''
+      ) {
+        // Historical cards must remain readable even after a projected tool's
+        // live contract changes, so the READ path checks only the durable probe
+        // shape (not its current registry revision). A malformed shape is
+        // discarded rather than silently surfacing as executable evidence.
+        const probe = continuityProbeShapeSchema.safeParse(r.probe);
+        if (!probe.success) continue;
+        // `observed` is intentionally scalar: runContinuityProbeBatch redacts
+        // and bounds it before persistence. Drop malformed richer values rather
+        // than letting arbitrary payloads ride through the observation reader.
+        const observed =
+          r.observed === null ||
+          typeof r.observed === 'string' ||
+          typeof r.observed === 'number' ||
+          typeof r.observed === 'boolean'
+            ? r.observed
+            : undefined;
+        const verdictMatchesStatus =
+          (r.status === 'fresh' && r.verdict === 'pass') || (r.status === 'stale' && r.verdict === 'fail');
+        if (!verdictMatchesStatus) continue;
+        runs[key] = {
+          kind: 'probe',
+          probe: probe.data,
+          verdict: r.verdict,
+          status: r.status,
+          executed: true,
+          ...(observed !== undefined ? { observed } : {}),
+          measuredAt: r.measuredAt,
+        };
+      } else if (
         r.kind === 'tests' &&
         files.length > 0 &&
         (r.verdict === 'pass' || r.verdict === 'fail') &&
