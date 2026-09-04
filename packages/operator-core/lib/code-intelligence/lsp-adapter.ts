@@ -878,6 +878,127 @@ function nearestTsProjectRoot(file: string, fallbackRoot: string): string | null
   return null;
 }
 
+/** The configured project retaining `file`, or a conservative inferred-project key. */
+function typescriptProjectKey(file: string, fallbackRoot: string): string {
+  return nearestTsProjectRoot(file, fallbackRoot) ?? dirname(file);
+}
+
+function projectKeyForOpenUri(
+  client: LspClient,
+  uri: string,
+  stamp: { typescriptProjectKey?: string },
+): string | null {
+  if (stamp.typescriptProjectKey) return stamp.typescriptProjectKey;
+  try {
+    return typescriptProjectKey(fileURLToPath(uri), client.rootPath);
+  } catch {
+    // A non-file URI cannot have come from ensureOpen, but pinned module state
+    // predates this field. Keep it rather than closing an unclassified document.
+    return null;
+  }
+}
+
+/**
+ * Close documents that keep any TypeScript project other than `keepKey` alive.
+ *
+ * TypeScript's ProjectService removes orphan configured projects when the next
+ * open-file update runs. The adapter previously sent no didClose at all during
+ * normal reads, so that cleanup could never collect an old project. This sends
+ * the missing half of the protocol before the new project's didOpen.
+ */
+function closeTypeScriptProjectsExcept(client: LspClient, keepKey: string): number {
+  if (client.language !== 'typescript') return 0;
+
+  const open = [...client.openDocs.entries()].map(([uri, stamp]) => ({
+    uri,
+    projectKey: projectKeyForOpenUri(client, uri, stamp),
+  }));
+  const projectKeys = new Set(
+    open
+      .map((entry) => entry.projectKey)
+      .filter((projectKey): projectKey is string => projectKey !== null),
+  );
+  if (
+    (projectKeys.has(keepKey) && projectKeys.size <= MAX_FOREGROUND_TYPESCRIPT_PROJECTS) ||
+    (!projectKeys.has(keepKey) && projectKeys.size < MAX_FOREGROUND_TYPESCRIPT_PROJECTS)
+  ) {
+    return 0;
+  }
+
+  // Keep the requested project first, then the most recently opened projects
+  // if the budget is ever raised from one. Map insertion order gives us the
+  // stable LRU tie-break without another mutable index.
+  const retained = new Set<string>([keepKey]);
+  for (const entry of [...open].reverse()) {
+    if (retained.size >= MAX_FOREGROUND_TYPESCRIPT_PROJECTS) break;
+    if (entry.projectKey) retained.add(entry.projectKey);
+  }
+  const toClose = open.filter(
+    (entry) => entry.projectKey !== null && !retained.has(entry.projectKey),
+  );
+  if (toClose.length === 0) return 0;
+
+  // Closing projects invalidates every cached readiness claim just as opening
+  // one does. Mark busy before the first notification so no concurrent reader
+  // can reuse the pre-transition idle observation.
+  invalidateClientReadiness(client);
+  for (const { uri } of toClose) {
+    client.connection.sendNotification('textDocument/didClose', {
+      textDocument: { uri },
+    });
+    client.openDocs.delete(uri);
+    client.diagnostics.delete(uri);
+  }
+  return toClose.length;
+}
+
+function typeScriptProjectLeaseState(client: LspClient): NonNullable<LspClient['typescriptProjectLease']> {
+  return (client.typescriptProjectLease ??= {
+    activeKey: null,
+    users: 0,
+    waiters: new Set(),
+  });
+}
+
+/**
+ * Acquire the foreground-project lease for one LSP operation.
+ *
+ * Queries inside the same project remain concurrent. A cross-project query
+ * waits for the previous project's in-flight operations, closes the documents
+ * retaining that project, and only then proceeds. That makes the one-project
+ * bound safe under the saturation runner's Promise.all traffic: eviction never
+ * closes a document beneath a request that is still using it.
+ */
+export async function acquireLspProjectLease(
+  client: LspClient,
+  file: string,
+): Promise<() => void> {
+  if (client.language !== 'typescript') return () => undefined;
+
+  const key = typescriptProjectKey(file, client.rootPath);
+  const lease = typeScriptProjectLeaseState(client);
+  while (lease.activeKey !== null && lease.activeKey !== key) {
+    await new Promise<void>((resolve) => lease.waiters.add(resolve));
+  }
+
+  if (lease.activeKey === null) lease.activeKey = key;
+  lease.users += 1;
+  closeTypeScriptProjectsExcept(client, key);
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    lease.users = Math.max(0, lease.users - 1);
+    if (lease.users !== 0) return;
+
+    lease.activeKey = null;
+    const waiters = [...lease.waiters];
+    lease.waiters.clear();
+    for (const wake of waiters) wake();
+  };
+}
+
 /**
  * Why an empty symbol search is never absence.
  *
@@ -972,6 +1093,7 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
     rootUri: pathToFileURL(rootPath).href,
     rootPath,
     openDocs: new Map(),
+    typescriptProjectLease: { activeKey: null, users: 0, waiters: new Set() },
     health: 'unknown',
     lastError: null,
     startedAt: Date.now(),
@@ -998,8 +1120,9 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
   // instead of sleeping a magic number.
   connection.onRequest('window/workDoneProgress/create', (params: { token: string | number }) => {
     client.pendingProgress.add(params.token);
-    // The server is loading again: the idle period is broken, not merely unread.
-    markBusy(client);
+    // The server is loading again: the idle period and any cached per-intent
+    // proof are broken, not merely unread.
+    invalidateClientReadiness(client);
     return null;
   });
   connection.onNotification(
@@ -1157,6 +1280,17 @@ async function getClient(language: LspLanguage, rootPath: string): Promise<LspCl
   return pending;
 }
 
+/** Start/reuse a client and hold its foreground project for one operation. */
+async function getLeasedClient(
+  language: LspLanguage,
+  rootPath: string,
+  file: string,
+): Promise<{ client: LspClient; release: () => void }> {
+  const client = await getClient(language, rootPath);
+  const release = await acquireLspProjectLease(client, file);
+  return { client, release };
+}
+
 type IntentReadinessPreparation = 'certified' | 'answerable' | 'canary' | 'timeout';
 
 /**
@@ -1278,6 +1412,15 @@ function markIdle(client: LspClient): number {
 /** Record that the server is loading again, breaking the idle period. */
 function markBusy(client: LspClient): void {
   (client as LspClient & { idleSince?: number | null }).idleSince = null;
+}
+
+/** A project/document transition invalidates every readiness claim on the client. */
+function invalidateClientReadiness(client: LspClient): void {
+  markBusy(client);
+  client.quiescent = null;
+  readinessProofs(client).clear();
+  canaryReadiness(client).clear();
+  unprovenReadiness(client).clear();
 }
 
 /** Pinned module state may contain a pre-WI-41090 client until host restart. */
@@ -1484,6 +1627,7 @@ export function healthForAnswer(
 export async function ensureOpen(client: LspClient, absPath: string): Promise<string> {
   const uri = pathToFileURL(absPath).href;
   const seen = client.openDocs.get(uri);
+  const tsProjectKey = client.language === 'typescript' ? typescriptProjectKey(absPath, client.rootPath) : undefined;
 
   let stamp: { mtimeMs: number; size: number } | null = null;
   try {
@@ -1517,7 +1661,7 @@ export async function ensureOpen(client: LspClient, absPath: string): Promise<st
   // progress boundary and pays the full 5-second settle window — measured as
   // [4844, 1, 2, 1, 1] in WI-2142941. An unchanged already-open document takes
   // the early return above and keeps the genuine hot-path observation.
-  markBusy(client);
+  invalidateClientReadiness(client);
   client.connection.sendNotification('textDocument/didOpen', {
     textDocument: {
       uri,
@@ -1528,7 +1672,10 @@ export async function ensureOpen(client: LspClient, absPath: string): Promise<st
   });
   // Stamp from AFTER the read where the stat failed, so a transient stat error
   // cannot pin a document as permanently fresh.
-  client.openDocs.set(uri, stamp ?? { mtimeMs: -1, size: -1 });
+  client.openDocs.set(uri, {
+    ...(stamp ?? { mtimeMs: -1, size: -1 }),
+    ...(tsProjectKey ? { typescriptProjectKey: tsProjectKey } : {}),
+  });
   return uri;
 }
 
@@ -1617,8 +1764,11 @@ export async function lspQuery(
   const project = resolveProjectRoot(language, query.file, query.rootPath);
   if (project.error) return fail(project.error, 'unhealthy');
 
+  let releaseProjectLease: (() => void) | null = null;
   try {
-    const client = await getClient(language, project.root);
+    const leased = await getLeasedClient(language, project.root, query.file);
+    const client = leased.client;
+    releaseProjectLease = leased.release;
     const uri = await ensureOpen(client, query.file);
 
     // Never answer from a half-loaded project — that returns a plausible WRONG
@@ -1658,16 +1808,8 @@ export async function lspQuery(
 
     const raw = await client.connection.sendRequest(method, params);
     const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
-    const sites = list
-      .map((r) => toSite(r, query.rootPath))
-      .filter((s): s is SymbolSite => s !== null);
-    certifyCanaryAnswer(
-      client,
-      readinessIntent,
-      readiness,
-      sites.length,
-      JSON.stringify(sites),
-    );
+    const sites = list.map((r) => toSite(r, query.rootPath)).filter((s): s is SymbolSite => s !== null);
+    certifyCanaryAnswer(client, readinessIntent, readiness, sites.length, JSON.stringify(sites));
 
     // WI-2142693. An empty answer is the ONLY symptom a dead language service
     // produces, so this is the one place its death can be caught — and the
@@ -1718,6 +1860,8 @@ export async function lspQuery(
     };
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
+  } finally {
+    releaseProjectLease?.();
   }
 }
 
@@ -1769,8 +1913,11 @@ export async function lspDiagnostics(query: {
   const project = resolveProjectRoot(language, query.file, query.rootPath);
   if (project.error) return fail(project.error, 'unhealthy');
 
+  let releaseProjectLease: (() => void) | null = null;
   try {
-    const client = await getClient(language, project.root);
+    const leased = await getLeasedClient(language, project.root, query.file);
+    const client = leased.client;
+    releaseProjectLease = leased.release;
     const uri = await ensureOpen(client, query.file);
     const readiness = await prepareIntentReadiness(client, intent);
     if (readiness === 'timeout') {
@@ -1798,9 +1945,7 @@ export async function lspDiagnostics(query: {
       );
     }
 
-    const rel = query.file.startsWith(query.rootPath + '/')
-      ? query.file.slice(query.rootPath.length + 1)
-      : query.file;
+    const rel = query.file.startsWith(query.rootPath + '/') ? query.file.slice(query.rootPath.length + 1) : query.file;
     const sites: SymbolSite[] = entry.diags.map((d) => ({
       path: rel,
       line1: toOneIndexed('lsp-adapter', d.range?.start?.line),
@@ -1852,6 +1997,8 @@ export async function lspDiagnostics(query: {
     };
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
+  } finally {
+    releaseProjectLease?.();
   }
 }
 
@@ -1895,8 +2042,14 @@ export async function lspWorkspaceSymbols(query: {
   const scope = resolveSymbolSearchScope(query.language, query.anchor, query.rootPath);
   if (scope.error) return fail(scope.error, 'unknown');
 
+  let releaseProjectLease: (() => void) | null = null;
   try {
-    const client = await getClient(query.language, scope.root);
+    const client = scope.anchor
+      ? await getLeasedClient(query.language, scope.root, scope.anchor).then((leased) => {
+          releaseProjectLease = leased.release;
+          return leased.client;
+        })
+      : await getClient(query.language, scope.root);
     // Opening the anchor is what CREATES the tsserver project this search runs
     // against; for rust it merely warms a crate graph the root already implies.
     if (scope.anchor) await ensureOpen(client, scope.anchor);
@@ -1952,6 +2105,8 @@ export async function lspWorkspaceSymbols(query: {
     };
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
+  } finally {
+    releaseProjectLease?.();
   }
 }
 
@@ -1987,8 +2142,11 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
   const project = resolveProjectRoot(language, query.file, query.rootPath);
   if (project.error) return fail(project.error, 'unhealthy');
 
+  let releaseProjectLease: (() => void) | null = null;
   try {
-    const client = await getClient(language, project.root);
+    const leased = await getLeasedClient(language, project.root, query.file);
+    const client = leased.client;
+    releaseProjectLease = leased.release;
     const uri = await ensureOpen(client, query.file);
     const readiness = await prepareIntentReadiness(client, intent);
     if (readiness === 'timeout') {
@@ -2004,9 +2162,7 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
       textDocument: { uri },
       position: { line: query.line1 - 1, character: query.character },
       newName: query.newName,
-    })) as
-      | { changes?: Record<string, Array<{ range?: { start?: { line?: number } }; newText?: string }>> }
-      | null;
+    })) as { changes?: Record<string, Array<{ range?: { start?: { line?: number } }; newText?: string }>> } | null;
 
     const sites: SymbolSite[] = [];
     for (const [editUri, edits] of Object.entries(raw?.changes ?? {})) {
@@ -2038,6 +2194,8 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
     };
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
+  } finally {
+    releaseProjectLease?.();
   }
 }
 
@@ -2088,8 +2246,11 @@ export async function lspRenameWorkspaceEdit(
   const project = resolveProjectRoot(language, query.file, query.rootPath);
   if (project.error) return { ok: false, error: project.error, health: 'unhealthy' };
 
+  let releaseProjectLease: (() => void) | null = null;
   try {
-    const client = await getClient(language, project.root);
+    const leased = await getLeasedClient(language, project.root, query.file);
+    const client = leased.client;
+    releaseProjectLease = leased.release;
     const uri = await ensureOpen(client, query.file);
     const readiness = await prepareIntentReadiness(client, 'rename-preview');
     // `answerable` is accepted here to hold this gate EXACTLY where it stood
@@ -2145,6 +2306,8 @@ export async function lspRenameWorkspaceEdit(
     };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err), health: 'unhealthy' };
+  } finally {
+    releaseProjectLease?.();
   }
 }
 

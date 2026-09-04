@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  acquireLspProjectLease,
   canaryReadinessIsStable,
   certifyCanaryAnswer,
   ensureOpen,
@@ -421,6 +422,122 @@ describe('ensureOpen — disk freshness and readiness invalidation', () => {
 
     expect(again).toBe(uri);
     expect(sent).toEqual([]);
+  });
+});
+
+describe('WI-2142895 — one foreground TypeScript project per client', () => {
+  type Sent = { method: string; params: { textDocument: { uri: string } } };
+
+  let root: string;
+  let projectA: string;
+  let projectB: string;
+  let fileA1: string;
+  let fileA2: string;
+  let fileB: string;
+  let sent: Sent[];
+  let client: Parameters<typeof acquireLspProjectLease>[0];
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'wi-2142895-project-lease-'));
+    projectA = join(root, 'a');
+    projectB = join(root, 'b');
+    await Promise.all([mkdir(projectA), mkdir(projectB)]);
+    await Promise.all([
+      writeFile(join(projectA, 'tsconfig.json'), '{}\n'),
+      writeFile(join(projectB, 'tsconfig.json'), '{}\n'),
+    ]);
+    fileA1 = join(projectA, 'one.ts');
+    fileA2 = join(projectA, 'two.ts');
+    fileB = join(projectB, 'one.ts');
+    await Promise.all([
+      writeFile(fileA1, 'export const one = 1;\n'),
+      writeFile(fileA2, 'export const two = 2;\n'),
+      writeFile(fileB, 'export const other = 3;\n'),
+    ]);
+
+    sent = [];
+    client = {
+      language: 'typescript',
+      rootPath: root,
+      openDocs: new Map(),
+      diagnostics: new Map(),
+      idleSince: Date.now() - 60_000,
+      quiescent: null,
+      certifiedReadiness: new Set(),
+      canaryReadiness: new Map(),
+      unprovenReadiness: new Set(),
+      connection: {
+        sendNotification: (method: string, params: unknown) => {
+          sent.push({ method, params } as Sent);
+        },
+      },
+    } as unknown as Parameters<typeof acquireLspProjectLease>[0];
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('closes the old project BEFORE opening a document in a different project', async () => {
+    const releaseA = await acquireLspProjectLease(client, fileA1);
+    await ensureOpen(client, fileA1);
+    releaseA();
+    sent.length = 0;
+
+    const releaseB = await acquireLspProjectLease(client, fileB);
+    await ensureOpen(client, fileB);
+    releaseB();
+
+    expect(sent.map((entry) => entry.method)).toEqual(['textDocument/didClose', 'textDocument/didOpen']);
+    expect(sent[0].params.textDocument.uri).toContain('/a/one.ts');
+    expect(sent[1].params.textDocument.uri).toContain('/b/one.ts');
+    expect(client.openDocs.size).toBe(1);
+    expect([...client.openDocs.keys()][0]).toContain('/b/one.ts');
+  });
+
+  it('keeps documents in the SAME project open, avoiding needless project reloads', async () => {
+    const releaseA1 = await acquireLspProjectLease(client, fileA1);
+    await ensureOpen(client, fileA1);
+    releaseA1();
+    sent.length = 0;
+
+    const releaseA2 = await acquireLspProjectLease(client, fileA2);
+    await ensureOpen(client, fileA2);
+    releaseA2();
+
+    expect(sent.map((entry) => entry.method)).toEqual(['textDocument/didOpen']);
+    expect(client.openDocs.size).toBe(2);
+  });
+
+  it('serializes different projects but allows concurrent users of one project', async () => {
+    const releaseA1 = await acquireLspProjectLease(client, fileA1);
+    const releaseA2 = await acquireLspProjectLease(client, fileA2);
+
+    let acquiredB = false;
+    const pendingB = acquireLspProjectLease(client, fileB).then((release) => {
+      acquiredB = true;
+      return release;
+    });
+    await Promise.resolve();
+    expect(acquiredB).toBe(false);
+
+    releaseA1();
+    await Promise.resolve();
+    expect(acquiredB).toBe(false);
+
+    releaseA2();
+    const releaseB = await pendingB;
+    expect(acquiredB).toBe(true);
+    releaseB();
+  });
+
+  it('makes release idempotent so an error path cannot underflow the lease', async () => {
+    const release = await acquireLspProjectLease(client, fileA1);
+    release();
+    release();
+
+    const releaseB = await acquireLspProjectLease(client, fileB);
+    releaseB();
   });
 });
 
