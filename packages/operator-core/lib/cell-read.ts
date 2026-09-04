@@ -274,6 +274,9 @@ export interface CellSourceRead {
 export interface CellHoist {
   key: string;
   value: unknown;
+  /** True ⇒ the declared key sits below an explicit null parent in the resolver result.
+   *  This is a measured nullable absence, not a missing key or registration drift. */
+  nullTerminated?: true;
   /** True ⇒ the declared key was absent from the resolver result: registration
    *  drift, NOT a measured silence. `value` is null and means nothing. */
   drifted?: true;
@@ -299,6 +302,9 @@ export interface CellAssessmentEvidence {
   path: string;
   /** The value AT that path in this SAME resolver payload — never a second dispatch. */
   value: unknown;
+  /** True ⇒ the path sits below an explicit null parent: a measured nullable absence,
+   *  not a missing key or registration drift. */
+  nullTerminated?: true;
   /** True ⇒ the path was absent from the payload: registration or resolver drift. */
   drifted?: true;
   /** True ⇒ absent, but the payload declares ITSELF truncated, so the absence is
@@ -314,7 +320,7 @@ export interface CellAssessmentEvidence {
    * reason-or-null); nothing here interprets it. `drifted` ⇒ the flag path did not
    * arrive, which is registration drift on the PAIRING and is reported as such.
    */
-  measuredBy?: { path: string; value: unknown; drifted?: true };
+  measuredBy?: { path: string; value: unknown; nullTerminated?: true; drifted?: true };
 }
 
 /**
@@ -845,7 +851,9 @@ async function readCellValue(
    * transient, matching how `not_read_only` is already reported.
    */
   try {
-    const value = valueAtPath(payload, spec.changeSignal.path);
+    const found = pathExists(payload, spec.changeSignal.path, { reportNullTermination: true });
+    const nullTerminated = spec.nullable && found.nullTerminatedAt !== undefined;
+    const value = nullTerminated ? null : found.value;
     // The resolver answered but the declared path is not present. `value === undefined`
     // has (at least) two causes with DIFFERENT fixes, and conflating them misdiagnoses
     // the common one: a resolver that never produced a result at all (it returned an
@@ -855,7 +863,7 @@ async function readCellValue(
     // "the declared path has drifted" actively misdirects an author auditing the former
     // (D-067 defect 2 / EI-18790908999972569: three correct paths were blamed for a
     // one-line arg-wiring bug in the resolver's own error branch).
-    if (value === undefined) {
+    if (value === undefined && !nullTerminated) {
       const errorMessage = errorShapeMessage(payload);
       if (errorMessage !== undefined) {
         return {
@@ -981,8 +989,9 @@ function payloadTruncatedByDoor(payload: unknown): { truncated: boolean; fullRea
 }
 
 function hoistFrom(payload: unknown, key: string): CellHoist {
-  const hoisted = valueAtPath(payload, key);
-  if (hoisted !== undefined) return { key, value: hoisted };
+  const found = pathExists(payload, key, { reportNullTermination: true });
+  if (found.exists && found.value !== undefined) return { key, value: found.value };
+  if (found.nullTerminatedAt !== undefined) return { key, value: null, nullTerminated: true };
   const door = payloadTruncatedByDoor(payload);
   if (door.truncated) {
     return { key, value: null, truncatedByDoor: true, ...(door.fullRead === undefined ? {} : { fullRead: door.fullRead }) };
@@ -1047,17 +1056,26 @@ function assessmentFrom(payload: unknown, spec: CellAssessmentSpec): CellAssessm
    */
   const pairs = spec.measuredBy ?? {};
   const evidence: CellAssessmentEvidence[] = spec.evidence.map((p) => {
-    const r = pathExists(payload, p);
+    const r = pathExists(payload, p, { reportNullTermination: true });
     const base: CellAssessmentEvidence = r.exists
       ? { path: p, value: r.value }
+      : r.nullTerminatedAt !== undefined
+        ? { path: p, value: null, nullTerminated: true as const }
       : door.truncated
         ? { path: p, value: null, truncatedByDoor: true as const }
         : { path: p, value: null, drifted: true as const };
     // P-012: the paired measured-ness flag rides WITH the value, off the same payload.
     const flag = pairs[p];
     if (flag === undefined) return base;
-    const f = pathExists(payload, flag);
-    return { ...base, measuredBy: f.exists ? { path: flag, value: f.value } : { path: flag, value: null, drifted: true as const } };
+    const f = pathExists(payload, flag, { reportNullTermination: true });
+    return {
+      ...base,
+      measuredBy: f.exists
+        ? { path: flag, value: f.value }
+        : f.nullTerminatedAt !== undefined
+          ? { path: flag, value: null, nullTerminated: true as const }
+          : { path: flag, value: null, drifted: true as const },
+    };
   });
 
   const unavailable = (unknown: CellUnknown): CellAssessmentRead => ({
@@ -1072,9 +1090,18 @@ function assessmentFrom(payload: unknown, spec: CellAssessmentSpec): CellAssessm
     ...(door.truncated && door.fullRead !== undefined ? { fullRead: door.fullRead } : {}),
   });
 
-  const found = pathExists(payload, path);
+  const found = pathExists(payload, path, { reportNullTermination: true });
 
   if (!found.exists) {
+    if (found.nullTerminatedAt !== undefined) {
+      return unavailable(
+        cellUnknown(
+          'insufficient-data',
+          `this cell's assessment path "${path}" sits below an explicit null parent at "${found.nullTerminatedAt}" — ` +
+            'the nullable headline may be a measured null, but the resolver emitted no assessment code for that absent subject.',
+        ),
+      );
+    }
     // WI-38266's split, one field over: DRIFT sends the reader to fix a resolver,
     // TRUNCATION sends them to re-read it. Reporting either as the other blames a
     // blameless resolver or hides a real one.

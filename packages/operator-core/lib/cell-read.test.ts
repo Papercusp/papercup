@@ -29,7 +29,12 @@ vi.mock('./events/await/predicate-watch', async (importOriginal) => {
 });
 
 import { CELL_READ_TIMEOUT_MS, formatCellPointers, readCell, unknownForDispatchError } from './cell-read';
-import { BUILTIN_CELLS, GATE_OWNERSHIP_CELL, MEMORY_CGROUP_ATTRIBUTION_CELL } from './cell-registrations';
+import {
+  BUILTIN_CELLS,
+  GATE_CANDIDATE_FAILURES_CELL,
+  GATE_OWNERSHIP_CELL,
+  MEMORY_CGROUP_ATTRIBUTION_CELL,
+} from './cell-registrations';
 import { ReadOnlyDispatchError } from './events/await/predicate-watch';
 import { registerCell, __resetCellRegistryForTests, type CellSpec } from './cell-registry';
 
@@ -160,6 +165,31 @@ describe('readCell — the happy path', () => {
     if (r.status === 'value') {
       expect(r.value).toBeNull();
       expect(r.totality).toBeUndefined();
+    }
+  });
+
+  it('a nullable nested headline below an explicit null parent is a VALUE null, not path drift', async () => {
+    registerCell(GATE_CANDIDATE_FAILURES_CELL);
+    dispatchReadOnlyTool.mockResolvedValue({ gate: { candidateFailures: null } });
+
+    const r = await readCell('gate.greenCheckpoint.candidateFailures', READER, ENV);
+
+    expect(r.status).toBe('value');
+    if (r.status === 'value') {
+      expect(r.value).toBeNull();
+      expect(r.assessment?.status).toBe('unavailable');
+      expect(r.assessment?.unknown.detail).toContain('explicit null parent');
+      expect(r.assessment?.unknown.detail).not.toContain('drifted apart');
+      expect(r.unknownHoist).toEqual({
+        key: 'gate.candidateFailures.unavailable',
+        value: null,
+        nullTerminated: true,
+      });
+      expect(r.assessment?.evidence[0]).toMatchObject({
+        path: 'gate.candidateFailures.stillBrokenNeedsRunCount',
+        value: null,
+        nullTerminated: true,
+      });
     }
   });
 });
