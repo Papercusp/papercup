@@ -2809,6 +2809,78 @@ describe('buildAgentFactsSupersessionAdvisory — superseded_at means neither "l
     );
     expect(advisory).toBeTruthy();
   });
+
+  /**
+   * DRIFT PIN. The advisory prints what it calls "the full predicate, mirroring
+   * capPopulationPredicate" — a hand-maintained second copy of a predicate the
+   * store owns. Its only previous guard was a comment asking the next editor to
+   * remember, and that failed: the partition clause added by
+   * EI-20365165629381535 never reached the advisory, so the advertised "full
+   * predicate" merged the ordinary and volatile populations and compared the
+   * total against one of two different caps.
+   *
+   * Rather than assert a hand-listed clause set (which would be a THIRD copy
+   * with the same defect), derive the required tokens from store.ts at test
+   * time: every column/marker the canonical predicate constrains must be named
+   * in the advisory. A new clause in capPopulationPredicate fails this until the
+   * advisory names it too.
+   */
+  it('mirrors every column the canonical capPopulationPredicate constrains', async () => {
+    const { readFileSync } = await import('node:fs');
+    const storeSrc = readFileSync(new URL('./agent-facts/store.ts', import.meta.url), 'utf8');
+
+    const fnStart = storeSrc.indexOf('function capPopulationPredicate(');
+    expect(fnStart, 'capPopulationPredicate not found — this pin is measuring nothing').toBeGreaterThan(-1);
+    // Slice to the next top-level `function ` so the body is bounded even as it grows.
+    const after = storeSrc.slice(fnStart + 1);
+    const fnEnd = after.indexOf('\nfunction ');
+    const body = fnEnd === -1 ? after : after.slice(0, fnEnd);
+
+    // Only the SQL the function actually emits: its sql`...` template literals,
+    // minus `--` comments and ${...} interpolations, so TypeScript identifiers
+    // and explanatory prose cannot inflate the required set.
+    const sqlChunks = [...body.matchAll(/sql`([^`]*)`/g)].map((m) => m[1]);
+    expect(sqlChunks.length, 'no sql`` templates found in capPopulationPredicate').toBeGreaterThan(0);
+    const emittedSql = sqlChunks
+      .join('\n')
+      .replace(/\$\{[^}]*\}/g, ' ')
+      .replace(/--[^\n]*/g, ' ');
+
+    // SQL keywords/functions and bare literals are not columns.
+    const NOISE = new Set([
+      'and',
+      'or',
+      'not',
+      'null',
+      'like',
+      'from',
+      'distinct',
+      'true',
+      'false',
+      'coalesce',
+      'now',
+      'jsonb',
+      'is',
+    ]);
+    const required = [...new Set([...emittedSql.matchAll(/[A-Za-z_][A-Za-z0-9_]{2,}/g)].map((m) => m[0]))].filter(
+      (t) => !NOISE.has(t.toLowerCase()),
+    );
+    // Guard the guard: if extraction silently returned nothing, the assertions
+    // below would all pass vacuously.
+    expect(required, 'derived token set is empty — extraction broke, not a clean pass').not.toHaveLength(0);
+    expect(required).toContain('subjectVolatile');
+
+    const advisory = buildAgentFactsSupersessionAdvisory(
+      `SELECT count(*) FROM ${AF} WHERE retracted_at IS NULL AND expires_at > now()`,
+    );
+    expect(advisory).toBeTruthy();
+    const missing = required.filter((token) => !advisory!.includes(token));
+    expect(
+      missing,
+      `the advisory's printed predicate omits ${missing.join(', ')} — it is a hand-maintained ` +
+        'mirror of capPopulationPredicate and has drifted; add the clause to the advisory text',
+    ).toEqual([]);
+  });
 });
 
 /**
