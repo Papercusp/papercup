@@ -85,6 +85,12 @@ import {
 } from '../../release/checkpoint-qualification-transaction';
 import { readLiveReleaseCertification, type LiveReleaseCertification } from '../../release/live-release-certification';
 import { createTextCollector } from '../../child-output';
+import {
+  buildCandidateSnapshot,
+  candidateSnapshotMatchesDispatch,
+  parseCandidateSnapshot,
+  type CandidateSnapshot,
+} from '../../release/candidate-snapshot';
 
 // Kept as exports from this historical module for callers/tests that already
 // use the release-actions config surface. The implementation is shared with
@@ -705,6 +711,8 @@ export interface CheckpointVerdict {
   typecheckPreflight?: CheckpointTypecheckPreflight;
   /** EI-203121: structural mirror of CheckpointResult.postSuiteLegs. The producer and
    *  this storage boundary both cap the collection and every free-text field. */
+  /** WI-22344736163383832: whether the post-suite legs were measured for this verdict. */
+  postSuiteMeasured?: boolean;
   postSuiteLegs?: Array<{
     id: string;
     status: 'passed' | 'failed' | 'skipped';
