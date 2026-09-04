@@ -123,6 +123,16 @@ install -d -o root -g "$SERVICE_GROUP" -m 0750 "$RUNTIME_ROOT" "$RUNTIME_ROOT/re
 # alongside `runtimeReadableByWorkspaceUser: false` in the attestation.
 setfacl -m "u:$AGENT_USER:r-x" "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"
 
+# The named-user grant must reach the immutable release tree as well as its two
+# parents.  The image layer intentionally strips world access, and the agent is
+# forbidden from joining $SERVICE_GROUP because that group also gates the state
+# root and delivered service credentials.  A parent-only ACL therefore lets the
+# agent traverse to a release it still cannot read or execute.  Reapply this
+# recursively on EVERY boot: POSIX ACLs are the metadata class that the
+# container commit drops, and each bootc deployment carries a fresh copy of the
+# release tree.
+setfacl -R -m "u:$AGENT_USER:rX" "$RUNTIME_ROOT/releases"
+
 # Assert rather than assume: this is the exact property that a container commit
 # silently drops, so on a booted host it is worth one grep to prove it took.
 getfacl -p "$RUNTIME_ROOT" 2>/dev/null | grep -q "^user:$AGENT_USER:r-x" \
