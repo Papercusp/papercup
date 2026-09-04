@@ -1793,9 +1793,30 @@ export function buildWorkspaceHostBootstrap(
   const harden = hostModelHardenLines(validated);
   const digest = input.release.bundleSha256.toLowerCase();
   const signingKeyDigest = input.release.signingKeySha256.toLowerCase();
+  // PER MODEL, not the whole name space. Rendering the union would make a bootc host attest
+  // `bundle-signature` — the exact "attested property no code performs" this port is unwinding.
   const checksJson = JSON.stringify(
-    WORKSPACE_HOST_BOOTSTRAP_CHECKS.map((name) => ({ name, ok: true })),
+    workspaceHostBootstrapChecks(hostModel).map((name) => ({ name, ok: true })),
   );
+  // The three model-specific slices of the attestation jq. They are built as a matched TRIPLE —
+  // args, discriminant fields, release object — because they have to stay consistent with one
+  // another: a `--arg` without its field renders nothing, and a field without its `--arg` makes
+  // jq exit non-zero mid-attestation. Keeping them adjacent is what makes that reviewable.
+  const isBootcModel = hostModel === 'bootc-image';
+  const modelJqArgs = isBootcModel
+    ? '--arg bootcBaseImage "$BOOTED_BASE_IMAGE" --arg source "$BOOTED_IMAGE_REF" --arg imageDigest "$BOOTED_IMAGE_DIGEST" --arg signaturePolicyPath "$SIGNATURE_POLICY_PATH" '
+    : '--arg ubuntuVersion "$VERSION_ID" --arg source "$BUNDLE_URL" --arg bundleSha256 "$BUNDLE_SHA256" --arg signingKeySha256 "$SIGNING_KEY_SHA256" ';
+  const modelJqFields = isBootcModel
+    ? `hostModel:"${hostModel}",bootcBaseImage:$bootcBaseImage,`
+    : `hostModel:"${hostModel}",ubuntuVersion:$ubuntuVersion,`;
+  // `signatureVerified:true` appears in BOTH, and means two different things — minisign over a
+  // downloaded tarball on one model, a containers sigstore policy that gated the pull on the
+  // other. That is why the surrounding fields differ rather than being generalised into shared
+  // names: a reader who sees `imageDigest` and `signaturePolicyPath` cannot mistake the claim
+  // for the minisign one, whereas a shared `digest`/`verifiedBy` pair invites exactly that.
+  const modelReleaseJqField = isBootcModel
+    ? 'release:{version:$releaseVersion,source:$source,imageDigest:$imageDigest,signaturePolicyPath:$signaturePolicyPath,signatureVerified:true}'
+    : 'release:{version:$releaseVersion,source:$source,bundleSha256:$bundleSha256,signingKeySha256:$signingKeySha256,signatureVerified:true}';
   // D-259: INSTALLED is a strictly narrower claim than VERIFIED, and they must not be conflated.
   // This render installs the vendor runtimes and RESOLVES each one (the resolve `die`s otherwise,
   // so reaching the attestation is the proof) — that establishes they are present and executable.
@@ -2025,9 +2046,13 @@ export function buildWorkspaceHostBootstrap(
     ...harden.tail,
     "",
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[2]}'`,
+    // The two update paths. ⛔ The bundle arm below is NOT legacy awaiting deletion — it is what
+    // every provisioned host runs today, and both models are live through the transition
+    // (D-280). It is kept verbatim, in place, with its comments attached to their lines.
     ...(hostModel === 'bootc-image'
       ? bootcReleaseLines(validated, input.action, input.hostId)
-      : bundleReleaseLines()),
+      : [
+    'WORK_DIR="$(mktemp -d /var/tmp/papercusp-bootstrap.XXXXXX)"',
     'BUNDLE_PATH="$WORK_DIR/server-bundle.tgz"',
     'SIGNATURE_PATH="$WORK_DIR/server-bundle.tgz.minisig"',
     'PUBLIC_KEY_PATH="$WORK_DIR/bootstrap-public.key"',
@@ -2083,6 +2108,9 @@ export function buildWorkspaceHostBootstrap(
     // `$ROOT/scripts/psu.mjs`, so the grant has to span the tree rather than the three
     // entrypoints; the group already has exactly this access, and root stays the only writer.
     'setfacl -R -m "u:$AGENT_USER:rX" "$RELEASE_DIR"',
+        ]),
+    // ── Model-invariant from here: whatever delivered the release tree, these are the same
+    // observations over the same paths, and a bootc host must satisfy every one of them.
     'for entrypoint in "$INSTALL_ENTRYPOINT" "$ROLLBACK_ENTRYPOINT" "$NODE_ENTRYPOINT" "$MIGRATE_ENTRYPOINT" "$OPERATOR_ENTRYPOINT" "$HEALTH_ENTRYPOINT" "$PSU_ENTRYPOINT" "$PUI_ENTRYPOINT" "$CLAUDE_ENTRYPOINT" "$CODEX_ENTRYPOINT" "$OMP_ENTRYPOINT" "$REMOTE_INITIALIZER_ENTRYPOINT" "$CREDENTIAL_DELIVERY_ENTRYPOINT"; do',
     '  [[ -x "$RELEASE_DIR/$entrypoint" ]] || die "missing executable release entrypoint: $entrypoint"',
     "done",
@@ -2090,7 +2118,24 @@ export function buildWorkspaceHostBootstrap(
     '[[ -s "$RELEASE_DIR/$PUI_INSTALL_MANIFEST_PATH" ]] || die "missing or empty PUI install manifest: $PUI_INSTALL_MANIFEST_PATH"',
     '"$RELEASE_DIR/$INSTALL_ENTRYPOINT" --action "$BOOTSTRAP_ACTION" --release-root "$RELEASE_DIR" --state-root "$STATE_ROOT"',
     'if [[ "$BOOTSTRAP_ACTION" == "rollback" ]]; then',
-    '  "$RELEASE_DIR/$ROLLBACK_ENTRYPOINT" --from "$PREVIOUS_TARGET" --to "$RELEASE_DIR" --state-root "$STATE_ROOT"',
+    ...(hostModel === 'ubuntu-release-bundle'
+      ? [
+          '  "$RELEASE_DIR/$ROLLBACK_ENTRYPOINT" --from "$PREVIOUS_TARGET" --to "$RELEASE_DIR" --state-root "$STATE_ROOT"',
+        ]
+      : [
+          // ⛔ FAILS CLOSED, deliberately, and this is the safe direction rather than a gap left
+          // open. `bootc rollback` has already returned the OS to the previous deployment; the
+          // DATABASE has not moved, so the schema is still the newer one while the code is the
+          // older one. Skipping this step silently would leave exactly that mismatch behind a
+          // successful-looking rollback.
+          //
+          // `$PREVIOUS_TARGET` is a symlink readback and has no bootc analogue: the previous
+          // release tree lives in the other ostree deployment, not at `$RUNTIME_ROOT/releases`,
+          // so resolving it needs a deployment-path lookup that cannot be written blind — it has
+          // to be exercised on a booted bootc host, which is P-305's leg. P-307 owns the release
+          // layer this depends on.
+          '  die "bootc-image rollback cannot run the database rollback step yet: the previous release tree is in the other ostree deployment, not at $RUNTIME_ROOT/releases. The OS rolled back; the database did NOT. Resolve the previous deployment path (P-305/P-307) before using rollback on this host model."',
+        ]),
     "fi",
     'NODE_VERSION="$("$RELEASE_DIR/$NODE_ENTRYPOINT" --version)"',
     'NODE_MAJOR="${NODE_VERSION#v}"',
@@ -2103,9 +2148,28 @@ export function buildWorkspaceHostBootstrap(
     '"$RELEASE_DIR/$MIGRATE_ENTRYPOINT" --database-root "$STATE_ROOT/embedded-pg" --migration-id "$MIGRATION_ID"',
     "",
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[5]}'`,
-    'ln -sfn "$RELEASE_DIR" "$RUNTIME_ROOT/current.next"',
-    'mv -Tf "$RUNTIME_ROOT/current.next" "$RUNTIME_ROOT/current"',
-    "SWITCHED=1",
+    // The swap, and the one place the two models differ most sharply.
+    //
+    // On the bundle model this IS the release swap: rename-over-symlink is atomic, so no reader
+    // ever sees a half-switched `current`, and `restore_previous` can put it back.
+    //
+    // On bootc there is nothing to swap. `current` is image content, fixed when the image was
+    // built, and the atomic switch already happened at the reboot. Writing it here would fail on
+    // a read-only deployment root — and would be wrong even if it succeeded, because a `current`
+    // that a running host can repoint is precisely the mutability an image-based host exists to
+    // remove. So the line becomes an ASSERTION that the image is internally consistent.
+    ...(hostModel === 'ubuntu-release-bundle'
+      ? [
+          'ln -sfn "$RELEASE_DIR" "$RUNTIME_ROOT/current.next"',
+          'mv -Tf "$RUNTIME_ROOT/current.next" "$RUNTIME_ROOT/current"',
+          'SWITCHED=1',
+        ]
+      : [
+          '[[ -L "$RUNTIME_ROOT/current" || -d "$RUNTIME_ROOT/current" ]] || die "$RUNTIME_ROOT/current is absent from the booted image — the release layer (P-307) has not been baked into this image"',
+          'CURRENT_TARGET="$(readlink -f "$RUNTIME_ROOT/current")"',
+          'RELEASE_TARGET="$(readlink -f "$RELEASE_DIR")"',
+          '[[ "$CURRENT_TARGET" == "$RELEASE_TARGET" ]] || die "booted image points $RUNTIME_ROOT/current at $CURRENT_TARGET, but this bootstrap was rendered for release $RELEASE_VERSION at $RELEASE_TARGET"',
+        ]),
     // The SSH identity deliberately cannot traverse the immutable runtime or credential root. Two
     // root-owned wrappers are therefore the ONLY privilege seam. Each accepts exactly the fixed
     // protocol argv and sudoers repeats that exact allowlist; variable material remains on stdin.
@@ -2369,8 +2433,8 @@ export function buildWorkspaceHostBootstrap(
     'OBSERVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
     `CHECKS_JSON=${shellQuote(checksJson)}`,
     'ATTESTATION_PATH="$STATE_ROOT/bootstrap-attestation.json"',
-    'jq -n --arg contractVersion "$CONTRACT_VERSION" --arg hostId "$HOST_ID" --arg action "$BOOTSTRAP_ACTION" --arg ubuntuVersion "$VERSION_ID" --arg observedAt "$OBSERVED_AT" --arg releaseVersion "$RELEASE_VERSION" --arg source "$BUNDLE_URL" --arg bundleSha256 "$BUNDLE_SHA256" --arg signingKeySha256 "$SIGNING_KEY_SHA256" --arg migrationId "$MIGRATION_ID" --arg serviceName "$SERVICE_NAME" --arg serviceUser "$SERVICE_USER" --arg serviceGroup "$SERVICE_GROUP" --arg workspaceUser "$WORKSPACE_USER" --arg workspaceGroup "$WORKSPACE_GROUP" --arg agentUser "$AGENT_USER" --arg agentGroup "$AGENT_GROUP" --arg runtimeRoot "$RUNTIME_ROOT" --arg stateRoot "$STATE_ROOT" --arg workspaceRoot "$WORKSPACE_ROOT" --argjson nodeMajor "$NODE_MAJOR" --argjson minimumNodeMajor "$MINIMUM_NODE_MAJOR" --argjson servicePort "$SERVICE_PORT" ' + agentRuntimeJqArgs + '--argjson checks "$CHECKS_JSON" \\',
-    '  \'{contractVersion:$contractVersion,hostId:$hostId,action:$action,ubuntuVersion:$ubuntuVersion,observedAt:$observedAt,status:"healthy",release:{version:$releaseVersion,source:$source,bundleSha256:$bundleSha256,signingKeySha256:$signingKeySha256,signatureVerified:true},migration:{id:$migrationId,applied:true},runtime:{nodeMajor:$nodeMajor,minimumNodeMajor:$minimumNodeMajor,psu:true,pui:true,agentLaunchers:{claude:true,codex:true,omp:true},agentRuntimesVerifiedByBootstrap:false,agentRuntimesInstalledByBootstrap:' + agentRuntimesInstalled + agentRuntimeJqFields + '},service:{name:$serviceName,user:$serviceUser,group:$serviceGroup,bindHost:"127.0.0.1",port:$servicePort,active:true},isolation:{workspaceUser:$workspaceUser,workspaceGroup:$workspaceGroup,agentUser:$agentUser,agentGroup:$agentGroup,runtimeRoot:$runtimeRoot,stateRoot:$stateRoot,workspaceRoot:$workspaceRoot,runtimeReadableByWorkspaceUser:false,runtimeWritableByWorkspaceUser:false,runtimeReadableByAgentUser:true,runtimeWritableByAgentUser:false,agentHomeReadableBySshUser:false,workspaceWritableByService:true,workspaceWritableBySshUser:true,workspaceWritableByAgentUser:true,sudo:false,serviceGroupMember:false,operatorIngress:"ssh-local-forward",updateMode:"signed-atomic-release-swap"},checks:$checks}\' > "$ATTESTATION_PATH"',
+    'jq -n --arg contractVersion "$CONTRACT_VERSION" --arg hostId "$HOST_ID" --arg action "$BOOTSTRAP_ACTION" ' + modelJqArgs + '--arg observedAt "$OBSERVED_AT" --arg releaseVersion "$RELEASE_VERSION" --arg migrationId "$MIGRATION_ID" --arg serviceName "$SERVICE_NAME" --arg serviceUser "$SERVICE_USER" --arg serviceGroup "$SERVICE_GROUP" --arg workspaceUser "$WORKSPACE_USER" --arg workspaceGroup "$WORKSPACE_GROUP" --arg agentUser "$AGENT_USER" --arg agentGroup "$AGENT_GROUP" --arg runtimeRoot "$RUNTIME_ROOT" --arg stateRoot "$STATE_ROOT" --arg workspaceRoot "$WORKSPACE_ROOT" --argjson nodeMajor "$NODE_MAJOR" --argjson minimumNodeMajor "$MINIMUM_NODE_MAJOR" --argjson servicePort "$SERVICE_PORT" ' + agentRuntimeJqArgs + '--argjson checks "$CHECKS_JSON" \\',
+    '  \'{contractVersion:$contractVersion,hostId:$hostId,action:$action,' + modelJqFields + 'observedAt:$observedAt,status:"healthy",' + modelReleaseJqField + ',migration:{id:$migrationId,applied:true},runtime:{nodeMajor:$nodeMajor,minimumNodeMajor:$minimumNodeMajor,psu:true,pui:true,agentLaunchers:{claude:true,codex:true,omp:true},agentRuntimesVerifiedByBootstrap:false,agentRuntimesInstalledByBootstrap:' + agentRuntimesInstalled + agentRuntimeJqFields + '},service:{name:$serviceName,user:$serviceUser,group:$serviceGroup,bindHost:"127.0.0.1",port:$servicePort,active:true},isolation:{workspaceUser:$workspaceUser,workspaceGroup:$workspaceGroup,agentUser:$agentUser,agentGroup:$agentGroup,runtimeRoot:$runtimeRoot,stateRoot:$stateRoot,workspaceRoot:$workspaceRoot,runtimeReadableByWorkspaceUser:false,runtimeWritableByWorkspaceUser:false,runtimeReadableByAgentUser:true,runtimeWritableByAgentUser:false,agentHomeReadableBySshUser:false,workspaceWritableByService:true,workspaceWritableBySshUser:true,workspaceWritableByAgentUser:true,sudo:false,serviceGroupMember:false,operatorIngress:"ssh-local-forward",updateMode:"' + WORKSPACE_HOST_UPDATE_MODE_BY_MODEL[hostModel] + '"},checks:$checks}\' > "$ATTESTATION_PATH"',
     'chown "$SERVICE_USER:$SERVICE_GROUP" "$ATTESTATION_PATH"',
     'chmod 0640 "$ATTESTATION_PATH"',
     `printf '${WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX}%s\\n' "$(base64 --wrap=0 < \"$ATTESTATION_PATH\")"`,
@@ -2465,11 +2529,57 @@ export function validateWorkspaceHostBootstrapAttestation(
     candidate.action === expected.action,
     'bootstrap action mismatch',
   );
+  // The discriminant is checked BEFORE anything reads a model-specific field, and against the
+  // render's own model rather than merely "one of the known values". A host that attests a model
+  // this bootstrap was not rendered for is not a host with an odd field — it is a host whose
+  // entire check set, update mode and release chain were judged against the wrong contract.
   addMismatch(
     errors,
-    candidate.ubuntuVersion === WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
-    'Ubuntu version mismatch',
+    candidate.hostModel === validated.hostModel,
+    `attested host model '${String(candidate.hostModel)}' does not match the rendered model '${validated.hostModel}'`,
   );
+  if (candidate.hostModel === 'ubuntu-release-bundle') {
+    addMismatch(
+      errors,
+      candidate.ubuntuVersion === WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+      'Ubuntu version mismatch',
+    );
+    addMismatch(
+      errors,
+      isRecord(candidate.release) &&
+        typeof candidate.release.bundleSha256 === 'string' &&
+        typeof candidate.release.signingKeySha256 === 'string',
+      'bundle release attestation is missing its minisign trust chain',
+    );
+  } else if (candidate.hostModel === 'bootc-image') {
+    addMismatch(
+      errors,
+      candidate.bootcBaseImage === validated.bootc?.baseImage,
+      `attested bootc base image '${String(candidate.bootcBaseImage)}' does not match the expected '${String(validated.bootc?.baseImage)}'`,
+    );
+    // The digest, not the tag. A tag-only match would accept whatever the registry served.
+    addMismatch(
+      errors,
+      isRecord(candidate.release) &&
+        candidate.release.imageDigest === validated.bootc?.imageDigest,
+      'attested image digest does not match the pinned release image',
+    );
+    // Refuse the minisign chain HERE rather than only requiring the image fields, because the
+    // failure this guards is an attestation carrying BOTH: a bootc host that also reports a
+    // bundle digest is describing a verification it did not perform, and a validator that only
+    // checks for what it expects would pass it.
+    // Read through an untyped view on purpose: the whole point is to detect fields the bootc
+    // member does NOT declare, and a narrowed read cannot see what the type says is absent.
+    // The attestation arrives as untrusted JSON, so "the type says it cannot be there" is a
+    // statement about our code, never about the document.
+    const bootcRelease = candidate.release as unknown as Record<string, unknown>;
+    addMismatch(
+      errors,
+      bootcRelease.bundleSha256 === undefined &&
+        bootcRelease.signingKeySha256 === undefined,
+      'bootc attestation reports a minisign bundle trust chain it cannot have performed',
+    );
+  }
   addMismatch(
     errors,
     Number.isFinite(Date.parse(candidate.observedAt)),
@@ -2485,23 +2595,41 @@ export function validateWorkspaceHostBootstrapAttestation(
     candidate.release.version === expected.release.version,
     'release version mismatch',
   );
-  addMismatch(
-    errors,
-    candidate.release.source === expected.release.bundleUrl,
-    'release source mismatch',
-  );
-  addMismatch(
-    errors,
-    candidate.release.bundleSha256 ===
-      expected.release.bundleSha256.toLowerCase(),
-    'release digest mismatch',
-  );
-  addMismatch(
-    errors,
-    candidate.release.signingKeySha256 ===
-      expected.release.signingKeySha256.toLowerCase(),
-    'signing key mismatch',
-  );
+  // `source` means different things per model — the bundle URL that was fetched, or the image
+  // ref that was booted — so it is compared per model rather than against `release.bundleUrl`
+  // for both. Comparing a booted image ref to a tarball URL would fail every bootc host with a
+  // message about a release source, which names the symptom and hides the cause.
+  if (candidate.hostModel === 'bootc-image') {
+    addMismatch(
+      errors,
+      candidate.release.source === validated.bootc?.image,
+      'attested booted image ref does not match the pinned release image',
+    );
+    addMismatch(
+      errors,
+      candidate.release.signaturePolicyPath ===
+        validated.bootc?.signaturePolicyPath,
+      'attested signature policy path does not match the rendered one',
+    );
+  } else {
+    addMismatch(
+      errors,
+      candidate.release.source === expected.release.bundleUrl,
+      'release source mismatch',
+    );
+    addMismatch(
+      errors,
+      candidate.release.bundleSha256 ===
+        expected.release.bundleSha256.toLowerCase(),
+      'release digest mismatch',
+    );
+    addMismatch(
+      errors,
+      candidate.release.signingKeySha256 ===
+        expected.release.signingKeySha256.toLowerCase(),
+      'signing key mismatch',
+    );
+  }
   addMismatch(
     errors,
     candidate.release.signatureVerified === true,
@@ -2648,23 +2776,44 @@ export function validateWorkspaceHostBootstrapAttestation(
     candidate.isolation.operatorIngress === 'ssh-local-forward',
     'operator ingress is not restricted to authenticated SSH forwarding',
   );
+  // A PAIRING test, not membership in the union. Membership would accept a bootc host reporting
+  // `signed-atomic-release-swap` — a claim to have swapped a minisign-verified tarball it never
+  // downloaded — which is the precise shape of the attested-but-unperformed property D-262
+  // exists to refuse.
   addMismatch(
     errors,
-    candidate.isolation.updateMode === 'signed-atomic-release-swap',
-    'runtime update mode is not a signed atomic release swap',
+    candidate.isolation.updateMode ===
+      WORKSPACE_HOST_UPDATE_MODE_BY_MODEL[validated.hostModel],
+    `runtime update mode '${String(candidate.isolation.updateMode)}' is not the update path of host model '${validated.hostModel}'`,
   );
 
   const checks = candidate.checks.filter(
     (check) => isRecord(check) && typeof check.name === 'string',
   );
   const checkMap = new Map(checks.map((check) => [check.name, check.ok]));
-  for (const check of WORKSPACE_HOST_BOOTSTRAP_CHECKS) {
+  const requiredChecks = workspaceHostBootstrapChecks(validated.hostModel);
+  for (const check of requiredChecks) {
     addMismatch(
       errors,
       checkMap.get(check) === true,
       `required bootstrap check '${check}' did not pass`,
     );
   }
+  // Set EQUALITY, and the "no extras" half is the new one. The loop above only ever asked
+  // whether each EXPECTED name was present and ok; a well-formed name outside the expected set
+  // sailed through, because with a single host model there was no such thing. There is now: the
+  // extras a bootc host could carry are `bundle-digest` and `bundle-signature`, i.e. precisely
+  // the claims it is not entitled to make, and precisely the ones a reader of the attestation
+  // would take as evidence that the release was minisign-verified.
+  const required = new Set<string>(requiredChecks);
+  const unexpected = checks
+    .map((check) => String(check.name))
+    .filter((name) => !required.has(name));
+  addMismatch(
+    errors,
+    unexpected.length === 0,
+    `bootstrap attestation carries checks that host model '${validated.hostModel}' cannot establish: ${unexpected.join(', ')}`,
+  );
   addMismatch(
     errors,
     checks.length === candidate.checks.length,

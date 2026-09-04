@@ -9,7 +9,7 @@ import {
   DEFAULT_WORKSPACE_HOST_AGENT_USER,
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
-  WORKSPACE_HOST_BOOTSTRAP_CHECKS,
+  workspaceHostBootstrapChecks,
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
   WORKSPACE_HOST_DATA_ROOT,
@@ -792,6 +792,11 @@ export function workspaceHostCleanRoomFixtureAttestation(
     contractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
     hostId: fixture.bootstrapInput.hostId,
     action: fixture.bootstrapInput.action,
+    // The clean-room acceptance fixture models the SHIPPED host, and the image compatibility
+    // matrix it feeds is expressed in Ubuntu releases (see WorkspaceHostImageCompatibilityRule).
+    // A bootc clean-room needs its own artifact matrix, which is P-307's leg — so this is pinned
+    // rather than parameterised, and the literal is what makes that visible.
+    hostModel: 'ubuntu-release-bundle',
     ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
     observedAt,
     status: "healthy",
@@ -844,6 +849,10 @@ export function workspaceHostCleanRoomFixtureAttestation(
       operatorIngress: "ssh-local-forward",
       updateMode: "signed-atomic-release-swap",
     },
-    checks: WORKSPACE_HOST_BOOTSTRAP_CHECKS.map((name) => ({ name, ok: true })),
+    // Scoped to the model above. The old flat list is now a NAME SPACE spanning both models, so
+    // mapping it wholesale would fabricate a host that established every check of both.
+    checks: workspaceHostBootstrapChecks('ubuntu-release-bundle').map(
+      (name) => ({ name, ok: true as const }),
+    ),
   };
 }
