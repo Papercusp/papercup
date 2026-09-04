@@ -125,6 +125,14 @@ export const DEFAULT_WORKSPACE_HOST_AGENT_USER = 'papercusp-agent';
 export const WORKSPACE_HOST_RUNTIME_ROOT = '/opt/papercusp';
 export const WORKSPACE_HOST_STATE_ROOT = '/var/lib/papercusp';
 export const WORKSPACE_HOST_DATA_ROOT = '/srv/papercusp/workspaces';
+/**
+ * Written by the specialised bootc image build from the exact namespace used in
+ * both containers policy and registries.d.  Reading this pin avoids deriving a
+ * policy key from an OCI reference (and accidentally dropping an explicit
+ * registry port or checking the leaf repository when policy is namespace-wide).
+ */
+export const WORKSPACE_HOST_BOOTC_RELEASE_REGISTRY_SCOPE_PATH =
+  '/usr/lib/papercusp/release-registry-namespace';
 export const WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT =
   "/usr/local/bin/papercusp-workspace-host-initialize";
 export const WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT =
@@ -1747,24 +1755,42 @@ function bootcReleaseLines(
   hostId: string,
 ): string[] {
   const bootc = v.bootc as NonNullable<ValidatedBootstrapInput['bootc']>;
+  // A tag separator is a colon AFTER the final slash; a registry port is a colon
+  // BEFORE it. `split(':')[0]` therefore turns
+  // `127.0.0.1:5096/papercusp/workspace-host:tag` into `127.0.0.1` and stages a
+  // different image. SAFE_IMAGE_REF excludes digests here, so the last-colon
+  // comparison is a complete parser for the admitted shape.
+  const finalSlash = bootc.image.lastIndexOf('/');
+  const finalColon = bootc.image.lastIndexOf(':');
+  const imageRepository =
+    finalColon > finalSlash ? bootc.image.slice(0, finalColon) : bootc.image;
   // Pull BY DIGEST. The tag rides along as provenance only: a tag is mutable, so switching to
   // `image:tag` and then attesting the digest that arrived would attest whatever the registry
   // happened to be serving, which is a description of the outcome rather than a constraint on it.
-  const pinnedImage = `${bootc.image.split(':')[0]}@${bootc.imageDigest}`;
+  const pinnedImage = `${imageRepository}@${bootc.imageDigest}`;
   return [
     assignment('EXPECTED_IMAGE', bootc.image),
+    assignment('EXPECTED_IMAGE_REPO', imageRepository),
     assignment('EXPECTED_IMAGE_DIGEST', bootc.imageDigest),
     assignment('EXPECTED_IMAGE_PINNED', pinnedImage),
     assignment('SIGNATURE_POLICY_PATH', bootc.signaturePolicyPath),
+    assignment(
+      'SIGNATURE_POLICY_SCOPE_PATH',
+      WORKSPACE_HOST_BOOTC_RELEASE_REGISTRY_SCOPE_PATH,
+    ),
     '[[ -s "$SIGNATURE_POLICY_PATH" ]] || die "containers signature policy is missing at $SIGNATURE_POLICY_PATH"',
-    // The repository key, not the full ref: containers policy is scoped by repository, and a
-    // tag-qualified lookup silently matches nothing and falls through to `default`.
-    'EXPECTED_IMAGE_REPO="${EXPECTED_IMAGE%%:*}"',
+    '[[ -s "$SIGNATURE_POLICY_SCOPE_PATH" ]] || die "release registry policy scope pin is missing at $SIGNATURE_POLICY_SCOPE_PATH"',
+    'EXPECTED_POLICY_SCOPE="$(cat "$SIGNATURE_POLICY_SCOPE_PATH")"',
+    // The image build installs one namespace-scoped policy entry, not a leaf-repository entry.
+    // Prove the requested repository is inside that exact namespace before consulting it: a
+    // sibling namespace must not inherit this signature claim, while a registry port remains a
+    // byte-for-byte part of the key.
+    'case "$EXPECTED_IMAGE_REPO" in "$EXPECTED_POLICY_SCOPE"|"$EXPECTED_POLICY_SCOPE"/*) ;; *) die "release image repository $EXPECTED_IMAGE_REPO is outside the signed policy namespace $EXPECTED_POLICY_SCOPE" ;; esac',
     // `jq -e` exits non-zero on a false/null result, so a policy that has no entry for this
-    // repository, or one whose entry is `insecureAcceptAnything`, both fail here rather than
+    // namespace, or one whose entry is `insecureAcceptAnything`, both fail here rather than
     // reading as verified. The `default` fallback is deliberately NOT consulted: the base ships
     // a permissive default (D-279 probe C), so falling back to it is the trap, not the answer.
-    `jq -e --arg repo "$EXPECTED_IMAGE_REPO" '((.transports.docker[$repo] // []) | map(select(.type == "sigstoreSigned")) | length) > 0' "$SIGNATURE_POLICY_PATH" >/dev/null || die "containers-policy does not require a signature for $EXPECTED_IMAGE_REPO"`,
+    `jq -e --arg scope "$EXPECTED_POLICY_SCOPE" '((.transports.docker[$scope] // []) | map(select(.type == "sigstoreSigned")) | length) > 0' "$SIGNATURE_POLICY_PATH" >/dev/null || die "containers-policy does not require a signature for $EXPECTED_POLICY_SCOPE"`,
     '',
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[3]}'`,
     'if [[ "$BOOTED_IMAGE_DIGEST" != "$EXPECTED_IMAGE_DIGEST" ]]; then',

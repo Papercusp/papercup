@@ -12,6 +12,7 @@ import {
   WORKSPACE_HOST_MODELS,
   WORKSPACE_HOST_BOOTC_BASE_IMAGE,
   WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
+  WORKSPACE_HOST_BOOTC_RELEASE_REGISTRY_SCOPE_PATH,
   WORKSPACE_HOST_BOOTSTRAP_STAGED_PREFIX,
   WORKSPACE_HOST_UPDATE_MODE_BY_MODEL,
   workspaceHostBootstrapChecks,
@@ -1598,6 +1599,32 @@ describe('workspace-host bootstrap attestation', () => {
       expect(script).toContain(`@${bootcInput().bootc!.imageDigest}`);
       // …and the symlink swap is gone with it.
       expect(script).not.toContain('$RUNTIME_ROOT/current.next');
+    });
+
+    it('preserves an explicit registry port and checks the baked namespace policy pin', () => {
+      const image = '127.0.0.1:5096/papercusp/workspace-host:2026.9.4-1';
+      const script = buildWorkspaceHostBootstrap(
+        bootcInput({ bootc: { ...bootcInput().bootc!, image } }),
+      );
+
+      // The repository is the portion before the FINAL colon.  The old first-colon
+      // split rendered `127.0.0.1@sha256:…`, silently discarding both the port and
+      // the namespace.
+      expect(script).toContain(
+        "EXPECTED_IMAGE_REPO='127.0.0.1:5096/papercusp/workspace-host'",
+      );
+      expect(script).toContain(
+        "EXPECTED_IMAGE_PINNED='127.0.0.1:5096/papercusp/workspace-host@sha256:",
+      );
+      expect(script).not.toContain("EXPECTED_IMAGE_REPO='127.0.0.1'");
+
+      // Policy is authored at the exact path the specialised image build records,
+      // and the generated check reads that namespace rather than guessing a leaf key.
+      expect(script).toContain(
+        `SIGNATURE_POLICY_SCOPE_PATH='${WORKSPACE_HOST_BOOTC_RELEASE_REGISTRY_SCOPE_PATH}'`,
+      );
+      expect(script).toContain('EXPECTED_POLICY_SCOPE="$(cat "$SIGNATURE_POLICY_SCOPE_PATH")"');
+      expect(script).toContain('--arg scope "$EXPECTED_POLICY_SCOPE"');
     });
 
     it('uses bootc rollback for the rollback action', () => {
