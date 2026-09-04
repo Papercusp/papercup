@@ -4519,6 +4519,30 @@ describe('changeInCandidate (P-004)', () => {
       expect(summary).not.toMatch(/clear the gate abort condition/);
     });
 
+    it('EI-22162745262638300: a gate wait keeps staging/current-build work actionable', () => {
+      const summary = summarizePosition(
+        base({
+          blockedOn: 'gate',
+          nextAction: null,
+          gate: {
+            ...base().gate,
+            stalled: true,
+            checkpointRunInFlight: {
+              active: true,
+              candidate: 'candidate-sha',
+              startedAtMs: 1,
+              elapsedSec: 600,
+              asOfAgeMs: 5_000,
+            },
+          },
+        }),
+      );
+      expect(summary).toMatch(/WAITING AT GATE/);
+      expect(summary).toMatch(/staging\/current-build/);
+      expect(summary).toMatch(/final shipment|deployed-only/);
+      expect(summary).not.toMatch(/nothing to do/);
+    });
+
     /**
      * The EI names this line specifically. For a working-tree tsx host the reassurance
      * "even an uncommitted edit is what it loads on restart" is TRUE — of the RESTART
