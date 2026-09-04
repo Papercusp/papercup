@@ -757,11 +757,11 @@ _pc_heavy_internal_preempt_run() {
     _preempt_refresh_child_pid
     [ -n "${_preempt_child_pid:-}" ] && return 0
     [ -n "${_preempt_wait_pid:-}" ] || return 1
-    _deadline=$(( $(date +%s) + 1 ))
+    _deadline=$(( ${EPOCHSECONDS:-$(date +%s)} + 1 ))
     while [ -z "${_preempt_child_pid:-}" ] && kill -0 "${_preempt_wait_pid:-}" 2>/dev/null; do
       _preempt_refresh_child_pid
       [ -n "${_preempt_child_pid:-}" ] && return 0
-      [ "$(date +%s)" -ge "$_deadline" ] && break
+      [ "${EPOCHSECONDS:-$(date +%s)}" -ge "$_deadline" ] && break
       sleep "${_preempt_poll:-0.1}"
     done
     _preempt_refresh_child_pid
@@ -1215,8 +1215,8 @@ _pc_heavy_internal_preempt_run() {
       # cleanup boundary without changing process identity.
       kill -CONT -- "-${_preempt_child_pid:-}" 2>/dev/null || true
       kill -TERM -- "-${_preempt_child_pid:-}" 2>/dev/null || true
-      _deadline=$(( $(date +%s) + ${_preempt_term_grace:-30} ))
-      while _preempt_group_alive && [ "$(date +%s)" -lt "$_deadline" ]; do
+      _deadline=$(( ${EPOCHSECONDS:-$(date +%s)} + ${_preempt_term_grace:-30} ))
+      while _preempt_group_alive && [ "${EPOCHSECONDS:-$(date +%s)}" -lt "$_deadline" ]; do
         sleep "${_preempt_poll:-0.1}"
       done
       if _preempt_group_alive; then
@@ -1271,7 +1271,7 @@ _pc_heavy_internal_preempt_run() {
     exec "$@"
   ' _ "$_preempt_pid_file" "$@" &
   _preempt_wait_pid=$!
-  _preempt_start_deadline=$(( $(date +%s) + 5 ))
+  _preempt_start_deadline=$(( ${EPOCHSECONDS:-$(date +%s)} + 5 ))
   while [ ! -s "$_preempt_pid_file" ]; do
     if ! kill -0 "$_preempt_wait_pid" 2>/dev/null; then
       wait "$_preempt_wait_pid"
@@ -1281,7 +1281,7 @@ _pc_heavy_internal_preempt_run() {
       rm -f "$_preempt_pid_file" 2>/dev/null || true
       return "$_early_rc"
     fi
-    if [ "$(date +%s)" -ge "$_preempt_start_deadline" ]; then
+    if [ "${EPOCHSECONDS:-$(date +%s)}" -ge "$_preempt_start_deadline" ]; then
       echo "[pc-heavy] REFUSED preemptible heavy run: child process-group identity was not published" >&2
       _preempt_reap_group
       _preempt_emit_result undetermined child-start-timeout 75
@@ -1344,7 +1344,7 @@ _pc_heavy_internal_preempt_run() {
       if _preempt_ready_is_published; then
         _preempt_seen_at=''
         _preempt_free_since=''
-        _preempt_now=$(date +%s)
+        _preempt_now="${EPOCHSECONDS:-$(date +%s)}"
         if [ -z "$_preempt_ready_seen_at" ]; then
           _preempt_ready_seen_at="$_preempt_now"
           if [ "$_preempt_ready_max" -gt 0 ]; then
@@ -1362,7 +1362,7 @@ _pc_heavy_internal_preempt_run() {
         continue
       fi
       _preempt_ready_seen_at=''
-      _preempt_now=$(date +%s)
+      _preempt_now="${EPOCHSECONDS:-$(date +%s)}"
       _preempt_free_since=''
       if [ -z "$_preempt_seen_at" ]; then
         _preempt_seen_at="$_preempt_now"
@@ -1379,7 +1379,7 @@ _pc_heavy_internal_preempt_run() {
       # A grace clock is already running. Abandon it only after the intent signal
       # has stayed absent for _preempt_clear_after seconds — a single free poll is
       # noise, not evidence the materializer left.
-      _preempt_now=$(date +%s)
+      _preempt_now="${EPOCHSECONDS:-$(date +%s)}"
       if [ -z "$_preempt_free_since" ]; then
         _preempt_free_since="$_preempt_now"
       elif [ $(( _preempt_now - _preempt_free_since )) -ge "$_preempt_clear_after" ]; then
@@ -2765,7 +2765,7 @@ if [ "$_coalesce_enabled" = 1 ]; then
     # than declaring a possibly-live leader dead: this path must never reclaim
     # MORE aggressively than the behaviour it replaced.
     _lm=$(stat -c %Y "$_c_lockdir" 2>/dev/null || echo 0)
-    [ $(( $(date +%s) - _lm )) -le "$_coalesce_ttl" ]
+    [ $(( ${EPOCHSECONDS:-$(date +%s)} - _lm )) -le "$_coalesce_ttl" ]
   }
 
   # Fast path: an already-fresh result sitting from a just-finished run —
@@ -2789,7 +2789,7 @@ if [ "$_coalesce_enabled" = 1 ]; then
   # the common case; re-checking immediately AFTER winning the lock closes the
   # remaining microsecond TOCTOU window between that check and the mkdir call
   # itself (the previous leader can finish + free the lock in that gap too).
-  _c_deadline=$(( $(date +%s) + _c_max_wait ))
+  _c_deadline=$(( ${EPOCHSECONDS:-$(date +%s)} + _c_max_wait ))
   while :; do
     if _coalesce_fresh; then _coalesce_replay; fi
     if mkdir "$_c_lockdir" 2>/dev/null; then
@@ -2839,7 +2839,7 @@ if [ "$_coalesce_enabled" = 1 ]; then
     # Deliberately fall through to the deadline check + sleep rather than
     # `continue`-ing straight back: if the reclaim ever fails (permissions, a
     # racing peer) an immediate retry would spin hot forever.
-    [ "$(date +%s)" -ge "$_c_deadline" ] && break
+    [ "${EPOCHSECONDS:-$(date +%s)}" -ge "$_c_deadline" ] && break
     sleep 0.3
   done
 fi
