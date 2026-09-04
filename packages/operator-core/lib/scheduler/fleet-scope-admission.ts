@@ -2208,6 +2208,22 @@ export function fleetScopedMiss(
             'still misses after a couple more pulls, report it to your fleet leader as a possible claim-path defect in the tier-1 ' +
             '(feature-family) narrowing — quoting `reason: "issue_family_diagnosis_blind_spot"` and `featureFamilyMatched` — rather ' +
             'than a spec-authoring problem (do NOT quote spec_matches_nothing; that has the opposite remedy). Do NOT stand down.'
+          : staleBlockedLane
+          ? 'CLEAR THE STALE BLOCK — do NOT stand down and do NOT just re-poll (WI-7316). ' +
+            `${staleBlockedRows.length} row(s) in your lane were CLAIMED on this pull and released because their linked plan item reads ` +
+            "`blocked` while every one of its blocked-by dependencies has already resolved. That token is sticky BY DESIGN (it is " +
+            'reserved for external blockers the dependency graph cannot see), so re-polling this lane will return the same miss forever: ' +
+            'nothing is going to clear it but a person or an agent deciding to. ' +
+            `Take one: ${staleBlockedRows
+              .slice(0, 3)
+              .map((r) => `plans:set-status { slug: "${r.planSlug}", item: "${r.itemId}", status: "todo" }`)
+              .join(' · ')}` +
+            `${staleBlockedRows.length > 3 ? ` (+${staleBlockedRows.length - 3} more — see staleBlockedLane)` : ''}, ` +
+            'then scheduler:get_next again and the rows become claimable. ' +
+            'If instead the item IS still genuinely blocked on something the graph cannot express, leave the token and record the ' +
+            'cause as a plan Decision (plans:add-decision) — that turns a permanent silent miss into a reason the next member can ' +
+            'read, and is the ONLY case where standing down on this lane is correct. Do NOT re-author the claim spec: your spec is ' +
+            'fine, and widening it would only pull the same blocked rows in under a different filter.'
           : planComplete
           ? 'PLAN COMPLETE (EI-20260781488788952): every plan named by the claim spec is terminal. Checkpoint any final progress, release remaining lane resources, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the successful completed-plan wind-down. Do NOT escalate, widen, or re-author the claim spec.'
           : specExhausted

@@ -155,6 +155,79 @@ describe('planItemLaneBlockReason', () => {
     expect(got?.reason).toMatch(/blocked-by: P-001/);
   });
 
+  // WI-7316: the lane guard already resolves `staleBlockedHint` (resolveEffectiveStatusForItems
+  // computes it in the same pass it computes effectiveStatus) and used to DROP it. Carrying it on
+  // the block is what lets scheduler:get_next / work_items:claimable tell a genuinely drained lane
+  // apart from one held shut by a sticky token nothing will ever clear on its own.
+  //
+  // The pair below is the point: the same `blocked` verdict, once WITH a contradiction and once
+  // WITHOUT. If the hint were unconditionally populated (or unconditionally null) exactly one of
+  // these two would still pass, which is what makes them a falsifiable pair rather than one test.
+  describe('staleBlockedHint pass-through (WI-7316)', () => {
+    it('carries the hint when the stored blocked token contradicts a fully-resolved blocked-by set', async () => {
+      getPlanRowMock.mockResolvedValue({
+        items: [
+          planItem({ id: 'P-001', storedStatus: 'done' }), // resolved
+          planItem({ id: 'P-002', storedStatus: 'dropped' }), // resolved
+          planItem({ id: 'P-003', storedStatus: 'blocked', blockedBy: ['P-001', 'P-002'] }),
+        ],
+      });
+      const got = await planItemLaneBlockReason({
+        payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-003' } },
+        harness: 'papercusp',
+        id: UNUSED_ID,
+        family: UNUSED_FAMILY,
+      });
+      expect(got?.effectiveStatus).toBe('blocked');
+      expect(got?.itemId).toBe('P-003');
+      // The hint must name the resolved dependencies and the remedy — this is the whole payload a
+      // self-selecting member gets, and "is effectively blocked" alone is what sent it to re-poll.
+      expect(got?.staleBlockedHint).toEqual(expect.stringContaining('P-001, P-002'));
+      expect(got?.staleBlockedHint).toMatch(/already resolved/);
+      expect(got?.staleBlockedHint).toMatch(/plans:set-status/);
+      // And the trap this closes: with every blocker resolved the reason carries NO blocked-by
+      // list, so the caller sees a bare "effectively blocked" with nothing to wait on. Pinning
+      // the absence keeps the hint load-bearing rather than merely redundant with `reason`.
+      expect(got?.reason).not.toMatch(/blocked-by:/);
+    });
+
+    it('leaves the hint null for an ORDINARY block with a genuinely unresolved dependency', async () => {
+      getPlanRowMock.mockResolvedValue({
+        items: [
+          planItem({ id: 'P-001', storedStatus: 'todo' }), // still unresolved — a real blocker
+          planItem({ id: 'P-002', storedStatus: 'blocked', blockedBy: ['P-001'] }),
+        ],
+      });
+      const got = await planItemLaneBlockReason({
+        payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-002' } },
+        harness: 'papercusp',
+        id: UNUSED_ID,
+        family: UNUSED_FAMILY,
+      });
+      expect(got?.effectiveStatus).toBe('blocked');
+      // Null is the load-bearing value: an honest block is correct, self-clearing, and already
+      // explained by `reason`'s blocked-by list. Surfacing a hint here would turn the rare,
+      // actionable "this will never clear itself" signal into routine noise on every pull.
+      expect(got?.staleBlockedHint).toBeNull();
+      expect(got?.reason).toMatch(/blocked-by: P-001/);
+    });
+
+    it('carries a null hint on a cleanly-terminal residue block', async () => {
+      getPlanRowMock.mockResolvedValue({ items: [planItem({ id: 'P-009', storedStatus: 'done' })] });
+      const got = await planItemLaneBlockReason({
+        payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-009' } },
+        harness: 'papercusp',
+        id: UNUSED_ID,
+        family: UNUSED_FAMILY,
+      });
+      // The field is REQUIRED on the interface, so every branch must set it explicitly — this
+      // pins that the terminal/residue branch returns the resolver's value rather than
+      // accidentally omitting the key (which reads as `undefined`, not `null`, to a consumer).
+      expect(got?.effectiveStatus).toBe('done');
+      expect(got).toHaveProperty('staleBlockedHint', null);
+    });
+  });
+
   it('returns null once the blocker resolves (done)', async () => {
     getPlanRowMock.mockResolvedValue({
       items: [

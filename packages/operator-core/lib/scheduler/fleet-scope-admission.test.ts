@@ -1097,6 +1097,79 @@ describe('fleet scope assignment admission (P-016)', () => {
   // drained queue at the member's end unless fleetScopedMiss names the case loudly. Live
   // incident: spec `p2p-release-lane@8` matched 0 of 1250 rows for 4.5h while two members
   // separately, in good faith, reported "floor-gated, not a spec bug" — because the miss they
+  // WI-7316: the plan-lane bounce happens AFTER the atomic claim, so no SQL-floor diagnosis in
+  // this file can see it. A lane whose every candidate was bounced by a plan item stuck on a
+  // STALE `blocked` token therefore used to report as an ordinary drain — windDown:true, "no
+  // claimable work-item matched fleet scope" — and each member in turn stood down while the work
+  // sat one status write from claimable. These pin the opposite.
+  describe('WI-7316: a lane held shut by a STALE plan-item block is never certified as a drain', () => {
+    const staleScope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bugs',
+      fleetRole: 'member' as const,
+      workspaceId: 'papercusp-workspace',
+      record: {
+        source: 'fleet' as const,
+        spec: {
+          specVersion: '1.0',
+          specId: 'bugs-lane',
+          revision: 3,
+          view: { filter: { field: 'kind', op: 'in' as const, value: ['bug', 'change'] } },
+          rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
+          states: ['open'],
+        },
+        revision: 1,
+        updatedBy: 'su-leader',
+        updatedAt: 'now',
+      },
+    };
+    const staleRows = [
+      { workItemId: 'WI-8001', planSlug: 'a-plan', itemId: 'P-003', hint: 'every blocked-by dependency has already resolved' },
+      { workItemId: 'WI-8002', planSlug: 'a-plan', itemId: 'P-004', hint: 'every blocked-by dependency has already resolved' },
+    ];
+
+    it('refuses windDown and names the rows + the one-call remedy', () => {
+      const miss = fleetScopedMiss(staleScope, [], { staleBlockedLane: staleRows });
+      // THE regression this exists to prevent: certifying a drain here is what silently
+      // stands a whole fleet down on work that is still there.
+      expect(miss.windDown).toBe(false);
+      expect(miss.reason).toBe('stale_plan_item_block');
+      expect(miss.staleBlockedLane).toEqual(staleRows);
+      expect(miss.error).toMatch(/STALE PLAN-ITEM BLOCK, NOT A DRAINED LANE/);
+      // The rows must be NAMED — a count alone leaves the member with nothing to act on.
+      expect(miss.error).toMatch(/WI-8001 → a-plan#P-003/);
+      // The advice must be executable, not a diagnosis: an exact call it can paste.
+      expect(miss.advice).toMatch(/plans:set-status \{ slug: "a-plan", item: "P-003", status: "todo" \}/);
+      // And it must not contradict windDown:false by also telling the member to stand down —
+      // the failure mode if this case fell through to the planComplete/specExhausted advice.
+      expect(miss.advice).not.toMatch(/loop:end/);
+      expect(miss.advice).toMatch(/do NOT stand down/i);
+      // Re-polling is the intuitive move and is exactly wrong: the token never self-clears.
+      expect(miss.advice).toMatch(/do NOT just re-poll/);
+    });
+
+    it('is inert when no row carried a stale hint — an ordinary drain still certifies', () => {
+      // The falsifiability control for the pair above: same scope, same call, empty list. If the
+      // new branch fired on the mere PRESENCE of the option (or unconditionally), this would red.
+      const miss = fleetScopedMiss(staleScope, [], { staleBlockedLane: [] });
+      expect(miss.windDown).toBe(true);
+      expect(miss.reason).not.toBe('stale_plan_item_block');
+      expect(miss).not.toHaveProperty('staleBlockedLane');
+      expect(miss.error).not.toMatch(/STALE PLAN-ITEM BLOCK/);
+    });
+
+    it('a PAUSED fleet still reports the pause, not the stale block', () => {
+      // Precedence: every diagnosis here is suppressed while paused because the pause message
+      // already fully explains the miss — and a paused member must stand down regardless of
+      // what its lane holds. This pins the new branch into that same rule.
+      const miss = fleetScopedMiss(staleScope, [], { staleBlockedLane: staleRows, pausedReason: 'winding down' });
+      expect(miss.windDown).toBe(true);
+      expect(miss.paused).toBe(true);
+      expect(miss.reason).not.toBe('stale_plan_item_block');
+      expect(miss.error).toMatch(/winding-down/);
+    });
+  });
+
   // could actually observe (windDown:true, a bare message) is the SAME shape a genuine drain
   // produces. These tests assert the zero-match case gets its own loud, escalate-worthy shape.
   describe('EI-18663622382734446: a spec matching ZERO rows is named loudly, never folded into a bare drain', () => {
