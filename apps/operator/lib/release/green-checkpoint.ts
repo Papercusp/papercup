@@ -15499,6 +15499,14 @@ export function realCheckpointDeps(
       cfg.integrationRoot,
       "--select-inputs-from",
       inputRoot,
+      // Selection and setup run in separate subprocesses with a potentially
+      // long pc-heavy wait between them. Retention must protect the selected
+      // identity for that whole interval, so the selector attributes its lease
+      // to this long-lived checkpoint controller rather than its short-lived
+      // shell process. Existing dead-PID lease cleanup releases it after this
+      // controller exits.
+      "--lease-owner-pid",
+      String(process.pid),
     ];
     const outputRemainders: Record<"stdout" | "stderr", string> = {
       stdout: "",

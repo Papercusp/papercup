@@ -836,9 +836,9 @@ dependency_generation_cleanup_abandoned() {
 }
 
 dependency_generation_write_owner() {
-  local marker="$1"
+  local marker="$1" owner_pid="${2:-$$}"
   printf 'host=%s\npid=%s\nstarted=%s\n' \
-    "$(dependency_generation_host)" "$$" "$(date +%s)" > "$marker"
+    "$(dependency_generation_host)" "$owner_pid" "$(date +%s)" > "$marker"
 }
 
 # Name the current holder, so a timeout distinguishes ordinary contention from
@@ -917,10 +917,21 @@ dependency_generation_release_publish_lock() {
 # process-owned: same-host dead readers are reclaimable; a foreign-host reader
 # is preserved fail-closed because kill(2) cannot prove its liveness.
 dependency_generation_acquire_selector_lease() {
-  local generation_root="$1" identity="$2" lease
+  local generation_root="$1" identity="$2" owner_pid="${3:-$$}" expected_token="${4:-}"
+  local lease current_token
   if [[ ! "$identity" =~ ^v1-[0-9a-f]{64}$ ]]; then
     dependency_generation_log "FATAL: invalid dependency-generation lease identity: $identity"
     return 2
+  fi
+  case "$owner_pid" in
+    ''|*[!0-9]*)
+      dependency_generation_log "FATAL: invalid dependency-generation lease owner pid: $owner_pid"
+      return 2
+      ;;
+  esac
+  if ! kill -0 "$owner_pid" 2>/dev/null; then
+    dependency_generation_log "FATAL: dependency-generation lease owner pid is not live: $owner_pid"
+    return 74
   fi
   dependency_generation_acquire_publish_lock "$generation_root" || return $?
   if ! dependency_generation_marker_matches "$generation_root/$identity" "$identity"; then
@@ -928,9 +939,20 @@ dependency_generation_acquire_selector_lease() {
     dependency_generation_log "FATAL: dependency generation $identity disappeared before it could be leased"
     return 74
   fi
+  if [ -n "$expected_token" ]; then
+    current_token="$(
+      dependency_generation_selector_token "$generation_root/$identity" 2>/dev/null || true
+    )"
+    if [ "$current_token" != "$expected_token" ]; then
+      dependency_generation_release_publish_lock
+      dependency_generation_log \
+        "FATAL: dependency generation $identity was replaced before its selection lease could be acquired"
+      return 74
+    fi
+  fi
   dependency_generation_ensure_store_root "$generation_root" "$generation_root/.leases"
   lease="$generation_root/.leases/selector-$$-$(date +%s)-${RANDOM:-0}"
-  dependency_generation_write_owner "$lease"
+  dependency_generation_write_owner "$lease" "$owner_pid"
   printf 'identity=%s\n' "$identity" >> "$lease"
   DEPENDENCY_GENERATION_SELECTOR_LEASE="$lease"
   dependency_generation_release_publish_lock
@@ -1701,7 +1723,7 @@ dependency_generation_ensure() {
 
 dependency_generation_main() {
   local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' fingerprint_ref='' retention_rc=0
-  local input_before='' input_after='' exact_input='' selector=''
+  local input_before='' input_after='' exact_input='' selector='' lease_owner_pid=''
   local workspace_dirs=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1709,6 +1731,7 @@ dependency_generation_main() {
       --generation-root) generation_root="$2"; shift 2 ;;
       --workspace-dir) workspace_dirs+=("$2"); shift 2 ;;
       --select-inputs-from) select_inputs_from="$2"; shift 2 ;;
+      --lease-owner-pid) lease_owner_pid="$2"; shift 2 ;;
       --ensure-ref) ensure_ref="$2"; shift 2 ;;
       --fingerprint-ref) fingerprint_ref="$2"; shift 2 ;;
       *) dependency_generation_log "unknown arg: $1"; return 2 ;;
@@ -1726,6 +1749,10 @@ dependency_generation_main() {
   fi
   if [ -n "$ensure_ref" ] && [ -n "$fingerprint_ref" ]; then
     dependency_generation_log '--select-inputs-from, --ensure-ref, and --fingerprint-ref are mutually exclusive'
+    return 2
+  fi
+  if [ -n "$lease_owner_pid" ] && [ -z "$select_inputs_from" ]; then
+    dependency_generation_log '--lease-owner-pid requires --select-inputs-from'
     return 2
   fi
   if [ -n "$fingerprint_ref" ]; then
@@ -1751,6 +1778,16 @@ dependency_generation_main() {
     }
     select_inputs_from="$(cd "$select_inputs_from" && pwd -P)"
     dependency_generation_select_inputs "$select_inputs_from" "$generation_root" || return $?
+    if [ -n "$lease_owner_pid" ]; then
+      # Bridge the controller's selection-to-materialization interval. The
+      # selector subprocess exits before pc-heavy admission and setup begin, so
+      # a lease owned by $$ would immediately become reclaimable. Attribute it
+      # to the long-lived controller instead, and re-check the immutable token
+      # under the publish lock before returning the handoff.
+      dependency_generation_acquire_selector_lease \
+        "$generation_root" "$DEPENDENCY_GENERATION_ID" \
+        "$lease_owner_pid" "$DEPENDENCY_GENERATION_TOKEN" || return $?
+    fi
     printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=full reused=true token=%s path=%s\n' \
       "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
       "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" "$DEPENDENCY_GENERATION_TOKEN" \

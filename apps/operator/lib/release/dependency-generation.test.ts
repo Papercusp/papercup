@@ -155,18 +155,23 @@ function selectPrewarmed(
   generationRoot: string,
   inputRoot: string,
   env: NodeJS.ProcessEnv = {},
+  leaseOwnerPid?: number,
 ): ShellResult {
+  const args = [
+    SCRIPT,
+    '--integration',
+    inputRoot,
+    '--generation-root',
+    generationRoot,
+    '--select-inputs-from',
+    inputRoot,
+  ];
+  if (leaseOwnerPid !== undefined) {
+    args.push('--lease-owner-pid', String(leaseOwnerPid));
+  }
   const result = spawnSync(
     'bash',
-    [
-      SCRIPT,
-      '--integration',
-      inputRoot,
-      '--generation-root',
-      generationRoot,
-      '--select-inputs-from',
-      inputRoot,
-    ],
+    args,
     {
       encoding: 'utf8',
       env: { ...process.env, ...env },
@@ -1614,6 +1619,62 @@ describe('immutable dependency generation', () => {
     expect(after.status, after.stderr).toBe(0);
     expect(existsSync(firstPath)).toBe(false);
   });
+
+  it('protects the selection-to-materialization handoff with a live controller-owned lease (WI-2144343)', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const first = publish(integration, {
+      DEPENDENCY_GENERATION_RETAIN_COUNT: '1',
+    });
+    expect(first.status, first.stderr).toBe(0);
+    const firstIdentity = publishedIdentity(first.stdout);
+    const firstPath = publishedPath(first.stdout);
+
+    const selected = selectPrewarmed(
+      generationRoot,
+      integration,
+      {},
+      process.pid,
+    );
+    expect(selected.status, selected.stderr).toBe(0);
+    expect(publishedIdentity(selected.stdout)).toBe(firstIdentity);
+    const leaseDir = join(generationRoot, '.leases');
+    const handoffLease = readdirSync(leaseDir)
+      .map((entry) => join(leaseDir, entry))
+      .find((lease) => {
+        const body = readFileSync(lease, 'utf8');
+        return (
+          body.includes(`pid=${process.pid}\n`) &&
+          body.includes(`identity=${firstIdentity}\n`)
+        );
+      });
+    expect(handoffLease).toBeDefined();
+
+    for (let i = 1; i <= 2; i += 1) {
+      writeFileSync(
+        join(integration, 'package-lock.json'),
+        `{"name":"fixture-${i}","lockfileVersion":3,"packages":{}}\n`,
+      );
+      writeFileSync(join(integration, 'node_modules/pkg/index.js'), `new-${i}\n`);
+      const result = publish(integration, {
+        DEPENDENCY_GENERATION_RETAIN_COUNT: '1',
+      });
+      expect(result.status, result.stderr).toBe(0);
+    }
+    expect(existsSync(firstPath)).toBe(true);
+
+    rmSync(handoffLease!);
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      '{"name":"fixture-after-handoff","lockfileVersion":3,"packages":{}}\n',
+    );
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'after-handoff\n');
+    const after = publish(integration, {
+      DEPENDENCY_GENERATION_RETAIN_COUNT: '1',
+    });
+    expect(after.status, after.stderr).toBe(0);
+    expect(existsSync(firstPath)).toBe(false);
+  }, NATIVE_SHELL_TIMEOUT_MS);
 
   // The manifest walk fingerprints each node_modules tree independently and
   // sorts globally, so it runs in parallel. Parallelism must remain an

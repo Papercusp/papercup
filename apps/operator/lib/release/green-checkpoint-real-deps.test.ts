@@ -2590,6 +2590,8 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       "/int",
       "--select-inputs-from",
       cpTree,
+      "--lease-owner-pid",
+      expect.stringMatching(/^\d+$/),
     ]);
   }
 
@@ -2684,6 +2686,8 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       "/int",
       "--select-inputs-from",
       cpTree,
+      "--lease-owner-pid",
+      expect.stringMatching(/^\d+$/),
     ]);
     expect(calls[1].args).toEqual(
       expect.arrayContaining([
