@@ -520,6 +520,108 @@ describe('plans:audit phase:activation', () => {
     expect(result.derivedSpecClauses).toEqual({ error: 'spec clause store unavailable' });
   });
 
+  it('reports the P-017 under-read verdict, flagging a declared-but-uncited requirement turn', async () => {
+    // The fixture declares turns 0-20 and cites only turn 7. Turn 12 carries obligation
+    // language and nothing maps it — exactly the self-chosen-denominator gap P-017 opens up.
+    mockOrgSql.mockResolvedValue([
+      { source_kind: 'codex', session_id: 'session-full-id', turn_idx: 7, speaker: 'user', text: 'the audit must record a complete source range' },
+      { source_kind: 'codex', session_id: 'session-full-id', turn_idx: 12, speaker: 'user', text: 'it should never accept a citation outside the declared range' },
+    ]);
+
+    const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: true, phase: 'activation' });
+    expect(result.underRead).toMatchObject({
+      advisory: true,
+      declaredTurns: 21,
+      suppliedTurns: 2,
+      citedTurns: 1,
+      uncitedTurns: 1,
+    });
+    expect(result.underRead.candidates).toEqual([
+      expect.objectContaining({
+        ref: 'session_turn:codex:session-full-id:12',
+        signals: expect.arrayContaining(['constraint']),
+      }),
+    ]);
+    // 19 of 21 declared turns were never supplied, so this verdict is a FLOOR — an empty
+    // candidate list here would NOT have meant "nothing was under-read".
+    expect(result.underRead.unsuppliedTurns).toBe(19);
+  });
+
+  it('an under-read read failure is REPORTED, never propagated — the audit is already recorded', async () => {
+    mockOrgSql.mockRejectedValue(new Error('session_turns unavailable'));
+
+    const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: true, phase: 'activation', auditSeq: 2 });
+    expect(result.underRead).toEqual({ error: 'session_turns unavailable' });
+  });
+
+  it('reports the P-018 source-span verdict, flagging turns the audit never declared', async () => {
+    // Two different queries share the one sql mock, so route by statement text rather
+    // than by call order — the `sql(values)` IN-clause helper is also a call on it, which
+    // makes positional mocking fragile in a way that would silently mis-attribute rows.
+    mockOrgSql.mockImplementation((...args: unknown[]) => {
+      const first = args[0];
+      if (!Array.isArray(first) || !('raw' in first)) return first; // the sql(values) helper
+      const text = (first as unknown as string[]).join('?');
+      if (text.includes('MIN(turn_idx)')) {
+        // The fixture declares turns 0-20; the transcript actually runs to 40.
+        return Promise.resolve([
+          { source_kind: 'codex', session_id: 'session-full-id', min_turn: 0, max_turn: 40 },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: true, phase: 'activation' });
+    expect(result.sourceSpan).toMatchObject({
+      advisory: true,
+      transcriptTurns: 41,
+      declaredTurns: 21,
+      gapTurns: 20,
+      unmeasuredSessions: [],
+    });
+    // A TAIL gap: the audit stopped reading at turn 20 of a 40-turn conversation, which
+    // is where corrections and reversals live.
+    expect(result.sourceSpan.gaps).toEqual([
+      expect.objectContaining({ position: 'tail', fromTurn: 21, toTurn: 40, turnCount: 20 }),
+    ]);
+  });
+
+  it('an unmeasurable session makes the span verdict inconclusive rather than clean', async () => {
+    // Zero gaps here must NOT read as "fully spanned" — the extent query returned nothing,
+    // so the detector could not see the session it was asked about.
+    mockOrgSql.mockImplementation((...args: unknown[]) => {
+      const first = args[0];
+      if (!Array.isArray(first) || !('raw' in first)) return first;
+      return Promise.resolve([]);
+    });
+
+    const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
+
+    expect(result.sourceSpan.gaps).toEqual([]);
+    expect(result.sourceSpan.unmeasuredSessions).toEqual(['codex::session-full-id']);
+  });
+
+  it('a source-span read failure is REPORTED, never propagated', async () => {
+    mockOrgSql.mockImplementation((...args: unknown[]) => {
+      const first = args[0];
+      if (!Array.isArray(first) || !('raw' in first)) return first;
+      const text = (first as unknown as string[]).join('?');
+      if (text.includes('MIN(turn_idx)')) return Promise.reject(new Error('extent read failed'));
+      return Promise.resolve([]);
+    });
+
+    const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: true, phase: 'activation', auditSeq: 2 });
+    expect(result.sourceSpan).toEqual({ error: 'extent read failed' });
+  });
+
   it('derives DRAFT clauses only, so a derivation pass can never gate another plan ship', async () => {
     // plan-spec-coverage-gate enforces only {accepted, active}. An enforceable lifecycle
     // here would let this bulk pass refuse ships it has no business judging.

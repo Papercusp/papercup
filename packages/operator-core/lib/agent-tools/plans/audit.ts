@@ -52,6 +52,8 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { parseTurnRef, resolveSessionTurnRefs, SESSION_SOURCE_KINDS } from '../sessions/_shared';
 import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
 import { persistDerivedDraftClauses } from '../../derive-draft-spec-clauses';
+import { detectUnderReadFromSource } from '../../activation-under-read';
+import { assertSourceSpan } from '../../activation-source-span';
 import { setSpecClause } from './spec-clauses-store';
 import { getPlanRow } from './source';
 import { parsePlan } from './parser';
@@ -444,6 +446,92 @@ export default defineTool({
         derivedSpecClauses = { error: error instanceof Error ? error.message : String(error) };
       }
 
+      // P-017: the UNDER-READ detector. Independently re-extracts requirement-shaped
+      // turns from the ranges this audit DECLARED and reports the ones no mapping cited.
+      // ADVISORY by construction (see the module header): it is lexical, so it can see
+      // that a turn sounds like a requirement but never that its content went unabsorbed.
+      // Refusing an audit on that basis would block correct work on a guess.
+      //
+      // The verdict carries its own coverage (`unsuppliedTurns`), so a bounded read
+      // degrades it to inconclusive rather than silently shrinking the denominator —
+      // which would be the very self-chosen-denominator failure P-017 exists to close.
+      let underRead:
+        | Awaited<ReturnType<typeof detectUnderReadFromSource>>
+        | { error: string };
+      try {
+        underRead = await detectUnderReadFromSource(
+          { sourceRanges, mappings },
+          async (ranges, cap) => {
+            if (ranges.length === 0) return [];
+            const rows = await sql<
+              Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; text: string }>
+            >`
+              SELECT source_kind, session_id, turn_idx, speaker, text
+                FROM harness_shared.session_turns
+               WHERE workspace_id = ${workspaceId}
+                 AND (source_kind, session_id) IN ${sql(
+                   ranges.map((range) => [range.sourceKind, range.sessionId] as const),
+                 )}
+                 AND turn_idx BETWEEN ${Math.min(...ranges.map((r) => r.fromTurn))}
+                                  AND ${Math.max(...ranges.map((r) => r.toTurn))}
+               ORDER BY source_kind, session_id, turn_idx
+               LIMIT ${cap}`;
+            // Over-fetches across gaps between ranges of the SAME session; detectUnderRead
+            // filters to the declared set, so the extra rows change no count.
+            return rows.map((row) => ({
+              sourceKind: row.source_kind,
+              sessionId: row.session_id,
+              turnIdx: row.turn_idx,
+              speaker: row.speaker,
+              text: row.text,
+            }));
+          },
+        );
+      } catch (error) {
+        underRead = { error: error instanceof Error ? error.message : String(error) };
+      }
+
+      // P-018: the SOURCE-SPAN assertion — the complement of P-017 above. P-017 asks
+      // "within the ranges you declared, what did you skip"; this asks the prior question
+      // that decides the denominator: "were the ranges you declared the whole
+      // conversation". An auditor who declares turns 60-120 of a 200-turn session has
+      // excluded 140 turns before any mapping is written, and every other check operates
+      // inside that choice and cannot see past it.
+      //
+      // Advisory for the same reason as P-017, and inconclusive rather than clean when a
+      // declared session's extent cannot be measured — concluding "fully spanned" from a
+      // failed measurement would be the very hole this closes, moved into the detector.
+      let sourceSpan: ReturnType<typeof assertSourceSpan> | { error: string };
+      try {
+        const sessionKeys = [
+          ...new Map(
+            sourceRanges.map((range) => [
+              `${range.sourceKind}::${range.sessionId}`,
+              [range.sourceKind, range.sessionId] as const,
+            ]),
+          ).values(),
+        ];
+        const extents = sessionKeys.length === 0
+          ? []
+          : (
+              await sql<Array<{ source_kind: string; session_id: string; min_turn: number; max_turn: number }>>`
+                SELECT source_kind, session_id,
+                       MIN(turn_idx) AS min_turn, MAX(turn_idx) AS max_turn
+                  FROM harness_shared.session_turns
+                 WHERE workspace_id = ${workspaceId}
+                   AND (source_kind, session_id) IN ${sql(sessionKeys.map((key) => [key[0], key[1]] as const))}
+                 GROUP BY source_kind, session_id`
+            ).map((row) => ({
+              sourceKind: row.source_kind,
+              sessionId: row.session_id,
+              minTurn: Number(row.min_turn),
+              maxTurn: Number(row.max_turn),
+            }));
+        sourceSpan = assertSourceSpan({ sourceRanges, extents });
+      } catch (error) {
+        sourceSpan = { error: error instanceof Error ? error.message : String(error) };
+      }
+
       await emitPlanEventForCaller(ctx as Parameters<typeof emitPlanEventForCaller>[0], {
         planSlug: args.slug,
         event: 'plan_audited',
@@ -469,6 +557,8 @@ export default defineTool({
         repairedOmissions: activation.repairedOmissions.length,
         rejectedOrSuperseded: activation.rejectedOrSuperseded.length,
         derivedSpecClauses,
+        underRead,
+        sourceSpan,
       } };
     }
 
