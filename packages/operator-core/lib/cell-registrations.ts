@@ -825,15 +825,15 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
     codes: {
       green: {
         meaning:
-          'The gate is green about what it last judged and no staging buffer was measured. If unknownLegs names mainBehindStaging, the promotion reading is withheld rather than guessed.',
+          'The gate is green about what it last judged. Exact judged-SHA promotion and the independent staging relation are carried in the same brief; an ordinary staging buffer does not make this not-promoted.',
         safeAction:
-          'Proceed. If mainBehindStaging is named in unknownLegs, re-read the instrument before claiming staging is fully promoted.',
+          'Proceed on the green verdict. If unknownLegs names promotion.mainContainsJudgedSha, do not claim the judged SHA reached main until that exact ancestry read succeeds.',
       },
       'green-not-promoted': {
         meaning:
-          'The gate is green about its last judged pin, but staging contains newer commits that have not yet reached that green pin. This is a promotion buffer, not a red verdict.',
+          'The gate is green about its last judged SHA, but exact ancestry says that SHA did not reach the writer-owned main pin. This is independent of whether staging has an ordinary buffer.',
         safeAction:
-          'The green-checkpoint is the single lever: let or trigger its next verdict after checking gate.greenCheckpoint.retriage; do not fast-forward main directly.',
+          'Resume the frozen-lineage promotion/absorption transaction after checking gate.greenCheckpoint.retriage; do not substitute a fresh staging-tip verdict or fast-forward main by hand.',
       },
       'red-owned-remediating': {
         meaning: 'The gate is red, a LIVE session owns the incident, and remediation shows signs of life.',
@@ -891,11 +891,21 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
       // measured-ness flag, so an empty list is never read as "no legs failing".
       'gate.ownerBrief.whyNot.failingNonTestLegs',
       'gate.ownerBrief.whyNot.nonTestLegsMeasured',
-      // P-005: makes `green` versus `green-not-promoted` independently checkable in the
-      // SAME cell read; the answer must not send callers to a second state read.
-      'verdictProvenance.mainBehindStaging',
+      // D-013/P-011: exact judged-SHA promotion and the ordinary staging buffer are
+      // orthogonal, and both are independently checkable in this SAME cell read.
+      'gate.ownerBrief.promotion.mainContainsJudgedSha',
+      'gate.ownerBrief.promotion.staging.bufferPresent',
+      'gate.ownerBrief.promotion.staging.relation',
       'gate.ownerBrief.ownership.assessmentCode',
       'gate.ownerBrief.remediation.fixerAlive',
+      'gate.ownerBrief.remediation.frozenCandidate',
+      'gate.ownerBrief.remediation.repairHead',
+      'gate.ownerBrief.remediation.frozenSinceAtMs',
+      'gate.ownerBrief.remediation.admissions',
+      'gate.ownerBrief.remediation.signature',
+      'gate.ownerBrief.remediation.legs',
+      'gate.ownerBrief.remediation.blockedReason',
+      'gate.ownerBrief.remediation.verdictProvenance',
       'gate.ownerBrief.vintageSpreadMs',
       // main-green-status-visible-2026-09-03 P-010: the spread alone says the legs
       // disagree about WHEN but never WHICH ONE IS OLD, which is the question a reader
@@ -913,6 +923,10 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
     measuredBy: {
       'gate.ownerBrief.whyNot.failingLegs': 'gate.ownerBrief.whyNot.measured',
       'gate.ownerBrief.whyNot.failingNonTestLegs': 'gate.ownerBrief.whyNot.nonTestLegsMeasured',
+      'gate.ownerBrief.remediation.admissions': 'gate.ownerBrief.remediation.admissionsMeasured',
+      'gate.ownerBrief.remediation.signature': 'gate.ownerBrief.remediation.signatureMeasured',
+      'gate.ownerBrief.remediation.legs': 'gate.ownerBrief.remediation.legsMeasured',
+      'gate.ownerBrief.remediation.blockedReason': 'gate.ownerBrief.remediation.blockedReasonMeasured',
       'gate.ownerBrief.attestations.staleLegs': 'gate.ownerBrief.attestations.verdict',
     },
   },
@@ -935,7 +949,7 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
     path: 'gate.ownerBrief.answer',
   },
   shape:
-    '{ gate: { ownerBrief: { answer, assessment: { code, meaning, safeAction }, mainGreen: { value, vintage }, whyNot: { failingLegs, measured, provenance, failingNonTestLegs, nonTestLegsMeasured, inconclusiveStatus, vintage } | null, ownership: { claimState, holder, workItem, assessmentCode, vintage }, remediation: { phase, attempts, fixerSpawnId, fixerAlive, zeroAttemptStalled, queueAgeMs, vintage } | null, lastGreen: { atMs, ageMs }, vintageSpreadMs, attestations: { legs: [{ leg, observedAtMs, ageMs, source, stale }], spreadMs, verdict, staleLegs, oldestLeg, summary }, unknownLegs } } }',
+    '{ gate: { ownerBrief: { answer, assessment: { code, meaning, safeAction }, mainGreen: { value, vintage }, promotion: { judgedSha, mainPin, mainContainsJudgedSha, vintage, staging: { headSha, bufferPresent, relation, vintage } }, whyNot: { failingLegs, measured, provenance, failingNonTestLegs, nonTestLegsMeasured, inconclusiveStatus, vintage } | null, ownership: { claimState, holder, workItem, assessmentCode, vintage }, remediation: { frozenCandidate, repairHead, phase, frozenSinceAtMs, admissions, admissionsMeasured, signature: [{ status }], signatureMeasured, legs: [{ status }], legsMeasured, blockedReason, blockedReasonMeasured, verdictProvenance, attempts, fixerSpawnId, fixerAlive, zeroAttemptStalled, queueAgeMs, vintage } | null, lastGreen: { atMs, ageMs }, vintageSpreadMs, attestations: { legs: [{ leg, observedAtMs, ageMs, source, stale }], spreadMs, verdict, staleLegs, oldestLeg, summary }, unknownLegs } } }',
 };
 
 /**

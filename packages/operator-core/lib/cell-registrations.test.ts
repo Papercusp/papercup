@@ -598,11 +598,17 @@ describe('P-007: the four verdict cells', () => {
     expect(Object.keys(assessment!.codes)).toEqual(
       expect.arrayContaining(['green', 'green-not-promoted', 'no-verdict', 'red-owned-stalled']),
     );
-    expect(assessment!.codes['green-not-promoted'].safeAction).toContain('green-checkpoint');
+    expect(assessment!.codes['green-not-promoted'].safeAction).toContain('frozen-lineage');
     expect(assessment!.codes['no-verdict'].meaning).toContain('zero new reds is NOT evidence of green');
     expect(assessment!.evidence).toContain('gate.ownerBrief.whyNot.measured');
     expect(assessment!.evidence).toContain('gate.ownerBrief.whyNot.provenance');
-    expect(assessment!.evidence).toContain('verdictProvenance.mainBehindStaging');
+    expect(assessment!.evidence).toContain('gate.ownerBrief.promotion.mainContainsJudgedSha');
+    expect(assessment!.evidence).toContain('gate.ownerBrief.promotion.staging.bufferPresent');
+    expect(assessment!.evidence).toContain('gate.ownerBrief.promotion.staging.relation');
+    expect(assessment!.evidence).toContain('gate.ownerBrief.remediation.admissions');
+    expect(assessment!.evidence).toContain('gate.ownerBrief.remediation.signature');
+    expect(assessment!.evidence).toContain('gate.ownerBrief.remediation.legs');
+    expect(assessment!.evidence).toContain('gate.ownerBrief.remediation.blockedReason');
   });
 
   /** Axis 4 admits no fixture-only registration, and every one of these carries a
