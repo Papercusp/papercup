@@ -166,6 +166,43 @@ if [[ -n "$(in_image "grep -E '^\s*\"default\"' -A3 /etc/containers/policy.json 
 else
   fail "policy.json default is NOT reject — it does not fail closed"
 fi
+# ⛔ GREPPING A POLICY IS NOT VERIFYING IT. The two checks above are TEXT assertions, and for a
+# long time they were the ONLY ones touching this file — which is exactly how it shipped with a
+# fatal `"_comment"` key that nobody could see. containers/image's policy parser rejects ANY
+# unknown top-level key, so the image could not install itself: `bootc install to-filesystem`
+# died with
+#   invalid policy in "/etc/containers/policy.json": Unknown key "_comment"
+# and ONLY a real disk render reaches that code path (measured 2026-09-04 by P-307's first
+# end-to-end bake). `skopeo --policy` rejects it identically, so the shipped file had never been
+# loadable by anything — while both greps passed the whole time. Assert loadability
+# BEHAVIOURALLY; the prose that used to live in the JSON is in the sibling README.
+#
+# The copy is aimed at a deliberately dead registry: a policy-load failure is reported BEFORE
+# the source is contacted, so "no load error" is a real verdict and not merely an absence.
+polcheck() { # $1 = policy path inside the image -> count of load errors
+  in_image "skopeo --policy $1 copy docker://127.0.0.1:1/nope/nope:latest dir:/tmp/polcheck 2>&1 \
+            | grep -c 'Error loading trust policy'"
+}
+if [[ "$(polcheck /etc/containers/policy.json)" == "0" ]]; then
+  pass "policy.json LOADS (containers/image accepts it)"
+else
+  fail "policy.json is NOT LOADABLE by containers/image — the image cannot install or upgrade"\
+       "itself. An unknown top-level key (a '_comment' block, etc.) is fatal; put prose in"\
+       "release-signature-policy.README.md instead"
+fi
+# POSITIVE CONTROL. A guard that has never failed is a guard you have not tested, and this one's
+# entire job is to notice a key that looks harmless. Feed the loader the SHIPPED policy with a
+# comment key planted in it: it MUST reject that. If this control ever passes, the check above
+# has gone blind and its PASS proves nothing.
+polctl="$(in_image "jq '. + {\"_comment\":[\"planted\"]}' /etc/containers/policy.json > /tmp/bad-policy.json 2>/dev/null; \
+          skopeo --policy /tmp/bad-policy.json copy docker://127.0.0.1:1/nope/nope:latest dir:/tmp/polctl 2>&1 \
+          | grep -c 'Error loading trust policy'")"
+if [[ "$polctl" != "0" ]]; then
+  pass "policy loadability check is FALSIFIABLE (a planted comment key is rejected)"
+else
+  fail "positive control FAILED: a policy with a planted '_comment' key was NOT rejected — the"\
+       "loadability check above is blind, so its PASS carries no information"
+fi
 for u in papercusp-host-prepare.service nftables.service dnf-automatic.timer; do
   if [[ -n "$(in_image "systemctl is-enabled $u 2>/dev/null | grep -Fx enabled")" ]]; then
     pass "enabled: $u"

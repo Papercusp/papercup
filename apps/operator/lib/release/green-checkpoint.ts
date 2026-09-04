@@ -12037,9 +12037,15 @@ async function runGreenCheckpointInner(
         repairQueue.candidate,
         candidate,
       ).catch(() => null),
-      judgedOnLineageRef: (await refExists(cfg.integrationRoot, lineageRef).catch(() => false))
-        ? await isAncestor(cfg.integrationRoot, candidate, lineageRef).catch(() => null)
-        : null,
+      // An ABSENT ref is a definite `false` (no admission ever opened a lineage for this
+      // candidate), not `null`. Only a git invocation that actually threw is unmeasured.
+      judgedOnLineageRef: await refExists(cfg.integrationRoot, lineageRef)
+        .then((exists) =>
+          exists
+            ? isAncestor(cfg.integrationRoot, candidate, lineageRef).catch(() => null)
+            : (false as boolean | null),
+        )
+        .catch(() => null),
     });
     if (!promotion.promotable) {
       const refusalSummary =

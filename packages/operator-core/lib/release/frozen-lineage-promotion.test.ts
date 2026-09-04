@@ -47,13 +47,37 @@ describe('main may only fast-forward to a frozen-lineage commit that passed the 
   });
 
   it('a candidate that froze and verified green with ZERO admissions promotes itself', () => {
-    // repairHead === candidate is the legitimate no-admission case: a commit is its own
-    // ancestor, so the lineage predicate holds without a special case.
-    const verdict = assessFrozenLineagePromotion(
-      input({ repairHead: CANDIDATE, judged: CANDIDATE }),
-    );
-    expect(verdict.promotable).toBe(true);
-    expect(verdict.code).toBe('promotable');
+    // The no-admission case. Nothing was admitted, so `refs/papercusp/frozen/<candidate>` does
+    // not exist and CANNOT exist — demanding it would permanently refuse the one candidate that
+    // needed no repair at all. It must promote whatever the ledger leg says, including absent
+    // (false) and unmeasured (null).
+    for (const onRef of [true, false, null] as Array<boolean | null>) {
+      const verdict = assessFrozenLineagePromotion(
+        input({ repairHead: CANDIDATE, judged: CANDIDATE, judgedOnLineageRef: onRef }),
+      );
+      expect(verdict.promotable).toBe(true);
+      expect(verdict.code).toBe('promotable');
+    }
+  });
+
+  it('but the zero-admission shortcut still requires identity and ancestry', () => {
+    // It must not become a hole: the shortcut is reached only AFTER judged === repairHead and
+    // descent are proven, so a mismatched head or an unreadable ancestry still refuses.
+    expect(
+      assessFrozenLineagePromotion(
+        input({ repairHead: STAGING_TIP, judged: CANDIDATE, judgedOnLineageRef: null }),
+      ).code,
+    ).toBe('judged-sha-is-not-the-repair-head');
+    expect(
+      assessFrozenLineagePromotion(
+        input({
+          repairHead: CANDIDATE,
+          judged: CANDIDATE,
+          judgedDescendsFromCandidate: null,
+          judgedOnLineageRef: null,
+        }),
+      ).code,
+    ).toBe('lineage-unreadable');
   });
 
   it('refuses when the gate judged a sha that is NOT the repair head', () => {

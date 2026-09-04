@@ -40,7 +40,14 @@ export interface FrozenLineagePromotionInput {
   /**
    * `git merge-base --is-ancestor <judged> refs/papercusp/frozen/<candidate>` — true when the
    * judged sha is reachable from the CAS-advanced admission ledger ref, which is the only
-   * record of what was actually admitted. `null` when the ref could not be resolved.
+   * record of what was actually admitted.
+   *
+   * `false` when the ref resolves and does not contain the sha, AND when the ref does not exist
+   * at all: "no admission ever opened a lineage for this candidate" is a definite negative, not
+   * an unmeasured one. Reserve `null` for a git invocation that actually FAILED.
+   *
+   * Ignored when `judged === candidate` (see below): a candidate with zero admissions is the
+   * root of its own lineage and legitimately has no ledger ref yet.
    */
   judgedOnLineageRef: boolean | null;
 }
@@ -95,6 +102,20 @@ export function assessFrozenLineagePromotion(
       summary:
         `${short(judged)} does not descend from frozen candidate ${short(candidate)}; it is a ` +
         `cut taken off the lineage, not a repair of it`,
+    };
+  }
+
+  // A candidate that froze and went green with ZERO admissions is the root of its own lineage:
+  // no admission ran, so `refs/papercusp/frozen/<candidate>` legitimately does not exist yet, and
+  // demanding it would refuse the one case that needed no repair at all. Identity has already
+  // been proven above (judged === repairHead), so this widens nothing else.
+  if (judged === candidate) {
+    return {
+      promotable: true,
+      code: 'promotable',
+      summary:
+        `${short(judged)} IS frozen candidate ${short(candidate)} — it passed the full canonical ` +
+        `gate with no admissions, so there is no admission ledger to consult`,
     };
   }
 

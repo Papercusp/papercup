@@ -1256,6 +1256,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "2", "frozen candidate");
     const repaired = await commit("b", "3", "forward repair");
+    // P-007/D-004: see above — the repair head must be reachable from the candidate's admission
+    // ledger ref, which is what `release:repair-queue { op:'admit' }` advances in production.
+    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, repaired]);
     // The repair is NOT on staging: staging fixed nothing and moved on. Pre-P-005 this exact
     // shape was re-queued as `repair-staging-mismatch` for an "alignment fixer" — the lineage
     // was required to be observable on staging before it could be judged. It no longer is.
@@ -1319,6 +1322,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
     const repaired = await commit("b", "fixed", "isolated repair");
+    // P-007/D-004: a repairHead can only differ from the candidate because
+    // `admitPathsOntoRepairHead` produced it, and that CAS-advances the admission ledger ref.
+    // Promotion now requires that ref, so the fixture models the one door the head came through.
+    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, repaired]);
 
     // Staging fixed the same thing independently and moved on. Pre-P-005 the queue's signature
     // was re-run at THIS tip and, on a pass, the queue was retired and the gate re-cut at the
@@ -1395,6 +1402,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
     const repaired = await commit("b", "fixed", "isolated repair");
+    // P-007/D-004: a repairHead can only differ from the candidate because
+    // `admitPathsOntoRepairHead` produced it, and that CAS-advances the admission ledger ref.
+    // Promotion now requires that ref, so the fixture models the one door the head came through.
+    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, repaired]);
 
     await git(repo, ["reset", "--hard", ready]);
     const transportedQuietCut = await commit(
@@ -1525,6 +1536,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
     const repaired = await commit("b", "fixed", "isolated repair");
+    // P-007/D-004: a repairHead can only differ from the candidate because
+    // `admitPathsOntoRepairHead` produced it, and that CAS-advances the admission ledger ref.
+    // Promotion now requires that ref, so the fixture models the one door the head came through.
+    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, repaired]);
 
     // The repair lives only on the frozen lineage; canonical staging fixed the same thing
     // independently and moved on. `repaired` descends from the frozen candidate but is NOT an
@@ -1577,6 +1592,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
     const repaired = await commit("b", "fixed", "isolated repair");
+    // P-007/D-004: a repairHead can only differ from the candidate because
+    // `admitPathsOntoRepairHead` produced it, and that CAS-advances the admission ledger ref.
+    // Promotion now requires that ref, so the fixture models the one door the head came through.
+    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, repaired]);
 
     await git(repo, ["reset", "--hard", ready]);
     const transportedQuietCut = await commit(
@@ -1656,6 +1675,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
     const repaired = await commit("b", "fixed", "isolated repair");
+    // P-007/D-004: a repairHead can only differ from the candidate because
+    // `admitPathsOntoRepairHead` produced it, and that CAS-advances the admission ledger ref.
+    // Promotion now requires that ref, so the fixture models the one door the head came through.
+    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, repaired]);
 
     await git(repo, ["reset", "--hard", ready]);
     const stagingTip = await commit("b", "different", "canonical staging tip");
@@ -1832,14 +1855,18 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
 
     const held = await runGreenCheckpoint(cfg(), deps);
 
+    // The ref does not exist at all, which is a DEFINITE negative — no admission ever opened a
+    // lineage for this candidate — not an unmeasured one.
+    expect(held.summary).toContain("repair-head-absent-from-lineage-ref");
+    expect(held.summary).not.toContain("lineage-unreadable");
     expect(held).toMatchObject({
       advanced: false,
       green: null,
       reason: "repair-in-progress",
-      candidate: impostor,
       from: ready,
     });
-    expect(held.summary).toContain("repair-head-absent-from-lineage-ref");
+    // The judged sha is on the frozen side of the fixture, never the moving staging tip.
+    expect(held.candidate).not.toBe(stagingTip);
     // Fail-closed: nothing advanced, and the tip was NOT selected as a consolation candidate.
     expect(advancedCandidates).toEqual([]);
     expect(await revParse(repo, "ready")).toBe(ready);
