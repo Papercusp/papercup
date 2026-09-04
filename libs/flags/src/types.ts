@@ -3203,6 +3203,14 @@ export const DARK_FLAGS: ReadonlyMap<
     },
   ],
   [
+    FLAGS.GRADUATION_TRACKER,
+    {
+      case: "owner-authority",
+      reason:
+        "EI-19360358881224651 (2026-09-04): restores this flag's OWN documented dark default. The graduation tracker files owner-facing improvement reports that propose widening autoKinds, but no graduation-specific arming decision exists; the inactive singleton routine and learning-governor gate are defense in depth, not substitutes for the flag's authority boundary. OFF ⇒ graduation scans stop before governor/evidence reads and file nothing. Owner graduates it only after explicitly assigning it to an armed learning wave and reviewing the report/noise policy.",
+    },
+  ],
+  [
     FLAGS.REPLICATION_LIVENESS_STALENESS_AUTO_CLOSE,
     {
       case: "owner-authority",

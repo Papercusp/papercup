@@ -356,14 +356,12 @@ describe('flag-comment-lint: the real tree (libs/flags/src/types.ts)', () => {
    * its comment was fixed) is always welcome — this list should only shrink.
    */
   // ════════════════════════════════════════════════════════════════════════════════════
-  // PENDING_MISMATCHES — was EMPTY 2026-07-12 to 2026-08-02 (WI-4238/WI-4239/WI-4240,
-  // su-00a91); ONE entry as of 2026-08-02 (EI-19360358881224651, su-5622daef), added
-  // the same day the SIXTH form of this bug class (step 6 in flag-comment-lint.ts's
-  // module doc — a bare "ships dark" narrative claim) started being detected at all.
-  // Widening the detector surfaced two real, previously-invisible mismatches in the
-  // same sweep: LEARNING_SLO_SENSORS (EI-18886519654229938 — resolved: comment was
-  // stale, code was right, see below) and GRADUATION_TRACKER (EI-19360358881224651 —
-  // genuinely needs an owner arming ruling, listed below).
+  // PENDING_MISMATCHES — EMPTY again as of 2026-09-04. The step-6 "ships dark"
+  // detector surfaced two real mismatches on 2026-08-02: LEARNING_SLO_SENSORS
+  // (EI-18886519654229938 — stale comment, code was right) and GRADUATION_TRACKER
+  // (EI-19360358881224651 — code was wrong; restored to its documented dark default
+  // as an owner-authority flag because it files owner-facing graduation reports and
+  // has no lane-specific arming decision).
   //
   // The entire PRIOR flag-comment/DARK_FLAGS mismatch backlog was CLEARED: every flag
   // whose comment and DARK_FLAGS membership disagreed had been resolved in the RIGHT
@@ -406,20 +404,7 @@ describe('flag-comment-lint: the real tree (libs/flags/src/types.ts)', () => {
   // /internal/docs/agent-insights/a-flag-mismatch-is-a-question-not-a-verdict
   //
   // To re-open: add { key, reason: '<why it needs a ruling before it can be resolved> + <ref>' }.
-  const PENDING_MISMATCHES: ReadonlyArray<{ key: string; reason: string }> = [
-    {
-      key: 'GRADUATION_TRACKER',
-      reason:
-        'EI-19360358881224651 (2026-08-02): comment says "ships dark until the plan\'s P-001 ' +
-        'arming gate closes" but the key is absent from DARK_FLAGS (live default-ON). Unlike ' +
-        'LEARNING_SLO_SENSORS, this loop is NOT named in any of D-010\'s three arming waves, so ' +
-        '(unlike that one) this needs an actual owner/leader ruling on whether to arm it (flag ' +
-        'stays ON, routine flipped active, comment corrected) or formally dark-ship it (added to ' +
-        'DARK_FLAGS). Currently safe in practice regardless: the @singleton routine row is ' +
-        'active=false and the loop has never self-registered with the learning governor, so the ' +
-        'flag bug alone has zero live exposure today.',
-    },
-  ];
+  const PENDING_MISMATCHES: ReadonlyArray<{ key: string; reason: string }> = [];
 
   it('the pending-allowlist itself stays honest: every listed key is a REAL current mismatch (never a stale/unnecessary entry)', () => {
     const staleAllowlistEntries = PENDING_MISMATCHES.filter((p) => !realMismatchKeys.has(p.key));

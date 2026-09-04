@@ -116,6 +116,13 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // intended default-OFF, so the watchdog goes back to escalate-only until the owner
   // reviews the auto-close criteria. Count 13 → 14.
   "papercusp-watchdog-auto-close",
+  // 2026-09-04 (EI-19360358881224651) — BUG-FIX correction in the same class:
+  // GRADUATION_TRACKER's own comment has always said it ships dark until its
+  // arming gate closes, but it was absent from DARK_FLAGS and therefore derived
+  // default-ON. It files owner-facing reports proposing autoKinds expansion and
+  // has no graduation-specific arming decision, so owner-authority is the correct
+  // default-OFF posture. Safety cases do not consume a parking-watermark slot.
+  "papercusp-graduation-tracker",
   // 2026-07-05 (WI-1994) — NOT a new post-inversion darkening: the same bug-fix class as
   // papercusp-watchdog-auto-close above. papercusp-substrate-sidecar's OWN code comment
   // (libs/flags/src/types.ts) has ALWAYS said "DEFAULT OFF ... Listed in KNOWN_DARK_FLAGS"
@@ -773,7 +780,10 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // after the owner-directed production Luna tool-turn canary satisfied the
     // entry's exact live gate. Count 35 → 34; incomplete parking subset and its
     // watermark both ratchet 14 → 13.
-    expect(offCount).toBe(34);
+    // 2026-09-04 (EI-19360358881224651) — GRADUATION_TRACKER restored to its
+    // documented owner-authority dark default. Count 34 → 35; parking subset and
+    // DARK_FLAGS_HIGH_WATERMARK remain unchanged.
+    expect(offCount).toBe(35);
   });
 
   it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {
@@ -798,6 +808,10 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // re-flip it to default-ON the way the P-011 inversion originally did.
     expect(DARK_FLAGS.get(FLAGS.PSU_END_USER)?.case).toBe("owner-authority");
     expect(FLAG_DEFAULTS[FLAGS.PSU_END_USER]).toBe(false);
+    // EI-19360358881224651: a loop that files owner-facing graduation reports must
+    // not silently derive default-ON before its lane-specific arming decision.
+    expect(DARK_FLAGS.get(FLAGS.GRADUATION_TRACKER)?.case).toBe("owner-authority");
+    expect(FLAG_DEFAULTS[FLAGS.GRADUATION_TRACKER]).toBe(false);
   });
 
   it("plan completion audit guards ship default-ON and are never dark", () => {
