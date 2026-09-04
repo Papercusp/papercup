@@ -584,7 +584,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       "write:clear",
     ]);
     expect(persisted[0]).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
       phase: "ready-to-test",
       candidate,
       qualificationAttemptId: "qualification-attempt-1",

@@ -124,7 +124,7 @@ describe('P-006 — the typed signature on the queue row', () => {
       { kind: 'lint-leg', id: 'lint:tsc', recipe: 'npm run lint:tsc', admittedRound: 1, measuredHead: C },
     ]);
     expect(queue.failingTests).toEqual(queue.signature.map((e) => e.id));
-    expect(diagnoseFrozenCandidateRepairQueue(queue, { nowMs: T0 + 1 }).signature).toEqual(queue.signature);
+    expect(diagnoseFrozenCandidateRepairQueue(queue, { nowMs: T0 + 1 })?.signature).toEqual(queue.signature);
   });
 
   it('a LINT-ONLY red (suite green, one post-suite leg red) opens the SAME queue on that leg alone', () => {
