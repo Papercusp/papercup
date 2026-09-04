@@ -1574,6 +1574,7 @@ describe('P-003: classifyFrozenRepairFixerSuccession', () => {
     updatedAtMs: NOW - FIXER_SUCCESSION_STALL_MS,
     fixerSpawnId: 'fixer-dead',
     failingTests: ['lib/broken.test.ts'],
+    signature: [],
     ...over,
   });
 
@@ -1655,6 +1656,7 @@ describe('frozenRepairHasNoMeasuredFailures (WI-2140605: no reproduce-fixer with
     updatedAtMs: 1_800_000_000_000,
     fixerSpawnId: null,
     failingTests: ['lib/broken.test.ts'],
+    signature: [],
     ...over,
   });
 
@@ -2575,6 +2577,7 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
         updatedAtMs: 2,
         fixerSpawnId: 'fixer-2',
         failingTests: ['lib/broken.test.ts'],
+    signature: [],
       },
     });
 
@@ -2606,6 +2609,7 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
         updatedAtMs: 2,
         fixerSpawnId: 'fixer-2',
         failingTests: ['lib/red.test.ts'],
+    signature: [],
       },
     });
 
@@ -2660,6 +2664,7 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
         updatedAtMs: 2,
         fixerSpawnId: 'fixer-1',
         failingTests: ['lib/broken.test.ts'],
+    signature: [],
       },
       postSuiteLegs: Array.from({ length: 35 }, (_, index) => ({
         id: `leg-${index}-${'i'.repeat(200)}`,
@@ -3142,6 +3147,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     updatedAtMs: 2,
     fixerSpawnId: 'fixer-1',
     failingTests: ['lib/broken.test.ts'],
+    signature: [],
   };
 
   it('round-trips the queue and scopes every read/write/clear to its workspace routine row', async () => {
@@ -3557,6 +3563,7 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       updatedAtMs: 2,
       fixerSpawnId: null,
       failingTests: ['lib/red.test.ts'],
+    signature: [],
     };
 
     const brief = buildReleaseFixerKickoff({
@@ -3639,6 +3646,7 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       updatedAtMs: 2,
       fixerSpawnId: 'fixer-1',
       failingTests: ['lib/y.test.ts'],
+    signature: [],
     };
 
     const recorded = await recordCheckpointVerdict(
