@@ -24,6 +24,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { composeSuStackSource, suSessionBinding } from '@papercusp/orchestrator/blueprint';
 import { renderSuPlaybook } from './papercusp-files';
 import {
   REQUIRED_SPLICE_MARKERS_BY_ARTIFACT,
@@ -57,6 +58,13 @@ const KNOWN_MARKERS: Record<string, string> = Object.fromEntries(
 const TIERS = ['full', 'fleet'] as const;
 const UPDATE = process.env.BASELINE_UPDATE === '1';
 const DUMP_DIR = process.env.SU_RENDER_BASELINE_DUMP;
+/**
+ * P-035 prompt-weight ratchet. The canonical engineer + fleet-leader + AUTO stack
+ * measured 244,230 B with the real Claude overlay and real project guide on
+ * 2026-09-04; 256 KiB leaves 17,914 B (7.3%) of explicit headroom without turning
+ * the budget into an unbounded approximation.
+ */
+const COMPOSED_ENGINEER_LEADER_BUDGET_BYTES = 256 * 1024;
 
 const read = (p: string) => readFileSync(p, 'utf8');
 const inputRecord = (p: string) => {
@@ -208,7 +216,7 @@ describe('su render baseline — pinned fixture inputs (P-018)', () => {
   });
 });
 
-describe('su render baseline — live blueprint base (informational score)', () => {
+describe('su render baseline — live blueprint base (informational score + P-035 budget)', () => {
   // Walk up to the repo root (the dir that holds libs/papercusp) so the test does not depend
   // on the cwd vitest was started from.
   const repoRoot = (() => {
@@ -255,5 +263,42 @@ describe('su render baseline — live blueprint base (informational score)', () 
     // moves land; the table is the score, not a verdict.
     dump('live-vs-baseline.full.md', formatScoreTable(score));
     expect(score.sections.length).toBeGreaterThan(0);
+  });
+
+  it('keeps the composed engineer + fleet-leader stack within the declared 256 KiB prompt budget (P-035)', async () => {
+    if (!repoRoot) throw new Error('P-035 prompt budget: repo root (libs/papercusp) not found');
+    const harnessDir = join(repoRoot, 'libs/papercusp/packages/harness');
+    const baseSource = join(harnessDir, 'blueprints/base/prompts/su.md');
+    const overlayDir = join(repoRoot, 'apps/operator/prompts');
+    const projectGuideSource = join(repoRoot, 'CLAUDE.md');
+    // Fleet leadership enters AUTO by contract, so the budgeted render binds both;
+    // measuring a modes-off leader would understate the steady-state launch prompt.
+    const composed = composeSuStackSource({
+      harnessDir,
+      binding: suSessionBinding({ fleetRole: 'leader', modes: ['auto'] }),
+    });
+    const rendered = await renderSuPlaybook({
+      agent: 'claude',
+      profile: 'engineer',
+      baseSource,
+      baseText: composed.text,
+      overlayDir,
+      projectGuideSource,
+      tier: 'full',
+    });
+    const measuredBytes = Buffer.byteLength(rendered.text, 'utf8');
+    const headroom = COMPOSED_ENGINEER_LEADER_BUDGET_BYTES - measuredBytes;
+
+    expect(composed.order.map((entry) => entry.id)).toEqual(
+      expect.arrayContaining(['papercusp-engineer', 'su.fleet-leader', 'su.mode-auto']),
+    );
+    expect(rendered.overlaySource).toBe(join(overlayDir, 'papercusp-su.claude.md'));
+    expect(rendered.projectGuideSource).toBe(projectGuideSource);
+    expect(
+      measuredBytes,
+      `composed engineer + fleet-leader + AUTO prompt is ${measuredBytes.toLocaleString('en-US')} B; ` +
+        `budget is ${COMPOSED_ENGINEER_LEADER_BUDGET_BYTES.toLocaleString('en-US')} B ` +
+        `(headroom ${headroom.toLocaleString('en-US')} B)`,
+    ).toBeLessThanOrEqual(COMPOSED_ENGINEER_LEADER_BUDGET_BYTES);
   });
 });
