@@ -113,10 +113,12 @@ import { recordBatchNudgeFire } from '../../../code-run-nudge-telemetry';
 import { authSafeToolsRemoveSet } from '../../../auth-config-overrides';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { workspaceForCoordOwner } from '../../../adv-sessions';
-import { getSessionBrief } from '../../../session-brief';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loopPressure } from '../../../event-loop-lag-monitor';
-import { isEngineeringDocsSentinel } from '../../../agent-tools/_harness-scope';
+import {
+  isEngineeringDocsSentinel,
+  resolveInheritedHarnessScope,
+} from '../../../agent-tools/_harness-scope';
 import { verifyExplicitPlanHarness } from '../../../agent-tools/plans/slug-scope';
 import { withMcpAdmission, ADMISSION_CONTROL_ENABLED } from './mcp-admission';
 import { DeltaProxySessionStore } from './delta-proxy-session-store';
@@ -1150,14 +1152,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     // sessions (zero port=initialize ledger stamps, live-verified in the WI).
     const headerHarness = (headers.get('x-papercusp-harness') ?? '').trim();
     const explicitHarness = headerHarness || harnessUrlParam;
-    // A resumed/transport-reconnected SU session can retain its stable client SID
-    // while the launch URL loses its harness carrier. Recover the durable session
-    // brief only for that carrier-miss; an explicit header/URL harness always wins.
-    const briefHarness =
-      !explicitHarness && sidForLookup
-        ? ((await getSessionBrief({ ownerId: sidForLookup }).catch(() => null))?.harnessSlug ?? '').trim()
-        : '';
-    const harnessParam = explicitHarness || briefHarness;
+    let harnessParam = explicitHarness;
     if (!workspaceId && sidForLookup) {
       workspaceId = (await workspaceForCoordOwner(sidForLookup)) ?? '';
     }
@@ -1197,6 +1192,32 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         } else {
           return { kind: 'failed', reason: 'scoped_superuser_workspace_unresolved' };
         }
+      }
+    }
+    // P-006 (fleet-friction-remediation): every transport call now inherits a
+    // missing harness through the same canonical chain used by scheduler:get_next.
+    // This is the load-bearing seam for nested tools:invoke, coord:presence, and
+    // events:await: they all receive this rebuilt ctx instead of each inventing a
+    // session-brief-only fallback. Explicit URL/header scope still wins. A stale,
+    // ambiguous, or failed durable read is a deterministic refusal; only a genuinely
+    // missing binding remains operator scope ('*').
+    if (sidForLookup) {
+      const inheritedHarness = await resolveInheritedHarnessScope({
+        explicitHarness,
+        ownerId: sidForLookup,
+        workspaceId: workspaceId || '*',
+        sessionHarness: null,
+      });
+      if (inheritedHarness.kind === 'harness') {
+        harnessParam = inheritedHarness.slug;
+      } else if (inheritedHarness.kind === 'all') {
+        harnessParam = '*';
+      } else if (inheritedHarness.reason !== 'missing') {
+        const source = inheritedHarness.source ? ` at ${inheritedHarness.source}` : '';
+        return {
+          kind: 'failed',
+          reason: `harness_scope_${inheritedHarness.reason}${source}${inheritedHarness.detail ? `: ${inheritedHarness.detail}` : ''}`,
+        };
       }
     }
     // Profile: header (OMP) > URL param (claude env-expanded / install-baked).
