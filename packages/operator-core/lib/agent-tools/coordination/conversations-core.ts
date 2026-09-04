@@ -355,7 +355,7 @@ export async function supersedeConversationCore(
   // Owner questions are gates owned by the agent that asked them. A peer that
   // misidentifies a conversation id must not be able to retract that gate (the
   // replacement would silently move the human decision to the wrong lane). The
-  // producer check keeps peer-to-peer `coord:ask` questions and discussions
+  // producer check keeps owner-UI `coord:ask` questions and discussions
   // supersedable by their coordinators, while legacy unattributed questions
   // fail closed because they cannot prove a different ownership contract.
   // WI-1373235: a P-011 correction accidentally superseded an unrelated P-003
