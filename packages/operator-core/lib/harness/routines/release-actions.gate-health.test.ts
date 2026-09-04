@@ -295,6 +295,41 @@ describe('P-003: trackGateStall ANNOUNCES a torn sweep on the record-only tick',
     expect(notPending.emits).toHaveLength(2);
     expect(notPending.reds).toBe(4);
   });
+
+  it('does NOT raise a red stall alarm for a promotion-pending GREEN when age crosses the threshold', async () => {
+    // A pending green is intentionally record-only until promotion settles, but it is not a
+    // red verdict. Feeding it to the age ladder made a stale lastGreenAt look like a current
+    // red: the alarm reported "0 consecutive red" immediately before the same run's final
+    // GREEN (EI-22104112908427169).
+    const stallAgeMs = releaseCheckpointConfig().stallAgeMs;
+    seededGh = {
+      consecutiveReds: 0,
+      stallAlerted: false,
+      stallAlertedAtAgeMs: null,
+      lastGreenAt: Date.now() - stallAgeMs * 2,
+    };
+
+    await trackGateStall(
+      ctx,
+      'advanced',
+      'green-pending-candidate',
+      [],
+      null,
+      undefined,
+      null,
+      undefined,
+      { promotionPending: true, green: true, runId: 'pending-green-run' },
+    );
+
+    expect(notifyAttentionOnce).not.toHaveBeenCalled();
+    expect(broadcastSevereEvent).not.toHaveBeenCalled();
+    expect(lastGateHealthWrite()).toMatchObject({
+      consecutiveReds: 0,
+      lastVerdict: 'decision-pending',
+      stallAlerted: false,
+      stallAlertedAtAgeMs: null,
+    });
+  });
 });
 
 /**
