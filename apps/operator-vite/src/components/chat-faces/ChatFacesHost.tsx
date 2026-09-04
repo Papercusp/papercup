@@ -24,7 +24,6 @@ import { Users, AudioLines, GraduationCap } from 'lucide-react';
 import ChromeShell from '@/app/_components/ChromeShell';
 import type { OpChatFace } from '@/app/_components/op-chat-faces';
 import { useLexicon } from '@/lib/useLexicon';
-import { LEFT_SIDEBAR_CSS } from '../left-sidebar/left-sidebar.styles';
 
 // The same retry-wrapped lazy the left sidebar used for these panes: a
 // transient first-boot chunk fetch failure on the packaged WebKitGTK desktop
@@ -32,6 +31,12 @@ import { LEFT_SIDEBAR_CSS } from '../left-sidebar/left-sidebar.styles';
 const SwarmTab = lazy(() => import('../left-sidebar/SwarmTab'));
 const VoiceTab = lazy(() => import('../left-sidebar/VoiceTab'));
 const LearningLoopFace = lazy(() => import('./LearningLoopFace'));
+// The rail's ~110KB `pclsb-*` stylesheet. THIS module is imported eagerly by
+// routes/__root.tsx, so a static `LEFT_SIDEBAR_CSS` import here put that
+// stylesheet in the first-paint graph to style panes first paint never mounts
+// (WI-5502 item 3 neighbourhood). Behind a dynamic import it is fetched when a
+// face pane first renders instead. See LeftSidebarStyleTag's own comment.
+const LeftSidebarStyleTag = lazy(() => import('./LeftSidebarStyleTag'));
 
 /**
  * Hosts a pane that was written for the left rail inside the chat sidebar.
@@ -46,7 +51,16 @@ const LearningLoopFace = lazy(() => import('./LearningLoopFace'));
 function ChatFacePane({ children }: { children: React.ReactNode }) {
   return (
     <div className="pclsb-face-host" data-testid="op-chat-face-pane">
-      <style>{LEFT_SIDEBAR_CSS}</style>
+      {/*
+        `fallback={null}` on purpose: this renders a <style> tag, so it
+        occupies no layout box and there is nothing to reserve. It is a
+        SIBLING of `children` (not a wrapper) so React starts both chunk
+        fetches in the same render pass rather than serialising them —
+        the pane's own Suspense keeps showing its "Loading…" meanwhile.
+      */}
+      <Suspense fallback={null}>
+        <LeftSidebarStyleTag />
+      </Suspense>
       <style>{CHAT_FACE_PANE_CSS}</style>
       {children}
     </div>
