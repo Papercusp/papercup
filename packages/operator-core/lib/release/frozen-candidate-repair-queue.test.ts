@@ -21,6 +21,7 @@ import {
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
   parseFrozenCandidateRepairQueue,
+  parseFrozenCandidateRepairQueueRead,
   summarizeFrozenRepairConvergence,
   buildFrozenRepairConvergenceGateHealth,
   parseFrozenRepairConvergence,
@@ -926,6 +927,34 @@ describe('frozen-candidate repair queue', () => {
       nowMs: T0,
     });
     expect(parseFrozenCandidateRepairQueue(readyToTest)).toEqual(readyToTest);
+  });
+
+  it('P-025: distinguishes a newer persisted schema from a genuinely absent queue', () => {
+    const raw = fresh();
+    expect(parseFrozenCandidateRepairQueueRead(null)).toEqual({ status: 'absent' });
+    expect(parseFrozenCandidateRepairQueueRead(undefined)).toEqual({ status: 'absent' });
+    expect(parseFrozenCandidateRepairQueueRead(raw)).toEqual({
+      status: 'value',
+      queue: raw,
+    });
+    expect(
+      parseFrozenCandidateRepairQueueRead({
+        ...raw,
+        schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION + 1,
+      }),
+    ).toEqual({
+      status: 'unreadable',
+      reason: 'schema-newer-than-reader',
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION + 1,
+    });
+  });
+
+  it('P-025: a present malformed row is unreadable, never absent', () => {
+    expect(parseFrozenCandidateRepairQueueRead({ schemaVersion: 4, phase: 'ready-to-test' })).toEqual({
+      status: 'unreadable',
+      reason: 'invalid-shape',
+      schemaVersion: 4,
+    });
   });
 });
 

@@ -490,6 +490,25 @@ export interface FrozenCandidateRepairQueue {
 }
 
 /**
+ * A persisted queue read whose FAILURE cannot be mistaken for ABSENCE (P-025).
+ *
+ * `parseFrozenCandidateRepairQueue()` remains the compatibility parser for callers whose
+ * only safe response to any bad shape is `null`. Safety-critical readers use this union
+ * instead: a JSONB null/missing key is genuinely absent, while a present row that this
+ * build cannot understand is explicitly unreadable. In particular, a newer writer's
+ * schema must never look like permission to cut a fresh candidate at staging tip.
+ */
+export type FrozenCandidateRepairQueueRead =
+  | { status: 'value'; queue: FrozenCandidateRepairQueue }
+  | { status: 'absent' }
+  | {
+      status: 'unreadable';
+      reason: 'schema-newer-than-reader' | 'invalid-shape';
+      /** Integer schema observed on the row, or null when the shape did not carry one. */
+      schemaVersion: number | null;
+    };
+
+/**
  * One admission (see ./repair-head-admission.ts): the source commit the entries came from,
  * the head it was built on, the head it produced, and exactly which paths changed.
  */
@@ -1280,6 +1299,42 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     failingTests: boundedFailures(typed.failingTests),
     signature: typed.signature,
   };
+}
+
+/**
+ * Parse the persisted repair queue without collapsing a present-but-unreadable row into
+ * absence. The current parser accepts legacy schemas 1–4; a schema above that range is a
+ * version-skew signal, not evidence that no candidate is frozen.
+ */
+export function parseFrozenCandidateRepairQueueRead(
+  value: unknown,
+): FrozenCandidateRepairQueueRead {
+  if (value == null) return { status: 'absent' };
+  const queue = parseFrozenCandidateRepairQueue(value);
+  if (queue) return { status: 'value', queue };
+
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  const schemaVersion =
+    raw && Number.isSafeInteger(raw.schemaVersion)
+      ? (raw.schemaVersion as number)
+      : null;
+  return schemaVersion !== null && schemaVersion > FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION
+    ? { status: 'unreadable', reason: 'schema-newer-than-reader', schemaVersion }
+    : { status: 'unreadable', reason: 'invalid-shape', schemaVersion };
+}
+
+/** One bounded, shared explanation for every fail-closed unreadable-queue surface. */
+export function describeUnreadableFrozenCandidateRepairQueue(
+  read: Extract<FrozenCandidateRepairQueueRead, { status: 'unreadable' }>,
+): string {
+  const schema = read.schemaVersion === null ? 'unknown' : String(read.schemaVersion);
+  return (
+    `a persisted frozen repair queue is unreadable (${read.reason}, schema ${schema}; ` +
+    `reader supports through ${FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION})`
+  );
 }
 
 /** Decide the next orchestration step. A queue always wins over a moving staging tip. */
