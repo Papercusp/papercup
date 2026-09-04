@@ -480,7 +480,11 @@ export default defineTool({
         title: hardText(LIMITS.SHORT_TITLE)
           .optional()
           .describe(
-            `one-line summary. ${OBSERVATION_TITLE_RULE} Do NOT include a [kind] prefix — pass kind separately.`,
+            // EI-21906899166065181: `.optional()` here is a HALF-TRUTH — a superRefine below
+            // rejects a call that omits BOTH title and toolFailure. A caller reading the schema
+            // saw `title?` and learned the real contract only from the runtime refusal. Say the
+            // conditional requirement where it is read, not only where it is enforced.
+            `one-line summary — REQUIRED unless toolFailure is supplied (that shorthand derives bounded title/body server-side). ${OBSERVATION_TITLE_RULE} Do NOT include a [kind] prefix — pass kind separately.`,
           ),
         kind: z
           .enum(['bug', 'change', 'feature'])
