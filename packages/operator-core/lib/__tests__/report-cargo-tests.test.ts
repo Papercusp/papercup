@@ -1107,6 +1107,31 @@ describe('affected-tests cargo failure labelling (EI-21950408988436927)', () => 
     expect(AFFECTED_TESTS_SOURCE).toContain('"papercusp-desktop :: cargo test"');
   });
 
+  it('counts a quarantined Cargo failure in AFFECTED_TESTS_RESULT without gating the run', () => {
+    // A real failing Cargo leg is deliberately too expensive for this unit suite. Scope the
+    // source assertion to the executable cargo-failure branch so the regression cannot be
+    // satisfied by the unrelated Vitest quarantine counter above.
+    const cargoFailureStart = AFFECTED_TESTS_SOURCE.indexOf('if (cargoRun.status !== 0) {');
+    const cargoFailureEnd = AFFECTED_TESTS_SOURCE.indexOf('  } catch (err) {', cargoFailureStart);
+    expect(cargoFailureStart).toBeGreaterThanOrEqual(0);
+    expect(cargoFailureEnd).toBeGreaterThan(cargoFailureStart);
+    const cargoFailureBlock = AFFECTED_TESTS_SOURCE.slice(cargoFailureStart, cargoFailureEnd);
+
+    expect(cargoFailureBlock).toContain(
+      'if (cargoFailureClass.gating && !quarantined.has("papercusp-desktop"))',
+    );
+    expect(cargoFailureBlock).toContain('} else if (cargoFailureClass.gating) {');
+    expect(cargoFailureBlock).toContain('quarantinedFailed++;');
+    expect(cargoFailureBlock).toContain(
+      'papercusp-desktop :: cargo test (quarantined failure — not gating)',
+    );
+    // The terminal marker must consume that same counter, or the observed failure would still
+    // be absent from the machine-readable verdict despite the branch recording it.
+    expect(AFFECTED_TESTS_SOURCE).toContain(
+      'quarantinedFailed=${quarantinedFailed} timedOutTasks=${timedOutTasks}',
+    );
+  });
+
   // ── falsifiability controls ────────────────────────────────────────────────
   // A guard that has never failed is a guard nobody has tested, and this one guards a
   // branch that runs only when cargo has ALREADY failed — so it will not fail on its
