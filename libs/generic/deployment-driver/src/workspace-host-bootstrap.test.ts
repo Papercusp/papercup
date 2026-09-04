@@ -8,6 +8,7 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX,
   WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES,
   WORKSPACE_HOST_BOOTSTRAP_CHECK_NAMES,
+  WORKSPACE_HOST_BOOTSTRAP_SHARED_CHECKS,
   WORKSPACE_HOST_MODELS,
   WORKSPACE_HOST_BOOTC_BASE_IMAGE,
   WORKSPACE_HOST_UPDATE_MODE_BY_MODEL,
@@ -92,9 +93,12 @@ type BootcAttestation = Extract<
   { hostModel: 'bootc-image' }
 >;
 
+// Returns the CONCRETE member, not the union: callers spread `attestation().isolation` to build
+// near-miss documents, and off a union every one of those spreads is itself a union with no
+// single `updateMode`. The validator takes `unknown`, so nothing is weakened by being specific.
 function attestation(
   overrides: Partial<UbuntuAttestation> = {},
-): WorkspaceHostBootstrapAttestation {
+): UbuntuAttestation {
   return {
     contractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
     hostId: 'host-1',
@@ -1239,9 +1243,9 @@ describe('buildWorkspaceHostBootstrap', () => {
         ...WORKSPACE_HOST_BOOTSTRAP_CHECK_EVIDENCE,
         'ssh-forwarding-policy': 'die "no bootstrap has ever emitted this line"',
       };
-      const attestingOnNothing = WORKSPACE_HOST_BOOTSTRAP_CHECKS.filter(
-        (name) => !script.includes(fabricated[name]),
-      );
+      const attestingOnNothing = workspaceHostBootstrapChecks(
+        'ubuntu-release-bundle',
+      ).filter((name) => !script.includes(fabricated[name]));
       expect(attestingOnNothing).toEqual(['ssh-forwarding-policy']);
     });
   });
@@ -1279,16 +1283,16 @@ describe('buildWorkspaceHostBootstrap', () => {
     });
 
     it('names the check so the attestation is not silent about reachability', () => {
-      expect(WORKSPACE_HOST_BOOTSTRAP_CHECKS).toContain(
+      expect(workspaceHostBootstrapChecks('ubuntu-release-bundle')).toContain(
         'workspace-ssh-authorized-keys',
       );
       // The validator iterates the same list, so an attestation that omits the new check is
       // refused rather than accepted as healthy.
       const verdict = validateWorkspaceHostBootstrapAttestation(
         attestation({
-          checks: WORKSPACE_HOST_BOOTSTRAP_CHECKS.filter(
-            (name) => name !== 'workspace-ssh-authorized-keys',
-          ).map((name) => ({ name, ok: true })),
+          checks: workspaceHostBootstrapChecks('ubuntu-release-bundle')
+            .filter((name) => name !== 'workspace-ssh-authorized-keys')
+            .map((name) => ({ name, ok: true as const })),
         }),
         input(),
       );
@@ -1487,10 +1491,9 @@ describe('workspace-host bootstrap attestation', () => {
         agentHomeReadableBySshUser: true as false,
         sudo: true as false,
       },
-      checks: WORKSPACE_HOST_BOOTSTRAP_CHECKS.slice(1).map((name) => ({
-        name,
-        ok: true,
-      })),
+      checks: workspaceHostBootstrapChecks('ubuntu-release-bundle')
+        .slice(1)
+        .map((name) => ({ name, ok: true as const })),
     });
     const result = validateWorkspaceHostBootstrapAttestation(drifted, input());
     expect(result.ok).toBe(false);
