@@ -367,13 +367,25 @@ describe("workspace-host image compatibility", () => {
       {
         async execute(fixture) {
           return {
-            stdout: stdoutFor(fixture, spec().observedAt, (attestation) => ({
-              ...attestation,
-              release: {
-                ...attestation.release,
-                bundleSha256: "f".repeat(64),
-              },
-            })),
+            stdout: stdoutFor(fixture, spec().observedAt, (attestation) => {
+              // The drift under test is a BUNDLE digest, which only the ubuntu-release-bundle
+              // model has. Throw rather than pass the document through unchanged if the fixture
+              // model ever moves: a pass-through would still produce a valid attestation, the
+              // acceptance run would succeed, and this "fails closed" test would report green
+              // while asserting nothing at all.
+              if (attestation.hostModel !== "ubuntu-release-bundle") {
+                throw new Error(
+                  `clean-room drift fixture expects the ubuntu-release-bundle model, got '${attestation.hostModel}'`,
+                );
+              }
+              return {
+                ...attestation,
+                release: {
+                  ...attestation.release,
+                  bundleSha256: "f".repeat(64),
+                },
+              };
+            }),
           };
         },
       },
