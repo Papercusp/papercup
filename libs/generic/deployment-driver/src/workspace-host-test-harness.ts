@@ -11,6 +11,10 @@ import type {
   WorkspaceHostResourceRef,
   WorkspaceHostScopeRef,
 } from "./workspace-host-types";
+import {
+  WORKSPACE_HOST_CANARY_TAG_KEYS,
+  workspaceHostCanaryIdentityLabels,
+} from "./workspace-host-canary-identity";
 
 /** Versioned gate shared by fake-adapter conformance and live canary approval. */
 export const WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION =
@@ -747,12 +751,6 @@ export type WorkspaceHostLiveCanarySpec =
       failedRunTeardown: WorkspaceHostFailedRunTeardown;
     });
 
-export const WORKSPACE_HOST_CANARY_TAG_KEYS = {
-  canary: "papercusp_canary",
-  runId: "papercusp_run_id",
-  workspaceId: "papercusp_workspace_id",
-} as const;
-
 export interface WorkspaceHostCanarySpendReservation {
   id: string;
   purpose: string;
@@ -939,11 +937,13 @@ export class WorkspaceHostLiveCanaryHarness {
     extra: Readonly<Record<string, string>> = {},
   ): Readonly<Record<string, string>> {
     assertWorkspaceHostSecretIsolation(extra, "canary.tags");
-    const required: Record<string, string> = {
-      [WORKSPACE_HOST_CANARY_TAG_KEYS.canary]: "true",
-      [WORKSPACE_HOST_CANARY_TAG_KEYS.runId]: this.spec.runId,
-      [WORKSPACE_HOST_CANARY_TAG_KEYS.workspaceId]: this.spec.workspaceId,
-    };
+    // Same synthesizer the provision route uses, so a fake-provider host and a real one carry
+    // byte-identical identity labels and the destroy gate cannot be satisfied here in a way the
+    // product path could not reproduce.
+    const required = workspaceHostCanaryIdentityLabels({
+      runId: this.spec.runId,
+      workspaceId: this.spec.workspaceId,
+    });
     for (const key of Object.keys(required)) {
       if (key in extra && extra[key] !== required[key])
         throw new Error(`Canary tag '${key}' cannot be overridden`);

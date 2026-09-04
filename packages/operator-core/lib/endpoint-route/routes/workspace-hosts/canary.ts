@@ -1,6 +1,10 @@
 /** POST /workspace-hosts/:hostId/canary — resumable production P-046 canary controller. */
 import { defineTool } from '@papercusp/agent-mcp';
-import { WorkspaceHostDestroyEvidenceError } from '@papercusp/deployment-driver';
+import {
+  WorkspaceHostDestroyEvidenceError,
+  workspaceHostCanaryIdentityProblems,
+  type WorkspaceHostDesiredSpec,
+} from '@papercusp/deployment-driver';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import {
   UnsupportedWorkspaceHostInitializationTargetError,
@@ -143,10 +147,11 @@ export function createWorkspaceHostCanaryRoute(
         throw error;
       }
 
+      let desired: WorkspaceHostDesiredSpec;
       let operations;
       let deliveryCapabilities;
       try {
-        ({ operations, deliveryCapabilities } = await dependencies.resolveOperationsForHost({
+        ({ desired, operations, deliveryCapabilities } = await dependencies.resolveOperationsForHost({
           workspaceId,
           hostId,
           controller,
@@ -171,6 +176,22 @@ export function createWorkspaceHostCanaryRoute(
           });
         }
         throw error;
+      }
+
+      // IDENTITY preflight. The destroy gate will demand exactly these labels in the stored spec,
+      // and nothing after this point can add them — so a host that fails here is one this run
+      // could drive to completion and then be unable to retire through the product route at all.
+      // Refusing now costs a rejected request; refusing at teardown costs a billing VM that only
+      // an out-of-band script can delete. Provisioning declares the run (`canary.runId`); this
+      // checks that the host in front of us is the one that declaration produced.
+      const identityProblems = workspaceHostCanaryIdentityProblems(desired.labels, {
+        runId: body.runId,
+        workspaceId,
+      });
+      if (identityProblems.length > 0) {
+        return requestError('workspace host is not provisioned as a canary for this run', 422, {
+          problems: identityProblems,
+        });
       }
 
       let phaseStarted = false;

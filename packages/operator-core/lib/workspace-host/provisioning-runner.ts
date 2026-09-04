@@ -12,8 +12,9 @@ import {
   assertWorkspaceHostSecretIsolation,
   createWorkspaceHostManualDestroyReceipt,
   nextWorkspaceHostControllerAction,
+  workspaceHostCanaryIdentityAudit,
+  workspaceHostCanaryIdentityLabels,
   workspaceHostProviderRetryClass,
-  WORKSPACE_HOST_CANARY_TAG_KEYS,
   WorkspaceHostLiveCanaryHarness,
   type WorkspaceHostApplyResult,
   type WorkspaceHostCanaryCompletionReceipt,
@@ -443,19 +444,12 @@ function resolveDestroyCanaryLabels(
   evidence: WorkspaceHostDestroyCanaryEvidence,
 ): DestroyCanaryLabelBinding {
   const labels = desired.labels ?? {};
-  const required = {
-    [WORKSPACE_HOST_CANARY_TAG_KEYS.canary]: 'true',
-    [WORKSPACE_HOST_CANARY_TAG_KEYS.runId]: evidence.runId,
-    [WORKSPACE_HOST_CANARY_TAG_KEYS.workspaceId]: evidence.workspaceId,
-  } as const;
-  const mismatches = Object.entries(required)
-    .filter(([key, value]) => labels[key] !== undefined && labels[key] !== value)
-    .map(([key, value]) => `stored desired.labels must contain '${key}=${value}'`);
-  if (mismatches.length > 0) throw new WorkspaceHostProvisioningRequestError(mismatches);
-
-  const missing = Object.entries(required)
-    .filter(([key]) => labels[key] === undefined)
-    .map(([key, value]) => `stored desired.labels must contain '${key}=${value}'`);
+  const identity = { runId: evidence.runId, workspaceId: evidence.workspaceId };
+  // Same audit the provision route and the canary route run, so a host that survived those two
+  // gates cannot be refused here for an identity reason they would have admitted.
+  const required = workspaceHostCanaryIdentityLabels(identity);
+  const { mismatched, missing } = workspaceHostCanaryIdentityAudit(labels, identity);
+  if (mismatched.length > 0) throw new WorkspaceHostProvisioningRequestError(mismatched);
   if (missing.length === 0) return { tags: required };
 
   const manual = evidence.emergencyManualDestroy;

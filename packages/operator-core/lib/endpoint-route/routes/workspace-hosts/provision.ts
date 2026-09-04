@@ -1,6 +1,10 @@
 /** POST /workspace-hosts/provision — start or resume one durable GCP host provision. */
 import { defineTool } from '@papercusp/agent-mcp';
-import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
+import {
+  isWorkspaceHostCanaryIdentityLabelKey,
+  workspaceHostCanaryIdentityLabels,
+  type WorkspaceHostDesiredSpec,
+} from '@papercusp/deployment-driver';
 import {
   startWorkspaceHostProvisioningWorkflow,
   WorkspaceHostProvisioningConflictError,
@@ -24,6 +28,8 @@ interface ProvisionBody {
   name?: unknown;
   desired?: unknown;
   operationId?: unknown;
+  /** Declares this host as belonging to a canary run: `{ runId }`. See the identity note below. */
+  canary?: unknown;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -85,6 +91,37 @@ export function createWorkspaceHostProvisionRoute(
       if (body.operationId !== undefined && (typeof body.operationId !== 'string' || !SAFE_ID.test(body.operationId))) {
         return Response.json({ ok: false, error: 'invalid operationId' }, { status: 400 });
       }
+      let canaryRunId: string | undefined;
+      if (body.canary !== undefined) {
+        const declared = isRecord(body.canary) ? body.canary.runId : undefined;
+        if (typeof declared !== 'string' || !SAFE_ID.test(declared)) {
+          return Response.json(
+            { ok: false, error: 'canary must be an object whose runId is a valid identifier' },
+            { status: 400 },
+          );
+        }
+        canaryRunId = declared;
+      }
+      // IDENTITY is operator-written, never caller-written. The destroy gate treats these three
+      // labels as proof that this host belongs to a named canary run, so a caller that could hand
+      // them in could manufacture exactly the provenance the gate exists to demand. Declaring
+      // `canary.runId` is the only way to get them, and they are synthesized below.
+      const requestedLabels = isRecord(requestedDesired.labels)
+        ? (requestedDesired.labels as Record<string, string>)
+        : undefined;
+      const callerIdentityLabels = Object.keys(requestedLabels ?? {}).filter(isWorkspaceHostCanaryIdentityLabelKey);
+      if (callerIdentityLabels.length > 0) {
+        return Response.json(
+          {
+            ok: false,
+            error: 'workspace-host provisioning request rejected',
+            problems: callerIdentityLabels.map(
+              (key) => `desired.labels must not set '${key}'; declare canary.runId and the operator writes it`,
+            ),
+          },
+          { status: 422 },
+        );
+      }
       if (!dependencies.provisioningAvailable()) {
         return Response.json(
           { ok: false, error: 'workspace-host provisioning workflow is unavailable on this operator' },
@@ -127,6 +164,18 @@ export function createWorkspaceHostProvisionRoute(
       const requestedProvider = isRecord(requestedDesired.provider) ? requestedDesired.provider : {};
       const desired = {
         ...requestedDesired,
+        // A declared canary run is bound into the persisted spec HERE, at provision, from values
+        // the operator resolved itself — the run the caller declared and this operator's own
+        // workspace. That binding is what makes the host destroyable through the product route
+        // later; a host provisioned without it can only ever be retired out of band.
+        ...(canaryRunId
+          ? {
+              labels: {
+                ...(requestedLabels ?? {}),
+                ...workspaceHostCanaryIdentityLabels({ runId: canaryRunId, workspaceId }),
+              },
+            }
+          : {}),
         credentials: {
           ...(isRecord(requestedDesired.credentials) ? requestedDesired.credentials : {}),
           cloudCredentialRef: stored.connection.cloudCredentialRef,

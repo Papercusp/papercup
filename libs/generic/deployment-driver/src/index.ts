@@ -220,7 +220,6 @@ export {
   WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
   WORKSPACE_HOST_LIVE_CANARY_MAX_SPEND_CENTS,
   WORKSPACE_HOST_PROVIDER_CONTRACT_CHECKS,
-  WORKSPACE_HOST_CANARY_TAG_KEYS,
   WorkspaceHostContractAssertionError,
   WorkspaceHostInjectedFault,
   DeterministicWorkspaceHostFaultInjector,
@@ -229,6 +228,17 @@ export {
   runFakeWorkspaceHostProviderContractSuite,
   createWorkspaceHostManualDestroyReceipt,
 } from "./workspace-host-test-harness";
+export {
+  WORKSPACE_HOST_CANARY_TAG_KEYS,
+  workspaceHostCanaryIdentityLabels,
+  workspaceHostCanaryIdentityAudit,
+  workspaceHostCanaryIdentityProblems,
+  isWorkspaceHostCanaryIdentityLabelKey,
+} from "./workspace-host-canary-identity";
+export type {
+  WorkspaceHostCanaryIdentity,
+  WorkspaceHostCanaryIdentityAudit,
+} from "./workspace-host-canary-identity";
 export {
   registerWorkspaceHostProvider,
   configureWorkspaceHostProviders,
