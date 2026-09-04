@@ -12,7 +12,7 @@ const KEY = ALL_FLAG_KEYS[0] as FlagKey;
 const sibling = (port: number, pid: number) => ({
   port,
   pid,
-  startedAt: '2026-09-04T12:00:00.000Z',
+  startedAt: 1_788_523_200_000,
 });
 
 function attestation(label: string, pid: number): ProcessFlagAttestation {

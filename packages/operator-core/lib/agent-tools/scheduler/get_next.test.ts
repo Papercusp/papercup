@@ -13,7 +13,12 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import type { ZodTypeAny } from 'zod';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
-const scopeState = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[], windingDown: false, pauseReason: null as string | null }));
+const scopeState = vi.hoisted(() => ({
+  scope: null as any,
+  quarantinedIds: [] as string[],
+  windingDown: false,
+  pauseReason: null as string | null,
+}));
 const getNextM = vi.hoisted(() => vi.fn());
 type TestClaimSpecRecord = {
   source: 'default' | 'cup';
@@ -22,17 +27,26 @@ type TestClaimSpecRecord = {
   updatedBy: string | null;
   updatedAt: string | null;
 };
-const getClaimSpecRecordM = vi.hoisted(() => vi.fn(async (): Promise<TestClaimSpecRecord> => ({
-  source: 'default',
-  spec: { specId: 'default', revision: 0 },
-  revision: null,
-  updatedBy: null,
-  updatedAt: null,
-})));
-const getSessionBriefM = vi.hoisted(() => vi.fn(async () => null as {
-  workspaceId?: string | null;
-  harnessSlug?: string | null;
-} | null));
+const getClaimSpecRecordM = vi.hoisted(() =>
+  vi.fn(
+    async (): Promise<TestClaimSpecRecord> => ({
+      source: 'default',
+      spec: { specId: 'default', revision: 0 },
+      revision: null,
+      updatedBy: null,
+      updatedAt: null,
+    }),
+  ),
+);
+const getSessionBriefM = vi.hoisted(() =>
+  vi.fn(
+    async () =>
+      null as {
+        workspaceId?: string | null;
+        harnessSlug?: string | null;
+      } | null,
+  ),
+);
 const getActiveClaimForOwnerM = vi.hoisted(() => vi.fn(async () => null));
 // EI-16057: registry contents the harness-existence gate checks against — 'papercusp'
 // is the only registered slug by default so every pre-existing test (which all pass
@@ -180,19 +194,12 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   }),
 }));
 
-import getNextTool, {
-  GET_NEXT_BUDGET_MS,
-  GET_NEXT_ISSUE_DIAG_BUDGET_MS,
-  GET_NEXT_TOTAL_BUDGET_MS,
-} from './get_next';
+import getNextTool, { GET_NEXT_BUDGET_MS, GET_NEXT_ISSUE_DIAG_BUDGET_MS, GET_NEXT_TOTAL_BUDGET_MS } from './get_next';
 import claimNextTool from '../work_items/claim_next';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 
-function handlerPayload(out: {
-  data?: unknown;
-  content?: Array<{ text?: string }>;
-}): Record<string, unknown> {
+function handlerPayload(out: { data?: unknown; content?: Array<{ text?: string }> }): Record<string, unknown> {
   if (out.data !== undefined) return out.data as Record<string, unknown>;
   return JSON.parse(out.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
@@ -357,7 +364,17 @@ describe('pull-tool `states` arg is clamped to the claimable allowlist (WI-1912)
 
   it('REJECTS floor-protected and terminal states — the WI-1912 widening', () => {
     for (const { name, args } of TOOLS) {
-      for (const bad of ['blocked', 'cursed', 'in_progress', 'passed', 'resolved', 'closed', 'deprecated', 'needs-human', 'todo']) {
+      for (const bad of [
+        'blocked',
+        'cursed',
+        'in_progress',
+        'passed',
+        'resolved',
+        'closed',
+        'deprecated',
+        'needs-human',
+        'todo',
+      ]) {
         const r = args.safeParse({ harness: 'papercusp', states: ['open', bad] });
         expect(r.success, `${name} must reject states:['open','${bad}']`).toBe(false);
       }
@@ -391,7 +408,9 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
       fleetRole: 'member',
       record: { source: 'default', spec: { specId: 'default', revision: 0 } },
     };
-    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as { content: Array<{ text: string }> };
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
     const b = JSON.parse(out.content[0]!.text);
     expect(b).toMatchObject({ ok: false, windDown: true, fleetScope: { fleet: 'bugs', source: 'default' } });
     expect(getNextM).not.toHaveBeenCalled();
@@ -405,7 +424,9 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
       record: { source: 'fleet', spec: { specId: 'bugs-rev4', revision: 4 } },
     };
     scopeState.quarantinedIds = ['WI-out'];
-    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as { content: Array<{ text: string }> };
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
     const b = JSON.parse(out.content[0]!.text);
     expect(b).toMatchObject({ ok: false, windDown: true, quarantinedIds: ['WI-out'] });
     expect(getNextM).toHaveBeenCalledOnce();
@@ -422,7 +443,9 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     };
     scopeState.windingDown = true;
     scopeState.pauseReason = 'owner pause';
-    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as { content: Array<{ text: string }> };
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
     const b = JSON.parse(out.content[0]!.text);
     expect(b).toMatchObject({ ok: false, windDown: true, paused: true });
     expect(getNextM).not.toHaveBeenCalled();
@@ -732,9 +755,7 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     const startedAt = Date.now();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     getFlagM
-      .mockImplementationOnce(
-        () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 20_000)),
-      )
+      .mockImplementationOnce(() => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 20_000)))
       .mockResolvedValue(true);
     getNextM.mockImplementation(() => new Promise(() => {}));
 
@@ -795,9 +816,9 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     // re-surfacing) — capture it so vitest-fail-on-console does not trip on the expected warn.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     getNextM.mockRejectedValue(new Error('pool exhausted: boom'));
-    await expect(
-      getNextTool.handler({ harness: 'papercusp' } as never, {} as never),
-    ).rejects.toThrow(/pool exhausted: boom/);
+    await expect(getNextTool.handler({ harness: 'papercusp' } as never, {} as never)).rejects.toThrow(
+      /pool exhausted: boom/,
+    );
     warnSpy.mockRestore();
   });
 
@@ -936,9 +957,7 @@ describe('scheduler:get_next bounds post-claim enrichment (EI-21834503221873518)
         items: [expect.objectContaining({ id: 'WI-218345032' })],
       }),
     );
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('scheduler:get_next:postClaimEnrichment exceeded'),
-    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:postClaimEnrichment exceeded'));
     warnSpy.mockRestore();
   });
 });
@@ -1016,10 +1035,12 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
     liveLockedPathsM.mockResolvedValueOnce(['packages/operator-core/lib/hot.ts']);
     await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
     expect(liveLockedPathsM).toHaveBeenCalledWith({ excludeOwner: 'su-member' });
-    expect(getNextM).toHaveBeenCalledWith(expect.objectContaining({
-      cupId: 'su-member',
-      contendedPaths: ['packages/operator-core/lib/hot.ts'],
-    }));
+    expect(getNextM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cupId: 'su-member',
+        contendedPaths: ['packages/operator-core/lib/hot.ts'],
+      }),
+    );
   });
 
   it('routes a legacy/pre-envelope bug through the cheap validation lane at claim time', async () => {

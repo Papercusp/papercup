@@ -8,10 +8,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Rubric } from '../../rubrics';
-import type {
-  ScorecardReleaseGateBinding,
-  ScorecardRow,
-} from '../../scorecards';
+import type { ScorecardRow } from '../../scorecards';
+import type { ScorecardReleaseGateBinding } from '../../harness/improvements/observation-types';
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();

@@ -23,7 +23,11 @@ import {
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 import type { Rubric } from '../../rubrics';
 import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
-import { areAcceptanceLineageRelated, isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
+import {
+  areAcceptanceLineageRelated,
+  isAcceptanceAuthorIdentity,
+  resolvePlanImplementerIdentities,
+} from '../../acceptance-author-identity';
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
@@ -47,6 +51,7 @@ vi.mock('../../scorecards', async (importOriginal) => {
 vi.mock('../../acceptance-author-identity', () => ({
   isAcceptanceAuthorIdentity: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
   areAcceptanceLineageRelated: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
+  resolvePlanImplementerIdentities: vi.fn(async () => [] as string[]),
 }));
 
 import { getRubric, getRubricPlanRevision, readRubricPlanRevision } from '../../rubrics';
@@ -104,6 +109,7 @@ const ISSUE_BASE: EngineerIssue = {
 const issueWith = (payload: unknown): EngineerIssue => ({ ...ISSUE_BASE, payload });
 const sameAuthorM = vi.mocked(isAcceptanceAuthorIdentity);
 const lineageRelatedM = vi.mocked(areAcceptanceLineageRelated);
+const planImplementersM = vi.mocked(resolvePlanImplementerIdentities);
 
 const RUBRIC: Rubric = {
   rubricId: 'test-rubric',
@@ -194,6 +200,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   sameAuthorM.mockImplementation(async (author, candidate) => author === candidate);
   lineageRelatedM.mockImplementation(async (author, candidate) => author === candidate);
+  planImplementersM.mockResolvedValue([]);
   getRubricM.mockResolvedValue(RUBRIC);
   getRubricPlanRevisionM.mockResolvedValue(7);
   readRubricPlanRevisionM.mockResolvedValue({ ok: true, revision: 7 });
@@ -960,8 +967,9 @@ describe('emitScorecard', () => {
       error: expect.stringContaining('spawn/rebind lineage'),
     });
     expect((r as { error?: string }).error).toContain('existing unrelated live session');
-    expect((r as { error?: string }).error).toContain('unassigned grading work-item');
-    expect((r as { error?: string }).error).toContain('never launch a grader from this lineage');
+    expect((r as { error?: string }).error).toContain('assign_to');
+    expect((r as { error?: string }).error).toContain('Do NOT file it unassigned');
+    expect((r as { error?: string }).error).toMatch(/never launch a grader from this lineage/i);
     expect((r as { error?: string }).error).not.toContain('launch or assign a lineage-independent grader');
     expect(captureM).not.toHaveBeenCalled();
   });
@@ -1496,11 +1504,48 @@ describe('acceptance-grader eligibility is answerable BEFORE the grading work (E
       graderEligibility?: { refusal?: { error?: string } };
     }).graderEligibility?.refusal;
     expect(refusal?.error).toContain('existing unrelated live session');
-    expect(refusal?.error).toContain('unassigned grading work-item');
-    expect(refusal?.error).toContain('never launch a grader from this lineage');
+    expect(refusal?.error).toContain('assign_to');
+    expect(refusal?.error).toContain('Do NOT file it unassigned');
+    expect(refusal?.error).toMatch(/never launch a grader from this lineage/i);
     await expect(
       emitScorecard({ rubricRef: 'acceptance-rubric', ratings: RATINGS }, { createdBy: 'su-relative' }),
     ).resolves.toMatchObject({ ok: false, code: 'grader_in_implementer_lineage' });
+  });
+
+  it('reports principal plan implementers and excludes them without changing acceptance-author authority', async () => {
+    getRubricM.mockResolvedValue({
+      ...ACCEPTANCE_RUBRIC,
+      subjectPlan: 'split-role-plan',
+      createdBy: 'su-acceptance-author',
+      proposedBy: 'su-repair-proposer',
+    } as Rubric);
+    planImplementersM.mockResolvedValue(['su-plan-implementer']);
+
+    await expect(
+      evaluateScorecard(
+        { rubricRef: 'acceptance-rubric' },
+        { id: 'su-plan-implementer', workspaceId: 'ws' },
+      ),
+    ).resolves.toMatchObject({
+      graderEligibility: {
+        role: 'disqualified',
+        principalImplementers: ['su-plan-implementer'],
+        refusal: { code: 'grader_in_implementer_lineage' },
+      },
+    });
+
+    await expect(
+      evaluateScorecard(
+        { rubricRef: 'acceptance-rubric' },
+        { id: 'su-acceptance-author', workspaceId: 'ws' },
+      ),
+    ).resolves.toMatchObject({
+      graderEligibility: {
+        role: 'acceptance-author',
+        implementer: 'su-acceptance-author',
+        principalImplementers: ['su-plan-implementer'],
+      },
+    });
   });
 
   it('an eligible independent grader is told so — the pre-flight is not a blanket warning', async () => {

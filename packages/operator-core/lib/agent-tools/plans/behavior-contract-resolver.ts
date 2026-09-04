@@ -31,6 +31,7 @@ import { enforcementEligibility, type EnforcementEligibility } from './spec-enfo
 import { listPlanStatuses } from './plan-status-read';
 import type { WorkItemSpecRevisionEdge } from './spec-evidence-store';
 import { listWorkItemSpecRevisionEdges } from './spec-evidence-store';
+import { ADHOC_WORK_ITEM_SPEC_SCOPE } from './adhoc-spec-scope';
 
 /** The clause lifecycle states that carry an enforceable promise (D-012). */
 export const ENFORCEABLE_LIFECYCLE_STATUSES = ['accepted', 'active'] as const;
@@ -300,6 +301,11 @@ export async function resolveWorkItemBehaviorContract(
   }
 
   const resolved = enforceable.length > 0;
+  const missingClauseRemedy = stamp
+    ? `link one with plans:bind-spec-evidence, or promote a new clause with plans:set-specs.`
+    : `This item has no source plan. Use the harness ad-hoc scope \`${ADHOC_WORK_ITEM_SPEC_SCOPE}\`: ` +
+      `author an item-local clause with plans:set-specs while omitting \`slug\`, then bind this ` +
+      `work item and its proof with plans:bind-spec-evidence while also omitting \`slug\`.`;
   return {
     workItemId: workItem.id,
     groups,
@@ -311,8 +317,7 @@ export async function resolveWorkItemBehaviorContract(
       report: resolved
         ? null
         : `${workItem.id} is a behavior-changing ${kind} that resolves no active behavior clause. ` +
-          `D-012 expects a behavior-changing item to name the clauses it affects — link one with ` +
-          `plans:set-spec-evidence, or promote a new clause with plans:set-specs. ` +
+          `D-012 expects a behavior-changing item to name the clauses it affects — ${missingClauseRemedy} ` +
           `Reported, not enforced (P-016 reports; P-013 turns this into a hard gate).`,
     },
   };

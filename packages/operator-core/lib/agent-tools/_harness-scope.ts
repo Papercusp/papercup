@@ -44,16 +44,16 @@ export const harnessArg = z
   .min(1)
   .optional()
   .describe(
-    "Harness slug to operate on. In a workspace-scoped operator/superuser session, " +
+    'Harness slug to operate on. In a workspace-scoped operator/superuser session, ' +
       "pass the concrete in-scope harness slug (for example, 'papercusp' for " +
       "Papercusp's own plans). 'all' is only valid in an unscoped (--all-workspaces) " +
-      "session. A harness-scoped session supplies this automatically. Recovering an " +
-      "EXACT plan slug without knowing its owner? On plans:get / plans:items you may " +
-      "omit `harness` entirely — but only an UNSCOPED session auto-resolves the owning " +
-      "harness from the slug; a session already scoped to a concrete harness (the common " +
-      "case) stays scoped to it, and a miss there reports which OTHER harness actually " +
-      "owns the slug instead of silently reading across harnesses — pass that harness " +
-      "explicitly to read it.",
+      'session. A harness-scoped session supplies this automatically. Recovering an ' +
+      'EXACT plan slug without knowing its owner? On plans:get / plans:items you may ' +
+      'omit `harness` entirely — but only an UNSCOPED session auto-resolves the owning ' +
+      'harness from the slug; a session already scoped to a concrete harness (the common ' +
+      'case) stays scoped to it, and a miss there reports which OTHER harness actually ' +
+      'owns the slug instead of silently reading across harnesses — pass that harness ' +
+      'explicitly to read it.',
   );
 
 /** True when a value is the explicit all/operator-scope sentinel. */
@@ -104,10 +104,7 @@ export function stripCallerOperatorScope<T extends { harness?: string | null }>(
   return rest as Partial<T>;
 }
 
-export type HarnessScope =
-  | { kind: 'harness'; slug: string }
-  | { kind: 'all' }
-  | { kind: 'none' };
+export type HarnessScope = { kind: 'harness'; slug: string } | { kind: 'all' } | { kind: 'none' };
 
 /** The ordered, durable bindings that may supply one concrete harness. */
 export type InheritedHarnessSource = 'explicit' | 'claim' | 'plan' | 'fleet' | 'brief' | 'session';
@@ -379,8 +376,9 @@ export async function resolveInheritedHarnessScope(
       };
     }
     const refs = [...new Set((read.refs ?? []).map((ref) => ref.trim()).filter(Boolean))];
-    const sourceCandidates = [...new Set((read.harnesses ?? []).map(concreteHarness).filter((v): v is string => Boolean(v)))]
-      .map((harnessSlug) => ({ source, harnessSlug, refs }));
+    const sourceCandidates = [
+      ...new Set((read.harnesses ?? []).map(concreteHarness).filter((v): v is string => Boolean(v))),
+    ].map((harnessSlug) => ({ source, harnessSlug, refs }));
     candidates.push(...sourceCandidates);
     if (read.stale) {
       return {
@@ -452,7 +450,7 @@ export function resolveHarnessScope(
 
 /** Shared detail string for the `harness_required` error every gated tool returns. */
 export const HARNESS_REQUIRED_DETAIL =
-  "No harness specified. `harness` is a per-call arg — pass it on THIS call " +
+  'No harness specified. `harness` is a per-call arg — pass it on THIS call ' +
   "(you don't need a differently-scoped session): normally the concrete slug for that " +
   "harness (for example, `harness: 'papercusp'` for Papercusp's own plans). " +
   "`harness: 'all'` is valid only in an unscoped (`--all-workspaces`) session; a " +
@@ -462,10 +460,7 @@ export const HARNESS_REQUIRED_DETAIL =
   'when you OMIT `harness` and pass the slug.';
 
 export function harnessRequiredDetail(
-  ctx?:
-    | { workspaceId?: string | null }
-    | { harnessSlug?: string | null }
-    | null,
+  ctx?: { workspaceId?: string | null } | { harnessSlug?: string | null } | null,
 ): string {
   // Callers that resolve a scope carry `harnessSlug`, while plans resolvers also
   // carry `workspaceId`; accept both context shapes without making the generic
@@ -473,7 +468,7 @@ export function harnessRequiredDetail(
   const workspaceId = ctx && 'workspaceId' in ctx ? ctx.workspaceId?.trim() : undefined;
   if (isAllHarnessSentinel(workspaceId)) {
     return (
-      "No harness specified. This is an unscoped (`--all-workspaces`) session, so pass " +
+      'No harness specified. This is an unscoped (`--all-workspaces`) session, so pass ' +
       "either a concrete harness slug or `harness: 'all'` on THIS call."
     );
   }

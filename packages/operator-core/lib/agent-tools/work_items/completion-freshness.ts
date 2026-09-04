@@ -345,8 +345,10 @@ export function describeUnprovenContentIdentity(
       head +
       `WAITING SETTLES THIS — your evidence was accepted and nothing is wrong with your tree. Those path(s) are ` +
       `present in the working tree but not yet in the commit, and git-sync sweeps this tree on a schedule, so ONE ` +
-      `logical change routinely lands across TWO ticks. Wait for the sweep, then re-send this IDENTICAL completion ` +
-      `to upgrade it to \`committed\`. Do not re-verify work that is already correct, and do not re-word the evidence.`
+      `logical change routinely lands across TWO ticks. The git-sync completion-settlement reconciler checks the ` +
+      `recorded settlement manifest automatically after each emitted commit and upgrades this close to ` +
+      `\`committed\` when those exact blobs land. Do not re-call \`work_items:complete\`, re-verify work that is ` +
+      `already correct, or re-word the evidence.`
     );
   }
   if (willSettle.length === 0) {
@@ -354,7 +356,8 @@ export function describeUnprovenContentIdentity(
   }
   return (
     head +
-    `MIXED — only one half is worth waiting on. ${render(willSettle)} will settle on the next git-sync sweep, ` +
+    `MIXED — only one half is worth waiting on. ${render(willSettle)} will be checked automatically by the ` +
+    `git-sync completion-settlement reconciler on the next sweep, ` +
     `but ${neverRemedy} Waiting alone leaves this close \`proposed\` indefinitely.`
   );
 }

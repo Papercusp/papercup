@@ -79,7 +79,7 @@ export type FlagOverrideStore = {
 // shape as the one the store pin exists to prevent, one level down. One
 // pinModuleState call per module body also keeps `evaluations` an honest count
 // of module RECORDS.
-const STATE_KEY = '@papercusp/flags.server';
+const STATE_KEY = "@papercusp/flags.server";
 interface OverrideCacheEntry {
   flags: Partial<Record<FlagKey, boolean>>;
   ts: number;
@@ -103,7 +103,7 @@ const state = pinModuleState<FlagsServerState>(STATE_KEY, () => ({
   overrideCache: new Map(),
   cacheGeneration: 0,
 }));
-type StoreSlot = Pick<FlagsServerState, 'store'>;
+type StoreSlot = Pick<FlagsServerState, "store">;
 function storeSlot(): StoreSlot {
   return state;
 }
@@ -112,21 +112,21 @@ const DEFAULT_OVERRIDE_CACHE_TTL_MS = 5_000;
 const DEFAULT_FLAG_BACKEND_TIMEOUT_MS = 2_000;
 
 export type FlagResolutionSource =
-  | 'env-override'
-  | 'platform-mode-override'
-  | 'test-override'
-  | 'override-store'
-  | 'process-cache'
-  | 'posthog'
-  | 'compiled-default';
+  | "env-override"
+  | "platform-mode-override"
+  | "test-override"
+  | "override-store"
+  | "process-cache"
+  | "posthog"
+  | "compiled-default";
 
 export type FlagOverrideReadKind =
-  | 'not-read'
-  | 'unconfigured'
-  | 'cache-hit'
-  | 'store-load'
-  | 'stale-cache-fallback'
-  | 'store-error';
+  | "not-read"
+  | "unconfigured"
+  | "cache-hit"
+  | "store-load"
+  | "stale-cache-fallback"
+  | "store-error";
 
 /** Process-local evidence for the override layer consulted by one flag read. */
 export interface FlagOverrideReadAttestation {
@@ -166,19 +166,24 @@ function overrideCacheTtlMs(): number {
 }
 
 function currentCacheKey(): string {
-  return storeSlot().store?.cacheKey?.() ?? '';
+  return storeSlot().store?.cacheKey?.() ?? "";
 }
 
 function flagBackendTimeoutMs(): number {
   const raw = Number(process.env.PAPERCUSP_FLAG_BACKEND_TIMEOUT_MS);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_FLAG_BACKEND_TIMEOUT_MS;
+  return Number.isFinite(raw) && raw > 0
+    ? raw
+    : DEFAULT_FLAG_BACKEND_TIMEOUT_MS;
 }
 
 async function withFlagBackendTimeout<T>(op: Promise<T>): Promise<T> {
   const ms = flagBackendTimeoutMs();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`flag backend timed out after ${ms}ms`)), ms);
+    timer = setTimeout(
+      () => reject(new Error(`flag backend timed out after ${ms}ms`)),
+      ms,
+    );
     (timer as { unref?: () => void }).unref?.();
   });
   try {
@@ -238,16 +243,16 @@ export function resetOverrideStoreWarningForTest(): void {
 function warnOverrideStoreMissingOnce(): void {
   // Suppression is checked BEFORE the latch so a suppressed call never consumes the one shot
   // (otherwise a single early test import would mute the warning for the real process).
-  if (process.env.PAPERCUSP_SILENCE_FLAG_OVERRIDE_WARN === '1') return;
-  if (process.env.NODE_ENV === 'test' || process.env.VITEST) return;
+  if (process.env.PAPERCUSP_SILENCE_FLAG_OVERRIDE_WARN === "1") return;
+  if (process.env.NODE_ENV === "test" || process.env.VITEST) return;
   if (warnedNoOverrideStore) return;
   warnedNoOverrideStore = true;
   console.warn(
-    '[flags] No override store installed in this process: runtime overrides (flags:set / ' +
-      'POST /api/flags/set) are INVISIBLE here and getFlag() is serving FLAG_DEFAULTS. ' +
-      'If this process is expected to observe runtime flag flips, call initFlagOverrideStore() ' +
-      'during boot BEFORE any flag is resolved (operator-core: installFlagOverrideStore()). ' +
-      'Silence with PAPERCUSP_SILENCE_FLAG_OVERRIDE_WARN=1 if defaults-only is intentional.',
+    "[flags] No override store installed in this process: runtime overrides (flags:set / " +
+      "POST /api/flags/set) are INVISIBLE here and getFlag() is serving FLAG_DEFAULTS. " +
+      "If this process is expected to observe runtime flag flips, call initFlagOverrideStore() " +
+      "during boot BEFORE any flag is resolved (operator-core: installFlagOverrideStore()). " +
+      "Silence with PAPERCUSP_SILENCE_FLAG_OVERRIDE_WARN=1 if defaults-only is intentional.",
   );
 }
 
@@ -259,7 +264,9 @@ interface StoredOverrideRead {
 function nextCacheGeneration(): number {
   // A hot-reloaded process can retain a state object created by an older build
   // without this field. Coerce that shape forward instead of reporting NaN.
-  state.cacheGeneration = Number.isFinite(state.cacheGeneration) ? state.cacheGeneration + 1 : 1;
+  state.cacheGeneration = Number.isFinite(state.cacheGeneration)
+    ? state.cacheGeneration + 1
+    : 1;
   return state.cacheGeneration;
 }
 
@@ -283,11 +290,13 @@ function overrideReadAttestation(
   };
 }
 
-function inspectOverrideReadWithoutLoading(now: number = Date.now()): FlagOverrideReadAttestation {
+function inspectOverrideReadWithoutLoading(
+  now: number = Date.now(),
+): FlagOverrideReadAttestation {
   const ck = currentCacheKey();
   const entry = overrideCache.get(ck);
   return overrideReadAttestation(
-    storeSlot().store ? 'not-read' : 'unconfigured',
+    storeSlot().store ? "not-read" : "unconfigured",
     ck,
     entry,
     now,
@@ -309,7 +318,7 @@ async function loadStoredOverridesWithAttestation(): Promise<StoredOverrideRead>
   if (hit && t - hit.ts < overrideCacheTtlMs()) {
     return {
       flags: hit.flags,
-      attestation: overrideReadAttestation('cache-hit', ck, hit, t),
+      attestation: overrideReadAttestation("cache-hit", ck, hit, t),
     };
   }
   try {
@@ -329,7 +338,7 @@ async function loadStoredOverridesWithAttestation(): Promise<StoredOverrideRead>
     overrideCache.set(ck, entry);
     return {
       flags,
-      attestation: overrideReadAttestation('store-load', ck, entry, Date.now()),
+      attestation: overrideReadAttestation("store-load", ck, entry, Date.now()),
     };
   } catch {
     // Store unreachable OR too slow — serve the last good map for THIS scope (or
@@ -338,7 +347,7 @@ async function loadStoredOverridesWithAttestation(): Promise<StoredOverrideRead>
     return {
       flags: stale?.flags ?? {},
       attestation: overrideReadAttestation(
-        stale ? 'stale-cache-fallback' : 'store-error',
+        stale ? "stale-cache-fallback" : "store-error",
         ck,
         stale,
         Date.now(),
@@ -347,7 +356,9 @@ async function loadStoredOverridesWithAttestation(): Promise<StoredOverrideRead>
   }
 }
 
-async function loadStoredOverrides(): Promise<Partial<Record<FlagKey, boolean>>> {
+async function loadStoredOverrides(): Promise<
+  Partial<Record<FlagKey, boolean>>
+> {
   return (await loadStoredOverridesWithAttestation()).flags;
 }
 
@@ -356,7 +367,8 @@ export async function setFlagOverride(
   enabled: boolean | null,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const overrideStore = storeSlot().store;
-  if (!overrideStore) return { ok: false, reason: "override-store-not-configured" };
+  if (!overrideStore)
+    return { ok: false, reason: "override-store-not-configured" };
   try {
     await overrideStore.set(key, enabled);
     // A store write may affect a layer shared by EVERY scope (Papercusp's
@@ -367,7 +379,10 @@ export async function setFlagOverride(
     overrideCache.clear();
     return { ok: true };
   } catch (err) {
-    return { ok: false, reason: err instanceof Error ? err.message : "unknown" };
+    return {
+      ok: false,
+      reason: err instanceof Error ? err.message : "unknown",
+    };
   }
 }
 
@@ -491,7 +506,11 @@ export async function getFlagAttestation(
 
   const envOverride = resolveEnvOverride(key);
   if (envOverride !== undefined) {
-    return done(envOverride, 'env-override', inspectOverrideReadWithoutLoading(observedAtMs));
+    return done(
+      envOverride,
+      "env-override",
+      inspectOverrideReadWithoutLoading(observedAtMs),
+    );
   }
   // Coarse deployment-mode lever (P-070): PAPERCUSP_PLATFORM_MODE=off forces the
   // platform-improvement flag off on a release build. The per-flag PAPERCUSP_FLAG_*
@@ -500,45 +519,57 @@ export async function getFlagAttestation(
   if (platformMode !== undefined) {
     return done(
       platformMode,
-      'platform-mode-override',
+      "platform-mode-override",
       inspectOverrideReadWithoutLoading(observedAtMs),
     );
   }
   const overrides = resolveTestOverrides();
   if (overrides) {
-    return done(overrides[key], 'test-override', inspectOverrideReadWithoutLoading(observedAtMs));
+    return done(
+      overrides[key],
+      "test-override",
+      inspectOverrideReadWithoutLoading(observedAtMs),
+    );
   }
   const stored = await loadStoredOverridesWithAttestation();
   if (stored.flags[key] !== undefined) {
     const source: FlagResolutionSource =
-      stored.attestation.kind === 'cache-hit' ||
-      stored.attestation.kind === 'stale-cache-fallback'
-        ? 'process-cache'
-        : 'override-store';
+      stored.attestation.kind === "cache-hit" ||
+      stored.attestation.kind === "stale-cache-fallback"
+        ? "process-cache"
+        : "override-store";
     return done(stored.flags[key] as boolean, source, stored.attestation);
   }
-  if (!client) return done(compiledDefault, 'compiled-default', stored.attestation);
+  if (!client)
+    return done(compiledDefault, "compiled-default", stored.attestation);
   try {
     // posthog-node v5 deprecated isFeatureEnabled in favor of evaluateFlags (one /flags request,
     // scoped via flagKeys) — and its deprecation console.warn trips vitest-fail-on-console in ANY
     // test that touches a flag (host-spa gate-red, 2026-07-01). Feature-detect so the v4 range in
     // package.json keeps working.
     const c = client as typeof client & {
-      evaluateFlags?: (distinctId: string, opts?: { flagKeys?: string[] }) => Promise<{ isEnabled: (key: string) => boolean | undefined }>;
+      evaluateFlags?: (
+        distinctId: string,
+        opts?: { flagKeys?: string[] },
+      ) => Promise<{ isEnabled: (key: string) => boolean | undefined }>;
     };
     if (typeof c.evaluateFlags === "function") {
-      const flags = await withFlagBackendTimeout(c.evaluateFlags(distinctId, { flagKeys: [key] }));
+      const flags = await withFlagBackendTimeout(
+        c.evaluateFlags(distinctId, { flagKeys: [key] }),
+      );
       const v = flags.isEnabled(key);
       return typeof v === "boolean"
-        ? done(v, 'posthog', stored.attestation)
-        : done(compiledDefault, 'compiled-default', stored.attestation);
+        ? done(v, "posthog", stored.attestation)
+        : done(compiledDefault, "compiled-default", stored.attestation);
     }
-    const v = await withFlagBackendTimeout(client.isFeatureEnabled(key, distinctId));
+    const v = await withFlagBackendTimeout(
+      client.isFeatureEnabled(key, distinctId),
+    );
     return typeof v === "boolean"
-      ? done(v, 'posthog', stored.attestation)
-      : done(compiledDefault, 'compiled-default', stored.attestation);
+      ? done(v, "posthog", stored.attestation)
+      : done(compiledDefault, "compiled-default", stored.attestation);
   } catch {
-    return done(compiledDefault, 'compiled-default', stored.attestation);
+    return done(compiledDefault, "compiled-default", stored.attestation);
   }
 }
 
@@ -573,7 +604,11 @@ function applyEnvOverrides(flags: FlagValues): FlagValues {
 export async function getAllFlags(distinctId: string): Promise<FlagPayload> {
   const overrides = resolveTestOverrides();
   if (overrides) {
-    return { flags: applyEnvOverrides(overrides), evaluatedAt: Date.now(), source: "override" };
+    return {
+      flags: applyEnvOverrides(overrides),
+      evaluatedAt: Date.now(),
+      source: "override",
+    };
   }
   // Filter the stored map through resolveWithDefaults: the PG row can carry
   // keys for RETIRED flags (e.g. papercusp-oracle after the 2026-06-10 fold),
@@ -591,11 +626,16 @@ export async function getAllFlags(distinctId: string): Promise<FlagPayload> {
   // console.warn trips vitest-fail-on-console — host-spa gate-red 2026-07-01). v4 fallback keeps the
   // declared ">=4 <6" range honest.
   const c5 = client as typeof client & {
-    evaluateFlags?: (distinctId: string, opts?: { flagKeys?: string[] }) => Promise<{ isEnabled: (key: string) => boolean | undefined }>;
+    evaluateFlags?: (
+      distinctId: string,
+      opts?: { flagKeys?: string[] },
+    ) => Promise<{ isEnabled: (key: string) => boolean | undefined }>;
   };
   if (typeof c5.evaluateFlags === "function") {
     try {
-      const snap = await withFlagBackendTimeout(c5.evaluateFlags(distinctId, { flagKeys: [...ALL_FLAG_KEYS] }));
+      const snap = await withFlagBackendTimeout(
+        c5.evaluateFlags(distinctId, { flagKeys: [...ALL_FLAG_KEYS] }),
+      );
       for (const key of ALL_FLAG_KEYS) {
         const v = snap.isEnabled(key);
         if (typeof v === "boolean") evaluated[key] = v;
@@ -607,7 +647,9 @@ export async function getAllFlags(distinctId: string): Promise<FlagPayload> {
     await Promise.all(
       ALL_FLAG_KEYS.map(async (key) => {
         try {
-          const v = await withFlagBackendTimeout(client!.isFeatureEnabled(key, distinctId));
+          const v = await withFlagBackendTimeout(
+            client!.isFeatureEnabled(key, distinctId),
+          );
           if (typeof v === "boolean") evaluated[key] = v;
         } catch {
           // leave undefined; resolveWithDefaults fills with FLAG_DEFAULTS[key]
@@ -633,7 +675,9 @@ export async function setFlag(
       headers: { Authorization: `Bearer ${config.personalApiKey}` },
     });
     if (!listRes.ok) return { ok: false, reason: `list:${listRes.status}` };
-    const list = (await listRes.json()) as { results?: Array<{ id: number; key: string; active: boolean }> };
+    const list = (await listRes.json()) as {
+      results?: Array<{ id: number; key: string; active: boolean }>;
+    };
     const hit = list.results?.find((f) => f.key === key);
     if (!hit) return { ok: false, reason: "flag-not-found-in-posthog" };
     // PostHog evaluates a flag as true only when both `active` is true
@@ -655,7 +699,10 @@ export async function setFlag(
     if (!patchRes.ok) return { ok: false, reason: `patch:${patchRes.status}` };
     return { ok: true };
   } catch (err) {
-    return { ok: false, reason: err instanceof Error ? err.message : "unknown" };
+    return {
+      ok: false,
+      reason: err instanceof Error ? err.message : "unknown",
+    };
   }
 }
 

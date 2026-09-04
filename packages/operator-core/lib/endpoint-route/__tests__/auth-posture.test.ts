@@ -20,10 +20,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ALL_ROUTES } from '../routes';
 
-const attentionBulkResolveSrc = readFileSync(
-  join(__dirname, '../routes/admin/attention-bulk-resolve.ts'),
-  'utf8',
-);
+const attentionBulkResolveSrc = readFileSync(join(__dirname, '../routes/admin/attention-bulk-resolve.ts'), 'utf8');
 
 type RouteAuth = 'public' | 'loopback' | { trust?: readonly string[] };
 const VT = { trust: ['verified', 'trusted'] } as const;
@@ -143,14 +140,14 @@ const RULES: ReadonlyArray<{
     prefix: '/tui/',
     expect: 'public',
     exceptions: [
-      { method: 'PUT',    path: '/tui/view-state',    auth: 'loopback' },
-      { method: 'PUT',    path: '/tui/layouts',       auth: 'loopback' },
+      { method: 'PUT', path: '/tui/view-state', auth: 'loopback' },
+      { method: 'PUT', path: '/tui/layouts', auth: 'loopback' },
       { method: 'DELETE', path: '/tui/layouts/:name', auth: 'loopback' },
-      { method: 'PUT',    path: '/tui/crews',         auth: 'loopback' },
-      { method: 'DELETE', path: '/tui/crews/:name',   auth: 'loopback' },
-      { method: 'POST',   path: '/tui/intents/:id/result',  auth: 'loopback' },
-      { method: 'POST',   path: '/tui/plan-item-convert',   auth: 'loopback' },
-      { method: 'POST',   path: '/tui/plan-item-release',   auth: 'loopback' },
+      { method: 'PUT', path: '/tui/crews', auth: 'loopback' },
+      { method: 'DELETE', path: '/tui/crews/:name', auth: 'loopback' },
+      { method: 'POST', path: '/tui/intents/:id/result', auth: 'loopback' },
+      { method: 'POST', path: '/tui/plan-item-convert', auth: 'loopback' },
+      { method: 'POST', path: '/tui/plan-item-release', auth: 'loopback' },
     ],
   },
   {
@@ -160,14 +157,14 @@ const RULES: ReadonlyArray<{
       // Pre-existing tier — faithful ports of routes that already required SU.
       { method: 'POST', path: '/admin/backup-orphan-cleanup', auth: T_ONLY },
       { method: 'POST', path: '/admin/embed-backfill', auth: T_ONLY },
-      { method: 'GET',  path: '/admin/spawn-signing/failures', auth: T_ONLY },
+      { method: 'GET', path: '/admin/spawn-signing/failures', auth: T_ONLY },
       { method: 'POST', path: '/admin/spawn-signing/rotate', auth: T_ONLY },
       // dbos/pipeline/start intentionally requires the stricter `trusted` tier
       // (not verified) — a deliberate stricter gate, like spawn-signing.
       { method: 'POST', path: '/admin/dbos/pipeline/start', auth: T_ONLY },
       // Deploy-accounts powers the settings UI from the cookie-less desktop
       // webview's HTTP-fallback path — admits unverified-loopback (see VTL).
-      { method: 'GET',  path: '/admin/deploy-accounts', auth: VTL },
+      { method: 'GET', path: '/admin/deploy-accounts', auth: VTL },
       { method: 'POST', path: '/admin/deploy-accounts/register', auth: VTL },
       // One-click OAuth link start + completion (accounts-pool-tab-2026-06-15 P-002)
       // — both routes declare VTL with the SAME cookie-less desktop-webview rationale
@@ -228,7 +225,7 @@ const RULES: ReadonlyArray<{
       // Same cookie-less desktop-webview HTTP-fallback path (EI-338): the
       // gateway rate/headroom stats view admits unverified-loopback (see the
       // route's own auth declaration in admin/inference-gateway-stats.ts).
-      { method: 'GET',  path: '/admin/inference-gateway/stats', auth: VTL },
+      { method: 'GET', path: '/admin/inference-gateway/stats', auth: VTL },
       // The Task Manager's kill control (task-manager-no-escape-2026-07-27
       // P-023/P-024) — mounted in BOTH the AdvShell dropdown and the full page,
       // both of which post from that same cookie-less loopback webview, so VT
@@ -268,7 +265,7 @@ const RULES: ReadonlyArray<{
       // Windows desktop app hits this route as a diagnostic from localhost with
       // no session cookie to present (EI-8816) — see the route's own auth
       // comment in admin/dogfood-substrate-health.ts.
-      { method: 'GET',  path: '/admin/dogfood-substrate-health', auth: VTL },
+      { method: 'GET', path: '/admin/dogfood-substrate-health', auth: VTL },
       // (admin/plans.ts is now committed + gated to VT, so its prior deferred
       // 'public' exception was removed.)
       // owner-presence-human-turn-signal-2026-07-11 P-002: the psu pty-host hits
@@ -285,19 +282,19 @@ const RULES: ReadonlyArray<{
       // panes (EI-18834967602055309, measured live 2026-07-27). Read-only,
       // except tables/:exportName's mutating verbs, which are additionally
       // CSRF-guarded by requireAllowedOriginOr403 (see the route file).
-      { method: 'GET',    path: '/admin/commands', auth: VTL },
-      { method: 'GET',    path: '/admin/tables', auth: VTL },
-      { method: 'GET',    path: '/admin/tables/:exportName', auth: VTL },
-      { method: 'POST',   path: '/admin/tables/:exportName', auth: VTL },
-      { method: 'PATCH',  path: '/admin/tables/:exportName', auth: VTL },
+      { method: 'GET', path: '/admin/commands', auth: VTL },
+      { method: 'GET', path: '/admin/tables', auth: VTL },
+      { method: 'GET', path: '/admin/tables/:exportName', auth: VTL },
+      { method: 'POST', path: '/admin/tables/:exportName', auth: VTL },
+      { method: 'PATCH', path: '/admin/tables/:exportName', auth: VTL },
       { method: 'DELETE', path: '/admin/tables/:exportName', auth: VTL },
-      { method: 'GET',    path: '/admin/dbos/status', auth: VTL },
-      { method: 'GET',    path: '/admin/schedules/inventory', auth: VTL },
+      { method: 'GET', path: '/admin/dbos/status', auth: VTL },
+      { method: 'GET', path: '/admin/schedules/inventory', auth: VTL },
       // External-trigger admin shares the same cookie-less owner desktop path.
       // PATCH is CSRF-guarded and additionally requires explicit owner confirm
       // for both arm and disarm mutations (admin/external-triggers.ts).
-      { method: 'GET',    path: '/admin/triggers', auth: VTL },
-      { method: 'PATCH',  path: '/admin/triggers', auth: VTL },
+      { method: 'GET', path: '/admin/triggers', auth: VTL },
+      { method: 'PATCH', path: '/admin/triggers', auth: VTL },
     ],
   },
 ];
@@ -307,16 +304,16 @@ const RULES: ReadonlyArray<{
  * (external-provider redirect) or pre-login health probes.
  */
 const MUST_BE_PUBLIC: ReadonlyArray<[string, string]> = [
-  ['GET',     '/oauth/start'],
-  ['GET',     '/oauth/callback'],
-  ['GET',     '/desktop/version'],
+  ['GET', '/oauth/start'],
+  ['GET', '/oauth/callback'],
+  ['GET', '/desktop/version'],
   ['OPTIONS', '/desktop/version'],
-  ['GET',     '/desktop/preflight'],
+  ['GET', '/desktop/preflight'],
   ['OPTIONS', '/desktop/preflight'],
   // The desktop dev-wrapper bar's status poll (desktop-build-switcher-
   // wrapper-2026-06-09 P-010) — a native Rust HTTP client with no auth
   // context; tightening it blanks the bar's pipeline readout.
-  ['GET',     '/desktop/git-pipeline'],
+  ['GET', '/desktop/git-pipeline'],
   ['OPTIONS', '/desktop/git-pipeline'],
 ];
 
@@ -327,15 +324,11 @@ describe('D3 auth posture', () => {
       expect(inFamily.length, `no routes found under ${rule.prefix}`).toBeGreaterThan(0);
       const wrong: string[] = [];
       for (const r of inFamily) {
-        const exc = rule.exceptions?.find(
-          (e) => e.method === r.method && e.path === r.path,
-        );
+        const exc = rule.exceptions?.find((e) => e.method === r.method && e.path === r.path);
         const expected = exc ? exc.auth : rule.expect;
         const actual = r.auth as unknown as RouteAuth;
         if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-          wrong.push(
-            `  [${r.method}] ${r.path}  expected ${describeAuth(expected)}, got ${describeAuth(actual)}`,
-          );
+          wrong.push(`  [${r.method}] ${r.path}  expected ${describeAuth(expected)}, got ${describeAuth(actual)}`);
         }
       }
       expect(wrong, `auth-tier drift under ${rule.prefix}:\n${wrong.join('\n')}`).toEqual([]);
@@ -372,9 +365,7 @@ describe('EI-100 security-posture recurrence guards', () => {
   });
 
   it('keeps the retired GET /fleet/bee-output route out of ALL_ROUTES', () => {
-    expect(
-      ALL_ROUTES.find((route) => route.method === 'GET' && route.path === '/fleet/bee-output'),
-    ).toBeUndefined();
+    expect(ALL_ROUTES.find((route) => route.method === 'GET' && route.path === '/fleet/bee-output')).toBeUndefined();
   });
 });
 
@@ -434,16 +425,15 @@ describe('auth-tier Wave 1 — no public mutating routes (standing gate)', () =>
   ]);
 
   it('every mutating HTTP route declares a non-public tier unless owner-allowlisted', () => {
-    const offenders = ALL_ROUTES
-      .filter((r) => MUTATING.has(r.method))
+    const offenders = ALL_ROUTES.filter((r) => MUTATING.has(r.method))
       .filter((r) => (r.auth as unknown) === 'public')
       .map((r) => `${r.method} ${r.path}`)
       .filter((key) => !OWNER_PUBLIC.has(key) && !OWN_AUTH_TRANSPORTS.has(key));
     expect(
       offenders,
       `PUBLIC mutating route(s) — declare auth: 'loopback' (the Wave-1 rule) or get ` +
-      `explicit owner sign-off and add the route to OWNER_PUBLIC here AND to the ` +
-      `REMOTE_SURFACES list in scripts/gen-auth-tier-audit.mjs:\n  ${offenders.join('\n  ')}`,
+        `explicit owner sign-off and add the route to OWNER_PUBLIC here AND to the ` +
+        `REMOTE_SURFACES list in scripts/gen-auth-tier-audit.mjs:\n  ${offenders.join('\n  ')}`,
     ).toEqual([]);
   });
 

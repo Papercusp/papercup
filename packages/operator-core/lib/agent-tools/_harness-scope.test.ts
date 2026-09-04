@@ -39,8 +39,7 @@ describe('stripCallerOperatorScope (EI-20186804943808838)', () => {
     }
   });
   it('leaves a concrete harness untouched — a caller may still scope itself', () => {
-    expect(stripCallerOperatorScope({ harness: 'papercusp', plan: 'p' }))
-      .toEqual({ harness: 'papercusp', plan: 'p' });
+    expect(stripCallerOperatorScope({ harness: 'papercusp', plan: 'p' })).toEqual({ harness: 'papercusp', plan: 'p' });
   });
   it('handles an absent context and an absent harness without inventing keys', () => {
     expect(stripCallerOperatorScope(undefined)).toEqual({});
@@ -72,7 +71,7 @@ describe('isEngineeringDocsSentinel (EI-18894866320087268)', () => {
       expect(isEngineeringDocsSentinel(v)).toBe(false);
     }
   });
-  it('is a DISTINCT literal from isAllHarnessSentinel — neither predicate double-matches the other\'s sentinel', () => {
+  it("is a DISTINCT literal from isAllHarnessSentinel — neither predicate double-matches the other's sentinel", () => {
     expect(isAllHarnessSentinel('engineering')).toBe(false);
     expect(isEngineeringDocsSentinel('all')).toBe(false);
     expect(isEngineeringDocsSentinel('*')).toBe(false);
@@ -161,13 +160,20 @@ describe('resolveInheritedHarnessScope (P-006)', () => {
   it('fails closed on stale bindings and reader errors instead of falling through', async () => {
     const staleReaders = emptyReaders();
     staleReaders.claim.mockResolvedValue({ harnesses: ['old'], stale: true, refs: ['WI-old'] });
-    await expect(resolveInheritedHarnessScope({ sessionHarness: 'session' }, staleReaders))
-      .resolves.toMatchObject({ kind: 'none', reason: 'stale', source: 'claim' });
+    await expect(resolveInheritedHarnessScope({ sessionHarness: 'session' }, staleReaders)).resolves.toMatchObject({
+      kind: 'none',
+      reason: 'stale',
+      source: 'claim',
+    });
 
     const errorReaders = emptyReaders();
     errorReaders.plan.mockRejectedValue(new Error('plan index unavailable'));
-    await expect(resolveInheritedHarnessScope({ sessionHarness: 'session' }, errorReaders))
-      .resolves.toMatchObject({ kind: 'none', reason: 'reader_error', source: 'plan', detail: 'plan index unavailable' });
+    await expect(resolveInheritedHarnessScope({ sessionHarness: 'session' }, errorReaders)).resolves.toMatchObject({
+      kind: 'none',
+      reason: 'reader_error',
+      source: 'plan',
+      detail: 'plan index unavailable',
+    });
   });
 
   it('keeps the explicit all sentinel distinct from one-harness inference', async () => {
@@ -237,8 +243,9 @@ describe('harnessScopedCtx', () => {
   });
 
   it("pins plans:get's workspace-scoped harness_required correction away from harness:'all'", () => {
-    expect(() => harnessScopedCtx(undefined, { harnessSlug: '*', workspaceId: 'workspace-1' }))
-      .toThrow(/Do not retry with `harness: 'all'`.*harness_forbidden/);
+    expect(() => harnessScopedCtx(undefined, { harnessSlug: '*', workspaceId: 'workspace-1' })).toThrow(
+      /Do not retry with `harness: 'all'`.*harness_forbidden/,
+    );
   });
 
   it("'all' arg → ctx with harnessSlug '*' (preserving other ctx fields)", () => {

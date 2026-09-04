@@ -26713,7 +26713,7 @@
           "POST"
         ]
       },
-      "description": "Return the exact typed grading skeleton for a rubric. Optionally validate + canonicalize a complete ratings map, attach deterministic instrument snapshots, compute its evidence fingerprint, and show the criterion delta from the latest scorecard. Read-only; use scorecards:emit to file the validated result.",
+      "description": "Return the exact typed grading skeleton for a rubric. Optionally validate + canonicalize a complete ratings map, attach deterministic instrument snapshots, bind positive release-gating ratings to the tested green SHA, compute its evidence fingerprint, and show the criterion delta from the latest scorecard. Read-only; use scorecards:emit to file the validated result.",
       "capabilities": [
         "coord:read"
       ],
@@ -26741,7 +26741,7 @@
       "guidance": {
         "when": "Before grading/emitting a rubric scorecard, especially in GRADE mode. This eliminates criterion-key, rating-case, evidence, and nested-schema guessing. For an acceptance rubric it also returns `graderEligibility` — whether YOU may file the grading at all; read it BEFORE doing the grading work, not after.",
         "notWhen": "Reading scorecard history only — scorecards:list. Filing the validated scorecard — scorecards:emit.",
-        "chaining": "scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots } → scorecards:emit with the canonical result."
+        "chaining": "scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with the canonical result. `testedSha` is required when a releaseGating rubric has a pass-like rating."
       }
     },
     {

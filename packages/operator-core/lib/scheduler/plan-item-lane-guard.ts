@@ -59,6 +59,7 @@
  * still applies as a backstop.
  */
 import type { WorkItem } from '../work-items';
+import { isTerminalItemStatus } from '../fleet-drained-events';
 
 export interface PlanItemLaneBlock {
   reason: string;
@@ -389,7 +390,7 @@ export async function planItemNeedsHumanContradiction(
   const stamp = await resolvePlanItemStamp(workItem);
   if (!stamp) return null;
   try {
-    const [{ getPlanRow, planItemsForRow }, { resolveEffectiveStatusForItems }] = await Promise.all([
+    const [{ getPlanRow, planItemsForRow }, { isTerminalPlanStatus, resolveEffectiveStatusForItems }] = await Promise.all([
       import('../agent-tools/plans/source'),
       import('@papercusp/plan-parser'),
     ]);
@@ -398,6 +399,14 @@ export async function planItemNeedsHumanContradiction(
     const { items } = resolveEffectiveStatusForItems(planItemsForRow(row));
     const linked = stamp.item_ids.map((itemId) => items.find((item) => item.id === itemId));
     if (linked.some((item) => !item)) return null;
+    // EI-22166703532735250: `needsHuman:false` is derived even for carrier residue.
+    // A shipped/superseded plan is historical, and an all-terminal linked set is
+    // abandoned/completed work; neither is evidence that a fresh owner blocker would
+    // contradict a currently agent-actionable lane.
+    const planStatus = typeof (row as { status?: unknown }).status === 'string' ? (row as { status: string }).status : null;
+    if (isTerminalPlanStatus(planStatus) || linked.every((item) => isTerminalItemStatus(item!.effectiveStatus))) {
+      return null;
+    }
     if (!linked.every((item) => item?.needsHuman === false)) return null;
     return {
       reason:

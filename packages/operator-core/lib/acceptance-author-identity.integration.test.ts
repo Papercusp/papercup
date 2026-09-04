@@ -5,6 +5,7 @@ import {
   areAcceptanceLineageRelated,
   isAcceptanceAuthorIdentity,
   lineagePartyKeys,
+  resolvePlanImplementerIdentities,
 } from './acceptance-author-identity';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
@@ -169,6 +170,59 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
       },
     ];
     await db.adminSql`INSERT INTO harness_shared.adv_sessions ${db.adminSql(sessions)}`;
+    const planWorkItems = [
+      {
+        workspace_id: workspaceId,
+        harness_slug: 'h-a',
+        feature_id: 'WI-split-terminal',
+        item_kind: 'bug',
+        status: 'done',
+        source_plan_slug: 'split-role-plan',
+        terminal_owner: 'su-plan-terminal-owner',
+        taken_by: 'su-plan-current-owner',
+      },
+      {
+        workspace_id: workspaceId,
+        harness_slug: 'h-a',
+        feature_id: 'WI-split-current',
+        item_kind: 'change',
+        status: 'open',
+        source_plan_slug: 'split-role-plan',
+        terminal_owner: null,
+        taken_by: 'su-plan-current-owner-2',
+      },
+      {
+        workspace_id: workspaceId,
+        harness_slug: 'h-a',
+        feature_id: 'WI-split-blank',
+        item_kind: 'task',
+        status: 'open',
+        source_plan_slug: 'split-role-plan',
+        terminal_owner: ' ',
+        taken_by: ' ',
+      },
+      {
+        workspace_id: workspaceId,
+        harness_slug: 'h-a',
+        feature_id: 'WI-other-plan',
+        item_kind: 'bug',
+        status: 'done',
+        source_plan_slug: 'other-plan',
+        terminal_owner: 'su-other-plan-owner',
+        taken_by: null,
+      },
+      {
+        workspace_id: 'different-workspace',
+        harness_slug: 'h-a',
+        feature_id: 'WI-cross-tenant-plan',
+        item_kind: 'bug',
+        status: 'done',
+        source_plan_slug: 'split-role-plan',
+        terminal_owner: 'su-cross-tenant-owner',
+        taken_by: null,
+      },
+    ];
+    await db.adminSql`INSERT INTO harness_shared.work_items ${db.adminSql(planWorkItems)}`;
   }, 180_000);
 
   afterAll(async () => {
@@ -183,6 +237,18 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
     await expect(isAcceptanceAuthorIdentity('su-author', 'su-refused', opts)).resolves.toBe(false);
     await expect(isAcceptanceAuthorIdentity('su-author', 'su-unrelated', opts)).resolves.toBe(false);
     await expect(isAcceptanceAuthorIdentity('su-author', 'su-cross-tenant', opts)).resolves.toBe(false);
+  });
+
+  it('resolves split-role plan owners from terminal_owner and taken_by, workspace-scoped', async () => {
+    const opts = { sql: db.adminSql, workspaceId };
+    await expect(resolvePlanImplementerIdentities('split-role-plan', opts)).resolves.toEqual([
+      'su-plan-current-owner',
+      'su-plan-current-owner-2',
+      'su-plan-terminal-owner',
+    ]);
+    await expect(resolvePlanImplementerIdentities('other-plan', opts)).resolves.toEqual(['su-other-plan-owner']);
+    await expect(resolvePlanImplementerIdentities('missing-plan', opts)).resolves.toEqual([]);
+    await expect(resolvePlanImplementerIdentities(' ', opts)).resolves.toEqual([]);
   });
 
   it('treats descendants, ancestors, and rebind successors as related but keeps siblings and tenants separate', async () => {

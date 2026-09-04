@@ -344,12 +344,15 @@ describe('describeUnprovenContentIdentity (EI-21970667079827352)', () => {
     expect(out).toContain('`a.ts` (missing-from-commit)');
   });
 
-  it('an all-sweep set tells the caller WAITING SETTLES IT and to re-send the identical completion', () => {
+  it('an all-sweep set tells the caller settlement is automatic after git-sync', () => {
     const out = describeUnprovenContentIdentity([pending], 6)!;
     expect(out).toContain('WAITING SETTLES THIS');
-    expect(out).toContain('re-send this IDENTICAL completion');
+    expect(out).toContain('completion-settlement reconciler');
+    expect(out).toContain('automatically');
+    expect(out).not.toContain('re-send this IDENTICAL completion');
+    expect(out).toContain('Do not re-call `work_items:complete`');
     // It must NOT send them to re-verify work that is already correct — the old text did.
-    expect(out).toContain('Do not re-verify work that is already correct');
+    expect(out).toContain('re-verify work that is already correct');
     expect(out).not.toContain('WAITING WILL NOT SETTLE');
   });
 
@@ -367,7 +370,8 @@ describe('describeUnprovenContentIdentity (EI-21970667079827352)', () => {
     const out = describeUnprovenContentIdentity([pending, typo], 5)!;
     expect(out).toContain('MIXED');
     expect(out).toContain('2 of 5 declared');
-    expect(out).toContain('`a.ts` (missing-from-commit) will settle on the next git-sync sweep');
+    expect(out).toContain('`a.ts` (missing-from-commit) will be checked automatically');
+    expect(out).toContain('completion-settlement reconciler');
     // Singular here on purpose: one never-settling path, so "is", not "are".
     expect(out).toContain('`typo.ts` (absent-from-both) is absent from the working tree');
     expect(out).toContain('leaves this close `proposed` indefinitely');

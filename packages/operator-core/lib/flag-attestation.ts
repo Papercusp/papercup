@@ -7,10 +7,7 @@
  * different code or still hold different override-cache generations.
  */
 import { ALL_FLAG_KEYS, type FlagKey } from '@papercusp/flags';
-import {
-  getFlagAttestation,
-  type FlagAttestation,
-} from '@papercusp/flags/server';
+import { getFlagAttestation, type FlagAttestation } from '@papercusp/flags/server';
 import { getServingHostIdentity } from './serving-host-identity';
 
 export const OPERATOR_FLAG_ATTEST_PATH = '/api/internal/flags-attest';

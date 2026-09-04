@@ -24,7 +24,10 @@ import { listScorecards, type ScorecardRow } from './scorecards';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
-import { areAcceptanceLineageRelated } from './acceptance-author-identity';
+import {
+  areAcceptanceLineageRelated,
+  resolvePlanImplementerIdentities,
+} from './acceptance-author-identity';
 import { readGraderSelectionVia } from './acceptance-grading-authority';
 import {
   evaluatePlanSpecCoverageGate,
@@ -52,6 +55,7 @@ vi.mock('./acceptance-author-identity', () => ({
   areAcceptanceLineageRelated: vi.fn(
     async (author: string | null, candidate: string | null) => author === candidate,
   ),
+  resolvePlanImplementerIdentities: vi.fn(async () => [] as string[]),
 }));
 vi.mock('@papercusp/flags/server', () => ({
   getFlag: vi.fn(),
@@ -93,6 +97,7 @@ const mockScorecards = vi.mocked(listScorecards);
 const mockFlag = vi.mocked(getFlag);
 const mockPg = vi.mocked(getOrgPg);
 const mockLineageRelated = vi.mocked(areAcceptanceLineageRelated);
+const mockPlanImplementers = vi.mocked(resolvePlanImplementerIdentities);
 const mockGraderVia = vi.mocked(readGraderSelectionVia);
 const mockSpecCoverage = vi.mocked(evaluatePlanSpecCoverageGate);
 
@@ -158,6 +163,7 @@ beforeEach(() => {
   // Default: no retired acceptance rubric on record (only the already-shipped cases set one).
   rubricMocks.getRetiredAcceptanceRubricsForPlan.mockResolvedValue([]);
   mockLineageRelated.mockImplementation(async (author, candidate) => author === candidate);
+  mockPlanImplementers.mockResolvedValue([]);
   // Delegate the ok/failed-aware read to the plain value mock every existing case
   // already drives, so those cases keep expressing "the revision is N" unchanged.
   mockRevisionRead.mockImplementation(async (rubricId: string) => ({
@@ -399,6 +405,65 @@ describe('evaluatePlanAcceptanceGate', () => {
     ]);
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v).toMatchObject({ satisfied: true, rubricId: 'ar-some-plan', gradedBy: 'su-grader' });
+  });
+
+  it('excludes principal plan implementers while preserving the acceptance-author seat', async () => {
+    mockRubric.mockResolvedValue(
+      acceptanceRubric({
+        createdBy: 'su-acceptance-author',
+        proposedBy: 'su-repair-proposer',
+        subjectPlan: 'some-plan-2026-08-11',
+      }),
+    );
+    mockPlanImplementers.mockResolvedValue(['su-plan-implementer']);
+    mockScorecards.mockResolvedValue([
+      scorecard({
+        issueId: 'EI-plan-implementer',
+        createdAt: '2026-08-21T03:00:00Z',
+        createdBy: 'su-plan-implementer',
+      }),
+      scorecard({
+        issueId: 'EI-author-accept',
+        createdAt: '2026-08-21T04:00:00Z',
+        createdBy: 'su-acceptance-author',
+        acceptance: { verdict: 'accept', reasoning: 'The independent grading meets the plan.' },
+      }),
+    ]);
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({
+      satisfied: false,
+      code: 'self_graded_only',
+    });
+    expect(v.message).toContain('su-plan-implementer');
+  });
+
+  it('keeps a genuinely independent grader when a principal implementer also graded', async () => {
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockPlanImplementers.mockResolvedValue(['su-plan-implementer']);
+    mockScorecards.mockResolvedValue([
+      scorecard({
+        issueId: 'EI-plan-implementer',
+        createdAt: '2026-08-21T03:00:00Z',
+        createdBy: 'su-plan-implementer',
+      }),
+      scorecard({
+        issueId: 'EI-independent',
+        createdAt: '2026-08-21T01:00:00Z',
+        createdBy: 'su-grader',
+      }),
+      scorecard({
+        issueId: 'EI-author-accept',
+        createdAt: '2026-08-21T04:00:00Z',
+        createdBy: 'su-implementer',
+        acceptance: { verdict: 'accept', reasoning: 'The independent grading meets the plan.' },
+      }),
+    ]);
+
+    await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+      satisfied: true,
+      gradedBy: 'su-grader',
+    });
   });
 
   it('satisfies the process gate but reports criteria rated UNKNOWN by the authoritative grader', async () => {

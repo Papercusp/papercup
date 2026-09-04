@@ -925,4 +925,30 @@ describe('planItemNeedsHumanContradiction (EI-13766)', () => {
     getPlanRowMock.mockRejectedValue(new Error('plan unavailable'));
     await expect(planItemNeedsHumanContradiction(input)).resolves.toBeNull();
   });
+
+  it('EI-22166703532735250: dropped residue on a shipped plan does not contradict a human blocker', async () => {
+    getPlanRowMock.mockResolvedValue({
+      status: 'shipped',
+      items: [planItem({ id: 'P-001', storedStatus: 'dropped' })],
+    });
+    const got = await planItemNeedsHumanContradiction({
+      payload: { plan_item: { plan_slug: 'shipped-plan', item_id: 'P-001' } },
+      harness: 'papercusp',
+    });
+    expect(got).toBeNull();
+  });
+
+  it('also ignores all-terminal linked residue when the plan itself is still active', async () => {
+    getPlanRowMock.mockResolvedValue({
+      status: 'active',
+      items: [
+        planItem({ id: 'P-001', storedStatus: 'dropped' }),
+        planItem({ id: 'P-002', storedStatus: 'done' }),
+      ],
+    });
+    fakeSourcePlanRow = { source_plan_slug: 'active-plan', source_plan_item_ids: ['P-001', 'P-002'] };
+    await expect(
+      planItemNeedsHumanContradiction({ payload: {}, harness: 'papercusp', id: 'F-1', family: 'feature' }),
+    ).resolves.toBeNull();
+  });
 });

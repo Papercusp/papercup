@@ -9,10 +9,7 @@
  * configuration and process/build identity and has no reason to leave the box.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import {
-  assertKnownFlagKey,
-  buildProcessFlagAttestation,
-} from '../../../flag-attestation';
+import { assertKnownFlagKey, buildProcessFlagAttestation } from '../../../flag-attestation';
 import { describeProcessRole, ownHonoPort } from '../../../schedule-federation';
 
 export default defineTool({
@@ -38,11 +35,11 @@ export default defineTool({
     const role = describeProcessRole();
     try {
       return Response.json(
-        await buildProcessFlagAttestation(
-          key,
-          url.searchParams.get('distinctId')?.trim() || 'flags-attest',
-          { role, label: `${role}:${port}`, port },
-        ),
+        await buildProcessFlagAttestation(key, url.searchParams.get('distinctId')?.trim() || 'flags-attest', {
+          role,
+          label: `${role}:${port}`,
+          port,
+        }),
       );
     } catch (error) {
       // Diagnostics fail as data, not as an unlabelled process 5xx. The caller

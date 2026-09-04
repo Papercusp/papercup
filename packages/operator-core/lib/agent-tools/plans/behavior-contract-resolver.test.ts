@@ -174,6 +174,12 @@ describe('resolveWorkItemBehaviorContract — impact reporting', () => {
     const out = await resolveWorkItemBehaviorContract({ id: 'EI-1', kind: 'bug', harness: 'papercup' }, readers());
     expect(out.impact).toMatchObject({ required: true, resolved: false, reason: 'unresolved' });
     expect(out.impact.report).toContain('EI-1');
+    expect(out.impact.report).toContain('no source plan');
+    expect(out.impact.report).toContain('adhoc-work-item-specs');
+    expect(out.impact.report).toContain('plans:set-specs');
+    expect(out.impact.report).toContain('omitting `slug`');
+    expect(out.impact.report).toContain('plans:bind-spec-evidence');
+    expect(out.impact.report).not.toContain('plans:set-spec-evidence');
     // The advisory boundary D-013 draws between P-016 and P-013 must survive refactors:
     // if this ever reads as a refusal, enforcement has leaked a plan item early.
     expect(out.impact.report).toContain('Reported, not enforced');

@@ -13,11 +13,7 @@ import {
   listSiblingOperators,
   type SiblingOperator,
 } from './schedule-federation';
-import {
-  GATEWAY_FLAG_ATTEST_PATH,
-  OPERATOR_FLAG_ATTEST_PATH,
-  type ProcessFlagAttestation,
-} from './flag-attestation';
+import { GATEWAY_FLAG_ATTEST_PATH, OPERATOR_FLAG_ATTEST_PATH, type ProcessFlagAttestation } from './flag-attestation';
 import { DEFAULT_GATEWAY_PORT } from './inference-gateway/launch';
 
 export interface FlagAttestationTarget {
@@ -57,12 +53,7 @@ export function operatorFlagAttestationTarget(
 ): FlagAttestationTarget {
   return {
     label: `operator:${sibling.port}`,
-    url: targetUrl(
-      `http://127.0.0.1:${sibling.port}`,
-      OPERATOR_FLAG_ATTEST_PATH,
-      key,
-      distinctId,
-    ),
+    url: targetUrl(`http://127.0.0.1:${sibling.port}`, OPERATOR_FLAG_ATTEST_PATH, key, distinctId),
     expectedPid: sibling.pid,
   };
 }
@@ -74,28 +65,16 @@ export function gatewayFlagAttestationTarget(
 ): FlagAttestationTarget {
   return {
     label: `inference-gateway:${port}`,
-    url: targetUrl(
-      `http://127.0.0.1:${port}`,
-      GATEWAY_FLAG_ATTEST_PATH,
-      key,
-      distinctId,
-    ),
+    url: targetUrl(`http://127.0.0.1:${port}`, GATEWAY_FLAG_ATTEST_PATH, key, distinctId),
     expectedPid: null,
   };
 }
 
-function degraded(
-  target: FlagAttestationTarget,
-  error: string,
-  elapsedMs: number,
-): RemoteFlagAttestationResult {
+function degraded(target: FlagAttestationTarget, error: string, elapsedMs: number): RemoteFlagAttestationResult {
   return { target, ok: false, attestation: null, error, elapsedMs };
 }
 
-function isProcessFlagAttestation(
-  value: unknown,
-  key: FlagKey,
-): value is ProcessFlagAttestation {
+function isProcessFlagAttestation(value: unknown, key: FlagKey): value is ProcessFlagAttestation {
   if (!value || typeof value !== 'object') return false;
   const row = value as Partial<ProcessFlagAttestation>;
   return (
@@ -147,11 +126,7 @@ export async function probeFlagAttestation(
       elapsedMs: Date.now() - startedAt,
     };
   } catch (error) {
-    return degraded(
-      target,
-      error instanceof Error ? error.message : String(error),
-      Date.now() - startedAt,
-    );
+    return degraded(target, error instanceof Error ? error.message : String(error), Date.now() - startedAt);
   }
 }
 
@@ -175,9 +150,7 @@ export async function collectRemoteFlagAttestations(
   } = {},
 ): Promise<RemoteFlagAttestationResult[]> {
   const siblings = opts.siblings ?? (await listSiblingOperators().catch(() => []));
-  const targets = siblings.map((sibling) =>
-    operatorFlagAttestationTarget(sibling, key, distinctId),
-  );
+  const targets = siblings.map((sibling) => operatorFlagAttestationTarget(sibling, key, distinctId));
   if (opts.includeGateway !== false) {
     targets.push(gatewayFlagAttestationTarget(key, distinctId, opts.gatewayPort));
   }
@@ -191,9 +164,7 @@ export async function collectRemoteFlagAttestations(
           timeoutMs: opts.timeoutMs,
           fetchImpl: opts.fetchImpl,
         }),
-        budgetExpiry(budgetMs, () =>
-          degraded(target, `probe budget ${budgetMs}ms exceeded`, budgetMs),
-        ),
+        budgetExpiry(budgetMs, () => degraded(target, `probe budget ${budgetMs}ms exceeded`, budgetMs)),
       ]),
     ),
   );
