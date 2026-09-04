@@ -300,7 +300,8 @@ export async function heartbeatHostedLifecycleJob(
  * Deliberately NOT `extends DirectoryRow`. Reconciliation covers BYOC-connection operations as
  * well as hosted ones, and a BYOC operation has no `customer_workspaces` row at all — so every
  * customer-derived column is genuinely nullable here. Inheriting DirectoryRow typed them as
- * non-null strings, which is a claim the data cannot honour once the join is OUTER.
+ * non-null strings, which is a claim the data cannot honour — `customer_workspace_id` is read
+ * straight off the operation row, and for a BYOC operation it is NULL.
  */
 interface ReconciliationRow {
   operation_id: string;
@@ -310,10 +311,10 @@ interface ReconciliationRow {
   heartbeat_at: Date | string | null;
   operation_updated_at: Date | string;
   recovery_attempts: number;
-  /** NULL for a BYOC-connection operation, which has no `customer_workspaces` row. */
+  /** NULL for a BYOC-connection operation, which has no `customer_workspaces` row. Read straight
+   *  off the operation — this sweep must never join `customer_workspaces` (see the note on
+   *  `reconcileHostedLifecycleJobs`: `harness_app` has no privilege on that relation). */
   customer_workspace_id: string | null;
-  /** NULL if the host row has since been deleted — the sweep still classifies the operation. */
-  provider_target: string | null;
 }
 
 /**
@@ -358,24 +359,37 @@ export interface HostedLifecycleReconciliationResult {
  * Classify stale work and emit replay-safe owner notices, for EVERY workspace-host lifecycle
  * operation — BYOC-connection operations included, not only hosted/customer ones.
  *
- * ⛔ THE JOINS ARE `LEFT` ON PURPOSE. THEY WERE `JOIN`, AND THAT MADE THIS SWEEP BLIND TO THE
- * EXACT FAILURE IT EXISTS FOR (WI-2143803). An operation created through the BYOC
- * `/api/workspace-hosts/action` route carries `customer_workspace_id = NULL`, so an inner join to
- * `customer_workspaces` eliminated every one of them. Measured on a live rig DB 2026-09-04: an
- * operation orphaned by controller termination sat at `running|99` with `recovery_state='none'`
- * and `heartbeat_at` NULL; 38 of 38 operations had a NULL `customer_workspace_id`; and
- * `customer_workspaces` held 0 rows. DBOS recovery-on-relaunch does not cover for it either — the
- * host process was fully restarted and the row's `updated_at` never moved.
+ * ⛔ THIS SWEEP READS `workspace_host_operations` AND NOTHING ELSE. IT USED TO INNER-JOIN
+ * `customer_workspaces`, AND THAT MADE IT BLIND TO THE EXACT FAILURE IT EXISTS FOR (WI-2143803).
+ * An operation created through the BYOC `/api/workspace-hosts/action` route carries
+ * `customer_workspace_id = NULL`, so an inner join to `customer_workspaces` eliminated every one
+ * of them. Measured on a live rig DB 2026-09-04: an operation orphaned by controller termination
+ * sat at `running|99` with `recovery_state='none'` and `heartbeat_at` NULL; 38 of 38 operations
+ * had a NULL `customer_workspace_id`; and `customer_workspaces` held 0 rows. DBOS
+ * recovery-on-relaunch does not cover for it either — the host process was fully restarted and
+ * the row's `updated_at` never moved.
  *
  * That made the defect two-layered, and only the outer layer was obvious: the function had no
  * production caller, AND it could not have recovered the row even when called. Scheduling it
- * without widening the join would have produced a sweep that runs, passes, and matches nothing —
- * the same inert shape retired from this very file below.
+ * without fixing the read would have produced a sweep that runs, passes, and matches nothing.
  *
- * The host join keys on `operation.host_id` rather than `customer.workspace_host_id` for the same
- * reason: the operation itself is the thing being reconciled, so its own identity is what the
- * predicate must be anchored to. It is LEFT too, so an operation whose host row has already been
- * deleted is still classified rather than silently skipped.
+ * ⛔ AND THE JOIN COULD NOT RUN AT ALL IN PRODUCTION — DO NOT REINTRODUCE ONE. `customer_workspaces`
+ * is granted to `hosted_app`, and migration 997 grants that role to the pool role `harness_app`
+ * `WITH INHERIT FALSE`, so privileges are NOT inherited without an explicit `SET LOCAL ROLE`.
+ * `transaction()` here resolves to `withWorkspace`, which runs as plain `harness_app` and never
+ * assumes `hosted_app`. Measured on the rig 2026-09-04, the moment this sweep first had a real
+ * caller: `PostgresError: permission denied for table customer_workspaces`. It had been latent
+ * for exactly as long as the function had no caller — a sweep that would have thrown on EVERY
+ * tick. Widening the join to LEFT (the first fix attempted) does not help: the permission check
+ * is on the RELATION, not the rows.
+ *
+ * The fix is that neither join was load-bearing. `customer.id` is by definition equal to
+ * `operation.customer_workspace_id`, which is already a column on the operations table (the join
+ * could only ever differ by yielding NULL for a dangling reference — and naming the id the
+ * operation actually carries is the better notice subject anyway). `host.target` was selected and
+ * never read by this function at all. So both were dropped: the sweep now touches only the ledger
+ * it reconciles, a table `harness_app` fully owns, and it no longer depends on a role grant to
+ * classify a stale operation.
  *
  * Every column this sweep does not read was dropped from the SELECT. `organization_id`,
  * `billing_owner_*`, `state` and the tenant/budget limits are ADMISSION inputs
@@ -405,13 +419,8 @@ export async function reconcileHostedLifecycleJobs(
         operation.id AS operation_id, operation.host_id, operation.action, operation.status,
         operation.heartbeat_at, operation.updated_at AS operation_updated_at,
         operation.recovery_attempts,
-        customer.id AS customer_workspace_id, host.target AS provider_target
+        operation.customer_workspace_id
       FROM harness_shared.workspace_host_operations operation
-      LEFT JOIN harness_shared.customer_workspaces customer
-        ON customer.workspace_id = operation.workspace_id
-       AND customer.id = operation.customer_workspace_id
-      LEFT JOIN harness_shared.workspace_hosts host
-        ON host.workspace_id = operation.workspace_id AND host.id = operation.host_id
       WHERE operation.workspace_id = ${workspaceId}
         AND operation.status IN ('queued', 'running')
       ORDER BY operation.updated_at, operation.id

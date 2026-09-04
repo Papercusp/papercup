@@ -164,7 +164,7 @@ describe('hosted lifecycle store', () => {
   // test hands it regardless of the SQL, so the behavioural test above would keep passing even if
   // someone restored the inner join. This asserts on the emitted query text, which is the only
   // thing that decides whether a real BYOC row is reachable.
-  it('does not INNER JOIN customer_workspaces — a BYOC operation has no such row', async () => {
+  it('never references customer_workspaces at all — harness_app has no privilege on it', async () => {
     const queries: string[] = [];
     setHostedLifecycleStoreHooks({
       transaction: fakeTransaction((text) => {
@@ -175,12 +175,32 @@ describe('hosted lifecycle store', () => {
     await reconcileHostedLifecycleJobs('control-a', new Date('2026-08-28T02:00:00Z'));
     const sweep = queries.find((query) => query.includes('FOR UPDATE OF operation'));
     expect(sweep).toBeDefined();
-    expect(sweep).toContain('LEFT JOIN harness_shared.customer_workspaces');
-    expect(sweep).not.toMatch(/(?<!LEFT )JOIN harness_shared\.customer_workspaces/);
-    // The host is joined on the OPERATION's own host_id; keying it through
-    // customer.workspace_host_id reintroduces the customer row as a hidden requirement.
-    expect(sweep).toContain('host.id = operation.host_id');
+
+    // CALIBRATION: prove the captured text is really the reconciliation SELECT, so the absence
+    // assertions below mean "the relation is not referenced" rather than "the matcher read
+    // nothing" — an empty string would satisfy every `not.toContain` identically.
+    expect(sweep).toContain('harness_shared.workspace_host_operations');
+    expect(sweep).toContain('operation.customer_workspace_id');
+
+    // The relation is granted to `hosted_app`, and migration 997 grants that role to the pool role
+    // `harness_app` WITH INHERIT FALSE — so touching it from `withWorkspace` (plain harness_app,
+    // no SET LOCAL ROLE) is `permission denied for table customer_workspaces` on EVERY tick.
+    // Measured on the rig 2026-09-04, the first time this sweep had a real caller. A LEFT join
+    // does not fix it: the privilege check is on the RELATION, not the rows.
+    expect(sweep).not.toContain('customer_workspaces customer');
+    expect(sweep).not.toMatch(/JOIN\s+harness_shared\.customer_workspaces/);
     expect(sweep).not.toContain('customer.workspace_host_id');
+    // Nothing in this sweep reads host.target, so it must not join workspace_hosts either.
+    expect(sweep).not.toMatch(/JOIN\s+harness_shared\.workspace_hosts/);
+  });
+
+  it('NEGATIVE CONTROL: the join matcher really does detect a join it must reject', () => {
+    // Without this, the assertions above pass just as happily on a regex that matches nothing.
+    const planted =
+      'SELECT x FROM harness_shared.workspace_host_operations operation\n' +
+      '  LEFT JOIN harness_shared.customer_workspaces customer ON customer.id = operation.customer_workspace_id';
+    expect(planted).toMatch(/JOIN\s+harness_shared\.customer_workspaces/);
+    expect(planted).toContain('customer_workspaces customer');
   });
 
   it('no longer issues an idle-stop query against customer_workspaces (the sweep was retired)', async () => {
