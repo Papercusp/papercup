@@ -167,7 +167,8 @@ export interface AgentMessageRow {
   from: string;
   to: string[];
   summary: string | null;
-  body: string | null;
+  /** Long form is returned only for an active server-side search or detail read. */
+  body?: string | null;
   harness_slug: string | null;
   plan_slug: string | null;
   /** `intent` / `claim` / `completion` / `finding` / … — a machine-declared

@@ -1,7 +1,7 @@
 # Recovering a dropped papercusp-su MCP client via the HTTP bridge
 URL: /internal/docs/agent-insights/recovering-a-dropped-mcp-client-via-the-http-bridge
 
-When your harness MCP client disconnects (tools vanish, ToolSearch finds nothing) but the operator :3070 is healthy, replay MCP JSON-RPC directly via curl to /api/mcp and keep working — don't just idle waiting to reconnect.
+Merged into agent-insights/mcp-client-drop-curl-recovery; retained as a historical redirect for existing links.
 
 ## What
 

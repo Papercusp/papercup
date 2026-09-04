@@ -15,43 +15,34 @@
  * same precedent as plans:items). `full` keeps rawLine for surgical edits.
  */
 
-import { z } from "zod";
-import { defineTool, SU_ROLES } from "@papercusp/agent-mcp";
-import { withWorkspace } from "@papercusp/db-org";
-import { readPlanBySlug } from "./source";
-import { ctxToPlanSourceOpts, resolveEffectiveHarnessSlug } from "./_ctx-opts";
-import { harnessArg, harnessScopedCtx, resolveHarnessScope } from "../_harness-scope";
-import { recoverHarnessFromSlugs, slugScopeErrorResult } from "./slug-scope";
-import { resolveEffectiveStatus } from "./effective-status";
-import { reconcileStartStatus } from "./plan-start-state";
-import { hashPlanContent } from "./content-hash";
-import { DEFAULT_WORKSPACE_ID } from "../../workspace-registry";
-import {
-  computePlanItemTestStatus,
-  type PlanItemTestStatus,
-} from "../../harness-test-rollup";
-import { overlayIssueBlocksForPlan } from "../../issue-blocks-merge";
-import { planItemProvenanceFromRow } from "../../plan-item-provenance";
-import { boundRowField } from "../_bound-output";
-import { bulkContent, mergeIds, runBulk } from "../_bulk";
-import { cachedRead, type CachedReadCtx } from "../../cache";
-import { shapePlansGet } from "./get-shape";
-import { decoratePlanNowBlock } from "./liveness-decoration";
-import { reconcileNowNext } from "./now-next-derivation";
-import {
-  derivePlanLifecycleForRead,
-  normalizeActivityTimestamp,
-} from "./plan-lifecycle-derivation";
-import type { PlanLifecycleReconciliation } from "@papercusp/plan-parser";
-import { getAcceptanceRubricForPlan } from "../../rubrics";
-import { getLatestPlanAudit } from "../../plan-audits";
-import { splitPlanSections } from "./plan-sections";
-import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from "../../context-doors";
-import { getDoorConstantsSync } from "../../context-doors-config";
-import {
-  getStalePathRefsForSubjects,
-  stalePathRefsNote,
-} from "../../stale-path-hints-claim-port";
+import { z } from 'zod';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { withWorkspace } from '@papercusp/db-org';
+import { readPlanBySlug } from './source';
+import { ctxToPlanSourceOpts, resolveEffectiveHarnessSlug } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx, resolveHarnessScope } from '../_harness-scope';
+import { recoverHarnessFromSlugs, slugScopeErrorResult } from './slug-scope';
+import { resolveEffectiveStatus } from './effective-status';
+import { reconcileStartStatus } from './plan-start-state';
+import { hashPlanContent } from './content-hash';
+import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
+import { computePlanItemTestStatus, type PlanItemTestStatus } from '../../harness-test-rollup';
+import { overlayIssueBlocksForPlan } from '../../issue-blocks-merge';
+import { planItemProvenanceFromRow } from '../../plan-item-provenance';
+import { boundRowField } from '../_bound-output';
+import { bulkContent, mergeIds, runBulk } from '../_bulk';
+import { cachedRead, type CachedReadCtx } from '../../cache';
+import { shapePlansGet } from './get-shape';
+import { decoratePlanNowBlock } from './liveness-decoration';
+import { reconcileNowNext } from './now-next-derivation';
+import { derivePlanLifecycleForRead, normalizeActivityTimestamp } from './plan-lifecycle-derivation';
+import type { PlanLifecycleReconciliation } from '@papercusp/plan-parser';
+import { getAcceptanceRubricForPlan } from '../../rubrics';
+import { getLatestPlanAudit } from '../../plan-audits';
+import { splitPlanSections } from './plan-sections';
+import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
+import { getDoorConstantsSync } from '../../context-doors-config';
+import { getStalePathRefsForSubjects, stalePathRefsNote } from '../../stale-path-hints-claim-port';
 
 /**
  * SWR backstop for plans:get (cache-expensive-tool-reads-round2-2026-06-23 P-001).
@@ -70,7 +61,7 @@ interface PlanHarnessMismatch {
   reportedHarness?: string;
   availableHarnesses: string[];
   /** Whether the caller NAMED the searched harness, or inherited it from the session. */
-  harnessSource: "explicit" | "ambient";
+  harnessSource: 'explicit' | 'ambient';
   warning: string;
 }
 
@@ -95,25 +86,24 @@ async function harnessMismatchForMiss(
   ctx: unknown,
   callerHarness: string,
   slug: string,
-  harnessSource: "explicit" | "ambient",
+  harnessSource: 'explicit' | 'ambient',
 ): Promise<PlanHarnessMismatch | null> {
   try {
     const decision = await recoverHarnessFromSlugs(ctx, [slug]);
-    if (decision.status !== "resolved") return null;
+    if (decision.status !== 'resolved') return null;
     const availableHarnesses = decision.ambiguous[slug] ?? [decision.harnessSlug];
     if (availableHarnesses.includes(callerHarness)) return null;
-    const reportedHarness =
-      availableHarnesses.length === 1 ? availableHarnesses[0] : undefined;
+    const reportedHarness = availableHarnesses.length === 1 ? availableHarnesses[0] : undefined;
     const target = reportedHarness
       ? `harness '${reportedHarness}'`
-      : `harnesses ${availableHarnesses.map((h) => `'${h}'`).join(", ")}`;
+      : `harnesses ${availableHarnesses.map((h) => `'${h}'`).join(', ')}`;
     const suggested = reportedHarness ?? availableHarnesses[0];
     const searched =
-      harnessSource === "explicit"
+      harnessSource === 'explicit'
         ? `plans:get searched harness '${callerHarness}' because you passed harness:'${callerHarness}' for '${slug}', `
         : `plans:get searched ambient harness '${callerHarness}' for '${slug}', `;
     const remedy =
-      harnessSource === "explicit"
+      harnessSource === 'explicit'
         ? `Pass harness:'${suggested}' instead, or omit harness to auto-resolve the owning harness from the slug.`
         : `Pass harness:'${suggested}' to read that plan explicitly.`;
     return {
@@ -146,7 +136,7 @@ async function harnessMismatchForMiss(
 // `dependencies.tools` for the same reason. Read-only (capability: plans:read, granted
 // to the role in role-principal-caps.ts) — never a write path. Derived + enforced by
 // ../../release/release-fixer-tool-contract.test.ts.
-const ALL_ROLES = [...SU_ROLES, "promote", "kettle", "worker", "cup", "judge", "release-fixer"] as const;
+const ALL_ROLES = [...SU_ROLES, 'promote', 'kettle', 'worker', 'cup', 'judge', 'release-fixer'] as const;
 
 const argsSchema = z
   .object({
@@ -155,31 +145,27 @@ const argsSchema = z
       .string()
       .min(1)
       .optional()
-      .describe(
-        "Plan slug (filename without .md). Resolves both docs/plans/ and docs/plans/archive/.",
-      ),
+      .describe('Plan slug (filename without .md). Resolves both docs/plans/ and docs/plans/archive/.'),
     slugs: z
       .array(z.string().min(1))
       .min(1)
       .max(100)
       .optional()
-      .describe(
-        "Plan slugs to fetch in one call. Equivalent to calling this tool once per slug.",
-      ),
+      .describe('Plan slugs to fetch in one call. Equivalent to calling this tool once per slug.'),
     items: z
       .array(z.string().min(1))
       .min(1)
       .max(100)
       .optional()
       .describe(
-        "Return only these P-NNN records from the structured items array. Counts still describe the whole plan; itemSelection reports requested/matched/missing ids. Use this instead of pulling a large plan or querying harness_plans directly when you need one item.",
+        'Return only these P-NNN records from the structured items array. Counts still describe the whole plan; itemSelection reports requested/matched/missing ids. Use this instead of pulling a large plan or querying harness_plans directly when you need one item.',
       ),
     decisionId: z
       .string()
       .min(1)
       .optional()
       .describe(
-        "Return one decision by id with its complete body from the plan named by slug (decision ids are plan-local, so slug or slugs is still required). This is a narrow selection/CAS read; decisionSelection reports the requested, matched, and missing ids.",
+        'Return one decision by id with its complete body from the plan named by slug (decision ids are plan-local, so slug or slugs is still required). This is a narrow selection/CAS read; decisionSelection reports the requested, matched, and missing ids.',
       ),
     decisions: z
       .array(z.string().min(1))
@@ -187,10 +173,10 @@ const argsSchema = z
       .max(100)
       .optional()
       .describe(
-        "Return only these decision ids with complete bodies from the plans named by slug/slugs (decision ids are plan-local, so slug or slugs is still required). This is a narrow selection/CAS read; counts still describe the whole plan and decisionSelection reports requested/matched/missing ids.",
+        'Return only these decision ids with complete bodies from the plans named by slug/slugs (decision ids are plan-local, so slug or slugs is still required). This is a narrow selection/CAS read; counts still describe the whole plan and decisionSelection reports requested/matched/missing ids.',
       ),
     mode: z
-      .enum(["meta", "sections", "full"])
+      .enum(['meta', 'sections', 'full'])
       .optional()
       .describe(
         "How much to return. 'meta' = frontmatter + ## Now + counts + a section index (headings only). 'sections' (DEFAULT) = meta + structured items/decisions (items WITHOUT rawLine; long decision bodies are EXCERPTED to keep the default read bounded — each carries body_truncated + body_full_chars, and decisionBodiesTruncated flags when any were cut — use mode:'full' for complete bodies), still WITHOUT the markdown body. 'full' = everything incl. the whole markdown body as `prose`, per-item rawLine, and full decision bodies (a big blueprint can be 90KB+ — only when you actually need the prose; exact raw file bytes live behind plans:export).",
@@ -201,7 +187,7 @@ const argsSchema = z
     // full payload; `false`/`'summary'` retain plans:get's default sections
     // payload. When both are supplied, the explicit mode wins.
     detail: z
-      .union([z.boolean(), z.enum(["summary", "full"])])
+      .union([z.boolean(), z.enum(['summary', 'full'])])
       .optional()
       .describe(
         "Compatibility alias for `mode`: true or 'full' maps to mode:'full'; false or 'summary' maps to the default mode:'sections'. Explicit `mode` wins when both are supplied.",
@@ -216,7 +202,7 @@ const argsSchema = z
       .boolean()
       .optional()
       .describe(
-        "Also return the EXACT raw markdown file bytes as `raw` (full mode only). Off by default — the payload diet (P-008) drops `raw` because it duplicates `prose`+structured frontmatter, doubling agent tool-output. The plans admin UI sets this because it round-trips the whole document through plans:set-content (whose CAS hashes the raw bytes) and reconstructing raw from prose+frontmatter would not byte-match. Agents that just need the body should use `prose`; for a standalone dump use plans:export.",
+        'Also return the EXACT raw markdown file bytes as `raw` (full mode only). Off by default — the payload diet (P-008) drops `raw` because it duplicates `prose`+structured frontmatter, doubling agent tool-output. The plans admin UI sets this because it round-trips the whole document through plans:set-content (whose CAS hashes the raw bytes) and reconstructing raw from prose+frontmatter would not byte-match. Agents that just need the body should use `prose`; for a standalone dump use plans:export.',
       ),
     // EI-21913230259449717: a caller reached for the generic `include` (the
     // shape other read tools use for a boolean opt-in) instead of this tool's
@@ -227,9 +213,7 @@ const argsSchema = z
     include: z
       .boolean()
       .optional()
-      .describe(
-        "Compatibility alias for `includeRaw`; `includeRaw` wins when both are supplied.",
-      ),
+      .describe('Compatibility alias for `includeRaw`; `includeRaw` wins when both are supplied.'),
     // EI-21967410937471873: the ship-blocker verdict was already computed
     // read-only, but only the UI could reach it (the plans.acceptanceGate sync
     // resolver). An agent's sole route to the same answer was to ATTEMPT
@@ -243,11 +227,11 @@ const argsSchema = z
       .boolean()
       .optional()
       .describe(
-        "Ask what is blocking this plan's ship RIGHT NOW, without attempting the write. Returns `shipReadiness: { satisfied, code, message, skipped, forcedPast, vettedUnderWaiver, unavailableReason }` from the SAME evaluator plans:set-plan-status enforces, so it cannot disagree with the real refusal. ⚠ Reports ONE blocker at a time — the gate short-circuits on the first refusal, so clearing the named code can reveal another. ⚠ `satisfied:true` is not automatically a clean pass: read `skipped` (the gate did not APPLY — nothing was checked), `forcedPast` (a code-truth waiver) and `unavailableReason` (could not evaluate ≠ passed) before calling a plan shippable. OFF by default — the gate runs five check families across several tables, so it is opt-in and rides on the meta/sections/full payload (not the narrow `heading`/`decisionId` reads).",
+        "Ask what is blocking this plan's ship RIGHT NOW, without attempting the write. Returns `shipReadiness: { satisfied, code, message, skipped, forcedPast, vettedUnderWaiver, unavailableReason, acceptanceBarContractSnapshot }` from the SAME evaluator plans:set-plan-status enforces, plus the versioned bounded BAR explainability projection. The snapshot is not a second verdict: `satisfied`/`code` remain authoritative. ⚠ Reports ONE gate blocker at a time — the gate short-circuits on the first refusal, while the snapshot's per-BAR traces and `nextRepair` explain the complete BAR state. ⚠ `satisfied:true` is not automatically a clean pass: read `skipped` (the gate did not APPLY — nothing was checked), `forcedPast` (a code-truth waiver) and `unavailableReason` (could not evaluate ≠ passed) before calling a plan shippable. OFF by default — the gate and snapshot read several bounded source families, so it is opt-in and rides on the meta/sections/full payload (not the narrow `heading`/`decisionId` reads).",
       ),
   })
   .refine((v) => !!v.slug || !!v.slugs?.length, {
-    message: "Provide slug or slugs; decisionId/decisions select within a plan because D-NNN ids are plan-local.",
+    message: 'Provide slug or slugs; decisionId/decisions select within a plan because D-NNN ids are plan-local.',
   });
 
 interface PlanSection {
@@ -282,15 +266,8 @@ export const DECISIONS_TOTAL_BUDGET = 15_000;
 
 // EI-1597: a thin semantic wrapper over the shared budget-aware bound — single
 // source of truth for the per-field excerpt (was an inlined copy of the loop).
-export function boundDecisionBodies<T extends { body: string }>(
-  decisions: T[],
-): T[] {
-  return boundRowField(
-    decisions,
-    "body",
-    DECISION_BODY_CAP,
-    DECISIONS_TOTAL_BUDGET,
-  );
+export function boundDecisionBodies<T extends { body: string }>(decisions: T[]): T[] {
+  return boundRowField(decisions, 'body', DECISION_BODY_CAP, DECISIONS_TOTAL_BUDGET);
 }
 
 /** Split a plan's markdown body into level-1/2 sections, tracking fenced code
@@ -307,21 +284,19 @@ export const splitSections = (md: string): Array<PlanSection & { body: string }>
  *  Only used by the `heading` LOOKUP fallback below — deliberately NOT folded
  *  into splitSections(), so the section index, `counts.sections` and every
  *  existing payload stay byte-identical. */
-function splitSubsections(
-  body: string,
-): Array<PlanSection & { body: string }> {
+function splitSubsections(body: string): Array<PlanSection & { body: string }> {
   const out: Array<PlanSection & { body: string }> = [];
   let cur: (PlanSection & { body: string }) | null = null;
   let buf: string[] = [];
   let inFence = false;
   const flush = () => {
     if (cur) {
-      cur.body = buf.join("\n").trim();
+      cur.body = buf.join('\n').trim();
       cur.chars = cur.body.length;
       out.push(cur);
     }
   };
-  for (const line of body.split("\n")) {
+  for (const line of body.split('\n')) {
     if (/^\s*(?:```|~~~)/.test(line)) {
       inFence = !inFence;
       if (cur) buf.push(line);
@@ -331,7 +306,7 @@ function splitSubsections(
     if (m) {
       flush();
       buf = [];
-      cur = { heading: (m[1] ?? "").trim(), level: 3, chars: 0, body: "" };
+      cur = { heading: (m[1] ?? '').trim(), level: 3, chars: 0, body: '' };
     } else if (cur) {
       buf.push(line);
     }
@@ -393,7 +368,7 @@ export function findSection(
  * plan is large — and a large plan has a large `## Now`, so the fixed envelope
  * was heaviest precisely in the case the feature exists to serve.
  */
-const HEADING_DROPPED_FIELDS = new Set(["now", "promotePolicy"]);
+const HEADING_DROPPED_FIELDS = new Set(['now', 'promotePolicy']);
 
 /**
  * Build the `heading`-narrowed payload from the meta base. Shared by the legacy
@@ -412,22 +387,18 @@ export function narrowHeadingPayload(
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(base)) {
     if (HEADING_DROPPED_FIELDS.has(key)) continue;
-    if (key === "sectionIndex" && sec) continue;
-    if (key === "frontmatter" && value && typeof value === "object") {
+    if (key === 'sectionIndex' && sec) continue;
+    if (key === 'frontmatter' && value && typeof value === 'object') {
       // `raw` duplicates the parsed fields sitting beside it (measured 250 chars
       // of pure duplication). Filtered by key rather than destructured so this
       // holds whatever the parser adds later.
-      out[key] = Object.fromEntries(
-        Object.entries(value as Record<string, unknown>).filter(([k]) => k !== "raw"),
-      );
+      out[key] = Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([k]) => k !== 'raw'));
       continue;
     }
     out[key] = value;
   }
   out.heading = heading;
-  out.section = sec
-    ? { heading: sec.heading, level: sec.level, body: sec.body }
-    : null;
+  out.section = sec ? { heading: sec.heading, level: sec.level, body: sec.body } : null;
   return out;
 }
 
@@ -446,10 +417,7 @@ export function narrowHeadingPayload(
  * would page non-deterministically for identical inputs. Decision ids are
  * plan-local, so a multi-slug decision read is the rare case anyway.
  */
-export function decisionPageBudgetChars(
-  ownerId: string | null | undefined,
-  planCount: number,
-): number {
+export function decisionPageBudgetChars(ownerId: string | null | undefined, planCount: number): number {
   const doors = computeTurnDoors(0, getDoorConstantsSync(ownerId));
   const perResponse = doors.resultEach * CHARS_PER_TOKEN_ESTIMATE;
   return Math.floor(perResponse / Math.max(1, planCount));
@@ -485,16 +453,10 @@ export function pageDecisionsToBudget<T extends { id: string }>(
   selected: T[],
   budgetChars: number | undefined,
 ): { returned: T[]; deferred: string[] } {
-  if (
-    budgetChars == null ||
-    !Number.isFinite(budgetChars) ||
-    budgetChars <= 0 ||
-    selected.length <= 1
-  ) {
+  if (budgetChars == null || !Number.isFinite(budgetChars) || budgetChars <= 0 || selected.length <= 1) {
     return { returned: selected, deferred: [] };
   }
-  const available =
-    budgetChars - JSON.stringify(envelope).length - DECISION_PAGE_ENVELOPE_RESERVE_CHARS;
+  const available = budgetChars - JSON.stringify(envelope).length - DECISION_PAGE_ENVELOPE_RESERVE_CHARS;
   const returned: T[] = [];
   let used = 0;
   for (const decision of selected) {
@@ -561,23 +523,21 @@ export function narrowDecisionPayload<T extends { id: string }>(
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const identityFields = new Set([
-    "slug",
-    "harness",
-    "archived",
-    "legacy",
-    "frontmatter",
-    "contentHash",
-    "version",
-    "filename",
-    "forcedPast",
-    "counts",
+    'slug',
+    'harness',
+    'archived',
+    'legacy',
+    'frontmatter',
+    'contentHash',
+    'version',
+    'filename',
+    'forcedPast',
+    'counts',
   ]);
   for (const [key, value] of Object.entries(base)) {
     if (!identityFields.has(key)) continue;
-    if (key === "frontmatter" && value && typeof value === "object") {
-      out[key] = Object.fromEntries(
-        Object.entries(value as Record<string, unknown>).filter(([k]) => k !== "raw"),
-      );
+    if (key === 'frontmatter' && value && typeof value === 'object') {
+      out[key] = Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([k]) => k !== 'raw'));
       continue;
     }
     out[key] = value;
@@ -593,9 +553,7 @@ export function narrowDecisionPayload<T extends { id: string }>(
     missing: requestedIds.filter((id) => !selected.some((decision) => decision.id === id)),
     // Present only on a split — see the header note. Absence means every
     // matched id's complete body is in `decisions`.
-    ...(deferred.length > 0
-      ? { returned: returned.map((decision) => String(decision.id)), deferred }
-      : {}),
+    ...(deferred.length > 0 ? { returned: returned.map((decision) => String(decision.id)), deferred } : {}),
   };
   if (deferred.length > 0) {
     out.decisionContinuation = {
@@ -605,8 +563,8 @@ export function narrowDecisionPayload<T extends { id: string }>(
         `DEFERRED, not truncated — every body in \`decisions\` above is complete. ` +
         `Re-issue plans:get with \`decisionContinuation.call\` to receive them.`,
       call: {
-        ...(typeof out.slug === "string" ? { slug: out.slug } : {}),
-        ...(typeof out.harness === "string" ? { harness: out.harness } : {}),
+        ...(typeof out.slug === 'string' ? { slug: out.slug } : {}),
+        ...(typeof out.harness === 'string' ? { harness: out.harness } : {}),
         decisions: deferred,
       },
     };
@@ -615,21 +573,20 @@ export function narrowDecisionPayload<T extends { id: string }>(
 }
 
 export default defineTool({
-  name: "plans:get",
+  name: 'plans:get',
   description:
     "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. An exact slug can auto-resolve its owning harness within the caller's workspace ONLY from an unscoped (operator/superuser) session; a session already scoped to a concrete harness stays scoped to it and reports which harness actually owns the slug on a miss. Pass a concrete `harness` (for example, 'papercusp') to disambiguate, constrain, or escape the ambient scope. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
   guidance: {
     when: "You have an exact slug and need the plan contents. In operator/superuser scope, the slug auto-resolves its owning harness within the caller's workspace; pass a concrete `harness` (for example, 'papercusp') when you need to constrain or disambiguate that lookup. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
-    notWhen:
-      "You don't know the slug — call plans:list first. Item-only queries across plans should use plans:items.",
+    notWhen: "You don't know the slug — call plans:list first. Item-only queries across plans should use plans:items.",
     chaining:
-      "plans:list → plans:get { slug } (or { slug, harness } to constrain scope) → optionally plans:items for cross-plan picks.",
+      'plans:list → plans:get { slug } (or { slug, harness } to constrain scope) → optionally plans:items for cross-plan picks.',
   },
-  capability: "plans:read",
+  capability: 'plans:read',
   requirePrincipal: false,
   skipWorkspaceTx: true,
   agentRoles: [...ALL_ROLES],
-  modality: ["text"],
+  modality: ['text'],
   args: argsSchema,
   // Freshness negotiation (agent-tool-delta-client-rollout-2026-06-23, P-002): plans:get
   // returns a single plan's full detail (content + items + decisions) — a COMPOSITE object,
@@ -641,8 +598,8 @@ export default defineTool({
   // sends `_meta.delta` and reconstructs before the model sees anything. In-process
   // callers set no cursor, so `negotiateDelta` returns full (reason:'no_request').
   delta: {
-    scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? "",
-    schemaVersion: "plans-get-v1",
+    scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? '',
+    schemaVersion: 'plans-get-v1',
     maxDeltaAge: 5 * 60_000,
   },
   // context-trimming-tiers P-012: trimmed/standard sessions get a projected
@@ -651,8 +608,8 @@ export default defineTool({
   // dispatch), so one cached read serves every tier; the UI (HTTP transport, no
   // ctx_tier) always reads full.
   shape: {
-    standard: (data) => shapePlansGet(data, "standard"),
-    trimmed: (data) => shapePlansGet(data, "trimmed"),
+    standard: (data) => shapePlansGet(data, 'standard'),
+    trimmed: (data) => shapePlansGet(data, 'trimmed'),
   },
   async handler(args, ctx) {
     // `ownerId` is not on UnifiedToolContext but is present on the papercusp
@@ -671,9 +628,7 @@ export default defineTool({
     // EI-21905561475819210: normalize the generic `detail` compatibility
     // alias before cache-key construction and every output branch. Keeping one
     // canonical mode prevents alias/mode reads from diverging in cache.
-    const mode =
-      args.mode ??
-      (args.detail === true || args.detail === "full" ? "full" : "sections");
+    const mode = args.mode ?? (args.detail === true || args.detail === 'full' ? 'full' : 'sections');
     // EI-21194994217912029: exact-slug scope recovery. A recovery call often
     // carries an exact plan slug but NO resolvable harness; instead of failing
     // bare `harness_required`, resolve the owning harness from the slug itself
@@ -681,41 +636,28 @@ export default defineTool({
     // harness-scoped sessions take the unchanged fast path below.
     const scope = resolveHarnessScope(args.harness, ctx);
     let sctx: typeof ctx & { harnessSlug: string };
-    if (scope.kind === "none") {
+    if (scope.kind === 'none') {
       const decision = await recoverHarnessFromSlugs(ctx, slugs);
-      if (decision.status !== "resolved") return slugScopeErrorResult("plans:get", decision);
+      if (decision.status !== 'resolved') return slugScopeErrorResult('plans:get', decision);
       sctx = { ...ctx, harnessSlug: decision.harnessSlug };
       ctxAny.metadata?.({
         harnessAutoResolved: decision.bySlug,
-        ...(Object.keys(decision.ambiguous).length > 0
-          ? { harnessAmbiguous: decision.ambiguous }
-          : {}),
+        ...(Object.keys(decision.ambiguous).length > 0 ? { harnessAmbiguous: decision.ambiguous } : {}),
       });
     } else {
       sctx = harnessScopedCtx(args.harness, ctx);
     }
     const opts = await ctxToPlanSourceOpts(sctx);
-    const ambientCallerHarness =
-      !args.harness && scope.kind === "harness" ? scope.slug : null;
+    const ambientCallerHarness = !args.harness && scope.kind === 'harness' ? scope.slug : null;
     // An EXPLICIT harness is checked AFTER the read, not before it like the
     // ambient case: a named harness is usually the right one, so a hit must not
     // pay an extra slug-index round-trip. Only the miss is explained.
-    const explicitCallerHarness =
-      args.harness && scope.kind === "harness" ? scope.slug : null;
-    const requestedItemIds = args.items
-      ? [...new Set(args.items)]
-      : null;
-    const requestedItemIdSet = requestedItemIds
-      ? new Set(requestedItemIds)
-      : null;
+    const explicitCallerHarness = args.harness && scope.kind === 'harness' ? scope.slug : null;
+    const requestedItemIds = args.items ? [...new Set(args.items)] : null;
+    const requestedItemIdSet = requestedItemIds ? new Set(requestedItemIds) : null;
     const requestedDecisionIds =
       args.decisionId || args.decisions?.length
-        ? [
-            ...new Set([
-              ...(args.decisionId ? [args.decisionId] : []),
-              ...(args.decisions ?? []),
-            ]),
-          ]
+        ? [...new Set([...(args.decisionId ? [args.decisionId] : []), ...(args.decisions ?? [])])]
         : null;
     const env = await runBulk(
       slugs,
@@ -724,12 +666,7 @@ export default defineTool({
         // slug is known to live elsewhere, return a loud, actionable miss
         // instead of a bare not_found or an implicit cross-hive read.
         if (ambientCallerHarness) {
-          const mismatch = await harnessMismatchForMiss(
-            ctx,
-            ambientCallerHarness,
-            slug,
-            "ambient",
-          );
+          const mismatch = await harnessMismatchForMiss(ctx, ambientCallerHarness, slug, 'ambient');
           if (mismatch) {
             ctxAny.metadata?.({
               slug,
@@ -739,7 +676,7 @@ export default defineTool({
             return {
               ok: false as const,
               slug,
-              error: "not_found",
+              error: 'not_found',
               harness: ambientCallerHarness,
               harnessMismatch: mismatch,
             };
@@ -749,7 +686,7 @@ export default defineTool({
         return cachedRead(
           ctx as CachedReadCtx,
           {
-            tool: "plans:get",
+            tool: 'plans:get',
             // Folds EVERY output-determining dimension: slug + resolved harness +
             // mode + heading + includeRaw + item/decision selection. workspace scope is added by cachedRead
             // from ctx. includeRaw MUST be here — else a slim agent-cached entry
@@ -764,7 +701,7 @@ export default defineTool({
               items: requestedItemIds,
               decisions: requestedDecisionIds,
             },
-            tags: ["harness_plans", "plan_revisions", "plan_runs", "plan_audits"],
+            tags: ['harness_plans', 'plan_revisions', 'plan_runs', 'plan_audits'],
             softTtlMs: PLANS_GET_SOFT_TTL_MS,
           },
           async () => {
@@ -773,7 +710,7 @@ export default defineTool({
             // not_found object here would make a transient read miss sticky for
             // the full plans:get soft TTL. Let runBulk preserve the per-slug error
             // while the rejected factory result remains uncached.
-            if (!result) throw new Error("not_found");
+            if (!result) throw new Error('not_found');
 
             const { parsed, archived, row } = result;
             ctxAny.metadata?.({ slug, archived, legacy: parsed.isLegacy });
@@ -789,7 +726,7 @@ export default defineTool({
               // them identically (list.ts: `row.status ?? 'draft'` +
               // `reconcileStartStatus(row.opStatus, status)`), so this is a projection
               // of an already-fetched row, not new plumbing.
-              const legacyStatus = row.status ?? "draft";
+              const legacyStatus = row.status ?? 'draft';
               const legacyBase = {
                 slug: parsed.slug,
                 harness: row.harnessSlug,
@@ -814,12 +751,8 @@ export default defineTool({
               if (requestedDecisionIds) {
                 payload = narrowDecisionPayload(legacyBase, requestedDecisionIds, []);
               } else if (args.heading) {
-                payload = narrowHeadingPayload(
-                  legacyBase,
-                  args.heading,
-                  findSection(sections, args.heading),
-                );
-              } else if (mode === "full") {
+                payload = narrowHeadingPayload(legacyBase, args.heading, findSection(sections, args.heading));
+              } else if (mode === 'full') {
                 // Legacy plans are prose-only — full includes the body; meta/sections omit it.
                 // (Raw is byte-identical to prose for a legacy plan; only surfaced when the
                 // caller opts in via includeRaw — see the non-legacy branch below.)
@@ -839,8 +772,7 @@ export default defineTool({
             // by an open engineer-issue resolves to `blocked` + carries which EI(s) block it
             // (the closing of the issue unblocks every target atomically). The pure
             // @papercusp/plan-parser resolver is unchanged; the merge lives only here.
-            const { items: resolvedItems, blockingIssues } =
-              await overlayIssueBlocksForPlan(slug, resolved.items);
+            const { items: resolvedItems, blockingIssues } = await overlayIssueBlocksForPlan(slug, resolved.items);
             const responseItems = requestedItemIdSet
               ? resolvedItems.filter((item) => requestedItemIdSet.has(item.id))
               : resolvedItems;
@@ -854,18 +786,13 @@ export default defineTool({
               : null;
             const selectItemMap = <T>(value: Record<string, T>): Record<string, T> =>
               requestedItemIdSet
-                ? Object.fromEntries(
-                    Object.entries(value).filter(([id]) => responseItemIds.has(id)),
-                  )
+                ? Object.fromEntries(Object.entries(value).filter(([id]) => responseItemIds.has(id)))
                 : value;
 
             // P-006: Build a map of plan-item-id → { featureId, status } so the UI
             // can show live feature status badges next to each P-NNN item.
             const harnessSlug = resolveEffectiveHarnessSlug(sctx);
-            let linkedFeatures: Record<
-              string,
-              { featureId: string; status: string; harnessSlug: string }
-            > = {};
+            let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
             // P-003: the newest transition across work-items linked to this
             // plan — one of the two measurable freshness sources. Taken from
             // the query below rather than a second one: it already selects
@@ -873,21 +800,19 @@ export default defineTool({
             // column instead of a round-trip.
             let linkedWorkItemUpdatedAt: string | null = null;
             try {
-              const rows = await withWorkspace(
-                DEFAULT_WORKSPACE_ID,
-                async (tx) => {
-                  return tx<
-                    {
-                      feature_id: string;
-                      status: string;
-                      source_plan_slug: string | null;
-                      source_plan_item_ids: string[] | null;
-                      stamped_plan_slug: string | null;
-                      stamped_item_id: string | null;
-                      harness_slug: string;
-                      updated_ts: string | number | null;
-                    }[]
-                  >`
+              const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+                return tx<
+                  {
+                    feature_id: string;
+                    status: string;
+                    source_plan_slug: string | null;
+                    source_plan_item_ids: string[] | null;
+                    stamped_plan_slug: string | null;
+                    stamped_item_id: string | null;
+                    harness_slug: string;
+                    updated_ts: string | number | null;
+                  }[]
+                >`
               SELECT feature_id, status, source_plan_slug, source_plan_item_ids,
                      payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
                      payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
@@ -897,8 +822,7 @@ export default defineTool({
                  AND (source_plan_slug = ${slug}
                       OR payload -> 'plan_item' ->> 'plan_slug' = ${slug})
             `;
-                },
-              );
+              });
               for (const row of rows) {
                 // P-003 freshness: newest linked work-item write. Taken over
                 // ALL linked rows, including ones whose plan-item provenance
@@ -906,11 +830,7 @@ export default defineTool({
                 // moved is evidence of activity on this plan whether or not it
                 // can be attributed to a specific item.
                 const at = normalizeActivityTimestamp(row.updated_ts);
-                if (
-                  at &&
-                  (linkedWorkItemUpdatedAt === null ||
-                    Date.parse(at) > Date.parse(linkedWorkItemUpdatedAt))
-                ) {
+                if (at && (linkedWorkItemUpdatedAt === null || Date.parse(at) > Date.parse(linkedWorkItemUpdatedAt))) {
                   linkedWorkItemUpdatedAt = at;
                 }
                 // EI-19435123521651527: `source_plan_item_ids` is effectively unwritten
@@ -936,39 +856,32 @@ export default defineTool({
             // has no inline-VAL assertions. Non-fatal.
             let planItemTests: Record<string, PlanItemTestStatus> = {};
             try {
-              planItemTests = await withWorkspace(
-                DEFAULT_WORKSPACE_ID,
-                async (tx) => {
-                  const assertions = await tx<
-                    {
-                      val_id: string;
-                      item_id: string;
-                      requires_test: boolean;
-                    }[]
-                  >`
+              planItemTests = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+                const assertions = await tx<
+                  {
+                    val_id: string;
+                    item_id: string;
+                    requires_test: boolean;
+                  }[]
+                >`
               SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
                WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}
             `;
-                  if (assertions.length === 0) return {};
-                  const testRows = await tx<
-                    { status: string; payload: { coversVALs?: unknown } }[]
-                  >`
+                if (assertions.length === 0) return {};
+                const testRows = await tx<{ status: string; payload: { coversVALs?: unknown } }[]>`
               SELECT status, payload FROM harness_shared.harness_tests
                WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug}
             `;
-                  return computePlanItemTestStatus(
-                    assertions,
-                    testRows.map((r) => ({
-                      status: r.status,
-                      coversVALs: Array.isArray(r.payload?.coversVALs)
-                        ? (r.payload.coversVALs as unknown[]).filter(
-                            (v): v is string => typeof v === "string",
-                          )
-                        : [],
-                    })),
-                  );
-                },
-              );
+                return computePlanItemTestStatus(
+                  assertions,
+                  testRows.map((r) => ({
+                    status: r.status,
+                    coversVALs: Array.isArray(r.payload?.coversVALs)
+                      ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
+                      : [],
+                  })),
+                );
+              });
             } catch {
               // Non-fatal — UI degrades to no coverage badges.
             }
@@ -992,9 +905,7 @@ export default defineTool({
             // item it names is terminal — see now-next-derivation.ts for why
             // that jurisdiction rule is narrow. `now.raw` still carries the
             // stored bytes verbatim, and nothing here mutates the plan.
-            const nowNext = decoratedNow
-              ? reconcileNowNext(decoratedNow.next, parsed.items, row.planSlug)
-              : null;
+            const nowNext = decoratedNow ? reconcileNowNext(decoratedNow.next, parsed.items, row.planSlug) : null;
             const nowWithDerivedNext =
               decoratedNow && nowNext
                 ? {
@@ -1021,7 +932,7 @@ export default defineTool({
             // `row.status`, NOT `parsed.frontmatter.status`: `row` is the DB
             // projection plans:list already reads from, so the two response shapes
             // can never disagree on what "the plan's status" means.
-            const status = row.status ?? "draft";
+            const status = row.status ?? 'draft';
             // deterministic-plan-state-derivation-2026-08-31 P-003 / D-004:
             // `status` above is a HAND-ASSERTED label that nothing recomputes
             // when the plan's items go terminal — the same second-copy defect
@@ -1127,9 +1038,7 @@ export default defineTool({
             // Rationale + the measurement live on narrowHeadingPayload above.
             if (requestedDecisionIds) {
               const requestedDecisionIdSet = new Set(requestedDecisionIds);
-              const selectedDecisions = parsed.decisions.filter((decision) =>
-                requestedDecisionIdSet.has(decision.id),
-              );
+              const selectedDecisions = parsed.decisions.filter((decision) => requestedDecisionIdSet.has(decision.id));
               return {
                 ok: true as const,
                 ...narrowDecisionPayload(
@@ -1143,15 +1052,11 @@ export default defineTool({
             if (args.heading) {
               return {
                 ok: true as const,
-                ...narrowHeadingPayload(
-                  base,
-                  args.heading,
-                  findSection(sections, args.heading),
-                ),
+                ...narrowHeadingPayload(base, args.heading, findSection(sections, args.heading)),
               };
             }
 
-            if (mode === "meta") {
+            if (mode === 'meta') {
               return { ok: true as const, ...base };
             }
 
@@ -1161,13 +1066,8 @@ export default defineTool({
             // WI-274: in `sections` (the default) excerpt long decision bodies so a
             // decision-heavy plan can't overflow the agent tool-output cap. `full` keeps
             // complete bodies (alongside the prose blob).
-            const boundedDecisions =
-              mode === "full"
-                ? parsed.decisions
-                : boundDecisionBodies(parsed.decisions);
-            const decisionBodiesTruncated =
-              mode !== "full" &&
-              boundedDecisions.some((d) => "body_truncated" in d);
+            const boundedDecisions = mode === 'full' ? parsed.decisions : boundDecisionBodies(parsed.decisions);
+            const decisionBodiesTruncated = mode !== 'full' && boundedDecisions.some((d) => 'body_truncated' in d);
             // acceptance-rubrics-on-every-plan-2026-08-11 P-003: surface the plan's
             // acceptance rubric (its definition-of-done) so completion state is
             // discoverable from the plan itself. Absent = not yet authored (it is
@@ -1216,7 +1116,7 @@ export default defineTool({
             const stalePathRefsByItem = await getStalePathRefsForSubjects(
               responseItems.map((item) => ({
                 id: item.id,
-                summary: typeof item.text === "string" ? item.text : null,
+                summary: typeof item.text === 'string' ? item.text : null,
               })),
             ).catch(() => ({}));
             const decorateStalePathRefs = <T extends { id: string }>(item: T) =>
@@ -1226,7 +1126,7 @@ export default defineTool({
               ...(acceptanceRubric ? { acceptanceRubric } : {}),
               ...(latestAudit ? { latestAudit } : {}),
               items:
-                mode === "full"
+                mode === 'full'
                   ? responseItems.map(decorateStalePathRefs)
                   : responseItems.map(({ rawLine: _rawLine, ...rest }) => decorateStalePathRefs(rest)),
               decisions: boundedDecisions,
@@ -1244,7 +1144,7 @@ export default defineTool({
               blockingIssues: selectItemMap(blockingIssues),
             };
             const payload =
-              mode === "full"
+              mode === 'full'
                 ? {
                     ...structured,
                     prose: parsed.prose,
@@ -1286,12 +1186,10 @@ export default defineTool({
     if (args.shipReadiness) {
       for (const result of env.results as Array<Record<string, unknown>>) {
         if (result.ok !== true) continue;
-        const slug = typeof result.slug === "string" ? result.slug : null;
+        const slug = typeof result.slug === 'string' ? result.slug : null;
         if (!slug) continue;
         try {
-          const { resolvePlanAcceptanceGateVerdict } = await import(
-            "../../sync-resolver/plan-acceptance-gate-verdict"
-          );
+          const { resolvePlanAcceptanceGateVerdict } = await import('../../sync-resolver/plan-acceptance-gate-verdict');
           const rows = await resolvePlanAcceptanceGateVerdict({
             // The resolver's own contract: this arg "rides for registry
             // consistency and to key the subscription rather than being
@@ -1299,7 +1197,7 @@ export default defineTool({
             // row itself. So the schema's own default is the honest value here;
             // inventing a workspace id would imply a scoping that does not
             // happen.
-            workspaceId: "default",
+            workspaceId: 'default',
             planSlug: slug,
           });
           result.shipReadiness = rows[0];
@@ -1313,7 +1211,7 @@ export default defineTool({
           result.shipReadiness = {
             planSlug: slug,
             satisfied: false,
-            unavailableReason: "resolver-unavailable",
+            unavailableReason: 'resolver-unavailable',
             message: `Ship readiness could not be evaluated (${
               error instanceof Error ? error.message : String(error)
             }).`,
@@ -1328,16 +1226,11 @@ export default defineTool({
     // and only for results the read itself missed.
     if (explicitCallerHarness) {
       for (const result of env.results as Array<Record<string, unknown>>) {
-        if (result.ok !== false || result.error !== "not_found") continue;
+        if (result.ok !== false || result.error !== 'not_found') continue;
         if (result.harnessMismatch) continue;
-        const slug = typeof result.slug === "string" ? result.slug : null;
+        const slug = typeof result.slug === 'string' ? result.slug : null;
         if (!slug) continue;
-        const mismatch = await harnessMismatchForMiss(
-          ctx,
-          explicitCallerHarness,
-          slug,
-          "explicit",
-        );
+        const mismatch = await harnessMismatchForMiss(ctx, explicitCallerHarness, slug, 'explicit');
         if (!mismatch) continue;
         ctxAny.metadata?.({ slug, searchedHarness: explicitCallerHarness, harnessMismatch: mismatch });
         result.harness = explicitCallerHarness;

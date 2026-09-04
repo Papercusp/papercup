@@ -36,6 +36,7 @@ import {
   WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
+import { WIDE_TRIGGER_DDL } from './dependency-trigger-fixture';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -183,6 +184,7 @@ beforeAll(async () => {
   // Migration 379: the maintained readiness sidecar (some claim-path code paths reference
   // work_item_blocked even on the inline arm via the sidecar table; apply it for parity).
   await db.sql.unsafe(readMigration('379-maintained-ready-column.sql')).simple();
+  await db.sql.unsafe(WIDE_TRIGGER_DDL).simple();
   // harness_plans + plan_item_claims are created by HARNESS_FEATURES_CONSOLIDATED_DDL (the WI-2118
   // reserved-plan-lane floor reads them); the reserved-lane describe below seeds into them.
 }, 180_000);

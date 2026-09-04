@@ -298,7 +298,11 @@ function UnifiedInboxView() {
   const questions = useSyncQuery<ConvRow>({ queryName: 'conversations.questionsList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
   const deliberations = useSyncQuery<ThreadRow>({ queryName: 'conversations.deliberationList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
   const agentChats = useSyncQuery<AgentChatRow>({ queryName: 'conversations.agentChatList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
-  const agentMessages = useSyncQuery<AgentMessageRow>({ queryName: 'conversations.agentMessageList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
+  const agentMessages = useSyncQuery<AgentMessageRow>({
+    queryName: 'conversations.agentMessageList',
+    args: { limit: COMMS_LIST_LIMIT, q: debouncedSearch.trim() || undefined },
+    staleTime: 30_000,
+  });
   const rows = useMemo(
     () => composeUnifiedConversationRows(
       {

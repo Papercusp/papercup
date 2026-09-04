@@ -29,8 +29,12 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
  */
 
 const gateSpy = vi.fn();
+const snapshotSpy = vi.fn();
 vi.mock('../plan-acceptance-gate', () => ({
   evaluatePlanAcceptanceGate: (...a: unknown[]) => gateSpy(...a),
+}));
+vi.mock('../acceptance-bar-contract-snapshot', () => ({
+  readAcceptanceBarContractSnapshot: (...a: unknown[]) => snapshotSpy(...a),
 }));
 
 import { resolvePlanAcceptanceGateVerdict } from './plan-acceptance-gate-verdict';
@@ -49,13 +53,21 @@ type Row = {
   forcedPast: { reason: string; checks: string[] } | null;
   vettedUnderWaiver: { consultId: string; reason: string | null } | null;
   unavailableReason: string | null;
+  acceptanceBarContractSnapshot: Record<string, unknown> | null;
+  acceptanceBarContractSnapshotUnavailableReason: string | null;
 };
 
-const run = async (): Promise<Row> =>
-  (await resolvePlanAcceptanceGateVerdict(ARGS))[0] as Row;
+const run = async (): Promise<Row> => (await resolvePlanAcceptanceGateVerdict(ARGS))[0] as Row;
 
 beforeEach(() => {
   gateSpy.mockReset();
+  snapshotSpy.mockReset();
+  snapshotSpy.mockResolvedValue({
+    schemaVersion: 1,
+    contentHash: 'snapshot-hash',
+    planSlug: 'p-1',
+    bars: [],
+  });
 });
 
 describe('P-011 acceptance-gate read — never flatten a non-check into a pass', () => {
@@ -63,6 +75,36 @@ describe('P-011 acceptance-gate read — never flatten a non-check into a pass',
     gateSpy.mockResolvedValue({ satisfied: true });
     await run();
     expect(gateSpy).toHaveBeenCalledWith('p-1');
+    expect(snapshotSpy).toHaveBeenCalledWith('p-1');
+  });
+
+  it('carries the shared BAR snapshot without re-deriving or summarizing it', async () => {
+    gateSpy.mockResolvedValue({ satisfied: false, code: 'plan_items_unfinished' });
+    const snapshot = {
+      schemaVersion: 1,
+      contentHash: 'snapshot-hash',
+      planSlug: 'p-1',
+      bars: [{ barKey: 'R-1', readiness: { state: 'blocked', codes: ['bar_snapshot_method_missing'] } }],
+    };
+    snapshotSpy.mockResolvedValue(snapshot);
+
+    const row = await run();
+
+    expect(row.acceptanceBarContractSnapshot).toBe(snapshot);
+    expect(row.acceptanceBarContractSnapshotUnavailableReason).toBeNull();
+    expect(row.code).toBe('plan_items_unfinished');
+  });
+
+  it('keeps the real gate verdict when only snapshot explainability is unavailable', async () => {
+    gateSpy.mockResolvedValue({ satisfied: false, code: 'acceptance_ungraded' });
+    snapshotSpy.mockRejectedValue(new Error('snapshot read down'));
+
+    const row = await run();
+
+    expect(row.code).toBe('acceptance_ungraded');
+    expect(row.unavailableReason).toBeNull();
+    expect(row.acceptanceBarContractSnapshot).toBeNull();
+    expect(row.acceptanceBarContractSnapshotUnavailableReason).toBe('snapshot read down');
   });
 
   it('carries `skipped` through even though the gate reports satisfied', async () => {
@@ -162,6 +204,7 @@ describe('P-011 acceptance-gate read — fails CLOSED (opposite polarity to the 
     expect(row.satisfied).toBe(false);
     expect(row.unavailableReason).toBe('resolver-unavailable');
     expect(row.message).toContain('could not be evaluated');
+    expect(row.acceptanceBarContractSnapshot).toBeNull();
   });
 
   it('does not invent a refusal CODE out of a read failure', async () => {

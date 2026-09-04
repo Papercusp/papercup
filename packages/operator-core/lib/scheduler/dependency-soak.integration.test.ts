@@ -100,9 +100,6 @@
  *   npm run test:file -- packages/operator-core/lib/scheduler/dependency-soak.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
@@ -111,11 +108,13 @@ import {
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
-
-const migrationText = (f: string) => readFileSync(resolve(SQL_DIR, f), 'utf8');
+import {
+  extractTriggerDdl,
+  migrationText,
+  NARROW_TRIGGER_DDL,
+  TRIGGER,
+  WIDE_TRIGGER_DDL,
+} from './dependency-trigger-fixture';
 
 /** Strip psql meta-commands, GRANTs and bare txn markers — the sibling files' convention. */
 const readMigration = (f: string) =>
@@ -123,40 +122,6 @@ const readMigration = (f: string) =>
     .split('\n')
     .filter((l) => !/^\s*\\/.test(l) && !/\bGRANT\b/.test(l) && !/^\s*(BEGIN|COMMIT);\s*$/.test(l))
     .join('\n');
-
-/**
- * Pull a named trigger's `DROP TRIGGER … ; CREATE TRIGGER … ;` pair out of a migration's
- * REAL bytes.
- *
- * THROWS when the statement is absent. That is the entire value of doing it this way: the
- * alternative failure — quietly falling back to whatever trigger an earlier migration left
- * installed — produces a fully green run against a rig that no longer models production,
- * and nothing in the output would say so. Better to fail on a rename than to pass on a lie.
- */
-function extractTriggerDdl(sqlText: string, triggerName: string): string {
-  const drop = new RegExp(`DROP\\s+TRIGGER[^;]*\\b${triggerName}\\b[^;]*;`, 'i').exec(sqlText);
-  const create = new RegExp(`CREATE\\s+TRIGGER\\s+${triggerName}\\b[\\s\\S]*?;`, 'i').exec(sqlText);
-  if (!create) {
-    throw new Error(
-      `dependency-soak: could not find 'CREATE TRIGGER ${triggerName}' in the migration text. ` +
-        `The rig extracts this statement from the SHIPPED migration on purpose — if the trigger ` +
-        `was renamed or restructured, update this extractor rather than pasting DDL into the test, ` +
-        `or the soak silently runs against a stale trigger and stays green.`,
-    );
-  }
-  return `${drop ? drop[0] : ''}\n${create[0]}`;
-}
-
-/** The PRODUCTION trigger (640) and the NARROW one it replaced (379) — both from real bytes. */
-const TRIGGER = 'wir_status_sync_dependents_trg';
-const WIDE_TRIGGER_DDL = extractTriggerDdl(
-  migrationText('640-unify-workitem-readiness-triggers.sql'),
-  TRIGGER,
-);
-const NARROW_TRIGGER_DDL = extractTriggerDdl(
-  migrationText('379-maintained-ready-column.sql'),
-  TRIGGER,
-);
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 

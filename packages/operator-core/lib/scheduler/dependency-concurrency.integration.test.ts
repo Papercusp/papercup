@@ -57,6 +57,7 @@ import {
   USER_TRUST_LIST_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
+import { WIDE_TRIGGER_DDL } from './dependency-trigger-fixture';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -133,6 +134,7 @@ beforeAll(async () => {
     .simple();
   // The SHIPPED readiness oracle + sidecar triggers, replacing the fixture's stand-in.
   await db.sql.unsafe(readMigration('379-maintained-ready-column.sql')).simple();
+  await db.sql.unsafe(WIDE_TRIGGER_DDL).simple();
   await db.sql.unsafe(readMigration('719-fix-work-item-is-blocked-workspace-scope.sql')).simple();
 }, 180_000);
 

@@ -380,6 +380,9 @@ const asStr = (v: unknown): string | null => (typeof v === 'string' && v.length 
 const asStrArray = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 
+/** Escape LIKE metacharacters so agent-message search stays a literal substring. */
+const likeContainsPattern = (query: string): string => `%${query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+
 /**
  * Flatten a `coord_event_log` row into the flat `AgentMessageRow` wire shape the
  * Conversations surfaces consume (apps/operator-vite/src/components/
@@ -393,7 +396,7 @@ export function toAgentMessageRow(
   // hands the ARRAY INDEX in as `opts`; reading `opts?.includeAuthored` off a
   // number yields undefined, so that mistake degrades to the full row (the safe
   // direction) rather than silently dropping a field.
-  opts?: { includeAuthored?: boolean },
+  opts?: { includeAuthored?: boolean; includeBody?: boolean },
 ): Record<string, unknown> {
   const body = (row.body ?? {}) as CoordEnvelopeBody;
   const to = asStrArray(body.to);
@@ -420,7 +423,7 @@ export function toAgentMessageRow(
     from: asStr(body.from) ?? '',
     to,
     summary: asStr(body.summary),
-    body: asStr(body.body),
+    ...(opts?.includeBody === false ? {} : { body: asStr(body.body) }),
     ...(authored ? { authored } : {}),
     harness_slug: (row.harness_slug as string | null) ?? null,
     plan_slug: asStr(body.plan_slug),
@@ -7621,20 +7624,34 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       limit: clampedLimit(500, 100),
       harness: z.string().optional(),
       kinds: z.array(z.string()).optional(),
+      /** Filter the append-only message haystack server-side before projecting rows. */
+      q: z.string().max(500).optional(),
       /** Include machine traffic — `auto:true` lifecycle projections AND named
        *  service actors. Default false: the pane shows what agents wrote. */
       includeMachine: z.boolean().optional(),
     }),
     resolve: async (args) => {
-      const { limit, harness, kinds, includeMachine } = args as {
+      const { limit, harness, kinds, q, includeMachine } = args as {
         limit: number;
         harness?: string;
         kinds?: string[];
+        q?: string;
         includeMachine?: boolean;
       };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
       const kindFilter = kinds && kinds.length > 0 ? kinds : [...CURATED_COORD_ROOT_KINDS];
       const machineOk = includeMachine === true;
+      const query = q?.trim() || null;
+      const searchPattern = query ? likeContainsPattern(query) : null;
+      // Search against the JSON envelope so every field the unified row exposes
+      // (body, summary, sender, recipients, lifecycle, audience, and plan refs)
+      // remains searchable without shipping the long body on the default list.
+      const searchFilter = searchPattern
+        ? sql`(
+            c.body::text ILIKE ${searchPattern} ESCAPE '\\'
+            OR COALESCE(c.harness_slug, '') ILIKE ${searchPattern} ESCAPE '\\'
+          )`
+        : sql`TRUE`;
       const [rows, totalRows] = await Promise.all([
         sql`
           SELECT c.msg_id,
@@ -7658,6 +7675,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
                   OR (COALESCE(c.body ->> 'auto', '') <> 'true'
                       AND COALESCE(c.body ->> 'from', '') ~* ${AGENT_SESSION_ID_HEX_RUN}))
              AND (${harness ?? null}::text IS NULL OR c.harness_slug = ${harness ?? null})
+             AND ${searchFilter}
            ORDER BY c.id DESC
            LIMIT ${limit}`,
         sql<{ n: number }[]>`
@@ -7670,13 +7688,21 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
              AND (${machineOk}
                   OR (COALESCE(c.body ->> 'auto', '') <> 'true'
                       AND COALESCE(c.body ->> 'from', '') ~* ${AGENT_SESSION_ID_HEX_RUN}))
-             AND (${harness ?? null}::text IS NULL OR c.harness_slug = ${harness ?? null})`,
+             AND (${harness ?? null}::text IS NULL OR c.harness_slug = ${harness ?? null})
+             AND ${searchFilter}`,
       ]);
       // WI-7240: the LIST omits `authored` — only the detail views render it, and it
       // was 43.90% of this payload. `conversations.agentMessageDetail` still carries
       // it in full, via this same mapper.
       return attachListMeta(
-        rows.map((r) => toAgentMessageRow(r, { includeAuthored: false })),
+        rows.map((r) =>
+          toAgentMessageRow(r, {
+            includeAuthored: false,
+            // A searched row may need its body for the exact client-side
+            // highlight/filter pass; the ordinary list never ships it.
+            includeBody: searchPattern !== null,
+          }),
+        ),
         { total: totalRows[0]?.n ?? rows.length },
       );
     },

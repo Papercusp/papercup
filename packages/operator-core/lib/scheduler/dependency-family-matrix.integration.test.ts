@@ -49,6 +49,7 @@ import {
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
 import { defineScenario, seedScenario, type Family } from '../testing/dependency-fixture';
+import { WIDE_TRIGGER_DDL } from './dependency-trigger-fixture';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -113,6 +114,7 @@ beforeAll(async () => {
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(readMigration('379-maintained-ready-column.sql')).simple();
+  await db.sql.unsafe(WIDE_TRIGGER_DDL).simple();
   await db.sql.unsafe(readMigration('719-fix-work-item-is-blocked-workspace-scope.sql')).simple();
 }, 180_000);
 

@@ -45,6 +45,7 @@ import {
 } from '../../test/_work-items-schema';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { WIDE_TRIGGER_DDL } from './dependency-trigger-fixture';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -184,6 +185,7 @@ beforeAll(async () => {
   // cross-check the sidecar (the indexed read the flag will switch to) against the inline
   // predicate the claim uses today.
   await db.sql.unsafe(readMigration('379-maintained-ready-column.sql')).simple();
+  await db.sql.unsafe(WIDE_TRIGGER_DDL).simple();
   // 719: workspace-scoped oracle (required 3rd arg). See EI-19313459163394127.
   await db.sql.unsafe(readMigration('719-fix-work-item-is-blocked-workspace-scope.sql')).simple();
   // 996: lifecycle-terminal proposed completions remain blocked, and an
@@ -538,5 +540,28 @@ describe('claim respects blocking with SCHEDULER_MAINTAINED_READY ON — the ind
     const { legacy, spec } = await claimViaBothPaths('m3');
     expect(legacy).toBe('F-ready');
     expect(spec).toBe('F-ready');
+  });
+});
+
+// @covers INV-07 INV-14
+describe('getNextForBee contention releases the losing claim (P-011)', () => {
+  beforeEach(() => setFlagOverridesForTest({ [FLAGS.SCHEDULER_MAINTAINED_READY]: false }));
+  afterEach(() => setFlagOverridesForTest({}));
+
+  it('two bees racing one plan-lane row leave it available after the winner releases', async () => {
+    await seedFeature('F-race', { status: 'open', createdTs: 10, tags: ['sync'] });
+    const [a, b] = await Promise.all([
+      getNextForBee({ cupId: 'bee-a', harness: H }),
+      getNextForBee({ cupId: 'bee-b', harness: H }),
+    ]);
+    const winner = a?.workItem.id ?? b?.workItem.id;
+    expect(winner).toBe('F-race');
+    expect([a, b].filter(Boolean)).toHaveLength(1);
+
+    // Simulate the lane-guard bounce's release, then prove a later bee can serve it.
+    await db.sql`UPDATE harness_shared.harness_features_consolidated
+                    SET taken_by = NULL, taken_at = NULL WHERE feature_id = 'F-race'`;
+    const retry = await getNextForBee({ cupId: 'bee-retry', harness: H });
+    expect(retry?.workItem.id).toBe('F-race');
   });
 });

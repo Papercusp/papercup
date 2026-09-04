@@ -33,6 +33,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
+import { WIDE_TRIGGER_DDL } from './dependency-trigger-fixture';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -106,6 +107,7 @@ beforeAll(async () => {
   // triggers + the work_item_is_blocked() oracle + the backfill. `.simple()` because it
   // is a multi-statement DDL script.
   await db.sql.unsafe(readMigration('379-maintained-ready-column.sql')).simple();
+  await db.sql.unsafe(WIDE_TRIGGER_DDL).simple();
   // 719: workspace-scoped oracle (required 3rd arg). See EI-19313459163394127.
   await db.sql.unsafe(readMigration('719-fix-work-item-is-blocked-workspace-scope.sql')).simple();
 }, 90_000);

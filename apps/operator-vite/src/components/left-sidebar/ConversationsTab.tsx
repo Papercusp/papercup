@@ -749,7 +749,7 @@ export default function ConversationsTab({ active }: { active: boolean }) {
   });
   const agentMessages = useSyncQuery<AgentMessageRow>({
     queryName: 'conversations.agentMessageList',
-    args: { limit: LIST_LIMIT },
+    args: { limit: LIST_LIMIT, q: search.trim() || undefined },
     enabled: active,
     staleTime: 30_000,
   });

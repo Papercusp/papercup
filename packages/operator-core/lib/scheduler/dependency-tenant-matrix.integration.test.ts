@@ -43,6 +43,7 @@ import {
   standardScenario,
   type DependencyScenarioSpec,
 } from '../testing/dependency-fixture';
+import { WIDE_TRIGGER_DDL } from './dependency-trigger-fixture';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -111,6 +112,7 @@ beforeAll(async () => {
   // work_item_is_blocked oracle. 719: makes that oracle workspace-scoped (the fix for the
   // very defect this file exists to guard). Applying 379 WITHOUT 719 is what shipped.
   await db.sql.unsafe(readMigration('379-maintained-ready-column.sql')).simple();
+  await db.sql.unsafe(WIDE_TRIGGER_DDL).simple();
   await db.sql.unsafe(readMigration('719-fix-work-item-is-blocked-workspace-scope.sql')).simple();
 }, 180_000);
 

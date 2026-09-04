@@ -145,7 +145,18 @@ describe('agent-message row projection: authored is DETAIL-only (WI-7240)', () =
     // Reading `.includeAuthored` off a number gives undefined, so the mistake
     // yields the complete row rather than silently dropping a field — the safe
     // direction for a mapper two resolvers share.
-    const asMapped = toAgentMessageRow(ROW, 0 as unknown as { includeAuthored?: boolean });
+    const asMapped = toAgentMessageRow(
+      ROW,
+      0 as unknown as { includeAuthored?: boolean; includeBody?: boolean },
+    );
     expect('authored' in asMapped).toBe(true);
+  });
+
+  it('omits the long body from the default list projection but keeps it for a search result', () => {
+    const list = toAgentMessageRow(ROW, { includeAuthored: false, includeBody: false });
+    expect('body' in list).toBe(false);
+
+    const searched = toAgentMessageRow(ROW, { includeAuthored: false, includeBody: true });
+    expect(searched.body).toBe(ENVELOPE.body);
   });
 });

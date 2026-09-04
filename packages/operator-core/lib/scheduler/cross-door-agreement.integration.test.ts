@@ -58,6 +58,7 @@ import {
 // The ISSUE-family by-id claim subscribes the claimant to the item (coord_entity_subscriptions),
 // so the coord capability tables are load-bearing for that door — not optional scaffolding.
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
+import { WIDE_TRIGGER_DDL } from './dependency-trigger-fixture';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -104,6 +105,7 @@ beforeAll(async () => {
   // Both are DOORS in the table below, not decoration: the sidecar is the indexed read the
   // claim will switch to, and INV-15 makes their disagreement a reportable defect.
   await db.sql.unsafe(readMigration('379-maintained-ready-column.sql')).simple();
+  await db.sql.unsafe(WIDE_TRIGGER_DDL).simple();
   await db.sql.unsafe(readMigration('719-fix-work-item-is-blocked-workspace-scope.sql')).simple();
 }, 180_000);
 

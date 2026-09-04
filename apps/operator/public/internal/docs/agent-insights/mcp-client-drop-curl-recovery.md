@@ -1,7 +1,7 @@
 # Stranded after your papercusp-su MCP tools vanished? Recover in seconds via curl
 URL: /internal/docs/agent-insights/mcp-client-drop-curl-recovery
 
-The Claude Code papercusp-su MCP client can drop mid-session (often after a /loop, or when a :3070 worker restarts/wedges) and never re-handshake — ToolSearch returns 'No matching deferred tools' for every mcp__papercusp-su__*. The server is fine. Drive it directly via a single-shot stateless curl tools/call (superuser bearer) and keep working — proven to materialize plans, claim/resolve work items, coord, and memory:remember while the client stayed dropped.
+A papercusp-su MCP client can drop mid-session while the operator remains healthy. Probe both endpoints, then use the committed stateless curl helper or HTTP tools/call bridge with an explicit session identity; recognize operator wedges and avoid retry storms.
 
 ## Symptom
 
@@ -128,3 +128,28 @@ EI-1750(a): a keepalive/heartbeat on the `/api/mcp` SSE stream so a brief worker
 stall doesn't silently kill client sessions. MCP transport is sensitive — under
 peer review before implementation. This runbook (EI-1750(b)) is the recover-now
 stopgap. Related: \[\[/agent-insights/transient-signal-over-reaction]].
+
+## Identity, continuity, and bridge gotchas
+
+The bridge is stateless, but its writes still need a stable caller identity. Pass the su id for **this session** in `client=` (the id returned by `coord:whoami`), not a transient shell's `$PAPERCUSP_SID` if they differ. Confirm with `coord:whoami` before a critical write. A drifted or guessed id can fragment presence and attribution, even though the HTTP call itself succeeds.
+
+The server's superuser identity precedence is now explicit: `x-papercusp-client` header, then `?client=`, then `Mcp-Session-Id`. An explicit per-launch SID therefore wins over a transport-session id after reconnects (EI-7066 / EI-1753). `Mcp-Session-Id` is only a fallback when no explicit SID was supplied.
+
+If a shell was launched outside `psu`, the HTTP bridge still works, but writes may resolve to a shared fallback identity (`su-loopback` / `su-http-loopback`) when no `client` is supplied. Prefer an explicit session id; do not regenerate tokens or rewrite client configuration just to repair a dropped stream.
+
+## When to use this bridge vs. wait
+
+Use the bridge when `/api/health` is 200 **and** the `/api/mcp` initialize probe answers promptly: that combination identifies a dropped client stream while the operator is healthy. If `/api/mcp` times out, the operator event loop is saturated and this bridge traverses the same path; stop retrying and follow the operator-wedge runbook instead. If both endpoints fail, the operator itself is down and the bridge cannot help.
+
+Light reads usually remain reliable during a wedge. Heavy writes can time out or land intermittently, so send small, single-recipient coordination messages and put durable details in the work-item or this runbook. Do not retry-storm a saturated operator.
+
+## The server-side fix and scope
+
+The curl bridge is a recover-now route-around for a client-side disconnect; it does not repair the underlying MCP stream lifecycle. Keepalive/reconnect work belongs in the MCP transport layer (EI-1750). The bridge remains useful for unattended loops because it can call the same stateless `tools/call` endpoint while the client is unavailable.
+
+## Don't
+
+* Don't infer an operator outage from a missing client tool; probe `/api/mcp`, not only `/api/health`.
+* Don't use a guessed, drifted, or peer's `client` id for writes.
+* Don't use underscore-form tool names; the HTTP endpoint expects colon-form names such as `coord:send` and `work_items:complete`.
+* Don't keep polling or piling retries onto a wedged operator; stage durable work and recover when the MCP route is responsive.

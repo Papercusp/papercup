@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { AcceptanceBarContractSnapshot } from '../acceptance-bar-contract-snapshot';
 
 /**
  * P-011 — the READ surface for a plan's ACCEPTANCE GATE verdict.
@@ -83,16 +84,34 @@ export interface PlanAcceptanceGateVerdictRow {
   vettedUnderWaiver: { consultId: string; reason: string | null } | null;
   /** Distinguishes "the gate could not run" from "the gate passed". */
   unavailableReason: 'resolver-unavailable' | null;
+  /**
+   * requirements-with-teeth-bar-before-method-2026-09-04 P-014: the one
+   * versioned BAR contract projection. This is explainability, not a second
+   * gate verdict — `satisfied`/`code` above remain the write path's authority.
+   */
+  acceptanceBarContractSnapshot: AcceptanceBarContractSnapshot | null;
+  /** A snapshot module/read failure never erases a real gate verdict. */
+  acceptanceBarContractSnapshotUnavailableReason: string | null;
 }
 
-export async function resolvePlanAcceptanceGateVerdict(
-  args: PlanAcceptanceGateArgs,
-): Promise<unknown[]> {
+export async function resolvePlanAcceptanceGateVerdict(args: PlanAcceptanceGateArgs): Promise<unknown[]> {
   const { planSlug } = args;
 
   try {
-    const mod = await import('../plan-acceptance-gate');
-    const v = await mod.evaluatePlanAcceptanceGate(planSlug);
+    const [mod, snapshotMod] = await Promise.all([
+      import('../plan-acceptance-gate'),
+      import('../acceptance-bar-contract-snapshot'),
+    ]);
+    const [v, snapshotResult] = await Promise.all([
+      mod.evaluatePlanAcceptanceGate(planSlug),
+      snapshotMod
+        .readAcceptanceBarContractSnapshot(planSlug)
+        .then((snapshot) => ({ snapshot, error: null as string | null }))
+        .catch((error) => ({
+          snapshot: null,
+          error: error instanceof Error ? error.message : String(error),
+        })),
+    ]);
 
     return [
       {
@@ -105,9 +124,7 @@ export async function resolvePlanAcceptanceGateVerdict(
         gradedBy: v.gradedBy ?? null,
         unknownRatedCriteria: [...(v.unknownRatedCriteria ?? [])],
         gradedVia: v.gradedVia ?? null,
-        forcedPast: v.forcedPast
-          ? { reason: v.forcedPast.reason, checks: [...v.forcedPast.checks] }
-          : null,
+        forcedPast: v.forcedPast ? { reason: v.forcedPast.reason, checks: [...v.forcedPast.checks] } : null,
         vettedUnderWaiver: v.vettedUnderWaiver
           ? {
               consultId: v.vettedUnderWaiver.consultId,
@@ -115,6 +132,8 @@ export async function resolvePlanAcceptanceGateVerdict(
             }
           : null,
         unavailableReason: null,
+        acceptanceBarContractSnapshot: snapshotResult.snapshot,
+        acceptanceBarContractSnapshotUnavailableReason: snapshotResult.error,
       } satisfies PlanAcceptanceGateVerdictRow,
     ];
   } catch (error) {
@@ -127,9 +146,7 @@ export async function resolvePlanAcceptanceGateVerdict(
         satisfied: false,
         skipped: null,
         code: null,
-        message: `Acceptance gate could not be evaluated (${
-          error instanceof Error ? error.message : String(error)
-        }).`,
+        message: `Acceptance gate could not be evaluated (${error instanceof Error ? error.message : String(error)}).`,
         rubricId: null,
         gradedBy: null,
         unknownRatedCriteria: [],
@@ -137,6 +154,8 @@ export async function resolvePlanAcceptanceGateVerdict(
         forcedPast: null,
         vettedUnderWaiver: null,
         unavailableReason: 'resolver-unavailable',
+        acceptanceBarContractSnapshot: null,
+        acceptanceBarContractSnapshotUnavailableReason: null,
       } satisfies PlanAcceptanceGateVerdictRow,
     ];
   }

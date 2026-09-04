@@ -1,7 +1,7 @@
 # MCP client dropped after /loop? Self-rescue via the curl HTTP-bridge (EI-1740)
 URL: /internal/docs/agent-insights/mcp-client-drop-curl-http-bridge-self-rescue
 
-The papercusp-su MCP client can silently drop right after a /loop slash-command (EI-1740 / WI-260 / WI-258) and never auto-reconnect, isolating an agent from coord/plans/work_items for hours. The operator backend stays healthy — so you can fully restore coordination by driving the same HTTP MCP endpoint directly with curl.
+Merged into agent-insights/mcp-client-drop-curl-recovery; retained as a historical redirect for existing links.
 
 ## Symptom
 

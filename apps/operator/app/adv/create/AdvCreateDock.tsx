@@ -25,6 +25,9 @@ import { onDockApiBind } from '../../harness/dock/dock-actions';
 import PlansListPanel, { CreateViewRail } from './PlansListPanel';
 import MainViewPanel from './MainViewPanel';
 import '../harnesses/adv-dock.css';
+// This dock is loaded as an /adv tab chunk. Keep the Create panels' noncritical
+// styles in that chunk instead of making the Overview route pay for them.
+import '@/app/admin/plans/plans.css';
 
 let registered = false;
 export function ensureCreatePanelsRegistered(): void {

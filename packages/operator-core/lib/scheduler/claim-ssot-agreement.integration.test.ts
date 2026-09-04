@@ -74,6 +74,7 @@ import {
   WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
+import { WIDE_TRIGGER_DDL } from './dependency-trigger-fixture';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -333,6 +334,7 @@ beforeAll(async () => {
     )
     .simple();
   await db.sql.unsafe(readMigration('379-maintained-ready-column.sql')).simple();
+  await db.sql.unsafe(WIDE_TRIGGER_DDL).simple();
   // P-001 (the thing under test): the SSOT function + view. Applying the REAL migration file (not
   // a re-typed copy) is the point — this test binds the migration's SQL to the TS claim path.
   await db.sql.unsafe(readMigration('654-work-item-claim-floors-ssot.sql')).simple();
