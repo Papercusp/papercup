@@ -902,9 +902,13 @@ export const GATE_OWNER_BRIEF_CELL: CellSpec = {
       'gate.ownerBrief.remediation.repairHead',
       'gate.ownerBrief.remediation.frozenSinceAtMs',
       'gate.ownerBrief.remediation.admissions',
+      'gate.ownerBrief.remediation.admissionsMeasured',
       'gate.ownerBrief.remediation.signature',
+      'gate.ownerBrief.remediation.signatureMeasured',
       'gate.ownerBrief.remediation.legs',
+      'gate.ownerBrief.remediation.legsMeasured',
       'gate.ownerBrief.remediation.blockedReason',
+      'gate.ownerBrief.remediation.blockedReasonMeasured',
       'gate.ownerBrief.remediation.verdictProvenance',
       'gate.ownerBrief.vintageSpreadMs',
       // main-green-status-visible-2026-09-03 P-010: the spread alone says the legs
