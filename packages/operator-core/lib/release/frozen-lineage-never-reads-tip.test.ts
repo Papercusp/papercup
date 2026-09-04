@@ -10,8 +10,8 @@
  * that keeps it unreachable. The resolver-level structural guard (green-checkpoint.ts never
  * calling `revParse(cfg.integrationBranch)` while a queue row exists) lands with P-009.
  */
-import { readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
@@ -266,5 +266,62 @@ describe('no age, stall or fossil clock ever clears a queue row (P-009/P-010)', 
     expect(legacy).not.toHaveProperty('blockedReason');
     // And a genuinely attempt-exhausted blocked row is untouched by that migration.
     expect(parseFrozenCandidateRepairQueue(row('blocked'))?.phase).toBe('blocked');
+  });
+});
+
+/**
+ * P-013(d) (D-011): `retire` is an ACTOR-attributed operator verb, never an automatic path. The
+ * storage compare-and-swap `retireFrozenCandidateRepairQueue` (harness/routines/release-actions.ts)
+ * has exactly ONE non-test call site — the release:repair-queue tool's `retire` op, which requires
+ * a reason and audits the caller's ownerId — and nothing a routine tick, the gate, or a fixer could
+ * reach. Written as a falsifier: a second call site anywhere under the scanned roots fails here
+ * until it is argued into the allowlist, which is deliberately a single entry (an "automatic
+ * retire" would be the age/stall clock of D-011 wearing a new name).
+ */
+const RETIRE_CALLER_ALLOWLIST = ['packages/operator-core/lib/agent-tools/release/repair-queue.ts'];
+const RETIRE_SCAN_ROOTS = ['packages/operator-core/lib', 'apps/operator/lib', 'apps/operator/bin', 'packages/agent-mcp/src'];
+// A CALL, not the declaration (`function retireFrozenCandidateRepairQueue(`) and not an import /
+// export specifier (which never carries the `(`).
+const RETIRE_CALL = /(?<!function\s+)\bretireFrozenCandidateRepairQueue\s*\(/g;
+
+function walkSources(dir: string, out: string[]): void {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name.startsWith('.')) continue;
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) walkSources(full, out);
+    else if (/\.(ts|tsx|mts)$/.test(entry.name) && !/\.test\.(ts|tsx|mts)$/.test(entry.name)) out.push(full);
+  }
+}
+
+describe('retire is an actor-attributed operator verb with no automatic caller (P-013(d), D-011)', () => {
+  const files: string[] = [];
+  for (const root of RETIRE_SCAN_ROOTS) walkSources(join(REPO_ROOT, root), files);
+  const callers = new Map<string, number>();
+  for (const file of files) {
+    const calls = [...readFileSync(file, 'utf8').matchAll(RETIRE_CALL)].length;
+    if (calls > 0) callers.set(relative(REPO_ROOT, file), calls);
+  }
+
+  it('scanned a real population (positive control against an empty walk reading as "no callers")', () => {
+    expect(files.length).toBeGreaterThan(1000);
+    expect(callers.size).toBeGreaterThan(0);
+  });
+
+  it('exactly the tool op calls the storage retire; no routine, tick or gate path does', () => {
+    expect([...callers.keys()].sort()).toEqual(RETIRE_CALLER_ALLOWLIST);
+    expect(callers.get(RETIRE_CALLER_ALLOWLIST[0]!)).toBe(1);
+  });
+
+  it('the tool op requires a reason and audits the retire to the caller identity', () => {
+    const tool = readFileSync(join(REPO_ROOT, RETIRE_CALLER_ALLOWLIST[0]!), 'utf8');
+    const retireReason = /op:\s*z\.literal\('retire'\)[\s\S]*?(reason:[^\n]*)/.exec(tool);
+    expect(retireReason, "the retire op must declare a reason").not.toBeNull();
+    expect(retireReason![1]).toMatch(/z\.string\(\)\.min\(\d+\)/);
+    expect(retireReason![1], "the retire op's reason must be required").not.toContain('.optional()');
+    expect(tool).toMatch(/recordAudit\(\s*identity\.ownerId/);
+  });
+
+  it('the gate never calls retire itself', () => {
+    expect(GATE_SOURCE).not.toMatch(RETIRE_CALL);
   });
 });
