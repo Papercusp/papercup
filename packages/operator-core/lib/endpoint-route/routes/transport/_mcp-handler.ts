@@ -67,7 +67,7 @@ import type { AgentRole } from '@papercusp/plugin-sdk';
 // Generic MCP↔dispatcher bridge primitives (plan P-031). The auth/spawn-context
 // assembly below stays host-side; only the reusable, host-agnostic glue moved.
 import { bearerFromExtra, urlFromExtra, headersFromExtra, dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
-import { mcpTraceIdFromExtra } from '../../../mcp-request-trace';
+import { mcpDataPlaneDegradedAtFromExtra, mcpTraceIdFromExtra } from '../../../mcp-request-trace';
 import { getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoor, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
@@ -642,12 +642,7 @@ export function crossHiveLaunchHint(toolName: string, scopeHive: string): string
  * can expose at most the single canonical git-sync row; broad routine reads and
  * arbitrary sibling targets remain forbidden.
  */
-function isExplicitPlatformPotGitSyncTarget(
-  toolName: string,
-  arg: string,
-  slug: string,
-  callArgs: unknown,
-): boolean {
+function isExplicitPlatformPotGitSyncTarget(toolName: string, arg: string, slug: string, callArgs: unknown): boolean {
   if ((arg !== 'installSlug' && arg !== 'harness') || slug !== PLATFORM_POT_SLUG) return false;
   if (toolName === 'git-sync:run') return true;
   if (toolName !== 'routines:list' || !callArgs || typeof callArgs !== 'object' || Array.isArray(callArgs)) {
@@ -674,11 +669,16 @@ export interface BuiltSpawnContext {
    * scopes to the wrong tenant — surfacing as a confident, well-formed
    * NOT-FOUND/empty result for data that is provably present elsewhere. Absent
    * (the overwhelmingly common case) means the workspace was actually resolved.
-   * Consumed by `withScopeGuessWarning` to annotate every tool result for the
+   * Consumed by `withMcpDiagnosticWarnings` to annotate every tool result for the
    * rest of this session, so a caller reading an unexpected empty/not-found
    * result is told to suspect scoping before concluding data loss.
    */
   workspaceResolution?: 'registry-fallback';
+  /**
+   * Millisecond timestamp stamped by the local MCP proxy after a recent
+   * upstream retry/failure. Diagnostic only: it never changes dispatch or auth.
+   */
+  dataPlaneDegradedAtMs?: number;
   harnessSlug: string;
   role: AgentRole;
   featureId: string | null;
@@ -963,8 +963,7 @@ async function applyScopedSuperuserTransportClamp(
           (toolName === 'plans:get' || toolName === 'plans:add-decision' || toolName === 'coord:declare-intent') &&
           (await verifyExplicitPlanHarness(spawnCtx, requestedHarness, args));
         const goalLocalPlacement =
-          escapesHive &&
-          (await mayUseGoalLocalPlacement(toolName, spawnCtx, scopeHive, requestedHarness));
+          escapesHive && (await mayUseGoalLocalPlacement(toolName, spawnCtx, scopeHive, requestedHarness));
         if (verifiedExactPlanRebind || goalLocalPlacement) {
           effectiveHarnessSlug = requestedHarness;
         } else if (escapesHive) {
@@ -1157,6 +1156,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
   const url = urlFromExtra(extra);
   if (!url) return { kind: 'none' };
   const requestOrigin = buildMcpRequestOrigin(extra);
+  const dataPlaneDegradedAtMs = mcpDataPlaneDegradedAtFromExtra(extra);
 
   // Plan-run provenance (plan-agent-launch-2026-05-21, P-006). Folded
   // onto every built ctx below; the plan-agent runner (P-011) sets it,
@@ -1237,7 +1237,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     // WI-6734: set ONLY by the registry-fallback branch below — a GUESS, not a
     // verified resolution. Threaded onto the built ctx so the dispatch layer can
     // warn the caller that an empty/not-found result may reflect wrong-workspace
-    // scoping rather than genuine absence (see withScopeGuessWarning below).
+    // scoping rather than genuine absence (see withMcpDiagnosticWarnings below).
     let workspaceResolution: 'registry-fallback' | undefined;
     // scoped-superuser-workspace-clamp-2026-06-18 (P-006 / D-004), flag-gated:
     // safe-by-default. When the clamp flag is ON, a superuser session must resolve
@@ -1316,6 +1316,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
       ctx: {
         workspaceId: workspaceId || '*',
         ...(workspaceResolution ? { workspaceResolution } : {}),
+        ...(dataPlaneDegradedAtMs ? { dataPlaneDegradedAtMs } : {}),
         harnessSlug: harnessParam || '*',
         // Canonicalize old-spelling roles here too (see the matching comment on the
         // signed role-scoped branch above) — isSuperuser bypasses the gates so this
@@ -1382,6 +1383,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
       ctx: {
         // Clamp: workspace comes from the verified token, NOT the URL.
         workspaceId: claims.workspaceId,
+        ...(dataPlaneDegradedAtMs ? { dataPlaneDegradedAtMs } : {}),
         // Harness is within-workspace; resolveHarnessPaths resolves it
         // against the clamped workspace, so reading it from the URL
         // can't cross the workspace boundary.
@@ -1525,6 +1527,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
       kind: 'ok',
       ctx: {
         workspaceId: parsed.workspaceId,
+        ...(dataPlaneDegradedAtMs ? { dataPlaneDegradedAtMs } : {}),
         harnessSlug: parsed.harnessSlug,
         // Canonicalize pre-rename role spellings (bee→cup, queen→mug, sentinel→
         // papercup, overwatch→kettle, scout→blender) here, at the one point every
@@ -1744,22 +1747,19 @@ async function dispatchWithSynthesizedTx<T>(
  * the overwhelmingly common case — so this changes nothing for a normally-
  * scoped session.
  */
-function withScopeGuessWarning<T extends McpCallResult>(result: T, spawnCtx: BuiltSpawnContext): T {
-  if (spawnCtx.workspaceResolution !== 'registry-fallback' || !result || result.isError) return result;
-  const warning =
-    `⚠ SCOPE GUESSED, NOT VERIFIED: this session's workspace could not be resolved from an explicit ` +
-    `param, header, or launch record — it was scoped to '${spawnCtx.workspaceId}' as a REGISTRY-FALLBACK ` +
-    `GUESS (the box's active workspace), which can be wrong on a multi-workspace box. If this result ` +
-    `looks like an unexpected empty/not-found for something you expect to exist, suspect WRONG-WORKSPACE ` +
-    `SCOPING before concluding data is missing — verify independently (dev:pg_query / psql against the ` +
-    `expected workspace) rather than trusting this result at face value.`;
+function withMcpDiagnosticWarning<T extends McpCallResult>(
+  result: T,
+  jsonKey: string,
+  metaKey: string,
+  warning: string,
+): T {
   const content = Array.isArray(result.content) ? result.content : [];
   const first = content[0];
   if (first && 'type' in first && first.type === 'text' && typeof (first as { text?: unknown }).text === 'string') {
     try {
       const parsed: unknown = JSON.parse((first as { text: string }).text);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        (parsed as Record<string, unknown>)._scopeGuessWarning = warning;
+        (parsed as Record<string, unknown>)[jsonKey] = warning;
         return {
           ...result,
           content: [{ type: 'text' as const, text: JSON.stringify(parsed) }, ...content.slice(1)],
@@ -1769,7 +1769,37 @@ function withScopeGuessWarning<T extends McpCallResult>(result: T, spawnCtx: Bui
       /* non-JSON text content (or a malformed body) — fall through to _meta */
     }
   }
-  return { ...result, _meta: { ...(result._meta ?? {}), scopeGuessWarning: warning } };
+  return { ...result, _meta: { ...(result._meta ?? {}), [metaKey]: warning } };
+}
+
+/**
+ * Fold rare transport/scoping uncertainty into otherwise well-formed tool
+ * results. Both warnings use the same JSON-body-or-_meta annotation contract so
+ * clients have one diagnostic shape to inspect.
+ */
+export function withMcpDiagnosticWarnings<T extends McpCallResult>(result: T, spawnCtx: BuiltSpawnContext): T {
+  if (!result || result.isError) return result;
+  let annotated = result;
+  if (spawnCtx.workspaceResolution === 'registry-fallback') {
+    const warning =
+      `⚠ SCOPE GUESSED, NOT VERIFIED: this session's workspace could not be resolved from an explicit ` +
+      `param, header, or launch record — it was scoped to '${spawnCtx.workspaceId}' as a REGISTRY-FALLBACK ` +
+      `GUESS (the box's active workspace), which can be wrong on a multi-workspace box. If this result ` +
+      `looks like an unexpected empty/not-found for something you expect to exist, suspect WRONG-WORKSPACE ` +
+      `SCOPING before concluding data is missing — verify independently (dev:pg_query / psql against the ` +
+      `expected workspace) rather than trusting this result at face value.`;
+    annotated = withMcpDiagnosticWarning(annotated, '_scopeGuessWarning', 'scopeGuessWarning', warning);
+  }
+  if (spawnCtx.dataPlaneDegradedAtMs) {
+    const observedAt = new Date(spawnCtx.dataPlaneDegradedAtMs).toISOString();
+    const warning =
+      `⚠ DATA PLANE MAY BE DEGRADED: this session's local MCP proxy observed an upstream retry or ` +
+      `connection failure at ${observedAt}. During this short warning window, an unexpected empty/not-found ` +
+      `result may be a transport symptom rather than authoritative absence. Retry or verify independently ` +
+      `before concluding that data is missing.`;
+    annotated = withMcpDiagnosticWarning(annotated, '_dataPlaneMayBeDegraded', 'dataPlaneMayBeDegraded', warning);
+  }
+  return annotated;
 }
 
 /**
@@ -2880,11 +2910,7 @@ const handler = createMcpHandler(
                   argHarness,
                   args,
                 );
-                const isSelfOwnedCheckpointRead = isSelfOwnedLoopCheckpointRead(
-                  toolName,
-                  args,
-                  spawnRes.ctx,
-                );
+                const isSelfOwnedCheckpointRead = isSelfOwnedLoopCheckpointRead(toolName, args, spawnRes.ctx);
                 const escapes =
                   !isEngineeringDocsSurface &&
                   !isPlatformPotGitSyncTarget &&
@@ -2907,8 +2933,7 @@ const handler = createMcpHandler(
                     toolName === 'coord:declare-intent') &&
                   (await verifyExplicitPlanHarness(spawnRes.ctx, argHarness, args));
                 const goalLocalPlacement =
-                  escapes &&
-                  (await mayUseGoalLocalPlacement(toolName, spawnRes.ctx, scopeHive, argHarness));
+                  escapes && (await mayUseGoalLocalPlacement(toolName, spawnRes.ctx, scopeHive, argHarness));
                 if (verifiedExactPlanRebind || goalLocalPlacement) {
                   effectiveHarnessSlug = argHarness;
                 } else if (escapes) {
@@ -3382,7 +3407,7 @@ const handler = createMcpHandler(
                       aggregateScope,
                       ...(projectionSpec?.pick ? { preservePaths: projectionSpec.pick } : {}),
                     });
-                return withScopeGuessWarning(replayedResult, dispatchSpawnCtx);
+                return withMcpDiagnosticWarnings(replayedResult, dispatchSpawnCtx);
               }
             } catch (err) {
               console.warn(
@@ -3968,7 +3993,7 @@ const handler = createMcpHandler(
             // re-blocking the response we just raced to send.
             if (!raced.deadlineFired) await persist;
           }
-          return withScopeGuessWarning(dispatched, dispatchSpawnCtx);
+          return withMcpDiagnosticWarnings(dispatched, dispatchSpawnCtx);
         }
 
         // Legacy bearer-only fallback (no spawn ctx supplied).
