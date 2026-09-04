@@ -3547,6 +3547,52 @@ test('[soft-pin] a PINNED request whose account is UNSERVICEABLE (governor-pause
     `A->${routed}`,
     'the yield is a STRUCTURED signal to the pinned owner (P-003), not a silent divert',
   );
+  const quality = (await (await ask('/stats')).json()) as {
+    routingQuality: {
+      automatic: { picks: number; comparablePicks: number; divergences: number };
+      pins: { picks: number; explicitPicks: number; affinityPicks: number; yields: number; yieldRate: number | null };
+      recent: Array<{
+        selectedAccount: string;
+        mode: string;
+        reason: string;
+        requestedAccount: string | null;
+        yieldedFrom: string | null;
+        includedInAutomaticDivergence: boolean;
+      }>;
+    };
+  };
+  assert.deepEqual(
+    quality.routingQuality.automatic,
+    { picks: 0, comparablePicks: 0, divergences: 0, divergenceRate: null },
+    'an intentional pin is not scored as an automatic-routing defect',
+  );
+  assert.deepEqual(quality.routingQuality.pins, {
+    picks: 1,
+    explicitPicks: 1,
+    affinityPicks: 0,
+    yields: 1,
+    yieldRate: 1,
+  });
+  assert.deepEqual(
+    quality.routingQuality.recent.map((decision) => ({
+      selectedAccount: decision.selectedAccount,
+      mode: decision.mode,
+      reason: decision.reason,
+      requestedAccount: decision.requestedAccount,
+      yieldedFrom: decision.yieldedFrom,
+      includedInAutomaticDivergence: decision.includedInAutomaticDivergence,
+    })),
+    [
+      {
+        selectedAccount: routed,
+        mode: 'soft-pin',
+        reason: 'pin-yield',
+        requestedAccount: 'A',
+        yieldedFrom: 'A',
+        includedInAutomaticDivergence: false,
+      },
+    ],
+  );
 }, 20_000);
 
 test('[soft-pin] a PINNED request to a HEALTHY idle account STAYS on its pin (cache affinity preserved)', async () => {
@@ -4843,6 +4889,30 @@ test('[P-008] /admin/owner-report returns the per-owner outcome ledger', async (
   const rep = (await (await ask('/admin/owner-report?owner=su-ledger-test')).json()) as {
     ok: boolean;
     ledger: { requests: number; ok: number; lastAccount: string | null; lastRequestAt: number; lastAt: number } | null;
+    routingQuality: {
+      picks: number;
+      upstream429s: number;
+      upstream429PerPick: number | null;
+      automatic: { picks: number; comparablePicks: number; divergences: number; divergenceRate: number | null };
+      pins: { picks: number; explicitPicks: number; affinityPicks: number; yields: number; yieldRate: number | null };
+      byProvider: {
+        claude: {
+          picks: number;
+          byAccount: Record<string, { picks: number; upstream429s: number; upstream429PerPick: number | null }>;
+        };
+      };
+      recentScope: string | null;
+      recent: Array<{
+        provider: string;
+        owner: string | null;
+        selectedAccount: string;
+        mode: string;
+        reason: string;
+        bestAvailableAccount: string | null;
+        divergedFromBest: boolean | null;
+        includedInAutomaticDivergence: boolean;
+      }>;
+    };
   };
   assert.equal(rep.ok, true);
   assert.ok(rep.ledger, 'the owner has a ledger entry');
@@ -4853,11 +4923,63 @@ test('[P-008] /admin/owner-report returns the per-owner outcome ledger', async (
     rep.ledger!.lastAt > rep.ledger!.lastRequestAt,
     'the delayed outcome advances lastAt without rewriting request-start activity',
   );
-  const top = (await (await ask('/admin/owner-report')).json()) as { owners: Array<{ owner: string }> };
+  assert.equal(rep.routingQuality.picks, 1, 'one logical request contributes one initial routing pick');
+  assert.equal(rep.routingQuality.upstream429s, 0);
+  assert.equal(rep.routingQuality.upstream429PerPick, 0);
+  assert.deepEqual(rep.routingQuality.automatic, {
+    picks: 1,
+    comparablePicks: 1,
+    divergences: 0,
+    divergenceRate: 0,
+  });
+  assert.deepEqual(rep.routingQuality.pins, {
+    picks: 0,
+    explicitPicks: 0,
+    affinityPicks: 0,
+    yields: 0,
+    yieldRate: null,
+  });
+  assert.deepEqual(rep.routingQuality.byProvider.claude.byAccount['test-acct'], {
+    picks: 1,
+    upstream429s: 0,
+    upstream429PerPick: 0,
+  });
+  assert.equal(rep.routingQuality.recentScope, 'su-ledger-test');
+  assert.deepEqual(
+    rep.routingQuality.recent.map((decision) => ({
+      provider: decision.provider,
+      owner: decision.owner,
+      selectedAccount: decision.selectedAccount,
+      mode: decision.mode,
+      reason: decision.reason,
+      bestAvailableAccount: decision.bestAvailableAccount,
+      divergedFromBest: decision.divergedFromBest,
+      includedInAutomaticDivergence: decision.includedInAutomaticDivergence,
+    })),
+    [
+      {
+        provider: 'claude',
+        owner: 'su-ledger-test',
+        selectedAccount: 'test-acct',
+        mode: 'automatic',
+        reason: 'health-ranked',
+        bestAvailableAccount: 'test-acct',
+        divergedFromBest: false,
+        includedInAutomaticDivergence: true,
+      },
+    ],
+    'the per-owner report carries bounded, owner-filtered evidence for why this account was picked',
+  );
+  const top = (await (await ask('/admin/owner-report')).json()) as {
+    owners: Array<{ owner: string }>;
+    routingQuality: { recentScope: string | null; picks: number };
+  };
   assert.ok(
     top.owners.some((o) => o.owner === 'su-ledger-test'),
     'overview lists the owner',
   );
+  assert.equal(top.routingQuality.recentScope, null, 'the overview exposes the bounded all-owner routing snapshot');
+  assert.equal(top.routingQuality.picks, 1);
 }, 20_000);
 
 test('[egress kill-switch] ?proxy=off means NO request builds a proxy dispatcher — including proxy-only accounts (the default-param leak)', async () => {
