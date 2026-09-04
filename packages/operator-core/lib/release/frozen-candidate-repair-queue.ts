@@ -18,8 +18,286 @@ import {
   type RepairLegShrinkSummary,
 } from './repair-leg-lifecycle';
 
-export const FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION = 3 as const;
+/**
+ * Schema 4 (P-006, frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the row
+ * carries a TYPED `signature` beside the flat `failingTests` projection. Older rows (1–3)
+ * still parse — their signature is DERIVED from `failingTests` on read (the P-014 migration
+ * for the live queue, so a candidate-vs-staging parser skew can never strand an open queue).
+ */
+export const FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION = 4 as const;
 export const FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE = 'repair-staging-mismatch';
+
+/**
+ * ── P-006 / D-004: THE TYPED FAILURE SIGNATURE ─────────────────────────────────────────
+ *
+ * `failingTests` was one flat `string[]` holding three populations at once — vitest test
+ * paths, npm workspace names / `<ws> :: <script>` task ids, and non-test gate leg ids — and
+ * every consumer re-guessed which was which from the string's SHAPE (`inferFailingFilesFromEntries`,
+ * `nonTestGateIdsFrom`, `partitionRepairSignatures`, …). The typed signature names the kind
+ * ONCE, at the moment the judging run measured it, and carries the recipe that re-measures
+ * it. `failingTests` survives as the PROJECTION `signature.map(e => e.id)` so nothing that
+ * reads the flat list (cells, the owner brief, the fixer prompt, collision detection) is
+ * stranded — the two are written together and never disagree.
+ *
+ * Kinds, by which runner re-measures them at the repair head:
+ *  - `test-file`      — a vitest file (workspace-relative); `runTestsAtRef`.
+ *  - `workspace-task` — a `<ws> :: <script>` task id or a bare `@scope/pkg` workspace name;
+ *                       `runGateAtRef` (a `test` task is covered by its files' re-run).
+ *  - `lint-leg`       — a NON_TEST_GATE_SCRIPTS registry id or a root `lint:*` script;
+ *                       `runGateAtRef` through the registry.
+ *  - `post-suite-leg` — a post-suite phase outcome no selective runner can narrow (the SPA
+ *                       build sentinel, a corrupt-tree sentinel, an unmapped crash id): only
+ *                       the FULL gate at the repair head re-measures it.
+ *  - `seed`           — a `seed:*:check` guard the affected-tests selector attaches
+ *                       (`<ws> :: seed:substitutions:check`); `runGateAtRef` in its workspace.
+ *
+ * EXTEND, NOT REPLACE (rule 2 of ./repair-leg-lifecycle, now enforced on the signature
+ * itself): a red re-measures only the kinds the judging run actually ran — a suite-red run
+ * defers the post-suite legs, so its verdict says NOTHING about the lint legs already in
+ * the signature. Those carry forward with their original `admittedRound`; only a kind that
+ * WAS measured is replaced by its fresh result. Unmeasured is never passing.
+ */
+export type RepairSignatureKind = 'test-file' | 'workspace-task' | 'lint-leg' | 'post-suite-leg' | 'seed';
+
+export const REPAIR_SIGNATURE_KINDS: readonly RepairSignatureKind[] = Object.freeze([
+  'test-file',
+  'workspace-task',
+  'lint-leg',
+  'post-suite-leg',
+  'seed',
+]);
+
+export interface RepairSignatureEntry {
+  kind: RepairSignatureKind;
+  /** The correlation key — byte-identical to the `failingTests` entry it projects to. */
+  id: string;
+  /**
+   * How to re-measure THIS entry at a ref, from the repo root. Informational: the gate's
+   * runners resolve their own invocations from `kind` + `id`; this is what a fixer or an
+   * owner reads without reverse-engineering the id.
+   */
+  recipe: string;
+  /** `test-file` / `workspace-task` / `seed`: the owning npm workspace when it is known. */
+  workspace?: string;
+  /**
+   * The convergence round (see `convergenceRounds`) at which this entry FIRST entered the
+   * signature. Kept across an extend so a regression cannot reset the shrink baseline —
+   * the same reason `capConvergenceRounds` always keeps round 1.
+   */
+  admittedRound: number;
+  /** The head this entry was most recently measured red at. */
+  measuredHead: string;
+}
+
+/** The judge-supplied half of an entry: everything but the round/head bookkeeping the
+ * queue fills in itself. */
+export type RepairSignatureInput = Pick<RepairSignatureEntry, 'kind' | 'id' | 'recipe' | 'workspace'>;
+
+/** What the caller knows about the gate's vocabulary. Both fields optional: a bare
+ * classification (no context) is shape-only and lands every entry in a SAFE kind. */
+export interface RepairSignatureContext {
+  /**
+   * The gate's NON_TEST_GATE_SCRIPTS registry (id → root scripts). With it a registry id's
+   * recipe is its exact expansion; without it a `lint:*` id still classifies as a lint leg
+   * with the single-script recipe `npm run <id>`.
+   */
+  gateRegistry?: Readonly<Record<string, readonly string[]>>;
+  /** Ids the judging run's POST-SUITE phase measured red that are NOT lint legs. */
+  postSuiteLegIds?: readonly string[];
+}
+
+/** The SPA build-break sentinel `checkpointFailureSignature` pushes when the build, not
+ * the suite, is what failed. A package name, but never a test workspace. */
+export const REPAIR_SIGNATURE_BUILD_SENTINEL = '@papercusp/operator-vite';
+
+/** Recipe for an entry only the full gate can re-measure. Rendered, never parsed. */
+export const REPAIR_SIGNATURE_FULL_GATE_RECIPE =
+  'not selectively re-runnable: the full gate at the repair head re-measures it';
+
+/** Post-suite sentinels that name a TREE condition, not a script: nothing re-runs them. */
+const NON_RERUNNABLE_SENTINELS: ReadonlySet<string> = new Set([
+  FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
+  'package.json-unreadable',
+  'lint:tsc-missing',
+]);
+
+const WORKSPACE_NAME_SHAPE = /^@[^/\s]+\/[^/\s]+$/;
+const TEST_FILE_SHAPE = /\.(test|spec)\.[cm]?[jt]sx?$/;
+
+/** `<workspace> :: <script>` — the affected runner's task id. Same grammar as the gate's
+ * `parseFailingTaskId`; duplicated here (two regex lines) so this module stays free of
+ * the apps/operator import direction. */
+export function parseRepairTaskId(entry: string): { workspace: string; script: string } | null {
+  const m = /^(\S+)\s+::\s+(\S+)$/.exec(entry.trim());
+  return m ? { workspace: m[1] as string, script: m[2] as string } : null;
+}
+
+function isSeedScript(script: string): boolean {
+  return script === 'seed' || script.startsWith('seed:');
+}
+
+/**
+ * PURE: classify ONE flat entry. `workspaceHint` is the single test workspace the whole
+ * list names (see `classifyRepairSignature`), so a workspace-relative test path can be
+ * paired with the cwd that re-runs it — the same pairing `inferFailingFilesFromEntries`
+ * performs in the gate, done once and persisted instead of re-derived on every read.
+ */
+export function classifyRepairSignatureEntry(
+  rawId: string,
+  ctx: RepairSignatureContext & { workspaceHint?: string | null } = {},
+): RepairSignatureInput {
+  const id = rawId.trim();
+  const task = parseRepairTaskId(id);
+  if (task) {
+    const recipe = `npm run ${task.script} -w ${task.workspace}`;
+    return isSeedScript(task.script)
+      ? { kind: 'seed', id, recipe, workspace: task.workspace }
+      : { kind: 'workspace-task', id, recipe, workspace: task.workspace };
+  }
+  if (id === REPAIR_SIGNATURE_BUILD_SENTINEL) {
+    return { kind: 'post-suite-leg', id, recipe: `npm --workspace ${id} run build` };
+  }
+  if (WORKSPACE_NAME_SHAPE.test(id)) {
+    return { kind: 'workspace-task', id, recipe: `npm run test -w ${id}`, workspace: id };
+  }
+  if (NON_RERUNNABLE_SENTINELS.has(id)) {
+    return { kind: 'post-suite-leg', id, recipe: REPAIR_SIGNATURE_FULL_GATE_RECIPE };
+  }
+  if (isSeedScript(id)) return { kind: 'seed', id, recipe: `npm run ${id}` };
+  const registered = ctx.gateRegistry?.[id];
+  if (registered && registered.length > 0) {
+    return { kind: 'lint-leg', id, recipe: registered.map((script) => `npm run ${script}`).join(' && ') };
+  }
+  if (id.startsWith('lint:')) return { kind: 'lint-leg', id, recipe: `npm run ${id}` };
+  if (TEST_FILE_SHAPE.test(id) || (id.includes('/') && !id.startsWith('@'))) {
+    return {
+      kind: 'test-file',
+      id,
+      recipe: `npm run test:file -- ${id}`,
+      ...(ctx.workspaceHint ? { workspace: ctx.workspaceHint } : {}),
+    };
+  }
+  // An id the post-suite phase named, or anything else we cannot place: only the full gate
+  // can re-measure it. Naming the ignorance beats guessing a runner (the P-006 bug class).
+  return { kind: 'post-suite-leg', id, recipe: REPAIR_SIGNATURE_FULL_GATE_RECIPE };
+}
+
+/**
+ * PURE: classify a whole flat list. The test workspace hint is the ONE bare workspace name
+ * the list carries (the build sentinel excluded); two or more means the pairing is
+ * ambiguous and no test-file entry gets a workspace — the gate's `inferFailingFilesFromEntries`
+ * makes the same fail-closed call. Duplicates collapse on id, first occurrence wins.
+ */
+export function classifyRepairSignature(
+  failingTests: readonly string[] | undefined,
+  ctx: RepairSignatureContext = {},
+): RepairSignatureInput[] {
+  const ids = [...new Set((failingTests ?? []).filter(nonBlank).map((id) => id.trim()))];
+  const workspaces = ids.filter((id) => WORKSPACE_NAME_SHAPE.test(id) && id !== REPAIR_SIGNATURE_BUILD_SENTINEL);
+  const workspaceHint = workspaces.length === 1 ? (workspaces[0] as string) : null;
+  return ids.map((id) => classifyRepairSignatureEntry(id, { ...ctx, workspaceHint }));
+}
+
+/** The judge's contribution to a red: the fresh measurement, in either form, plus WHICH
+ * kinds that measurement covered. Absent `measuredKinds` means "every kind" — a full
+ * replacement, which is right for a full gate that measured suite AND post-suite. */
+export interface RepairSignatureRedInput {
+  /** Legacy flat form; classified with `signatureContext`. */
+  failingTests?: readonly string[];
+  /** Typed form from a judge that already knows the kinds (verifyRepairHead). Wins on id. */
+  signature?: readonly RepairSignatureInput[];
+  /** Kinds this run MEASURED. Prior entries of any OTHER kind carry forward unchanged. */
+  measuredKinds?: readonly RepairSignatureKind[];
+  signatureContext?: RepairSignatureContext;
+}
+
+function boundedSignature(entries: readonly RepairSignatureEntry[]): RepairSignatureEntry[] {
+  return entries.slice(0, MAX_PERSISTED_FAILURES).map((entry) => ({
+    ...entry,
+    id: entry.id.slice(0, MAX_PERSISTED_FAILURE_CHARS),
+    recipe: entry.recipe.slice(0, MAX_PERSISTED_FAILURE_CHARS),
+  }));
+}
+
+/**
+ * PURE: the signature after a red at `head` in `round`.
+ *
+ * Fresh entries (typed first, then the classified flat list) REPLACE prior entries of a
+ * measured kind; prior entries of an UNMEASURED kind carry forward; an entry present before
+ * keeps its `admittedRound`. The flat projection is always `signature.map(id)`.
+ */
+export function nextRepairSignature(
+  prior: readonly RepairSignatureEntry[] | undefined,
+  input: RepairSignatureRedInput & { head: string; round: number },
+): { signature: RepairSignatureEntry[]; failingTests: string[] } {
+  const priorById = new Map((prior ?? []).map((entry) => [entry.id, entry] as const));
+  const fresh = new Map<string, RepairSignatureInput>();
+  for (const entry of input.signature ?? []) {
+    if (!nonBlank(entry.id)) continue;
+    const id = entry.id.trim();
+    if (!fresh.has(id)) fresh.set(id, { ...entry, id });
+  }
+  for (const entry of classifyRepairSignature(input.failingTests, input.signatureContext)) {
+    if (!fresh.has(entry.id)) fresh.set(entry.id, entry);
+  }
+  const measured = new Set<RepairSignatureKind>(input.measuredKinds ?? REPAIR_SIGNATURE_KINDS);
+  const next: RepairSignatureEntry[] = [];
+  for (const entry of fresh.values()) {
+    const before = priorById.get(entry.id);
+    next.push({
+      ...entry,
+      admittedRound: before?.admittedRound ?? input.round,
+      measuredHead: input.head,
+    });
+  }
+  for (const entry of prior ?? []) {
+    if (fresh.has(entry.id)) continue;
+    if (measured.has(entry.kind)) continue;
+    next.push(entry);
+  }
+  const signature = boundedSignature(next);
+  return { signature, failingTests: signature.map((entry) => entry.id) };
+}
+
+/** PURE: interpret a persisted `signature` array against the row's flat list. Malformed
+ * ENTRIES are dropped individually; an entry the flat list names but the array lacks is
+ * classified in (so a row written by an older build reads as a complete v4 row), and the
+ * flat projection is rebuilt from the result so the two can never disagree on read. */
+function parseRepairSignature(
+  raw: unknown,
+  failingTests: readonly string[],
+  fallback: { head: string; round: number },
+): { signature: RepairSignatureEntry[]; failingTests: string[] } {
+  const parsed: RepairSignatureEntry[] = [];
+  if (Array.isArray(raw)) {
+    for (const value of raw) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const row = value as Record<string, unknown>;
+      if (!nonBlank(row.id)) continue;
+      if (!(REPAIR_SIGNATURE_KINDS as readonly string[]).includes(row.kind as string)) continue;
+      parsed.push({
+        kind: row.kind as RepairSignatureKind,
+        id: (row.id as string).trim(),
+        recipe: nonBlank(row.recipe) ? (row.recipe as string) : REPAIR_SIGNATURE_FULL_GATE_RECIPE,
+        ...(nonBlank(row.workspace) ? { workspace: row.workspace as string } : {}),
+        admittedRound:
+          Number.isInteger(row.admittedRound) && (row.admittedRound as number) >= 1
+            ? (row.admittedRound as number)
+            : fallback.round,
+        measuredHead: nonBlank(row.measuredHead) ? (row.measuredHead as string) : fallback.head,
+      });
+    }
+  }
+  const known = new Set(parsed.map((entry) => entry.id));
+  const missing = failingTests.filter((id) => nonBlank(id) && !known.has(id.trim()));
+  const derived = classifyRepairSignature(missing).map((entry) => ({
+    ...entry,
+    admittedRound: fallback.round,
+    measuredHead: fallback.head,
+  }));
+  const signature = boundedSignature([...parsed, ...derived]);
+  return { signature, failingTests: signature.map((entry) => entry.id) };
+}
 
 /** These bounds stop unattended fixer churn. Exhaustion retains the candidate at the queue
  * head and NEVER authorizes a newer moving-tip candidate — D-005 of
@@ -146,7 +424,17 @@ export interface FrozenCandidateRepairQueue {
   blockedReason?: FrozenCandidateBlockedReason;
   /** Short-lived CAS lease held only while one process launches this queue's fixer. */
   dispatchReservation?: FrozenRepairDispatchReservation;
+  /**
+   * P-006: the flat PROJECTION of `signature` (`signature.map(e => e.id)`), kept for every
+   * consumer that correlates by id. Written together with `signature`; never diverges.
+   */
   failingTests: string[];
+  /**
+   * P-006 / D-004: the TYPED failure signature — every red leg the judging run measured,
+   * with its kind and the recipe that re-measures it. See the module docblock at
+   * `RepairSignatureKind`. Required on schema 4; derived from `failingTests` for older rows.
+   */
+  signature: RepairSignatureEntry[];
   /**
    * P-013 / D-007 observability. `failingTests` is REPLACED on every red, so by the time a
    * reader asks "is this cycle converging?" the only evidence that it was ever larger is
@@ -540,6 +828,9 @@ export interface FrozenRepairQueueDiagnostic {
    * additive: absent means no leg measurement was recorded, never "no legs are failing".
    */
   legs?: readonly FrozenRepairLegState[];
+  /** P-006: the typed signature — WHAT is red, by kind, with the recipe that re-measures it.
+   * The same population as `failingTests`, so the two never disagree. */
+  signature: readonly RepairSignatureEntry[];
   verdictProvenance?: {
     frozenCandidate: string;
     repairHead: string;
@@ -817,17 +1108,26 @@ function requireCurrentHead(queue: FrozenCandidateRepairQueue, repairHead: strin
 
 /** Persist the immutable candidate before its first suite. A process crash or moving staging
  * tip cannot replace it; the next gate invocation resumes this exact SHA. */
-export function createFrozenCandidateQueue(input: {
-  candidate: string;
-  qualificationAttemptId?: string | null;
-  base: string | null;
-  failingTests?: readonly string[];
-  affectedTestProofGroup?: string | null;
-  nowMs: number;
-}): FrozenCandidateRepairQueue {
+export function createFrozenCandidateQueue(
+  input: RepairSignatureRedInput & {
+    candidate: string;
+    qualificationAttemptId?: string | null;
+    base: string | null;
+    affectedTestProofGroup?: string | null;
+    nowMs: number;
+  },
+): FrozenCandidateRepairQueue {
   if (!nonBlank(input.candidate)) throw new Error('candidate must be non-empty');
   if (input.base !== null && !nonBlank(input.base)) throw new Error('base must be null or non-empty');
   assertTimestamp(input.nowMs, 'nowMs');
+  // A queue persisted BEFORE its first suite carries no signature yet; a compatibility caller
+  // that learned about the candidate at its red hands the failing set in here, and it is
+  // typed from the start (round 1, measured at the candidate itself).
+  const { signature, failingTests } = nextRepairSignature([], {
+    ...input,
+    head: input.candidate,
+    round: 1,
+  });
   return {
     schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
     phase: 'ready-to-test',
@@ -840,7 +1140,8 @@ export function createFrozenCandidateQueue(input: {
     openedAtMs: input.nowMs,
     updatedAtMs: input.nowMs,
     fixerSpawnId: null,
-    failingTests: boundedFailures(input.failingTests ?? []),
+    failingTests: boundedFailures(failingTests),
+    signature,
   };
 }
 
@@ -851,6 +1152,9 @@ export function createFrozenCandidateRepairQueue(
 ): FrozenCandidateRepairQueue {
   return markFrozenCandidateVerificationRed(createFrozenCandidateQueue(input), {
     failingTests: input.failingTests,
+    signature: input.signature,
+    measuredKinds: input.measuredKinds,
+    signatureContext: input.signatureContext,
     nowMs: input.nowMs,
   });
 }
@@ -862,6 +1166,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   if (
     row.schemaVersion !== 1 &&
     row.schemaVersion !== 2 &&
+    row.schemaVersion !== 3 &&
     row.schemaVersion !== FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION
   )
     return null;
@@ -913,6 +1218,14 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
       ? row.blockedReason
       : undefined;
   if (row.phase === 'blocked' && !blockedReason) return null;
+  // P-006 / P-014: a pre-schema-4 row (or a v4 row an older build rewrote without the array)
+  // gets its typed signature DERIVED from the flat list — the live queue keeps parsing across
+  // the bump, and the flat projection is rebuilt from the result so the two agree on read.
+  const highestRound = convergenceRounds.reduce((max, entry) => (entry.round > max ? entry.round : max), 0);
+  const typed = parseRepairSignature(row.signature, row.failingTests as string[], {
+    head: row.repairHead,
+    round: highestRound || 1,
+  });
   return {
     schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
     phase: row.phase,
@@ -936,7 +1249,8 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     ...(convergenceRounds.length > 0 ? { convergenceRounds } : {}),
     ...(legs.length > 0 ? { legs } : {}),
     ...(admissions.length > 0 ? { admissions } : {}),
-    failingTests: boundedFailures(row.failingTests as string[]),
+    failingTests: boundedFailures(typed.failingTests),
+    signature: typed.signature,
   };
 }
 
@@ -1253,6 +1567,7 @@ export function diagnoseFrozenCandidateRepairQueue(
     // P-002/P-003: carried onto the diagnostic so a reader holding it can answer "which
     // non-test leg, and did its fix land" without re-parsing the raw queue blob.
     ...(queue.legs && queue.legs.length > 0 ? { legs: queue.legs } : {}),
+    signature: queue.signature,
     attempts: queue.attempts,
     openedAtMs: queue.openedAtMs,
     updatedAtMs: queue.updatedAtMs,
@@ -1275,23 +1590,37 @@ export function diagnoseFrozenCandidateRepairQueue(
   };
 }
 
-/** A first red transitions the already-persisted candidate into repair without changing C. */
+/** The round the NEXT red will be recorded as: one past the highest recorded round. */
+function nextConvergenceRound(queue: FrozenCandidateRepairQueue): number {
+  return (queue.convergenceRounds ?? []).reduce((max, entry) => (entry.round > max ? entry.round : max), 0) + 1;
+}
+
+/** A first red transitions the already-persisted candidate into repair without changing C.
+ * P-006: the red's measurement (flat or typed) becomes the typed signature; a queue opened by
+ * a lint-only red (suite green, one post-suite leg red) opens on exactly that leg. */
 export function markFrozenCandidateVerificationRed(
   queue: FrozenCandidateRepairQueue,
-  input: { failingTests?: readonly string[]; nowMs: number },
+  input: RepairSignatureRedInput & { nowMs: number },
 ): FrozenCandidateRepairQueue {
   requirePhase(queue, 'ready-to-test', 'initial candidate red');
   assertTimestamp(input.nowMs, 'nowMs');
+  const round = nextConvergenceRound(queue);
+  const { signature, failingTests } = nextRepairSignature(queue.signature, {
+    ...input,
+    head: queue.repairHead,
+    round,
+  });
   return {
     ...queue,
     phase: 'awaiting-fixer',
     updatedAtMs: input.nowMs,
     convergenceRounds: appendConvergenceRound(queue, {
       head: queue.repairHead,
-      failingTests: input.failingTests ?? [],
+      failingTests,
       nowMs: input.nowMs,
     }),
-    failingTests: boundedFailures(input.failingTests ?? []),
+    failingTests: boundedFailures(failingTests),
+    signature,
   };
 }
 
@@ -1473,11 +1802,20 @@ export function frozenRepairHeadAwaitsVerification(queue: FrozenCandidateRepairQ
  * a historical prefix and never adopts the moving staging tip. */
 export function markFrozenRepairVerificationRed(
   queue: FrozenCandidateRepairQueue,
-  input: { repairHead: string; failingTests?: readonly string[]; nowMs: number },
+  input: RepairSignatureRedInput & { repairHead: string; nowMs: number },
 ): FrozenCandidateRepairQueue {
   requirePhase(queue, 'ready-to-verify', 'red repair verification');
   requireCurrentHead(queue, input.repairHead);
   assertTimestamp(input.nowMs, 'nowMs');
+  const round = nextConvergenceRound(queue);
+  // P-006 EXTEND: prior entries of a kind this run did not measure carry forward (a
+  // suite-red run never re-measured the lint legs), entries it did measure are replaced by
+  // the fresh result, and an entry present before keeps its admittedRound.
+  const { signature, failingTests } = nextRepairSignature(queue.signature, {
+    ...input,
+    head: input.repairHead,
+    round,
+  });
   return {
     ...queue,
     phase: 'awaiting-fixer',
@@ -1485,10 +1823,11 @@ export function markFrozenRepairVerificationRed(
     fixerSpawnId: null,
     convergenceRounds: appendConvergenceRound(queue, {
       head: input.repairHead,
-      failingTests: input.failingTests ?? [],
+      failingTests,
       nowMs: input.nowMs,
     }),
-    failingTests: boundedFailures(input.failingTests ?? []),
+    failingTests: boundedFailures(failingTests),
+    signature,
   };
 }
 
@@ -1559,6 +1898,7 @@ export function markFrozenRepairVerificationGreen(
     phase: 'ready-to-promote',
     updatedAtMs: input.nowMs,
     failingTests: [],
+    signature: [],
   };
 }
 

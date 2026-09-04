@@ -121,8 +121,14 @@ import {
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
   buildFrozenRepairStatusIdentity,
+  classifyRepairSignature,
+  classifyRepairSignatureEntry,
   type FrozenCandidateFossilAbandonment,
   type FrozenCandidateRepairQueue,
+  type RepairSignatureContext,
+  type RepairSignatureEntry,
+  type RepairSignatureInput,
+  type RepairSignatureKind,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 import type {
   FreezeAndConvergeDisposition,
@@ -4549,9 +4555,15 @@ export type RepairHeadVerification =
   /** Every selective leg passed AT the repair head; the full canonical gate at that same sha
    *  is the promotion proof (P-007). */
   | { kind: "green"; summary: string }
-  /** At least one leg is still red AT the repair head. `failingTests` is the FRESH signature
-   *  (files as `<file>` + `<workspace>` entries, gates as their ids) for the re-queued row. */
-  | { kind: "red"; failingTests: string[]; summary: string }
+  /** At least one leg is still red AT the repair head. `signature` is the FRESH typed
+   *  signature (P-006: files as `test-file` + their `workspace-task`, gates as the entries
+   *  they were re-run from) and `failingTests` its flat projection, for the re-queued row. */
+  | {
+      kind: "red";
+      failingTests: string[];
+      signature: RepairSignatureInput[];
+      summary: string;
+    }
   /** The signature (or the admitted paths' radius) cannot be narrowed to the file/gate
    *  runners, so nothing selective was measured: the FULL gate at the repair head decides. */
   | { kind: "full-run-required"; summary: string }
@@ -4582,6 +4594,115 @@ export function admittedPathsOf(queue: FrozenCandidateRepairQueue): string[] {
 
 function failingFileKey(f: FailingFile): string {
   return `${f.workspace} :: ${f.file}`;
+}
+
+/** P-006: partition the queue's TYPED signature by the runner that re-measures each kind —
+ *  `test-file` → `runTestsAtRef`, re-runnable `workspace-task` / `lint-leg` / `seed` →
+ *  `runGateAtRef`, and everything else (`post-suite-leg`, an unregistered leg, a bare
+ *  workspace with no paired file) → `fullRun`, which forces the full gate at the repair head.
+ *  Reads `entry.kind`, never the id's shape; the only shape fallback is pairing a test file
+ *  persisted WITHOUT a workspace (a derived pre-schema-4 row) with the one bare workspace the
+ *  signature names — `inferFailingFilesFromEntries`' own rule. Pure + exported for tests. */
+export function partitionRepairSignatureEntries(
+  entries: readonly RepairSignatureEntry[],
+): { files: FailingFile[]; gateIds: string[]; fullRun: string[] } {
+  const files = new Map<string, FailingFile>();
+  const gateIds = new Set<string>();
+  const fullRun: string[] = [];
+  const testWorkspaces = new Set<string>();
+  const unpaired: string[] = [];
+  for (const entry of entries) {
+    if (entry.kind !== "test-file") continue;
+    if (entry.workspace) {
+      const f = { workspace: entry.workspace, file: entry.id };
+      files.set(failingFileKey(f), f);
+      testWorkspaces.add(entry.workspace);
+    } else {
+      unpaired.push(entry.id);
+    }
+  }
+  if (unpaired.length > 0) {
+    const inferred = inferFailingFilesFromEntries(entries.map((e) => e.id)).filter(
+      (f) => unpaired.includes(f.file),
+    );
+    if (inferred.length === unpaired.length) {
+      for (const f of inferred) {
+        files.set(failingFileKey(f), f);
+        testWorkspaces.add(f.workspace);
+      }
+    } else {
+      fullRun.push(...unpaired);
+    }
+  }
+  for (const entry of entries) {
+    switch (entry.kind) {
+      case "test-file":
+        break;
+      case "workspace-task": {
+        const task = parseFailingTaskId(entry.id);
+        const script = task?.script ?? "test";
+        const workspace = task?.workspace ?? entry.id;
+        // A `test` task (or the bare workspace marker) is covered by its files' re-run.
+        if (script === "test" && testWorkspaces.has(workspace)) break;
+        if (isRerunnableGateEntry(entry.id)) gateIds.add(entry.id);
+        else fullRun.push(entry.id);
+        break;
+      }
+      case "lint-leg":
+      case "seed":
+        if (isRerunnableGateEntry(entry.id)) gateIds.add(entry.id);
+        else fullRun.push(entry.id);
+        break;
+      case "post-suite-leg":
+        fullRun.push(entry.id);
+        break;
+    }
+  }
+  return { files: [...files.values()], gateIds: [...gateIds], fullRun };
+}
+
+/** P-006: what a verdict contributes to the queue's typed signature — the flat failing set
+ *  UNION the red post-suite legs (whenever they were measured), the registry context that
+ *  types it, and WHICH kinds this run measured so the queue can extend rather than replace:
+ *   - the suite measured `test-file` / `workspace-task` / `seed` (affected-tests guards);
+ *   - the post-suite phase, when it RAN, measured `lint-leg` / `post-suite-leg`;
+ *   - an early typecheck-preflight failure measured only the ids it names — no kind at all.
+ *  Pure + exported so the extend/replace split is asserted by tests, not only by a live run. */
+export function repairSignatureFromVerdict(result: {
+  failingTests?: readonly string[];
+  postSuiteMeasured?: boolean;
+  postSuiteLegs?: readonly Pick<PostSuiteLegRecord, "id" | "status">[];
+  typecheckPreflight?: { status: string } | null;
+}): {
+  failingTests: string[];
+  measuredKinds: RepairSignatureKind[];
+  signatureContext: RepairSignatureContext;
+} {
+  const redLegIds = (result.postSuiteLegs ?? [])
+    .filter((leg) => leg.status === "failed")
+    .map((leg) => leg.id);
+  const failingTests = [
+    ...new Set([...(result.failingTests ?? []), ...redLegIds]),
+  ];
+  const suiteRan = result.typecheckPreflight?.status !== "failed";
+  const measuredKinds: RepairSignatureKind[] = suiteRan
+    ? [
+        "test-file",
+        "workspace-task",
+        "seed",
+        ...(result.postSuiteMeasured === true
+          ? (["lint-leg", "post-suite-leg"] as const)
+          : []),
+      ]
+    : [];
+  return {
+    failingTests,
+    measuredKinds,
+    signatureContext: {
+      gateRegistry: NON_TEST_GATE_SCRIPTS,
+      postSuiteLegIds: redLegIds,
+    },
+  };
 }
 
 /** P-005 / D-004 — verify the frozen repair head AT ITS OWN SHA, never at the integration tip.
@@ -4616,8 +4737,15 @@ export async function verifyRepairHead(
   const head = queue.repairHead;
   const at = head.slice(0, 8);
   // A legacy row can still carry the retired staging-mismatch sentinel; it names no leg.
-  const signature = queue.failingTests.filter(
-    (entry) => entry !== FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
+  // A row handed in WITHOUT a typed signature (an in-memory row from before schema 4, or a
+  // fixture) is typed the way the parser types a persisted one: derived from the flat list.
+  const typed: readonly RepairSignatureEntry[] = queue.signature?.length
+    ? queue.signature
+    : classifyRepairSignature(queue.failingTests, {
+        gateRegistry: NON_TEST_GATE_SCRIPTS,
+      }).map((entry) => ({ ...entry, admittedRound: 1, measuredHead: head }));
+  const signature = typed.filter(
+    (entry) => entry.id !== FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
   );
   if (signature.length === 0) {
     return {
@@ -4626,13 +4754,14 @@ export async function verifyRepairHead(
     };
   }
 
-  const failingFiles = inferFailingFilesFromEntries(signature);
-  const residual = signature.filter(
-    (entry) => !fileRescueCovers(entry, failingFiles),
-  );
-  const gateIds = rescueGateIdsFrom(signature, failingFiles);
+  // P-006: the kinds decide the runners; nothing here re-guesses a kind from an id's shape.
+  const {
+    files: failingFiles,
+    gateIds,
+    fullRun,
+  } = partitionRepairSignatureEntries(signature);
   const selective =
-    (residual.length === 0 || gateIds.length > 0) &&
+    fullRun.length === 0 &&
     (failingFiles.length === 0 || Boolean(deps.runTestsAtRef)) &&
     (gateIds.length === 0 || Boolean(deps.runGateAtRef));
   if (!selective) {
@@ -4640,7 +4769,8 @@ export async function verifyRepairHead(
       kind: "full-run-required",
       summary:
         `failure signature is not fully selectively re-runnable ` +
-        `(${failingFiles.length} file(s), ${gateIds.length} gate(s), ${residual.length} other entry/entries); ` +
+        `(${failingFiles.length} file(s), ${gateIds.length} gate(s), ${fullRun.length} full-gate-only entry/entries` +
+        `${fullRun.length > 0 ? `: ${fullRun.slice(0, 5).join(", ")}${fullRun.length > 5 ? ", …" : ""}` : ""}); ` +
         `the full gate at repair head ${at} decides`,
     };
   }
@@ -4700,7 +4830,14 @@ export async function verifyRepairHead(
     };
   }
 
-  const failingTests: string[] = [];
+  // P-006: the fresh signature is TYPED — a failing file is its `test-file` entry plus the
+  // `workspace-task` marker for its workspace; a failing gate is re-emitted from the entry it
+  // was re-run from (so its kind, recipe and admittedRound survive the re-queue).
+  const priorById = new Map(queue.signature.map((e) => [e.id, e] as const));
+  const fresh = new Map<string, RepairSignatureInput>();
+  const emit = (entry: RepairSignatureInput): void => {
+    if (!fresh.has(entry.id)) fresh.set(entry.id, entry);
+  };
   if (fileRun && !fileRun.pass) {
     // The diagnostic per-file split names exactly which files failed alone; without it the
     // whole file set is the honest signature (a subset would be evidence nobody collected).
@@ -4709,18 +4846,44 @@ export async function verifyRepairHead(
         ? fileRun.perFile.filter((r) => !r.pass)
         : [];
     for (const f of split.length > 0 ? split : fileList) {
-      failingTests.push(f.file, f.workspace);
+      emit({
+        kind: "test-file",
+        id: f.file,
+        recipe: `npm run test:file -- ${f.file}`,
+        workspace: f.workspace,
+      });
+      emit({
+        kind: "workspace-task",
+        id: f.workspace,
+        recipe: `npm run test -w ${f.workspace}`,
+        workspace: f.workspace,
+      });
     }
   }
   if (gateRun && !gateRun.pass) {
     // `runGateAtRef` short-circuits on its first FAIL, so the legs after it are unmeasured;
     // keep every leg in the fresh signature rather than declare an unmeasured one green.
-    failingTests.push(...gateList);
+    for (const id of gateList) {
+      const prior = priorById.get(id);
+      emit(
+        prior
+          ? {
+              kind: prior.kind,
+              id,
+              recipe: prior.recipe,
+              ...(prior.workspace ? { workspace: prior.workspace } : {}),
+            }
+          : classifyRepairSignatureEntry(id, {
+              gateRegistry: NON_TEST_GATE_SCRIPTS,
+            }),
+      );
+    }
   }
-  if (failingTests.length > 0) {
+  if (fresh.size > 0) {
     return {
       kind: "red",
-      failingTests: [...new Set(failingTests)],
+      failingTests: [...fresh.keys()],
+      signature: [...fresh.values()],
       summary:
         `still red at repair head ${at}: ` +
         [fileRun?.summary, gateRun?.summary].filter(Boolean).join("; "),
@@ -4870,7 +5033,10 @@ export function isRerunnableGateEntry(entry: string): boolean {
     (task.script === "test" ||
       task.script.startsWith("test:") ||
       task.script.startsWith("lint:") ||
-      (task.script.startsWith("gen:") && task.script.endsWith(":check")))
+      (task.script.startsWith("gen:") && task.script.endsWith(":check")) ||
+      // P-006: a `seed:*:check` guard the affected-tests selector attaches (one fast,
+      // deterministic script in its workspace — the registry header's own bar).
+      (task.script.startsWith("seed:") && task.script.endsWith(":check")))
   );
 }
 
@@ -9554,9 +9720,13 @@ async function runGreenCheckpointInner(
       if (verification.kind === "red") {
         const canRequeue = Boolean(deps.writeFrozenRepairQueue);
         if (canRequeue) {
+          // P-006: the selective verification re-ran EVERY entry (that is what `selective`
+          // means), so every kind was measured and the typed fresh signature replaces the row's.
           repairQueue = markFrozenRepairVerificationRed(repairQueue, {
             repairHead: candidate,
             failingTests: verification.failingTests,
+            signature: verification.signature,
+            signatureContext: { gateRegistry: NON_TEST_GATE_SCRIPTS },
             nowMs: Date.now(),
           });
           await deps.writeFrozenRepairQueue?.(repairQueue);
@@ -10708,10 +10878,20 @@ async function runGreenCheckpointInner(
       deps.dispatchFrozenRepairFixer
     ) {
       let repairQueueRedPersisted = false;
+      // P-006: every red below hands the queue the TYPED measurement — the flat failing set
+      // union the red post-suite legs, plus which kinds this run measured, so a suite-red run
+      // that deferred the post-suite legs EXTENDS the signature instead of silently dropping
+      // the lint legs it never re-measured.
+      const measuredSignature = repairSignatureFromVerdict({
+        failingTests,
+        postSuiteMeasured,
+        postSuiteLegs,
+        typecheckPreflight,
+      });
       if (repairVerification && repairQueue) {
         repairQueue = markFrozenRepairVerificationRed(repairQueue, {
           repairHead: candidate,
-          failingTests,
+          ...measuredSignature,
           nowMs: Date.now(),
         });
       } else if (
@@ -10745,7 +10925,7 @@ async function runGreenCheckpointInner(
           );
         }
         repairQueue = markFrozenCandidateVerificationRed(queueForRedTransition, {
-          failingTests,
+          ...measuredSignature,
           nowMs: Date.now(),
         });
         await deps.writeFrozenRepairQueue(repairQueue);
@@ -10783,7 +10963,7 @@ async function runGreenCheckpointInner(
             candidate,
             qualificationAttemptId: deps.qualificationAttemptId ?? null,
             base: lastReady,
-            failingTests,
+            ...measuredSignature,
             affectedTestProofGroup: deps.runId ?? null,
             nowMs: Date.now(),
           });
@@ -10796,7 +10976,7 @@ async function runGreenCheckpointInner(
         // Compatibility callers create the queue only after the suite. Persist its red
         // transition before allowing the moving-tip rescue to inspect the failure.
         repairQueue = markFrozenCandidateVerificationRed(repairQueue, {
-          failingTests,
+          ...measuredSignature,
           nowMs: Date.now(),
         });
         await deps.writeFrozenRepairQueue(repairQueue);
