@@ -9,6 +9,11 @@ import {
   type WorkspaceHostResourceCheckpoint,
   type WorkspaceHostResourceRef,
 } from '@papercusp/deployment-driver';
+import type { RouteContext } from '../endpoint-route/define-route';
+import {
+  createWorkspaceHostProvisionRoute,
+  type WorkspaceHostProvisionRouteDependencies,
+} from '../endpoint-route/routes/workspace-hosts/provision';
 import type { GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
 import {
   GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS,
@@ -681,6 +686,158 @@ describe('runWorkspaceHostDestroy evidence axes (D-274)', () => {
       runWorkspaceHostDestroy({ ...runInput(provider, store), canary: failedRunCanary() }),
     ).rejects.toMatchObject({
       problems: expect.arrayContaining([expect.stringContaining('papercusp_canary=true')]),
+    });
+    expect(provider.plan).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * WI-2144027 — the identity labels must come from the PRODUCTION provision path.
+ *
+ * Every other test in this file hands the destroy runner a `desired` whose canary labels the test
+ * itself wrote (the `labels` fixture at the top). That is exactly how the defect shipped: the only
+ * writer of these keys anywhere in the tree was the fake-provider harness, so the suite was green
+ * because the harness satisfied the gate on the product's behalf, while every real GCP canary was
+ * born with no labels at all and could not be destroyed through the product route.
+ *
+ * These tests never write a canary label. They drive the real `POST /workspace-hosts/provision`
+ * handler, capture the spec IT persisted, and feed exactly that into the real destroy runner — so
+ * if the provision route stops synthesizing the labels, the round trip fails here.
+ */
+describe('canary identity survives provision → destroy (WI-2144027)', () => {
+  const PROVISION_CTX: RouteContext = {
+    principal: null,
+    input: undefined,
+    params: {},
+    log: () => {},
+    signal: new AbortController().signal,
+  };
+
+  /** The fixture spec with the canary labels REMOVED — a caller never supplies them. */
+  function requestedDesired(): Record<string, unknown> {
+    const request: Record<string, unknown> = { ...(desired as unknown as Record<string, unknown>) };
+    delete request.labels;
+    return request;
+  }
+
+  async function provision(body: Record<string, unknown>): Promise<{
+    response: Response;
+    persisted?: WorkspaceHostDesiredSpec;
+  }> {
+    let persisted: WorkspaceHostDesiredSpec | undefined;
+    const dependencies: WorkspaceHostProvisionRouteDependencies = {
+      activeWorkspaceId: () => WORKSPACE_ID,
+      provisioningAvailable: () => true,
+      readConnection: async () => ({
+        id: 'connection-1',
+        target: 'gcp',
+        status: 'connected' as const,
+        connection: { target: 'gcp', cloudCredentialRef: { kind: 'cloud' as const, ref: 'adc://controller' } },
+      }),
+      startProvisioning: async (input) => {
+        persisted = input.desired;
+        return {
+          status: 'succeeded' as const,
+          operationId: 'op-provision-1',
+          hostId: 'host-1',
+          plan: {
+            planId: 'plan-1',
+            operationId: 'op-provision-1',
+            target: 'gcp' as const,
+            hostId: 'host-1',
+            generatedAt: NOW,
+            steps: [],
+            warnings: [],
+          },
+          checkpoints: [],
+        };
+      },
+    };
+    const response = await createWorkspaceHostProvisionRoute(dependencies).handler(
+      new Request('http://operator.test/api/workspace-hosts/provision', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+      PROVISION_CTX,
+    );
+    return { response, persisted };
+  }
+
+  it('destroys a host whose labels the provision route wrote — this test writes none', async () => {
+    const { response, persisted } = await provision({
+      connectionId: 'connection-1',
+      name: 'Canary host',
+      desired: requestedDesired(),
+      canary: { runId: RUN_ID },
+    });
+    expect(response.status).toBe(201);
+    // Derived by the operator from the declared run and its own workspace. Nothing in this file
+    // supplied them, which is what makes the round trip below evidence rather than assertion.
+    expect(persisted?.labels).toEqual({
+      papercusp_canary: 'true',
+      papercusp_run_id: RUN_ID,
+      papercusp_workspace_id: WORKSPACE_ID,
+    });
+
+    const { provider } = providerHarness();
+    const { store } = storeHarness(persisted!);
+    const result = await runWorkspaceHostDestroy(runInput(provider, store));
+    expect(result.status).toBe('succeeded');
+  });
+
+  // The falsifier. This is the exact state canary-13/14/15/16 were provisioned in, and the refusal
+  // the destroy runner produced on real hardware at 2026-09-04T08:11:49Z.
+  it('refuses the destroy when the provision declared no canary run — labels are never invented', async () => {
+    const { response, persisted } = await provision({
+      connectionId: 'connection-1',
+      name: 'Ordinary host',
+      desired: requestedDesired(),
+    });
+    expect(response.status).toBe(201);
+    expect(persisted?.labels).toBeUndefined();
+
+    const { provider, apply } = providerHarness();
+    const { store } = storeHarness(persisted!);
+    await expect(runWorkspaceHostDestroy(runInput(provider, store))).rejects.toMatchObject({
+      problems: [
+        `stored desired.labels must contain 'papercusp_canary=true'`,
+        `stored desired.labels must contain 'papercusp_run_id=${RUN_ID}'`,
+        `stored desired.labels must contain 'papercusp_workspace_id=${WORKSPACE_ID}'`,
+      ],
+    });
+    expect(provider.plan).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it('refuses a caller that hand-writes an identity label instead of declaring the run', async () => {
+    const { response, persisted } = await provision({
+      connectionId: 'connection-1',
+      name: 'Forged canary',
+      desired: { ...requestedDesired(), labels: { papercusp_run_id: RUN_ID } },
+      canary: { runId: RUN_ID },
+    });
+    expect(response.status).toBe(422);
+    expect(persisted).toBeUndefined();
+    await expect(response.json()).resolves.toMatchObject({
+      problems: [expect.stringContaining(`desired.labels must not set 'papercusp_run_id'`)],
+    });
+  });
+
+  it('binds the labels to the declared run, so a destroy citing another run still refuses', async () => {
+    const { persisted } = await provision({
+      connectionId: 'connection-1',
+      name: 'Canary host',
+      desired: requestedDesired(),
+      canary: { runId: 'canary_2' },
+    });
+    expect(persisted?.labels?.papercusp_run_id).toBe('canary_2');
+
+    const { provider, apply } = providerHarness();
+    const { store } = storeHarness(persisted!);
+    await expect(runWorkspaceHostDestroy(runInput(provider, store))).rejects.toMatchObject({
+      problems: [`stored desired.labels must contain 'papercusp_run_id=${RUN_ID}'`],
     });
     expect(provider.plan).not.toHaveBeenCalled();
     expect(apply).not.toHaveBeenCalled();
