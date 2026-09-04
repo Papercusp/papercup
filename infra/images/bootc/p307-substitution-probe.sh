@@ -64,6 +64,16 @@ SPECIALISE=(
   --build-arg "RELEASE_SIGNING_PUBKEY_B64=$PUBKEY_B64"
 )
 
+# Every positive assertion below must describe THIS run. Leaving a prior tag in storage lets a
+# failed build fall through to `in_image` against yesterday's image and print a false PASS — this
+# happened while developing the public-key layer. Delete only this probe's explicit tags up front;
+# shared base layers remain cached.
+PROBE_TAGS=(
+  p307-subst-none p307-subst-set p307-subst-bad
+  p307-subst-no-key p307-subst-no-driver
+)
+"${PODMAN[@]}" image rm -f "${PROBE_TAGS[@]}" >/dev/null 2>&1 || true
+
 fail=0
 pass() { echo "  PASS: $*"; }
 bad()  { echo "  FAIL: $*"; fail=1; }
@@ -100,7 +110,9 @@ else
 fi
 
 echo "### B — a real namespace: substituted into BOTH files, identically"
+B_BUILT=0
 if build p307-subst-set "${SPECIALISE[@]}"; then
+  B_BUILT=1
   b_pol="$(in_image p307-subst-set "grep -cF '<RELEASE_REGISTRY_NAMESPACE>' $POL")"
   b_rd="$(in_image p307-subst-set "grep -cF '<RELEASE_REGISTRY_NAMESPACE>' $RD")"
   [ "${b_pol:-1}" -eq 0 ] && pass "policy.json has no placeholder left" \
@@ -146,12 +158,13 @@ else
 fi
 
 echo "### D — the PORT survives substitution"
-case "$NS" in
-  *:[0-9]*)
+case "$B_BUILT:$NS" in
+  1:*:[0-9]*)
     d_rd="$(in_image p307-subst-set "grep -oE '[a-z0-9.-]+:[0-9]+' $RD | head -1")"
     [ -n "$d_rd" ] && pass "registries.d kept the port ($d_rd)" \
       || bad "the port was dropped — a port-less scope matches NOTHING and refuses like unsigned"
     ;;
+  0:*) bad "current specialised build failed; refusing to inspect a stale p307-subst-set tag";;
   *) echo "  SKIP: P307_NAMESPACE carries no port, so this case cannot be measured";;
 esac
 

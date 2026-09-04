@@ -649,6 +649,27 @@ describe('wakeTurnText', () => {
   });
 
   /**
+   * WI-5867: a carry-respawn can lose the transcript turn that registered an
+   * await. The delivered turn must therefore identify the registration as the
+   * recipient's own and carry the note joined from that exact await row. Without
+   * both, a legitimate post-compaction wake can look like foreign work merely
+   * because the note names a work item assigned to a peer.
+   */
+  it("identifies a post-compaction wake as this session's own await registration", () => {
+    const t = wakeTurnText(
+      work({
+        id: 29_878,
+        awaitId: 89,
+        note: 'Post-compaction re-registration; waiting on the gate for WI-5827',
+      }),
+    );
+
+    expect(t).toContain('you registered this with events:await');
+    expect(t).toContain('your note: Post-compaction re-registration; waiting on the gate for WI-5827');
+    expect(t).toContain('event-wake delivery #29878');
+  });
+
+  /**
    * EI-20130618357432548 — the owner's chat-pane message is delivered AS the turn.
    * Everything the wrapper adds (event key, delivery id, inbox-wake reconcile note)
    * is correct for an agent/system wake and wrong here: the chat pane renders this

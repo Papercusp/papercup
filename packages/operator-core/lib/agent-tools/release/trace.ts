@@ -415,6 +415,7 @@ export default defineTool({
       data: {
         ...trace,
         repairQueue: snapshot.gate.repairQueue ?? null,
+        repairQueueRead: snapshot.gate.repairQueueRead,
         ...subjectStamp,
         ...(plane ? { plane } : {}),
       },

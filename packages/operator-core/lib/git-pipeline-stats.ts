@@ -651,6 +651,44 @@ function num(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * P-025: project queue read health before diagnostics can collapse it to `null`.
+ * Exported so the current-plus-one schema falsifier exercises the same mapping the live
+ * git-pipeline snapshot uses, without needing a database fixture.
+ */
+export function projectFrozenRepairQueueRead(
+  rawQueue: unknown,
+  gateHealth: unknown,
+  nowMs: number,
+): {
+  queue: ReturnType<typeof parseFrozenCandidateRepairQueue>;
+  read: FrozenRepairQueueReadProjection;
+  freezeAndConverge: FreezeAndConvergeGateHealth['freezeAndConverge'] | null;
+} {
+  const parsed = parseFrozenCandidateRepairQueueRead(rawQueue);
+  const queue = parsed.status === 'value' ? parsed.queue : null;
+  const read: FrozenRepairQueueReadProjection =
+    parsed.status === 'value'
+      ? { status: 'value', schemaVersion: parsed.queue.schemaVersion }
+      : parsed;
+  const stored = readFreezeAndConverge(gateHealth);
+  const freezeAndConverge =
+    parsed.status === 'unreadable'
+      ? {
+          enabled: stored?.enabled ?? true,
+          state: 'unreadable' as const,
+          reason:
+            `${describeUnreadableFrozenCandidateRepairQueue(parsed)}; ` +
+            'refusing to report the queue as absent or freeze state none',
+          candidate: null,
+          holdUntilMs: null,
+          capacityRetryAtMs: null,
+          observedAtMs: nowMs,
+        }
+      : stored;
+  return { queue, read, freezeAndConverge };
+}
+
 export function currentGateInconclusive(
   value: unknown,
   repairQueue: unknown,
@@ -1406,13 +1444,13 @@ export async function gitPipelineSnapshot(
     });
   }
 
-  const persistedRepairQueueRead = parseFrozenCandidateRepairQueueRead(gcMeta.repair_queue);
-  const persistedRepairQueue =
-    persistedRepairQueueRead.status === 'value' ? persistedRepairQueueRead.queue : null;
-  const repairQueueRead: FrozenRepairQueueReadProjection =
-    persistedRepairQueueRead.status === 'value'
-      ? { status: 'value', schemaVersion: persistedRepairQueueRead.queue.schemaVersion }
-      : persistedRepairQueueRead;
+  const repairQueueProjection = projectFrozenRepairQueueRead(
+    gcMeta.repair_queue,
+    gateHealth,
+    Date.now(),
+  );
+  const persistedRepairQueue = repairQueueProjection.queue;
+  const repairQueueRead = repairQueueProjection.read;
   let repairQueueFixerAlive: boolean | null | undefined;
   if (persistedRepairQueue?.fixerSpawnId) {
     repairQueueFixerAlive = await releaseFixerSpawnAlive(
@@ -1424,21 +1462,7 @@ export async function gitPipelineSnapshot(
     nowMs: Date.now(),
     fixerAlive: repairQueueFixerAlive,
   });
-  const storedFreezeAndConverge = readFreezeAndConverge(gateHealth);
-  const freezeAndConverge =
-    persistedRepairQueueRead.status === 'unreadable'
-      ? {
-          enabled: storedFreezeAndConverge?.enabled ?? true,
-          state: 'unreadable' as const,
-          reason:
-            `${describeUnreadableFrozenCandidateRepairQueue(persistedRepairQueueRead)}; ` +
-            'refusing to report the queue as absent or freeze state none',
-          candidate: null,
-          holdUntilMs: null,
-          capacityRetryAtMs: null,
-          observedAtMs: Date.now(),
-        }
-      : storedFreezeAndConverge;
+  const freezeAndConverge = repairQueueProjection.freezeAndConverge;
 
   // P-001: "judging vs idle" — probe the live checkpoint unit ONLY when opted in
   // (the dev.gitPipeline derived-read producer; see the interface note). Best-effort:

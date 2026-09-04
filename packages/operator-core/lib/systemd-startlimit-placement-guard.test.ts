@@ -9,6 +9,8 @@
  * flagging the same keys correctly placed under `[Unit]`.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
 import { findMisplacedStartLimitKeys } from '../../../scripts/check-systemd-startlimit-placement.mjs';
@@ -64,5 +66,16 @@ describe('systemd StartLimit-placement guard predicate (EI-19381535849234617)', 
     const dropIn = ['[Service]', '# comment', 'StartLimitIntervalSec=600', 'StartLimitBurst=6'].join('\n');
     const hits = findMisplacedStartLimitKeys(dropIn);
     expect(hits.map((h: { key: string }) => h.key)).toEqual(['StartLimitIntervalSec', 'StartLimitBurst']);
+  });
+
+  it('keeps the phone media-plane unit sources free of misplaced directives', () => {
+    const unitPaths = [
+      '../../../infra/phone-app/systemd/papercusp-phone-sip.service',
+      '../../../infra/phone-app/systemd/papercusp-phone-livekit.service',
+    ];
+    for (const relativePath of unitPaths) {
+      const unit = readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8');
+      expect(findMisplacedStartLimitKeys(unit), relativePath).toEqual([]);
+    }
   });
 });

@@ -294,10 +294,10 @@ jobs:
       # 10s/5-burst rate limiter instead of whatever the unit intended — `systemd-analyze
       # --user verify` already surfaces the warning but exits 0, so it went unread for
       # weeks on 6 live units, including one whose own header promised "NEVER gives up"
-      # via StartLimitIntervalSec=0, a promise that was not in effect. Scope: this only
-      # covers the version-controlled unit sources under apps/operator/scripts/systemd/
-      # — a host-local ~/.config/systemd/user/*.service.d/*.conf drop-in is invisible to
-      # a repo lint by construction.
+      # via StartLimitIntervalSec=0, a promise that was not in effect. Scope: this covers
+      # the version-controlled unit sources under apps/operator/scripts/systemd/ and
+      # infra/phone-app/systemd/ — a host-local ~/.config/systemd/user/*.service.d/*.conf
+      # drop-in is invisible to a repo lint by construction.
       - name: Lint systemd StartLimit placement
         if: ${{ !cancelled() }}
         run: npm run lint:systemd-startlimit-placement

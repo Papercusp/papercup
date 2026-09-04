@@ -15,7 +15,8 @@
  * StartLimitIntervalSec=0 — a promise that was not in effect).
  *
  * Scope: this repo's version-controlled systemd unit sources under
- * apps/operator/scripts/systemd/ (*.service, *.conf drop-ins). It CANNOT see
+ * apps/operator/scripts/systemd/ (*.service, *.conf drop-ins) and
+ * infra/phone-app/systemd/ (*.service, *.tmpl). It CANNOT see
  * host-local `~/.config/systemd/user/*.service.d/*.conf` drop-ins that are not
  * checked in anywhere — those need a live `systemd-analyze --user verify` spot
  * check on the box that runs them; a repo lint has no way to reach them.
@@ -29,7 +30,7 @@ import { realpathSync } from 'node:fs';
 import { listTrackedFiles, describeUnscanned } from './lib/tracked-files.mjs';
 
 const OFFENDING_KEYS = ['StartLimitIntervalSec', 'StartLimitBurst'];
-const UNIT_SOURCE_RE = /apps\/operator\/scripts\/systemd\/.*\.(service|conf)$/;
+const UNIT_SOURCE_RE = /^(?:apps\/operator\/scripts\/systemd\/.*\.(service|conf)|infra\/phone-app\/systemd\/.*\.(service|tmpl))$/;
 
 /**
  * Pure: scan one unit-file's TEXT for an offending key inside a `[Service]`
@@ -83,7 +84,7 @@ function main() {
   const { offenders, unscanned } = findOffenders();
   if (offenders.length === 0) {
     console.log(
-      '✓ no StartLimitIntervalSec/StartLimitBurst misplaced under [Service] in apps/operator/scripts/systemd/.' +
+      '✓ no StartLimitIntervalSec/StartLimitBurst misplaced under [Service] in tracked systemd unit sources.' +
         describeUnscanned(unscanned),
     );
     console.log(

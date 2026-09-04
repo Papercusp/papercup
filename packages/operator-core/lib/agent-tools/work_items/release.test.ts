@@ -23,6 +23,11 @@ vi.mock('../../work-items', () => ({
   commentWorkItem: vi.fn(),
 }));
 
+const checkpointStore = vi.hoisted(() => ({
+  getWorkItemCheckpointWithMeta: vi.fn(async () => ({ checkpoint: null, updatedAtMs: null })),
+}));
+vi.mock('../../work-item-checkpoint', () => checkpointStore);
+
 const reachabilityM = vi.hoisted(() => vi.fn(async () => ({
   verdict: 'reachable' as const,
   basis: 'live-resolver' as const,
@@ -69,6 +74,7 @@ const commentM = vi.mocked(commentWorkItem);
 const assessM = vi.mocked(assessForceRelease);
 const auditM = vi.mocked(recordForceReleaseAudit);
 const notifyM = vi.mocked(notifyForceRelease);
+const checkpointM = checkpointStore.getWorkItemCheckpointWithMeta;
 const tool = (await import('./release')).default;
 const LONG_REASON = 'r'.repeat(501);
 const CLAMPED_REASON = LONG_REASON.slice(0, 500);
@@ -101,6 +107,7 @@ beforeEach(() => {
   });
   releaseM.mockImplementation(async (id: string) => ({ id, assignee: null }) as never);
   holdM.mockImplementation(async (id: string, hold: boolean) => ({ id, harness: null, hold, applicable: true }) as never);
+  checkpointM.mockResolvedValue({ checkpoint: null, updatedAtMs: null });
 });
 
 describe('work_items:release handler (keyed-array)', () => {
@@ -470,6 +477,48 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
     // every ephemeral agent's park boomerang back into scheduler:get_next.
     expect(holdM).toHaveBeenCalledWith('WI-1', true, { harness: undefined, parkedBy: 'me', parkedReason: 'umbrella item' });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', claimHold: true });
+  });
+
+  it('warns when claimHold:true parks an already-unassigned item with a fresh checkpoint (WI-5860)', async () => {
+    const now = Date.parse('2026-09-04T12:00:00.000Z');
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now);
+    checkpointM.mockResolvedValue({ checkpoint: 'implemented; verification still running', updatedAtMs: now - 60_000 });
+    try {
+      const b = await body({ id: 'WI-FRESH', claimHold: true, reason: 'park after release' });
+
+      expect(b.results[0]).toMatchObject({
+        ok: true,
+        released: false,
+        claimHold: true,
+        freshUnclaimedCheckpoint: {
+          status: 'checkpointed-but-unowned',
+          checkpointAgeMs: 60_000,
+        },
+      });
+      expect(b.results[0].freshUnclaimedCheckpointWarning).toMatch(/CHECKPOINTED-BUT-UNOWNED/);
+      expect(b.results[0].freshUnclaimedCheckpointWarning).toMatch(/assignee\/takenAt alone/);
+      expect(checkpointM).toHaveBeenCalledWith({
+        harness: null,
+        workItemId: 'WI-FRESH',
+        workspaceId: undefined,
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('does not label an old checkpoint fresh when claimHold:true parks an already-unassigned item', async () => {
+    const now = Date.parse('2026-09-04T12:00:00.000Z');
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now);
+    checkpointM.mockResolvedValue({ checkpoint: 'old handoff', updatedAtMs: now - 2 * 60 * 60_000 });
+    try {
+      const b = await body({ id: 'WI-OLD', claimHold: true });
+
+      expect(b.results[0]).not.toHaveProperty('freshUnclaimedCheckpoint');
+      expect(b.results[0]).not.toHaveProperty('freshUnclaimedCheckpointWarning');
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('requires a typed release contract for every claimHold:true park', () => {

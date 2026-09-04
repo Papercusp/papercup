@@ -241,7 +241,7 @@ RUN set -eu; \
       jq --arg scope "$CS_SCOPE" \
         '.transports["containers-storage"] = {($scope): [{"type":"insecureAcceptAnything"}]}' \
         "$POL" > "$POL_TMP"; \
-      install -m 0644 "$POL_TMP" "$POL"; \
+      cp -f "$POL_TMP" "$POL"; \
       rm -f "$POL_TMP"; \
       jq -e --arg scope "$CS_SCOPE" \
         '.transports["containers-storage"][$scope][0].type == "insecureAcceptAnything"' \

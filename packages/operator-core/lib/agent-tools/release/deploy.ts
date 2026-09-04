@@ -175,6 +175,7 @@ function statusBrief(s: DeployStatus) {
       // trigger/force reply carries the same answer without a follow-up op:status call.
       ...(s.gate.failingTests.length ? { failingTests: s.gate.failingTests } : {}),
       repairQueue: s.gate.repairQueue ?? null,
+      repairQueueRead: s.gate.repairQueueRead,
       // WI-2141736 P-004: rides in every reply beside `repairQueue`, because the question it
       // answers — "is the freeze actually on, and if not why not" — is invisible through a
       // null queue, which is what a retire and an owner-set OFF both leave behind. Measured

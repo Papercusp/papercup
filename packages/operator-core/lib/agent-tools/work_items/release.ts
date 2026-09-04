@@ -21,10 +21,11 @@ import {
   type ForceReleaseBasis,
 } from './release-force-guard';
 import { readWorkItemReleaseRequest, resolveWorkItemReleaseRequest } from '../../work-items-release-request';
-import { getWorkItemCheckpoint } from '../../work-item-checkpoint';
+import { getWorkItemCheckpointWithMeta } from '../../work-item-checkpoint';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { readOutbox } from '../coordination/messages';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { STALE_CLAIM_GRACE_MS } from '../../work-items-stale-claims';
 import { clampText, softText } from '../limits';
 import { readEventConditionReachability } from '../../external-condition-reachability';
 import type { DurableParkReleaseContract } from '../../work-items-durable-park-audit';
@@ -570,14 +571,48 @@ export default defineTool({
         // release on it would block legitimate ones on a low-precision signal. The releasing
         // agent is also the ONE reader who can cheaply settle it — they still have the pid and
         // the shell. Fail-soft: a checkpoint-read hiccup must never fail the release itself.
-        const releaseCheckpoint = wasHeld
-          ? await getWorkItemCheckpoint({
-              harness: workItem.harness ?? it.harness ?? null,
-              workItemId: it.id,
-              workspaceId: ident.workspaceId ?? undefined,
-            })
-              .catch(() => null)
-          : null;
+        const checkpointMeta =
+          wasHeld || claimHold === true
+            ? await getWorkItemCheckpointWithMeta({
+                harness: workItem.harness ?? it.harness ?? null,
+                workItemId: it.id,
+                workspaceId: ident.workspaceId ?? undefined,
+              }).catch(() => ({ checkpoint: null, updatedAtMs: null }))
+            : { checkpoint: null, updatedAtMs: null };
+        const releaseCheckpoint = wasHeld ? checkpointMeta.checkpoint : null;
+        // WI-5860 gap (2): claimHold:true can be applied as a SECOND call after a
+        // plain release, when the item is already unassigned. That is normally a
+        // deliberate durable park, but a checkpoint written inside the same liveness
+        // window is contradictory evidence: the claim may have vanished while its
+        // session is still finishing the work. The hold remains allowed (this is an
+        // advisory safety signal, not a new lifecycle gate), but the placer must see
+        // the checkpointed-but-unowned state instead of reading ok:true + claimHold:true
+        // as proof that the row was idle. Reuse the claim reaper's canonical 10-minute
+        // grace rather than inventing a second notion of "fresh".
+        const freshUnclaimedCheckpointAgeMs =
+          !wasHeld &&
+          claimHold === true &&
+          checkpointMeta.checkpoint &&
+          checkpointMeta.updatedAtMs != null
+            ? Math.max(0, Date.now() - checkpointMeta.updatedAtMs)
+            : null;
+        const freshUnclaimedCheckpoint =
+          freshUnclaimedCheckpointAgeMs != null && freshUnclaimedCheckpointAgeMs <= STALE_CLAIM_GRACE_MS
+            ? {
+                freshUnclaimedCheckpoint: {
+                  status: 'checkpointed-but-unowned' as const,
+                  checkpointAgeMs: freshUnclaimedCheckpointAgeMs,
+                  freshnessWindowMs: STALE_CLAIM_GRACE_MS,
+                },
+                freshUnclaimedCheckpointWarning:
+                  `You requested claimHold:true for '${it.id}' while it was ALREADY unassigned, but it carries a ` +
+                  `checkpoint written ${freshUnclaimedCheckpointAgeMs}ms ago (inside the ${STALE_CLAIM_GRACE_MS}ms ` +
+                  `claim-liveness window). This is CHECKPOINTED-BUT-UNOWNED: a live session may still be finishing ` +
+                  `work after losing its claim. The hold request still proceeds, but do NOT infer idleness from ` +
+                  `assignee/takenAt alone — read work_items:get's checkpoint + priorWork, reconcile the prior ` +
+                  `worker, then claim/finish it or deliberately confirm the park.`,
+              }
+            : {};
         const stranding = releaseCheckpoint && detectBgJobCheckpointClaim(releaseCheckpoint).detected
           ? {
               strandedCheckpointWarning:
@@ -703,6 +738,7 @@ export default defineTool({
           claimHold: held?.applicable ? held.hold : undefined,
           claimHoldRelease: held?.applicable && claimHold ? releaseContract : undefined,
           ...claimHoldFailure,
+          ...freshUnclaimedCheckpoint,
           ...reasonDisclosure,
         };
       },
