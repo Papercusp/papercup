@@ -64,11 +64,7 @@ import {
   evaluateCriterionCoverageChecks,
   evaluateCriterionRequirementChecks,
 } from '../../rubrics-criterion-checks';
-import {
-  getEffectiveItemAudits,
-  getLatestActivationAudit,
-  getPlanItemStatuses,
-} from '../../plan-audits';
+import { getEffectiveItemAudits, getLatestActivationAudit, getPlanItemStatuses } from '../../plan-audits';
 import { resolveHarnessPaths } from '../../resolve-harness-paths';
 import { resolvePlanHarnessSlug } from '../plans/source';
 import { SPEC_TEST_ADEQUACY_RUBRIC_REF, specTestAdequacySubjectRef } from '../plans/spec-test-adequacy';
@@ -97,6 +93,7 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { trackDetached } from '../../detached-imports';
 import { areAcceptanceLineageRelated, isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
 import { acceptanceSeatRefusalHint, resolveAcceptanceSeatSuccession } from '../../acceptance-seat-succession';
+import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 // TYPE-ONLY (erased at runtime) — see defaultResolveAuthorSessionState below,
 // which mirrors rebind-identity.ts's own dynamic-import discipline for the
 // same oracle so this write-path module never carries it on its static graph.
@@ -301,7 +298,7 @@ function validateSpecTestAdequacyBinding(
       code: 'invalid_spec_test_adequacy_binding',
       error:
         `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' requires the evaluator's rerunRecipe from ` +
-        "plans:evaluate-spec-test-adequacy, including its exact selection; do not emit a hand-built adequacy card",
+        'plans:evaluate-spec-test-adequacy, including its exact selection; do not emit a hand-built adequacy card',
     };
   }
 
@@ -469,10 +466,7 @@ export async function emitScorecard(
     lineageRelated?: typeof areAcceptanceLineageRelated;
     /** EI-21917534129987791: liveness probe backing the author-rebind recovery
      *  hint on the "acceptance must be recorded by the author" refusal. */
-    resolveAuthorSessionState?: (
-      ownerId: string,
-      opts: { workspaceId?: string },
-    ) => Promise<SessionState | null>;
+    resolveAuthorSessionState?: (ownerId: string, opts: { workspaceId?: string }) => Promise<SessionState | null>;
   } = {},
 ) {
   const rubric = await getRubric(args.rubricRef);
@@ -563,6 +557,21 @@ export async function emitScorecard(
       };
     }
     if (rubric.kind === 'acceptance') {
+      // P-003: the grading door consumes the same bounded BAR snapshot as the
+      // start/ship doors. This is intentionally before deterministic checks and
+      // task cleanup, so a BAR-only or divergent contract is refused before a
+      // costly grading pass is spent.
+      if (rubric.barContract?.adoptionEpoch != null) {
+        const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(args.rubricRef, 'pre-grading');
+        if (!lifecycle.satisfied) {
+          return {
+            ok: false as const,
+            code: 'acceptance_bar_contract_not_ready' as const,
+            error: lifecycle.message ?? 'acceptance BAR contract is not ready for grading',
+            lifecycle,
+          };
+        }
+      }
       const sameAcceptanceAuthor = deps.sameAcceptanceAuthor ?? isAcceptanceAuthorIdentity;
       const lineageRelated = deps.lineageRelated ?? areAcceptanceLineageRelated;
       const identityWorkspace = rubric.workspaceId || input.workspaceId || activeWorkspaceId();
@@ -770,7 +779,8 @@ export async function emitScorecard(
         canonicalRatings: ratings,
       };
     }
-    const boundTestedSha = releaseGateBinding?.status === 'bound' ? releaseGateBinding.testedSha ?? undefined : undefined;
+    const boundTestedSha =
+      releaseGateBinding?.status === 'bound' ? (releaseGateBinding.testedSha ?? undefined) : undefined;
     const evidenceFingerprint = scorecardEvidenceFingerprint({
       rubricRef: args.rubricRef,
       ratings,
@@ -845,6 +855,24 @@ export async function emitScorecard(
           ok: false as const,
           error: `vetting subject '${subjectRef}' does not resolve to a rubric — the vetting stamp would be a dangling link`,
         };
+      }
+      if (
+        vettedRubric.kind === 'acceptance' &&
+        vettedRubric.subjectPlan &&
+        vettedRubric.barContract?.adoptionEpoch != null
+      ) {
+        // P-003: vetting is the first phase that requires the as-built METHOD
+        // and its runnable/manual check. Reuse the same snapshot rather than
+        // inspecting the submitted meta-scorecard in isolation.
+        const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(vettedRubric.subjectPlan, 'pre-vetting');
+        if (!lifecycle.satisfied) {
+          return {
+            ok: false as const,
+            code: 'acceptance_bar_contract_not_ready' as const,
+            error: lifecycle.message ?? 'acceptance BAR contract is not ready for vetting',
+            lifecycle,
+          };
+        }
       }
       vettedSubjectPlan = vettedRubric.subjectPlan ?? null;
       if (args.vettingWorkItem) {
@@ -1089,11 +1117,13 @@ export async function emitScorecard(
     // far-end completion gate notices. Refuse the ambiguous form before any
     // scorecard write and teach the only form that settles the pending stamp.
     if (args.subject) {
-      const pendingSubject = (await listScorecards({
-        rubricRef: args.rubricRef,
-        subjectRef: args.subject.ref,
-        limit: 100,
-      })).find(
+      const pendingSubject = (
+        await listScorecards({
+          rubricRef: args.rubricRef,
+          subjectRef: args.subject.ref,
+          limit: 100,
+        })
+      ).find(
         (card) =>
           card.gradingAudit?.state === 'pending' &&
           card.subject?.ref === args.subject?.ref &&
@@ -1156,7 +1186,7 @@ export async function emitScorecard(
           ok: false as const,
           error:
             `superseded scorecard '${args.supersedes}' belongs to ${priorLabel}, not '${sourceHive ?? ''}' — ` +
-            'omit sourceHive to inherit the superseded card\'s own value instead of this session\'s hive',
+            "omit sourceHive to inherit the superseded card's own value instead of this session's hive",
         };
       }
     }
@@ -1600,7 +1630,7 @@ export default defineTool({
     notWhen:
       'Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.',
     returns:
-      "Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A positive releaseGating card also returns and stores `releaseGateBinding`; a failed binding returns code `stale_pass_blocked` with status `stale-pass-blocked`, the gate reason/failing tests, tested vs green/head SHAs, and `commitsBehindHead`, and writes no card. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.",
+      'Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A positive releaseGating card also returns and stores `releaseGateBinding`; a failed binding returns code `stale_pass_blocked` with status `stale-pass-blocked`, the gate reason/failing tests, tested vs green/head SHAs, and `commitsBehindHead`, and writes no card. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.',
     chaining:
       'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with that same canonical payload → scorecards:list / rubrics:trend. `testedSha` is required when a releaseGating rubric has a pass-like rating. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance still supplies schema-complete ratings; do not pass supersedes on the author acceptance.',
     seeAlso: ['scorecards:evaluate', 'scorecards:list', 'rubrics:trend'],
