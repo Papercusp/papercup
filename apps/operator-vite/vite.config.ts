@@ -9,6 +9,10 @@ import { distWipeGuardPlugin } from './dist-wipe-guard';
 import { watchHeartbeatPlugin } from './watch-heartbeat';
 import { tanstackLazyRetryPlugin } from './tanstack-lazy-retry';
 import { createDevWatchIgnore } from './dev-watch-ignore';
+import {
+  filterInitialModulePreloadDependencies,
+  stripNonCriticalLazyStylesheetsFromInitialHtml,
+} from './build-preload-policy';
 // P-006: the destination invariant as a POLICY (the prevention leg), kept in one
 // place so the dev server, the SPA host and the desktop cannot drift apart.
 import { cspReportOnlyHeaders, crossOriginIsolationHeaders } from '../../libs/generic/desktop-ipc/src/csp-policy';
@@ -67,9 +71,6 @@ const apiTarget = process.env.PAPERCUSP_API_TARGET ?? 'http://127.0.0.1:3070';
 // `defaultPreload: 'intent'` is a DIFFERENT, runtime-only TanStack Router
 // hover-preload mechanism — it cannot produce a build-time HTML preload link.
 // Full investigation: WI-5502 thread.)
-const EAGER_ROUTE_CHUNK_PRELOAD_EXCLUDE_RE =
-  /(?:^|\/)(?:InboxPane|PlansPane|PlanDetail|WorkItemDiscussion|triggers|review-report|plan-cleanup-report|inbox-bulk(?:-report)?|BulkResolverStrip|SessionsRosterView)-[^/]+\.(?:js|css)$/;
-
 const noViteClientPlugin: Plugin = {
   name: 'papercusp-no-vite-client',
   configureServer(server) {
@@ -83,6 +84,20 @@ const noViteClientPlugin: Plugin = {
       res.setHeader('Content-Type', 'application/javascript');
       res.end(NO_VITE_CLIENT_BODY);
     });
+  },
+};
+
+// Vite's modulePreload hook filters only JS dependencies. Its HTML builder
+// separately injects CSS gathered from the entry's imported chunk graph, so a
+// post transform is required to keep the same known-lazy stylesheets off the
+// initial document. The dynamic import() dependency map keeps those CSS files,
+// preserving on-demand route/pane loading; see build-preload-policy.ts.
+const initialLazyStylesheetFilterPlugin: Plugin = {
+  name: 'papercusp-initial-lazy-stylesheet-filter',
+  apply: 'build',
+  transformIndexHtml: {
+    order: 'post',
+    handler: stripNonCriticalLazyStylesheetsFromInitialHtml,
   },
 };
 
@@ -268,7 +283,7 @@ export default defineConfig({
     modulePreload: {
       resolveDependencies: (_filename, deps, { hostType }) => {
         if (hostType !== 'html') return deps;
-        return deps.filter((dep) => !EAGER_ROUTE_CHUNK_PRELOAD_EXCLUDE_RE.test(dep));
+        return filterInitialModulePreloadDependencies(deps);
       },
     },
     rollupOptions: {
@@ -380,6 +395,7 @@ export default defineConfig({
   plugins: [
     noViteClientPlugin,
     flagsBootstrapPlugin,
+    initialLazyStylesheetFilterPlugin,
     // Route generation must run before the React plugin.
     tanstackRouter({
       target: 'react',
