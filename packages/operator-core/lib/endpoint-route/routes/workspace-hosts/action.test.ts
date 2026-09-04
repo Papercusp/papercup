@@ -178,6 +178,41 @@ describe('POST /workspace-hosts/action destroy', () => {
     expect(readTarget).not.toHaveBeenCalled();
   });
 
+  // WI-2143805: a run that FAILED cannot produce an approved contract report, settled cumulative
+  // cost, or a provider-delayed spend entry, so requiring them refused teardown for exactly the
+  // hosts that most needed it. The route admits an audited failedRunTeardown in their place — and
+  // only in their place.
+  it('admits a failed-run teardown that carries no economic evidence, and refuses one carrying both authorizations', async () => {
+    const { dependencies, startDestroy } = harness();
+    const failedRunTeardown = {
+      actorId: 'operator:test',
+      reason: 'canary run failed during bootstrap; the host must still be torn down',
+      procedureRef: 'runbook://workspace-host/gcp/failed-run-teardown-v1',
+      failedOperationIds: ['op-run-1'],
+    };
+    const { contractApproval: _approval, lateObservedSpend: _late, ...base } = canary;
+    const failedRunCanary = { ...base, costEvidence: [], failedRunTeardown };
+
+    const admitted = await post(dependencies, { ...destroyBody, canary: failedRunCanary });
+    expect(admitted.status).toBe(200);
+    expect(startDestroy).toHaveBeenCalledWith(expect.objectContaining({ canary: failedRunCanary }));
+
+    // Presenting an approved report AND claiming the run failed would leave the audit record unable
+    // to say which evidence the destroy was admitted on.
+    const both = await post(dependencies, {
+      ...destroyBody,
+      canary: { ...canary, failedRunTeardown },
+    });
+    expect(both.status).toBe(400);
+
+    // Still not a blanket waiver: the audit context itself has to be complete.
+    const unnamed = await post(dependencies, {
+      ...destroyBody,
+      canary: { ...failedRunCanary, failedRunTeardown: { ...failedRunTeardown, failedOperationIds: [] } },
+    });
+    expect(unnamed.status).toBe(400);
+  });
+
   it('maps the host-scoped DBOS dedup conflict to 409 without leaking internals', async () => {
     const { dependencies, startDestroy } = harness();
     startDestroy.mockRejectedValueOnce(new WorkspaceHostProvisioningConflictError('host-1'));
