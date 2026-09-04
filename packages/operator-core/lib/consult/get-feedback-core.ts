@@ -976,7 +976,12 @@ export async function getFeedbackCore(
     allCandidates: route.snapshot.candidates,
     min: minResponders,
     max: maxResponders,
-    isSelectable: (c) => !DEAD_RESPONDER_STATES.has(c.liveness),
+    // warmIdle is deliberately distinct from "dead": a parked owner with a
+    // fresh heartbeat may still wake, but a long-silent owner must not consume
+    // the minimum-fill slot ahead of a live cascade candidate. Fresh parked
+    // responders remain selectable.
+    isSelectable: (c) =>
+      !DEAD_RESPONDER_STATES.has(c.liveness) && !(c.liveness === 'parked' && c.warmIdle === true),
   });
   route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, selected);
   const chosenSel = selected[0] ?? null;

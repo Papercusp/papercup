@@ -219,6 +219,19 @@ describe('routeConsult — routing + blend', () => {
     expect(beta!.liveness).toBe('unknown');
   });
 
+  it('carries the oracle warmIdle signal into the routing snapshot', async () => {
+    const r = await routeConsult(
+      baseParams,
+      deps(0, {
+        getLiveness: async () => ({
+          'agent-alpha': { sessionState: 'parked', warmIdle: true },
+        }),
+      }),
+    );
+    const alpha = r.snapshot.candidates.find((c) => c.ownerId === 'agent-alpha');
+    expect(alpha).toMatchObject({ liveness: 'parked', warmIdle: true });
+  });
+
   it('authorship: a question naming a path boosts the owner whose completed work touched it', async () => {
     const r = await routeConsult(
       { ...baseParams, question: 'who understands packages/operator-core/lib/consult/relevance-router.ts?' },

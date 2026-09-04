@@ -78,6 +78,20 @@ export interface TurnEvidence {
   lexicalRank?: number;
 }
 
+/** The liveness annotation returned by the shared presence oracle. */
+export interface ConsultLiveness {
+  sessionState: string | null;
+  /** Heartbeat is fresh, but genuine activity is older than the warm-idle band. */
+  warmIdle?: boolean;
+}
+
+/**
+ * Backward-compatible liveness seam: older route bindings returned only the
+ * session-state string, while the consult:get_feedback binding now preserves
+ * the oracle's warmIdle metadata too.
+ */
+export type ConsultLivenessReading = string | null | ConsultLiveness;
+
 export interface RoutingCandidate {
   ownerId: string;
   /** Blended score in [0,1]. */
@@ -95,6 +109,8 @@ export interface RoutingCandidate {
    * 'unknown' otherwise. The consult layer owns the liveness GATE (D-008 §5) —
    * the router only annotates. */
   liveness: string;
+  /** Presence oracle's non-fatal warm-idle signal, when measured. */
+  warmIdle?: boolean;
   /** Present only when semantic discovery degraded to session_turns.text_tsv.
    * These candidates can be selected only as labeled minimum-fill reviewers. */
   fallback?: 'lexical';
@@ -274,7 +290,7 @@ export interface ConsultRouteDeps {
    *  (EI-18771777750306094 — the oracle reports an unknown IN BAND rather than
    *  omitting the owner). Both readings land on the same `?? 'unknown'` at the
    *  two use sites below, so this widening is type-level only. */
-  getLiveness?: (ownerIds: string[]) => Promise<Record<string, string | null>>;
+  getLiveness?: (ownerIds: string[]) => Promise<Record<string, ConsultLivenessReading>>;
   now?: () => Date;
 }
 
@@ -293,6 +309,18 @@ export function extractPathTokens(question: string, cap = 4): string[] {
 }
 
 const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
+
+function annotateLiveness(
+  reading: ConsultLivenessReading | undefined,
+): Pick<RoutingCandidate, 'liveness' | 'warmIdle'> {
+  if (reading !== null && typeof reading === 'object') {
+    return {
+      liveness: reading.sessionState ?? 'unknown',
+      ...(typeof reading.warmIdle === 'boolean' ? { warmIdle: reading.warmIdle } : {}),
+    };
+  }
+  return { liveness: reading ?? 'unknown' };
+}
 
 /**
  * Route a consult question to qualified responders. One embedding + at most
@@ -390,7 +418,7 @@ export async function routeConsult(
     }
 
     const owners = [...byOwner.keys()];
-    let livenessByOwner: Record<string, string | null> = {};
+    let livenessByOwner: Record<string, ConsultLivenessReading> = {};
     if (deps.getLiveness && owners.length > 0) {
       livenessByOwner = await deps.getLiveness(owners).catch(() => ({}));
     }
@@ -407,7 +435,7 @@ export async function routeConsult(
         score: lexicalRank,
         signals: { similarity: 0, recency, verification: 0, authorship: 0 },
         evidence: owner.evidence,
-        liveness: livenessByOwner[ownerId] ?? 'unknown',
+        ...annotateLiveness(livenessByOwner[ownerId]),
         fallback: 'lexical' as const,
       };
     });
@@ -539,7 +567,7 @@ export async function routeConsult(
   }
 
   // 5) Liveness annotation (never a gate here — D-008 §5).
-  let livenessByOwner: Record<string, string | null> = {};
+  let livenessByOwner: Record<string, ConsultLivenessReading> = {};
   if (deps.getLiveness) {
     livenessByOwner = await deps.getLiveness(owners).catch(() => ({}));
   }
@@ -564,7 +592,7 @@ export async function routeConsult(
       score,
       signals: { similarity, recency, verification, authorship },
       evidence: o.evidence,
-      liveness: livenessByOwner[ownerId] ?? 'unknown',
+      ...annotateLiveness(livenessByOwner[ownerId]),
     };
   });
   candidates.sort((a, b) => b.score - a.score);

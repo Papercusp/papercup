@@ -261,6 +261,38 @@ describe('getFeedbackCore — routed', () => {
     // survive in the persisted routing snapshot).
     expect(r.remaining_candidates).toEqual([]);
   });
+
+  it('liveness gate: warm-idle parked minimum is skipped for a live fallback', async () => {
+    const warmIdle = cand('agent-warm-idle', { score: 0.9, liveness: 'parked', warmIdle: true });
+    const liveFallback = cand('agent-live-fallback', {
+      score: 0.2,
+      liveness: 'live',
+      signals: { similarity: 0.2, recency: 0.2, verification: 0, authorship: 0 },
+    });
+    const { deps, opened } = makeDeps(routeOf([warmIdle], { all: [warmIdle, liveFallback] }));
+    const r = asOk(await getFeedbackCore(baseReq, deps));
+    expect(r.responder?.ownerId).toBe('agent-live-fallback');
+    expect(r.responder_via).toBe('minimum');
+    expect(opened[0].direct_to).toEqual(['agent-live-fallback']);
+    expect(r.remaining_candidates).toEqual([]);
+
+    const row = await stateRow(r.conversation_id);
+    const candidates = (row.routing as RoutingSnapshot).candidates;
+    expect(candidates).toContainEqual(expect.objectContaining({ ownerId: 'agent-warm-idle', warmIdle: true }));
+  });
+
+  it('liveness gate: fresh parked responders remain selectable', async () => {
+    const freshParked = cand('agent-fresh-parked', { score: 0.9, liveness: 'parked', warmIdle: false });
+    const liveFallback = cand('agent-live-fallback-2', {
+      score: 0.2,
+      liveness: 'live',
+      signals: { similarity: 0.2, recency: 0.2, verification: 0, authorship: 0 },
+    });
+    const { deps } = makeDeps(routeOf([freshParked], { all: [freshParked, liveFallback] }));
+    const r = asOk(await getFeedbackCore(baseReq, deps));
+    expect(r.responder?.ownerId).toBe('agent-fresh-parked');
+    expect(r.responder_via).toBe('floor');
+  });
 });
 
 describe('getFeedbackCore — honest no_qualified_responder', () => {
