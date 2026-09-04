@@ -39,7 +39,6 @@ function safeQueue() {
     candidate: 'candidate-1',
     qualificationAttemptId: 'attempt-1',
     base: null,
-    worktreePath: '/repo/.papercusp/worktrees/candidate-1',
     nowMs: 110,
   });
 }

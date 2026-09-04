@@ -242,7 +242,6 @@ describe('logical checkpoint qualification transaction', () => {
       candidate: 'candidate-1',
       qualificationAttemptId: 'attempt-1',
       base: null,
-      worktreePath: '/repo/.papercusp/worktrees/candidate-1',
       nowMs: 200,
     });
     const successor = {
@@ -292,7 +291,6 @@ describe('logical checkpoint qualification transaction', () => {
       candidate: 'candidate-1',
       qualificationAttemptId: 'attempt-1',
       base: null,
-      worktreePath: '/repo/.papercusp/worktrees/candidate-1',
       nowMs: 200,
     });
     const successor = {
