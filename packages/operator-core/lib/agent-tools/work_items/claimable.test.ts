@@ -117,6 +117,15 @@ const EMPTY_SAMPLE = {
 };
 /** What the mocked snapshot read reports as its per-floor sample (a test may override). */
 let sampleValue: Record<string, unknown> = EMPTY_SAMPLE;
+/**
+ * What the mocked snapshot read reports as its ROWS and BREAKDOWN (a test may override).
+ * Overridable through the ONE `beforeEach` mock rather than a second `mockImplementation`
+ * per test: re-installing readM needs an `as never` cast (its real signature is wider than
+ * any fixture), and each such cast defeats the vi.mocked() typecheck AND raises the
+ * shrink-only lint:mock-cast-escape ratchet. Same seam as sampleValue/admittedValue above.
+ */
+let rowsValue: Record<string, unknown>[] = ROWS;
+let breakdownValue: Record<string, unknown> = BREAKDOWN;
 
 /**
  * A HEALTHY admitted composition (WI-6673) — the default, so the composition warning is
@@ -142,11 +151,13 @@ beforeEach(() => {
   hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
   sampleValue = EMPTY_SAMPLE;
   admittedValue = HEALTHY_ADMITTED;
+  rowsValue = ROWS;
+  breakdownValue = BREAKDOWN;
   // Stands in for the ONE snapshot read: honours breakdownOnly/sampleLimit exactly as the
   // real readIssueClaimability does, so the handler's payload assembly is what's under test.
   readM.mockImplementation((async (_filter: unknown, _opts: unknown, readOpts: { breakdownOnly?: boolean; sampleLimit?: number }) => ({
-    breakdown: BREAKDOWN,
-    rows: readOpts.breakdownOnly ? [] : ROWS,
+    breakdown: breakdownValue,
+    rows: readOpts.breakdownOnly ? [] : rowsValue,
     admitted: admittedValue,
     ...(readOpts.sampleLimit ? { sample: sampleValue } : {}),
   })) as never);
@@ -203,7 +214,16 @@ describe('work_items:claimable handler', () => {
   it('EI-21834285144372521: a plan-linked row the post-claim guard would block is excluded from claimable/rows, the count is corrected, and it is surfaced in ownerGateExcluded — never checked for a plan-less row', async () => {
     laneM.mockImplementation(async ({ id }: { id?: string }) =>
       id === 'WI-B'
-        ? { reason: `plan-item p#P-011's plan text marks it owner-gated ("owner-gated")`, planSlug: 'p', itemId: 'P-011', effectiveStatus: 'wip' }
+        ? {
+            reason: `plan-item p#P-011's plan text marks it owner-gated ("owner-gated")`,
+            planSlug: 'p',
+            itemId: 'P-011',
+            effectiveStatus: 'wip',
+            // WI-7316 made this REQUIRED on PlanItemLaneBlock. `null` is the ordinary case —
+            // the resolver found no contradiction — and keeps this test's assertion below
+            // exact: a null hint must add NO key to the ownerGateExcluded row.
+            staleBlockedHint: null,
+          }
         : null,
     );
 
@@ -241,6 +261,64 @@ describe('work_items:claimable handler', () => {
     expect(out.claimable.map((r: { id: string }) => r.id)).toEqual(['WI-A', 'WI-B', 'WI-C']);
     expect(out.claimableCount).toBe(3);
     expect(out).not.toHaveProperty('ownerGateExcluded');
+  });
+
+  describe('WI-7316: a stale-blocked exclusion must not read as a drained lane', () => {
+    /** A lane-guard block whose plan item is blocked on nothing that is still unresolved. */
+    const STALE_BLOCK = {
+      reason: 'plan-item p#P-011 is effectively blocked',
+      planSlug: 'p',
+      itemId: 'P-011',
+      effectiveStatus: 'blocked',
+      staleBlockedHint:
+        "stored status 'blocked' but every blocked-by dependency (P-004) is already resolved — clear it with plans:set-status",
+    };
+
+    it('carries the hint per-row on ownerGateExcluded and leads the note with a ⚠, even when other rows are still claimable', async () => {
+      laneM.mockImplementation(async ({ id }: { id?: string }) => (id === 'WI-B' ? STALE_BLOCK : null));
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(out.ownerGateExcluded).toEqual([
+        { id: 'WI-B', plan: 'p', reason: STALE_BLOCK.reason, staleBlockedHint: STALE_BLOCK.staleBlockedHint },
+      ]);
+      expect(out.note).toContain('1 of the 1 excluded row(s) are gated by a plan item');
+      expect(out.note).toContain('WI-B — ' + STALE_BLOCK.staleBlockedHint);
+      expect(out.note).toContain('plans:set-status');
+      // Two rows survived, so this is a qualification, not a verdict about the whole lane.
+      expect(out.note).not.toContain('NOT DRAINED');
+    });
+
+    it('says NOT DRAINED when the stale block is why the result is empty — the case a bare claimableCount:0 hides', async () => {
+      // Every returned row is plan-linked, so the guard can empty the page entirely.
+      rowsValue = [{ id: 'WI-B', kind: 'change', title: 'b', status: 'open', severity: null, plan: 'p', featureOrder: 2, createdTs: 2 }];
+      breakdownValue = { ...BREAKDOWN, claimable: 1 };
+      mockResolvedTyped(laneM, STALE_BLOCK);
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(out.returned).toBe(0);
+      expect(out.claimableCount).toBe(0);
+      expect(out.note).toContain('NOT DRAINED');
+      expect(out.note).toContain('this empty result is self-inflicted');
+      expect(out.note).toContain(STALE_BLOCK.staleBlockedHint);
+    });
+
+    it('stays silent when the block carries no hint — an ordinary honest block reads exactly as before', async () => {
+      laneM.mockImplementation(async ({ id }: { id?: string }) =>
+        id === 'WI-B'
+          ? { reason: 'plan-item p#P-011 is effectively blocked (blocked-by: P-004)', planSlug: 'p', itemId: 'P-011', effectiveStatus: 'blocked', staleBlockedHint: null }
+          : null,
+      );
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(out.ownerGateExcluded).toEqual([
+        { id: 'WI-B', plan: 'p', reason: 'plan-item p#P-011 is effectively blocked (blocked-by: P-004)' },
+      ]);
+      expect(out.note).not.toContain('NOT DRAINED');
+      expect(out.note).not.toContain('plans:set-status');
+    });
   });
 
   it('a single kind narrows the filter to a `= kind` leaf', async () => {

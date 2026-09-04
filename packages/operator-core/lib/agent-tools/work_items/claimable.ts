@@ -362,6 +362,28 @@ export default defineTool({
     // never an over-exclusion) when the page was truncated — some owner-gated rows beyond the
     // page may still inflate the count in that case, which the note below says plainly.
     const correctedClaimableCount = Math.max(0, breakdown.claimable - ownerGateExcluded.length);
+    // WI-7316: the "lane reads as drained when it isn't" case. The per-row hint already rides
+    // on `ownerGateExcluded` above — but the field a caller ACTS on is `claimableCount`, and a
+    // bare `0` gives them no reason to go read an exclusion list at all. That is exactly the
+    // trap EI-19397307303043951 diagnosed at the plans:get-item/plans:lint layer and left open
+    // here: a member polling by claim-spec calls neither of those tools, so the one surface it
+    // does read must say plainly that the emptiness is self-inflicted. Escalated wording only
+    // when nothing at all came back — a partially-drained lane still reports it, quietly.
+    const staleBlockedExcluded = ownerGateExcluded.filter((r) => r.staleBlockedHint);
+    const staleBlockedNote =
+      staleBlockedExcluded.length === 0
+        ? ''
+        : (claimable.length === 0
+            ? ` ⚠ NOT DRAINED — this empty result is self-inflicted: `
+            : ` ⚠ `) +
+          `${staleBlockedExcluded.length} of the ${ownerGateExcluded.length} excluded row(s) are gated by a plan item ` +
+          `whose blockers have ALREADY resolved (a sticky stored 'blocked' token, not a live blocker): ` +
+          staleBlockedExcluded
+            .slice(0, 3)
+            .map((r) => `${r.id} — ${r.staleBlockedHint}`)
+            .join('; ') +
+          (staleBlockedExcluded.length > 3 ? `, +${staleBlockedExcluded.length - 3} more` : '') +
+          `. Each clears with one plans:set-status on the named plan item; do NOT read this as a drained lane (WI-7316).`;
 
     const payload = {
       ok: true as const,
@@ -419,6 +441,9 @@ export default defineTool({
       note:
         '`claimableCount` is authoritative for THIS CALLER (spec_match AND all ~12 floors, MINUS any plan-prose owner-gated row this page detected — the SAME oracle scheduler:get_next runs, plus the post-claim plan-lane guard it also applies). Caller-relative release cooldown and filing grace mean another fleet member may have a different total; a fresh row is visible to its filer before peers for up to ' +
         `${filingGraceSeconds}s. excludedBreakdown buckets OVERLAP, so they do NOT sum to matched−claimable. READ ONLY — nothing was claimed; take one via work_items:claim / scheduler:get_next.` +
+        // WI-7316: leads the warning block on purpose — it is the only one that changes the
+        // reader's CONCLUSION about an empty result rather than qualifying a number in it.
+        staleBlockedNote +
         (ownerGateExcluded.length > 0 && claimableRows.length >= limit
           ? ` ⚠ This page was truncated at limit=${limit} — ${ownerGateExcluded.length} owner-gated row(s) were excluded from THIS page, but the matched population beyond it was not checked, so claimableCount can still be an OVER-count if more owner-gated rows exist past the page.`
           : '') +
