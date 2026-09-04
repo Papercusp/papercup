@@ -221,18 +221,34 @@ function gateFacts(g: GateInputs): GateFacts {
   return {
     improvementMargin: g.candidateJudgeAgg - (g.parentJudgeAgg + g.epsilon),
     devAnchorMargin: g.candidateDevAnchorAgg - (g.championDevAnchorAgg - g.delta),
-    anyNewRegression: g.anyNewRegression,
-    allProbesCaught: g.allProbesCaught,
+    regressionStatus: g.regressionEvidence.status,
+    probeStatus: g.probeEvidence.status,
     costMargin: g.baselineMeanCost * g.costCeiling - g.candidateMeanCost,
   };
 }
 
 export function evaluateGates(g: GateInputs): GatesVerdict {
   const facts = gateFacts(g);
-  const results: GateResult[] = GATE_RULES.map((r) => ({
-    gate: r.gate,
-    pass: evaluateDataCondition(r.cond, facts),
-    detail: r.detail(g),
-  }));
-  return { accept: results.every((r) => r.pass), results };
+  const results: GateResult[] = GATE_RULES.map((r) => {
+    const evidence = r.evidence?.(g);
+    // An evidence-backed gate reports its evidence's own status, so `not-measured`
+    // reaches the verdict intact. A threshold gate is computed from values that are
+    // always present, so its condition IS its status.
+    const status: GateStatus = evidence ? evidence.status : evaluateDataCondition(r.cond, facts) ? 'pass' : 'fail';
+    return {
+      gate: r.gate,
+      pass: status === 'pass',
+      status,
+      detail: r.detail(g),
+      ...(evidence ? { evidence } : {}),
+    };
+  });
+  // Missing evidence is inconclusive, not a rejection — but a real FAIL still rejects
+  // even alongside a gap, because a failure that WAS measured is decisive.
+  const outcome: GatesVerdict['outcome'] = results.some((r) => r.status === 'fail')
+    ? 'reject'
+    : results.some((r) => r.status === 'not-measured')
+      ? 'inconclusive'
+      : 'accept';
+  return { accept: outcome === 'accept', outcome, results };
 }

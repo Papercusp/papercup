@@ -14,7 +14,7 @@
 import { createHash } from 'node:crypto';
 import { paretoFrontier } from './frontier';
 import { decideAccept, selectParent, type AcceptThresholds, type VariantEval } from './gate-engine';
-import type { GateResult } from './gates';
+import type { GateResult, GateStatus } from './gates';
 import { selectParentQD } from './qd-selection';
 import { appendChangelog } from './changelog';
 import { circuitBreakerTripped } from './circuit-breaker';
@@ -91,6 +91,35 @@ function sha256(value: unknown): string {
   return createHash('sha256').update(stableJson(value)).digest('hex');
 }
 
+/**
+ * The candidate-version verdict implied by a gate set (P-003).
+ *
+ * Three-state, and the ORDER of the tests is the contract: a gate that actually
+ * FAILED rejects even when a sibling gate went unmeasured (a measured failure is
+ * decisive), while any remaining gap — including the empty set — is inconclusive
+ * rather than an accept. The rule this closes: an un-collected deterministic
+ * guardrail used to be indistinguishable from a satisfied one, so a candidate
+ * could be promoted on evidence nobody ever gathered.
+ *
+ * A gate persisted before P-003 carries no `status`; its boolean `pass` is the only
+ * thing recorded, so it is read as pass/fail. That is exactly right — those rows
+ * were written by a pipeline that could not represent a gap in the first place.
+ */
+export function candidateVerdictFromGates(
+  gateResults: readonly GateResult[],
+): CandidateVersionVerdict['verdict'] {
+  if (gateResults.length === 0) return 'inconclusive';
+  // Cast, not optional chaining on a required field: rows read back from
+  // gym_proposals.candidate_verdict are JSON.parse'd and cast, so a pre-P-003 row
+  // really can arrive without `status` however the type reads.
+  const statuses = gateResults.map(
+    (g) => (g as { status?: GateStatus }).status ?? (g.pass ? 'pass' : 'fail'),
+  );
+  if (statuses.some((s) => s === 'fail')) return 'reject';
+  if (statuses.some((s) => s === 'not-measured')) return 'inconclusive';
+  return 'accept';
+}
+
 /** Build the immutable, hash-pinned verdict persisted with each changed-role proposal. */
 export function createCandidateVersionVerdict(input: {
   candidateId: string;
@@ -118,7 +147,7 @@ export function createCandidateVersionVerdict(input: {
       codeHash: input.provenance?.codeHash ?? 'unresolved',
     },
     gateResults: input.gateResults,
-    verdict: input.gateResults.length === 0 ? 'inconclusive' : input.gateResults.every((g) => g.pass) ? 'accept' : 'reject',
+    verdict: candidateVerdictFromGates(input.gateResults),
     recordedAt: input.recordedAt,
   };
 }
@@ -136,9 +165,13 @@ export interface LoopProposalRecord {
   /** Candidate dev-anchor minus the parent's (did this change help?). */
   devAnchorDelta: number;
   costDelta: number;
-  probeStatus: string;
-  /** The loop's own gate verdict — advisory for the human reviewer. */
-  verdict: 'accept' | 'reject';
+  /** The probe guardrail's three-state status ('pass' | 'fail' | 'not-measured'). */
+  probeStatus: GateStatus;
+  /**
+   * The loop's own gate verdict — advisory for the human reviewer. `inconclusive`
+   * means a guardrail went unmeasured, which is NOT a rejection of the candidate.
+   */
+  verdict: 'accept' | 'reject' | 'inconclusive';
   /** Immutable candidate-version evidence used by the promotion authority. */
   candidateVersion: CandidateVersionVerdict;
 }
@@ -347,8 +380,8 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
         rationale: proposal.rationale,
         devAnchorDelta: evalRes.evalResult.devAnchorAgg - parent.evalResult.devAnchorAgg,
         costDelta: evalRes.evalResult.meanCost - config.baselineMeanCost,
-        probeStatus: evalRes.evalResult.allProbesCaught ? 'pass' : 'fail',
-        verdict: verdict.accept ? 'accept' : 'reject',
+        probeStatus: evalRes.evalResult.probeEvidence.status,
+        verdict: verdict.outcome,
         candidateVersion: createCandidateVersionVerdict({
           candidateId,
           parentId,
@@ -393,7 +426,10 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
         decision: 'accept',
         devAnchorDelta: variants.get(championId)!.evalResult.devAnchorAgg - championDevBefore,
         costDelta: evalRes.evalResult.meanCost - config.baselineMeanCost,
-        probeCaught: evalRes.evalResult.allProbesCaught,
+        // The changelog line is a human narrative, so it collapses to a boolean —
+        // only a measured PASS reads as "caught"; a gap reads like a miss, which is
+        // the conservative direction for a summary a person skims.
+        probeCaught: evalRes.evalResult.probeEvidence.status === 'pass',
         narrative: proposal.rationale,
       });
     } else {
@@ -402,7 +438,10 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
         decision: 'reject',
         devAnchorDelta: evalRes.evalResult.devAnchorAgg - championDevBefore,
         costDelta: evalRes.evalResult.meanCost - config.baselineMeanCost,
-        probeCaught: evalRes.evalResult.allProbesCaught,
+        // The changelog line is a human narrative, so it collapses to a boolean —
+        // only a measured PASS reads as "caught"; a gap reads like a miss, which is
+        // the conservative direction for a summary a person skims.
+        probeCaught: evalRes.evalResult.probeEvidence.status === 'pass',
         narrative: proposal.rationale,
       });
     }

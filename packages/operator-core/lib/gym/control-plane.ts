@@ -611,7 +611,15 @@ function isPromotableCandidate(candidate: CandidateVersionVerdict | null, varian
   if (!candidate.candidateId || String(variantId ?? '') !== candidate.candidateId || !candidate.parentId) return false;
   const hashes = candidate.hashes;
   if (!hashes || Object.values(hashes).some((value) => typeof value !== 'string' || value.trim().length === 0 || value === 'unresolved')) return false;
-  return candidate.verdict === 'accept' && candidate.gateResults.length > 0 && candidate.gateResults.every((gate) => gate.pass === true);
+  // P-003: every gate must be an affirmative PASS. Checking `status` rather than the
+  // derived `pass` makes the intent explicit — an unmeasured guardrail is not a
+  // promotion basis — while the `pass` fallback keeps pre-P-003 persisted rows
+  // (which carry no `status`) judged exactly as they were written.
+  return (
+    candidate.verdict === 'accept' &&
+    candidate.gateResults.length > 0 &&
+    candidate.gateResults.every((gate) => ((gate as { status?: string }).status ?? (gate.pass ? 'pass' : 'fail')) === 'pass')
+  );
 }
 
 export async function decideProposal(

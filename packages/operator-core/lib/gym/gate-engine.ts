@@ -6,7 +6,7 @@
  * The frontier prune + champion update live in the loop driver (P-022) using
  * frontier.ts; this module is the per-candidate decision + parent pick.
  */
-import { evaluateGates, type GatesVerdict } from './gates';
+import { evaluateGates, type DeterministicEvidence, type GatesVerdict } from './gates';
 
 export interface VariantEval {
   variantId: string;
@@ -18,10 +18,13 @@ export interface VariantEval {
   devAnchorAgg: number;
   /** Mean cost per run. */
   meanCost: number;
-  /** Did any run break the repo's pre-existing tests? */
-  anyNewRegression: boolean;
-  /** Were all planted bugs caught? */
-  allProbesCaught: boolean;
+  /**
+   * Did any run break the repo's pre-existing tests? Three-state evidence (P-003):
+   * a run that never reported the signal is `not-measured`, never a silent pass.
+   */
+  regressionEvidence: DeterministicEvidence;
+  /** Were all planted bugs caught? Three-state evidence (P-003). */
+  probeEvidence: DeterministicEvidence;
 }
 
 export interface AcceptThresholds {
@@ -47,8 +50,8 @@ export function decideAccept(
     candidateDevAnchorAgg: candidate.devAnchorAgg,
     championDevAnchorAgg: champion.devAnchorAgg,
     delta: t.delta,
-    anyNewRegression: candidate.anyNewRegression,
-    allProbesCaught: candidate.allProbesCaught,
+    regressionEvidence: candidate.regressionEvidence,
+    probeEvidence: candidate.probeEvidence,
     candidateMeanCost: candidate.meanCost,
     baselineMeanCost,
     costCeiling: t.costCeiling,

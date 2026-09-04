@@ -31,8 +31,32 @@ import type { LoopDeps, EvaluateResult, LoopProposalRecord } from './loop';
 import type { ArchiveCandidateRecord } from './qd/niche';
 import type { VariantOverlay } from './variant-overlay';
 import type { VariantEval } from './gate-engine';
+import { rollUpEvidenceStatus, type DeterministicEvidence, type GateStatus } from './gates';
 import type { GymLlmCall, GymTaskPool } from './task-generator';
 import type { AbTask, AbDeps } from './ab-runner';
+
+/**
+ * Roll per-task deterministic signals into one gate's evidence (P-003).
+ *
+ * The coverage counts are what make the status auditable rather than asserted: a
+ * reader can see how many tasks owed the signal, how many reported it, and exactly
+ * which ones did not. An EMPTY contributor list yields `required: 0` and a
+ * `not-measured` status — the case that used to be reported as a satisfied gate.
+ */
+function buildEvidence(
+  contributions: readonly { taskId: string; status: GateStatus; traceRefs: readonly string[] }[],
+): DeterministicEvidence {
+  const unmeasuredTaskIds = contributions.filter((c) => c.status === 'not-measured').map((c) => c.taskId);
+  return {
+    status: rollUpEvidenceStatus(contributions.map((c) => c.status)),
+    coverage: {
+      measured: contributions.length - unmeasuredTaskIds.length,
+      required: contributions.length,
+      unmeasuredTaskIds,
+    },
+    artifacts: contributions.flatMap((c) => c.traceRefs),
+  };
+}
 
 /** A task the loop evaluates, tagged with the pool that decides how its composite is rolled up. */
 export interface LoopTask extends Omit<AbTask, 'pool'> {
@@ -162,8 +186,16 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
       rationale: string; // the worst repeat's rationale (most informative for the proposer)
       distilled: string; // the worst repeat's distilled trace
       cost: number; // SUM over repeats
-      regression: boolean; // any repeat regressed
-      probeCaught: boolean | null; // all repeats caught (probe pool only)
+      /**
+       * P-003 — three-state, per task. `not-measured` means at least one repeat's
+       * deterministic signals did not CONTAIN the key at all, which a boolean could
+       * not distinguish from a reported `false`.
+       */
+      regressionStatus: GateStatus;
+      /** Probe pool only; `null` for a task that owes no probe signal. */
+      probeStatus: GateStatus | null;
+      /** Trace refs for this task's runs — the artifact references the verdict cites. */
+      traceRefs: string[];
     }
     const perTask: PerTask[] = [];
 
@@ -171,8 +203,14 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
       await ab.store.upsertTask({ ...task, pool: task.pool });
       const composites: number[] = [];
       let cost = 0;
-      let regression = false;
-      let probeCaughtAll = task.pool === 'probe' ? true : null;
+      const traceRefs: string[] = [];
+      // Three accumulators per signal, because "did any repeat regress" and "did every
+      // repeat actually report" are different questions and only the pair of them can
+      // tell a clean run apart from an uninstrumented one.
+      let regressionSeen = false;
+      let regressionReportedEveryRepeat = true;
+      let probeMissed = false;
+      let probeReportedEveryRepeat = true;
       let worst: { composite: number; rationale: string; distilled: string } | null = null;
 
       for (let repeat = 0; repeat < repeats; repeat++) {
@@ -215,8 +253,22 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
         const sig = (rawSignals ?? {}) as Record<string, unknown>;
         composites.push(score.composite);
         cost += handle.pipelineUsd + score.costUsd;
-        if (sig.regressions) regression = true;
-        if (task.pool === 'probe' && !sig.planted_bug_caught) probeCaughtAll = false;
+        if (typeof traceRef === 'string' && traceRef.length > 0) traceRefs.push(traceRef);
+        // PRESENCE first, value second. `sig.regressions` being falsy is ambiguous —
+        // it is equally "the run reported no regressions" and "the run never reported".
+        // Only `in` separates them, and that separation is the whole point of P-003.
+        if ('regressions' in sig) {
+          if (sig.regressions) regressionSeen = true;
+        } else {
+          regressionReportedEveryRepeat = false;
+        }
+        if (task.pool === 'probe') {
+          if ('planted_bug_caught' in sig) {
+            if (!sig.planted_bug_caught) probeMissed = true;
+          } else {
+            probeReportedEveryRepeat = false;
+          }
+        }
         if (!worst || score.composite < worst.composite) {
           worst = { composite: score.composite, rationale: score.rationale, distilled: distilledTrace };
         }
@@ -229,8 +281,18 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
         rationale: worst?.rationale ?? '',
         distilled: worst?.distilled ?? '',
         cost,
-        regression,
-        probeCaught: probeCaughtAll,
+        // A measured failure outranks a gap even within one task: if any repeat
+        // regressed, the task regressed, whatever a sibling repeat failed to report.
+        regressionStatus: regressionSeen ? 'fail' : regressionReportedEveryRepeat ? 'pass' : 'not-measured',
+        probeStatus:
+          task.pool !== 'probe'
+            ? null
+            : probeMissed
+              ? 'fail'
+              : probeReportedEveryRepeat
+                ? 'pass'
+                : 'not-measured',
+        traceRefs,
       });
     }
 
@@ -248,9 +310,17 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
       devAnchorAgg: mean(devAnchor.map((r) => r.composite)),
       // Mean cost PER RUN across every (task × repeat).
       meanCost: totalRuns ? totalCost / totalRuns : 0,
-      anyNewRegression: perTask.some((r) => r.regression),
-      // No probe tasks ⇒ the gate is vacuously satisfied (probe is a guardrail, not a target).
-      allProbesCaught: probes.length === 0 ? true : probes.every((r) => r.probeCaught === true),
+      // P-003 — typed evidence, not booleans. Every task owes the regression signal;
+      // only probe tasks owe the probe signal.
+      regressionEvidence: buildEvidence(perTask.map((r) => ({ taskId: r.taskId, status: r.regressionStatus, traceRefs: r.traceRefs }))),
+      // The zero-probe case is `not-measured`, NOT the vacuous `true` it used to be.
+      // "Probe is a guardrail, not a target" justified never REQUIRING probe tasks; it
+      // never justified reporting an uncaught-bug guarantee for a pool that never ran.
+      // A run with no probes now yields an inconclusive verdict — the loop still runs,
+      // it just cannot autonomously promote on a guardrail it never exercised.
+      probeEvidence: buildEvidence(
+        probes.map((r) => ({ taskId: r.taskId, status: r.probeStatus ?? 'not-measured', traceRefs: r.traceRefs })),
+      ),
     };
 
     // The proposer reflects on the WORST train traces (lowest per-task mean composite first).
