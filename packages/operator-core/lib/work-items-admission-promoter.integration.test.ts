@@ -142,7 +142,7 @@ async function seedItem(input: {
   id: string;
   title?: string;
   summary?: string;
-  admission?: string;
+  admission?: string | null;
   status?: string;
   createdAtMs?: number;
   vector?: string | null;
@@ -158,7 +158,7 @@ async function seedItem(input: {
     VALUES (${input.workspaceId ?? WS}, ${input.harness ?? HARNESS}, ${input.id},
             ${input.title ?? 'vitest clone failure'},
             ${input.summary ?? 'same finding and same retry remedy'}, ${input.status ?? 'open'}, 'bug',
-            ${input.admission ?? 'pending'}, ${input.conditionKey ?? null}, NULL, '{}'::jsonb,
+            ${input.admission === undefined ? 'pending' : input.admission}, ${input.conditionKey ?? null}, NULL, '{}'::jsonb,
             ${input.createdAtMs ?? NOW - 10_000}, ${input.createdAtMs ?? NOW - 10_000},
             ${input.vector === undefined ? '[1,0,0]' : input.vector}::vector,
             ${input.vector === null ? null : 'gemma'})`;
@@ -333,6 +333,50 @@ describe('work-item admission promoter (real Postgres)', () => {
         },
       },
     });
+  });
+
+  it('terminalizes a legacy-admission loser surfaced only through a transitive merge component', async () => {
+    await seedItem({ id: 'WI-canonical', admission: 'admitted', createdAtMs: NOW - 30_000, vector: '[1,0,0]' });
+    await seedItem({ id: 'WI-legacy-loser', admission: null, createdAtMs: NOW - 20_000, vector: '[1,0,0]' });
+    await seedItem({ id: 'WI-pending-bridge', admission: 'pending', createdAtMs: NOW - 10_000, vector: '[1,0,0]' });
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-transitive-legacy',
+      sql: db.sql,
+      llmCall: judgementCall('r-finding-merge'),
+      now: () => NOW,
+    });
+
+    expect(result).toMatchObject({ batchSize: 1, promoted: 0, merged: 2, held: 0, modelCalled: true });
+    const rows = await db.sql<
+      Array<{
+        feature_id: string;
+        status: string;
+        admission: string | null;
+        terminal_reason: string | null;
+        payload: Record<string, any> | null;
+      }>
+    >`
+      SELECT feature_id, status, admission, terminal_reason, payload
+        FROM harness_shared.work_items
+       ORDER BY feature_id`;
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toMatchObject({ feature_id: 'WI-canonical', status: 'open', admission: 'admitted' });
+    for (const row of rows.slice(1)) {
+      expect(row).toMatchObject({
+        status: 'dropped',
+        admission: 'admitted',
+        terminal_reason: expect.stringContaining('duplicate of WI-canonical'),
+        payload: {
+          admissionMerge: {
+            canonicalId: 'WI-canonical',
+            runId: 'promoter-transitive-legacy',
+            actor: 'system:work-item-admission-promoter',
+          },
+        },
+      });
+    }
   });
 
   it('keeps and cross-links an R-remedy pair', async () => {

@@ -9,15 +9,30 @@
  * missing parameter. Now that a SECOND surface (the goal popup) depends on this
  * function, a silent regression here would take out both.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildSessionStreamUrl,
   deliveryFromSendResponse,
   sessionTargetFromRoster,
+  resolveOwnerSession,
 } from './use-owner-session-chat';
 
 const LIVE = { source_kind: 'claude', session_id: 's-live', active: true, last_ts: null };
 const ENDED = { source_kind: 'claude', session_id: 's-ended', active: false, last_ts: null };
+
+describe('owner history without a live roster row', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('resolves Codex and OMP histories when no backend hint survives', async () => {
+    for (const source_kind of ['codex', 'omp']) {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ sessions: [{ source_kind, session_id: 'native-id', last_ts: null }] }))));
+      expect(await resolveOwnerSession('su-ended')).toMatchObject({ source_kind, session_id: 'native-id' });
+    }
+  });
+  it('preserves an explicit stream key returned by owner-session resolution', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ sessions: [{ source_kind: 'codex', session_id: '42', stream_key: 'codexSessionKey', last_ts: null }] }))));
+    expect(await resolveOwnerSession('su-ended')).toMatchObject({ stream_key: 'codexSessionKey' });
+  });
+});
 
 /** Parse the query off a built url so assertions read as intent, not string-match. */
 const q = (url: string | null) => new URLSearchParams((url ?? '').split('?')[1] ?? '');

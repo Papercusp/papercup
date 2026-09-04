@@ -82,6 +82,7 @@ export const COORD_EVENT_LOG_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.coord_event_log (
     id bigserial PRIMARY KEY, workspace_id text NOT NULL DEFAULT 'default', surface text NOT NULL,
     writer_key text, msg_id text NOT NULL, body jsonb NOT NULL, ts timestamptz NOT NULL DEFAULT now(),
+    superseded_by_msg_id text, superseded_at timestamptz,
     harness_slug text, origin text NOT NULL DEFAULT 'local', author_pubkey text,
     fed_ts bigint, fed_hlc text);
   CREATE UNIQUE INDEX IF NOT EXISTS coord_event_log_fed_uq ON harness_shared.coord_event_log (workspace_id, msg_id)

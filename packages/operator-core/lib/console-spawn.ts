@@ -64,6 +64,10 @@ import { scopeUnitForTask, sliceForClass } from './task-manager/types';
 import { warmScopeProbe } from './task-manager/managed-spawn';
 import { agentSpawnScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 
+/** Shared with psu-pty-host.mjs; kept as a literal here because this TypeScript
+ * module is also imported by the launcher-side plain-ESM boundary. */
+export const HEADLESS_NORMALIZED_LOG_ENV = 'PAPERCUSP_PSU_HEADLESS_NORMALIZED_LOG';
+
 warmScopeProbe();
 
 // ─── Linux terminal selection ────────────────────────────────────────

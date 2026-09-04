@@ -507,11 +507,16 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect((r as { pid: number | null }).pid).toBe(7777);
     expect((r as { taskId?: string }).taskId).toMatch(/^[0-9a-z]{4,64}$/);
     expect((r as { logPath?: string }).logPath).toMatch(/hl-.*\.log$/);
+    expect((r as { normalizedLogPath?: string }).normalizedLogPath).toBe(
+      headlessNormalizedLogPath((r as { logPath: string }).logPath),
+    );
     // the spawned program is bash -lc <oneliner>, NOT a terminal emulator
     const [bin, args] = spawnMock.mock.calls[0];
     expect(bin).toBe('bash');
     expect(args[0]).toBe('-lc');
     expect(args[1]).toContain('psu --headless');
+    expect(args[1]).toContain('export PAPERCUSP_PSU_HEADLESS_NORMALIZED_LOG=');
+    expect(args[1]).toContain((r as { normalizedLogPath: string }).normalizedLogPath);
   }, 10_000);
 
   it('stamps a known trimmed coord owner only into the agent-session ledger detail', async () => {

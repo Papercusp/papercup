@@ -86,6 +86,8 @@ import {
   isCandidateFile,
   readBudgets,
   violationsFor,
+  weightIndex,
+  worseningViolations,
   weighToolsInSource,
 } from './posttooluse-tool-prompt-weight-nudge.mjs';
 
@@ -168,38 +170,6 @@ export function resultingFileText(tool, input, filePath, readFile = readFileSync
     return { text: input.edits.reduce(applyOne, base), exact, existed };
   }
   return { text: base, exact: false, existed };
-}
-
-/** name → weight, keeping the HEAVIEST when a name somehow appears twice. */
-export function weightIndex(tools) {
-  const m = new Map();
-  for (const t of tools) {
-    const prev = m.get(t.name);
-    if (prev === undefined || t.weight > prev) m.set(t.name, t.weight);
-  }
-  return m;
-}
-
-/**
- * The violations this edit WORSENS — the deny set. Everything else passes,
- * including a tool that stays over budget while getting smaller.
- *
- * `beforeIndex` is a Map name→weight of the file as it stands. A name absent
- * from it is either a new tool or one that was unmeasurable before; both are
- * treated as "no baseline", and a tool with no baseline that lands over budget
- * is a breach the author is introducing right now.
- */
-export function worseningViolations(afterViolations, beforeIndex) {
-  const out = [];
-  for (const v of afterViolations) {
-    const before = beforeIndex.get(v.name);
-    if (before === undefined) {
-      out.push({ ...v, before: null, delta: null });
-      continue;
-    }
-    if (v.weight > before) out.push({ ...v, before, delta: v.weight - before });
-  }
-  return out;
 }
 
 /**

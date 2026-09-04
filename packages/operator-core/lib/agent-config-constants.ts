@@ -1352,11 +1352,10 @@ export function supersededDerivedCompactionLimits(spec?: string | null, opts?: {
  */
 export function selfSetCeilingForSpec(spec?: string | null, opts?: { fleetMember?: boolean }): number {
   if (opts?.fleetMember) return defaultCompactionLimitForSpec(spec, opts);
-  if (spec == null || spec.trim() === '' || spec.includes('[1m]')) {
-    const raw = (MODEL_WINDOW_1M - COMPACTION_WINDOW_MARGIN_TOKENS) / COMPACTION_OVERSHOOT_FACTOR;
-    return Math.floor(raw / 1000) * 1000;
-  }
-  return defaultCompactionLimitForSpec(spec, opts);
+  // Extended Codex models do not carry Claude's [1m] marker. Derive every
+  // deliberate self-set from its window, never from the capped seeded default.
+  const window = derivesFrom1mWindow(spec) ? MODEL_WINDOW_1M : modelWindowForSpec(spec);
+  return selfSetCeilingForWindow(window, opts);
 }
 
 /**

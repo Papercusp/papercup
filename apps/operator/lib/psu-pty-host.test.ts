@@ -89,6 +89,8 @@ import {
   sharedDrillLedgerPath,
   appendSharedDrillLedgerEvent,
   stripAnsi,
+  makeHeadlessLogNormalizer,
+  createHeadlessNormalizedLogWriter,
   mcpServerRowStatus,
   mcpDialogRowSelected,
   mcpConnectedVerdict,
@@ -3142,6 +3144,50 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
     });
     it('drops other control chars but keeps newlines and tabs', () => {
       expect(stripAnsi('a\x07b\tc\nd')).toBe('ab\tc\nd');
+    });
+  });
+
+  describe('headless normalized log sidecar (EI-22062652981611226)', () => {
+    it('carries split ANSI sequences across chunks, splits CR redraw frames, and keeps CRLF to one newline', () => {
+      const normalizer = makeHeadlessLogNormalizer({ maxLineBytes: 64 });
+
+      expect(normalizer.push('\x1b[36mCod')).toBe('');
+      expect(normalizer.push('ex\x1b[0m\r')).toBe('Codex\n');
+      expect(normalizer.push('\nnext\r\nlast')).toBe('next\n');
+      expect(normalizer.flush()).toBe('last\n');
+    });
+
+    it('chunks a giant frame by UTF-8 bytes without splitting a Unicode code point', () => {
+      const normalizer = makeHeadlessLogNormalizer({ maxLineBytes: 5 });
+      const output = normalizer.push('a🙂b');
+      expect(output).toBe(`a🙂\n`);
+      expect(normalizer.flush()).toBe('b\n');
+      expect(Buffer.byteLength('a🙂', 'utf8')).toBeLessThanOrEqual(5);
+    });
+
+    it('writes a bounded, owner-only companion and closes idempotently', () => {
+      const root = nodeFs.mkdtempSync(pathJoin(nodeOs.tmpdir(), 'psu-normalized-log-'));
+      const path = pathJoin(root, 'member.normalized.log');
+      try {
+        const writer = createHeadlessNormalizedLogWriter(path, {
+          maxLineBytes: 64,
+          maxBytes: 32,
+          maxWriteBytes: 8,
+        });
+        expect(writer.enabled).toBe(true);
+        writer.push(`\x1b[31m${'x'.repeat(100)}`);
+        writer.close();
+        writer.close();
+
+        expect(nodeFs.existsSync(path)).toBe(true);
+        // The writer permits at most one bounded write chunk beyond the
+        // retained tail before trimming; it must never retain the whole frame.
+        expect(nodeFs.statSync(path).size).toBeLessThanOrEqual(32 + 8);
+        expect(nodeFs.statSync(path).mode & 0o777).toBe(0o600);
+        expect(nodeFs.readFileSync(path, 'utf8')).not.toMatch(/\x1b/);
+      } finally {
+        nodeFs.rmSync(root, { recursive: true, force: true });
+      }
     });
   });
 

@@ -42,10 +42,12 @@
  * boundary the operator's own route-level code-splitting gives them.
  */
 import { lazy, type ComponentType, type LazyExoticComponent } from 'react';
+import '../../../../apps/operator/app/harness/harness.css';
 
 /** The portal rail kinds that resolve to an operator surface. */
 export type OperatorSurfaceKind =
   | 'tasks-roster'
+  | 'session-history'
   | 'desktops'
   | 'plans'
   | 'inbox'
@@ -66,6 +68,7 @@ export const OPERATOR_SURFACES: Record<
   OperatorSurfaceKind,
   LazyExoticComponent<ComponentType<Record<string, never>>>
 > = {
+  'session-history': lazy(() => import('../../../../apps/operator/app/adv/sessions/SessionHistoryModal')),
   // The topbar process pill's roster. Not a rail surface — it is the popover
   // behind the process pill — but it is the same kind of thing (an operator
   // panel the portal framed) and it is the LAST iframe in the portal, so it

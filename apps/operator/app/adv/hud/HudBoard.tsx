@@ -488,6 +488,12 @@ export default function HudBoard({
 
   return (
     <div className="hud">
+      <header className="hud__heading">
+        <div>
+          <h1>Workspace activity</h1>
+          <p>Follow your agents and keep work moving.</p>
+        </div>
+      </header>
       {/* The launcher owns a ROW OF ITS OWN, ABOVE the tab strip (owner ask
           2026-07-27, restated: "put the row with the new session button above the
           sessions / plans / work items tabs"). Its position has moved several

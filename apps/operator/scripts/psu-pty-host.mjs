@@ -2843,7 +2843,10 @@ export function createHeadlessNormalizedLogWriter(path, {
 
   try {
     mkdirSync(dirname(target), { recursive: true });
-    fd = openSync(target, 'a', 0o600);
+    // Read access is required by the tail-trim path below. `a` is write-only
+    // on POSIX, so its fd makes readSync throw as soon as the cap is crossed,
+    // disabling the sidecar exactly when it needs bounding most.
+    fd = openSync(target, 'a+', 0o600);
     try {
       chmodSync(target, 0o600);
     } catch {
@@ -6850,6 +6853,15 @@ export function hostThroughPty(o) {
         clearInterval(activityTimer);
       } catch {
         /* ignore */
+      }
+      // The normalized companion is a separate diagnostic file descriptor.
+      // Flush the final visible frame and close it on every terminal exit so
+      // the last line is durable and a successor/test can reopen the path
+      // without inheriting an open writer from this host.
+      try {
+        normalizedLog?.close();
+      } catch {
+        /* diagnostic side-channel cleanup must never block session teardown */
       }
       try {
         if (headlessClaudeOnboardingExpiryTimer) clearTimeout(headlessClaudeOnboardingExpiryTimer);

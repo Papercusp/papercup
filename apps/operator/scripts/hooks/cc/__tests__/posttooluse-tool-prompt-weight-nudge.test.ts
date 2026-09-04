@@ -24,7 +24,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -50,11 +50,19 @@ type Hook = {
   staticStringValue: (ts: unknown, node: unknown) => string | null;
   weighToolObject: (ts: unknown, obj: unknown) => number | null;
   weighToolsInSource: (ts: unknown, src: string, file?: string) => Array<{ name: string; weight: number }>;
+  weightIndex: (tools: Array<{ name: string; weight: number }>) => Map<string, number>;
+  worseningViolations: (
+    violations: ReturnType<Hook['violationsFor']>,
+    before: Map<string, number>,
+  ) => Array<ReturnType<Hook['violationsFor']>[number] & { before: number | null; delta: number | null }>;
   violationsFor: (
     tools: Array<{ name: string; weight: number }>,
     b: { BUDGET: number; HARD_CAP: number; allowOverBudget?: string[] | null },
   ) => Array<{ name: string; weight: number; hardCap: boolean; limit: number; cutAtLeast: number }>;
-  formatNudge: (v: ReturnType<Hook['violationsFor']>) => string;
+  formatNudge: (
+    v: ReturnType<Hook['violationsFor']>,
+    options?: { preExisting?: ReturnType<Hook['violationsFor']> },
+  ) => string;
   nudgeFor: (p: string) => string;
 };
 
@@ -125,6 +133,8 @@ describe('posttooluse-tool-prompt-weight-nudge', () => {
   describe('3. falsifiability, end-to-end through the real binary', () => {
     let dir = '';
     const toolDir = () => join(dir, 'packages/operator-core/lib/agent-tools/loop');
+    const def = (name: string, len: number) =>
+      `export default defineTool({ name: '${name}', description: '${'x'.repeat(len)}' });\n`;
 
     beforeAll(() => {
       // Built OUTSIDE the shared tree on purpose: proving a guard can fail must
@@ -138,11 +148,24 @@ describe('posttooluse-tool-prompt-weight-nudge', () => {
         join(dir, 'packages/operator-core/lib/agent-tools/tool-guidance-budget.ts'),
         `export const BUDGET = ${BUDGET};\nexport const HARD_CAP = ${HARD_CAP};\n`,
       );
-      const def = (name: string, len: number) =>
-        `export default defineTool({ name: '${name}', description: '${'x'.repeat(len)}' });\n`;
       writeFileSync(join(toolDir(), 'ok.ts'), def('loop:ok', BUDGET));
       writeFileSync(join(toolDir(), 'over.ts'), def('loop:over', BUDGET + 68));
       writeFileSync(join(toolDir(), 'hard.ts'), def('loop:hard', HARD_CAP + 93));
+      execFileSync('git', ['init', '-q'], { cwd: dir });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+      execFileSync('git', ['config', 'user.name', 'Prompt Weight Test'], { cwd: dir });
+      execFileSync(
+        'git',
+        [
+          'add',
+          'packages/operator-core/lib/agent-tools/tool-guidance-budget.ts',
+          'packages/operator-core/lib/agent-tools/loop/ok.ts',
+          'packages/operator-core/lib/agent-tools/loop/over.ts',
+          'packages/operator-core/lib/agent-tools/loop/hard.ts',
+        ],
+        { cwd: dir },
+      );
+      execFileSync('git', ['commit', '-qm', 'fixture baseline'], { cwd: dir });
     });
 
     afterAll(() => {
@@ -160,6 +183,28 @@ describe('posttooluse-tool-prompt-weight-nudge', () => {
       expect(msg).toContain('Cut >=68');
       // The actionable remedy, not just the complaint.
       expect(msg).toContain('guidance.returns');
+    });
+
+    it('a pre-existing breach is reported without blaming this edit', () => {
+      const target = join(toolDir(), 'over.ts');
+      appendFileSync(target, '\n// unrelated edit after the baseline\n');
+      const msg = runHook({ tool_name: 'Edit', tool_input: { file_path: target } });
+      expect(msg).toContain('PRE-EXISTING P-011 prompt-weight breach');
+      expect(msg).toContain('not caused by this edit');
+      expect(msg).not.toContain('budget increased by this edit');
+      expect(msg).toContain(`already ${BUDGET + 68} chars before this edit`);
+    });
+
+    it('a counted-field increase is attributed to the edit and includes the delta', () => {
+      const target = join(toolDir(), 'growing.ts');
+      writeFileSync(target, def('loop:growing', BUDGET - 100));
+      execFileSync('git', ['add', 'packages/operator-core/lib/agent-tools/loop/growing.ts'], { cwd: dir });
+      execFileSync('git', ['commit', '-qm', 'growing baseline'], { cwd: dir });
+      writeFileSync(target, def('loop:growing', BUDGET + 20));
+      const msg = runHook({ tool_name: 'Edit', tool_input: { file_path: target } });
+      expect(msg).toContain('budget increased by this edit');
+      expect(msg).toContain(`was ${BUDGET - 100}, +120`);
+      expect(msg).toContain('Cut >=20');
     });
 
     it('over the HARD CAP but NOT grandfathered → still reported against the BUDGET, with the FULL cut', () => {

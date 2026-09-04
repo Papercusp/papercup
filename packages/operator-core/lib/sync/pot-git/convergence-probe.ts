@@ -63,6 +63,15 @@
  *  genuinely stuck mirror is named within a quarter hour rather than a week. */
 export const DEFAULT_CONVERGENCE_PERSISTENCE_MS = 15 * 60 * 1000;
 
+/**
+ * Release acceptance needs a fresh, exact observation rather than the
+ * long-running lag detector below. Keep the window aligned with the normal
+ * three-tick convergence cadence: an install that has not produced a fresh
+ * signed statement inside it is UNKNOWN, never silently current.
+ */
+export const DEFAULT_RELEASE_CONSISTENCY_MAX_OBSERVATION_AGE_MS = 15 * 60 * 1000;
+export const DEFAULT_RELEASE_CONSISTENCY_MAX_FUTURE_SKEW_MS = 60 * 1000;
+
 /** A snapshot a device has ANNOUNCED (signature-verified by the caller before it
  *  gets here — see the guard note on {@link judgeConvergence}). */
 export interface AnnouncedSnapshot {
@@ -82,6 +91,16 @@ export interface AnnouncedSnapshot {
    */
   sequence?: number;
   sigrefsOid?: string;
+  /** Receiver-local time at which the federated event was persisted. */
+  observedAtMs?: number;
+  /** Sender time covered by the announcement signature. */
+  signedAtMs?: number;
+  /**
+   * Stable lineage identifier covered by the announcement signature. V1
+   * announcements do not carry it; exact release consistency must therefore
+   * remain UNKNOWN until the versioned protocol supplies it.
+   */
+  storeGeneration?: string;
 }
 
 /** What WE currently mirror for a device. */
@@ -89,6 +108,385 @@ export interface LocalMirror {
   devicePubkeyBase64: string;
   /** `null` = we hold no sigrefs for this device at all (never seeded it). */
   version: number | null;
+  /** Blob OID at this device's local refs/rad/sigrefs. */
+  sigrefsOid?: string | null;
+  /** Stable lineage identifier read from the mirrored signed snapshot. */
+  storeGeneration?: string | null;
+}
+
+/**
+ * Exact release-readiness state. This is intentionally NOT a boolean: missing
+ * evidence is different from observed lag, and neither may collapse into the
+ * health detector's permissive `converged:true` value.
+ */
+export type ReleaseConsistencyState = 'unknown' | 'catching-up' | 'current';
+
+export type ReleaseConsistencyIssueCode =
+  | 'expected-peer-set-empty'
+  | 'missing-announcement'
+  | 'missing-receiver-sequence'
+  | 'missing-observation-time'
+  | 'stale-observation'
+  | 'future-observation'
+  | 'missing-signed-time'
+  | 'stale-signed-snapshot'
+  | 'future-signed-snapshot'
+  | 'missing-store-generation'
+  | 'missing-generation-sequence'
+  | 'missing-snapshot-oid'
+  | 'replayed-announcement'
+  | 'missing-local-mirror'
+  | 'missing-local-store-generation'
+  | 'missing-local-generation-sequence'
+  | 'missing-local-snapshot-oid'
+  | 'store-generation-mismatch'
+  | 'generation-sequence-mismatch'
+  | 'snapshot-oid-mismatch';
+
+export interface ReleaseConsistencyIssue {
+  /** null only for a whole-evaluation issue such as an empty expected set. */
+  devicePubkeyBase64: string | null;
+  code: ReleaseConsistencyIssueCode;
+  detail: string;
+}
+
+export interface ReleaseConsistencyPeerVerdict {
+  devicePubkeyBase64: string;
+  state: ReleaseConsistencyState;
+  receiverSequence: number | null;
+  storeGeneration: string | null;
+  announcedVersion: number | null;
+  localVersion: number | null;
+  announcedSigrefsOid: string | null;
+  localSigrefsOid: string | null;
+  observedAtMs: number | null;
+  signedAtMs: number | null;
+  issues: ReleaseConsistencyIssue[];
+}
+
+export interface ReleaseConsistencyVerdict {
+  state: ReleaseConsistencyState;
+  /** The explicit, deduplicated peer set this verdict promises to cover. */
+  expectedDevicePubkeys: string[];
+  currentDevicePubkeys: string[];
+  /** Greatest receiver event id represented by the selected peer snapshots. */
+  watermarkSequence: number | null;
+  evaluatedAtMs: number;
+  maxObservationAgeMs: number;
+  peers: ReleaseConsistencyPeerVerdict[];
+  issues: ReleaseConsistencyIssue[];
+}
+
+export interface JudgeReleaseConsistencyInput {
+  /** Named release population. Empty is UNKNOWN, not vacuous success. */
+  expectedDevicePubkeys: readonly string[];
+  /** Signature-verified announcements, potentially including relays/replays. */
+  announced: readonly AnnouncedSnapshot[];
+  /** Local mirrored snapshots for the expected devices. */
+  local: readonly LocalMirror[];
+  nowMs: number;
+  maxObservationAgeMs?: number;
+  maxFutureSkewMs?: number;
+}
+
+const RELEASE_CONSISTENCY_UNKNOWN_CODES = new Set<ReleaseConsistencyIssueCode>([
+  'expected-peer-set-empty',
+  'missing-announcement',
+  'missing-receiver-sequence',
+  'missing-observation-time',
+  'stale-observation',
+  'future-observation',
+  'missing-signed-time',
+  'stale-signed-snapshot',
+  'future-signed-snapshot',
+  'missing-store-generation',
+  'missing-generation-sequence',
+  'missing-snapshot-oid',
+  'replayed-announcement',
+  'missing-local-store-generation',
+  'missing-local-generation-sequence',
+  'missing-local-snapshot-oid',
+]);
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function safeNonNegativeInteger(value: unknown): number | null {
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : null;
+}
+
+function safeFiniteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Exact release-consistency judge.
+ *
+ * Unlike {@link judgeConvergence}, this function never grants a warm-up period,
+ * never treats an absent peer as success, and never uses `local >= announced`.
+ * Every expected peer needs a fresh receiver observation and fresh signed
+ * statement, a signed store generation, an exact per-generation sequence, and
+ * the identical sigrefs OID in the local mirror. Missing protocol fields are
+ * UNKNOWN; complete-but-different evidence is CATCHING-UP; only exact equality
+ * across the entire named set is CURRENT.
+ */
+export function judgeReleaseConsistency(input: JudgeReleaseConsistencyInput): ReleaseConsistencyVerdict {
+  const maxObservationAgeMs =
+    input.maxObservationAgeMs ?? DEFAULT_RELEASE_CONSISTENCY_MAX_OBSERVATION_AGE_MS;
+  const maxFutureSkewMs = input.maxFutureSkewMs ?? DEFAULT_RELEASE_CONSISTENCY_MAX_FUTURE_SKEW_MS;
+  const expectedDevicePubkeys = [...new Set(input.expectedDevicePubkeys.filter((d) => d.length > 0))].sort();
+
+  if (expectedDevicePubkeys.length === 0) {
+    const issue: ReleaseConsistencyIssue = {
+      devicePubkeyBase64: null,
+      code: 'expected-peer-set-empty',
+      detail: 'release consistency requires an explicit non-empty expected peer set',
+    };
+    return {
+      state: 'unknown',
+      expectedDevicePubkeys,
+      currentDevicePubkeys: [],
+      watermarkSequence: null,
+      evaluatedAtMs: input.nowMs,
+      maxObservationAgeMs,
+      peers: [],
+      issues: [issue],
+    };
+  }
+
+  const expected = new Set(expectedDevicePubkeys);
+  const announcementsByDevice = new Map<string, AnnouncedSnapshot[]>();
+  for (const announcement of input.announced) {
+    if (!expected.has(announcement.devicePubkeyBase64)) continue;
+    const list = announcementsByDevice.get(announcement.devicePubkeyBase64) ?? [];
+    list.push(announcement);
+    announcementsByDevice.set(announcement.devicePubkeyBase64, list);
+  }
+  const localByDevice = new Map(input.local.map((mirror) => [mirror.devicePubkeyBase64, mirror]));
+
+  const peers: ReleaseConsistencyPeerVerdict[] = [];
+  const issues: ReleaseConsistencyIssue[] = [];
+  const currentDevicePubkeys: string[] = [];
+  let watermarkSequence: number | null = null;
+
+  const addIssue = (
+    peerIssues: ReleaseConsistencyIssue[],
+    devicePubkeyBase64: string,
+    code: ReleaseConsistencyIssueCode,
+    detail: string,
+  ): void => {
+    const issue = { devicePubkeyBase64, code, detail } satisfies ReleaseConsistencyIssue;
+    peerIssues.push(issue);
+    issues.push(issue);
+  };
+
+  for (const devicePubkeyBase64 of expectedDevicePubkeys) {
+    const deviceAnnouncements = announcementsByDevice.get(devicePubkeyBase64) ?? [];
+    const receiverOrdered = deviceAnnouncements
+      .map((announcement) => ({ announcement, receiverSequence: safeNonNegativeInteger(announcement.sequence) }))
+      .filter((entry): entry is { announcement: AnnouncedSnapshot; receiverSequence: number } =>
+        entry.receiverSequence !== null,
+      )
+      .sort((a, b) => b.receiverSequence - a.receiverSequence);
+    const latest = receiverOrdered[0] ?? null;
+    const local = localByDevice.get(devicePubkeyBase64) ?? null;
+    const peerIssues: ReleaseConsistencyIssue[] = [];
+
+    if (!latest) {
+      addIssue(
+        peerIssues,
+        devicePubkeyBase64,
+        deviceAnnouncements.length > 0 ? 'missing-receiver-sequence' : 'missing-announcement',
+        deviceAnnouncements.length > 0
+          ? 'announcements exist but none carries a valid receiver event sequence'
+          : 'the expected peer has no signature-verified announcement',
+      );
+    }
+
+    const announcement = latest?.announcement ?? null;
+    const receiverSequence = latest?.receiverSequence ?? null;
+    if (receiverSequence !== null) {
+      watermarkSequence = Math.max(watermarkSequence ?? receiverSequence, receiverSequence);
+    }
+
+    const storeGeneration = nonEmptyString(announcement?.storeGeneration);
+    const announcedVersion = safeNonNegativeInteger(announcement?.version);
+    const announcedSigrefsOid = nonEmptyString(announcement?.sigrefsOid);
+    const observedAtMs = safeFiniteNumber(announcement?.observedAtMs);
+    const signedAtMs = safeFiniteNumber(announcement?.signedAtMs);
+
+    if (announcement) {
+      if (observedAtMs === null) {
+        addIssue(peerIssues, devicePubkeyBase64, 'missing-observation-time', 'receiver observation time is absent');
+      } else if (observedAtMs > input.nowMs + maxFutureSkewMs) {
+        addIssue(peerIssues, devicePubkeyBase64, 'future-observation', 'receiver observation time is implausibly future');
+      } else if (input.nowMs - observedAtMs > maxObservationAgeMs) {
+        addIssue(peerIssues, devicePubkeyBase64, 'stale-observation', 'receiver observation is outside the freshness window');
+      }
+
+      if (signedAtMs === null) {
+        addIssue(peerIssues, devicePubkeyBase64, 'missing-signed-time', 'signed snapshot time is absent');
+      } else if (signedAtMs > input.nowMs + maxFutureSkewMs) {
+        addIssue(peerIssues, devicePubkeyBase64, 'future-signed-snapshot', 'signed snapshot time is implausibly future');
+      } else if (input.nowMs - signedAtMs > maxObservationAgeMs) {
+        addIssue(peerIssues, devicePubkeyBase64, 'stale-signed-snapshot', 'signed snapshot is outside the freshness window');
+      }
+
+      if (storeGeneration === null) {
+        addIssue(
+          peerIssues,
+          devicePubkeyBase64,
+          'missing-store-generation',
+          'announcement does not bind a signed store generation',
+        );
+      }
+      if (announcedVersion === null) {
+        addIssue(
+          peerIssues,
+          devicePubkeyBase64,
+          'missing-generation-sequence',
+          'announcement does not carry a valid per-generation sequence',
+        );
+      }
+      if (announcedSigrefsOid === null) {
+        addIssue(peerIssues, devicePubkeyBase64, 'missing-snapshot-oid', 'announcement does not bind a sigrefs OID');
+      }
+
+      if (storeGeneration !== null && announcedVersion !== null) {
+        const sameGeneration = receiverOrdered.filter(
+          ({ announcement: candidate }) => candidate.storeGeneration === storeGeneration,
+        );
+        const priorHigherSequence = sameGeneration.some(
+          ({ announcement: candidate }) =>
+            safeNonNegativeInteger(candidate.version) !== null && candidate.version > announcedVersion,
+        );
+        const exactSignedReplay = sameGeneration.slice(1).some(({ announcement: candidate }) =>
+          candidate.version === announcedVersion &&
+          candidate.sigrefsOid === announcedSigrefsOid &&
+          candidate.signedAtMs === signedAtMs,
+        );
+        if (priorHigherSequence || exactSignedReplay) {
+          addIssue(
+            peerIssues,
+            devicePubkeyBase64,
+            'replayed-announcement',
+            priorHigherSequence
+              ? 'the newest receiver event lowers the signed sequence within the same store generation'
+              : 'the newest receiver event repeats an identical signed snapshot',
+          );
+        }
+      }
+    }
+
+    const localVersion = safeNonNegativeInteger(local?.version);
+    const localStoreGeneration = nonEmptyString(local?.storeGeneration);
+    const localSigrefsOid = nonEmptyString(local?.sigrefsOid);
+
+    if (announcement && (!local || local.version === null)) {
+      addIssue(peerIssues, devicePubkeyBase64, 'missing-local-mirror', 'no local mirror exists for the expected peer');
+    } else if (announcement && local) {
+      if (localStoreGeneration === null) {
+        addIssue(
+          peerIssues,
+          devicePubkeyBase64,
+          'missing-local-store-generation',
+          'local mirrored snapshot does not expose a signed store generation',
+        );
+      }
+      if (localVersion === null) {
+        addIssue(
+          peerIssues,
+          devicePubkeyBase64,
+          'missing-local-generation-sequence',
+          'local mirrored snapshot does not expose a valid per-generation sequence',
+        );
+      }
+      if (localSigrefsOid === null) {
+        addIssue(
+          peerIssues,
+          devicePubkeyBase64,
+          'missing-local-snapshot-oid',
+          'local mirror does not expose its sigrefs OID',
+        );
+      }
+
+      if (storeGeneration !== null && localStoreGeneration !== null && storeGeneration !== localStoreGeneration) {
+        addIssue(
+          peerIssues,
+          devicePubkeyBase64,
+          'store-generation-mismatch',
+          `local generation ${localStoreGeneration} does not equal announced generation ${storeGeneration}`,
+        );
+      }
+      if (announcedVersion !== null && localVersion !== null && announcedVersion !== localVersion) {
+        addIssue(
+          peerIssues,
+          devicePubkeyBase64,
+          'generation-sequence-mismatch',
+          `local sequence ${localVersion} does not equal announced sequence ${announcedVersion}`,
+        );
+      }
+      if (announcedSigrefsOid !== null && localSigrefsOid !== null && announcedSigrefsOid !== localSigrefsOid) {
+        addIssue(
+          peerIssues,
+          devicePubkeyBase64,
+          'snapshot-oid-mismatch',
+          `local sigrefs ${localSigrefsOid} does not equal announced sigrefs ${announcedSigrefsOid}`,
+        );
+      }
+    }
+
+    const peerState: ReleaseConsistencyState = peerIssues.some((issue) =>
+      RELEASE_CONSISTENCY_UNKNOWN_CODES.has(issue.code),
+    )
+      ? 'unknown'
+      : peerIssues.length > 0
+        ? 'catching-up'
+        : 'current';
+    if (peerState === 'current') currentDevicePubkeys.push(devicePubkeyBase64);
+    peers.push({
+      devicePubkeyBase64,
+      state: peerState,
+      receiverSequence,
+      storeGeneration,
+      announcedVersion,
+      localVersion,
+      announcedSigrefsOid,
+      localSigrefsOid,
+      observedAtMs,
+      signedAtMs,
+      issues: peerIssues,
+    });
+  }
+
+  const state: ReleaseConsistencyState = peers.some((peer) => peer.state === 'unknown')
+    ? 'unknown'
+    : peers.some((peer) => peer.state === 'catching-up')
+      ? 'catching-up'
+      : 'current';
+
+  return {
+    state,
+    expectedDevicePubkeys,
+    currentDevicePubkeys,
+    watermarkSequence,
+    evaluatedAtMs: input.nowMs,
+    maxObservationAgeMs,
+    peers,
+    issues,
+  };
+}
+
+/** One-line release-focused summary; never aliases the lag-health wording. */
+export function formatReleaseConsistencyVerdict(verdict: ReleaseConsistencyVerdict): string {
+  if (verdict.state === 'current') {
+    return `CURRENT: exact signed snapshot match for ${verdict.currentDevicePubkeys.length}/${verdict.expectedDevicePubkeys.length}` +
+      ` expected peer(s) at receiver watermark ${verdict.watermarkSequence ?? 'unknown'}`;
+  }
+  const issueSummary = [...new Set(verdict.issues.map((issue) => issue.code))].join(', ') || 'unclassified';
+  return `${verdict.state.toUpperCase()}: ${verdict.currentDevicePubkeys.length}/${verdict.expectedDevicePubkeys.length}` +
+    ` expected peer(s) exact (${issueSummary})`;
 }
 
 /** Per-device lag carried ACROSS ticks — the persistence watermark. */

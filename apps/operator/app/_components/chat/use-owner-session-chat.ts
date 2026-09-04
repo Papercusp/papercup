@@ -205,10 +205,12 @@ export async function resolveOwnerSession(
 
   const sessions = await listOwnerSessions(ownerId);
   const preferred = hint.agent?.trim().toLowerCase();
-  const sourceKind = preferred === 'codex' || preferred === 'omp' ? preferred : 'claude';
-  const matching = sessions.filter((s) => s.source_kind === sourceKind);
+  const sourceKind = preferred === 'codex' || preferred === 'omp' ? preferred : preferred ? 'claude' : null;
+  const matching = sessions.filter((s) => sourceKind
+    ? s.source_kind === sourceKind
+    : ['claude', 'codex', 'omp'].includes(s.source_kind));
   const row = matching.find((s) => s.active) ?? matching[0] ?? null;
-  return row ? { ...row, stream_key: streamKeyForSource(row.source_kind) } : null;
+  return row ? { ...row, stream_key: row.stream_key ?? streamKeyForSource(row.source_kind) } : null;
 }
 
 /**

@@ -66,6 +66,7 @@ export default function AgentInspectorModal({
   focusTarget,
   resumeTarget,
   onOpenInGui,
+  conversationOwnerId,
   highlightTerm,
 }: {
   slug: string;
@@ -150,6 +151,8 @@ export default function AgentInspectorModal({
    * never renders one.
    */
   onOpenInGui?: (ownerId: string) => void;
+  /** A read-only history host can open the chat without offering a relaunch. */
+  conversationOwnerId?: string;
   /** Search-hit deep-link (agents-pill-inactive-search-2026-07-09 P-005): the
    *  term to highlight throughout the transcript. Pair with a streamUrl that
    *  carries `find`/`anchorTs` — the stream's `anchor` event then names the
@@ -381,6 +384,11 @@ export default function AgentInspectorModal({
           </span>
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {conversationOwnerId && onOpenInGui ? (
+            <button type="button" className="h-button" onClick={() => onOpenInGui(conversationOwnerId)}>
+              Open conversation
+            </button>
+          ) : null}
           {/* TASK2 (owner 2026-07-11): Resume + Fork are two INDEPENDENT buttons,
               both offered for active AND ended sessions. Resume (↻, fork:false)
               always shows when a resumeTarget is present; on a still-LIVE source

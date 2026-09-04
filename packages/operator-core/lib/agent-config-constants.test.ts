@@ -176,6 +176,16 @@ describe('selfSetCeilingForSpec — a DELIBERATE self-set may exceed the SEEDED 
     expect(clampCompactionLimit(900_000, 'haiku', { selfSet: true })).toBe(158_000);
   });
 
+  it.each(['gpt-5.6-sol', 'gpt-5.6-terra:high', 'gpt-5.4'])(
+    'extended Codex %s can self-raise without changing seeded or fleet limits',
+    (spec) => {
+      expect(selfSetCeilingForSpec(spec)).toBe(825_000);
+      expect(clampCompactionLimit(682_000, spec, { selfSet: true })).toBe(682_000);
+      expect(defaultCompactionLimitForSpec(spec)).toBe(400_000);
+      expect(selfSetCeilingForSpec(spec, { fleetMember: true })).toBe(250_000);
+    },
+  );
+
   it('the MIN floor still applies on the self-set path', () => {
     expect(clampCompactionLimit(1, 'opus[1m]', { selfSet: true })).toBe(MIN_COMPACTION_LIMIT_TOKENS);
   });

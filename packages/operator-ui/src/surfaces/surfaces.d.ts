@@ -43,6 +43,7 @@ import type { ComponentType, LazyExoticComponent } from 'react';
  */
 export type OperatorSurfaceKind =
   | 'tasks-roster'
+  | 'session-history'
   | 'desktops'
   | 'plans'
   | 'inbox'

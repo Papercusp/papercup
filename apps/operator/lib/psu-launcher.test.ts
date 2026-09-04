@@ -15,7 +15,7 @@ import {
   readlinkSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   codexContextConfigArgs,
   codexContextConfigToml,
@@ -285,6 +285,10 @@ import {
 // value-for-value so a fix landed in one (the codex effort-drop, found 2026-07-03) can never
 // again silently miss the other.
 import { applyRoleModel } from "@papercusp/operator-core/lib/harness-invoke-once";
+import {
+  ledgerPathForSid,
+  tagTurnForInjection,
+} from "@papercusp/operator-core/lib/turn-provenance/turn-provenance";
 // weak-model-tool-tier: the canonical core spine — psu-launcher.mjs carries an
 // inlined copy because it is a plain node script with no TS imports. The drift
 // guard below keeps the OMP seed exactly aligned with every other trimmed client.
@@ -543,6 +547,59 @@ describe("tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)
     expect(row.nonce).toMatch(/^[a-f0-9]{16}$/);
     expect(row.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(tagged).toContain(row.nonce); // the typed envelope references the ledger row
+  });
+
+  it("pins the launcher mirror to the canonical turn-provenance contract", () => {
+    const sid = "su/kickoff .. id";
+    const text = " Begin: advance this plan.\r\n";
+    const nowMs = 1_760_000_000_000;
+    const canonicalDir = mkdtempSync(join(tmpdir(), "kickoff-prov-ts-"));
+    const mirrorDir = mkdtempSync(join(tmpdir(), "kickoff-prov-mjs-"));
+    try {
+      const canonical = tagTurnForInjection({
+        sid,
+        origin: "fleet-kickoff",
+        text,
+        dir: canonicalDir,
+        nowMs,
+      });
+      const mirror = tagKickoffProvenance(
+        text,
+        sid,
+        { ...envFor(), PAPERCUSP_TURN_PROVENANCE_DIR: mirrorDir },
+        nowMs,
+      );
+      const canonicalPath = ledgerPathForSid(sid, canonicalDir);
+      const mirrorPath = join(mirrorDir, basename(canonicalPath));
+      const canonicalRow = JSON.parse(readFileSync(canonicalPath, "utf8").trim());
+      const mirrorRow = JSON.parse(readFileSync(mirrorPath, "utf8").trim());
+      const withoutNonce = (row: Record<string, unknown>) => ({
+        ...row,
+        nonce: "<nonce>",
+      });
+
+      // The mirror must use the same routing key and emit the same row contract;
+      // only the independently minted nonce is expected to differ.
+      expect(existsSync(mirrorPath)).toBe(true);
+      expect(Object.keys(mirrorRow).sort()).toEqual(Object.keys(canonicalRow).sort());
+      expect(withoutNonce(mirrorRow)).toEqual(withoutNonce(canonicalRow));
+
+      const envelope = (tagged: string) => {
+        const line = tagged.slice(0, tagged.indexOf("\n"));
+        return { line, nonce: line.match(/nonce:([a-f0-9]+)⟧$/)?.[1] };
+      };
+      const canonicalEnvelope = envelope(canonical.taggedText);
+      const mirrorEnvelope = envelope(mirror);
+      expect(canonicalEnvelope.nonce).toBe(canonical.nonce);
+      expect(mirrorEnvelope.nonce).toBe(mirrorRow.nonce);
+      expect(mirrorEnvelope.nonce?.length).toBe(canonicalEnvelope.nonce?.length);
+      expect(
+        canonicalEnvelope.line.replace(canonicalEnvelope.nonce!, "<nonce>"),
+      ).toBe(mirrorEnvelope.line.replace(mirrorEnvelope.nonce!, "<nonce>"));
+    } finally {
+      rmSync(canonicalDir, { recursive: true, force: true });
+      rmSync(mirrorDir, { recursive: true, force: true });
+    }
   });
 
   it("no sid (interactive/untracked launch) → untagged text, no ledger write", () => {

@@ -445,6 +445,40 @@ describe('maybeBatchNudge — scoping guards (teeth)', () => {
     expect(maybeBatchNudge({ sessionKey: 'lk', toolName: 'work_items:get', canCodeRun: true, now: t })).toBeNull();
   });
 
+  it('does NOT replay SESSION-LIFECYCLE calls in ready-to-paste skeletons (EI-22140114721989909)', () => {
+    // `session:request-compaction` is a session transition, not a batchable read. If it enters the
+    // recent-call ring, the fan-out skeleton can paste it back into the next code:run and trigger
+    // another compaction; the same rule applies to session:end and session:carry-drill.
+    let firstFire: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (const call of [
+      { toolName: 'plans:get', args: { slug: 'alpha-plan' } },
+      { toolName: 'session:request-compaction', args: { autoContinue: false } },
+      { toolName: 'docs:search', args: { q: 'beta-topic' } },
+      { toolName: 'session:end', args: { reason: 'finished' } },
+      { toolName: 'session:carry-drill', args: { op: 'report' } },
+      { toolName: 'work_items:get', args: { id: 'WI-1234' } },
+    ]) {
+      t += 1000;
+      const hit = maybeBatchNudge({
+        sessionKey: 'session-lifecycle',
+        ...call,
+        canCodeRun: true,
+        now: t,
+      });
+      if (hit && !firstFire) firstFire = hit;
+    }
+
+    expect(firstFire?.kind).toBe('fanout');
+    expect(firstFire?.suggestedScript).toContain('tools.plans.get({"slug":"alpha-plan"})');
+    expect(firstFire?.suggestedScript).toContain('tools.docs.search({"q":"beta-topic"})');
+    expect(firstFire?.suggestedScript).toContain('tools.workItems.get({"id":"WI-1234"})');
+    expect(firstFire?.suggestedScript).not.toContain('session');
+    expect(firstFire?.text).not.toContain('session:request-compaction');
+    expect(firstFire?.text).not.toContain('session:end');
+    expect(firstFire?.text).not.toContain('session:carry-drill');
+  });
+
   it('does NOT fire on an empty session key or empty tool name', () => {
     let t = 0;
     for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 1; i++) {

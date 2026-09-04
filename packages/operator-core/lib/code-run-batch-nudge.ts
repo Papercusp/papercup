@@ -306,6 +306,16 @@ const LOCK_LIFECYCLE_NORMALIZED: ReadonlySet<string> = new Set<string>([
   'locksheartbeatresource',
 ]);
 
+/** SESSION-LIFECYCLE tools — their calls change the session itself rather than advancing a
+ * batchable tool flow. Replaying one from a ready-to-paste skeleton can end/respawn the session
+ * again (most dangerously `session:request-compaction`), so exclude every session lifecycle call
+ * before it enters the recent-call ring. */
+const SESSION_LIFECYCLE_NORMALIZED: ReadonlySet<string> = new Set<string>([
+  'sessioncarrydrill',
+  'sessionend',
+  'sessionrequestcompaction',
+]);
+
 /** One recorded call in the sliding window. */
 interface RecentCall {
   tool: string;
@@ -767,7 +777,8 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   if (
     EXCLUDED_NORMALIZED.has(normalized) ||
     AMBIENT_NORMALIZED.has(normalized) ||
-    LOCK_LIFECYCLE_NORMALIZED.has(normalized)
+    LOCK_LIFECYCLE_NORMALIZED.has(normalized) ||
+    SESSION_LIFECYCLE_NORMALIZED.has(normalized)
   )
     return null;
   const now = input.now ?? Date.now();

@@ -1267,12 +1267,18 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
                   ? action.confirmedAbsent
                     ? `⚠ supervision: \`${entry.unit}\` not found by systemctl --user (LoadState=not-found — removed/never installed) — report-only`
                     : action.confirmedLoaded
-                      ? // EI-21531785497245954: the show-probe RESOLVED this unit as loaded, so neither
-                        // "not loaded" nor "state could not be read" is true. Absence from `list-units`
-                        // only means systemd has not kept it resident, which is the normal idle state of
-                        // a timer-triggered or oneshot unit. Reporting that as an unreadable/absent unit
-                        // is a false alarm that costs every reader a verification round.
-                        `ⓘ supervision: \`${entry.unit}\` is loaded but not resident in \`systemctl --user list-units\` (LoadState=loaded, currently inactive) — normal for an idle timer-triggered/oneshot unit, NOT a fault (report-only)`
+                      ? entry.episodic
+                        ? // EI-21531785497245954: the show-probe RESOLVED this unit as loaded, so neither
+                          // "not loaded" nor "state could not be read" is true. Absence from `list-units`
+                          // only means systemd has not kept it resident, which is the normal idle state of
+                          // a timer-triggered or oneshot unit. Reporting that as an unreadable/absent unit
+                          // is a false alarm that costs every reader a verification round.
+                          `ⓘ supervision: \`${entry.unit}\` is loaded but not resident in \`systemctl --user list-units\` (LoadState=loaded, currently inactive) — normal for an idle timer-triggered/oneshot unit, NOT a fault (report-only)`
+                        : // EI-22361981911655947: a loaded persistent service disappearing from
+                          // `list-units` is not the episodic idle case above. Keep the warning
+                          // actionable instead of falsely clearing a service that should remain
+                          // resident.
+                          `⚠ supervision: \`${entry.unit}\` is loaded but not resident in \`systemctl --user list-units\` (LoadState=loaded, currently inactive) — this persistent service is expected to stay resident; investigate its inactive state (report-only)`
                       : `⚠ supervision: \`${entry.unit}\` is not loaded by systemctl --user and its state could not be read — report-only (NOT confirmed missing; check \`systemctl --user status ${entry.unit}\`)`
                   : // EI-21232345359778222: pair the down claim with the up claim. For a unit
                     // whose exit status encodes only the RUN, "is down" over-states in the same

@@ -52,6 +52,10 @@
 //     imported constant) makes that tool UNMEASURABLE and it is SKIPPED, never
 //     guessed at. Under-reporting is the safe direction for an advisory nudge;
 //     a made-up number would be worse than silence.
+//   - CAUSALITY IS COMPARED, NOT INFERRED: the current file is weighed against
+//     its HEAD version. A newly over-budget or heavier tool is attributed to
+//     this edit; an unchanged breach is explicitly labelled PRE-EXISTING rather
+//     than blaming the author who happened to touch the file.
 //   - MEASURED COVERAGE (2026-08-03, against the live catalog rather than
 //     asserted): this weigher was cross-checked against the production
 //     promptWeight() over all 953 tool files / 722 registered tools. 687 tools
@@ -75,9 +79,10 @@
 //   - `--self-test` runs the embedded cases (no stdin) and exits non-zero on
 //     failure; mirrors both sibling nudges.
 //
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
@@ -350,52 +355,143 @@ export function violationsFor(tools, budgets) {
   return out;
 }
 
-export function formatNudge(violations) {
-  const lines = violations.map((v) => {
-    const which = v.hardCapBinding ? `${v.limit}-char HARD CAP` : `${v.limit}-char budget`;
-    return `  • ${v.name} — ${v.weight} chars, over the ${which} by ${v.cutAtLeast}. Cut >=${v.cutAtLeast}.`;
-  });
-  return [
-    '⚠ P-011 prompt-weight budget breached by this edit — it will RED the fleet gate later:',
-    ...lines,
+/** name → weight, keeping the HEAVIEST when a name somehow appears twice. */
+export function weightIndex(tools) {
+  const out = new Map();
+  for (const t of tools) {
+    const prev = out.get(t.name);
+    if (prev === undefined || t.weight > prev) out.set(t.name, t.weight);
+  }
+  return out;
+}
+
+/**
+ * Split resulting violations into ones this edit worsened and ones that were
+ * already present at the comparison base. The pre-tool guard uses the same
+ * predicate, so the advisory and blocking halves cannot drift on causality.
+ *
+ * `beforeIndex` is a name → weight map for the file before this edit. A missing
+ * name means a new tool or a previously unmeasurable tool; either way, an
+ * over-budget result has no measurable safe baseline and is treated as new.
+ */
+export function classifyViolations(afterViolations, beforeIndex) {
+  const worsening = [];
+  const preExisting = [];
+  for (const v of afterViolations) {
+    const before = beforeIndex.get(v.name);
+    if (before === undefined) {
+      worsening.push({ ...v, before: null, delta: null });
+    } else if (v.weight > before) {
+      worsening.push({ ...v, before, delta: v.weight - before });
+    } else {
+      preExisting.push({ ...v, before, delta: v.weight - before });
+    }
+  }
+  return { worsening, preExisting };
+}
+
+/** The worsening subset used by the blocking sibling. */
+export function worseningViolations(afterViolations, beforeIndex) {
+  return classifyViolations(afterViolations, beforeIndex).worsening;
+}
+
+function formatViolation(v, context) {
+  const which = v.hardCapBinding ? `${v.limit}-char HARD CAP` : `${v.limit}-char budget`;
+  const provenance =
+    context === 'pre-existing'
+      ? `(already ${v.before ?? v.weight} chars before this edit)`
+      : v.before === null
+        ? '(no prior measurable weight — this edit introduces it over budget)'
+        : `(was ${v.before}, +${v.delta})`;
+  return `  • ${v.name} — ${v.weight} chars, over the ${which} by ${v.cutAtLeast} ${provenance}. Cut >=${v.cutAtLeast}.`;
+}
+
+export function formatNudge(violations, { preExisting = [] } = {}) {
+  const lines = [];
+  if (violations.length) {
+    lines.push(
+      '⚠ P-011 prompt-weight budget increased by this edit — it will RED the fleet gate later:',
+      ...violations.map((v) => formatViolation(v, 'worsening')),
+    );
+  }
+  if (preExisting.length) {
+    if (lines.length) lines.push('');
+    lines.push(
+      '⚠ PRE-EXISTING P-011 prompt-weight breach — not caused by this edit:',
+      ...preExisting.map((v) => formatViolation(v, 'pre-existing')),
+    );
+  }
+  if (!lines.length) return '';
+  lines.push(
     '',
     'The budget counts description + guidance.when/notWhen/chaining (and per-role variants).',
     'It does NOT count `returns` or `seeAlso` — so moving RESPONSE documentation from',
     '`description` into `guidance.returns` fixes this at zero cost to the reader, and is',
     'demand-loaded via tools:find instead of baked into every system prompt (WI-9334 did',
     'exactly this). Verify with: npm run lint:tool-prompts',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 /** The nudge text for an edited path, or '' when there is nothing to say. */
-export function nudgeFor(filePath) {
+export function nudgeFor(filePath, deps = {}) {
+  const {
+    exists = existsSync,
+    readFile = (p) => readFileSync(p, 'utf8'),
+    sizeOf = (p) => statSync(p).size,
+    showHead = defaultShowHead,
+    loadTs = defaultLoadTs,
+  } = deps;
   try {
     if (!isCandidateFile(filePath)) return '';
-    if (!existsSync(filePath)) return '';
-    if (statSync(filePath).size > MAX_BYTES) return '';
+    const abs = resolve(filePath);
+    if (!exists(abs)) return '';
+    if (sizeOf(abs) > MAX_BYTES) return '';
 
-    const root = findRepoRoot(filePath);
+    const root = findRepoRoot(abs, exists);
     if (!root) return '';
 
     // Resolve `typescript` from the edited file's OWN repo — see CONTRACT.
-    let ts;
-    try {
-      const req = createRequire(join(root, 'package.json'));
-      ts = req('typescript');
-    } catch {
-      return '';
-    }
+    const ts = loadTs(root);
     if (!ts || typeof ts.createSourceFile !== 'function') return '';
 
-    const budgets = readBudgets(ts, readFileSync(join(root, BUDGET_REL), 'utf8'));
+    const budgets = readBudgets(ts, readFile(join(root, BUDGET_REL)));
     if (!budgets) return '';
 
-    const tools = weighToolsInSource(ts, readFileSync(filePath, 'utf8'), filePath);
-    const violations = violationsFor(tools, budgets);
-    if (!violations.length) return '';
-    return formatNudge(violations);
+    const relPath = relative(root, abs).split(sep).join('/');
+    const afterText = readFile(abs);
+    const beforeText = showHead(root, relPath) ?? '';
+    const afterTools = weighToolsInSource(ts, afterText, relPath);
+    const beforeTools = weighToolsInSource(ts, beforeText, relPath);
+    const afterViolations = violationsFor(afterTools, budgets);
+    if (!afterViolations.length) return '';
+
+    const { worsening, preExisting } = classifyViolations(afterViolations, weightIndex(beforeTools));
+    return formatNudge(worsening, { preExisting });
   } catch {
     return '';
+  }
+}
+
+function defaultLoadTs(root) {
+  try {
+    return createRequire(join(root, 'package.json'))('typescript');
+  } catch {
+    return null;
+  }
+}
+
+function defaultShowHead(root, relPath) {
+  try {
+    return execFileSync('git', ['show', `HEAD:${relPath}`], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: MAX_BYTES * 4,
+    });
+  } catch {
+    // New file, submodule path, detached/empty repo: no measurable baseline.
+    return null;
   }
 }
 

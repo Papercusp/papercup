@@ -924,7 +924,10 @@ class UnionFind {
 /**
  * Turn one complete batched model verdict into replay-stable lifecycle writes.
  * Merge components choose ONE canonical up front, preventing batch-internal
- * clone cycles (A→B and B→A) when several pending rows describe one finding.
+ * clone cycles (A→B and B→A) when several rows describe one finding.  The
+ * disposition list includes every still-live noncanonical endpoint, not only
+ * the pending rows that seeded this tick: otherwise an older candidate can be
+ * adjudicated and linked while remaining open forever.
  */
 export function planPromoterDispositions(
   pending: readonly PromoterItem[],
@@ -986,14 +989,29 @@ export function planPromoterDispositions(
     for (const id of ids) canonicalById.set(id, canonical);
   }
 
-  const dispositions: PromoterDisposition[] = pending
-    .map((item): PromoterDisposition => {
-      if (held.has(item.id)) return { itemId: item.id, action: 'hold', reason: held.get(item.id)! };
-      const canonical = canonicalById.get(item.id);
-      if (canonical && canonical !== item.id) return { itemId: item.id, action: 'merge', canonicalId: canonical };
-      return { itemId: item.id, action: 'promote' };
-    })
-    .sort((a, b) => a.itemId.localeCompare(b.itemId));
+  const dispositionsById = new Map<string, PromoterDisposition>();
+  for (const item of pending) {
+    if (held.has(item.id)) {
+      dispositionsById.set(item.id, { itemId: item.id, action: 'hold', reason: held.get(item.id)! });
+      continue;
+    }
+    const canonical = canonicalById.get(item.id);
+    if (canonical && canonical !== item.id) {
+      dispositionsById.set(item.id, { itemId: item.id, action: 'merge', canonicalId: canonical });
+    } else {
+      dispositionsById.set(item.id, { itemId: item.id, action: 'promote' });
+    }
+  }
+  for (const [itemId, canonicalId] of canonicalById) {
+    // Pending endpoints were already assigned above.  Canonical endpoints
+    // remain live by definition; only add a disposition for a candidate that
+    // is outside this tick's pending batch and is still nonterminal.
+    if (pendingIds.has(itemId) || itemId === canonicalId) continue;
+    const candidate = itemById.get(itemId);
+    if (!candidate || isTerminal(candidate)) continue;
+    dispositionsById.set(itemId, { itemId, action: 'merge', canonicalId });
+  }
+  const dispositions = [...dispositionsById.values()].sort((a, b) => a.itemId.localeCompare(b.itemId));
 
   const adjudications: PromoterAdjudication[] = [];
   const relatedPairs: Array<{ a: string; b: string }> = [];
@@ -1701,13 +1719,23 @@ export async function persistAdmissionPlan(
     plan: PromoterPlan;
     /** Bulk stages adjudicate an already-admitted corpus and must not re-promote every distinct item. */
     promoteUnmerged?: boolean;
-    /** Promoter merges are pending-only; bulk stages may merge any still-live corpus member. */
+    /**
+     * Allow merge writes to cover any still-live noncanonical endpoint.  When
+     * omitted, infer this from the plan so a normal promoter tick widens its
+     * WHERE clause only when it actually carries an out-of-batch loser.
+     */
     mergeAnyAdmission?: boolean;
     actor?: string;
   },
 ): Promise<void> {
   const actor = input.actor ?? PROMOTER_ACTOR;
   const promoteUnmerged = input.promoteUnmerged ?? true;
+  const pendingById = new Map(input.pending.map((item) => [item.id, item]));
+  const mergeAnyAdmission =
+    input.mergeAnyAdmission ??
+    input.plan.dispositions.some(
+      (disposition) => disposition.action === 'merge' && !pendingById.has(disposition.itemId),
+    );
   const terminal = [...ALL_TERMINAL_STATUSES];
   const adjudicationRows = input.plan.adjudications.map((adjudication) => {
     const [a, b] = canonicalIds(adjudication.a, adjudication.b);
@@ -1740,7 +1768,6 @@ export async function persistAdmissionPlan(
              )
       ON CONFLICT (workspace_id, harness_slug, a, b) DO NOTHING`;
   }
-  const pendingById = new Map(input.pending.map((item) => [item.id, item]));
   const mergePairs = input.plan.dispositions.flatMap((disposition) =>
     disposition.action === 'merge' ? [{ a: disposition.itemId, b: disposition.canonicalId }] : [],
   );
@@ -1837,7 +1864,7 @@ export async function persistAdmissionPlan(
       );
     }
     const terminalReason = `duplicate of ${disposition.canonicalId} (${actor} ${input.runId})`;
-    if (input.mergeAnyAdmission === true) {
+    if (mergeAnyAdmission) {
       await sql`
         UPDATE harness_shared.work_items
            SET status = 'dropped',

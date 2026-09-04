@@ -12,8 +12,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_CONVERGENCE_PERSISTENCE_MS,
+  DEFAULT_RELEASE_CONSISTENCY_MAX_OBSERVATION_AGE_MS,
   formatConvergenceVerdict,
+  formatReleaseConsistencyVerdict,
   judgeConvergence,
+  judgeReleaseConsistency,
   type ConvergenceState,
 } from './convergence-probe';
 
@@ -23,6 +26,9 @@ const PEER2 = 'PEER2devicePubkeyBase64AAAAAAAAAAAAAAAAAAAA=';
 const STRANGER = 'STRANGERdevicePubkeyBase64AAAAAAAAAAAAAAAAA=';
 
 const NOW = 1_800_000_000_000;
+const STORE_GENERATION = 'store-generation-a';
+const SIGREFS_OID = 'a'.repeat(40);
+const NEXT_SIGREFS_OID = 'b'.repeat(40);
 
 /** The healthy baseline: one attested peer, we mirror exactly what it announced. */
 function judge(over: Partial<Parameters<typeof judgeConvergence>[0]> = {}) {
@@ -35,6 +41,230 @@ function judge(over: Partial<Parameters<typeof judgeConvergence>[0]> = {}) {
     ...over,
   });
 }
+
+/** The release baseline: fresh, signed lineage + exact local snapshot equality. */
+function judgeExact(over: Partial<Parameters<typeof judgeReleaseConsistency>[0]> = {}) {
+  return judgeReleaseConsistency({
+    expectedDevicePubkeys: [PEER],
+    announced: [
+      {
+        devicePubkeyBase64: PEER,
+        version: 7,
+        sequence: 100,
+        sigrefsOid: SIGREFS_OID,
+        observedAtMs: NOW - 1_000,
+        signedAtMs: NOW - 2_000,
+        storeGeneration: STORE_GENERATION,
+      },
+    ],
+    local: [
+      {
+        devicePubkeyBase64: PEER,
+        version: 7,
+        sigrefsOid: SIGREFS_OID,
+        storeGeneration: STORE_GENERATION,
+      },
+    ],
+    nowMs: NOW,
+    ...over,
+  });
+}
+
+describe('judgeReleaseConsistency — fail-closed exact release acceptance', () => {
+  it('is CURRENT only when every expected peer has a fresh exact generation/sequence/snapshot match', () => {
+    const verdict = judgeExact();
+    expect(verdict).toMatchObject({
+      state: 'current',
+      expectedDevicePubkeys: [PEER],
+      currentDevicePubkeys: [PEER],
+      watermarkSequence: 100,
+      issues: [],
+    });
+    expect(verdict.peers[0]).toMatchObject({
+      state: 'current',
+      storeGeneration: STORE_GENERATION,
+      announcedVersion: 7,
+      localVersion: 7,
+      announcedSigrefsOid: SIGREFS_OID,
+      localSigrefsOid: SIGREFS_OID,
+    });
+    expect(formatReleaseConsistencyVerdict(verdict)).toContain('CURRENT');
+  });
+
+  it('does not grant vacuous success when the expected peer set is empty', () => {
+    const verdict = judgeExact({ expectedDevicePubkeys: [], announced: [], local: [] });
+    expect(verdict.state).toBe('unknown');
+    expect(verdict.issues.map((issue) => issue.code)).toEqual(['expected-peer-set-empty']);
+  });
+
+  it('keeps an absent expected peer UNKNOWN even when another peer and a filtered stranger are exact', () => {
+    const baseline = judgeExact();
+    const verdict = judgeExact({
+      expectedDevicePubkeys: [PEER, PEER2],
+      announced: [
+        ...baseline.peers.map((peer) => ({
+          devicePubkeyBase64: peer.devicePubkeyBase64,
+          version: peer.announcedVersion!,
+          sequence: peer.receiverSequence!,
+          sigrefsOid: peer.announcedSigrefsOid!,
+          observedAtMs: peer.observedAtMs!,
+          signedAtMs: peer.signedAtMs!,
+          storeGeneration: peer.storeGeneration!,
+        })),
+        {
+          devicePubkeyBase64: STRANGER,
+          version: 999,
+          sequence: 999,
+          sigrefsOid: NEXT_SIGREFS_OID,
+          observedAtMs: NOW,
+          signedAtMs: NOW,
+          storeGeneration: 'stranger-generation',
+        },
+      ],
+    });
+    expect(verdict.state).toBe('unknown');
+    expect(verdict.currentDevicePubkeys).toEqual([PEER]);
+    expect(verdict.issues).toContainEqual(
+      expect.objectContaining({ devicePubkeyBase64: PEER2, code: 'missing-announcement' }),
+    );
+    expect(verdict.peers.some((peer) => peer.devicePubkeyBase64 === STRANGER)).toBe(false);
+  });
+
+  it('calls transient exact lag CATCHING-UP even while the health judge deliberately stays green', () => {
+    const health = judge({
+      announced: [{ devicePubkeyBase64: PEER, version: 8, sequence: 100 }],
+      local: [{ devicePubkeyBase64: PEER, version: 7 }],
+    });
+    const exact = judgeExact({
+      announced: [
+        {
+          devicePubkeyBase64: PEER,
+          version: 8,
+          sequence: 100,
+          sigrefsOid: NEXT_SIGREFS_OID,
+          observedAtMs: NOW - 1_000,
+          signedAtMs: NOW - 2_000,
+          storeGeneration: STORE_GENERATION,
+        },
+      ],
+    });
+    expect(health.converged).toBe(true);
+    expect(exact.state).toBe('catching-up');
+    expect(exact.issues.map((issue) => issue.code)).toEqual(
+      expect.arrayContaining(['generation-sequence-mismatch', 'snapshot-oid-mismatch']),
+    );
+  });
+
+  it('treats a missing local mirror as observed CATCHING-UP, not UNKNOWN or CURRENT', () => {
+    const verdict = judgeExact({ local: [] });
+    expect(verdict.state).toBe('catching-up');
+    expect(verdict.issues.map((issue) => issue.code)).toEqual(['missing-local-mirror']);
+  });
+
+  it('keeps legacy v1 evidence without a signed store generation UNKNOWN', () => {
+    const verdict = judgeExact({
+      announced: [
+        {
+          devicePubkeyBase64: PEER,
+          version: 7,
+          sequence: 100,
+          sigrefsOid: SIGREFS_OID,
+          observedAtMs: NOW - 1_000,
+          signedAtMs: NOW - 2_000,
+        },
+      ],
+      local: [{ devicePubkeyBase64: PEER, version: 7, sigrefsOid: SIGREFS_OID }],
+    });
+    expect(verdict.state).toBe('unknown');
+    expect(verdict.issues.map((issue) => issue.code)).toEqual(
+      expect.arrayContaining(['missing-store-generation', 'missing-local-store-generation']),
+    );
+  });
+
+  it('does not let a freshly received replay lower the per-generation sequence bar', () => {
+    const verdict = judgeExact({
+      announced: [
+        {
+          devicePubkeyBase64: PEER,
+          version: 7,
+          sequence: 101,
+          sigrefsOid: SIGREFS_OID,
+          observedAtMs: NOW - 1_000,
+          signedAtMs: NOW - 2_000,
+          storeGeneration: STORE_GENERATION,
+        },
+        {
+          devicePubkeyBase64: PEER,
+          version: 8,
+          sequence: 100,
+          sigrefsOid: NEXT_SIGREFS_OID,
+          observedAtMs: NOW - 2_000,
+          signedAtMs: NOW - 3_000,
+          storeGeneration: STORE_GENERATION,
+        },
+      ],
+    });
+    expect(verdict.state).toBe('unknown');
+    expect(verdict.issues).toContainEqual(expect.objectContaining({ code: 'replayed-announcement' }));
+  });
+
+  it('does not let an identical signed replay refresh release evidence', () => {
+    const announcement = {
+      devicePubkeyBase64: PEER,
+      version: 7,
+      sigrefsOid: SIGREFS_OID,
+      observedAtMs: NOW - 1_000,
+      signedAtMs: NOW - 2_000,
+      storeGeneration: STORE_GENERATION,
+    };
+    const verdict = judgeExact({
+      announced: [
+        { ...announcement, sequence: 101 },
+        { ...announcement, sequence: 100, observedAtMs: NOW - 5_000 },
+      ],
+    });
+    expect(verdict.state).toBe('unknown');
+    expect(verdict.issues).toContainEqual(expect.objectContaining({ code: 'replayed-announcement' }));
+  });
+
+  it('keeps stale sender or receiver evidence UNKNOWN', () => {
+    const staleAt = NOW - DEFAULT_RELEASE_CONSISTENCY_MAX_OBSERVATION_AGE_MS - 1;
+    const verdict = judgeExact({
+      announced: [
+        {
+          devicePubkeyBase64: PEER,
+          version: 7,
+          sequence: 100,
+          sigrefsOid: SIGREFS_OID,
+          observedAtMs: staleAt,
+          signedAtMs: staleAt,
+          storeGeneration: STORE_GENERATION,
+        },
+      ],
+    });
+    expect(verdict.state).toBe('unknown');
+    expect(verdict.issues.map((issue) => issue.code)).toEqual(
+      expect.arrayContaining(['stale-observation', 'stale-signed-snapshot']),
+    );
+  });
+
+  it('keeps complete-but-different lineage or snapshot evidence CATCHING-UP', () => {
+    const verdict = judgeExact({
+      local: [
+        {
+          devicePubkeyBase64: PEER,
+          version: 7,
+          sigrefsOid: NEXT_SIGREFS_OID,
+          storeGeneration: 'store-generation-b',
+        },
+      ],
+    });
+    expect(verdict.state).toBe('catching-up');
+    expect(verdict.issues.map((issue) => issue.code)).toEqual(
+      expect.arrayContaining(['store-generation-mismatch', 'snapshot-oid-mismatch']),
+    );
+  });
+});
 
 describe('judgeConvergence — never fires on a healthy case', () => {
   it('is converged when local equals announced', () => {

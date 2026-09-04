@@ -451,6 +451,58 @@ describe('decideReconcile', () => {
     });
   });
 
+  it('EI-22361981911655947: loaded persistent services are not mislabeled as idle oneshots', async () => {
+    _resetReconcilerState();
+    const notify = vi.fn(async (_opts: { summary: string; kind?: 'message' | 'escalation'; category?: string }) => {});
+    const deps: ReconcilerDeps = {
+      execUser: async (args: string[]) =>
+        args[0] === 'list-units'
+          ? ''
+          : 'LoadState=loaded\nUnitFileState=enabled\nResult=success\n',
+      now: () => 1_000_000,
+      notify,
+      autoRestartFlagOn: async () => true,
+      registry: () => [REPORT_ONLY_ENTRY],
+      log: () => {},
+    };
+
+    await reconcileTick(deps);
+
+    const summaries = notify.mock.calls.map((c) => c[0].summary);
+    const persistentWarning = summaries.find((summary) => summary.includes('loaded but not resident'));
+    expect(persistentWarning).toContain('persistent service is expected to stay resident');
+    expect(persistentWarning).not.toContain('normal for an idle timer-triggered/oneshot unit');
+  });
+
+  it('EI-22361981911655947: episodic loaded units retain the normal idle oneshot message', async () => {
+    _resetReconcilerState();
+    const notify = vi.fn(async (_opts: { summary: string; kind?: 'message' | 'escalation'; category?: string }) => {});
+    const episodicEntry: SupervisionEntry = {
+      ...REPORT_ONLY_ENTRY,
+      name: 'live-federation-gate-timer',
+      unit: 'papercup-live-federation-gate.timer',
+      episodic: true,
+    };
+    const deps: ReconcilerDeps = {
+      execUser: async (args: string[]) =>
+        args[0] === 'list-units'
+          ? ''
+          : 'LoadState=loaded\nUnitFileState=enabled\nResult=success\n',
+      now: () => 1_000_000,
+      notify,
+      autoRestartFlagOn: async () => true,
+      registry: () => [episodicEntry],
+      log: () => {},
+    };
+
+    await reconcileTick(deps);
+
+    const summaries = notify.mock.calls.map((c) => c[0].summary);
+    const idleInfo = summaries.find((summary) => summary.includes('loaded but not resident'));
+    expect(idleInfo).toContain('normal for an idle timer-triggered/oneshot unit');
+    expect(idleInfo).not.toContain('persistent service is expected to stay resident');
+  });
+
   // ── WI-35537: the pause check must be reachable for a unit ABSENT from `list-units` ──
   //
   // `systemctl --user disable --now <unit>` — the DOCUMENTED way to pause the federation gate —

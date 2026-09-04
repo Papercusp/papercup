@@ -120,6 +120,7 @@ const headlessSpawnResult = (childExit?: Promise<SpawnChildExit>): SpawnConsoleR
     terminal: 'headless',
     taskId: 'task777',
     logPath: '/tmp/papercusp-ws/fleet-logs/judge.log',
+    normalizedLogPath: '/tmp/papercusp-ws/fleet-logs/judge.normalized.log',
     child: {} as never,
     display: null,
     desktopEnvResolvedVia: null,
@@ -795,8 +796,15 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
       deduped: false,
       opened: 1,
       failed: 0,
-      tasks: [{ taskId: 'task777', logPath: '/tmp/papercusp-ws/fleet-logs/judge.log', pid: 777, headless: true }],
+      tasks: [{
+        taskId: 'task777',
+        logPath: '/tmp/papercusp-ws/fleet-logs/judge.log',
+        normalizedLogPath: '/tmp/papercusp-ws/fleet-logs/judge.normalized.log',
+        pid: 777,
+        headless: true,
+      }],
     });
+    expect(textOf(res)).toContain('grep-safe log: /tmp/papercusp-ws/fleet-logs/judge.normalized.log');
     expect(textOf(res)).toContain('EI-9748');
   });
 });
