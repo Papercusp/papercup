@@ -7,6 +7,7 @@ afterEach(() => {
   cleanup();
   delete window.__papercuspBootError;
   delete window.__papercuspServerConnectionRequired;
+  delete window.__papercuspServerConnectionRestored;
 });
 
 describe('normalizeRemoteServerUrl', () => {
@@ -42,6 +43,54 @@ describe('<ServerConnectionGate>', () => {
     expect(screen.getByLabelText('Server address')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Connect securely' })).toBeTruthy();
     expect(screen.getByText('Papercusp Server is not installed.')).toBeTruthy();
+  });
+
+  it('closes on a restored attach and ignores stale diagnostic retries', () => {
+    window.__papercuspServerConnectionRequired = 'Initial launch failed.';
+    const { container } = render(<ServerConnectionGate />);
+    expect(screen.getByText('Initial launch failed.')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Server address'), {
+      target: { value: 'http://insecure.example.com' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect securely' }));
+    expect(screen.getByRole('alert')).toBeTruthy();
+
+    fireEvent(window, new CustomEvent('papercusp:server-connection-restored'));
+
+    expect(container.innerHTML).toBe('');
+    expect(window.__papercuspServerConnectionRestored).toBe(true);
+    expect(window.__papercuspServerConnectionRequired).toBeUndefined();
+    expect(window.__papercuspBootError).toBeUndefined();
+
+    fireEvent(
+      window,
+      new CustomEvent('papercusp:boot-error', { detail: 'Stale retry after recovery.' }),
+    );
+    expect(container.innerHTML).toBe('');
+
+    // A fresh document has no restored latch, so a later genuine failure can
+    // still start a new gate lifecycle instead of being suppressed forever.
+    delete window.__papercuspServerConnectionRestored;
+    fireEvent(
+      window,
+      new CustomEvent('papercusp:server-connection-required', {
+        detail: 'A new attach attempt failed.',
+      }),
+    );
+    expect(screen.getByText('A new attach attempt failed.')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect((screen.getByLabelText('Server address') as HTMLInputElement).value).toBe('');
+  });
+
+  it('does not resurrect a stale gate when restoration won before React mounted', () => {
+    window.__papercuspServerConnectionRequired = 'Stale launch failure.';
+    window.__papercuspBootError = 'Stale boot failure.';
+    window.__papercuspServerConnectionRestored = true;
+
+    const { container } = render(<ServerConnectionGate />);
+
+    expect(container.innerHTML).toBe('');
   });
 
   it('rejects an insecure remote address without navigating', () => {

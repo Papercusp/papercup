@@ -4,6 +4,7 @@ declare global {
   interface Window {
     __papercuspBootError?: string;
     __papercuspServerConnectionRequired?: string;
+    __papercuspServerConnectionRestored?: boolean;
   }
 }
 
@@ -41,19 +42,34 @@ export default function ServerConnectionGate() {
   const [remoteError, setRemoteError] = useState<string | null>(null);
 
   useEffect(() => {
-    const initial =
-      window.__papercuspServerConnectionRequired ?? window.__papercuspBootError;
+    const initial = window.__papercuspServerConnectionRestored
+      ? null
+      : window.__papercuspServerConnectionRequired ?? window.__papercuspBootError;
     if (initial) setReason(initial);
 
     const requireConnection = (event: Event) => {
+      // point_window_at_operator marks a successful attach before emitting the
+      // restored event. Ignore any bounded diagnostic retry that was already in
+      // flight when the operator became reachable.
+      if (window.__papercuspServerConnectionRestored) return;
       const detail = (event as CustomEvent<string>).detail;
       setReason(detail || 'No Papercusp Server endpoint is available.');
     };
+    const restoreConnection = () => {
+      window.__papercuspServerConnectionRestored = true;
+      delete window.__papercuspServerConnectionRequired;
+      delete window.__papercuspBootError;
+      setReason(null);
+      setRemoteUrl('');
+      setRemoteError(null);
+    };
     window.addEventListener('papercusp:server-connection-required', requireConnection);
     window.addEventListener('papercusp:boot-error', requireConnection);
+    window.addEventListener('papercusp:server-connection-restored', restoreConnection);
     return () => {
       window.removeEventListener('papercusp:server-connection-required', requireConnection);
       window.removeEventListener('papercusp:boot-error', requireConnection);
+      window.removeEventListener('papercusp:server-connection-restored', restoreConnection);
     };
   }, []);
 
