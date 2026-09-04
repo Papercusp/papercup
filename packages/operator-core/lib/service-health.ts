@@ -14,6 +14,11 @@ import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { probeDesktop } from './desktop-health';
 import { listListeningSockets, type ListeningSocket } from './listening-sockets';
+import {
+  readProcessMemoryPressure,
+  describeMemoryPressure,
+  type ProcessMemoryPressure,
+} from './process-memory-pressure';
 import { operatorApiBase } from './operator-api-base';
 import { emitServiceHealthTransitionEvent } from './service-health-events';
 
@@ -243,6 +248,28 @@ export interface ProbeResult {
    * visible without re-deriving it.
    */
   acceptQueue?: { pending: number; backlog: number };
+  /**
+   * WI-7329 — per-process memory pressure for the listener that failed this
+   * probe, when its pid was readable. Answers the question every other signal
+   * here leaves open: is this a CODE BUG, or is the process swap-thrashing?
+   *
+   * A Node event loop stalled on major page faults is byte-identical to a hot
+   * synchronous loop across every other signal (high CPU, full accept queue,
+   * live pid, `is-active` green, TCP connect succeeding), so `wedged` alone
+   * points a reader at "find the blocking code" even when the real cause is
+   * that the box is out of memory. Measured 2026-08-03: the :3270 sidecar had
+   * 9.5 GB swapped against 4.2 GB resident and was major-faulting continuously
+   * — the busy-loop hypothesis was wrong and cost several manual `/proc` reads
+   * to disprove (EI-19406226890070872).
+   *
+   * STRICTLY DIAGNOSTIC. It never sets or clears `up`/`wedged`/`present` and
+   * never originates a transition; it only explains a failure already detected.
+   *
+   * Undefined = not sampled (no listener pid, non-Linux host, or `/proc`
+   * unreadable). Never read an absent value as "memory is fine" — and note the
+   * booleans inside are false-when-undetermined for the same reason.
+   */
+  memoryPressure?: ProcessMemoryPressure;
   /**
    * Provenance for a code-drift verdict. The mtime leg remains a useful
    * fallback for legacy/unbundled processes, but it must not be rendered as
@@ -530,15 +557,37 @@ type ListenTableReader = (opts: { port: number }) => Promise<{ sockets: Listenin
 export async function detectWedgedListener(
   url: string,
   read: ListenTableReader = listListeningSockets,
-): Promise<{ wedged: boolean; pending: number; backlog: number } | null> {
+): Promise<{ wedged: boolean; pending: number; backlog: number; pid: number | null } | null> {
   const port = localProbePort(url);
   if (port === null) return null;
   try {
     const { sockets } = await read({ port });
-    return classifyListenerWedge(sockets);
+    const verdict = classifyListenerWedge(sockets);
+    if (!verdict) return null;
+    // WI-7329: carry the owning pid alongside the wedge verdict. The listen
+    // table was already read to reach this verdict, so the pid is free here and
+    // would otherwise cost a second lookup at the only moment it is wanted.
+    // `classifyListenerWedge` stays a pure 3-field verdict on purpose — it
+    // answers "is this wedged", not "who owns it".
+    return { ...verdict, pid: firstListenerPid(sockets) };
   } catch {
     return null;
   }
+}
+
+/**
+ * The representative owning pid for a set of listening sockets, or null when no
+ * row exposed one (a listener owned by another uid reports `pid: null` rather
+ * than being omitted — "not readable by us", never "unowned").
+ */
+function firstListenerPid(sockets: ListeningSocket[] | null): number | null {
+  if (!sockets) return null;
+  for (const s of sockets) {
+    if (typeof s.pid === 'number' && s.pid > 0) return s.pid;
+    const fromList = s.pids?.find((p) => typeof p === 'number' && p > 0);
+    if (fromList !== undefined) return fromList;
+  }
+  return null;
 }
 
 export async function probeEndpoint(
@@ -593,7 +642,19 @@ export async function probeEndpoint(
     // with connections it never accepted? That separates WEDGED (a live process
     // with a blocked event loop) from DOWN, which every other signal here
     // reports identically. Undetermined stays undetermined.
+    // Capture the failure latency BEFORE any diagnostics run. Everything below
+    // (the listen-table read, and WI-7329's ~500ms memory sample) is our own
+    // instrumentation, and folding it into the reported latency would let a
+    // diagnostic corrupt the very measurement it is attached to.
+    const failureLatencyMs = Date.now() - start;
     const wedge = await detectWedgedListener(spec.url, readListenTable);
+    // WI-7329: a listener exists but the probe still failed — the one moment
+    // "code bug vs. swap-thrash" is worth the ~500ms to answer. Skipped entirely
+    // when no pid was readable (nothing listening, or another uid owns it), so
+    // an ordinary connection-refused failure pays nothing.
+    const memoryPressure =
+      wedge?.pid != null ? ((await sampleMemory(wedge.pid)) ?? undefined) : undefined;
+    const memoryNote = describeMemoryPressure(memoryPressure ?? null) ?? undefined;
     const preflightNote = preflight === 'indeterminate'
       ? `TCP preflight was indeterminate (timer expired under load, not a refused connection) and the follow-up HTTP fetch then also failed — likely a genuinely down/wedged listener, not event-loop lag`
       : undefined;
@@ -604,10 +665,11 @@ export async function probeEndpoint(
       name: spec.name,
       up: false,
       status: null,
-      latencyMs: Date.now() - start,
+      latencyMs: failureLatencyMs,
       url: spec.url,
       wedged: wedge?.wedged,
       acceptQueue: wedge ? { pending: wedge.pending, backlog: wedge.backlog } : undefined,
+      memoryPressure,
       // Surface WHY the preflight didn't fast-fail this result, for the
       // diagnostic signature the bug report names: "TCP preflight timed out,
       // then the real fetch also failed" is a genuinely down/wedged listener;
