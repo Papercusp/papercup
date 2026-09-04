@@ -2765,6 +2765,35 @@ describe('buildBacklogFlowAdvisory — lane-predicate detection (EI-214121615739
   });
 });
 
+describe('buildBacklogFlowAdvisory — exact resource-governor population detection (EI-22041497849729519)', () => {
+  it('stays silent for an aggregate restricted to resource-governor receipts', () => {
+    const sql = [
+      'SELECT count(*) FROM harness_shared.work_items',
+      "WHERE jsonb_exists(payload, 'resource_governor')",
+    ].join(' ');
+    expect(buildBacklogFlowAdvisory(sql)).toBeNull();
+  });
+
+  it('recognizes the equivalent JSON existence operator', () => {
+    const sql = "SELECT count(*) FROM harness_shared.work_items WHERE payload ? 'resource_governor'";
+    expect(buildBacklogFlowAdvisory(sql)).toBeNull();
+  });
+
+  it('still warns when resource-governor receipts are excluded from a general aggregate', () => {
+    const sql = "SELECT count(*) FROM harness_shared.work_items WHERE NOT jsonb_exists(payload, 'resource_governor')";
+    expect(buildBacklogFlowAdvisory(sql)).toMatch(/no `lane` predicate/);
+  });
+
+  it('does not treat a marker mentioned only in the projection as a population predicate', () => {
+    const sql = [
+      'SELECT count(*), jsonb_exists(payload,',
+      "'resource_governor') AS has_receipt",
+      'FROM harness_shared.work_items',
+    ].join(' ');
+    expect(buildBacklogFlowAdvisory(sql)).toMatch(/no `lane` predicate/);
+  });
+});
+
 /**
  * EI-19450552881841590 — `superseded_at` misread in both directions.
  *

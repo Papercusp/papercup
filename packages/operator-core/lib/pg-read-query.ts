@@ -1615,7 +1615,34 @@ export function buildBacklogFlowAdvisory(rawSql: string): string | null {
   // inside a COMMENT can also suppress the advisory — an acceptable heuristic
   // cost, since the alternative was flagging correctly-filtered queries.
   const hasLanePredicate = /\blane\b/i.test(stripped) || /\blane\b/i.test(rawSql);
-  if (isAggregate && !hasLanePredicate) {
+  // Resource-governor receipts are stored in this compatibility relation, but
+  // they are not filed work and therefore cannot carry the observation lane.
+  // A positive marker predicate is an exact subpopulation filter; treating it
+  // like a general work_items aggregate would make the lane advice change the
+  // question being asked. Keep the detector narrow: require the marker in a
+  // WHERE/HAVING predicate, ignore matches inside SQL noise, and do not treat
+  // the receipt-exclusion form (`NOT jsonb_exists(...)`) as an exact receipt
+  // census.
+  const sqlNoise = sqlLiteralAndCommentRanges(rawSql);
+  const startsInsideSqlNoise = (idx: number): boolean =>
+    sqlNoise.some(([from, to]) => idx >= from && idx < to);
+  const hasExactResourceGovernorPopulation = (() => {
+    const markerPatterns = [
+      /\bjsonb_exists\s*\(\s*(?:coalesce\s*\(\s*)?(?:[A-Za-z_][A-Za-z0-9_$]*\.)?payload\s*(?:,\s*'\{\}'\s*::\s*jsonb\s*)?\)?\s*,\s*'resource_governor'\s*\)/gi,
+      /\b(?:[A-Za-z_][A-Za-z0-9_$]*\.)?payload\s*\?\s*'resource_governor'/gi,
+    ];
+    return markerPatterns.some((pattern) => {
+      for (let match = pattern.exec(rawSql); match; match = pattern.exec(rawSql)) {
+        if (startsInsideSqlNoise(match.index)) continue;
+        const before = stripSqlLiteralsAndComments(rawSql.slice(0, match.index));
+        if (!/\b(?:where|having)\b/i.test(before)) continue;
+        if (/\bnot\s*(?:\(\s*)?$/i.test(before)) continue;
+        return true;
+      }
+      return false;
+    });
+  })();
+  if (isAggregate && !hasLanePredicate && !hasExactResourceGovernorPopulation) {
     parts.push(
       "no `lane` predicate: harness_shared.work_items also holds agents' own end-of-turn notes under " +
         "lane='observation'. An unfiltered aggregate counts those as filed work — measured 2026-08-17, " +
