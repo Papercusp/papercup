@@ -10,6 +10,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "pretest:e2e": "node ../../scripts/ensure-playwright-browsers.mjs",
     "test:e2e": "playwright test",
+    "test:e2e:hosted-http1": "playwright test --config playwright.hosted-http1.config.ts",
     "test:e2e:ui": "playwright test --ui",
     "test": "node ../../scripts/workspace-test.mjs --passWithNoTests",
     "typecheck": "node ../../scripts/lint-tsc-operator.mjs",
