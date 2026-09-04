@@ -19,7 +19,6 @@ const input = (
   candidate: 'a'.repeat(40),
   repairHead: 'b'.repeat(40),
   failingTests: ['packages/operator-core/lib/one.test.ts'],
-  worktreePath: '/repo/.papercusp/worktrees/green-candidate-papercusp-aaaaaaaaaaaa',
   capacityRetryAtMs: T0 + 6 * 24 * HOUR,
   capacitySummary: 'all codex accounts are usage-walled',
   heldMs: HOUR,
@@ -97,10 +96,10 @@ describe('buildFrozenRepairConvergenceBroadcast', () => {
     expect(ev.body).toContain('lib/b.test.ts');
     // 3. The EXACT call that admits a fix to it.
     expect(ev.body).toContain("release:repair-queue { op: 'admit'");
-    // …and the repair worktree, so nobody reconstructs the path by hand.
-    expect(ev.body).toContain(
-      '/repo/.papercusp/worktrees/green-candidate-papercusp-aaaaaaaaaaaa',
-    );
+    // …and that there is NO repair worktree to go looking for (P-003 / D-010): the fix is
+    // authored on the shared checkout and lands only through the admit door above.
+    expect(ev.body).toContain('there is no repair worktree');
+    expect(ev.body).not.toContain('/.papercusp/worktrees/');
   });
 
   it('warns against fixing AT TIP, which is the default behaviour it exists to correct', () => {
