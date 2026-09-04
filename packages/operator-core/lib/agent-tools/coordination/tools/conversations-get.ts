@@ -4,8 +4,9 @@
  * (oldest-first), the accepted answer (if resolved), and the follower count.
  *
  * Bulk by default (the house keyed-array contract,
- * bulk-endpoint-standardization-2026-06-21): pass `id` for one or `ids` for
- * several; the result is `{ ok, results:[{ ok, id, conversation?, error? }], counts }`
+ * bulk-endpoint-standardization-2026-06-21): pass `id` (or its
+ * `conversation_id` alias) for one or `ids` for several; the result is
+ * `{ ok, results:[{ ok, id, conversation?, error? }], counts }`
  * — each result self-describes its id, so a not-found item never poisons the rest
  * and the agent correlates by id (not array position).
  */
@@ -20,9 +21,9 @@ import { mergeIds, runBulk, bulkContent } from '../../_bulk';
 export default defineTool({
   name: 'conversations:get',
   description:
-    'Read one OR many conversations in full: the seed, topic tags, the whole thread (posts oldest-first), the accepted answer if resolved, and follower count. Pass `id` for one or `ids` for several (1–100). Returns { ok, results:[{ ok, id, conversation? + topics/posts/subscriber_count | error }], counts } — correlate each result by its id, not by position; a missing id comes back as that item\'s { ok:false } without failing the rest. For a CONSULT conversation the result also carries `consult` (state, expires_at, closed_at, responder_id, wakes_used) — read THAT for whether the consult is still live: `conversation.state` stays "open" after a consult has expired and closed, and empty `posts` is not evidence of a stall (a cascade advance wakes the next responder instead of posting). Ids are minted as `<prefix>-<8charMs>-<4charSeq>-<32hexUuid>`; a request that passes only the leading truncated segment (looks like a complete short id, but is not) is resolved via a UNIQUE-prefix fallback and returns `warning` naming the real full id to cite going forward — an AMBIGUOUS or genuinely-nonexistent prefix still returns `not_found` (never guesses).',
+    'Read one OR many conversations in full: the seed, topic tags, the whole thread (posts oldest-first), the accepted answer if resolved, and follower count. Pass `id` (or the single-item alias `conversation_id`) for one or `ids` for several (1–100); when both single-item keys are supplied, canonical `id` wins. Returns { ok, results:[{ ok, id, conversation? + topics/posts/subscriber_count | error }], counts } — correlate each result by its id, not by position; a missing id comes back as that item\'s { ok:false } without failing the rest. For a CONSULT conversation the result also carries `consult` (state, expires_at, closed_at, responder_id, wakes_used) — read THAT for whether the consult is still live: `conversation.state` stays "open" after a consult has expired and closed, and empty `posts` is not evidence of a stall (a cascade advance wakes the next responder instead of posting). Ids are minted as `<prefix>-<8charMs>-<4charSeq>-<32hexUuid>`; a request that passes only the leading truncated segment (looks like a complete short id, but is not) is resolved via a UNIQUE-prefix fallback and returns `warning` naming the real full id to cite going forward — an AMBIGUOUS or genuinely-nonexistent prefix still returns `not_found` (never guesses).',
   guidance: {
-    when: 'You have one or more conversation_ids (from coord:ask, conversations:list, or an inbox notice) and want the full thread. Pass every id you need at once via `ids` instead of calling per id.',
+    when: 'You have one or more conversation ids (often named `conversation_id` by coord:ask, conversations:list, or an inbox notice) and want the full thread. Use `id` or its `conversation_id` alias for one; pass every id you need at once via `ids` instead of calling per id.',
     notWhen: 'Browsing many → conversations:list.',
     chaining: 'conversations:get { ids:[…] } → conversations:answer / conversations:post / conversations:join / conversations:resolve.',
     seeAlso: [
@@ -37,10 +38,11 @@ export default defineTool({
   args: z
     .object({
       id: z.string().min(1).optional().describe('a single conversation id (n=1 shorthand for ids:[id])'),
+      conversation_id: z.string().min(1).optional().describe('alias for id (single form); id wins when both are supplied'),
       ids: z.array(z.string().min(1)).max(100).optional().describe('conversation ids to fetch (1–100)'),
     })
-    .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
-      message: 'pass `id` (one) or `ids` (many)',
+    .refine((a) => Boolean(a.id) || Boolean(a.conversation_id) || (a.ids?.length ?? 0) > 0, {
+      message: 'pass `id`/`conversation_id` (one) or `ids` (many)',
     }),
   async handler(args, ctx) {
     // Read scoped to the CALLER's workspace partition (WI-1571 read side): a
@@ -54,7 +56,9 @@ export default defineTool({
     } catch {
       identity = undefined;
     }
-    const ids = mergeIds(args.id, args.ids);
+    // `id` is canonical; accept the caller-natural `conversation_id` spelling
+    // for the single-item form without changing the keyed-array result shape.
+    const ids = mergeIds(args.id ?? args.conversation_id, args.ids);
     // EI-21510601647367544: pre-fetch consult lifecycle in ONE query rather than
     // per-id inside the bulk loop (up to 100 ids ⇒ up to 100 round-trips).
     // Fail-soft inside getConsultStates: on error this is an empty map and the

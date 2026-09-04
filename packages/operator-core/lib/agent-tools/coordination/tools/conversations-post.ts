@@ -4,8 +4,9 @@
  * conversation is Threadable; a post appends to its timeline and fans out to
  * its subscribers (topic + direct), honoring delivery_mode, excluding you.
  *
- *   • no conversation_id → starts a new `discussion` tagged with your topics.
- *   • conversation_id     → appends a reply to that conversation's thread.
+ *   • no conversation_id/id → starts a new `discussion` tagged with your topics.
+ *   • conversation_id/id    → appends a reply to that conversation's thread
+ *     (`conversation_id` is canonical when both are supplied).
  */
 
 import { z } from 'zod';
@@ -18,10 +19,10 @@ import { hardText, LIMITS } from '../../limits';
 export default defineTool({
   name: 'conversations:post',
   description:
-    'Start a discussion (open-ended) or append a reply to an existing conversation. Omit conversation_id to start a new discussion tagged with topics; pass conversation_id to reply. Replies fan out to the conversation\'s subscribers.',
+    'Start a discussion (open-ended) or append a reply to an existing conversation. Omit conversation_id and its id alias to start a new discussion tagged with topics; pass either key to reply (conversation_id wins when both are supplied). Replies fan out to the conversation\'s subscribers.',
   guidance: {
     when:
-      'Open-ended coordination with no single answer ("how should we approach X?"), or contributing to an existing thread. For a question that wants an answer, use coord:ask instead.',
+      'Open-ended coordination with no single answer ("how should we approach X?"), or contributing to an existing thread via conversation_id (or its id alias). For a question that wants an answer, use coord:ask instead.',
     notWhen:
       'A factual question → coord:ask (it tries knowledge first). To accept an answer + close a question → conversations:resolve.',
     chaining:
@@ -37,6 +38,7 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     conversation_id: z.string().optional().describe('Append to this conversation. Omit to start a new discussion.'),
+    id: z.string().optional().describe('Alias for conversation_id; conversation_id wins when both are supplied.'),
     body: hardText(8000),
     title: hardText(LIMITS.SHORT_TITLE).optional().describe('Short headline (new discussion only).'),
     topics: z.array(z.string().min(1)).max(8).optional().describe('Topic slugs to route a new discussion (new discussion only).'),
@@ -44,9 +46,12 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    // `conversation_id` is canonical; accept `id` for callers that use the
+    // single-item key shared by the other conversations:* verbs.
+    const conversationId = args.conversation_id ?? args.id;
 
-    if (args.conversation_id) {
-      const res = await postReply(identity, { conversation_id: args.conversation_id, body: args.body });
+    if (conversationId) {
+      const res = await postReply(identity, { conversation_id: conversationId, body: args.body });
       if ('error' in res) {
         return {
           content: [{
@@ -65,7 +70,7 @@ export default defineTool({
       return {
         content: [{
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, conversation_id: args.conversation_id, post_id: res.post.id, notified_subscribers: res.delivered }),
+          text: JSON.stringify({ ok: true, conversation_id: conversationId, post_id: res.post.id, notified_subscribers: res.delivered }),
         }],
       };
     }

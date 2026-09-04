@@ -43,6 +43,21 @@ describe('conversations:post reply path', () => {
     const b = body(await call({ conversation_id: 'c1' }));
     expect(b).toMatchObject({ ok: false, reason: 'not_a_member' });
   });
+
+  it('accepts id as the reply alias for conversation_id', async () => {
+    replyM.mockResolvedValue({ post: { id: 'p-alias' }, delivered: 1 } as never);
+    const b = body(await call({ id: 'c-alias', body: 'a reply' }));
+    expect(replyM).toHaveBeenCalledWith({ ownerId: 'me' }, { conversation_id: 'c-alias', body: 'a reply' });
+    expect(b).toMatchObject({ ok: true, conversation_id: 'c-alias', post_id: 'p-alias' });
+  });
+
+  it('prefers canonical conversation_id when both reply keys are supplied', async () => {
+    replyM.mockResolvedValue({ post: { id: 'p-canonical' }, delivered: 1 } as never);
+    const b = body(await call({ conversation_id: 'c-canonical', id: 'c-alias', body: 'a reply' }));
+    expect(replyM).toHaveBeenCalledWith({ ownerId: 'me' }, { conversation_id: 'c-canonical', body: 'a reply' });
+    expect(replyM).not.toHaveBeenCalledWith({ ownerId: 'me' }, { conversation_id: 'c-alias', body: 'a reply' });
+    expect(b).toMatchObject({ ok: true, conversation_id: 'c-canonical', post_id: 'p-canonical' });
+  });
 });
 
 describe('conversations:post new-discussion path', () => {

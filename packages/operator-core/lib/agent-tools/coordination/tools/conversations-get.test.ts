@@ -130,6 +130,21 @@ describe('conversations:get handler (bulk keyed-array)', () => {
     expect(b.results[1]).toMatchObject({ ok: false, id: 'c404', error: 'not_found' });
   });
 
+  it('accepts conversation_id as the single-item alias for id', async () => {
+    getM.mockResolvedValue(detail('c-alias'));
+    const b = await body({ conversation_id: 'c-alias' });
+    expect(getM).toHaveBeenCalledWith('c-alias', undefined);
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'c-alias' });
+  });
+
+  it('prefers canonical id when id and conversation_id are both supplied', async () => {
+    getM.mockResolvedValue(detail('c-canonical'));
+    const b = await body({ id: 'c-canonical', conversation_id: 'c-alias' });
+    expect(getM).toHaveBeenCalledWith('c-canonical', undefined);
+    expect(getM).not.toHaveBeenCalledWith('c-alias', expect.anything());
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'c-canonical' });
+  });
+
   // WI-1571 read side: a workspace-scoped caller must read ITS OWN partition
   // (the one its writes land in) — an identity-less read resolved 'default' and
   // returned not_found for the caller's own conversations (live 2026-07-07).
