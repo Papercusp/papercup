@@ -123,7 +123,6 @@ import {
   buildFrozenRepairStatusIdentity,
   classifyRepairSignature,
   classifyRepairSignatureEntry,
-  type FrozenCandidateFossilAbandonment,
   type FrozenCandidateRepairQueue,
   type RepairSignatureContext,
   type RepairSignatureEntry,
@@ -1253,10 +1252,6 @@ export interface CheckpointResult {
       | "same-as-frozen-full-gate-red"
       | "isolated-repair-green";
   };
-  /** EI-21763163890991789: the frozen candidate pin was retired before this run continued
-   * with a fresher tip. The queue is intentionally cleared, so this evidence must travel on
-   * the result/event rather than disappear with the queue row. */
-  fossilAbandonment?: FrozenCandidateFossilAbandonment;
   /** EI-203121: durable per-leg execution identity, capped by the producer. */
   postSuiteLegs?: PostSuiteLegRecord[];
   /** P-009: present ONLY on an `awaiting-fixer` repair-in-progress hold — the cheap non-test
@@ -1481,9 +1476,6 @@ export async function emitInconclusiveCheckpointVerdict(
     // reach consumers only on the `green-checkpoint:red` emit this path no longer makes.
     // The other inconclusive reasons (skipped-locked, migrations-pending, …) carry none.
     ...(result.failingTests ? { failingTests: result.failingTests } : {}),
-    ...(result.fossilAbandonment
-      ? { fossilAbandonment: result.fossilAbandonment }
-      : {}),
   };
   const cancelSiblingKeysFor = checkpointVerdictSiblingKeys(pipeline);
   await emit({
@@ -7631,8 +7623,6 @@ export interface CheckpointOpts {
    *  is never organically out of time and the skip branch would otherwise be unreachable.
    *  Mirrors the isolation phase's own injectable `phaseDeadlineMs`. */
   salvageDeadlineMs?: number;
-  /** Internal carry for fossil-pin abandonment evidence across in-process refires. */
-  fossilAbandonment?: FrozenCandidateFossilAbandonment;
 }
 
 /**
@@ -8818,8 +8808,7 @@ async function runGreenCheckpointInner(
   let repairQueue: FrozenCandidateRepairQueue | null = null;
   let repairVerification = false;
   let initialCandidateVerification = false;
-  let fossilAbandonment = opts.fossilAbandonment;
-  const withFossilAbandonment = <T extends CheckpointResult>(result: T): T => {
+  const withRepairIdentity = <T extends CheckpointResult>(result: T): T => {
     let next = result;
     if (result.repairQueue) {
       // P-003 / D-002: a no-suite repair hold is about the immutable queue candidate;
@@ -8833,8 +8822,7 @@ async function runGreenCheckpointInner(
         ...(result.green == null ? { candidate: result.repairQueue.candidate } : {}),
       } as T;
     }
-    if (!fossilAbandonment || next.fossilAbandonment) return next;
-    return { ...next, fossilAbandonment };
+    return next;
   };
   // A queue created by this pass is still provisional until the red verdict's moving-tip
   // re-triage completes. Automatic candidates must not launch repair against a stale cut.
@@ -9103,9 +9091,6 @@ async function runGreenCheckpointInner(
         : {}),
       lineage: result.lineage ?? null,
       candidateSource,
-      ...(result.fossilAbandonment
-        ? { fossilAbandonment: result.fossilAbandonment }
-        : {}),
     };
     const cancelSiblingKeysFor = [
       "release:green",
@@ -9195,76 +9180,18 @@ async function runGreenCheckpointInner(
       };
     }
   }
-  // WI-42207: RELEASE a frozen candidate that has aged past the fossil threshold.
-  //
-  // The queue created below deliberately pins ONE candidate, so that "a crash, red verdict, or
-  // newer staging tip therefore resumes this exact candidate". That is correct while the pin can
-  // still produce a USABLE verdict. It stops being correct the moment the pinned sha is older
-  // than CANDIDATE_FOSSIL_AGE_MS, because gate-verdict-freshness rule 5 then WITHHOLDS every red
-  // it produces — "No failing-test signature was published; the next run must re-judge a fresh
-  // tip" — while this queue guarantees the next run resumes the SAME sha. Each rule is sound in
-  // isolation; together they are a livelock, and the fossil message asks for the one thing the
-  // queue forbids.
-  //
-  // Measured 2026-08-26: `main` frozen 6 days at a2d69cef, 44 consecutive reds,
-  // gate_health.failingTests: [] throughout (no signature was ever published), five abandoned
-  // `green-candidate-*` worktrees on disk, and the runs that got far enough to judge ending
-  // `candidate-fossil` with a candidate already 143m old AT SUITE START — i.e. doomed before a
-  // single test ran.
-  //
-  // Releasing here loses nothing real: the pinned sha is IMMUTABLE, so no fix landed on staging
-  // can change its outcome. Re-judging it cannot succeed where the previous attempt failed; only
-  // a fresh tip can. GREENS are untouched — the fossil rule is gated on `!green`, so a green
-  // candidate never reaches it and still advances `main` however old it is. Clearing the queue
-  // simply lets `candidate` stay `transportedCandidate` (the freshly-resolved tip), which is the
-  // same path a run with no queue at all takes.
-  //
-  // Fail-soft: an unreadable/NaN commit time leaves the queue exactly as it was, because
-  // releasing a pin on a guess is worse than holding one that is merely suspect.
-  if (repairQueue && !diagnosticOnly) {
-    let pinnedCommittedAtSec: number | null = null;
-    try {
-      pinnedCommittedAtSec = await commitUnixTime(
-        cfg.integrationRoot,
-        repairQueue.candidate,
-      );
-    } catch {
-      /* unreadable commit time — hold the pin rather than release on a guess */
-    }
-    const pinAgeNowMs = Date.now();
-    if (
-      frozenPinIsFossilized({
-        committedAtSec: pinnedCommittedAtSec,
-        nowMs: pinAgeNowMs,
-        repairPhase: repairQueue.phase,
-        repairBlockedReason: repairQueue.blockedReason ?? null,
-        repairUpdatedAtMs: repairQueue.updatedAtMs,
-      })
-    ) {
-      // Safe: the predicate only returns true for a FINITE commit time, so this cannot be NaN.
-      const pinnedAgeMs = Math.max(
-        0,
-        pinAgeNowMs - (pinnedCommittedAtSec as number) * 1_000,
-      );
-      const fossilQueue = repairQueue;
-      fossilAbandonment = {
-        abandonedCandidate: fossilQueue.candidate,
-        ageMs: pinnedAgeMs,
-        thresholdMs: CANDIDATE_FOSSIL_AGE_MS,
-        reason: "candidate-fossil",
-      };
-      opts.fossilAbandonment = fossilAbandonment;
-      await deps.writeFrozenRepairQueue?.(null);
-      repairQueue = null;
-      deps.log(
-        `frozen-candidate-fossil: released the stable-candidate pin on ` +
-          `${fossilQueue.candidate.slice(0, 8)} — it is ${Math.round(pinnedAgeMs / 60_000)}m old, past the ` +
-          `${Math.round(CANDIDATE_FOSSIL_AGE_MS / 60_000)}m fossil threshold, so every red it can still ` +
-          `produce would be withheld unpublished. Judging the current tip ${candidate.slice(0, 8)} ` +
-          `instead (WI-42207).`,
-      );
-    }
-  }
+  // D-004 / P-009 / P-010 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): there is
+  // deliberately NO age-, stall- or "fossil"-based release of a pinned candidate here. The
+  // WI-42207 block that used to live at this point released any pin older than
+  // CANDIDATE_FOSSIL_AGE_MS whose queue row had not moved for one suite + 30m and re-cut at tip —
+  // which is the treadmill under another name (measured 2026-09-04 06:25Z: the 97c0b102 lineage,
+  // 47 admitted fix paths deep, was dropped for tip 7910b78c because its last verification red
+  // had not bumped `updatedAtMs`). The livelock that block was written for — rule 5 withholding
+  // a fossil red so no signature was ever published — is closed on the other side by
+  // `isJudgingPinnedActiveRepair`: a red on the pinned lineage IS the signature and is published.
+  // A queue that has stopped progressing is an ESCALATION (the stall alert), never a retirement;
+  // only the promotion path (`main` fast-forwarded to the lineage) or an explicit operator
+  // `release:repair-queue { op: 'retire', confirm: true }` clears the row.
   if (repairQueue) {
     // A process may die after proving the exact repair green or while publishing the additive
     // staging-history join. The persisted ready-to-promote row resumes that idempotent join,
@@ -9288,7 +9215,7 @@ async function runGreenCheckpointInner(
             `Keeping the ready-to-promote queue, leaving ${cfg.releaseRef} unchanged, and refusing ` +
             `to select a moving integration tip`;
           deps.log(summary);
-          return withFossilAbandonment({
+          return withRepairIdentity({
             advanced: false,
             candidate: verifiedRepairHead,
             from: lastReady,
@@ -9433,7 +9360,7 @@ async function runGreenCheckpointInner(
         reason: summary,
         candidate: repairQueue.candidate,
       });
-      return withFossilAbandonment({
+      return withRepairIdentity({
         advanced: false,
         candidate: repairQueue.repairHead,
         from: lastReady,
@@ -9563,7 +9490,7 @@ async function runGreenCheckpointInner(
                 ),
               );
           }
-          return withFossilAbandonment({
+          return withRepairIdentity({
             advanced: false,
             candidate: repairQueue.repairHead,
             from: lastReady,
@@ -9609,7 +9536,7 @@ async function runGreenCheckpointInner(
             candidate: repairQueue.candidate,
             capacityRetryAtMs: dispatch.capacityHold.retryAtMs ?? null,
           });
-          return withFossilAbandonment({
+          return withRepairIdentity({
             advanced: false,
             candidate: repairQueue.repairHead,
             from: lastReady,
@@ -9626,7 +9553,7 @@ async function runGreenCheckpointInner(
             dispatch.capacityHold,
           );
           deps.log(summary);
-          return withFossilAbandonment({
+          return withRepairIdentity({
             advanced: false,
             candidate: repairQueue.repairHead,
             from: lastReady,
@@ -9649,7 +9576,7 @@ async function runGreenCheckpointInner(
           ? `frozen repair fixer dispatch is reserved by another checkpoint until ${reservation.expiresAtMs}; candidate ${repairQueue.repairHead.slice(0, 8)} remains serialized and no suite was run`
           : `frozen repair fixer dispatch reservation was unavailable for ${repairQueue.repairHead.slice(0, 8)}; holding without a second launch`;
         deps.log(summary);
-        return withFossilAbandonment({
+        return withRepairIdentity({
           advanced: false,
           candidate: repairQueue.repairHead,
           from: lastReady,
@@ -9665,7 +9592,7 @@ async function runGreenCheckpointInner(
           ? `frozen repair fixer ${fired.spawnId} dispatched for ${repairQueue.repairHead.slice(0, 8)} (attempt ${repairQueue.attempts}); no suite run`
           : `frozen repair fixer dispatch did not return a spawn for ${repairQueue.repairHead.slice(0, 8)}; queue remains unassigned for retry`;
         deps.log(summary);
-        return withFossilAbandonment({
+        return withRepairIdentity({
           advanced: false,
           candidate: repairQueue.repairHead,
           from: lastReady,
@@ -9680,7 +9607,7 @@ async function runGreenCheckpointInner(
         `frozen repair fixer dispatch reservation ${decision.reservationToken} is active until ${decision.reservationExpiresAtMs}; ` +
         `candidate ${repairQueue.repairHead.slice(0, 8)} remains serialized and no suite was run`;
       deps.log(summary);
-      return withFossilAbandonment({
+      return withRepairIdentity({
         advanced: false,
         candidate: repairQueue.repairHead,
         from: lastReady,
@@ -9692,7 +9619,7 @@ async function runGreenCheckpointInner(
     } else if (decision.kind === "wait-for-fixer") {
       const summary = `frozen repair fixer ${decision.fixerSpawnId} is ${decision.liveness}; candidate ${repairQueue.candidate.slice(0, 8)} remains serialized and no suite was run`;
       deps.log(summary);
-      return withFossilAbandonment({
+      return withRepairIdentity({
         advanced: false,
         candidate: repairQueue.repairHead,
         from: lastReady,
@@ -9737,7 +9664,7 @@ async function runGreenCheckpointInner(
             ? `re-queued it for the next fixer without spending a full suite`
             : `holding without spending a suite because no queue writer is available`);
         deps.log(summary);
-        return withFossilAbandonment({
+        return withRepairIdentity({
           advanced: false,
           candidate,
           from: lastReady,
@@ -9752,7 +9679,7 @@ async function runGreenCheckpointInner(
           `frozen repair head ${candidate.slice(0, 8)} could not be verified this tick (${verification.summary}); ` +
           `holding the ready-to-verify queue without spending a suite`;
         deps.log(summary);
-        return withFossilAbandonment({
+        return withRepairIdentity({
           advanced: false,
           candidate,
           from: lastReady,
@@ -11150,7 +11077,7 @@ async function runGreenCheckpointInner(
     const buildNotGreenResult = (
       forRetriage?: RedTriage & { tip: string | null },
     ): CheckpointResult =>
-      withFossilAbandonment({
+      withRepairIdentity({
         advanced: false,
         candidate,
         from: lastReady,
