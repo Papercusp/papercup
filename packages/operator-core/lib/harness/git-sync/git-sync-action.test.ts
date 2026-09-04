@@ -1415,6 +1415,111 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     }
   });
 
+  it('EI-22367010504753373: reclaims a terminal correlated resolver on the shared barrier and retries by lock_id', async () => {
+    const terminalResolverOwner = 's-invoke-88ee4ec4-32f4-4988-90aa-fb9b38cc49f4';
+    const terminalResolverHolder = {
+      owner: terminalResolverOwner,
+      owner_label: 'merge-resolver',
+      mode: 'exclusive' as const,
+      status: 'held' as const,
+      lock_id: 'resolver-shared-barrier-lock',
+      reason: 'merge-resolution git-sync conflict',
+      acquired_ts: new Date('2026-09-04T20:00:00.000Z'),
+      expires_ts: new Date('2026-09-04T20:10:00.000Z'),
+      fence_seq: 12,
+    };
+    let firstBarrierAttempt = true;
+    tryAcquireResourceMock.mockImplementation(async (_tx, opts) => {
+      const resource = (opts as { resource: string }).resource;
+      if (resource === 'git-sync' && firstBarrierAttempt) {
+        firstBarrierAttempt = false;
+        return {
+          ok: false,
+          reason: 'exclusive_pending',
+          holders: [terminalResolverHolder],
+        };
+      }
+      return { ok: true };
+    });
+    endedSessionOwnersMock.mockResolvedValue(new Set([terminalResolverOwner]));
+    tryReleaseResourceMock.mockResolvedValue({ ok: true, released: 1 });
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await action(ctx);
+      expect(error).toHaveBeenCalledWith(expect.stringContaining(
+        `STALE LOCK RECLAIMED — papercup git-sync holder ${terminalResolverOwner} ` +
+          '(session ended per the shared liveness oracle)',
+      ));
+    } finally {
+      error.mockRestore();
+    }
+
+    expect(endedSessionOwnersMock).toHaveBeenCalledWith([terminalResolverOwner]);
+    expect(tryReleaseResourceMock.mock.calls.some(([, opts]) =>
+      (opts as { owner?: string; lockId?: string }).owner === terminalResolverOwner &&
+      (opts as { lockId?: string }).lockId === terminalResolverHolder.lock_id,
+    )).toBe(true);
+    const barrierAcquires = tryAcquireResourceMock.mock.calls
+      .map(([, opts]) => opts as { resource: string; mode: string })
+      .filter(({ resource }) => resource === 'git-sync');
+    expect(barrierAcquires).toHaveLength(2);
+    expect(barrierAcquires.every(({ mode }) => mode === 'shared')).toBe(true);
+    expect(runGitSyncMock).toHaveBeenCalledOnce();
+  });
+
+  it('EI-22367010504753373 control: live and opaque shared-barrier holders remain protected', async () => {
+    const liveResolverOwner = 'su-live-resolver-session';
+    const opaqueResolverOwner = 'merge-resolver-opaque-owner';
+    const holders = [
+      {
+        owner: liveResolverOwner,
+        owner_label: 'merge-resolver (live)',
+        mode: 'exclusive' as const,
+        status: 'held' as const,
+        lock_id: 'live-resolver-lock',
+        reason: 'merge-resolution git-sync conflict',
+        acquired_ts: new Date('2026-09-04T20:00:00.000Z'),
+        expires_ts: new Date('2026-09-04T20:10:00.000Z'),
+        fence_seq: 13,
+      },
+      {
+        owner: opaqueResolverOwner,
+        owner_label: 'opaque resolver',
+        mode: 'exclusive' as const,
+        status: 'held' as const,
+        lock_id: 'opaque-resolver-lock',
+        reason: 'merge-resolution git-sync conflict',
+        acquired_ts: new Date('2026-09-04T20:00:00.000Z'),
+        expires_ts: new Date('2026-09-04T20:10:00.000Z'),
+        fence_seq: 14,
+      },
+    ];
+    tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
+      (opts as { resource: string }).resource === 'git-sync'
+        ? { ok: false, reason: 'exclusive_pending', holders }
+        : { ok: true },
+    );
+    endedSessionOwnersMock.mockResolvedValue(new Set<string>());
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await action(ctx);
+    } finally {
+      log.mockRestore();
+    }
+
+    expect(endedSessionOwnersMock).toHaveBeenCalledWith([liveResolverOwner, opaqueResolverOwner]);
+    expect(tryReleaseResourceMock.mock.calls.some(([, opts]) =>
+      [liveResolverOwner, opaqueResolverOwner].includes((opts as { owner?: string }).owner ?? ''),
+    )).toBe(false);
+    expect(tryReleaseResourceMock.mock.calls.some(([, opts]) =>
+      ['live-resolver-lock', 'opaque-resolver-lock'].includes((opts as { lockId?: string }).lockId ?? ''),
+    )).toBe(false);
+    expect(runGitSyncMock).not.toHaveBeenCalled();
+  });
+
   it('retries transient contention while releasing and completes all releases before the committed event', async () => {
     runGitSyncMock.mockResolvedValue(syncedOutcome);
     const contention = Object.assign(
