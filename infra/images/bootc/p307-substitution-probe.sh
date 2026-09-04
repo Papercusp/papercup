@@ -58,6 +58,7 @@ case "$STORAGE_DRIVER" in
   ''|*[!A-Za-z0-9_-]*) echo "SETUP FAILED: invalid storage driver '$STORAGE_DRIVER'"; exit 2;;
 esac
 CS_SCOPE="[$STORAGE_DRIVER@/var/lib/containers/storage]$NS"
+OSBUILD_CS_SCOPE='[overlay@/run/osbuild/containers/storage2]'
 SPECIALISE=(
   --build-arg "RELEASE_REGISTRY_NAMESPACE=$NS"
   --build-arg "RELEASE_STORAGE_DRIVER=$STORAGE_DRIVER"
@@ -134,6 +135,12 @@ if build p307-subst-set "${SPECIALISE[@]}"; then
   b_cs="$(in_image p307-subst-set "jq -r --arg scope '$CS_SCOPE' '.transports[\"containers-storage\"][\$scope][0].type // empty' $POL")"
   [ "$b_cs" = insecureAcceptAnything ] && pass "local render allowance is scoped to $CS_SCOPE" \
     || bad "scoped containers-storage allowance is missing (got '$b_cs')"
+  b_osbuild_cs="$(in_image p307-subst-set "jq -r --arg scope '$OSBUILD_CS_SCOPE' '.transports[\"containers-storage\"][\$scope][0].type // empty' $POL")"
+  [ "$b_osbuild_cs" = insecureAcceptAnything ] && pass "osbuild handoff allowance is scoped to $OSBUILD_CS_SCOPE" \
+    || bad "osbuild private-store allowance is missing (got '$b_osbuild_cs')"
+  b_cs_count="$(in_image p307-subst-set "jq -r '.transports[\"containers-storage\"] | length' $POL")"
+  [ "$b_cs_count" = 2 ] && pass "specialised image carries exactly the two required local-store scopes" \
+    || bad "specialised image carries $b_cs_count local-store scopes, expected exactly 2"
   b_key_sha="$(in_image p307-subst-set "sha256sum /etc/pki/papercusp/release-signing.pub | cut -d' ' -f1")"
   [ "$b_key_sha" = "$PUBKEY_SHA" ] && pass "the matching release public key is baked byte-for-byte" \
     || bad "baked public key hash '$b_key_sha' differs from input '$PUBKEY_SHA'"

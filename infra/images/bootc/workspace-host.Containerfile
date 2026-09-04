@@ -237,15 +237,22 @@ RUN set -eu; \
         echo "FATAL: RELEASE_SIGNING_PUBKEY_B64 is required when RELEASE_REGISTRY_NAMESPACE is set" >&2; exit 1; }; \
       sed -i "s|<RELEASE_REGISTRY_NAMESPACE>|${RELEASE_REGISTRY_NAMESPACE}|g" "$POL" "$RD"; \
       CS_SCOPE="[${RELEASE_STORAGE_DRIVER}@/var/lib/containers/storage]${RELEASE_REGISTRY_NAMESPACE}"; \
+      OSBUILD_CS_SCOPE='[overlay@/run/osbuild/containers/storage2]'; \
       POL_TMP="$(mktemp)"; \
-      jq --arg scope "$CS_SCOPE" \
-        '.transports["containers-storage"] = {($scope): [{"type":"insecureAcceptAnything"}]}' \
+      jq --arg scope "$CS_SCOPE" --arg osbuild_scope "$OSBUILD_CS_SCOPE" \
+        '.transports["containers-storage"] = { \
+          ($scope): [{"type":"insecureAcceptAnything"}], \
+          ($osbuild_scope): [{"type":"insecureAcceptAnything"}] \
+        }' \
         "$POL" > "$POL_TMP"; \
       cp -f "$POL_TMP" "$POL"; \
       rm -f "$POL_TMP"; \
       jq -e --arg scope "$CS_SCOPE" \
         '.transports["containers-storage"][$scope][0].type == "insecureAcceptAnything"' \
         "$POL" >/dev/null || { echo "FATAL: scoped containers-storage policy was not installed" >&2; exit 1; }; \
+      jq -e --arg scope "$OSBUILD_CS_SCOPE" \
+        '.transports["containers-storage"][$scope][0].type == "insecureAcceptAnything"' \
+        "$POL" >/dev/null || { echo "FATAL: osbuild private-store policy was not installed" >&2; exit 1; }; \
       printf '%s' "${RELEASE_SIGNING_PUBKEY_B64}" | base64 -d > "$PUB" \
         || { echo "FATAL: RELEASE_SIGNING_PUBKEY_B64 is not valid base64" >&2; exit 1; }; \
       [ -s "$PUB" ] && openssl pkey -pubin -in "$PUB" -noout >/dev/null 2>&1 \
