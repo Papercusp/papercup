@@ -867,13 +867,18 @@ export interface FrozenRepairQueueDiagnostic {
    */
   /**
    * P-002/P-003 — the cycle's per-leg lifecycle, carried through so a diagnostic reader can
-   * name WHICH non-test leg is failing and whether its own re-run has passed. Optional and
-   * additive: absent means no leg measurement was recorded, never "no legs are failing".
+   * name WHICH non-test leg is failing and whether its own re-run has passed. Always present:
+   * an empty array means this valid queue has no recorded leg measurement, never that the
+   * diagnostic forgot to project the ledger.
    */
-  legs?: readonly FrozenRepairLegState[];
+  legs: readonly FrozenRepairLegState[];
   /** P-006: the typed signature — WHAT is red, by kind, with the recipe that re-measures it.
    * The same population as `failingTests`, so the two never disagree. */
   signature: readonly RepairSignatureEntry[];
+  /** P-011: every path-exact advance of repairHead, bounded by FROZEN_REPAIR_ADMISSION_CAP. */
+  admissions: readonly FrozenRepairAdmission[];
+  /** Why automation is blocked, or null while the queue remains actionable. */
+  blockedReason: FrozenCandidateBlockedReason | null;
   verdictProvenance?: {
     frozenCandidate: string;
     repairHead: string;
@@ -1648,8 +1653,13 @@ export function diagnoseFrozenCandidateRepairQueue(
     candidate: queue.candidate,
     // P-002/P-003: carried onto the diagnostic so a reader holding it can answer "which
     // non-test leg, and did its fix land" without re-parsing the raw queue blob.
-    ...(queue.legs && queue.legs.length > 0 ? { legs: queue.legs } : {}),
+    legs: queue.legs ?? [],
     signature: queue.signature,
+    // P-011: the normalized diagnostic is the ONE read model behind release:repair-queue,
+    // gitPipelineSnapshot and the owner brief. Dropping these two fields here forced each
+    // surface to re-parse the raw persisted row (or, in practice, omit the answer entirely).
+    admissions: queue.admissions ?? [],
+    blockedReason: queue.blockedReason ?? null,
     attempts: queue.attempts,
     openedAtMs: queue.openedAtMs,
     updatedAtMs: queue.updatedAtMs,

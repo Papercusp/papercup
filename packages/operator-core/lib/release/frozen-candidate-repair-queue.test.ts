@@ -124,6 +124,41 @@ describe('frozen-candidate repair queue', () => {
     ).toMatchObject({ zeroAttemptStalled: false });
   });
 
+  it('P-011 projects the complete bounded lineage ledger and blocked reason through the canonical diagnostic', () => {
+    const admission = {
+      atMs: T0 + 1,
+      actor: 'su-fixer',
+      source: { ref: 'staging', sha: C1 },
+      fromRepairHead: C,
+      toRepairHead: C1,
+      paths: ['lib/a.test.ts'],
+      unchanged: [],
+      blobs: { 'lib/a.test.ts': 'blob-a' },
+      reason: 'admit the exact failing path',
+    };
+    const blocked: FrozenCandidateRepairQueue = {
+      ...fresh(),
+      phase: 'blocked',
+      repairHead: C1,
+      attempts: DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS.maxAttempts,
+      blockedReason: 'attempts-exhausted',
+      admissions: [admission],
+    };
+
+    const diagnostic = diagnoseFrozenCandidateRepairQueue(blocked, { nowMs: T0 + 2 });
+
+    expect(diagnostic).toMatchObject({
+      frozenCandidate: C,
+      repairHead: C1,
+      phase: 'blocked',
+      openedAtMs: T0,
+      blockedReason: 'attempts-exhausted',
+      admissions: [admission],
+      signature: blocked.signature,
+      legs: [],
+    });
+  });
+
   it('keeps the dispatch-infeasible decision helper pure and explicit', () => {
     expect(
       decideFrozenRepairDispatchInfeasible(fresh(), {

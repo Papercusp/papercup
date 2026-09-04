@@ -546,6 +546,66 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.verdictProvenance.targetIncludedInGreenPin).toBe(false);
   });
 
+  it('measures exact fix-commit containment against gate_health.observedCandidate', async () => {
+    const target = 'targetsha0';
+    const observedCandidate = 'observedsha0';
+    const snapshot = snap({ observedCandidate });
+    const git = fakeGit({
+      pathCommit: target,
+      subject: 'target',
+      contains: {
+        HEAD: [target],
+        'origin/staging': [target],
+        'origin/main': [target],
+        deployedsha0: [target],
+        readysha0: [target],
+        [observedCandidate]: [target],
+      },
+    });
+
+    const res = await gitPipelinePosition(
+      { sha: target },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snapshot },
+    );
+
+    expect(res.gate.observedCandidate).toBe(observedCandidate);
+    expect(res.verdictProvenance.targetIncludedInObservedCandidate).toBe(true);
+  });
+
+  it('distinguishes an honest observed-candidate miss from an unreadable ancestry probe', async () => {
+    const target = 'targetsha0';
+    const observedCandidate = 'observedsha0';
+    const snapshot = snap({ observedCandidate });
+    const base = {
+      pathCommit: target,
+      subject: 'target',
+      contains: {
+        HEAD: [target],
+        'origin/staging': [target],
+        'origin/main': [target],
+        deployedsha0: [target],
+        readysha0: [target],
+        [observedCandidate]: [],
+      },
+    };
+
+    const missing = await gitPipelinePosition(
+      { sha: target },
+      { git: fakeGit(base), loadDeploy: async () => deploy(), loadSnapshot: async () => snapshot },
+    );
+    expect(missing.verdictProvenance.targetIncludedInObservedCandidate).toBe(false);
+
+    const unreadable = await gitPipelinePosition(
+      { sha: target },
+      {
+        git: fakeGit({ ...base, failRefs: [observedCandidate] }),
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snapshot,
+      },
+    );
+    expect(unreadable.verdictProvenance.targetIncludedInObservedCandidate).toBeNull();
+  });
+
   it('projects structured git-sync skipped-path provenance into the pipeline position', async () => {
     const skippedPaths = [
       {
@@ -3089,7 +3149,10 @@ describe('computeStages: position x health', () => {
             zeroAttemptStallMs: 15 * 60_000,
             fixerSpawnId: 'dead-fixer',
             fixerAlive: false,
+            legs: [],
             signature: [],
+            admissions: [],
+            blockedReason: null,
             dispatchReservation: null,
             // This fixture supplies no shared-tree edit set, so the collision probe is
             // explicitly UNMEASURED rather than a false all-clear (measured:false ≠ zero paths).
@@ -4831,13 +4894,15 @@ describe('changeInCandidate (P-004)', () => {
          * from a candidate that provably contains it — and then prescribes a ~55min
          * re-fire. Sending the reader there would have relocated this bug, not fixed it.
          *
-         * So the detail must name the ancestry test AND explicitly warn the reader off
-         * the containment field. `callerEditsInCandidate` still appears in the string —
+         * So the detail must name the canonical ancestry reader AND explicitly warn the
+         * reader off the containment field. `callerEditsInCandidate` still appears in the string —
          * as the thing NOT to use — which is why this pins the warning phrasing rather
          * than merely asserting the substring is absent.
          */
-        expect(res.changeInCandidate.detail).toMatch(/merge-base --is-ancestor/);
-        expect(res.changeInCandidate.detail).toMatch(/Do NOT settle it with[\s\S]*callerEditsInCandidate/);
+        expect(res.changeInCandidate.detail).toMatch(/release:trace[\s\S]*gate\.fixCommitContainment\.verdict/);
+        expect(res.changeInCandidate.detail).not.toMatch(/git merge-base --is-ancestor/);
+        expect(res.changeInCandidate.detail).toMatch(/Do NOT hand-run merge-base/);
+        expect(res.changeInCandidate.detail).toMatch(/settle it with[\s\S]*callerEditsInCandidate/);
         // …and the marker note itself must carry the WARNING glyph, never the reassuring
         // ✓ (the position ticks legitimately use ✓, so this pins the note's own prefix).
         expect(res.summary).toMatch(/⚠ The gate's judged candidate/);
@@ -5454,7 +5519,10 @@ describe('stage levers (P-005)', () => {
     zeroAttemptStallMs: 15 * 60_000,
     fixerSpawnId: 'dead-fixer',
     fixerAlive: false,
+    legs: [],
     signature: [],
+    admissions: [],
+    blockedReason: null,
     dispatchReservation: null,
     sharedTreeCollision: {
       measured: false,
