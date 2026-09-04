@@ -92,6 +92,21 @@ const NOW_ACTION_RE =
 const NOW_ACTIVE_RE = /\b(?:active|assigned|in\s+progress|ongoing|open|pending|underway)\b/i;
 const NOW_CROSS_LEDGER_REF_BEFORE_RE = /\bWI-\d+\s*\/\s*$/i;
 const NOW_CROSS_LEDGER_REF_AFTER_RE = /^\s*\/\s*WI-\d+\b/i;
+// EI-22299775069357894: a decision can cite a terminal plan item as neutral
+// historical/definitional evidence, e.g. "D-022 records P-012's
+// stack-mutation primitive". Keep this narrowly tied to a decision id followed
+// by the present-tense records verb; action, future, negated, or active-status
+// wording around the reference must still be reported.
+const NOW_DECISION_REFERENCE_RE = /\bD-\d{3,}\s+records?\s+$/i;
+// EI-21901034855868849: a terminal item can be named while its remaining
+// evidence is deliberately handed to another work-item, e.g. "P-014's
+// measurement residue is owned by WI-1311290, not dropped" or "P-014's
+// measurement residue carries forward under WI-1311290". These are neutral
+// references to carried residue, not directions to resume the terminal item.
+// Keep the exemption tied to an explicit WI handoff; generic "residue remains"
+// prose must still be checked as a possible current-work contradiction.
+const NOW_RESIDUE_REFERENCE_RE =
+  /\bresidue\b[^.!?;:\n]{0,100}\b(?:owned\s+by\s+WI-\d+|carries\s+forward\s+under\s+WI-\d+|is\s+carried\s+forward\s+under\s+WI-\d+)\b/i;
 
 // Exhaustive-list wording is intentionally narrow.  These are the two
 // shapes that have caused real successor drops: "only P-002 remains" and
@@ -127,6 +142,28 @@ function hasAffirmativeResolution(text: string): boolean {
 
 function isStagingOnlyCompletion(text: string): boolean {
   return NOW_STAGING_COMPLETION_RE.test(text) && NOW_RELEASE_PLANE_ABSENCE_RE.test(text);
+}
+
+function hasNeutralResidueReference(before: string, after: string): boolean {
+  const match = NOW_RESIDUE_REFERENCE_RE.exec(after);
+  if (!match) return false;
+
+  const matchEnd = (match.index ?? 0) + match[0].length;
+  const trailing = after.slice(matchEnd);
+  // "not dropped" in the reported shape qualifies the residue handoff, not
+  // the terminal item itself. Only forgive that exact trailing qualifier;
+  // any additional negation/future/active/action wording remains guarded.
+  const notDroppedQualifier = /^\s*(?:,\s*)?not\s+dropped\b/i;
+  const neutralTrailing = notDroppedQualifier.test(trailing)
+    ? trailing.replace(notDroppedQualifier, '')
+    : trailing;
+  const surrounding = `${before}${after.slice(0, match.index ?? 0)}${neutralTrailing}`;
+
+  return (
+    !NOW_ACTION_RE.test(surrounding) &&
+    !NOW_NEGATED_OR_FUTURE_RE.test(surrounding) &&
+    !NOW_ACTIVE_RE.test(surrounding)
+  );
 }
 
 /**
@@ -236,6 +273,19 @@ export function detectNowItemContradictions(
       !NOW_NEGATED_OR_FUTURE_RE.test(after) &&
       !NOW_ACTIVE_RE.test(historicalContext.slice(-120)) &&
       !NOW_ACTIVE_RE.test(after);
+    // A decision reference such as `D-022 records P-012's primitive` is
+    // evidence about a completed item, not a direction to revisit it. The
+    // surrounding guards preserve the detector's safety boundary for
+    // `Revisit D-022 records P-012` and `D-022 records P-012 as pending`.
+    const neutralDecisionReference =
+      NOW_DECISION_REFERENCE_RE.test(before) &&
+      !NOW_ACTION_RE.test(before) &&
+      !NOW_ACTION_RE.test(after) &&
+      !NOW_NEGATED_OR_FUTURE_RE.test(before) &&
+      !NOW_NEGATED_OR_FUTURE_RE.test(after) &&
+      !NOW_ACTIVE_RE.test(before) &&
+      !NOW_ACTIVE_RE.test(after);
+    const neutralResidueReference = hasNeutralResidueReference(before, after);
     // An explicit "<other-plan-slug> P-NNN" citation scopes the id to that
     // OTHER plan, never this one — see PLAN_SLUG_PREFIX_RE above. Tense/action
     // wording after the id is irrelevant here: the id itself does not name an
@@ -250,6 +300,8 @@ export function detectNowItemContradictions(
       stagingOnlyCompletion ||
       historicalReference ||
       crossLedgerReference ||
+      neutralDecisionReference ||
+      neutralResidueReference ||
       explicitForeignPlanReference ||
       retrospectiveResolution ||
       neutralMetadataReference
