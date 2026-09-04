@@ -1166,19 +1166,68 @@ describe('buildWorkspaceHostBootstrap', () => {
   // (every name has a `die` guard upstream, so reaching attest-health is the proof) is sound and
   // is kept; what was missing is anything BINDING a name to its guard.
   describe('attested checks are bound to a host-side observation (EI-22185970114422986)', () => {
-    it('renders the observation that establishes every attested check', () => {
-      const script = buildWorkspaceHostBootstrap(input());
-      const attestingOnNothing = WORKSPACE_HOST_BOOTSTRAP_CHECKS.filter(
-        (name) => !script.includes(WORKSPACE_HOST_BOOTSTRAP_CHECK_EVIDENCE[name]),
-      );
-      // Named, never counted: the failure has to say WHICH check is attesting on nothing.
-      expect(attestingOnNothing).toEqual([]);
-    });
+    // PER MODEL (P-306). Running this against the Ubuntu render alone would leave the bootc
+    // render completely unpinned while the suite stayed green — and a bootc host attests four
+    // names whose observations exist nowhere else, so that is exactly where an unbacked check
+    // could hide.
+    it.each(WORKSPACE_HOST_MODELS)(
+      'renders the observation that establishes every attested check (%s)',
+      (hostModel) => {
+        const script = buildWorkspaceHostBootstrap(
+          hostModel === 'bootc-image' ? bootcInput() : input(),
+        );
+        const attestingOnNothing = workspaceHostBootstrapChecks(
+          hostModel,
+        ).filter(
+          (name) =>
+            !script.includes(WORKSPACE_HOST_BOOTSTRAP_CHECK_EVIDENCE[name]),
+        );
+        // Named, never counted: the failure has to say WHICH check is attesting on nothing.
+        expect(attestingOnNothing).toEqual([]);
+      },
+    );
+
+    // The complement, and it is the half that catches a check name deleted from a model without
+    // its evidence entry going too — leaving a fragment pinned to a script nothing renders.
+    it.each(WORKSPACE_HOST_MODELS)(
+      'renders NO observation belonging to the other host model (%s)',
+      (hostModel) => {
+        const script = buildWorkspaceHostBootstrap(
+          hostModel === 'bootc-image' ? bootcInput() : input(),
+        );
+        const foreign = WORKSPACE_HOST_BOOTSTRAP_CHECK_NAMES.filter(
+          (name) =>
+            !workspaceHostBootstrapChecks(hostModel).includes(name) &&
+            script.includes(WORKSPACE_HOST_BOOTSTRAP_CHECK_EVIDENCE[name]),
+        );
+        expect(foreign).toEqual([]);
+      },
+    );
 
     it('declares evidence for every attested name and for no name that is not attested', () => {
       expect(
         Object.keys(WORKSPACE_HOST_BOOTSTRAP_CHECK_EVIDENCE).sort(),
-      ).toEqual([...WORKSPACE_HOST_BOOTSTRAP_CHECKS].sort());
+      ).toEqual([...WORKSPACE_HOST_BOOTSTRAP_CHECK_NAMES].sort());
+    });
+
+    it('partitions every check name into exactly one model, with nothing orphaned', () => {
+      const perModel = WORKSPACE_HOST_MODELS.flatMap((model) => [
+        ...workspaceHostBootstrapChecks(model),
+      ]);
+      // Every name reachable from some model…
+      expect([...new Set(perModel)].sort()).toEqual(
+        [...WORKSPACE_HOST_BOOTSTRAP_CHECK_NAMES].sort(),
+      );
+      // …and the ONLY names both models share are the shared ones. A model-specific check that
+      // drifts into both lists would silently re-create the flat list this split replaced.
+      const inBoth = [...new Set(perModel)].filter(
+        (name) =>
+          perModel.filter((candidate) => candidate === name).length ===
+          WORKSPACE_HOST_MODELS.length,
+      );
+      expect(inBoth.sort()).toEqual(
+        [...WORKSPACE_HOST_BOOTSTRAP_SHARED_CHECKS].sort(),
+      );
     });
 
     // A guard that has never failed is a guard nobody has tested. The map is only worth its line
