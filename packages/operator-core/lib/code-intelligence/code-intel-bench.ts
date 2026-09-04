@@ -117,7 +117,7 @@ export const BENCH_PROBES: readonly BenchProbe[] = Object.freeze([
   {
     caseId: 'rust-trait-implementations',
     file: 'papercusp-desktop/src-tauri/src/endpoint_ipc.rs',
-    line1: 284,
+    line1: 308,
     symbol: 'IpcStream',
     rationale:
       'Ask at the enum declaration; the answer must enumerate the trait impls. ' +
@@ -495,7 +495,10 @@ export function sampleLspResources(): ResourceSample {
     Math.round(perClient.reduce((sum, c) => sum + (c.rssMb ?? 0), 0) * 10) / 10;
   const maxClientRssMb = perClient.reduce((max, c) => Math.max(max, c.rssMb ?? 0), 0);
   const overBudgetClients = perClient
-    .filter((c) => (c.rssMb ?? 0) > DEFAULT_RESOURCE_BUDGET.rssMbMax)
+    .filter((c) => {
+      const verdict = classifyRss(c.language, c.rssMb);
+      return verdict.status === 'accepted-exceedance' || verdict.status === 'over-ceiling';
+    })
     .map((c) => ({ language: c.language, rssMb: c.rssMb as number }));
 
   return {
@@ -541,13 +544,15 @@ export function sampleLspResources(): ResourceSample {
  * failing check is sometimes "this is real, here is its size and why we accept
  * it for now", never "assert less".
  */
-export const KNOWN_RSS_EXCEEDANCES: readonly {
+export interface KnownRssExceedance {
   readonly language: string;
   readonly observedMb: number;
   /** Fails if the server grows past this — the exceedance stays bounded. */
   readonly observedCeilingMb: number;
   readonly why: string;
-}[] = Object.freeze([
+}
+
+export const KNOWN_RSS_EXCEEDANCES: readonly KnownRssExceedance[] = Object.freeze([
   Object.freeze({
     language: 'rust',
     observedMb: 2826.6,
@@ -564,6 +569,74 @@ export const KNOWN_RSS_EXCEEDANCES: readonly {
       'For comparison the TypeScript server measured 66.6MB on the same run.',
   }),
 ]);
+
+/** One resident backend's RSS measurement graded against the frozen budget. */
+export interface RssVerdict {
+  readonly language: string;
+  readonly status: 'not-measured' | 'within-budget' | 'accepted-exceedance' | 'over-ceiling';
+  readonly budgetMb: number;
+  readonly measuredMb: number | null;
+  /** The matched allowance's ceiling, or null when no allowance applies. */
+  readonly acceptedCeilingMb: number | null;
+}
+
+/**
+ * Grade one resident backend's RSS without turning an allowance into a budget.
+ *
+ * An allowance is deliberately narrow: it applies only when the measured
+ * backend has the exact language named by the measured exception, and only up
+ * to that exception's recorded ceiling. A different language, a measurement
+ * beyond the ceiling, or an absent measurement is not a pass. The budget and
+ * accounting table are injectable so focused tests can prove both directions
+ * of the guard without starting a language server.
+ */
+export function classifyRss(
+  language: string,
+  measuredMb: number | null,
+  opts: {
+    readonly budgetMb?: number;
+    readonly exceedances?: readonly KnownRssExceedance[];
+  } = {},
+): RssVerdict {
+  const budgetMb = opts.budgetMb ?? DEFAULT_RESOURCE_BUDGET.rssMbMax;
+  const exceedances = opts.exceedances ?? KNOWN_RSS_EXCEEDANCES;
+  const allowance = exceedances.find((e) => e.language === language) ?? null;
+
+  if (measuredMb === null) {
+    return {
+      language,
+      status: 'not-measured',
+      budgetMb,
+      measuredMb,
+      acceptedCeilingMb: allowance?.observedCeilingMb ?? null,
+    };
+  }
+  if (measuredMb <= budgetMb) {
+    return {
+      language,
+      status: 'within-budget',
+      budgetMb,
+      measuredMb,
+      acceptedCeilingMb: allowance?.observedCeilingMb ?? null,
+    };
+  }
+  if (allowance !== null && measuredMb <= allowance.observedCeilingMb) {
+    return {
+      language,
+      status: 'accepted-exceedance',
+      budgetMb,
+      measuredMb,
+      acceptedCeilingMb: allowance.observedCeilingMb,
+    };
+  }
+  return {
+    language,
+    status: 'over-ceiling',
+    budgetMb,
+    measuredMb,
+    acceptedCeilingMb: allowance?.observedCeilingMb ?? null,
+  };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cold start

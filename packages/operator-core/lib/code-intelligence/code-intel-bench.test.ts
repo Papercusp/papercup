@@ -25,6 +25,7 @@ import {
   CORPUS_GROUND_TRUTH_INTENTS,
   KNOWN_DIVERGENCES,
   KNOWN_RSS_EXCEEDANCES,
+  classifyRss,
   MCP_LANGUAGE_SERVER_SERVED_INTENTS,
   MCP_LANGUAGE_SERVER_TOOL_SURFACE,
   auditToolSurface,
@@ -440,6 +441,43 @@ describe('accounted corpus divergences (P-010: frozen corpus vs LSP semantics)',
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('accounted RSS exceedances (P-010: a real breach, bounded not silenced)', () => {
+  const ALLOWANCE = [
+    { language: 'rust', observedMb: 2_500, observedCeilingMb: 4_000, why: 'measured fixture' },
+  ] as const;
+
+  it('grades a measured breach inside the matching allowance as accepted, not within budget', () => {
+    const v = classifyRss('rust', 2_600, { budgetMb: 1_024, exceedances: ALLOWANCE });
+    expect(v.status).toBe('accepted-exceedance');
+    expect(v).toMatchObject({ measuredMb: 2_600, acceptedCeilingMb: 4_000 });
+  });
+
+  it('FAILS a new language even when another language has an allowance', () => {
+    const v = classifyRss('typescript', 2_600, { budgetMb: 1_024, exceedances: ALLOWANCE });
+    expect(v.status).toBe('over-ceiling');
+    expect(v.acceptedCeilingMb).toBeNull();
+  });
+
+  it('FAILS a matching language once it grows past the recorded ceiling', () => {
+    const v = classifyRss('rust', 4_001, { budgetMb: 1_024, exceedances: ALLOWANCE });
+    expect(v.status).toBe('over-ceiling');
+    expect(v.acceptedCeilingMb).toBe(4_000);
+  });
+
+  it('refuses to fabricate a pass when RSS could not be measured', () => {
+    const v = classifyRss('rust', null, { budgetMb: 1_024, exceedances: ALLOWANCE });
+    expect(v.status).toBe('not-measured');
+    expect(v.status).not.toBe('within-budget');
+  });
+
+  it('CONTROL: the guard can fail under an injected tighter budget', () => {
+    const measuredMb = 1_000;
+    const lenient = classifyRss('typescript', measuredMb, { budgetMb: 1_024, exceedances: [] });
+    const strict = classifyRss('typescript', measuredMb, { budgetMb: 500, exceedances: [] });
+    expect(lenient.status).toBe('within-budget');
+    expect(strict.status).toBe('over-ceiling');
+    expect(lenient.status).not.toBe(strict.status);
+  });
+
   it('does NOT raise the frozen budget to make a breach pass', () => {
     // The whole point: a budget edited to match the backend it judges stops
     // being a budget. P-002 froze this at 1024MB and it stays there.
