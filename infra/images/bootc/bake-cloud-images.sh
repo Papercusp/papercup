@@ -99,6 +99,47 @@ done
 echo "BAKE_REPO=$REPO:$TAG"
 echo "BAKE_CLOUDS=${WANT[*]}"
 
+# ── 0. Preflight the SUPPLY-CHAIN toolchain, BEFORE the expensive half ────────────────────────
+# release-supply-chain.sh resolves syft/grype off PATH and documents SYFT_BIN/GRYPE_BIN as the
+# override seam — but nothing propagated them, and this script drives podman against ROOT
+# storage, so it is invoked under sudo. sudo's secure_path DISCARDS a per-user ~/.local/bin,
+# which is exactly where syft and grype install by default. Measured on the first end-to-end
+# run: build, push, registry digest resolve, cosign sign and the provenance attest ALL
+# succeeded, and the chain then died on "syft not found" — the expensive half spent for a
+# binary that was knowably missing at second 0. Resolve them here and refuse before building.
+#
+# PATH wins. A release host installs these system-wide and never reaches the sudo branch.
+resolve_tool() { # $1 tool name  $2 caller-supplied override
+  local name="$1" override="${2-}" p="" home=""
+  if [ -n "$override" ]; then printf '%s' "$override"; return 0; fi
+  p="$(command -v "$name" 2>/dev/null || true)"
+  if [ -z "$p" ] && [ -n "${SUDO_USER-}" ]; then
+    home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+    [ -n "$home" ] && [ -x "$home/.local/bin/$name" ] && p="$home/.local/bin/$name"
+  fi
+  printf '%s' "$p"
+}
+
+need_tool() { # $1 name  $2 resolved path
+  local name="$1" path="${2-}" upper
+  upper="$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
+  if [ -n "$path" ] && [ -x "$path" ]; then
+    echo "BAKE_TOOL_$upper=$path"
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "DRY_RUN: WARNING '$name' not found — the real run would refuse before building"
+    return 0
+  fi
+  die "'$name' not found. The supply-chain gate runs BEFORE the bake and needs it; install it system-wide or pass ${upper}_BIN=/path/to/$name"
+}
+
+SYFT_RESOLVED="$(resolve_tool syft "${SYFT_BIN-}")"
+GRYPE_RESOLVED="$(resolve_tool grype "${GRYPE_BIN-}")"
+need_tool syft  "$SYFT_RESOLVED"
+need_tool grype "$GRYPE_RESOLVED"
+export SYFT_BIN="$SYFT_RESOLVED" GRYPE_BIN="$GRYPE_RESOLVED"
+
 # ── 1. Build the image ONCE ───────────────────────────────────────────────────────────────────
 # The registry namespace is substituted into policy.json + registries.d INSIDE the build (layer
 # 3), all-or-nothing, so an image either names the real registry in both files or fails closed
@@ -152,6 +193,26 @@ else
     echo "BAKE_RESULT=REFUSED supply chain exited $sc_rc — nothing was baked"
     exit 3
   fi
+fi
+
+# ── 3b. Make the PINNED DIGEST resolvable in LOCAL storage ────────────────────────────────────
+# bake_one hands bootc-image-builder `--local`, which reads ONLY local container storage, while
+# the digest everything is pinned to was resolved from the REGISTRY. Those two do not have to
+# agree, and measured on this box they did not: after `podman push`, local storage recorded
+# RepoDigest sha256:1908e66d… while the registry served sha256:bf60322b… for that same tag, so
+# `podman image exists <repo>@<registry digest>` was FALSE while the tag resolved fine (probe
+# positive-controlled against the tag and against the local digest, so this is a real divergence
+# and not a broken lookup). bib would then fail to find an image we had just built and pushed.
+#
+# Pull the pinned digest BACK so local storage provably holds exactly the bytes that were
+# signed, then ASSERT it — an unresolvable ref must not reach bib as a vague "image not found".
+if [ "$DRY_RUN" -eq 0 ]; then
+  echo "### 3b/4 materialise $PINNED into local storage"
+  "${PODMAN[@]}" pull "${TLS[@]}" "$PINNED" >/dev/null 2>&1 || true
+  "${PODMAN[@]}" image exists "$PINNED" || {
+    echo "BAKE_RESULT=FAILED $PINNED absent from local storage; bootc-image-builder --local cannot render it"
+    exit 1
+  }
 fi
 
 # ── 4. Render each cloud from the SAME pinned digest ──────────────────────────────────────────
