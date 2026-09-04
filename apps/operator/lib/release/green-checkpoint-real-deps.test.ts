@@ -751,8 +751,8 @@ describe("realCheckpointDeps.runChangedFileTypecheckPreflight — WI-38422", () 
   });
 });
 
-describe("EI-21007486441633274: real frozen-repair ancestry reconciliation", () => {
-  it("publishes an unchanged-tree staging join for an already-represented local repair head", async () => {
+describe("P-007/D-004: the real deps no longer wire a frozen-repair staging join", () => {
+  it("exposes no reconcileFrozenRepairIntoStaging hook, and leaves the integration branch alone", async () => {
     const root = mkdtempSync(join(tmpdir(), "green-cp-repair-bridge-"));
     const remote = join(root, "origin.git");
     const repo = join(root, "work");
@@ -818,28 +818,32 @@ describe("EI-21007486441633274: real frozen-repair ancestry reconciliation", () 
         checkpointRoot: repo,
         integrationBranch: "staging",
       });
-      const joined = await deps.reconcileFrozenRepairIntoStaging?.({
-        schemaVersion: 3,
-        phase: "ready-to-promote",
-        candidate: frozen,
-        base: ready,
-        repairHead,
-        attempts: 1,
-        openedAtMs: Date.now() - 1_000,
-        updatedAtMs: Date.now(),
-        fixerSpawnId: "fixture-fixer",
-        failingTests: [],
-        signature: [],
-      });
+      // EI-21007486441633274 / WI-40081 wired a real `reconcileFrozenRepairIntoStaging` here,
+      // because D-001 held that a green isolated repair head could not advance the release ref:
+      // it published an additive staging join and the gate re-ran the COMPLETE suite at the
+      // joined sha. D-004 (owner-ratified 2026-09-03) promotes the lineage commit itself, so the
+      // hook is gone — and with it the second full suite and the re-import of everything that
+      // landed since the freeze. The fixture is kept: it proves the deps are real deps built on
+      // a real repo, so `toBeUndefined` here is a measurement and not a vacuous pass.
+      expect(
+        (deps as Record<string, unknown>).reconcileFrozenRepairIntoStaging,
+      ).toBeUndefined();
+      // POSITIVE CONTROL: these same deps DO carry the hooks the gate still uses, so an empty
+      // or mis-built `deps` object cannot make the assertion above pass by accident.
+      expect(typeof deps.runGreen).toBe("function");
+      expect(typeof deps.advance).toBe("function");
 
-      expect(joined).toMatch(/^[0-9a-f]{40}$/);
-      expect(git(repo, "rev-parse", "staging")).toBe(joined);
-      expect(git(repo, "rev-parse", `${joined}^{tree}`)).toBe(stagingTree);
-      git(repo, "merge-base", "--is-ancestor", stagingTip, joined!);
-      git(repo, "merge-base", "--is-ancestor", repairHead, joined!);
+      // Nothing was joined, pushed, or moved: the integration branch is exactly where the
+      // fixture left it, locally and on its remote.
+      expect(git(repo, "rev-parse", "staging")).toBe(stagingTip);
+      expect(git(repo, "rev-parse", `${stagingTip}^{tree}`)).toBe(stagingTree);
       expect(git(repo, "ls-remote", "origin", "refs/heads/staging")).toBe(
-        `${joined}\trefs/heads/staging`,
+        `${stagingTip}\trefs/heads/staging`,
       );
+      // The lineage the join used to consume still exists and is untouched by these deps.
+      expect(repairHead).toMatch(/^[0-9a-f]{40}$/);
+      git(repo, "merge-base", "--is-ancestor", frozen, repairHead);
+      git(repo, "merge-base", "--is-ancestor", ready, frozen);
     } finally {
       if (priorWorkspace === undefined)
         delete process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;

@@ -1719,19 +1719,21 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(await revParse(repo, "ready")).toBe(ready);
   });
 
-  it("keeps an isolated repair off release and promotes only its canonical full-gate re-entry", async () => {
+  it("P-007/D-004: promotes the frozen repair head itself, in ONE full gate, without joining the moving tip", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
     const repaired = await commit("b", "fixed", "verified repair");
+    // The admission ledger ref is what makes `repaired` a LINEAGE commit rather than merely a
+    // descendant of the candidate. `admitPathsOntoRepairHead` CAS-advances it in production.
+    await git(repo, ["update-ref", `refs/papercusp/frozen/${frozen}`, repaired]);
 
-    // Staging absorbed the same repair as a separate commit and then kept moving. The isolated
-    // repair suite may prove the patch content, but only an immutable joined staging SHA may
-    // re-enter the complete gate and become eligible for release.
+    // Staging moved on independently and does NOT contain the repair head. Under D-001 that was
+    // fatal: the repair was "verification-only", so it was joined into this moving tip and the
+    // whole gate re-run there — a second full suite, on a sha carrying every commit landed since
+    // the freeze. D-004 promotes the lineage commit instead; staging absorbs it afterwards (P-008).
     await git(repo, ["reset", "--hard", ready]);
-    await commit("b", "fixed", "patch-equivalent staging repair");
     const stagingTip = await commit("c", "3", "later staging work");
-    const stagingTree = await git(repo, ["rev-parse", `${stagingTip}^{tree}`]);
 
     const now = Date.now();
     let queue: FrozenCandidateRepairQueue | null = {
@@ -1763,94 +1765,86 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       advancedCandidates.push(candidateSha);
       return advanceReady(repo, candidateSha, "ready");
     };
-    let reconciliationAttempts = 0;
-    const reconciledHeads: string[] = [];
-    Object.assign(deps, {
-      reconcileFrozenRepairIntoStaging: async (
-        next: FrozenCandidateRepairQueue,
-      ) => {
-        reconciliationAttempts += 1;
-        if (reconciliationAttempts === 1) {
-          throw new Error("simulated canonical join failure");
-        }
-        const currentStaging = await revParse(repo, "main");
-        const tree = await git(repo, ["rev-parse", `${currentStaging}^{tree}`]);
-        const joined = await git(repo, [
-          "commit-tree",
-          tree,
-          "-p",
-          currentStaging,
-          "-p",
-          next.repairHead,
-          "-m",
-          "Join verified frozen repair into staging history",
-        ]);
-        await git(repo, [
-          "update-ref",
-          "refs/heads/main",
-          joined,
-          currentStaging,
-        ]);
-        reconciledHeads.push(joined);
-        return joined;
-      },
-    });
-
-    // A green isolated suite persists ready-to-promote, but a failed canonical join does not
-    // publish the repair SHA or move the release ref. The exact queue remains resumable.
-    const heldForCanonicalJoin = await runGreenCheckpoint(cfg(), deps);
-
-    expect(heldForCanonicalJoin).toMatchObject({
-      advanced: false,
-      green: null,
-      reason: "repair-in-progress",
-      candidate: frozen,
-      frozenCandidate: frozen,
-      repairHead: repaired,
-      verdictProvenance: { currentStatus: "isolated-suite-result" },
-      from: ready,
-      repairQueue: { phase: "ready-to-promote", repairHead: repaired },
-    });
-    expect(queue).toMatchObject({
-      phase: "ready-to-promote",
-      repairHead: repaired,
-    });
-    expect(await revParse(repo, "ready")).toBe(ready);
-    expect(await revParse(repo, "main")).toBe(stagingTip);
-    expect(pushedCandidates).toEqual([]);
-    expect(advancedCandidates).toEqual([]);
-    expect(reconciliationAttempts).toBe(1);
-    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
-
-    // Resume joins the verified repair into canonical staging, replaces the durable row with
-    // a ready-to-test pin for that immutable SHA, and spends a full gate before publication.
     const promoted = await runGreenCheckpoint(cfg(), deps);
-    const joinedTip = reconciledHeads.at(-1)!;
 
+    // ONE full gate, at the repair head, and the release ref moves to that exact sha.
     expect(promoted).toMatchObject({
       advanced: true,
       green: true,
       reason: "advanced",
-      candidate: joinedTip,
+      candidate: repaired,
       from: ready,
     });
-    expect(await revParse(repo, "ready")).toBe(joinedTip);
-    expect(await revParse(repo, "main")).toBe(joinedTip);
-    expect(await git(repo, ["rev-parse", `${joinedTip}^{tree}`])).toBe(
-      stagingTree,
-    );
-    await expect(
-      git(repo, ["merge-base", "--is-ancestor", repaired, joinedTip]),
-    ).resolves.toBe("");
+    expect(await revParse(repo, "ready")).toBe(repaired);
+    expect(pushedCandidates).toEqual([repaired]);
+    expect(advancedCandidates).toEqual([repaired]);
     expect(queue).toBeNull();
-    expect(pushedCandidates).toEqual([joinedTip]);
-    expect(advancedCandidates).toEqual([joinedTip]);
-    expect(reconciliationAttempts).toBe(2);
-    expect(calls.filter((call) => call === "runGreen")).toHaveLength(2);
+
+    // The decisive assertions. Under D-001 both of these read the other way: the gate spent a
+    // SECOND runGreen at a joined sha, and set up a checkout for it.
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
     expect(calls.filter((call) => call.startsWith("setup:"))).toEqual([
       `setup:${repaired.slice(0, 7)}`,
-      `setup:${joinedTip.slice(0, 7)}`,
     ]);
+
+    // The moving integration tip was never adopted, never joined, and never moved by the gate.
+    expect(await revParse(repo, "main")).toBe(stagingTip);
+    expect(advancedCandidates).not.toContain(stagingTip);
+  });
+
+  it("P-007/D-004: a repair head absent from the admission ledger ref is REFUSED, and the queue is kept", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    // Descends from the frozen candidate, but no admission ever authored it: there is no
+    // `refs/papercusp/frozen/<candidate>` ref pointing at it. Descent is not membership.
+    const impostor = await commit("b", "fixed", "not admitted through the one door");
+    await git(repo, ["reset", "--hard", ready]);
+    const stagingTip = await commit("c", "3", "later staging work");
+
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: impostor,
+      affectedTestProofGroup: "initial-proof-run",
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      failingTests: ["lib/broken.test.ts"],
+      signature: [],
+    };
+    const { deps } = stubDeps(true);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    const advancedCandidates: string[] = [];
+    deps.push = async () => {};
+    deps.advance = async (candidateSha) => {
+      advancedCandidates.push(candidateSha);
+      return advanceReady(repo, candidateSha, "ready");
+    };
+
+    const held = await runGreenCheckpoint(cfg(), deps);
+
+    expect(held).toMatchObject({
+      advanced: false,
+      green: null,
+      reason: "repair-in-progress",
+      candidate: impostor,
+      from: ready,
+    });
+    expect(held.summary).toContain("repair-head-absent-from-lineage-ref");
+    // Fail-closed: nothing advanced, and the tip was NOT selected as a consolation candidate.
+    expect(advancedCandidates).toEqual([]);
+    expect(await revParse(repo, "ready")).toBe(ready);
+    expect(await revParse(repo, "main")).toBe(stagingTip);
+    expect(queue).toMatchObject({ repairHead: impostor });
   });
 
   it("retries forward from a red repair head without adopting the moving staging tip", async () => {
