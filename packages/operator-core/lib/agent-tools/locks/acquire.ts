@@ -31,7 +31,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readFileLockIdentity } from './identity';
 import { enrichBusy } from './enrich-busy';
-import { inWorkspaceTxn, WorkspaceContendedError } from './in-workspace-txn';
+import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry, isWorkspaceContended } from './contention-retry';
 import {
   expireWaiter,
