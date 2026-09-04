@@ -359,6 +359,47 @@ describe('resolveSessionRefReconciled — rung 4: unlogged native-session transi
     expect(out).toEqual({ agent: 'claude', sessionId: 'successor' });
   });
 
+  it('does not let an older respawn event override a newer adv-session ref', async () => {
+    // Live WI-2143790 chronology: the host event named cb3e6dba on 2026-09-03,
+    // while the current adv row was started/rebound as 1b5b38ae on 2026-09-04.
+    // The event is valid for that host but cannot be newer than this DB ref.
+    const out = await resolveSessionRefReconciled(OWNER, {
+      resolveRef: async () => ({
+        agent: 'claude',
+        sessionId: '1b5b38ae-current',
+        startedAtMs: Date.parse('2026-09-04T15:02:05.756Z'),
+      }),
+      latestRespawnInfo: () => ({
+        nativeId: 'cb3e6dba-stale',
+        atMs: Date.parse('2026-09-03T13:25:33.769Z'),
+      }),
+      newestTranscript: () => '/iso/1f22e935-current.jsonl',
+      isFresh: () => true,
+    });
+    expect(out).toEqual({ agent: 'claude', sessionId: '1f22e935-current', startedAtMs: Date.parse('2026-09-04T15:02:05.756Z') });
+  });
+
+  it('still lets a timestamped respawn event win over the predecessor when it is newer than the DB ref', async () => {
+    const out = await resolveSessionRefReconciled(OWNER, {
+      resolveRef: async () => ({
+        agent: 'claude',
+        sessionId: 'predecessor',
+        startedAtMs: Date.parse('2026-09-03T12:00:00.000Z'),
+      }),
+      latestRespawnInfo: () => ({
+        nativeId: 'successor',
+        atMs: Date.parse('2026-09-03T13:25:33.769Z'),
+      }),
+      newestTranscript: () => '/iso/predecessor.jsonl',
+      isFresh: () => true,
+    });
+    expect(out).toEqual({
+      agent: 'claude',
+      sessionId: 'successor',
+      startedAtMs: Date.parse('2026-09-03T12:00:00.000Z'),
+    });
+  });
+
   it('does NOT override when the newest transcript is STALE/frozen (a dead predecessor)', async () => {
     const out = await resolveSessionRefReconciled(OWNER, {
       resolveRef: claudeRef('live-id'),

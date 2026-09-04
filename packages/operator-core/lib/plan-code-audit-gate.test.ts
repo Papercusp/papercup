@@ -271,6 +271,23 @@ describe('evaluatePlanAcceptanceGate — per-item code audit freshness', () => {
     expect(verdict.message).toContain('P-001: item text changed since audit #1');
   });
 
+  it('ignores a mutable set-status reflection note when checking item-text freshness', async () => {
+    const p1 = effective({ itemId: 'P-001', itemText: 'first requirement', auditSeq: 1 });
+    mockEffectiveAudits.mockResolvedValue([p1]);
+    mockPlanItems.mockResolvedValue([
+      {
+        itemId: 'P-001',
+        status: 'done',
+        itemText: 'first requirement — note: reflected from EI-21907088033648683',
+      },
+    ]);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict).toMatchObject({ satisfied: true, skipped: 'flag-off' });
+    expect(verdict.code).not.toBe('audit_coverage_stale');
+  });
+
   it('marks a resolving citation stale when its current blob differs from the audited blob', async () => {
     const p1 = effective({
       itemId: 'P-001',

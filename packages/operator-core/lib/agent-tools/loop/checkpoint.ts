@@ -350,28 +350,19 @@ export default defineTool({
   name: 'loop:checkpoint',
   profile: 'engineer',
   description:
-    'Read, write, or clear the carry-note used by a COLD su AUTO-loop wake. Read with ' +
-    '{ read:true, ownerId?, harness? }; write { did, left, insight, next } (goal, keyInsight, nextAction are aliases), { note }, ' +
-    'or compatibility alias { checkpoint }; canonical note wins and blank/null clears. An optional workItem key is accepted as non-scoping metadata. Keyed by ownerId. walls/checks default ' +
-    "to rowsMode:'merge': supplied rows win and ? PREDICTED yields before ✓ VERIFIED at the cap. rowsMode:'replace' " +
-    'retires omitted rows; empty list with replace clears. Returns verified metadata plus walls/checks. PostgreSQL ' +
-    'contention returns retryable timeout data, not a transport hang. ' +
-    EXECUTABLE_PROBE_SHAPE,
+    'Read, write, or clear the COLD su loop carry-note. Read with { read:true, ownerId?, harness? }; write compressed ' +
+    '{ did,left,insight,next } (goal,keyInsight,nextAction alias them), { note }, or { checkpoint }; blank/null clears. ' +
+    'Optional workItem is metadata. walls/checks default to rowsMode:"merge"; rowsMode:"replace" retires omitted rows. ' +
+    'Returns note metadata plus walls/checks.',
   guidance: {
     when:
-      "At a COLD loop turn's end, store compressed facts, not a transcript. Add a real same-line " +
-      '[turn:<session>@<iso-ts>] ref for owner directives/completed coordination; never invent a ref. Mark other sources ' +
-      "[self-imposed], [peer:<sid>], or [inferred]. Use rowsMode:'replace' only when retiring rows; default merge " +
-      'mode preserves them. For an executable check, ' +
-      EXECUTABLE_PROBE_SHAPE +
-      ' Pair with work_items:checkpoint.',
-    notWhen:
-      "WARM loops (carry:'warm', the default) carry the live transcript and need no note. " +
-      'Use work_items:checkpoint for work-item state.',
+      "At a COLD loop turn's end, save compressed facts, not a transcript. Pair with work_items:checkpoint; use " +
+      '[turn:<session>@<iso-ts>] refs for owner directives/completed coordination and label other sources [self-imposed], ' +
+      '[peer:<sid>], or [inferred].',
+    notWhen: "WARM loops (carry:'warm', default) carry the live transcript; use work_items:checkpoint for work-item state.",
     chaining:
-      'Write last before a cold turn ends; also refresh work_items:checkpoint and facts:assert durable conclusions. ' +
-      "To retune an ACTIVE loop, first read loop:status, then call loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; " +
-      'intervalSec and goal are required even when only carry changes.',
+      'Write last before a cold turn ends; refresh work_items:checkpoint and facts:assert. To retune an active loop, ' +
+      'read loop:status, then loop:arm with intervalSec, goal, and carry.',
     seeAlso: [
       "loop:arm (arm the loop; carry:'cold' opts into the cold lifecycle)",
       'loop:status (inspect the loop, incl. carry mode)',
