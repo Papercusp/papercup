@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   cacheVerifyArgs,
   publishDependencyGeneration,
+  npmChildEnv,
+  normalizeNpmArgs,
+  parseCliArgs,
   repoLockName,
   runCommandUnderInstallMutex,
+  verifyDepsExtracted,
   withPackageCacheReadLease,
   verificationScopeForNpmArgs,
   verifyNpmCache,
@@ -113,6 +117,95 @@ test("verifyNpmCache returns a failure status without hiding npm cache errors", 
     }),
     7,
   );
+});
+
+test("parseCliArgs consumes the wrapper-only offline-safe flag", () => {
+  const parsed = parseCliArgs(["--offline-safe", "ci", "--ignore-scripts"]);
+
+  assert.equal(parsed.offlineSafe, true);
+  assert.deepEqual(parsed.npmArgs, ["ci", "--ignore-scripts"]);
+});
+
+test("parseCliArgs keeps offline-safe out of npm argv after an explicit repo root", () => {
+  const parsed = parseCliArgs(
+    ["--repo-root", "../sidestage", "--offline-safe", "--", "install", "--no-save"],
+    { cwd: "/managed/papercusp" },
+  );
+
+  assert.deepEqual(parsed, {
+    repoRoot: "/managed/sidestage",
+    npmArgs: ["install", "--no-save"],
+    offlineSafe: true,
+  });
+});
+
+test("npmChildEnv overrides onnxruntime postinstall only in offline-safe mode", () => {
+  const callerEnv = {
+    PATH: "/bin",
+    CUSTOM_SETTING: "preserve",
+  };
+
+  assert.deepEqual(npmChildEnv({ env: callerEnv }), callerEnv);
+  assert.deepEqual(npmChildEnv({ env: callerEnv, offlineSafe: true }), {
+    ...callerEnv,
+    ONNXRUNTIME_NODE_INSTALL: "skip",
+  });
+  assert.equal(callerEnv.ONNXRUNTIME_NODE_INSTALL, undefined);
+});
+
+test("npmChildEnv preserves an explicit caller install choice in offline-safe mode", () => {
+  const callerEnv = { ONNXRUNTIME_NODE_INSTALL: "cuda12" };
+
+  assert.deepEqual(
+    npmChildEnv({ env: callerEnv, offlineSafe: true }),
+    callerEnv,
+  );
+});
+
+test("verifyDepsExtracted passes the selected npm environment to bounded repairs", async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-repair-env-"));
+  const workspace = join(repoRoot, "apps/operator");
+  mkdirSync(workspace, { recursive: true });
+  writeFileSync(
+    join(repoRoot, "package.json"),
+    JSON.stringify({ workspaces: ["apps/operator"] }),
+  );
+  writeFileSync(
+    join(workspace, "package.json"),
+    JSON.stringify({ dependencies: { "was-missing": "^1" } }),
+  );
+
+  const env = {
+    PATH: "/bin",
+    ONNXRUNTIME_NODE_INSTALL: "skip",
+    PAPERCUSP_INSTALL_SAFE_ACTIVE: "1",
+  };
+  const calls = [];
+  try {
+    const status = await verifyDepsExtracted({
+      repoRoot,
+      env,
+      runNpm: (args, options) => {
+        calls.push({ args, options });
+        mkdirSync(join(repoRoot, "node_modules/was-missing"), {
+          recursive: true,
+        });
+        return 0;
+      },
+      deps: { sleep: async () => {} },
+    });
+
+    assert.equal(status, 0);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args, ["install", "--legacy-peer-deps"]);
+    assert.deepEqual(calls[0].options, {
+      cwd: repoRoot,
+      stdio: "inherit",
+      env,
+    });
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
 });
 
 test("publishDependencyGeneration invokes the shared atomic publisher after install verification", async () => {

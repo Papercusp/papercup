@@ -39,8 +39,14 @@
  * Usage: npm run install:safe [-- <npm args>]   (defaults to plain `npm install`)
  *        node scripts/npm-install-safe.mjs ci
  *        node scripts/npm-install-safe.mjs install --legacy-peer-deps
+ *        node scripts/npm-install-safe.mjs --offline-safe ci
  *        node scripts/npm-install-safe.mjs --repo-root /path/to/hive -- install --no-save pkg
  *        node scripts/npm-install-safe.mjs --repo-root /path/to/hive --exec-under-lock -- command arg...
+ *
+ * `--offline-safe` is a wrapper-only mode for exact-candidate reconstruction. It
+ * sets `ONNXRUNTIME_NODE_INSTALL=skip` in npm and bounded-repair children without
+ * mutating the caller's environment or forwarding the wrapper flag to npm. An
+ * explicit caller-provided `ONNXRUNTIME_NODE_INSTALL` value remains authoritative.
  *
  * `--exec-under-lock` is the reader-side half of the same contract. Long-lived
  * host services build an entrypoint from node_modules immediately before boot;
@@ -86,6 +92,7 @@ const DEFAULT_REPO_ROOT = resolve(
 
 const REPAIR_ARGS = ["install", "--legacy-peer-deps"];
 const EXEC_UNDER_LOCK_FLAG = "--exec-under-lock";
+const OFFLINE_SAFE_FLAG = "--offline-safe";
 const CACHE_VERIFY_ARGS = ["cache", "verify"];
 const DEPENDENCY_GENERATION_SCRIPT = join(
   DEFAULT_REPO_ROOT,
@@ -333,12 +340,17 @@ export async function verifyDepsExtracted({
   npmArgs = [],
   runNpm,
   probeSpecifiers,
+  env = process.env,
   deps = {},
 } = {}) {
   const spawn =
     runNpm ??
     ((args) =>
-      spawnSync("npm", args, { cwd: repoRoot, stdio: "inherit" }).status ?? 1);
+      spawnSync("npm", args, {
+        cwd: repoRoot,
+        stdio: "inherit",
+        env,
+      }).status ?? 1);
 
   const { workspaceDirs, repairWorkspaceArgs } = verificationScopeForNpmArgs({
     repoRoot,
@@ -456,7 +468,12 @@ export async function verifyDepsExtracted({
   console.error(
     `NPM_INSTALL_SAFE repairing: npm ${repairArgs.join(" ")} (one bounded attempt, still holding the lock)`,
   );
-  const repairStatus = spawn(repairArgs) ?? 1;
+  const repairStatus =
+    spawn(repairArgs, {
+      cwd: repoRoot,
+      stdio: "inherit",
+      env,
+    }) ?? 1;
   if (repairStatus !== 0) {
     console.error(
       `NPM_INSTALL_SAFE_FATAL: repair npm exited ${repairStatus}; dependency integrity is unverified.`,
@@ -507,6 +524,26 @@ export function withPackageCacheReadLease(fn, opts = {}) {
 export function normalizeNpmArgs(argv) {
   if (argv.length === 0) return ["install"];
   return argv[0].startsWith("-") ? ["install", ...argv] : argv;
+}
+
+/**
+ * Build the environment for npm children without changing the parent process.
+ * The offline override is deliberately opt-in: ordinary installs retain an
+ * explicit caller setting (including `ONNXRUNTIME_NODE_INSTALL=skip`).
+ */
+export function npmChildEnv({
+  env = process.env,
+  offlineSafe = false,
+} = {}) {
+  const hasExplicitInstallSetting =
+    Object.prototype.hasOwnProperty.call(env, "ONNXRUNTIME_NODE_INSTALL") &&
+    env.ONNXRUNTIME_NODE_INSTALL !== undefined;
+  return {
+    ...env,
+    ...(offlineSafe && !hasExplicitInstallSetting
+      ? { ONNXRUNTIME_NODE_INSTALL: "skip" }
+      : {}),
+  };
 }
 
 /**
@@ -561,6 +598,7 @@ export function parseCliArgs(
 ) {
   let repoRoot = DEFAULT_REPO_ROOT;
   let npmArgv = [...argv];
+  let offlineSafe = false;
 
   if (npmArgv[0] === "--repo-root" || npmArgv[0]?.startsWith("--repo-root=")) {
     const inline = npmArgv[0].startsWith("--repo-root=")
@@ -571,16 +609,28 @@ export function parseCliArgs(
     repoRoot = resolve(cwd, rawRoot);
     npmArgv = npmArgv.slice(inline === null ? 2 : 1);
   }
+  if (npmArgv[0] === OFFLINE_SAFE_FLAG) {
+    offlineSafe = true;
+    npmArgv = npmArgv.slice(1);
+  }
   if (npmArgv[0] === EXEC_UNDER_LOCK_FLAG) {
     const commandArgs = npmArgv.slice(npmArgv[1] === "--" ? 2 : 1);
     if (commandArgs.length === 0)
       throw new Error(`${EXEC_UNDER_LOCK_FLAG} requires a command`);
-    return { repoRoot, commandArgs };
+    return {
+      repoRoot,
+      commandArgs,
+      ...(offlineSafe ? { offlineSafe: true } : {}),
+    };
   }
 
   if (npmArgv[0] === "--") npmArgv = npmArgv.slice(1);
 
-  return { repoRoot, npmArgs: normalizeNpmArgs(npmArgv) };
+  return {
+    repoRoot,
+    npmArgs: normalizeNpmArgs(npmArgv),
+    ...(offlineSafe ? { offlineSafe: true } : {}),
+  };
 }
 
 /**
@@ -640,6 +690,13 @@ export async function main(argv = process.argv.slice(2)) {
   if ("commandArgs" in parsed) return runCommandUnderInstallMutex(parsed);
 
   const { repoRoot, npmArgs } = parsed;
+  const npmEnv = {
+    ...npmChildEnv({
+      env: process.env,
+      offlineSafe: parsed.offlineSafe === true,
+    }),
+    PAPERCUSP_INSTALL_SAFE_ACTIVE: "1",
+  };
   const lockName = repoLockName(repoRoot);
 
   const installStatus = await withPackageCacheReadLease(
@@ -647,7 +704,11 @@ export async function main(argv = process.argv.slice(2)) {
       withFsMutex(
         lockName,
         async () => {
-          const cacheStatus = verifyNpmCache({ repoRoot, npmArgs });
+          const cacheStatus = verifyNpmCache({
+            repoRoot,
+            npmArgs,
+            env: npmEnv,
+          });
           if (cacheStatus !== 0) {
             console.error(
               `NPM_INSTALL_SAFE_FATAL: npm cache verify exited ${cacheStatus}; cache integrity is unverified.`,
@@ -663,14 +724,14 @@ export async function main(argv = process.argv.slice(2)) {
           const result = spawnSync("npm", npmArgs, {
             cwd: repoRoot,
             stdio: "inherit",
-            env: { ...process.env, PAPERCUSP_INSTALL_SAFE_ACTIVE: "1" },
+            env: npmEnv,
           });
           if (result.error) throw result.error;
           const status = result.status ?? 1;
           // A FAILED npm run reports its own error — never mask it with a dep verdict.
           if (status !== 0 || process.env.PAPERCUSP_SKIP_DEP_VERIFY === "1")
             return status;
-          return verifyDepsExtracted({ repoRoot, npmArgs });
+          return verifyDepsExtracted({ repoRoot, npmArgs, env: npmEnv });
         },
         {
           onWaiting: ({ owner, elapsedMs }) => {
