@@ -664,6 +664,9 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   // coord:read fetches one message without advancing the inbox read cursor;
   // unlike coord:inbox, replaying it cannot mutate coordination state.
   "coord:read",
+  // conversations:list only reads conversation rows/topics; replaying it is safe
+  // for reconciliation after a preceding consult write has an unknown outcome.
+  "conversations:list",
   "events:catalog",
   "events:status",
   "facts:list",

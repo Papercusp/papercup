@@ -252,6 +252,42 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(r.body).toBe(body);
     expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
   });
+  it.each([
+    ["canonical", "conversations:list"],
+    ["mcp__-mangled", "mcp__papercusp-su__conversations_list"],
+  ])(
+    "conversations:list %s is readonly and keeps the request body untouched",
+    (_label, name) => {
+      const body = Buffer.from(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name, arguments: {} },
+        }),
+      );
+      const r = prepareForward("POST", {}, body, {
+        keyingEnabled: true,
+        genKey: gen,
+      });
+      expect(r.klass).toBe("readonly");
+      expect(r.body).toBe(body);
+      expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
+    },
+  );
+  it("consult:get_feedback remains keyed because it writes consult/conversation state", () => {
+    const body = Buffer.from(
+      '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"consult:get_feedback","arguments":{}}}',
+    );
+    const r = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: gen,
+    });
+    expect(r.klass).toBe("keyed");
+    expect(JSON.parse(r.body.toString()).params._meta.idempotencyKey).toBe(
+      "KEY123",
+    );
+  });
   it.each(["loop:status", "events:status"])(
     "%s is a pure status snapshot → readonly",
     (name) => {
@@ -453,6 +489,7 @@ describe("READ_ONLY_TOOLS — writer-exclusion guard", () => {
       "coord:dispatch",
       "coord:orient",
       "coord:send",
+      "consult:get_feedback",
       "db:migrate",
       "dev:restart",
       "events:await",
@@ -1435,6 +1472,32 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
       expect(upstream.hits()).toBe(2);
     }),
   );
+
+  it("EI-223511: conversations:list retries once after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"conversations":[]}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const r = await request(
+      port(proxy),
+      '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"conversations:list","arguments":{}}}',
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":{"conversations":[]}}');
+    expect(upstream.hits()).toBe(2);
+  });
 
   it(
     "P-005: with keying DISABLED a tools/call does NOT retry post-connect → 502 (write-safety preserved)",
