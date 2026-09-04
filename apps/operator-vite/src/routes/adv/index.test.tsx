@@ -110,16 +110,16 @@ afterEach(() => {
 });
 
 describe('/adv tab router', () => {
-  it('keeps a dedicated Workflow Editor embed renderable without restoring its Papercusp tab', () => {
+  it('keeps a dedicated Workflow Editor embed renderable without restoring its Papercusp tab', async () => {
     window.history.replaceState({}, '', '/adv?tab=workflows&portalEmbed=1');
     renderAdv('?tab=workflows&portalEmbed=1');
-    expect(screen.getByTestId('tab-workflows')).toBeTruthy();
+    expect(await screen.findByTestId('tab-workflows')).toBeTruthy();
   });
 
-  it('routes a stale non-portal tab deep link to Overview inside the cloud Papercusp embed', () => {
+  it('routes a stale non-portal tab deep link to Overview inside the cloud Papercusp embed', async () => {
     window.history.replaceState({}, '', '/adv?tab=docs&portalEmbed=1');
     renderAdv('?tab=docs&portalEmbed=1');
-    expect(screen.getByTestId('tab-overview')).toBeTruthy();
+    expect(await screen.findByTestId('tab-overview')).toBeTruthy();
   });
 
   const FIRST_CLASS = [
@@ -141,9 +141,9 @@ describe('/adv tab router', () => {
     { tab: 'history', child: 'tab-history', bar: true, pills: false },
   ] as const;
 
-  it.each(FIRST_CLASS)('renders the $tab surface (pot bar: $bar, pills: $pills)', ({ tab, child, bar, pills }) => {
+  it.each(FIRST_CLASS)('renders the $tab surface (pot bar: $bar, pills: $pills)', async ({ tab, child, bar, pills }) => {
     renderAdv(`?tab=${tab}`);
-    expect(screen.getByTestId(child)).toBeTruthy();
+    expect(await screen.findByTestId(child)).toBeTruthy();
     if (!bar) {
       expect(potBar(), `${tab} aggregates the workspace — no pot picker`).toBeNull();
       return;
@@ -154,26 +154,26 @@ describe('/adv tab router', () => {
 
   const PANELS = ['brainstorm', 'prs', 'insights', 'git', 'testing'] as const;
 
-  it.each(PANELS)('routes the %s tab to the harness panel page, with a pot bar (it is a per-pot panel)', (tab) => {
+  it.each(PANELS)('routes the %s tab to the harness panel page, with a pot bar (it is a per-pot panel)', async (tab) => {
     renderAdv(`?tab=${tab}`);
-    expect(screen.getByTestId('harness-panel').getAttribute('data-panel')).toBe(tab);
+    expect((await screen.findByTestId('harness-panel')).getAttribute('data-panel')).toBe(tab);
     expect(potBar()).toBeTruthy();
     expect(potBar()!.getAttribute('data-with-status')).toBe('0');
   });
 
-  it('defaults to the overview surface when ?tab is absent', () => {
+  it('defaults to the overview surface when ?tab is absent', async () => {
     renderAdv('');
-    expect(screen.getByTestId('tab-overview')).toBeTruthy();
+    expect(await screen.findByTestId('tab-overview')).toBeTruthy();
   });
 
-  it('bridges the shell pot scope structurally into HUD', () => {
+  it('bridges the shell pot scope structurally into HUD', async () => {
     renderAdv('?tab=hud');
-    expect(screen.getByTestId('tab-hud').getAttribute('data-scope')).toBe('pot-a,pot-a-child');
+    expect((await screen.findByTestId('tab-hud')).getAttribute('data-scope')).toBe('pot-a,pot-a-child');
   });
 
-  it('falls back to overview for an unknown ?tab value (enum guard)', () => {
+  it('falls back to overview for an unknown ?tab value (enum guard)', async () => {
     renderAdv('?tab=bogus');
-    expect(screen.getByTestId('tab-overview')).toBeTruthy();
+    expect(await screen.findByTestId('tab-overview')).toBeTruthy();
   });
 
   it('keeps the pot bar OUTSIDE the tab error boundary, so a crashed tab is still escapable', () => {
