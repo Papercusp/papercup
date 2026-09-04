@@ -4,6 +4,7 @@ import {
   OPERATIVE_MARKERS,
   capPreservingOperative,
   capPreservingOperativeDetailed,
+  extractKnowledgeIdentifiers,
   renderWithheldNotice,
   type CapPreservingOperativeTruncation,
 } from './operative-clause';
@@ -123,10 +124,76 @@ describe('capPreservingOperativeDetailed — discloses what it withheld', () => 
       totalChars: 25_510,
       withheldChars: 24_310,
       operativeClausesKept: 1,
+      identifiersKept: 0,
       more: 'x',
     });
     expect(notice).toContain('24,310');
     expect(notice).toContain('25,510');
+  });
+});
+
+describe('P-011 — excerpts preserve answer-bearing identifiers independently of directives', () => {
+  const incidentSha = '1f43e05ae7a88ebed626c84ff254a0b1508937d6';
+
+  it('replays the 2026-09-03 incident: the freeze rule AND its candidate SHA survive the cut', () => {
+    const body =
+      `${'historical evidence '.repeat(30)} ` +
+      `⛔ NEVER cut a fresh candidate while ${incidentSha} is frozen. ` +
+      'See WI-2144181, EI-22344000673418738, F-2048, P-011, ' +
+      'packages/operator-core/lib/operative-clause.ts, and :3070.';
+    const out = capPreservingOperativeDetailed(body, 160);
+
+    expect(out.text).toContain('⚠ OPERATIVE:');
+    expect(out.text).toContain('NEVER cut a fresh candidate');
+    expect(out.text).toContain('⚠ IDENTIFIERS:');
+    for (const identifier of [
+      incidentSha,
+      'WI-2144181',
+      'EI-22344000673418738',
+      'F-2048',
+      'P-011',
+      'packages/operator-core/lib/operative-clause.ts',
+      ':3070',
+    ]) {
+      expect(out.text).toContain(identifier);
+    }
+    expect(out.truncation?.identifiersKept).toBe(7);
+  });
+
+  it('does not spend the identifier budget repeating a token already visible in the head', () => {
+    const body = `${incidentSha} ${'x'.repeat(300)} WI-2144181 ${incidentSha}`;
+    const out = capPreservingOperativeDetailed(body, 120);
+
+    expect(out.text).toContain('⚠ IDENTIFIERS: WI-2144181');
+    expect(out.text.match(new RegExp(incidentSha, 'g'))).toHaveLength(1);
+    expect(out.truncation?.identifiersKept).toBe(1);
+  });
+
+  it('keeps only complete tokens inside its own small budget', () => {
+    const identifiers = extractKnowledgeIdentifiers(
+      `prefix WI-123456 EI-987654 packages/operator-core/lib/a-very-long-file.ts :3070`,
+      'prefix',
+      { maxChars: 19, maxIdentifiers: 8 },
+    );
+
+    expect(identifiers.join(' ').length).toBeLessThanOrEqual(19);
+    expect(identifiers).toEqual(['WI-123456', ':3070']);
+    expect(identifiers.join(' ')).not.toContain('…');
+  });
+
+  it('does not misclassify clock times, short hashes, or out-of-range ports as identifiers', () => {
+    expect(
+      extractKnowledgeIdentifiers(
+        'At 15:57 the short hash abc1234 used port :99999 and ordinary prose had no durable answer.',
+        '',
+      ),
+    ).toEqual([]);
+  });
+
+  it('falsifiability control: the pre-fix head-only helper loses the incident SHA', () => {
+    const body = `${'evidence '.repeat(80)} ${incidentSha}`;
+    expect(silentlyTruncating(body, 120).text).not.toContain(incidentSha);
+    expect(capPreservingOperativeDetailed(body, 120).text).toContain(incidentSha);
   });
 });
 

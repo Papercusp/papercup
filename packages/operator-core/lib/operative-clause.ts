@@ -33,6 +33,10 @@
 export const OPERATIVE_CLAUSE_CHARS_DEFAULT = 220;
 /** Max number of clauses preserved, when the caller doesn't override it. */
 export const OPERATIVE_CLAUSE_MAX_CLAUSES_DEFAULT = 2;
+/** Independent budget for concrete identifiers rescued from past an excerpt cut. */
+export const KNOWLEDGE_IDENTIFIER_CHARS_DEFAULT = 220;
+/** Max number of concrete identifiers rescued from one excerpt. */
+export const KNOWLEDGE_IDENTIFIER_MAX_DEFAULT = 8;
 
 /**
  * Shapes this corpus uses when a line is telling the reader to do (or stop
@@ -94,7 +98,16 @@ export interface ExtractOperativeClausesOptions {
   maxClauses?: number;
 }
 
-export interface CapPreservingOperativeOptions extends ExtractOperativeClausesOptions {
+export interface ExtractKnowledgeIdentifiersOptions {
+  /** Total char budget across complete identifiers (identifiers are never cut mid-token). */
+  maxChars?: number;
+  /** Max number of identifiers to preserve. */
+  maxIdentifiers?: number;
+}
+
+export interface CapPreservingOperativeOptions
+  extends ExtractOperativeClausesOptions,
+    ExtractKnowledgeIdentifiersOptions {
   /**
    * The concrete call that returns the UNTRUNCATED text (e.g.
    * `work_items:get { id: 'WI-1234' }`). Carried into the structured
@@ -127,6 +140,8 @@ export interface CapPreservingOperativeTruncation {
   withheldChars: number;
   /** Operative/supersession clauses rescued from PAST the cut and appended. */
   operativeClausesKept: number;
+  /** Concrete answer-bearing identifiers rescued from PAST the cut and appended. */
+  identifiersKept: number;
   /** The concrete call that returns the untruncated text, when the caller supplied one. */
   more?: string;
 }
@@ -178,10 +193,73 @@ export function extractOperativeClauses(
 }
 
 /**
+ * Identifier shapes that frequently ARE the answer rather than prose about the
+ * answer. P-011 (knowledge-at-symptom-time-2026-08-09) measured the concrete
+ * failure: the operative pass correctly rescued a late freeze directive while
+ * dropping the 40-hex candidate SHA beside it, leaving the successor with the
+ * rule but not the object the rule governed.
+ *
+ * Keep this deliberately narrower than a generic "word with punctuation"
+ * matcher. These are stable, actionable identifiers used throughout this repo:
+ * commit SHAs, ledger/plan refs, explicit ports, and repo-rooted source paths.
+ */
+const KNOWLEDGE_IDENTIFIER_PATTERNS: readonly RegExp[] = [
+  /\b[0-9a-f]{40}\b/gi,
+  /\b(?:WI|EI|F)-\d+\b/g,
+  /\bP-\d{3,}\b/g,
+  // Do not mistake the second half of a clock (`15:57`) for a port. A bare
+  // `:3070` is the house shape in prompts/briefs; URL paths are rescued by the
+  // repo-path/source-ref alternatives around them when present.
+  /(?<![\d:]):(?:[1-9]\d{1,4})\b/g,
+  /(?:\.papercusp|apps|config|docs|infra|libs|migrations|packages|scripts|src|templates|tests?)\/[A-Za-z0-9_@.+/-]*[A-Za-z0-9_@.+-]/g,
+];
+
+/**
+ * Pull complete identifier tokens out of `body` that are not already visible
+ * in `head`. Results retain source order and are independently bounded: an
+ * identifier is never truncated mid-token, because a partial SHA/ref/path is
+ * not a weaker answer — it is a different, usually unresolvable identifier.
+ */
+export function extractKnowledgeIdentifiers(
+  body: string,
+  head: string,
+  opts: ExtractKnowledgeIdentifiersOptions = {},
+): string[] {
+  const maxChars = opts.maxChars ?? KNOWLEDGE_IDENTIFIER_CHARS_DEFAULT;
+  const maxIdentifiers = opts.maxIdentifiers ?? KNOWLEDGE_IDENTIFIER_MAX_DEFAULT;
+  const matches: Array<{ token: string; index: number }> = [];
+
+  for (const pattern of KNOWLEDGE_IDENTIFIER_PATTERNS) {
+    for (const match of body.matchAll(pattern)) {
+      const token = match[0];
+      if (!token || match.index == null) continue;
+      if (token.startsWith(':') && Number(token.slice(1)) > 65_535) continue;
+      matches.push({ token, index: match.index });
+    }
+  }
+
+  matches.sort((a, b) => a.index - b.index || a.token.localeCompare(b.token));
+  const out: string[] = [];
+  const seen = new Set<string>();
+  let spent = 0;
+  for (const { token } of matches) {
+    if (out.length >= maxIdentifiers) break;
+    if (seen.has(token) || head.includes(token)) continue;
+    seen.add(token);
+    const cost = token.length + (out.length > 0 ? 1 : 0);
+    if (spent + cost > maxChars) continue;
+    out.push(token);
+    spent += cost;
+  }
+  return out;
+}
+
+/**
  * Cap `s` to `max` chars, but — unlike a plain head-only slice — never let
- * the cut discard an operative/supersession clause: any such clause found
- * past the cut is appended verbatim after a `⚠ OPERATIVE:` marker. Shared
- * excerpt shape for any carry surface that truncates long verbatim text.
+ * the cut discard an operative/supersession clause OR a concrete identifier:
+ * clauses are appended after `⚠ OPERATIVE:` and identifiers after their own
+ * `⚠ IDENTIFIERS:` marker. Shared excerpt shape for any carry surface that
+ * truncates long verbatim text.
  *
  * ⚠ This returns the excerpt STRING only, so a caller using it alone cannot
  * tell its reader HOW MUCH was withheld or how to fetch the rest — a bare `…`
@@ -244,14 +322,19 @@ export function capPreservingOperativeDetailed(
 
   const head = t.slice(0, Math.max(0, max - 1 - reserved));
   const operative = extractOperativeClauses(t, head, opts);
+  const identifiers = extractKnowledgeIdentifiers(t, head, opts);
   const truncation: CapPreservingOperativeTruncation = {
     keptChars: head.length,
     totalChars: t.length,
     withheldChars: t.length - head.length,
     operativeClausesKept: operative.length,
+    identifiersKept: identifiers.length,
     ...(opts?.more ? { more: opts.more } : {}),
   };
-  let text = operative.length ? `${head}… ⚠ OPERATIVE: ${operative.join(' ')}` : `${head}…`;
+  const rescued: string[] = [];
+  if (operative.length) rescued.push(`⚠ OPERATIVE: ${operative.join(' ')}`);
+  if (identifiers.length) rescued.push(`⚠ IDENTIFIERS: ${identifiers.join(' ')}`);
+  let text = `${head}…${rescued.length ? ` ${rescued.join(' ')}` : ''}`;
   if (opts?.inlineNotice) text += ` ${renderWithheldNotice(truncation)}`;
   return { text, truncation };
 }
