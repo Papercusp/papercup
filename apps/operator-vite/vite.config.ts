@@ -137,6 +137,16 @@ export default defineConfig({
   // the SPA-fallback index.html and render as broken images.
   publicDir: resolve(operatorRoot, 'public'),
 
+  // EI-22037046116395640: a long-open portal embed can request an optimized
+  // dependency with the browser hash from before Vite regenerated its dep cache.
+  // Vite otherwise answers that stale request with 504 "Outdated Optimize Dep",
+  // which leaves the route blank until a manual reload. Keep the stale module
+  // usable while the optimizer settles; the next request receives the current
+  // optimized copy.
+  optimizeDeps: {
+    ignoreOutdatedRequests: true,
+  },
+
   // The Vite app imports operator components from `apps/operator/app/**`
   // in place. The operator's `@/*` tsconfig path maps to `apps/operator/*`;
   // mirror it here. (The former `next/{navigation,link,dynamic}` +
