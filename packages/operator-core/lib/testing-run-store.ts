@@ -281,42 +281,86 @@ function snapshotFromRow(row: DurableRunSnapshotRow): RunSnapshot | null {
  */
 export async function persistRunSnapshot(snapshot: RunSnapshot, sqlOverride?: SqlLike): Promise<boolean> {
   if (!snapshotPersistenceEnabled(sqlOverride)) return false;
+  // Snapshot values are mutable while the child runs. Freeze the values for
+  // this write before the async pool lookup, otherwise an initial "running"
+  // write can observe the later close-handler mutation and race a sibling
+  // lifecycle write with a different state.
+  const persistedSnapshot: RunSnapshot = {
+    ...snapshot,
+    command: [...snapshot.command],
+  };
   const sql = await snapshotSql(sqlOverride);
   if (!sql) return false;
-  const startedAt = new Date(snapshot.startedAt).toISOString();
-  const finishedAt = snapshot.finishedAt === null ? null : new Date(snapshot.finishedAt).toISOString();
-  const rows = await boundedSnapshotQuery<unknown[]>(sql`
-    INSERT INTO harness_shared.testing_run_snapshots
-      (run_id, kind, label, file_path, command, status, exit_code, started_at, finished_at, output, truncated)
-    VALUES
-      (${snapshot.runId}, ${snapshot.kind}, ${snapshot.label}, ${snapshot.filePath ?? null},
-       ${JSON.stringify(snapshot.command)}::jsonb, ${snapshot.status}, ${snapshot.exitCode},
-       ${startedAt}, ${finishedAt}, ${snapshot.output}, ${snapshot.truncated})
-    ON CONFLICT (run_id) DO UPDATE SET
-      kind = EXCLUDED.kind,
-      label = EXCLUDED.label,
-      file_path = EXCLUDED.file_path,
-      command = EXCLUDED.command,
-      status = CASE
-        WHEN harness_shared.testing_run_snapshots.status = 'cancelled'
-          THEN harness_shared.testing_run_snapshots.status
-        ELSE EXCLUDED.status
-      END,
-      exit_code = CASE
-        WHEN harness_shared.testing_run_snapshots.status = 'cancelled'
-          THEN harness_shared.testing_run_snapshots.exit_code
-        ELSE EXCLUDED.exit_code
-      END,
-      started_at = EXCLUDED.started_at,
-      finished_at = CASE
-        WHEN harness_shared.testing_run_snapshots.status = 'cancelled'
-          THEN harness_shared.testing_run_snapshots.finished_at
-        ELSE EXCLUDED.finished_at
-      END,
-      output = EXCLUDED.output,
-      truncated = EXCLUDED.truncated,
-      updated_at = now()
-  `);
+  const startedAt = new Date(persistedSnapshot.startedAt).toISOString();
+  const finishedAt = persistedSnapshot.finishedAt === null ? null : new Date(persistedSnapshot.finishedAt).toISOString();
+  let query: PromiseLike<unknown>;
+  try {
+    query = sql`
+      INSERT INTO harness_shared.testing_run_snapshots
+        (run_id, kind, label, file_path, command, status, exit_code, started_at, finished_at, output, truncated)
+      VALUES
+        (${persistedSnapshot.runId}, ${persistedSnapshot.kind}, ${persistedSnapshot.label}, ${persistedSnapshot.filePath ?? null},
+         ${JSON.stringify(persistedSnapshot.command)}::jsonb, ${persistedSnapshot.status}, ${persistedSnapshot.exitCode},
+         ${startedAt}, ${finishedAt}, ${persistedSnapshot.output}, ${persistedSnapshot.truncated})
+      ON CONFLICT (run_id) DO UPDATE SET
+        kind = EXCLUDED.kind,
+        label = EXCLUDED.label,
+        file_path = EXCLUDED.file_path,
+        command = EXCLUDED.command,
+        status = CASE
+          WHEN harness_shared.testing_run_snapshots.status = 'cancelled'
+            OR (
+              harness_shared.testing_run_snapshots.finished_at IS NOT NULL
+              AND EXCLUDED.finished_at IS NULL
+            )
+            THEN harness_shared.testing_run_snapshots.status
+          ELSE EXCLUDED.status
+        END,
+        exit_code = CASE
+          WHEN harness_shared.testing_run_snapshots.status = 'cancelled'
+            OR (
+              harness_shared.testing_run_snapshots.finished_at IS NOT NULL
+              AND EXCLUDED.finished_at IS NULL
+            )
+            THEN harness_shared.testing_run_snapshots.exit_code
+          ELSE EXCLUDED.exit_code
+        END,
+        started_at = EXCLUDED.started_at,
+        finished_at = CASE
+          WHEN harness_shared.testing_run_snapshots.status = 'cancelled'
+            OR (
+              harness_shared.testing_run_snapshots.finished_at IS NOT NULL
+              AND EXCLUDED.finished_at IS NULL
+            )
+            THEN harness_shared.testing_run_snapshots.finished_at
+          ELSE EXCLUDED.finished_at
+        END,
+        output = CASE
+          WHEN harness_shared.testing_run_snapshots.status = 'cancelled'
+            OR (
+              harness_shared.testing_run_snapshots.finished_at IS NOT NULL
+              AND EXCLUDED.finished_at IS NULL
+            )
+            THEN harness_shared.testing_run_snapshots.output
+          ELSE EXCLUDED.output
+        END,
+        truncated = CASE
+          WHEN harness_shared.testing_run_snapshots.status = 'cancelled'
+            OR (
+              harness_shared.testing_run_snapshots.finished_at IS NOT NULL
+              AND EXCLUDED.finished_at IS NULL
+            )
+            THEN harness_shared.testing_run_snapshots.truncated
+          ELSE EXCLUDED.truncated
+        END,
+        updated_at = now()
+    `;
+  } catch {
+    // A malformed/unavailable SQL seam is still a persistence failure, not a
+    // reason to reject the detached process start.
+    return false;
+  }
+  const rows = await boundedSnapshotQuery<unknown[]>(query);
   return rows !== null;
 }
 
@@ -334,14 +378,20 @@ async function prunePersistedRunSnapshots(sqlOverride?: SqlLike): Promise<void> 
 async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike): Promise<RunSnapshot | null> {
   const sql = await snapshotSql(sqlOverride);
   if (!sql) return null;
-  const rows = await boundedSnapshotQuery<DurableRunSnapshotRow[]>(sql`
-    SELECT run_id, kind, label, file_path, command, status, exit_code,
-           started_at, finished_at, output, truncated
-      FROM harness_shared.testing_run_snapshots
-     WHERE run_id = ${runId}
-       AND (finished_at IS NULL OR finished_at >= now() - interval '1 hour')
-     LIMIT 1
-  `);
+  let query: PromiseLike<unknown>;
+  try {
+    query = sql`
+      SELECT run_id, kind, label, file_path, command, status, exit_code,
+             started_at, finished_at, output, truncated
+        FROM harness_shared.testing_run_snapshots
+       WHERE run_id = ${runId}
+         AND (finished_at IS NULL OR finished_at >= now() - interval '1 hour')
+       LIMIT 1
+    `;
+  } catch {
+    return null;
+  }
+  const rows = await boundedSnapshotQuery<DurableRunSnapshotRow[]>(query);
   const row = rows?.[0];
   return row ? snapshotFromRow(row) : null;
 }
@@ -404,7 +454,20 @@ function signalRunProcess(proc: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
-export function startRun(req: SpawnRequest): RunSnapshot {
+type SyncEnrolment = ReturnType<typeof beginSyncEnrolment>;
+
+interface PreparedRun {
+  snapshot: RunSnapshot;
+  cwd: string;
+  worktreeBefore: WorktreeGitSnapshot;
+  childEnv: NodeJS.ProcessEnv;
+  taskSpec: TaskSpec;
+  enrolment: SyncEnrolment;
+  scopeCgroupPath: string | null;
+  wrapped: ReturnType<SyncEnrolment['wrap']>;
+}
+
+function prepareRun(req: SpawnRequest): PreparedRun {
   evictOldRuns();
   const runId = randomUUID();
   const snapshot: RunSnapshot = {
@@ -454,6 +517,14 @@ export function startRun(req: SpawnRequest): RunSnapshot {
   const enrolment = beginSyncEnrolment(taskSpec);
   const scopeCgroupPath = syncEnrolmentScopePath(enrolment, 'test-run');
   const wrapped = enrolment.wrap(req.command, req.args, childEnv, cwd);
+  return { snapshot, cwd, worktreeBefore, childEnv, taskSpec, enrolment, scopeCgroupPath, wrapped };
+}
+
+function launchPreparedRun(
+  prepared: PreparedRun,
+  opts: { persistInitialSnapshot: boolean },
+): RunSnapshot {
+  const { snapshot, cwd, worktreeBefore, childEnv, taskSpec, enrolment, scopeCgroupPath, wrapped } = prepared;
   let enrolmentFinished = false;
   const finishEnrolment = (outcome: Parameters<typeof finishSyncEnrolment>[1]): void => {
     // ChildProcess emits `error` followed by `close` for an asynchronous spawn
@@ -479,7 +550,7 @@ export function startRun(req: SpawnRequest): RunSnapshot {
     snapshot.exitCode = -1;
     snapshot.finishedAt = Date.now();
     snapshot.output = e instanceof Error ? e.message : String(e);
-    _runs.set(runId, { snapshot, proc: null, cwd, worktreeBefore });
+    _runs.set(snapshot.runId, { snapshot, proc: null, cwd, worktreeBefore });
     void persistRunSnapshot(snapshot);
     finishEnrolment(
       {
@@ -492,8 +563,8 @@ export function startRun(req: SpawnRequest): RunSnapshot {
   }
 
   const state: RunState = { snapshot, proc, cwd, worktreeBefore };
-  _runs.set(runId, state);
-  void persistRunSnapshot(snapshot);
+  _runs.set(snapshot.runId, state);
+  if (opts.persistInitialSnapshot) void persistRunSnapshot(snapshot);
 
   proc.stdout?.on('data', (b: Buffer) => appendOutput(state, b.toString('utf8')));
   proc.stderr?.on('data', (b: Buffer) => appendOutput(state, b.toString('utf8')));
@@ -531,6 +602,36 @@ export function startRun(req: SpawnRequest): RunSnapshot {
   completeSyncEnrolment(enrolment, taskSpec, proc.pid ?? null);
 
   return snapshot;
+}
+
+/**
+ * Start a run without changing the existing synchronous API. The initial
+ * snapshot is persisted best-effort after the local process-control state is
+ * registered, matching the historical admin/TUI launch semantics.
+ */
+export function startRun(req: SpawnRequest): RunSnapshot {
+  return launchPreparedRun(prepareRun(req), { persistInitialSnapshot: true });
+}
+
+/**
+ * Start a detached recovery only after its initial `running` snapshot has
+ * completed one bounded durable write. The child must not become active before
+ * this barrier: if the operator worker is restarted immediately after the
+ * spawn, a sibling worker can still read the row and report the run rather than
+ * turning a live detached process into `unknown_run`.
+ *
+ * A database outage remains fail-soft. In that case the run still starts, but
+ * `durable` is false and callers must not promise that testing:run-status can
+ * recover it after a worker restart.
+ */
+export async function startRunDurable(
+  req: SpawnRequest,
+  sqlOverride?: SqlLike,
+): Promise<{ snapshot: RunSnapshot; durable: boolean }> {
+  const prepared = prepareRun(req);
+  const durable = await persistRunSnapshot(prepared.snapshot, sqlOverride);
+  const snapshot = launchPreparedRun(prepared, { persistInitialSnapshot: false });
+  return { snapshot, durable };
 }
 
 /**

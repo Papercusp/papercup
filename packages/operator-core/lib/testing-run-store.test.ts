@@ -349,6 +349,114 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
   });
 });
 
+describe('durable detached snapshot lifecycle', () => {
+  type Sql = Parameters<Store['persistRunSnapshot']>[1];
+
+  it('persists the running snapshot before spawning the detached child', async () => {
+    const events: string[] = [];
+    const sql = vi.fn(async () => {
+      events.push('persist');
+      return [];
+    }) as unknown as Sql;
+    spawnMock.mockImplementationOnce(() => {
+      events.push('spawn');
+      lastChild = makeChild();
+      return lastChild;
+    });
+
+    const result = await store.startRunDurable(req(), sql);
+
+    expect(result.durable).toBe(true);
+    expect(result.snapshot.status).toBe('running');
+    expect(events).toEqual(['persist', 'spawn']);
+  });
+
+  it('keeps the active snapshot readable after the local worker state is gone', async () => {
+    let durableRow: Record<string, unknown> | null = null;
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('INSERT INTO harness_shared.testing_run_snapshots')) {
+        durableRow = {
+          run_id: values[0],
+          kind: values[1],
+          label: values[2],
+          file_path: values[3],
+          command: values[4],
+          status: values[5],
+          exit_code: values[6],
+          started_at: values[7],
+          finished_at: values[8],
+          output: values[9],
+          truncated: values[10],
+        };
+        return [];
+      }
+      if (statement.includes('SELECT run_id, kind, label')) return durableRow ? [durableRow] : [];
+      return [];
+    }) as unknown as Sql;
+
+    const { snapshot, durable } = await store.startRunDurable(req(), sql);
+    expect(durable).toBe(true);
+
+    // Simulate the operator worker being replaced while the detached process
+    // remains alive. The sibling worker has no local _runs entry to consult.
+    store._resetTestingRunStore();
+
+    await expect(store.getRunAsync(snapshot.runId, sql)).resolves.toMatchObject({
+      runId: snapshot.runId,
+      status: 'running',
+      finishedAt: null,
+    });
+  });
+
+  it('still launches when the durable write fails and reports durable=false', async () => {
+    const sql = vi.fn(async () => {
+      throw new Error('database unavailable');
+    }) as unknown as Sql;
+
+    const result = await store.startRunDurable(req(), sql);
+
+    expect(result.durable).toBe(false);
+    expect(result.snapshot.status).toBe('running');
+    expect(spawnMock).toHaveBeenCalled();
+  });
+
+  it('freezes snapshot values before an asynchronous persistence lookup', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const sql = vi.fn(async () => {
+      await gate;
+      return [];
+    }) as unknown as Sql;
+    const snapshot = {
+      runId: 'race-run',
+      kind: 'shell' as const,
+      label: 'race',
+      command: ['bash', '-c', 'true'],
+      status: 'running' as const,
+      exitCode: null,
+      startedAt: 1_700_000_000_000,
+      finishedAt: null,
+      output: '',
+      truncated: false,
+    };
+
+    const pending = store.persistRunSnapshot(snapshot, sql);
+    snapshot.status = 'pass';
+    snapshot.exitCode = 0;
+    snapshot.finishedAt = snapshot.startedAt + 1_000;
+    release();
+    await expect(pending).resolves.toBe(true);
+
+    const values = (sql as unknown as ReturnType<typeof vi.fn>).mock.calls[0].slice(1);
+    expect(values[5]).toBe('running');
+    expect(values[6]).toBeNull();
+    expect(values[8]).toBeNull();
+  });
+});
+
 describe('fallback persistence worktree snapshots (EI-18795303393201472)', () => {
   it('uses the post-run commit and marks a run dirty when the tree changes', async () => {
     // Load the partial db-org mock before the close handler starts its 1s
