@@ -72,6 +72,29 @@ describe('preExistingChangedPathsInCompletion', () => {
     expect(result?.paths).toEqual([{ path: 'packages/old.ts', lastCommitAt: BEFORE }]);
   });
 
+  it('treats an explicit top-level empty filesChanged census as no changed paths', () => {
+    expect(
+      preExistingChangedPathsInCompletion(
+        item,
+        { summary: 'All named target files were remediated', filesChanged: [] },
+        { repoRoot: ROOT, lastCommitAt: () => BEFORE },
+      ),
+    ).toBeUndefined();
+  });
+
+  it('treats an explicit nested empty filesChanged census as no changed paths', () => {
+    expect(
+      preExistingChangedPathsInCompletion(
+        item,
+        {
+          summary: 'All named target files were remediated',
+          verification: { filesChanged: [] },
+        },
+        { repoRoot: ROOT, lastCommitAt: () => BEFORE },
+      ),
+    ).toBeUndefined();
+  });
+
   it('does not attribute a generic all-changed-files evidence phrase to unrelated item targets', () => {
     const result = preExistingChangedPathsInCompletion(
       {

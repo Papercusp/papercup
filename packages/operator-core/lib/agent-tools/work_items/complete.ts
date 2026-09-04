@@ -1317,6 +1317,19 @@ function completionFilesChanged(completion: unknown): string[] {
   return [...strings(rec.filesChanged), ...strings(nested.filesChanged)];
 }
 
+function completionHasFilesChanged(completion: unknown): boolean {
+  if (!completion || typeof completion !== 'object' || Array.isArray(completion)) return false;
+  const rec = completion as Record<string, unknown>;
+  const nested =
+    rec.verification && typeof rec.verification === 'object' && !Array.isArray(rec.verification)
+      ? (rec.verification as Record<string, unknown>)
+      : {};
+  return (
+    Object.prototype.hasOwnProperty.call(rec, 'filesChanged') ||
+    Object.prototype.hasOwnProperty.call(nested, 'filesChanged')
+  );
+}
+
 /**
  * Completion evidence legitimately names loopback service/API origins while
  * explaining HOW a fix was verified. That is diagnostic provenance, not a
@@ -1438,6 +1451,7 @@ function completionClaimsTargetPaths(itemPaths: string[], completion: unknown): 
   const filesChanged = completionFilesChanged(completion)
     .map(repoRelativePath)
     .filter((path): path is string => Boolean(path));
+  const hasFilesChanged = completionHasFilesChanged(completion);
   const prose = completionTargetClaimTextParts(completion).join('\n');
   const explicitlyClaimed = itemPaths.filter(
     (target) => filesChanged.some((file) => sameRepoPath(file, target)) || prose.includes(target),
@@ -1448,7 +1462,7 @@ function completionClaimsTargetPaths(itemPaths: string[], completion: unknown): 
     // however, it is the closer's explicit claim set. Do not widen that set back to
     // every item target: a generic evidence phrase such as "all 5 changed files"
     // otherwise makes an unrelated prescribed path look positively claimed.
-    return filesChanged.length > 0 ? explicitlyClaimed : itemPaths;
+    return hasFilesChanged ? explicitlyClaimed : itemPaths;
   }
   return explicitlyClaimed;
 }
