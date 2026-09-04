@@ -85,7 +85,8 @@ dependency_generation_input_manifest() {
       printf '%s\t%s\n' "$rel" "$digest"
     done < <(
       find . \
-        \( -type d \( -name .papercusp -o -name .git -o -name node_modules \) -prune \) -o \
+        \( -type d \( -name .papercusp -o -name .git -o -name node_modules \
+          -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \) -prune \) -o \
         \( -type f \( -name package-lock.json -o -name npm-shrinkwrap.json \) -print \) \
         | LC_ALL=C sort
     )
@@ -235,7 +236,8 @@ dependency_generation_enumerate_node_modules() {
     return 0
   fi
   find "$root" \
-    \( -type d \( -name .papercusp -o -name .git \) -prune \) -o \
+    \( -type d \( -name .papercusp -o -name .git \
+      -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \) -prune \) -o \
     \( -type d -name node_modules -prune -print \)
 }
 

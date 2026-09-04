@@ -1211,6 +1211,38 @@ describe('immutable dependency generation', () => {
     ).toBe(false);
   });
 
+  it('ignores crash-left deployment swap siblings in both input and dependency manifests (WI-2144371)', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+
+    const deployTmp = join(
+      integration,
+      'node_modules.deploy-tmp.1592326/nested/node_modules/stale-package',
+    );
+    const deployOld = join(
+      integration,
+      'packages/a/node_modules.deploy-old.1592326/nested/node_modules/stale-package',
+    );
+    mkdirSync(deployTmp, { recursive: true });
+    mkdirSync(deployOld, { recursive: true });
+    writeFileSync(join(deployTmp, 'index.js'), 'stale temp dependency\n');
+    writeFileSync(join(deployOld, 'index.js'), 'stale old dependency\n');
+    writeFileSync(
+      join(integration, 'node_modules.deploy-tmp.1592326/package-lock.json'),
+      '{"name":"runtime-debris","lockfileVersion":3,"packages":{}}\n',
+    );
+
+    const afterDebris = publish(integration);
+    expect(afterDebris.status, afterDebris.stderr).toBe(0);
+    expect(afterDebris.stdout).toContain('reused=true');
+    expect(publishedIdentity(afterDebris.stdout)).toBe(
+      publishedIdentity(first.stdout),
+    );
+    expect(afterDebris.stderr).not.toContain('node_modules.deploy-tmp.1592326');
+    expect(afterDebris.stderr).not.toContain('node_modules.deploy-old.1592326');
+  });
+
   it('reclaims a same-host dead writer before publishing', () => {
     const integration = makeIntegration();
     const generationRoot = join(
