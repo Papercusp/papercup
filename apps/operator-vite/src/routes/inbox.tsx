@@ -1,27 +1,13 @@
-import { createFileRoute } from '@tanstack/react-router';
-import InboxPane from '@/app/_components/inbox/InboxPane';
+import { createFileRoute, lazyRouteComponent } from '@tanstack/react-router';
 
 /**
- * `/inbox` — Direction B's focused portal embed. InboxPane owns the complete
- * canonical attention flow, including selection/detail, discussion, and the
- * explicit InboxBulkStrip resolve/review/settle lifecycle.
- *
- * `layout="split"` (portal-work-two-pane-2026-09-01 D-001): the full page lays
- * the row list out beside the selected item's detail — the ratified Direction B
- * list + detail — while the chat sidebar keeps the pane's stack default.
+ * `/inbox` — Direction B's focused portal embed. The component itself lives in
+ * `components/route-content/InboxEmbedRoute` (WI-5502): a route module that
+ * ALSO exports its component keeps that export — and every import it needs — in
+ * the route's critical half, which defeated `autoCodeSplitting` and pulled
+ * `InboxPane` + `InboxBulkRecommendation` into the eager boot graph. Same shape
+ * as `routes/dev.tsx`.
  */
 export const Route = createFileRoute('/inbox')({
-  component: InboxEmbedRoute,
+  component: lazyRouteComponent(() => import('../components/route-content/InboxEmbedRoute')),
 });
-
-export function InboxEmbedRoute() {
-  return (
-    <div
-      className="portal-focused-work-surface"
-      data-testid="inbox-portal-embed"
-      data-portal-surface="inbox"
-    >
-      <InboxPane layout="split" />
-    </div>
-  );
-}

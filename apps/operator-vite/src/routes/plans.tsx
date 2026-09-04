@@ -1,28 +1,13 @@
-import { createFileRoute } from '@tanstack/react-router';
-import PlansPane from '@/app/_components/plans/PlansPane';
+import { createFileRoute, lazyRouteComponent } from '@tanstack/react-router';
 
 /**
- * `/plans` — Direction B's focused portal embed. This is composition only:
- * PlansPane remains the canonical reader/action owner, including its filters,
- * plan dashboard navigation, and PlansCleanupStrip bulk cleanup flow.
- *
- * `layout="split"` (portal-work-two-pane-2026-09-01 D-001): the full page lays
- * the plan list out beside the selected plan's dashboard (`?pdash`, rendered
- * in the pane's own aside — the root PlanDashboardHost takeover is skipped on
- * this route), while the chat sidebar keeps the pane's stack default.
+ * `/plans` — Direction B's focused portal embed. The component itself lives in
+ * `components/route-content/PlansEmbedRoute` (WI-5502): a route module that
+ * ALSO exports its component keeps that export — and every import it needs — in
+ * the route's critical half, which defeated `autoCodeSplitting` and pulled
+ * `PlansPane` (and, through it, `SessionChatModal`) plus their stylesheets into
+ * the eager boot graph. Same shape as `routes/dev.tsx`.
  */
 export const Route = createFileRoute('/plans')({
-  component: PlansEmbedRoute,
+  component: lazyRouteComponent(() => import('../components/route-content/PlansEmbedRoute')),
 });
-
-export function PlansEmbedRoute() {
-  return (
-    <div
-      className="portal-focused-work-surface"
-      data-testid="plans-portal-embed"
-      data-portal-surface="plans"
-    >
-      <PlansPane layout="split" />
-    </div>
-  );
-}
