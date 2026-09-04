@@ -175,6 +175,56 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
     expect((await rubrics.getAcceptanceRubricForGoal('goal-for-versioned-acceptance'))?.revision).toBe(13);
   });
 
+  it('class-only acceptance rubrics inherit the class scale and hash the live class revision', async () => {
+    const subjectPlan = 'class-only-acceptance-subject';
+    const classRef = 'class-only-acceptance-class';
+    const classScale = ['pass', 'partial', 'fail', 'unknown'];
+
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, origin)
+      VALUES (${activeWorkspaceId()}, 'papercusp', ${subjectPlan}, '# Subject plan', md5('# Subject plan'), 1,
+              'Class-only acceptance subject', 'active', '2026-09-04', '2026-09-04', 'su-test', false, NULL, 'local')`;
+    await insertRubricPlan(classRef, {
+      version: 7,
+      data: { ...rubricData, ratingScale: classScale },
+      title: 'Class-only acceptance class',
+    });
+
+    const acceptance = await rubrics.proposeRubric({
+      rubricId: 'class-only-acceptance',
+      kind: 'acceptance',
+      subjectPlan,
+      classRef,
+      characteristic: 'plan-acceptance',
+      title: 'Class-only acceptance',
+      criteria: [],
+      by: 'author-a',
+    });
+
+    expect(acceptance.ratingScale).toEqual(classScale);
+    expect(acceptance.criteria).toEqual([]);
+    const [stored] = await db.adminSql<{ template_data: { ratingScale: string[] } }[]>`
+      SELECT template_data
+        FROM harness_shared.harness_plans
+       WHERE plan_slug = 'class-only-acceptance'
+         AND template = 'rubric'`;
+    expect(stored.template_data.ratingScale).toEqual(classScale);
+
+    const hashAtClassRevision7 = acceptance.criteriaHash;
+    expect(hashAtClassRevision7).toEqual((await rubrics.getRubric('class-only-acceptance'))?.criteriaHash);
+
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET version = 8, updated_at = now()
+       WHERE plan_slug = ${classRef}
+         AND template = 'rubric'`;
+    const reread = await rubrics.getRubric('class-only-acceptance');
+    expect(reread?.ratingScale).toEqual(classScale);
+    expect(reread?.criteriaHash).not.toBe(hashAtClassRevision7);
+  });
+
   it('does not fabricate a ratifier for active acceptance rubrics while preserving the standard legacy fallback', async () => {
     await insertRubricPlan('legacy-standard-rubric');
     await insertRubricPlan('plan-acceptance-rubric', {
