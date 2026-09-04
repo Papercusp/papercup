@@ -81,6 +81,55 @@ describe('planRowToRubric', () => {
     expect(r!.updatedAt).toBe('2026-06-20T10:00:00.000Z');
   });
 
+  it('projects persisted acceptance BAR metadata and derives bar as a model alias', () => {
+    const model = 'The activation path produces coverage-evidence rows.';
+    const r = planRowToRubric(
+      planRow({
+        template_data: {
+          ...baseData,
+          kind: 'acceptance',
+          subjectPlan: 'some-plan-2026-09-04',
+          criteria: [
+            {
+              key: 'activation-outcome',
+              title: 'Coverage activation exists',
+              model,
+              method: 'Read the activation instrument.',
+              driftMarkers: 'No coverage-evidence rows exist.',
+              barKey: 'R-7',
+              barHash: 'a'.repeat(64),
+              role: 'outcome',
+              mandatory: true,
+              requiredScope: ['surface:coverage-row'],
+              passRatings: ['pass'],
+              barProvenance: {
+                lifecycle: 'pre-implementation',
+                declaredAt: '2026-09-04T12:00:00.000Z',
+                declaredBy: 'su-author',
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(r?.criteria[0]).toMatchObject({
+      model,
+      bar: model,
+      barKey: 'R-7',
+      barHash: 'a'.repeat(64),
+      role: 'outcome',
+      mandatory: true,
+      requiredScope: ['surface:coverage-row'],
+      passRatings: ['pass'],
+      barProvenance: {
+        lifecycle: 'pre-implementation',
+        declaredAt: '2026-09-04T12:00:00.000Z',
+        declaredBy: 'su-author',
+      },
+    });
+  });
+
   it('projects only finite plan versions as the optional rubric revision', () => {
     expect(planRowToRubric(planRow({ version: '42' }))?.revision).toBe(42);
     expect(planRowToRubric(planRow({ version: null }))).not.toHaveProperty('revision');

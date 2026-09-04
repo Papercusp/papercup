@@ -57,6 +57,7 @@ import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/i
 import { resolveOwnerGoal } from '../coordination/agent-goal-sources';
 import { readAgentStateStamp } from '../../agent-state-stamp';
 import { readHeldWorkItems } from '../../carry-brief';
+import { listLiveTasks } from '../../task-manager/store';
 
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const INTEGRATION_KEY_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
@@ -389,6 +390,13 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Run detached; returns a bash_id immediately. Read output via capability:bash_output.'),
+    allow_duplicate: z
+      .boolean()
+      .optional()
+      .describe(
+        'Allow a duplicate background launch when a live task already has the exact same command and cwd. ' +
+          'Use only when the duplicate is intentional.',
+      ),
     cwd: z
       .string()
       .optional()
@@ -436,6 +444,51 @@ export default defineTool({
           ],
           isError: true,
         };
+      }
+      // EI-21910156647461981: background tasks survive the caller's carry boundary.
+      // A successor can therefore see the old task in the durable ledger while a
+      // contradictory carry surface tells it to launch the same command again.
+      // Compare the exact argv shape emitted by startBackground (bash -o pipefail
+      // -c <command>) and the resolved cwd before creating another task. The
+      // explicit override is reserved for callers that genuinely intend to run
+      // the same command more than once.
+      const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId;
+      if (!args.allow_duplicate && workspaceId) {
+        const expectedArgv = ['bash', '-o', 'pipefail', '-c', command];
+        const duplicate = (await listLiveTasks(workspaceId)).find(
+          (task) =>
+            task.class === 'bash-job' &&
+            task.cwd === cwd &&
+            task.argv.length === expectedArgv.length &&
+            task.argv.every((arg, index) => arg === expectedArgv[index]),
+        );
+        if (duplicate) {
+          const bashId = duplicate.detail?.bashJobId;
+          const taskHandle = `capability:bash_output { task_id: "${duplicate.taskId}" }`;
+          const bashHandle =
+            typeof bashId === 'string' && bashId.length > 0
+              ? ` (or { bash_id: "${bashId}" } in the original launching context)`
+              : '';
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: false,
+                  reason: 'duplicate_live_task',
+                  task_id: duplicate.taskId,
+                  ...(typeof bashId === 'string' && bashId.length > 0 ? { bash_id: bashId } : {}),
+                  cwd,
+                  advice:
+                    `A live background shell with the exact command and cwd already exists. ` +
+                    `Reattach with ${taskHandle}${bashHandle}. ` +
+                    'Pass allow_duplicate:true only when this duplicate launch is intentional.',
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
       }
     }
     // WI-6677: the default depends on the MODE. A background job is contractually

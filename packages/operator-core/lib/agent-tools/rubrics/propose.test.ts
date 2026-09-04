@@ -125,6 +125,63 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
     }
   });
 
+  it('accepts canonical BAR metadata and keeps model as the single semantic text', () => {
+    const parsed = rubricsProposeArgs.safeParse({
+      ...base,
+      kind: 'acceptance',
+      subjectPlan: 'release-plan',
+      criteria: [
+        {
+          ...lightAcceptanceCriterion,
+          bar: 'The shipped behavior exists for every post-epoch plan.',
+          barKey: 'R-1',
+          role: 'outcome',
+          mandatory: true,
+          requiredScope: ['cohort:post-epoch'],
+          passRatings: ['pass'],
+          barProvenance: {
+            lifecycle: 'pre-implementation',
+            declaredAt: '2026-09-04T12:00:00.000Z',
+            declaredBy: 'su-author',
+          },
+        },
+      ],
+    });
+
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.criteria[0]).toMatchObject({
+        bar: 'The shipped behavior exists for every post-epoch plan.',
+        barKey: 'R-1',
+        role: 'outcome',
+        mandatory: true,
+      });
+    }
+
+    expect(
+      rubricsProposeArgs.safeParse({
+        ...base,
+        kind: 'acceptance',
+        subjectPlan: 'release-plan',
+        criteria: [
+          {
+            ...lightAcceptanceCriterion,
+            model: 'Canonical outcome.',
+            bar: 'A different outcome.',
+            role: 'outcome',
+            mandatory: true,
+          },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      rubricsProposeArgs.safeParse({
+        ...base,
+        criteria: [{ ...base.criteria[0], barKey: 'R-1', role: 'outcome' }],
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects acceptance criteria that omit the meta-rubric falsifier or structured-check floor', () => {
     const missingFalsifier = rubricsProposeArgs.safeParse({
       ...base,

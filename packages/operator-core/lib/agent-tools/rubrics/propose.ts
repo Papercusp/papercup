@@ -11,7 +11,12 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { proposeRubric, rubricCompleteness } from '../../rubrics';
 import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
-import { rubricCriterionWindowSchema, rubricCriterionCheckSchema } from '../plans/rubric-template';
+import {
+  rubricCriterionWindowSchema,
+  rubricCriterionCheckSchema,
+  acceptanceCriterionRoleSchema,
+  acceptanceBarProvenanceSchema,
+} from '../plans/rubric-template';
 import { VALID_PLAN_SLUG } from '../plans/source';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { trackDetached } from '../../detached-imports';
@@ -26,6 +31,53 @@ const criterion = z.object({
     .describe(
       'how this criterion is supposed to work (the MODEL). REQUIRED for a standard-kind rubric; optional on an acceptance-kind criterion only when the title, non-empty driftMarkers, and concrete verification check/procedure carry the outcome semantics the meta-acceptance-rubric vets',
     ),
+  bar: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'acceptance-kind only: clearer wire/UI alias for model. It is canonicalized into model and never stored as a second text field; if both are supplied they must match after trimming',
+    ),
+  barKey: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('acceptance-kind only: stable BAR identity, normally the source R-N key'),
+  barHash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional()
+    .describe(
+      'read-back compatibility only: the server ignores this value and recomputes barHash from canonical meaning on every write',
+    ),
+  role: acceptanceCriterionRoleSchema
+    .optional()
+    .describe("acceptance-kind only: 'outcome' is gradeable truth; 'disclosure' can report but never satisfy it"),
+  mandatory: z
+    .boolean()
+    .optional()
+    .describe('acceptance-kind only: include this outcome in the non-waivable ship floor'),
+  requiredScope: z
+    .array(z.string().min(1))
+    .min(1)
+    .max(200)
+    .optional()
+    .describe('acceptance-kind only: stable surface/cohort/subject tokens the BAR must cover'),
+  passRatings: z
+    .array(z.string().min(1))
+    .min(1)
+    .max(50)
+    .optional()
+    .describe('acceptance-kind only: explicit rating labels that satisfy this BAR'),
+  coversBarKeys: z
+    .array(z.string().min(1))
+    .min(1)
+    .max(200)
+    .optional()
+    .describe('acceptance disclosure only: outcome BAR keys this criterion reports on'),
+  barProvenance: acceptanceBarProvenanceSchema
+    .optional()
+    .describe('acceptance-kind only: pre-implementation declaration or honest legacy-backfill provenance'),
   method: z
     .string()
     .min(1)
@@ -174,6 +226,38 @@ export const rubricsProposeArgs = z.object({
         'releaseGating is standard-kind only — an acceptance rubric is one-shot and watchdog-exempt; set kind:\'standard\' for a reusable release bar',
     });
   }
+
+  args.criteria.forEach((criterion, index) => {
+    const barFields = [
+      criterion.bar,
+      criterion.barKey,
+      criterion.barHash,
+      criterion.role,
+      criterion.mandatory,
+      criterion.requiredScope,
+      criterion.passRatings,
+      criterion.coversBarKeys,
+      criterion.barProvenance,
+    ];
+    if (args.kind !== 'acceptance' && barFields.some((value) => value !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['criteria', index, 'barKey'],
+        message: 'BAR metadata is acceptance-kind only; standard criteria keep their existing model/method contract',
+      });
+    }
+    if (
+      criterion.model?.trim() &&
+      criterion.bar?.trim() &&
+      criterion.model.trim().replace(/\r\n?/g, '\n') !== criterion.bar.trim().replace(/\r\n?/g, '\n')
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['criteria', index, 'bar'],
+        message: '`model` is the canonical BAR text; a supplied bar alias must match it after trimming',
+      });
+    }
+  });
 
   // Keep dispatch validation aligned with the stricter acceptance authoring
   // profile enforced by proposeRubric. Model/method intentionally remain

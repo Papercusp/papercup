@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
+  WORKSPACE_HOST_BOOTC_BUILDER_KIND,
   WORKSPACE_HOST_SIDECAR_BUILDER_KIND,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
   WorkspaceHostBuildManifestError,
@@ -235,6 +236,30 @@ describe("workspace-host build manifest", () => {
     });
 
     expect(manifest.baseImage.reference).toBe("ubuntu-24.04-amd64");
+  });
+
+  it("accepts an OCI base for a bootc GCP target and rejects an unqualified one", () => {
+    const bootc: WorkspaceHostBuildManifestInput = {
+      ...input(),
+      baseImage: {
+        ...input().baseImage,
+        reference: "quay.io/centos-bootc/centos-bootc:stream9",
+      },
+      builder: {
+        ...input().builder,
+        kind: WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+        templatePath: "infra/images/bootc/workspace-host.Containerfile",
+      },
+    };
+    expect(buildWorkspaceHostBuildManifest(bootc).baseImage.reference).toBe(
+      "quay.io/centos-bootc/centos-bootc:stream9",
+    );
+    expect(() =>
+      buildWorkspaceHostBuildManifest({
+        ...bootc,
+        baseImage: { ...bootc.baseImage, reference: "centos-bootc:stream9" },
+      }),
+    ).toThrow("registry-qualified OCI image reference");
   });
 
   it("refuses a material path that is secret-shaped", () => {

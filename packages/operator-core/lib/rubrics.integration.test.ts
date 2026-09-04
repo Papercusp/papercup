@@ -569,7 +569,14 @@ Preserve this plan body.
       title: 'Acceptance round-trip',
       // Acceptance criteria may omit model/method, but the authoring contract
       // requires a concrete drift marker so the outcome remains falsifiable.
-      criteria: [{ key: 'outcome', title: 'Outcome', model: '', method: '', driftMarkers: 'the outcome regresses' }],
+      criteria: [{
+        key: 'outcome',
+        title: 'Outcome',
+        model: '',
+        method: '',
+        driftMarkers: 'the outcome regresses',
+        check: { kind: 'instrument', instrumentKey: 'none' },
+      }],
       by: 'su-test',
     });
     expect(first.status).toBe('active');
@@ -581,6 +588,7 @@ Preserve this plan body.
       key: 'outcome',
       title: 'Outcome',
       driftMarkers: 'the outcome regresses',
+      check: { kind: 'instrument', instrumentKey: 'none' },
     });
 
     // getRubric maps the optional fields back to '' for the legacy Rubric shape. A
@@ -596,6 +604,69 @@ Preserve this plan body.
       by: 'su-reviser',
     });
     expect(revised.status).toBe('active');
+  });
+
+  it('canonicalizes BAR alias metadata and persists only the server-derived hash', async () => {
+    const subjectPlan = 'canonical-bar-subject';
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, template_data, template_slug, origin)
+      VALUES (${activeWorkspaceId()}, 'papercusp', ${subjectPlan}, '', md5(${subjectPlan}), 1,
+              'Canonical BAR subject', 'draft', '2026-09-04', '2026-09-04', 'su-test',
+              false, NULL, '{}'::text::jsonb, NULL, 'local')`;
+
+    const bar = 'The activation path produces coverage-evidence rows.';
+    const proposed = await rubrics.proposeRubric({
+      rubricId: 'canonical-bar-rubric',
+      kind: 'acceptance',
+      subjectPlan,
+      characteristic: 'plan-acceptance',
+      title: 'Canonical BAR rubric',
+      criteria: [
+        {
+          key: 'activation-outcome',
+          title: 'Coverage activation exists',
+          bar,
+          barKey: 'R-7',
+          barHash: '0'.repeat(64), // caller value must never become authority
+          role: 'outcome',
+          mandatory: true,
+          requiredScope: ['surface:coverage-row', 'cohort:post-epoch', 'surface:coverage-row'],
+          passRatings: ['PASS', 'pass'],
+          driftMarkers: 'No coverage-evidence row exists for the activation path.',
+          check: { kind: 'instrument', instrumentKey: 'none' },
+          barProvenance: {
+            lifecycle: 'pre-implementation',
+            declaredAt: '2026-09-04T12:00:00.000Z',
+            declaredBy: 'su-test',
+          },
+        },
+      ],
+      ratingScale: ['pass', 'fail', 'unknown'],
+      by: 'su-test',
+    });
+
+    const criterion = proposed.criteria[0]!;
+    expect(criterion.model).toBe(bar);
+    expect(criterion.bar).toBe(bar);
+    expect(criterion.barHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(criterion.barHash).not.toBe('0'.repeat(64));
+    expect(criterion.requiredScope).toEqual(['cohort:post-epoch', 'surface:coverage-row']);
+    expect(criterion.passRatings).toEqual(['pass']);
+
+    const [stored] = await db.adminSql<{ template_data: { criteria: Record<string, unknown>[] } }[]>`
+      SELECT template_data FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = 'canonical-bar-rubric'`;
+    expect(stored.template_data.criteria[0]).not.toHaveProperty('bar');
+    expect(stored.template_data.criteria[0]).toMatchObject({
+      model: bar,
+      barKey: 'R-7',
+      barHash: criterion.barHash,
+      role: 'outcome',
+      mandatory: true,
+    });
   });
 
   it('refuses a second active acceptance rubric for the same subject plan', async () => {
@@ -614,7 +685,12 @@ Preserve this plan body.
       subjectPlan,
       characteristic: 'acceptance-uniqueness',
       title: 'Acceptance uniqueness first',
-      criteria: [{ key: 'outcome', title: 'Outcome', driftMarkers: 'the outcome regresses' }],
+      criteria: [{
+        key: 'outcome',
+        title: 'Outcome',
+        driftMarkers: 'the outcome regresses',
+        check: { kind: 'instrument', instrumentKey: 'none' },
+      }],
       by: 'su-first',
     });
 
@@ -625,7 +701,12 @@ Preserve this plan body.
         subjectPlan,
         characteristic: 'acceptance-uniqueness',
         title: 'Acceptance uniqueness second',
-        criteria: [{ key: 'outcome', title: 'Outcome', driftMarkers: 'the outcome regresses' }],
+        criteria: [{
+          key: 'outcome',
+          title: 'Outcome',
+          driftMarkers: 'the outcome regresses',
+          check: { kind: 'instrument', instrumentKey: 'none' },
+        }],
         by: 'su-second',
       }),
     ).rejects.toThrow(/already has an active acceptance rubric.*acceptance-unique-first/i);
@@ -658,7 +739,12 @@ Preserve this plan body.
       characteristic: 'acceptance-amend',
       title: 'Acceptance amend',
       criteria: [
-        { key: 'outcome-a', title: 'Outcome A', driftMarkers: 'outcome A regresses' },
+        {
+          key: 'outcome-a',
+          title: 'Outcome A',
+          driftMarkers: 'outcome A regresses',
+          check: { kind: 'instrument', instrumentKey: 'none' },
+        },
         { key: 'outcome-b', title: 'Outcome B', driftMarkers: 'outcome B regresses' },
       ],
       by: 'su-test',
@@ -692,7 +778,12 @@ Preserve this plan body.
        WHERE plan_slug = ${rubricId} AND template = 'rubric'`;
     expect(stored.template_data.methodRef).toBe('/internal/docs/testing/agent-e2e');
     expect(stored.template_data.criteria).toEqual([
-      { key: 'outcome-a', title: 'Outcome A', driftMarkers: 'outcome A regresses' },
+      {
+        key: 'outcome-a',
+        title: 'Outcome A',
+        driftMarkers: 'outcome A regresses',
+        check: { kind: 'instrument', instrumentKey: 'none' },
+      },
       { key: 'outcome-b', title: 'Outcome B', driftMarkers: 'outcome B regresses' },
     ]);
   });
@@ -708,9 +799,12 @@ Preserve this plan body.
               'Retired acceptance subject', 'active', '2026-08-22', '2026-08-22', 'su-test',
               false, NULL, '{}'::text::jsonb, NULL, 'local')`;
 
-    const initialCriteria = [
-      { key: 'original-outcome', title: 'Original outcome', driftMarkers: 'the original outcome regresses' },
-    ];
+    const initialCriteria = [{
+      key: 'original-outcome',
+      title: 'Original outcome',
+      driftMarkers: 'the original outcome regresses',
+      check: { kind: 'instrument' as const, instrumentKey: 'none' },
+    }];
     const first = await rubrics.proposeRubric({
       rubricId,
       kind: 'acceptance',

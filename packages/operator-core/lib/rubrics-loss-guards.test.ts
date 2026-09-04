@@ -18,6 +18,8 @@ import {
   rubricCompleteness,
   planRowToRubric,
   normalizeAcceptanceRubricProposal,
+  normalizeAcceptanceBarCriterion,
+  computeAcceptanceBarHash,
   REPLICATION_DRILL_MARKER,
   METHOD_SHRINK_GUARD_MIN_CHARS,
   type Rubric,
@@ -367,6 +369,76 @@ describe('legacy acceptance successor compatibility normalization (EI-2205695152
       criteria: currentCriteria,
       ratingScale: ['pass', 'partial', 'fail'],
     });
+  });
+});
+
+describe('canonical acceptance BAR metadata (requirements-with-teeth P-001)', () => {
+  const bar = {
+    key: 'activation-outcome',
+    title: 'Coverage activation exists',
+    bar: 'The activation path produces coverage evidence.',
+    driftMarkers: 'No coverage-evidence row exists for the activation path.',
+    barKey: 'R-7',
+    role: 'outcome' as const,
+    mandatory: true,
+    requiredScope: ['surface:coverage-row', 'cohort:post-epoch', 'surface:coverage-row'],
+    passRatings: ['PASS', 'healthy', 'pass'],
+    coversBarKeys: ['R-7'],
+    barHash: '0'.repeat(64),
+  };
+
+  it('canonicalizes the wire alias into model, normalizes sets, and replaces a caller hash', () => {
+    const normalized = normalizeAcceptanceBarCriterion(bar);
+
+    expect(normalized).toMatchObject({
+      model: bar.bar,
+      barKey: 'R-7',
+      role: 'outcome',
+      mandatory: true,
+      requiredScope: ['cohort:post-epoch', 'surface:coverage-row'],
+      passRatings: ['healthy', 'pass'],
+      coversBarKeys: ['R-7'],
+      barHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(normalized).not.toHaveProperty('bar');
+    expect(normalized.barHash).not.toBe(bar.barHash);
+    expect(normalized.barHash).toBe(computeAcceptanceBarHash(normalized));
+  });
+
+  it('binds every declared semantic dimension while ignoring set order and duplicates', () => {
+    const baseHash = computeAcceptanceBarHash(bar);
+    expect(
+      computeAcceptanceBarHash({
+        ...bar,
+        requiredScope: ['cohort:post-epoch', 'surface:coverage-row'],
+        passRatings: ['healthy', 'pass'],
+      }),
+    ).toBe(baseHash);
+
+    const changes: Array<Partial<ProposeRubricCriterion>> = [
+      { key: 'other-key' },
+      { barKey: 'R-8' },
+      { bar: 'The activation path produces a different outcome.' },
+      { driftMarkers: 'A different falsifier.' },
+      { requiredScope: ['surface:other'] },
+      { role: 'disclosure' },
+      { mandatory: false },
+      { passRatings: ['exceptional'] },
+      { coversBarKeys: ['R-8'] },
+    ];
+    for (const change of changes) {
+      expect(computeAcceptanceBarHash({ ...bar, ...change })).not.toBe(baseHash);
+    }
+  });
+
+  it('refuses two competing BAR texts instead of choosing a hidden winner', () => {
+    expect(() =>
+      normalizeAcceptanceBarCriterion({
+        ...bar,
+        model: 'Canonical model text.',
+        bar: 'Different alias text.',
+      }),
+    ).toThrow(/conflicting model and bar text.*model.*canonical/i);
   });
 });
 

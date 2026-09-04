@@ -90,6 +90,20 @@ export const DEFAULT_RATING_SCALE: readonly string[] = ['healthy', 'degraded', '
  *  permanently once its phase ends. */
 export type CriterionClass = 'settle-once' | 'violatable';
 
+/** Acceptance criteria distinguish the thing that must become true from a
+ * disclosure ABOUT that thing. The distinction is structural so prose cannot
+ * game coverage or substitute an accurate post-hoc report for the outcome. */
+export type AcceptanceCriterionRole = 'outcome' | 'disclosure';
+
+/** When an acceptance BAR entered the subject plan's lifecycle. Historical rows
+ * omit this; every post-adoption writer supplies it before the lifecycle gates
+ * introduced by requirements-with-teeth-bar-before-method-2026-09-04 apply. */
+export interface AcceptanceBarProvenance {
+  lifecycle: 'pre-implementation' | 'legacy-backfilled';
+  declaredAt: string;
+  declaredBy: string;
+}
+
 /** One gradeable item within a rubric (the per-characteristic criterion). */
 export interface RubricCriterion {
   /** Stable kebab id; a structured observation's ratings Record is keyed by this. */
@@ -97,6 +111,26 @@ export interface RubricCriterion {
   title: string;
   /** How this criterion is supposed to work (the MODEL). */
   model: string;
+  /** Acceptance-kind only: clearer wire/UI alias of `model`. It is projected on
+   * reads and accepted on writes, but is NEVER persisted as a second text field. */
+  bar?: string;
+  /** Acceptance-kind only: stable source identity (normally the originating R-N). */
+  barKey?: string;
+  /** Server-derived SHA-256 over the BAR's stable meaning. Caller values are ignored
+   * and recomputed at the canonical rubric writer. */
+  barHash?: string;
+  /** Acceptance-kind only: outcome is gradeable truth; disclosure can only report it. */
+  role?: AcceptanceCriterionRole;
+  /** Whether this outcome is part of the non-waivable ship floor. */
+  mandatory?: boolean;
+  /** Stable scope tokens the BAR promises to cover (surfaces, cohorts, or subjects). */
+  requiredScope?: string[];
+  /** Ratings that satisfy this BAR. Empty/absent remains legacy/unbound. */
+  passRatings?: string[];
+  /** Disclosure-only mapping to the outcome BAR keys it reports on. */
+  coversBarKeys?: string[];
+  /** Predeclared versus explicitly post-implementation/backfilled provenance. */
+  barProvenance?: AcceptanceBarProvenance;
   /** How to investigate it (the METHOD: signals / queries). */
   method: string;
   /** Optional per-criterion override of the rubric's default rating_scale. */
@@ -348,19 +382,45 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
     // Acceptance-kind criteria may omit model/method/driftMarkers (the light profile —
     // per-kind superRefine guarantees standard-kind criteria always carry them), so the
     // v1 required-string shape maps absent → '' rather than loosening every consumer.
-    criteria: d.criteria.map((c) => ({
-      key: c.key,
-      title: c.title,
-      model: c.model ?? '',
-      method: c.method ?? '',
-      driftMarkers: c.driftMarkers ?? '',
-      ...(c.ratingScale ? { ratingScale: c.ratingScale } : {}),
-      ...(c.replication ? { replication: c.replication } : {}),
-      ...(c.instrumentKey ? { instrumentKey: c.instrumentKey } : {}),
-      ...(c.window ? { window: c.window } : {}),
-      ...(c.criterionClass ? { criterionClass: c.criterionClass } : {}),
-      ...(c.check ? { check: c.check } : {}),
-    })),
+    criteria: d.criteria.map((c) => {
+      // The template schema is the persisted authority. Keep the cast local while
+      // legacy rows omit every BAR field; a missing optional value projects absent.
+      const barFields = c as typeof c & {
+        barKey?: string;
+        barHash?: string;
+        role?: AcceptanceCriterionRole;
+        mandatory?: boolean;
+        requiredScope?: string[];
+        passRatings?: string[];
+        coversBarKeys?: string[];
+        barProvenance?: AcceptanceBarProvenance;
+      };
+      const model = c.model ?? '';
+      return {
+        key: c.key,
+        title: c.title,
+        model,
+        // `bar` is deliberately a projection, not template_data. `model` remains
+        // the one canonical stored text field (D-001/D-003).
+        ...(kind === 'acceptance' && model ? { bar: model } : {}),
+        ...(barFields.barKey ? { barKey: barFields.barKey } : {}),
+        ...(barFields.barHash ? { barHash: barFields.barHash } : {}),
+        ...(barFields.role ? { role: barFields.role } : {}),
+        ...(barFields.mandatory !== undefined ? { mandatory: barFields.mandatory } : {}),
+        ...(barFields.requiredScope ? { requiredScope: barFields.requiredScope } : {}),
+        ...(barFields.passRatings ? { passRatings: barFields.passRatings } : {}),
+        ...(barFields.coversBarKeys ? { coversBarKeys: barFields.coversBarKeys } : {}),
+        ...(barFields.barProvenance ? { barProvenance: barFields.barProvenance } : {}),
+        method: c.method ?? '',
+        driftMarkers: c.driftMarkers ?? '',
+        ...(c.ratingScale ? { ratingScale: c.ratingScale } : {}),
+        ...(c.replication ? { replication: c.replication } : {}),
+        ...(c.instrumentKey ? { instrumentKey: c.instrumentKey } : {}),
+        ...(c.window ? { window: c.window } : {}),
+        ...(c.criterionClass ? { criterionClass: c.criterionClass } : {}),
+        ...(c.check ? { check: c.check } : {}),
+      };
+    }),
     ratingScale: d.ratingScale,
     criteriaHash: computeSeedContentHash(d),
     methodRef: d.methodRef ?? null,
@@ -919,6 +979,113 @@ export async function searchRubrics(
 export type ProposeRubricCriterion = Omit<RubricCriterion, 'model' | 'method' | 'driftMarkers'> &
   Partial<Pick<RubricCriterion, 'model' | 'method' | 'driftMarkers'>>;
 
+type AcceptanceBarHashInput = Pick<
+  ProposeRubricCriterion,
+  | 'key'
+  | 'model'
+  | 'bar'
+  | 'barKey'
+  | 'driftMarkers'
+  | 'requiredScope'
+  | 'role'
+  | 'mandatory'
+  | 'passRatings'
+  | 'coversBarKeys'
+>;
+
+function normalizedBarText(value: string | undefined): string {
+  return (value ?? '').replace(/\r\n?/g, '\n').trim();
+}
+
+function normalizedBarSet(values: readonly string[] | undefined, lowerCase = false): string[] {
+  return [
+    ...new Set(
+      (values ?? [])
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .map((value) => (lowerCase ? value.toLowerCase() : value)),
+    ),
+  ].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Stable BAR fingerprint. An ordered tuple avoids object-key-order drift, while
+ * set-like fields are deduplicated/sorted before hashing. Provenance is deliberately
+ * excluded: it says WHEN the same promise entered the lifecycle, not WHAT it promises.
+ */
+export function computeAcceptanceBarHash(criterion: AcceptanceBarHashInput): string {
+  const canonicalBar = normalizedBarText(criterion.model) || normalizedBarText(criterion.bar);
+  if (!canonicalBar) {
+    throw new Error(
+      `invalid_args: acceptance criterion '${criterion.key}' cannot derive barHash without canonical model/bar text`,
+    );
+  }
+  const key = criterion.key.trim();
+  const material = [
+    ['criterionKey', key],
+    ['barKey', criterion.barKey?.trim() || key],
+    ['bar', canonicalBar],
+    ['falsifier', normalizedBarText(criterion.driftMarkers)],
+    ['requiredScope', normalizedBarSet(criterion.requiredScope)],
+    ['role', criterion.role ?? null],
+    ['mandatory', criterion.mandatory ?? false],
+    ['passRatings', normalizedBarSet(criterion.passRatings, true)],
+    ['coversBarKeys', normalizedBarSet(criterion.coversBarKeys)],
+  ] as const;
+  return hashPlanContent(JSON.stringify(material));
+}
+
+/**
+ * Canonicalize one acceptance BAR at the central writer. `bar` is only an alias:
+ * it is removed before persistence, and a mismatching model+bar pair is refused.
+ * Caller-supplied barHash is discarded and recomputed from normalized meaning.
+ */
+export function normalizeAcceptanceBarCriterion(
+  criterion: ProposeRubricCriterion,
+): ProposeRubricCriterion {
+  const carriesBarContract =
+    criterion.bar !== undefined ||
+    criterion.barHash !== undefined ||
+    criterion.barKey !== undefined ||
+    criterion.role !== undefined ||
+    criterion.mandatory !== undefined ||
+    criterion.requiredScope !== undefined ||
+    criterion.passRatings !== undefined ||
+    criterion.coversBarKeys !== undefined ||
+    criterion.barProvenance !== undefined;
+  // A model-only acceptance criterion predates the BAR contract. Preserve it
+  // byte-for-byte until migration explicitly marks its cohort/provenance; merely
+  // re-proposing a legacy rubric must not pretend its bar was predeclared.
+  if (!carriesBarContract) return criterion;
+
+  const model = normalizedBarText(criterion.model);
+  const alias = normalizedBarText(criterion.bar);
+  if (model && alias && model !== alias) {
+    throw new Error(
+      `invalid_args: acceptance criterion '${criterion.key}' supplied conflicting model and bar text; ` +
+        '`model` is canonical, so omit bar or make the alias byte-equivalent after trimming',
+    );
+  }
+
+  const { bar: _wireAlias, barHash: _callerHash, ...rest } = criterion;
+  const normalized: ProposeRubricCriterion = {
+    ...rest,
+    ...(model || alias ? { model: model || alias } : {}),
+    ...(criterion.barKey?.trim() ? { barKey: criterion.barKey.trim() } : {}),
+    ...(criterion.requiredScope
+      ? { requiredScope: normalizedBarSet(criterion.requiredScope) }
+      : {}),
+    ...(criterion.passRatings
+      ? { passRatings: normalizedBarSet(criterion.passRatings, true) }
+      : {}),
+    ...(criterion.coversBarKeys
+      ? { coversBarKeys: normalizedBarSet(criterion.coversBarKeys) }
+      : {}),
+  };
+  if (!normalized.model) return normalized;
+  return { ...normalized, barHash: computeAcceptanceBarHash(normalized) };
+}
+
 export interface ProposeRubricInput {
   rubricId: string;
   /**
@@ -1270,7 +1437,7 @@ export function normalizeAcceptanceRubricProposal(
         value,
       });
     }
-    return normalized;
+    return normalizeAcceptanceBarCriterion(normalized);
   });
 
   const normalizedRatingScale = [...ratingScale];

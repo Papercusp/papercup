@@ -131,6 +131,85 @@ describe('rubric template schema', () => {
       }).success,
     ).toBe(true);
   });
+
+  it('persists canonical acceptance BAR metadata but never a second bar text field', () => {
+    const criterion = {
+      key: 'activation-outcome',
+      title: 'Coverage activation exists',
+      model: 'The activation path produces coverage-evidence rows.',
+      driftMarkers: 'No coverage-evidence rows exist for the activation path.',
+      barKey: 'R-7',
+      barHash: 'a'.repeat(64),
+      role: 'outcome' as const,
+      mandatory: true,
+      requiredScope: ['cohort:post-epoch', 'surface:coverage-row'],
+      passRatings: ['pass', 'healthy'],
+      barProvenance: {
+        lifecycle: 'pre-implementation' as const,
+        declaredAt: '2026-09-04T12:00:00.000Z',
+        declaredBy: 'su-author',
+      },
+    };
+    const data = {
+      kind: 'acceptance' as const,
+      subjectPlan: 'some-plan-2026-09-04',
+      characteristic: 'plan-acceptance',
+      criteria: [criterion],
+      ratingScale: ['pass', 'fail', 'unknown'],
+    };
+
+    expect(rubricTemplateDataAuthoringSchema.safeParse(data).success).toBe(true);
+    expect(
+      rubricTemplateDataAuthoringSchema.safeParse({
+        ...data,
+        criteria: [{ ...criterion, bar: criterion.model }],
+      }).success,
+    ).toBe(false); // `bar` is a wire alias, never persisted template_data.
+    expect(
+      rubricTemplateDataSchema.safeParse({
+        ...minimalData,
+        criteria: [{ ...minimalCriterion, barHash: 'a'.repeat(64) }],
+      }).success,
+    ).toBe(false); // BAR metadata is acceptance-kind only.
+  });
+
+  it('refuses a partial persisted BAR contract without canonical model text or its hash', () => {
+    const acceptance = {
+      kind: 'acceptance' as const,
+      subjectPlan: 'some-plan-2026-09-04',
+      characteristic: 'plan-acceptance',
+      ratingScale: ['pass', 'fail', 'unknown'],
+    };
+    expect(
+      rubricTemplateDataAuthoringSchema.safeParse({
+        ...acceptance,
+        criteria: [
+          {
+            key: 'outcome',
+            title: 'Outcome',
+            driftMarkers: 'The outcome is absent.',
+            role: 'outcome',
+            mandatory: true,
+          },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      rubricTemplateDataAuthoringSchema.safeParse({
+        ...acceptance,
+        criteria: [
+          {
+            key: 'outcome',
+            title: 'Outcome',
+            model: 'The outcome exists.',
+            driftMarkers: 'The outcome is absent.',
+            role: 'outcome',
+            mandatory: true,
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe('structured criterion grading-window (EI-12146)', () => {
