@@ -1,0 +1,58 @@
+# P-303 gate spike — minimal bootc host image on an RPM-family base.
+#
+# PURPOSE: prove the D-254 pipeline end to end at its narrowest:
+#   Containerfile -> bootc OCI image -> bootc-image-builder -> {gce, ami, vhd}
+#   -> boot one instance per cloud.
+#
+# This deliberately does NOT port the workspace-host bootstrap (that is P-306).
+# It carries only the minimum needed to prove (a) an RPM-family bootc image
+# builds, (b) it converts to all three cloud disk formats, (c) it boots and the
+# systemd unit model survives the conversion.
+#
+# BASE CHOICE: centos-bootc:stream9 rather than fedora-bootc. Both are bootc
+# reference bases; Stream 9 is the RHEL-family long-support line, which is the
+# one a product would actually ship on. Fedora moves too fast for a customer VM.
+FROM quay.io/centos-bootc/centos-bootc:stream9
+
+# The Ubuntu apt package set on the current host is readelf-DERIVED
+# (WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES) and its own comment forbids
+# translating it by guesswork. P-304 owns re-deriving it on this base.
+# For the SPIKE we install only what proves the model works.
+RUN dnf -y install --setopt=install_weak_deps=False \
+      acl \
+      policycoreutils \
+      shadow-utils \
+      sudo \
+    && dnf clean all
+
+# ── Identity model probe (D-043 / D-251) ───────────────────────────────────
+# The three-identity separation is the most base-sensitive code we have: it is
+# unit-proven on UBUNTU semantics only (setfacl masks, runuser, default-ACL
+# inheritance, nologin). P-305 owns re-proving it properly. This spike creates
+# the identities at BUILD time purely to establish that the primitives exist
+# and behave on this base -- it is a smoke test, not the port.
+RUN groupadd --system papercusp \
+    && useradd --system --gid papercusp --home-dir /var/lib/papercusp \
+         --shell /usr/sbin/nologin papercusp-service \
+    && useradd --system --gid papercusp --home-dir /var/lib/papercusp-agent \
+         --shell /usr/sbin/nologin papercusp-agent
+
+# Prove the ACL primitives the identity contract depends on exist and take
+# effect at build time. A base where setfacl silently no-ops (no acl support in
+# the filesystem/toolchain) fails HERE, loudly, instead of on a booted VM.
+RUN install -d -o root -g papercusp -m 0750 /opt/papercusp \
+    && setfacl -m u:papercusp-agent:r-x /opt/papercusp \
+    && getfacl -p /opt/papercusp | tee /usr/share/papercusp-acl-probe.txt \
+    && getfacl -p /opt/papercusp | grep -q '^user:papercusp-agent:r-x' \
+       || (echo 'FATAL: setfacl did not take effect on this base' >&2; exit 1)
+
+# ── Boot-proof marker ──────────────────────────────────────────────────────
+# A oneshot unit that writes a marker the boot test can read over the serial
+# console. This is what turns "the image converted" into "the image BOOTED".
+COPY p303-boot-proof.service /usr/lib/systemd/system/p303-boot-proof.service
+RUN systemctl enable p303-boot-proof.service
+
+# bootc requires a container that can be deployed as a host: it validates the
+# image has a kernel + bootloader config. `bootc container lint` catches the
+# common shape errors at BUILD time rather than at install time.
+RUN bootc container lint

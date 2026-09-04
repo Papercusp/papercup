@@ -1,0 +1,33 @@
+[Unit]
+Description=P-303 bootc spike boot proof
+# Ordered late so the marker means "userspace really came up", not "systemd
+# started parsing units". A marker written at sysinit would be satisfied by a
+# VM that then fails to reach multi-user.
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Everything here goes to the serial console, which is the ONLY channel a
+# converted cloud disk image gives us before SSH is up. The boot test reads
+# these lines off the instance's serial output, so each is a distinct
+# greppable assertion rather than one blob.
+StandardOutput=journal+console
+StandardError=journal+console
+ExecStart=/bin/sh -c 'echo "P303-BOOT-PROOF: booted os=$(. /etc/os-release; echo $ID-$VERSION_ID) kernel=$(uname -r) arch=$(uname -m)"'
+# Re-assert the D-043/D-251 ACL contract on the BOOTED system. The build-time
+# check proved setfacl works in a container layer; this proves it SURVIVED the
+# ostree commit + the disk-image conversion, which is the part that actually
+# differs from the Ubuntu path.
+ExecStart=/bin/sh -c 'getfacl -p /opt/papercusp 2>&1 | grep -q "^user:papercusp-agent:r-x" && echo "P303-BOOT-PROOF: acl-survived-conversion PASS" || echo "P303-BOOT-PROOF: acl-survived-conversion FAIL"'
+ExecStart=/bin/sh -c 'id papercusp-service >/dev/null 2>&1 && id papercusp-agent >/dev/null 2>&1 && echo "P303-BOOT-PROOF: identities-present PASS" || echo "P303-BOOT-PROOF: identities-present FAIL"'
+# bootc's own view of the deployed system. If this errors, the image booted but
+# is not actually a bootc-managed host -- which would mean the whole D-254
+# update model (bootc upgrade) does not apply, and we would want to know that
+# on the spike rather than at P-308.
+ExecStart=/bin/sh -c 'bootc status --format=json >/dev/null 2>&1 && echo "P303-BOOT-PROOF: bootc-managed PASS" || echo "P303-BOOT-PROOF: bootc-managed FAIL"'
+ExecStart=/bin/sh -c 'echo "P303-BOOT-PROOF: complete"'
+
+[Install]
+WantedBy=multi-user.target
