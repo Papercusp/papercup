@@ -60,6 +60,7 @@ import { getPlanRow } from './source';
 import { setSpecClause } from './spec-clauses-store';
 import { resolveSessionTurnRefs } from '../sessions/_shared';
 import { recoverHarnessFromSlugs } from './slug-scope';
+import { BUDGET, promptWeight } from '../tool-guidance-budget';
 import tool from './audit';
 
 const mockItems = vi.mocked(getPlanItemStatuses);
@@ -492,6 +493,10 @@ describe('plans:audit phase:activation', () => {
     for (const cosmetic of ['spelling', 'formatting', 'cosmetic-only wording']) {
       expect(guidance).toContain(cosmetic);
     }
+  });
+
+  it('stays within the shared prompt-weight budget', () => {
+    expect(promptWeight(tool)).toBeLessThanOrEqual(BUDGET);
   });
 
   it('resolves every source ref and returns the exact server-captured revision', async () => {
