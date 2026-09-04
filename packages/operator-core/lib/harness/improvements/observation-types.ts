@@ -174,6 +174,25 @@ export type ObservationScope = 'self' | 'role' | 'harness' | 'papercusp';
 export type ObservationConfidence = 'low' | 'med' | 'high';
 
 /**
+ * Authoritative release-gate binding for a scorecard that claims at least one
+ * positive criterion. `stale-pass-blocked` is returned by evaluate/emit so the
+ * caller can render the gate reason; only `bound` is written to the ledger.
+ */
+export interface ScorecardReleaseGateBinding {
+  status: 'bound' | 'stale-pass-blocked';
+  reasonCode: string | null;
+  reason: string | null;
+  checkedAt: string;
+  testedSha: string | null;
+  gateVerdict: 'green' | 'not-green' | null;
+  gateCandidate: string | null;
+  lastGreenCommit: string | null;
+  stagingHead: string | null;
+  commitsBehindHead: number | null;
+  failingTests: string[];
+}
+
+/**
  * The canonical structured-observation v2 record stored at
  * `engineer_issues.payload.observation`. All fields optional — free-text
  * observations carry none of them.
@@ -211,6 +230,18 @@ export interface StructuredObservation {
   criteriaHash?: string;
   /** Per-criterion ratings against `rubricRef` — each carries MANDATORY evidence. */
   ratings?: ObservationRatings;
+  /**
+   * Commit that a release-gating scorecard's positive ratings actually tested.
+   * `scorecards:emit` accepts this only after binding it to the live green pin and
+   * current staging HEAD. Absent on non-release scorecards and historical cards.
+   */
+  testedSha?: string;
+  /**
+   * Server-stamped proof that `testedSha` matched the authoritative release gate
+   * at emit time. A blocked attempt is returned to the caller but never persisted;
+   * stored observations therefore carry only `status:'bound'` records.
+   */
+  releaseGateBinding?: ScorecardReleaseGateBinding;
   /** Post-grading implementer verdict; valid only for acceptance-kind rubrics. */
   acceptance?: ScorecardAcceptance;
   /** Structured currentness inputs and selector for independently replaying spec-test-adequacy. */
@@ -853,6 +884,41 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   }
   if (typeof o.criteriaHash === 'string' && o.criteriaHash.trim()) {
     out.criteriaHash = o.criteriaHash;
+  }
+  if (typeof o.testedSha === 'string' && o.testedSha.trim()) {
+    out.testedSha = o.testedSha;
+  }
+  if (o.releaseGateBinding && typeof o.releaseGateBinding === 'object' && !Array.isArray(o.releaseGateBinding)) {
+    const binding = o.releaseGateBinding as Record<string, unknown>;
+    const failingTests = Array.isArray(binding.failingTests)
+      ? binding.failingTests.filter((value): value is string => typeof value === 'string')
+      : [];
+    if (
+      (binding.status === 'bound' || binding.status === 'stale-pass-blocked') &&
+      typeof binding.checkedAt === 'string' &&
+      binding.checkedAt.trim()
+    ) {
+      out.releaseGateBinding = {
+        status: binding.status,
+        reasonCode: typeof binding.reasonCode === 'string' ? binding.reasonCode : null,
+        reason: typeof binding.reason === 'string' ? binding.reason : null,
+        checkedAt: binding.checkedAt,
+        testedSha: typeof binding.testedSha === 'string' ? binding.testedSha : null,
+        gateVerdict:
+          binding.gateVerdict === 'green' || binding.gateVerdict === 'not-green'
+            ? binding.gateVerdict
+            : null,
+        gateCandidate: typeof binding.gateCandidate === 'string' ? binding.gateCandidate : null,
+        lastGreenCommit:
+          typeof binding.lastGreenCommit === 'string' ? binding.lastGreenCommit : null,
+        stagingHead: typeof binding.stagingHead === 'string' ? binding.stagingHead : null,
+        commitsBehindHead:
+          typeof binding.commitsBehindHead === 'number' && Number.isFinite(binding.commitsBehindHead)
+            ? binding.commitsBehindHead
+            : null,
+        failingTests,
+      };
+    }
   }
   if (o.ratings && typeof o.ratings === 'object' && !Array.isArray(o.ratings)) {
     const rawRatings = o.ratings as Record<string, unknown>;

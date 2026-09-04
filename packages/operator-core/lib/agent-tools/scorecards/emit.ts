@@ -36,9 +36,12 @@ import {
   auditVerdictFromRatings,
   listScorecards,
   evaluateScorecardInstrumentContract,
+  resolveScorecardReleaseGateBinding,
+  scorecardRatingsClaimPass,
   recordGradingAudit,
   scorecardEvidenceFingerprint,
   type ScorecardInstrumentSnapshot,
+  type ScorecardReleaseGateSnapshot,
 } from '../../scorecards';
 import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from './evaluate';
 import {
@@ -190,6 +193,14 @@ export const scorecardEmitArgs = z
     title: z.string().min(1).max(240).optional(),
     body: z.string().max(8000).optional(),
     ratings: z.record(z.string().min(1), scorecardRatingEntrySchema),
+    testedSha: z
+      .string()
+      .trim()
+      .regex(/^[0-9a-f]{7,64}$/i)
+      .optional()
+      .describe(
+        'Commit SHA the supplied ratings actually tested. Required when a releaseGating rubric contains any pass-like rating; emit proves it is both the fresh green pin and current staging HEAD before filing.',
+      ),
     acceptance: z
       .object({
         verdict: z.enum(['accept', 'reject']),
@@ -445,6 +456,8 @@ export async function emitScorecard(
     evaluateCoverageChecks?: typeof evaluateCriterionCoverageChecks;
     /** Injectable seam for tests — production runs the real P-014 activation↔completion join. */
     evaluateRequirementChecks?: typeof evaluateCriterionRequirementChecks;
+    /** Injectable live release-gate read; production uses gitPipelineSnapshot. */
+    releaseGateSnapshot?: () => Promise<ScorecardReleaseGateSnapshot>;
     /** Audited coord-identity continuity resolver. */
     sameAcceptanceAuthor?: typeof isAcceptanceAuthorIdentity;
     /** Spawn/rebind ancestry resolver for independent-grader enforcement. */
@@ -721,13 +734,6 @@ export async function emitScorecard(
         : acceptance
       : undefined;
     const instrumentSnapshots = args.instrumentSnapshots as Record<string, ScorecardInstrumentSnapshot> | undefined;
-    const evidenceFingerprint = scorecardEvidenceFingerprint({
-      rubricRef: args.rubricRef,
-      ratings,
-      instrumentSnapshots,
-      ...(acceptance ? { acceptance } : {}),
-      ...(args.rerunRecipe ? { rerunRecipe: args.rerunRecipe as SpecTestAdequacyRerunRecipe } : {}),
-    });
     const instrumentContract = evaluateScorecardInstrumentContract({
       rubric,
       ratings,
@@ -742,6 +748,32 @@ export async function emitScorecard(
         instrumentContract,
       };
     }
+    const releaseGateBinding =
+      rubric.releaseGating && scorecardRatingsClaimPass(ratings)
+        ? await resolveScorecardReleaseGateBinding(args.testedSha, {
+            ...(deps.releaseGateSnapshot ? { snapshot: deps.releaseGateSnapshot } : {}),
+          })
+        : undefined;
+    if (releaseGateBinding?.status === 'stale-pass-blocked') {
+      return {
+        ok: false as const,
+        code: 'stale_pass_blocked' as const,
+        error:
+          `release-gating pass blocked for '${args.rubricRef}' — ${releaseGateBinding.reason}. ` +
+          'Re-run the drill at the current staging commit after that same commit has a fresh green gate verdict, then pass testedSha.',
+        releaseGateBinding,
+        canonicalRatings: ratings,
+      };
+    }
+    const boundTestedSha = releaseGateBinding?.status === 'bound' ? releaseGateBinding.testedSha ?? undefined : undefined;
+    const evidenceFingerprint = scorecardEvidenceFingerprint({
+      rubricRef: args.rubricRef,
+      ratings,
+      instrumentSnapshots,
+      ...(acceptance ? { acceptance } : {}),
+      ...(args.rerunRecipe ? { rerunRecipe: args.rerunRecipe as SpecTestAdequacyRerunRecipe } : {}),
+      ...(boundTestedSha ? { testedSha: boundTestedSha } : {}),
+    });
     // ── the vetting stamp (consult-min-max-and-rubric-vetting-2026-08-17 P-004) ──
     // A vetting scorecard (meta-rubric grading of an acceptance rubric) links the
     // get_feedback consult that critiqued the rubric and pins the rubric's plan-row
@@ -1170,6 +1202,7 @@ export async function emitScorecard(
           ratings: latest.ratings,
           ...(latest.acceptance ? { acceptance: latest.acceptance } : {}),
           ...(latest.rerunRecipe ? { rerunRecipe: latest.rerunRecipe } : {}),
+          ...(latest.testedSha ? { testedSha: latest.testedSha } : {}),
         }))
       : null;
     const sameCorrectionAlreadyExists = args.supersedes && latest?.supersedes === args.supersedes;
@@ -1396,6 +1429,8 @@ export async function emitScorecard(
           ...(rubricRevision != null ? { rubricRevision } : {}),
           ...(criteriaHash != null ? { criteriaHash } : {}),
           ratings,
+          ...(boundTestedSha ? { testedSha: boundTestedSha } : {}),
+          ...(releaseGateBinding ? { releaseGateBinding } : {}),
           ...(acceptanceRecord ? { acceptance: acceptanceRecord } : {}),
           ...(args.rerunRecipe ? { rerunRecipe: args.rerunRecipe } : {}),
           ...(sourceHive ? { sourceHive } : {}),
@@ -1505,6 +1540,7 @@ export async function emitScorecard(
         : {}),
       ...(args.supersedes ? { supersedes: args.supersedes } : {}),
       canonicalRatings: ratings,
+      ...(releaseGateBinding ? { releaseGateBinding } : {}),
       ...(acceptanceRecord ? { acceptance: acceptanceRecord } : {}),
       // P-008: surfaced loudly so the emitter knows this card is a working note — a
       // terminal re-emit (terminal:true, supersedes this issueId) finalizes it.
@@ -1535,9 +1571,9 @@ export default defineTool({
     notWhen:
       'Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.',
     returns:
-      "Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.",
+      "Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A positive releaseGating card also returns and stores `releaseGateBinding`; a failed binding returns code `stale_pass_blocked` with status `stale-pass-blocked`, the gate reason/failing tests, tested vs green/head SHAs, and `commitsBehindHead`, and writes no card. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.",
     chaining:
-      'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance still supplies schema-complete ratings; do not pass supersedes on the author acceptance.',
+      'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with that same canonical payload → scorecards:list / rubrics:trend. `testedSha` is required when a releaseGating rubric has a pass-like rating. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance still supplies schema-complete ratings; do not pass supersedes on the author acceptance.',
     seeAlso: ['scorecards:evaluate', 'scorecards:list', 'rubrics:trend'],
   },
   capability: 'coord:write',

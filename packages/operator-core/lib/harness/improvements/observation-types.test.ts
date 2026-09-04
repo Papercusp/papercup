@@ -198,6 +198,20 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
       targetHive: 'shared-hive-test',
       rubricRef: 'pot-coordination-health',
       ratings: { 'end-to-end-flow': { rating: 'healthy', evidence: 'e1', suggestion: 'keep it' } },
+      testedSha: 'abcdef123456',
+      releaseGateBinding: {
+        status: 'bound',
+        reasonCode: null,
+        reason: null,
+        checkedAt: '2026-09-04T16:00:00.000Z',
+        testedSha: 'abcdef123456',
+        gateVerdict: 'green',
+        gateCandidate: 'abcdef123456',
+        lastGreenCommit: 'abcdef1234567890',
+        stagingHead: 'abcdef1234567890',
+        commitsBehindHead: 0,
+        failingTests: [],
+      },
       acceptance: { verdict: 'accept', reasoning: 'The independent grading meets this plan.' },
       evidenceFingerprint: 'abc123',
       instrumentSnapshots: { flow: { verdict: 'pass' } },
@@ -208,6 +222,13 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     expect(out?.targetHive).toBe('shared-hive-test');
     expect(out?.rubricRef).toBe('pot-coordination-health');
     expect(out?.ratings?.['end-to-end-flow']).toEqual({ rating: 'healthy', evidence: 'e1', suggestion: 'keep it' });
+    expect(out?.testedSha).toBe('abcdef123456');
+    expect(out?.releaseGateBinding).toMatchObject({
+      status: 'bound',
+      testedSha: 'abcdef123456',
+      gateVerdict: 'green',
+      commitsBehindHead: 0,
+    });
     expect(out?.acceptance).toEqual({ verdict: 'accept', reasoning: 'The independent grading meets this plan.' });
     expect(out?.evidenceFingerprint).toBe('abc123');
     expect(out?.instrumentSnapshots).toEqual({ flow: { verdict: 'pass' } });
