@@ -11,6 +11,7 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_SHARED_CHECKS,
   WORKSPACE_HOST_MODELS,
   WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+  WORKSPACE_HOST_BOOTSTRAP_STAGED_PREFIX,
   WORKSPACE_HOST_UPDATE_MODE_BY_MODEL,
   workspaceHostBootstrapChecks,
   WORKSPACE_HOST_BOOTSTRAP_CHECK_EVIDENCE,
@@ -1491,8 +1492,12 @@ describe('workspace-host bootstrap attestation', () => {
         agentHomeReadableBySshUser: true as false,
         sudo: true as false,
       },
+      // Dropped BY NAME, not by position. `.slice(1)` used to mean "drop ubuntu-24.04" only
+      // because that name happened to sit first in a flat list; the per-model split reorders it,
+      // and a positional drop then removes a different check than the one asserted below —
+      // which reads as this test breaking rather than as the coupling it actually is.
       checks: workspaceHostBootstrapChecks('ubuntu-release-bundle')
-        .slice(1)
+        .filter((name) => name !== 'ubuntu-24.04')
         .map((name) => ({ name, ok: true as const })),
     });
     const result = validateWorkspaceHostBootstrapAttestation(drifted, input());
@@ -1520,6 +1525,225 @@ describe('workspace-host bootstrap attestation', () => {
     ).toEqual({
       ok: false,
       errors: ['bootstrap attestation has an invalid shape'],
+    });
+  });
+
+  // P-306 half B. Every test here exists to refuse ONE specific way a bootc host could claim a
+  // property only the tarball host can establish — which is D-262's trap, and the reason D-280
+  // ordered the port before condition 2.
+  describe('bootc-image host model', () => {
+    function bootcAttestation(
+      overrides: Partial<BootcAttestation> = {},
+    ): BootcAttestation {
+      const base = attestation();
+      return {
+        ...base,
+        hostModel: 'bootc-image',
+        bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+        release: {
+          version: base.release.version,
+          source: bootcInput().bootc!.image,
+          imageDigest: bootcInput().bootc!.imageDigest,
+          signaturePolicyPath: bootcInput().bootc!.signaturePolicyPath,
+          signatureVerified: true,
+        },
+        isolation: {
+          ...base.isolation,
+          updateMode: 'bootc-atomic-image-swap',
+        },
+        checks: workspaceHostBootstrapChecks('bootc-image').map((name) => ({
+          name,
+          ok: true as const,
+        })),
+        ...overrides,
+      };
+    }
+
+    it('accepts a well-formed bootc attestation', () => {
+      const verdict = validateWorkspaceHostBootstrapAttestation(
+        bootcAttestation(),
+        bootcInput(),
+      );
+      expect(verdict.errors).toEqual([]);
+      expect(verdict.ok).toBe(true);
+    });
+
+    it('renders the bootc update mode, never the release-swap one', () => {
+      const script = buildWorkspaceHostBootstrap(bootcInput());
+      expect(script).toContain(
+        `updateMode:"${WORKSPACE_HOST_UPDATE_MODE_BY_MODEL['bootc-image']}"`,
+      );
+      expect(script).not.toContain('signed-atomic-release-swap');
+    });
+
+    // The whole tarball trust chain must be ABSENT from the render — not merely unused. A line
+    // that downloads and minisign-verifies a bundle on a host whose release is the image would
+    // be verifying something the host does not run.
+    it.each(['curl ', 'minisign ', 'sha256sum ', 'apt-get ', 'ufw '])(
+      'renders no bundle-model command: %s',
+      (fragment) => {
+        expect(buildWorkspaceHostBootstrap(bootcInput())).not.toContain(
+          fragment,
+        );
+      },
+    );
+
+    it('stages by DIGEST and reboots rather than swapping a symlink', () => {
+      const script = buildWorkspaceHostBootstrap(bootcInput());
+      expect(script).toContain('bootc switch --retain');
+      expect(script).toContain(WORKSPACE_HOST_BOOTSTRAP_STAGED_PREFIX);
+      expect(script).toContain('systemctl reboot');
+      // Pinned by digest, so the tag cannot decide what actually gets deployed.
+      expect(script).toContain(`@${bootcInput().bootc!.imageDigest}`);
+      // …and the symlink swap is gone with it.
+      expect(script).not.toContain('$RUNTIME_ROOT/current.next');
+    });
+
+    it('uses bootc rollback for the rollback action', () => {
+      const script = buildWorkspaceHostBootstrap(
+        bootcInput({ action: 'rollback' }),
+      );
+      expect(script).toContain('bootc rollback');
+      // ⛔ and fails closed on the database half rather than silently skipping it, which would
+      // leave the newer schema behind an older runtime.
+      expect(script).toContain(
+        'bootc-image rollback cannot run the database rollback step yet',
+      );
+    });
+
+    it('refuses an attestation claiming the release-swap update mode', () => {
+      const verdict = validateWorkspaceHostBootstrapAttestation(
+        bootcAttestation({
+          isolation: {
+            ...bootcAttestation().isolation,
+            updateMode:
+              'signed-atomic-release-swap' as unknown as 'bootc-atomic-image-swap',
+          },
+        }),
+        bootcInput(),
+      );
+      expect(verdict.ok).toBe(false);
+      expect(verdict.errors).toContain(
+        "runtime update mode 'signed-atomic-release-swap' is not the update path of host model 'bootc-image'",
+      );
+    });
+
+    // The extras case. The pre-P-306 validator required every EXPECTED check and never rejected
+    // an unexpected one, so this exact document — a bootc host also reporting that it verified a
+    // minisign bundle signature — would have validated clean.
+    it('refuses a bootc attestation that also carries the bundle checks', () => {
+      const verdict = validateWorkspaceHostBootstrapAttestation(
+        bootcAttestation({
+          checks: [
+            ...workspaceHostBootstrapChecks('bootc-image'),
+            'bundle-digest' as const,
+            'bundle-signature' as const,
+          ].map((name) => ({ name, ok: true as const })),
+        }),
+        bootcInput(),
+      );
+      expect(verdict.ok).toBe(false);
+      expect(verdict.errors).toContain(
+        "bootstrap attestation carries checks that host model 'bootc-image' cannot establish: bundle-digest, bundle-signature",
+      );
+    });
+
+    it('refuses a bootc attestation reporting a minisign trust chain', () => {
+      const verdict = validateWorkspaceHostBootstrapAttestation(
+        bootcAttestation({
+          release: {
+            ...bootcAttestation().release,
+            bundleSha256: 'a'.repeat(64),
+          } as unknown as BootcAttestation['release'],
+        }),
+        bootcInput(),
+      );
+      expect(verdict.ok).toBe(false);
+      expect(verdict.errors).toContain(
+        'bootc attestation reports a minisign bundle trust chain it cannot have performed',
+      );
+    });
+
+    it('refuses an attestation whose model does not match the render', () => {
+      const verdict = validateWorkspaceHostBootstrapAttestation(
+        attestation(),
+        bootcInput(),
+      );
+      expect(verdict.ok).toBe(false);
+      expect(verdict.errors).toContain(
+        "attested host model 'ubuntu-release-bundle' does not match the rendered model 'bootc-image'",
+      );
+    });
+
+    it('refuses a tag-only digest match', () => {
+      const verdict = validateWorkspaceHostBootstrapAttestation(
+        bootcAttestation({
+          release: {
+            ...bootcAttestation().release,
+            imageDigest: `sha256:${'c'.repeat(64)}`,
+          },
+        }),
+        bootcInput(),
+      );
+      expect(verdict.ok).toBe(false);
+      expect(verdict.errors).toContain(
+        'attested image digest does not match the pinned release image',
+      );
+    });
+
+    // Both directions. The second is the quiet one: a caller who passes a bootc block on an
+    // ubuntu render believes it pinned an image, and nothing in that script reads it.
+    it('requires a bootc descriptor for the bootc model', () => {
+      expect(() =>
+        buildWorkspaceHostBootstrap(bootcInput({ bootc: undefined })),
+      ).toThrow("hostModel 'bootc-image' requires a bootc release descriptor");
+    });
+
+    it('refuses a bootc descriptor on the bundle model', () => {
+      expect(() =>
+        buildWorkspaceHostBootstrap({
+          ...input(),
+          bootc: bootcInput().bootc,
+        }),
+      ).toThrow(
+        "bootc release descriptor is only valid with hostModel 'bootc-image'",
+      );
+    });
+
+    // Registry-qualified, because an unqualified ref is resolved by the HOST's search registries
+    // rather than by us — the pulled image would be chosen by host configuration.
+    it('refuses an unqualified image reference', () => {
+      expect(() =>
+        buildWorkspaceHostBootstrap(
+          bootcInput({
+            bootc: {
+              ...bootcInput().bootc!,
+              image: 'workspace-host:2026.9.4-1',
+            },
+          }),
+        ),
+      ).toThrow('bootc.image must be a registry-qualified image reference');
+    });
+
+    it('refuses a digest that is not a pinned sha256 manifest digest', () => {
+      expect(() =>
+        buildWorkspaceHostBootstrap(
+          bootcInput({
+            bootc: { ...bootcInput().bootc!, imageDigest: 'latest' },
+          }),
+        ),
+      ).toThrow('bootc.imageDigest must be');
+    });
+
+    // The default is the model the whole fleet runs today; an omitted field must not silently
+    // move a host onto the unported path.
+    it('defaults an unspecified host model to the shipped bundle model', () => {
+      expect(buildWorkspaceHostBootstrap(input())).toContain(
+        'signed-atomic-release-swap',
+      );
+      expect(
+        validateWorkspaceHostBootstrapAttestation(attestation(), input()).ok,
+      ).toBe(true);
     });
   });
 });
