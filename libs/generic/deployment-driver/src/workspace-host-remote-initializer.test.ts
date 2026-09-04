@@ -1012,14 +1012,19 @@ describe("executeWorkspaceHostRemoteInitializerStep", () => {
           agents: agentReport({ claude: false, omp: false }),
         }),
       });
-      await expect(
+      // Each agent now carries its REASON CODE (WI-2144034), so the names are no longer adjacent.
+      // Asserted separately rather than as one loosened pattern: the point of this test is that
+      // BOTH agents are named, and a single relaxed regex could pass while one of them vanished.
+      const rejects = expect(
         executeWorkspaceHostRemoteInitializerStep(
           parseWorkspaceHostRemoteInitializerRequest(
             request("verify-initialization"),
           ),
           deps,
         ),
-      ).rejects.toThrow(/claude, omp/);
+      ).rejects;
+      await rejects.toThrow(/\bclaude \(/);
+      await rejects.toThrow(/\bomp \(/);
     });
 
     it("requires requiredChannels to be an array of strings", async () => {
