@@ -66,6 +66,17 @@ import {
 import { classifyGateAbort, type GateAbortKind } from './gate-abort-status';
 import { evaluateVerdictRateAlarm, readVerdictRateWindow } from './gate-verdict-rate-alarm';
 import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from './green-checkpoint-schedule';
+import {
+  clearInFlightCandidateIfUnchanged,
+  describeAbandonedInFlightCandidate,
+  isPidAlive,
+  judgeAbandonedInFlightCandidate,
+  parseInFlightCandidate,
+  recordLostGateRun,
+  type StoredInFlightCandidate,
+} from './in-flight-candidate';
+import { buildKey } from '../events/await/catalog';
+import type { EmitAwaitedEventOpts } from '../events/await/engine';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
  *  running it (cron is hourly at :15, so this is ~3 missed fires). */
@@ -1390,6 +1401,113 @@ export interface GreenStallWatchdogResult {
   suppressed: string[];
 }
 
+export type AbandonedCheckpointAwaitWakeResult =
+  | { status: 'not-abandoned'; reason: string }
+  | { status: 'emit-failed'; candidate: string }
+  | { status: 'woken'; candidate: string; markerCleared: boolean };
+
+interface AbandonedCheckpointAwaitWakeDeps {
+  nowMs?: number;
+  selfPid?: number;
+  pidAlive?: (pid: number) => boolean | null;
+  recordLostRun?: typeof recordLostGateRun;
+  clearIfUnchanged?: typeof clearInFlightCandidateIfUnchanged;
+  emit?: (opts: EmitAwaitedEventOpts) => Promise<unknown>;
+}
+
+/**
+ * WI-6989: wake checkpoint waiters when a published run process disappears before
+ * producing any verdict.
+ *
+ * Managed SIGTERM/SIGINT, fatal exceptions and the in-process self-watchdog already
+ * publish the normal `green-checkpoint:inconclusive` outcome. A hard loss (SIGKILL,
+ * OOM, host-generation replacement) cannot run that finalizer; its durable
+ * `inFlightCandidate` marker is the independent witness. Reuse the SAME inconclusive
+ * keys `checkpoint:await` already arms rather than inventing an abort subscription.
+ * An unfiltered await matches the payload immediately, while a candidate-bound await
+ * matches the dead sha. Sibling cancellation retires the other green/red/held rows in
+ * that same registration group.
+ *
+ * The marker is cleared only AFTER both emits succeed, and only if its generation is
+ * unchanged. An emit failure therefore leaves evidence for the next 15-minute watchdog
+ * pass to retry; a concurrent replacement run is never erased.
+ */
+export async function wakeAbandonedCheckpointAwaits(
+  input: { installSlug: string; workspaceId: string; rawMarker: unknown },
+  deps: AbandonedCheckpointAwaitWakeDeps = {},
+): Promise<AbandonedCheckpointAwaitWakeResult> {
+  const nowMs = deps.nowMs ?? Date.now();
+  const marker = parseInFlightCandidate(input.rawMarker, nowMs);
+  if (!marker) return { status: 'not-abandoned', reason: 'no-current-marker' };
+
+  const verdict = judgeAbandonedInFlightCandidate(marker, {
+    selfPid: deps.selfPid ?? process.pid,
+    pidAlive: (deps.pidAlive ?? isPidAlive)(marker.pid),
+    nowMs,
+  });
+  if (!verdict.abandoned) return { status: 'not-abandoned', reason: verdict.reason };
+
+  const target = { installSlug: input.installSlug, workspaceId: input.workspaceId };
+  const summary = describeAbandonedInFlightCandidate(verdict) ??
+    `Checkpoint run for ${marker.candidate.slice(0, 12)} disappeared without a verdict.`;
+  try {
+    await (deps.recordLostRun ?? recordLostGateRun)(target, verdict);
+  } catch (error) {
+    // Recording is diagnostic; a failed record must not suppress the actionable wake.
+    console.warn(
+      `[green-stall-watchdog] abandoned checkpoint record failed for ${input.installSlug} (non-fatal): ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  const eventPayload = {
+    sha: marker.candidate,
+    from: marker.base,
+    pipeline: input.installSlug,
+    candidateSource: marker.candidateSource,
+    reason: 'process-disappeared',
+    summary,
+    runId: null,
+  };
+  const params = (pipeline?: string) => ({ pipeline });
+  const inconclusiveKeys = [
+    buildKey('checkpoint-inconclusive', params()),
+    buildKey('checkpoint-inconclusive', params(input.installSlug)),
+  ];
+  const siblingKeys = [
+    buildKey('checkpoint', params()),
+    buildKey('checkpoint', params(input.installSlug)),
+    buildKey('checkpoint-red', params()),
+    buildKey('checkpoint-red', params(input.installSlug)),
+    buildKey('checkpoint-held', params()),
+    buildKey('checkpoint-held', params(input.installSlug)),
+  ];
+  const emit =
+    deps.emit ??
+    (async (opts: EmitAwaitedEventOpts) => {
+      const { emitAwaitedEvent } = await import('../events/await/engine');
+      return emitAwaitedEvent(opts);
+    });
+  try {
+    for (const key of inconclusiveKeys) {
+      await emit({
+        key,
+        summary,
+        payload: eventPayload,
+        source: 'green-stall-watchdog:abandoned-checkpoint',
+        cancelSiblingKeysFor: siblingKeys,
+      });
+    }
+  } catch (error) {
+    console.warn(
+      `[green-stall-watchdog] abandoned checkpoint wake failed for ${input.installSlug} (will retry): ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return { status: 'emit-failed', candidate: marker.candidate };
+  }
+
+  const markerCleared = await (deps.clearIfUnchanged ?? clearInFlightCandidateIfUnchanged)(target, marker);
+  return { status: 'woken', candidate: marker.candidate, markerCleared };
+}
+
 /**
  * Resolve and read the checkpoint run state for one routine row.
  *
@@ -1971,6 +2089,10 @@ export async function checkGreenStall(
           consecutiveReds?: number;
           green?: boolean;
           verdictRateAlarmed?: boolean;
+          // WI-6989: a hard-killed checkpoint cannot emit its own inconclusive result.
+          // The process-level watchdog reads the producer-published marker and wakes
+          // checkpoint:await registrations as soon as the marker's pid is proven gone.
+          inFlightCandidate?: unknown;
           // P-006 (WI-41755): the typed abort record release-actions.ts writes on an aborted
           // tick. Already inside the `gate_health` jsonb this query selects, so reading it
           // costs nothing extra — it is what lets the re-fire advisory classify the abort.
@@ -2026,6 +2148,11 @@ export async function checkGreenStall(
       // EI-7505: gate_health.failingTests, threaded through by trackGateStall
       // (release-actions.ts) on the last red green-checkpoint tick.
       const failingTests = row.gh?.failingTests ?? [];
+      await wakeAbandonedCheckpointAwaits({
+        installSlug: row.install_slug,
+        workspaceId: row.workspace_id,
+        rawMarker: row.gh?.inFlightCandidate,
+      });
       const checkpointRun = await readCheckpointRunState(row.install_slug, row.workspace_id);
       const verdict = evaluateGreenStall(
         {
