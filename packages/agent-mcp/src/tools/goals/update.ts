@@ -614,6 +614,10 @@ const goalUpdateTool = defineTool({
               workspaceId,
               status: args.status,
               actor: ctx.principal?.slug ?? null,
+              // Keep terminal relationship cleanup in the same transaction as
+              // the goals row. Background callers omit this and use the host
+              // connection selected by the installed executor.
+              sql: tx as Sql,
             });
           } catch (e) {
             // The status write STANDS even when the stop fails: the owner's intent
