@@ -187,6 +187,13 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     -- (Observed: claim-respects-blocking.integration.test.ts went 4/17 red on this.)
     -- GENERATED ALWAYS — never write it directly; write payload.lane.
     lane text GENERATED ALWAYS AS (payload ->> 'lane') STORED,
+    -- migration 1110 (WI-7102): the two top-level issue-admission flags are materialized
+    -- for the same reason as lane. issueAdmissibleWhereSql reads these columns through both
+    -- the base/view aliases, so the shared fixture must keep the production generated shape.
+    -- Text comparison intentionally admits only the exact value 'true', matching the old
+    -- JSONB ->> predicates for both boolean true and a legacy string "true".
+    claim_hold boolean GENERATED ALWAYS AS ((payload ->> '_claimHold') = 'true') STORED,
+    needs_owner_action boolean GENERATED ALWAYS AS ((payload ->> 'needsOwnerAction') = 'true') STORED,
     -- condition-singleton identity (migration 741 family): the stop-the-line floor
     -- (P-013/D-012, work-items-admission.ts stopTheLineExclusionSql) reads
     -- wi.condition_key on EVERY claim path — a fixture without this column fails the
@@ -336,7 +343,12 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- 94% of that bucket's population is issue-family, so a fixture missing these columns
       -- makes the audit look EMPTY rather than fail (see the THIRD COPY warning above).
       last_released_at,
-      last_released_by
+      last_released_by,
+      -- migration 1110 (WI-7102): generated admission booleans appended to the production
+      -- view and read directly by issueAdmissibleWhereSql. Keep them last to mirror the
+      -- append-only CREATE OR REPLACE VIEW migration contract.
+      claim_hold,
+      needs_owner_action
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb; v_payload jsonb; v_updated int;

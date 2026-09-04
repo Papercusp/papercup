@@ -79,14 +79,8 @@ import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from '
 import { randomInt } from 'node:crypto';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { trackDetached } from './detached-imports';
-import {
-  projectWorkItemColumns,
-  type WorkItemReadOptions,
-} from './work-item-read-projection';
-import {
-  AUTO_CLOSE_DEFAULT_MIN_TICKS,
-  AUTO_CLOSE_ELIGIBLE_SOURCES,
-} from './harness/improvements/auto-close-sources';
+import { projectWorkItemColumns, type WorkItemReadOptions } from './work-item-read-projection';
+import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import { agentReviewNormalExclusionSql } from './harness/improvements/agent-review-policy';
 
 /**
@@ -199,11 +193,8 @@ export async function deriveLeaderDispatchAdmission(
 ): Promise<LeaderDispatchAdmission | null> {
   if (!item.assignedBy) return null;
   try {
-    const {
-      resolveFleetScopeContext,
-      fleetControlWindDownRefusal,
-      leaderDispatchedAdmission,
-    } = await import('./scheduler/fleet-scope-admission');
+    const { resolveFleetScopeContext, fleetControlWindDownRefusal, leaderDispatchedAdmission } =
+      await import('./scheduler/fleet-scope-admission');
     const scope = await resolveFleetScopeContext(target, workspaceId);
     if (!scope) return null;
     if (await fleetControlWindDownRefusal(scope, workspaceId)) return null;
@@ -233,11 +224,8 @@ export async function deriveSelfFiledFalloutAdmission(
 ): Promise<SelfFiledFalloutAdmission | null> {
   if (item.kind !== 'bug' || !item.createdBy) return null;
   try {
-    const {
-      resolveFleetScopeContext,
-      fleetControlWindDownRefusal,
-      selfFiledFalloutAdmission,
-    } = await import('./scheduler/fleet-scope-admission');
+    const { resolveFleetScopeContext, fleetControlWindDownRefusal, selfFiledFalloutAdmission } =
+      await import('./scheduler/fleet-scope-admission');
     const scope = await resolveFleetScopeContext(target, workspaceId);
     if (!scope) return null;
     if (await fleetControlWindDownRefusal(scope, workspaceId)) return null;
@@ -274,15 +262,7 @@ export type IssueSource = 'engineer' | 'su';
 // resolved/closed stay in the union as a TRANSITIONAL superset (aliased to done/dropped on
 // write; still accepted from a pre-flip row or an un-upgraded federated peer). The
 // resolved/closed→done/dropped nuance is preserved in work_items.terminal_reason.
-export type IssueState =
-  | 'open'
-  | 'wip'
-  | 'blocked'
-  | 'needs-human'
-  | 'done'
-  | 'dropped'
-  | 'resolved'
-  | 'closed';
+export type IssueState = 'open' | 'wip' | 'blocked' | 'needs-human' | 'done' | 'dropped' | 'resolved' | 'closed';
 /** Work-item kind within the issue kind-table for the issues:* SURFACE
  *  (unify-work-items D-002). bug|change are the user-facing issue kinds. */
 export type IssueKind = 'bug' | 'change';
@@ -294,7 +274,14 @@ export type IssueStoreKind = IssueKind | 'task';
 export const ISSUE_KIND = 'issue';
 export const ISSUE_SEVERITIES: readonly IssueSeverity[] = ['critical', 'major', 'minor', 'nit'];
 export const ISSUE_STATES: readonly IssueState[] = [
-  'open', 'wip', 'blocked', 'needs-human', 'done', 'dropped', 'resolved', 'closed',
+  'open',
+  'wip',
+  'blocked',
+  'needs-human',
+  'done',
+  'dropped',
+  'resolved',
+  'closed',
 ];
 export const ISSUE_KINDS: readonly IssueKind[] = ['bug', 'change'];
 /** Storage kinds (incl. `task`). The default listIssues filter restricts to
@@ -753,13 +740,17 @@ export function toIssue(r: IssueRowDb): EngineerIssue {
     updatedAt: tsIso(r.updated_at),
     closedAt: tsIsoOrNull(r.closed_ts),
     goalId: r.goal_id,
-    ...(r.tags !== undefined ? {
-      tags: Array.isArray(r.tags) ? r.tags.filter((v): v is string => typeof v === 'string') : null,
-    } : {}),
+    ...(r.tags !== undefined
+      ? {
+          tags: Array.isArray(r.tags) ? r.tags.filter((v): v is string => typeof v === 'string') : null,
+        }
+      : {}),
     ...(r.source_plan_slug !== undefined ? { sourcePlanSlug: r.source_plan_slug } : {}),
-    ...(r.source_plan_item_ids !== undefined ? {
-      sourcePlanItemIds: Array.isArray(r.source_plan_item_ids) ? r.source_plan_item_ids : null,
-    } : {}),
+    ...(r.source_plan_item_ids !== undefined
+      ? {
+          sourcePlanItemIds: Array.isArray(r.source_plan_item_ids) ? r.source_plan_item_ids : null,
+        }
+      : {}),
     ...(r.redundancy !== undefined ? { redundancy: coerceFiniteNumber(r.redundancy) } : {}),
     ...(r.expected_cost_cents !== undefined ? { expectedCostCents: coerceFiniteNumber(r.expected_cost_cents) } : {}),
   };
@@ -801,10 +792,7 @@ export const ISSUE_COLS_BODYLESS = ISSUE_COLS.replace(/(^|,\s*)body(\s*,)/, '$1N
  * still reference the real payload where a filter needs it; only the returned column
  * is projected away.
  */
-export const ISSUE_COLS_PAYLOADLESS = ISSUE_COLS.replace(
-  /(^|,\s*)payload(\s*,)/,
-  '$1NULL::jsonb AS payload$2',
-);
+export const ISSUE_COLS_PAYLOADLESS = ISSUE_COLS.replace(/(^|,\s*)payload(\s*,)/, '$1NULL::jsonb AS payload$2');
 
 /** Combined body + payload projection for agent-facing list reads. */
 export const ISSUE_COLS_BODYLESS_PAYLOADLESS = ISSUE_COLS_BODYLESS.replace(
@@ -840,17 +828,48 @@ export function issueListColumns(filter: Pick<ListIssuesFilter, 'includeBody' | 
  * Together: ISSUE_COLS <-runtime test-> ISSUE_ROW_DB_KEYS <-compile-time-> IssueRowDb.
  */
 export const ISSUE_ROW_DB_KEYS = [
-  'issue_id', 'kind', 'scope', 'title', 'body', 'severity', 'source', 'state', 'assignee',
-  'assigned_by', 'assigned_at', 'last_progress_at', 'payload', 'origin', 'found_during',
-  'linked_feature_id', 'created_by', 'signal_origin', 'assignee_rank', 'rank_writer',
-  'rank_updated_at', 'terminal_owner', 'terminal_completion_ref', 'authority', 'feature_order',
-  'created_at', 'updated_at', 'closed_ts', 'goal_id', 'parent_id',
-  'tags', 'source_plan_slug', 'source_plan_item_ids', 'redundancy', 'expected_cost_cents',
+  'issue_id',
+  'kind',
+  'scope',
+  'title',
+  'body',
+  'severity',
+  'source',
+  'state',
+  'assignee',
+  'assigned_by',
+  'assigned_at',
+  'last_progress_at',
+  'payload',
+  'origin',
+  'found_during',
+  'linked_feature_id',
+  'created_by',
+  'signal_origin',
+  'assignee_rank',
+  'rank_writer',
+  'rank_updated_at',
+  'terminal_owner',
+  'terminal_completion_ref',
+  'authority',
+  'feature_order',
+  'created_at',
+  'updated_at',
+  'closed_ts',
+  'goal_id',
+  'parent_id',
+  'tags',
+  'source_plan_slug',
+  'source_plan_item_ids',
+  'redundancy',
+  'expected_cost_cents',
 ] as const;
 type IssueRowDbKeysUnion = (typeof ISSUE_ROW_DB_KEYS)[number];
 type MissingFromTuple = Exclude<keyof IssueRowDb, IssueRowDbKeysUnion>;
 type ExtraInTuple = Exclude<IssueRowDbKeysUnion, keyof IssueRowDb>;
-type AssertNoMissingFromTuple = MissingFromTuple extends never ? true : { ISSUE_ROW_DB_KEYS_is_missing: MissingFromTuple };
+type AssertNoMissingFromTuple = MissingFromTuple extends never
+  ? true
+  : { ISSUE_ROW_DB_KEYS_is_missing: MissingFromTuple };
 type AssertNoExtraInTuple = ExtraInTuple extends never ? true : { ISSUE_ROW_DB_KEYS_has_extra: ExtraInTuple };
 // Referenced only for its type-level effect — a real value keeps this from being
 // tree-shaken away and dead-code-eliminated before tsc ever sees the assertion.
@@ -1078,7 +1097,8 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   const sourcePlanSlug =
     typeof input.sourcePlanSlug === 'string' && input.sourcePlanSlug.trim() ? input.sourcePlanSlug.trim() : null;
   const sourcePlanItemIds = Array.isArray(input.sourcePlanItemIds)
-    ? input.sourcePlanItemIds.filter((itemId): itemId is string => typeof itemId === 'string' && itemId.trim().length > 0)
+    ? input.sourcePlanItemIds
+        .filter((itemId): itemId is string => typeof itemId === 'string' && itemId.trim().length > 0)
         .map((itemId) => itemId.trim())
     : null;
   const issue = await boundedOrgTxn(async (tx) => {
@@ -1550,9 +1570,7 @@ function likeContainsPattern(query: string): string {
  * subqueries, matching {@link issueAdmissibleWhereSql}.
  */
 function issueIdsWhereSql(sql: OrgSql, aliased: boolean, ids: readonly string[]) {
-  return aliased
-    ? sql`ei.issue_id = ANY(${ids as string[]}::text[])`
-    : sql`issue_id = ANY(${ids as string[]}::text[])`;
+  return aliased ? sql`ei.issue_id = ANY(${ids as string[]}::text[])` : sql`issue_id = ANY(${ids as string[]}::text[])`;
 }
 
 /**
@@ -1717,11 +1735,11 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
   // (migration 721), not the payload jsonb — mirrors observationLaneExclusionSql
   // (work-items.ts). Any `payload ->> 'lane'` here forces the whole payload datum to
   // be fetched and decompressed (payload/_search are large and out-of-line) for every
-  // candidate row, on TOP of the three payload accesses still below it (_claimHold,
-  // needsOwnerAction, plan_item) — this was the one of the four with a ready-made fast
-  // column, so it's the one fixed here; the other three are tracked in WI-7102 rather
-  // than migrated in the same breath (each needs its own generated-column migration +
-  // A/B measurement, mirroring 721's own diligence). Same NULL-safety as the COALESCE
+  // candidate row. WI-7102 / migration 1110 subsequently materialised the two top-level
+  // boolean floors (_claimHold and needsOwnerAction) by the same mechanism; this predicate
+  // reads their physical columns below. The nested plan_item / externalBlockers shapes and
+  // derived created_by still require payload and remain separate follow-up territory rather
+  // than silently widening this migration. Same NULL-safety as the COALESCE
   // form: `lane` is NULL both when payload is NULL and when the key is absent, and
   // `NULL IS DISTINCT FROM 'observation'` = TRUE ⇒ included (never excluded).
   //
@@ -1740,9 +1758,9 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
   // work_items and derives it as `(payload -> '_ei') ->> 'created_by'` (verified
   // against pg_get_viewdef in prod AND test/_work-items-schema.ts — they agree), so
   // this floor touches the same out-of-line payload datum as the `_claimHold` /
-  // `needsOwnerAction` floors below. It does NOT add a fetch (those already force it), but
-  // do not "optimize" it on the belief that it is a plain column — it is the SAME
-  // class WI-7102 tracks for a generated-column migration, and belongs in that batch.
+  // remaining plan_item / externalBlockers floors below. Do not "optimize" it on the belief
+  // that it is a plain column — it is derived from the same TOASTed payload and needs its own
+  // generated-column migration + equivalence proof if it moves later.
   //
   // Deriving it from payload is also what makes this floor AGREE BY CONSTRUCTION with
   // federationDetectorExclusionSql (work-items.ts), which reads
@@ -1780,12 +1798,12 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
   // ⚠ COST: none of the three adds a datum fetch. `title`, `terminal_owner`,
   // `terminal_completion_ref` and `authority` are real in-line columns on this view, and
   // `title` is already in ISSUE_COLS; the jsonb_path_exists touches the SAME out-of-line
-  // payload datum the `_claimHold` / `needsOwnerAction` floors above already force. The ILIKE pair
-  // is the same predicate, at the same cost, the claim path already runs on this table.
+  // payload datum the created_by / plan_item floors still force. The ILIKE pair is the same
+  // predicate, at the same cost, the claim path already runs on this table.
   //
   // ⚠ The helpers are written `wi.`-prefixed against the base work_items TABLE, so they are
   // RESTATED here in the view's column form rather than imported — the same deliberate
-  // duplication as the needsOwnerAction/_claimHold floors above. `externalBlockers` survives the
+  // duplication as the other base-table claim floors. `externalBlockers` survives the
   // view's `payload - '_ei'` subtraction because it is a TOP-LEVEL payload key, not an _ei
   // sub-field (verified against WI-5107's live payload).
   // WI-37827: ONE definition, rendered in the caller's column form. These two forms were
@@ -1811,8 +1829,8 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
         (${c}origin = 'local' OR ${c}origin IS NULL)
         AND ${c}lane IS DISTINCT FROM 'observation'
         AND ${c}created_by IS DISTINCT FROM 'system:replication-liveness'
-        AND COALESCE(${c}payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
-        AND COALESCE(${c}payload, '{}'::jsonb) ->> 'needsOwnerAction' IS DISTINCT FROM 'true'
+        AND ${c}claim_hold IS DISTINCT FROM TRUE
+        AND ${c}needs_owner_action IS DISTINCT FROM TRUE
         AND COALESCE(${c}title, '') NOT ILIKE 'Loop wake #%'
         AND COALESCE(${c}title, '') NOT ILIKE 'AUTO loop iteration:%'
         AND (
@@ -1854,10 +1872,7 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
   )`;
 }
 
-async function listIssuesWithLimit(
-  filter: ListIssuesFilter,
-  rowLimit: number | null,
-): Promise<EngineerIssue[]> {
+async function listIssuesWithLimit(filter: ListIssuesFilter, rowLimit: number | null): Promise<EngineerIssue[]> {
   const { sql } = getOrgPg();
   // Kind gate: an explicit single `kind`, else an explicit `kinds` set, else the
   // default = ISSUE_KINDS (bug|change) so `task` work-items never surface as issues.
@@ -1959,9 +1974,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
  * rows to files and returns only counts, so no unbounded result crosses the
  * model transport.
  */
-export async function listAllIssuesForFileExport(
-  filter: ListIssuesFilter = {},
-): Promise<EngineerIssue[]> {
+export async function listAllIssuesForFileExport(filter: ListIssuesFilter = {}): Promise<EngineerIssue[]> {
   return listIssuesWithLimit(filter, null);
 }
 
@@ -2047,7 +2060,11 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
            filter.audit
-             ? auditWhereSql(sql, filter.audit, { stateColumn: 'state', terminalStates: ISSUE_TERMINAL_STATES, alias: 'ei' })
+             ? auditWhereSql(sql, filter.audit, {
+                 stateColumn: 'state',
+                 terminalStates: ISSUE_TERMINAL_STATES,
+                 alias: 'ei',
+               })
              : sql`TRUE`
          }
          -- P-013: completion-authority filter, alias-qualified for the topic-joined branch.
@@ -2156,7 +2173,11 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
            filter.audit
-             ? auditWhereSql(sql, filter.audit, { stateColumn: 'state', terminalStates: ISSUE_TERMINAL_STATES, alias: 'ei' })
+             ? auditWhereSql(sql, filter.audit, {
+                 stateColumn: 'state',
+                 terminalStates: ISSUE_TERMINAL_STATES,
+                 alias: 'ei',
+               })
              : sql`TRUE`
          }
          -- P-013: completion-authority filter, alias-qualified for the topic-joined branch.
@@ -2282,7 +2303,11 @@ export async function countIssuesBySourceRole(filter: ListIssuesFilter = {}): Pr
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
            filter.audit
-             ? auditWhereSql(sql, filter.audit, { stateColumn: 'state', terminalStates: ISSUE_TERMINAL_STATES, alias: 'ei' })
+             ? auditWhereSql(sql, filter.audit, {
+                 stateColumn: 'state',
+                 terminalStates: ISSUE_TERMINAL_STATES,
+                 alias: 'ei',
+               })
              : sql`TRUE`
          }
          AND ${
@@ -2300,12 +2325,12 @@ export async function countIssuesBySourceRole(filter: ListIssuesFilter = {}): Pr
          AND kind = ANY(${kindSet as string[]}::text[])
          AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
            AND ${
-           filter.scope
-             ? sql`scope = ${filter.scope}`
-             : filter.scopes
-               ? sql`scope = ANY(${filter.scopes as string[]}::text[])`
-               : sql`TRUE`
-         }
+             filter.scope
+               ? sql`scope = ${filter.scope}`
+               : filter.scopes
+                 ? sql`scope = ANY(${filter.scopes as string[]}::text[])`
+                 : sql`TRUE`
+           }
          AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
          AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
          AND ${issueMatchWhereSql(sql, false, filter)}
@@ -2379,7 +2404,11 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
            filter.audit
-             ? auditWhereSql(sql, filter.audit, { stateColumn: 'state', terminalStates: ISSUE_TERMINAL_STATES, alias: 'ei' })
+             ? auditWhereSql(sql, filter.audit, {
+                 stateColumn: 'state',
+                 terminalStates: ISSUE_TERMINAL_STATES,
+                 alias: 'ei',
+               })
              : sql`TRUE`
          }
          -- P-013: completion-authority filter, alias-qualified for the topic-joined branch.
@@ -2830,19 +2859,31 @@ export async function claimIssue(
          leaderDispatchAdmission || selfFiledFalloutAdmission || forceTakeoverAdmission
            ? sql`(
                ${admittedWhereSql(sql)}
-               ${leaderDispatchAdmission ? sql`OR (
+               ${
+                 leaderDispatchAdmission
+                   ? sql`OR (
                  admission = 'pending'
                  AND assigned_by = ${leaderDispatchAdmission.assignedBy}
-               )` : sql``}
-               ${selfFiledFalloutAdmission ? sql`OR (
+               )`
+                   : sql``
+               }
+               ${
+                 selfFiledFalloutAdmission
+                   ? sql`OR (
                  admission = 'pending'
                  AND kind = 'bug'
                  AND created_by = ${selfFiledFalloutAdmission.createdBy}
-               )` : sql``}
-               ${forceTakeoverAdmission ? sql`OR (
+               )`
+                   : sql``
+               }
+               ${
+                 forceTakeoverAdmission
+                   ? sql`OR (
                  admission = 'pending'
                  AND assignee = ${forceTakeoverAdmission.expectedAssignee}
-               )` : sql``}
+               )`
+                   : sql``
+               }
              )`
            : admittedWhereSql(sql)
        }
@@ -3027,9 +3068,7 @@ export async function releaseIssue(
   // was the one that was not. The blank/'unassigned' normalization mirrors the claim
   // predicate's "not taken" sentinels (EI-15027) so both guards agree on what "held" means.
   const releasedARealHolder =
-    formerAssignee != null &&
-    formerAssignee.trim() !== '' &&
-    formerAssignee.trim().toLowerCase() !== 'unassigned';
+    formerAssignee != null && formerAssignee.trim() !== '' && formerAssignee.trim().toLowerCase() !== 'unassigned';
   if (releasedARealHolder) {
     await deliver(issue, 'updated', `issue ${id} released (unassigned)`);
   }
@@ -3179,14 +3218,16 @@ export async function setIssueState(
       // Read the holder in the SAME transaction as the terminal UPDATE. The
       // cached goal must be cleared for the holder that this write actually
       // released, not for the completion actor (which may be a system path).
-      const prior = await tx<{
-        taken_by: string | null;
-        status: string;
-        payload: unknown;
-        terminal_owner: string | null;
-        terminal_completion_ref: string | null;
-        authority: string | null;
-      }[]>`
+      const prior = await tx<
+        {
+          taken_by: string | null;
+          status: string;
+          payload: unknown;
+          terminal_owner: string | null;
+          terminal_completion_ref: string | null;
+          authority: string | null;
+        }[]
+      >`
         SELECT taken_by, status, payload, terminal_owner, terminal_completion_ref, authority
           FROM harness_shared.work_items
          WHERE workspace_id = ${ws} AND feature_id = ${id}
@@ -3217,9 +3258,7 @@ export async function setIssueState(
         const existingSufficient = isSufficientEvidence(existingEvidence);
         const incomingSufficient = isSufficientEvidence(incomingEvidence);
         const upgrade = incomingSufficient && !existingSufficient;
-        const existingAuthority = isWorkItemCompletionAuthority(priorRow.authority)
-          ? priorRow.authority
-          : null;
+        const existingAuthority = isWorkItemCompletionAuthority(priorRow.authority) ? priorRow.authority : null;
         const attestation: CompletionAttestation = {
           at: new Date().toISOString(),
           by: upgrade ? priorRow.terminal_owner : (by ?? null),
@@ -3230,8 +3269,9 @@ export async function setIssueState(
           assumptions: upgrade ? readStoredAssumptions(priorRow.payload) : (opts.assumptions ?? null),
           outcome: upgrade ? 'superseded' : 'attested',
         };
-        const existingAttestations =
-          (priorRow.payload as Record<string, unknown> | null)?.[COMPLETION_ATTESTATIONS_KEY];
+        const existingAttestations = (priorRow.payload as Record<string, unknown> | null)?.[
+          COMPLETION_ATTESTATIONS_KEY
+        ];
         const priorAttestations = Array.isArray(existingAttestations) ? existingAttestations : [];
         const mergedAttestations = JSON.stringify({
           [COMPLETION_ATTESTATIONS_KEY]: [...priorAttestations.slice(-4), attestation],
@@ -3392,7 +3432,12 @@ export async function setIssueState(
   // unified `done`/`dropped` write still delivers the 'resolved' event kind, not 'updated'.
   const resolved = ISSUE_TERMINAL_STATUSES.has(state);
   if (!terminalWriteWasAttested) {
-    await deliver(issue, resolved ? 'resolved' : 'updated', `issue ${id} → ${state}: ${issue.title}`, by ?? 'substrate');
+    await deliver(
+      issue,
+      resolved ? 'resolved' : 'updated',
+      `issue ${id} → ${state}: ${issue.title}`,
+      by ?? 'substrate',
+    );
   }
   return issue;
 }
@@ -3532,12 +3577,14 @@ export async function mergeIssuePayload(
     // refs in one bounded transaction. This avoids both half-clears and deleting a
     // separate hand-authored plan relation that was never represented on the row.
     rows = await boundedOrgTxn(async (tx) => {
-      const prior = await tx<{
-        payload_plan_slug: string | null;
-        payload_item_id: string | null;
-        source_plan_slug: string | null;
-        source_plan_item_ids: string[] | null;
-      }[]>`
+      const prior = await tx<
+        {
+          payload_plan_slug: string | null;
+          payload_item_id: string | null;
+          source_plan_slug: string | null;
+          source_plan_item_ids: string[] | null;
+        }[]
+      >`
         SELECT payload->'plan_item'->>'plan_slug' AS payload_plan_slug,
                payload->'plan_item'->>'item_id' AS payload_item_id,
                source_plan_slug,
@@ -3650,7 +3697,13 @@ export async function unsubscribeIssue(subscriberId: string, id: string): Promis
 }
 
 /** Linkable.link — an issue→target edge (rel 'blocks' | 'relates' | 'duplicates' | …). Phase 2. */
-export async function linkIssue(id: string, dst: ObjectRef, rel: string, by?: string, satisfaction?: 'settled' | 'success'): Promise<void> {
+export async function linkIssue(
+  id: string,
+  dst: ObjectRef,
+  rel: string,
+  by?: string,
+  satisfaction?: 'settled' | 'success',
+): Promise<void> {
   const src = issueRef(id);
   if (rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')) {
     await mirrorWorkItemBlockingEdge(src, dst, { createdBy: by, satisfaction });
@@ -3871,12 +3924,14 @@ function dedupSearchQuery(title: string): string {
  */
 export async function searchIssuesForDedup(query: string, limit = 50): Promise<EngineerIssue[]> {
   const tsQuerySource = dedupSearchQuery(query);
-  const rows = await boundedPgReadTxn<IssueRowDb[]>((tx) => tx<IssueRowDb[]>`
+  const rows = await boundedPgReadTxn<IssueRowDb[]>(
+    (tx) => tx<IssueRowDb[]>`
       SELECT ${tx.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
        WHERE workspace_id = ANY(${dedupScopeWorkspaces()}::text[])
          AND _search @@ websearch_to_tsquery('english', ${tsQuerySource})
        ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${tsQuerySource})) DESC
-       LIMIT ${Math.min(limit, 200)}`);
+       LIMIT ${Math.min(limit, 200)}`,
+  );
   return rows.map(toIssue);
 }
 
