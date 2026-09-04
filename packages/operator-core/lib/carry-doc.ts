@@ -200,6 +200,7 @@ export const REORIENT_BANNER =
 // ── Build ─────────────────────────────────────────────────────────────────────
 
 export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
+  /** The caller/session harness scope; never infer it from the persisted loop scope. */
   harness?: string | null;
   account?: string | null;
   ownerLabel?: string | null;
@@ -428,8 +429,12 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
       );
       return buildAutomaticCompactionRecovery(id, workspaceId, recoveryOpts);
     });
+  // The persisted loop harness identifies the loop's scope, not necessarily this
+  // caller/session's scope. Keep both carry-document projections bound to the
+  // explicit caller option; an omitted caller harness is intentionally null.
+  const callerHarness = opts.harness ?? null;
   const automaticRecovery = await buildAutomaticRecovery(ownerId, ws, {
-    sessionHarness: opts.harness ?? brief.loop?.harness ?? null,
+    sessionHarness: callerHarness,
     heldItems: brief.heldItems,
   }).catch(() => null);
 
@@ -454,7 +459,7 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
     identity: {
       ownerId,
       ownerLabel: opts.ownerLabel ?? null,
-      harness: opts.harness ?? brief.loop?.harness ?? null,
+      harness: callerHarness,
       workspaceId: ws,
       fleet: brief.fleet,
       account: opts.account ?? null,

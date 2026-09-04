@@ -70,12 +70,9 @@ const CONFIG: Readonly<Record<string, ResourceDeltaConfig>> = {
   // `runId` remains distinct within every workspace/harness page. (`sessionId` and
   // `featureId` both collide, so neither is a valid delta key.)
   'agentRunsConsolidated.bySlug': { itemKeyField: 'runId', schemaVersion: 'agent-runs-consolidated-v1' },
-  // featuresConsolidated.bySlug — 1,645 rows / 516,096 B; `featureId` distinct 1645/1645.
-  // ⚠ This resource is EXPLICITLY BARRED from slimming/windowing (the resolver states the full
-  // row count must stay complete for client-side search/count). That bar does NOT apply here and
-  // this is not a route around it: a delta changes nothing about the view's completeness or its
-  // row shape — the client still holds every row — it only stops re-sending rows that did not
-  // change. Delta is the RIGHT lever precisely for a view that must stay complete.
+  // featuresConsolidated.bySlug — WI-7209 bounds this compatibility view to
+  // 500 latest rows after moving its last live consumers to detail + exact
+  // stats. `featureId` stays unique within every limit-keyed view.
   'featuresConsolidated.bySlug': { itemKeyField: 'featureId', schemaVersion: 'features-consolidated-v1' },
   // ── D-092: the last two over-budget reads without a config. With these, ALL 9 eligible
   // entries in sync-read-audit's accepted-over-budget allowlist are delta-negotiated; the

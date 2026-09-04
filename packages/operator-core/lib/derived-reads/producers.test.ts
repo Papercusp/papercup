@@ -103,9 +103,7 @@ describe('derived-reads producers: rubrics.list', () => {
     vi.doMock('../scorecards', () => ({ listScorecards, scorecardTotalCountsByRubric }));
 
     const producer = await loadRubricsListProducer();
-    const out = (await producer.compute({ workspaceId: 'ws-test', harnessSlug: '' })) as Array<
-      Record<string, unknown>
-    >;
+    const out = (await producer.compute({ workspaceId: 'ws-test', harnessSlug: '' })) as Array<Record<string, unknown>>;
 
     expect(out).toHaveLength(2);
     // scoped per-rubric, never a shared/global read.
@@ -159,9 +157,7 @@ describe('derived-reads producers: rubrics.list', () => {
     vi.doMock('../scorecards', () => ({ listScorecards, scorecardTotalCountsByRubric }));
 
     const producer = await loadRubricsListProducer();
-    const out = (await producer.compute({ workspaceId: 'ws-test', harnessSlug: '' })) as Array<
-      Record<string, unknown>
-    >;
+    const out = (await producer.compute({ workspaceId: 'ws-test', harnessSlug: '' })) as Array<Record<string, unknown>>;
 
     expect(out[0]?.scorecardCount).toBe(968); // the true total, not 500 (cappedRead.length)
   });
@@ -205,7 +201,12 @@ describe('derived-reads producers: insights.coordTokens', () => {
       triggerAttributionAvailable: false,
       byRoleClass: [{ roleClass: 'fleet', tokens: 10, costUsd: 5, runs: 2 }],
     }));
-    const loadCoordPollVolume = vi.fn(async (_opts: Record<string, unknown>) => ({ windowMs: 86400000, tools: [], wakePollCalls: 7, wakePollRowSharePct: 75 }));
+    const loadCoordPollVolume = vi.fn(async (_opts: Record<string, unknown>) => ({
+      windowMs: 86400000,
+      tools: [],
+      wakePollCalls: 7,
+      wakePollRowSharePct: 75,
+    }));
     vi.doMock('../harness-insights/load-token-rollups', () => ({
       loadModelPricingBook,
       loadCoordTokenBreakdown,
@@ -286,9 +287,7 @@ async function loadLearningImprovementsHiveProducer() {
   const registry = await import('./registry');
   registry.__clearDerivedReadRegistryForTest();
   await import('./producers');
-  const producer = registry
-    .listDerivedReadProducers()
-    .find((p) => p.key === 'learning.improvements.hive');
+  const producer = registry.listDerivedReadProducers().find((p) => p.key === 'learning.improvements.hive');
   if (!producer) throw new Error('learning.improvements.hive producer not registered');
   return producer;
 }
@@ -302,9 +301,7 @@ describe('derived-reads producers: learning.improvements.hive (WI-7432)', () => 
 
   it('is HARNESS-scoped and lenses the shared compute by the harness it runs for', async () => {
     const snapshotRow = { humanQueue: [{ id: 'EI-9' }], flow: {}, recurringSignatures: [] };
-    const computeLearningImprovementsSnapshot = vi.fn(async (_a: Record<string, unknown>) => [
-      snapshotRow,
-    ]);
+    const computeLearningImprovementsSnapshot = vi.fn(async (_a: Record<string, unknown>) => [snapshotRow]);
     vi.doMock('../harness/improvements/learning-digest-snapshot', () => ({
       computeLearningImprovementsSnapshot,
     }));
@@ -328,9 +325,7 @@ describe('derived-reads producers: learning.improvements.hive (WI-7432)', () => 
   });
 
   it('two different pots get two different lensed computes (the fan-out is real)', async () => {
-    const computeLearningImprovementsSnapshot = vi.fn(async (a: Record<string, unknown>) => [
-      { lensedFor: a.hive },
-    ]);
+    const computeLearningImprovementsSnapshot = vi.fn(async (a: Record<string, unknown>) => [{ lensedFor: a.hive }]);
     vi.doMock('../harness/improvements/learning-digest-snapshot', () => ({
       computeLearningImprovementsSnapshot,
     }));
@@ -501,7 +496,7 @@ describe('summarizePlanLintReport (plans.lint list projection)', () => {
     });
   });
 
-  it('the producer is registered at producerVersion 4 so the old shape is not served', async () => {
+  it('the producer keeps version 4 and refreshes only after an actual read (WI-7230)', async () => {
     // registry.ts:204 treats a snapshot from an older producerVersion as ABSENT
     // rather than serving a superseded shape. Bumping this is what makes the
     // projection safe to deploy against already-stored 561KB snapshots.
@@ -511,6 +506,8 @@ describe('summarizePlanLintReport (plans.lint list projection)', () => {
     await import('./producers');
     const producer = registry.listDerivedReadProducers().find((p) => p.key === 'plans.lint');
     expect(producer?.producerVersion).toBe(4);
+    expect(producer?.excludeFromDefaultSweep).toBe(true);
+    expect(producer?.refreshOnRead).toBe(true);
   });
 
   it('learning.improvements is at producerVersion 5 — each wire-shape change needs a bump to take effect (WI-7275, WI-39773, WI-471938)', async () => {
@@ -546,16 +543,12 @@ describe('summarizePlanLintReport (plans.lint list projection)', () => {
     const registry = await import('./registry');
     registry.__clearDerivedReadRegistryForTest();
     await import('./producers');
-    const producer = registry
-      .listDerivedReadProducers()
-      .find((p) => p.key === 'learning.improvements');
+    const producer = registry.listDerivedReadProducers().find((p) => p.key === 'learning.improvements');
     expect(producer?.producerVersion).toBe(5);
     // The hive lens is the SAME compute behind a scope arg, so it takes the same wire
     // shape and the same stale-row hazard; pinning it here keeps the pair from drifting
     // apart, which is how one of them would ship inert while the other looked fixed.
-    const hiveProducer = registry
-      .listDerivedReadProducers()
-      .find((p) => p.key === 'learning.improvements.hive');
+    const hiveProducer = registry.listDerivedReadProducers().find((p) => p.key === 'learning.improvements.hive');
     expect(hiveProducer?.producerVersion).toBe(5);
   });
 
@@ -584,7 +577,7 @@ describe('summarizePlanLintReport (plans.lint list projection)', () => {
   // sample (through the actual summarizePlanLintReport narrowing logic, not a
   // stand-in) to the producer's LIVE registered version — see
   // shape-fingerprint.ts's module doc for the failure modes it catches.
-  it('shape-guard: plans.lint\'s real projected shape matches the shape recorded for its LIVE registered producerVersion (WI-7289)', async () => {
+  it("shape-guard: plans.lint's real projected shape matches the shape recorded for its LIVE registered producerVersion (WI-7289)", async () => {
     const { summarizePlanLintReport } = await import('./producers');
     // Exercises every branch: errors present, warnings present (tallied), all
     // three D-025 booleans true (they're omitted-when-false, so a sample that
@@ -661,6 +654,10 @@ describe('derived-reads producers: syncReads.audit (EI-19457924854150358)', () =
 
     // And the exclusion must remain the rare exception, not the norm.
     const excluded = all.filter((p) => p.excludeFromDefaultSweep);
-    expect(excluded.map((p) => p.key)).toEqual(['syncReads.audit']);
+    expect(excluded.map((p) => p.key)).toEqual(['plans.lint', 'syncReads.audit']);
+
+    // Only plans.lint is demand-driven. syncReads.audit remains dedicated-routine
+    // owned, so an ordinary read can never launch its minutes-scale audit.
+    expect(all.filter((p) => p.refreshOnRead).map((p) => p.key)).toEqual(['plans.lint']);
   });
 });

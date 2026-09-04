@@ -303,6 +303,9 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
   it('routes through the spawnInvokeOnce chokepoint → spawn() with buildInvokeOnce argv + returns the captured output', async () => {
     const res = await appWith(invoke).request('/harness/papercup/invoke?role=worker', post({}));
     expect(res.status, await res.clone().text()).toBe(200);
+    const invokeArgs = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
+    expect(invokeArgs?.extraEnv?.PAPERCUSP_SID).toMatch(/^s-invoke-[0-9a-f-]{36}$/);
+    expect(invokeArgs?.extraEnv?.PAPERCUSP_SPAWN_ID).toBe(invokeArgs?.extraEnv?.PAPERCUSP_SID);
     expect(spawnMock).toHaveBeenCalledTimes(1);
     // The route now funnels through spawnInvokeOnce → runChild (unify-agent-spawn-chokepoint
     // P-008), which spawns the buildInvokeOnce argv `detached: true` (its own process group,

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../../test/_work-items-schema';
+import { _resetHarnessAdminUrlCacheForTests } from '../../embedded-pg-discovery';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -9,7 +10,12 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { readDrainFlow, withDrainBugAdmission } = await import('./drain-flow');
+const {
+  _closeDrainBugAdmissionLockForTests,
+  drainBugAdmissionLockUrl,
+  readDrainFlow,
+  withDrainBugAdmission,
+} = await import('./drain-flow');
 
 const WORKSPACE = 'default';
 const HARNESS = 'papercusp';
@@ -17,15 +23,22 @@ const OWNER = 'su-drain';
 const START = '2026-08-13T08:00:00.000Z';
 const START_MS = Date.parse(START);
 let db: FreshPgDb;
+const SAVED_ADMIN_URL = process.env.HARNESS_ADMIN_DATABASE_URL;
 
 beforeAll(async () => {
   db = await createFreshPgDb('drain-flow');
   h.sql = db.sql;
+  process.env.HARNESS_ADMIN_DATABASE_URL = db.url;
+  _resetHarnessAdminUrlCacheForTests();
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
 }, 90_000);
 
 afterAll(async () => {
+  await _closeDrainBugAdmissionLockForTests();
   await db?.cleanup();
+  _resetHarnessAdminUrlCacheForTests();
+  if (SAVED_ADMIN_URL === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
+  else process.env.HARNESS_ADMIN_DATABASE_URL = SAVED_ADMIN_URL;
 });
 
 beforeEach(async () => {
@@ -157,5 +170,58 @@ describe('DRAIN flow exact-store oracle', () => {
     });
     expect(second).toMatchObject({ ok: true, allowed: false, code: 'drain_flow_circuit_open' });
     expect(secondPersisted).toBe(false);
+  });
+
+  it('releases the direct session lock before slow persistence completes', async () => {
+    const args = {
+      workspaceId: WORKSPACE,
+      harness: HARNESS,
+      ownerId: OWNER,
+      drainStartedAt: START,
+      sql: db.sql,
+    };
+    let markPersistenceStarted!: () => void;
+    const persistenceStarted = new Promise<void>((resolve) => {
+      markPersistenceStarted = resolve;
+    });
+    let releasePersistence!: () => void;
+    const persistenceRelease = new Promise<void>((resolve) => {
+      releasePersistence = resolve;
+    });
+
+    const admission = withDrainBugAdmission(args, async () => {
+      markPersistenceStarted();
+      await persistenceRelease;
+      return 'created';
+    });
+    await persistenceStarted;
+
+    expect(drainBugAdmissionLockUrl()).toBe(db.url);
+    const lockBackends = await db.sql<Array<{
+      state: string;
+      xact_start: string | null;
+      advisory_lock_count: number;
+    }>>`
+      SELECT a.state,
+             a.xact_start,
+             COUNT(l.*)::int AS advisory_lock_count
+        FROM pg_stat_activity AS a
+        LEFT JOIN pg_locks AS l
+          ON l.pid = a.pid
+         AND l.locktype = 'advisory'
+         AND l.granted
+       WHERE a.application_name LIKE 'pcusp:drain-bug-admission:%'
+       GROUP BY a.pid, a.state, a.xact_start
+    `;
+    expect(lockBackends).toEqual([
+      expect.objectContaining({
+        state: 'idle',
+        xact_start: null,
+        advisory_lock_count: 0,
+      }),
+    ]);
+
+    releasePersistence();
+    await expect(admission).resolves.toMatchObject({ ok: true, allowed: true, value: 'created' });
   });
 });

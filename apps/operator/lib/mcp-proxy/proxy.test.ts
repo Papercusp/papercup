@@ -391,10 +391,7 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
         jsonrpc: "2.0",
         id: 1,
         method: "tools/call",
-        params: {
-          name,
-          arguments: { query: "compaction critical-continuation queue" },
-        },
+        params: { name, arguments: { query: "compaction critical-continuation queue" } },
       }),
     );
     const r = prepareForward("POST", {}, body, {
@@ -579,10 +576,7 @@ describe("READ_ONLY_TOOLS — writer-exclusion guard", () => {
   it.each([...READ_ONLY_TOOLS])(
     "%s classifies readonly in both canonical and mcp__-mangled form",
     (verb) => {
-      for (const name of [
-        verb,
-        `mcp__papercusp-su__${verb.replace(/:/g, "_")}`,
-      ]) {
+      for (const name of [verb, `mcp__papercusp-su__${verb.replace(/:/g, "_")}`]) {
         const body = Buffer.from(
           JSON.stringify({
             jsonrpc: "2.0",
@@ -2499,10 +2493,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
             method: "tools/call",
             params: {
               name: "tools:invoke",
-              arguments: {
-                name: "state:read",
-                args: { cell: "gate.greenCheckpoint.ownership" },
-              },
+              arguments: { name: "state:read", args: { cell: "gate.greenCheckpoint.ownership" } },
             },
           }),
         ),
@@ -2581,7 +2572,9 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isCriticalContinuationCall(call("coord:send"))).toBe(false);
     expect(criticalContinuationToolNames(call("coord:send"))).toEqual([]);
     expect(isCoordSendContinuationCall(call("coord:send"))).toBe(true);
-    expect(coordSendToolNames(call("coord:send"))).toEqual(["coord:send"]);
+    expect(coordSendToolNames(call("coord:send"))).toEqual([
+      "coord:send",
+    ]);
     expect(isCriticalContinuationCall(call("improvements:capture"))).toBe(true);
     expect(isCriticalContinuationCall(call("loop:checkpoint"))).toBe(true);
     expect(criticalContinuationToolNames(call("loop:checkpoint"))).toEqual([
@@ -4217,17 +4210,14 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     const healthBeforeCheckpoints = JSON.parse(
       (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
     );
-    expect(
-      healthBeforeCheckpoints.inFlight.criticalContinuationQueue,
-    ).toMatchObject({
-      waiting: agedWaiterCount,
-      max: maxInFlight,
-    });
-
-    const checkpointSettled = Array.from(
-      { length: checkpointCount },
-      () => false,
+    expect(healthBeforeCheckpoints.inFlight.criticalContinuationQueue).toMatchObject(
+      {
+        waiting: agedWaiterCount,
+        max: maxInFlight,
+      },
     );
+
+    const checkpointSettled = Array.from({ length: checkpointCount }, () => false);
     const checkpoints = Array.from({ length: checkpointCount }, (_, index) =>
       request(
         port(proxy),
@@ -4242,8 +4232,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       () =>
         logs.filter((line) =>
           line.includes("queued critical-continuation request"),
-        ).length >=
-        agedWaiterCount + checkpointCount,
+        ).length >= agedWaiterCount + checkpointCount,
     );
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -4256,12 +4245,12 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     const healthWithCheckpoints = JSON.parse(
       (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
     );
-    expect(
-      healthWithCheckpoints.inFlight.criticalContinuationQueue,
-    ).toMatchObject({
-      waiting: agedWaiterCount + checkpointCount,
-      max: maxInFlight,
-    });
+    expect(healthWithCheckpoints.inFlight.criticalContinuationQueue).toMatchObject(
+      {
+        waiting: agedWaiterCount + checkpointCount,
+        max: maxInFlight,
+      },
+    );
 
     releaseFirst();
     const results = await Promise.all([first, ...aged, ...checkpoints]);
@@ -4338,9 +4327,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       "/api/mcp?client=queued-ordinary",
     );
     await waitFor(() =>
-      logs.some((line) =>
-        line.includes("queued critical-continuation request"),
-      ),
+      logs.some((line) => line.includes("queued critical-continuation request")),
     );
 
     let compactionSettled = false;
@@ -4352,11 +4339,9 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       compactionSettled = true;
       return result;
     });
-    await waitFor(
-      () =>
-        logs.filter((line) =>
-          line.includes("queued critical-continuation request"),
-        ).length >= 2,
+    await waitFor(() =>
+      logs.filter((line) => line.includes("queued critical-continuation request"))
+        .length >= 2,
     );
     expect(compactionSettled).toBe(false);
     expect(hits).toEqual(["held-checkpoint"]);
@@ -4439,7 +4424,9 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         params: {
           name,
           arguments: {},
-          ...(idempotencyKey ? { _meta: { idempotencyKey } } : {}),
+          ...(idempotencyKey
+            ? { _meta: { idempotencyKey } }
+            : {}),
         },
       });
     const first = request(
@@ -4455,9 +4442,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       "/api/mcp?client=queued-ordinary",
     );
     await waitFor(() =>
-      logs.some((line) =>
-        line.includes("queued critical-continuation request"),
-      ),
+      logs.some((line) => line.includes("queued critical-continuation request")),
     );
 
     let checkpointSettled = false;
@@ -4469,11 +4454,9 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       checkpointSettled = true;
       return result;
     });
-    await waitFor(
-      () =>
-        logs.filter((line) =>
-          line.includes("queued critical-continuation request"),
-        ).length >= 2,
+    await waitFor(() =>
+      logs.filter((line) => line.includes("queued critical-continuation request"))
+        .length >= 2,
     );
     expect(checkpointSettled).toBe(false);
     expect(hits).toEqual(["held-completion"]);
@@ -4566,9 +4549,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       "/api/mcp?client=loop-checkpoint",
     );
     await waitFor(() =>
-      logs.some((line) =>
-        line.includes("queued critical-continuation request"),
-      ),
+      logs.some((line) => line.includes("queued critical-continuation request")),
     );
 
     let fallbackSettled = false;
@@ -4739,9 +4720,9 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect((await first).status).toBe(200);
     expect((await fallbackCheckpoint).status).toBe(200);
     expect((await loopCheckpoint).status).toBe(200);
-    expect(
-      (await Promise.all(ordinary)).every(({ status }) => status === 200),
-    ).toBe(true);
+    expect((await Promise.all(ordinary)).every(({ status }) => status === 200)).toBe(
+      true,
+    );
     expect(hits.slice(0, 3)).toEqual([
       "held-completion",
       "work-item-checkpoint",
@@ -4813,9 +4794,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       "/api/mcp?client=queued-ordinary",
     );
     await waitFor(() =>
-      logs.some((line) =>
-        line.includes("queued critical-continuation request"),
-      ),
+      logs.some((line) => line.includes("queued critical-continuation request")),
     );
 
     let priorityCompletionSettled = false;
@@ -4827,11 +4806,9 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       priorityCompletionSettled = true;
       return result;
     });
-    await waitFor(
-      () =>
-        logs.filter((line) =>
-          line.includes("queued critical-continuation request"),
-        ).length >= 2,
+    await waitFor(() =>
+      logs.filter((line) => line.includes("queued critical-continuation request"))
+        .length >= 2,
     );
     expect(priorityCompletionSettled).toBe(false);
     expect(hits).toEqual(["held-completion"]);
@@ -4960,9 +4937,9 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     releaseFirst();
     expect((await first).status).toBe(200);
     expect((await terminal).status).toBe(200);
-    expect(
-      (await Promise.all(ordinary)).every(({ status }) => status === 200),
-    ).toBe(true);
+    expect((await Promise.all(ordinary)).every(({ status }) => status === 200)).toBe(
+      true,
+    );
     expect(hits.slice(0, 2)).toEqual([
       "held-completion",
       "terminal-completion",
@@ -5072,10 +5049,13 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
 
     releaseFirst();
     expect((await first).status).toBe(200);
-    expect(
-      (await Promise.all(ordinary)).every(({ status }) => status === 200),
-    ).toBe(true);
-    expect(hits.slice(0, 2)).toEqual(["held-completion", "priority-send"]);
+    expect((await Promise.all(ordinary)).every(({ status }) => status === 200)).toBe(
+      true,
+    );
+    expect(hits.slice(0, 2)).toEqual([
+      "held-completion",
+      "priority-send",
+    ]);
     expect(hits).toHaveLength(18);
   });
 
@@ -5310,9 +5290,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       "/api/mcp?client=queued-ordinary",
     );
     await waitFor(() =>
-      logs.some((line) =>
-        line.includes("queued critical-continuation request"),
-      ),
+      logs.some((line) => line.includes("queued critical-continuation request")),
     );
 
     let captureSettled = false;
@@ -5433,7 +5411,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       waiting: 1,
       max: 1,
       maxWaitMs: 0,
-      improvementsCaptureMaxWaitMs: DEFAULT_IMPROVEMENTS_CAPTURE_QUEUE_WAIT_MS,
+      improvementsCaptureMaxWaitMs:
+        DEFAULT_IMPROVEMENTS_CAPTURE_QUEUE_WAIT_MS,
       requests: [
         expect.objectContaining({
           tools: ["improvements:capture"],
@@ -5511,9 +5490,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       "/api/mcp?client=short-capture",
     );
     await waitFor(() =>
-      logs.some((line) =>
-        line.includes("queued critical-continuation request"),
-      ),
+      logs.some((line) => line.includes("queued critical-continuation request")),
     );
 
     const expired = await capture;
@@ -5592,9 +5569,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       "/api/mcp?client=blocked-capture",
     );
     await waitFor(() =>
-      logs.some((line) =>
-        line.includes("queued critical-continuation request"),
-      ),
+      logs.some((line) => line.includes("queued critical-continuation request")),
     );
 
     const expired = await capture;
@@ -5685,9 +5660,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       return result;
     });
     await waitFor(() =>
-      logs.some((line) =>
-        line.includes("queued critical-continuation request"),
-      ),
+      logs.some((line) => line.includes("queued critical-continuation request")),
     );
     await new Promise((resolve) => setTimeout(resolve, 75));
 

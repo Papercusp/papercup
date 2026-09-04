@@ -3301,13 +3301,23 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // featuresConsolidated.bySlug — features for a harness, latest first.
-  //   zql.featuresConsolidated.where(harnessSlug).orderBy('updatedTs', 'desc')
+  // featuresConsolidated.bySlug — a bounded compatibility page, latest first.
+  // WI-7209 moved its last live consumers to the existing one-row detail read
+  // and exact work-item aggregate. Older clients may still request this key,
+  // but ordinary corpus growth must never make it unbounded again.
   'featuresConsolidated.bySlug': {
     // EI-1763: workspace-scope the read (see harnessTextArtifact.byHarness).
-    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional() }),
+    argsSchema: z.object({
+      harnessSlug: z.string(),
+      workspaceId: z.string().optional(),
+      limit: clampedLimit(500, 500),
+    }),
     resolve: async (args) => {
-      const { harnessSlug, workspaceId } = args as { harnessSlug: string; workspaceId?: string };
+      const { harnessSlug, workspaceId, limit } = args as {
+        harnessSlug: string;
+        workspaceId?: string;
+        limit: number;
+      };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.harnessFeaturesConsolidatedInHarnessShared;
@@ -3318,8 +3328,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // (a pgvector ≈15KB/row), `_search` (tsvector), and several jsonb blobs
       // (metadata / payload / completion_ref / worked_by_history / schedule).
       // On papercusp that was 1162 rows ≈ 9.4MB parsed into the webview per load.
-      // Projecting to the rendered columns cuts it ~20× with NO behavior change
-      // (row count unchanged, so client-side search/count still see every row).
+      // Projecting to the rendered columns cut it ~20× before cardinality
+      // itself became the only remaining payload axis.
       //
       // P-007 (precompute-sync-reads-phase2): `summary` was STILL ~423KB of the
       // remaining ~665KB list payload (1181 rows × ~366 avg chars) — and the grid
@@ -3327,8 +3337,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // selected feature). Dropped here at the sync boundary; the Detail pane
       // fetches the selected feature's summary on demand via
       // `featuresConsolidated.detail` (mirrors the workItems.byHarness/.detail
-      // split, P-006). List row count is unchanged so client search/count still
-      // see every row.
+      // split, P-006). The selected-row consumer now reads detail directly and
+      // exact counts come from workItems.stats, so neither relies on this page's
+      // completeness.
       // WI-7203: two more columns left the wire, and the nulls with them.
       //
       // `harnessSlug` is REDUNDANT WITH THE QUERY ARG — every row carries the slug
@@ -3364,7 +3375,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
             : eq(t.harnessSlug, harnessSlug),
         )
-        .orderBy(desc(t.updatedTs))) as Array<Record<string, unknown>>;
+        .orderBy(desc(t.updatedTs))
+        .limit(limit)) as Array<Record<string, unknown>>;
       return rows.map((r) => {
         const out: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(r)) if (v !== null) out[k] = v;

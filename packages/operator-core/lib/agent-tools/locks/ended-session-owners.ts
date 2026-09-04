@@ -20,14 +20,15 @@
  *
  * Two rails make it safe to consult at acquire time:
  *
- *  1. PRESENCE-GATED. The oracle's pure model reads "no wake registered, no turn
+ *  1. IDENTITY-GATED. The oracle's pure model reads "no wake registered, no turn
  *     in flight" as `ended` — correct for a session, and a FALSE death verdict
  *     for an owner that was never a session at all (a peer host's
  *     `system:git-sync:<pid>:<uuid>` lease, a deploy-cli owner, a legacy uuid).
- *     Feeding those in would let two live holders race the resource, which is
- *     the one outcome the reclaim path exists to prevent. So only an owner with
- *     a `coord_presence` row — the roster's own definition of "a session" — is
- *     ever asked about; every other owner is UNKNOWN, and unknown is never dead.
+ *     A presence row proves the owner is a session and admits it to the shared
+ *     liveness oracle. When presence is already gone, a correlated agent-session
+ *     task row is the second proof: only a latest TERMINAL row with no live row
+ *     under that exact coordOwnerId is dead. An opaque owner with neither proof
+ *     stays UNKNOWN, so system/PID/peer owners retain the original safety rail.
  *  2. `ended` ONLY. `suspect` (dead-but-holding-claims), `draining`, `parked`,
  *     `live`, `recorded` and the in-band unknown (`sessionState: null` /
  *     `signalMissing`) all keep the holder. A verdict the oracle itself hedges
@@ -46,6 +47,8 @@
 
 import { getPresence, type PresenceRecord } from '../coordination/presence';
 import { resolveSessionStates, type LivenessSubject, type LivenessVerdict } from '../coordination/liveness-oracle';
+import { listTasks } from '../../task-manager/store';
+import { isTerminalState, type TaskState } from '../../task-manager/types';
 
 /**
  * The shape `reclaimDeadExclusiveHolders` consumes: given candidate owner
@@ -57,6 +60,9 @@ export type DeadOwnerOracle = (owners: readonly string[]) => Promise<ReadonlySet
 export interface EndedSessionOwnersDeps {
   getPresenceFn?: (ownerId: string) => Promise<PresenceRecord | null>;
   resolveSessionStatesFn?: (subjects: readonly LivenessSubject[]) => Promise<Map<string, LivenessVerdict>>;
+  /** Read the newest agent-session task for an owner, optionally restricted to
+   * states. The default delegates to task-manager's canonical ledger reader. */
+  readAgentTasksFn?: (ownerId: string, states?: readonly TaskState[]) => Promise<readonly { state: TaskState }[]>;
 }
 
 /** PURE: the one verdict that counts as dead here. Exported so the boundary is
@@ -79,21 +85,38 @@ export async function endedSessionOwners(
   if (distinct.length === 0) return dead;
   const getPresenceFn = deps.getPresenceFn ?? getPresence;
   const resolve = deps.resolveSessionStatesFn ?? resolveSessionStates;
+  const readAgentTasks =
+    deps.readAgentTasksFn ??
+    (async (ownerId: string, states?: readonly TaskState[]) =>
+      listTasks({
+        coordOwnerId: ownerId,
+        classes: ['agent-session'],
+        ...(states ? { states } : {}),
+        includeEnded: true,
+        limit: 1,
+      }));
 
   try {
-    // Rail 1: only owners the roster knows as sessions are subjects at all.
+    // Rail 1a: only owners the roster knows as sessions are oracle subjects.
+    // Keep store failures distinct from an honest "no row": a failed presence
+    // read is UNKNOWN and must not fall through to a different instrument.
     const rows = await Promise.all(
       distinct.map(async (ownerId) => {
         try {
-          return await getPresenceFn(ownerId);
+          return { ownerId, presence: await getPresenceFn(ownerId), readFailed: false };
         } catch {
-          return null; // a store hiccup on one owner leaves THAT owner unknown, never dead
+          return { ownerId, presence: null, readFailed: true };
         }
       }),
     );
     const subjects: LivenessSubject[] = [];
-    for (const p of rows) {
-      if (!p) continue;
+    const taskCandidates: string[] = [];
+    for (const row of rows) {
+      const p = row.presence;
+      if (!p) {
+        if (!row.readFailed) taskCandidates.push(row.ownerId);
+        continue;
+      }
       subjects.push({
         ownerId: p.ownerId,
         heartbeatAt: p.heartbeatAt,
@@ -103,12 +126,24 @@ export async function endedSessionOwners(
         agentRole: p.agentRole,
       });
     }
-    if (subjects.length === 0) return dead;
 
-    const verdicts = await resolve(subjects);
-    for (const s of subjects) {
-      // Rail 2: `ended` and nothing else.
-      if (isDefinitivelyEndedVerdict(verdicts.get(s.ownerId))) dead.add(s.ownerId);
+    if (subjects.length > 0) {
+      const verdicts = await resolve(subjects);
+      for (const s of subjects) {
+        // Rail 2: `ended` and nothing else.
+        if (isDefinitivelyEndedVerdict(verdicts.get(s.ownerId))) dead.add(s.ownerId);
+      }
+    }
+
+    // Rail 1b: presence may have been reaped before its resource lease. A task
+    // row stamped with the same route-owned coordOwnerId proves this was an
+    // agent-session owner. Require BOTH a latest terminal row and the absence of
+    // any live row; non-terminal/unknown states and opaque system owners stay.
+    for (const ownerId of taskCandidates) {
+      const latest = (await readAgentTasks(ownerId))[0];
+      if (!latest || !isTerminalState(latest.state)) continue;
+      const live = await readAgentTasks(ownerId, ['pending', 'running']);
+      if (live.length === 0) dead.add(ownerId);
     }
     return dead;
   } catch {

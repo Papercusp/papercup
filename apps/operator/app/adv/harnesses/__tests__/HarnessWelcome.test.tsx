@@ -7,9 +7,6 @@
  * Verifies: the D-002 copy renders verbatim when the harness has no
  * work; the gate stays hidden while data loads, on errors, or when any
  * work exists; the CTAs write `?tab=`; dismissal writes `?welcome=0`.
- *
- * useHarnessData is mocked — the gate logic under test is
- * HarnessWelcome's, not the data hooks'.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -17,7 +14,6 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 import HarnessWelcome, { HarnessWelcomeCard } from '../HarnessWelcome';
-import type { HarnessFeature } from '../useHarnessData';
 import { lexiconFor } from '@papercusp/lexicon';
 
 // These components render under the DEFAULT ('classic' → Pot) brand pack in tests
@@ -27,23 +23,11 @@ import { lexiconFor } from '@papercusp/lexicon';
 // (restore-pot-lexicon-public-release-2026-07-04 fallout — green-gate fix su-e9204.)
 const LEX = lexiconFor('classic');
 
-const mockFeatures = vi.fn<() => { features: HarnessFeature[] | null; error: string | null }>();
-const mockIssues = vi.fn<() => { issues: unknown[] | null; error: string | null }>();
+const mockStats = vi.fn<() => { data: unknown; loading: boolean; error: unknown }>();
 
-vi.mock('../useHarnessData', () => ({
-  useHarnessFeatures: (slug: string) => ({
-    loading: false,
-    patchFeature: vi.fn(),
-    ...mockFeatures(),
-    slug,
-  }),
-  useHarnessIssues: (slug: string) => ({
-    loading: false,
-    pendingCount: 0,
-    patchIssue: vi.fn(),
-    ...mockIssues(),
-    slug,
-  }),
+vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
+  useSyncQuery: () => mockStats(),
 }));
 
 afterEach(() => {
@@ -52,8 +36,7 @@ afterEach(() => {
 });
 
 const noWork = () => {
-  mockFeatures.mockReturnValue({ features: [], error: null });
-  mockIssues.mockReturnValue({ issues: [], error: null });
+  mockStats.mockReturnValue({ data: [], loading: false, error: null });
 };
 
 function renderWelcome(searchParams = '?slug=demo', onUrlUpdate?: (e: unknown) => void) {
@@ -77,33 +60,34 @@ describe('HarnessWelcome gate', () => {
     ).toBeTruthy();
   });
 
-  it('stays hidden while either list is still loading', () => {
-    mockFeatures.mockReturnValue({ features: null, error: null });
-    mockIssues.mockReturnValue({ issues: [], error: null });
+  it('stays hidden while the aggregate is still loading', () => {
+    mockStats.mockReturnValue({ data: undefined, loading: true, error: null });
     renderWelcome();
     expect(screen.queryByTestId('harness-welcome')).toBeNull();
   });
 
   it('stays hidden when features exist', () => {
-    mockFeatures.mockReturnValue({
-      features: [{ id: 'F-001', title: 'x', status: 'todo' }],
+    mockStats.mockReturnValue({
+      data: [{ kind: 'feature', state: 'open', n: 1 }],
+      loading: false,
       error: null,
     });
-    mockIssues.mockReturnValue({ issues: [], error: null });
     renderWelcome();
     expect(screen.queryByTestId('harness-welcome')).toBeNull();
   });
 
   it('stays hidden when issues exist (bugs are work too)', () => {
-    mockFeatures.mockReturnValue({ features: [], error: null });
-    mockIssues.mockReturnValue({ issues: [{ id: 'I-1' }], error: null });
+    mockStats.mockReturnValue({
+      data: [{ kind: 'bug', state: 'open', n: '2' }],
+      loading: false,
+      error: null,
+    });
     renderWelcome();
     expect(screen.queryByTestId('harness-welcome')).toBeNull();
   });
 
   it('stays hidden on a data error (never masks an unknown dashboard)', () => {
-    mockFeatures.mockReturnValue({ features: [], error: 'status 500' });
-    mockIssues.mockReturnValue({ issues: [], error: null });
+    mockStats.mockReturnValue({ data: undefined, loading: false, error: new Error('status 500') });
     renderWelcome();
     expect(screen.queryByTestId('harness-welcome')).toBeNull();
   });

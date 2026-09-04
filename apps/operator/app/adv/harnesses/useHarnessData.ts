@@ -122,58 +122,85 @@ export function parseWorkingUsers(raw: unknown): number[] | undefined {
   return ids.length > 0 ? ids : undefined;
 }
 
-export function useHarnessFeatures(slug: string): {
-  features: HarnessFeature[] | null;
+function syncFeatureRowToFeature(zf: SyncFeatureRow): HarnessFeature {
+  return {
+    id: zf.featureId,
+    title: zf.title,
+    summary: zf.summary ?? undefined,
+    status: zf.status as FeatureStatus,
+    attempts: Number(zf.attempts) || 0,
+    claims: parseClaims(zf.claims),
+    sourcePlanSlug: zf.sourcePlanSlug ?? undefined,
+    needsReview: zf.needsHumanReview ?? zf.needs_human_review ?? undefined,
+    tags: parseClaims(zf.tags),
+    workingUsers: parseWorkingUsers(zf.workingUsers ?? zf.working_users),
+  };
+}
+
+/**
+ * The selected feature's authoritative one-row read. DetailPanel used to mount
+ * the harness-wide feature list only to find this id, even though the existing
+ * detail query already carries every field the pane renders. Keep the local
+ * keyed state so status/reset mutations retain their instant optimistic patch;
+ * the next pushed detail row reconciles it.
+ */
+export function useHarnessFeature(slug: string, featureId: string, enabled = true): {
+  feature: HarnessFeature | null;
   loading: boolean;
   error: string | null;
   patchFeature: (id: string, partial: Partial<HarnessFeature>) => void;
 } {
   const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
-  const [features, setFeatures] = useState<HarnessFeature[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const active = enabled && Boolean(slug) && Boolean(featureId);
+  const [local, setLocal] = useState<{
+    featureId: string;
+    feature: HarnessFeature | null;
+    loaded: boolean;
+  }>({ featureId: '', feature: null, loaded: false });
 
   const { data: syncRows, loading, error: syncError } = useSyncQuery<SyncFeatureRow>({
-    queryName: 'featuresConsolidated.bySlug',
-    args: slug ? { harnessSlug: slug, workspaceId } : undefined,
-    enabled: !!slug,
+    queryName: 'featuresConsolidated.detail',
+    args: {
+      harnessSlug: slug,
+      featureId: active ? featureId : '',
+      workspaceId,
+    },
+    enabled: active,
   });
   useEffect(() => {
-    if (!slug) {
-      setFeatures(null);
-      setError(null);
+    if (!active) {
+      setLocal({ featureId, feature: null, loaded: false });
       return;
     }
     if (loading || !Array.isArray(syncRows)) return;
-    setFeatures(
-      syncRows.map(
-        (zf): HarnessFeature => ({
-          id: zf.featureId,
-          title: zf.title,
-          summary: zf.summary ?? undefined,
-          status: zf.status as FeatureStatus,
-          attempts: Number(zf.attempts) || 0,
-          claims: parseClaims(zf.claims),
-          sourcePlanSlug: zf.sourcePlanSlug ?? undefined,
-          needsReview: zf.needsHumanReview ?? zf.needs_human_review ?? undefined,
-          tags: parseClaims(zf.tags),
-          workingUsers: parseWorkingUsers(zf.workingUsers ?? zf.working_users),
-        }),
-      ),
-    );
-  }, [slug, syncRows, loading]);
-  useEffect(() => {
-    setError(syncError ? (syncError instanceof Error ? syncError.message : String(syncError)) : null);
-  }, [syncError]);
+    const row = syncRows.find((candidate) => candidate.featureId === featureId);
+    setLocal({
+      featureId,
+      feature: row ? syncFeatureRowToFeature(row) : null,
+      loaded: true,
+    });
+  }, [active, featureId, syncRows, loading]);
 
   // Optimistic local patch — merge a partial into one feature in the local
-  // state for instant feedback on a mutation. The sync result reconciles to
-  // the authoritative value when it next pushes (or the patch stands if the
-  // harness isn't consolidated). No-op if the id isn't present.
+  // state for instant feedback on a mutation. The pushed detail row reconciles
+  // it. The featureId guard also prevents a late mutation result from patching
+  // the next selection.
   const patchFeature = useCallback((id: string, partial: Partial<HarnessFeature>) => {
-    setFeatures((prev) => (prev ? prev.map((f) => (f.id === id ? { ...f, ...partial } : f)) : prev));
+    setLocal((prev) =>
+      prev.featureId === id && prev.feature
+        ? { ...prev, feature: { ...prev.feature, ...partial } }
+        : prev,
+    );
   }, []);
 
-  return { features, loading: features === null && !error, error, patchFeature };
+  const error = syncError ? (syncError instanceof Error ? syncError.message : String(syncError)) : null;
+  const current = local.featureId === featureId ? local : null;
+  return {
+    feature: current?.feature ?? null,
+    loading: active && (!current?.loaded || loading) && !error,
+    error,
+    patchFeature,
+  };
 }
 
 // ───────── Issues ─────────

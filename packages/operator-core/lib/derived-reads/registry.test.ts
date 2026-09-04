@@ -61,7 +61,9 @@ describe('readDerivedSnapshot', () => {
       scope: 'workspace',
       compute,
     });
-    sqlResults = [[{ payload: [{ id: 'a' }], computed_at: Date.now(), compute_ms: 12, producer_version: 1, error: null }]];
+    sqlResults = [
+      [{ payload: [{ id: 'a' }], computed_at: Date.now(), compute_ms: 12, producer_version: 1, error: null }],
+    ];
 
     const { payload } = await readDerivedSnapshot('test.slow');
 
@@ -106,7 +108,9 @@ describe('readDerivedSnapshot', () => {
       scope: 'workspace',
       compute: vi.fn(),
     });
-    sqlResults = [[{ payload: [{ old: true }], computed_at: Date.now(), compute_ms: 1, producer_version: 1, error: null }]];
+    sqlResults = [
+      [{ payload: [{ old: true }], computed_at: Date.now(), compute_ms: 1, producer_version: 1, error: null }],
+    ];
 
     const { payload, meta } = await readDerivedSnapshot('test.slow');
 
@@ -130,6 +134,31 @@ describe('readDerivedSnapshot', () => {
     expect(payload).toEqual(['x']);
     expect(meta.stale).toBe(true);
     expect(meta.computedAt).toBe(old);
+  });
+
+  it('a refreshOnRead producer serves stale data NOW and refreshes it in the background', async () => {
+    const compute = vi.fn().mockResolvedValue(['fresh']);
+    registerDerivedRead({
+      key: 'test.lazy',
+      ttlMs: 1_000,
+      producerVersion: 1,
+      scope: 'workspace',
+      excludeFromDefaultSweep: true,
+      refreshOnRead: true,
+      compute,
+    });
+    const old = Date.now() - 60_000;
+    sqlResults = [
+      [{ payload: ['stale'], computed_at: old, compute_ms: 5, producer_version: 1, error: null }],
+      [{ computed_at: old, producer_version: 1, payload_md5: 'old' }],
+      [{ payload_md5: 'fresh' }],
+    ];
+
+    const { payload, meta } = await readDerivedSnapshot('test.lazy');
+
+    expect(payload).toEqual(['stale']);
+    expect(meta.stale).toBe(true);
+    await vi.waitFor(() => expect(compute).toHaveBeenCalledOnce());
   });
 
   it('falls back to inline compute ONLY when the flag is explicitly off', async () => {
@@ -545,6 +574,26 @@ describe('producerVersion downgrade guard (WI-7226)', () => {
     // proven by 'kicks a BACKGROUND warm-up on a miss without awaiting it' above,
     // which is identical but for `excludeFromDefaultSweep`. Without that pairing
     // this test would still pass if warming broke outright.
+  });
+
+  it('a MISS on a refreshOnRead producer heals in the background without joining the default sweep', async () => {
+    const compute = vi.fn().mockResolvedValue(['fresh']);
+    registerDerivedRead({
+      key: 'test.lazy',
+      ttlMs: 12 * 60 * 60_000,
+      producerVersion: 1,
+      scope: 'workspace',
+      excludeFromDefaultSweep: true,
+      refreshOnRead: true,
+      compute,
+    });
+    sqlResults = [[], [], []];
+
+    const { payload, meta } = await readDerivedSnapshot('test.lazy');
+
+    expect(payload).toBeNull();
+    expect(meta.missing).toBe(true);
+    await vi.waitFor(() => expect(compute).toHaveBeenCalledOnce());
   });
 
   it('still warms a producer that merely has a LONG ttl — duration is the criterion, not cadence', async () => {

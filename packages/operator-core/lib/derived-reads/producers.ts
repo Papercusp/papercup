@@ -3,8 +3,10 @@
  * WI-5460 audit (precompute-derived-sync-reads-2026-07-19 P-003/P-004/P-005).
  *
  * Each one moves an expensive computation OFF the user-facing sync read path and
- * onto the `system:precompute-derived-reads` routine. The resolver then does a
- * plain SELECT against `harness_shared.derived_read_snapshots`.
+ * onto background refreshes. Most run from the
+ * `system:precompute-derived-reads` routine; demand-driven producers run only
+ * after an actual read observes a missing or stale snapshot. The resolver then
+ * does a plain SELECT against `harness_shared.derived_read_snapshots`.
  *
  * Imported for side effect by the routine action and by the sync resolver, so a
  * read and a refresh always agree on which producers exist.
@@ -81,17 +83,19 @@ registerDerivedRead({
 // that does not apply here: this payload goes into a jsonb column, not an agent's
 // context, and it is no longer on a read path at all.
 //
-// SIX-HOUR ttl — deliberately the longest here, on a cost/benefit the other two
-// do not face. At ~159s per compute this is by far the most expensive producer:
-// on a 30-minute cadence it would spend ~9% of wall-clock doing heavy fs+PG work
-// inside the operator process, which is real event-loop pressure (the EI-6045
-// lesson) for a query that currently has NO UI consumer — nothing in
-// apps/operator-vite or apps/operator reads `plans.lint`. A corpus-wide lint also
-// changes slowly by nature.
+// DEMAND-DRIVEN (WI-7230). At ~159s per compute this is the most expensive
+// producer, yet the nullary sync query has NO application consumer. Running it
+// every six hours on every operator paid real event-loop and filesystem cost to
+// produce bytes nobody requested. It is therefore excluded from the periodic
+// sweep and refreshed only after an actual read observes a missing or stale
+// snapshot. The read returns immediately with empty/stale data while the
+// deduplicated refresh runs in the background (D-003), so zero consumers means
+// zero computes without deleting the future query surface.
 //
-// If a live consumer appears and needs it fresher, the fix is to make the lint
-// itself incremental (lint only plans whose updated_at moved), not to shorten
-// this ttl — see WI-5460.
+// The six-hour ttl now defines when an observed snapshot is stale, not a cron
+// cadence. If a live consumer needs tighter freshness, make the lint itself
+// incremental (lint only plans whose updated_at moved), not this 159s walk more
+// frequent — see WI-5460.
 //
 // ── WI-7221: the stored shape is a SUMMARY, not the full dump ────────────────
 //
@@ -183,6 +187,8 @@ registerDerivedRead({
   // with a 6h ttl it would have been served in the old shape until it expired.
   producerVersion: 4,
   scope: 'workspace',
+  excludeFromDefaultSweep: true,
+  refreshOnRead: true,
   compute: async () => {
     const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
     const r = (await callPlansRead('lint', { full: true })) as { reports?: unknown[] };
@@ -542,9 +548,7 @@ registerDerivedRead({
   producerVersion: 5,
   scope: 'workspace',
   compute: async () => {
-    const { computeLearningImprovementsSnapshot } = await import(
-      '../harness/improvements/learning-digest-snapshot'
-    );
+    const { computeLearningImprovementsSnapshot } = await import('../harness/improvements/learning-digest-snapshot');
     // The DEFAULT variant: no state filter, default limit, whole workspace (no hive
     // lens), and the DEFAULT provenance scope ('loop' — LearningImprovementsArgs.scope).
     // Keeping this call argument-free is what keeps the tab's own view on the fast
@@ -601,9 +605,7 @@ registerDerivedRead({
   producerVersion: 5,
   scope: 'harness',
   compute: async ({ harnessSlug }) => {
-    const { computeLearningImprovementsSnapshot } = await import(
-      '../harness/improvements/learning-digest-snapshot'
-    );
+    const { computeLearningImprovementsSnapshot } = await import('../harness/improvements/learning-digest-snapshot');
     // Only the hive lens varies from the default variant — state/limit/scope stay
     // at their defaults so this snapshot answers exactly the question the tab's
     // pot-scoped mount asks, and nothing broader.
@@ -739,9 +741,7 @@ registerDerivedRead({
   scope: 'workspace',
   excludeFromDefaultSweep: true,
   compute: async () => {
-    const { buildLiveFixtureMap, measureSyncReadPayloadsInProcess } = await import(
-      '../sync-resolver/sync-read-audit'
-    );
+    const { buildLiveFixtureMap, measureSyncReadPayloadsInProcess } = await import('../sync-resolver/sync-read-audit');
     const { knownQueryNamesV2, getRegistryEntryV2 } = await import('../sync-resolver/index');
 
     const fixtures = buildLiveFixtureMap(knownQueryNamesV2(), getRegistryEntryV2);

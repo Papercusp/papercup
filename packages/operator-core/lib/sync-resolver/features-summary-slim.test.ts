@@ -1,8 +1,7 @@
-// featuresConsolidated.bySlug summary-slim + featuresConsolidated.detail
-// on-demand read (P-007, precompute-sync-reads-phase2). bySlug drops the per-row
-// `summary` at the sync boundary (the grid never renders it — only the Detail
-// pane's Description prose, for the ONE selected feature); featuresConsolidated
-// .detail serves that single feature's full row (with summary) on demand.
+// featuresConsolidated.bySlug bounded compatibility page +
+// featuresConsolidated.detail on-demand read. bySlug retains the prior slim row
+// projection but WI-7209 caps cardinality after its final live consumers moved
+// to detail + workItems.stats.
 //
 // Mirrors the workItems.byHarness/.detail split (P-006). The featuresConsolidated
 // resolvers read the drizzle chain directly, so — like workspace-filter-coverage
@@ -12,7 +11,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { knownQueryNamesV2 } from './index';
+import { getRegistryEntryV2, knownQueryNamesV2 } from './index';
+import { SYNC_READ_ALLOWLIST } from './sync-read-audit';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const INDEX = readFileSync(resolve(HERE, 'index.ts'), 'utf8');
@@ -49,6 +49,20 @@ describe('featuresConsolidated P-007 (bySlug summary-slim + detail)', () => {
     expect(block).toMatch(/title:\s*t\.title/);
     expect(block).toMatch(/status:\s*t\.status/);
     expect(block).toMatch(/workingUsers:\s*t\.workingUsers/);
+  });
+
+  it('bounds bySlug to 500 rows and no longer needs a raised payload ceiling', () => {
+    const entry = getRegistryEntryV2('featuresConsolidated.bySlug');
+    expect(entry?.argsSchema?.parse({ harnessSlug: 'papercusp' })).toEqual({
+      harnessSlug: 'papercusp',
+      limit: 500,
+    });
+    expect(entry?.argsSchema?.parse({ harnessSlug: 'papercusp', limit: 50_000 })).toEqual({
+      harnessSlug: 'papercusp',
+      limit: 500,
+    });
+    expect(resolverBlock('featuresConsolidated.bySlug')).toMatch(/\.limit\(limit\)/);
+    expect(SYNC_READ_ALLOWLIST['featuresConsolidated.bySlug']).toBeUndefined();
   });
 
   it('detail resolver serves the single feature WITH summary, workspace-scoped', () => {

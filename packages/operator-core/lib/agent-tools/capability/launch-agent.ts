@@ -429,7 +429,7 @@ export default defineTool({
         .max(20)
         .optional()
         .describe(
-          "Extra psu flags passed through verbatim (e.g. ['--brain', '--context-size=trimmed']) — the capability:terminal pass-through model, so a NEW psu flag needs no tool change. Shell metacharacters are refused.",
+          "Extra psu flags passed through as individually shell-quoted argv values (e.g. ['--brain', '--context-size=trimmed']) — the capability:terminal pass-through model, so a NEW psu flag or structured JSON value needs no tool change.",
         ),
       idempotencyKey: z
         .string()

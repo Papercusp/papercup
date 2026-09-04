@@ -10,35 +10,35 @@
  * SPEC.md bootstrap CTA this replaces died with HarnessDashboard
  * (ad5897d58); this is its plans-era successor.
  *
- * Gating is deliberately conservative: while either list is still
- * loading (null) or errored, the welcome stays hidden so it can never
- * mask a real dashboard. Dismissal rides nuqs (`?welcome=0`) per the
+ * Gating is deliberately conservative: while the exact work-item aggregate
+ * is loading or errored, the welcome stays hidden so it can never mask a real
+ * dashboard. Dismissal rides nuqs (`?welcome=0`) per the
  * state-in-the-URL rule; the brainstorm/plans CTAs write the same
  * `?tab=` param the /adv index reads (plain strings — `@/app` cannot
  * import operator-vite's AdvTabId).
  */
 
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
+import { useSyncQuery } from '@papercusp/sync';
 import { useLexicon } from '@/lib/useLexicon';
-import { useHarnessFeatures, useHarnessIssues } from './useHarnessData';
+
+type WorkItemStatRow = { n?: number | string | null };
 
 /**
- * True only when BOTH the features and issues lists have loaded clean
- * and are empty — "this harness has no work yet". Loading (null) or
- * error states return false so the overlay never covers a dashboard
- * whose contents are merely unknown.
+ * True only when the exact server-side work-item count has loaded cleanly and
+ * is zero — "this harness has no work yet". This reuses workItems.stats rather
+ * than mounting the complete feature and issue corpora just to ask `length ===
+ * 0`. Loading and error states return false so the overlay never covers a
+ * dashboard whose contents are merely unknown.
  */
 export function useHarnessHasNoWork(slug: string): boolean {
-  const { features, error: featuresError } = useHarnessFeatures(slug);
-  const { issues, error: issuesError } = useHarnessIssues(slug);
-  return (
-    !featuresError &&
-    !issuesError &&
-    Array.isArray(features) &&
-    features.length === 0 &&
-    Array.isArray(issues) &&
-    issues.length === 0
-  );
+  const { data, loading, error } = useSyncQuery<WorkItemStatRow>({
+    queryName: 'workItems.stats',
+    args: slug ? { harnessSlug: slug } : undefined,
+    enabled: Boolean(slug),
+  });
+  if (!slug || loading || error || !Array.isArray(data)) return false;
+  return data.reduce((total, row) => total + Math.max(0, Number(row.n) || 0), 0) === 0;
 }
 
 export interface HarnessWelcomeCardProps {

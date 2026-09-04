@@ -451,9 +451,11 @@ export function buildAgentLaunchCommand(opts: {
   extraArgs?: string[] | null;
   platform?: NodeJS.Platform;
 }): string {
-  // Every value below lands inside a terminal greeting one-liner, so it is
-  // VALIDATED rather than quoted: an identity-shaped value needs no quoting, and
-  // anything else is a bug (or an injection) we want to hear about loudly.
+  // Identity-shaped values land inside a terminal greeting one-liner and are
+  // VALIDATED rather than quoted: an identity that falls outside the allowed
+  // grammar is a bug (or an injection) we want to hear about loudly. Free-form
+  // option values, including extra args, use quoteLaunchValue so each remains
+  // exactly one shell/argv value.
   const safe = (label: string, v: string): string => {
     if (!/^[A-Za-z0-9._:=@/,+-]+$/.test(v)) {
       throw new Error(`buildAgentLaunchCommand: refusing ${label} with shell metacharacters: ${JSON.stringify(v)}`);
@@ -521,7 +523,11 @@ export function buildAgentLaunchCommand(opts: {
       if (launchMode.ownerDirected) parts.push('--mode-owner-directed');
     }
   }
-  for (const a of opts.extraArgs ?? []) parts.push(safe('extraArg', a));
+  // Extra args are an escape hatch for psu flags whose first-class options have
+  // not reached this tool yet. They may carry structured values (for example the
+  // JSON offender list used by content-fixer), so shell-quote each whole arg
+  // rather than rejecting braces/quotes as if they were command syntax.
+  for (const a of opts.extraArgs ?? []) if (a) parts.push(quoteLaunchValue(a));
   return parts.join(' ');
 }
 

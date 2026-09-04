@@ -12,14 +12,14 @@
  *   - admitted/opened: `created_ts` + `payload._ei.created_by`
  *   - terminaled:      `closed_ts`  + `terminal_owner`
  *
- * The admission wrapper holds a transaction-scoped advisory lock across the
- * oracle read AND the supplied persistence callback. Every cooperating DRAIN bug
- * writer therefore serializes read -> decision -> write for one
- * workspace/harness/owner tuple; two concurrent first filings cannot both observe
- * 0/0 and pass the breaker.
+ * The admission wrapper holds a session-scoped advisory lock on a dedicated
+ * direct connection while it performs the oracle read and admission decision.
+ * The supplied persistence callback runs after that lock is released, so slow
+ * async writes do not hold a transaction or a PgBouncer backend open.
  */
-import type postgres from 'postgres';
+import postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 
 export const DRAIN_FLOW_SEVERITIES = ['critical', 'major', 'minor', 'nit'] as const;
 export type DrainFlowSeverity = (typeof DRAIN_FLOW_SEVERITIES)[number];
@@ -53,6 +53,47 @@ interface DrainFlowAggregateRow {
 }
 
 type QuerySql = postgres.Sql | postgres.TransactionSql;
+
+/**
+ * Resolve the direct admin URL used by the DRAIN admission mutex.
+ *
+ * This intentionally goes through `getHarnessAdminUrl()` rather than the org
+ * pool. The mutex uses a SESSION-level advisory lock, so acquire/read/unlock
+ * must stay on one backend even when the org pool is routed through PgBouncer.
+ */
+export function drainBugAdmissionLockUrl(): string {
+  return getHarnessAdminUrl();
+}
+
+/**
+ * Dedicated direct `max:1` connection for the DRAIN admission mutex.
+ *
+ * `reserve()` pins the lock/read sequence to one backend. `idle_timeout: 0`
+ * prevents postgres-js from closing an idle pooled connection while a caller
+ * still holds the session lock; the wrapper explicitly unlocks before release.
+ */
+let _drainBugAdmissionLockSql: postgres.Sql | null = null;
+function drainBugAdmissionLockSql(): postgres.Sql {
+  if (!_drainBugAdmissionLockSql) {
+    _drainBugAdmissionLockSql = postgres(drainBugAdmissionLockUrl(), {
+      onnotice: () => {},
+      max: 1,
+      idle_timeout: 0,
+      connection: {
+        application_name: `pcusp:drain-bug-admission:p${process.pid}`.slice(0, 63),
+      },
+    });
+  }
+  return _drainBugAdmissionLockSql;
+}
+
+/** Test-only — close + drop the dedicated admission-lock connection. */
+export async function _closeDrainBugAdmissionLockForTests(): Promise<void> {
+  if (_drainBugAdmissionLockSql) {
+    await _drainBugAdmissionLockSql.end({ timeout: 1 }).catch(() => {});
+    _drainBugAdmissionLockSql = null;
+  }
+}
 
 function count(value: unknown): number {
   const parsed = typeof value === 'number' ? value : Number(value);
@@ -184,9 +225,11 @@ export type DrainBugAdmissionResult<T> =
     };
 
 /**
- * Serialize the exact read and the caller's persistence under one advisory
- * transaction lock. Persistence errors remain persistence errors; only failures
- * before the callback starts are normalized to a fail-closed oracle verdict.
+ * Serialize the exact read and admission decision under a direct SESSION lock.
+ * Persistence deliberately runs after the lock connection is unlocked/released,
+ * so a slow callback cannot hold the lock transaction open. Persistence errors
+ * remain persistence errors; only failures in the lock/read phase normalize to
+ * a fail-closed oracle verdict.
  */
 export async function withDrainBugAdmission<T>(
   args: {
@@ -194,32 +237,30 @@ export async function withDrainBugAdmission<T>(
     harness: string;
     ownerId: string;
     drainStartedAt: string;
+    /** Retained for caller compatibility; the lock/read use a direct connection. */
     sql?: postgres.Sql;
   },
   persist: (flow: DrainFlowReport) => Promise<T>,
 ): Promise<DrainBugAdmissionResult<T>> {
-  const sql = args.sql ?? getOrgPg().sql;
   const lockKey = `drain-bug-admission:${args.workspaceId}:${args.harness}:${args.ownerId}`;
-  let persistenceStarted = false;
+  let reserved: Awaited<ReturnType<ReturnType<typeof drainBugAdmissionLockSql>['reserve']>> | undefined;
+  let acquired = false;
+  let flow: DrainFlowReport | undefined;
   try {
-    return (await sql.begin(async (tx) => {
-      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
-      const flow = await readDrainFlow({ ...args, sql: tx });
-      if (flow.breaker.tripped) {
-        return {
-          ok: true as const,
-          allowed: false as const,
-          code: 'drain_flow_circuit_open' as const,
-          message: `${flow.breaker.reason} Terminal one more bug before filing another; severity detail is attached in drainFlow.`,
-          flow,
-        };
-      }
-      persistenceStarted = true;
-      const value = await persist(flow);
-      return { ok: true as const, allowed: true as const, flow, value };
-    })) as DrainBugAdmissionResult<T>;
+    reserved = await drainBugAdmissionLockSql().reserve();
+    await reserved`SELECT pg_advisory_lock(hashtextextended(${lockKey}, 0))`;
+    acquired = true;
+    flow = await readDrainFlow({ ...args, sql: reserved });
+    if (flow.breaker.tripped) {
+      return {
+        ok: true,
+        allowed: false,
+        code: 'drain_flow_circuit_open',
+        message: `${flow.breaker.reason} Terminal one more bug before filing another; severity detail is attached in drainFlow.`,
+        flow,
+      };
+    }
   } catch (error) {
-    if (persistenceStarted) throw error;
     return {
       ok: false,
       allowed: false,
@@ -228,5 +269,27 @@ export async function withDrainBugAdmission<T>(
         `DRAIN bug admission failed closed because the exact flow oracle was unavailable: ` +
         (error instanceof Error ? error.message : String(error)),
     };
+  } finally {
+    if (reserved) {
+      if (acquired) {
+        await reserved`SELECT pg_advisory_unlock(hashtextextended(${lockKey}, 0))`.catch(() => {});
+      }
+      reserved.release();
+    }
   }
+
+  // The lock/read phase either returned a circuit-open result, failed closed,
+  // or assigned a flow. Keep the guard explicit for type safety if that phase
+  // is changed later.
+  if (!flow) {
+    return {
+      ok: false,
+      allowed: false,
+      code: 'drain_flow_unavailable',
+      message: 'DRAIN bug admission failed closed because the exact flow oracle returned no decision.',
+    };
+  }
+
+  const value = await persist(flow);
+  return { ok: true, allowed: true, flow, value };
 }

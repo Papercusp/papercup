@@ -220,14 +220,15 @@ export interface ProgramSuccessOptions {
    */
   minErrorRateDenominator?: number;
   /**
-   * Denominator at which the bar's LITERAL "<5%" claim is statistically supported
-   * (default {@link STRICT_ERROR_RATE_DENOMINATOR}). Between the minimum and this,
-   * a pass is reported but explicitly labelled as the weaker claim.
+   * @deprecated Retained for input compatibility with the pre-EI-223650 API. The
+   * literal "<5%" claim is now decided from the exact one-sided binomial upper
+   * confidence bound, not from a denominator heuristic.
    */
   strictErrorRateDenominator?: number;
 }
 
 const DEFAULT_MAX_ERROR_RATE = 0.05;
+const ERROR_RATE_CONFIDENCE = 0.95;
 
 /**
  * MINIMUM DENOMINATOR for a 'pass' on the cycle-error-rate bar (WI-5397, design ask
@@ -257,7 +258,11 @@ const DEFAULT_MAX_ERROR_RATE = 0.05;
  */
 export const MIN_ERROR_RATE_DENOMINATOR = 9;
 
-/** Denominator supporting the literal "<5%" bound at 95% (rule of three: 3/0.05 = 60). */
+/**
+ * Legacy denominator reference for callers that imported the old heuristic.
+ * The release claim no longer uses this value: nonzero failures require the exact
+ * one-sided binomial upper confidence bound below the target.
+ */
 export const STRICT_ERROR_RATE_DENOMINATOR = 60;
 
 /**
@@ -284,6 +289,81 @@ function cycleStartMs(cycleId: string): number | null {
 }
 
 const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
+
+/**
+ * Exact one-sided Clopper–Pearson upper confidence bound for a binomial error rate.
+ *
+ * For `errors` observed errors in `trials` independent cycles, this returns the
+ * smallest p whose lower-tail probability P(X <= errors | p) is the requested
+ * alpha. Equivalently, it is the one-sided upper confidence endpoint
+ * `Beta^{-1}(confidence, errors + 1, trials - errors)`. The lower-tail inversion
+ * is evaluated by a log-space binomial CDF and a deterministic bisection, so the
+ * release bar does not mistake the zero-error rule of three for a bound that also
+ * applies when failures are present.
+ */
+export function oneSidedBinomialUpperBound(
+  errors: number,
+  trials: number,
+  confidence = ERROR_RATE_CONFIDENCE,
+): number {
+  if (!Number.isInteger(errors) || !Number.isInteger(trials)) {
+    throw new Error(`oneSidedBinomialUpperBound: errors and trials must be integers (got errors=${errors}, trials=${trials})`);
+  }
+  if (trials < 1 || errors < 0 || errors > trials) {
+    throw new Error(`oneSidedBinomialUpperBound: need 1 ≤ trials and 0 ≤ errors ≤ trials (got errors=${errors}, trials=${trials})`);
+  }
+  if (!(confidence > 0 && confidence < 1) || !Number.isFinite(confidence)) {
+    throw new Error(`oneSidedBinomialUpperBound: confidence must be between 0 and 1 (got ${confidence})`);
+  }
+
+  const alpha = 1 - confidence;
+  if (errors === 0) {
+    // This is the familiar rule-of-three form, retained as an exact special case.
+    return -Math.expm1(Math.log(alpha) / trials);
+  }
+  if (errors === trials) return 1;
+
+  // The binomial CDF is monotone decreasing in p. Invert P(X <= errors) = alpha.
+  let lower = 0;
+  let upper = 1;
+  for (let i = 0; i < 80; i++) {
+    const midpoint = (lower + upper) / 2;
+    if (binomialCdfAtMost(errors, trials, midpoint) > alpha) {
+      lower = midpoint;
+    } else {
+      upper = midpoint;
+    }
+  }
+  return (lower + upper) / 2;
+}
+
+/** Log-space P(X <= successes) for X ~ Binomial(trials, probability). */
+function binomialCdfAtMost(successes: number, trials: number, probability: number): number {
+  if (probability <= 0) return 1;
+  if (probability >= 1) return 0;
+
+  const logProbability = Math.log(probability);
+  const logFailureProbability = Math.log1p(-probability);
+  let logTerm = trials * logFailureProbability;
+  let maxLogTerm = logTerm;
+  let scaledSum = 1;
+
+  for (let successesSeen = 1; successesSeen <= successes; successesSeen++) {
+    logTerm +=
+      Math.log(trials - successesSeen + 1) -
+      Math.log(successesSeen) +
+      logProbability -
+      logFailureProbability;
+    if (logTerm > maxLogTerm) {
+      scaledSum = scaledSum * Math.exp(maxLogTerm - logTerm) + 1;
+      maxLogTerm = logTerm;
+    } else {
+      scaledSum += Math.exp(logTerm - maxLogTerm);
+    }
+  }
+
+  return Math.min(1, Math.exp(maxLogTerm) * scaledSum);
+}
 
 /**
  * Fold the ledger snapshots into the program's done-check. PURE — deterministic over the
@@ -426,8 +506,12 @@ export function evaluateProgramSuccess(
   // evidence of health once it is big enough to have caught the regression. Gates
   // 'pass' only — a 'fail' is positive evidence and fires at any n.
   const minDenominator = opts.minErrorRateDenominator ?? MIN_ERROR_RATE_DENOMINATOR;
-  const strictDenominator = opts.strictErrorRateDenominator ?? STRICT_ERROR_RATE_DENOMINATOR;
-  const measured = `${errorBarSource.errorTicks} error ticks / ${cycleTicks} cycle ticks (ran + errored) = ${pct(errorRate ?? 0)}`;
+  const upperErrorRate = cycleTicks > 0 ? oneSidedBinomialUpperBound(errorBarSource.errorTicks, cycleTicks) : null;
+  const measured =
+    upperErrorRate === null
+      ? ''
+      : `${errorBarSource.errorTicks} error ticks / ${cycleTicks} cycle ticks (ran + errored) = ${pct(errorRate ?? 0)}` +
+        `; exact one-sided 95% upper bound = ${pct(upperErrorRate)}`;
   criteria.push({
     key: 'cycle-error-rate',
     bar: `cycle error rate < ${pct(maxErrorRate)} (was ~30%)`,
@@ -454,10 +538,11 @@ export function evaluateProgramSuccess(
               status: 'pass' as const,
               observed:
                 `${measured}${capacityNote}${soakNote}` +
-                (cycleTicks < strictDenominator
-                  ? ` [claim: rejects the ~30% baseline at p<0.05 (n=${cycleTicks}>=${minDenominator}); the literal ` +
-                    `${pct(maxErrorRate)} bound needs n>=${strictDenominator} and is NOT yet established]`
-                  : ` [claim: ${pct(maxErrorRate)} bound supported at 95% (n=${cycleTicks}>=${strictDenominator})]`),
+                (upperErrorRate !== null && upperErrorRate < maxErrorRate
+                  ? ` [claim: rejects the ~30% baseline at p<0.05 (n=${cycleTicks}>=${minDenominator}); literal ` +
+                    `${pct(maxErrorRate)} release bound supported at 95% (upper bound ${pct(upperErrorRate)})]`
+                  : ` [claim: rejects the ~30% baseline at p<0.05 (n=${cycleTicks}>=${minDenominator}); literal ` +
+                    `${pct(maxErrorRate)} release bound NOT established at 95% (upper bound ${pct(upperErrorRate ?? 1)})]`),
             }),
   });
 

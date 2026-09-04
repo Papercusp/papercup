@@ -654,11 +654,15 @@ const invoke = defineTool({
     // EI-22019512930234742: mcp-call and coordination tools identify the caller
     // from PAPERCUSP_SID before PAPERCUSP_SPAWN_ID. Bind both to the same
     // route-owned identity so a child cannot invent a per-process owner.
-    const childOwnerId = hiveSpawnId ?? spawnRecordId;
-    if (childOwnerId) {
-      env.PAPERCUSP_SID = childOwnerId;
-      env.PAPERCUSP_SPAWN_ID = childOwnerId;
-    }
+    // EI-22367010504753373: a direct /invoke without either durable launch row
+    // still needs a route-owned identity. runChild records this value as the
+    // task-ledger coordOwnerId; without it, a timed-out resolver can leave an
+    // exclusive resource lease under an opaque UUID that no liveness instrument
+    // can safely condemn. Mint once at this route boundary and bind both env keys
+    // to it so the task row and every child tool call share the same join key.
+    const childOwnerId = hiveSpawnId ?? spawnRecordId ?? `s-invoke-${randomUUID()}`;
+    env.PAPERCUSP_SID = childOwnerId;
+    env.PAPERCUSP_SPAWN_ID = childOwnerId;
     if (hiveSpawnId) {
       if (nativeSessionId) env.PAPERCUSP_NATIVE_SESSION_ID = nativeSessionId;
       // Codex ALWAYS gets the durable-CODEX_HOME key (resume-by-row-id), even now

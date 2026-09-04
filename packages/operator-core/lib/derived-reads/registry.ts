@@ -63,10 +63,10 @@ export interface DerivedReadProducer<T = unknown> {
   scope: 'workspace' | 'harness';
   /**
    * Opt OUT of the default `precompute-derived-reads` sweep (EI-19457924854150358).
-   * Such a producer runs ONLY when named explicitly in `refreshDerivedReads({ only })`,
-   * i.e. from its own dedicated routine — a READ that misses the snapshot does not
-   * warm it either (EI-19480218051289304, see `warmMissedSnapshot`), so the fill is
-   * owned entirely by that routine and a cold panel stays empty until it fires.
+   * Such a producer runs ONLY when named explicitly in `refreshDerivedReads({ only })`.
+   * By default that means its dedicated routine owns the fill and a read never warms
+   * it (EI-19480218051289304). `refreshOnRead` is the explicit demand-driven variant:
+   * a missing/stale read schedules the named refresh instead of a periodic routine.
    *
    * ⚠ This exists because `ttlMs` alone CANNOT express "too expensive for the shared
    * tick". Producers run SEQUENTIALLY (see refreshDerivedReads below) and the routine
@@ -84,6 +84,16 @@ export interface DerivedReadProducer<T = unknown> {
    * shared tick is blocked when you do.
    */
   excludeFromDefaultSweep?: boolean;
+  /**
+   * Refresh a missing OR stale snapshot in the background when a read observes it.
+   * The read still returns immediately and never awaits `compute` (D-003).
+   *
+   * Pair this with `excludeFromDefaultSweep` for a demand-driven producer: zero
+   * reads means zero computes, while the first real consumer heals an absent or
+   * expired snapshot. An excluded producer without this flag is owned solely by
+   * its dedicated routine and must never be warmed by a reader.
+   */
+  refreshOnRead?: boolean;
   /** The expensive computation. Runs on the routine's thread, never a read. */
   compute: (ctx: { workspaceId: string; harnessSlug: string }) => Promise<T>;
 }
@@ -136,32 +146,27 @@ export interface DerivedSnapshotResult<T> {
 const warmingKeys = new Set<string>();
 
 /**
- * Keys whose warm-on-miss was DECLINED because their own routine owns the fill.
+ * Keys whose read-driven refresh was DECLINED because their own routine owns the fill.
  * Logged once per key per process: a missing panel is worth explaining, but the
  * read that finds it missing runs on every 3s sync poll.
  */
 const declinedWarmKeys = new Set<string>();
 
-/** Fire-and-forget fill for a missed snapshot. Never awaited by a read. */
-function warmMissedSnapshot(key: string, workspaceId: string, harnessSlug: string): void {
-  // EI-19480218051289304: NEVER warm an `excludeFromDefaultSweep` producer from a
-  // read. That flag means "this compute is minutes-scale, too long for the shared
-  // tick" — and the warm path names the key explicitly (`only: [key]`), which by
-  // design OVERRIDES the exclusion (that override is how the producer's own
-  // dedicated routine drives it). So without this guard the flag holds the cost off
-  // the 2-min sweep while leaving it reachable from ANY ordinary viewer of a cold
-  // panel — the same cost on a worse trigger, since a read-path compute is
-  // unscheduled, unbounded in number of distinct callers, and invisible to the
-  // routine bookkeeping. A miss here is filled by that producer's own routine on
-  // its own cadence; until then the panel renders empty, which is the intended
-  // trade and is exactly what the exclusion was chosen for.
+/** Fire-and-forget fill for a missing or stale snapshot. Never awaited by a read. */
+function refreshSnapshotFromRead(key: string, workspaceId: string, harnessSlug: string): void {
+  // EI-19480218051289304: an `excludeFromDefaultSweep` producer does NOT warm
+  // from a read by default. The named refresh (`only: [key]`) overrides exclusion,
+  // so allowing it implicitly would put a dedicated-routine producer back onto an
+  // unscheduled trigger. WI-7230 adds the deliberate exception: `refreshOnRead`
+  // marks a producer as demand-driven, where the absence of reads is the scheduling
+  // policy and a deduplicated background refresh is exactly the requested behavior.
   const excludedProducer = REGISTRY.get(key);
-  if (excludedProducer?.excludeFromDefaultSweep) {
+  if (excludedProducer?.excludeFromDefaultSweep && !excludedProducer.refreshOnRead) {
     if (!declinedWarmKeys.has(key)) {
       declinedWarmKeys.add(key);
       console.warn(
         `[derived-reads] snapshot "${key}" is missing; NOT warming from a read — ` +
-          `excludeFromDefaultSweep producers are filled only by their own dedicated routine.`,
+          `this excludeFromDefaultSweep producer is filled only by its own dedicated routine.`,
       );
     }
     return;
@@ -272,19 +277,27 @@ export async function readDerivedSnapshot<T>(
     // compute storm. Return the miss and let the newer process serve.
     const storedVersion = row ? Number(row.producer_version ?? 1) : null;
     if (storedVersion == null || storedVersion <= producer.producerVersion) {
-      void warmMissedSnapshot(producer.key, workspaceId, harnessSlug);
+      refreshSnapshotFromRead(producer.key, workspaceId, harnessSlug);
     }
     return { payload: null, meta: MISSING_META };
   }
 
   const computedAt = Number(row.computed_at ?? 0) || null;
+  const stale = computedAt !== null && Date.now() - computedAt > producer.ttlMs;
+  // WI-7230: a demand-driven producer has no periodic sweep to heal a stale
+  // snapshot. Notice the stale read, return the last-known-good payload NOW,
+  // and refresh behind it. `warmingKeys` collapses repeated readers to one
+  // in-process compute, exactly as it does for a cold miss.
+  if (stale && producer.refreshOnRead) {
+    refreshSnapshotFromRead(producer.key, workspaceId, harnessSlug);
+  }
   return {
     payload: row.payload as T,
     meta: {
       computedAt,
       computeMs: row.compute_ms ?? null,
       missing: false,
-      stale: computedAt !== null && Date.now() - computedAt > producer.ttlMs,
+      stale,
       error: row.error ?? null,
       precomputed: true,
     },
@@ -297,10 +310,7 @@ export async function readDerivedSnapshot<T>(
  * attaches the staleness meta to `rows[0]._meta` following the house
  * `attachListMeta` convention so a panel can show "as of HH:MM".
  */
-export async function readDerivedSnapshotRows<T>(
-  key: string,
-  opts: { harnessSlug?: string } = {},
-): Promise<T[]> {
+export async function readDerivedSnapshotRows<T>(key: string, opts: { harnessSlug?: string } = {}): Promise<T[]> {
   const { payload, meta } = await readDerivedSnapshot<T[]>(key, opts);
   const rows = Array.isArray(payload) ? payload : [];
   if (rows.length > 0 && rows[0] && typeof rows[0] === 'object') {

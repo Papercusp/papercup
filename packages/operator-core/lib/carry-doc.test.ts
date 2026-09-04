@@ -193,6 +193,32 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
     expect(built.automaticRecovery).toEqual(automaticRecovery());
   });
 
+  it('does not infer caller/session scope from a different persisted loop harness', async () => {
+    const buildAutomaticRecoveryFn = vi.fn(async () => automaticRecovery());
+    const { harness: _callerHarness, ...baseWithoutHarness } = base;
+    const built = await buildCarryDoc('su-1', {
+      ...baseWithoutHarness,
+      buildCarryBriefFn: async () =>
+        brief({
+          loop: {
+            harness: 'persisted-loop-scope',
+            active: true,
+            intervalSec: 60,
+            goal: null,
+            carryNote: '## Next\ngo',
+            carryNoteUpdatedAtMs: NOW,
+          },
+        }),
+      buildAutomaticRecoveryFn,
+    });
+
+    expect(buildAutomaticRecoveryFn).toHaveBeenCalledWith('su-1', 'ws-1', {
+      sessionHarness: null,
+      heldItems: [],
+    });
+    expect(built.identity.harness).toBeNull();
+  });
+
   /**
    * EI-20072281215342526 — the carry document printed the loop's INTERVAL and not its
    * GOAL, so a respawned successor was told a loop existed but not what it was FOR.

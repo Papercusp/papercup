@@ -16,7 +16,7 @@ import { Tooltip } from '../../harness/Tooltip';
 import { useConfirmDialog } from '../../harness/useConfirmDialog';
 import FeatureEditor from '../../harness/FeatureEditor';
 import { LivenessDot, livenessFromHeartbeat } from '../../coord/presence-ui';
-import { useHarnessFeatures, useHarnessIssues, type FeatureStatus, type HarnessFeature } from './useHarnessData';
+import { useHarnessFeature, useHarnessIssues, type FeatureStatus, type HarnessFeature } from './useHarnessData';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { issueAction, issueActionStatus, type IssueActionKind } from './harness-actions';
 import type { WorkItemRow } from './WorkItemsPanel';
@@ -151,10 +151,17 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   // this pane. Navigating to another item clears it (back to the read view).
   const [editId, setEditId] = useQueryState('edit', parseAsString.withDefault(''));
   const selectedId = pinnedId ?? urlSel;
+  const kind = useMemo(() => resolveSelectionKind(selectedId), [selectedId]);
 
-  // Phase 3: live data via Zero (REST bootstrap + Zero overlay), no polling.
-  // The Features/Issues panels subscribe to the same queries → Zero dedups.
-  const { features, patchFeature } = useHarnessFeatures(slug);
+  // Live data via pushed named queries, no polling. A selected feature comes
+  // from the existing one-row detail read rather than mounting the harness-wide
+  // feature corpus merely to find one id. Its hook preserves optimistic patches.
+  const {
+    feature,
+    loading: featureLoading,
+    error: featureError,
+    patchFeature,
+  } = useHarnessFeature(slug, kind === 'feature' ? selectedId : '', kind === 'feature');
   const { issues, patchIssue } = useHarnessIssues(slug);
   // Select-from-Detail (related issue/feature cross-links) drives the global
   // ?sel so the swap panel follows, even when invoked from a pinned panel.
@@ -192,17 +199,10 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   }, [setUrlSel]);
   const onBack = !pinnedId && selHistory.length > 0 ? goBack : undefined;
 
-  const kind = useMemo(() => resolveSelectionKind(selectedId), [selectedId]);
-
-  // P-007: featuresConsolidated.bySlug no longer carries the per-row `summary`
-  // (dropped at the sync boundary — the grid never renders it). Fetch the selected
-  // feature's FULL detail on demand (its own tiny 1-row query, not a fork of the
-  // list key), so the Description prose shows the full summary. Enabled only while
-  // a feature is actually selected. Mirrors the workItems.byHarness/.detail split.
-  const featureDetailWorkspaceId = useWorkspaceId();
-  // P-008: the detail renders at most three runs for ONE selected feature. Push
+  // The detail pane renders at most three runs for ONE selected feature. Push
   // that predicate + limit into the existing agent-runs keyset query instead of
   // subscribing this pane to the harness-wide history window.
+  const featureDetailWorkspaceId = useWorkspaceId();
   const { data: runRows } = useSyncQuery<RunRow>({
     queryName: 'agentRunsConsolidated.bySlug',
     args: {
@@ -213,35 +213,6 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
     },
     enabled: Boolean(slug) && kind === 'feature' && Boolean(selectedId),
   });
-  // The id arg is kind-scoped (WI-39558): a non-feature selection must not
-  // ripple its id into this then-disabled query's args — each ripple forks a
-  // phantom react-query cache key and churns the observer for nothing. Same
-  // for the workItems.detail query below.
-  const featureDetailQuery = useSyncQuery<{ featureId: string; summary?: string | null }>({
-    queryName: 'featuresConsolidated.detail',
-    args: {
-      harnessSlug: slug,
-      featureId: kind === 'feature' ? selectedId : '',
-      workspaceId: featureDetailWorkspaceId,
-    },
-    enabled: Boolean(slug) && kind === 'feature' && Boolean(selectedId),
-  });
-  const featureDetailSummary =
-    !featureDetailQuery.loading && featureDetailQuery.data?.[0]?.featureId === selectedId
-      ? (featureDetailQuery.data[0].summary ?? undefined)
-      : undefined;
-  const feature = useMemo(
-    () => {
-      if (kind !== 'feature') return null;
-      const listFeature = (features ?? []).find((f) => f.id === selectedId) ?? null;
-      if (!listFeature) return null;
-      // Prefer the on-demand detail summary; the list row's summary is now absent.
-      return featureDetailSummary !== undefined
-        ? { ...listFeature, summary: featureDetailSummary }
-        : listFeature;
-    },
-    [kind, features, selectedId, featureDetailSummary],
-  );
   const issue = useMemo(
     () => (kind === 'issue' ? (issues ?? []).find((i) => i.id === selectedId) ?? null : null),
     [kind, issues, selectedId],
@@ -306,12 +277,15 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
     // The id is in the URL but the lists haven't settled yet (or it's a
     // stale selection). Show a brief loading state until the lists load.
     if (
-      features === null ||
+      (kind === 'feature' && featureLoading) ||
       issues === null ||
       (kind === 'workItem' && workItemDetailQuery.loading) ||
       (kind === 'agent' && agentRows === null)
     ) {
       return <Empty>Loading {selectedId}…</Empty>;
+    }
+    if (kind === 'feature' && featureError) {
+      return <Empty tone="error">Unable to load {selectedId}: {featureError}</Empty>;
     }
     // An agent selection goes stale the moment the session ends (the fleet
     // projection only carries working agents) — say that, not "no item".

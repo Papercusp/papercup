@@ -15,6 +15,7 @@ import {
   LENS_DIVERSITY_SAMPLE,
   MIN_ERROR_RATE_DENOMINATOR,
   STRICT_ERROR_RATE_DENOMINATOR,
+  oneSidedBinomialUpperBound,
   programSuccessReadScopes,
   SCOUT_TICK_INSTALL_SLUG,
   type ProgramSuccessReport,
@@ -140,6 +141,20 @@ describe('evaluateProgramSuccess — zero-signal cycles', () => {
 });
 
 describe('evaluateProgramSuccess — cycle error rate', () => {
+  it('computes exact one-sided binomial upper bounds, including nonzero failures', () => {
+    // Clopper–Pearson calibration points: the first is the exact zero-error
+    // special case, while the second is the regression that the old n>=60
+    // heuristic incorrectly called a literal <5% release claim.
+    expect(oneSidedBinomialUpperBound(0, 60)).toBeCloseTo(0.0487029133100975, 12);
+    expect(oneSidedBinomialUpperBound(2, 60)).toBeCloseTo(0.1012358949241616, 12);
+  });
+
+  it('validates exact-bound inputs instead of silently manufacturing a denominator', () => {
+    expect(() => oneSidedBinomialUpperBound(0, 0)).toThrow('trials');
+    expect(() => oneSidedBinomialUpperBound(2, 1)).toThrow('errors');
+    expect(() => oneSidedBinomialUpperBound(1, 2, 1)).toThrow('confidence');
+  });
+
   it('PASSES under the 5% bar', () => {
     const ticks = [...Array(20)].map((_, i) => ranTick({ detail: { cycleId: `c${i}`, signalScore: 5 } }));
     expect(bar(evaluateProgramSuccess(inputs(ticks, [])), 'cycle-error-rate').status).toBe('pass');
@@ -184,14 +199,37 @@ describe('evaluateProgramSuccess — cycle error rate', () => {
     const b = bar(evaluateProgramSuccess(inputs(ticks, [])), 'cycle-error-rate');
     expect(b.status).toBe('pass');
     expect(b.observed).toContain('rejects the ~30% baseline');
-    expect(b.observed).toContain('is NOT yet established');
+    expect(b.observed).toContain('literal 5.0% release bound NOT established');
   });
 
-  it('claims the literal bound only at the strict denominator', () => {
+  it('claims the literal bound when the exact upper confidence bound clears it', () => {
     const ticks = [...Array(STRICT_ERROR_RATE_DENOMINATOR)].map((_, i) => ranTick({ detail: { cycleId: `c${i}` } }));
     const b = bar(evaluateProgramSuccess(inputs(ticks, [])), 'cycle-error-rate');
     expect(b.status).toBe('pass');
     expect(b.observed).toContain('bound supported at 95%');
+    expect(b.observed).toContain('upper bound 4.9%');
+  });
+
+  it('keeps the historical-baseline pass but refuses a literal release claim for 2/60 errors', () => {
+    const ticks: ScoutTickRecord[] = [
+      ...[...Array(58)].map((_, i) => ranTick({ detail: { cycleId: `c${i}` } })),
+      { status: 'error', detail: { cycleId: 'err-1' } },
+      { status: 'error', detail: { cycleId: 'err-2' } },
+    ];
+    const b = bar(evaluateProgramSuccess(inputs(ticks, [])), 'cycle-error-rate');
+    expect(b.status).toBe('pass');
+    expect(b.observed).toContain('rejects the ~30% baseline');
+    expect(b.observed).toContain('literal 5.0% release bound NOT established at 95%');
+    expect(b.observed).toContain('upper bound 10.1%');
+    expect(b.observed).not.toContain('release bound supported at 95%');
+  });
+
+  it('can clear the literal target before the legacy 60-cycle heuristic', () => {
+    const ticks = [...Array(59)].map((_, i) => ranTick({ detail: { cycleId: `c${i}` } }));
+    const b = bar(evaluateProgramSuccess(inputs(ticks, [])), 'cycle-error-rate');
+    expect(b.status).toBe('pass');
+    expect(oneSidedBinomialUpperBound(0, 59)).toBeLessThan(0.05);
+    expect(b.observed).toContain('literal 5.0% release bound supported at 95%');
   });
 
   // The guard is ASYMMETRIC on purpose: an observed error is positive evidence of

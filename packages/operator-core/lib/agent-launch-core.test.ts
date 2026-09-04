@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -231,16 +232,37 @@ describe('buildAgentLaunchCommand', () => {
     );
   });
 
-  it('passes extraArgs through verbatim but refuses shell metacharacters', () => {
+  it('shell-quotes extraArgs so structured JSON reaches psu as one argv value', () => {
     expect(
       buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', extraArgs: ['--model=opus', '--brain'] }),
     ).toBe('psu --no-picker --account=default --agent=claude --model=opus --brain');
-    expect(() =>
-      buildAgentLaunchCommand({ mode: 'fresh', extraArgs: ['--x=$(rm -rf /)'] }),
-    ).toThrow(/shell metacharacters/);
-    expect(() => buildAgentLaunchCommand({ mode: 'fresh', extraArgs: ['a; b'] })).toThrow(
-      /shell metacharacters/,
+
+    const offenderList = JSON.stringify({
+      files: [
+        {
+          scope: 'superproject',
+          file: 'apps/operator-docs/src/content/docs/example.mdx',
+          detector: 'mdx',
+          error: "unexpected ';' and $(touch /tmp/pwned)",
+        },
+      ],
+    });
+    const command = buildAgentLaunchCommand({
+      mode: 'fresh',
+      agent: 'claude',
+      extraArgs: ['--git-sync-content-error', offenderList],
+    });
+
+    expect(command).toContain('--git-sync-content-error');
+    // The command runs in a shell greeting. Replacing psu with printf verifies
+    // that shell metacharacters remain literal and the JSON survives as one
+    // argument, rather than becoming command syntax.
+    const output = execFileSync(
+      'bash',
+      ['-lc', command.replace(/^psu /, "printf '%s\\n' ")],
+      { encoding: 'utf8' },
     );
+    expect(output.trimEnd().split('\n').at(-1)).toBe(offenderList);
   });
 
   // P-002: the per-member launch fields the general door now composes (so a

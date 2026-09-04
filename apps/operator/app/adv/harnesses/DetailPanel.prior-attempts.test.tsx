@@ -53,7 +53,7 @@ vi.mock('@papercusp/sync', () => ({
   },
 }));
 vi.mock('./useHarnessData', () => ({
-  useHarnessFeatures: () => ({ features: [], patchFeature: vi.fn() }),
+  useHarnessFeature: () => ({ feature: null, loading: false, error: null, patchFeature: vi.fn() }),
   useHarnessIssues: () => ({ issues: [], patchIssue: vi.fn() }),
 }));
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));

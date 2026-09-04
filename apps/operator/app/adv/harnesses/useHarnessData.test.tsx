@@ -42,7 +42,7 @@ vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'workspace-test
 import {
   parseWorkingUsers,
   useHarnessAgents,
-  useHarnessFeatures,
+  useHarnessFeature,
   useHarnessIssues,
   useHarnessHookLogs,
 } from './useHarnessData';
@@ -105,26 +105,27 @@ describe('parseWorkingUsers', () => {
   });
 });
 
-// ── useHarnessFeatures ──────────────────────────────────────────────────────
+// ── useHarnessFeature ───────────────────────────────────────────────────────
 
-describe('useHarnessFeatures', () => {
+describe('useHarnessFeature', () => {
   it('surfaces a sync failure without issuing a REST fallback', async () => {
-    syncState.set('featuresConsolidated.bySlug', { data: undefined, loading: false, error: new Error('sync unavailable') });
-    const { result } = renderHook(() => useHarnessFeatures('sheets'));
+    syncState.set('featuresConsolidated.detail', { data: undefined, loading: false, error: new Error('sync unavailable') });
+    const { result } = renderHook(() => useHarnessFeature('sheets', 'F-010'));
     await waitFor(() => expect(result.current.error).toBe('sync unavailable'));
-    expect(result.current.features).toBeNull();
+    expect(result.current.feature).toBeNull();
     expect(result.current.loading).toBe(false);
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it('returns null features without fetching when slug is empty', () => {
-    const { result } = renderHook(() => useHarnessFeatures(''));
-    expect(result.current.features).toBeNull();
+  it('returns a disabled null feature without fetching when slug is empty', () => {
+    const { result } = renderHook(() => useHarnessFeature('', 'F-010'));
+    expect(result.current.feature).toBeNull();
+    expect(result.current.loading).toBe(false);
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it('maps sync rows defensively', async () => {
-    syncState.set('featuresConsolidated.bySlug', {
+  it('maps the selected detail row defensively', async () => {
+    syncState.set('featuresConsolidated.detail', {
       loading: false,
       data: [
         {
@@ -139,9 +140,9 @@ describe('useHarnessFeatures', () => {
         },
       ],
     });
-    const { result } = renderHook(() => useHarnessFeatures('sheets'));
-    await waitFor(() => expect(result.current.features).not.toBeNull());
-    expect(result.current.features![0]).toEqual({
+    const { result } = renderHook(() => useHarnessFeature('sheets', 'F-010'));
+    await waitFor(() => expect(result.current.feature).not.toBeNull());
+    expect(result.current.feature).toEqual({
       id: 'F-010',
       title: 'Sync row',
       summary: undefined,
@@ -153,29 +154,32 @@ describe('useHarnessFeatures', () => {
       tags: ['a', 'b'],
       workingUsers: [12, 34],
     });
+    expect(seenQueryArgs.get('featuresConsolidated.detail')).toEqual({
+      harnessSlug: 'sheets',
+      featureId: 'F-010',
+      workspaceId: 'workspace-test',
+    });
   });
 
   it('treats an empty sync result as authoritative', async () => {
-    syncState.set('featuresConsolidated.bySlug', { loading: false, data: [] });
-    const { result } = renderHook(() => useHarnessFeatures('sheets'));
-    await waitFor(() => expect(result.current.features).not.toBeNull());
-    expect(result.current.features).toEqual([]);
+    syncState.set('featuresConsolidated.detail', { loading: false, data: [] });
+    const { result } = renderHook(() => useHarnessFeature('sheets', 'F-404'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.feature).toBeNull();
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it('patchFeature merges a partial into the matching feature only', async () => {
-    syncState.set('featuresConsolidated.bySlug', { loading: false, data: [
-      { featureId: 'F-001', title: 'One', status: 'todo', attempts: 0 },
+  it('patchFeature merges a partial only when the selected id matches', async () => {
+    syncState.set('featuresConsolidated.detail', { loading: false, data: [
       { featureId: 'F-002', title: 'Two', status: 'todo', attempts: 0 },
     ] });
-    const { result } = renderHook(() => useHarnessFeatures('sheets'));
-    await waitFor(() => expect(result.current.features).not.toBeNull());
+    const { result } = renderHook(() => useHarnessFeature('sheets', 'F-002'));
+    await waitFor(() => expect(result.current.feature).not.toBeNull());
     act(() => result.current.patchFeature('F-002', { status: 'passed' }));
-    expect(result.current.features!.find((f) => f.id === 'F-002')!.status).toBe('passed');
-    expect(result.current.features!.find((f) => f.id === 'F-001')!.status).toBe('todo');
+    expect(result.current.feature!.status).toBe('passed');
     // unknown id → no-op, no throw
     act(() => result.current.patchFeature('F-404', { status: 'failing' }));
-    expect(result.current.features).toHaveLength(2);
+    expect(result.current.feature!.status).toBe('passed');
   });
 });
 

@@ -45,9 +45,10 @@ export const LATENCY_BUDGET_MS = 150; // compute time on the operator
  *  so this map cannot silently fall behind the registry. Extend it (don't work
  *  around it) when you add an arg-requiring sync query.
  *
- *  `null` = intentionally UNMEASURABLE in a generic audit (needs a per-run id
- *  that does not exist as a stable fixture — e.g. a specific run/session/cycle
- *  id). Listed so coverage is explicit; the live audit skips these. */
+ *  `null` = intentionally NOT PROBED by the generic audit: either the query
+ *  needs an unstable per-run id, or it is demand-driven with no product client
+ *  and probing it would make the audit its only consumer. Listed so coverage is
+ *  explicit; the live audit skips these. */
 export type QueryFixture = Record<string, unknown> | null;
 
 /** The args most harness/workspace-scoped reads need. The coverage guard tries
@@ -60,12 +61,12 @@ export const DEFAULT_HARNESS_ARGS: Record<string, unknown> = {
   workspaceId: 'papercusp-workspace',
 };
 
-/** EXPLICIT fixtures — only where DEFAULT_HARNESS_ARGS does NOT satisfy the
- *  argsSchema. `null` = intentionally UNMEASURABLE in a generic audit (needs a
- *  per-run id with no stable fixture — a specific run/feature/cycle/conversation
- *  id); listed so coverage is explicit and the live audit skips it. A non-null
- *  entry supplies the specific args the query requires. Extend this (don't work
- *  around the guard) when you add an arg-requiring sync query the default misses. */
+/** EXPLICIT fixtures — queries that need representative args OR must not be
+ *  probed by the generic audit. `null` means intentionally skipped: usually no
+ *  stable fixture exists, but it also protects a demand-driven zero-client read
+ *  from having the audit become its only consumer. A non-null entry supplies the
+ *  specific args the query requires. Extend this (don't work around the guard)
+ *  when you add an arg-requiring sync query the default misses. */
 export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   // ── measurable with specific (non-default) args ──
   'workItems.byHarness': { harnessSlug: 'papercusp', limit: 500 },
@@ -82,6 +83,12 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   // consumer ever DOES call plans.items unfiltered, change this fixture back to
   // `{}` rather than allowlisting the result.
   'plans.items': { actionable: true },
+  // WI-7230: plans.lint has no product consumer and its ~159s producer is now
+  // demand-driven. The audit enumerates every registered nullary query, so `{}`
+  // here would make this daily instrument the producer's only reader and silently
+  // turn it back into scheduled work. Remove this null when a real client starts
+  // consuming the list; that client read will then own the background refresh.
+  'plans.lint': null,
   // plans.list declares NO argsSchema (sync-resolver/index.ts: "coarse, no args …
   // the underlying tool validates its own args"), so WITHOUT this entry
   // resolveFixture falls through to `{}` — a shape NO client ever requests. Every
@@ -247,12 +254,6 @@ export const SYNC_READ_ALLOWLIST: Record<string, SyncReadAllowlistEntry> = {
       'The /admin/recipes corpus (LIMIT 1000 of 8,923 recipes). WI-7085 found this was the FATTEST sync read in the tree at 2,936,018 B — ~11.7x budget, unallowlisted, and never measured by anything until the full 175-query audit ran. NOT the WI-7083 fabricated-row class (distinct id 1000/1000, ratio 1.0000): it was the unread-field class (D-023) in its purest form, with `script` — the recipe BODY — alone accounting for 2,309,736 B / 79.21% of the payload. No list caller had ever read it (recipes:list, the learning-retain read and this resolver each projected it straight back off), so listRecipes now returns CodeRecipeListRow and never SELECTs it — saving the Postgres->node leg too, not just the wire. A UI-read allow-list (code-recipes-ui-projection.ts) then dropped 7 more unread columns and, per D-025, the null-valued keys (promotedTool null on 1000/1000). Measured live 2,906,331 -> 393,406 B (-2,512,925 B, -86.46%) on a SIMULTANEOUS two-operator paired fetch: 0 rows lost, 0 rows added, 0 read-set value diffs, 0 residual nulls. Over the 250KB budget and honestly so: the residual is 382 B/row x 1000 rows of exclusively rendered fields (description 29%, title 17%, id 16%, lastRunAt 11%). The next real cut is windowing the list itself, not fewer bytes per row.',
     reviewBy: '2026-09-01',
   },
-  'featuresConsolidated.bySlug': {
-    maxBytes: 520_000,
-    reason:
-      "Bounded feature list. P-007 dropped the heavy per-row summary at the sync boundary (detail on demand). WI-7203 then removed the last per-row waste: `harnessSlug` (1,606 copies of the very slug the caller passes in args — redundant, the same cut agentRunsConsolidated.recent made) and `updatedTs` (ORDER BY only, server-side), NEITHER of which the sole consumer's SyncFeatureRow even declares, plus the D-025 null-omit (claims null on 1,560 of 1,606 rows, tags on 1,603, sourcePlanSlug on 437). Measured 637,015 -> 502,813 B (-21.1%), lossless. ⚠ THE CEILING WENT UP 500,000 -> 520,000 AND THE JUSTIFICATION MUST BE READ, because raising a ceiling to silence a red is normally the anti-pattern: this is a re-ratchet AFTER the fix, not instead of it, and PER-ROW cost FELL 394 -> 313 B/row (-20%). The 500,000 was set against ~1,181 rows; there are now 1,606 (+36%), so the breach was pure ROW GROWTH against a fixed byte ceiling — something no per-row projection can ever answer. All 9 surviving columns are genuinely read, and `title` (42.76%) is already capped at ~200 chars upstream (p50=p90=p99=200), so no honest per-row cut remains. THE NEXT BREACH IS A WINDOWING TRIGGER, NOT ANOTHER RAISE (WI-7209).",
-    reviewBy: '2026-09-01',
-  },
   'featuresConsolidated.byHive': {
     maxBytes: 450_000,
     reason:
@@ -373,7 +374,7 @@ export interface SyncReadAuditReport {
    * number, and it has since drifted past it.
    */
   ratchetRegressions: SyncReadMeasurement[];
-  skipped: string[]; // fixture === null (unmeasurable generically)
+  skipped: string[]; // fixture === null (intentionally not probed)
   budgetBytes: number;
   budgetMs: number;
   /**

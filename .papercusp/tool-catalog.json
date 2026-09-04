@@ -19566,7 +19566,7 @@
           "POST"
         ]
       },
-      "description": "Record one of two plan-audit phases. `completion` (default) checks changed items against resolving code/test citations; prior entries retain provenance. `activation` maps canonical session_turn refs to current P-NNN/D-NNN/sections, resolves every ref, and records the exact current revision. For post-epoch plans it also transactionally seeds one acceptance BAR per `## Requirements` R-N using the existing `### Bar-to-work map for this plan`; any parse/map/projection failure rolls the audit back. No parallel review tool exists.",
+      "description": "Record a plan audit: `completion` (default) re-resolves each item's code/test citations and preserves provenance; `activation` maps canonical `session_turn` refs to P-NNN/D-NNN/sections, resolves them, and records the current revision. Post-epoch activation also transactionally seeds acceptance BARs from the plan's `## Requirements`/`### Bar-to-work map`; parse, map, or projection failures roll back. No parallel review tool exists.",
       "capabilities": [
         "plans:write"
       ],
@@ -19627,9 +19627,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Before ready/active, read the COMPLETE source conversation (never memory/summary), map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions; ensure every `## Requirements` R-N has exactly one row in Design's Bar-to-work map (optional third column: tree|deployed|live); then use `activation`. Before shipped, use `completion` and compare items to ACTUAL CODE.",
-        "notWhen": "Using completion phase mid-implementation. Grading against an acceptance rubric — scorecards:emit. Recording a decision — plans:add-decision. Activation auditing with unresolved/open mappings — repair the plan first.",
-        "chaining": "sessions:search/read → repair omissions → activation audit → ready. Later edits preserve the audit and return audited/current revision id/seq/contentHash. Re-audit when an edit changes requirements, scope, constraints, decisions, dependencies, sequencing, acceptance criteria, open questions, promised follow-ups; spelling, formatting, cosmetic-only wording do not require it. Completion: plans:audit → rubric/scorecard → shipped."
+        "when": "Before ready/active, read the COMPLETE source conversation (not memory/summary); map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions; ensure each `## Requirements` R-N has one Design Bar-to-work map row (optional `tree|deployed|live`); use `activation`. Before shipped, use `completion` against ACTUAL CODE.",
+        "notWhen": "Not mid-implementation. Grade a rubric with scorecards:emit; record a decision with plans:add-decision; repair unresolved/open activation mappings before auditing.",
+        "chaining": "sessions:search/read → repair omissions → activation audit → ready. Later edits preserve the audit and return audited/current revision id/seq/contentHash; re-audit after changes to requirements, scope, constraints, decisions, dependencies, sequencing, acceptance criteria, open questions, promised follow-ups; spelling, formatting, cosmetic-only wording need no re-audit. Completion: plans:audit → rubric/scorecard → shipped."
       }
     },
     {
