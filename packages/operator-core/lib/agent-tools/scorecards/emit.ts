@@ -561,8 +561,10 @@ export async function emitScorecard(
       // start/ship doors. This is intentionally before deterministic checks and
       // task cleanup, so a BAR-only or divergent contract is refused before a
       // costly grading pass is spent.
-      if (rubric.barContract?.adoptionEpoch != null) {
-        const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(args.rubricRef, 'pre-grading');
+      if (rubric.barContract?.adoptionEpoch != null && rubric.subjectPlan) {
+        const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(rubric.subjectPlan, 'pre-grading', {
+          expectedApplicable: true,
+        });
         if (!lifecycle.satisfied) {
           return {
             ok: false as const,
