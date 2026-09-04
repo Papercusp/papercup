@@ -45,6 +45,30 @@ describe('deriveTickFreezeDisposition — P-008 per-tick backstop', () => {
     expect(d.reason).toContain('went green');
   });
 
+  it('P-025: derives `unreadable` instead of `none` for a present newer-schema queue', () => {
+    const d = deriveTickFreezeDisposition({
+      flagEnabled: true,
+      repairQueue: null,
+      repairQueueRead: {
+        status: 'unreadable',
+        reason: 'schema-newer-than-reader',
+        schemaVersion: 5,
+      },
+      summary: 'no candidate is frozen this tick',
+      green: null,
+    });
+    expect(d).toMatchObject({
+      enabled: true,
+      state: 'unreadable',
+      candidate: null,
+    });
+    expect(d.reason).toContain('schema-newer-than-reader');
+    expect(d.reason).toContain('refusing to conclude');
+    const stored = buildFreezeAndConvergeGateHealth(d, T0);
+    expect(readFreezeAndConverge(stored)).toMatchObject({ state: 'unreadable' });
+    expect(summarizeFreezeAndConverge(stored, T0)).toContain('queue is UNREADABLE');
+  });
+
   it('derives `off` whenever the owner flag is off, whatever else the tick did', () => {
     const d = deriveTickFreezeDisposition({
       flagEnabled: false,

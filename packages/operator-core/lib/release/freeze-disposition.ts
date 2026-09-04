@@ -24,6 +24,8 @@
  * This module performs no git, filesystem, database, or process work.
  */
 
+import type { FrozenCandidateRepairQueueRead } from './frozen-candidate-repair-queue';
+
 /**
  * What the gate did with freeze-and-converge on this tick.
  *
@@ -43,7 +45,9 @@ export type FreezeAndConvergeState =
   /** A frozen candidate was RETIRED this tick; the gate falls through to a fresher candidate. */
   | 'retired'
   /** A frozen candidate is live and being repaired (fixer dispatched, or repairHead advancing). */
-  | 'converging';
+  | 'converging'
+  /** A persisted queue exists, but this build cannot interpret it. Never equivalent to `none`. */
+  | 'unreadable';
 
 export interface FreezeAndConvergeDisposition {
   /** Is the mechanism switched on at all? False ONLY for state 'off'. */
@@ -121,6 +125,8 @@ export interface TickFreezeObservation {
   flagEnabled: boolean;
   /** The frozen repair queue the tick ended holding, when there was one. */
   repairQueue?: { candidate?: string | null } | null;
+  /** P-025: typed queue-read health. `unreadable` outranks any absence-shaped fallback. */
+  repairQueueRead?: FrozenCandidateRepairQueueRead;
   /** The run's own one-line summary — the honest reason when no branch recorded a richer one. */
   summary?: string | null;
   /** Did the tick reach a green verdict? */
@@ -160,6 +166,18 @@ export function deriveTickFreezeDisposition(
         'FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT is OFF (owner-set): this tick did not ' +
         'freeze anything, and the next tick re-cuts at tip',
       candidate,
+    };
+  }
+  if (observation.repairQueueRead?.status === 'unreadable') {
+    const read = observation.repairQueueRead;
+    const schema = read.schemaVersion === null ? 'unknown' : String(read.schemaVersion);
+    return {
+      enabled: true,
+      state: 'unreadable',
+      reason:
+        `a persisted frozen repair queue is unreadable (${read.reason}, schema ${schema}); ` +
+        'refusing to conclude that no candidate is frozen or to cut a moving candidate',
+      candidate: null,
     };
   }
   if (candidate) {
@@ -207,6 +225,9 @@ export function summarizeFreezeAndConverge(
   const subject = record.candidate
     ? ` (candidate ${record.candidate.slice(0, 12)})`
     : '';
+  if (record.state === 'unreadable') {
+    return `freeze-and-converge queue is UNREADABLE: ${record.reason}${staleNote}`;
+  }
   const head = record.enabled
     ? `freeze-and-converge is ON, ${record.state}${subject}`
     : `freeze-and-converge is OFF${subject}`;
@@ -233,7 +254,8 @@ export function readFreezeAndConverge(
     state === 'none' ||
     state === 'held' ||
     state === 'retired' ||
-    state === 'converging';
+    state === 'converging' ||
+    state === 'unreadable';
   if (!validState) return null;
   if (typeof r['enabled'] !== 'boolean') return null;
   if (typeof r['reason'] !== 'string' || r['reason'] === '') return null;
@@ -279,7 +301,8 @@ export type FreezeDispositionCode =
   | 'none'
   | 'held'
   | 'retired'
-  | 'converging';
+  | 'converging'
+  | 'unreadable';
 
 /**
  * PURE: what should a reader conclude from this disposition, right now?
