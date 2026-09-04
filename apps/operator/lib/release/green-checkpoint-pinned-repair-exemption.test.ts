@@ -20,15 +20,19 @@ import { describe, expect, it } from "vitest";
 import { isJudgingPinnedActiveRepair } from "./green-checkpoint";
 
 describe("isJudgingPinnedActiveRepair — the fossil verdict exemption (plan D-004)", () => {
-  const CAND = "ba345f31b1c0ffee";
+  const BASE = "ba345f31b1c0ffee";
+  const HEAD = "ca456f42c2d1feed";
+  const ACTIVE_QUEUE = {
+    candidate: BASE,
+    repairHead: HEAD,
+    phase: "ready-to-verify" as const,
+  };
 
-  it("exempts a live pin on the candidate actually being judged", () => {
+  it("exempts the live repairHead after admissions move it past the frozen candidate", () => {
     expect(
       isJudgingPinnedActiveRepair({
-        candidate: CAND,
-        repairCandidate: CAND,
-        repairPhase: "ready-to-verify",
-        repairBlockedReason: null,
+        candidate: HEAD,
+        repairQueue: ACTIVE_QUEUE,
       }),
     ).toBe(true);
   });
@@ -36,21 +40,28 @@ describe("isJudgingPinnedActiveRepair — the fossil verdict exemption (plan D-0
   it("does NOT exempt an accidentally-stale candidate — the rule's original job survives", () => {
     // No queue at all: this is the EI-21436432400491183 case the withholding was written for, and
     // it must keep behaving exactly as before.
-    expect(isJudgingPinnedActiveRepair({ candidate: CAND })).toBe(false);
+    expect(isJudgingPinnedActiveRepair({ candidate: HEAD })).toBe(false);
     expect(
-      isJudgingPinnedActiveRepair({ candidate: CAND, repairCandidate: null }),
+      isJudgingPinnedActiveRepair({ candidate: HEAD, repairQueue: null }),
     ).toBe(false);
   });
 
-  it("does NOT exempt when the pin names a DIFFERENT sha than the one being judged", () => {
+  it("does NOT exempt the frozen base after the repairHead has moved", () => {
+    expect(
+      isJudgingPinnedActiveRepair({
+        candidate: BASE,
+        repairQueue: ACTIVE_QUEUE,
+      }),
+    ).toBe(false);
+  });
+
+  it("does NOT exempt when repairHead names a DIFFERENT sha than the one being judged", () => {
     // The dangerous confusion: a queue exists, but this verdict is about some other candidate, so
     // publishing it would be exactly the mis-dispatch the withholding prevents.
     expect(
       isJudgingPinnedActiveRepair({
-        candidate: CAND,
-        repairCandidate: "deadbeefdeadbeef",
-        repairPhase: "ready-to-test",
-        repairBlockedReason: null,
+        candidate: "deadbeefdeadbeef",
+        repairQueue: ACTIVE_QUEUE,
       }),
     ).toBe(false);
   });
@@ -58,20 +69,24 @@ describe("isJudgingPinnedActiveRepair — the fossil verdict exemption (plan D-0
   it("does NOT exempt a repair that has already given up", () => {
     expect(
       isJudgingPinnedActiveRepair({
-        candidate: CAND,
-        repairCandidate: CAND,
-        repairPhase: "blocked",
-        repairBlockedReason: "attempts-exhausted",
+        candidate: HEAD,
+        repairQueue: {
+          ...ACTIVE_QUEUE,
+          phase: "blocked",
+          blockedReason: "attempts-exhausted",
+        },
       }),
     ).toBe(false);
     // blockedReason alone is disqualifying, so a phase/reason skew cannot publish a dead repair's
     // red.
     expect(
       isJudgingPinnedActiveRepair({
-        candidate: CAND,
-        repairCandidate: CAND,
-        repairPhase: "ready-to-test",
-        repairBlockedReason: "attempts-exhausted",
+        candidate: HEAD,
+        repairQueue: {
+          ...ACTIVE_QUEUE,
+          phase: "ready-to-test",
+          blockedReason: "attempts-exhausted",
+        },
       }),
     ).toBe(false);
   });
@@ -81,19 +96,17 @@ describe("isJudgingPinnedActiveRepair — the fossil verdict exemption (plan D-0
     // must be a function of the pin's identity and liveness only. If age ever became an input here
     // the 2026-08-26 livelock (pin held + red withheld) would be back.
     const exemption = isJudgingPinnedActiveRepair({
-      candidate: CAND,
-      repairCandidate: CAND,
-      repairPhase: "ready-to-verify",
-      repairBlockedReason: null,
+      candidate: HEAD,
+      repairQueue: ACTIVE_QUEUE,
     });
     expect(exemption).toBe(true);
     // Structural half of the same claim: the predicate's input shape carries no clock at all.
     const shape: Parameters<typeof isJudgingPinnedActiveRepair>[0] = {
-      candidate: CAND,
-      repairCandidate: CAND,
-      repairPhase: "ready-to-verify",
-      repairBlockedReason: null,
+      candidate: HEAD,
+      repairQueue: ACTIVE_QUEUE,
     };
-    expect(Object.keys(shape).some((k) => /age|now|committed|stall/i.test(k))).toBe(false);
+    expect(
+      Object.keys(shape).some((k) => /age|now|committed|stall/i.test(k)),
+    ).toBe(false);
   });
 });
