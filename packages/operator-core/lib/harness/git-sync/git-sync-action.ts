@@ -1056,7 +1056,7 @@ async function acquireLocks(
       // workspace-lock contention spike delays — but does not multi-minute-stall —
       // the commit, instead of skipping the tick outright.
       r = await acquireOne();
-      if (!r.ok && r.reason === 'held_exclusive') {
+      if (!r.ok && (r.reason === 'held_exclusive' || r.reason === 'exclusive_pending')) {
         // A killed bg-host leaves a fresh-looking exclusive row behind. Give
         // this fire one proof-safe reclaim attempt before treating it as a live
         // peer; the helper scopes release by lock_id and accepts exactly two
