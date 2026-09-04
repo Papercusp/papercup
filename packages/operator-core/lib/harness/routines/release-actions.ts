@@ -702,6 +702,8 @@ export interface CheckpointVerdict {
   /** WI-4957: this run's own identity (structural mirror of CheckpointResult.runId) —
    *  distinguishes two runs that happen to judge the same candidate sha. */
   runId?: string;
+  /** WI-22344736163383832: candidate-selection timestamp, when the producer can attest it. */
+  selectedAtMs?: number;
   /** WI-4957: the full-suite output log this run wrote (structural mirror of
    *  CheckpointResult.logPath), when produced. */
   logPath?: string;
@@ -3045,7 +3047,11 @@ export async function trackGateStall(
   // primary producer of the fixer-succession axis. Keeping one decision call preserves
   // WI-42116's "exactly one production call site" invariant while letting that third axis speak
   // from the otherwise-noop branch.
-  const ladderTracksVerdict = gateClass === 'red' || gateClass === 'record-only';
+  // A promotion-pending GREEN is a real suite result, but not yet the terminal promotion
+  // disposition. It therefore carries the existing red episode without participating in the
+  // ladder: a stale `lastGreenAt` must not turn this record-only bridge into a fresh age rung.
+  const pendingGreen = promotionPending && options.green === true;
+  const ladderTracksVerdict = !pendingGreen && (gateClass === 'red' || gateClass === 'record-only');
   const recordOnly = gateClass === 'record-only';
   const alreadyCountedPending = !promotionPending && !!options.runId && gh.pendingRunId === options.runId;
   const carryStreak = recordOnly || alreadyCountedPending;
@@ -3053,33 +3059,48 @@ export async function trackGateStall(
     ? carryStreak
       ? (gh.consecutiveReds ?? 0)
       : (gh.consecutiveReds ?? 0) + 1
-    : 0;
-  const firstRedAt = ladderTracksVerdict
-    ? carryStreak
-      ? (gh.firstRedAt ?? null)
-      : (gh.firstRedAt ?? Date.now())
-    : (gh.firstRedAt ?? null);
+    : pendingGreen
+      ? (gh.consecutiveReds ?? 0)
+      : 0;
+  const firstRedAt =
+    ladderTracksVerdict && !carryStreak ? (gh.firstRedAt ?? Date.now()) : (gh.firstRedAt ?? null);
   const lastGreenAt = gh.lastGreenAt ?? null;
   const stallAgeMs = ladderTracksVerdict && lastGreenAt != null ? Date.now() - lastGreenAt : null;
   const fixerAxisEligible =
     fixerSuccession != null && (status === 'repair-in-progress' || status === 'repair-staging-mismatch');
   const currentFixerSuccession = fixerAxisEligible ? fixerSuccession : null;
-  const ladder = decideStallNotification({
-    consecutiveReds,
-    stallAgeMs,
-    stallRedsThreshold: releaseCheckpointConfig().stallReds,
-    stallAgeThresholdMs: releaseCheckpointConfig().stallAgeMs,
-    fixerSuccessionAgeMs: currentFixerSuccession?.ageMs ?? null,
-    fixerSuccessionThresholdMs: FIXER_SUCCESSION_STALL_MS,
-    fixerSuccessionKey: currentFixerSuccession?.key ?? null,
-    marks: {
-      stallAlertedAtReds: ladderTracksVerdict ? (gh.stallAlertedAtReds ?? null) : null,
-      stallAlertedAtAgeMs: ladderTracksVerdict ? (gh.stallAlertedAtAgeMs ?? null) : null,
-      stallAlertedAtFixerAgeMs: gh.stallAlertedAtFixerAgeMs ?? null,
-      stallFixerSuccessionKey: gh.stallFixerSuccessionKey ?? null,
-      stallAlerted: ladderTracksVerdict ? (gh.stallAlerted ?? false) : false,
-    },
-  });
+  const ladder = pendingGreen
+    ? {
+        shouldNotify: false,
+        axis: null,
+        rung: null,
+        rungIndex: null,
+        // This bridge is not a ladder observation. Preserve the prior marks verbatim so a
+        // pending result cannot clear or advance an episode that the terminal verdict still owns.
+        marks: {
+          stallAlertedAtReds: gh.stallAlertedAtReds ?? null,
+          stallAlertedAtAgeMs: gh.stallAlertedAtAgeMs ?? null,
+          stallAlertedAtFixerAgeMs: gh.stallAlertedAtFixerAgeMs ?? null,
+          stallFixerSuccessionKey: gh.stallFixerSuccessionKey ?? null,
+        },
+        reason: 'promotion-pending GREEN — carrying the prior stall ladder without observing a new rung',
+      }
+    : decideStallNotification({
+        consecutiveReds,
+        stallAgeMs,
+        stallRedsThreshold: releaseCheckpointConfig().stallReds,
+        stallAgeThresholdMs: releaseCheckpointConfig().stallAgeMs,
+        fixerSuccessionAgeMs: currentFixerSuccession?.ageMs ?? null,
+        fixerSuccessionThresholdMs: FIXER_SUCCESSION_STALL_MS,
+        fixerSuccessionKey: currentFixerSuccession?.key ?? null,
+        marks: {
+          stallAlertedAtReds: ladderTracksVerdict ? (gh.stallAlertedAtReds ?? null) : null,
+          stallAlertedAtAgeMs: ladderTracksVerdict ? (gh.stallAlertedAtAgeMs ?? null) : null,
+          stallAlertedAtFixerAgeMs: gh.stallAlertedAtFixerAgeMs ?? null,
+          stallFixerSuccessionKey: gh.stallFixerSuccessionKey ?? null,
+          stallAlerted: ladderTracksVerdict ? (gh.stallAlerted ?? false) : false,
+        },
+      });
   const stallAlertedAtReds = ladder.marks.stallAlertedAtReds;
   const stallAlertedAtAgeMs = ladder.marks.stallAlertedAtAgeMs;
   const stallAlertedAtFixerAgeMs = fixerLivenessUnknown
