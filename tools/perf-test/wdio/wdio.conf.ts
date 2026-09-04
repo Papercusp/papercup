@@ -19,6 +19,7 @@ import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import {
+  hasRunOutcomeMeasure,
   operatorBaseUrl,
   readMeasures,
   recordHostPressure,
@@ -207,7 +208,7 @@ const installedAppTree = require(
 };
 
 /**
- * Prefer a COMPLETE app tree, not merely an existing binary.
+ * Prefer a COMPLETE thin-GUI app tree, not merely an existing binary.
  *
  * WHY COMPLETENESS AND NOT JUST EXISTENCE (EI-18885442084466501). This function
  * used to return the first path that existed, and the first candidate it tried
@@ -224,7 +225,8 @@ const installedAppTree = require(
  * completeness is the third axis, and it is the one that decides whether the
  * measurement describes the shipping configuration or a fallback.
  *
- * Bundle paths therefore come FIRST — only a bundled tree can be complete.
+ * Bundle paths therefore come FIRST — only a bundled tree can carry the SPA
+ * resources that the attach-only GUI measures.
  */
 function resolveTauriAppPath(): string {
   if (process.env.TAURI_APP_PATH) return process.env.TAURI_APP_PATH;
@@ -266,7 +268,7 @@ function resolveTauriAppPath(): string {
 const TAURI_APP_PATH = resolveTauriAppPath();
 
 /**
- * Refuse to measure an app that cannot start its own operator.
+ * Refuse to measure a GUI artifact that cannot render its packaged shell.
  *
  * This is the detector that was missing (EI-18885442084466501). Without it the
  * suite spent 3m19s producing four identical `operator UI did not mount in 30s`
@@ -278,13 +280,10 @@ const TAURI_APP_PATH = resolveTauriAppPath();
  * It fails rather than warns, and it fails BEFORE tauri-driver is spawned, for
  * two reasons:
  *
- * 1. There is no useful degraded mode. A sidecar-less app falls back to a
- *    foreign environment reached over HTTP — so it would still mount eventually
- *    under a longer wait, and then report timings and egress for a configuration
- *    the product does not ship. For the egress invariant specifically that is
- *    worse than no data: the whole point of `webview-http-egress.perf.spec.ts` is
- *    that the shell reaches its operator over IPC, and a fallback run could show
- *    a green zero for a shell that has no operator to talk to at all.
+ * 1. There is no useful degraded mode. The thin GUI deliberately does not own
+ *    the operator sidecar; it must contain the packaged SPA and attach to the
+ *    separately-running Server. Measuring a package without that SPA describes
+ *    neither shipping product.
  * 2. A hard stop here is what lets the mount wait be generous. Once the
  *    structural failure is caught in ~1ms, a long UI-mount timeout only ever
  *    costs time on a genuinely slow boot, never on a broken build.
@@ -415,6 +414,18 @@ function isDebugBinary(): boolean {
 
 async function publishMeasures(): Promise<void> {
   const measures = readMeasures();
+  if (!hasRunOutcomeMeasure(measures)) {
+    // onComplete runs even when onPrepare or session creation failed. Host stamps
+    // from that path are context, not proof that one spec measured anything.
+    // Clear them so a later crash cannot inherit and publish this false run.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[perf-report] NOTHING TO PUBLISH — ${measures.length} host-context measure(s) ` +
+        `were recorded, but no spec produced a timing or invariant outcome.`,
+    );
+    resetMeasures();
+    return;
+  }
   // Refuse debug-build numbers by DEFAULT (override only for deliberately testing
   // the ingest path itself). The run's own [perf] log lines still show the timings.
   if (isDebugBinary() && process.env.PAPERCUSP_PERF_PUBLISH_DEBUG !== "1") {
@@ -551,6 +562,10 @@ export const config: WebdriverIO.Config = {
   // resolveDriverPort's doc comment for why that — not mutating `config`
   // in-place — is what actually reaches worker processes).
   async onPrepare() {
+    // Reset FIRST. WDIO still calls onComplete when a later preflight throws; if
+    // stale measures survive until then, its host-pressure stamp can make an old
+    // crashed run look like a fresh green one.
+    resetMeasures();
     assertNativeWebDriverAvailable();
     assertInstallationComplete();
     // Announce WHAT is being measured, with its age. This is the detector that was
@@ -579,10 +594,6 @@ export const config: WebdriverIO.Config = {
       // eslint-disable-next-line no-console
       console.warn(`[perf-report] could not stat the app binary at ${TAURI_APP_PATH}`);
     }
-    // Discard measures from a previously CRASHED run (one that died before
-    // onComplete consumed them) so stale timings are never published against this
-    // commit — reporting none beats reporting someone else's numbers.
-    resetMeasures();
     // Stamp the host pressure this run STARTS under (D-005). Must come AFTER
     // resetMeasures, or the reset would wipe the stamp it just wrote.
     recordHostPressure("start");

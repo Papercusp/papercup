@@ -109,6 +109,7 @@ vi.mock('../../grading-integrity', () => ({
 import { z } from 'zod';
 import complete, {
   claimsUniversalVerification,
+  contentIdentityAdviceForOrigin,
   hasEnumeratedVerificationCoverage,
   isVerificationWorkItem,
 } from './complete';
@@ -154,17 +155,47 @@ describe('work_items:complete — prompt budget (EI-20189722405308981)', () => {
  * conditional gate has dedicated raw-schema and handler tests which never go through
  * this helper.
  */
+const ROOT_CAUSE_VERIFICATION_FIXTURE = {
+  hypothesis: 'the stale cache supplied the wrong value',
+  alternativeHypothesis: 'the database writer persisted the wrong value',
+  distinguishingTest:
+    'if the stale-cache hypothesis is true then a direct database read is correct; if the writer hypothesis is true then the direct database read is wrong',
+  testResult: 'before the fix, the direct database read was correct while the cached read was stale',
+};
+
 const withAssumptions = (x: unknown): unknown => {
   if (typeof x !== 'object' || x === null) return x;
   const o = { ...(x as Record<string, unknown>) };
+  const withCompletionContract = (value: unknown, fallbackState?: unknown): unknown => {
+    if (typeof value !== 'object' || value === null) return value;
+    const item = { ...(value as Record<string, unknown>) };
+    if (item.assumptions === undefined) item.assumptions = 'none';
+    const completion = item.completion;
+    const state = String(
+      item.state ??
+        fallbackState ??
+        (typeof completion === 'object' && completion !== null && !Array.isArray(completion)
+          ? (completion as Record<string, unknown>).status
+          : '') ??
+        '',
+    )
+      .trim()
+      .toLowerCase();
+    if (completion === undefined && ['done', 'resolved', 'passed'].includes(state)) {
+      item.rootCauseVerification = ROOT_CAUSE_VERIFICATION_FIXTURE;
+      return item;
+    }
+    if (typeof completion !== 'object' || completion === null || Array.isArray(completion)) return item;
+    const completionRecord = completion as Record<string, unknown>;
+    if (['done', 'resolved', 'passed'].includes(state) && completionRecord.rootCauseVerification === undefined) {
+      item.completion = { ...completionRecord, rootCauseVerification: ROOT_CAUSE_VERIFICATION_FIXTURE };
+    }
+    return item;
+  };
   if (Array.isArray(o.items)) {
-    o.items = o.items.map((it) =>
-      typeof it === 'object' && it !== null && (it as Record<string, unknown>).assumptions === undefined
-        ? { ...(it as Record<string, unknown>), assumptions: 'none' }
-        : it,
-    );
-  } else if (o.assumptions === undefined) {
-    o.assumptions = 'none';
+    o.items = o.items.map((it) => withCompletionContract(it, o.state));
+  } else {
+    return withCompletionContract(o);
   }
   return o;
 };
@@ -233,6 +264,95 @@ beforeEach(() => {
   // Default: the row had no competing completion record, so the evidence was stored. Note
   // this is only REACHED when the item is already terminal AND no state was passed.
   attachCompletionEvidenceToSettledItem.mockResolvedValue({ outcome: 'recorded', workItem: null });
+});
+
+describe('EI-18793465701838962 — contrastive root-cause verification gate', () => {
+  const bug = { id: 'WI-root', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
+
+  beforeEach(() => {
+    getWorkItem.mockResolvedValue(bug);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...bug, state: 'done' }));
+  });
+
+  it('refuses a successful bug close without the causal record before any write', async () => {
+    const r = await oneRaw({
+      id: 'WI-root',
+      state: 'resolved',
+      assumptions: 'none',
+      completion: { summary: 'fixed the cache', tests: '5 green' },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.rootCauseVerificationError).toMatch(/completion\.rootCauseVerification is missing/);
+    expect(r.error).toMatch(/if H1 then observable A; if H2 then observable B/);
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('rejects a block whose two hypotheses predict the same observable', () => {
+    const result = (
+      complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+    ).safeParse({
+      id: 'WI-root',
+      state: 'resolved',
+      assumptions: 'none',
+      completion: {
+        summary: 'fixed the cache',
+        rootCauseVerification: {
+          hypothesis: 'cache was stale',
+          alternativeHypothesis: 'writer was stale',
+          distinguishingTest: 'if cache was stale then value is wrong; if writer was stale then value is wrong',
+          testResult: 'value was wrong',
+        },
+      },
+    });
+    expect(result.success).toBe(false);
+    expect(String(result.error)).toMatch(/two different conditional observables/);
+  });
+
+  it('accepts and persists a contrastive record on a successful bug close', async () => {
+    const r = await oneRaw({
+      id: 'WI-root',
+      state: 'resolved',
+      assumptions: 'none',
+      completion: {
+        summary: 'fixed the cache',
+        tests: '5 green',
+        rootCauseVerification: ROOT_CAUSE_VERIFICATION_FIXTURE,
+      },
+    });
+    expect(r.ok).toBe(true);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      'WI-root',
+      'resolved',
+      expect.objectContaining({
+        completionEvidence: expect.objectContaining({
+          rootCauseVerification: ROOT_CAUSE_VERIFICATION_FIXTURE,
+        }),
+      }),
+    );
+  });
+
+  it('keeps discard/wontfix bug closes drainable without inventing a causal record', async () => {
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...bug, state: 'dropped' }));
+    const r = await oneRaw({
+      id: 'WI-root',
+      state: 'dropped',
+      assumptions: 'none',
+      completion: { summary: 'obsolete duplicate', tests: 'n/a' },
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('recognizes an explicit capability-gap tag without treating prose mentions as a type', async () => {
+    getWorkItem.mockResolvedValue({ ...bug, id: 'WI-gap', kind: 'change', tags: ['capability-gap'] });
+    const r = await oneRaw({
+      id: 'WI-gap',
+      state: 'resolved',
+      assumptions: 'none',
+      completion: { summary: 'filled the missing capability', tests: '4 green' },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.rootCauseVerificationError).toMatch(/successful capability-gap close/);
+  });
 });
 
 // ── EI-11507: idempotent-completion opt-in (false-timeout fix) ───────────────────────────
@@ -4222,6 +4342,21 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(r.authorityWarning).toMatch(/NOT counted toward burn-down/);
       expect(r.authorityWarning).toMatch(/verifiedHow/);
       expect(r.authorityWarning).toMatch(/testsRun/);
+    });
+
+    it('EI-22166138797743784: remote-origin content advice names federation ownership instead of local retry', () => {
+      const localAdvice =
+        'WAITING SETTLES THIS — the git-sync completion-settlement reconciler upgrades this close automatically.';
+      expect(contentIdentityAdviceForOrigin('local', 'su-local', localAdvice)).toBe(localAdvice);
+
+      const remoteAdvice = contentIdentityAdviceForOrigin('remote', 'su-author', localAdvice)!;
+      expect(remoteAdvice).toMatch(/REMOTE-AUTHORED/);
+      expect(remoteAdvice).toContain("'su-author'");
+      expect(remoteAdvice).toMatch(/originating authoring peer|federation writer/);
+      expect(remoteAdvice).toMatch(/cannot upgrade it/);
+      expect(remoteAdvice).not.toMatch(/WAITING SETTLES THIS/);
+      expect(remoteAdvice).not.toMatch(/re-send this IDENTICAL completion/);
+      expect(remoteAdvice).toContain('do not re-call `work_items:complete` locally');
     });
 
     it('verifiedHow + testResult lands `committed` and DOES count toward burn-down', async () => {

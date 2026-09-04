@@ -94,6 +94,26 @@ export type {
   CompletionTreeStampProbe,
   CompletionTreeStampForEvidenceProbe,
 } from './completion-freshness';
+
+/**
+ * EI-22166138797743784: completion settlement is local-only. A proposed close whose
+ * content identity is merely waiting for this install's git-sync can converge without
+ * another completion call; a remote-authored row must not receive that same advice because
+ * its originating author/federation writer owns the commit and settlement authority.
+ */
+export function contentIdentityAdviceForOrigin(
+  origin: string | null | undefined,
+  createdBy: string | null | undefined,
+  localAdvice: string | undefined,
+): string | undefined {
+  if (origin !== 'remote') return localAdvice;
+  return (
+    `This row is REMOTE-AUTHORED${createdBy ? ` by '${createdBy}'` : ''}; this install's ` +
+    `git-sync completion-settlement reconciler cannot upgrade it. The originating authoring ` +
+    `peer or federation writer owns the committed-content proof and must settle the close; ` +
+    `do not re-call \`work_items:complete\` locally.`
+  );
+}
 import {
   isBackedLiveDroveUiClaim,
   isBackedLiveServiceClaim,
@@ -235,6 +255,7 @@ const completionSpec = z
       // asserts every harvest-fed surface still names it.
       `${HARVESTED_COORD_NOTES_RULE} ` +
       `A bare STRING is rejected because it cannot carry structured evidence. ${COMPLETION_STRING_REJECTION} ` +
+      `Successful bug/capability-gap closes require completion.rootCauseVerification with hypothesis, alternativeHypothesis, a contrastive distinguishingTest, and the observed testResult. ` +
       `If verification.coverage.residue is present it may be empty to explicitly declare zero residue; ['none'] remains accepted for compatibility. ` +
       `Object example: ${COMPLETION_OBJECT_EXAMPLE}.`,
   );
@@ -2367,6 +2388,46 @@ async function completeOne(
     return { ok: false, id: it.id, error: ASSUMPTIONS_REQUIRED_MESSAGE };
   }
 
+  // EI-18793465701838962: successful defect closes need a falsifiable causal
+  // record, not a plausible post-hoc explanation. `capability-gap` is not a
+  // built-in work-item kind in the unified vocabulary, so recognize only an
+  // explicit structured marker (tag / payload classification), never prose in
+  // the title or summary. Discard/wontfix states stay exempt: no fix ships.
+  const payloadRecords = (() => {
+    if (!existing.payload || typeof existing.payload !== 'object' || Array.isArray(existing.payload)) return [];
+    const payload = existing.payload as Record<string, unknown>;
+    return [payload, payload.metaPattern, payload.improvement, payload.source].filter(
+      (value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value),
+    );
+  })();
+  const capabilityGapMarker = (value: unknown): boolean =>
+    typeof value === 'string' && value.trim().toLowerCase().replaceAll('_', '-') === 'capability-gap';
+  const capabilityGapItem =
+    existing.tags?.some(capabilityGapMarker) === true ||
+    payloadRecords.some((record) =>
+      ['kind', 'type', 'category', 'workItemType', 'itemType', 'sourceCategory'].some((key) =>
+        capabilityGapMarker(record[key]),
+      ),
+    );
+  const successfulClose =
+    Boolean(effectiveState) && ['done', 'resolved', 'passed'].includes(String(effectiveState).trim().toLowerCase());
+  const rootCauseVerificationRequired =
+    closeIntentRequested && successfulClose && (existing.kind === 'bug' || capabilityGapItem);
+  if (rootCauseVerificationRequired && !it.completion.rootCauseVerification) {
+    const rootCauseVerificationError =
+      `REJECTED — ${it.id} is a successful ${existing.kind === 'bug' ? 'bug' : 'capability-gap'} close, but ` +
+      'completion.rootCauseVerification is missing. Add { hypothesis, alternativeHypothesis, ' +
+      'distinguishingTest: "if H1 then observable A; if H2 then observable B", testResult } so the ' +
+      'record preserves what would have looked different if the claimed cause were wrong. No completion ' +
+      'record or state transition was written.';
+    return {
+      ok: false,
+      id: it.id,
+      error: rootCauseVerificationError,
+      rootCauseVerificationError,
+    };
+  }
+
   // EI-20245220770262027: assigneeMismatchWarning used to be advisory even when this call
   // requested a terminal transition. That let a wrong-id completion apply the state and clear
   // the live assignee's claim. Refuse the close before the completion record is persisted; the
@@ -2747,6 +2808,9 @@ async function completeOne(
   // Keep this object separate from `completionEvidenceForGate`: narrative fields
   // describe the close, but must never promote an evidence-free close to `committed`.
   const completionNarrative: PersistedCompletionEvidence = {};
+  if (it.completion.rootCauseVerification) {
+    completionNarrative.rootCauseVerification = it.completion.rootCauseVerification;
+  }
   if (it.completion.whatLanded?.length) completionNarrative.whatLanded = it.completion.whatLanded;
   if (it.completion.deferred?.length) completionNarrative.deferred = it.completion.deferred;
   if (it.completion.coordNotes) completionNarrative.coordNotes = it.completion.coordNotes;
@@ -3548,12 +3612,19 @@ async function completeOne(
     unprovenContentIdentityPaths(treeStamp),
     completionEvidenceForGate?.filesChanged?.length ?? 0,
   );
+  const originAwareContentIdentityDetail = contentIdentityAdviceForOrigin(
+    existing.origin,
+    existing.createdBy,
+    contentIdentityDetail,
+  );
   const authorityWarning =
     stampedAuthority === 'proposed'
       ? `${it.id} is CLOSED but its completion landed authority:'proposed' — recorded and out of the ` +
         `claimable pool, but NOT counted toward burn-down, and it stays owned by you until it is settled. ` +
         (contentIdentityDowngrade
-          ? unresolvableContentIdentityPaths(treeStamp).length > 0
+          ? originAwareContentIdentityDetail
+            ? originAwareContentIdentityDetail
+            : unresolvableContentIdentityPaths(treeStamp).length > 0
             ? // WI-42441: this is the SERVER's resolution failure, not the closer's tree
               // hygiene. The generic advice below is unfollowable here — re-running from a
               // perfectly committed tree reproduces it exactly — so say what actually

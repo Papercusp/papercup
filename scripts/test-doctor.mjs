@@ -5,6 +5,11 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findIncompleteSubmoduleInstalls, formatProblems } from './lib/submodule-installs.mjs';
 import { findShallowGitdirs, formatShallowProblems } from './lib/shallow-gitdirs.mjs';
+import {
+  DEFAULT_STALE_SWAP_MAX_AGE_MINUTES,
+  findStaleSwapLeftovers,
+  formatStaleSwapProblems,
+} from './lib/stale-swap-leftovers.mjs';
 import { missingPlaywrightBrowsers, browserCachePath } from './ensure-playwright-browsers.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -81,6 +86,26 @@ if (!submodulesOnly) {
   });
 }
 check('submodule worktrees sane', assertSubmoduleWorktreesSane);
+
+// Atomic publishers move `<live>` to `<live>.old.<pid>` before replacing it.
+// A killed producer can strand gigabytes, but blind reaping is unsafe: WI-6557
+// found the only complete desktop sidecar in the backup while the live sibling
+// was a tiny placeholder. Detect the shared failure class and show both sides;
+// leave the authority/cleanup decision to the operator.
+check('no stale atomic-publish swap directories (*.old.<pid>)', () => {
+  const configured = process.env.PAPERCUSP_STALE_SWAP_MAX_AGE_MINUTES;
+  const maxAgeMinutes = configured === undefined
+    ? DEFAULT_STALE_SWAP_MAX_AGE_MINUTES
+    : Number(configured);
+  const problems = findStaleSwapLeftovers({ repoRoot: REPO_ROOT, maxAgeMinutes });
+  if (problems.length > 0) {
+    throw new Error(
+      `swap backup director${problems.length === 1 ? 'y' : 'ies'} older than ` +
+        `${maxAgeMinutes} minute${maxAgeMinutes === 1 ? '' : 's'} detected:\n    ` +
+        formatStaleSwapProblems(problems),
+    );
+  }
+});
 
 // A `git fetch --depth=N` against this tree silently converts the target into a SHALLOW
 // repository — no error, clean `git status`, nothing for the sweep to show — after which its

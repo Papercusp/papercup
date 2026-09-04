@@ -702,7 +702,7 @@ export function buildScopedTsconfig(
 export default defineTool({
   name: 'build:typecheck',
   description:
-    'Run `tsc --noEmit` for ONE project and return structured diagnostics — { ok, errorCount, errors:[{file,line,column,code,message}], byFile, syntaxBroken } — instead of a compiler log you pipe through grep/tail. REFUSES a run that checked nothing (TS5057/TS5058/TS18003) rather than reporting a clean zero: this repo has no root tsconfig.json, so `-p .` silently checks zero files. `files` filters diagnostics server-side. Runs with --incremental false so a warm tsbuildinfo cannot under-report.',
+    'Run `tsc --noEmit` for ONE project and return structured diagnostics — { ok, errorCount, errors:[{file,line,column,code,message}], byFile, syntaxBroken, semanticCheckIncomplete } — instead of a compiler log you pipe through grep/tail. When syntaxBroken is non-empty, semanticCheckIncomplete is true and the diagnostic counts are LOWER BOUNDS, not complete totals. REFUSES a run that checked nothing (TS5057/TS5058/TS18003) rather than reporting a clean zero: this repo has no root tsconfig.json, so `-p .` silently checks zero files. `files` filters diagnostics server-side. Runs with --incremental false so a warm tsbuildinfo cannot under-report.',
   guidance: {
     when: 'You edited TypeScript and want to know whether a project typechecks, and exactly which errors are where. Also the way to check a workspace OUTSIDE operator-core, which `npm run lint:tsc` does not cover.',
     notWhen: 'You want the baseline VERDICT on whether your change added errors — that is `npm run lint:tsc -- --mine` (per-file ratchet, peer-drift aware), which this tool does not replace. Not for building/emitting, eslint, or cargo.',
@@ -931,6 +931,7 @@ export default defineTool({
     const maxErrors = args.maxErrors ?? DEFAULT_MAX_ERRORS;
     const bounded = boundDiagnostics(shown, byFile, maxErrors);
     const reported = parseFoundSummary(outcome.output);
+    const syntaxBroken = syntaxBrokenFiles(errors);
 
     return {
       data: {
@@ -967,7 +968,22 @@ export default defineTool({
         byFile: bounded.byFile,
         byFileTruncated: bounded.byFileTruncated,
         filesWithErrors: bounded.filesWithErrors,
-        syntaxBroken: syntaxBrokenFiles(errors),
+        syntaxBroken,
+        // EI-19278981435037331 — a parser/scanner failure can stop TypeScript before
+        // semantic checking reaches the rest of the program. `errorsTruncated:false`
+        // only says OUR returned arrays are complete relative to tsc's emitted output;
+        // it cannot make that output a complete project verdict. Keep the machine flag
+        // adjacent to the counts and add the human caveat only on the unsafe branch, so
+        // `2 errors` can never again be compared with a later `615 errors` as like units.
+        semanticCheckIncomplete: syntaxBroken.length > 0,
+        ...(syntaxBroken.length > 0
+          ? {
+              countCaveat:
+                `Parsing failed in ${syntaxBroken.length} file(s); TypeScript did not complete semantic checking. ` +
+                '`errorCount` and `totalErrorCount` (when present) are LOWER BOUNDS, not complete totals. ' +
+                '`errorsTruncated:false` means only that the diagnostics TypeScript emitted fit in the returned arrays.',
+            }
+          : {}),
         durationMs,
         exitCode: outcome.code,
         // Cross-check against tsc's own tally: a mismatch means the diagnostic

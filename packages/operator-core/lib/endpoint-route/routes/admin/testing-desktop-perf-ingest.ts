@@ -37,6 +37,11 @@ import { recordDesktopPerfRun } from '../../../system-health/desktop-perf-runs';
 const UNITS: readonly DesktopPerfMetricUnit[] = ['ms', 'kb', 'count'];
 const STATUSES: readonly DesktopPerfRunStatus[] = ['pass', 'warn', 'fail'];
 
+/** Host stamps are measurement context, not evidence that a suite ran. */
+export function hasDesktopPerfOutcomeMeasure(measures: readonly DesktopPerfMeasure[]): boolean {
+  return measures.some((measure) => !measure.key.startsWith('host:'));
+}
+
 /** Parse one wire measure, or null when it does not satisfy DesktopPerfMeasure.
  *  Exported for unit test only — pure, no IO. */
 export function parseMeasure(raw: unknown): DesktopPerfMeasure | null {
@@ -100,6 +105,12 @@ export default defineTool({
     // (persistDesktopPerfRun applies the same rule by skipping the write.)
     if (measures.length === 0) {
       return new Response('refusing to record a run with no measures', { status: 400 });
+    }
+    if (!hasDesktopPerfOutcomeMeasure(measures)) {
+      return new Response(
+        'refusing to record a run with host context but no performance outcome',
+        { status: 400 },
+      );
     }
 
     const status: DesktopPerfRunStatus = STATUSES.includes(body.status as DesktopPerfRunStatus)

@@ -2288,7 +2288,7 @@
           "POST"
         ]
       },
-      "description": "Run `tsc --noEmit` for ONE project and return structured diagnostics — { ok, errorCount, errors:[{file,line,column,code,message}], byFile, syntaxBroken } — instead of a compiler log you pipe through grep/tail. REFUSES a run that checked nothing (TS5057/TS5058/TS18003) rather than reporting a clean zero: this repo has no root tsconfig.json, so `-p .` silently checks zero files. `files` filters diagnostics server-side. Runs with --incremental false so a warm tsbuildinfo cannot under-report.",
+      "description": "Run `tsc --noEmit` for ONE project and return structured diagnostics — { ok, errorCount, errors:[{file,line,column,code,message}], byFile, syntaxBroken, semanticCheckIncomplete } — instead of a compiler log you pipe through grep/tail. When syntaxBroken is non-empty, semanticCheckIncomplete is true and the diagnostic counts are LOWER BOUNDS, not complete totals. REFUSES a run that checked nothing (TS5057/TS5058/TS18003) rather than reporting a clean zero: this repo has no root tsconfig.json, so `-p .` silently checks zero files. `files` filters diagnostics server-side. Runs with --incremental false so a warm tsbuildinfo cannot under-report.",
       "capabilities": [
         "operator:write"
       ],
@@ -26203,7 +26203,7 @@
           "POST"
         ]
       },
-      "description": "Propose a shared rubric → status \"proposed\". ⚠ WHOLE-DOCUMENT REPLACE: re-proposing an existing rubricRef replaces ALL content; call rubrics:get first, then resubmit EVERY criterion with full method/replication text and structured check (a partial list deletes the rest). Standard criteria require model/method/driftMarkers; acceptance criteria may omit model/method only when their outcome remains concrete and falsifiable, but every bespoke criterion requires a non-empty driftMarkers falsifier and the rubric requires at least one structured check. Loss-guards require dropKeys for dropped keys; removing a stored structured check, shrinking method+replication >40%, or losing its REPLICATION DRILL marker requires allowMethodShrink + shrinkReason.",
+      "description": "Propose/replace a rubric → status \"proposed\". ⚠ Whole-document replace: call rubrics:get first and resubmit all criteria/checks; omissions need dropKeys. Standard criteria require model/method/driftMarkers; acceptance criteria may omit model/method only with a concrete outcome, non-empty driftMarkers falsifier, and at least one structured check. Removing a stored structured check, shrinking method+replication >40%, or losing a REPLICATION DRILL requires allowMethodShrink + shrinkReason.",
       "capabilities": [
         "coord:write"
       ],
@@ -26228,9 +26228,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Use when a recurring characteristic lacks a rubric, or when revising one (rubrics:get first; resubmit ALL criteria and stored structured checks). Standard criteria need model, method, and driftMarkers. Acceptance criteria are a light profile only for model/method: each bespoke criterion still needs an outcome-shaped title, a non-empty driftMarkers falsifier, traceability to the plan goal/Decisions, failure/regression-mode coverage, and non-overlap with its peers; include at least one structured check for the rubric (and bind every objectively checkable outcome where possible). Each criterion should also carry its own copy-runnable replication drill; methodRef names the rubric runbook. Omitting a stored structured check requires allowMethodShrink:true + shrinkReason because it weakens deterministic enforcement to fuzzy judgment.",
+        "when": "Use for a new/revised rubric (rubrics:get first; resubmit all criteria/checks). Standard criteria need model, method, and driftMarkers. Acceptance criteria are a light profile: use outcome-shaped titles, a non-empty driftMarkers falsifier, traceability to the plan goal/Decisions, regression coverage, and peer non-overlap; include at least one structured check and bind objective outcomes when possible. Each criterion should carry a replication drill; methodRef names the runbook. Stored structured check removal needs allowMethodShrink:true + shrinkReason. See /internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook.",
         "notWhen": "One-off finding → free-text observation; activating a proposed rubric → rubrics:ratify. Search first to avoid duplicates.",
-        "chaining": "rubrics:search (dedup) → rubrics:get (revision source; never memory) → rubrics:propose → independent reviewer: rubrics:ratify. Preserve every stored structured check; intentional removal requires allowMethodShrink:true + shrinkReason. Review `completeness` (missing replication drills/methodRef) and `replicationSqlCheck` (read `summary`; `findings` excludes bind-placeholder noise); fix gaps first."
+        "chaining": "rubrics:search → rubrics:get → rubrics:propose → independent rubrics:ratify. Preserve every structured check; intentional removal needs allowMethodShrink + shrinkReason. Review completeness and replicationSqlCheck; fix gaps first."
       }
     },
     {

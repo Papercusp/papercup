@@ -235,14 +235,14 @@ describe('defineTool', () => {
       expect(result.error?.message).toContain('"what"');
     });
 
-    it('FALSIFIABILITY: a top-level failure still gets the full dump, not the narrowed hint', async () => {
-      // Depth-1 paths are already reachable in the flat dump, so the narrowing must NOT
-      // engage — otherwise this change would hide information rather than focus it.
+    it('a top-level failure gets only its own schema, never the whole args schema (WI-6661)', async () => {
       const result = await dispatch({ to: 'not-an-array', body: 'fine' });
 
       expect(result.ok).toBe(false);
-      expect(result.error?.message).toContain('full args schema:');
-      expect(result.error?.message).not.toContain('the field(s) that failed, in full:');
+      expect(result.error?.message).toContain('the field(s) that failed, in full:');
+      expect(result.error?.message).toContain('`to` accepts');
+      expect(result.error?.message).toContain('"type":"array"');
+      expect(result.error?.message).not.toContain('full args schema:');
     });
 
     it('stays BOUNDED — the narrowed hint is far smaller than the dump it replaces', async () => {
@@ -345,7 +345,7 @@ describe('defineTool', () => {
     });
   });
 
-  it('appends the FULL args schema to invalid_args failures (P-004, code-run-batch-adoption)', async () => {
+  it('replaces the whole-schema dump with the failing field schema plus accepted keys (WI-6661)', async () => {
     defineTool({
       name: 'operator:schema_hint_probe',
       description: 'schema-on-invalid-args probe',
@@ -377,9 +377,13 @@ describe('defineTool', () => {
     );
     expect(result.ok).toBe(false);
     expect(result.error?.message).toContain('invalid_args:');
-    // One failed call now teaches the whole shape: the full schema rides the error.
-    expect(result.error?.message).toContain('full args schema:');
+    // P-004's one-call correction intent survives without the unreliable blob:
+    // `body` is named and typed, while the closed-shape hint lists both valid keys.
+    expect(result.error?.message).toContain('the field(s) that failed, in full:');
+    expect(result.error?.message).toContain('`body` accepts {"type":"string"}');
+    expect(result.error?.message).toContain('this tool accepts ONLY: id, body');
     expect(result.error?.message).toContain('"body"');
+    expect(result.error?.message).not.toContain('full args schema:');
   });
 
   /**
@@ -430,8 +434,7 @@ describe('defineTool', () => {
     expect(result.error?.message).not.toContain('full args schema:');
   });
 
-  it('still dumps the schema when the caller is SHAPE-blind (an over-length value alongside an unknown key)', async () => {
-    // Mixed issues ⇒ not purely value-level ⇒ the caller does need the contract.
+  it('a mixed value/shape failure still stays field-scoped', async () => {
     defineTool({
       name: 'operator:mixed_probe',
       description: 'mixed-issue probe',
@@ -460,7 +463,10 @@ describe('defineTool', () => {
       {},
     );
     expect(result.ok).toBe(false);
-    expect(result.error?.message).toContain('full args schema:');
+    expect(result.error?.message).toContain('`label` accepts');
+    expect(result.error?.message).toContain('"maxLength":10');
+    expect(result.error?.message).toContain('this tool accepts ONLY: id, label');
+    expect(result.error?.message).not.toContain('full args schema:');
   });
 
   it('exposes the catalog', () => {

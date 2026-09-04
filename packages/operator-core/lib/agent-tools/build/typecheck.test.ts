@@ -129,6 +129,64 @@ describe('bounded diagnostic serialization', () => {
   });
 });
 
+describe('EI-19278981435037331 — syntax failures make diagnostic counts lower bounds', () => {
+  let root: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'build-typecheck-completeness-'));
+    writeFileSync(join(root, 'tsconfig.json'), '{}');
+  });
+
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  const runWithDiagnostic = async (diagnostic: string) => {
+    const { child } = fakeChild();
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        child.stdout?.emit('data', Buffer.from(`${diagnostic}\n`));
+        child.emit('close', 2);
+      });
+      return child;
+    });
+    try {
+      return await (
+        buildTypecheck as unknown as {
+          handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, unknown> }>;
+        }
+      ).handler({ project: '.' }, { projectDir: root });
+    } finally {
+      spawnMock.mockReset();
+    }
+  };
+
+  it('marks a parser-aborted count incomplete even when the returned array was not truncated', async () => {
+    const raw = await runWithDiagnostic("broken.ts(1,1): error TS1005: '}' expected.");
+
+    expect(raw.data).toMatchObject({
+      ok: false,
+      errorCount: 1,
+      errorsTruncated: false,
+      syntaxBroken: ['broken.ts'],
+      semanticCheckIncomplete: true,
+    });
+    expect(String(raw.data.countCaveat)).toContain('LOWER BOUNDS');
+    expect(String(raw.data.countCaveat)).toContain('errorsTruncated:false');
+  });
+
+  it('reports a semantic-only diagnostic run as complete and omits the caveat', async () => {
+    const raw = await runWithDiagnostic("typed.ts(1,1): error TS2322: Type 'string' is not assignable to type 'number'.");
+
+    expect(raw.data).toMatchObject({
+      ok: false,
+      errorCount: 1,
+      syntaxBroken: [],
+      semanticCheckIncomplete: false,
+    });
+    expect(raw.data).not.toHaveProperty('countCaveat');
+  });
+});
+
 describe('resolveProjectPath — tsc\'s own project resolution', () => {
   let root: string;
 

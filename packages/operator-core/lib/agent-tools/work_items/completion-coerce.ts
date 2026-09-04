@@ -59,6 +59,7 @@ export const COMPLETION_FIELDS: readonly string[] = [
   'filesChanged',
   'verification',
   'coverage',
+  'rootCauseVerification',
   // Arm-B pilot self-review (D-021). Listed here so a FLAT completion carrying
   // `selfReview` is still recognised as structured rather than being swept into the
   // free-text residue — the gate reads it off the parsed record.
@@ -243,6 +244,7 @@ const COMPLETION_SHAPE_KEYS = new Set([
   'migrations',
   'coverage',
   'coordNotes',
+  'rootCauseVerification',
 ]);
 
 /**

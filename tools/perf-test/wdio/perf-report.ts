@@ -67,6 +67,15 @@ const MEASURES_PATH = path.join(RESULTS_DIR, "measures.jsonl");
 export { MEASURES_PATH };
 
 /**
+ * Host-pressure stamps describe the environment around a run; they are not a
+ * test outcome. A preflight/session failure can still reach WDIO's onComplete,
+ * so a host-only batch must never mint a fresh green performance run.
+ */
+export function hasRunOutcomeMeasure(measures: readonly PerfMeasure[]): boolean {
+  return measures.some((measure) => !measure.key.startsWith("host:"));
+}
+
+/**
  * The operator this run talks to over plain HTTP — for publishing measures, and
  * for anything else that needs an origin the RUNNER can reach.
  *

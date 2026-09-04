@@ -415,6 +415,61 @@ const RequirementDispositionSchema = z
     '`implemented` cites a path that resolves, each `deferred` names a filed follow-up ref.',
   );
 
+/**
+ * EI-18793465701838962: a bug close must retain the claim that was tested, the
+ * live rival, and the observation that separated them. Free-form "root cause"
+ * prose cannot distinguish a pre-fix test from a post-hoc explanation.
+ */
+function normalizedRootCauseClaim(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function contrastiveObservables(value: string): string[] {
+  return value
+    .split(/\bif\b/gi)
+    .slice(1)
+    .map((arm) => {
+      const separator = /\bthen\b|=>|→/i.exec(arm);
+      return separator ? normalizedRootCauseClaim(arm.slice((separator.index ?? 0) + separator[0].length)) : '';
+    })
+    .filter(Boolean);
+}
+
+export const RootCauseVerificationSchema = z
+  .object({
+    hypothesis: z.string().trim().min(1).describe('The claimed originating cause.'),
+    alternativeHypothesis: z.string().trim().min(1).describe('A rival explanation that predicts a different result.'),
+    distinguishingTest: z
+      .string()
+      .trim()
+      .min(1)
+      .describe('Two contrastive conditional arms: "if H1 then A; if H2 then B".'),
+    testResult: z.string().trim().min(1).describe('The actual pre-fix observable.'),
+  })
+  .strict()
+  .superRefine((record, ctx) => {
+    if (normalizedRootCauseClaim(record.hypothesis) === normalizedRootCauseClaim(record.alternativeHypothesis)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['alternativeHypothesis'],
+        message: 'alternativeHypothesis must be meaningfully different from hypothesis.',
+      });
+    }
+    const observables = contrastiveObservables(record.distinguishingTest);
+    if (observables.length < 2 || new Set(observables).size < 2) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['distinguishingTest'],
+        message:
+          'distinguishingTest must state at least two different conditional observables, e.g. "if H1 then A; if H2 then B".',
+      });
+    }
+  });
+export type RootCauseVerification = z.infer<typeof RootCauseVerificationSchema>;
+
 export const CompletionVerificationEvidenceSchema = z.object({
   /** Files/modules changed, for audit queries without reading completion prose. */
   filesChanged: FilesChangedSchema,
@@ -503,6 +558,8 @@ export type CompletionVerificationEvidence = z.infer<typeof CompletionVerificati
  * They never participate in completion-authority calculation.
  */
 export type PersistedCompletionEvidence = CompletionVerificationEvidence & {
+  /** Contrastive causal record required for successful bug/capability-gap closes. */
+  rootCauseVerification?: RootCauseVerification;
   whatLanded?: string[];
   deferred?: string[];
   coordNotes?: string;
@@ -786,6 +843,8 @@ export const CompletionRecordSchema = z.object({
   tests: z.string().min(1).optional(),
   /** Queryable verification evidence; aliases below keep legacy callers cheap. */
   verification: CompletionVerificationEvidenceSchema.optional(),
+  /** Required on successful bug/capability-gap closes; persisted with terminal evidence. */
+  rootCauseVerification: RootCauseVerificationSchema.optional(),
   /** Top-level alias for the structured verification coverage record (WI-37960). */
   coverage: CompletionCoverageSchema.optional(),
   filesChanged: FilesChangedSchema,

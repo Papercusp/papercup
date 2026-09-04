@@ -63,7 +63,17 @@ describe('design-to-code coverage seam: not-code accounting searches', () => {
     expect(files).toContain('packages/operator-core/lib/qodo-cover-loop.ts');
     expect(files.length).toBeGreaterThan(100);
 
-    const monocartHits = files.filter((file) => readTracked(file).includes('monocart'));
+    // Implementation absence is a claim about production/config source, not
+    // about the acceptance test that names the thing it is looking for. This
+    // filter is intentionally applied BEFORE the search so the check behaves
+    // identically while untracked and after its own file enters git ls-files.
+    const implementationFiles = files
+      .filter((file) => /^(?:packages|libs|scripts|apps)\//.test(file))
+      .filter((file) => !/\.(?:test|spec)\.[^.]+$/.test(file));
+    expect(implementationFiles).toContain('packages/operator-core/package.json');
+    expect(implementationFiles).toContain('packages/operator-core/lib/qodo-cover-loop.ts');
+
+    const monocartHits = implementationFiles.filter((file) => readTracked(file).includes('monocart'));
     expect(
       monocartHits,
       'P-012 was an evaluation-to-defer; an implementation hit makes its not-code verdict false',
@@ -78,8 +88,7 @@ describe('design-to-code coverage seam: not-code accounting searches', () => {
     // roots—not the wider JSON corpus P-012 searches. Keeping those scopes
     // separate prevents generated report fixtures from masquerading as an
     // implementation of a completion-authority distribution.
-    const authorityCorpus = files
-      .filter((file) => /^(?:packages|libs|scripts|apps)\//.test(file))
+    const authorityCorpus = implementationFiles
       .filter((file) => /\.(?:ts|mjs)$/.test(file) && !file.includes('.test.'))
       .filter((file) => /completionAuthority|completion_authority/.test(readTracked(file)));
     expect(authorityCorpus).toContain('packages/operator-core/lib/work-item-completion-authority.ts');

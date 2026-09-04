@@ -15,7 +15,7 @@
  * a test file of its own even though the parser is four lines long.
  */
 import { describe, expect, it } from 'vitest';
-import { parseMeasure } from './testing-desktop-perf-ingest';
+import { hasDesktopPerfOutcomeMeasure, parseMeasure } from './testing-desktop-perf-ingest';
 
 const base = { key: 'invariant:webview-http-egress', value: 9, unit: 'count', budget: 0, ok: false };
 
@@ -61,5 +61,26 @@ describe('parseMeasure — invariant passthrough (P-003c)', () => {
     const parsed = parseMeasure({ key: 'invariant:console-errors', value: 3, unit: 'count', budget: null, ok: false, invariant: true });
     expect(parsed?.budget).toBeNull();
     expect(parsed?.invariant).toBe(true);
+  });
+});
+
+describe('desktop-perf run outcome admission', () => {
+  it('rejects host-only context as a vacuous run', () => {
+    expect(hasDesktopPerfOutcomeMeasure([
+      { key: 'host:psi-cpu-some-avg10-pct:start', value: 0.1, unit: 'count', budget: null, ok: true },
+      { key: 'host:loadavg1-not-authoritative:end', value: 12, unit: 'count', budget: null, ok: true },
+    ])).toBe(false);
+  });
+
+  it('admits a measured timing or invariant alongside host context', () => {
+    const host = { key: 'host:psi-cpu-some-avg10-pct:start', value: 0.1, unit: 'count' as const, budget: null, ok: true };
+    expect(hasDesktopPerfOutcomeMeasure([
+      host,
+      { key: 'interaction:plan-popup-open', value: 300, unit: 'ms', budget: 1500, ok: true },
+    ])).toBe(true);
+    expect(hasDesktopPerfOutcomeMeasure([
+      host,
+      { key: 'invariant:webview-http-egress', value: 0, unit: 'count', budget: 0, ok: true, invariant: true },
+    ])).toBe(true);
   });
 });
