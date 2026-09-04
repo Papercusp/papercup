@@ -89,7 +89,8 @@ beforeAll(async () => {
       cycle integer NOT NULL DEFAULT 0, variant_id text, role text NOT NULL,
       original_md text, proposed_md text NOT NULL, rationale text,
       dev_anchor_delta double precision, cost_delta double precision, probe_status text,
-      status text NOT NULL DEFAULT 'pending', created_at bigint NOT NULL, decided_at bigint
+      status text NOT NULL DEFAULT 'pending', created_at bigint NOT NULL, decided_at bigint,
+      task_corpus text NOT NULL DEFAULT 'synthetic', candidate_verdict jsonb
     )`);
   h.sql = rootSql;
 }, 90_000);
@@ -205,15 +206,26 @@ describe('autoDecideRunProposals — autonomous promotion (owner mandate 2026-07
     devAnchorDelta: number | null;
     status?: string;
     proposedMd?: string;
+    candidateVerdict?: unknown;
   }) =>
     rootSql`
       INSERT INTO harness_shared.gym_proposals
-        (id, workspace_id, harness_slug, cycle, variant_id, role, proposed_md,
-         dev_anchor_delta, status, created_at)
+      (id, workspace_id, harness_slug, cycle, variant_id, role, proposed_md,
+         dev_anchor_delta, status, candidate_verdict, created_at)
       VALUES
         (${over.id}, ${WS}, ${HS}, 1, ${over.id}, ${AGENT_ROLE},
          ${over.proposedMd ?? `P ${over.id}`}, ${over.devAnchorDelta},
-         ${over.status ?? 'pending'}, ${over.createdAt})`;
+         ${over.status ?? 'pending'}, ${JSON.stringify(over.candidateVerdict ?? {
+           schemaVersion: 1,
+           candidateId: over.id,
+           parentId: 'baseline',
+           variant: { promptOverrides: { [AGENT_ROLE]: `P ${over.id}` } },
+           parent: { promptOverrides: {} },
+           hashes: { variantHash: 'variant', parentHash: 'parent', evaluatorHash: 'evaluator', rubricHash: 'rubric', taskHash: 'task', codeHash: 'code' },
+           gateResults: [{ gate: 'fixture', pass: over.devAnchorDelta != null && over.devAnchorDelta > 0, detail: 'fixture' }],
+           verdict: over.devAnchorDelta != null && over.devAnchorDelta > 0 ? 'accept' : 'reject',
+           recordedAt: over.createdAt,
+         })}::text::jsonb, ${over.createdAt})`;
 
   it('accepts the winner (prompt promoted + outcome window opened), rejects the rest, leaves pre-run rows alone', async () => {
     await seed({ id: 'old-pending', createdAt: RUN_START - 10_000, devAnchorDelta: 9 }); // BEFORE the run
@@ -268,5 +280,32 @@ describe('autoDecideRunProposals — autonomous promotion (owner mandate 2026-07
     expect(res).toEqual({ accepted: 0, rejected: 0 });
     const rows = await rootSql<{ status: string }[]>`SELECT status FROM harness_shared.gym_proposals WHERE id = 'decided'`;
     expect(rows[0]!.status).toBe('rejected');
+  });
+
+  it('does not auto-promote a positive dev-anchor delta when the immutable gate verdict rejects', async () => {
+    await seed({
+      id: 'unsafe-positive',
+      createdAt: RUN_START + 1,
+      devAnchorDelta: 5,
+      candidateVerdict: {
+        schemaVersion: 1,
+        candidateId: 'unsafe-positive',
+        parentId: 'baseline',
+        variant: { promptOverrides: { [AGENT_ROLE]: 'unsafe' } },
+        parent: { promptOverrides: {} },
+        hashes: { variantHash: 'variant', parentHash: 'parent', evaluatorHash: 'evaluator', rubricHash: 'rubric', taskHash: 'task', codeHash: 'code' },
+        gateResults: [{ gate: 'no-new-regressions', pass: false, detail: 'regression' }],
+        verdict: 'reject',
+        recordedAt: RUN_START + 1,
+      },
+    });
+    const res = await autoDecideRunProposals(rootSql, { workspaceId: WS, harnessSlug: HS, sinceMs: RUN_START, now: NOW });
+    expect(res).toEqual({ accepted: 0, rejected: 1 });
+    const row = (await rootSql<{ status: string }[]>`SELECT status FROM harness_shared.gym_proposals WHERE id = 'unsafe-positive'`)[0]!;
+    expect(row.status).toBe('rejected');
+    const prompts = await rootSql<{ prompt_md: string }[]>`
+      SELECT prompt_md FROM harness_shared.harness_prompt_overrides
+       WHERE workspace_id = ${WS} AND harness_slug = ${HS} AND role = ${AGENT_ROLE}`;
+    expect(prompts).toHaveLength(0);
   });
 });

@@ -82,7 +82,20 @@ export type AcceptanceBarSnapshotCode =
   | 'bar_snapshot_vetting_stale'
   | 'bar_snapshot_author_verdict_missing'
   | 'bar_snapshot_author_verdict_stale'
-  | 'bar_snapshot_author_rejected';
+  | 'bar_snapshot_author_rejected'
+  // P-003 lifecycle contract checks. These are deliberately separate from the
+  // phase evaluator: the snapshot remains an explainable read model while the
+  // evaluator decides which of these become blocking at each door.
+  | 'bar_snapshot_falsifier_missing'
+  | 'bar_snapshot_role_invalid'
+  | 'bar_snapshot_mandatory_invalid'
+  | 'bar_snapshot_scope_invalid'
+  | 'bar_snapshot_pass_ratings_invalid'
+  | 'bar_snapshot_coverage_invalid'
+  | 'bar_snapshot_check_missing'
+  | 'bar_snapshot_check_invalid'
+  | 'bar_snapshot_proof_uncertain'
+  | 'bar_snapshot_evidence_plane_unmet';
 
 export interface BoundedAcceptanceBarRows<T> {
   rows: T[];
@@ -158,6 +171,10 @@ export interface AcceptanceBarTrace {
   barHash: string | null;
   model: string;
   method: string;
+  /** Structured verification contract, when declared. Required from pre-vetting onward. */
+  check: RubricCriterion['check'] | null;
+  /** Explicit manual replication procedure, when the check uses instrument:'none'. */
+  replication: string | null;
   falsifier: string;
   role: string | null;
   mandatory: boolean | null;
@@ -190,6 +207,10 @@ export interface AcceptanceBarTrace {
     staleEvidence: number;
     kinds: string[];
     evidenceRefs: string[];
+    /** Evidence rows whose currentness could not be established. */
+    uncertainEvidence: number;
+    /** Explicit planes recorded by evidence details, when producers supplied one. */
+    evidencePlanes: string[];
   };
   grading: {
     state: 'pass' | 'not-pass' | 'stale' | 'missing' | 'truncated';
@@ -222,6 +243,8 @@ export interface AcceptanceBarContractSnapshot {
     barSetHash: string | null;
     contract: Rubric['barContract'] | null;
     createdBy: string | null;
+    ratingScale: string[];
+    classRef: string | null;
   } | null;
   sourceRevisions: {
     subjectPlan: number | null;
@@ -461,6 +484,17 @@ function nextRepair(
     bar_snapshot_author_verdict_missing: 'Record the author-side verdict after reading the independent grading.',
     bar_snapshot_author_verdict_stale: 'Record a new author verdict for the authoritative grading.',
     bar_snapshot_author_rejected: 'Address the rejected grading before recording a newer verdict.',
+    bar_snapshot_falsifier_missing: 'Declare a concrete falsifier/drift marker for the BAR.',
+    bar_snapshot_role_invalid: 'Make each BAR an outcome or make a disclosure explicitly cover outcome BARs.',
+    bar_snapshot_mandatory_invalid: 'Mark every BAR outcome mandatory; disclosures must not satisfy the ship floor.',
+    bar_snapshot_scope_invalid: 'Declare a non-empty tree, deployed, or live evidence scope.',
+    bar_snapshot_pass_ratings_invalid:
+      'Use non-empty positive pass ratings from the rubric scale for mandatory outcomes.',
+    bar_snapshot_coverage_invalid: 'Repair disclosure coverage so it references existing outcome BAR keys only.',
+    bar_snapshot_check_missing: 'Add a runnable structured check or explicit manual instrument contract.',
+    bar_snapshot_check_invalid: 'Repair the structured check or provide an explicit manual replication contract.',
+    bar_snapshot_proof_uncertain: 'Re-bind evidence with complete currentness/fingerprint metadata.',
+    bar_snapshot_evidence_plane_unmet: "Record current evidence on the BAR's declared evidence plane.",
   };
   return { code, barKey: bar?.barKey ?? null, action: actions[code] };
 }
@@ -765,6 +799,8 @@ export function projectAcceptanceBarContractSnapshot(
       barHash: criterion.barHash ?? null,
       model: criterion.model ?? criterion.bar ?? '',
       method: criterion.method ?? '',
+      check: criterion.check ?? null,
+      replication: criterion.replication ?? null,
       falsifier: criterion.driftMarkers ?? '',
       role: criterion.role ?? null,
       mandatory: criterion.mandatory ?? null,
@@ -781,6 +817,22 @@ export function projectAcceptanceBarContractSnapshot(
         staleEvidence: staleEvidence.length,
         kinds: normalized(evidence.map((row) => row.evidenceKind)),
         evidenceRefs: normalized(evidence.map((row) => row.evidenceRef)),
+        uncertainEvidence: evidence.filter((row) => {
+          const currentness = (row as { currentness?: { overall?: string; dimensions?: Record<string, string> } })
+            .currentness;
+          return (
+            currentness?.overall === 'unknown' ||
+            Object.values(currentness?.dimensions ?? {}).some((value) => value === 'unknown')
+          );
+        }).length,
+        evidencePlanes: normalized(
+          evidence.flatMap((row) => {
+            const details =
+              row.details && typeof row.details === 'object' ? (row.details as Record<string, unknown>) : {};
+            const plane = details.evidencePlane ?? details.evidence_plane ?? details.plane;
+            return typeof plane === 'string' ? [plane] : [];
+          }),
+        ),
       },
       grading: {
         state: gradingState,
@@ -867,6 +919,8 @@ export function projectAcceptanceBarContractSnapshot(
           barSetHash: rubric.barSetHash ?? null,
           contract: rubric.barContract ?? null,
           createdBy: rubric.createdBy ?? rubric.proposedBy ?? null,
+          ratingScale: [...rubric.ratingScale],
+          classRef: rubric.classRef ?? null,
         }
       : null,
     sourceRevisions: {

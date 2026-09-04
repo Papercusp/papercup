@@ -29,7 +29,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, openSync, readFileSync, 
 import { tmpdir, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -394,6 +394,7 @@ export async function runOneAutoloopCycle(
     // store). `materialisePapercuspSubstrate` commits them beneath every task
     // commit and asserts they landed — see GYM_HARNESS_FILES.
     const tasks: LoopTask[] = materialised.map((m) => m.gymTask);
+    const taskHash = createHash('sha256').update(JSON.stringify(tasks)).digest('hex');
     log(`substrate: real papercusp @ ${materialised[0]?.descriptor.pinCommit.slice(0, 12)} — ${tasks.length} real tasks`);
 
     // 3. Boot the gym-operator (fake or real agent).
@@ -560,6 +561,12 @@ export async function runOneAutoloopCycle(
         budgetUsd: BUDGET_USD,
         proposerModel: PROPOSER_MODEL,
         autoPromote: false,
+        provenance: {
+          evaluatorHash: createHash('sha256').update('gym-gate-engine:v1').digest('hex'),
+          rubricHash: rubricHash(GYM_JUDGE_RUBRIC_V1),
+          taskHash,
+          codeHash: harnessCommit,
+        },
         // P-011 (D-008): quality-diversity parent selection when a novelty weight is set (>0);
         // unset ⇒ the loop falls back to legacy fitness-headroom selection (unchanged).
         ...(NOVELTY_WEIGHT > 0 ? { qualityDiversity: { noveltyWeight: NOVELTY_WEIGHT } } : {}),
