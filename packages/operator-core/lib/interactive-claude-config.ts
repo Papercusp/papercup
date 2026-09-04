@@ -308,6 +308,50 @@ async function readStdinJson() {
   }
 }
 
+// EI-22197250733115758: a Claude self-relaunch can leave the replacement
+// process outside the managed psu-pty host. That simultaneously removes the
+// direct wake-injection path and the host-driven carry-respawn path, but the
+// recovery banner previously reported neither. Read the SAME owner-scoped
+// discovery record as psu-pty-discovery.ts and report only what this hook can
+// verify locally. Keep this dependency-free: the generated SessionStart hook
+// must run even while the operator/MCP transport is down.
+function ptyHostRecoveryLine(intent) {
+  const ownerId = String(process.env.PAPERCUSP_SID || intent?.sid || '').trim();
+  const verifyViaLoop = 'After confirming identity, run loop:status before relying on wake delivery or compaction.';
+  if (!ownerId) {
+    return '- ⚠ Managed psu-pty host state could not be checked because no owner id is available. ' + verifyViaLoop;
+  }
+  try {
+    const metaPath = join(PSU_PTY_DIR, sanitizeOwnerKey(ownerId) + '.json');
+    const host = JSON.parse(readFileSync(metaPath, 'utf8'));
+    const pid = Number(host?.pid);
+    const argv = Number.isInteger(pid) && pid > 1 ? cmdlineOf(pid) : null;
+    const command = Array.isArray(argv) ? argv.join(' ') : '';
+    const hostLive =
+      host?.ownerId === ownerId &&
+      typeof host?.sock === 'string' &&
+      existsSync(host.sock) &&
+      (command.includes('psu-launcher') || command.includes('psu-pty-host'));
+    if (hostLive && Array.isArray(host?.caps) && host.caps.includes('carry-respawn')) {
+      return '- Managed psu-pty host and carry-respawn capability are still verified after this relaunch.';
+    }
+    if (hostLive) {
+      return (
+        '- ⚠ The managed psu-pty host is live but does not advertise carry-respawn. Direct wake injection remains host-backed, but host-driven self-compaction is unavailable. ' +
+        verifyViaLoop
+      );
+    }
+  } catch {
+    // Missing, stale, or partially-written discovery state is the unsafe case:
+    // do not reassure the recovered process that either host-backed path exists.
+  }
+  return (
+    '- ⚠ NO LIVE MANAGED PSU-PTY HOST could be verified after this relaunch. Direct wake injection and host-driven carry-respawn are unavailable; wakes may park until this process exits. ' +
+    'An armed cold loop (or session:request-compaction retuning a warm loop) can still provide fresh-context continuation, and the compaction watchdog remains the fallback. ' +
+    verifyViaLoop
+  );
+}
+
 // EI-20273348458054257: the recovery banner used to assert, unconditionally,
 // "coord/MCP identity is unaffected" — a claim about a thing it had not
 // checked. A self-relaunch CAN fork the coord identity (measured: recorded
@@ -359,6 +403,7 @@ function playbookRecovery(intent) {
     'the --system-prompt-file playbook, --permission-mode, --session-id and any --disallowedTools',
     'were dropped. Permissions were separately restored via this session settings.json. Notes:',
     identityLine(intent),
+    ptyHostRecoveryLine(intent),
     intent.nativeSessionId ? '- Your native claude session id may differ from the recorded one (' + intent.nativeSessionId + ') — psu resume/tracking of this conversation may be degraded; disclose this if coordination looks off.' : '- psu resume/tracking of this conversation may be degraded; disclose this if coordination looks off.',
     '- If the playbook below denies tools (subagents, native schedulers), honor it even though the CLI deny flags were lost.',
     '- The document below IS your operating playbook / system prompt. Follow it in full.',

@@ -533,6 +533,13 @@ describe('WI-3280: SessionStart playbook recovery', () => {
     expect(ctx).toContain('su-rec5'); // identity from the intent file
     expect(ctx).toContain('22fa0398-0e51-48b1-93cb-e7c8426064d1'); // recorded native id
     expect(ctx).toContain('A pot is the offline-first data substrate'); // the playbook itself
+    // EI-22197250733115758: the replacement process must not be reassured that
+    // host-backed wake injection / self-compaction survived when the discovery
+    // record is absent. The banner names both consequences and the live read.
+    expect(ctx).toContain('NO LIVE MANAGED PSU-PTY HOST');
+    expect(ctx).toContain('Direct wake injection and host-driven carry-respawn are unavailable');
+    expect(ctx).toContain('compaction watchdog remains the fallback');
+    expect(ctx).toContain('run loop:status');
   });
 
   it('hook injects on the --resume relaunch branch too (argv rebuilt without the prompt flag)', () => {
