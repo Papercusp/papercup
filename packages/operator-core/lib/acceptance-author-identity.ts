@@ -171,6 +171,51 @@ export async function isAcceptanceAuthorIdentity(
 }
 
 /**
+ * Resolve the principal implementer identities for an acceptance rubric's
+ * subject plan.
+ *
+ * `Rubric.createdBy` is the acceptance-author/seat identity, not necessarily the
+ * person who implemented the plan. Plan-linked work-items retain the principal
+ * implementation identities in the base table: `terminal_owner` is the durable
+ * terminal owner and `taken_by` is the current/last claimant. Union both columns
+ * so a split author/implementer plan cannot admit one of its implementers as the
+ * independent grader.
+ *
+ * This is deliberately workspace-scoped and returns only nonblank identities.
+ * Query failures propagate to callers, which must not silently convert an
+ * unreadable independence population into a clean result.
+ */
+export async function resolvePlanImplementerIdentities(
+  subjectPlan: string | null | undefined,
+  opts: AcceptanceAuthorIdentityOpts = {},
+): Promise<string[]> {
+  const planSlug = subjectPlan?.trim() ?? '';
+  if (!planSlug) return [];
+
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+  const sql = opts.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ owner: string | null }>>`
+    SELECT DISTINCT btrim(owner) AS owner
+      FROM (
+        SELECT terminal_owner AS owner
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${workspaceId}
+           AND source_plan_slug = ${planSlug}
+        UNION ALL
+        SELECT taken_by AS owner
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${workspaceId}
+           AND source_plan_slug = ${planSlug}
+      ) AS plan_owners
+     WHERE NULLIF(btrim(owner), '') IS NOT NULL
+     ORDER BY owner
+  `;
+  return rows
+    .map((row) => row.owner?.trim() ?? '')
+    .filter((owner, index, owners) => owner !== '' && owners.indexOf(owner) === index);
+}
+
+/**
  * Partition `ownerIds` into PARTIES — groups of ids that are one agent wearing
  * several coordination identities — and return each id's canonical party key.
  *

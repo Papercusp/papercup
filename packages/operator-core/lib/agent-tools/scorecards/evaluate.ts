@@ -16,6 +16,8 @@ import {
 import {
   listScorecards,
   evaluateScorecardInstrumentContract,
+  resolveScorecardReleaseGateBinding,
+  scorecardRatingsClaimPass,
   scorecardEvidenceFingerprint,
   type ScorecardInstrumentSnapshot,
 } from '../../scorecards';
@@ -45,12 +47,21 @@ export const scorecardInstrumentSnapshotSchema = z
   })
   .strict();
 
+export const scorecardTestedShaSchema = z
+  .string()
+  .trim()
+  .regex(/^[0-9a-f]{7,64}$/i)
+  .describe(
+    'Commit SHA the supplied ratings actually tested. Required when a releaseGating rubric contains any pass-like rating; evaluate proves it is both the fresh green pin and current staging HEAD.',
+  );
+
 export const scorecardEvaluateArgs = z
   .object({
     rubricRef: z.string().min(1).max(120),
     sourceHive: z.string().min(1).max(120).optional(),
     ratings: z.record(z.string().min(1), scorecardRatingEntrySchema).optional(),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
+    testedSha: scorecardTestedShaSchema.optional(),
   })
   .strict();
 
@@ -70,6 +81,7 @@ export type GraderEligibilityReport =
       canEmitGrading: boolean;
       blocksEmit: boolean;
       implementer: string | null;
+      principalImplementers: string[] | null;
       advice: string;
       refusal?: { code: string; error: string };
     }
@@ -113,6 +125,7 @@ async function reportGraderEligibility(
         canEmitGrading: false,
         blocksEmit: true,
         implementer: verdict.implementer,
+        principalImplementers: verdict.principalImplementers,
         advice:
           `STOP — do not grade: scorecards:emit will refuse this card with '${verdict.refusal.code}' ` +
           `however complete it is. Report this to whoever assigned the review so a different ` +
@@ -126,6 +139,7 @@ async function reportGraderEligibility(
         canEmitGrading: false,
         blocksEmit: false,
         implementer: verdict.implementer,
+        principalImplementers: verdict.principalImplementers,
         advice:
           'You authored this acceptance rubric. You record the acceptance verdict ' +
           "(acceptance:{ verdict, reasoning }) AFTER reading a non-implementer's independent grading — " +
@@ -137,6 +151,7 @@ async function reportGraderEligibility(
       canEmitGrading: true,
       blocksEmit: false,
       implementer: verdict.implementer,
+      principalImplementers: verdict.principalImplementers,
       advice:
         'Eligible to emit the independent grading (omit acceptance — that is the rubric author’s call). ' +
         'Identity rails only; the ratings/evidence rails are what this call validates.',
@@ -148,6 +163,7 @@ async function reportGraderEligibility(
       canEmitGrading: false,
       blocksEmit: false,
       implementer: null,
+      principalImplementers: null,
       advice:
         'Grader eligibility could not be resolved (' +
         `${error instanceof Error ? error.message : String(error)}` +
@@ -210,7 +226,7 @@ export async function evaluateScorecard(
     const instrumentSnapshots = args.instrumentSnapshots as
       | Record<string, ScorecardInstrumentSnapshot>
       | undefined;
-    const evidenceFingerprint = scorecardEvidenceFingerprint({
+    const unboundEvidenceFingerprint = scorecardEvidenceFingerprint({
       rubricRef: args.rubricRef,
       ratings,
       instrumentSnapshots,
@@ -229,17 +245,48 @@ export async function evaluateScorecard(
           'inspect instrumentContract for missing/stale/window/verdict mismatches',
         skeleton,
         canonicalRatings: ratings,
-        evidenceFingerprint,
+        evidenceFingerprint: unboundEvidenceFingerprint,
         instrumentContract,
         latest: latest ?? null,
       };
     }
+    const releaseGateBinding =
+      rubric.releaseGating && scorecardRatingsClaimPass(ratings)
+        ? await resolveScorecardReleaseGateBinding(args.testedSha)
+        : undefined;
+    if (releaseGateBinding?.status === 'stale-pass-blocked') {
+      return {
+        ok: false as const,
+        code: 'stale_pass_blocked' as const,
+        graderEligibility,
+        error:
+          `release-gating pass blocked for '${args.rubricRef}' — ${releaseGateBinding.reason}. ` +
+          'Re-run the drill at the current staging commit after that same commit has a fresh green gate verdict, then pass testedSha.',
+        skeleton,
+        canonicalRatings: ratings,
+        instrumentContract,
+        releaseGateBinding,
+        latest: latest ?? null,
+      };
+    }
+    const boundTestedSha = releaseGateBinding?.status === 'bound'
+      ? releaseGateBinding.testedSha ?? undefined
+      : undefined;
+    const evidenceFingerprint = boundTestedSha
+      ? scorecardEvidenceFingerprint({
+          rubricRef: args.rubricRef,
+          ratings,
+          instrumentSnapshots,
+          testedSha: boundTestedSha,
+        })
+      : unboundEvidenceFingerprint;
     const latestFingerprint = latest
       ? latest.evidenceFingerprint ??
         scorecardEvidenceFingerprint({
           rubricRef: latest.rubricRef,
           ratings: latest.ratings,
           ...(latest.rerunRecipe ? { rerunRecipe: latest.rerunRecipe } : {}),
+          ...(latest.testedSha ? { testedSha: latest.testedSha } : {}),
         })
       : null;
     const changedCriteria = rubric.criteria
@@ -264,6 +311,7 @@ export async function evaluateScorecard(
       canonicalRatings: ratings,
       evidenceFingerprint,
       instrumentContract,
+      ...(releaseGateBinding ? { releaseGateBinding } : {}),
       changed: latestFingerprint !== evidenceFingerprint,
       delta: {
         previousIssueId: latest?.issueId ?? null,
@@ -291,15 +339,15 @@ export default defineTool({
   name: 'scorecards:evaluate',
   profile: 'engineer',
   description:
-    'Return the exact typed grading skeleton for a rubric. Optionally validate + canonicalize a complete ratings map, attach deterministic instrument snapshots, compute its evidence fingerprint, and show the criterion delta from the latest scorecard. Read-only; use scorecards:emit to file the validated result.',
+    'Return the exact typed grading skeleton for a rubric. Optionally validate + canonicalize a complete ratings map, attach deterministic instrument snapshots, bind positive release-gating ratings to the tested green SHA, compute its evidence fingerprint, and show the criterion delta from the latest scorecard. Read-only; use scorecards:emit to file the validated result.',
   guidance: {
     when:
       'Before grading/emitting a rubric scorecard, especially in GRADE mode. This eliminates criterion-key, rating-case, evidence, and nested-schema guessing. For an acceptance rubric it also returns `graderEligibility` — whether YOU may file the grading at all; read it BEFORE doing the grading work, not after.',
     notWhen: 'Reading scorecard history only — scorecards:list. Filing the validated scorecard — scorecards:emit.',
     chaining:
-      'scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots } → scorecards:emit with the canonical result.',
+      'scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with the canonical result. `testedSha` is required when a releaseGating rubric has a pass-like rating.',
     returns:
-      'Top level: { ok, skeleton, rubric, graderEligibility, latest, canonicalRatings, evidenceFingerprint, instrumentContract, changed, delta, error }. `skeleton` is an ARRAY of criterion rows — NOT an object keyed by criterion, so index it positionally or by `.key`; each row carries key, title, instrumentKey, check and allowedRatings beside the null rating/evidence you fill in. `rubric` summarises the rubric incl. criteriaCount; `graderEligibility` is null unless the rubric is kind acceptance. `latest` is the newest ScorecardRow or null, and its `ratings`, `gradedGeneration` and `generationFreshness` are nested OBJECTS rather than scalars — `generationFreshness` only when the row carries a `gradedGeneration` — so a flat/CSV projection over a row fails on them. `canonicalRatings`, `evidenceFingerprint`, `instrumentContract`, `changed` and `delta.changedCriteria` appear only when you pass `ratings`.',
+      'Top level: { ok, code, skeleton, rubric, graderEligibility, latest, canonicalRatings, evidenceFingerprint, instrumentContract, releaseGateBinding, changed, delta, error }. `skeleton` is an ARRAY of criterion rows — NOT an object keyed by criterion, so index it positionally or by `.key`; each row carries key, title, instrumentKey, check and allowedRatings beside the null rating/evidence you fill in. `rubric` summarises the rubric incl. criteriaCount; `graderEligibility` is null unless the rubric is kind acceptance and then includes the acceptance-author `implementer` plus `principalImplementers` from its subject plan; a positive releaseGating evaluation returns a bound `releaseGateBinding` or refuses with code `stale_pass_blocked` and the current gate reason/failing tests. `latest` is the newest ScorecardRow or null, and its `ratings`, `gradedGeneration` and `generationFreshness` are nested OBJECTS rather than scalars — `generationFreshness` only when the row carries a `gradedGeneration` — so a flat/CSV projection over a row fails on them. `canonicalRatings`, `evidenceFingerprint`, `instrumentContract`, `changed` and `delta.changedCriteria` appear only when you pass `ratings`.',
     seeAlso: ['scorecards:emit', 'scorecards:list', 'rubrics:get'],
   },
   // EI-21228209276284649: this is a correctness payload, not a browseable list.
@@ -328,6 +376,7 @@ export default defineTool({
   result: z
     .object({
       ok: z.boolean().optional(),
+      code: z.string().optional(),
       error: z.string().optional(),
       graderEligibility: z.record(z.string(), z.unknown()).nullable().optional(),
       rubric: z.record(z.string(), z.unknown()).optional(),
@@ -335,6 +384,7 @@ export default defineTool({
       canonicalRatings: z.record(z.string(), z.unknown()).optional(),
       evidenceFingerprint: z.string().optional(),
       instrumentContract: z.record(z.string(), z.unknown()).optional(),
+      releaseGateBinding: z.record(z.string(), z.unknown()).optional(),
       changed: z.boolean().optional(),
       delta: z.record(z.string(), z.unknown()).optional(),
       latest: z.record(z.string(), z.unknown()).nullable().optional(),
