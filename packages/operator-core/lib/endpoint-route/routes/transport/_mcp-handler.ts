@@ -66,12 +66,7 @@ import {
 import type { AgentRole } from '@papercusp/plugin-sdk';
 // Generic MCP↔dispatcher bridge primitives (plan P-031). The auth/spawn-context
 // assembly below stays host-side; only the reusable, host-agnostic glue moved.
-import {
-  bearerFromExtra,
-  urlFromExtra,
-  headersFromExtra,
-  dispatchProjectedToolToMcp,
-} from '@papercusp/tooldef-mcp';
+import { bearerFromExtra, urlFromExtra, headersFromExtra, dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
 import { mcpTraceIdFromExtra } from '../../../mcp-request-trace';
 import { getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoor, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
@@ -115,10 +110,7 @@ import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-to
 import { workspaceForCoordOwner } from '../../../adv-sessions';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loopPressure } from '../../../event-loop-lag-monitor';
-import {
-  isEngineeringDocsSentinel,
-  resolveInheritedHarnessScope,
-} from '../../../agent-tools/_harness-scope';
+import { isEngineeringDocsSentinel, resolveInheritedHarnessScope } from '../../../agent-tools/_harness-scope';
 import { verifyExplicitPlanHarness } from '../../../agent-tools/plans/slug-scope';
 import { withMcpAdmission, ADMISSION_CONTROL_ENABLED } from './mcp-admission';
 import { DeltaProxySessionStore } from './delta-proxy-session-store';
@@ -789,10 +781,7 @@ async function applyScopedSuperuserTransportClamp(
   if (scopedSuperuserClamp) {
     const requestedHarness = typeof args.harness === 'string' ? args.harness.trim() : '';
     if (requestedHarness === 'all' || requestedHarness === '*') {
-      if (
-        (toolName === 'plans:list' || toolName === 'loop:arm') &&
-        spawnCtx.harnessSlug === '*'
-      ) {
+      if ((toolName === 'plans:list' || toolName === 'loop:arm') && spawnCtx.harnessSlug === '*') {
         const rest = { ...args };
         delete rest.harness;
         args = toolName === 'plans:list' ? { ...rest, workspaceWide: true } : rest;
@@ -881,9 +870,7 @@ async function applyScopedSuperuserTransportClamp(
         // normal sibling-Hive rejection.
         const verifiedExactPlanRebind =
           escapesHive &&
-          (toolName === 'plans:get' ||
-            toolName === 'plans:add-decision' ||
-            toolName === 'coord:declare-intent') &&
+          (toolName === 'plans:get' || toolName === 'plans:add-decision' || toolName === 'coord:declare-intent') &&
           (await verifyExplicitPlanHarness(spawnCtx, requestedHarness, args));
         if (verifiedExactPlanRebind) {
           effectiveHarnessSlug = requestedHarness;
@@ -896,8 +883,7 @@ async function applyScopedSuperuserTransportClamp(
           if (typeof args.id === 'string') requestedIds.push(args.id);
           if (Array.isArray(args.ids)) requestedIds.push(...args.ids);
           const allRequestedIdsAreIssueFamily =
-            requestedIds.length > 0 &&
-            requestedIds.every((id) => typeof id === 'string' && id.startsWith('EI-'));
+            requestedIds.length > 0 && requestedIds.every((id) => typeof id === 'string' && id.startsWith('EI-'));
           const crossHiveWorkItemReadHint =
             toolName === 'work_items:get'
               ? allRequestedIdsAreIssueFamily
@@ -995,9 +981,7 @@ async function applyScopedSuperuserTransportClamp(
 
       for (const { arg, slug } of collectHarnessSlugArgs(args, { toolName })) {
         const escapesHive =
-          slug === 'all' ||
-          slug === '*' ||
-          (await potHomeSlugForHarness(spawnCtx.workspaceId, slug)) !== scopeHive;
+          slug === 'all' || slug === '*' || (await potHomeSlugForHarness(spawnCtx.workspaceId, slug)) !== scopeHive;
         if (escapesHive) {
           return {
             ok: false,
@@ -3025,8 +3009,7 @@ const handler = createMcpHandler(
                 hiveArgs.owner.trim().length > 0;
               const forbiddenPresenceScope =
                 toolName === 'coord:presence' &&
-                (hiveArgs?.scope === 'all' ||
-                  (hiveArgs?.scope === 'workspace' && !targetedPresenceOwner));
+                (hiveArgs?.scope === 'all' || (hiveArgs?.scope === 'workspace' && !targetedPresenceOwner));
               if (forbiddenPresenceScope) {
                 return {
                   isError: true,
@@ -4342,11 +4325,8 @@ export function primeSseResponse(res: Response, keepaliveMs: number = DEFAULT_KE
 // rationale live in ./mcp-admission (kept out of this heavy side-effect module so it's
 // unit-testable). Fail-open when no lag monitor is running (loopPressure() → 'ok').
 const mcpHandler = async (req: Request): Promise<Response> => {
-  return withMcpAdmission(
-    req,
-    loopPressure(),
-    ADMISSION_CONTROL_ENABLED,
-    async () => primeSseResponse(await handler(req)),
+  return withMcpAdmission(req, loopPressure(), ADMISSION_CONTROL_ENABLED, async () =>
+    primeSseResponse(await handler(req)),
   );
 };
 
