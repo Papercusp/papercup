@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
+  makeFakeWorkspaceHostProvider,
   type WorkspaceHostApplyResult,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostPlanStep,
@@ -163,9 +164,8 @@ function providerHarness(options: { inventoryError?: Error } = {}) {
       ],
     };
   });
-  const provider = {
+  const provider = makeFakeWorkspaceHostProvider({
     target: 'gcp',
-    capabilities: {},
     validateConnection: vi.fn(async () => ({ ok: true, checkedAt: NOW, warnings: [], errors: [] })),
     plan: vi.fn(async (request) => ({
       planId: 'plan-destroy-1',
@@ -180,9 +180,7 @@ function providerHarness(options: { inventoryError?: Error } = {}) {
     reconcile: vi.fn<WorkspaceHostProvider['reconcile']>(),
     observe: vi.fn<WorkspaceHostProvider['observe']>(),
     inventoryManagedResources,
-  } as unknown as WorkspaceHostProvider & {
-    inventoryManagedResources: typeof inventoryManagedResources;
-  };
+  });
   return { provider, apply, inventoryManagedResources };
 }
 

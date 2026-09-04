@@ -3,9 +3,12 @@ import type {
   WorkspaceHostApplyResult,
   WorkspaceHostDesiredSpec,
   WorkspaceHostDestroyConfirmation,
+  WorkspaceHostDiscoveryCapabilities,
+  WorkspaceHostLifecycleCapabilities,
   WorkspaceHostPlan,
   WorkspaceHostPlanRequest,
   WorkspaceHostProvider,
+  WorkspaceHostProviderCapabilities,
   WorkspaceHostProviderContext,
   WorkspaceHostProviderTarget,
   WorkspaceHostResourceRef,
@@ -1237,4 +1240,92 @@ export class WorkspaceHostLiveCanaryHarness {
       costEvidence: this.costs.map((entry) => ({ ...entry })),
     };
   }
+}
+
+function notStubbed(member: keyof WorkspaceHostProvider): never {
+  throw new Error(
+    `Fake workspace-host provider: '${String(member)}' was called but this test did not stub it. ` +
+      `Pass it to makeFakeWorkspaceHostProvider({ ${String(member)}: ... }).`,
+  );
+}
+
+/**
+ * Complete capabilities for a fake provider, every flag off.
+ *
+ * Annotated `WorkspaceHostProviderCapabilities` with NO cast on purpose: this is the single
+ * place a newly-required capability field must be filled in, and until it is, the compiler
+ * stops every fake built from it. The alternative — `capabilities: {}` behind
+ * `as unknown as WorkspaceHostProvider` — is what let provisioning-runner.integration.test.ts
+ * sit red for two days after `lifecycle.hostBootstrap` became load-bearing (WI-2144032): the
+ * cast erased the one error that would have named the missing field.
+ *
+ * Defaults are all `false`/empty so a fake declares only the capability its test exercises,
+ * and a test that needs a capability has to say so.
+ */
+export function fakeWorkspaceHostCapabilities(
+  overrides: {
+    discovery?: Partial<WorkspaceHostDiscoveryCapabilities>;
+    lifecycle?: Partial<WorkspaceHostLifecycleCapabilities>;
+    transportKinds?: readonly string[];
+    constraints?: readonly string[];
+  } = {},
+): WorkspaceHostProviderCapabilities {
+  return {
+    discovery: {
+      scopes: false,
+      regions: false,
+      sizes: false,
+      images: false,
+      priceEstimates: false,
+      ...overrides.discovery,
+    },
+    lifecycle: {
+      start: false,
+      stop: false,
+      restart: false,
+      snapshot: false,
+      restore: false,
+      upgrade: false,
+      repair: false,
+      confirmedDestroy: false,
+      hostBootstrap: false,
+      ...overrides.lifecycle,
+    },
+    transportKinds: overrides.transportKinds ?? [],
+    ...(overrides.constraints ? { constraints: overrides.constraints } : {}),
+  };
+}
+
+/**
+ * Build a fake provider that genuinely satisfies `WorkspaceHostProvider`, so a test never has
+ * to reach for `as unknown as WorkspaceHostProvider` to get one.
+ *
+ * Every interface member is present. The ones a test does not supply throw when called, naming
+ * themselves — a fake that is missing a method a code path reaches now fails loudly instead of
+ * answering `undefined` and surfacing as an unrelated TypeError deep inside the runner.
+ *
+ * `Extra` carries members that are NOT on the interface (an optional capability the runner
+ * probes for with `'x' in provider`, for instance) through to the return type, so those stay
+ * typed at the call site rather than forcing the cast back.
+ */
+export function makeFakeWorkspaceHostProvider<
+  Extra extends object = Record<never, never>,
+>(parts: Partial<WorkspaceHostProvider> & Extra): WorkspaceHostProvider & Extra {
+  const base: WorkspaceHostProvider = {
+    target: "gcp",
+    capabilities: fakeWorkspaceHostCapabilities(),
+    validateConnection: () => notStubbed("validateConnection"),
+    listScopes: () => notStubbed("listScopes"),
+    listRegions: () => notStubbed("listRegions"),
+    listSizes: () => notStubbed("listSizes"),
+    listImages: () => notStubbed("listImages"),
+    estimatePrice: () => notStubbed("estimatePrice"),
+    plan: () => notStubbed("plan"),
+    apply: () => notStubbed("apply"),
+    observe: () => notStubbed("observe"),
+    reconcile: () => notStubbed("reconcile"),
+    getTransportProfile: () => notStubbed("getTransportProfile"),
+    attestHealth: () => notStubbed("attestHealth"),
+  };
+  return { ...base, ...parts };
 }

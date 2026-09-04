@@ -227,6 +227,8 @@ export {
   assertWorkspaceHostSecretIsolation,
   runFakeWorkspaceHostProviderContractSuite,
   createWorkspaceHostManualDestroyReceipt,
+  fakeWorkspaceHostCapabilities,
+  makeFakeWorkspaceHostProvider,
 } from "./workspace-host-test-harness";
 export {
   WORKSPACE_HOST_CANARY_TAG_KEYS,
