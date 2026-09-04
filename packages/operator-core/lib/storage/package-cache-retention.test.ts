@@ -101,7 +101,11 @@ describe('runPackageCacheRetention', () => {
     ]);
     const measure = vi.fn(async (path: string) => queues.get(path)!.shift()!);
     const runCommand = vi.fn(async () => ({ ok: true, exitCode: 0, timedOut: false, output: 'ok' }));
-    const withMutex = vi.fn(async (_name: string, run: () => Promise<unknown>) => run());
+    const mutexCalls: Array<[string, Record<string, unknown> | undefined]> = [];
+    const withMutex = async <T>(name: string, run: () => Promise<T>, options?: Record<string, unknown>): Promise<T> => {
+      mutexCalls.push([name, options]);
+      return run();
+    };
 
     const out = await runPackageCacheRetention({
       targets,
@@ -112,9 +116,9 @@ describe('runPackageCacheRetention', () => {
       withMutex,
     });
 
-    expect(withMutex).toHaveBeenCalledTimes(1);
-    expect(withMutex.mock.calls[0]?.[0]).toBe(PACKAGE_CACHE_MUTEX_NAME);
-    expect(withMutex.mock.calls[0]?.[2]).toMatchObject({
+    expect(mutexCalls).toHaveLength(1);
+    expect(mutexCalls[0]?.[0]).toBe(PACKAGE_CACHE_MUTEX_NAME);
+    expect(mutexCalls[0]?.[1]).toMatchObject({
       intent: { operation: 'package-cache-retention', managers: 'npm,pnpm' },
     });
     expect(runCommand.mock.calls).toEqual([

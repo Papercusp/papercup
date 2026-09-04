@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CITED_AS_OUTSTANDING_RE,
+  FIXED_BUT_OPEN_ITEM_KINDS,
   classifyCitation,
   tierFor,
 } from '../../../scripts/check-fixed-but-open.mjs';
@@ -34,6 +35,15 @@ function rec(opts: {
     samples: [],
   };
 }
+
+describe('backward reconciliation candidate scope', () => {
+  it('includes feature-family rows as well as issue-family work', () => {
+    // EI-19327225905639728's exact stale exemplars — WI-5657, WI-5754, WI-5779 — were ALL
+    // kind=feature. Omitting feature here made the live report look healthy while excluding the
+    // class that filed the item. Pin the complete forward-active kind set, not just one token.
+    expect(FIXED_BUT_OPEN_ITEM_KINDS).toEqual(['feature', 'bug', 'change', 'task']);
+  });
+});
 
 describe('classifyCitation — measured citation shapes', () => {
   it('reads a fixture ARRAY LITERAL as data, not as evidence of a fix', () => {

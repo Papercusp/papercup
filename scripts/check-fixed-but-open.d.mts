@@ -58,6 +58,18 @@ export function tierFor(rec: {
     hasAssertion?: boolean;
 }): "guard" | "source-comment" | "weak";
 /**
+ * Active work-item kinds the backward reconciliation sweep must inspect.
+ *
+ * `feature` is deliberately first and load-bearing. The three incidents that motivated
+ * EI-19327225905639728 (WI-5657, WI-5754, WI-5779) were ALL feature-family rows; limiting this
+ * query to the issue-store kinds made the detector healthy-looking while excluding the exact
+ * backlog class it was meant to find. `chunk` is intentionally absent: its forward write path is
+ * retired and only terminal historical rows remain (see work-items.ts).
+ *
+ * @type {readonly string[]}
+ */
+export const FIXED_BUT_OPEN_ITEM_KINDS: readonly string[];
+/**
  * A citation can name an item as STILL OUTSTANDING rather than as fixed — a third false-positive
  * mode, distinct from fixture data and invisible to the tiering (the line is a genuine comment in
  * a genuine guard file; it just says the opposite of what we are looking for).

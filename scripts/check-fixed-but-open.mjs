@@ -60,6 +60,19 @@ const TEST_PATH_RE = /(\.test\.[cm]?[jt]sx?|\.spec\.[cm]?[jt]sx?|selftest)/;
 const TIERS = ['guard', 'source-comment', 'weak'];
 
 /**
+ * Active work-item kinds the backward reconciliation sweep must inspect.
+ *
+ * `feature` is deliberately first and load-bearing. The three incidents that motivated
+ * EI-19327225905639728 (WI-5657, WI-5754, WI-5779) were ALL feature-family rows; limiting this
+ * query to the issue-store kinds made the detector healthy-looking while excluding the exact
+ * backlog class it was meant to find. `chunk` is intentionally absent: its forward write path is
+ * retired and only terminal historical rows remain (see work-items.ts).
+ *
+ * @type {readonly string[]}
+ */
+export const FIXED_BUT_OPEN_ITEM_KINDS = Object.freeze(['feature', 'bug', 'change', 'task']);
+
+/**
  * A citation can name an item as STILL OUTSTANDING rather than as fixed — a third false-positive
  * mode, distinct from fixture data and invisible to the tiering (the line is a genuine comment in
  * a genuine guard file; it just says the opposite of what we are looking for).
@@ -308,9 +321,9 @@ async function openWorkItems(harness) {
          FROM harness_shared.work_items
         WHERE harness_slug = $1
           AND status = 'open'
-          AND item_kind IN ('bug','change','task')
+          AND item_kind = ANY($2::text[])
           AND coalesce(payload->>'lane','') <> 'observation'`,
-      [harness],
+      [harness, FIXED_BUT_OPEN_ITEM_KINDS],
     );
     return rows;
   } finally {

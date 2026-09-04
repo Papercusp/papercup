@@ -40,6 +40,9 @@ function windowOf(at: string, states: Partial<Record<PlaneMetricId, MetricWindow
   };
 }
 
+/** Literal fixture: the exemption lifecycle stays testable after the shipped map empties. */
+const STALE_ACTION_GAP = { 'acted-on-stale-or-wrong-value': 'WI-6548' } as const;
+
 describe('⚠ a QUIET window is not a DEAD producer (the 2026-07-28T03:08Z fleet-gate red)', () => {
   /** The exact live window that red the gate: 37 eligible, 0 comparable. */
   const quiet = (over: Partial<MetricWindow> = {}): MetricWindow =>
@@ -578,7 +581,9 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
   });
 
   /**
-   * The live series after WI-6545 / D-103: 6/7, one exempt, no regression.
+   * The live rollout series through WI-6548: 6/7 while producer v2 carried the
+   * blind dependency replay, then 7/7 when producer v3 persisted a comparable
+   * `staleValueQuotes` verdict for the first time.
    *
    * The DENOMINATOR dropped 8 → 7 because D-103 retired
    * `conflicting-assumption-incidence` outright rather than exempting it forever
@@ -587,27 +592,37 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
    * (WI-6465 / D-102) and they hold in production from 2026-07-27T23:36Z onward,
    * so they take windowOf's interpretable default.
    */
-  it('passes the real production series, with the dependsOn-backed metric exempt', () => {
+  it('passes the producer-v3 rollout series with no shipped exemption', () => {
     const blocked = { 'acted-on-stale-or-wrong-value': w(false) };
     const report = ratchetPlaneSeries({
       series: [
         windowOf('2026-07-27T13:18:00Z', { ...blocked, 'intent-action-divergence-stamped': w(false) }),
         windowOf('2026-07-27T14:34:00Z', blocked),
-        windowOf('2026-07-27T17:05:00Z', blocked),
+        windowOf('2026-09-04T18:30:21.818Z', {
+          'acted-on-stale-or-wrong-value': w(true, {
+            measuredAt: '2026-09-04T18:30:21.818Z',
+            fillRate: 0.0014,
+            zeroReason: null,
+          }),
+        }),
       ],
     });
     expect(report.failures).toHaveLength(0);
-    expect(report.exempt.map((r) => r.metric)).toEqual(['acted-on-stale-or-wrong-value']);
-    // 7 ids, 1 never-interpretable.
-    expect(report.highWaterCount).toBe(6);
-    expect(report.currentCount).toBe(6);
+    expect(report.exempt).toHaveLength(0);
+    expect(report.rows.find((r) => r.metric === 'acted-on-stale-or-wrong-value')).toMatchObject({
+      verdict: 'holding',
+      interpretableNow: true,
+      lastInterpretableAt: '2026-09-04T18:30:21.818Z',
+    });
+    expect(report.highWaterCount).toBe(7);
+    expect(report.currentCount).toBe(7);
   });
 
   /**
    * ⚠ RETIRING A METRIC MUST NOT BE A WAY TO LAUNDER ONE.
    *
    * D-103 retired `conflicting-assumption-incidence` and deliberately KEPT
-   * `acted-on-stale-or-wrong-value`, whose producer is equally silent. The
+   * `acted-on-stale-or-wrong-value`, whose producer was equally silent then. The
    * difference is that the kept one is `clarification-rate`'s declared companion,
    * so dropping it would silently upgrade that metric's hedged zero to an
    * unqualified pass. Pinned as an executable property rather than argued in a
@@ -639,7 +654,11 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
   it('does NOT excuse the gapped metric when some OTHER item closes', () => {
     const blocked = { 'acted-on-stale-or-wrong-value': w(false) };
     const series = [windowOf('2026-07-27T14:34:00Z', blocked), windowOf('2026-07-27T17:05:00Z', blocked)];
-    const afterUnrelated = ratchetPlaneSeries({ series, closedGaps: new Set(['WI-6465']) });
+    const afterUnrelated = ratchetPlaneSeries({
+      series,
+      closedGaps: new Set(['WI-6465']),
+      gaps: STALE_ACTION_GAP,
+    });
     expect(afterUnrelated.failures).toHaveLength(0);
     expect(afterUnrelated.exempt.map((r) => r.metric)).toEqual(['acted-on-stale-or-wrong-value']);
   });
@@ -657,7 +676,11 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
   it('closing WI-6545 is INERT — the metric it retired is no longer a gap to excuse', () => {
     const blocked = { 'acted-on-stale-or-wrong-value': w(false) };
     const series = [windowOf('2026-07-27T14:34:00Z', blocked), windowOf('2026-07-27T17:05:00Z', blocked)];
-    const afterClose = ratchetPlaneSeries({ series, closedGaps: new Set(['WI-6545']) });
+    const afterClose = ratchetPlaneSeries({
+      series,
+      closedGaps: new Set(['WI-6545']),
+      gaps: STALE_ACTION_GAP,
+    });
     expect(afterClose.failures).toHaveLength(0);
     expect(afterClose.exempt.map((r) => r.metric)).toEqual(['acted-on-stale-or-wrong-value']);
   });
@@ -667,9 +690,13 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
     const blocked = { 'acted-on-stale-or-wrong-value': w(false) };
     const series = [windowOf('2026-07-27T14:34:00Z', blocked), windowOf('2026-07-27T17:05:00Z', blocked)];
 
-    expect(ratchetPlaneSeries({ series }).failures).toHaveLength(0);
+    expect(ratchetPlaneSeries({ series, gaps: STALE_ACTION_GAP }).failures).toHaveLength(0);
 
-    const afterClose = ratchetPlaneSeries({ series, closedGaps: new Set(['WI-6548']) });
+    const afterClose = ratchetPlaneSeries({
+      series,
+      closedGaps: new Set(['WI-6548']),
+      gaps: STALE_ACTION_GAP,
+    });
     expect(afterClose.failures.map((f) => f.metric)).toEqual(['acted-on-stale-or-wrong-value']);
     expect(afterClose.exempt).toHaveLength(0);
   });
@@ -683,8 +710,9 @@ describe('ratchetPlaneSeries — per-metric, never the aggregate count', () => {
     expect(report.highWaterCount).toBe(0);
   });
 
-  it('names a gap item for every metric known to be blind, and only real ids', () => {
-    for (const [metric, ref] of Object.entries(METRIC_KNOWN_GAPS)) {
+  it('ships no gap after producer v3, while injected gap fixtures still name real ids', () => {
+    expect(METRIC_KNOWN_GAPS).toEqual({});
+    for (const [metric, ref] of Object.entries(STALE_ACTION_GAP)) {
       expect(PLANE_METRIC_IDS).toContain(metric as PlaneMetricId);
       expect(ref).toMatch(/^WI-\d+$/);
     }

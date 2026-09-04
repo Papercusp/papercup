@@ -134,16 +134,14 @@ export const METRIC_KNOWN_GAPS: Readonly<Partial<Record<PlaneMetricId, string>>>
   // Widening its gate would have changed which structural-zero string printed and
   // nothing else. Do NOT re-add it: the metric id no longer exists.
   //
-  // `acted-on-stale-or-wrong-value` DID NOT ride on that retirement — different
-  // question, and it is
-  // `clarification-rate`'s declared `interpretableOnlyWith` companion, so retiring
-  // it would silently promote that metric to an unqualified pass. It was pointed at
-  // WI-6545 only because that pointer was written too broadly while WI-6465 closed;
-  // WI-6548 owns it now. Its replacement producer is the send-time
-  // `staleValueQuotes` stamp already captured inline by `coord:send`; keep this
-  // exemption through the two-phase rollout until a producer-v3 measurement row
-  // proves that persisted verdict leg live, then close the item and remove it.
-  'acted-on-stale-or-wrong-value': 'WI-6548',
+  // `acted-on-stale-or-wrong-value` is deliberately NOT listed here either. It
+  // remains `clarification-rate`'s declared `interpretableOnlyWith` companion, so
+  // retiring the metric would silently promote that rate to an unqualified pass.
+  // WI-6548 instead replaced the blind fact-dependency replay with the send-time
+  // `staleValueQuotes` stamp already captured inline by `coord:send`. Producer v3's
+  // first persisted row (2026-09-04T18:30:21.818Z) proved that leg live over 696
+  // messages: 1 eligible, 1 comparable, 0 stale, `clean` and interpretable. With
+  // the producer proven, keeping an exemption would now hide a future regression.
   // ⚠ `acted-on-stale-declared-basis` and `closed-work-basis-moved` were listed here
   // under WI-6465 while their producer was still being built. They are deliberately NOT
   // listed any more: both now HOLD in production, measured every ~30min since
@@ -458,13 +456,12 @@ export function judgeKnownGap(args: {
  * every verdict depend on the whole report and destroy that property. It is a
  * separate disclosure on top of an unchanged verdict.
  *
- * ⚠ AND WHY IT DOES NOT FAIL THE BUILD. The honest fix is WI-6548 giving `dependsOn`
- * a producer, which is a filed, owned gap — failing here would red the fleet
- * gate for a known-open item and teach everyone to ignore this check, the exact outcome
- * METRIC_KNOWN_GAPS exists to avoid. The teeth are already in the right place: when
- * WI-6548 closes with the producer still silent, the COMPANION's own row fails via
- * {@link judgeKnownGap}, and this disclosure clears on its own the moment the
- * companion starts holding.
+ * ⚠ AND WHY IT DOES NOT FAIL THE BUILD. The honest fix for an unavailable companion
+ * is to make its producer emit. While that work is filed and open, METRIC_KNOWN_GAPS
+ * keeps one known absence from pinning the fleet gate red forever. WI-6548 completed
+ * that lifecycle: producer v3 replaced the blind `dependsOn` leg with persisted
+ * `staleValueQuotes`, proved the companion holding, and removed its exemption. The
+ * ordinary ratchet now has the teeth again if that producer ever regresses.
  */
 export function companionsUnavailable(
   metric: PlaneMetricId,
