@@ -37,13 +37,9 @@
 
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { isSubstrateOwnerProcess } from '../../background-workers';
-import {
-  listBootedHandles,
-  listRelocatedBootedHandles,
-  type BootedHandleSummary,
-} from './boot-all';
+import { listBootedHandles, listRelocatedBootedHandles, type BootedHandleSummary } from './boot-all';
 import type { BootedAnnounceIdentity } from './boot';
-import { readOperatorState, writeOperatorState } from '../../operator-state-pg';
+import { readOperatorState, updateOperatorState } from '../../operator-state-pg';
 import {
   collectSubstrateHealthInputs,
   isCompleteHealthInputs,
@@ -60,9 +56,24 @@ interface PgRelocatedSidecarAdvertisement {
   handles: BootedHandleSummary[];
 }
 
+interface PgLastKnownHarnessAnnounceDeviceRecord {
+  workspaceId: string;
+  harnessSlug: string;
+  devicePubkeyBase64: string;
+  advertisedAt: number;
+}
+
 interface PgBootedHandlesPayload {
   handles: BootedHandleSummary[];
   sentAt: number;
+  /**
+   * WI-2142873 / D-013: last serving identity observed for each pot, retained
+   * across a fresh snapshot that temporarily omits the pot during owner boot.
+   * Refusal-only evidence: readers must never use one of these records to sign.
+   * Optional so a new reader can bootstrap the history from a legacy row's
+   * current `handles` before the publisher replaces it.
+   */
+  lastKnownAnnounceDevices?: PgLastKnownHarnessAnnounceDeviceRecord[];
   /**
    * EI-20575137548097507: the owner's health-input registries, published
    * ALONGSIDE the handle list so a non-owner reader can actually ASSESS the
@@ -139,6 +150,93 @@ export interface BootedHandlesPgPublisherHandle {
   stop(): void;
 }
 
+// The snapshot row is a liveness surface, not an append-only history. Bound the
+// refusal-only identity ledger so deleted/renamed harnesses cannot grow it
+// forever; current handles are stamped newest and therefore survive eviction.
+const LAST_KNOWN_ANNOUNCE_DEVICE_LIMIT = 2_048;
+
+function isLastKnownAnnounceDeviceRecord(value: unknown): value is PgLastKnownHarnessAnnounceDeviceRecord {
+  const record = value as Partial<PgLastKnownHarnessAnnounceDeviceRecord> | null;
+  return Boolean(
+    record &&
+    typeof record.workspaceId === 'string' &&
+    record.workspaceId &&
+    typeof record.harnessSlug === 'string' &&
+    record.harnessSlug &&
+    typeof record.devicePubkeyBase64 === 'string' &&
+    record.devicePubkeyBase64 &&
+    typeof record.advertisedAt === 'number' &&
+    Number.isFinite(record.advertisedAt),
+  );
+}
+
+function lastKnownAnnounceDeviceKey(record: { workspaceId: string; harnessSlug: string }): string {
+  return `${record.workspaceId}\u0000${record.harnessSlug}`;
+}
+
+function announceDeviceRecordFromHandle(
+  handle: BootedHandleSummary,
+  advertisedAt: number,
+): PgLastKnownHarnessAnnounceDeviceRecord | null {
+  const devicePubkeyBase64 = handle.announceIdentity?.devicePubkeyBase64;
+  if (
+    typeof handle.workspaceId !== 'string' ||
+    !handle.workspaceId ||
+    typeof handle.harnessSlug !== 'string' ||
+    !handle.harnessSlug ||
+    typeof devicePubkeyBase64 !== 'string' ||
+    !devicePubkeyBase64
+  ) {
+    return null;
+  }
+  return {
+    workspaceId: handle.workspaceId,
+    harnessSlug: handle.harnessSlug,
+    devicePubkeyBase64,
+    advertisedAt,
+  };
+}
+
+/**
+ * Carry forward identity history while replacing the liveness snapshot.
+ *
+ * The legacy `current.handles` pass is load-bearing: on the first publisher
+ * beat after this field ships, it captures the old process's last live
+ * identities BEFORE the fresh (possibly empty) handle list replaces them.
+ */
+function mergeLastKnownAnnounceDevices(
+  current: Partial<PgBootedHandlesPayload> | null | undefined,
+  nextHandles: BootedHandleSummary[],
+  nextAdvertisedAt: number,
+): PgLastKnownHarnessAnnounceDeviceRecord[] {
+  const byHarness = new Map<string, PgLastKnownHarnessAnnounceDeviceRecord>();
+  const priorRecords = Array.isArray(current?.lastKnownAnnounceDevices) ? current.lastKnownAnnounceDevices : [];
+  for (const value of priorRecords) {
+    if (!isLastKnownAnnounceDeviceRecord(value)) continue;
+    const key = lastKnownAnnounceDeviceKey(value);
+    const prior = byHarness.get(key);
+    if (!prior || value.advertisedAt >= prior.advertisedAt) byHarness.set(key, value);
+  }
+
+  const currentAdvertisedAt =
+    typeof current?.sentAt === 'number' && Number.isFinite(current.sentAt) ? current.sentAt : 0;
+  for (const handle of Array.isArray(current?.handles) ? current.handles : []) {
+    const record = announceDeviceRecordFromHandle(handle, currentAdvertisedAt);
+    if (record) byHarness.set(lastKnownAnnounceDeviceKey(record), record);
+  }
+  for (const handle of nextHandles) {
+    const record = announceDeviceRecordFromHandle(handle, nextAdvertisedAt);
+    if (record) byHarness.set(lastKnownAnnounceDeviceKey(record), record);
+  }
+
+  return [...byHarness.values()]
+    .sort(
+      (a, b) =>
+        b.advertisedAt - a.advertisedAt || lastKnownAnnounceDeviceKey(a).localeCompare(lastKnownAnnounceDeviceKey(b)),
+    )
+    .slice(0, LAST_KNOWN_ANNOUNCE_DEVICE_LIMIT);
+}
+
 /**
  * SUBSTRATE-OWNER side: periodically upsert `listBootedHandles()` to the
  * cross-service PG row. Self-gates on real ownership EVERY beat (never once
@@ -163,9 +261,10 @@ export function startBootedHandlesPgPublisher(opts: {
     if (!(opts.ownsSubstrate ?? isSubstrateOwnerProcess())) return;
     const handles = listBootedHandles();
     const relocated = listRelocatedBootedHandles();
+    const sentAt = now();
     const payload: PgBootedHandlesPayload = {
       handles,
-      sentAt: now(),
+      sentAt,
       // EI-20575137548097507: publish what a reader needs to ASSESS these
       // handles, not just enumerate them.
       healthInputs: collectSubstrateHealthInputs(),
@@ -178,14 +277,22 @@ export function startBootedHandlesPgPublisher(opts: {
           }
         : {}),
     };
-    // Return the write Promise to managedSetInterval. Swallowing it here made
-    // the timer look healthy (`lastError:null`) while every PG write failed —
-    // exactly the observability gap that prolonged EI-20952729544817284. The
-    // managed timer records/logs a rejection and still retries next interval.
-    return writeOperatorState<PgBootedHandlesPayload>('substrate_booted_handles_status', payload);
+    // D-013: merge the refusal-only identity ledger under the SAME row lock as
+    // the snapshot replacement. A read-then-write pair can lose history when
+    // two publisher starts overlap; updateOperatorState is the existing
+    // single-round-trip, FOR UPDATE primitive for exactly this class.
+    //
+    // Return the Promise to managedSetInterval. Swallowing it here made the
+    // timer look healthy (`lastError:null`) while every PG write failed — the
+    // observability gap that prolonged EI-20952729544817284. The managed timer
+    // records/logs a rejection and still retries next interval.
+    return updateOperatorState<PgBootedHandlesPayload>('substrate_booted_handles_status', payload, (current) => ({
+      ...payload,
+      lastKnownAnnounceDevices: mergeLastKnownAnnounceDevices(current, handles, sentAt),
+    })).then(() => undefined);
   };
   // Preserve the publisher's existing synchronous first-attempt semantics:
-  // writeOperatorState is invoked before this function returns. This attempt
+  // updateOperatorState is invoked before this function returns. This attempt
   // is outside the managed interval, so contain + name its failure explicitly;
   // subsequent failures are visible through the timer's lastError field.
   const initialBeat = beat();
@@ -263,9 +370,7 @@ export async function getPgBootedHandlesSnapshotFallback(opts?: {
     // through as `undefined` so the reader reports health UNOBSERVED rather
     // than manufacturing a healthy verdict from a missing field. A partial
     // bundle is rejected for the same reason (isCompleteHealthInputs).
-    ...(isCompleteHealthInputs(row.healthInputs)
-      ? { healthInputs: row.healthInputs }
-      : {}),
+    ...(isCompleteHealthInputs(row.healthInputs) ? { healthInputs: row.healthInputs } : {}),
   };
 }
 
@@ -331,9 +436,7 @@ export async function getPgBootedHarnessAnnounceIdentity(
   // A half-identity is not an identity: signing needs BOTH the device peers
   // filed us under and the keychain that can sign as it.
   const usable =
-    identity && typeof identity.devicePubkeyBase64 === 'string' && identity.devicePubkeyBase64
-      ? identity
-      : null;
+    identity && typeof identity.devicePubkeyBase64 === 'string' && identity.devicePubkeyBase64 ? identity : null;
   return { booted: true, identity: usable, advertisedAt: row.sentAt };
 }
 
@@ -375,11 +478,9 @@ export async function getPgLastKnownHarnessAnnounceDevice(
 ): Promise<PgLastKnownHarnessAnnounceDevice | null> {
   let row: PgBootedHandlesPayload | null;
   try {
-    row = await readOperatorState<PgBootedHandlesPayload>(
-      'substrate_booted_handles_status',
-      undefined,
-      { fresh: true },
-    );
+    row = await readOperatorState<PgBootedHandlesPayload>('substrate_booted_handles_status', undefined, {
+      fresh: true,
+    });
   } catch {
     return null;
   }
@@ -387,13 +488,28 @@ export async function getPgLastKnownHarnessAnnounceDevice(
   const match = row.handles.find(
     (handle) => handle?.workspaceId === workspaceId && handle?.harnessSlug === harnessSlug,
   );
-  const devicePubkeyBase64 = match?.announceIdentity?.devicePubkeyBase64;
-  if (typeof devicePubkeyBase64 !== 'string' || !devicePubkeyBase64) return null;
+  const currentDevicePubkeyBase64 = match?.announceIdentity?.devicePubkeyBase64;
+  const historical = Array.isArray(row.lastKnownAnnounceDevices)
+    ? row.lastKnownAnnounceDevices.find(
+        (record) =>
+          isLastKnownAnnounceDeviceRecord(record) &&
+          record.workspaceId === workspaceId &&
+          record.harnessSlug === harnessSlug,
+      )
+    : undefined;
+  const devicePubkeyBase64 =
+    typeof currentDevicePubkeyBase64 === 'string' && currentDevicePubkeyBase64
+      ? currentDevicePubkeyBase64
+      : historical?.devicePubkeyBase64;
+  if (!devicePubkeyBase64) return null;
+  const advertisedAt =
+    typeof currentDevicePubkeyBase64 === 'string' && currentDevicePubkeyBase64 ? row.sentAt : historical?.advertisedAt;
+  if (typeof advertisedAt !== 'number' || !Number.isFinite(advertisedAt)) return null;
   const maxAgeMs = opts?.maxAgeMs ?? DEFAULT_PG_SNAPSHOT_MAX_AGE_MS;
   const now = opts?.now ?? (() => Date.now());
   return {
     devicePubkeyBase64,
-    advertisedAt: row.sentAt,
-    stale: now() - row.sentAt > maxAgeMs,
+    advertisedAt,
+    stale: now() - advertisedAt > maxAgeMs,
   };
 }
