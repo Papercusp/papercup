@@ -181,8 +181,14 @@ RUN set -eux; \
 # to establish and `/etc/pki/papercusp/release-signing.pub` is what P-308's
 # signing key populates. Neither placeholder can match, so an image built before
 # those land refuses to pull a release rather than accepting an unsigned one.
+# ⛔ The policy is INERT WITHOUT the registries.d fragment beside it (D-287). On the
+# docker: transport containers/image does not LOOK for a cosign signature unless the
+# registry carries `use-sigstore-attachments: true`, and without it a correctly signed
+# image is refused with the SAME message an unsigned one gets ("A signature was
+# required, but no signature exists"). Fail-closed, and totally opaque. Ship both.
 COPY release-signature-policy.json /etc/containers/policy.json
-RUN chmod 0644 /etc/containers/policy.json \
+COPY release-registries.d.yaml /etc/containers/registries.d/papercusp-release.yaml
+RUN chmod 0644 /etc/containers/policy.json /etc/containers/registries.d/papercusp-release.yaml \
     && install -d -m 0755 /etc/pki/papercusp
 
 # ── Layer 4: firewall — ufw is NOT-IN-REPOS, nftables replaces it ─────────────
