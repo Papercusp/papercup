@@ -1334,11 +1334,21 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for packages/operator-core/lib/harness/routines/frozen-candidate-drift-sweep-action.ts: spawnSync(git log <candidate>..<branch> --name-only) is one bounded synchronous metadata read (explicit maxBuffer) used to compute a residual drift finding; it creates no independent resident queue.",
   },
   {
-    path: "packages/operator-core/lib/release/converge-repair-head.ts",
+    // frozen-candidate-stays-frozen-through-all-fixes-2026-09-03 P-003 / D-010: this is the
+    // read-only half of the former converge-repair-head.ts (renamed when the fast-forward plan
+    // was deleted); the disposition below carries over with the code it describes.
+    path: "packages/operator-core/lib/release/judged-sha-containment.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for packages/operator-core/lib/release/converge-repair-head.ts: the GitProbe implemented here is read-only — spawnSync(git rev-parse --verify --quiet), spawnSync(git merge-base --is-ancestor), and a rev-parse blob lookup. This module only classifies the frozen-candidate queue against staging and returns a plan; it performs no fast-forward, merge, or push itself, and creates no independent resident queue.",
+      "P-016 reviewed bypass disposition for packages/operator-core/lib/release/judged-sha-containment.ts (formerly converge-repair-head.ts): the GitProbe implemented here is read-only — spawnSync(git rev-parse --verify --quiet), spawnSync(git merge-base --is-ancestor), and a rev-parse blob lookup. This module only answers whether the judged sha CONTAINS a path's blob; it performs no fast-forward, merge, or push itself, and creates no independent resident queue.",
+  },
+  {
+    path: "packages/operator-core/lib/release/repair-head-admission.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for packages/operator-core/lib/release/repair-head-admission.ts (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03 P-001, the ONE door a fix enters the frozen lineage through): every start is a short synchronous spawnSync('git', …) plumbing call awaited to completion — rev-parse, ls-tree, read-tree/update-index/write-tree against a throwaway temp index, diff-tree (the allowlist proof), and commit-tree — followed by one update-ref. It runs once per explicit `release:repair-queue { op:'admit' }` call under the caller's own admission, holds nothing resident, and creates no independent queue; a resident Governor lease here would gate the gate's own repair path behind the resource it is trying to un-wedge.",
   },
   {
     path: "scripts/check-integration-teardown-nullsafe.mjs",

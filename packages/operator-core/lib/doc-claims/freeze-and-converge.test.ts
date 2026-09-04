@@ -17,7 +17,10 @@ import { judgeFreezeAndConverge, stripComments } from './freeze-and-converge';
 // lib/doc-claims → lib → operator-core → packages → <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const QUEUE = join(ROOT, 'packages/operator-core/lib/release/frozen-candidate-repair-queue.ts');
-const CONVERGE = join(ROOT, 'packages/operator-core/lib/release/converge-repair-head.ts');
+// P-001 / D-010 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the ONE door a
+// fix enters the frozen lineage through. `converge-repair-head.ts` (the fast-forward plan) is
+// gone; what remains of it is the read-only containment probe in `judged-sha-containment.ts`.
+const ADMIT = join(ROOT, 'packages/operator-core/lib/release/repair-head-admission.ts');
 
 describe('fixture controls (the detector must be able to FAIL)', () => {
   it('catches a fast-forward of the frozen candidate — the retracted design', () => {
@@ -71,8 +74,8 @@ describe('the live claim', () => {
     expect(verdict.ok).toBe(true);
   });
 
-  it('the P-002 converge route also leaves the candidate alone', () => {
-    const verdict = judgeFreezeAndConverge(readFileSync(CONVERGE, 'utf8'));
+  it('the P-001 admit route (the one door) also leaves the candidate alone', () => {
+    const verdict = judgeFreezeAndConverge(readFileSync(ADMIT, 'utf8'));
     expect(verdict.candidateWriteSites).toEqual([]);
   });
 
