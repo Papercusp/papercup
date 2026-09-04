@@ -153,9 +153,9 @@ describe('defineTool', () => {
    * EI-20087434994864624 (+7 duplicate filings on 2026-08-10 alone) — a NESTED failure
    * must teach the shape it needs.
    *
-   * The full-schema dump above is bounded at 1,800 chars. When the failing field sits
-   * several levels down behind a union, that bound lands long before it — so the error is
-   * simultaneously too long (context burn) and too short (never reaches the answer). Eight
+   * The former full-schema dump was bounded at 1,800 chars. When the failing field sat
+   * several levels down behind a union, that bound landed long before it — so the error was
+   * simultaneously too long (context burn) and too short (never reached the answer). Eight
    * agents independently burned ~3 round-trips each on coord:send's `body[].couldNotDetermine`,
    * and the only way any of them extracted the shape was sending a deliberate `[{}]` to make
    * the validator enumerate the required keys.
@@ -383,6 +383,84 @@ describe('defineTool', () => {
     expect(result.error?.message).toContain('`body` accepts {"type":"string"}');
     expect(result.error?.message).toContain('this tool accepts ONLY: id, body');
     expect(result.error?.message).toContain('"body"');
+    expect(result.error?.message).not.toContain('full args schema:');
+  });
+
+  it('keeps a late primitive failure bounded even when unrelated fields have huge descriptions (WI-6661)', async () => {
+    defineTool({
+      name: 'operator:bounded_field_hint_probe',
+      description: 'bounded field-hint probe',
+      capability: 'operator:scan',
+      requirePrincipal: false,
+      agentRoles: ['operator'],
+      args: z.object({
+        unrelated: z.string().optional().describe('unrelated prose '.repeat(300)),
+        claimableLimit: z.number().int().positive().max(100).describe('Maximum claimable items.'),
+      }),
+      async handler() {
+        return { content: [{ type: 'text', text: 'should not run' }] };
+      },
+    });
+    const tool = lookupByMcpName('operator:bounded_field_hint_probe')!;
+    const result = await dispatchProjectedTool(
+      tool,
+      'operator:bounded_field_hint_probe',
+      { claimableLimit: 'not-a-number' },
+      {
+        log: () => {},
+        signal: new AbortController().signal,
+        progress: () => {},
+        emit: () => {},
+        workspaceId: 'default',
+        role: 'operator',
+        runId: 'run_T',
+      },
+      {},
+    );
+
+    expect(result.ok).toBe(false);
+    const message = result.error?.message ?? '';
+    expect(message).toContain('`claimableLimit` accepts');
+    expect(message).toContain('"maximum":100');
+    expect(message).not.toContain('unrelated prose');
+    expect(message).not.toContain('full args schema:');
+    expect(message.length).toBeLessThan(900);
+  });
+
+  it('uses only accepted field names when a root-level failure has no field path (WI-6661)', async () => {
+    defineTool({
+      name: 'operator:pathless_hint_probe',
+      description: 'pathless field-hint probe',
+      capability: 'operator:scan',
+      requirePrincipal: false,
+      agentRoles: ['operator'],
+      args: z.union([
+        z.object({ left: z.string() }),
+        z.object({ right: z.number() }),
+      ]),
+      async handler() {
+        return { content: [{ type: 'text', text: 'should not run' }] };
+      },
+    });
+    const tool = lookupByMcpName('operator:pathless_hint_probe')!;
+    const result = await dispatchProjectedTool(
+      tool,
+      'operator:pathless_hint_probe',
+      42,
+      {
+        log: () => {},
+        signal: new AbortController().signal,
+        progress: () => {},
+        emit: () => {},
+        workspaceId: 'default',
+        role: 'operator',
+        runId: 'run_T',
+      },
+      {},
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error?.message).toContain('accepted args: left, right');
     expect(result.error?.message).not.toContain('full args schema:');
   });
 
