@@ -114,8 +114,10 @@ import {
   decideFrozenConvergenceCycleEntry,
   frozenRepairHeadAwaitsVerification,
   markFrozenCandidateVerificationRed,
+  markFrozenRepairAgeEscalated,
   markFrozenRepairExhausted,
   markFrozenRepairFixerDead,
+  frozenRepairAgeEscalationRung,
   markFrozenRepairFixerDispatched,
   markFrozenRepairFixerFinished,
   markFrozenRepairVerificationGreen,
@@ -7543,6 +7545,32 @@ export function frozenRepairHoldEscalationBody(
   );
 }
 
+/**
+ * P-010 / D-011: the 8h-cadence AGE escalation for an open frozen candidate. It replaces the
+ * deleted `maxAgeMs` retirement: the pin is never cleared for being old, so the escalation has to
+ * carry the whole story — how long it has been held, where it is, and that the ONLY movers are an
+ * admission onto the lineage or an owner retire.
+ */
+export function frozenRepairAgeEscalationBody(
+  queue: Pick<FrozenCandidateRepairQueue, "candidate" | "repairHead" | "phase" | "attempts" | "failingTests">,
+  rung: number,
+): string {
+  const failing =
+    queue.failingTests.length > 0
+      ? ` Failing: ${queue.failingTests.slice(0, 8).join(", ")}${queue.failingTests.length > 8 ? ` (+${queue.failingTests.length - 8} more)` : ""}.`
+      : "";
+  return (
+    `Frozen repair queue for candidate ${queue.candidate} has been open for ${rung * 8}h+ ` +
+    `(phase=${queue.phase}; attempts=${queue.attempts}) at repairHead ${queue.repairHead}. It is ` +
+    `NOT retired and will not be: under frozen-means-frozen the gate keeps judging this lineage ` +
+    `until it is green, and its age only re-raises this alert every 8h.${failing} To move it: land ` +
+    `the fix on staging, then admit exactly those paths onto the frozen lineage with ` +
+    `release:repair-queue { op: 'admit', paths: ['<changed path>', ...], confirm: true }. Retire is ` +
+    `OWNER-ONLY and re-opens the treadmill: release:repair-queue { op: 'retire', confirm: true } ` +
+    `with the exact identity release:repair-queue { op: 'get' } prints.`
+  );
+}
+
 /** P-012 failure signature for the release-fixer dedup, folding the SPA-build break in:
  *  a green run has none; otherwise the extracted suite failures, plus the sentinel
  *  `@papercusp/operator-vite` when the build (not the suite) is what failed — so a broken
@@ -9235,6 +9263,29 @@ async function runGreenCheckpointInner(
       decision = decideFrozenCandidateRepairQueue(repairQueue, {
         nowMs: Date.now(),
       });
+    }
+
+    // P-010 / D-011 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the queue's
+    // AGE never clears, blocks or retires it — it is made LOUD instead. Escalate once per 8h
+    // rung the open queue has crossed (a monotone high-water mark persisted on the row), so a
+    // long-held candidate keeps re-surfacing without the per-tick spam EI-7472 fixed. The
+    // decision computed above is untouched: this is bookkeeping beside it, never an input to it.
+    {
+      const ageRung = frozenRepairAgeEscalationRung(repairQueue, Date.now());
+      if (ageRung > (repairQueue.ageEscalatedRung ?? 0)) {
+        repairQueue = markFrozenRepairAgeEscalated(repairQueue, { rung: ageRung, nowMs: Date.now() });
+        await deps.writeFrozenRepairQueue?.(repairQueue);
+        await deps
+          .escalate?.(
+            `frozen candidate ${repairQueue.candidate.slice(0, 8)} has been held ${ageRung * 8}h and is still not green`,
+            frozenRepairAgeEscalationBody(repairQueue, ageRung),
+          )
+          .catch((e) =>
+            deps.log(
+              `warn: frozen-repair age escalation failed: ${e instanceof Error ? e.message : e}`,
+            ),
+          );
+      }
     }
 
     if (

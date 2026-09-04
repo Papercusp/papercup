@@ -306,7 +306,9 @@ function parseRepairSignature(
  * was deleted outright: every automatic retire observed since 2026-08-19 was a re-cut in
  * disguise, and a re-cut is the treadmill the freeze exists to stop. An exhausted pin BLOCKS
  * and escalates; an admission through the one door (repair-head-admission.ts) un-blocks it. */
-/* `maxAgeMs` was 4h until 2026-08-27 [owner 2026-08-27, approved in-session].
+/* HISTORY of the DELETED `maxAgeMs` (P-010 / D-011 of
+ * frozen-candidate-stays-frozen-through-all-fixes-2026-09-03, 2026-09-04): it was 4h until
+ * 2026-08-27 [owner 2026-08-27, approved in-session], then 8h, then gone.
  * WHY IT MOVED (WI-85288): the 4h budget was calibrated against fixers that never ran.
  * From 2026-08-24 16:57Z to 2026-08-27, EVERY dispatched release-fixer was SIGTERM'd at
  * exactly 300000ms by the release-fixer first-turn guard — measured lifetimes 301/301/300/301s
@@ -319,11 +321,33 @@ function parseRepairSignature(
  * dispatched at 13:23:19Z was already inside a queue reading `hold-exhausted` — its commit
  * would have been discarded unverified at the 14:22:37Z evaluation.
  * 8h covers dispatch + a full fixer run + up to two hourly verification ticks.
+ * WHY IT WAS DELETED (P-010): whatever the number, an age budget is an automatic retirement in
+ * disguise — before D-005 an expired pin was re-cut at tip, after it the pin was BLOCKED from
+ * verification, and on 2026-09-04 the restored 97c0b102 lineage (opened 22:23Z the day before)
+ * would have been held `wall-clock-exhausted` on its first tick, unverifiable however many fixes
+ * were admitted. The owner's directive is that a frozen candidate stays frozen until it is green
+ * or an owner retires it, so AGE IS NOT AN INPUT to any queue decision. What the clock used to
+ * do — make a long-held pin loud — is `FROZEN_REPAIR_AGE_ESCALATION_INTERVAL_MS` below: the gate
+ * escalates when the queue crosses 8h and again at every further 8h rung, clearing nothing.
  * NOT CHANGED: maxAttempts. */
 export const DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS = Object.freeze({
   maxAttempts: 3,
-  maxAgeMs: 8 * 60 * 60 * 1_000,
 });
+
+/**
+ * P-010: the cadence at which a still-open queue's AGE is escalated — at 8h, then every further
+ * 8h. An alert cadence only: nothing reads it to clear, block or retire a queue.
+ */
+export const FROZEN_REPAIR_AGE_ESCALATION_INTERVAL_MS = 8 * 60 * 60 * 1_000;
+
+/** PURE: how many 8h rungs the queue's age has crossed (0 while it is under 8h old). */
+export function frozenRepairAgeEscalationRung(
+  queue: Pick<FrozenCandidateRepairQueue, 'openedAtMs'>,
+  nowMs: number,
+): number {
+  const ageMs = Math.max(0, nowMs - queue.openedAtMs);
+  return Math.floor(ageMs / FROZEN_REPAIR_AGE_ESCALATION_INTERVAL_MS);
+}
 
 /**
  * A queue dispatch is an external side effect, so the metadata row needs a short-lived
@@ -345,8 +369,8 @@ export const FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS = 15 * 60 * 1_000;
  * measured provider wall outlasts that stall window — i.e. while the only available repair
  * path is agent/human convergence rather than an auto-fixer dispatch.
  *
- * 4h matches the queue's own `maxAgeMs` budget, so a held candidate cannot outlive the
- * bound the queue already carries. Without this hold the 15-minute stall retires every
+ * 4h matched the queue's former `maxAgeMs` budget (deleted in P-010 — the queue now carries
+ * no age bound at all, so this is simply the re-check cadence). Without this hold the 15-minute stall retires every
  * queue against a multi-day wall, which is how freeze-and-converge went silently off for a
  * full day (20 retirements, 0 resumes, 2026-09-02).
  */
@@ -361,7 +385,11 @@ export type FrozenCandidateRepairPhase =
   | 'ready-to-verify'
   | 'ready-to-promote'
   | 'blocked';
-export type FrozenCandidateBlockedReason = 'attempts-exhausted' | 'wall-clock-exhausted' | 'dispatch-infeasible';
+/**
+ * P-010: `'wall-clock-exhausted'` is no longer a member — no decision can produce it. A row still
+ * PERSISTED with it (blocked by the deleted 8h hold) is returned to `ready-to-verify` on parse.
+ */
+export type FrozenCandidateBlockedReason = 'attempts-exhausted' | 'dispatch-infeasible';
 
 export interface FrozenRepairDispatchReservation {
   token: string;
@@ -540,7 +568,6 @@ export const FROZEN_REPAIR_CONVERGENCE_ROUND_CAP = 24;
 
 export interface FrozenRepairQueueLimits {
   maxAttempts: number;
-  maxAgeMs: number;
   /**
    * P-005: cap on attempt refunds for unproductive infrastructure fixer deaths (see
    * FrozenCandidateRepairQueue.freeRetries). OPTIONAL so existing limit constructors are
@@ -790,8 +817,12 @@ export interface FrozenRepairQueueDiagnostic {
   openedAtMs: number;
   updatedAtMs: number;
   ageMs: number;
-  maxAgeMs: number;
-  ageExpired: boolean;
+  /**
+   * P-010: the queue's age in 8h escalation rungs (0 under 8h) and the rung width. An alert
+   * cadence the gate reads to re-surface a long-held pin — never a clear, block or retire input.
+   */
+  ageEscalationRung: number;
+  ageEscalationIntervalMs: number;
   /** True only after an unassigned zero-attempt queue outlives the normal dispatch window. */
   zeroAttemptStalled: boolean;
   zeroAttemptStallMs: number;
@@ -1011,9 +1042,6 @@ function assertLimits(limits: FrozenRepairQueueLimits): void {
   if (!Number.isInteger(limits.maxAttempts) || limits.maxAttempts < 1) {
     throw new Error('maxAttempts must be a positive integer');
   }
-  if (!Number.isFinite(limits.maxAgeMs) || limits.maxAgeMs <= 0) {
-    throw new Error('maxAgeMs must be a positive finite duration');
-  }
   if (
     limits.maxFreeRetries !== undefined &&
     (!Number.isInteger(limits.maxFreeRetries) || limits.maxFreeRetries < 0)
@@ -1199,13 +1227,19 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   // P-002 legs are observability on the same terms as rounds above: malformed entries are
   // dropped individually, never failing the parse of a live queue.
   const legs = parseRepairLegStates(row.legs);
+  // P-010: a row PERSISTED as blocked by the deleted 8h wall-clock hold is returned to
+  // verification on read. The hold no longer exists, so no decision could ever un-wedge such a
+  // row; leaving it blocked behind a reason nothing produces any more is the fossil P-010 removed.
+  const wallClockLegacyHold = row.phase === 'blocked' && row.blockedReason === 'wall-clock-exhausted';
   const blockedReason =
-    row.blockedReason === 'attempts-exhausted' ||
-    row.blockedReason === 'wall-clock-exhausted' ||
-    row.blockedReason === 'dispatch-infeasible'
+    row.blockedReason === 'attempts-exhausted' || row.blockedReason === 'dispatch-infeasible'
       ? row.blockedReason
       : undefined;
-  if (row.phase === 'blocked' && !blockedReason) return null;
+  if (row.phase === 'blocked' && !blockedReason && !wallClockLegacyHold) return null;
+  const ageEscalatedRung =
+    Number.isInteger(row.ageEscalatedRung) && (row.ageEscalatedRung as number) > 0
+      ? (row.ageEscalatedRung as number)
+      : undefined;
   // P-006 / P-014: a pre-schema-4 row (or a v4 row an older build rewrote without the array)
   // gets its typed signature DERIVED from the flat list — the live queue keeps parsing across
   // the bump, and the flat projection is rebuilt from the result so the two agree on read.
@@ -1216,7 +1250,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   });
   return {
     schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
-    phase: row.phase,
+    phase: wallClockLegacyHold ? 'ready-to-verify' : row.phase,
     candidate: row.candidate,
     qualificationAttemptId: nonBlank(row.qualificationAttemptId) ? row.qualificationAttemptId : null,
     base: row.base as string | null,
@@ -1233,6 +1267,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     updatedAtMs: row.updatedAtMs,
     fixerSpawnId: row.fixerSpawnId as string | null,
     ...(blockedReason ? { blockedReason } : {}),
+    ...(ageEscalatedRung !== undefined ? { ageEscalatedRung } : {}),
     ...(dispatchReservation ? { dispatchReservation } : {}),
     ...(convergenceRounds.length > 0 ? { convergenceRounds } : {}),
     ...(legs.length > 0 ? { legs } : {}),
@@ -1310,12 +1345,11 @@ export function decideFrozenCandidateRepairQueue(
     };
   }
 
-  const ageMs = Math.max(0, observation.nowMs - queue.openedAtMs);
-  // Going green inside the budget satisfies D-001 even if promotion bookkeeping crosses the
-  // boundary a moment later. The normal promotion freshness checks still apply downstream.
-  if (queue.phase !== 'ready-to-promote' && ageMs >= limits.maxAgeMs) {
-    return decideExhaustedPin(queue, 'wall-clock-exhausted');
-  }
+  // P-010 / D-011: the queue's AGE is deliberately NOT an input here. The 8h `maxAgeMs` hold
+  // that used to sit at this point was an automatic retirement in disguise (a re-cut at tip
+  // before D-005, an unverifiable block after it). A frozen candidate is held until it is green
+  // or an owner retires it; its age is escalated by the gate on an 8h cadence instead
+  // (`frozenRepairAgeEscalationRung`), which clears nothing.
 
   if (queue.phase === 'awaiting-fixer') {
     // A measured provider wall with no fixer ever dispatched is a structural dead end, not an
@@ -1560,8 +1594,8 @@ export function diagnoseFrozenCandidateRepairQueue(
     openedAtMs: queue.openedAtMs,
     updatedAtMs: queue.updatedAtMs,
     ageMs,
-    maxAgeMs: limits.maxAgeMs,
-    ageExpired: ageMs >= limits.maxAgeMs,
+    ageEscalationRung: frozenRepairAgeEscalationRung(queue, observation.nowMs),
+    ageEscalationIntervalMs: FROZEN_REPAIR_AGE_ESCALATION_INTERVAL_MS,
     zeroAttemptStalled,
     zeroAttemptStallMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
     fixerSpawnId: queue.fixerSpawnId,
@@ -1627,6 +1661,21 @@ export function markFrozenRepairExhausted(
   };
 }
 
+/**
+ * P-010: record that the gate escalated the queue's age at `rung` — a monotone high-water mark
+ * so the 8h-cadence alert fires once per rung and never per tick (the per-tick spam EI-7472
+ * fixed). The queue's phase, head and budget are untouched: this is bookkeeping, not a decision.
+ */
+export function markFrozenRepairAgeEscalated(
+  queue: FrozenCandidateRepairQueue,
+  input: { rung: number; nowMs: number },
+): FrozenCandidateRepairQueue {
+  assertTimestamp(input.nowMs, 'nowMs');
+  if (!Number.isInteger(input.rung) || input.rung < 1) throw new Error('rung must be a positive integer');
+  if ((queue.ageEscalatedRung ?? 0) >= input.rung) return queue;
+  return { ...queue, ageEscalatedRung: input.rung, updatedAtMs: input.nowMs };
+}
+
 /** Record a successful launch. Replacing a dead spawn is allowed; the decision helper owns the
  * liveness check and this transition owns the monotonically increasing attempt count. */
 export function markFrozenRepairFixerDispatched(
@@ -1638,9 +1687,6 @@ export function markFrozenRepairFixerDispatched(
   if (!nonBlank(input.spawnId)) throw new Error('spawnId must be non-empty');
   assertTimestamp(input.nowMs, 'nowMs');
   assertLimits(limits);
-  if (input.nowMs - queue.openedAtMs >= limits.maxAgeMs) {
-    throw new Error('repair queue wall-clock budget is exhausted');
-  }
   if (queue.attempts >= limits.maxAttempts) {
     throw new Error('repair queue attempt budget is exhausted');
   }
