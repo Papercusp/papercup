@@ -1,8 +1,6 @@
 /** Flagship Gmail inbound message → plan run → anchored draft reply binding (P-011). */
 import type postgres from 'postgres';
-import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
-import { deriveIndexFromContent } from '../agent-tools/plans/source';
-import { writePlanIndexRows } from '../agent-tools/plans/plan-index-rows';
+import { ensureFlagshipPlan, type FlagshipPlanEnsureResult } from './flagship-plan';
 import { ensureExternalTriggerBinding, type CreatedExternalTriggerBinding } from './admin';
 import { createGoogleGmailDraft, replySubjectFor, type GoogleGmailDraftResult } from './google-gmail';
 import { resolveGoogleWorkspaceAccessToken } from './google-workspace';
@@ -21,7 +19,7 @@ title: Gmail message — respond with a draft
 slug: ${GMAIL_RESPOND_DRAFT_PLAN}
 status: ready
 created: 2026-08-22
-updated: 2026-08-22
+updated: 2026-09-04
 ---
 
 # Gmail message — respond with a draft
@@ -30,23 +28,29 @@ updated: 2026-08-22
 
 **State:** Ready built-in template. Each inbound Gmail message creates one isolated event run.
 
-**Next:** Read the trigger inputs, draft a useful response, and save it to the originating Gmail thread.
+**Next:** Read the triggering message, draft a useful response, and save it to the originating Gmail thread.
 
 ## Background
 
-The trigger run carries the normalized email under \`plan_run.inputs.trigger.payload\`.
-The draft tool accepts only that run's numeric id; it resolves the recipient, thread,
-reply headers, and OAuth credential server-side. It creates a Gmail DRAFT and never sends.
+\`plan_run.inputs.trigger\` carries only the routing envelope — the message itself is
+deliberately NOT embedded there. Read it with \`triggers:read-payload\`, passing this
+run's numeric id. The draft tool accepts only that same id; it resolves the recipient,
+thread, reply headers, and OAuth credential server-side. It creates a Gmail DRAFT and
+never sends.
 
 ## Phase 1 — Draft
 
-- **P-001** \`todo\` Read \`payload.plan_run.inputs.trigger.payload\`, compose a concise response, then call \`gmail:create-draft\` with \`planRunId=payload.plan_run.runId\` and the response text. Complete only after the tool reports \`created:true\` or \`alreadyCreated:true\`.
+- **P-001** \`todo\` Call \`triggers:read-payload\` with \`planRunId=payload.plan_run.runId\` to read the inbound message, compose a concise response, then call \`gmail:create-draft\` with that same \`planRunId\` and the response text. Complete only after the tool reports \`created:true\` or \`alreadyCreated:true\`.
 
 ## Decisions
 
 ### D-001 — Draft creation is anchored to a trigger plan run; auto-send stays outside this tool
 Date: 2026-08-22
 The tool resolves every Gmail coordinate and credential from the durable trigger run. Its public input is only planRunId plus text. It has no send branch; automatic sending is a separate owner-authority dark-flag surface.
+
+### D-002 — The message is referenced, not embedded
+Date: 2026-09-04
+A plan run's inputs land in a federated work-item payload, so embedding the inbound email there would replicate the owner's private inbox to admitted hive members. The engine now passes the routing envelope only, and the agent pulls the message server-side by planRunId. Read and write both resolve from the owner-local trigger run.
 `;
 
 export const GMAIL_RESPOND_DRAFT_INPUT_SCHEMA = {
@@ -57,7 +61,10 @@ export const GMAIL_RESPOND_DRAFT_INPUT_SCHEMA = {
     trigger: {
       type: 'object',
       additionalProperties: true,
-      required: ['key', 'source', 'event', 'sourceId', 'externalId', 'dedupeKey', 'payload'],
+      // `payload` is deliberately absent: the engine projects it out of plan-run
+      // inputs (WI-2143575) because those inputs federate. Requiring it here
+      // would refuse every launch. The agent reads it via `triggers:read-payload`.
+      required: ['key', 'source', 'event', 'sourceId', 'externalId', 'dedupeKey'],
       properties: {
         key: { const: GMAIL_RESPOND_DRAFT_EVENT },
         source: { const: 'gmail' },
@@ -65,19 +72,6 @@ export const GMAIL_RESPOND_DRAFT_INPUT_SCHEMA = {
         sourceId: { type: 'string', minLength: 1 },
         externalId: { type: 'string', minLength: 1 },
         dedupeKey: { type: 'string', minLength: 1 },
-        payload: {
-          type: 'object',
-          additionalProperties: true,
-          required: ['id', 'threadId', 'from', 'subject', 'messageId', 'direction'],
-          properties: {
-            id: { type: 'string', minLength: 1 },
-            threadId: { type: 'string', minLength: 1 },
-            from: { type: 'string', minLength: 1 },
-            subject: { type: 'string', minLength: 1 },
-            messageId: { type: 'string', minLength: 1 },
-            direction: { const: 'inbound' },
-          },
-        },
       },
     },
   },
@@ -93,64 +87,17 @@ export const GMAIL_RESPOND_DRAFT_EVENT_FILTER = {
   ],
 } as const;
 
-export interface GmailFlagshipPlanEnsureResult {
-  created: boolean;
-  schemaAdded: boolean;
-}
+export type GmailFlagshipPlanEnsureResult = FlagshipPlanEnsureResult;
 
 export async function ensureGmailRespondDraftPlan(
   sql: postgres.Sql,
   workspaceId: string,
 ): Promise<GmailFlagshipPlanEnsureResult> {
-  const idx = deriveIndexFromContent(GMAIL_RESPOND_DRAFT_PLAN_CONTENT);
-  const itemsJson = JSON.stringify(idx.items);
-  const decisionsJson = JSON.stringify(idx.decisions);
-  const inputSchemaJson = JSON.stringify(GMAIL_RESPOND_DRAFT_INPUT_SCHEMA);
-  return sql.begin(async (tx) => {
-    const lockKey = [workspaceId, GMAIL_RESPOND_DRAFT_HARNESS, GMAIL_RESPOND_DRAFT_PLAN].join(':');
-    await tx`SELECT pg_advisory_xact_lock(hashtext('harness_plans'), hashtext(${lockKey}))`;
-    const existing = await tx<Array<{ inputSchema: unknown }>>`
-      SELECT input_schema AS "inputSchema"
-        FROM harness_shared.harness_plans
-       WHERE workspace_id = ${workspaceId}
-         AND harness_slug = ${GMAIL_RESPOND_DRAFT_HARNESS}
-         AND plan_slug = ${GMAIL_RESPOND_DRAFT_PLAN}`;
-    if (existing[0]) {
-      if (existing[0].inputSchema == null) {
-        await tx`
-          UPDATE harness_shared.harness_plans
-             SET input_schema = ${inputSchemaJson}::text::jsonb,
-                 version = version + 1, updated_at = now()
-           WHERE workspace_id = ${workspaceId}
-             AND harness_slug = ${GMAIL_RESPOND_DRAFT_HARNESS}
-             AND plan_slug = ${GMAIL_RESPOND_DRAFT_PLAN}`;
-        return { created: false, schemaAdded: true };
-      }
-      return { created: false, schemaAdded: false };
-    }
-    await tx`
-      INSERT INTO harness_shared.harness_plans (
-        workspace_id, harness_slug, plan_slug, title, status, content, content_hash,
-        version, created, updated, is_legacy, items, decisions, now_state, now_next,
-        input_schema, origin
-      ) VALUES (
-        ${workspaceId}, ${GMAIL_RESPOND_DRAFT_HARNESS}, ${GMAIL_RESPOND_DRAFT_PLAN},
-        ${idx.title}, ${idx.status}, ${GMAIL_RESPOND_DRAFT_PLAN_CONTENT},
-        ${hashPlanContent(GMAIL_RESPOND_DRAFT_PLAN_CONTENT)}, 1,
-        ${idx.created}, ${idx.updated}, ${idx.isLegacy}, ${itemsJson}::text::jsonb,
-        ${decisionsJson}::text::jsonb, ${idx.nowState}, ${idx.nowNext},
-        ${inputSchemaJson}::text::jsonb, 'local'
-      )`;
-    await writePlanIndexRows(
-      tx as unknown as Parameters<typeof writePlanIndexRows>[0],
-      {
-        workspaceId,
-        harnessSlug: GMAIL_RESPOND_DRAFT_HARNESS,
-        planSlug: GMAIL_RESPOND_DRAFT_PLAN,
-      },
-      idx,
-    );
-    return { created: true, schemaAdded: true };
+  return ensureFlagshipPlan(sql, workspaceId, {
+    harnessSlug: GMAIL_RESPOND_DRAFT_HARNESS,
+    planSlug: GMAIL_RESPOND_DRAFT_PLAN,
+    content: GMAIL_RESPOND_DRAFT_PLAN_CONTENT,
+    inputSchema: GMAIL_RESPOND_DRAFT_INPUT_SCHEMA,
   });
 }
 

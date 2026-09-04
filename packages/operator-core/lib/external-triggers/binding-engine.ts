@@ -18,6 +18,7 @@ import {
   type ScheduledPlanFireStartedResult,
 } from '../harness/routines/plan-run-action';
 import type { CanonicalExternalEvent, ExternalTriggerSink } from './ingestion';
+import { redactTriggerArgsForPlanInputs, type TriggerRunArgs } from './plan-run-payload';
 import { startGoalById, type StartGoalByIdResult } from '../goals/start-goal-by-id';
 import { parseAgenticPlanExecutionTarget } from '../agentic-plan-execution-target';
 import { openEscalation, resolveEscalation } from '../agent-tools/coordination/escalations';
@@ -127,19 +128,9 @@ interface ClaimedTriggerRun {
   outcome: Record<string, unknown>;
 }
 
-interface TriggerRunArgs {
-  trigger: {
-    key: string;
-    source: string;
-    event: string;
-    sourceId: string;
-    externalId: string;
-    occurredAt: string | null;
-    datatypeId: string;
-    dedupeKey: string;
-    payload: Record<string, unknown>;
-  };
-}
+// The envelope type and the "what is private in it" projection both live in
+// ./plan-run-payload, so exactly one module decides what may leave trust level 1.
+
 
 export interface StormPolicy {
   /**
@@ -927,7 +918,11 @@ export async function dispatchPendingTriggerRuns(
         templateSlug: row.planSlug,
         trigger: 'event',
         runToken: triggerRunPlanToken(row.id),
-        inputs: row.args,
+        // `inputs` lands in work_items.payload.plan_run.inputs, which FEDERATES.
+        // `row.args` keeps the owner's private ingest and stays in trigger_runs
+        // (local); only the routing envelope crosses (WI-2143575). The agent
+        // pulls the payload back with `triggers:read-payload` by planRunId.
+        inputs: redactTriggerArgsForPlanInputs(row.args),
         ...(execution ? { execution } : {}),
       });
       if (launched.started === false) {

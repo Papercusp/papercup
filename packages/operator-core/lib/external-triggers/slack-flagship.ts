@@ -1,9 +1,7 @@
 /** Flagship Slack mention → plan run → thread response binding (P-008). */
 import type postgres from 'postgres';
-import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import type { TokenStorage } from '../oauth/token';
-import { deriveIndexFromContent } from '../agent-tools/plans/source';
-import { writePlanIndexRows } from '../agent-tools/plans/plan-index-rows';
+import { ensureFlagshipPlan, type FlagshipPlanEnsureResult } from './flagship-plan';
 import { ensureExternalTriggerBinding, type CreatedExternalTriggerBinding } from './admin';
 import { postSlackThreadMessage, resolveSlackSocketCredentials } from './slack';
 import type { ExternalTriggerSourceRow } from './source-store';
@@ -19,7 +17,7 @@ title: Slack mention — respond in thread
 slug: ${SLACK_RESPOND_IN_THREAD_PLAN}
 status: ready
 created: 2026-08-22
-updated: 2026-08-22
+updated: 2026-09-04
 ---
 
 # Slack mention — respond in thread
@@ -28,23 +26,29 @@ updated: 2026-08-22
 
 **State:** Ready built-in template. Each Slack mention creates one isolated event run.
 
-**Next:** Read the trigger inputs, write a concise answer, and post it to the originating thread.
+**Next:** Read the triggering mention, write a concise answer, and post it to the originating thread.
 
 ## Background
 
-The trigger run carries the normalized Slack envelope under \`plan_run.inputs.trigger\`.
-The response tool accepts only that run's numeric id; it resolves the source, channel,
-thread, and bot credential server-side so a worker cannot redirect the reply elsewhere.
+\`plan_run.inputs.trigger\` carries only the routing envelope — the mention itself is
+deliberately NOT embedded there. Read it with \`triggers:read-payload\`, passing this
+run's numeric id. The response tool accepts only that same id; it resolves the source,
+channel, thread, and bot credential server-side so a worker cannot redirect the reply
+elsewhere.
 
 ## Phase 1 — Respond
 
-- **P-001** \`todo\` Read \`payload.plan_run.inputs.trigger.payload\`, draft a concise response to the triggering mention, then call \`slack:respond-in-thread\` with \`planRunId=payload.plan_run.runId\` and the response text. Complete only after the tool reports \`posted:true\` or \`alreadyPosted:true\`.
+- **P-001** \`todo\` Call \`triggers:read-payload\` with \`planRunId=payload.plan_run.runId\` to read the triggering mention, draft a concise response, then call \`slack:respond-in-thread\` with that same \`planRunId\` and the response text. Complete only after the tool reports \`posted:true\` or \`alreadyPosted:true\`.
 
 ## Decisions
 
 ### D-001 — Bind replies to a trigger plan run, never caller-supplied Slack coordinates
 Date: 2026-08-22
 The reply tool resolves channel and thread from the durable trigger run. Its public input is only planRunId plus text, preventing arbitrary-channel posting and keeping credentials server-side.
+
+### D-002 — The mention is referenced, not embedded
+Date: 2026-09-04
+A plan run's inputs land in a federated work-item payload, so embedding the message text there would replicate private workspace content to admitted hive members. The engine now passes the routing envelope only, and the agent pulls the mention server-side by planRunId.
 `;
 
 export const SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA = {
@@ -55,7 +59,10 @@ export const SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA = {
     trigger: {
       type: 'object',
       additionalProperties: true,
-      required: ['key', 'source', 'event', 'sourceId', 'externalId', 'dedupeKey', 'payload'],
+      // `payload` is deliberately absent: the engine projects it out of plan-run
+      // inputs (WI-2143575) because those inputs federate. Requiring it here
+      // would refuse every launch. The agent reads it via `triggers:read-payload`.
+      required: ['key', 'source', 'event', 'sourceId', 'externalId', 'dedupeKey'],
       properties: {
         key: { const: SLACK_RESPOND_IN_THREAD_EVENT },
         source: { const: 'slack' },
@@ -63,25 +70,12 @@ export const SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA = {
         sourceId: { type: 'string', minLength: 1 },
         externalId: { type: 'string', minLength: 1 },
         dedupeKey: { type: 'string', minLength: 1 },
-        payload: {
-          type: 'object',
-          additionalProperties: true,
-          required: ['channelId', 'threadId', 'text'],
-          properties: {
-            channelId: { type: 'string', minLength: 1 },
-            threadId: { type: 'string', pattern: '^\\d+(?:\\.\\d+)?$' },
-            text: { type: 'string', minLength: 1 },
-          },
-        },
       },
     },
   },
 } as const;
 
-export interface SlackFlagshipPlanEnsureResult {
-  created: boolean;
-  schemaAdded: boolean;
-}
+export type SlackFlagshipPlanEnsureResult = FlagshipPlanEnsureResult;
 
 /**
  * Create the immutable built-in plan once, using the canonical markdown-derived
@@ -91,55 +85,11 @@ export async function ensureSlackRespondInThreadPlan(
   sql: postgres.Sql,
   workspaceId: string,
 ): Promise<SlackFlagshipPlanEnsureResult> {
-  const idx = deriveIndexFromContent(SLACK_RESPOND_IN_THREAD_PLAN_CONTENT);
-  const itemsJson = JSON.stringify(idx.items);
-  const decisionsJson = JSON.stringify(idx.decisions);
-  const inputSchemaJson = JSON.stringify(SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA);
-  return sql.begin(async (tx) => {
-    const lockKey = [workspaceId, SLACK_RESPOND_IN_THREAD_HARNESS, SLACK_RESPOND_IN_THREAD_PLAN].join(':');
-    await tx`SELECT pg_advisory_xact_lock(hashtext('harness_plans'), hashtext(${lockKey}))`;
-    const existing = await tx<Array<{ inputSchema: unknown }>>`
-      SELECT input_schema AS "inputSchema"
-        FROM harness_shared.harness_plans
-       WHERE workspace_id = ${workspaceId}
-         AND harness_slug = ${SLACK_RESPOND_IN_THREAD_HARNESS}
-         AND plan_slug = ${SLACK_RESPOND_IN_THREAD_PLAN}`;
-    if (existing[0]) {
-      if (existing[0].inputSchema == null) {
-        await tx`
-          UPDATE harness_shared.harness_plans
-             SET input_schema = ${inputSchemaJson}::text::jsonb,
-                 version = version + 1, updated_at = now()
-           WHERE workspace_id = ${workspaceId}
-             AND harness_slug = ${SLACK_RESPOND_IN_THREAD_HARNESS}
-             AND plan_slug = ${SLACK_RESPOND_IN_THREAD_PLAN}`;
-        return { created: false, schemaAdded: true };
-      }
-      return { created: false, schemaAdded: false };
-    }
-    await tx`
-      INSERT INTO harness_shared.harness_plans (
-        workspace_id, harness_slug, plan_slug, title, status, content, content_hash,
-        version, created, updated, is_legacy, items, decisions, now_state, now_next,
-        input_schema, origin
-      ) VALUES (
-        ${workspaceId}, ${SLACK_RESPOND_IN_THREAD_HARNESS}, ${SLACK_RESPOND_IN_THREAD_PLAN},
-        ${idx.title}, ${idx.status}, ${SLACK_RESPOND_IN_THREAD_PLAN_CONTENT},
-        ${hashPlanContent(SLACK_RESPOND_IN_THREAD_PLAN_CONTENT)}, 1,
-        ${idx.created}, ${idx.updated}, ${idx.isLegacy}, ${itemsJson}::text::jsonb,
-        ${decisionsJson}::text::jsonb, ${idx.nowState}, ${idx.nowNext},
-        ${inputSchemaJson}::text::jsonb, 'local'
-      )`;
-    await writePlanIndexRows(
-      tx as unknown as Parameters<typeof writePlanIndexRows>[0],
-      {
-        workspaceId,
-        harnessSlug: SLACK_RESPOND_IN_THREAD_HARNESS,
-        planSlug: SLACK_RESPOND_IN_THREAD_PLAN,
-      },
-      idx,
-    );
-    return { created: true, schemaAdded: true };
+  return ensureFlagshipPlan(sql, workspaceId, {
+    harnessSlug: SLACK_RESPOND_IN_THREAD_HARNESS,
+    planSlug: SLACK_RESPOND_IN_THREAD_PLAN,
+    content: SLACK_RESPOND_IN_THREAD_PLAN_CONTENT,
+    inputSchema: SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA,
   });
 }
 
