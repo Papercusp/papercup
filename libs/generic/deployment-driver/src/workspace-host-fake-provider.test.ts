@@ -4,7 +4,40 @@ import {
   fakeWorkspaceHostCapabilities,
   makeFakeWorkspaceHostProvider,
 } from "./workspace-host-test-harness";
-import type { WorkspaceHostProvider } from "./workspace-host-types";
+import type {
+  WorkspaceHostProvider,
+  WorkspaceHostProviderCapabilities,
+} from "./workspace-host-types";
+
+/**
+ * The real guarantee of this fix is COMPILE-TIME, and no runtime assertion below can fail if
+ * someone makes a capability field optional again. These `@ts-expect-error` lines are the
+ * falsifiability control for that: each one is an error only while the shape is genuinely
+ * rejected, and tsc reports an UNUSED `@ts-expect-error` as its own error. So if
+ * `WorkspaceHostProviderCapabilities` ever again accepts the shapes that caused WI-2144032,
+ * this file stops compiling and says so.
+ */
+// @ts-expect-error - `{}` must never satisfy the capabilities contract: that is the exact
+// shape the five fixtures declared, and the cast that hid it is what cost two days of red.
+const _rejectsEmptyCapabilities: WorkspaceHostProviderCapabilities = {};
+// @ts-expect-error - declaring only `lifecycle` must not be enough either; `discovery` and
+// `transportKinds` are required too, and the inline repair to provisioning-runner.test.ts
+// omitted both while looking like a fix.
+const _rejectsLifecycleOnlyCapabilities: WorkspaceHostProviderCapabilities = {
+  lifecycle: {
+    start: false,
+    stop: false,
+    restart: false,
+    snapshot: false,
+    restore: false,
+    upgrade: false,
+    repair: false,
+    confirmedDestroy: false,
+    hostBootstrap: false,
+  },
+};
+void _rejectsEmptyCapabilities;
+void _rejectsLifecycleOnlyCapabilities;
 
 /**
  * WI-2144032: `provisioning-runner.integration.test.ts` sat red for two days because its fake
