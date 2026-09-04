@@ -4591,108 +4591,301 @@ export function rescueGateIdsFrom(
 }
 
 type FrozenRepairOutcomeProof =
-  | { kind: "proved"; tip: string; summary: string }
-  | { kind: "full-suite-required"; tip: string; summary: string }
-  | {
-      kind: "unavailable" | "failed" | "tip-moved";
-      summary: string;
-    };
+  /** Every selective leg passed AT the repair head; the full canonical gate at that same sha
+   *  is the promotion proof (P-007). */
+  | { kind: "green"; summary: string }
+  /** At least one leg is still red AT the repair head. `failingTests` is the FRESH signature
+   *  (files as `<file>` + `<workspace>` entries, gates as their ids) for the re-queued row. */
+  | { kind: "red"; failingTests: string[]; summary: string }
+  /** The signature (or the admitted paths' radius) cannot be narrowed to the file/gate
+   *  runners, so nothing selective was measured: the FULL gate at the repair head decides. */
+  | { kind: "full-run-required"; summary: string }
+  /** A runner failed to EXECUTE (a tree-setup throw) — absence of evidence, never a verdict:
+   *  the queue holds as it is and the next tick retries. */
+  | { kind: "unavailable"; summary: string };
 
-/** EI-210830: determine whether canonical staging already resolves EVERY failure that
- * opened the frozen-repair queue, even when its fix has different patch identity.
+/** P-005 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03, D-004): the ONLY deps
+ *  repair-head verification may touch. `resolveTip` is absent from this Pick STRUCTURALLY, not
+ *  by convention — a future edit that wants the integration tip here has to widen this type, and
+ *  `frozen-lineage-never-reads-tip.test.ts` pins the declaration. Every runner it names takes an
+ *  explicit `ref`, and every call below passes `queue.repairHead`. */
+export type RepairHeadVerificationDeps = Pick<
+  CheckpointDeps,
+  "runTestsAtRef" | "runGateAtRef" | "affectedTestsAtRef"
+>;
+
+/** The paths every admission put on the frozen lineage (the ledger's PROVED diff-tree name
+ *  sets, see `repair-head-admission.ts`), deduplicated and sorted. A legacy row with no
+ *  admissions yields `[]`, so its radius is exactly its failure signature. */
+export function admittedPathsOf(queue: FrozenCandidateRepairQueue): string[] {
+  const out = new Set<string>();
+  for (const admission of queue.admissions ?? []) {
+    for (const p of admission.paths) out.add(p);
+  }
+  return [...out].sort();
+}
+
+function failingFileKey(f: FailingFile): string {
+  return `${f.workspace} :: ${f.file}`;
+}
+
+/** P-005 / D-004 — verify the frozen repair head AT ITS OWN SHA, never at the integration tip.
  *
- * This is deliberately all-or-nothing. A flat queue signature is admitted to the cheap proof
- * only when every entry maps to the existing file or deterministic-gate re-run seams. When the
- * persisted signature is not selectively re-runnable, return the exact current tip for a FULL
- * canonical suite instead of leaving the queue permanently pinned to an obsolete patch identity.
- * A missing tip resolver, execution error, failing arm, or staging-tip movement still leaves the
- * exact-patch alignment path in charge. Passing a subset must never clear the serialized repair
- * queue. */
-async function proveFrozenRepairOutcomeAtStableTip(
-  deps: Pick<CheckpointDeps, "resolveTip" | "runTestsAtRef" | "runGateAtRef">,
+ *  The retired predecessor (`proveFrozenRepairOutcomeAtStableTip`, EI-210830) re-ran the queue's
+ *  signature at the STAGING TIP and, when it passed, retired the queue and re-cut the gate at
+ *  that tip — the re-cut-at-tip treadmill freeze-and-converge (D-007) exists to prevent: every
+ *  commit between the frozen candidate and the tip was re-admitted, and a red among them opened
+ *  a NEW queue further downstream (observed 2026-09-03T18:23Z: d165d753 → 761d0a85, 62 commits
+ *  past the frozen candidate). Under D-004 the judged lineage is the frozen candidate plus the
+ *  admitted fix blobs and nothing else, so the ONLY sha this function ever hands a runner is
+ *  `queue.repairHead`.
+ *
+ *  What runs, selectively, at the repair head:
+ *   - every signature entry the file rescue can name (`runTestsAtRef(repairHead, files)`);
+ *   - every registered / self-describing gate leg (`runGateAtRef(repairHead, ids)`);
+ *   - the ADMITTED paths' radius — `affected-tests --changed-paths <paths> --related`,
+ *     resolved at the repair head (`affectedTestsAtRef`) — its files and legs merged into the
+ *     two runs above, so a fix's blast radius is measured, not only the failure it targeted.
+ *
+ *  All-or-nothing, in the SAFE direction: a signature entry or a radius leg that no runner can
+ *  re-run selectively (a cargo task, a build, an unmapped crash sentinel, a widened related
+ *  selection) makes the answer `full-run-required` — the full canonical gate then runs at the
+ *  repair head (the caller already has `candidate === repairHead`). A red re-queues the row with
+ *  the fresh failing set WITHOUT spending a full suite; a green proceeds to that full gate,
+ *  which is the promotion proof. Nothing here retires the queue, and nothing here reads a ref
+ *  it was not handed. */
+export async function verifyRepairHead(
+  deps: RepairHeadVerificationDeps,
   queue: FrozenCandidateRepairQueue,
-): Promise<FrozenRepairOutcomeProof> {
-  const failures = queue.failingTests.filter(
-    (failure) => failure !== FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
+): Promise<RepairHeadVerification> {
+  const head = queue.repairHead;
+  const at = head.slice(0, 8);
+  // A legacy row can still carry the retired staging-mismatch sentinel; it names no leg.
+  const signature = queue.failingTests.filter(
+    (entry) => entry !== FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
   );
-  if (failures.length === 0 || !deps.resolveTip) {
+  if (signature.length === 0) {
     return {
-      kind: "unavailable",
-      summary:
-        "no original failure signature or canonical-tip resolver is available",
+      kind: "full-run-required",
+      summary: `no failure signature is recorded for repair head ${at}; the full gate at ${at} decides`,
     };
   }
 
-  const failingFiles = inferFailingFilesFromEntries(failures);
-  const uncovered = failures.filter(
-    (failure) => !fileRescueCovers(failure, failingFiles),
+  const failingFiles = inferFailingFilesFromEntries(signature);
+  const residual = signature.filter(
+    (entry) => !fileRescueCovers(entry, failingFiles),
   );
-  const gateIds = rescueGateIdsFrom(failures, failingFiles);
-  const requiresFullSuite =
-    (uncovered.length > 0 && gateIds.length === 0) ||
-    (failingFiles.length > 0 && !deps.runTestsAtRef) ||
-    (gateIds.length > 0 && !deps.runGateAtRef) ||
-    (failingFiles.length === 0 && gateIds.length === 0);
-  if (requiresFullSuite) {
-    const tip = (await deps.resolveTip().catch(() => null)) ?? null;
-    if (!tip) {
-      return {
-        kind: "unavailable",
-        summary:
-          "canonical staging tip could not be resolved for full-suite outcome proof",
-      };
-    }
+  const gateIds = rescueGateIdsFrom(signature, failingFiles);
+  const selective =
+    (residual.length === 0 || gateIds.length > 0) &&
+    (failingFiles.length === 0 || Boolean(deps.runTestsAtRef)) &&
+    (gateIds.length === 0 || Boolean(deps.runGateAtRef));
+  if (!selective) {
     return {
-      kind: "full-suite-required",
-      tip,
+      kind: "full-run-required",
       summary:
         `failure signature is not fully selectively re-runnable ` +
-        `(${failingFiles.length} file(s), ${gateIds.length} gate(s), ${uncovered.length} non-file entry/entries); ` +
-        `the full canonical suite must decide this queue (staging tip ${tip.slice(0, 8)})`,
+        `(${failingFiles.length} file(s), ${gateIds.length} gate(s), ${residual.length} other entry/entries); ` +
+        `the full gate at repair head ${at} decides`,
     };
   }
 
-  const tipBefore = (await deps.resolveTip().catch(() => null)) ?? null;
-  if (!tipBefore) {
-    return {
-      kind: "unavailable",
-      summary:
-        "canonical staging tip could not be resolved before outcome proof",
-    };
+  const files = new Map<string, FailingFile>(
+    failingFiles.map((f) => [failingFileKey(f), f]),
+  );
+  const gates = new Set<string>(gateIds);
+  const admitted = admittedPathsOf(queue);
+  let radiusNote = "no admitted paths";
+  if (admitted.length > 0) {
+    if (!deps.affectedTestsAtRef) {
+      return {
+        kind: "full-run-required",
+        summary: `${admitted.length} admitted path(s) have no selective radius resolver; the full gate at repair head ${at} decides`,
+      };
+    }
+    const radius = await deps
+      .affectedTestsAtRef(head, admitted)
+      .catch(() => null);
+    if (!radius) {
+      return {
+        kind: "full-run-required",
+        summary: `the radius of ${admitted.length} admitted path(s) could not be proved selectively at repair head ${at}; the full gate at ${at} decides`,
+      };
+    }
+    if (
+      (radius.files.length > 0 && !deps.runTestsAtRef) ||
+      (radius.gateIds.length > 0 && !deps.runGateAtRef)
+    ) {
+      return {
+        kind: "full-run-required",
+        summary: `the admitted paths' radius (${radius.summary}) has no runner for one of its halves; the full gate at repair head ${at} decides`,
+      };
+    }
+    for (const f of radius.files) files.set(failingFileKey(f), f);
+    for (const id of radius.gateIds) gates.add(id);
+    radiusNote = `${admitted.length} admitted path(s) → ${radius.summary}`;
   }
 
-  const [fileRun, gateRun] = await Promise.all([
-    failingFiles.length > 0
-      ? deps.runTestsAtRef!(tipBefore, failingFiles).catch(() => null)
-      : Promise.resolve(undefined),
-    gateIds.length > 0
-      ? deps.runGateAtRef!(tipBefore, gateIds).catch(() => null)
-      : Promise.resolve(undefined),
-  ]);
-  const tipAfter = (await deps.resolveTip().catch(() => null)) ?? null;
-  if (tipAfter !== tipBefore) {
-    return {
-      kind: "tip-moved",
-      summary: `canonical staging moved during outcome proof (${tipBefore.slice(0, 8)} -> ${tipAfter?.slice(0, 8) ?? "unknown"})`,
-    };
-  }
+  const fileList = [...files.values()];
+  const gateList = [...gates];
+  // Sequential on purpose: both runners materialize `head` in the SAME checkpoint tree, and
+  // two concurrent setupTree calls on one directory race each other's checkout.
+  const fileRun =
+    fileList.length > 0
+      ? await deps.runTestsAtRef!(head, fileList).catch(() => null)
+      : undefined;
+  const gateRun =
+    gateList.length > 0
+      ? await deps.runGateAtRef!(head, gateList).catch(() => null)
+      : undefined;
   if (fileRun === null || gateRun === null) {
     return {
       kind: "unavailable",
-      summary: "at least one outcome-proof runner failed to execute",
-    };
-  }
-  if ((fileRun?.pass ?? true) !== true || (gateRun?.pass ?? true) !== true) {
-    return {
-      kind: "failed",
-      summary: `queued failure still reproduces at ${tipBefore.slice(0, 8)}`,
+      summary: `the ${fileRun === null ? "file" : "gate"} runner failed to execute at repair head ${at}; nothing was measured`,
     };
   }
 
+  const failingTests: string[] = [];
+  if (fileRun && !fileRun.pass) {
+    // The diagnostic per-file split names exactly which files failed alone; without it the
+    // whole file set is the honest signature (a subset would be evidence nobody collected).
+    const split =
+      fileRun.perFile && fileRun.perFile.length === fileList.length
+        ? fileRun.perFile.filter((r) => !r.pass)
+        : [];
+    for (const f of split.length > 0 ? split : fileList) {
+      failingTests.push(f.file, f.workspace);
+    }
+  }
+  if (gateRun && !gateRun.pass) {
+    // `runGateAtRef` short-circuits on its first FAIL, so the legs after it are unmeasured;
+    // keep every leg in the fresh signature rather than declare an unmeasured one green.
+    failingTests.push(...gateList);
+  }
+  if (failingTests.length > 0) {
+    return {
+      kind: "red",
+      failingTests: [...new Set(failingTests)],
+      summary:
+        `still red at repair head ${at}: ` +
+        [fileRun?.summary, gateRun?.summary].filter(Boolean).join("; "),
+    };
+  }
   return {
-    kind: "proved",
-    tip: tipBefore,
-    summary: `all ${failures.length} queued failure signature(s) passed on stable staging ${tipBefore.slice(0, 8)} (${failingFiles.length} file(s), ${gateIds.length} gate(s))`,
+    kind: "green",
+    summary:
+      `every selective leg passed at repair head ${at} ` +
+      `(${fileList.length} file(s), ${gateList.length} gate(s); ${radiusNote}); ` +
+      `the full gate at ${at} is the promotion proof`,
+  };
+}
+
+/** P-005: the selective radius of the ADMITTED paths, as `affected-tests --changed-paths <paths>
+ *  --related --print-affected` reports it AT the repair head (see `affectedTestsAtRef`). */
+export interface RepairHeadRadius {
+  /** Related test files the selector narrowed each affected `test` task to — `runTestsAtRef`. */
+  files: FailingFile[];
+  /** `<ws> :: lint:*` / `<ws> :: gen:*:check` legs the same run attached — `runGateAtRef`. */
+  gateIds: string[];
+  summary: string;
+}
+
+/** Turn the selector's `--changed-paths … --related --print-affected` output into the exact set
+ *  of files and legs that re-verify the admitted paths at the repair head. Fail-closed in the
+ *  FULL-RUN direction: any task the two runners cannot re-run selectively — a `test` task whose
+ *  related selection widened or went unreported, a build/cargo/desktop task, an unmapped leg —
+ *  returns null, and the caller runs the full gate at the repair head instead. Pure + exported so
+ *  the parse is asserted by tests rather than only by a live gate run. */
+export function parseRepairHeadRadius(output: string): RepairHeadRadius | null {
+  const lines = output.split(/\r?\n/).filter(Boolean);
+  const related = new Map<string, { selected: number; ok: boolean }>();
+  for (const line of lines) {
+    const m =
+      /^RELATED_SELECTION ws=(\S+) selected=(\d+) total=(\d+) mode=(\S+) reason=(\S+)$/.exec(
+        line,
+      );
+    if (!m) continue;
+    if (related.has(m[1]!)) return null;
+    related.set(m[1]!, {
+      selected: Number(m[2]),
+      ok: m[4] === "related" && m[5] === "ok",
+    });
+  }
+  const safeRelativePath = (file: string) =>
+    file.length > 0 &&
+    file.length <= 1024 &&
+    !path.posix.isAbsolute(file) &&
+    path.posix.normalize(file) === file &&
+    file !== "." &&
+    !file.split("/").some((part) => part === ".." || part === "");
+
+  const files: FailingFile[] = [];
+  const fileKeys = new Set<string>();
+  const gateIds = new Set<string>();
+  let testTasks = 0;
+  for (const line of lines) {
+    if (line.startsWith("RELATED_AFFECTED_FILE\t")) {
+      const fields = line.split("\t");
+      if (fields.length !== 3) return null;
+      const entry = { workspace: fields[1]!, file: fields[2]! };
+      if (!safeRelativePath(entry.file)) return null;
+      const key = failingFileKey(entry);
+      if (!fileKeys.has(key)) {
+        fileKeys.add(key);
+        files.push(entry);
+      }
+      continue;
+    }
+    if (line.startsWith("AFFECTED_WS_CMD\t")) {
+      const fields = line.split("\t");
+      if (fields.length !== 3) return null;
+      const workspace = fields[1]!;
+      const script = fields[2]!.trim().split(/\s+/).pop() ?? "";
+      if (script === "test" || script.startsWith("test:")) {
+        const selection = related.get(workspace);
+        // A test task the selector could not narrow has no file list to re-run: the whole
+        // workspace suite would be the honest measurement, which is the full gate's job.
+        if (!selection || !selection.ok || selection.selected < 1) return null;
+        testTasks += 1;
+        continue;
+      }
+      const id = `${workspace} :: ${script}`;
+      if (!isRerunnableGateEntry(id)) return null;
+      gateIds.add(id);
+      continue;
+    }
+    if (line.startsWith("AFFECTED_GUARD\t")) {
+      const fields = line.split("\t");
+      if (fields.length !== 4) return null;
+      const id = `${fields[1]!} :: ${fields[2]!}`;
+      if (!isRerunnableGateEntry(id)) return null;
+      gateIds.add(id);
+    }
+  }
+  // The selector's own summary must confirm an EXACT file radius whenever a test task was
+  // narrowed — `status=full` means it fell back to whole-workspace runs, which is not selective.
+  if (testTasks > 0) {
+    const summaries = lines.filter((line) =>
+      line.startsWith("RELATED_AFFECTED_FILES status="),
+    );
+    if (
+      summaries.length !== 1 ||
+      !/^RELATED_AFFECTED_FILES status=selected workspaces=\d+ files=\d+$/.test(
+        summaries[0]!,
+      )
+    ) {
+      return null;
+    }
+    for (const [workspace, selection] of related) {
+      if (selection.ok && !files.some((f) => f.workspace === workspace)) {
+        return null;
+      }
+    }
+  }
+  return {
+    files,
+    gateIds: [...gateIds],
+    summary: `${files.length} related file(s) in ${testTasks} test task(s), ${gateIds.size} leg(s)`,
   };
 }
 
