@@ -115,6 +115,7 @@ import { isEngineeringDocsSentinel, resolveInheritedHarnessScope } from '../../.
 import { verifyExplicitPlanHarness } from '../../../agent-tools/plans/slug-scope';
 import { withMcpAdmission, ADMISSION_CONTROL_ENABLED } from './mcp-admission';
 import { DeltaProxySessionStore } from './delta-proxy-session-store';
+import { goalHolderMayPlaceIntoLocalPot } from './goal-local-placement';
 import {
   classifyAndConsumeFailure,
   logVerificationFailure,
@@ -628,24 +629,32 @@ export function crossHiveLaunchHint(toolName: string, scopeHive: string): string
 }
 
 /**
- * EI-22344259264889593: a session may execute in a repo-less Hive while its
- * canonical editable checkout remains the workspace's platform/self Pot. The
- * generic Hive clamp rejected that exact explicit `git-sync:run` target
- * (`installSlug`, or the tool's documented `harness` alias), leaving the manual
- * COMMIT lever unable to sync the canonical staging checkout.
+ * EI-22344259264889593 / EI-22344366831358072: a session may execute in a
+ * repo-less Hive while its canonical editable checkout remains the workspace's
+ * platform/self Pot. The generic Hive clamp rejected both halves of the one
+ * operational seam such a session needs: firing `git-sync:run` and inspecting
+ * that exact routine through `routines:list`.
  *
- * This is deliberately NOT a general cross-Hive exception. It admits only this
- * one tool, only its two target spellings, and only PLATFORM_POT_SLUG — the
- * existing dependency-free SSOT for the canonical platform Pot. The runtime
- * operator-home harness is a different concept and may legitimately be repo-less;
+ * This is deliberately NOT a general cross-Hive exception. Both tools must name
+ * PLATFORM_POT_SLUG through one of their documented target spellings. The read
+ * additionally requires the exact `git-sync` name filter and forbids rollup
+ * because routines:list ignores its install/name filters in rollup mode. Thus it
+ * can expose at most the single canonical git-sync row; broad routine reads and
  * arbitrary sibling targets remain forbidden.
  */
-function isExplicitPlatformPotGitSyncTarget(toolName: string, arg: string, slug: string): boolean {
-  return (
-    toolName === 'git-sync:run' &&
-    (arg === 'installSlug' || arg === 'harness') &&
-    slug === PLATFORM_POT_SLUG
-  );
+function isExplicitPlatformPotGitSyncTarget(
+  toolName: string,
+  arg: string,
+  slug: string,
+  callArgs: unknown,
+): boolean {
+  if ((arg !== 'installSlug' && arg !== 'harness') || slug !== PLATFORM_POT_SLUG) return false;
+  if (toolName === 'git-sync:run') return true;
+  if (toolName !== 'routines:list' || !callArgs || typeof callArgs !== 'object' || Array.isArray(callArgs)) {
+    return false;
+  }
+  const routineArgs = callArgs as Record<string, unknown>;
+  return routineArgs.name === 'git-sync' && routineArgs.rollup !== true;
 }
 
 /**
@@ -745,6 +754,26 @@ type ScopedSuperuserTransportClampResult =
       scopedSuperuserClamp: boolean;
     }
   | { ok: false; result: McpCallResult };
+
+/**
+ * Keep the goal-authorized local placement escape identical on the direct and
+ * nested MCP paths. The session SID is the stable owner for superuser calls;
+ * signed spawns have no SID and use their stable spawn id instead.
+ */
+async function mayUseGoalLocalPlacement(
+  toolName: string,
+  spawnCtx: BuiltSpawnContext,
+  scopeHive: string,
+  targetHarness: string,
+): Promise<boolean> {
+  if (!CROSS_HIVE_LAUNCH_TOOLS.has(toolName)) return false;
+  return goalHolderMayPlaceIntoLocalPot({
+    workspaceId: spawnCtx.workspaceId,
+    callerOwnerId: spawnCtx.uiClientId ?? spawnCtx.spawnId,
+    scopeHive,
+    targetHarness,
+  });
+}
 
 /**
  * Apply the request-level profile, workspace, and hive clamps before a projected
@@ -885,6 +914,7 @@ async function applyScopedSuperuserTransportClamp(
           toolName,
           'harness',
           requestedHarness,
+          args,
         );
         const escapesHive =
           !isEngineeringDocsSurface &&
@@ -900,7 +930,10 @@ async function applyScopedSuperuserTransportClamp(
           escapesHive &&
           (toolName === 'plans:get' || toolName === 'plans:add-decision' || toolName === 'coord:declare-intent') &&
           (await verifyExplicitPlanHarness(spawnCtx, requestedHarness, args));
-        if (verifiedExactPlanRebind) {
+        const goalLocalPlacement =
+          escapesHive &&
+          (await mayUseGoalLocalPlacement(toolName, spawnCtx, scopeHive, requestedHarness));
+        if (verifiedExactPlanRebind || goalLocalPlacement) {
           effectiveHarnessSlug = requestedHarness;
         } else if (escapesHive) {
           const crossHiveClaimHint =
@@ -1008,7 +1041,7 @@ async function applyScopedSuperuserTransportClamp(
       }
 
       for (const { arg, slug } of collectHarnessSlugArgs(args, { toolName })) {
-        if (isExplicitPlatformPotGitSyncTarget(toolName, arg, slug)) continue;
+        if (isExplicitPlatformPotGitSyncTarget(toolName, arg, slug, args)) continue;
         const escapesHive =
           slug === 'all' || slug === '*' || (await potHomeSlugForHarness(spawnCtx.workspaceId, slug)) !== scopeHive;
         if (escapesHive) {
@@ -2813,6 +2846,7 @@ const handler = createMcpHandler(
                   toolName,
                   'harness',
                   argHarness,
+                  args,
                 );
                 const escapes =
                   !isEngineeringDocsSurface &&
@@ -2834,7 +2868,10 @@ const handler = createMcpHandler(
                     toolName === 'plans:add-decision' ||
                     toolName === 'coord:declare-intent') &&
                   (await verifyExplicitPlanHarness(spawnRes.ctx, argHarness, args));
-                if (verifiedExactPlanRebind) {
+                const goalLocalPlacement =
+                  escapes &&
+                  (await mayUseGoalLocalPlacement(toolName, spawnRes.ctx, scopeHive, argHarness));
+                if (verifiedExactPlanRebind || goalLocalPlacement) {
                   effectiveHarnessSlug = argHarness;
                 } else if (escapes) {
                   const crossHiveClaimHint =
@@ -3022,7 +3059,7 @@ const handler = createMcpHandler(
               // but "the pot's home-harness slug" on pot:* — and pot:obliterate
               // is the sharp end of getting that wrong.
               for (const { arg, slug } of collectHarnessSlugArgs(args, { toolName })) {
-                if (isExplicitPlatformPotGitSyncTarget(toolName, arg, slug)) continue;
+                if (isExplicitPlatformPotGitSyncTarget(toolName, arg, slug, args)) continue;
                 const escapesHive =
                   slug === 'all' ||
                   slug === '*' ||
