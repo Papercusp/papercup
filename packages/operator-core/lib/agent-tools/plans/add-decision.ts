@@ -429,7 +429,9 @@ async function decisionContext(
 /** Append ONE decision, returning the self-describing bulk result. PRESERVES the
  *  in-lock allocate → append → bump, the revision capture, the P-070 usage ledger,
  *  the plan-event emit, AND the cross-plan `affects` propagation. The new decisionId
- *  rides the result; not_found / legacy_plan / busy map to this item's failure. */
+ *  rides the result; not_found / legacy_plan / busy map to this item's failure.
+ *  Busy results preserve the safe owner/expiry fields plus the optional point-in-time
+ *  PostgreSQL holder snapshot. */
 async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Promise<BulkItemResult> {
   // EI-21915372335188454: a client-side tool-call serializer that mis-closes a
   // `<parameter name="body">` block (e.g. `</body>` instead of `</parameter>`)
@@ -514,9 +516,11 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
       error: 'busy',
       busy: result.busy.map((b) => ({
         path: b.path,
+        owner: b.owner,
         owner_label: b.owner_label,
         intent: b.intent,
         expires_ts: b.expires_ts,
+        holder_snapshot: b.holder_snapshot,
       })),
     };
   }

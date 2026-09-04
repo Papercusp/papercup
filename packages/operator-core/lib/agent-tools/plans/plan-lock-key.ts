@@ -78,9 +78,15 @@ export async function readPlanAdvisoryLockSnapshot(
                a.query_start::text AS query_start,
                a.wait_event_type,
                a.wait_event
-          FROM pg_locks AS l
+         FROM pg_locks AS l
           LEFT JOIN pg_stat_activity AS a ON a.pid = l.pid
          WHERE l.locktype = 'advisory'
+           AND l.objsubid = 2
+           AND l.database = (
+             SELECT oid
+               FROM pg_database
+              WHERE datname = current_database()
+           )
            AND l.classid::bigint = (hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE})::bigint & 4294967295)
            AND l.objid::bigint = (hashtext(${lockKey})::bigint & 4294967295)
            AND l.granted
