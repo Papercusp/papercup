@@ -159,6 +159,24 @@ function bridgedDedupeWindowMs(queryName: string, sourceEventName: string): numb
     : undefined;
 }
 
+/**
+ * Best-effort invalidation notifications can outlive the database they use.
+ * This is expected when an integration-test database is torn down while a
+ * detached capture is still flushing, and it is also expected when a partial
+ * test schema does not contain a projection table. Keep those lifecycle
+ * failures quiet, but preserve a loud signal for every other sync failure.
+ */
+function isExpectedNotifyFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/does not exist/.test(message)) return true;
+  const code = (error as { code?: unknown } | null)?.code;
+  return (
+    code === 'CONNECTION_ENDED' ||
+    code === 'CONNECTION_DESTROYED' ||
+    /CONNECTION_ENDED|CONNECTION_DESTROYED|Connection ended/i.test(message)
+  );
+}
+
 const bus = createInvalidationBus({
   // Onto the shared listen-hub when enabled (server-class hosts, default ON —
   // see hubBackedListenSource above); a dedicated single LISTEN connection on
@@ -204,7 +222,14 @@ const bus = createInvalidationBus({
   // window; hot sources feeding those same names retain the global 90s guard.
   bridgedDedupeWindowMs,
   log: (m) => console.log(m),
-  onError: (where, e) => console.error(`[sync-sse] ${where} failed:`, e),
+  onError: (where, e) => {
+    // The notify path is intentionally detached from writes. A test fixture
+    // can therefore close its PG before the notification settles; match the
+    // same expected-teardown classifier used by the other fire-and-forget
+    // event emitters instead of turning a green test into console noise.
+    if (isExpectedNotifyFailure(e)) return;
+    console.error(`[sync-sse] ${where} failed:`, e);
+  },
 });
 
 /** Register an SSE subscriber; lazily starts the LISTEN connection. */

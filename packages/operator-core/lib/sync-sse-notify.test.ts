@@ -87,4 +87,29 @@ describe('notifySyncInvalidate — failure handling', () => {
     sql.mockRejectedValueOnce(new Error('pg down'));
     await expect(notifySyncInvalidate('voiceState.p010g')).resolves.toBeUndefined();
   });
+
+  it.each([
+    [
+      'CONNECTION_ENDED by code',
+      Object.assign(new Error('write CONNECTION_ENDED localhost:32768'), { code: 'CONNECTION_ENDED' }),
+    ],
+    ['CONNECTION_ENDED by message', new Error('write CONNECTION_ENDED localhost:32768')],
+    ['CONNECTION_DESTROYED by code', Object.assign(new Error('connection closed'), { code: 'CONNECTION_DESTROYED' })],
+    ['partial schema', new Error('relation "harness_shared.learning_improvements" does not exist')],
+  ])('does not log expected detached-teardown failures: %s', async (_label, thrown) => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    sql.mockRejectedValueOnce(thrown);
+
+    await expect(notifySyncInvalidate(`voiceState.teardown.${String(_label)}`)).resolves.toBeUndefined();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('still logs unexpected notify failures loudly', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const thrown = new Error('pg connection pool is wedged');
+    sql.mockRejectedValueOnce(thrown);
+
+    await expect(notifySyncInvalidate('voiceState.unexpected-failure')).resolves.toBeUndefined();
+    expect(error).toHaveBeenCalledWith('[sync-sse] notify failed:', thrown);
+  });
 });
