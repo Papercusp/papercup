@@ -1553,6 +1553,10 @@ import './triggers/arm';
 import './triggers/disarm';
 import './triggers/run-with-last-event';
 import './triggers/status';
+// WI-2143575 — the READ half of the trigger pair. The private ingest is no
+// longer embedded in federated plan-run inputs, so the agent pulls it
+// server-side by planRunId, exactly as the write tools already resolve theirs.
+import './triggers/read-payload';
 // external-triggers-gmail-slack-2026-08-22 P-011 — anchored, draft-only
 // Gmail response seam. Recipient/thread/token come from the trigger run; there
 // is deliberately no send branch on this tool.

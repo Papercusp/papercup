@@ -30,15 +30,24 @@ describe('Slack flagship respond-in-thread binding', () => {
     expect(plan.items).toHaveLength(1);
     expect(plan.items[0]).toMatchObject({ id: 'P-001', storedStatus: 'todo' });
     expect(plan.items[0].text).toContain('slack:respond-in-thread');
-    expect(SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA.properties.trigger.properties.payload.required).toEqual([
-      'channelId',
-      'threadId',
-      'text',
+    // WI-2143575: the engine projects `trigger.payload` OUT of plan-run inputs
+    // because those inputs federate, so the schema must not require it — a
+    // schema that did would refuse every launch, silently.
+    expect(SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA.properties.trigger.required).toEqual([
+      'key',
+      'source',
+      'event',
+      'sourceId',
+      'externalId',
+      'dedupeKey',
     ]);
+    expect(SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA.properties.trigger.properties).not.toHaveProperty('payload');
+    // The mention still has to reach the agent — by reference, not by embedding.
+    expect(plan.items[0].text).toContain('triggers:read-payload');
   });
 
   it('installs the canonical plan before one disarmed mention binding', async () => {
-    const ensurePlan = vi.fn(async () => ({ created: true, schemaAdded: true }));
+    const ensurePlan = vi.fn(async () => ({ created: true, schemaAdded: true, refreshed: false }));
     const ensureBinding = vi.fn(async (_sql, _workspaceId, input) => ({
       id: '33333333-3333-4333-8333-333333333333',
       sourceId: input.sourceId,

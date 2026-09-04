@@ -35,18 +35,24 @@ describe('Gmail flagship respond-with-draft binding', () => {
     expect(plan.items[0]).toMatchObject({ id: 'P-001', storedStatus: 'todo' });
     expect(plan.items[0].text).toContain('gmail:create-draft');
     expect(plan.items[0].text).not.toContain('send');
-    expect(GMAIL_RESPOND_DRAFT_INPUT_SCHEMA.properties.trigger.properties.payload.required).toEqual([
-      'id',
-      'threadId',
-      'from',
-      'subject',
-      'messageId',
-      'direction',
+    // WI-2143575: the engine projects `trigger.payload` OUT of plan-run inputs
+    // because those inputs federate, so the schema must not require it — a
+    // schema that did would refuse every launch, silently.
+    expect(GMAIL_RESPOND_DRAFT_INPUT_SCHEMA.properties.trigger.required).toEqual([
+      'key',
+      'source',
+      'event',
+      'sourceId',
+      'externalId',
+      'dedupeKey',
     ]);
+    expect(GMAIL_RESPOND_DRAFT_INPUT_SCHEMA.properties.trigger.properties).not.toHaveProperty('payload');
+    // The message still has to reach the agent — by reference, not by embedding.
+    expect(plan.items[0].text).toContain('triggers:read-payload');
   });
 
   it('installs the plan before one disarmed binding filtered to complete inbound messages', async () => {
-    const ensurePlan = vi.fn(async () => ({ created: true, schemaAdded: true }));
+    const ensurePlan = vi.fn(async () => ({ created: true, schemaAdded: true, refreshed: false }));
     const migrateLegacyBinding = vi.fn(async () => ({ migrated: 0, detached: 0 }));
     const ensureBinding = vi.fn(async (_sql, _workspaceId, input) => ({
       id: '33333333-3333-4333-8333-333333333333',

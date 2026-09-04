@@ -198,9 +198,14 @@ describe('external trigger durable dispatch', () => {
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
     expect(planRuns).toHaveLength(1);
     expect(planRuns[0].trigger).toBe('event');
+    // WI-2143575: plan-run inputs FEDERATE, so they carry the routing envelope
+    // only. The private payload stays in trigger_runs.args (owner-local) and the
+    // agent pulls it back with `triggers:read-payload` by planRunId.
     expect(planRuns[0].inputs).toMatchObject({
-      trigger: { key: 'ext:gmail:message.received', payload: { id: 'dispatch-1' } },
+      trigger: { key: 'ext:gmail:message.received' },
     });
+    expect((planRuns[0].inputs as { trigger: Record<string, unknown> }).trigger).not.toHaveProperty('payload');
+    expect(JSON.stringify(planRuns[0].inputs)).not.toContain('dispatch-1');
     expect(announceRunWork).toHaveBeenCalledWith(sql, WS, triggerRuns[0].outcome.planRunId);
   });
 
@@ -1263,9 +1268,12 @@ describe('social platform dispatch (P-028 simulated acceptance)', () => {
       `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
     );
 
-    // The plan run carries the SOCIAL payload verbatim — an agent drafting a
-    // reply reads it from here, so a lossy hand-off would surface as a missing
-    // uri/text rather than as a dispatch failure.
+    // The plan run carries the ROUTING ENVELOPE only. It used to carry the
+    // social payload verbatim, but plan-run inputs land in a federated
+    // work-item payload, so WI-2143575 moved the content from push to pull:
+    // the agent drafting a reply resolves it server-side from the owner-local
+    // trigger run via `triggers:read-payload`. A lossy hand-off now surfaces as
+    // a missing routing field here, and as a not-found from that reader.
     const planRuns = await sql<Array<{ trigger: string; inputs: Record<string, unknown> }>>`
       SELECT trigger, inputs FROM harness_shared.plan_runs
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
@@ -1275,9 +1283,10 @@ describe('social platform dispatch (P-028 simulated acceptance)', () => {
       trigger: {
         key: 'ext:bluesky:reply.created',
         source: 'bluesky',
-        payload: { uri: 'at://did:plc:p028/app.bsky.feed.post/9001', text: 'anyone else seeing this?' },
       },
     });
+    expect((planRuns[0].inputs as { trigger: Record<string, unknown> }).trigger).not.toHaveProperty('payload');
+    expect(JSON.stringify(planRuns[0].inputs)).not.toContain('anyone else seeing this?');
     expect(announceRunWork).toHaveBeenCalledWith(sql, WS, triggerRuns[0].outcome.planRunId);
 
     // The ledger end of the trace: the delivery that caused this run is still
