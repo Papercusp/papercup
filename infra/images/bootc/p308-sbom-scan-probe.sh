@@ -141,11 +141,38 @@ if ! "$GRYPE" "sbom:$OUT/host-sbom.json" -o json > "$OUT/host-vulns.json" 2> "$O
   fi
 else
   MATCHES=$(jq '.matches | length' "$OUT/host-vulns.json")
-  echo "GRYPE_MATCHES=$MATCHES"
-  echo "--- by severity ---"
+  DISTINCT=$(jq -r '[.matches[].vulnerability.id] | unique | length' "$OUT/host-vulns.json")
+  echo "GRYPE_MATCHES=$MATCHES  (MATCHES, not vulnerabilities — see the decomposition below)"
+  echo "GRYPE_DISTINCT_CVES=$DISTINCT"
+  echo "--- by severity (of MATCHES) ---"
   jq -r '.matches | group_by(.vulnerability.severity)[] | "\(length)\t\(.[0].vulnerability.severity)"' \
     "$OUT/host-vulns.json" | sort -rn
-  echo "GRYPE_DB_STATUS=$(jq -r '.descriptor.db.status // "unknown"' "$OUT/host-vulns.json" 2>/dev/null)"
+
+  # ⛔ NEVER report the bare match count as "N vulnerabilities in the host image".
+  # Measured 2026-09-04 on the P-306 image: 29,872 matches — but `kernel`, `kernel-core`,
+  # `kernel-modules` and `kernel-modules-core` each reported an IDENTICAL 5,395, which is ONE
+  # kernel's CVE set counted four times under four RPM names, plus `linux-kernel` at 6,901.
+  # ~95% of the headline was the kernel, counted repeatedly. The number is arithmetically
+  # correct and analytically worthless, and it is exactly the figure that ends up in a release
+  # note. So the probe prints the decomposition beside it, always.
+  echo "--- top packages by match count (is one package dominating the total?) ---"
+  jq -r '.matches | group_by(.artifact.name)[] | "\(length)\t\(.[0].artifact.name)"' \
+    "$OUT/host-vulns.json" | sort -rn | head -8
+  echo "--- fix state: what could actually be ACTED ON ---"
+  jq -r '.matches | group_by(.vulnerability.fix.state)[] | "\(length)\t\(.[0].vulnerability.fix.state // "unknown")"' \
+    "$OUT/host-vulns.json" | sort -rn
+  ACTIONABLE=$(jq '[.matches[] | select(.vulnerability.fix.state=="fixed")
+                    | select(.vulnerability.severity=="Critical" or .vulnerability.severity=="High")] | length' \
+                "$OUT/host-vulns.json")
+  echo "GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=$ACTIONABLE"
+  echo "  ^ Critical/High AND a fix exists. THIS is the number a rebase decision is made on."
+  BASE_IMG=$(sed -n 's/^ARG PAPERCUSP_BASE_IMAGE=//p' "$(dirname "$0")/workspace-host.Containerfile" 2>/dev/null | head -1)
+  echo "  Nearly all of this is inherited from the base image (${BASE_IMG:-quay.io/centos-bootc/centos-bootc:stream9});"
+  echo "  the P-306 layers add ~73.5 MB of packages on top. Attribute before you escalate: a CVE"
+  echo "  count from the base is a BASE-IMAGE CURRENCY question, not a defect in our port."
+  # Just the identity of the DB, not its 26-provider manifest — a status line nobody reads is a
+  # status line that hides the one field that matters (whether it is valid, and how old).
+  echo "GRYPE_DB=$(jq -r '"built=\(.descriptor.db.status.built) valid=\(.descriptor.db.status.valid) schema=\(.descriptor.db.status.schemaVersion)"' "$OUT/host-vulns.json" 2>/dev/null)"
 fi
 
 echo "### 3/3 — what the OLD model put on the host, for the comparison"
