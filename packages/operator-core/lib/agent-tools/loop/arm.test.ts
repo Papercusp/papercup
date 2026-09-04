@@ -203,6 +203,14 @@ const monitorConfig = (overrides: Record<string, unknown> = {}) => ({
   authority: { kind: 'work-item', workItem: 'WI-42' },
   ...overrides,
 });
+const persistedMonitorConfig = (overrides: Record<string, unknown> = {}) => ({
+  predicateKey: 'release:green:papercusp',
+  stopCondition: 'the exact green verdict is recorded',
+  noDeltaBudget: 3,
+  remainingNoDeltaBudget: 2,
+  authority: { kind: 'work-item', workItem: 'WI-42' },
+  ...overrides,
+});
 
 const asWorkItem = (overrides: Partial<WorkItem> = {}): WorkItem => ({
   id: 'WI-TEST',
@@ -373,6 +381,52 @@ describe('loop:arm — WI-5345: mode reaches materializeLoop + the response (pre
         monitor: expect.objectContaining({ predicateKey: 'release:green:papercusp' }),
       }),
     );
+  });
+
+  it('inherits an active monitor mode and policy when a cadence/carry retune omits mode and monitor', async () => {
+    const monitor = persistedMonitorConfig();
+    mockResolvedOnceTyped(
+      priorLoopM,
+      priorLoop({
+        mode: 'monitor',
+        monitor,
+        carry: 'warm',
+      }),
+    );
+
+    const b = body(await call({ carry: 'cold' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      loop: {
+        mode: 'monitor',
+        carry: 'cold',
+        monitor,
+        workItem: 'WI-42',
+      },
+    });
+    expect(monitorAdmissionM).not.toHaveBeenCalled();
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ mode: 'monitor', monitor }));
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ mode: 'monitor' }));
+  });
+
+  it("keeps explicit mode:'work' authoritative over an active monitor and drops its policy", async () => {
+    const monitor = persistedMonitorConfig();
+    mockResolvedOnceTyped(
+      priorLoopM,
+      priorLoop({
+        mode: 'monitor',
+        monitor,
+      }),
+    );
+
+    const b = body(await call({ mode: 'work' }));
+
+    expect(b).toMatchObject({ ok: true, loop: { mode: 'work' } });
+    expect(b.loop).not.toHaveProperty('monitor');
+    expect(monitorAdmissionM).not.toHaveBeenCalled();
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ mode: 'work' }));
+    expect(materializeM.mock.calls.at(-1)![0]).not.toHaveProperty('monitor');
   });
 });
 

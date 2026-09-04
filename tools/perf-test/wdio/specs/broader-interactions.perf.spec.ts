@@ -202,6 +202,8 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
       search: location.search,
       hash: location.hash,
     }));
+    const retainedPaletteWasOpen =
+      new URLSearchParams(current.search).get("palette") === "true";
     if (isNonShellOperatorRoute(current.pathname)) {
       await spaNavigate(OPERATOR_SHELL_ROUTE);
     } else if (
@@ -213,6 +215,34 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
       // into Learning intercepts the next user's click even though both tests
       // happen to share /adv. Restore the documented bare-shell baseline.
       await spaNavigate(OPERATOR_SHELL_ROUTE);
+    }
+
+    // The palette is a controlled Radix dialog, so clearing ?palette=true and
+    // waiting for the router PUSH is not itself proof that the overlay has
+    // consumed its close transition. Exercise the same Escape path a user does
+    // and wait until BOTH URL state and the open dialog are gone before handing
+    // the webview to the next interaction. Without this, the palette retained
+    // focus and intercepted Learning's native Observations click even though
+    // location.search was already bare.
+    if (retainedPaletteWasOpen) {
+      await browser.keys(["Escape"]);
+      await browser.waitUntil(
+        async () =>
+          await browser.execute(() => {
+            const palette = document.querySelector<HTMLElement>(
+              '[aria-label="Command palette"]',
+            );
+            return (
+              new URLSearchParams(location.search).get("palette") !== "true" &&
+              palette?.getAttribute("data-state") !== "open"
+            );
+          }),
+        {
+          timeout: 5_000,
+          timeoutMsg:
+            "retained command palette did not close after Escape within 5s",
+        },
+      );
     }
   });
 
@@ -298,6 +328,90 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
         /* ignore */
       }
     }, NAME);
+
+    // Close any layer that survived the route transition only after the
+    // Learning body is mounted, then prove the native WebDriver click will
+    // actually land on Observations. `isClickable()` was not enough here:
+    // WebKit reported the button enabled and in-view while a retained overlay
+    // still won hit-testing at its centre.
+    await browser.keys(["Escape"]);
+    const observationsHitTarget = await browser.waitUntil(
+      async () =>
+        await browser.execute(() => {
+          const trigger = document.querySelector<HTMLElement>(
+            'button[aria-label="Observations"]',
+          );
+          if (!trigger) return false;
+          const rect = trigger.getBoundingClientRect();
+          const hit = document.elementFromPoint(
+            rect.left + rect.width / 2,
+            rect.top + rect.height / 2,
+          );
+          return Boolean(hit && (hit === trigger || trigger.contains(hit)));
+        }),
+      {
+        timeout: 5_000,
+        timeoutMsg:
+          "Learning Observations trigger remained covered after Escape",
+      },
+    ).then(() => true, () => false);
+
+    if (!observationsHitTarget) {
+      const snapshot = await browser.execute(() => {
+        const trigger = document.querySelector<HTMLElement>(
+          'button[aria-label="Observations"]',
+        );
+        const rect = trigger?.getBoundingClientRect();
+        const stack = rect
+          ? document.elementsFromPoint(
+              rect.left + rect.width / 2,
+              rect.top + rect.height / 2,
+            )
+          : [];
+        return {
+          href: location.href,
+          paletteQuery: new URLSearchParams(location.search).get("palette"),
+          triggerRect: rect
+            ? {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+              }
+            : null,
+          hitStack: stack.slice(0, 8).map((node) => {
+            const el = node as HTMLElement;
+            const style = getComputedStyle(el);
+            return {
+              tag: el.tagName.toLowerCase(),
+              id: el.id || null,
+              className: typeof el.className === "string" ? el.className : null,
+              role: el.getAttribute("role"),
+              ariaLabel: el.getAttribute("aria-label"),
+              dataState: el.getAttribute("data-state"),
+              pointerEvents: style.pointerEvents,
+              zIndex: style.zIndex,
+            };
+          }),
+          openLayers: Array.from(
+            document.querySelectorAll<HTMLElement>(
+              '[data-state="open"], [role="dialog"], [role="alertdialog"]',
+            ),
+          ).slice(0, 12).map((el) => ({
+            tag: el.tagName.toLowerCase(),
+            className: el.className,
+            role: el.getAttribute("role"),
+            ariaLabel: el.getAttribute("aria-label"),
+            dataState: el.getAttribute("data-state"),
+          })),
+        };
+      });
+      throw new Error(
+        "Learning Observations trigger remained covered after Escape; " +
+          `hit-test snapshot=${JSON.stringify(snapshot)}`,
+      );
+    }
+
     // Use WebDriver's native click path: this spec promises a REAL user
     // interaction, and it also surfaces an overlay/interception regression
     // that HTMLElement.click() would bypass.
@@ -429,26 +543,128 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     // location.assign() tears down the WebDriver session (see the note above),
     // and pushState+popstate stalls a cross-route transition 10-40+s (see
     // spaNavigate's doc comment, WI-6543).
-    // Enter the Work tab first, then wait for its project selector to prove
-    // harnessProjects.lite has resolved. Applying ?slug= on the same turn as
-    // AdvShell's first registry restore races that restore; the later write
-    // can legitimately replace the unverified deep link with its persisted
-    // selection, leaving no dock for the panel request to target.
+    // Enter the Work tab first and wait for its ACTUAL body before adding the
+    // slug. Applying ?slug= on the same turn as AdvShell's first registry
+    // restore races that restore; the later write can legitimately replace
+    // the unverified deep link with its persisted selection, leaving no dock
+    // for the panel request to target. Do not gate on an ENABLED project
+    // selector: a packaged session can render the real Work body before
+    // harnessProjects.lite has populated, and HarnessesWorkspace deliberately
+    // falls back to the explicit raw slug during that loading window.
     await spaNavigate("/adv?tab=harnesses");
     await waitForAppMount(browser);
-    await browser.waitUntil(
+
+    // waitForAppMount proves the long-lived AdvShell is present; it says
+    // nothing about whether TanStack has replaced the PREVIOUS tab body. Wait
+    // for the selected Work trigger AND HarnessesWorkspace itself so a later
+    // selector failure is correctly attributed to the registry, not to a tab
+    // navigation that never committed.
+    const workBodyReady = await browser.waitUntil(
+      async () =>
+        await browser.execute(() => {
+          const trigger = document.querySelector<HTMLElement>(
+            ".pc-advshell__tab--harnesses",
+          );
+          return Boolean(
+            trigger?.getAttribute("data-state") === "active" &&
+              document.querySelector(
+                ".pc-advshell__tabbody .pc-adv-harnesses",
+              ),
+          );
+        }),
+      {
+        timeout: 20_000,
+        timeoutMsg: "Work tab body did not render within 20s",
+      },
+    ).then(() => true, () => false);
+
+    if (!workBodyReady) {
+      const snapshot = await browser.execute(() => ({
+        href: location.href,
+        activeTabs: Array.from(
+          document.querySelectorAll<HTMLElement>(
+            '.pc-advshell__tab[data-state="active"]',
+          ),
+        ).map((tab) => ({
+          className: tab.className,
+          label: (tab.textContent ?? "").trim(),
+        })),
+        workTabState:
+          document
+            .querySelector<HTMLElement>(".pc-advshell__tab--harnesses")
+            ?.getAttribute("data-state") ?? null,
+        workBodyPresent: Boolean(
+          document.querySelector(
+            ".pc-advshell__tabbody .pc-adv-harnesses",
+          ),
+        ),
+        tabBodyClasses: Array.from(
+          document.querySelector<HTMLElement>(".pc-advshell__tabbody")
+            ?.firstElementChild?.children ?? [],
+        ).map((node) => (node as HTMLElement).className),
+        tabError:
+          document.querySelector<HTMLElement>('[data-testid="adv-tab-error"]')
+            ?.textContent?.trim() ?? null,
+        tabBodyText: (
+          document.querySelector<HTMLElement>(".pc-advshell__tabbody")
+            ?.textContent ?? ""
+        ).trim().slice(0, 320),
+      }));
+      throw new Error(
+        "Work tab body did not render after router PUSH; " +
+          `work snapshot=${JSON.stringify(snapshot)}`,
+      );
+    }
+
+    const projectSelectorPresent = await browser.waitUntil(
       async () =>
         await browser.execute(() => {
           const trigger = document.querySelector<HTMLElement>(
             ".pc-advshell__select-trigger",
           );
-          return Boolean(trigger && !trigger.hasAttribute("disabled"));
+          return Boolean(trigger);
         }),
       {
         timeout: 20_000,
-        timeoutMsg: "Work-tab project selector did not become ready within 20s",
+        timeoutMsg: "Work-tab project selector did not render within 20s",
       },
-    );
+    ).then(() => true, () => false);
+
+    if (!projectSelectorPresent) {
+      const snapshot = await browser.execute(() => {
+        const trigger = document.querySelector<HTMLElement>(
+          ".pc-advshell__select-trigger",
+        );
+        return {
+          href: location.href,
+          workTabState:
+            document
+              .querySelector<HTMLElement>(".pc-advshell__tab--harnesses")
+              ?.getAttribute("data-state") ?? null,
+          workBodyPresent: Boolean(
+            document.querySelector(
+              ".pc-advshell__tabbody .pc-adv-harnesses",
+            ),
+          ),
+          projectSelectorPresent: Boolean(trigger),
+          projectSelectorDisabled:
+            trigger?.hasAttribute("disabled") ?? null,
+          projectSelectorText: (trigger?.textContent ?? "").trim() || null,
+          potBarPresent: Boolean(document.querySelector(".pc-potbar")),
+          tabError:
+            document.querySelector<HTMLElement>('[data-testid="adv-tab-error"]')
+              ?.textContent?.trim() ?? null,
+          tabBodyText: (
+            document.querySelector<HTMLElement>(".pc-advshell__tabbody")
+              ?.textContent ?? ""
+          ).trim().slice(0, 320),
+        };
+      });
+      throw new Error(
+        "Work-tab project selector did not render; " +
+          `selector snapshot=${JSON.stringify(snapshot)}`,
+      );
+    }
 
     const harnessesUrl = await browser.execute(() => {
       const u = new URL(location.href);

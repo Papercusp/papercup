@@ -675,18 +675,40 @@ export default defineTool({
         isError: true,
       };
     }
-    const requestedMode = args.mode ?? 'work';
+    // Read the active loop before resolving mode. A retune commonly omits mode and
+    // monitor because it is changing only cadence/carry; defaulting that omission to
+    // 'work' silently converts a fleet-leader monitor into a work loop. Explicit mode
+    // changes remain authoritative, while an omitted mode inherits the active loop's
+    // persisted lifecycle.
+    let prior: PriorLoopFacts | null = null;
+    try {
+      prior = await readActiveLoopFacts(ownerId);
+    } catch (e) {
+      console.warn(
+        `[loop:arm] prior-loop read failed (falling back to default carry resolution): ${e instanceof Error ? e.message : e}`,
+      );
+    }
+    const modeExplicit = args.mode !== undefined;
+    const preservingPriorMonitor =
+      !modeExplicit && prior?.active === true && prior.mode === 'monitor' && !args.monitor;
+    const requestedMode = args.mode ?? (prior?.active === true ? prior.mode : 'work');
     let preparedMonitorConfig: PersistedMonitorConfig | null = null;
     if (requestedMode === 'monitor') {
-      if (!args.monitor) {
-        return monitorRefusal(
-          'monitor_config_required',
-          "mode:'monitor' requires monitor:{ predicateKey, stopCondition, noDeltaBudget?, authority }.",
-        );
+      if (preservingPriorMonitor) {
+        // This is a carry/cadence retune, not a new monitor authority request. Reuse
+        // the already-admitted policy and avoid re-running admission/dedup checks.
+        preparedMonitorConfig = prior.monitor ?? null;
+      } else {
+        if (!args.monitor) {
+          return monitorRefusal(
+            'monitor_config_required',
+            "mode:'monitor' requires monitor:{ predicateKey, stopCondition, noDeltaBudget?, authority }.",
+          );
+        }
+        const prepared = prepareMonitorConfig(args.monitor);
+        if (!prepared.allowed) return monitorRefusal(prepared.code, prepared.message, prepared.details);
+        preparedMonitorConfig = prepared.config;
       }
-      const prepared = prepareMonitorConfig(args.monitor);
-      if (!prepared.allowed) return monitorRefusal(prepared.code, prepared.message, prepared.details);
-      preparedMonitorConfig = prepared.config;
     } else if (args.monitor) {
       return monitorRefusal(
         'monitor_config_requires_monitor_mode',
@@ -719,14 +741,6 @@ export default defineTool({
     // loop installed under a concrete harness. Read the existing routine before
     // resolving the new scope so a scope-less re-arm preserves that install_slug
     // instead of returning no_harness (or silently moving the loop home).
-    let prior: PriorLoopFacts | null = null;
-    try {
-      prior = await readActiveLoopFacts(ownerId);
-    } catch (e) {
-      console.warn(
-        `[loop:arm] prior-loop read failed (falling back to default carry resolution): ${e instanceof Error ? e.message : e}`,
-      );
-    }
     // EI-21476896242465605: a carry/mode retune of an ACTIVE loop must not have to
     // re-state intervalSec/goal — inherit both from the live row so the documented
     // `loop:arm { carry }` retune works. A FRESH arm missing either still fails,
@@ -984,8 +998,11 @@ export default defineTool({
     // Every leg above is read-only scope/provenance resolution. Every mutation
     // below (the optional claim, materializeLoop, control-anchor write, and wake
     // registration) is downstream of this refusal boundary.
-    let admittedMonitorConfig: PersistedMonitorConfig | null = null;
-    if (requestedMode === 'monitor') {
+    // A monitor-policy retune that omitted mode reuses the prior admitted policy above.
+    // New monitor arms and explicit monitor config changes still pass the full admission
+    // and exact-await dedup gates.
+    let admittedMonitorConfig: PersistedMonitorConfig | null = preparedMonitorConfig;
+    if (requestedMode === 'monitor' && !preservingPriorMonitor) {
       const admission = await admitMonitorArm({
         ownerId,
         workspaceId,
