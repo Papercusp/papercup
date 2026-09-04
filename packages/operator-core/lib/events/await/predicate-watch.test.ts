@@ -1,17 +1,79 @@
 /**
  * predicate-watch.test.ts — unit coverage for the pure predicate helpers
  * (fleet-deltas-leader-primitives-2026-07-10 P-008): dot-path extraction,
- * op evaluation, and tool-result payload extraction. The store + poller +
+ * op evaluation, tool-result payload extraction, and the poller's dispatch deadline.
+ * The store + poller +
  * edge-fire lifecycle is covered in predicate-watch.integration.test.ts
  * (real PG, fake dispatch via configurePredicateDispatch).
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   valueAtPath,
   comparePredicate,
   extractToolPayload,
   INTERNAL_MACHINE_DISPATCH_PAYLOAD_CONTEXT,
+  configurePredicateDispatch,
+  dispatchPredicateTool,
+  withPredicateDispatchTimeout,
+  type PredicateWatchRow,
 } from './predicate-watch';
+
+describe('WI-7060 — predicate dispatch deadline', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    configurePredicateDispatch(null);
+    vi.useRealTimers();
+  });
+
+  it('aborts and rejects with a typed timeout when the resolver never settles', async () => {
+    let signal: AbortSignal | undefined;
+    const pending = withPredicateDispatchTimeout(
+      (receivedSignal) => {
+        signal = receivedSignal;
+        return new Promise(() => {});
+      },
+      { tool: 'fake:read', timeoutMs: 25 },
+    );
+    const assertion = expect(pending).rejects.toMatchObject({
+      name: 'ReadOnlyDispatchError',
+      code: 'dispatch_timeout',
+      message: 'predicate resolver ("fake:read") did not respond within 25ms',
+    });
+
+    await vi.advanceTimersByTimeAsync(25);
+    await assertion;
+
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it('is wired around the canonical predicate dispatcher, including its test seam', async () => {
+    const row = { tool: 'fake:read' } as PredicateWatchRow;
+    configurePredicateDispatch(() => new Promise(() => {}));
+    const pending = dispatchPredicateTool(row, 25);
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'dispatch_timeout' });
+
+    await vi.advanceTimersByTimeAsync(25);
+
+    await assertion;
+  });
+
+  it('preserves a resolver result that arrives just under the deadline and clears the timer', async () => {
+    let signal: AbortSignal | undefined;
+    const pending = withPredicateDispatchTimeout(
+      (receivedSignal) => {
+        signal = receivedSignal;
+        return new Promise((resolve) => setTimeout(() => resolve({ wm: 128 }), 24));
+      },
+      { tool: 'fake:read', timeoutMs: 25 },
+    );
+
+    await vi.advanceTimersByTimeAsync(24);
+
+    await expect(pending).resolves.toEqual({ wm: 128 });
+    expect(signal?.aborted).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
 
 describe('internal machine-dispatch payload context', () => {
   it('bypasses both tier shaping and the hard transport ceiling before path projection', () => {

@@ -625,11 +625,11 @@ export interface CellReadEnv {
  *
  * Deliberately the NARROWEST of the three fix directions the bug report weighed: it
  * bounds `readCell`'s own WAIT on the dispatch, not the dispatch itself — this does NOT
- * cancel the underlying resolver call (no AbortSignal is threaded through
- * `dispatchReadOnlyTool` yet), so a resolver that leaks a lock or a connection on its own
- * is still a bug worth fixing separately. What this closes is the specific failure this
- * module documents: a caller on a hot path — a lock acquire, a claim, a presence read —
- * waiting on `readCell` forever because ITS resolver hung.
+ * cancel the underlying resolver call (this caller does not supply the optional
+ * AbortSignal accepted by `dispatchReadOnlyTool`), so a resolver that leaks a lock or a
+ * connection on its own is still a bug worth fixing separately. What this closes is
+ * the specific failure this module documents: a caller on a hot path — a lock acquire,
+ * a claim, a presence read — waiting on `readCell` forever because ITS resolver hung.
  *
  * (`bounded-timeout.ts`'s `withBoundedTimeout` was considered and deliberately NOT
  * reused here — it unconditionally `console.warn`s and swallows every rejection into a

@@ -548,6 +548,8 @@ export interface ReadOnlyDispatchEnv {
   onBehalfOf: string;
   /** `tool_invocations.spawn_id` for the audit row — names the calling subsystem. */
   spawnId: string;
+  /** Optional caller-owned cancellation. The dispatch remains unbounded when omitted. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -571,7 +573,10 @@ export interface ReadOnlyDispatchEnv {
  *     rendered as an enumerated unknown rather than swallowed.
  *
  * Audited via tool_invocations like every dispatch. Throws on refusal or failure; the
- * caller decides whether that is an error or an unknown.
+ * caller decides whether that is an error or an unknown. A caller may supply `signal`
+ * to cancel cooperative projected tools, but this shared primitive deliberately does
+ * not impose one universal deadline: a synchronous cell read and a background
+ * predicate poll have different latency budgets.
  */
 export async function dispatchReadOnlyTool(
   tool: string,
@@ -610,7 +615,7 @@ export async function dispatchReadOnlyTool(
       log: () => {},
       progress: () => {},
       emit: () => {},
-      signal: new AbortController().signal,
+      signal: env.signal ?? new AbortController().signal,
       principal: {
         slug: `system:${env.spawnId}:${env.onBehalfOf}`,
         workspaceId: env.workspaceId,
@@ -632,15 +637,74 @@ export async function dispatchReadOnlyTool(
   return extractToolPayload(result.result);
 }
 
-/** One poll of the row's tool — a LENS on `dispatchReadOnlyTool`, not a second dispatch. */
-async function dispatchPredicateTool(row: PredicateWatchRow): Promise<unknown> {
-  return dispatchReadOnlyTool(row.tool, row.args, {
-    workspaceId: row.workspaceId,
-    harnessSlug: row.harnessSlug,
-    role: row.role,
-    onBehalfOf: row.ownerId,
-    spawnId: 'predicate-watch',
+/**
+ * WI-7060 — a background predicate resolver gets substantially more time than the
+ * synchronous cell-read hot path, but it must not wedge the serial poller forever.
+ * The env override accommodates legitimately slow read-only tools (for example a
+ * large-history `git rev-list`) without weakening the termination guarantee.
+ */
+export const PREDICATE_DISPATCH_TIMEOUT_MS = Math.max(
+  1,
+  Number(process.env.PAPERCUSP_PREDICATE_DISPATCH_TIMEOUT_MS) || 60_000,
+);
+
+/**
+ * Race one predicate dispatch against its caller-specific deadline. On expiry, abort
+ * the signal so cooperative projected tools can release their own resources; the
+ * race still rejects promptly when a tool ignores cancellation. The late work has an
+ * attached rejection handler so a post-timeout failure cannot become unhandled.
+ */
+export async function withPredicateDispatchTimeout<T>(
+  dispatch: (signal: AbortSignal) => Promise<T>,
+  opts: { tool: string; timeoutMs?: number },
+): Promise<T> {
+  const timeoutMs = Math.max(1, opts.timeoutMs ?? PREDICATE_DISPATCH_TIMEOUT_MS);
+  const controller = new AbortController();
+  const work = Promise.resolve().then(() => dispatch(controller.signal));
+  work.catch(() => {});
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new ReadOnlyDispatchError(
+        'dispatch_timeout',
+        `predicate resolver ("${opts.tool}") did not respond within ${timeoutMs}ms`,
+      );
+      // Settle the race with the stable typed error before abort listeners can reject
+      // the underlying work with their own implementation-specific AbortError.
+      reject(error);
+      controller.abort(error);
+    }, timeoutMs);
   });
+
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** One bounded poll of the row's tool — a LENS on `dispatchReadOnlyTool`, not a second dispatch. */
+export async function dispatchPredicateTool(
+  row: PredicateWatchRow,
+  timeoutMs = PREDICATE_DISPATCH_TIMEOUT_MS,
+): Promise<unknown> {
+  return withPredicateDispatchTimeout(
+    (signal) => {
+      // Keep the test seam INSIDE the deadline. A fake that never settles must prove
+      // the canonical wrapper terminates rather than bypassing the very guard it tests.
+      if (dispatchOverride) return dispatchOverride(row);
+      return dispatchReadOnlyTool(row.tool, row.args, {
+        workspaceId: row.workspaceId,
+        harnessSlug: row.harnessSlug,
+        role: row.role,
+        onBehalfOf: row.ownerId,
+        spawnId: 'predicate-watch',
+        signal,
+      });
+    },
+    { tool: row.tool, timeoutMs },
+  );
 }
 
 /* ── POLL-TICK DISPATCH DEDUPE (P-012) ──────────────────────────────────────────
@@ -836,7 +900,7 @@ export async function evalPredicateWatch(
    */
   shared?: PredicateDispatchOutcome,
 ): Promise<PredicateEvalResult> {
-  const dispatch = dispatchOverride ?? dispatchPredicateTool;
+  const dispatch = dispatchPredicateTool;
   try {
     if (shared && !shared.ok) throw shared.error;
     const payload = shared ? shared.payload : await dispatch(row);
@@ -945,7 +1009,7 @@ export async function pollDuePredicateWatches(): Promise<{
     else groups.set(key, [row]);
   }
 
-  const dispatch = dispatchOverride ?? dispatchPredicateTool;
+  const dispatch = dispatchPredicateTool;
   let fired = 0;
   let dispatches = 0;
   let deduped = 0;

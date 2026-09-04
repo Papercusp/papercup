@@ -1095,8 +1095,8 @@ describe('P-007 — TOTALITY FUZZ: readCell never throws, whatever the resolver 
  * the lock. The fix bounds `readCell`'s own WAIT via `withBoundedTimeout` (reused from
  * `bounded-timeout.ts` rather than a hand-rolled race) — see `CELL_READ_TIMEOUT_MS`'s
  * doc comment in `cell-read.ts` for why this bounds the CALLER, not the resolver dispatch
- * itself (no AbortSignal is threaded through yet — a resolver that leaks a lock or a
- * connection on its own is a separate bug).
+ * itself (`readCell` does not supply the dispatch helper's optional AbortSignal — a
+ * resolver that leaks a lock or a connection on its own is a separate bug).
  *
  * This test used to PIN the absent bound (a test asserting a bound that did not exist
  * would have been red forever). Now that the bound exists, it asserts it: a resolver that
