@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   callToolWithPressureRetry,
@@ -56,6 +56,13 @@ import {
 } from './ptool.mjs';
 
 describe('ptool bootstrap dependencies', () => {
+  it('keeps the repository ptool source directly executable (EI-22055633156739019)', () => {
+    if (process.platform === 'win32') return;
+
+    const mode = statSync(new URL('./ptool.mjs', import.meta.url)).mode;
+    expect(mode & 0o111).toBe(0o111);
+  });
+
   it('declares the MCP SDK directly in the operator workspace', () => {
     const packageJson = JSON.parse(
       readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
@@ -319,6 +326,14 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('tools:invoke', {
       name: 'work_items:request_release',
       args: { id: 'WI-1', deadlineSec: 30, onSilence: 'reclaim', reason: 'timeout mapping regression' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-22351729180562005: live rubric-vetting routing completed in 47.954s;
+    // the client must not abandon either transport shape at the flat 30s
+    // deadline and turn a successful consult write into outcome-unknown.
+    expect(timeoutForTool('consult:get_feedback')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'consult:get_feedback',
+      args: { question: 'timeout mapping regression', policy: 'rubric-vetting' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('activity:tool-log')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('sessions:search')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
