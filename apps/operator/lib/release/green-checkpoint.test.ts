@@ -1709,7 +1709,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(result.candidate).not.toBe(proofTipAfter);
   });
 
-  it("keeps EI-210831 alignment retry in charge when any queued failure still reproduces", async () => {
+  it("P-005: a signature that still reproduces AT the repair head re-queues the fresh failing set for the next fixer without spending a suite", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
@@ -1733,24 +1733,24 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       failingTests: ["@papercusp/web", "lib/broken.test.ts"],
     };
     const { deps, calls } = stubDeps(true);
+    const retestedRefs: string[] = [];
     deps.readFrozenRepairQueue = async () => queue;
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.stagingContainsFrozenRepair = async () => false;
     deps.resolveTip = async () => stagingTip;
-    deps.runTestsAtRef = async () => ({
-      pass: false,
-      summary: "file failure still reproduces",
-    });
+    deps.runTestsAtRef = async (ref) => {
+      retestedRefs.push(ref);
+      return { pass: false, summary: "file failure still reproduces" };
+    };
 
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
     expect(result).toMatchObject({
       advanced: false,
       green: null,
-      reason: "repair-staging-mismatch",
+      reason: "repair-in-progress",
       candidate: frozen,
       frozenCandidate: frozen,
       repairHead: repaired,
@@ -1761,11 +1761,19 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         fixerSpawnId: null,
       },
     });
+    expect(result.summary).toContain("still red at its own sha");
+    expect(retestedRefs).toEqual([repaired]);
     expect(queue).toMatchObject({
       phase: "awaiting-fixer",
       repairHead: repaired,
     });
+    // The FRESH signature, not the retired staging-mismatch sentinel.
+    expect(queue?.failingTests).toEqual(
+      expect.arrayContaining(["lib/broken.test.ts", "@papercusp/web"]),
+    );
+    expect(queue?.failingTests).not.toContain("repair-staging-mismatch");
     expect(calls).not.toContain("runGreen");
+    expect(calls).not.toContain(`setup:${stagingTip.slice(0, 7)}`);
     expect(await revParse(repo, "ready")).toBe(ready);
   });
 

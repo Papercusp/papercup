@@ -10,6 +10,9 @@
  * that keeps it unreachable. The resolver-level structural guard (green-checkpoint.ts never
  * calling `revParse(cfg.integrationBranch)` while a queue row exists) lands with P-009.
  */
+import { readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
@@ -100,5 +103,70 @@ describe('a queue row in any phase never lets the gate judge the tip (P-013(b))'
 
   it('no queue row at all is the ONLY input that judges the tip', () => {
     expect(decideFrozenCandidateRepairQueue(null, { nowMs: T0 })).toMatchObject({ kind: 'run-normal-gate' });
+  });
+});
+
+/**
+ * P-005 (D-004): the gate's ready-to-verify path verifies the repair head AT ITS OWN SHA. The
+ * queue decision above can only name the sha; whether the gate then re-runs the signature at
+ * that sha or at the tip lives in apps/operator/lib/release/green-checkpoint.ts, which this
+ * package cannot import — so the property is pinned at the SOURCE level, the way the doc-claims
+ * suite pins CLAUDE.md's gate claims. Written as a falsifier first: on the pre-P-005 tree the
+ * verify-repair branch called `proveFrozenRepairOutcomeAtStableTip`, whose deps Pick named
+ * `resolveTip` and whose `full-suite-required` / `proved` arms re-cut the gate at the tip — every
+ * assertion below was red there.
+ */
+// lib/release → lib → operator-core → packages → <repo root>
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const GATE_SOURCE = readFileSync(join(REPO_ROOT, 'apps/operator/lib/release/green-checkpoint.ts'), 'utf8');
+
+describe('the ready-to-verify path verifies the repair head at its own sha, never the tip (P-005)', () => {
+  it('the tip-proving predecessor is neither declared nor called', () => {
+    // Prose mentions in docblocks are allowed (they explain what was retired and why); a
+    // declaration or a call is not.
+    expect(GATE_SOURCE).not.toMatch(/(?:function|await)\s+proveFrozenRepairOutcomeAtStableTip\s*\(/);
+    expect(GATE_SOURCE).not.toContain('kind: "full-suite-required"');
+    expect(GATE_SOURCE).not.toContain('kind: "tip-moved"');
+    expect(GATE_SOURCE).not.toContain('kind: "proved"');
+  });
+
+  it('the verification deps Pick names the ref-taking runners and NO tip resolver (structural)', () => {
+    const declaration = /export type RepairHeadVerificationDeps = Pick<\s*CheckpointDeps,\s*([^>]+)>/.exec(GATE_SOURCE);
+    expect(declaration, 'RepairHeadVerificationDeps must be a Pick over CheckpointDeps').not.toBeNull();
+    const keys = declaration![1]!
+      .split('|')
+      .map((key) => key.trim().replace(/^"|"$/g, ''))
+      .filter(Boolean);
+    expect(keys).toEqual(expect.arrayContaining(['runTestsAtRef', 'runGateAtRef', 'affectedTestsAtRef']));
+    expect(keys).not.toContain('resolveTip');
+  });
+
+  it('the verify-repair branch hands verifyRepairHead the queue and never names the tip', () => {
+    const start = GATE_SOURCE.indexOf('decision.kind === "verify-repair"');
+    expect(start, 'the verify-repair branch must exist').toBeGreaterThan(-1);
+    const rest = GATE_SOURCE.slice(start);
+    const end = rest.indexOf('// QUIET CUT');
+    expect(end, 'the quiet-cut block must follow the branch').toBeGreaterThan(-1);
+    const branch = rest.slice(0, end);
+    expect(branch).toContain('await verifyRepairHead(deps, repairQueue)');
+    expect(branch).not.toMatch(/resolveTip|integrationBranch|transportedCandidate|stagingContainsFrozenRepair/);
+    // A red re-queues from the repair head that was just tested; nothing on this path retires
+    // the queue (`writeFrozenRepairQueue(null)`) or steps the candidate anywhere else.
+    expect(branch).toContain('markFrozenRepairVerificationRed(repairQueue');
+    expect(branch).not.toContain('writeFrozenRepairQueue?.(null)');
+  });
+
+  it('every runner call inside verifyRepairHead passes the repair head', () => {
+    const start = GATE_SOURCE.indexOf('export async function verifyRepairHead(');
+    expect(start).toBeGreaterThan(-1);
+    const rest = GATE_SOURCE.slice(start);
+    const body = rest.slice(0, rest.indexOf('\n}\n') + 3);
+    const runnerCalls = [...body.matchAll(/deps\s*\.\s*(runTestsAtRef|runGateAtRef|affectedTestsAtRef)!?\s*\(\s*(\w+)/g)];
+    expect(runnerCalls.length).toBeGreaterThanOrEqual(3);
+    for (const call of runnerCalls) {
+      expect(call[2], `${call[1]} must be called at the repair head`).toBe('head');
+    }
+    expect(body).toContain('const head = queue.repairHead;');
+    expect(body).not.toMatch(/resolveTip|integrationBranch/);
   });
 });

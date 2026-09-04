@@ -1647,31 +1647,6 @@ export {
   type RepairSignaturePartition,
 } from './repair-leg-lifecycle';
 
-/** The repair head passed its focused fixer work, but canonical staging contains a
- * content-equivalent repair with different patch context. The exact reverse-apply guard
- * must continue to fail closed, while the queue must also remain live: return it to the
- * queue-authorized fixer path so the specialized release-fixer can align the isolated
- * worktree. Attempts remain bounded by the existing policy; exhaustion blocks automation
- * while retaining the same frozen queue head for operator repair. */
-export function markFrozenRepairStagingMismatch(
-  queue: FrozenCandidateRepairQueue,
-  input: { repairHead: string; nowMs: number },
-): FrozenCandidateRepairQueue {
-  requirePhase(queue, 'ready-to-verify', 'staging-mismatch retry');
-  requireCurrentHead(queue, input.repairHead);
-  assertTimestamp(input.nowMs, 'nowMs');
-  return {
-    ...queue,
-    phase: 'awaiting-fixer',
-    updatedAtMs: input.nowMs,
-    fixerSpawnId: null,
-    failingTests: boundedFailures([
-      FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
-      ...queue.failingTests.filter((failure) => failure !== FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE),
-    ]),
-  };
-}
-
 /** A green verification makes only the exact tested head promotable. The separate staging-patch
  * decision remains mandatory before the caller can advance main. */
 export function markFrozenRepairVerificationGreen(
