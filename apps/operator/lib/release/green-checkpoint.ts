@@ -108,6 +108,7 @@ import {
   type GitRead,
 } from "@papercusp/operator-core/lib/candidate-contains";
 import {
+  describeUnreadableFrozenCandidateRepairQueue,
   FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS,
   FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
   createFrozenCandidateQueue,
@@ -129,6 +130,7 @@ import {
   classifyRepairSignature,
   classifyRepairSignatureEntry,
   type FrozenCandidateRepairQueue,
+  type FrozenCandidateRepairQueueRead,
   type RepairSignatureContext,
   type RepairSignatureEntry,
   type RepairSignatureInput,
@@ -1124,6 +1126,8 @@ export interface CheckpointDeps {
    * live on the existing gate dependency seam so test stubs and non-recording CLI runs
    * keep the old behavior when the routine metadata target is unavailable. */
   readFrozenRepairQueue?(): Promise<FrozenCandidateRepairQueue | null>;
+  /** P-025: branchable storage read; production prefers this over the legacy null API. */
+  readFrozenRepairQueueState?(): Promise<FrozenCandidateRepairQueueRead>;
   writeFrozenRepairQueue?(
     queue: FrozenCandidateRepairQueue | null,
   ): Promise<void>;
@@ -1279,6 +1283,8 @@ export interface CheckpointResult {
    * repair queue. Downstream recording uses it to suppress the legacy moving-tip
    * release-fixer dispatch; the queue already owns one targeted fixer. */
   repairQueue?: FrozenCandidateRepairQueue;
+  /** P-025: present when a persisted queue existed but this build could not interpret it. */
+  repairQueueRead?: FrozenCandidateRepairQueueRead;
   /** P-003: explicit immutable candidate identity for no-suite repair statuses. */
   frozenCandidate?: string;
   /** P-003: explicit mutable repair head identity for no-suite repair statuses. */
@@ -9430,9 +9436,29 @@ async function runGreenCheckpointInner(
   // into a joined staging sha so the whole gate could re-run there, because D-001 held that an
   // isolated repair head was verification-only. D-004 promotes the lineage commit itself, so the
   // join — and the second full suite it cost — is gone. See `assessFrozenLineagePromotion`.
-  if (!diagnosticOnly && deps.readFrozenRepairQueue) {
+  if (!diagnosticOnly && (deps.readFrozenRepairQueueState || deps.readFrozenRepairQueue)) {
     try {
-      repairQueue = await deps.readFrozenRepairQueue();
+      if (deps.readFrozenRepairQueueState) {
+        const read = await deps.readFrozenRepairQueueState();
+        if (read.status === "unreadable") {
+          const summary =
+            `${describeUnreadableFrozenCandidateRepairQueue(read)} — ` +
+            "refusing to conclude that no candidate is frozen or to cut a moving candidate";
+          deps.log(summary);
+          return {
+            advanced: false,
+            candidate,
+            from: lastReady,
+            green: null,
+            reason: "repair-in-progress",
+            summary,
+            repairQueueRead: read,
+          };
+        }
+        repairQueue = read.status === "value" ? read.queue : null;
+      } else {
+        repairQueue = await deps.readFrozenRepairQueue!();
+      }
     } catch (e) {
       const summary = `frozen repair queue read failed — refusing to cut a moving candidate: ${e instanceof Error ? e.message : e}`;
       deps.log(summary);
@@ -12865,6 +12891,7 @@ export async function runGreenCheckpoint(
   await deps.recordDerivedFreezeDisposition?.({
     flagEnabled: (await deps.freezeAndConvergeEnabled?.().catch(() => true)) ?? true,
     repairQueue: finalResult.repairQueue ?? null,
+    repairQueueRead: finalResult.repairQueueRead,
     summary: finalResult.summary ?? null,
     green: finalResult.green ?? null,
   });
@@ -15812,6 +15839,11 @@ export function realCheckpointDeps(
     },
     ...(repairTarget
       ? {
+          async readFrozenRepairQueueState() {
+            const { readFrozenCandidateRepairQueueState } =
+              await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+            return readFrozenCandidateRepairQueueState(repairTarget);
+          },
           async readFrozenRepairQueue() {
             const { readFrozenCandidateRepairQueue } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");

@@ -167,6 +167,7 @@ import {
   FROZEN_REPAIR_CONVERGENCE_HOLD_MS,
   type FrozenCandidateRepairQueue,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
+import type { TickFreezeObservation } from "@papercusp/operator-core/lib/release/freeze-disposition";
 
 const testRequire = createRequire(import.meta.url);
 
@@ -539,6 +540,46 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
 });
 
 describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
+  it("P-025: a newer-schema queue fails closed before setup/suite and reaches the disposition backstop", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps } = stubDeps(true);
+    const setupTree = vi.fn(async () => undefined);
+    const runGreen = vi.fn(async () => ({ green: true, summary: "must not run" }));
+    let observation: TickFreezeObservation | null = null;
+    deps.setupTree = setupTree;
+    deps.runGreen = runGreen;
+    deps.readFrozenRepairQueueState = async () => ({
+      status: "unreadable",
+      reason: "schema-newer-than-reader",
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION + 1,
+    });
+    deps.recordDerivedFreezeDisposition = async (value) => {
+      observation = value;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+
+    expect(result).toMatchObject({
+      advanced: false,
+      green: null,
+      reason: "repair-in-progress",
+      repairQueueRead: {
+        status: "unreadable",
+        reason: "schema-newer-than-reader",
+        schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION + 1,
+      },
+    });
+    expect(result.summary).toContain("refusing to conclude that no candidate is frozen");
+    expect(setupTree).not.toHaveBeenCalled();
+    expect(runGreen).not.toHaveBeenCalled();
+    expect(observation).toMatchObject({
+      repairQueue: null,
+      repairQueueRead: { status: "unreadable" },
+    });
+  });
+
   it("persists the immutable candidate before setup or its first suite", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
