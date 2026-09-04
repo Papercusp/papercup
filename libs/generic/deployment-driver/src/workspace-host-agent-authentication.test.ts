@@ -10,6 +10,7 @@ import {
   WORKSPACE_HOST_CANARY_AGENTS,
   applyWorkspaceHostAgentRuntimePath,
   buildWorkspaceHostAgentProbeProcess,
+  classifyWorkspaceHostAgentProbeFailure,
   probeWorkspaceHostAgentVerification,
   probeWorkspaceHostAgents,
   workspaceHostAgentSubjectDigest,
@@ -513,5 +514,163 @@ describe("attested vendor runtime paths (D-259 Defect 2)", () => {
   it("leaves the spec untouched when no path is attested for that agent", () => {
     const spec = DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0];
     expect(applyWorkspaceHostAgentRuntimePath(spec, undefined)).toBe(spec);
+  });
+});
+
+/**
+ * WI-2144034. A metered provider that has run out of quota fails a probe in a way that, from
+ * evidence alone, is indistinguishable from a broken credential — and the line that explains it
+ * goes to the stream this module deliberately discards. Measured 2026-09-04: `codex exec` printed
+ * `You've hit your usage limit` on STDERR and exited 0, so the probe recorded
+ * `no-verification-proof` and two GCP canaries were spent looking at credentials that were fine.
+ */
+describe("provider-cause classification (WI-2144034)", () => {
+  const QUOTA_STDERR =
+    "ERROR: You've hit your usage limit. Visit https://example.invalid/usage to purchase more credits or try again at Sep 6th, 2026 10:26 PM.\n";
+
+  it("classifies the measured quota phrasings and nothing else", () => {
+    for (const text of [
+      QUOTA_STDERR,
+      "usage limit reached for this account",
+      "Quota exceeded for model",
+      "error code: insufficient_quota",
+      "Rate limit exceeded, retry later",
+    ]) {
+      expect(classifyWorkspaceHostAgentProbeFailure(text)).toBe(
+        "provider-usage-limit",
+      );
+    }
+  });
+
+  /**
+   * CALIBRATION CONTROL, and the reason the test above proves anything: a classifier that simply
+   * returned "provider-usage-limit" for every input would pass it. These are the failures that
+   * must stay UNCLASSIFIED, because mislabelling a credential fault as a billing problem sends
+   * the reader to the wrong page — the more expensive of the two errors.
+   */
+  it("leaves genuine credential and transport failures unclassified", () => {
+    for (const text of [
+      "Not logged in. Run `codex login` to authenticate.",
+      "401 Unauthorized: invalid api key",
+      "error: connection refused",
+      "Logged in using ChatGPT",
+      "",
+    ]) {
+      expect(classifyWorkspaceHostAgentProbeFailure(text)).toBeUndefined();
+    }
+  });
+
+  it("reports the measured shape — exit 0, no marker, quota named — as provider-usage-limit", async () => {
+    const runner = new ScriptedRunner({
+      codex: {
+        exitCode: 0,
+        stdout: "Reply with exactly P046_CODEX_LIVE_OK and nothing else.\n",
+        failureHint: "provider-usage-limit",
+      },
+    });
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.codex[1],
+      runner,
+      now: NOW,
+    });
+
+    expect(evidence.ready).toBe(false);
+    expect(evidence.failure).toBe("provider-usage-limit");
+  });
+
+  /**
+   * PERMANENT CONTROL for the case above. The subject is an imported module, so a copy-out
+   * mutation cannot reach it; this pins the UNFIXED behaviour instead. Byte-identical to the test
+   * above except for the absent hint — so if `probeWorkspaceHostAgentVerification` ever ignored
+   * `failureHint` and hard-coded the generic code, the pair above would fail while this one still
+   * passed, and if it ever reported the provider code unconditionally, THIS one fails.
+   */
+  it("still reports no-verification-proof when nothing was classified", async () => {
+    const runner = new ScriptedRunner({
+      codex: {
+        exitCode: 0,
+        stdout: "Reply with exactly P046_CODEX_LIVE_OK and nothing else.\n",
+      },
+    });
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.codex[1],
+      runner,
+      now: NOW,
+    });
+
+    expect(evidence.ready).toBe(false);
+    expect(evidence.failure).toBe("no-verification-proof");
+  });
+
+  it("prefers the classified cause over the generic non-zero-exit code", async () => {
+    const runner = new ScriptedRunner({
+      claude: { exitCode: 1, stdout: "", failureHint: "provider-usage-limit" },
+    });
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0],
+      runner,
+      now: NOW,
+    });
+    expect(evidence.failure).toBe("provider-usage-limit");
+
+    const unclassified = new ScriptedRunner({
+      claude: { exitCode: 1, stdout: "" },
+    });
+    expect(
+      (
+        await probeWorkspaceHostAgentVerification({
+          spec: DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.claude[0],
+          runner: unclassified,
+          now: NOW,
+        })
+      ).failure,
+    ).toBe("non-zero-exit");
+  });
+
+  it("keeps the provider's text out of evidence entirely", async () => {
+    const runner = new ScriptedRunner({
+      codex: {
+        exitCode: 0,
+        stdout: "",
+        failureHint: "provider-usage-limit",
+      },
+    });
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.codex[1],
+      runner,
+      now: NOW,
+    });
+    const serialized = JSON.stringify(evidence);
+    expect(serialized).not.toContain("usage limit");
+    expect(serialized).not.toContain("purchase more credits");
+    expect(serialized).not.toContain("example.invalid");
+  });
+
+  /**
+   * The load-bearing one: it exercises the REAL runner against the REAL stream. stderr is drained
+   * and never returned, so this is what proves the cause survives that discard as a code.
+   */
+  it("classifies a real child's STDERR while returning none of its text", async () => {
+    const outcome = await new NodeWorkspaceHostAgentProbeRunner().run({
+      command: "/bin/sh",
+      args: ["-c", `printf '%s' "${QUOTA_STDERR.trim()}" >&2; exit 0`],
+      timeoutMs: 10_000,
+    });
+
+    // Exit 0 with no marker: exactly the shape that used to read as a credential fault.
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.failureHint).toBe("provider-usage-limit");
+    expect(outcome.stdout).toBe("");
+    expect(JSON.stringify(outcome)).not.toContain("usage limit");
+  });
+
+  it("leaves failureHint absent for a real child whose stderr says nothing recognizable", async () => {
+    const outcome = await new NodeWorkspaceHostAgentProbeRunner().run({
+      command: "/bin/sh",
+      args: ["-c", "printf 'not logged in' >&2; exit 1"],
+      timeoutMs: 10_000,
+    });
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.failureHint).toBeUndefined();
   });
 });

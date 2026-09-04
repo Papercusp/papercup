@@ -229,6 +229,12 @@ export const DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES: Readonly<
 };
 
 const DEFAULT_PROBE_TIMEOUT_MS = 60_000;
+/**
+ * Bounded stderr tail kept while classifying. Large enough that a recognized phrase split across
+ * two chunk boundaries still matches, small enough that nothing accumulates.
+ */
+const STDERR_CLASSIFY_WINDOW_BYTES = 4096;
+
 const MAX_PROBE_OUTPUT_BYTES = 512 * 1024;
 
 export interface WorkspaceHostAgentProbeInvocation {
@@ -245,6 +251,14 @@ export interface WorkspaceHostAgentProbeOutcome {
   readonly exitCode: number;
   /** Consumed in-process only. It is never copied into evidence. */
   readonly stdout: string;
+  /**
+   * A CLASSIFIED cause, when the probe's own output named one — a fixed reason code, never text.
+   *
+   * The runner matches output against `PROBE_FAILURE_CLASSIFIERS` and keeps only the resulting
+   * enum value; the text that produced it is dropped in the same tick. That is what lets a
+   * diagnosis survive without weakening the rule that CLI output never reaches evidence.
+   */
+  readonly failureHint?: WorkspaceHostAgentProbeFailureReason;
 }
 
 export interface WorkspaceHostAgentProbeRunner {
@@ -344,7 +358,52 @@ export interface WorkspaceHostAgentVerificationEvidence {
 export type WorkspaceHostAgentProbeFailureReason =
   | "non-zero-exit"
   | "no-verification-proof"
-  | "probe-error";
+  | "probe-error"
+  | "provider-usage-limit";
+
+/**
+ * Fixed patterns that turn a probe's own failure output into a REASON CODE.
+ *
+ * Why this exists: a metered third-party account that has run out of quota fails a probe in a way
+ * that is indistinguishable, from evidence alone, from a broken credential. MEASURED 2026-09-04
+ * (WI-2144034): `codex exec` printed `You've hit your usage limit` and **exited 0**, so the probe
+ * recorded `no-verification-proof` — a code that says "the marker was absent" and points every
+ * reader at the credentials. Diagnosing that cost two GCP canaries and most of two sessions; the
+ * one line that explained it went to stderr, which this module drains and discards on purpose.
+ *
+ * The isolation rule is unchanged and deliberately so: matching happens in-process, the matched
+ * text is dropped in the same tick, and only the enum value below can leave. A classifier may
+ * therefore never capture a group or interpolate what it matched — that would be a route for CLI
+ * text to reach evidence, which is exactly what `failure` forbids.
+ *
+ * Keep these patterns narrow and provider-agnostic in wording. A pattern that matched broadly
+ * would relabel ordinary credential failures as quota exhaustion, which is the more dangerous
+ * error: it would send a reader to the billing page while the real fault is an expired token.
+ */
+const PROBE_FAILURE_CLASSIFIERS: readonly {
+  readonly pattern: RegExp;
+  readonly reason: WorkspaceHostAgentProbeFailureReason;
+}[] = [
+  { pattern: /\bhit your usage limit\b/i, reason: "provider-usage-limit" },
+  { pattern: /\busage limit reached\b/i, reason: "provider-usage-limit" },
+  { pattern: /\bquota exceeded\b/i, reason: "provider-usage-limit" },
+  { pattern: /\binsufficient_quota\b/i, reason: "provider-usage-limit" },
+  { pattern: /\brate limit exceeded\b/i, reason: "provider-usage-limit" },
+];
+
+/**
+ * Reduce probe output to a fixed reason code, or undefined when nothing is recognized.
+ *
+ * Returns only a value from the closed union above; the input string is never retained.
+ */
+export function classifyWorkspaceHostAgentProbeFailure(
+  output: string,
+): WorkspaceHostAgentProbeFailureReason | undefined {
+  for (const classifier of PROBE_FAILURE_CLASSIFIERS) {
+    if (classifier.pattern.test(output)) return classifier.reason;
+  }
+  return undefined;
+}
 
 export function workspaceHostAgentSubjectDigest(subject: string): string {
   return createHash("sha256").update(subject).digest("hex").slice(0, 16);
@@ -383,6 +442,8 @@ export class NodeWorkspaceHostAgentProbeRunner implements WorkspaceHostAgentProb
       let stdout = "";
       let bytes = 0;
       let settled = false;
+      let stderrWindow = "";
+      let failureHint: WorkspaceHostAgentProbeFailureReason | undefined;
 
       const finish = (fn: () => void): void => {
         if (settled) return;
@@ -416,13 +477,31 @@ export class NodeWorkspaceHostAgentProbeRunner implements WorkspaceHostAgentProb
         }
         stdout += text;
       });
-      // stderr is drained so the child never blocks on a full pipe, and discarded so it cannot
-      // reach evidence by any route.
-      child.stderr?.resume();
+      // stderr is drained so the child never blocks on a full pipe, and still never reaches
+      // evidence as TEXT. It is classified as it arrives (a fixed reason code, dropped text) so a
+      // provider-side cause such as an exhausted quota survives as `failureHint` instead of being
+      // destroyed here and mis-read later as a credential fault — WI-2144034, where the one line
+      // that explained a two-canary failure went out on this exact stream.
+      child.stderr?.on("data", (chunk: Buffer | string) => {
+        if (failureHint) return;
+        const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+        // Carry a bounded tail across chunk boundaries so a pattern split across two reads is
+        // still matched, without accumulating the whole stream.
+        stderrWindow = (stderrWindow + text).slice(-STDERR_CLASSIFY_WINDOW_BYTES);
+        failureHint = classifyWorkspaceHostAgentProbeFailure(stderrWindow);
+        if (failureHint) stderrWindow = "";
+      });
       child.on("error", (error) => finish(() => reject(error)));
       child.on("close", (code) =>
         finish(() =>
-          resolve({ exitCode: typeof code === "number" ? code : 1, stdout }),
+          resolve({
+            exitCode: typeof code === "number" ? code : 1,
+            stdout,
+            // stdout is classified too: a CLI that reports quota on stdout is just as opaque.
+            ...((failureHint ??= classifyWorkspaceHostAgentProbeFailure(stdout))
+              ? { failureHint }
+              : {}),
+          }),
         ),
       );
     });
@@ -478,7 +557,10 @@ export async function probeWorkspaceHostAgentVerification(
       ready: false,
       exitStatus: outcome.exitCode,
       observedAt,
-      failure: "non-zero-exit",
+      // A classified provider cause outranks the generic shape code: "non-zero-exit" describes
+      // HOW the probe failed, "provider-usage-limit" describes WHY, and only the second one tells
+      // a reader not to go looking at the credential.
+      failure: outcome.failureHint ?? "non-zero-exit",
     };
   }
 
@@ -490,7 +572,10 @@ export async function probeWorkspaceHostAgentVerification(
       ready: false,
       exitStatus: outcome.exitCode,
       observedAt,
-      failure: "no-verification-proof",
+      // The measured WI-2144034 case lands HERE, not above: `codex exec` exited 0 while printing a
+      // usage-limit error, so the marker was simply absent. Without the hint this reads as
+      // "no proof" and sends every reader to the credentials.
+      failure: outcome.failureHint ?? "no-verification-proof",
     };
   }
 
