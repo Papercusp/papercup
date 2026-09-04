@@ -425,6 +425,49 @@ describe('improvements:capture tool envelope', () => {
     );
   });
 
+  it('keeps legacy caller attestations in probation but accepts structured caller evidence', async () => {
+    await callTool({
+      toolFailure: {
+        toolName: 'sessions:read',
+        errorCode: 'invalid_args',
+        message: 'invalid_args: tail too big — use 200',
+        clearServerMismatch: true,
+      },
+    });
+    expect(mockCapture).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: 'bug',
+        lane: 'observation',
+        payloadExtra: {
+          toolFailureProbation: expect.objectContaining({ state: 'probation' }),
+        },
+      }),
+    );
+
+    await callTool({
+      toolFailure: {
+        toolName: 'sessions:read',
+        errorCode: 'invalid_args',
+        message: 'invalid_args: documented tail=220 rejected as greater than 200',
+        directEvidence: {
+          kind: 'server-contract-mismatch',
+          expected: 'the active schema documents tail <= 220',
+          actual: 'the server rejects tail=220 against a maximum of 200',
+        },
+      },
+    });
+    expect(mockCapture).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: 'bug',
+        lane: undefined,
+        body: expect.stringContaining('Direct evidence expected: the active schema documents tail <= 220'),
+        payloadExtra: {
+          toolFailureProbation: expect.objectContaining({ state: 'promoted', directEvidence: true }),
+        },
+      }),
+    );
+  });
+
   it('passes every arg + the resolved ownerId through to the core unchanged', async () => {
     mockIdentity.mockReturnValue(identity('static-client', 'su-owner'));
     await callTool({
@@ -879,6 +922,35 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
         },
       });
     }
+  });
+
+  it('validates inspectable direct evidence for caller-class overrides', () => {
+    const accepted = argsSchema.safeParse({
+      toolFailure: {
+        toolName: 'sessions:read',
+        errorCode: 'invalid_args',
+        message: 'documented tail=220 was rejected',
+        directEvidence: {
+          kind: 'server-contract-mismatch',
+          expected: 'tail <= 220',
+          actual: 'tail > 200 rejected',
+        },
+      },
+    });
+    expect(accepted.success).toBe(true);
+
+    const emptyEvidence = argsSchema.safeParse({
+      toolFailure: {
+        toolName: 'sessions:read',
+        message: 'documented tail=220 was rejected',
+        directEvidence: {
+          kind: 'server-contract-mismatch',
+          expected: '',
+          actual: 'tail > 200 rejected',
+        },
+      },
+    });
+    expect(emptyEvidence.success).toBe(false);
   });
 
   it('coerces numeric toolFailure status codes to strings (EI-21444808398450659)', () => {
