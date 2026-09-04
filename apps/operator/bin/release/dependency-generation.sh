@@ -1647,7 +1647,6 @@ dependency_generation_ensure() {
   # compare its O(1) token and quarantine it directly. The expensive branch is
   # retained for any replacement/removal race, where a valid concurrent winner
   # must be recognized before publishing this build.
-  rm -f -- "$build/.papercusp-generation-writer"
   current_incumbent_token="$(dependency_generation_generation_token "$generation" 2>/dev/null || true)"
   publish_replacement='1'
   if [ -n "$incumbent_token" ] && [ "$incumbent_token" = "$current_incumbent_token" ]; then
@@ -1670,7 +1669,14 @@ dependency_generation_ensure() {
       mv "$generation" "$quarantine"
       dependency_generation_log "quarantined invalid generation as $(basename "$quarantine")"
     fi
+    # Move the live-owner marker with the completed build, then remove it at the
+    # published path. Waiters call cleanup_abandoned on every failed lock
+    # acquisition; removing the marker before this rename lets one of them
+    # classify an old-but-live build as abandoned and delete it underneath the
+    # lock holder. Keeping the marker through the atomic rename leaves cleanup
+    # only two observable states: a live owned build, or no pending build.
     mv "$build" "$generation"
+    rm -f -- "$generation/.papercusp-generation-writer"
     DEPENDENCY_GENERATION_REUSED='false'
     dependency_generation_log "published immutable dependency generation $identity"
   fi

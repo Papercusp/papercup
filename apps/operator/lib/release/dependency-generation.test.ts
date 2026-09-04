@@ -1283,6 +1283,54 @@ describe('immutable dependency generation', () => {
     expect(existsSync(freshWithoutMarker)).toBe(true);
   });
 
+  it('keeps a live completed build owned until its atomic publication rename (WI-2144383)', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(
+      integration,
+      '.papercusp/dependency-generations',
+    );
+    const wrapper = [
+      'set -uo pipefail',
+      'source "$SCRIPT"',
+      // Interpose only the under-lock concurrent-winner validation. This is the
+      // exact point where the publisher used to remove its build-owner marker.
+      // Age the pending directory beyond cleanup's five-minute fallback and run
+      // the same cleanup a contending waiter performs on every failed mkdir.
+      'eval "$(declare -f dependency_generation_is_valid | sed \'1s/dependency_generation_is_valid/dependency_generation_is_valid_original/\')"',
+      'dependency_generation_is_valid() {',
+      '  local pending',
+      '  pending="$(find "$DG_ROOT" -maxdepth 1 -type d -name \'.build-*\' -print -quit)"',
+      '  test -n "$pending"',
+      '  touch -d "10 minutes ago" "$pending"',
+      '  dependency_generation_cleanup_abandoned "$DG_ROOT"',
+      '  if test -d "$pending"; then printf "LIVE_BUILD_SURVIVED\\n" >&2; else printf "LIVE_BUILD_DELETED\\n" >&2; fi',
+      '  dependency_generation_is_valid_original "$@"',
+      '}',
+      'dependency_generation_configure_workspace_dirs "$ROOT"',
+      'dependency_generation_ensure "$ROOT" "$DG_ROOT"',
+      'printf "PUBLISHED identity=%s path=%s\\n" "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_PATH"',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        SCRIPT,
+        ROOT: integration,
+        DG_ROOT: generationRoot,
+      },
+    });
+
+    expect(result.status, String(result.stderr ?? '')).toBe(0);
+    expect(String(result.stderr ?? '')).toContain('LIVE_BUILD_SURVIVED');
+    expect(String(result.stderr ?? '')).not.toContain('LIVE_BUILD_DELETED');
+    expect(String(result.stdout ?? '')).toMatch(
+      /PUBLISHED identity=v1-[0-9a-f]{64} path=/,
+    );
+    expect(
+      readdirSync(generationRoot).some((entry) => entry.startsWith('.build-')),
+    ).toBe(false);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('publishes and reuses via the BSD-compatible metadata fallback', () => {
     const integration = makeIntegration();
     const env = { DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT: '1' };
