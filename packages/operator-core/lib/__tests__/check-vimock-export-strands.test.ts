@@ -295,6 +295,7 @@ describe('declared additions absent at the comparison base', () => {
 
       expect(result.error, `guard failed to spawn: ${result.error?.message}`).toBeUndefined();
       expect(result.status).toBe(0);
+      expect(result.stderr).not.toContain('fatal: path');
       expect(report.examined).toEqual([file]);
       expect(report.findings).toEqual([]);
     } finally {

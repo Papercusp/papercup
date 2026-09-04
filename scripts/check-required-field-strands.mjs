@@ -67,9 +67,14 @@ const WORKSPACE_TYPECHECKS = [
   { prefix: 'packages/', cmd: 'build:typecheck { project: "<the packages/* workspace>" }' },
 ];
 
-function git(args, { allowFail = false, cwd = ROOT } = {}) {
+function git(args, { allowFail = false, cwd = ROOT, suppressStderr = false } = {}) {
   try {
-    return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      ...(suppressStderr ? { stdio: ['ignore', 'pipe', 'ignore'] } : {}),
+    });
   } catch (err) {
     if (allowFail) return null;
     throw err;
@@ -169,10 +174,16 @@ export function showAtBase(file, base) {
   const prefix = submoduleFor(file, submodulePrefixes());
   const repositoryBase = prefix ? submoduleRevisionAt(base, prefix) : base;
   if (!repositoryBase) return null;
-  if (!prefix) return git(['show', `${repositoryBase}:${file}`], { allowFail: true });
+  if (!prefix) {
+    return git(['show', `${repositoryBase}:${file}`], {
+      allowFail: true,
+      suppressStderr: true,
+    });
+  }
   return git(['show', `${repositoryBase}:${file.slice(prefix.length + 1)}`], {
     allowFail: true,
     cwd: resolve(ROOT, prefix),
+    suppressStderr: true,
   });
 }
 
