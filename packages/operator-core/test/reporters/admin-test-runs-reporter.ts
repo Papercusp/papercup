@@ -84,6 +84,146 @@ function moduleStatus(m: TestModule): TestRunRow['status'] {
   }
 }
 
+type VitestErrorRecord = {
+  message?: unknown;
+  stack?: unknown;
+  stacks?: unknown;
+};
+
+function asErrorRecord(value: unknown): VitestErrorRecord | null {
+  return value !== null && typeof value === 'object' ? (value as VitestErrorRecord) : null;
+}
+
+function normalizedPath(value: string): string {
+  return value.replace(/^file:\/\//, '').replace(/\\/g, '/');
+}
+
+function isTestFilePath(value: string): boolean {
+  return /\.(?:test|spec)\.[cm]?[jt]sx?(?::\d+:\d+)?(?:\)?$|\?)/.test(value);
+}
+
+function sameModulePath(candidate: string, moduleId: string): boolean {
+  const left = normalizedPath(candidate);
+  const right = normalizedPath(moduleId);
+  return left === right || left.endsWith(`/${right}`) || right.endsWith(`/${left}`);
+}
+
+function structuredErrorLocation(
+  record: VitestErrorRecord | null,
+  moduleId: string,
+  displayPath: string,
+): string | null {
+  if (!Array.isArray(record?.stacks)) return null;
+  const frames = record.stacks.filter((entry): entry is Record<string, unknown> => entry !== null && typeof entry === 'object');
+  const usable = frames.filter(
+    (entry) =>
+      typeof entry.file === 'string' &&
+      typeof entry.line === 'number' &&
+      Number.isFinite(entry.line) &&
+      typeof entry.column === 'number' &&
+      Number.isFinite(entry.column),
+  );
+  const chosen =
+    usable.find((entry) => sameModulePath(String(entry.file), moduleId)) ??
+    usable.find((entry) => isTestFilePath(String(entry.file))) ??
+    usable[0];
+  if (!chosen) return null;
+  const file = sameModulePath(String(chosen.file), moduleId) ? displayPath : String(chosen.file);
+  return `❯ ${file}:${chosen.line}:${chosen.column}`;
+}
+
+function textualErrorLocation(
+  record: VitestErrorRecord | null,
+  error: unknown,
+  moduleId: string,
+  displayPath: string,
+): string | null {
+  const stack =
+    typeof record?.stack === 'string'
+      ? record.stack
+      : error instanceof Error && typeof error.stack === 'string'
+        ? error.stack
+        : null;
+  if (!stack) return null;
+  const lines = stack
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const moduleLine = lines.find((line) => normalizedPath(line).includes(normalizedPath(moduleId)));
+  const chosen = moduleLine ?? lines.find((line) => isTestFilePath(line));
+  if (!chosen) return null;
+  const withoutPrefix = chosen.replace(/^(?:at|❯)\s+/, '');
+  const displayed = moduleLine ? withoutPrefix.replace(moduleId, displayPath) : withoutPrefix;
+  return `❯ ${displayed}`;
+}
+
+/**
+ * Preserve the two diagnostic facts a red-test investigator needs: the assertion
+ * message and the first frame pointing back into the failing test module. Vitest 4
+ * hands reporters serialized errors, so `instanceof Error` alone is insufficient.
+ */
+export function formatVitestErrorForOutput(
+  error: unknown,
+  moduleId: string,
+  displayPath = moduleId,
+): string {
+  try {
+    const record = asErrorRecord(error);
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof record?.message === 'string'
+          ? record.message
+          : String(error);
+    const location =
+      structuredErrorLocation(record, moduleId, displayPath) ??
+      textualErrorLocation(record, error, moduleId, displayPath);
+    if (!location || message.includes(location.replace(/^❯\s+/, ''))) return message;
+    return `${message}\n${location}`;
+  } catch {
+    return '[unreadable Vitest error]';
+  }
+}
+
+/** Module collection errors plus failed assertion errors, without trusting either one alone. */
+export function collectVitestModuleErrors(testModule: TestModule): unknown[] {
+  const errors: unknown[] = [];
+  try {
+    errors.push(...(testModule.errors?.() ?? []));
+  } catch {
+    /* fail-soft — D-007 */
+  }
+  try {
+    for (const test of testModule.children.allTests()) {
+      try {
+        const result = test.result();
+        if (result.state === 'failed') errors.push(...result.errors);
+      } catch {
+        /* one malformed test result must not suppress the other failures */
+      }
+    }
+  } catch {
+    /* fail-soft — D-007 */
+  }
+  return errors;
+}
+
+export function formatVitestOutputTail(
+  errors: readonly unknown[],
+  moduleId: string,
+  displayPath = moduleId,
+): string | null {
+  const snippets: string[] = [];
+  const seen = new Set<string>();
+  for (const error of errors) {
+    const snippet = formatVitestErrorForOutput(error, moduleId, displayPath);
+    if (!snippet || seen.has(snippet)) continue;
+    seen.add(snippet);
+    snippets.push(snippet);
+  }
+  return snippets.length > 0 ? snippets.join('\n').slice(-4000) : null;
+}
+
 type PgSql = ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>) & {
   end(opts?: { timeout?: number }): Promise<unknown>;
 };
@@ -204,13 +344,16 @@ export default class AdminTestRunsReporter implements Reporter {
       const durationMs = Math.round(durationMsRaw);
       const startedAt = new Date(finishedAt.getTime() - durationMs);
 
-      // Best-effort tail of any module-level error messages.
+      // Best-effort tail of collection errors AND failed assertions. Preserve the
+      // first test-file frame: two identical assertion messages on different lines
+      // point at different root causes, and message-only storage erases that fact.
       let outputTail: string | null = null;
       try {
-        const errs = testModule.errors?.() ?? [];
-        if (errs.length > 0) {
-          outputTail = errs.map((e: unknown) => (e instanceof Error ? e.message : String(e))).join('\n').slice(-4000);
-        }
+        outputTail = formatVitestOutputTail(
+          collectVitestModuleErrors(testModule),
+          testModule.moduleId,
+          filePath,
+        );
       } catch { /* fail-soft */ }
 
       this.pending.push(
