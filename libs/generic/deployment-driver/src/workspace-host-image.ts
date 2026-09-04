@@ -285,24 +285,31 @@ function compatibilityPlatform(value: WorkspaceHostImageCompatibilityRule): stri
  * outside `runWorkspaceHostCleanRoomAcceptance`'s try/catch, that TypeError escaped the whole
  * acceptance path instead of becoming a `passed: false` report naming the field.
  */
-function requireText(value: string, path: string, errors: string[]): void {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requireText(value: unknown, path: string, errors: string[]): void {
   if (typeof value !== "string" || !value.trim()) {
     errors.push(`${path} must be a non-empty string`);
   }
 }
 
-function timestamp(value: string, path: string, errors: string[]): number {
-  const parsed = Date.parse(value);
+function timestamp(value: unknown, path: string, errors: string[]): number {
+  const parsed = typeof value === "string" ? Date.parse(value) : Number.NaN;
   if (!Number.isFinite(parsed)) errors.push(`${path} must be an ISO timestamp`);
   return parsed;
 }
 
 function sameImage(
-  left: WorkspaceHostImageRef | undefined,
-  right: WorkspaceHostImageRef | undefined,
+  left: unknown,
+  right: unknown,
 ): boolean {
   return (
-    !!left && !!right && left.id === right.id && left.version === right.version
+    isRecord(left) &&
+    isRecord(right) &&
+    left.id === right.id &&
+    left.version === right.version
   );
 }
 
@@ -311,6 +318,9 @@ export function validateWorkspaceHostImageArtifact(
   artifact: WorkspaceHostImageArtifact,
 ): readonly string[] {
   const errors: string[] = [];
+  if (!isRecord(artifact)) {
+    return ["artifact must be an object"];
+  }
   if (
     artifact.contractVersion !==
     WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION
@@ -325,33 +335,53 @@ export function validateWorkspaceHostImageArtifact(
   // evaluation OUTSIDE its try/catch, so a TypeError here escapes the acceptance path as an
   // opaque "Cannot read properties of undefined" instead of a `passed: false` report naming
   // the offending field.
-  const section = (value: unknown, path: string): boolean => {
-    const present = typeof value === "object" && value !== null;
+  const section = (value: unknown, path: string): value is Record<string, unknown> => {
+    const present = isRecord(value);
     if (!present) errors.push(`${path} must be an object`);
+    return present;
+  };
+  const listSection = (value: unknown, path: string): value is readonly unknown[] => {
+    const present = Array.isArray(value);
+    if (!present) errors.push(`${path} must be an array`);
     return present;
   };
   const hasImage = section(artifact.image, "image");
   const hasManifest = section(artifact.buildManifest, "buildManifest");
   const hasRelease = section(artifact.release, "release");
+  const hasLifecycle = section(artifact.lifecycle, "lifecycle");
+  const hasCompatibility = listSection(artifact.compatibility, "compatibility");
   const hostModel = workspaceHostImageModel(artifact);
   if (!WORKSPACE_HOST_MODELS.includes(hostModel)) {
     errors.push(`unsupported hostModel '${String(hostModel)}'`);
   }
-  const bootc = (artifact as { bootc?: Partial<WorkspaceHostBootcImageIdentity> }).bootc;
+  const bootc = (artifact as unknown as Record<string, unknown>).bootc;
+  const bootcRecord = isRecord(bootc) ? bootc : undefined;
   if (hostModel === "bootc-image") {
     if (!section(bootc, "bootc")) {
       // The section helper already names the structural error.
     } else {
-      if (!REGISTRY_IMAGE.test(bootc?.image ?? "")) {
+      if (
+        typeof bootcRecord?.image !== "string" ||
+        !REGISTRY_IMAGE.test(bootcRecord.image)
+      ) {
         errors.push("bootc.image must be a registry-qualified tagged image reference");
       }
-      if (!IMAGE_DIGEST.test(bootc?.imageDigest ?? "")) {
+      if (
+        typeof bootcRecord?.imageDigest !== "string" ||
+        !IMAGE_DIGEST.test(bootcRecord.imageDigest)
+      ) {
         errors.push("bootc.imageDigest must be a lowercase sha256 manifest digest");
       }
-      if (!REGISTRY_IMAGE.test(bootc?.baseImage ?? "")) {
+      if (
+        typeof bootcRecord?.baseImage !== "string" ||
+        !REGISTRY_IMAGE.test(bootcRecord.baseImage)
+      ) {
         errors.push("bootc.baseImage must be a registry-qualified image reference");
       }
-      if (bootc?.signaturePolicyPath !== WORKSPACE_HOST_CONTAINERS_POLICY_PATH) {
+      if (
+        bootcRecord?.signaturePolicyPath !==
+        WORKSPACE_HOST_CONTAINERS_POLICY_PATH
+      ) {
         errors.push(
           `bootc.signaturePolicyPath must be '${WORKSPACE_HOST_CONTAINERS_POLICY_PATH}'`,
         );
@@ -372,11 +402,39 @@ export function validateWorkspaceHostImageArtifact(
       errors.push(...manifest.errors.map((error) => `buildManifest: ${error}`));
     }
   }
+  const buildManifest = hasManifest
+    ? (artifact.buildManifest as unknown as Record<string, unknown>)
+    : undefined;
+  const hasReleaseArtifact =
+    buildManifest !== undefined &&
+    section(buildManifest.releaseArtifact, "buildManifest.releaseArtifact");
+  const hasBaseImage =
+    buildManifest !== undefined &&
+    section(buildManifest.baseImage, "buildManifest.baseImage");
+  const hasMaterials =
+    buildManifest !== undefined &&
+    listSection(buildManifest.materials, "buildManifest.materials");
+  const hasTargets =
+    buildManifest !== undefined &&
+    listSection(buildManifest.targets, "buildManifest.targets");
+  if (hasMaterials) {
+    buildManifest.materials.forEach((material, index) => {
+      if (!isRecord(material)) {
+        errors.push(`buildManifest.materials[${index}] must be an object`);
+      }
+    });
+  }
+  if (hasTargets) {
+    buildManifest.targets.forEach((target, index) => {
+      if (!isRecord(target)) {
+        errors.push(`buildManifest.targets[${index}] must be an object`);
+      }
+    });
+  }
   if (
     hasImage &&
     hasManifest &&
-    typeof artifact.buildManifest.releaseArtifact === "object" &&
-    artifact.buildManifest.releaseArtifact !== null &&
+    hasReleaseArtifact &&
     artifact.image.version !== artifact.buildManifest.releaseArtifact.version
   ) {
     errors.push(
@@ -389,7 +447,36 @@ export function validateWorkspaceHostImageArtifact(
 
   // Nothing below can be evaluated without all three sections, and continuing would only
   // convert a clear structural rejection into a crash.
-  if (!hasImage || !hasManifest || !hasRelease) return errors;
+  if (
+    !hasImage ||
+    !hasManifest ||
+    !hasRelease ||
+    !hasLifecycle ||
+    !hasCompatibility
+  ) {
+    return errors;
+  }
+
+  // The delegated provenance verifier expects the manifest's release artifact and materials to
+  // have the runtime shapes it reads (`sha256.toLowerCase()` and `materials.find(...)`). The
+  // manifest verifier reports malformed values, but deliberately catches its own exceptions;
+  // do not call the lower-level verifier until these two nested sections are safe to traverse.
+  const releaseArtifact = hasReleaseArtifact
+    ? buildManifest.releaseArtifact
+    : undefined;
+  const materials = hasMaterials ? buildManifest.materials : undefined;
+  const release = artifact.release as unknown as Record<string, unknown>;
+  const canVerifyReleaseProvenance =
+    hasReleaseArtifact &&
+    hasMaterials &&
+    isRecord(releaseArtifact) &&
+    typeof releaseArtifact.sha256 === "string" &&
+    typeof releaseArtifact.version === "string" &&
+    materials.every(isRecord) &&
+    typeof release.version === "string" &&
+    typeof release.bundleSha256 === "string" &&
+    typeof release.bundleUrl === "string" &&
+    typeof release.signatureUrl === "string";
 
   // The release pins must be provenance-bound to the manifest above: same digest, same version,
   // an immutably addressed bundle, a matching detached signature, and a packaged executable
@@ -398,64 +485,75 @@ export function validateWorkspaceHostImageArtifact(
   // that goes stale. The manifest's own self-consistency errors are dropped because they are
   // already reported above under the `buildManifest:` prefix; re-reporting them here would show
   // one defect twice and invite fixing it in the wrong place.
-  const provenance = verifyWorkspaceHostReleaseProvenance(
-    artifact.buildManifest,
-    artifact.release,
-  );
-  if (!provenance.ok) {
-    errors.push(
-      ...provenance.errors
-        .filter((error) => !error.startsWith("manifest is not self-consistent:"))
-        .map((error) => `release provenance: ${error}`),
+  if (canVerifyReleaseProvenance) {
+    const provenance = verifyWorkspaceHostReleaseProvenance(
+      artifact.buildManifest,
+      artifact.release,
     );
+    if (!provenance.ok) {
+      errors.push(
+        ...provenance.errors
+          .filter((error) => !error.startsWith("manifest is not self-consistent:"))
+          .map((error) => `release provenance: ${error}`),
+      );
+    }
   }
 
-  if (!SHA256.test(artifact.release.signingKeySha256)) {
+  if (
+    typeof release.signingKeySha256 !== "string" ||
+    !SHA256.test(release.signingKeySha256)
+  ) {
     errors.push("release.signingKeySha256 must be a lowercase SHA-256 digest");
   }
   requireText(
-    artifact.release.signingPublicKey,
+    release.signingPublicKey,
     "release.signingPublicKey",
     errors,
   );
   if (
+    typeof release.signingPublicKey === "string" &&
+    typeof release.signingKeySha256 === "string" &&
     createHash("sha256")
-      .update(artifact.release.signingPublicKey, "utf8")
-      .digest("hex") !== artifact.release.signingKeySha256
+      .update(release.signingPublicKey, "utf8")
+      .digest("hex") !== release.signingKeySha256
   ) {
     errors.push(
       "release.signingKeySha256 must equal the SHA-256 of signingPublicKey",
     );
   }
 
+  const lifecycle = artifact.lifecycle as unknown as Record<string, unknown>;
+  const lifecycleState = lifecycle.state;
   const publishedAt = timestamp(
-    artifact.lifecycle.publishedAt,
+    lifecycle.publishedAt,
     "lifecycle.publishedAt",
     errors,
   );
-  const deprecatedAt = artifact.lifecycle.deprecatedAt
+  const deprecatedAt = lifecycle.deprecatedAt
     ? timestamp(
-        artifact.lifecycle.deprecatedAt,
+        lifecycle.deprecatedAt,
         "lifecycle.deprecatedAt",
         errors,
       )
     : undefined;
-  const supportEndsAt = artifact.lifecycle.supportEndsAt
+  const supportEndsAt = lifecycle.supportEndsAt
     ? timestamp(
-        artifact.lifecycle.supportEndsAt,
+        lifecycle.supportEndsAt,
         "lifecycle.supportEndsAt",
         errors,
       )
     : undefined;
   if (
-    !WORKSPACE_HOST_IMAGE_LIFECYCLE_STATES.includes(artifact.lifecycle.state)
+    !WORKSPACE_HOST_IMAGE_LIFECYCLE_STATES.includes(
+      lifecycleState as WorkspaceHostImageLifecycleState,
+    )
   ) {
-    errors.push(`unsupported lifecycle.state '${artifact.lifecycle.state}'`);
+    errors.push(`unsupported lifecycle.state '${String(lifecycleState)}'`);
   }
-  if (artifact.lifecycle.state === "active" && deprecatedAt !== undefined) {
+  if (lifecycleState === "active" && deprecatedAt !== undefined) {
     errors.push("active artifacts must not carry lifecycle.deprecatedAt");
   }
-  if (artifact.lifecycle.state !== "active" && deprecatedAt === undefined) {
+  if (lifecycleState !== "active" && deprecatedAt === undefined) {
     errors.push(
       "deprecated/withdrawn artifacts require lifecycle.deprecatedAt",
     );
@@ -475,34 +573,47 @@ export function validateWorkspaceHostImageArtifact(
     errors.push("lifecycle.supportEndsAt must not predate publishedAt");
   }
   if (
-    artifact.lifecycle.state === "deprecated" &&
-    !artifact.lifecycle.successor
+    lifecycleState === "deprecated" &&
+    !lifecycle.successor
   ) {
     errors.push("deprecated artifacts require an exact lifecycle.successor");
   }
-  if (sameImage(artifact.image, artifact.lifecycle.successor)) {
+  if (sameImage(artifact.image, lifecycle.successor)) {
     errors.push("lifecycle.successor must differ from the current image");
   }
-  if (sameImage(artifact.image, artifact.lifecycle.rollbackTarget)) {
+  if (sameImage(artifact.image, lifecycle.rollbackTarget)) {
     errors.push("lifecycle.rollbackTarget must differ from the current image");
   }
   for (const [name, ref] of [
-    ["lifecycle.successor", artifact.lifecycle.successor],
-    ["lifecycle.rollbackTarget", artifact.lifecycle.rollbackTarget],
+    ["lifecycle.successor", lifecycle.successor],
+    ["lifecycle.rollbackTarget", lifecycle.rollbackTarget],
   ] as const) {
-    if (ref && (!ref.id.trim() || !ref.version.trim())) {
-      errors.push(`${name} must carry a non-empty id and version`);
+    if (ref !== undefined) {
+      if (!isRecord(ref)) {
+        errors.push(`${name} must be an object`);
+      } else {
+        requireText(ref.id, `${name}.id`, errors);
+        requireText(ref.version, `${name}.version`, errors);
+      }
     }
   }
 
-  if (artifact.compatibility.length === 0) {
+  const compatibility = artifact.compatibility as readonly unknown[];
+  if (compatibility.length === 0) {
     errors.push("compatibility must contain at least one matrix row");
   }
   const targetProviders = new Set(
-    artifact.buildManifest.targets.map((target) => target.provider),
+    (hasTargets ? buildManifest.targets : []).map((target) =>
+      isRecord(target) ? target.provider : undefined,
+    ),
   );
   const seen = new Set<string>();
-  artifact.compatibility.forEach((rule, index) => {
+  compatibility.forEach((rawRule, index) => {
+    if (!isRecord(rawRule)) {
+      errors.push(`compatibility[${index}] must be an object`);
+      return;
+    }
+    const rule = rawRule as unknown as WorkspaceHostImageCompatibilityRule;
     const ruleHostModel = compatibilityModel(rule);
     requireText(rule.provider, `compatibility[${index}].provider`, errors);
     requireText(
@@ -515,7 +626,10 @@ export function validateWorkspaceHostImageArtifact(
         `compatibility[${index}].provider '${rule.provider}' is absent from buildManifest.targets`,
       );
     }
-    if (rule.architecture !== artifact.buildManifest.baseImage.architecture) {
+    if (
+      rule.architecture !==
+      (hasBaseImage ? buildManifest.baseImage.architecture : undefined)
+    ) {
       errors.push(
         `compatibility[${index}].architecture must equal buildManifest.baseImage.architecture`,
       );
@@ -533,10 +647,13 @@ export function validateWorkspaceHostImageArtifact(
         errors.push(`compatibility[${index}].bootcBaseImage is invalid for the Ubuntu host model`);
       }
     } else {
-      if (!REGISTRY_IMAGE.test(rule.bootcBaseImage ?? "")) {
+      if (
+        typeof rule.bootcBaseImage !== "string" ||
+        !REGISTRY_IMAGE.test(rule.bootcBaseImage)
+      ) {
         errors.push(`compatibility[${index}].bootcBaseImage must be a registry-qualified image reference`);
       }
-      if (rule.bootcBaseImage !== bootc?.baseImage) {
+      if (rule.bootcBaseImage !== bootcRecord?.baseImage) {
         errors.push(`compatibility[${index}].bootcBaseImage must equal bootc.baseImage`);
       }
       if (rule.ubuntuVersion !== undefined) {
@@ -551,19 +668,23 @@ export function validateWorkspaceHostImageArtifact(
         `compatibility[${index}].bootstrapContractVersion must be '${WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION}'`,
       );
     }
-    if (rule.actions.length === 0) {
-      errors.push(`compatibility[${index}].actions must not be empty`);
-    }
-    const uniqueActions = new Set(rule.actions);
-    if (
-      uniqueActions.size !== rule.actions.length ||
-      rule.actions.some(
-        (action) => !WORKSPACE_HOST_IMAGE_ACTIONS.includes(action),
-      )
-    ) {
-      errors.push(
-        `compatibility[${index}].actions must contain unique supported actions`,
-      );
+    if (!Array.isArray(rule.actions)) {
+      errors.push(`compatibility[${index}].actions must be an array`);
+    } else {
+      if (rule.actions.length === 0) {
+        errors.push(`compatibility[${index}].actions must not be empty`);
+      }
+      const uniqueActions = new Set(rule.actions);
+      if (
+        uniqueActions.size !== rule.actions.length ||
+        rule.actions.some(
+          (action) => !WORKSPACE_HOST_IMAGE_ACTIONS.includes(action),
+        )
+      ) {
+        errors.push(
+          `compatibility[${index}].actions must contain unique supported actions`,
+        );
+      }
     }
     if (
       rule.maximumArtifactAgeDays !== undefined &&
@@ -579,7 +700,9 @@ export function validateWorkspaceHostImageArtifact(
       rule.architecture,
       ruleHostModel,
       compatibilityPlatform(rule),
-      rule.bootstrapContractVersion,
+      typeof rule.bootstrapContractVersion === "string"
+        ? rule.bootstrapContractVersion
+        : "",
     ].join("\u0000");
     if (seen.has(key)) {
       errors.push(`compatibility contains duplicate matrix row ${index}`);
