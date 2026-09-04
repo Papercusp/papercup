@@ -36,7 +36,7 @@ function verifiedAudit(itemId: string): EffectiveItemAudit {
   return {
     entry: {
       itemId,
-      verdict: 'pass',
+      verdict: 'implemented',
       citations: [{ kind: 'code', path: 'packages/operator-core/lib/example.ts', line: 1 }],
     },
     auditSeq: 1,
@@ -48,7 +48,7 @@ function unverifiedAudit(itemId: string): EffectiveItemAudit {
   return {
     entry: {
       itemId,
-      verdict: 'pass',
+      verdict: 'implemented',
       citations: [{ kind: 'doc', ref: 'some-doc', reason: 'described, not proven' }],
     },
     auditSeq: 1,
