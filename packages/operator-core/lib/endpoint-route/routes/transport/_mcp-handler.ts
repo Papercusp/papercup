@@ -642,7 +642,12 @@ export function crossHiveLaunchHint(toolName: string, scopeHive: string): string
  * can expose at most the single canonical git-sync row; broad routine reads and
  * arbitrary sibling targets remain forbidden.
  */
-function isExplicitPlatformPotGitSyncTarget(toolName: string, arg: string, slug: string, callArgs: unknown): boolean {
+function isExplicitPlatformPotGitSyncTarget(
+  toolName: string,
+  arg: string,
+  slug: string,
+  callArgs: unknown,
+): boolean {
   if ((arg !== 'installSlug' && arg !== 'harness') || slug !== PLATFORM_POT_SLUG) return false;
   if (toolName === 'git-sync:run') return true;
   if (toolName !== 'routines:list' || !callArgs || typeof callArgs !== 'object' || Array.isArray(callArgs)) {
@@ -963,7 +968,8 @@ async function applyScopedSuperuserTransportClamp(
           (toolName === 'plans:get' || toolName === 'plans:add-decision' || toolName === 'coord:declare-intent') &&
           (await verifyExplicitPlanHarness(spawnCtx, requestedHarness, args));
         const goalLocalPlacement =
-          escapesHive && (await mayUseGoalLocalPlacement(toolName, spawnCtx, scopeHive, requestedHarness));
+          escapesHive &&
+          (await mayUseGoalLocalPlacement(toolName, spawnCtx, scopeHive, requestedHarness));
         if (verifiedExactPlanRebind || goalLocalPlacement) {
           effectiveHarnessSlug = requestedHarness;
         } else if (escapesHive) {
@@ -2910,7 +2916,11 @@ const handler = createMcpHandler(
                   argHarness,
                   args,
                 );
-                const isSelfOwnedCheckpointRead = isSelfOwnedLoopCheckpointRead(toolName, args, spawnRes.ctx);
+                const isSelfOwnedCheckpointRead = isSelfOwnedLoopCheckpointRead(
+                  toolName,
+                  args,
+                  spawnRes.ctx,
+                );
                 const escapes =
                   !isEngineeringDocsSurface &&
                   !isPlatformPotGitSyncTarget &&
@@ -2933,7 +2943,8 @@ const handler = createMcpHandler(
                     toolName === 'coord:declare-intent') &&
                   (await verifyExplicitPlanHarness(spawnRes.ctx, argHarness, args));
                 const goalLocalPlacement =
-                  escapes && (await mayUseGoalLocalPlacement(toolName, spawnRes.ctx, scopeHive, argHarness));
+                  escapes &&
+                  (await mayUseGoalLocalPlacement(toolName, spawnRes.ctx, scopeHive, argHarness));
                 if (verifiedExactPlanRebind || goalLocalPlacement) {
                   effectiveHarnessSlug = argHarness;
                 } else if (escapes) {
