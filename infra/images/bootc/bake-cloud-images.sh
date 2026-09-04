@@ -42,14 +42,53 @@
 # Exit: 0 all requested clouds rendered; 1 a step failed; 2 usage/setup error;
 #       3 the supply-chain gate refused the image (nothing was baked).
 
+# EI-22355025813361885 — freeze the entrypoint before Bash can lazily parse a
+# compound body. A long bake must keep executing the bytes it passed at startup;
+# an in-place editor can otherwise replace the inode while Bash is between the
+# early setup commands and a later function body. Re-exec the validated copy so
+# the mutable checkout is never the interpreter's live input.
+if [ "${PAPERCUSP_BAKE_SOURCE_SNAPSHOT:-0}" != "1" ] &&
+   [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  _BAKE_SOURCE_PATH="${BASH_SOURCE[0]}"
+  _BAKE_SOURCE_DIR="$(cd "$(dirname "$_BAKE_SOURCE_PATH")" && pwd -P)" || {
+    echo "FATAL: cannot resolve bake script directory: $_BAKE_SOURCE_PATH" >&2
+    exit 2
+  }
+  _BAKE_SOURCE_SNAPSHOT="$(mktemp "${TMPDIR:-/tmp}/papercusp-bake-cloud-images.XXXXXX.sh")" || {
+    echo "FATAL: cannot create an immutable bake script snapshot" >&2
+    exit 2
+  }
+  # The parent trap covers copy/validation failures. The re-exec'd child installs
+  # its own trap because exec replaces this shell before an EXIT trap can run.
+  trap 'rm -f -- "$_BAKE_SOURCE_SNAPSHOT"' EXIT
+  if ! cp -- "$_BAKE_SOURCE_PATH" "$_BAKE_SOURCE_SNAPSHOT" ||
+     ! bash -n -- "$_BAKE_SOURCE_SNAPSHOT"; then
+    echo "FATAL: bake script snapshot is not a valid Bash program" >&2
+    exit 2
+  fi
+  export PAPERCUSP_BAKE_SOURCE_SNAPSHOT=1
+  export PAPERCUSP_BAKE_SOURCE_DIR="$_BAKE_SOURCE_DIR"
+  export PAPERCUSP_BAKE_SOURCE_SNAPSHOT_PATH="$_BAKE_SOURCE_SNAPSHOT"
+  exec bash "$_BAKE_SOURCE_SNAPSHOT" "$@" || exit 2
+fi
+if [ "${PAPERCUSP_BAKE_SOURCE_SNAPSHOT:-0}" = "1" ]; then
+  trap 'rm -f -- "${PAPERCUSP_BAKE_SOURCE_SNAPSHOT_PATH:-}"' EXIT
+fi
+
 set -uo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -n "${PAPERCUSP_BAKE_SOURCE_DIR:-}" ]; then
+  HERE="$PAPERCUSP_BAKE_SOURCE_DIR"
+else
+  HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+BUILD_HEALTH="$HERE/p307-build-health.sh"
 
 # bootc-image-builder's output type per cloud, and the disk file it produces. This table is the
 # whole per-cloud surface of the bake — three rows instead of three pipelines.
 declare -A CLOUD_TYPE=( [gcp]=gce      [aws]=ami       [azure]=vhd )
 declare -A CLOUD_FILE=( [gcp]=image/disk.raw [aws]=image/disk.raw [azure]=vhd/disk.vhd )
+declare -A CLOUD_SHA=() CLOUD_BYTES=()
 
 REGISTRY=""; KEY=""; PUBKEY=""; TAG=""; CLOUDS="gcp,aws,azure"; OUT="./.bake-out"
 INSECURE=0; DRY_RUN=0
@@ -108,6 +147,48 @@ case "$STORAGE_DRIVER" in
 esac
 
 mkdir -p "$OUT" || die "cannot create $OUT"
+OUT="$(cd "$OUT" && pwd)" || die "cannot resolve artifact directory"
+[ -x "$BUILD_HEALTH" ] || die "build health helper is missing or not executable: $BUILD_HEALTH"
+
+# Run one potentially long-lived rootful container operation while the companion
+# detector samples its process tree and build log. The operation's own exit code
+# remains authoritative: health findings are diagnostics, never an implicit
+# timeout or a changed bake verdict. Keep stdout live with a separate tail while
+# preserving the complete log for post-failure inspection.
+run_monitored() { # $1 log path, remaining args are the command
+  local log="$1" health_log="${1}.health" command_pid="" health_pid="" tail_pid="" rc
+  shift
+  : > "$log" || return 1
+  : > "$health_log" || return 1
+  "$@" >"$log" 2>&1 &
+  command_pid=$!
+  tail -n +1 -f "$log" &
+  tail_pid=$!
+  if [ "${P307_BUILD_HEALTH_DISABLE:-0}" != "1" ]; then
+    bash "$BUILD_HEALTH" \
+      --pid "$command_pid" \
+      --log "$log" \
+      --interval-sec "${P307_BUILD_HEALTH_INTERVAL_SEC:-15}" \
+      --stalled-after-sec "${P307_BUILD_HEALTH_STALLED_AFTER_SEC:-120}" \
+      >"$health_log" 2>&1 &
+    health_pid=$!
+  fi
+  wait "$command_pid"
+  rc=$?
+  if [ -n "$tail_pid" ]; then
+    kill "$tail_pid" 2>/dev/null || true
+    wait "$tail_pid" 2>/dev/null || true
+  fi
+  if [ -n "$health_pid" ]; then
+    kill "$health_pid" 2>/dev/null || true
+    wait "$health_pid" 2>/dev/null || true
+  fi
+  if [ -s "$health_log" ]; then
+    echo "P307_BUILD_HEALTH_LOG=$health_log"
+    cat "$health_log"
+  fi
+  return "$rc"
+}
 
 # Requested clouds are validated UP FRONT, before the expensive build. A typo'd cloud name that
 # is only noticed in the render loop has already paid for a build and a supply-chain pass.
@@ -169,12 +250,16 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "DRY_RUN: would podman build with registry=$REGISTRY storage-driver=$STORAGE_DRIVER and the release public key -t $REPO:$TAG"
 else
   echo "### 1/4 build (one image, all clouds)"
-  "${PODMAN[@]}" build \
+  run_monitored "$OUT/image-build.log" "${PODMAN[@]}" build \
     --build-arg "RELEASE_REGISTRY_NAMESPACE=$REGISTRY" \
     --build-arg "RELEASE_STORAGE_DRIVER=$STORAGE_DRIVER" \
     --build-arg "RELEASE_SIGNING_PUBKEY_B64=$PUBKEY_B64" \
-    -f "$HERE/workspace-host.Containerfile" -t "$REPO:$TAG" "$HERE" \
-    || { echo "BAKE_RESULT=FAILED build"; exit 1; }
+    -f "$HERE/workspace-host.Containerfile" -t "$REPO:$TAG" "$HERE"
+  build_rc=$?
+  if [ "$build_rc" -ne 0 ]; then
+    echo "BAKE_RESULT=FAILED build"
+    exit 1
+  fi
   "${PODMAN[@]}" push "${TLS[@]}" "$REPO:$TAG" \
     || { echo "BAKE_RESULT=FAILED push"; exit 1; }
 fi
@@ -251,14 +336,16 @@ bake_one() { # $1 cloud  $2 pinned ref
   mkdir -p "$dest"
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "  $cloud: DRY_RUN would render --type $type from $ref -> $dest/${CLOUD_FILE[$cloud]}"
+    CLOUD_SHA[$cloud]="$(printf '0%.0s' {1..64})"
+    CLOUD_BYTES[$cloud]=0
     return 0
   fi
   # No `-it`: this runs unattended from the release pipeline and from probes, where there is no
   # TTY and `-t` fails outright.
-  "${PODMAN[@]}" run --rm --privileged --pull=newer \
+  run_monitored "$dest/build.log" "${PODMAN[@]}" run --rm --privileged --pull=newer \
     --security-opt label=type:unconfined_t \
     -v "$dest":/output -v /var/lib/containers/storage:/var/lib/containers/storage \
-    "$BIB_IMG" --type "$type" --local "$ref" >"$dest/build.log" 2>&1
+    "$BIB_IMG" --type "$type" --local "$ref"
   local rc=$?
   if [ "$rc" -ne 0 ]; then
     echo "  $cloud: FAILED (exit $rc) — see $dest/build.log"
@@ -270,7 +357,9 @@ bake_one() { # $1 cloud  $2 pinned ref
     echo "  $cloud: FAILED — exited 0 but produced no disk at ${CLOUD_FILE[$cloud]}"
     return 1
   fi
-  echo "  $cloud: ok ($(stat -c%s "$dest/${CLOUD_FILE[$cloud]}") bytes)"
+  CLOUD_BYTES[$cloud]="$(stat -c%s "$dest/${CLOUD_FILE[$cloud]}")"
+  CLOUD_SHA[$cloud]="$(sha256sum "$dest/${CLOUD_FILE[$cloud]}" | cut -d' ' -f1)"
+  echo "  $cloud: ok (${CLOUD_BYTES[$cloud]} bytes; sha256:${CLOUD_SHA[$cloud]})"
   return 0
 }
 
@@ -291,11 +380,13 @@ done
   echo "  \"digest\": \"$DIGEST\","
   echo "  \"pinnedRef\": \"$PINNED\","
   echo "  \"registryNamespace\": \"$REGISTRY\","
+  echo "  \"dryRun\": $( [ "$DRY_RUN" -eq 1 ] && echo true || echo false ),"
   printf '  "clouds": ['
   for i in "${!rendered[@]}"; do
     [ "$i" -gt 0 ] && printf ', '
-    printf '{"cloud":"%s","type":"%s","artifact":"%s"}' \
-      "${rendered[$i]}" "${CLOUD_TYPE[${rendered[$i]}]}" "$OUT/${rendered[$i]}/${CLOUD_FILE[${rendered[$i]}]}"
+    printf '{"cloud":"%s","type":"%s","artifact":"%s","sha256":"%s","sizeBytes":%s}' \
+      "${rendered[$i]}" "${CLOUD_TYPE[${rendered[$i]}]}" "$OUT/${rendered[$i]}/${CLOUD_FILE[${rendered[$i]}]}" \
+      "${CLOUD_SHA[${rendered[$i]}]}" "${CLOUD_BYTES[${rendered[$i]}]}"
   done
   echo "]"
   echo "}"
