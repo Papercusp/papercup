@@ -157,9 +157,16 @@ function zeroClaimableLaneVerdict(
         'and claimable=0, but every reported exclusion bucket is zero; these counters do not support a floor-gated diagnosis.',
     };
   }
+  const activeExclusions = Object.entries(excluded)
+    .filter(([, count]) => count > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, count]) => `${name}=${count}`)
+    .join(', ');
   return {
     reason: 'floor-gated',
-    message: `Under ${scope}, the exact-plan lane is structurally reachable but every matched row is excluded by claim floors.`,
+    message:
+      `Under ${scope}, the exact-plan lane is structurally reachable but every matched row is excluded by claim floors ` +
+      `(${activeExclusions}).`,
   };
 }
 

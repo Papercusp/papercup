@@ -176,7 +176,14 @@ beforeAll(async () => {
   // P-006: promotion writes canonical blocks edges to work_item_deps. coord_links still exists
   // for plan coverage and every non-work relation.
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
-  await db.sql.unsafe(`
+  await db.sql
+    .unsafe(
+      `
+    CREATE TABLE IF NOT EXISTS harness_shared.agent_fleets (
+      workspace_id text NOT NULL,
+      fleet_slug text NOT NULL,
+      PRIMARY KEY (workspace_id, fleet_slug)
+    );
     ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
       ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz,
@@ -193,7 +200,9 @@ beforeAll(async () => {
     CREATE TABLE IF NOT EXISTS harness_shared.contributors (
       workspace_id text NOT NULL, harness_slug text NOT NULL,
       github_user_id bigint NOT NULL, github_username text NOT NULL DEFAULT '');
-  `).simple();
+  `,
+    )
+    .simple();
 }, 90_000);
 
 afterAll(async () => {
@@ -201,7 +210,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_links, harness_shared.coord_event_log, harness_shared.contributors, harness_shared.work_item_deps RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_links, harness_shared.coord_event_log, harness_shared.contributors, harness_shared.work_item_deps, harness_shared.agent_fleets RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   h.flagOn = true;
   h.specQuality = {
@@ -385,22 +394,26 @@ created: 2026-08-21
     const first = await run.promotePlanItems({ ...base, planRun, itemKind: 'feature' });
     expect(first.promoted).toBe(2);
     expect(first.workItems).toHaveLength(2);
-    expect(first.workItems.map((item) => ({
-      planItemId: item.planItemId,
-      actionable: item.actionable,
-      newlyPromoted: item.newlyPromoted,
-    }))).toEqual([
+    expect(
+      first.workItems.map((item) => ({
+        planItemId: item.planItemId,
+        actionable: item.actionable,
+        newlyPromoted: item.newlyPromoted,
+      })),
+    ).toEqual([
       { planItemId: 'P-001', actionable: true, newlyPromoted: true },
       { planItemId: 'P-002', actionable: false, newlyPromoted: true },
     ]);
 
-    const rows = await db.sql<Array<{
-      feature_id: string;
-      item_kind: string;
-      source_plan_slug: string;
-      status: string;
-      payload: Record<string, unknown>;
-    }>>`
+    const rows = await db.sql<
+      Array<{
+        feature_id: string;
+        item_kind: string;
+        source_plan_slug: string;
+        status: string;
+        payload: Record<string, unknown>;
+      }>
+    >`
       SELECT feature_id, item_kind, source_plan_slug, status, payload
         FROM harness_shared.harness_features_consolidated
        ORDER BY feature_id`;
@@ -420,24 +433,24 @@ created: 2026-08-21
     const replay = await run.promotePlanItems({ ...base, planRun, itemKind: 'feature' });
     expect(replay.promoted).toBe(0);
     expect(replay.skipped).toBe(2);
-    expect(replay.workItems.map((item) => item.workItemId)).toEqual(
-      first.workItems.map((item) => item.workItemId),
-    );
+    expect(replay.workItems.map((item) => item.workItemId)).toEqual(first.workItems.map((item) => item.workItemId));
     expect(replay.workItems.map((item) => item.newlyPromoted)).toEqual([false, false]);
     expect(replay.workItems.filter((item) => item.actionable).map((item) => item.planItemId)).toEqual(['P-001']);
   });
 
   it('rejects a plan-run context whose instance identity differs from the promoted plan', async () => {
     h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Do not misattribute me' }] });
-    await expect(run.promotePlanItems({
-      ...base,
-      planRun: {
-        runId: 9,
-        runSeq: 0,
-        instancePlanSlug: 'different-instance',
-        templateSlug: 'respond-to-email',
-      },
-    })).rejects.toThrow(`plan_run_instance_slug_mismatch:different-instance:${PLAN}`);
+    await expect(
+      run.promotePlanItems({
+        ...base,
+        planRun: {
+          runId: 9,
+          runSeq: 0,
+          instancePlanSlug: 'different-instance',
+          templateSlug: 'respond-to-email',
+        },
+      }),
+    ).rejects.toThrow(`plan_run_instance_slug_mismatch:different-instance:${PLAN}`);
     expect(await features()).toEqual([]);
   });
 
@@ -537,6 +550,42 @@ created: 2026-08-21
          AND source_plan_slug = ${ORDINARY_PLAN}
     `;
     expect(Object.keys(ordinary!.payload)).not.toContain('fleet_slug');
+  });
+
+  it('rebinds an orphaned fleet reservation on replay but preserves a registered fleet owner', async () => {
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Retryable fleet lane' }] });
+
+    const first = await run.promotePlanItems({ ...base, fleetSlug: 'failed-before-create' });
+    expect(first).toMatchObject({ promoted: 1, reservationsRebound: 0 });
+
+    const retry = await run.promotePlanItems({ ...base, fleetSlug: 'retry-fleet' });
+    expect(retry).toMatchObject({ promoted: 0, skipped: 1, reservationsRebound: 1 });
+    const [rebound] = await db.sql<{ payload: Record<string, unknown> }[]>`
+      SELECT payload
+        FROM harness_shared.harness_features_consolidated
+       WHERE source_plan_slug = ${PLAN}`;
+    expect(rebound!.payload.fleet_slug).toBe('retry-fleet');
+
+    const LIVE_PLAN = 'demo-promote-plan-live-fleet';
+    h.plans.set(LIVE_PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Owned fleet lane' }] });
+    expect((await run.promotePlanItems({ ...base, planSlug: LIVE_PLAN, fleetSlug: 'registered-fleet' })).promoted).toBe(
+      1,
+    );
+    await db.sql`
+      INSERT INTO harness_shared.agent_fleets (workspace_id, fleet_slug)
+      VALUES (${WS}, 'registered-fleet')`;
+
+    const competing = await run.promotePlanItems({
+      ...base,
+      planSlug: LIVE_PLAN,
+      fleetSlug: 'competing-retry',
+    });
+    expect(competing).toMatchObject({ promoted: 0, skipped: 1, reservationsRebound: 0 });
+    const [preserved] = await db.sql<{ payload: Record<string, unknown> }[]>`
+      SELECT payload
+        FROM harness_shared.harness_features_consolidated
+       WHERE source_plan_slug = ${LIVE_PLAN}`;
+    expect(preserved!.payload.fleet_slug).toBe('registered-fleet');
   });
 
   it('WI-40825: stamps item_text_hash off the SEMANTIC item text, so the read side can derive drift', async () => {
@@ -655,12 +704,10 @@ created: 2026-08-21
       payload: { plan_item: { plan_slug: PLAN, item_id: 'P-001', harness_slug: HARNESS } },
       createdBy: 'su-test',
     });
-    await wi.linkWorkItem(
-      adhoc.id,
-      { kind: PLAN_ITEM_KIND, ref: planItemRef(PLAN, 'P-001') },
-      'relates',
-      { harness: HARNESS, by: 'su-test' },
-    );
+    await wi.linkWorkItem(adhoc.id, { kind: PLAN_ITEM_KIND, ref: planItemRef(PLAN, 'P-001') }, 'relates', {
+      harness: HARNESS,
+      by: 'su-test',
+    });
     // Sanity: no `implements` edge exists yet — listConvertedPlanItemRefs alone would miss this.
     expect((await convert.listConvertedPlanItemRefs()).has(planItemRef(PLAN, 'P-001'))).toBe(false);
 
@@ -868,7 +915,10 @@ created: 2026-08-21
     const edges = await depEdges();
     expect(edges.map((e) => e.blocked)).toEqual([blocked, blocked]);
     expect(edges.map((e) => e.blocker).sort()).toEqual(
-      [rows.find((r) => r.title === 'Prereq A')!.feature_id, rows.find((r) => r.title === 'Prereq B')!.feature_id].sort(),
+      [
+        rows.find((r) => r.title === 'Prereq A')!.feature_id,
+        rows.find((r) => r.title === 'Prereq B')!.feature_id,
+      ].sort(),
     );
   });
 
@@ -1216,16 +1266,13 @@ describe('P-010: a promoted plan chain GATES the real claim door (end-to-end, no
     // SAME truth the backfill derives its candidate plans from (listConvertedPlanItemRefs), so
     // without it this plan is never even scanned — and creating it here is what proves an
     // ISSUE-family converted item is discoverable by that sweep at all, not just resolvable.
-    await wi.linkWorkItem(
-      id,
-      { kind: PLAN_ITEM_KIND, ref: planItemRef(PLAN, opts.itemId) },
-      convert.IMPLEMENTS_REL,
-      { harness: HARNESS, by: 'su-test' },
-    );
+    await wi.linkWorkItem(id, { kind: PLAN_ITEM_KIND, ref: planItemRef(PLAN, opts.itemId) }, convert.IMPLEMENTS_REL, {
+      harness: HARNESS,
+      by: 'su-test',
+    });
   };
 
-  const backfill = () =>
-    run.backfillPromotedDependencyEdges({ workspaceId: WS, harnessSlug: HARNESS });
+  const backfill = () => run.backfillPromotedDependencyEdges({ workspaceId: WS, harnessSlug: HARNESS });
 
   /** The raw edge rows, UNSTRIPPED — the per-family ref form is exactly what is on trial here. */
   const rawEdges = () =>

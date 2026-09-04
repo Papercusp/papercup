@@ -30,7 +30,11 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
+import {
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  USER_TRUST_LIST_DDL,
+  WORK_ITEM_DEPS_DDL,
+} from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import type { ClaimSpecRecord } from './claim-spec-store';
 import type { FleetScopeContext } from './fleet-scope-admission';
@@ -41,7 +45,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { diagnoseFleetScopeFeatureFamilyMatch } = await import('./fleet-scope-admission');
+const { diagnoseFleetScopeFeatureFamilyExclusions, diagnoseFleetScopeFeatureFamilyMatch } =
+  await import('./fleet-scope-admission');
 
 const H = 'papercusp';
 const WS = 'default';
@@ -138,6 +143,28 @@ describe('diagnoseFleetScopeFeatureFamilyMatch against real Postgres (WI-7151)',
     expect(cnt).toBe(1);
   });
 
+  it('reports pre-floor matches and names a foreign plan-lane reservation', async () => {
+    await seedItem('WI-orphan-reservation', {
+      sourcePlanSlug: PLAN,
+      payload: {
+        plan_item: { plan_slug: PLAN, item_id: 'P-001', harness_slug: H },
+        fleet_slug: 'a-different-fleet',
+      },
+    });
+
+    const breakdown = await diagnoseFleetScopeFeatureFamilyExclusions({
+      scope: planScopeFor('su-member'),
+      harness: H,
+      workspaceId: WS,
+    });
+
+    expect(breakdown).toEqual({
+      matchedByFilter: 1,
+      claimable: 0,
+      excluded: { claimFloors: 1, reservedPlanLane: 1 },
+    });
+  });
+
   it('returns 0 (not null) for a plan with no promoted items at all — a genuine drain, not a diagnosis failure', async () => {
     const cnt = await diagnoseFleetScopeFeatureFamilyMatch({
       scope: planScopeFor('su-member'),
@@ -187,7 +214,7 @@ describe('diagnoseFleetScopeFeatureFamilyMatch against real Postgres (WI-7151)',
     expect(cnt).toBe(0);
   });
 
-  it('excludes a DIFFERENT plan\'s feature-family item — the spec filter itself must narrow correctly', async () => {
+  it("excludes a DIFFERENT plan's feature-family item — the spec filter itself must narrow correctly", async () => {
     await seedItem('WI-other-plan', { sourcePlanSlug: 'some-unrelated-plan' });
 
     const cnt = await diagnoseFleetScopeFeatureFamilyMatch({

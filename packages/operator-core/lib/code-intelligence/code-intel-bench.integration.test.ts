@@ -247,16 +247,19 @@ describe.skipIf(missing.length > 0)(
       }
     });
 
-    it('meets the warm-query budget once the server is hot', () => {
-      // Asserted on the MEDIAN of repeated samples: a single re-query lands
-      // while the server is still finishing post-answer indexing, and that
-      // one sample is not the steady state the routing policy budgets.
-      //
+    it('meets the warm-query median and tail budgets once the server is hot', () => {
       // Sourced from `classifyWarmQueries` rather than comparing inline. This
       // test used to own the ONLY comparison against `warmQueryMsMax` in the
       // whole subsystem, which is how the budget stayed dead in the bench
-      // itself (WI-2142923) — the grader is now the single authority and this
-      // asserts on it.
+      // itself (WI-2142923) — the grader is now the single authority.
+      //
+      // Both halves are asserted. Median-only accepted an agent-visible 4988ms
+      // sample among four 1-2ms samples. That outlier was deterministic, not
+      // variance: opening a new document reused an idle observation from before
+      // that document existed, so project loading began after the first answer
+      // and the next query paid the full settle window. `ensureOpen` now
+      // invalidates that stale evidence before didOpen (WI-2142941), making the
+      // tail a safe regression boundary rather than a flaky timing pin.
       const verdicts = classifyWarmQueries(report.measurements);
       expect(verdicts.length).toBeGreaterThan(0);
       expect(
@@ -264,16 +267,11 @@ describe.skipIf(missing.length > 0)(
           .filter((v) => v.medianOverBudget)
           .map((v) => `${v.caseId}: median warm ${v.medianMs}ms samples=[${v.samplesMs.join(', ')}]`),
       ).toEqual([]);
+      expect(
+        verdicts
+          .filter((v) => v.tailOverBudget)
+          .map((v) => `${v.caseId}: max warm ${v.maxMs}ms samples=[${v.samplesMs.join(', ')}]`),
+      ).toEqual([]);
     });
-
-    // NOTE — the warm TAIL is graded but deliberately NOT asserted here yet.
-    // `formatLegReport` prints a WARM-TAIL banner with the sample array for
-    // every breach, which is the surfacing this leg needs. A hard assertion
-    // waits on a cause: bakeoff v10 measured one warm sample at 4988ms on
-    // `shadowed-symbol-no-cross-contamination` (median 1ms), and 4988ms sits
-    // just under `settleMs` (5000ms) — but that path has not been traced.
-    // Pinning a ceiling on an untraced, variance-prone number is the flake
-    // generator the cold-start test above refuses for the same reason, and a
-    // flaky gate test freezes the whole fleet. Promote once the cause is known.
   },
 );

@@ -11,6 +11,7 @@
  */
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { dispatchProjectedTool, lookupByMcpName, type UnifiedToolContext } from '@papercusp/tooldef';
 
 let fixtureRows: unknown[] = [];
 let edgeRows: unknown[] = [];
@@ -166,5 +167,62 @@ describe('goals:list — limit-cap convention', () => {
   it('passes the resolved limit through to the query builder', async () => {
     await tool.handler({ detail: 'summary', limit: 17 } as never, CTX() as never);
     expect(limitArg).toBe(17);
+  });
+});
+
+describe('goals:list — workspace-global call-scope contract', () => {
+  it('advertises the transport-scoped workspace and rejects harness routing', async () => {
+    const registered = lookupByMcpName('goals:list');
+    expect(registered).toBeDefined();
+    expect(registered!.description).toMatch(/workspace-global/i);
+    expect(registered!.description).toMatch(/do not pass [`"]?harness/i);
+
+    const accepted = await dispatchProjectedTool(
+      registered!,
+      'goals:list',
+      { detail: 'summary', limit: 1 },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        harnessSlug: 'papercusp',
+        role: 'operator',
+        runId: 'run-goals-list-scope',
+        spawnId: 'spawn-goals-list-scope',
+        principal: { slug: 'op', workspaceId: 'default', capabilities: new Set(['goals:read']) } as never,
+        tx: ((strings: TemplateStringsArray) => {
+          const query = strings.join(' ');
+          if (query.includes('FROM harness_shared.work_item_deps')) return Promise.resolve([]);
+          if (query.includes('FROM harness_shared.goals')) return Promise.resolve([]);
+          return Promise.resolve([]);
+        }) as never,
+      } as UnifiedToolContext,
+      {},
+    );
+    expect(accepted.ok).toBe(true);
+
+    const rejected = await dispatchProjectedTool(
+      registered!,
+      'goals:list',
+      { harness: 'papercusp' },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        harnessSlug: 'papercusp',
+        role: 'operator',
+        runId: 'run-goals-list-scope-invalid',
+        spawnId: 'spawn-goals-list-scope-invalid',
+        principal: { slug: 'op', workspaceId: 'default', capabilities: new Set(['goals:read']) } as never,
+        tx: (() => Promise.resolve([])) as never,
+      } as UnifiedToolContext,
+      {},
+    );
+    expect(rejected.ok).toBe(false);
+    expect(rejected.error?.message ?? '').toMatch(/Unrecognized key|harness|detail|limit/i);
   });
 });

@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   resolveFleetClaimSpec: vi.fn(),
   resolveClaimSpecWorkspace: vi.fn(() => 'ws-x'),
   aggregateIssueClaimExclusions: vi.fn(),
-  diagnoseFleetScopeFeatureFamilyMatch: vi.fn(),
+  diagnoseFleetScopeFeatureFamilyExclusions: vi.fn(),
 }));
 
 vi.mock('../scheduler/claim-spec-store', () => ({
@@ -17,7 +17,7 @@ vi.mock('../scheduler/get-next', () => ({
   aggregateIssueClaimExclusions: mocks.aggregateIssueClaimExclusions,
 }));
 vi.mock('../scheduler/fleet-scope-admission', () => ({
-  diagnoseFleetScopeFeatureFamilyMatch: mocks.diagnoseFleetScopeFeatureFamilyMatch,
+  diagnoseFleetScopeFeatureFamilyExclusions: mocks.diagnoseFleetScopeFeatureFamilyExclusions,
 }));
 
 import { readFleetLaneHealth } from './lane-health';
@@ -60,7 +60,11 @@ beforeEach(() => {
     matchedByFilter: 0,
     excluded: {},
   });
-  mocks.diagnoseFleetScopeFeatureFamilyMatch.mockResolvedValue(4);
+  mocks.diagnoseFleetScopeFeatureFamilyExclusions.mockResolvedValue({
+    claimable: 4,
+    matchedByFilter: 6,
+    excluded: { claimFloors: 2, reservedPlanLane: 2 },
+  });
 });
 
 const read = () =>
@@ -80,10 +84,12 @@ const readPopulation = () =>
 
 describe('readFleetLaneHealth — feature-family-aware effective verdict (EI-211885)', () => {
   it('uses only the feature oracle for an explicitly feature-only exact-plan lane', async () => {
-    mocks.resolveFleetClaimSpec.mockResolvedValueOnce(resolved({
-      ...spec,
-      view: { filter: { all: [planFilter, { field: 'kind', op: 'in', value: ['feature', 'chunk'] }] } },
-    }));
+    mocks.resolveFleetClaimSpec.mockResolvedValueOnce(
+      resolved({
+        ...spec,
+        view: { filter: { all: [planFilter, { field: 'kind', op: 'in', value: ['feature', 'chunk'] }] } },
+      }),
+    );
     const health = await read();
 
     expect(health).toMatchObject({
@@ -91,17 +97,21 @@ describe('readFleetLaneHealth — feature-family-aware effective verdict (EI-211
       matchedByFilter: 0,
       excluded: {},
       issueFamily: { claimable: 0, matchedByFilter: 0, excluded: {} },
-      featureFamily: { claimable: 4, matchedByFilter: null, excluded: null },
+      featureFamily: {
+        claimable: 4,
+        matchedByFilter: 6,
+        excluded: { claimFloors: 2, reservedPlanLane: 2 },
+      },
       effective: {
         claimable: 4,
-        matchedByFilter: null,
-        excluded: null,
+        matchedByFilter: 6,
+        excluded: { claimFloors: 2, reservedPlanLane: 2 },
         basis: 'feature-family',
       },
       familyReachability: { issue: false, feature: true },
     });
     expect(mocks.aggregateIssueClaimExclusions).not.toHaveBeenCalled();
-    expect(mocks.diagnoseFleetScopeFeatureFamilyMatch).toHaveBeenCalledWith(
+    expect(mocks.diagnoseFleetScopeFeatureFamilyExclusions).toHaveBeenCalledWith(
       expect.objectContaining({
         harness: 'papercusp',
         workspaceId: 'ws-x',
@@ -115,7 +125,7 @@ describe('readFleetLaneHealth — feature-family-aware effective verdict (EI-211
   });
 
   it('fails closed to UNKNOWN when the required feature-family read fails', async () => {
-    mocks.diagnoseFleetScopeFeatureFamilyMatch.mockResolvedValue(null);
+    mocks.diagnoseFleetScopeFeatureFamilyExclusions.mockResolvedValue(null);
 
     const health = await read();
 
@@ -129,14 +139,16 @@ describe('readFleetLaneHealth — feature-family-aware effective verdict (EI-211
   });
 
   it('does not probe features for an explicitly issue-family-only spec', async () => {
-    mocks.resolveFleetClaimSpec.mockResolvedValueOnce(resolved({
-      ...spec,
-      view: { filter: { all: [planFilter, { field: 'kind', op: 'in', value: ['bug', 'task'] }] } },
-    }));
+    mocks.resolveFleetClaimSpec.mockResolvedValueOnce(
+      resolved({
+        ...spec,
+        view: { filter: { all: [planFilter, { field: 'kind', op: 'in', value: ['bug', 'task'] }] } },
+      }),
+    );
 
     const health = await read();
 
-    expect(mocks.diagnoseFleetScopeFeatureFamilyMatch).not.toHaveBeenCalled();
+    expect(mocks.diagnoseFleetScopeFeatureFamilyExclusions).not.toHaveBeenCalled();
     expect(health?.featureFamily).toBeNull();
     expect(health?.effective).toEqual({
       claimable: 0,
@@ -151,16 +163,16 @@ describe('readFleetLaneHealth — feature-family-aware effective verdict (EI-211
     mocks.aggregateIssueClaimExclusions.mockResolvedValue({
       claimable: 2,
       matchedByFilter: 5,
-      excluded: { taken: 3 },
+      excluded: { taken: 3, claimFloors: 1 },
     });
 
     const health = await read();
 
-    expect(mocks.diagnoseFleetScopeFeatureFamilyMatch).toHaveBeenCalledTimes(1);
+    expect(mocks.diagnoseFleetScopeFeatureFamilyExclusions).toHaveBeenCalledTimes(1);
     expect(health?.effective).toEqual({
       claimable: 6,
-      matchedByFilter: null,
-      excluded: null,
+      matchedByFilter: 11,
+      excluded: { taken: 3, claimFloors: 3, reservedPlanLane: 2 },
       basis: 'issue+feature-family',
     });
   });
@@ -178,7 +190,7 @@ describe('readFleetLaneHealth — feature-family-aware effective verdict (EI-211
       planFilter,
       expect.objectContaining({ assignee: undefined }),
     );
-    expect(mocks.diagnoseFleetScopeFeatureFamilyMatch).toHaveBeenCalledWith(
+    expect(mocks.diagnoseFleetScopeFeatureFamilyExclusions).toHaveBeenCalledWith(
       expect.objectContaining({
         cooldownAssignee: null,
         scope: expect.objectContaining({ ownerId: '' }),

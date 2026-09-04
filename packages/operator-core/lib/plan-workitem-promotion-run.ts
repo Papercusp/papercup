@@ -34,7 +34,12 @@ import { FLAGS } from '@papercusp/flags';
 import { resolveEffectiveStatusForItems, type ItemStatus, type PlanItem } from '@papercusp/plan-parser';
 import { systemDistinctId } from './flag-distinct-id';
 import { readPlanBySlug, type PlanRow } from './agent-tools/plans/source';
-import { getWorkItem, linkWorkItem, type ActiveFeatureFamilyKind } from './work-items';
+import {
+  getWorkItem,
+  linkWorkItem,
+  rebindOrphanedPlanFleetReservation,
+  type ActiveFeatureFamilyKind,
+} from './work-items';
 import { upsertConditionWorkItem } from './coord/condition-upsert';
 import { PLAN_ITEM_KIND, planItemRef } from './issue-blocks-merge';
 import {
@@ -137,6 +142,8 @@ export interface PromotePlanResult {
    * second provenance query.
    */
   workItems: PromotedPlanWorkItem[];
+  /** Existing open lanes atomically rebound from a non-existent fleet to this run's fleet. */
+  reservationsRebound?: number;
 }
 
 /** Per-run provenance stamped onto every work item promoted from an instance plan. */
@@ -347,9 +354,7 @@ function isLegacyExecutingReportOnlyPlan(
 export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<PromotePlanResult> {
   if (opts.planRun) {
     if (opts.planRun.instancePlanSlug !== opts.planSlug) {
-      throw new Error(
-        `plan_run_instance_slug_mismatch:${opts.planRun.instancePlanSlug}:${opts.planSlug}`,
-      );
+      throw new Error(`plan_run_instance_slug_mismatch:${opts.planRun.instancePlanSlug}:${opts.planSlug}`);
     }
     if (!Number.isSafeInteger(opts.planRun.runId) || opts.planRun.runId <= 0) {
       throw new Error('plan_run_id_invalid');
@@ -424,11 +429,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
   // when spec-quality is explicitly report-only because it has no first-class
   // clauses. This does not weaken an explicit `specTriad: required` declaration
   // (`scopeReason` is `required-declared`) or any genuinely new plan.
-  const legacyExecutingContinuation = isLegacyExecutingReportOnlyPlan(
-    read.row,
-    specQuality,
-    specTriad,
-  );
+  const legacyExecutingContinuation = isLegacyExecutingReportOnlyPlan(read.row, specQuality, specTriad);
   if (specTriad?.gated && !legacyExecutingContinuation) {
     const { ensureSpecTriadFiling } = await import('./agent-tools/plans/spec-triad-filing');
     const filed = await ensureSpecTriadFiling({
@@ -495,9 +496,43 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     opts.harnessSlug,
     openItems.map((i) => i.id),
   );
-  const alreadyIds = openItems
-    .map((i) => i.id)
-    .filter((id) => coveredRefs.has(planItemRef(opts.planSlug, id)));
+  const alreadyIds = openItems.map((i) => i.id).filter((id) => coveredRefs.has(planItemRef(opts.planSlug, id)));
+
+  // EI-21708417543116316: launch promotion happens BEFORE admission and fleet creation.
+  // A refused attempt can therefore leave an already-covered row reserved to a fleet that
+  // was never persisted. The next launch must adopt that canonical row rather than mint a
+  // duplicate, but an idempotent coverage skip previously left the stale fleet_slug intact
+  // and the new exact-plan preflight saw zero claimable rows forever.
+  //
+  // Resolve the covered rows once (the result is reused by the return mapping below) and
+  // atomically rebind only the narrow orphan shape. The writer itself proves open + unclaimed
+  // + plan-promoted + old fleet absent in the same UPDATE; a live/persisted fleet reservation
+  // is never touched.
+  const existingByPlanItem = new Map<string, string>();
+  let reservationsRebound = 0;
+  for (const itemId of alreadyIds) {
+    const existing = await findConvertedWorkItemByStamp(opts.planSlug, itemId, opts.harnessSlug);
+    if (!existing?.id) continue;
+    existingByPlanItem.set(itemId, existing.id);
+    const payload =
+      existing.payload && typeof existing.payload === 'object' && !Array.isArray(existing.payload)
+        ? (existing.payload as Record<string, unknown>)
+        : null;
+    const expectedFleetSlug = typeof payload?.fleet_slug === 'string' ? payload.fleet_slug.trim() : '';
+    if (
+      opts.fleetSlug &&
+      expectedFleetSlug &&
+      (await rebindOrphanedPlanFleetReservation({
+        id: existing.id,
+        harness: opts.harnessSlug,
+        workspaceId: opts.workspaceId,
+        expectedFleetSlug,
+        fleetSlug: opts.fleetSlug,
+      }))
+    ) {
+      reservationsRebound++;
+    }
+  }
 
   const specs = computePromotions({
     planSlug: opts.planSlug,
@@ -527,10 +562,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
   // plan tags are the reusable source of truth and avoid a second classifier.
   // Topic routing enriches promotion; it must not become a new availability gate
   // on the primary plan→work path if the coordination store is temporarily down.
-  const planTopics = await listObjectTags(
-    'plan',
-    opts.planRun?.templateSlug ?? opts.planSlug,
-  ).catch(() => []);
+  const planTopics = await listObjectTags('plan', opts.planRun?.templateSlug ?? opts.planSlug).catch(() => []);
 
   const textById = new Map(openItems.map((i) => [i.id, i.text]));
   const stampForPlanItem = (itemId: string): PlanItemStamp => {
@@ -615,12 +647,10 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     // the created row's own `wi.harness` for exactly that reason.
     const wi = (await getWorkItem(minted.id, spec.harness)) ?? (await getWorkItem(minted.id));
     const winnerHarness = wi?.harness ?? spec.harness;
-    await linkWorkItem(
-      minted.id,
-      { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, itemId) },
-      IMPLEMENTS_REL,
-      { harness: winnerHarness ?? undefined, by: opts.createdBy },
-    );
+    await linkWorkItem(minted.id, { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, itemId) }, IMPLEMENTS_REL, {
+      harness: winnerHarness ?? undefined,
+      by: opts.createdBy,
+    });
     // EI-14024: if this item's plan-level blockers are still open (or it needs a
     // human decision), gate it the SAME way the periodic lane-sync sweep
     // (reconcile-linked-work-items.ts's syncLinkedWorkItemsToPlanLane, EI-14699)
@@ -652,7 +682,10 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
   // A deterministic run replay must recover the SAME execution records even
   // when this invocation minted none. Resolve every open item's canonical
   // stamp after the write pass; newly-minted ids stay query-free.
-  const workItemByPlanItem = new Map(mintedByPlanItem);
+  const workItemByPlanItem = new Map(existingByPlanItem);
+  for (const [planItemId, workItemId] of mintedByPlanItem) {
+    workItemByPlanItem.set(planItemId, workItemId);
+  }
   for (const item of openItems) {
     if (workItemByPlanItem.has(item.id)) continue;
     const existing = await findConvertedWorkItemByStamp(opts.planSlug, item.id, opts.harnessSlug);
@@ -700,27 +733,25 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
       newlyPromotedPlanItemIds.add(item.id);
     }
     const wi = (await getWorkItem(adopted.id, spec.harness)) ?? (await getWorkItem(adopted.id));
-    await linkWorkItem(
-      adopted.id,
-      { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, item.id) },
-      IMPLEMENTS_REL,
-      { harness: wi?.harness ?? spec.harness, by: opts.createdBy },
-    );
+    await linkWorkItem(adopted.id, { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, item.id) }, IMPLEMENTS_REL, {
+      harness: wi?.harness ?? spec.harness,
+      by: opts.createdBy,
+    });
   }
 
   const workItems: PromotedPlanWorkItem[] = openItems.flatMap((item) => {
     const workItemId = workItemByPlanItem.get(item.id);
     if (!workItemId) return [];
     const effective = effectiveById.get(item.id);
-    return [{
-      planItemId: item.id,
-      workItemId,
-      newlyPromoted: newlyPromotedPlanItemIds.has(item.id),
-      actionable:
-        effective?.effectiveStatus === 'todo' &&
-        effective.unresolvedBlockers.length === 0 &&
-        !effective.needsHuman,
-    }];
+    return [
+      {
+        planItemId: item.id,
+        workItemId,
+        newlyPromoted: newlyPromotedPlanItemIds.has(item.id),
+        actionable:
+          effective?.effectiveStatus === 'todo' && effective.unresolvedBlockers.length === 0 && !effective.needsHuman,
+      },
+    ];
   });
 
   const edgeCounts = await writePromotedDependencyEdges({
@@ -737,7 +768,14 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     preserveExistingEdges: Boolean(opts.planRun),
   });
 
-  return { promoted, skipped: openItems.length - promoted, ...edgeCounts, workItems, specQuality };
+  return {
+    promoted,
+    skipped: openItems.length - promoted,
+    ...edgeCounts,
+    workItems,
+    reservationsRebound,
+    specQuality,
+  };
 }
 
 /**
@@ -834,9 +872,7 @@ async function writePromotedDependencyEdges(args: {
 
   // D-015: ONE read of the live blocks graph for the whole plan (not one per item) — the union
   // source. Loaded up front so a plan with no pre-existing edges costs exactly one query.
-  const existingBlockers = args.preserveExistingEdges
-    ? await getFeatureBlockers(args.harnessSlug)
-    : null;
+  const existingBlockers = args.preserveExistingEdges ? await getFeatureBlockers(args.harnessSlug) : null;
 
   if (args.cyclicPlanItemIds.size > 0) {
     // Loud, once per plan: the plan cannot express a valid ordering for these items, so their

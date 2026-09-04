@@ -5,11 +5,7 @@ import type { ClaimSpecRecord } from './claim-spec-store';
 // Type-only: erased at compile time, so this does NOT defeat the vi.mock('../work-items')
 // factory below — it only makes the fixture genuinely checked against the real shape.
 import type { WorkItem } from '../work-items';
-import {
-  claimSpecSubjectFromWorkItem,
-  matchesClaimSpecFilter,
-  type ClaimSpecSubject,
-} from './claim-spec-match';
+import { claimSpecSubjectFromWorkItem, matchesClaimSpecFilter, type ClaimSpecSubject } from './claim-spec-match';
 /** The all-zero `IssueClaimExclusionBreakdown.queueControl` axis-set. Declared ONCE so the
  *  breakdown fixtures below stay type-complete against the real interface: `queueControl` is
  *  REQUIRED (get-next.ts), and these fixtures assert floor/exclusion behaviour, for which every
@@ -41,6 +37,7 @@ const admissionMocks = vi.hoisted(() => ({
   // right count/expiry out) instead of replicating postgres.js's nested tagged-
   // template fragment composition in a fake sql tag.
   claimFloorsWhereSql: vi.fn(),
+  reservedPlanLaneExclusionSql: vi.fn(),
   releaseCooldownSec: vi.fn(),
   compileFilter: vi.fn(),
   // WI-5561: diagnoseFleetScopeIssueFloorMiss's own seam-level dependency — the
@@ -69,6 +66,7 @@ vi.mock('../work-items', () => ({
   releaseWorkItem: admissionMocks.releaseWorkItem,
   readHeldDependencyEscapeContext: admissionMocks.readHeldDependencyEscapeContext,
   claimFloorsWhereSql: admissionMocks.claimFloorsWhereSql,
+  reservedPlanLaneExclusionSql: admissionMocks.reservedPlanLaneExclusionSql,
   releaseCooldownSec: admissionMocks.releaseCooldownSec,
   // EI-19393442073558754: specIsIssueFamilyOnly (fleet-scope-admission.ts) imports the REAL
   // kind-set constant from '../work-items' — mirror it here rather than re-declaring it, so
@@ -208,8 +206,9 @@ describe('WI-41163: caller-neutral feature-family population count', () => {
 
   it('explicit null omits the reading leader from the feature-family cooldown floor', async () => {
     admissionMocks.claimFloorsWhereSql.mockReturnValue('FLOORS_WITHOUT_CALLER');
+    admissionMocks.reservedPlanLaneExclusionSql.mockReturnValue('RESERVATION_FLOOR');
     admissionMocks.compileFilter.mockReturnValue('FILTER_FRAGMENT');
-    admissionMocks.sql.mockResolvedValue([{ cnt: 3 }]);
+    admissionMocks.sql.mockResolvedValue([{ matched: 3, claimable: 3, reserved_plan_lane: 0 }]);
 
     const count = await diagnoseFleetScopeFeatureFamilyMatch({
       scope: populationScope,
@@ -227,8 +226,9 @@ describe('WI-41163: caller-neutral feature-family population count', () => {
 
   it('passes the scope fleet and structural fleet authorization to the shared floor', async () => {
     admissionMocks.claimFloorsWhereSql.mockReturnValue('FLOORS_WITH_FLEET_AUTH');
+    admissionMocks.reservedPlanLaneExclusionSql.mockReturnValue('RESERVATION_FLOOR');
     admissionMocks.compileFilter.mockReturnValue('FILTER_FRAGMENT');
-    admissionMocks.sql.mockResolvedValue([{ cnt: 1 }]);
+    admissionMocks.sql.mockResolvedValue([{ matched: 1, claimable: 1, reserved_plan_lane: 0 }]);
 
     const fleetReferencedScope = {
       ...populationScope,
@@ -254,6 +254,12 @@ describe('WI-41163: caller-neutral feature-family population count', () => {
         claimantFleetSlug: 'fleet-x',
         claimSpecReferencesFleet: true,
       }),
+    );
+    expect(admissionMocks.reservedPlanLaneExclusionSql).toHaveBeenCalledWith(
+      admissionMocks.sql,
+      'su-reading-leader',
+      'payload',
+      { claimantFleetSlug: 'fleet-x', claimSpecReferencesFleet: true },
     );
   });
 });
@@ -291,7 +297,12 @@ describe('fleet scope assignment admission (P-016)', () => {
         { field: 'id', op: 'in', value: ['WI-7', 'WI-8'] },
         { field: 'kind', op: '=', value: 'bug' },
         { not: { field: 'title', op: 'glob', value: '*p2p*' } },
-        { any: [{ field: 'tags', op: 'contains', value: 'scheduler' }, { field: 'risk_tier', op: '=', value: 'low' }] },
+        {
+          any: [
+            { field: 'tags', op: 'contains', value: 'scheduler' },
+            { field: 'risk_tier', op: '=', value: 'low' },
+          ],
+        },
       ],
     };
     expect(matchesClaimSpecFilter(base, filter)).toBe(true);
@@ -351,19 +362,28 @@ describe('fleet scope assignment admission (P-016)', () => {
   });
 
   it('returns an explicit wind-down verdict instead of generic-backlog advice', () => {
-    const miss = fleetScopedMiss({
-      ownerId: 'su-member',
-      fleetSlug: 'bugs',
-      fleetRole: 'member',
-      workspaceId: 'papercusp-workspace',
-      record: {
-        source: 'fleet',
-        spec: { specVersion: '1.0', specId: 'bugs-rev4', revision: 4, view: {}, rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] } },
-        revision: 4,
-        updatedBy: 'su-leader',
-        updatedAt: 'now',
+    const miss = fleetScopedMiss(
+      {
+        ownerId: 'su-member',
+        fleetSlug: 'bugs',
+        fleetRole: 'member',
+        workspaceId: 'papercusp-workspace',
+        record: {
+          source: 'fleet',
+          spec: {
+            specVersion: '1.0',
+            specId: 'bugs-rev4',
+            revision: 4,
+            view: {},
+            rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+          },
+          revision: 4,
+          updatedBy: 'su-leader',
+          updatedAt: 'now',
+        },
       },
-    }, ['WI-out']);
+      ['WI-out'],
+    );
     expect(miss).toMatchObject({ windDown: true, quarantinedIds: ['WI-out'], fleetScope: { fleet: 'bugs' } });
     expect(miss.error).toMatch(/NOT allowed to fall through to the generic backlog/);
     expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
@@ -588,7 +608,11 @@ describe('fleet scope assignment admission (P-016)', () => {
     });
 
     it('refuses a member by-id claim while its fleet is winding-down (paused), before any item read', async () => {
-      admissionMocks.getFleet.mockResolvedValue({ fleetSlug: 'bugs', controlState: 'winding-down', controlReason: 'owner pause' });
+      admissionMocks.getFleet.mockResolvedValue({
+        fleetSlug: 'bugs',
+        controlState: 'winding-down',
+        controlReason: 'owner pause',
+      });
 
       const admission = await admitWorkItemForFleetTarget({
         target: 'su-member',
@@ -619,7 +643,13 @@ describe('fleet scope assignment admission (P-016)', () => {
 
     it('fleetScopedMiss surfaces a paused stand-down verdict for the self-select path', () => {
       const miss = fleetScopedMiss(
-        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', workspaceId: 'papercusp-workspace', record: fleetSpec },
+        {
+          ownerId: 'su-member',
+          fleetSlug: 'bugs',
+          fleetRole: 'member',
+          workspaceId: 'papercusp-workspace',
+          record: fleetSpec,
+        },
         [],
         { pausedReason: 'owner pause' },
       );
@@ -636,7 +666,13 @@ describe('fleet scope assignment admission (P-016)', () => {
     // wake was retired, not merely gated at the ensuing claim.
     it('EI-15777: a paused miss surfaces claimableAwaitsCancelled + the do-not-re-park advice', () => {
       const miss = fleetScopedMiss(
-        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', workspaceId: 'papercusp-workspace', record: fleetSpec },
+        {
+          ownerId: 'su-member',
+          fleetSlug: 'bugs',
+          fleetRole: 'member',
+          workspaceId: 'papercusp-workspace',
+          record: fleetSpec,
+        },
         [],
         { pausedReason: 'owner pause', claimableAwaitsCancelled: 2 },
       );
@@ -647,7 +683,13 @@ describe('fleet scope assignment admission (P-016)', () => {
 
     it('EI-15777: a paused miss with no cancelled awaits still surfaces claimableAwaitsCancelled:0 (default)', () => {
       const miss = fleetScopedMiss(
-        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', workspaceId: 'papercusp-workspace', record: fleetSpec },
+        {
+          ownerId: 'su-member',
+          fleetSlug: 'bugs',
+          fleetRole: 'member',
+          workspaceId: 'papercusp-workspace',
+          record: fleetSpec,
+        },
         [],
         { pausedReason: 'owner pause' },
       );
@@ -656,7 +698,13 @@ describe('fleet scope assignment admission (P-016)', () => {
 
     it('EI-15777: a non-paused (cooldown-only) miss never carries claimableAwaitsCancelled', () => {
       const miss = fleetScopedMiss(
-        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', workspaceId: 'papercusp-workspace', record: fleetSpec },
+        {
+          ownerId: 'su-member',
+          fleetSlug: 'bugs',
+          fleetRole: 'member',
+          workspaceId: 'papercusp-workspace',
+          record: fleetSpec,
+        },
         [],
         { cooldownDiag: null },
       );
@@ -666,7 +714,13 @@ describe('fleet scope assignment admission (P-016)', () => {
     it('readFleetPauseState fails OPEN when the control-state read errors (never wedges claiming)', async () => {
       admissionMocks.getFleet.mockRejectedValue(new Error('pg unavailable'));
       const state = await readFleetPauseState(
-        { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', workspaceId: 'papercusp-workspace', record: fleetSpec },
+        {
+          ownerId: 'su-member',
+          fleetSlug: 'bugs',
+          fleetRole: 'member',
+          workspaceId: 'papercusp-workspace',
+          record: fleetSpec,
+        },
         'papercusp-workspace',
       );
       expect(state).toEqual({ windingDown: false, reason: null });
@@ -717,7 +771,11 @@ describe('fleet scope assignment admission (P-016)', () => {
         workspaceId: 'papercusp-workspace',
       });
 
-      expect(diag).toEqual({ cooldownExcluded: 3, earliestExpiryMs: releasedAt.getTime() + 300_000, earliestRowId: 'WI-9001' });
+      expect(diag).toEqual({
+        cooldownExcluded: 3,
+        earliestExpiryMs: releasedAt.getTime() + 300_000,
+        earliestRowId: 'WI-9001',
+      });
       // The defining assertion: the WITHOUT-cooldown floors call must NOT thread this
       // bee's ownerId as cooldownAssignee — that is precisely the leg being dropped.
       const floorsOpts = admissionMocks.claimFloorsWhereSql.mock.calls[0]?.[1];
@@ -737,7 +795,10 @@ describe('fleet scope assignment admission (P-016)', () => {
 
     it('returns null when the spec has no view filter (nothing to diagnose)', async () => {
       const diag = await diagnoseFleetScopeCooldownMiss({
-        scope: { ...cooldownScope, record: { ...cooldownScope.record, spec: { ...cooldownScope.record.spec, view: {} } } },
+        scope: {
+          ...cooldownScope,
+          record: { ...cooldownScope.record, spec: { ...cooldownScope.record.spec, view: {} } },
+        },
         harness: 'papercusp',
         workspaceId: 'papercusp-workspace',
       });
@@ -759,7 +820,12 @@ describe('fleet scope assignment admission (P-016)', () => {
       const miss = fleetScopedMiss(cooldownScope, [], {
         cooldownDiag: { cooldownExcluded: 3, earliestExpiryMs: Date.now() + 42_000, earliestRowId: 'WI-9001' },
       });
-      expect(miss).toMatchObject({ windDown: true, cooldownOnly: true, cooldownExcluded: 3, cooldownEarliestRowId: 'WI-9001' });
+      expect(miss).toMatchObject({
+        windDown: true,
+        cooldownOnly: true,
+        cooldownExcluded: 3,
+        cooldownEarliestRowId: 'WI-9001',
+      });
       expect(miss.paused).toBeUndefined();
       expect(miss.error).toMatch(/YOUR OWN release-cooldown floor/);
       expect(miss.error).not.toMatch(/NOT allowed to fall through to the generic backlog/);
@@ -891,8 +957,8 @@ describe('fleet scope assignment admission (P-016)', () => {
 
     beforeEach(() => {
       fakeTx.unsafe.mockReset();
-      admissionMocks.boundedPgReadTxn.mockImplementation(
-        async (run: (tx: typeof fakeTx) => Promise<unknown>) => run(fakeTx),
+      admissionMocks.boundedPgReadTxn.mockImplementation(async (run: (tx: typeof fakeTx) => Promise<unknown>) =>
+        run(fakeTx),
       );
     });
 
@@ -919,9 +985,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       });
       const [, txnOpts] = admissionMocks.boundedPgReadTxn.mock.calls[0] ?? [];
       expect(txnOpts).toEqual({ acquireTimeoutMs: 2_250, timeoutMs: 6_750 });
-      expect(
-        txnOpts.acquireTimeoutMs + txnOpts.timeoutMs + 3_000,
-      ).toBe(FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS);
+      expect(txnOpts.acquireTimeoutMs + txnOpts.timeoutMs + 3_000).toBe(FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS);
     });
 
     it('fits acquire + statement + helper overhead inside a tighter caller budget', async () => {
@@ -940,9 +1004,13 @@ describe('fleet scope assignment admission (P-016)', () => {
       });
     });
 
-    it('falls back to the spec\'s own `states` when no explicit states are passed', async () => {
+    it("falls back to the spec's own `states` when no explicit states are passed", async () => {
       admissionMocks.aggregateIssueClaimExclusions.mockResolvedValue(floorGatedBreakdown);
-      await diagnoseFleetScopeIssueFloorMiss({ scope: issueScope, harness: 'papercusp', workspaceId: 'papercusp-workspace' });
+      await diagnoseFleetScopeIssueFloorMiss({
+        scope: issueScope,
+        harness: 'papercusp',
+        workspaceId: 'papercusp-workspace',
+      });
       const optsArg = admissionMocks.aggregateIssueClaimExclusions.mock.calls[0]?.[1];
       expect(optsArg?.states).toEqual(['open']);
     });
@@ -950,13 +1018,21 @@ describe('fleet scope assignment admission (P-016)', () => {
     it('EI-18663622382734446: returns the breakdown (NOT null) when the filter matches zero issue-family rows — the spec-empty case must be distinguishable from a diagnosis failure', async () => {
       const zeroMatch = { matchedByFilter: 0, claimable: 0, excluded: floorGatedBreakdown.excluded };
       admissionMocks.aggregateIssueClaimExclusions.mockResolvedValue(zeroMatch);
-      const diag = await diagnoseFleetScopeIssueFloorMiss({ scope: issueScope, harness: 'papercusp', workspaceId: 'papercusp-workspace' });
+      const diag = await diagnoseFleetScopeIssueFloorMiss({
+        scope: issueScope,
+        harness: 'papercusp',
+        workspaceId: 'papercusp-workspace',
+      });
       expect(diag).toEqual(zeroMatch);
     });
 
     it('FAILS SOFT: a query error degrades to null, never throws (annotation only, like diagnoseFleetScopeCooldownMiss)', async () => {
       admissionMocks.aggregateIssueClaimExclusions.mockRejectedValue(new Error('pg unavailable'));
-      const diag = await diagnoseFleetScopeIssueFloorMiss({ scope: issueScope, harness: 'papercusp', workspaceId: 'papercusp-workspace' });
+      const diag = await diagnoseFleetScopeIssueFloorMiss({
+        scope: issueScope,
+        harness: 'papercusp',
+        workspaceId: 'papercusp-workspace',
+      });
       expect(diag).toBeNull();
     });
 
@@ -983,7 +1059,11 @@ describe('fleet scope assignment admission (P-016)', () => {
     });
 
     it('returns null when the workspace cannot be resolved (nothing to diagnose)', async () => {
-      const diag = await diagnoseFleetScopeIssueFloorMiss({ scope: issueScope, harness: 'papercusp', workspaceId: null });
+      const diag = await diagnoseFleetScopeIssueFloorMiss({
+        scope: issueScope,
+        harness: 'papercusp',
+        workspaceId: null,
+      });
       expect(diag).toBeNull();
       expect(admissionMocks.aggregateIssueClaimExclusions).not.toHaveBeenCalled();
     });
@@ -1343,7 +1423,9 @@ describe('fleet scope assignment admission (P-016)', () => {
           specVersion: '1.0',
           specId: 'fleet-launch-opencode-omp-research-plan',
           revision: 1,
-          view: { filter: { field: 'plan', op: '=' as const, value: 'opencode-omp-token-reduction-research-2026-08-02' } },
+          view: {
+            filter: { field: 'plan', op: '=' as const, value: 'opencode-omp-token-reduction-research-2026-08-02' },
+          },
           rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
         },
         revision: 1,
@@ -1412,7 +1494,9 @@ describe('fleet scope assignment admission (P-016)', () => {
         expect(miss.error).toMatch(/ORDINARY DRAIN/);
         expect(miss.error).toMatch(/could not be confirmed/);
         expect((miss as { featureFamilyMatched?: number | null }).featureFamilyMatched).toBeNull();
-        expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
+        expect(miss.advice).toMatch(
+          /loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/,
+        );
       }
     });
 
@@ -1691,7 +1775,9 @@ describe('fleet scope assignment admission (P-016)', () => {
         const conf = fleetScopedMiss(divergentScope, [], confirmed);
         expect((conf as { divergenceRecheck?: string }).divergenceRecheck).toBe('confirmed-twice');
         // absent entirely when there were no survivors to be suspicious about
-        const drained = fleetScopedMiss(divergentScope, [], { issueBreakdown: { ...divergentBreakdown, claimable: 0 } });
+        const drained = fleetScopedMiss(divergentScope, [], {
+          issueBreakdown: { ...divergentBreakdown, claimable: 0 },
+        });
         expect((drained as { divergenceRecheck?: string }).divergenceRecheck).toBeUndefined();
       });
 
@@ -1765,7 +1851,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       allowed: false,
       scoped: true,
       code: 'fleet_scope_violation',
-      reason: 'work-item WI-5700 does not match p2p-release-verify-lane@20 for fleet \'p2p-release-verify\'',
+      reason: "work-item WI-5700 does not match p2p-release-verify-lane@20 for fleet 'p2p-release-verify'",
       scope,
     };
 
@@ -1814,7 +1900,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       const paused: Extract<FleetScopeAdmission, { allowed: false }> = {
         ...violation,
         code: 'fleet_winding_down',
-        reason: 'fleet \'p2p-release-verify\' is winding-down (paused)',
+        reason: "fleet 'p2p-release-verify' is winding-down (paused)",
       };
       const remedy = fleetScopeLeaderRemedy(paused);
       expect(remedy).toMatch(/fleet:resume \{ fleet: "p2p-release-verify" \}/);
@@ -1827,7 +1913,7 @@ describe('fleet scope assignment admission (P-016)', () => {
         allowed: false,
         scoped: true,
         code: 'fleet_scope_missing',
-        reason: 'fleet member su-member belongs to \'p2p-release-verify\' but has no explicit spec',
+        reason: "fleet member su-member belongs to 'p2p-release-verify' but has no explicit spec",
         scope: { ...scope, record: { ...scope.record, source: 'default' as const } },
       };
       const remedy = fleetScopeLeaderRemedy(missing);
@@ -1842,7 +1928,12 @@ describe('fleet scope assignment admission (P-016)', () => {
         'work_items:claim WI-5700 → su-member',
       );
       expect(admissionMocks.sendMessage).toHaveBeenCalledOnce();
-      const payload = admissionMocks.sendMessage.mock.calls[0]?.[1] as { to: string[]; summary: string; body: string; category: string };
+      const payload = admissionMocks.sendMessage.mock.calls[0]?.[1] as {
+        to: string[];
+        summary: string;
+        body: string;
+        category: string;
+      };
       expect(payload.to).toEqual(['@fleet-leader:p2p-release-verify']);
       expect(payload.category).toBe('fleet-scope-admission');
       // The factual mismatch is preserved…
@@ -1919,39 +2010,82 @@ describe('fleet scope assignment admission (P-016)', () => {
       allowed: false,
       scoped: true,
       code: 'fleet_scope_violation',
-      reason: 'work-item WI-5700 does not match p2p-release-verify-lane@20 for fleet \'p2p-release-verify\'',
+      reason: "work-item WI-5700 does not match p2p-release-verify-lane@20 for fleet 'p2p-release-verify'",
       scope,
     };
 
     describe('hasLiveFleetRouteTarget', () => {
       it('reports false when every OTHER row in the fleet is present-but-not-alive or absent', async () => {
         admissionMocks.listFleetAssignments.mockResolvedValue([
-          { source: 'presence', workspaceId: 'papercusp-workspace', agentId: 'su-member', fleetSlug: 'p2p-release-verify', holderPresent: true, holderAlive: true },
-          { source: 'presence', workspaceId: 'papercusp-workspace', agentId: 'su-leader', fleetSlug: 'p2p-release-verify', holderPresent: true, holderAlive: false },
+          {
+            source: 'presence',
+            workspaceId: 'papercusp-workspace',
+            agentId: 'su-member',
+            fleetSlug: 'p2p-release-verify',
+            holderPresent: true,
+            holderAlive: true,
+          },
+          {
+            source: 'presence',
+            workspaceId: 'papercusp-workspace',
+            agentId: 'su-leader',
+            fleetSlug: 'p2p-release-verify',
+            holderPresent: true,
+            holderAlive: false,
+          },
         ]);
         // Excludes the caller itself (su-member) — the question is whether ANYONE ELSE
         // can receive routed work, not whether the caller is alive (it obviously is).
-        await expect(hasLiveFleetRouteTarget('p2p-release-verify', 'papercusp-workspace', 'su-member')).resolves.toBe(false);
+        await expect(hasLiveFleetRouteTarget('p2p-release-verify', 'papercusp-workspace', 'su-member')).resolves.toBe(
+          false,
+        );
       });
 
       it('reports true when another member/leader in the fleet is present and alive', async () => {
         admissionMocks.listFleetAssignments.mockResolvedValue([
-          { source: 'presence', workspaceId: 'papercusp-workspace', agentId: 'su-member', fleetSlug: 'p2p-release-verify', holderPresent: true, holderAlive: true },
-          { source: 'presence', workspaceId: 'papercusp-workspace', agentId: 'su-other', fleetSlug: 'p2p-release-verify', holderPresent: true, holderAlive: true },
+          {
+            source: 'presence',
+            workspaceId: 'papercusp-workspace',
+            agentId: 'su-member',
+            fleetSlug: 'p2p-release-verify',
+            holderPresent: true,
+            holderAlive: true,
+          },
+          {
+            source: 'presence',
+            workspaceId: 'papercusp-workspace',
+            agentId: 'su-other',
+            fleetSlug: 'p2p-release-verify',
+            holderPresent: true,
+            holderAlive: true,
+          },
         ]);
-        await expect(hasLiveFleetRouteTarget('p2p-release-verify', 'papercusp-workspace', 'su-member')).resolves.toBe(true);
+        await expect(hasLiveFleetRouteTarget('p2p-release-verify', 'papercusp-workspace', 'su-member')).resolves.toBe(
+          true,
+        );
       });
 
       it('ignores rows from a DIFFERENT fleet', async () => {
         admissionMocks.listFleetAssignments.mockResolvedValue([
-          { source: 'presence', workspaceId: 'papercusp-workspace', agentId: 'su-other', fleetSlug: 'some-other-fleet', holderPresent: true, holderAlive: true },
+          {
+            source: 'presence',
+            workspaceId: 'papercusp-workspace',
+            agentId: 'su-other',
+            fleetSlug: 'some-other-fleet',
+            holderPresent: true,
+            holderAlive: true,
+          },
         ]);
-        await expect(hasLiveFleetRouteTarget('p2p-release-verify', 'papercusp-workspace', 'su-member')).resolves.toBe(false);
+        await expect(hasLiveFleetRouteTarget('p2p-release-verify', 'papercusp-workspace', 'su-member')).resolves.toBe(
+          false,
+        );
       });
 
       it('degrades to null (unknown) on a lookup failure rather than a false negative', async () => {
         admissionMocks.listFleetAssignments.mockRejectedValue(new Error('pg unavailable'));
-        await expect(hasLiveFleetRouteTarget('p2p-release-verify', 'papercusp-workspace', 'su-member')).resolves.toBeNull();
+        await expect(
+          hasLiveFleetRouteTarget('p2p-release-verify', 'papercusp-workspace', 'su-member'),
+        ).resolves.toBeNull();
       });
     });
 
@@ -1962,7 +2096,9 @@ describe('fleet scope assignment admission (P-016)', () => {
       });
 
       it('keeps the original unconditional wording when liveness is UNKNOWN (null/undefined) — never asserts a false negative', () => {
-        expect(fleetScopeLeaderRemedy(violation, null)).toMatch(/\(Or route the work elsewhere \/ complete it yourself\.\)/);
+        expect(fleetScopeLeaderRemedy(violation, null)).toMatch(
+          /\(Or route the work elsewhere \/ complete it yourself\.\)/,
+        );
         expect(fleetScopeLeaderRemedy(violation)).toMatch(/\(Or route the work elsewhere \/ complete it yourself\.\)/);
       });
 
@@ -1980,7 +2116,7 @@ describe('fleet scope assignment admission (P-016)', () => {
         const paused: Extract<FleetScopeAdmission, { allowed: false }> = {
           ...violation,
           code: 'fleet_winding_down',
-          reason: 'fleet \'p2p-release-verify\' is winding-down (paused)',
+          reason: "fleet 'p2p-release-verify' is winding-down (paused)",
         };
         const remedy = fleetScopeLeaderRemedy(paused, false);
         expect(remedy).toMatch(/fleet:resume/);
@@ -1992,7 +2128,14 @@ describe('fleet scope assignment admission (P-016)', () => {
       // Only the refused member itself (the excluded owner) is present in the fleet —
       // the exact repro shape (fleet was themself plus one idle member).
       admissionMocks.listFleetAssignments.mockResolvedValue([
-        { source: 'presence', workspaceId: 'papercusp-workspace', agentId: 'su-member', fleetSlug: 'p2p-release-verify', holderPresent: true, holderAlive: true },
+        {
+          source: 'presence',
+          workspaceId: 'papercusp-workspace',
+          agentId: 'su-member',
+          fleetSlug: 'p2p-release-verify',
+          holderPresent: true,
+          holderAlive: true,
+        },
       ]);
       const result = await notifyFleetScopeRefusal(
         { ownerId: 'su-member' } as never,
@@ -2013,9 +2156,13 @@ describe('fleet scope assignment admission (P-016)', () => {
       const paused: Extract<FleetScopeAdmission, { allowed: false }> = {
         ...violation,
         code: 'fleet_winding_down',
-        reason: 'fleet \'p2p-release-verify\' is winding-down (paused)',
+        reason: "fleet 'p2p-release-verify' is winding-down (paused)",
       };
-      const result = await notifyFleetScopeRefusal({ ownerId: 'su-member' } as never, paused, 'work_items:claim WI-5700 → su-member');
+      const result = await notifyFleetScopeRefusal(
+        { ownerId: 'su-member' } as never,
+        paused,
+        'work_items:claim WI-5700 → su-member',
+      );
       // EI-19484346966003625 (R1): a PAUSED fleet skips the class reading too, and for the
       // same reason it skips the liveness lookup — its remedy is "stand down", so a class
       // diagnosis could only ever argue for a spec widen the member must not act on.
@@ -2032,7 +2179,7 @@ describe('fleet scope assignment admission (P-016)', () => {
   // harness's claimable bug too (observed live: a papercusp-scoped fleet woken by an
   // oddsmith-hive bug). fleetScopedMiss must AND the caller's harness into `payloadFilter`
   // whenever it is passed, regardless of what the spec's own view.filter narrows on.
-  describe('EI-18674160393981819: payloadFilter is scoped to the caller\'s own harness', () => {
+  describe("EI-18674160393981819: payloadFilter is scoped to the caller's own harness", () => {
     const kindOnlyScope = {
       ownerId: 'su-member',
       fleetSlug: 'nonp2p-bug-drain',
@@ -2166,7 +2313,11 @@ describe('itemMatchesRawClaimSpec (EI-18862608742257943 — pre-launch kickoff-v
       return 'FRAGMENT';
     });
     await expect(
-      itemMatchesRawClaimSpec(item, { ...issueSpec, view: { filter: { field: 'kind', op: '=', value: 'feature' } } }, 'papercusp-workspace'),
+      itemMatchesRawClaimSpec(
+        item,
+        { ...issueSpec, view: { filter: { field: 'kind', op: '=', value: 'feature' } } },
+        'papercusp-workspace',
+      ),
     ).resolves.toBe(true);
     expect(admissionMocks.sql).toHaveBeenCalled();
   });

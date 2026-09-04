@@ -116,10 +116,7 @@ import {
   readStructuredOwnerAsk,
 } from './harness/improvements/agent-review-policy';
 import { hasResourceGovernorReceiptPayload, ResourceGovernorReleaseRequiredError } from './resource-governor/queue';
-import {
-  projectWorkItemColumns,
-  type WorkItemReadOptions,
-} from './work-item-read-projection';
+import { projectWorkItemColumns, type WorkItemReadOptions } from './work-item-read-projection';
 
 /**
  * Release cleanup is only needed on the explicit release paths. Keep the
@@ -4843,10 +4840,16 @@ export async function rebindOrphanedPlanFleetReservation(input: {
   id: string;
   harness: string;
   workspaceId: string;
+  expectedFleetSlug: string;
   fleetSlug: string;
 }): Promise<boolean> {
+  const expectedFleetSlug = input.expectedFleetSlug.trim();
   const fleetSlug = input.fleetSlug.trim();
+  if (!expectedFleetSlug) {
+    throw new Error('rebindOrphanedPlanFleetReservation: empty expectedFleetSlug');
+  }
   if (!fleetSlug) throw new Error('rebindOrphanedPlanFleetReservation: empty fleetSlug');
+  if (fleetSlug === expectedFleetSlug) return false;
   const { sql } = getOrgPg();
   const rows = await sql<{ feature_id: string }[]>`
     UPDATE harness_shared.harness_features_consolidated AS feature
@@ -4864,12 +4867,12 @@ export async function rebindOrphanedPlanFleetReservation(input: {
        AND (feature.taken_by IS NULL OR feature.taken_by = '')
        AND COALESCE(feature.payload, '{}'::jsonb) ? 'plan_item'
        AND COALESCE(feature.payload, '{}'::jsonb) ? 'fleet_slug'
-       AND feature.payload ->> 'fleet_slug' IS DISTINCT FROM ${fleetSlug}
+       AND feature.payload ->> 'fleet_slug' = ${expectedFleetSlug}
        AND NOT EXISTS (
          SELECT 1
            FROM harness_shared.agent_fleets registered
           WHERE registered.workspace_id = feature.workspace_id
-            AND registered.fleet_slug = feature.payload ->> 'fleet_slug'
+            AND registered.fleet_slug = ${expectedFleetSlug}
        )
     RETURNING feature.feature_id`;
   return rows.length > 0;
@@ -5023,24 +5026,22 @@ export async function claimWorkItem(
          -- (unless its verified author is trusted — P-010 trust leg, ws-scoped).
          AND ${autoPickableWhereSql(sql, ws)}
          -- P-002 born-pending: duplicate screening is a second, orthogonal gate.
-         AND ${
-           (() => {
-             const forceAdmission =
-               isForceTakeoverAdmission(opts.forceTakeoverAdmission) &&
-               opts.forceTakeoverAdmission.itemId === id &&
-               opts.forceTakeoverAdmission.target === assignee &&
-               opts.forceTakeoverAdmission.workspaceId === ws &&
-               opts.forceTakeoverAdmission.expectedAssignee === expectedAssignee
-                 ? opts.forceTakeoverAdmission
-                 : null;
-             return forceAdmission
-               ? sql`(
+         AND ${(() => {
+           const forceAdmission =
+             isForceTakeoverAdmission(opts.forceTakeoverAdmission) &&
+             opts.forceTakeoverAdmission.itemId === id &&
+             opts.forceTakeoverAdmission.target === assignee &&
+             opts.forceTakeoverAdmission.workspaceId === ws &&
+             opts.forceTakeoverAdmission.expectedAssignee === expectedAssignee
+               ? opts.forceTakeoverAdmission
+               : null;
+           return forceAdmission
+             ? sql`(
                    ${admittedWhereSql(sql)}
                    OR (admission = 'pending' AND taken_by = ${forceAdmission.expectedAssignee})
                  )`
-               : admittedWhereSql(sql);
-           })()
-         }
+             : admittedWhereSql(sql);
+         })()}
       RETURNING ${sql.unsafe(FEATURE_COLS)}`;
     claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }

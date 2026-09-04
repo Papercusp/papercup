@@ -648,14 +648,6 @@ export function evictIfLanguageServiceDead(
  * unit run, only as an empty `definition` answer against a large package hours
  * later, which is precisely how this bug stayed unexplained for so long.
  *
- * `tsserver.useSyntaxServer: 'never'` is equally deliberate. The wrapper's
- * default is `auto`, which selects a dynamic syntax/semantic server pair for
- * current TypeScript. Definition and reference requests can then be answered
- * by the syntax server while the semantic project is still loading. That
- * produced a plausible import-site answer followed by a repeatable ~5-second
- * warm-query stall (WI-2142941). One semantic server keeps compiler truth and
- * readiness in the same process.
- *
  * `maxTsServerMemory` is the wrapper's own option name; it becomes
  * `--max-old-space-size=<N>` on the tsserver fork (`getExecArgv`). Passing null
  * omits the key entirely, so an explicit opt-out really does restore node's
@@ -664,9 +656,9 @@ export function evictIfLanguageServiceDead(
 export function typescriptInitializationOptions(
   tsserverPath: string,
   maxTsServerMemoryMb: number | null = MAX_TSSERVER_MEMORY_MB,
-): { tsserver: { path: string; useSyntaxServer: 'never' }; maxTsServerMemory?: number } {
+): { tsserver: { path: string }; maxTsServerMemory?: number } {
   return {
-    tsserver: { path: tsserverPath, useSyntaxServer: 'never' },
+    tsserver: { path: tsserverPath },
     ...(maxTsServerMemoryMb ? { maxTsServerMemory: maxTsServerMemoryMb } : {}),
   };
 }
@@ -1481,6 +1473,17 @@ export async function ensureOpen(client: LspClient, absPath: string): Promise<st
   }
 
   const text = await readFile(absPath, 'utf8');
+  // Opening a document can start a new project-loading cycle. The client's
+  // previous idle period describes the server BEFORE this document existed
+  // and is therefore not readiness evidence for the query about to follow.
+  //
+  // This invalidation must happen before didOpen is sent. Without it, a warm
+  // client can reuse an hours-old idleSince, answer immediately, then announce
+  // and finish its project load AFTER the answer. The next query sees that new
+  // progress boundary and pays the full 5-second settle window — measured as
+  // [4844, 1, 2, 1, 1] in WI-2142941. An unchanged already-open document takes
+  // the early return above and keeps the genuine hot-path observation.
+  markBusy(client);
   client.connection.sendNotification('textDocument/didOpen', {
     textDocument: {
       uri,

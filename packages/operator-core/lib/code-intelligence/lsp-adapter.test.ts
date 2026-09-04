@@ -317,7 +317,7 @@ describe('WI-40250 — an unknown language refuses instead of falling through to
  * anyone restores the open-once shape: the important assertion is that a
  * mutated file forces didClose + didOpen carrying the NEW text — not a no-op.
  */
-describe('WI-40251 — ensureOpen re-opens when disk changed under an open document', () => {
+describe('ensureOpen — disk freshness and readiness invalidation', () => {
   type Sent = { method: string; params: { textDocument: { uri: string; text?: string; version?: number } } };
 
   let dir: string;
@@ -336,6 +336,9 @@ describe('WI-40251 — ensureOpen re-opens when disk changed under an open docum
     client = {
       language: 'typescript',
       openDocs: new Map<string, { mtimeMs: number; size: number }>(),
+      // Deliberately old: opening a new document must invalidate this stale
+      // readiness observation before it can reach prepareIntentReadiness.
+      idleSince: Date.now() - 60_000,
       connection: {
         sendNotification: (method: string, params: unknown) => {
           sent.push({ method, params } as Sent);
@@ -358,18 +361,29 @@ describe('WI-40251 — ensureOpen re-opens when disk changed under an open docum
     expect(stamp!.size).toBe('export const a = 1;\n'.length);
   });
 
+  it('invalidates the server idle period BEFORE opening a new document (WI-2142941)', async () => {
+    expect((client as unknown as { idleSince: number | null }).idleSince).not.toBeNull();
+
+    await ensureOpen(client, file);
+
+    expect((client as unknown as { idleSince: number | null }).idleSince).toBeNull();
+  });
+
   it('an UNCHANGED file is a no-op — no didClose/didOpen thrash on the hot path', async () => {
     await ensureOpen(client, file);
     sent.length = 0;
+    (client as unknown as { idleSince: number | null }).idleSince = 123;
 
     await ensureOpen(client, file);
 
     expect(sent).toEqual([]);
+    expect((client as unknown as { idleSince: number | null }).idleSince).toBe(123);
   });
 
   it('a file mutated on disk forces didClose + didOpen carrying the NEW text — never a silent stale serve', async () => {
     await ensureOpen(client, file);
     sent.length = 0;
+    (client as unknown as { idleSince: number | null }).idleSince = 123;
 
     // Longer content: the size delta makes the staleness detection
     // deterministic even when both writes land in the same mtime millisecond.
@@ -384,6 +398,7 @@ describe('WI-40251 — ensureOpen re-opens when disk changed under an open docum
     // Re-open restores the version-1 invariant the rest of the adapter assumes
     // (no incremental sync was ever established).
     expect(sent[1].params.textDocument.version).toBe(1);
+    expect((client as unknown as { idleSince: number | null }).idleSince).toBeNull();
   });
 
   it('re-opening RE-STAMPS, so the next unchanged read is again a no-op (no perpetual thrash)', async () => {
@@ -924,7 +939,7 @@ describe('evictIfLanguageServiceDead (WI-2142693)', () => {
   });
 });
 
-describe('typescriptInitializationOptions — tsserver correctness and survival', () => {
+describe('typescriptInitializationOptions — the tsserver memory ceiling (WI-2142840)', () => {
   /**
    * MEASURED, same probe, one variable changed: at node's default old-space
    * tsserver reached 4314MB RSS and self-aborted (`Signal: SIGABRT`), taking
@@ -938,26 +953,9 @@ describe('typescriptInitializationOptions — tsserver correctness and survival'
    */
   it('passes maxTsServerMemory, so tsserver does not run at the ceiling it dies at', () => {
     expect(typescriptInitializationOptions('/x/tsserver.js', 6144)).toEqual({
-      tsserver: { path: '/x/tsserver.js', useSyntaxServer: 'never' },
+      tsserver: { path: '/x/tsserver.js' },
       maxTsServerMemory: 6144,
     });
-  });
-
-  it('uses one semantic server so definition truth cannot race a syntax server (WI-2142941)', () => {
-    const opts = typescriptInitializationOptions('/x/tsserver.js');
-    expect(opts.tsserver.useSyntaxServer).toBe('never');
-  });
-
-  it('CONTROL: missing and auto syntax-server modes fail the semantic-only guard', () => {
-    const usesOnlySemanticServer = (useSyntaxServer: string | undefined) =>
-      useSyntaxServer === 'never';
-    expect(usesOnlySemanticServer(undefined)).toBe(false);
-    expect(usesOnlySemanticServer('auto')).toBe(false);
-    expect(
-      usesOnlySemanticServer(
-        typescriptInitializationOptions('/x/tsserver.js').tsserver.useSyntaxServer,
-      ),
-    ).toBe(true);
   });
 
   it('carries a default that clears the measured 4314MB abort point', () => {
@@ -969,9 +967,7 @@ describe('typescriptInitializationOptions — tsserver correctness and survival'
 
   it('OMITS the key when null, so an opt-out restores node default rather than pinning another number', () => {
     const opts = typescriptInitializationOptions('/x/tsserver.js', null);
-    expect(opts).toEqual({
-      tsserver: { path: '/x/tsserver.js', useSyntaxServer: 'never' },
-    });
+    expect(opts).toEqual({ tsserver: { path: '/x/tsserver.js' } });
     expect('maxTsServerMemory' in opts).toBe(false);
   });
 

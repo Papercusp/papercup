@@ -32,8 +32,10 @@ export default defineTool({
   name: 'goals:list',
   needsWorkspaceTx: true,
   capability: 'goals:read',
+  description:
+    'List goals in the active workspace. This is a workspace-global read, not a harness-scoped read: the transport supplies the workspace transaction, so call it with `{}` or the declared `detail`/`limit` options and do not pass `harness`.',
   guidance: {
-    when: 'User asks "what are we trying to do?", "what are my goals?", "which goals are doable right now?" (read `actionable`), or you need a goal id before calling `goals:get`.',
+    when: 'Workspace-global read: user asks "what are we trying to do?", "what are my goals?", "which goals are doable right now?" (read `actionable`), or you need a goal id before calling `goals:get`. The active workspace comes from the transport; do not pass `harness`.',
     notWhen: 'For TASKS (concrete TODOs), use `tasks:list`. Goals are the higher-level intent; tasks are how you get there.',
     chaining: 'Pair with `goals:get` for the full body + per-blocker verdicts.',
   },

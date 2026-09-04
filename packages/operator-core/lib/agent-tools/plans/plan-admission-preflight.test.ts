@@ -49,6 +49,8 @@ const lane = (args: {
   issueMatchedByFilter?: number;
   issueExcluded?: Record<string, number>;
   feature?: number | null;
+  featureMatchedByFilter?: number | null;
+  featureExcluded?: Record<string, number> | null;
   issueReachable?: boolean;
   featureReachable?: boolean;
   assigneeScoped?: string | null;
@@ -59,22 +61,31 @@ const lane = (args: {
   const issueMatchedByFilter = args.issueMatchedByFilter ?? issue;
   const issueExcluded = args.issueExcluded ?? {};
   const feature = featureReachable ? (args.feature ?? 0) : null;
+  const featureMatchedByFilter = args.featureMatchedByFilter ?? null;
+  const featureExcluded = args.featureExcluded ?? null;
   const mixed = issueReachable && featureReachable;
   return {
     claimable: issue,
     matchedByFilter: issueMatchedByFilter,
     excluded: issueExcluded,
     issueFamily: { claimable: issue, matchedByFilter: issueMatchedByFilter, excluded: issueExcluded },
-    featureFamily: featureReachable ? { claimable: feature, matchedByFilter: null, excluded: null } : null,
+    featureFamily: featureReachable
+      ? { claimable: feature, matchedByFilter: featureMatchedByFilter, excluded: featureExcluded }
+      : null,
     effective: mixed
       ? {
           claimable: feature == null ? null : issue + feature,
-          matchedByFilter: null,
-          excluded: null,
+          matchedByFilter: featureMatchedByFilter == null ? null : issueMatchedByFilter + featureMatchedByFilter,
+          excluded: featureExcluded == null ? null : { ...issueExcluded, ...featureExcluded },
           basis: 'issue+feature-family',
         }
       : featureReachable
-        ? { claimable: feature, matchedByFilter: null, excluded: null, basis: 'feature-family' }
+        ? {
+            claimable: feature,
+            matchedByFilter: featureMatchedByFilter,
+            excluded: featureExcluded,
+            basis: 'feature-family',
+          }
         : issueReachable
           ? {
               claimable: issue,
@@ -97,11 +108,7 @@ const lane = (args: {
 
 describe('evaluateExactPlanAdmission', () => {
   it('surfaces probable-mistake findings without changing an otherwise ready verdict', () => {
-    const planItems = [
-      item('P-001'),
-      item('P-002', 'todo', ['P-001']),
-      item('P-003', 'todo', ['P-002']),
-    ];
+    const planItems = [item('P-001'), item('P-002', 'todo', ['P-001']), item('P-003', 'todo', ['P-002'])];
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',
       planItems,
@@ -246,8 +253,40 @@ describe('evaluateExactPlanAdmission', () => {
       lane: { effective: { claimable: 0 } },
     });
     expect(verdict.message).toContain('diagnostics do not expose matched-row or exclusion-floor counts');
-    expect(verdict.message).toContain('cannot identify whether the filter matched rows or which claim floor excluded them');
+    expect(verdict.message).toContain(
+      'cannot identify whether the filter matched rows or which claim floor excluded them',
+    );
     expect(verdict.message).not.toContain('every matched row is excluded by claim floors');
+  });
+
+  it('names the feature-family reservation floor when exact-plan diagnostics measure it', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [{ id: 'F-1', family: 'feature', sourcePlanItemIds: ['P-001'], payload: null }],
+      laneHealth: lane({
+        issueReachable: false,
+        feature: 0,
+        featureMatchedByFilter: 2,
+        featureExcluded: { claimFloors: 2, reservedPlanLane: 2 },
+      }),
+    });
+
+    expect(verdict).toMatchObject({
+      ready: false,
+      status: 'refused',
+      reason: 'floor-gated',
+      lane: {
+        effective: {
+          claimable: 0,
+          matchedByFilter: 2,
+          excluded: { claimFloors: 2, reservedPlanLane: 2 },
+        },
+      },
+    });
+    expect(verdict.message).toContain('claimFloors=2');
+    expect(verdict.message).toContain('reservedPlanLane=2');
+    expect(verdict.message).not.toContain('diagnostics do not expose');
   });
 
   it('names the exact-plan filter when it matches no rows instead of blaming claim floors', () => {

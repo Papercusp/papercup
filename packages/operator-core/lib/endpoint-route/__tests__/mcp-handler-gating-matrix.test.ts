@@ -1939,6 +1939,29 @@ describe('scoped-superuser hive clamp', () => {
     expect(textOf(res)).not.toContain('harness_forbidden');
   });
 
+  it('flag ON: allows routines:list to inspect only the canonical platform Pot git-sync routine', async () => {
+    h.scopedClampFlag.value = true;
+    for (const target of [
+      { installSlug: PLATFORM_POT_SLUG, name: 'git-sync' },
+      { harness: PLATFORM_POT_SLUG, name: 'git-sync' },
+    ]) {
+      const res = await callTool('routines:list', target, hiveScoped());
+      expect(textOf(res), JSON.stringify(target)).not.toContain('harness_forbidden');
+    }
+  });
+
+  it.each([
+    ['a broad canonical routine read', { installSlug: PLATFORM_POT_SLUG }],
+    ['another canonical routine', { installSlug: PLATFORM_POT_SLUG, name: 'green-checkpoint' }],
+    ['a rollup that ignores its exact filters', { installSlug: PLATFORM_POT_SLUG, name: 'git-sync', rollup: true }],
+    ['a sibling install git-sync routine', { installSlug: 'hiveB-home', name: 'git-sync' }],
+  ])('flag ON: still rejects routines:list targeting %s', async (_case, args) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('routines:list', args, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
   it('flag ON: still rejects git-sync:run targeting any other foreign install', async () => {
     h.scopedClampFlag.value = true;
     const res = await callTool('git-sync:run', { installSlug: 'hiveB-home', dryRun: true }, hiveScoped());
@@ -3148,6 +3171,28 @@ describe('tools:invoke re-dispatch inherits the scoped-superuser hive clamp (EI-
       hiveScoped(),
     );
     expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it('flag ON: allows nested routines:list to inspect only the canonical platform Pot git-sync routine', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'routines:list', args: { installSlug: PLATFORM_POT_SLUG, name: 'git-sync' } },
+      hiveScoped(),
+    );
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it.each([
+    ['a broad canonical routine read', { installSlug: PLATFORM_POT_SLUG }],
+    ['another canonical routine', { installSlug: PLATFORM_POT_SLUG, name: 'green-checkpoint' }],
+    ['a rollup that ignores its exact filters', { installSlug: PLATFORM_POT_SLUG, name: 'git-sync', rollup: true }],
+    ['a sibling install git-sync routine', { installSlug: 'hiveB-home', name: 'git-sync' }],
+  ])('flag ON: nested routines:list still rejects %s', async (_case, args) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('tools:invoke', { name: 'routines:list', args }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
   });
 
   it('flag ON: nested git-sync:run still rejects any other foreign install', async () => {

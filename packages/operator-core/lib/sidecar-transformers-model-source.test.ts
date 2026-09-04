@@ -187,6 +187,27 @@ describe('transformers model sourcing — the opt-in step a pristine-clone build
     }
   });
 
+  it('does not mistake an atomic .tmp.<pid> parent for a fragment filename', () => {
+    const t = fixture();
+    const src = join(t, 'cache', 'onnx-community');
+    // This is the real build shape: build-desktop-sidecar.sh always stages beneath
+    // `${SIDECAR_FINAL_DIR}.tmp.$$`. The fragment classifier must inspect only the
+    // filename, or every final model.onnx_data shard under this parent is rejected.
+    const modelsRoot = join(t, 'darwin-sidecar.tmp.385594', 'node_modules', '@huggingface', 'transformers', 'models');
+    for (const m of MODELS) makeModel(src, m, { fragments: true, shards: 2 });
+
+    const r = runHelper(['stage', modelsRoot], { PAPERCUSP_TRANSFORMERS_MODEL_CACHE: src });
+
+    expect(r.code, r.err).toBe(0);
+    for (const m of MODELS) {
+      const onnx = join(modelsRoot, 'onnx-community', m, 'onnx');
+      expect(existsSync(join(onnx, 'model.onnx_data'))).toBe(true);
+      expect(existsSync(join(onnx, 'model.onnx_data_1'))).toBe(true);
+      expect(existsSync(join(onnx, 'model.onnx_data.tmp.657875.18f1gd2'))).toBe(false);
+      expect(existsSync(join(onnx, 'model.onnx_data.partial'))).toBe(false);
+    }
+  });
+
   it('REFUSES a fragments-only source rather than staging an interrupted download', () => {
     const t = fixture();
     const src = join(t, 'cache', 'onnx-community');
