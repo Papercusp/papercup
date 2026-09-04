@@ -9,7 +9,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, lookupByMcpName } from '@papercusp/agent-mcp';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { continuityProbeRevision } from '../../continuity-probes';
 
@@ -393,6 +393,33 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(guidance?.when).toMatch(/same-line/i);
     expect(guidance?.when).toMatch(/never invent a ref/i);
     expect(guidance?.when).toContain('[self-imposed]');
+  });
+
+  it('keeps the executable probe target shape visible in guidance and the projected schema', () => {
+    type JsonNode = { [key: string]: unknown };
+    const rawSchema = z.toJSONSchema(tool.args) as JsonNode;
+    const rawChecks = (rawSchema.properties as JsonNode).checks as JsonNode;
+    const rawRow = (rawChecks.items as JsonNode).properties as Record<string, JsonNode>;
+    const rawProbeDescription = String(rawRow.probe?.description ?? '');
+
+    const projected = lookupByMcpName('loop:checkpoint');
+    expect(projected, 'loop:checkpoint must be registered in the projected catalog').toBeDefined();
+    const projectedSchema = projected?.inputSchema as JsonNode;
+    const projectedChecks = (projectedSchema.properties as JsonNode).checks as JsonNode;
+    const projectedRow = (projectedChecks.items as JsonNode).properties as Record<string, JsonNode>;
+    const projectedProbeDescription = String(projectedRow.probe?.description ?? '');
+    const description = String((tool as unknown as { description?: unknown }).description ?? '');
+    const guidance = String((tool as unknown as { guidance?: { when?: unknown } }).guidance?.when ?? '');
+
+    expect(projectedProbeDescription).toBe(rawProbeDescription);
+    for (const text of [description, guidance, rawProbeDescription, projectedProbeDescription]) {
+      expect(text).toContain("kind:'tool'");
+      expect(text).toContain("kind:'state-cell'");
+      expect(text).toContain('schemaRevision');
+      expect(text).toContain('args');
+    }
+    expect(projectedProbeDescription).toMatch(/probe:\{ expect:\.\.\. \}/);
+    expect(projectedProbeDescription).toMatch(/omit `probe`.*recheck/i);
   });
 
   it("guides carry retunes to pass loop:arm's required intervalSec and goal", () => {

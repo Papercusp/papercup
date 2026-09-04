@@ -304,6 +304,11 @@ const CARRY_ALIAS_FIELD = z
   .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
   .optional();
 
+const EXECUTABLE_PROBE_SHAPE =
+  "Executable `probe` shape (choose ONE target): `{ kind:'tool', tool:'<direct read-only tool>', args:{...}, schemaRevision:'live', expect:{ path:'$.state', op:'eq', value:'green' } }` or `{ kind:'state-cell', cell:'<registered cell>', as:'<reader>', schemaRevision:'<revision>', expect:{ path:'$.state', op:'eq', value:'green' } }`. " +
+  '`kind`, the matching target (`tool` or `cell`), `schemaRevision`, and `expect` are required; `args` defaults to `{}` for tool probes. ' +
+  '`probe:{ expect:... }` has no executable target — omit `probe` and put the human command in `recheck`.';
+
 export default defineTool({
   name: 'loop:checkpoint',
   profile: 'engineer',
@@ -313,13 +318,16 @@ export default defineTool({
     'or compatibility alias { checkpoint }; canonical note wins and blank/null clears. An optional workItem key is accepted as non-scoping metadata. Keyed by ownerId. walls/checks default ' +
     "to rowsMode:'merge': supplied rows win and ? PREDICTED yields before ✓ VERIFIED at the cap. rowsMode:'replace' " +
     'retires omitted rows; empty list with replace clears. Returns verified metadata plus walls/checks. PostgreSQL ' +
-    'contention returns retryable timeout data, not a transport hang.',
+    'contention returns retryable timeout data, not a transport hang. ' +
+    EXECUTABLE_PROBE_SHAPE,
   guidance: {
     when:
       "At a COLD loop turn's end, store compressed facts, not a transcript. Add a real same-line " +
       '[turn:<session>@<iso-ts>] ref for owner directives/completed coordination; never invent a ref. Mark other sources ' +
       "[self-imposed], [peer:<sid>], or [inferred]. Use rowsMode:'replace' only when retiring rows; default merge " +
-      'mode preserves them. Pair with work_items:checkpoint.',
+      'mode preserves them. For an executable check, ' +
+      EXECUTABLE_PROBE_SHAPE +
+      ' Pair with work_items:checkpoint.',
     notWhen:
       "WARM loops (carry:'warm', the default) carry the live transcript and need no note. " +
       'Use work_items:checkpoint for work-item state.',
@@ -582,7 +590,9 @@ export default defineTool({
                 probe: continuityProbeSchema
                   .optional()
                   .describe(
-                    'Optional schema-versioned, read-only executable probe. Validated against the live tool/cell contract before any checkpoint bytes persist; `recheck` remains the human explanation.',
+                    'Optional schema-versioned, read-only executable probe. ' +
+                      EXECUTABLE_PROBE_SHAPE +
+                      ' Validated against the live tool/cell contract before any checkpoint bytes persist; `recheck` remains the human explanation.',
                   ),
                 // EI-21575304064818009: expose the structured verification
                 // vocabulary that coerceCarryRowShape already accepts. The
