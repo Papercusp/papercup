@@ -2511,6 +2511,68 @@ export function buildEpochUnitAdvisory(rawSql: string): string | null {
 }
 
 /**
+ * Flag an unbounded substring search over the large tool-invocation JSONB
+ * columns (EI-21663090256112441).
+ *
+ * `maxRows` caps rows returned by {@link pgReadQuery}; it does not cap the
+ * amount of work PostgreSQL performs while evaluating a WHERE clause. Casting
+ * `args_json` or `metadata_json` to text and applying LIKE/ILIKE therefore
+ * forces a per-row JSON serialisation/filter over the multi-million-row
+ * `tool_invocations` table when the SQL has no LIMIT. The query can look
+ * bounded to a caller while still running until statement_timeout.
+ *
+ * This is intentionally a pure, conservative shape check. It does not try to
+ * infer a query's selectivity or invent a new JSON index. An explicit SQL
+ * LIMIT is treated as a caller-provided scan bound; all other JSON-text
+ * pattern predicates are surfaced so the dev:pg_query handler can refuse them
+ * by default and require an explicit bypass for deliberate forensic scans.
+ */
+export function buildJsonTextSearchAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.some((t) => bareTableName(t) === 'tool_invocations')) return null;
+
+  const body = stripSqlLiteralsAndComments(rawSql);
+  // A SQL LIMIT gives PostgreSQL an opportunity to stop after finding enough
+  // rows. LIMIT ALL is not a bound and remains unsafe. FETCH FIRST/NEXT is the
+  // equivalent SQL spelling and is treated the same way.
+  if (
+    (/\blimit\b/i.test(body) && !/\blimit\s+all\b/i.test(body)) ||
+    /\bfetch\s+(?:first|next)\b/i.test(body)
+  ) {
+    return null;
+  }
+
+  const matchedColumns: string[] = [];
+  for (const column of ['args_json', 'metadata_json']) {
+    const qualifiedColumn = String.raw`(?:[A-Za-z_][A-Za-z0-9_$]*\s*\.\s*)?\b${column}\b`;
+    const castExpression = String.raw`(?:${qualifiedColumn}\s*::\s*text|cast\s*\(\s*${qualifiedColumn}\s+as\s+text\s*\))`;
+    // PostgreSQL exposes LIKE/ILIKE as ~~ / ~~* internally, so recognise both
+    // spellings. The stripped body keeps identifiers/operators while erasing
+    // pattern literals and comments, preventing quoted examples from firing.
+    const pattern = new RegExp(
+      String.raw`\(*\s*${castExpression}\s*\)*\s*(?:(?:like|ilike)\b|!?~~\*?)(?=\s|['(]|$)`,
+      'i',
+    );
+    if (pattern.test(body)) matchedColumns.push(column);
+  }
+  if (!matchedColumns.length) return null;
+
+  const columns = matchedColumns.map((column) => `\`${column}::text\``).join(' or ');
+  return (
+    '⚠ unbounded JSON-text search: this tool_invocations query applies LIKE/ILIKE to ' +
+    `${columns}, which forces PostgreSQL to serialise and scan the large ` +
+    '`harness_shared.tool_invocations` JSONB columns row by row; `maxRows` only caps ' +
+    'rows returned after the WHERE scan and cannot bound this work. Prefer an indexed ' +
+    'scalar predicate such as `workspace_id`, `harness_slug`, `coord_owner_id`, ' +
+    '`tool_name`, `goal_ref`, `spawn_id`, or `invoked_at`, add a selective SQL LIMIT/time ' +
+    'window, or use `activity:tool-log` / `dev:telemetry` for the documented compact ' +
+    'invocation views. This preflight refuses the unbounded shape by default; pass ' +
+    '`allowUnboundedJsonSearch: true` only for a deliberate forensic scan. ' +
+    '(EI-21663090256112441).'
+  );
+}
+
+/**
  * Resolve a caller-supplied scope value to a REAL id, or `undefined` if it is absent OR the
  * `'*'` wildcard sentinel (`_harness-scope.ts`: every su/operator-scope call sets
  * `ctx.harnessSlug = '*'`, and the same convention applies to `ctx.workspaceId`). Suggesting a

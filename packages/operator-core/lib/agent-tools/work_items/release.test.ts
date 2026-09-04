@@ -24,17 +24,22 @@ vi.mock('../../work-items', () => ({
 }));
 
 const checkpointStore = vi.hoisted(() => ({
-  getWorkItemCheckpointWithMeta: vi.fn(async () => ({ checkpoint: null, updatedAtMs: null })),
+  getWorkItemCheckpointWithMeta: vi.fn(async () => ({
+    checkpoint: null as string | null,
+    updatedAtMs: null as number | null,
+  })),
 }));
 vi.mock('../../work-item-checkpoint', () => checkpointStore);
 
-const reachabilityM = vi.hoisted(() => vi.fn(async () => ({
-  verdict: 'reachable' as const,
-  basis: 'live-resolver' as const,
-  authoritative: true,
-  evidence: 'catalogued producer is live',
-  checkedAt: '2026-09-01T12:00:00.000Z',
-})));
+const reachabilityM = vi.hoisted(() =>
+  vi.fn(async () => ({
+    verdict: 'reachable' as const,
+    basis: 'live-resolver' as const,
+    authoritative: true,
+    evidence: 'catalogued producer is live',
+    checkedAt: '2026-09-01T12:00:00.000Z',
+  })),
+);
 vi.mock('../../external-condition-reachability', () => ({
   readEventConditionReachability: reachabilityM,
 }));
@@ -87,7 +92,7 @@ const sendMessageM = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({}) 
 vi.mock('../coordination/messages', () => ({ sendMessage: sendMessageM }));
 
 type Out = { data: any };
-const body = async (args: unknown) => (((await tool.handler(args as never, {} as never)) as Out).data);
+const body = async (args: unknown) => ((await tool.handler(args as never, {} as never)) as Out).data;
 const parse = (args: unknown) => (tool.args as { parse: (value: unknown) => unknown }).parse(args);
 
 beforeEach(() => {
@@ -106,7 +111,9 @@ beforeEach(() => {
     checkedAt: '2026-09-01T12:00:00.000Z',
   });
   releaseM.mockImplementation(async (id: string) => ({ id, assignee: null }) as never);
-  holdM.mockImplementation(async (id: string, hold: boolean) => ({ id, harness: null, hold, applicable: true }) as never);
+  holdM.mockImplementation(
+    async (id: string, hold: boolean) => ({ id, harness: null, hold, applicable: true }) as never,
+  );
   checkpointM.mockResolvedValue({ checkpoint: null, updatedAtMs: null });
 });
 
@@ -258,17 +265,14 @@ describe('work_items:release reports its delta (WI-6678)', () => {
     expect(String((b.results[0] as { noop?: string }).noop)).toMatch(/ALREADY unassigned/i);
   });
 
-  it('the delta comes from releaseWorkItem\'s own read — the handler never pre-reads the row itself', async () => {
+  it("the delta comes from releaseWorkItem's own read — the handler never pre-reads the row itself", async () => {
     // The first cut of this fix called getWorkItem at the call site. That was a redundant
     // round-trip AND racy: the assignee can change between the call site's read and the
     // library's, so previousAssignee could describe a state the release never acted on.
     releaseWithPrior('me');
     await body({ id: 'WI-MINE' });
     expect(getM).not.toHaveBeenCalled();
-    expect(releaseM).toHaveBeenCalledWith(
-      'WI-MINE',
-      expect.objectContaining({ onPriorState: expect.any(Function) }),
-    );
+    expect(releaseM).toHaveBeenCalledWith('WI-MINE', expect.objectContaining({ onPriorState: expect.any(Function) }));
   });
 
   it('a release that reports NO prior state (row vanished) degrades to released:false, never a false positive', async () => {
@@ -475,7 +479,11 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
     // WI-321 boomerang fix: park provenance goes in claim_hold_* (parkedBy), never held_open_*
     // — a held_open lease dies ~2h after the parker's session ends (WI-4531 reaper), which made
     // every ephemeral agent's park boomerang back into scheduler:get_next.
-    expect(holdM).toHaveBeenCalledWith('WI-1', true, { harness: undefined, parkedBy: 'me', parkedReason: 'umbrella item' });
+    expect(holdM).toHaveBeenCalledWith('WI-1', true, {
+      harness: undefined,
+      parkedBy: 'me',
+      parkedReason: 'umbrella item',
+    });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', claimHold: true });
   });
 
@@ -525,12 +533,14 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
     expect(() => parse({ id: 'WI-1', claimHold: true, reason: 'wait for deploy' })).toThrow(
       /claimHoldRelease.*typed re-evaluation contract/,
     );
-    expect(() => parse({
-      id: 'WI-1',
-      claimHold: true,
-      reason: 'wait for deploy',
-      claimHoldRelease: { condition: 'deployment finishes', trigger: 'deploy:ready:staging' },
-    })).not.toThrow();
+    expect(() =>
+      parse({
+        id: 'WI-1',
+        claimHold: true,
+        reason: 'wait for deploy',
+        claimHoldRelease: { condition: 'deployment finishes', trigger: 'deploy:ready:staging' },
+      }),
+    ).not.toThrow();
   });
 
   it('derives reachability evidence and persists the typed claim_hold_release contract with the park', async () => {
@@ -611,8 +621,16 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
 
   it('a batch default claimHold applies to every item unless a per-item override is given', async () => {
     const b = await body({ items: [{ id: 'WI-1' }, { id: 'WI-2', claimHold: false }], claimHold: true });
-    expect(holdM).toHaveBeenNthCalledWith(1, 'WI-1', true, { harness: undefined, parkedBy: 'me', parkedReason: undefined });
-    expect(holdM).toHaveBeenNthCalledWith(2, 'WI-2', false, { harness: undefined, parkedBy: 'me', parkedReason: undefined });
+    expect(holdM).toHaveBeenNthCalledWith(1, 'WI-1', true, {
+      harness: undefined,
+      parkedBy: 'me',
+      parkedReason: undefined,
+    });
+    expect(holdM).toHaveBeenNthCalledWith(2, 'WI-2', false, {
+      harness: undefined,
+      parkedBy: 'me',
+      parkedReason: undefined,
+    });
     expect(b.results[0]).toMatchObject({ claimHold: true });
     expect(b.results[1]).toMatchObject({ claimHold: false });
   });
@@ -637,13 +655,32 @@ describe('work_items:release resolves a pending release request (WI-5974)', () =
     const payload = { release_request_by: 'req-1' }; // shape irrelevant — readWorkItemReleaseRequest is mocked
     releaseM.mockResolvedValue({ id: 'WI-1', assignee: null, harness: 'h', payload } as never);
     releaseRequest.readWorkItemReleaseRequest.mockReturnValue({
-      by: 'req-1', holder: 'me', reason: 'stalled', onSilence: 'reclaim', deadlineAt: 1, requestedAt: 1, resolved: false, resolution: null, resolvedAt: null,
+      by: 'req-1',
+      holder: 'me',
+      reason: 'stalled',
+      onSilence: 'reclaim',
+      deadlineAt: 1,
+      requestedAt: 1,
+      resolved: false,
+      resolution: null,
+      resolvedAt: null,
     });
     releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue({
-      by: 'req-1', holder: 'me', reason: 'stalled', onSilence: 'reclaim', deadlineAt: 1, requestedAt: 1, resolved: true, resolution: 'holder-released', resolvedAt: Date.now(),
+      by: 'req-1',
+      holder: 'me',
+      reason: 'stalled',
+      onSilence: 'reclaim',
+      deadlineAt: 1,
+      requestedAt: 1,
+      resolved: true,
+      resolution: 'holder-released',
+      resolvedAt: Date.now(),
     });
     await body({ id: 'WI-1' });
-    expect(releaseRequest.resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-1', { harness: 'h', resolution: 'holder-released' });
+    expect(releaseRequest.resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-1', {
+      harness: 'h',
+      resolution: 'holder-released',
+    });
     expect(sendMessageM).toHaveBeenCalledTimes(1);
     expect(sendMessageM.mock.calls[0][1]).toMatchObject({ to: ['req-1'] });
     expect(commentM).toHaveBeenCalledTimes(1);
@@ -652,7 +689,15 @@ describe('work_items:release resolves a pending release request (WI-5974)', () =
   it('an already-resolved pending request (race) is never re-notified (CAS returns null)', async () => {
     releaseM.mockResolvedValue({ id: 'WI-1', assignee: null, harness: 'h', payload: {} } as never);
     releaseRequest.readWorkItemReleaseRequest.mockReturnValue({
-      by: 'req-1', holder: 'me', reason: 'x', onSilence: 'nothing', deadlineAt: 1, requestedAt: 1, resolved: false, resolution: null, resolvedAt: null,
+      by: 'req-1',
+      holder: 'me',
+      reason: 'x',
+      onSilence: 'nothing',
+      deadlineAt: 1,
+      requestedAt: 1,
+      resolved: false,
+      resolution: null,
+      resolvedAt: null,
     });
     releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue(null); // lost the race
     await body({ id: 'WI-1' });
@@ -664,13 +709,32 @@ describe('work_items:release resolves a pending release request (WI-5974)', () =
     getM.mockResolvedValue({ id: 'WI-HELD', assignee: 'peer', lastProgressAt: 'ts' } as never);
     releaseM.mockResolvedValue({ id: 'WI-HELD', assignee: null, harness: 'h', payload: {} } as never);
     releaseRequest.readWorkItemReleaseRequest.mockReturnValue({
-      by: 'req-1', holder: 'peer', reason: 'x', onSilence: 'escalate', deadlineAt: 1, requestedAt: 1, resolved: false, resolution: null, resolvedAt: null,
+      by: 'req-1',
+      holder: 'peer',
+      reason: 'x',
+      onSilence: 'escalate',
+      deadlineAt: 1,
+      requestedAt: 1,
+      resolved: false,
+      resolution: null,
+      resolvedAt: null,
     });
     releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue({
-      by: 'req-1', holder: 'peer', reason: 'x', onSilence: 'escalate', deadlineAt: 1, requestedAt: 1, resolved: true, resolution: 'superseded', resolvedAt: Date.now(),
+      by: 'req-1',
+      holder: 'peer',
+      reason: 'x',
+      onSilence: 'escalate',
+      deadlineAt: 1,
+      requestedAt: 1,
+      resolved: true,
+      resolution: 'superseded',
+      resolvedAt: Date.now(),
     });
     await body({ id: 'WI-HELD', force: true, reason: 'holder session dead 3h' });
-    expect(releaseRequest.resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-HELD', { harness: 'h', resolution: 'superseded' });
+    expect(releaseRequest.resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-HELD', {
+      harness: 'h',
+      resolution: 'superseded',
+    });
   });
 
   it('a failure resolving the release request never fails the release itself (best-effort)', async () => {

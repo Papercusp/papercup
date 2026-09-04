@@ -1523,8 +1523,14 @@ export async function rehydrateLoopWakeText(
       checkpointState +
       `\n\nCurrent open walls:\n${wallsNow}\n` +
       (checksNow ? `${checksNow}\n` : '') +
-      `TRUST THIS BLOCK — it is the delivery-time re-read and outranks the fire-time snapshot below: do not re-execute an irreversible action ` +
-      `or re-ask the owner about a wall not listed here.`;
+      // EI-21988107654213811: the delivery read is ordered only to its own
+      // readAt instant. A newer loop:checkpoint can be written immediately
+      // afterward, so the authority claim must not make a recipient trust this
+      // snapshot over a later status/checkpoint it actually observes.
+      `TRUST THIS BLOCK AS OF readAt=${deliveryReadAtIso} — it outranks the fire-time snapshot below for state observed at that instant, ` +
+      `but it is NOT a promise that the carry-note stayed unchanged afterward. If you write a checkpoint, receive a newer status, ` +
+      `or otherwise observe progress after readAt, re-read loop:status / loop:checkpoint before acting; do not re-execute an ` +
+      `irreversible action or re-ask the owner about a wall not listed in this snapshot.`;
 
     // Keep both the live state and a lifecycle supersession warning ahead of the
     // generic fire-time text. The latter is just as important to preserve: an ended

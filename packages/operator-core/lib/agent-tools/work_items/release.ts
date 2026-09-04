@@ -39,8 +39,16 @@ const releaseReasonSchema = () =>
 
 const claimHoldReleaseSchema = z
   .object({
-    condition: z.string().min(1).max(1000).describe('the concrete condition that permits this durable park to be reconsidered'),
-    trigger: z.string().min(1).max(300).describe('the exact events:await key that signals the condition may have changed'),
+    condition: z
+      .string()
+      .min(1)
+      .max(1000)
+      .describe('the concrete condition that permits this durable park to be reconsidered'),
+    trigger: z
+      .string()
+      .min(1)
+      .max(300)
+      .describe('the exact events:await key that signals the condition may have changed'),
     owner: z.string().min(1).max(200).optional().describe('accountable condition owner/source; defaults to the parker'),
   })
   .strict();
@@ -216,12 +224,13 @@ function assertsCompletionForItem(message: unknown, itemId: string): boolean {
   });
 }
 
-async function readPriorCompletionAssertion(holder: string, itemId: string): Promise<{ msgId: string; ts: string } | null> {
+async function readPriorCompletionAssertion(
+  holder: string,
+  itemId: string,
+): Promise<{ msgId: string; ts: string } | null> {
   try {
     const messages = await readOutbox(holder);
-    const match = messages.find(
-      (message) => message.from === holder && assertsCompletionForItem(message, itemId),
-    );
+    const match = messages.find((message) => message.from === holder && assertsCompletionForItem(message, itemId));
     return match ? { msgId: match.msg_id, ts: match.ts } : null;
   } catch {
     // A coord read outage must never turn a voluntary release into a failed release.
@@ -232,15 +241,14 @@ async function readPriorCompletionAssertion(holder: string, itemId: string): Pro
 const itemSpec = z.object({
   id: z.string().min(1),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
-  claimHold: z
-    .boolean()
-    .optional()
-    .describe('per-item claim-hold override (else the batch `claimHold` default)'),
+  claimHold: z.boolean().optional().describe('per-item claim-hold override (else the batch `claimHold` default)'),
   claimHoldRelease: claimHoldReleaseSchema
     .optional()
     .describe('typed release condition required when the effective claimHold is true'),
   force: z.boolean().optional().describe('per-item override of the batch `force` default'),
-  reason: releaseReasonSchema().describe('per-item override of the batch `reason` (required when force clears a peer\'s claim)'),
+  reason: releaseReasonSchema().describe(
+    "per-item override of the batch `reason` (required when force clears a peer's claim)",
+  ),
 });
 
 export default defineTool({
@@ -256,7 +264,8 @@ export default defineTool({
     returns:
       'Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a not-found item never fails the rest. Refuses to clear ANOTHER agent\'s live claim (`{ ok:false, error:"not_holder", holder }` per item); `force:true` is a CHECKED override (WI-4198), not a bypass — non-live holder / queen / the holder\'s fleet leader only, requires `reason`, audited + notifies holder and owner (full rules on the `force` arg); anything else refuses with `force_unauthorized`. A voluntary release records a short re-claim cooldown.',
     when: 'You claimed work-item(s) but are no longer working them. Add claimHold:true plus claimHoldRelease when the item must NOT be opportunistically re-claimed until a named event condition changes — plain release lets it re-surface immediately.',
-    notWhen: 'A per-item `not_holder` means a LIVE peer currently holds it — coordinate with the `holder` (coord:send), do not blind-force: force is for reclaiming a dead/stuck agent\'s item, never for clearing a peer\'s in-flight claim.',
+    notWhen:
+      "A per-item `not_holder` means a LIVE peer currently holds it — coordinate with the `holder` (coord:send), do not blind-force: force is for reclaiming a dead/stuck agent's item, never for clearing a peer's in-flight claim.",
     chaining: 'work_items:claim → … → work_items:release.',
     seeAlso: [
       'work_items:set_state { state:"blocked" } (standalone feature-family park; plan-linked feature items must use plans:set-status because the plan item is the source of truth; issue-family aliases blocked back to open — release { claimHold:true } is the durable self-select exclusion)',
@@ -270,7 +279,12 @@ export default defineTool({
   args: z
     .object({
       id: z.string().min(1).optional().describe('single-release shorthand: the work-item id'),
-      ids: z.array(z.string().min(1)).min(1).max(200).optional().describe('release many work-items at once (homogeneous)'),
+      ids: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(200)
+        .optional()
+        .describe('release many work-items at once (homogeneous)'),
       items: z.array(itemSpec).min(1).max(200).optional().describe('release many, each { id, harness?, claimHold? }'),
       harness: z.string().max(80).optional().describe('default harness for the inline id / ids / items that omit one'),
       claimHold: z
@@ -281,7 +295,9 @@ export default defineTool({
         ),
       claimHoldRelease: claimHoldReleaseSchema
         .optional()
-        .describe('default typed release condition for claimHold:true; reachability/evidence are resolved by the writer'),
+        .describe(
+          'default typed release condition for claimHold:true; reachability/evidence are resolved by the writer',
+        ),
       force: z
         .boolean()
         .optional()
@@ -289,7 +305,7 @@ export default defineTool({
           'default force for the inline id / every id in `ids`: release even if held by ANOTHER agent. CHECKED override (WI-4198): allowed only when the holder is not live, or you are queen, or you lead the HOLDER\'s fleet — and a cross-holder force requires `reason` and is audited + notifies holder/owner. Default false: refuses with { error:"not_holder", holder } when the caller is not the current holder.',
         ),
       reason: releaseReasonSchema().describe(
-        'default reason for the inline id / every id in `ids` — REQUIRED when force clears another agent\'s claim; auto-truncated to 500 chars if longer, then recorded in the audit row/notifications and any durable park.',
+        "default reason for the inline id / every id in `ids` — REQUIRED when force clears another agent's claim; auto-truncated to 500 chars if longer, then recorded in the audit row/notifications and any durable park.",
       ),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (a.ids?.length ?? 0) > 0 || Boolean(a.id), {
@@ -326,8 +342,24 @@ export default defineTool({
     const list = args.items?.length
       ? args.items
       : args.ids?.length
-        ? args.ids.map((id) => ({ id, harness: args.harness, claimHold: args.claimHold, claimHoldRelease: args.claimHoldRelease, force: args.force, reason: args.reason }))
-        : [{ id: args.id as string, harness: args.harness, claimHold: args.claimHold, claimHoldRelease: args.claimHoldRelease, force: args.force, reason: args.reason }];
+        ? args.ids.map((id) => ({
+            id,
+            harness: args.harness,
+            claimHold: args.claimHold,
+            claimHoldRelease: args.claimHoldRelease,
+            force: args.force,
+            reason: args.reason,
+          }))
+        : [
+            {
+              id: args.id as string,
+              harness: args.harness,
+              claimHold: args.claimHold,
+              claimHoldRelease: args.claimHoldRelease,
+              force: args.force,
+              reason: args.reason,
+            },
+          ];
     const env = await runBulk(
       list,
       async (it) => {
@@ -339,9 +371,10 @@ export default defineTool({
         const reasonDisclosure = reasonTruncated ? { reasonTruncated: true as const } : {};
         const claimHold = it.claimHold ?? args.claimHold;
         const claimHoldReleaseInput = it.claimHoldRelease ?? args.claimHoldRelease;
-        const releaseContract = claimHold === true && claimHoldReleaseInput
-          ? await buildClaimHoldReleaseContract(claimHoldReleaseInput, ident.ownerId)
-          : undefined;
+        const releaseContract =
+          claimHold === true && claimHoldReleaseInput
+            ? await buildClaimHoldReleaseContract(claimHoldReleaseInput, ident.ownerId)
+            : undefined;
         // WI-4198: force is a CHECKED override, not a bypass. Before releasing,
         // identify the holder; a cross-holder force must pass the authority/liveness
         // guard, carry a reason, and leave an audit + notification trail.
@@ -590,10 +623,7 @@ export default defineTool({
         // as proof that the row was idle. Reuse the claim reaper's canonical 10-minute
         // grace rather than inventing a second notion of "fresh".
         const freshUnclaimedCheckpointAgeMs =
-          !wasHeld &&
-          claimHold === true &&
-          checkpointMeta.checkpoint &&
-          checkpointMeta.updatedAtMs != null
+          !wasHeld && claimHold === true && checkpointMeta.checkpoint && checkpointMeta.updatedAtMs != null
             ? Math.max(0, Date.now() - checkpointMeta.updatedAtMs)
             : null;
         const freshUnclaimedCheckpoint =
@@ -613,20 +643,21 @@ export default defineTool({
                   `worker, then claim/finish it or deliberately confirm the park.`,
               }
             : {};
-        const stranding = releaseCheckpoint && detectBgJobCheckpointClaim(releaseCheckpoint).detected
-          ? {
-              strandedCheckpointWarning:
-                `You are releasing '${it.id}' while its checkpoint cites a BACKGROUND JOB as the evidence it is waiting on. ` +
-                `That job's bookkeeping lives in YOUR process/shell and does not survive your session (EI-16611) — the next ` +
-                `reader gets a checkpoint promising a result that can never arrive, and the item sits open as if unstarted ` +
-                `(WI-5895 sat 17 days that way with its fix already committed). You are the last reader who can settle this ` +
-                `cheaply, while you still have the pid and the log. Before walking away, do ONE of: (a) verify the job now ` +
-                `(check the referenced pid is alive AND the log reached the runner's OWN completion marker — a log that just ` +
-                `stopped growing is ambiguous, not proof) and work_items:complete it; (b) re-checkpoint replacing the bg-job ` +
-                `reference with a re-runnable command a successor can execute from scratch; or (c) work_items:set_state ` +
-                `{ state:'blocked' } with the reason, so it lands somewhere that gets re-read instead of looking claimable.`,
-            }
-          : {};
+        const stranding =
+          releaseCheckpoint && detectBgJobCheckpointClaim(releaseCheckpoint).detected
+            ? {
+                strandedCheckpointWarning:
+                  `You are releasing '${it.id}' while its checkpoint cites a BACKGROUND JOB as the evidence it is waiting on. ` +
+                  `That job's bookkeeping lives in YOUR process/shell and does not survive your session (EI-16611) — the next ` +
+                  `reader gets a checkpoint promising a result that can never arrive, and the item sits open as if unstarted ` +
+                  `(WI-5895 sat 17 days that way with its fix already committed). You are the last reader who can settle this ` +
+                  `cheaply, while you still have the pid and the log. Before walking away, do ONE of: (a) verify the job now ` +
+                  `(check the referenced pid is alive AND the log reached the runner's OWN completion marker — a log that just ` +
+                  `stopped growing is ambiguous, not proof) and work_items:complete it; (b) re-checkpoint replacing the bg-job ` +
+                  `reference with a re-runnable command a successor can execute from scratch; or (c) work_items:set_state ` +
+                  `{ state:'blocked' } with the reason, so it lands somewhere that gets re-read instead of looking claimable.`,
+              }
+            : {};
         // EI-20744001855099113: a completion assertion from the holder is a second,
         // independent release-time signal for the same strand. Only inspect the
         // holder that actually owned this claim, and only while the returned item is

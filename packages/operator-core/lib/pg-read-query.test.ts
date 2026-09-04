@@ -28,6 +28,7 @@ import {
   buildSplitCompletionEvidenceAdvisory,
   buildDerivedColumnRedirect,
   buildToolRoutingAdvisory,
+  buildJsonTextSearchAdvisory,
   TOOL_ROUTING_BY_TABLE,
   buildJsonbPathRedirect,
   buildSchemaColumnRedirect,
@@ -2501,6 +2502,57 @@ describe('buildEpochUnitAdvisory (EI-20261119579595975 — seconds divided as mi
       `SELECT invoked_at FROM ${TOOL_INVOCATIONS} ` +
       "WHERE note = 'to_timestamp(1786547705.088/1000.0)' -- to_timestamp(1786547705.088/1000.0)";
     expect(buildEpochUnitAdvisory(sql)).toBeNull();
+  });
+});
+
+describe('buildJsonTextSearchAdvisory (EI-21663090256112441 — unbounded JSONB text search)', () => {
+  const TOOL_INVOCATIONS = 'harness_shared.tool_invocations';
+
+  it('warns when args_json is cast to text for an unbounded ILIKE predicate', () => {
+    const advisory = buildJsonTextSearchAdvisory(
+      `SELECT id, tool_name FROM ${TOOL_INVOCATIONS} ` +
+        "WHERE workspace_id = 'papercusp-workspace' AND args_json::text ILIKE '%EI-22033266394507364%'",
+    );
+    expect(advisory).toContain('unbounded JSON-text search');
+    expect(advisory).toContain('args_json::text');
+    expect(advisory).toContain('maxRows');
+    expect(advisory).toContain('allowUnboundedJsonSearch: true');
+  });
+
+  it('also catches metadata_json CAST(text) and PostgreSQL LIKE operator spellings', () => {
+    expect(
+      buildJsonTextSearchAdvisory(
+        `SELECT id FROM ${TOOL_INVOCATIONS} WHERE CAST(metadata_json AS text) ~~* '%requestOrigin%'`,
+      ),
+    ).toContain('metadata_json::text');
+  });
+
+  it('stays silent when SQL supplies an explicit row bound', () => {
+    expect(
+      buildJsonTextSearchAdvisory(
+        `SELECT id FROM ${TOOL_INVOCATIONS} WHERE args_json::text ILIKE '%needle%' LIMIT 5`,
+      ),
+    ).toBeNull();
+    expect(
+      buildJsonTextSearchAdvisory(
+        `SELECT id FROM ${TOOL_INVOCATIONS} WHERE metadata_json::text LIKE '%needle%' FETCH FIRST 5 ROWS ONLY`,
+      ),
+    ).toBeNull();
+  });
+
+  it('stays silent for projections, other relations, and quoted examples', () => {
+    expect(
+      buildJsonTextSearchAdvisory(`SELECT args_json::text FROM ${TOOL_INVOCATIONS}`),
+    ).toBeNull();
+    expect(
+      buildJsonTextSearchAdvisory("SELECT args_json::text FROM other_table WHERE args_json::text ILIKE '%x%'"),
+    ).toBeNull();
+    expect(
+      buildJsonTextSearchAdvisory(
+        `SELECT id FROM ${TOOL_INVOCATIONS} ` +
+          "WHERE note = 'args_json::text ILIKE ''%quoted%''' -- args_json::text ILIKE '%comment%'",
+      ),
+    ).toBeNull();
   });
 });
 

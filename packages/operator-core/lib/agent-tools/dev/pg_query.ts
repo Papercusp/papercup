@@ -29,6 +29,7 @@ import {
   buildAgentFactsSupersessionAdvisory,
   buildEventFireWindowAdvisory,
   buildSplitCompletionEvidenceAdvisory,
+  buildJsonTextSearchAdvisory,
   buildSilentNullPathAdvisory,
   buildJsonbTypeofNegationAdvisory,
   buildSchemaColumnRedirect,
@@ -137,7 +138,7 @@ export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
   description:
-    "Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim. PostgreSQL regex repetition bounds are limited to 255; use `left()` or `substring()` for larger excerpts. Rubrics are plan-backed in `harness_shared.harness_plans` (`template = 'rubric'`); `harness_shared.rubrics` is retired.",
+    "Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim. Unbounded LIKE/ILIKE searches over tool_invocations JSONB text are refused unless `allowUnboundedJsonSearch: true`; prefer indexed scalar predicates or activity:tool-log/dev:telemetry. PostgreSQL regex repetition bounds are limited to 255; use `left()` or `substring()` for larger excerpts. Rubrics are plan-backed in `harness_shared.harness_plans` (`template = 'rubric'`); `harness_shared.rubrics` is retired.",
   capability: 'intel:read',
   guidance: {
     when:
@@ -145,7 +146,7 @@ export default defineTool({
     notWhen:
       'A documented read tool already covers the question, or to change state. Writes and EXPLAIN of writes are rejected.',
     chaining:
-      "Use `describe` before guessing schema. For rubric schema, describe `harness_shared.harness_plans`; use `rubrics:list`, `rubrics:get`, or `rubrics:search` for canonical rubric reads. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`, which always returns a row. Alias duplicate columns and tighten the query when `truncated`. PostgreSQL ARE regex repetition bounds are at most 255 (`{m,n}`); use `left(text, n)` or `substring(text from start for n)` for larger excerpts.",
+      "Use `describe` before guessing schema. For rubric schema, describe `harness_shared.harness_plans`; use `rubrics:list`, `rubrics:get`, or `rubrics:search` for canonical rubric reads. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`, which always returns a row. Alias duplicate columns and tighten the query when `truncated`. Do not search `tool_invocations.args_json::text` or `metadata_json::text` with LIKE/ILIKE without a SQL LIMIT; `maxRows` does not bound the WHERE scan. Prefer indexed scalar predicates or `activity:tool-log`/`dev:telemetry`; pass `allowUnboundedJsonSearch: true` only for deliberate forensic work. PostgreSQL ARE regex repetition bounds are at most 255 (`{m,n}`); use `left(text, n)` or `substring(text from start for n)` for larger excerpts.",
     returns:
       'SQL: `{ rowCount, truncated, fields, elapsedMs, rows, positiveControl?, absence? }`; zero rows is `absence.status:"unverified"` unless the same-transaction control found a row. `code:run` returns this root directly. Describe returns relation metadata. bigint/int8 stays exact.',
     seeAlso: [
@@ -214,6 +215,13 @@ export default defineTool({
         .describe(
           'Explicitly allow a filtered read of a tenant-scoped table without a workspace_id/harness_slug predicate. Use only for deliberate cross-tenant analysis; the response retains the tenant-scope advisory.',
         ),
+      allowUnboundedJsonSearch: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          'Explicitly allow an unbounded LIKE/ILIKE scan over tool_invocations.args_json/metadata_json cast to text. maxRows does not bound the WHERE scan; prefer indexed scalar predicates or activity:tool-log/dev:telemetry.',
+        ),
     }),
     z.object({
       sql: z.never().optional().describe('Only valid for SQL calls; omit it when passing `describe`.'),
@@ -250,6 +258,10 @@ export default defineTool({
         .describe(
           'Explicitly allow a filtered read of a tenant-scoped table without a workspace_id/harness_slug predicate. Use only for deliberate cross-tenant analysis; the response retains the tenant-scope advisory.',
         ),
+      allowUnboundedJsonSearch: z
+        .never()
+        .optional()
+        .describe('Only valid for SQL calls; omit it when passing `describe`.'),
     }),
   ]),
   result: z
@@ -401,6 +413,7 @@ export default defineTool({
     // are not here: they need a round trip or a row count that a failed query
     // never produced.
     const sqlShapeAdvisories: (string | null)[] = [
+      advisoryOf(() => buildJsonTextSearchAdvisory(sql)),
       epochUnitAdvisory,
       claimabilityAdvisory,
       backlogFlowAdvisory,
@@ -415,6 +428,29 @@ export default defineTool({
       sessionTurnPartsJsonAdvisory,
       corpusNamespaceAdvisory,
     ];
+    const jsonTextSearchAdvisory = sqlShapeAdvisories[0];
+
+    // EI-21663090256112441: maxRows is a result cap, not a WHERE-scan bound.
+    // Refuse the known-large JSONB-to-text pattern before tenant probes or
+    // pgReadQuery can spend the caller's timeout. The explicit bypass is
+    // deliberately named and remains visible in the success/error advisory.
+    if (jsonTextSearchAdvisory && !args.allowUnboundedJsonSearch) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              error:
+                `${jsonTextSearchAdvisory} ` +
+                'To run this intentionally, pass allowUnboundedJsonSearch: true.',
+              reason: 'unbounded_json_search',
+              advisory: jsonTextSearchAdvisory,
+            }),
+          },
+        ],
+      };
+    }
 
     try {
       // EI-20200627264509977: scope-check BEFORE executing. The old advisory was

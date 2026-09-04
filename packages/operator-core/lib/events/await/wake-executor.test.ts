@@ -1268,6 +1268,26 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
     expect(out).toMatch(/readAt=\S+/);
   });
 
+  it('EI-21988107654213811: scopes the trust directive to readAt so a newer checkpoint requires re-reading', async () => {
+    const getLoopCarryNoteWithMetaFn = vi.fn(async () => ({
+      note: '## Did\nThe delivery snapshot is valid for its read instant.\n\n## Next action\nReconcile before acting.',
+      updatedAtMs: Date.now() - 5_000,
+    }));
+    const getLoopStatusFn = vi.fn(async () => ({ active: true, harnessSlug: 'papercusp' })) as never;
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 5 }, subscriberId: 'su-loop-read-boundary' });
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, {
+      getLoopCarryNoteWithMetaFn,
+      getLoopStatusFn,
+    });
+
+    expect(out).toMatch(/TRUST THIS BLOCK AS OF readAt=\S+/);
+    expect(out).toContain('it is NOT a promise that the carry-note stayed unchanged afterward');
+    expect(out).toContain(
+      'If you write a checkpoint, receive a newer status, or otherwise observe progress after readAt, re-read loop:status / loop:checkpoint before acting',
+    );
+    expect(out).toContain('not listed in this snapshot');
+  });
+
   it('keeps the delivery-time narrative checkpoint ahead of the injection-door spill (EI-20230529647745311)', async () => {
     const d = work({
       id: 990_002,

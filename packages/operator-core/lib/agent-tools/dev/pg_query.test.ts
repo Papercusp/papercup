@@ -11,12 +11,14 @@ import { z } from 'zod';
 const {
   pgReadQueryMock,
   advisoryMock,
+  jsonTextSearchAdvisoryMock,
   describeColumnsMock,
   describeRelationMock,
   listRelationsMock,
 } = vi.hoisted(() => ({
   pgReadQueryMock: vi.fn(),
   advisoryMock: vi.fn(),
+  jsonTextSearchAdvisoryMock: vi.fn(),
   describeColumnsMock: vi.fn(),
   describeRelationMock: vi.fn(),
   listRelationsMock: vi.fn(),
@@ -26,6 +28,7 @@ vi.mock('../../pg-read-query', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   pgReadQuery: pgReadQueryMock,
   buildTenantScopeAdvisory: advisoryMock,
+  buildJsonTextSearchAdvisory: jsonTextSearchAdvisoryMock,
   describeReferencedTableColumns: describeColumnsMock,
   describeRelation: describeRelationMock,
   listRelations: listRelationsMock,
@@ -43,6 +46,7 @@ function payloadOf(res: { content: Array<{ type: string; text: string }> }): Rec
 beforeEach(() => {
   pgReadQueryMock.mockReset().mockResolvedValue(OK_RESULT);
   advisoryMock.mockReset().mockResolvedValue(null);
+  jsonTextSearchAdvisoryMock.mockReset().mockReturnValue(null);
   describeColumnsMock.mockReset().mockResolvedValue([]);
   describeRelationMock.mockReset().mockResolvedValue(null);
   listRelationsMock.mockReset().mockResolvedValue([]);
@@ -196,6 +200,52 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     );
     expect(payloadOf(res as never)).toMatchObject({ advisory: '⚠ tenant scope: …', rowCount: 1 });
     expect(pgReadQueryMock).toHaveBeenCalledOnce();
+  });
+
+  it('refuses an unbounded JSON-text search before pgReadQuery', async () => {
+    const sql =
+      "SELECT id FROM harness_shared.tool_invocations WHERE args_json::text ILIKE '%EI-22033266394507364%'";
+    jsonTextSearchAdvisoryMock.mockReturnValue('⚠ unbounded JSON-text search: args_json::text');
+
+    const res = await pgQueryTool.handler({ sql } as never, {} as never);
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payloadOf(res as never)).toMatchObject({
+      reason: 'unbounded_json_search',
+      advisory: '⚠ unbounded JSON-text search: args_json::text',
+    });
+    expect(String(payloadOf(res as never).error)).toContain('allowUnboundedJsonSearch: true');
+    expect(pgReadQueryMock).not.toHaveBeenCalled();
+  });
+
+  it('allows the explicit JSON-search bypass and retains the advisory on success', async () => {
+    const sql =
+      "SELECT id FROM harness_shared.tool_invocations WHERE metadata_json::text ILIKE '%requestOrigin%'";
+    jsonTextSearchAdvisoryMock.mockReturnValue('⚠ unbounded JSON-text search: metadata_json::text');
+
+    const res = await pgQueryTool.handler({ sql, allowUnboundedJsonSearch: true } as never, {} as never);
+    expect(payloadOf(res as never)).toMatchObject({ rowCount: 1 });
+    expect(payloadOf(res as never).advisory).toContain(
+      '⚠ unbounded JSON-text search: metadata_json::text',
+    );
+    expect(pgReadQueryMock).toHaveBeenCalledWith(sql, {
+      maxRows: undefined,
+      timeoutMs: undefined,
+    });
+  });
+
+  it('publishes the JSON-search bypass only on SQL calls', () => {
+    expect(
+      pgQueryTool.args.safeParse({
+        sql: 'SELECT 1',
+        allowUnboundedJsonSearch: true,
+      }).success,
+    ).toBe(true);
+    expect(
+      pgQueryTool.args.safeParse({
+        describe: 'harness_shared.tool_invocations',
+        allowUnboundedJsonSearch: true,
+      }).success,
+    ).toBe(false);
   });
 
   it('runs a read-only EXPLAIN over a SELECT body and returns planner rows', async () => {

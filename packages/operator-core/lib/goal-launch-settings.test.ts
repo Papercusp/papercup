@@ -78,6 +78,7 @@ import {
   GOAL_HOLDER_ON_LOSS,
   type GoalLaunchSettings,
 } from './goal-launch-settings';
+import { GOAL_KICKOFF_REQUIRED_READS } from './goals/kickoff-evidence';
 
 interface MockOpts {
   /** agent_modes rows — an entry here means that owner RUNS the goal. */
@@ -1098,6 +1099,19 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     expect(rendered).toContain(`GOAL PORTFOLIO SNAPSHOT — assembled ${NOW.toISOString()}`);
     expect(rendered).toContain('1. plan:papercusp/alpha [active; placement=unplaced] next=P-002');
     expect(rendered).toContain('Queue: total=7; terminal=2; in-flight=2; blocked=1; needs-human=1');
+    const kickoffEvidenceMarker = rendered.indexOf('GOAL KICKOFF EVIDENCE — REQUIRED BEFORE ANY PORTFOLIO MUTATION');
+    const ownerReportInstruction = rendered.indexOf(
+      `In the current GOAL window, successfully run ${GOAL_KICKOFF_REQUIRED_READS.join(', ')} on the goal's terms; ` +
+        'then send an owner-facing report AFTER those reads (coord:send to ["human"] or coord:escalate) that names the exact goal id "goal-1".',
+    );
+    const kickoffCompletionInstruction = rendered.indexOf(
+      'Only after those reads and the owner-facing report may you create, launch, or place portfolio work.',
+    );
+    const mandatoryPlacementMarker = rendered.indexOf('MANDATORY NEXT PLAN PLACEMENT');
+    expect(kickoffEvidenceMarker).toBeGreaterThanOrEqual(0);
+    expect(ownerReportInstruction).toBeGreaterThan(kickoffEvidenceMarker);
+    expect(kickoffCompletionInstruction).toBeGreaterThan(ownerReportInstruction);
+    expect(mandatoryPlacementMarker).toBeGreaterThan(kickoffCompletionInstruction);
     expect(rendered).toContain('MANDATORY NEXT PLAN PLACEMENT');
     expect(rendered).toContain(
       'Call fleet:launch-on-plan exactly once with {"name":"papercusp-alpha-plan-fleet","plan":"alpha","harness":"papercusp","count":1,"leader":"spawn","headless":true}.',
