@@ -38,7 +38,10 @@ vi.mock('@papercusp/harness/paths', async (importOriginal) => ({
 // The chat-surface prompts dir for the workspace-level (harness-less) role
 // branch — pointed at a temp dir each test writes persona files into.
 let promptsDirValue = '/nonexistent-prompts';
-vi.mock('./prompt-assembly', () => ({
+vi.mock('./prompt-assembly', async (importOriginal) => ({
+  // P-022: the addressed-guide composer runs the REAL budget seam (projectGuideAtBudget)
+  // through this module; only promptsDir is stubbed.
+  ...(await importOriginal<typeof import('./prompt-assembly')>()),
   promptsDir: () => promptsDirValue,
 }));
 // Deterministic signer: append a fixed exp+sig so the URL is assertable.
@@ -761,5 +764,99 @@ describe('stewardSeedToolNames + the steward launch seed (WI-2140338)', () => {
         contextSize: 'steward',
       }),
     ).rejects.toThrow(/not a pipeline-role mode/);
+  });
+});
+
+// identities-v1-2026-08-30 P-022: the Project guide is selected by the WEARER'S STACK.
+// buildLaunchSpec threads a composer into renderSuPlaybook; the composer expands the
+// session's stack (su static layers + fleet posture + modes) into addressing tokens,
+// reads the rows addressed to them, and splices them after the default guide.
+// The read is exercised for REAL down to the SQL seam: `getOrgPg()` hands back a stub
+// whose `unsafe` records the parameters (workspace, harness, doc, tokens, client axes)
+// and returns whatever rows the test queued — so the assertions below are about the
+// query the launch actually issues, not about a mocked reader's arguments.
+const addressedReadMock = vi.hoisted(() => ({
+  fn: vi.fn(async (_params: unknown[]) => [] as unknown[]),
+}));
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const real = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...real,
+    getOrgPg: () => ({ unsafe: (_q: string, params: unknown[]) => addressedReadMock.fn(params) }),
+  };
+});
+
+describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () => {
+  const su = {
+    kind: 'su' as const,
+    agent: 'claude' as const,
+    workspaceId: 'default',
+    operatorBaseUrl: 'http://localhost:3070',
+    harnessSlug: 'papercup',
+  };
+  type Composer = (r: { text: string; source: string }) => Promise<{ text: string; addressed: { tokens: string[]; partKeys: string[] } | null }>;
+  type ReadInput = { tokens: string[]; harnessSlug: string; client: string };
+
+  function composerFromLastRender(): Composer {
+    const call = renderSuPlaybookMock.mock.calls.at(-1)?.[0] as { composeProjectGuide?: unknown };
+    expect(typeof call.composeProjectGuide).toBe('function');
+    return call.composeProjectGuide as Composer;
+  }
+  const lastRead = (): ReadInput => {
+    const params = addressedReadMock.fn.mock.calls.at(-1)?.[0] as [string, string, string, string[], string[]];
+    expect(params, 'the composer issued no read').toBeDefined();
+    return { harnessSlug: params[1], tokens: params[3], client: params[4][0] };
+  };
+
+  it('ENGINEER profile: reads with the su static layers + role tokens; no rows ⇒ the default guide byte-identical', async () => {
+    addressedReadMock.fn.mockResolvedValueOnce([]);
+    await buildLaunchSpec(su);
+    const out = await composerFromLastRender()({ text: '# DEFAULT GUIDE\n', source: '/repo/CLAUDE.md' });
+    expect(out.text).toBe('# DEFAULT GUIDE\n');
+    expect(out.addressed).toBeNull();
+    const read = lastRead();
+    // The engineer guide is papercusp's own CLAUDE.md, so its parts live under the projector's harness.
+    expect(read.harnessSlug).toBe(process.env.PAPERCUSP_HARNESS_SLUG ?? 'papercusp');
+    expect(read.client).toBe('claude');
+    expect(read.tokens).toEqual(
+      expect.arrayContaining(['role:su', 'blueprint:papercusp-engineer', 'slot:domain', 'blueprint:su-collaborator', 'blueprint:su.practice']),
+    );
+    expect(read.tokens).not.toContain('slot:fleet-posture');
+  });
+
+  it('a fleet LEADER launching with AUTO wears su.fleet-leader + su.mode-auto and receives the rows addressed to them', async () => {
+    addressedReadMock.fn.mockResolvedValueOnce([
+      { part_key: 'lead-1', body: 'LEADER ONLY RULE', ordinal: 1, target_section: 'Fleet', stack_scope: ['blueprint:su.fleet-leader'] },
+    ]);
+    await buildLaunchSpec({ ...su, fleetRole: 'leader', modes: ['auto'] });
+    const out = await composerFromLastRender()({ text: '# DEFAULT GUIDE\n', source: '/repo/CLAUDE.md' });
+    expect(lastRead().tokens).toEqual(
+      expect.arrayContaining(['blueprint:su.fleet-leader', 'slot:fleet-posture', 'blueprint:su.mode-auto', 'slot:autonomy']),
+    );
+    expect(out.text.startsWith('# DEFAULT GUIDE\n\n## Addressed guidance')).toBe(true);
+    expect(out.text).toContain('LEADER ONLY RULE');
+    expect(out.addressed?.partKeys).toEqual(['lead-1']);
+  });
+
+  it('two launches in the same pot with different stacks are read with DIFFERENT tokens', async () => {
+    await buildLaunchSpec({ ...su, fleetRole: 'leader' });
+    await composerFromLastRender()({ text: 'G', source: '/g' });
+    const leaderTokens = lastRead().tokens;
+    await buildLaunchSpec({ ...su, fleetRole: 'member', modes: ['auto'] });
+    await composerFromLastRender()({ text: 'G', source: '/g' });
+    const memberTokens = lastRead().tokens;
+    expect(leaderTokens).toContain('blueprint:su.fleet-leader');
+    expect(memberTokens).toContain('blueprint:su.fleet-member');
+    expect(memberTokens).toContain('blueprint:su.mode-auto');
+    expect(leaderTokens).not.toContain('blueprint:su.mode-auto');
+    expect(leaderTokens).not.toEqual(memberTokens);
+  });
+
+  it('GENERIC profile (no repo guide) threads NO composer; POWER reads under the launch harness', async () => {
+    await buildLaunchSpec({ ...su, profile: 'generic' });
+    expect((renderSuPlaybookMock.mock.calls.at(-1)?.[0] as { composeProjectGuide?: unknown }).composeProjectGuide).toBeUndefined();
+    await buildLaunchSpec({ ...su, profile: 'power' });
+    await composerFromLastRender()({ text: 'G', source: '/repo/CLAUDE.md' });
+    expect(lastRead().harnessSlug).toBe('papercup');
   });
 });

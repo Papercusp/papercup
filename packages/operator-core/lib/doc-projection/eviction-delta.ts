@@ -34,6 +34,11 @@ export interface ProjectionRow {
   client_scope: string[];
   target_section: string | null;
   project_rank: number;
+  /**
+   * P-022 addressing tokens. Optional: a row read before migration 1104 has none, and
+   * `projectClient` treats absent and empty alike (unaddressed → the default file).
+   */
+  stack_scope?: string[];
 }
 
 /** The subset of `projectClient`'s result this module reads. */

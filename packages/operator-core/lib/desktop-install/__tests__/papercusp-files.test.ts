@@ -1001,6 +1001,58 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
 describe('renderSuPlaybook project-guide splice (psu-isolation P-001 / D-002)', () => {
   const GUIDE_MARKER = '<!-- PAPERCUSP-SU:PROJECT-GUIDE -->';
 
+  // identities-v1-2026-08-30 P-022: the per-audience seam. The composer receives the
+  // RESOLVED default guide and returns what THIS wearer gets; omitted ⇒ byte-identical.
+  it('P-022: composeProjectGuide receives the resolved default and its output is what splices', async () => {
+    const guidePath = path.join(tmpAppRoot, 'PROJECT_CLAUDE.md');
+    await fs.writeFile(guidePath, '# Repo conventions\nUse nuqs for state.\n');
+    const seen: { text: string; source: string }[] = [];
+    const r = await renderSuPlaybook({
+      agent: 'claude',
+      operatorAppRoot: tmpAppRoot,
+      projectGuideSource: guidePath,
+      composeProjectGuide: async (resolved) => {
+        seen.push(resolved);
+        return {
+          text: `${resolved.text}\n## Addressed guidance\n\nLEADER ONLY\n`,
+          truncated: false,
+          addressed: { tokens: ['blueprint:su.fleet-leader'], partKeys: ['lead-1'], addedChars: 40 },
+        };
+      },
+    });
+    expect(seen).toEqual([{ text: '# Repo conventions\nUse nuqs for state.\n', source: guidePath }]);
+    expect(r.text).toContain('Use nuqs for state.');
+    expect(r.text).toContain('LEADER ONLY');
+    expect(r.projectGuideAddressed).toEqual({ tokens: ['blueprint:su.fleet-leader'], partKeys: ['lead-1'], addedChars: 40 });
+  });
+
+  it('P-022: no composer ⇒ byte-identical to the plain splice; no guide ⇒ the composer is never called', async () => {
+    const guidePath = path.join(tmpAppRoot, 'PROJECT_CLAUDE.md');
+    await fs.writeFile(guidePath, '# Repo conventions\nUse nuqs for state.\n');
+    const plain = await renderSuPlaybook({ agent: 'claude', operatorAppRoot: tmpAppRoot, projectGuideSource: guidePath });
+    const passthrough = await renderSuPlaybook({
+      agent: 'claude',
+      operatorAppRoot: tmpAppRoot,
+      projectGuideSource: guidePath,
+      composeProjectGuide: async (resolved) => ({ text: resolved.text, truncated: false, addressed: null }),
+    });
+    expect(passthrough.text).toBe(plain.text);
+    expect(plain.projectGuideAddressed).toBeNull();
+    expect(passthrough.projectGuideAddressed).toBeNull();
+    const calls: unknown[] = [];
+    const none = await renderSuPlaybook({
+      agent: 'claude',
+      operatorAppRoot: tmpAppRoot,
+      projectGuideSource: '',
+      composeProjectGuide: async (resolved) => {
+        calls.push(resolved);
+        return { text: resolved.text, truncated: false, addressed: null };
+      },
+    });
+    expect(calls).toEqual([]);
+    expect(none.projectGuideSource).toBe('');
+  });
+
   beforeEach(async () => {
     await fs.writeFile(
       path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),

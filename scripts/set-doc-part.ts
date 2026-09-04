@@ -124,6 +124,19 @@ interface PartRow {
   project_rank: number;
   target_section: string | null;
   rationale_part_key: string | null;
+  /** P-022 addressing tokens; `{}` = unaddressed (the default file). */
+  stack_scope: string[];
+}
+
+/**
+ * P-022: does a `blueprint:<id>` token name something a launch can wear? The built-in
+ * harness tier (`<harness>/blueprints/<id>/blueprint.yaml`) plus the su static layer
+ * ids that have no directory of their own (`su.practice`). A hive-local identity the
+ * script cannot see passes with `--allow-unknown-blueprint`.
+ */
+function builtInBlueprintExists(id: string): boolean {
+  if (SU_STATIC_LAYERS.some((l) => l.id === id)) return true;
+  return existsSync(join(harnessRoot(), "blueprints", id, "blueprint.yaml"));
 }
 
 function die(code: number, msg: string): never {
@@ -204,6 +217,7 @@ function describeColumnChanges(
     | "project_rank"
     | "target_section"
     | "rationale_part_key"
+    | "stack_scope"
   >,
   after: {
     kind: string;
@@ -212,11 +226,19 @@ function describeColumnChanges(
     projectRank: number;
     targetSection: string | null;
     rationalePartKey: string | null;
+    stackScope?: readonly string[];
   },
 ): string {
   const changes: string[] = [];
   if (before.kind !== after.kind)
     changes.push(`kind ${before.kind} -> ${after.kind}`);
+  {
+    const b = before.stack_scope ?? [];
+    const a = after.stackScope ?? [];
+    if (b.length !== a.length || b.some((t, i) => t !== a[i])) {
+      changes.push(`stack_scope ${JSON.stringify(b)} -> ${JSON.stringify(a)}`);
+    }
+  }
   if (before.ordinal !== after.ordinal)
     changes.push(`ordinal ${before.ordinal} -> ${after.ordinal}`);
   if (before.project_rank !== after.projectRank)
@@ -301,6 +323,14 @@ async function main(): Promise<void> {
         "  create/override (a NEW key requires --create plus the projection columns):",
         "  --create --kind <invariant|pointer|recipe|prose> --ordinal <n>",
         '  --target-section <heading> --client-scope <all|claude|codex|""> --project-rank <n>',
+        '  --stack-scope <tok,…|"">  P-022 ADDRESSING: deliver this part ONLY to a launch',
+        "                         whose stack matches a token — blueprint:<id> (e.g.",
+        "                         blueprint:su.fleet-leader), slot:<slot> (e.g. slot:autonomy),",
+        '                         role:<role>. "" (the default) = unaddressed = every reader,',
+        "                         via the default CLAUDE.md. An addressed part LEAVES the",
+        "                         default file and is spliced at launch instead.",
+        "  --allow-unknown-blueprint  accept a blueprint:<id> the built-in tier cannot see",
+        "                         (a hive-local identity)",
         "  --revive               un-tombstone a retired part",
         "  --accept-evictions     proceed with a --write that pushes OTHER parts out of",
         "                         the file. Every run reports the eviction delta; this",
@@ -325,7 +355,7 @@ async function main(): Promise<void> {
       const prefixArg = args.get("list");
       const prefix = typeof prefixArg === "string" ? prefixArg : "";
       const { rows } = await client.query<PartRow & { body_len: number }>(
-        `SELECT part_key, kind, ordinal, tombstone, client_scope, target_section,
+        `SELECT part_key, kind, ordinal, tombstone, client_scope, target_section, stack_scope,
                 length(body) AS body_len
            FROM harness_shared.harness_doc_parts
           WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3
@@ -339,7 +369,8 @@ async function main(): Promise<void> {
       for (const r of rows) {
         console.log(
           `  ${r.tombstone ? "⊘" : " "} ${r.part_key}  [${r.kind}, ord ${r.ordinal}, ` +
-            `${r.body_len} chars, scope ${JSON.stringify(r.client_scope)}]`,
+            `${r.body_len} chars, scope ${JSON.stringify(r.client_scope)}` +
+            `${r.stack_scope?.length ? `, addressed ${JSON.stringify(r.stack_scope)}` : ""}]`,
         );
       }
       return;
@@ -365,7 +396,7 @@ async function main(): Promise<void> {
     if (args.has("show")) {
       const { rows } = await client.query<PartRow>(
         `SELECT part_key, kind, body, ordinal, tombstone, client_scope, project_rank,
-                target_section, rationale_part_key
+                target_section, rationale_part_key, stack_scope
            FROM harness_shared.harness_doc_parts
           WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3 AND part_key = $4`,
         [WORKSPACE_ID, HARNESS_SLUG, docId, partKey],
@@ -385,7 +416,8 @@ async function main(): Promise<void> {
       writeStderrSync(
         `${r.tombstone ? "⊘ TOMBSTONED " : ""}${r.part_key}  [${r.kind}, ord ${r.ordinal}, ` +
           `${r.body.length} chars, scope ${JSON.stringify(r.client_scope)}, ` +
-          `rank ${r.project_rank}, section ${JSON.stringify(r.target_section)}]\n`,
+          `rank ${r.project_rank}, section ${JSON.stringify(r.target_section)}` +
+          `${r.stack_scope?.length ? `, addressed ${JSON.stringify(r.stack_scope)}` : ""}]\n`,
       );
       writeStdoutExactSync(r.body);
       return;
@@ -427,7 +459,7 @@ async function main(): Promise<void> {
     // validated, so a body-only edit cannot be validated against columns it never saw.
     const { rows: partRows } = await client.query<PartRow>(
       `SELECT part_key, kind, body, ordinal, tombstone, client_scope, project_rank,
-              target_section, rationale_part_key
+              target_section, rationale_part_key, stack_scope
          FROM harness_shared.harness_doc_parts
         WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3 AND part_key = $4
         FOR UPDATE`,
@@ -479,6 +511,17 @@ async function main(): Promise<void> {
         str(args.get("rationale-part-key")) ??
         existing?.rationale_part_key ??
         null,
+      // P-022: omitted keeps the stored addressing; "" clears it (back to every reader).
+      stackScope: (() => {
+        const raw = str(args.get("stack-scope"));
+        if (raw === undefined) return existing?.stack_scope ?? [];
+        return raw === ""
+          ? []
+          : raw
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean);
+      })(),
     };
 
     if (
@@ -496,6 +539,14 @@ async function main(): Promise<void> {
       clientScope: merged.clientScope,
       targetSection: merged.targetSection,
       rationalePartKey: merged.rationalePartKey,
+      stackScope: merged.stackScope,
+      stackVocabulary: {
+        knownSlots: SLOT_IDS,
+        blueprintExists:
+          args.get("allow-unknown-blueprint") === true
+            ? undefined
+            : builtInBlueprintExists,
+      },
     });
     if (invalid) {
       await client.query("ROLLBACK");
@@ -510,6 +561,7 @@ async function main(): Promise<void> {
       projectRank: merged.projectRank,
       targetSection: merged.targetSection,
       rationalePartKey: merged.rationalePartKey,
+      stackScope: merged.stackScope,
     };
 
     // A no-op that reports success is a FALSE CONFIRMATION — the caller believes the rule
@@ -526,6 +578,7 @@ async function main(): Promise<void> {
           projectRank: existing.project_rank,
           targetSection: existing.target_section,
           rationalePartKey: existing.rationale_part_key,
+          stackScope: existing.stack_scope ?? [],
         },
         nextComparable,
       ) &&
@@ -546,7 +599,8 @@ async function main(): Promise<void> {
     );
     console.log(
       `  columns      kind=${merged.kind} ordinal=${merged.ordinal} rank=${merged.projectRank} ` +
-        `scope=${JSON.stringify(merged.clientScope)}`,
+        `scope=${JSON.stringify(merged.clientScope)}` +
+        `${merged.stackScope.length ? ` addressed=${JSON.stringify(merged.stackScope)}` : ""}`,
     );
     console.log(`  section      ${merged.targetSection ?? "(none)"}`);
     if (existing) {
@@ -633,6 +687,7 @@ async function main(): Promise<void> {
         client_scope: merged.clientScope,
         target_section: merged.targetSection,
         project_rank: merged.projectRank,
+        stack_scope: merged.stackScope,
       }),
       detect: proj.docPartIdentityProblems,
     });
@@ -682,7 +737,25 @@ async function main(): Promise<void> {
     // Nothing else in the pipeline reports this. The projector's `⚠ cut:` list covers
     // budget cuts only, and this part is not cut — it is absent, so it appears in no
     // list at all while `project-doc-parts --write` still exits 0 (EI-22179257919368370).
-    const deprojecting = impacts.filter((i) => i.deprojected);
+    // P-022: an ADDRESSED part leaves the default file BY DESIGN — that is what
+    // `--stack-scope` asks for — so the projector's "de-projected" verdict on the
+    // default composition is the expected outcome, not the silent loss the guard below
+    // exists to stop. It still has a client_scope, still projects, and still reaches
+    // every launch whose stack matches; say so, and do not demand a second flag for
+    // the thing the author just spelled out.
+    const narrowedToAudience =
+      merged.stackScope.length > 0 && merged.clientScope.length > 0;
+    if (narrowedToAudience && impacts.some((i) => i.deprojected)) {
+      console.log(
+        `\n  ⓘ '${partKey}' is ADDRESSED (${merged.stackScope.join(", ")}): it leaves the default\n` +
+          `    ${impacts.filter((i) => i.deprojected).map((i) => i.file).join(" / ")} and is spliced at launch only into a\n` +
+          `    session whose stack matches one of those tokens (role-launch-spec → composeProjectGuideForWearer).\n` +
+          `    Preview what such a launch receives: node scripts/project-doc-parts.mjs --audience=${merged.stackScope.join(",")}`,
+      );
+    }
+    const deprojecting = impacts.filter(
+      (i) => i.deprojected && !narrowedToAudience,
+    );
     if (
       deprojecting.length > 0 &&
       args.get("accept-deprojection") !== true
@@ -733,6 +806,7 @@ async function main(): Promise<void> {
       projectRank: merged.projectRank,
       targetSection: merged.targetSection,
       rationalePartKey: merged.rationalePartKey,
+      stackScope: merged.stackScope,
     };
 
     // `author` is set on purpose: the hand-rolled UPDATEs this script replaces left it
@@ -743,14 +817,14 @@ async function main(): Promise<void> {
     await client.query(
       `INSERT INTO harness_shared.harness_doc_parts
          (workspace_id, harness_slug, doc_id, part_key, kind, body, ordinal, client_scope,
-          target_section, project_rank, rationale_part_key, author, tombstone)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,false)
+          target_section, project_rank, rationale_part_key, author, stack_scope, tombstone)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,false)
        ON CONFLICT (workspace_id, harness_slug, doc_id, part_key)
        DO UPDATE SET kind = EXCLUDED.kind, body = EXCLUDED.body, ordinal = EXCLUDED.ordinal,
                      client_scope = EXCLUDED.client_scope, target_section = EXCLUDED.target_section,
                      project_rank = EXCLUDED.project_rank,
                      rationale_part_key = EXCLUDED.rationale_part_key,
-                     author = EXCLUDED.author, tombstone = false,
+                     author = EXCLUDED.author, stack_scope = EXCLUDED.stack_scope, tombstone = false,
                      updated_at = (EXTRACT(epoch FROM now()) * 1000)::bigint`,
       [
         input.workspaceId,
@@ -765,6 +839,7 @@ async function main(): Promise<void> {
         input.projectRank,
         input.rationalePartKey,
         input.author,
+        input.stackScope,
       ],
     );
     await client.query("COMMIT");
