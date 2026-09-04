@@ -50,6 +50,18 @@ describe('looksLikeGateRedFixClaim', () => {
     }
   });
 
+  it('does NOT fire on red-state observations, identifiers, or quoted explanations', () => {
+    for (const summary of [
+      'P-005 still blocked: positions.deployed FALSE; Gate red 94.',
+      'The gate is red, not green, and remains blocked.',
+      'gate-reds-mostly-unowned',
+      'The check id `gate-reds-mostly-unowned` is data, not a gate claim.',
+      'The detector says "Gate red 94" matches like "greened the gate".',
+    ]) {
+      expect(looksLikeGateRedFixClaim({ summary }), summary).toBe(false);
+    }
+  });
+
   it('reads every evidence field, not just the summary', () => {
     expect(looksLikeGateRedFixClaim({ testResult: 'gate red cleared' })).toBe(true);
     expect(looksLikeGateRedFixClaim({ verifiedHow: 'greened the gate' })).toBe(true);

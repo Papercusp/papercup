@@ -36,6 +36,15 @@ describe('gateClaimCarryLint (P-007)', () => {
     ).toBeUndefined();
   });
 
+  it('is silent on red-state observations, identifiers, and quoted explanations', () => {
+    const text = [
+      'P-005 still blocked: positions.deployed FALSE; Gate red 94.',
+      'The check id `gate-reds-mostly-unowned` is data, not a gate claim.',
+      'The detector says "Gate red 94" matches like "greened the gate".',
+    ].join('\n');
+    expect(gateClaimCarryLint(text, { marker })).toBeUndefined();
+  });
+
   it('is silent on empty or blank text', () => {
     expect(gateClaimCarryLint('', { marker })).toBeUndefined();
     expect(gateClaimCarryLint('   \n  ', { marker })).toBeUndefined();

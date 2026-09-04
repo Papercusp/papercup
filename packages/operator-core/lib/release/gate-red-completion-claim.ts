@@ -29,9 +29,29 @@ import { readFrozenRepairMarker, type FrozenRepairEditMarker } from './frozen-re
 /**
  * Phrasings that assert gate progress. Kept narrow on purpose: a false positive here
  * nags a correct close, and a nagging check is one agents learn to ignore.
+ *
+ * This is deliberately an ACTION + GATE-RED matcher rather than a bare gate-red
+ * vocabulary matcher. The old regex matched a red-state observation (`Gate red 94`)
+ * and identifiers such as `gate-reds-mostly-unowned` exactly like a completion claim.
+ * A progress assertion needs a completed-action verb next to a standalone gate-red
+ * phrase, or one of the two explicit green-gate forms.
  */
-const GATE_RED_CLAIM_RE =
-  /\b(gate[- ]red|gate[- ]reds|red gate|green(?:ed|ing)? the gate|gate (?:is )?green|checkpoint red|green[- ]checkpoint red|fixed \d+ (?:of \d+ )?(?:gate|checkpoint) )/i;
+const GATE_RED_TERM = String.raw`(?<![\w-])(?:gate[- ]reds?|red gates?|checkpoint reds?|green[- ]checkpoint reds?)(?![\w-])`;
+const GATE_PROGRESS_ACTION = String.raw`(?:fixed|cleared|resolved|repaired|passed|promoted|unblocked)`;
+const GATE_RED_CLAIM_RE = new RegExp(
+  [
+    String.raw`\b${GATE_PROGRESS_ACTION}\s+(?:\d+(?:\s+of\s+\d+)?\s+)?(?:the\s+|a\s+|an\s+|all\s+)?${GATE_RED_TERM}`,
+    String.raw`${GATE_RED_TERM}\s+(?:was\s+|were\s+)?${GATE_PROGRESS_ACTION}\b`,
+    String.raw`\bgreened\s+(?:the\s+)?gate\b`,
+    String.raw`\bthe\s+gate\s+(?:is|was|went|turned)\s+green\b`,
+  ].join('|'),
+  'i',
+);
+
+/** Remove prose mentions that are data, not assertions (code spans and quotes). */
+function maskQuotedOrCodeSegments(text: string): string {
+  return text.replace(/`[^`\n]*`|"[^"\n]*"/g, (segment) => ' '.repeat(segment.length));
+}
 
 export interface GateRedClaimEvidence {
   filesChanged?: string[];
@@ -58,7 +78,7 @@ export function looksLikeGateRedFixClaim(evidence: GateRedClaimEvidence | undefi
   ]
     .filter((v): v is string => typeof v === 'string')
     .join('\n');
-  return GATE_RED_CLAIM_RE.test(haystack);
+  return GATE_RED_CLAIM_RE.test(maskQuotedOrCodeSegments(haystack));
 }
 
 export interface GateRedClaimWarning {
