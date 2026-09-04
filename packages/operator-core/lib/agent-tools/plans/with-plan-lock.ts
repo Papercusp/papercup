@@ -38,6 +38,8 @@ import {
   PLAN_LOCK_TIMEOUT_CODE,
   acquirePlanAdvisoryLock,
   planAdvisoryLockKey,
+  readPlanAdvisoryLockSnapshot,
+  type PlanLockHolderSnapshot,
 } from './plan-lock-key';
 import {
   conversationAuditRequiredValue,
@@ -210,6 +212,12 @@ export interface PlanBusy {
   owner_label: string | null;
   intent: string;
   expires_ts: Date | null;
+  /**
+   * Best-effort point-in-time PostgreSQL backend metadata observed after the
+   * timed-out transaction rolled back. This is nullable because diagnostics
+   * must never turn a safe busy response into a second failure.
+   */
+  holder_snapshot: PlanLockHolderSnapshot | null;
 }
 
 export interface BusyError {
@@ -731,12 +739,13 @@ export async function withPlanLock<T>(
       };
     }
     return result;
-  }).catch((err: unknown) => {
+  }).catch(async (err: unknown) => {
     // A lock_timeout surfaces as busy rather than a hard error; everything else propagates.
     // Since WI-2143102 this is the LIVE contention path, not a hypothetical one: the acquire is a
     // bounded blocking wait, so exhausting the budget arrives here as PG 55P03 with the
     // transaction already rolled back.
     if ((err as { code?: string })?.code === PLAN_LOCK_TIMEOUT_CODE) {
+      const holderSnapshot = await readPlanAdvisoryLockSnapshot(lockKey);
       return {
         kind: 'busy',
         busy: [
@@ -748,6 +757,9 @@ export async function withPlanLock<T>(
             // No knowable holder expiry — see the acquire-path comment
             // (audit P-045).
             expires_ts: null,
+            // Point-in-time PostgreSQL metadata only; never map this to a durable
+            // coord owner, intent, or holder TTL.
+            holder_snapshot: holderSnapshot,
           },
         ],
       } satisfies BusyError;
