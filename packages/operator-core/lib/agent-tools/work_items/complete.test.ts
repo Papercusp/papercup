@@ -2952,6 +2952,23 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       });
     });
 
+    it('normalizes false self-review scalars to explicit empty arrays', () => {
+      const out = coerceCompletionShape({
+        summary: 's',
+        selfReview: {
+          lookedAt: 'the diff',
+          findings: false,
+          changedAsResult: false,
+        },
+      }) as { selfReview: Record<string, unknown> };
+
+      expect(out.selfReview).toEqual({
+        lookedAt: 'the diff',
+        findings: [],
+        changedAsResult: [],
+      });
+    });
+
     it('coerces structured verification aliases', () => {
       const out = coerceCompletionShape({
         summary: 's',
@@ -3261,6 +3278,35 @@ describe('work_items:complete input coercion (EI-7031)', () => {
           selfReview: {
             findings: ['scalar finding'],
             changedAsResult: ['scalar change'],
+          },
+        },
+      });
+    });
+
+    it('accepts the reported false changedAsResult shape through the published args schema', () => {
+      const result = (
+        complete.args as {
+          safeParse: (value: unknown) => { success: boolean; data?: any };
+        }
+      ).safeParse({
+        id: 'EI-21887406150452962',
+        completion: {
+          workItem: 'EI-21887406150452962',
+          summary: 'self-review shape recovery',
+          selfReview: {
+            lookedAt: 'the diff',
+            findings: 'no additional findings',
+            changedAsResult: false,
+          },
+        },
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({
+        completion: {
+          selfReview: {
+            findings: ['no additional findings'],
+            changedAsResult: [],
           },
         },
       });
