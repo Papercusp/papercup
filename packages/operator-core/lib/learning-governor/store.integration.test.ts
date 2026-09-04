@@ -16,11 +16,16 @@ import { summarizeLearningSpend } from './core';
 import {
   deleteLearningLoop,
   getLearningLoop,
+  getLearningSpendPositions,
   governorCheck,
   listLearningLoops,
   listLearningSpendEvents,
+  listLearningSpendReservations,
   recordLearningSpend,
   registerLearningLoop,
+  reserveLearningSpend,
+  settleLearningSpend,
+  sumOpenReservedUsd,
 } from './store';
 import { setPotLearningScope } from '../learning/pot-gate/store';
 
@@ -257,5 +262,180 @@ describe('the one visible number (P-003 verification)', () => {
     // scout:alpha accumulated 0.4, frontier:ekg 1.8; gym mirror spend stays on its own row value.
     expect(s.totalSpentUsd).toBeCloseTo(loops.reduce((a, l) => a + l.spentUsd, 0), 6);
     expect(s.unbudgetedLoopIds).toContain('frontier:miner');
+  });
+});
+
+/* ── reservation + settlement (P-005), migration 1116 ────────────────────── */
+
+describe('spend reservation + settlement — every attempt closes', () => {
+  const LOOP = 'frontier:reserve-test';
+
+  beforeAll(async () => {
+    await registerLearningLoop(sql, {
+      workspaceId: WS,
+      loopId: LOOP,
+      budgetKind: 'lifetime',
+      budgetUsd: 10,
+    });
+  });
+
+  it('opens an attempt, and the reservation is immediately visible as unsettled', async () => {
+    const res = await reserveLearningSpend(sql, {
+      workspaceId: WS,
+      loopId: LOOP,
+      attemptKind: 'proposer',
+      requestedUsd: 2,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.reservation).toMatchObject({ reservedUsd: 2, usedUsd: 0, status: 'open' });
+    expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId: LOOP })).toBeCloseTo(2, 6);
+
+    // Settling releases it from the open pool and charges the real cost.
+    const settled = await settleLearningSpend(sql, {
+      workspaceId: WS,
+      reservationId: res.reservation.id,
+      disposition: 'used',
+      usedUsd: 0.5,
+    });
+    expect(settled.ok).toBe(true);
+    if (!settled.ok) return;
+    expect(settled.reservation).toMatchObject({ status: 'settled', usedUsd: 0.5 });
+    expect(settled.releasedUsd).toBeCloseTo(1.5, 6);
+    expect(settled.event?.costUsd).toBeCloseTo(0.5, 6);
+    expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId: LOOP })).toBeCloseTo(0, 6);
+    // The charge accumulated onto the registration, as recordLearningSpend does.
+    expect((await getLearningLoop(sql, { workspaceId: WS, loopId: LOOP }))!.spentUsd).toBeCloseTo(0.5, 6);
+  });
+
+  it('a CANCELLED attempt closes with no charge and no spend event', async () => {
+    const before = (await listLearningSpendEvents(sql, { workspaceId: WS, loopId: LOOP })).length;
+    const res = await reserveLearningSpend(sql, { workspaceId: WS, loopId: LOOP, requestedUsd: 1 });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const settled = await settleLearningSpend(sql, {
+      workspaceId: WS,
+      reservationId: res.reservation.id,
+      disposition: 'cancelled',
+    });
+    expect(settled.ok).toBe(true);
+    if (!settled.ok) return;
+    expect(settled.reservation.status).toBe('cancelled');
+    expect(settled.event).toBeNull();
+    // The reservation row IS the record that the attempt happened and cost
+    // nothing — exactly what the `costUsd > 0` guards used to drop.
+    expect((await listLearningSpendEvents(sql, { workspaceId: WS, loopId: LOOP })).length).toBe(before);
+    const cancelled = await listLearningSpendReservations(sql, {
+      workspaceId: WS,
+      loopId: LOOP,
+      status: 'cancelled',
+    });
+    expect(cancelled.map((r) => r.id)).toContain(res.reservation.id);
+  });
+
+  it('a FAILED attempt still charges what it burned before throwing', async () => {
+    const res = await reserveLearningSpend(sql, { workspaceId: WS, loopId: LOOP, requestedUsd: 1 });
+    if (!res.ok) throw new Error('reservation refused');
+    const settled = await settleLearningSpend(sql, {
+      workspaceId: WS,
+      reservationId: res.reservation.id,
+      disposition: 'failed',
+      usedUsd: 0.25,
+    });
+    expect(settled.ok).toBe(true);
+    if (!settled.ok) return;
+    expect(settled.reservation).toMatchObject({ status: 'failed', usedUsd: 0.25 });
+    // The charge is linked back to the attempt that made it.
+    expect(settled.event?.costUsd).toBeCloseTo(0.25, 6);
+  });
+
+  it('settling twice is refused rather than double-charging', async () => {
+    const res = await reserveLearningSpend(sql, { workspaceId: WS, loopId: LOOP, requestedUsd: 1 });
+    if (!res.ok) throw new Error('reservation refused');
+    const spentBefore = (await getLearningLoop(sql, { workspaceId: WS, loopId: LOOP }))!.spentUsd;
+    await settleLearningSpend(sql, {
+      workspaceId: WS,
+      reservationId: res.reservation.id,
+      disposition: 'used',
+      usedUsd: 0.3,
+    });
+    const again = await settleLearningSpend(sql, {
+      workspaceId: WS,
+      reservationId: res.reservation.id,
+      disposition: 'used',
+      usedUsd: 0.3,
+    });
+    expect(again).toMatchObject({ ok: false, reason: 'already-settled' });
+    expect((await getLearningLoop(sql, { workspaceId: WS, loopId: LOOP }))!.spentUsd).toBeCloseTo(
+      spentBefore + 0.3,
+      6,
+    );
+  });
+
+  it('governorCheck counts OPEN reservations as spend — the concurrency guarantee', async () => {
+    const loopId = 'frontier:concurrency-test';
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 4 });
+    const before = await governorCheck(sql, { workspaceId: WS, loopId });
+    expect(before).toMatchObject({ allow: true });
+    expect(before.remainingUsd).toBeCloseTo(4, 6);
+
+    // One attempt in flight takes the budget down to the floor: the gate now
+    // refuses a SECOND attempt even though nothing has been charged yet.
+    const res = await reserveLearningSpend(sql, { workspaceId: WS, loopId, requestedUsd: 4 });
+    if (!res.ok) throw new Error('reservation refused');
+    expect(res.reservation.reservedUsd).toBeCloseTo(3.5, 6); // 4 − 0.5 floor
+    const during = await governorCheck(sql, { workspaceId: WS, loopId });
+    expect(during).toMatchObject({ allow: false, reason: 'exhausted' });
+    const second = await reserveLearningSpend(sql, { workspaceId: WS, loopId, requestedUsd: 1 });
+    expect(second).toMatchObject({ ok: false, reason: 'no-headroom' });
+
+    // Settling for less than reserved returns the remainder to headroom.
+    await settleLearningSpend(sql, {
+      workspaceId: WS,
+      reservationId: res.reservation.id,
+      disposition: 'used',
+      usedUsd: 0.5,
+    });
+    const after = await governorCheck(sql, { workspaceId: WS, loopId });
+    expect(after).toMatchObject({ allow: true });
+    expect(after.remainingUsd).toBeCloseTo(3.5, 6);
+  });
+
+  it('refuses fail-closed on an unbudgeted loop', async () => {
+    await registerLearningLoop(sql, { workspaceId: WS, loopId: 'frontier:no-budget', budgetUsd: null });
+    expect(
+      await reserveLearningSpend(sql, {
+        workspaceId: WS,
+        loopId: 'frontier:no-budget',
+        requestedUsd: 1,
+      }),
+    ).toMatchObject({ ok: false, reason: 'unbudgeted', headroomUsd: null });
+  });
+
+  it('exposes requested, reserved, used and unsettled SEPARATELY', async () => {
+    const loopId = 'frontier:positions-test';
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 20 });
+    const done = await reserveLearningSpend(sql, { workspaceId: WS, loopId, requestedUsd: 5 });
+    if (!done.ok) throw new Error('reservation refused');
+    await settleLearningSpend(sql, {
+      workspaceId: WS,
+      reservationId: done.reservation.id,
+      disposition: 'used',
+      usedUsd: 2,
+    });
+    const open = await reserveLearningSpend(sql, { workspaceId: WS, loopId, requestedUsd: 3 });
+    if (!open.ok) throw new Error('reservation refused');
+
+    const { positions, spend } = await getLearningSpendPositions(sql, { workspaceId: WS, loopId });
+    expect(positions).toMatchObject({
+      requestedUsd: 8,
+      reservedUsd: 8,
+      usedUsd: 2,
+      unsettledUsd: 3,
+      openAttempts: 1,
+    });
+    // The same four numbers, in the shape a learning contract embeds.
+    expect(spend).toMatchObject({ requestedUsd: 8, reservedUsd: 8, usedUsd: 2, unsettledUsd: 3 });
+    expect(spend.settledAt).toBeUndefined(); // work still in flight ⇒ not settled
   });
 });

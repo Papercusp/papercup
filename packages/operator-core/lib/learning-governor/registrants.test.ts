@@ -14,9 +14,15 @@ import {
   learningGovernorPreflight,
   recordGymTickToGovernor,
   recordScoutTickToGovernor,
+  runGovernedSpendAttempt,
+  type GovernedSpendAttemptInput,
   type GovernorGlueDeps,
 } from './registrants';
-import type { RecordLearningSpendInput, RegisterLearningLoopInput } from './store';
+import type {
+  RecordLearningSpendInput,
+  RegisterLearningLoopInput,
+  ReserveLearningSpendResult,
+} from './store';
 
 const SQL = {} as Sql;
 
@@ -39,6 +45,158 @@ function fakeDeps(opts: { enabled?: boolean } = {}) {
   };
   return { deps, calls };
 }
+
+/**
+ * A governor stub for the attempt seam (P-005): grants what is asked and
+ * records every settlement, so a test can assert that an attempt CLOSED and
+ * with which disposition.
+ */
+function fakeAttemptDeps(
+  opts: { enabled?: boolean; reserve?: ReserveLearningSpendResult; settleThrows?: boolean } = {},
+) {
+  const settlements: Array<{ disposition: string; usedUsd?: number }> = [];
+  const logs: string[] = [];
+  const granted: ReserveLearningSpendResult = opts.reserve ?? {
+    ok: true,
+    clamped: false,
+    headroomUsd: 9,
+    reservation: {
+      id: 'res-1',
+      workspaceId: 'w',
+      loopId: 'frontier:x',
+      potSlug: null,
+      attemptKind: 'proposer',
+      requestedUsd: 1,
+      reservedUsd: 1,
+      usedUsd: 0,
+      status: 'open',
+      signalOrigin: 'organic',
+      runRef: null,
+      note: null,
+      createdAt: 0,
+      settledAt: null,
+    },
+  };
+  const deps: GovernorGlueDeps = {
+    enabled: async () => opts.enabled ?? true,
+    getSql: async () => SQL,
+    reserve: async () => granted,
+    settle: async (_sql, input) => {
+      if (opts.settleThrows) throw new Error('settlement write failed');
+      settlements.push({ disposition: input.disposition, usedUsd: input.usedUsd });
+      return { ok: false, reason: 'not-found', reservation: null };
+    },
+    log: (m) => logs.push(m),
+  };
+  return { deps, settlements, logs };
+}
+
+describe('runGovernedSpendAttempt — every attempt settles exactly once', () => {
+  const attempt = <T,>(run: GovernedSpendAttemptInput<T>['run']): GovernedSpendAttemptInput<T> => ({
+    workspaceId: 'w',
+    loopId: 'frontier:x',
+    attemptKind: 'proposer',
+    requestedUsd: 1,
+    run,
+  });
+
+  it('settles a completed attempt as used, at its actual cost', async () => {
+    const { deps, settlements } = fakeAttemptDeps();
+    const out = await runGovernedSpendAttempt(
+      attempt(async () => ({ costUsd: 0.4, value: 'lessons' })),
+      deps,
+    );
+    expect(out).toMatchObject({ ok: true, value: 'lessons', costUsd: 0.4, cancelled: false });
+    expect(settlements).toEqual([{ disposition: 'used', usedUsd: 0.4 }]);
+  });
+
+  it('settles a PARTIAL attempt at the partial cost, not the reservation', async () => {
+    const { deps, settlements } = fakeAttemptDeps();
+    await runGovernedSpendAttempt(
+      attempt(async () => ({ costUsd: 0.1, value: '3 of 10 tasks' })),
+      deps,
+    );
+    expect(settlements).toEqual([{ disposition: 'used', usedUsd: 0.1 }]);
+  });
+
+  it('settles a CANCELLED attempt as cancelled', async () => {
+    const { deps, settlements } = fakeAttemptDeps();
+    const out = await runGovernedSpendAttempt(
+      attempt(async () => ({ costUsd: 0, value: null, cancelled: true })),
+      deps,
+    );
+    expect(out).toMatchObject({ ok: true, cancelled: true });
+    expect(settlements).toEqual([{ disposition: 'cancelled', usedUsd: 0 }]);
+  });
+
+  it('settles a THROWN attempt as failed, charged for what it burned first', async () => {
+    // The proposer case: tokens spent, then the parse blows up. Pre-P-005 this
+    // ledgered nothing at all.
+    const { deps, settlements } = fakeAttemptDeps();
+    const out = await runGovernedSpendAttempt(
+      attempt(async () => {
+        throw Object.assign(new Error('bad JSON'), { costUsd: 0.02 });
+      }),
+      deps,
+    );
+    expect(out).toMatchObject({ ok: false, reason: 'failed', error: 'bad JSON', costUsd: 0.02 });
+    expect(settlements).toEqual([{ disposition: 'failed', usedUsd: 0.02 }]);
+  });
+
+  it('settles a thrown attempt at zero when nothing was burned', async () => {
+    const { deps, settlements } = fakeAttemptDeps();
+    await runGovernedSpendAttempt(
+      attempt(async () => {
+        throw new Error('transcript unreadable');
+      }),
+      deps,
+    );
+    expect(settlements).toEqual([{ disposition: 'failed', usedUsd: 0 }]);
+  });
+
+  it('does NOT run the work when the reservation is refused', async () => {
+    let ran = false;
+    const { deps, settlements } = fakeAttemptDeps({
+      reserve: { ok: false, reason: 'no-headroom', requestedUsd: 1, headroomUsd: 0 },
+    });
+    const out = await runGovernedSpendAttempt(
+      attempt(async () => {
+        ran = true;
+        return { costUsd: 1, value: null };
+      }),
+      deps,
+    );
+    expect(ran).toBe(false);
+    expect(out).toMatchObject({ ok: false, reason: 'refused', refusal: 'no-headroom' });
+    expect(settlements).toEqual([]);
+  });
+
+  it('flag OFF ⇒ governor-dark, and the work never runs', async () => {
+    let ran = false;
+    const { deps } = fakeAttemptDeps({ enabled: false });
+    const out = await runGovernedSpendAttempt(
+      attempt(async () => {
+        ran = true;
+        return { costUsd: 1, value: null };
+      }),
+      deps,
+    );
+    expect(ran).toBe(false);
+    expect(out).toEqual({ ok: false, reason: 'governor-dark' });
+  });
+
+  it('a settlement write failure never masks the work — the value returns, the row stays OPEN', async () => {
+    // Leaving it open is the honest state: it shows up as unsettled spend
+    // rather than silently reading as free.
+    const { deps, logs } = fakeAttemptDeps({ settleThrows: true });
+    const out = await runGovernedSpendAttempt(
+      attempt(async () => ({ costUsd: 0.3, value: 'lessons' })),
+      deps,
+    );
+    expect(out).toMatchObject({ ok: true, value: 'lessons', costUsd: 0.3 });
+    expect(logs.join('\n')).toMatch(/settlement failed.*stays OPEN/s);
+  });
+});
 
 const AUTOLOOPS = [
   { workspaceId: 'w', harnessSlug: 'alpha', enabled: true, budgetUsd: 20, spentUsd: 2 },
