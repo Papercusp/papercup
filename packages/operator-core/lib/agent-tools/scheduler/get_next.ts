@@ -31,8 +31,17 @@ import { CLAIM_STATES_ALLOWLIST, releaseWorkItem } from '../../work-items';
 import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
 import { getBuildInfo } from '../../build-info';
 import { assessClaimFreshness, type ClaimFreshnessVerdict } from '../../work-item-claim-freshness';
+import {
+  defaultHarnessScopeInheritanceReaders,
+  readBriefHarnessBinding,
+  readClaimHarnessBinding,
+  readFleetHarnessBinding,
+  readPlanHarnessBinding,
+  resolveInheritedHarnessScope,
+} from '../_harness-scope';
+import { getActiveClaimForOwner } from '../../work-item-claims';
 import { getSessionBrief } from '../../session-brief';
-import { resolveConcreteHarnessSlug } from '../_harness-scope';
+import { planHarnessesForSlugs } from '../plans/source';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { cancelClaimableAwaits } from '../../events/await/store';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -1063,26 +1072,26 @@ export default defineTool({
     // widens behaviour without removing any.
     const ident = resolveAgentIdentity(ctx);
     const ctxHarness = (ctx as { harnessSlug?: string | null }).harnessSlug;
-    const explicitHarness = typeof rawArgs.harness === 'string' ? rawArgs.harness.trim() : '';
-    let resolvedHarness = resolveConcreteHarnessSlug(rawArgs.harness, { harnessSlug: ctxHarness });
-    // WI-20256839898955733 — the transport uses '*' as the unscoped sentinel, even
-    // after coord:orient has established the caller's concrete harness in its durable
-    // session brief. Treating that sentinel as a real slug makes the miss path report
-    // `harness_not_found` for '*', so a fleet member cannot self-pull without repeating
-    // the harness on every wake. Read the brief only when no concrete arg/context exists;
-    // an explicit '*' remains a deliberate invalid single-harness scope.
-    if (!explicitHarness && !resolvedHarness) {
-      const brief = await getSessionBrief({ ownerId: ident.ownerId }).catch(() => null);
-      const briefWorkspace = brief?.workspaceId?.trim();
-      const identityWorkspace = ident.workspaceId?.trim();
-      if (brief && (!identityWorkspace || !briefWorkspace || identityWorkspace === briefWorkspace)) {
-        resolvedHarness = resolveConcreteHarnessSlug(brief.harnessSlug, undefined);
-      }
-    }
-    if (!resolvedHarness) {
+    const inheritedHarness = await resolveInheritedHarnessScope(
+      {
+        explicitHarness: rawArgs.harness,
+        ownerId: ident.ownerId,
+        workspaceId: ident.workspaceId,
+        sessionHarness: ctxHarness,
+      },
+      {
+        ...defaultHarnessScopeInheritanceReaders,
+        claim: (input) => readClaimHarnessBinding(input, getActiveClaimForOwner),
+        plan: (input) => readPlanHarnessBinding(input, getPresence, planHarnessesForSlugs),
+        fleet: (input) => readFleetHarnessBinding(input, getClaimSpecRecord),
+        brief: (input) => readBriefHarnessBinding(input, (ownerId) => getSessionBrief({ ownerId })),
+      },
+    );
+    if (inheritedHarness.kind !== 'harness') {
       // Reachable from an unscoped operator/cross-workspace session with no durable
-      // harness brief, or from an explicit wildcard. Say which scope is missing rather
-      // than passing '*' downstream and misreporting it as an unregistered harness.
+      // binding, an explicit wildcard, or a stale/ambiguous durable binding. Preserve
+      // the canonical resolver's candidates so the caller can correct the binding
+      // instead of guessing a harness and crossing an isolation boundary.
       return {
         content: [
           {
@@ -1090,9 +1099,18 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'harness_required',
+              reason: inheritedHarness.kind === 'all' ? 'operator_scope_not_concrete' : inheritedHarness.reason,
+              ...('source' in inheritedHarness && inheritedHarness.source
+                ? { resolverSource: inheritedHarness.source }
+                : {}),
+              candidates: inheritedHarness.candidates,
+              conflictingBindings: inheritedHarness.conflictingBindings,
+              ...('detail' in inheritedHarness && inheritedHarness.detail
+                ? { resolverDetail: inheritedHarness.detail }
+                : {}),
               detail:
-                'No `harness` argument and this session is not scoped to one, so there is no queue to pull from. ' +
-                'Pass harness explicitly (a harness-scoped session supplies it automatically).',
+                'No unique concrete harness can be inherited for this pull. Pass `harness` explicitly, ' +
+                'or repair the stale/ambiguous claimed-work, plan, fleet, or session binding named above.',
             }),
           },
         ],
@@ -1102,7 +1120,7 @@ export default defineTool({
     // Re-bind so every downstream `args.harness` stays a definite string — the
     // alternative (renaming ~15 call sites) would also have caught the unrelated
     // `args.harness` inside buildMissDiagnosis, which has its own `args` param.
-    const args = { ...rawArgs, harness: resolvedHarness };
+    const args = { ...rawArgs, harness: inheritedHarness.slug };
     // P-016: reconcile ALL incompatible pre-existing claims before the next
     // pickup. The sweep is batch-shaped (one pass, one leader alert), so a dead
     // lane cannot drip one stale claim per wake. Only fleet MEMBERS are scoped;
