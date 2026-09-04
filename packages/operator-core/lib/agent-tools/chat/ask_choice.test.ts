@@ -101,6 +101,17 @@ describe('chat:ask_choice handler', () => {
     expect(metadata.skipWorkspaceTx).toBe(true);
   });
 
+  it('documents the bounded text fields that otherwise reject route cards', () => {
+    const metadata = askChoiceTool as unknown as {
+      description?: string;
+      guidance?: { when?: string };
+    };
+    const guidance = `${metadata.description ?? ''} ${metadata.guidance?.when ?? ''}`;
+    expect(guidance).toContain('question ≤500');
+    expect(guidance).toContain('labels ≤80');
+    expect(guidance).toContain('hints ≤120');
+  });
+
   it('single-select: blocks until user submits; returns picked option', async () => {
     openRun({ workspaceId: ws, runId: 'r-ac' });
 

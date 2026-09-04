@@ -66,6 +66,20 @@ async function waitForMainThreadQuietInPage(): Promise<void> {
   }
 }
 
+/**
+ * TanStack Router patches pushState and synchronously observes the PUSH. Keep
+ * its history index intact and do not dispatch a synthetic popstate: that is a
+ * second, misclassified GO navigation rather than notification for this PUSH.
+ */
+async function spaNavigate(path: string): Promise<void> {
+  await browser.execute((p) => {
+    const prevState = (window.history.state ?? {}) as Record<string, unknown>;
+    const prevIndex =
+      typeof prevState.__TSR_index === "number" ? prevState.__TSR_index : 0;
+    history.pushState({ ...prevState, __TSR_index: prevIndex + 1 }, "", p);
+  }, path);
+}
+
 describe("Packaged Papercusp desktop — plan popup open interaction", () => {
   it("opens a plan from the sidebar within the warm-render budget", async () => {
     // 1. Wait for the operator UI to mount real app content.
@@ -73,15 +87,15 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
 
     // 2. Select the op-chat sidebar Plans face (?opcv=plans) — where the real
     //    "open a plan" interaction lives (WI-5547: the sidebar Plans view).
-    await browser.execute(() => {
+    const plansUrl = await browser.execute(() => {
       const u = new URL(location.href);
       u.searchParams.set("opcv", "plans");
-      history.pushState({}, "", u.pathname + u.search + u.hash);
-      window.dispatchEvent(new PopStateEvent("popstate"));
+      return u.pathname + u.search + u.hash;
     });
+    await spaNavigate(plansUrl);
 
     // 3. Wait for at least one plan row in the sidebar Plans face.
-    await browser.waitUntil(
+    const rowsReady = await browser.waitUntil(
       async () =>
         await browser.execute(() =>
           Boolean(document.querySelector('[data-testid^="plans-pane-row-"]')),
@@ -91,7 +105,28 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
         timeoutMsg:
           "no plan rows in the sidebar Plans face within 20s (is the op-chat sidebar open, and are there plans?)",
       },
-    );
+    ).then(() => true, () => false);
+
+    if (!rowsReady) {
+      const snapshot = await browser.execute(() => ({
+        href: location.href,
+        planRowCount: document.querySelectorAll(
+          '[data-testid^="plans-pane-row-"]',
+        ).length,
+        selectedFace: document.querySelector<HTMLElement>(
+          '[aria-selected="true"], [aria-pressed="true"]',
+        )?.getAttribute("aria-label") ?? null,
+        sidebarText: (
+          document.querySelector<HTMLElement>(".pc-opchat")?.textContent ??
+          document.body.textContent ??
+          ""
+        ).trim().slice(0, 320),
+      }));
+      throw new Error(
+        "no plan rows in the sidebar Plans face within 20s after router PUSH; " +
+          `sidebar snapshot=${JSON.stringify(snapshot)}`,
+      );
+    }
 
     // 4. Pick a row whose dashboard can open a real plan, and measure THAT
     //    dashboard's "Open full plan" interaction.

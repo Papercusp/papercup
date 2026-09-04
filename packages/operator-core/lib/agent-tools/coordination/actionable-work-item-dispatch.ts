@@ -8,9 +8,11 @@
  */
 import {
   claimWorkItem,
+  explainIssueClaimFloors,
   isClaimHoldParked,
   observeWorkItem,
   readUnresolvedDepBlockers,
+  type ClaimFloorAttribution,
   type UnresolvedDepBlocker,
   type WorkItem,
   type WorkItemObservation,
@@ -45,6 +47,8 @@ export interface WorkItemDispatchSkip {
   reason: string;
   holder?: string;
   blockers?: string[];
+  /** Canonical issue-family claim-floor attribution, when the readiness read can resolve it. */
+  claimFloor?: ClaimFloorAttribution;
 }
 
 export interface WorkItemDispatchClaimFailure {
@@ -109,6 +113,8 @@ export interface ActionableWorkItemDispatchResult {
 export interface ActionableWorkItemDispatchDeps {
   observe: (id: string, opts: { harness?: string }) => Promise<WorkItemObservation | null>;
   claim: (id: string, assignee: string, opts: { harness?: string }) => Promise<WorkItem | null>;
+  /** The same named-id claim-floor oracle used by work_items:claim. */
+  explainClaimFloors: typeof explainIssueClaimFloors;
   blockers: (id: string, harness?: string) => Promise<UnresolvedDepBlocker[]>;
   planBlock: (workItem: WorkItem) => Promise<PlanItemLaneBlock | null>;
   planClaim: (workItem: WorkItem) => Promise<PlanItemLiveClaimBlock | null>;
@@ -123,6 +129,7 @@ export interface ActionableWorkItemDispatchDeps {
 const defaultDeps: ActionableWorkItemDispatchDeps = {
   observe: (id, opts) => observeWorkItem(id, opts),
   claim: (id, assignee, opts) => claimWorkItem(id, assignee, opts),
+  explainClaimFloors: explainIssueClaimFloors,
   blockers: (id, harness) => readUnresolvedDepBlockers(id, harness),
   planBlock: (workItem) => planItemLaneBlockReason(workItem),
   planClaim: (workItem) => planItemLiveClaimReason(workItem),
@@ -136,6 +143,19 @@ function sameAgent(holder: string | null | undefined, target: string): boolean {
 
 function blockerIds(rows: UnresolvedDepBlocker[]): string[] {
   return rows.map((row) => row.ref).filter(Boolean);
+}
+
+function claimFloorReason(floor: ClaimFloorAttribution): string {
+  const retryHint = floor.retry
+    ? ` This floor CLEARS ON ITS OWN — typically within ~${Math.round(floor.retry.expectedWithinSec / 60)}m, ` +
+      `and at the latest ~${Math.round(floor.retry.guaranteedWithinSec / 60)}m (${floor.retry.basis}).`
+    : '';
+  const remedyHint = floor.remedy ? ` ${floor.remedy}` : '';
+  return (
+    `claim floor ${floor.refusedBy ?? 'unknown'}: ${floor.detail ?? 'the item is not claim-path admissible'}.` +
+    retryHint +
+    remedyHint
+  );
 }
 
 async function classifyOne(
@@ -264,13 +284,21 @@ async function classifyOne(
   }
   if (retainedByTarget) return { kind: 'retained', workItemId };
   if (!observed.available) {
-    // EI-22122824405906276: the admission-pending floor (the FIRST gate observeWorkItem
-    // checks) is a WAIT with a documented remedy, not a permanent refusal — render the
-    // SAME explanation + remedy work-items-admission.ts renders on the claim-refusal path,
-    // instead of the generic "outside the frontier" text that gave a caller no way to tell
-    // "not yet" from "never" or to see the one-argument create-time fix. Every OTHER
-    // `gated:true` case (the feature-family trust gate, an un-admitted remote issue) has no
-    // `admissionPending` and keeps the generic text, which is accurate for those.
+    // EI-22008434629323224: preserve the claim path's floors for targeted dispatch,
+    // but do not collapse an issue-family refusal into the generic frontier text.
+    // Reuse the same named-id oracle as work_items:claim so the caller receives the
+    // refused floor, retry bound, and remedy that a later manual claim would reveal.
+    let claimFloor: ClaimFloorAttribution | null = null;
+    const issueHarness = harness ?? workItem.harness;
+    if (observed.gated && workItem.family === 'issue' && issueHarness) {
+      try {
+        const [floor] = await deps.explainClaimFloors(issueHarness, [workItemId], { assignee: targetAgent });
+        claimFloor = floor && !floor.admissible && floor.refusedBy ? floor : null;
+      } catch {
+        // The diagnostic is fail-soft: a floor-read outage must not change dispatch's
+        // refusal or invent a reason the oracle did not establish.
+      }
+    }
     const admissionPending = observed.admissionPending;
     return {
       kind: 'skip',
@@ -278,10 +306,13 @@ async function classifyOne(
         workItemId,
         code: observed.gated ? 'admission_gated' : 'read_failed',
         reason: observed.gated
-          ? admissionPending
-            ? `${admissionPending.reason} ${admissionPending.remedy}`
-            : 'work-item is outside the canonical admission frontier'
+          ? claimFloor
+            ? claimFloorReason(claimFloor)
+            : admissionPending
+              ? `${admissionPending.reason} ${admissionPending.remedy}`
+              : 'work-item is outside the canonical admission frontier'
           : 'work-item is not currently available for assignment',
+        ...(claimFloor ? { claimFloor } : {}),
       },
     };
   }

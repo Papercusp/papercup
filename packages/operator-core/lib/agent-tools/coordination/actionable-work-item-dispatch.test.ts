@@ -23,6 +23,14 @@ function workItem(id: string, state = 'open', assignee: string | null = null): W
   } as WorkItem;
 }
 
+function issueWorkItem(id: string, state = 'open', assignee: string | null = null): WorkItem {
+  return {
+    ...workItem(id, state, assignee),
+    kind: 'task',
+    family: 'issue',
+  } as WorkItem;
+}
+
 function target(ownerId = 'agent-email-stable', patch: Partial<StableAgentTargetState> = {}): StableAgentTargetState {
   return {
     requested: ownerId,
@@ -42,6 +50,7 @@ function deps(patch: Partial<ActionableWorkItemDispatchDeps> = {}): ActionableWo
       claimedBy: null,
     })),
     claim: vi.fn(async (id, assignee) => workItem(id, 'open', assignee)),
+    explainClaimFloors: vi.fn(async () => []),
     blockers: vi.fn(async () => []),
     planBlock: vi.fn(async () => null),
     planClaim: vi.fn(async () => null),
@@ -164,6 +173,55 @@ describe('assignActionableWorkItems', () => {
       code: 'admission_gated',
       reason: 'work-item is outside the canonical admission frontier',
     });
+  });
+
+  it('EI-22008434629323224: an issue-family task gate carries the canonical claim floor and remedy', async () => {
+    const claimFloor = {
+      id: 'WI-FRESH-TASK',
+      admissible: false,
+      refusedBy: 'admission-pending',
+      detail: 'duplicate screening is pending',
+      retry: {
+        clearsOnItsOwn: true as const,
+        expectedWithinSec: 1800,
+        guaranteedWithinSec: 3600,
+        basis: 'promoter cadence',
+      },
+      remedy: 're-file with assign_to to bypass screening',
+    };
+    const explainClaimFloors = vi.fn(async () => [claimFloor]);
+    const d = deps({
+      explainClaimFloors,
+      observe: vi.fn(async (id) => ({
+        item: issueWorkItem(id),
+        available: false,
+        claimedBy: null,
+        gated: true,
+        // Keep the observation-side detail too: dispatch must prefer the
+        // canonical claim oracle, rather than only the generic observe hint.
+        admissionPending: {
+          reason: 'duplicate screening is pending',
+          remedy: 're-file with assign_to to bypass screening',
+        },
+      })),
+    });
+
+    const result = await assignActionableWorkItems(
+      { workItemIds: ['WI-FRESH-TASK'], targetAgent: 'agent-email-stable', harness: 'email' },
+      d,
+    );
+
+    expect(explainClaimFloors).toHaveBeenCalledWith('email', ['WI-FRESH-TASK'], {
+      assignee: 'agent-email-stable',
+    });
+    expect(result.skipped[0]).toMatchObject({
+      workItemId: 'WI-FRESH-TASK',
+      code: 'admission_gated',
+      claimFloor,
+    });
+    expect(result.skipped[0]?.reason).toContain('claim floor admission-pending');
+    expect(result.skipped[0]?.reason).toContain('re-file with assign_to');
+    expect(result.skipped[0]?.reason).not.toContain('outside the canonical admission frontier');
   });
 });
 

@@ -144,10 +144,10 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'chat:ask_choice',
   description:
-    'Present the user with a structured set of clickable choices and BLOCK until they pick. The tool returns the chosen option(s) (or {declined:true} if the user skipped). Use for yes/no, accept/reject, or pick-one-of questions with up to 6 options. Set multi:true for "select all that apply".',
+    'Present the user with a structured set of clickable choices and BLOCK until they pick. The tool returns the chosen option(s) (or {declined:true} if the user skipped). Use for yes/no, accept/reject, or pick-one-of questions with up to 6 options. Set multi:true for "select all that apply". Keep question ≤500 chars, labels ≤80, and hints ≤120; longer values are rejected.',
   capability: 'chat:write',
   guidance: {
-    when: 'You need a yes/no, accept/reject, or pick-one-of decision from the user before continuing. If your reply would name 2 or more options and ask which one the user wants, CALL this tool — never enumerate the options in prose. Renders clickable buttons in the chat; the tool returns the choice as its result. You can keep working in the same turn after the result lands.',
+    when: 'You need a yes/no, accept/reject, or pick-one-of decision from the user before continuing. If your reply would name 2 or more options and ask which one the user wants, CALL this tool — never enumerate the options in prose. Renders clickable buttons in the chat; the tool returns the choice as its result. You can keep working in the same turn after the result lands. Keep question ≤500 chars, labels ≤80, and hints ≤120 so schema validation succeeds.',
     notWhen: 'For OPEN-ENDED questions ("describe what you want", "paste the error"), keep using plain text. Use 2-3 options; 4+ only when genuinely distinct (6 hard max).',
   },
   requirePrincipal: false,

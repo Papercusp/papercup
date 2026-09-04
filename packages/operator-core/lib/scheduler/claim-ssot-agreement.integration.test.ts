@@ -46,6 +46,13 @@
  *   4. DIVERGENCE C (own-lease plan-item exemption) — the view excludes a plan-item under any
  *      live lease (caller-independent); the LEASE HOLDER can still claim it.
  *
+ * D-007/B2 (fleet-leadership-continuity-and-actuation-2026-08-01) reuses this mould for the
+ * second physically-separate claim pair: a linked feature work-item's `taken_by` holder and the
+ * live `plan_item_claims.owner`. Ordinary live pairs must agree. The three intentional one-sided
+ * states — a lane claimed before promotion, a held work-item whose plan item is terminal, and the
+ * same-owner lease exemption that lets the work-item claim converge — are pinned explicitly so
+ * they cannot become an excuse for an unlabelled owner mismatch.
+ *
  * Run:
  *   cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *     lib/scheduler/claim-ssot-agreement.integration.test.ts
@@ -171,6 +178,89 @@ const seedRouteDecision = (slug: string, itemId: string) =>
                  ARRAY[${itemId}]::text[])`;
 const seedPlanLinkedIssue = (id: string, planSlug: string, itemId: string) =>
   seed(id, { kind: 'task', payload: { plan_item: { plan_slug: planSlug, item_id: itemId, harness_slug: H } } });
+
+/** A promoted feature-family execution record carries BOTH the payload back-pointer read by the
+ * claim floors and the first-class source columns used by the pair-agreement join. */
+async function seedPlanLinkedFeature(
+  id: string,
+  planSlug: string,
+  itemId: string,
+  o: { status?: string; takenBy?: string | null; createdTs?: number } = {},
+) {
+  await seed(id, {
+    kind: 'feature',
+    status: o.status,
+    takenBy: o.takenBy,
+    createdTs: o.createdTs,
+    payload: { plan_item: { plan_slug: planSlug, item_id: itemId, harness_slug: H } },
+  });
+  await db.sql`
+    UPDATE harness_shared.work_items
+       SET source_plan_slug = ${planSlug}, source_plan_item_ids = ARRAY[${itemId}]::text[]
+     WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ${id}`;
+}
+
+interface FeatureClaimPairSnapshot {
+  plan_slug: string;
+  item_id: string;
+  work_item_id: string | null;
+  work_item_owner: string | null;
+  work_item_status: string | null;
+  plan_item_owner: string | null;
+  plan_item_status: string | null;
+}
+
+/** FULL-OUTER snapshot of the two deliberately separate claim stores for one plan. Keeping the
+ * one-sided rows is the point: filtering them out would make the three documented divergences
+ * invisible and turn an apparent equality into a vacuous one. */
+async function featureClaimPairSnapshots(planSlug: string): Promise<FeatureClaimPairSnapshot[]> {
+  return db.sql<FeatureClaimPairSnapshot[]>`
+    WITH feature_links AS (
+      SELECT wi.workspace_id,
+             wi.harness_slug,
+             wi.source_plan_slug AS plan_slug,
+             linked.item_id,
+             wi.feature_id AS work_item_id,
+             wi.taken_by AS work_item_owner,
+             wi.status AS work_item_status
+        FROM harness_shared.work_items wi
+        CROSS JOIN LATERAL unnest(COALESCE(wi.source_plan_item_ids, ARRAY[]::text[])) AS linked(item_id)
+       WHERE wi.workspace_id = ${WS}
+         AND wi.harness_slug = ${H}
+         AND wi.item_kind = 'feature'
+         AND wi.source_plan_slug = ${planSlug}
+    ), live_plan_claims AS (
+      SELECT workspace_id,
+             harness_slug,
+             plan_slug,
+             item_id,
+             owner AS plan_item_owner
+        FROM harness_shared.plan_item_claims
+       WHERE workspace_id = ${WS}
+         AND harness_slug = ${H}
+         AND plan_slug = ${planSlug}
+         AND expires_ts > clock_timestamp()
+    )
+    SELECT COALESCE(f.plan_slug, c.plan_slug) AS plan_slug,
+           COALESCE(f.item_id, c.item_id) AS item_id,
+           f.work_item_id,
+           f.work_item_owner,
+           f.work_item_status,
+           c.plan_item_owner,
+           pi.status AS plan_item_status
+      FROM feature_links f
+      FULL OUTER JOIN live_plan_claims c
+        ON c.workspace_id = f.workspace_id
+       AND c.harness_slug = f.harness_slug
+       AND c.plan_slug = f.plan_slug
+       AND c.item_id = f.item_id
+      LEFT JOIN harness_shared.plan_items pi
+        ON pi.workspace_id = COALESCE(f.workspace_id, c.workspace_id)
+       AND pi.harness_slug = COALESCE(f.harness_slug, c.harness_slug)
+       AND pi.plan_slug = COALESCE(f.plan_slug, c.plan_slug)
+       AND pi.item_id = COALESCE(f.item_id, c.item_id)
+     ORDER BY plan_slug, item_id, work_item_id NULLS FIRST`;
+}
 
 /**
  * EI-13738: a plan carrying an ITEM GRAPH — `harness_plans.items[]` with `blockedBy[]` edges,
@@ -333,9 +423,7 @@ describe('canonical plan-item sibling claim guard (EI-21151083448505391)', () =>
       UPDATE harness_shared.work_items
          SET taken_by = NULL, taken_at = NULL
        WHERE workspace_id = ${WS} AND feature_id = 'WI-SIBLING-HELD'`;
-    expect((await wi.claimNextIssueWorkItem({ harness: H, assignee: 'drain-member' }, WS))?.id).toBe(
-      'WI-SIBLING-HELD',
-    );
+    expect((await wi.claimNextIssueWorkItem({ harness: H, assignee: 'drain-member' }, WS))?.id).toBe('WI-SIBLING-HELD');
   });
 
   it('permits exactly one concurrent winner across bounded feature and issue claim transactions', async () => {
@@ -536,6 +624,83 @@ describe('the three DELIBERATE, documented divergences are pinned (a future "ali
 
     const claimed = (await wi.claimNextIssueWorkItem({ harness: H, assignee: 'probe' }, WS))?.id ?? null;
     expect(claimed).toBe('WI-OWN-LEASE'); // the holder's own-lease exemption admits it
+  });
+});
+
+describe('linked feature work-item / plan-item claim-pair AGREEMENT (D-007/B2)', () => {
+  it('AGREEMENT + DIVERGENCE C — only the lane owner gets the own-lease exemption, and the resulting live pair has one owner', async () => {
+    const gn = await import('./get-next');
+    await seedPlan('claim-pair', 'ready');
+    await seedNormalizedPlanItem('claim-pair', 'P-001', 'todo');
+    await seedPlanLinkedFeature('F-CLAIM-PAIR', 'claim-pair', 'P-001');
+    await seedLease('claim-pair', 'P-001', 'pair-owner', 20);
+
+    // A foreign claimant cannot take a work-item out from under the lane owner.
+    expect(
+      await gn.getNextWorkItem(
+        DEFAULT_CLAIM_SPEC,
+        { assignee: 'foreign-owner' },
+        { harness: H, workspaceId: WS, states: ['open'] },
+      ),
+    ).toBeNull();
+
+    // The SAME owner is deliberately exempt: this is how the two stores converge after the
+    // lane-first claim/promotion sequence rather than deadlocking each other forever.
+    const claimed = await gn.getNextWorkItem(
+      DEFAULT_CLAIM_SPEC,
+      { assignee: 'pair-owner' },
+      { harness: H, workspaceId: WS, states: ['open'] },
+    );
+    expect(claimed?.workItem.id).toBe('F-CLAIM-PAIR');
+
+    const [pair] = await featureClaimPairSnapshots('claim-pair');
+    expect(pair).toMatchObject({
+      work_item_id: 'F-CLAIM-PAIR',
+      work_item_owner: 'pair-owner',
+      plan_item_owner: 'pair-owner',
+      plan_item_status: 'todo',
+    });
+    expect(pair?.work_item_owner).toBe(pair?.plan_item_owner);
+  });
+
+  it('DIVERGENCE A — a live plan-item claim may exist before promotion creates any work-item', async () => {
+    await seedPlan('pre-promotion', 'ready');
+    await seedNormalizedPlanItem('pre-promotion', 'P-001', 'todo');
+    await seedLease('pre-promotion', 'P-001', 'plan-first-owner', 20);
+
+    expect(await featureClaimPairSnapshots('pre-promotion')).toEqual([
+      {
+        plan_slug: 'pre-promotion',
+        item_id: 'P-001',
+        work_item_id: null,
+        work_item_owner: null,
+        work_item_status: null,
+        plan_item_owner: 'plan-first-owner',
+        plan_item_status: 'todo',
+      },
+    ]);
+  });
+
+  it('DIVERGENCE B — a terminal plan item may retain an in-flight work-item holder without a live lane claim', async () => {
+    await seedPlan('terminal-in-flight', 'ready');
+    await seedNormalizedPlanItem('terminal-in-flight', 'P-001', 'done');
+    await seedPlanLinkedFeature('F-TERMINAL-IN-FLIGHT', 'terminal-in-flight', 'P-001', {
+      takenBy: 'finishing-owner',
+    });
+
+    // The terminal reconciler intentionally skips a currently-held work-item rather than
+    // clobber work still in flight. That recoverable, work-side-only state is not owner drift.
+    expect(await featureClaimPairSnapshots('terminal-in-flight')).toEqual([
+      {
+        plan_slug: 'terminal-in-flight',
+        item_id: 'P-001',
+        work_item_id: 'F-TERMINAL-IN-FLIGHT',
+        work_item_owner: 'finishing-owner',
+        work_item_status: 'open',
+        plan_item_owner: null,
+        plan_item_status: 'done',
+      },
+    ]);
   });
 });
 

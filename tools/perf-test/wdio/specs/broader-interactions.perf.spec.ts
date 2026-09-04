@@ -96,6 +96,34 @@ async function latestMeasure(name: string): Promise<number | null> {
 }
 
 /**
+ * Focus a registered HarnessesDock panel even when the persisted layout does
+ * not contain it. This mirrors requestDockPanelOpen without importing browser
+ * application code into the out-of-workspace WDIO runner: the queue survives
+ * the route's mount gap, while the event nudges an already-bound dock.
+ */
+async function requestHarnessPanel(type: string, title: string): Promise<void> {
+  await browser.execute(
+    (panelType, panelTitle) => {
+      const w = window as Window & {
+        __PAPERCUSP_PENDING_PANEL_OPENS__?: Array<{
+          type: string;
+          title?: string;
+        }>;
+      };
+      const queue = (w.__PAPERCUSP_PENDING_PANEL_OPENS__ ??= []);
+      if (!queue.some((request) => request.type === panelType)) {
+        queue.push({ type: panelType, title: panelTitle });
+      }
+      window.dispatchEvent(
+        new CustomEvent("papercusp:adv-open-dock-panel"),
+      );
+    },
+    type,
+    title,
+  );
+}
+
+/**
  * SPA-navigate to a new path WITHOUT tearing down the WebDriver session.
  *
  * WHY NOT `history.pushState({}, "", path)` + a synthetic `popstate`
@@ -259,7 +287,7 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
         ?.click();
     }, NAME);
 
-    await browser.waitUntil(
+    const measured = await browser.waitUntil(
       async () =>
         await browser.execute(
           (name) => performance.getEntriesByName(name, "measure").length > 0,
@@ -269,7 +297,45 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
         timeout: 20_000,
         timeoutMsg: `no "${NAME}" measure emitted within 20s of switching views`,
       },
-    );
+    ).then(() => true, () => false);
+
+    if (!measured) {
+      const snapshot = await browser.execute((name) => {
+        const trigger = document.querySelector<HTMLElement>(
+          'button[aria-label="Observations"]',
+        );
+        const selected = document.querySelector<HTMLElement>(
+          ".pc-learning__view-tab[aria-selected=\"true\"]",
+        );
+        const pane = document.querySelector<HTMLElement>(
+          '.pc-learning__viewpane[data-view="observations"]',
+        );
+        const starts = performance.getEntriesByName(`${name}:start`, "mark");
+        const start = starts[starts.length - 1];
+        return {
+          href: location.href,
+          triggerPresent: Boolean(trigger),
+          triggerSelected: trigger?.getAttribute("aria-selected") ?? null,
+          selectedView: selected?.getAttribute("data-value") ??
+            selected?.getAttribute("value") ??
+            selected?.getAttribute("aria-label") ??
+            null,
+          observationsPanePresent: Boolean(pane),
+          observationsPaneHidden: pane?.hidden ?? null,
+          observationsCount:
+            pane?.querySelector('[data-testid="observations-count"]')
+              ?.textContent?.trim() ?? null,
+          observationsText: (pane?.textContent ?? "").trim().slice(0, 240),
+          startMarkPresent: Boolean(start),
+          startMarkAgeMs: start ? Math.round(performance.now() - start.startTime) : null,
+          measureCount: performance.getEntriesByName(name, "measure").length,
+        };
+      }, NAME);
+      throw new Error(
+        `no "${NAME}" measure emitted within 20s of switching views; ` +
+          `learning snapshot=${JSON.stringify(snapshot)}`,
+      );
+    }
 
     const measuredMs = await latestMeasure(NAME);
     recordInteractionMs(NAME, measuredMs, LEARNING_VIEW_SWITCH_BUDGET_MS);
@@ -358,11 +424,17 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     await spaNavigate(harnessesUrl);
     await waitForAppMount(browser);
 
+    // Persisted dock layouts are user-defined and need not contain the Work
+    // items panel. Queue + focus the registered panel explicitly so this spec
+    // measures conversation loading instead of depending on whoever last
+    // arranged the packaged app's dock.
+    await requestHarnessPanel("adv:work-items", "Work items");
+
     // Wait for at least one row in the Work items grid. RichGrid (grid-core)
     // gives BOTH the header and every body row `role="row"` (see RichGrid.tsx —
     // no per-row data-testid exists), so index 0 is always the header and index
     // 1 is the first real data row once one has rendered.
-    await browser.waitUntil(
+    const rowsReady = await browser.waitUntil(
       async () =>
         await browser.execute(
           () => document.querySelectorAll('[role="row"]').length > 1,
@@ -372,7 +444,36 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
         timeoutMsg:
           "no work-item rows within 20s (is the harness slug valid, and does it have work items?)",
       },
-    );
+    ).then(() => true, () => false);
+
+    if (!rowsReady) {
+      const snapshot = await browser.execute(() => {
+        const w = window as Window & {
+          __PAPERCUSP_PENDING_PANEL_OPENS__?: Array<{
+            type: string;
+            title?: string;
+          }>;
+        };
+        return {
+          href: location.href,
+          pendingPanelOpens: w.__PAPERCUSP_PENDING_PANEL_OPENS__ ?? [],
+          dockTabs: Array.from(
+            document.querySelectorAll<HTMLElement>(".dv-tab"),
+          ).map((tab) => (tab.textContent ?? "").trim()).filter(Boolean),
+          rowCount: document.querySelectorAll('[role="row"]').length,
+          workItemCount:
+            document.querySelector('[data-testid="wi-count"]')?.textContent?.trim() ??
+            null,
+          workItemEmptyStates: Array.from(
+            document.querySelectorAll<HTMLElement>(".pc-advpanel__empty"),
+          ).map((node) => (node.textContent ?? "").trim()).filter(Boolean),
+        };
+      });
+      throw new Error(
+        "no work-item rows within 20s after requesting adv:work-items; " +
+          `dock snapshot=${JSON.stringify(snapshot)}`,
+      );
+    }
 
     // Click the first data row — RichGrid's onRowClick → WorkItemsPanel's
     // setSelectedId → the `?sel` nuqs param the Detail pane follows.

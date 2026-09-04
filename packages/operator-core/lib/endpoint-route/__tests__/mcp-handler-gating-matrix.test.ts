@@ -1413,9 +1413,42 @@ describe('a replayed call records a tool_invocation row', () => {
       expect(textOf(res)).toBe('{"ok":true,"created":"WI-42"}');
       expect(seen.length).toBe(before); // the tool did NOT re-run
       expect(h.withWorkspaceCalls).toEqual([]);
+      // The detached rejection handler runs after the replay response's
+      // microtask; let it settle while the expected-warning spy is installed.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(boom).toHaveBeenCalledWith(expect.stringContaining('telemetry queue exploded'));
     } finally {
       deps.recordInvocation = real;
       boom.mockRestore();
+    }
+  });
+
+  it('serves the replay without waiting for a never-settling telemetry write', async () => {
+    // Invocation-ledger writes can wait on a contended row/advisory lock. The
+    // stored mutation result must still return promptly; telemetry is detached
+    // because it is observability, not replay durability.
+    h.storedReplay = REPLAYED;
+    const deps = (await import('../../projected-tool-deps')).PROJECTED_DEPS as {
+      recordInvocation?: (i: unknown) => Promise<void>;
+    };
+    const real = deps.recordInvocation;
+    deps.recordInvocation = async () => new Promise<void>(() => {});
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const res = await Promise.race([
+        callTool('gatingtest:scoped', {}, scoped('ws-test'), {
+          idempotencyKey: 'idem-replay-telemetry-never-settles',
+        }),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('replay waited on telemetry')), 250);
+        }),
+      ]);
+      expect(textOf(res)).toBe('{"ok":true,"created":"WI-42"}');
+      expect(seen.length).toBe(0); // the tool did NOT re-run
+      expect(h.withWorkspaceCalls).toEqual([]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      deps.recordInvocation = real;
     }
   });
 

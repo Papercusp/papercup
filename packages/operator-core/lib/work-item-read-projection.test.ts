@@ -18,7 +18,9 @@ describe('work-item source read projection', () => {
     expect(projected).toContain(
       "jsonb_build_object('_completionEvidence', payload -> '_completionEvidence') AS payload",
     );
-    expect(projected.split(',')).toHaveLength(columns.split(',').length);
+    expect(projected).toBe(
+      "id, body, jsonb_build_object('_completionEvidence', payload -> '_completionEvidence') AS payload, state",
+    );
   });
 
   it('does not silently no-op when payload formatting changes', () => {
