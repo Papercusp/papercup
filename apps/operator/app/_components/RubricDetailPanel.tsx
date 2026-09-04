@@ -259,6 +259,41 @@ function CriterionCheck({ check }: { check: RubricCriterionCheck }) {
       </section>
     );
   }
+  if (check.kind === "cargo") {
+    return (
+      <section className="pc-rubric-definition__check" aria-label="Cargo check">
+        <h5>Must-pass Cargo crate</h5>
+        <code>{check.manifestPath}</code>
+        {check.test ? (
+          <p>
+            filtered to <code>{check.test}</code>
+          </p>
+        ) : null}
+      </section>
+    );
+  }
+  if (check.kind === "requirements") {
+    return (
+      <section
+        className="pc-rubric-definition__check"
+        aria-label="Requirements check"
+      >
+        <h5>Requirement realization</h5>
+        <p>
+          Every requirement the subject plan&rsquo;s activation audit
+          dispositioned <strong>covered</strong> or <strong>repaired</strong>{" "}
+          must reach a plan item the completion audit verifies with a code or
+          test citation.
+        </p>
+      </section>
+    );
+  }
+  // Only kind:'coverage' reaches here. Branching on it EXPLICITLY rather than
+  // treating it as the fallthrough: this block reads `check.scope`, which exists
+  // on no other arm, so an un-narrowed fallthrough throws a TypeError the moment a
+  // new kind is added to the union — which is exactly what adding kind:'cargo' and
+  // kind:'requirements' did.
+  if (check.kind !== "coverage") return null;
   const scope = [
     check.scope.surfaceKind ? `surface: ${check.scope.surfaceKind}` : null,
     check.scope.sourceFiles?.length

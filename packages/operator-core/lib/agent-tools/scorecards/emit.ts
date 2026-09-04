@@ -58,7 +58,13 @@ import {
   evaluateCriterionCargoChecks,
   evaluateCriterionTestChecks,
   evaluateCriterionCoverageChecks,
+  evaluateCriterionRequirementChecks,
 } from '../../rubrics-criterion-checks';
+import {
+  getEffectiveItemAudits,
+  getLatestActivationAudit,
+  getPlanItemStatuses,
+} from '../../plan-audits';
 import { resolveHarnessPaths } from '../../resolve-harness-paths';
 import { resolvePlanHarnessSlug } from '../plans/source';
 import { SPEC_TEST_ADEQUACY_RUBRIC_REF, specTestAdequacySubjectRef } from '../plans/spec-test-adequacy';
@@ -437,6 +443,8 @@ export async function emitScorecard(
     /** Injectable seam for tests — production runs the native Cargo crate runner. */
     evaluateCargoChecks?: typeof evaluateCriterionCargoChecks;
     evaluateCoverageChecks?: typeof evaluateCriterionCoverageChecks;
+    /** Injectable seam for tests — production runs the real P-014 activation↔completion join. */
+    evaluateRequirementChecks?: typeof evaluateCriterionRequirementChecks;
     /** Audited coord-identity continuity resolver. */
     sameAcceptanceAuthor?: typeof isAcceptanceAuthorIdentity;
     /** Spawn/rebind ancestry resolver for independent-grader enforcement. */
@@ -1317,6 +1325,54 @@ export async function emitScorecard(
       }
       if (Object.keys(coverageEvaluation.checkRuns).length > 0) {
         checkRuns = { ...(checkRuns ?? {}), ...coverageEvaluation.checkRuns };
+      }
+    }
+
+    // ── P-026 (design-to-code-coverage-seam): kind:'requirements' criterion checks ──
+    // The design→code counterpart of the two blocks above. It runs the SAME P-014
+    // activation↔completion join that `plan-acceptance-gate` enforces as
+    // `requirement_unrealized`, for a different reader: the gate answers "may the author
+    // ship", this answers "which of the plan's stated promises have no observable code"
+    // for the INDEPENDENT GRADER — who cannot run Bash, and therefore has no other way to
+    // ask. Reusing the judge rather than re-deriving it is the point: two implementations
+    // of this join could disagree, and the one the grader sees must be the one the gate
+    // enforces.
+    const requirementsCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'requirements');
+    if (requirementsCheckedCriteria.length > 0) {
+      const evaluateRequirements = deps.evaluateRequirementChecks ?? evaluateCriterionRequirementChecks;
+      // Hoisted for the same narrowing reason as the coverage block above.
+      const requirementsPlan = rubric.subjectPlan;
+      const requirementsEvaluation = await evaluateRequirements({
+        criteria: rubric.criteria,
+        ratings,
+        readRequirementRealization: async () => {
+          if (!requirementsPlan) return null;
+          // Read all three together. They are independent queries over the same plan, and
+          // the judge's own contract treats an empty planItems list as "not supplied"
+          // (never as "the plan has no items"), so a transient read failure degrades to
+          // the pre-P-016 behaviour instead of convicting every target.
+          const [activationAudit, itemAudits, planItems] = await Promise.all([
+            getLatestActivationAudit(requirementsPlan),
+            getEffectiveItemAudits(requirementsPlan),
+            getPlanItemStatuses(requirementsPlan),
+          ]);
+          return {
+            planSlug: requirementsPlan,
+            mappings: activationAudit?.activation?.mappings ?? [],
+            itemAudits,
+            planItems,
+          };
+        },
+      });
+      if (!requirementsEvaluation.ok) {
+        return {
+          ok: false as const,
+          error: requirementsEvaluation.detail,
+          checkRefusal: requirementsEvaluation,
+        };
+      }
+      if (Object.keys(requirementsEvaluation.checkRuns).length > 0) {
+        checkRuns = { ...(checkRuns ?? {}), ...requirementsEvaluation.checkRuns };
       }
     }
 

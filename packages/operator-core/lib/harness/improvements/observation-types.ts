@@ -393,8 +393,17 @@ export interface ScorecardRequirementsCheckRun {
   mappingsJudged: number;
   /** `P-NNN` targets actually resolved and judged against the completion audit. */
   checkedTargets: number;
-  /** Realizing mappings that reached no VERIFIED plan item — the fail condition (0 ⇒ pass). */
+  /**
+   * DISTINCT realizing requirements that reached no verified plan item — the fail
+   * condition (0 ⇒ pass), and the only count in the same unit as `mappingsJudged`.
+   */
   unrealized: number;
+  /**
+   * The raw (mapping, target) entry count behind `unrealized`. A requirement routed to
+   * three unproven items produces three entries and one distinct requirement; both are
+   * kept so neither number has to be reconstructed from the other.
+   */
+  unrealizedEntries: number;
   /**
    * D-035: realizing mappings judged by NOTHING because every target is non-item
    * (`D-NNN` / `section:`). Never a violation — these are conversational requirements
@@ -1205,6 +1214,46 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           },
           ...(Array.isArray(r.belowSurfaces)
             ? { belowSurfaces: r.belowSurfaces.filter((x): x is string => typeof x === 'string') }
+            : {}),
+          measuredAt: r.measuredAt,
+        };
+      } else if (
+        r.kind === 'requirements' &&
+        (r.verdict === 'pass' || r.verdict === 'fail') &&
+        typeof r.mappingsJudged === 'number' &&
+        typeof r.checkedTargets === 'number' &&
+        typeof r.unrealized === 'number' &&
+        typeof r.measuredAt === 'string' &&
+        r.measuredAt.trim() !== ''
+      ) {
+        // Load-bearing on READ: verdict plus the denominator and the failure count.
+        // Without them the record cannot say what it judged or how it came out, so a
+        // malformed entry is discarded rather than half-kept — the same posture as the
+        // two arms above.
+        //
+        // The REPORTED-not-violation counts default to 0 when absent rather than
+        // discarding the record: a card written before those fields existed carries a
+        // real verdict, and dropping it would lose the judgement to gain a field nobody
+        // wrote. `unrealizedEntries` falls back to `unrealized`, which is exactly right
+        // for a single-target mapping and never overstates the entry count.
+        runs[key] = {
+          kind: 'requirements',
+          verdict: r.verdict,
+          mappingsJudged: r.mappingsJudged,
+          checkedTargets: r.checkedTargets,
+          unrealized: r.unrealized,
+          unrealizedEntries:
+            typeof r.unrealizedEntries === 'number' ? r.unrealizedEntries : r.unrealized,
+          exemptMappings: typeof r.exemptMappings === 'number' ? r.exemptMappings : 0,
+          droppedTargets: typeof r.droppedTargets === 'number' ? r.droppedTargets : 0,
+          droppedTargetsVouchedByStaleAudit:
+            typeof r.droppedTargetsVouchedByStaleAudit === 'number' ? r.droppedTargetsVouchedByStaleAudit : 0,
+          ...(Array.isArray(r.unrealizedRequirements)
+            ? {
+                unrealizedRequirements: r.unrealizedRequirements.filter(
+                  (x): x is string => typeof x === 'string',
+                ),
+              }
             : {}),
           measuredAt: r.measuredAt,
         };

@@ -33,9 +33,16 @@ import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
 import { normalizeTestFilePaths, runTestFilesCore, type TestFilesCoreResult } from './agent-tools/testing/run';
 import { selectUnambiguousEvidenceRoot } from './evidence-root-selection';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
+import type { ActivationAuditMapping, EffectiveItemAudit, PlanItemStatus } from './plan-audits';
+import {
+  describeUnrealized,
+  judgeRequirementRealization,
+  REALIZING_DISPOSITIONS,
+} from './plan-requirement-realization';
 import type {
   ScorecardCheckRun,
   ScorecardCoverageCheckRun,
+  ScorecardRequirementsCheckRun,
 } from './harness/improvements/observation-types';
 import { managedSpawn } from './task-manager/managed-spawn';
 
@@ -1295,4 +1302,197 @@ function fidelityCaveat(fidelity: { weakest: string | null; declaredPct: number 
     (fidelity.declaredPct !== null ? `, ${fidelity.declaredPct}% declared` : '') +
     ` — a partial census flatters, since surfaces it never enumerated cannot appear as gaps.`
   );
+}
+
+// ── kind:'requirements' — the activation↔completion join, as a criterion ──────────
+// (design-to-code-coverage-seam-2026-09-02 P-026)
+
+export type RequirementsCheckRun = ScorecardRequirementsCheckRun;
+
+/** How many unrealized requirements to name in a refusal before summarising the rest. */
+const MAX_NAMED_REQUIREMENTS = 8;
+
+/**
+ * Injectable seam supplying the three datasets the P-014 judge needs, for the rubric's
+ * SUBJECT plan. Returns null when this emit has no plan subject to resolve against —
+ * which REFUSES the check rather than silently judging nothing.
+ */
+export type RequirementRealizationReader = () => Promise<{
+  planSlug: string;
+  mappings: ReadonlyArray<ActivationAuditMapping>;
+  itemAudits: ReadonlyArray<EffectiveItemAudit>;
+  planItems: ReadonlyArray<PlanItemStatus>;
+} | null>;
+
+/**
+ * GRADING-time evaluation for kind:'requirements' checks — the design→code counterpart
+ * of {@link evaluateCriterionCoverageChecks}, holding the identical three-part contract:
+ * measure NOW, refuse what cannot be judged, and refuse a pass-claiming rating the
+ * measurement contradicts.
+ *
+ * WHY THIS EXISTS AS A CRITERION AT ALL, given the ship gate already runs the same join:
+ * the two run for DIFFERENT readers. `plan-acceptance-gate` runs it to decide whether the
+ * author may ship; this runs it so the INDEPENDENT GRADER — who cannot run Bash, and so
+ * has no way to interrogate the tree — can see which of the plan's stated requirements
+ * have no observable code. Without it the grader's only source for that is the
+ * implementer's own summary, which is precisely the thing an independent grade exists to
+ * not rely on.
+ *
+ * ⚠ DELIBERATE DIVERGENCE FROM THE GATE — read this before "fixing" the inconsistency.
+ * `plan-acceptance-gate` fails OPEN on an absent or unreadable activation audit (its own
+ * KNOWN LIMIT comment says so): plans predating the activation-audit regime have none,
+ * and the gate must never make a plan LESS shippable than it was pre-P-014. That
+ * reasoning is sound THERE and wrong HERE. A criterion whose entire claim is "the
+ * requirements are realized" must never earn a pass from a population of zero — that is
+ * the same vacuous truth the coverage arm refuses ("0 gaps!" because nothing was looked
+ * at), and here it would be worse, because the grader would record a green criterion as
+ * independent evidence. So: zero realizing mappings REFUSES.
+ */
+export async function evaluateCriterionRequirementChecks(input: {
+  criteria: ReadonlyArray<CheckedCriterion>;
+  ratings: Record<string, { rating: string } | undefined>;
+  readRequirementRealization: RequirementRealizationReader;
+  nowIso?: () => string;
+}): Promise<CriterionCheckEvaluation> {
+  const nowIso = input.nowIso ?? (() => new Date().toISOString());
+  const checkRuns: Record<string, CriterionCheckRun> = {};
+  // Resolved at most once per emit: every requirements criterion on a card shares the
+  // one subject plan, so re-reading per criterion would be N identical queries whose
+  // answers could disagree if the audit moved between them.
+  let resolved: Awaited<ReturnType<RequirementRealizationReader>> | undefined;
+
+  for (const c of input.criteria) {
+    if (c.check?.kind !== 'requirements') continue;
+    if (input.ratings[c.key] === undefined) continue;
+
+    if (resolved === undefined) resolved = await input.readRequirementRealization();
+
+    // ── REFUSAL 1. No plan subject ⇒ there is nothing this criterion could be about.
+    if (resolved === null) {
+      return {
+        ok: false,
+        error: 'requirements_no_plan_subject',
+        criterionKey: c.key,
+        detail:
+          `criterion '${c.key}' carries a requirements-check, which judges whether the SUBJECT PLAN's ` +
+          `activation-audit requirements reached verified plan items — but this scorecard names no plan ` +
+          `subject to resolve against. Grade a card whose rubric has subjectPlan set, or drop the check ` +
+          `to leave the criterion fuzzy.`,
+      };
+    }
+
+    const { planSlug, mappings, itemAudits, planItems } = resolved;
+    const realization = judgeRequirementRealization({
+      mappings,
+      itemAudits,
+      // Same input the ship gate passes (P-016 / D-040): without it a target is resolved
+      // against the folded audit alone, so an item DELETED from the plan keeps vouching
+      // for the requirement routed to it. The judge treats an empty list as "not
+      // supplied", which is the correct degradation on a transient read failure.
+      planItems,
+    });
+
+    // The denominator is counted from the INPUT, in MAPPINGS, using the judge's own
+    // disposition set. Deriving it as `checkedTargets + exemptMappings.length` — the
+    // obvious-looking arithmetic — silently adds a TARGET count to a MAPPING count, and
+    // this plan already measured how far apart those units are: 4,090 of 9,912 realizing
+    // targets are non-item (41.3%) but only 366 of 2,493 realizing MAPPINGS carry no
+    // P-NNN (14.7%), an ~11x overstatement (D-035). Same class of error as reading a
+    // bounded row list as a total.
+    const realizingMappings = mappings.filter((m) => REALIZING_DISPOSITIONS.has(m.disposition)).length;
+
+    // ── REFUSAL 2. Zero realizing mappings ⇒ refuse. Never a vacuous pass. See the
+    //    DELIBERATE DIVERGENCE note above for why this differs from the ship gate.
+    if (mappings.length === 0 || realizingMappings === 0) {
+      return {
+        ok: false,
+        error: 'requirements_scope_empty',
+        criterionKey: c.key,
+        detail:
+          `criterion '${c.key}' carries a requirements-check, but plan '${planSlug}' has ` +
+          `${mappings.length === 0 ? 'NO activation-audit mappings at all' : 'no mappings dispositioned covered/repaired'} — ` +
+          `so there is no requirement to realize and nothing to judge. Passing here would be a vacuous ` +
+          `truth: "every promise is kept" because none was recorded. Note the ship gate deliberately ` +
+          `fails OPEN on this same condition (a plan predating the activation-audit regime must stay ` +
+          `shippable); a criterion asserting realization to an independent grader must not. Run ` +
+          `plans:audit { phase:'activation' } so the plan's requirements are on record, or drop the ` +
+          `check to leave the criterion fuzzy.`,
+      };
+    }
+
+    const unrealizedLines = realization.unrealized.map(describeUnrealized);
+    const droppedVouched = realization.droppedTargets.filter((d) => d.vouchedByStaleAudit).length;
+    // `realization.unrealized` is one entry per (mapping, target) pair, so a requirement
+    // routed to three unproven items appears three times. The headline count is DISTINCT
+    // REQUIREMENTS — the same unit as the denominator — with the raw entry count kept
+    // beside it rather than collapsed away.
+    const unrealizedMappingIds = new Set(realization.unrealized.map((u) => u.mappingId));
+    const record: RequirementsCheckRun = {
+      kind: 'requirements',
+      verdict: realization.ok ? 'pass' : 'fail',
+      mappingsJudged: realizingMappings,
+      checkedTargets: realization.checkedTargets,
+      unrealized: unrealizedMappingIds.size,
+      unrealizedEntries: realization.unrealized.length,
+      exemptMappings: realization.exemptMappings.length,
+      droppedTargets: realization.droppedTargets.length,
+      droppedTargetsVouchedByStaleAudit: droppedVouched,
+      ...(unrealizedLines.length > 0
+        ? { unrealizedRequirements: unrealizedLines.slice(0, MAX_NAMED_REQUIREMENTS) }
+        : {}),
+      measuredAt: nowIso(),
+    };
+
+    const rating = input.ratings[c.key]?.rating ?? '';
+    // ── REFUSAL 3. A measured gap outranks judgment, exactly as in the tests and
+    //    coverage arms.
+    if (record.verdict === 'fail' && ratingClaimsPass(rating)) {
+      return {
+        ok: false,
+        error: 'requirements_contradicted',
+        criterionKey: c.key,
+        rating,
+        run: record,
+        detail:
+          `criterion '${c.key}' is rated '${rating}' but ${record.unrealized} of ${realizingMappings} ` +
+          `realizing requirement(s) on plan '${planSlug}' never reached a VERIFIED plan item: ` +
+          `${namedRequirements(record.unrealizedRequirements ?? [], record.unrealized)}. ` +
+          `Only code/test citations count as verification (D-008), so a target audited with doc/none is ` +
+          `unproven. ${exemptionCaveat(record)} ` +
+          `Either audit the named item(s) against the real code with plans:audit, correct the ` +
+          `disposition to 'rejected'/'open' if the requirement genuinely was not absorbed, or rate the ` +
+          `criterion honestly.`,
+      };
+    }
+    checkRuns[c.key] = record;
+  }
+  return { ok: true, checkRuns };
+}
+
+/** Names the requirements, and says so when the named list stands for a larger
+ *  population — the same bounded-sample honesty {@link namedSurfaces} enforces. */
+function namedRequirements(named: string[], total: number): string {
+  if (named.length === 0) return `${total} requirement(s), none listed`;
+  const shown = named.join('; ');
+  return named.length < total ? `${shown} (+${total - named.length} more)` : shown;
+}
+
+/** States how much of the population was judged by nothing, so a reader never mistakes
+ *  a narrow pass for a broad one. Silent when every mapping was genuinely judged. */
+function exemptionCaveat(run: RequirementsCheckRun): string {
+  const parts: string[] = [];
+  if (run.exemptMappings > 0) {
+    parts.push(
+      `${run.exemptMappings} mapping(s) are judged by nothing (every target non-item — reported, never a violation, per D-035)`,
+    );
+  }
+  if (run.droppedTargets > 0) {
+    parts.push(
+      `${run.droppedTargets} target(s) point at a DROPPED plan item` +
+        (run.droppedTargetsVouchedByStaleAudit > 0
+          ? `, ${run.droppedTargetsVouchedByStaleAudit} of them still vouched by a pre-drop audit entry`
+          : ''),
+    );
+  }
+  return parts.length > 0 ? `Population note: ${parts.join('; ')}.` : '';
 }
