@@ -1313,7 +1313,13 @@ dependency_generation_prune_ephemeral() {
   # unwinnable, which is why the gate went days without rendering a verdict while merely
   # LOOKING red. The general defect is mutable runtime state living inside node_modules; this
   # prune list is the gate's defence against whichever package does it next.
-  rm -f -- "$root/.package-lock.json"
+  # `.papercusp-isolated-snapshot` is provenance for a MATERIALIZED release
+  # checkout, not dependency content. A checkpoint tree can legitimately be a
+  # later publisher input; copying that marker into an immutable generation and
+  # freezing it read-only makes the next pinned materialization fail when
+  # setup-release-checkout replaces the marker with the NEW generation id.
+  # Strip it at the generation boundary just like npm's local bookkeeping.
+  rm -f -- "$root/.package-lock.json" "$root/.papercusp-isolated-snapshot"
   rm -rf -- "$root/.cache"
   find "$root" -type d \
     \( -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \

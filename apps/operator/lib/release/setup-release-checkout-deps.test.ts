@@ -38,6 +38,7 @@ import {
   openSync,
   closeSync,
   utimesSync,
+  chmodSync,
 } from "node:fs";
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -710,6 +711,29 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
     // the identity of this tree IS that generation id — not a re-walk of content
     // that was just hardlinked from it.
     expect(statSync(join(dest, 'marker.txt')).ino).toBe(statSync(join(src, 'marker.txt')).ino);
+  });
+
+  it('replaces a read-only provenance marker carried by an older immutable generation', () => {
+    const src = join(work, 'src');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'marker.txt'), 'PINNED');
+    const staleMarker = join(src, '.papercusp-isolated-snapshot');
+    writeFileSync(staleMarker, 'generation=stale-checkpoint\n');
+    chmodSync(staleMarker, 0o444);
+    const dest = join(work, 'dest');
+
+    syncOne(src, dest, 'copy', { generationId: 'gen-current' });
+
+    expect(readFileSync(join(dest, '.papercusp-isolated-snapshot'), 'utf8')).toBe(
+      'generation=gen-current\n',
+    );
+    expect(readFileSync(staleMarker, 'utf8')).toBe(
+      'generation=stale-checkpoint\n',
+    );
+    expect(statSync(join(dest, '.papercusp-isolated-snapshot')).ino).not.toBe(
+      statSync(staleMarker).ino,
+    );
+    expect(statSync(staleMarker).mode & 0o777).toBe(0o444);
   });
 
   it('a later non-pinned run over a pinned marker falls back to a full independent copy', () => {

@@ -942,6 +942,14 @@ sync_one_node_modules() {
           echo "[setup-release] FATAL: pinned dependency generation materialization produced no tree at $tmp" >&2
           return 1
         fi
+        # Compatibility with generations published before WI-212675's marker
+        # boundary: they may contain an old checkout-provenance marker frozen
+        # read-only with the dependency payload. Materialization hardlinks files,
+        # so truncating that inode would either fail (0444) or mutate the
+        # immutable generation. Unlink only the TEMP tree's directory entry and
+        # create this checkout's marker afresh; the generation's link remains
+        # byte-for-byte untouched.
+        rm -f -- "$tmp/.papercusp-isolated-snapshot"
         printf 'generation=%s\n' "$PINNED_DEPENDENCY_GENERATION_ID" \
           > "$tmp/.papercusp-isolated-snapshot"
       else

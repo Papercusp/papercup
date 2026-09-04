@@ -388,6 +388,32 @@ describe('immutable dependency generation', () => {
     expect(publishedPath(second.stdout)).toBe(generation);
   });
 
+  it('does not publish release-checkout snapshot provenance as dependency content', () => {
+    const integration = makeIntegration();
+    const sourceMarker = join(
+      integration,
+      'packages/a/node_modules/.papercusp-isolated-snapshot',
+    );
+    writeFileSync(sourceMarker, 'generation=stale-checkpoint\n');
+    chmodSync(sourceMarker, 0o444);
+
+    const result = publish(integration);
+    expect(result.status, result.stderr).toBe(0);
+    const generation = publishedPath(result.stdout);
+
+    expect(
+      existsSync(
+        join(
+          generation,
+          'tree/packages/a/node_modules/.papercusp-isolated-snapshot',
+        ),
+      ),
+    ).toBe(false);
+    expect(readFileSync(sourceMarker, 'utf8')).toBe(
+      'generation=stale-checkpoint\n',
+    );
+  });
+
   it(
     'P-001: reports writer-owned phases and deterministic full/hit/one-change counters',
     () => {
