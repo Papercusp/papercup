@@ -153,7 +153,12 @@ export interface CodexOAuthAdapterOptions {
   /** Cooldown applied to an egress IP that failed at the transport layer. */
   transportCooldownMs: number;
   resolveAccessToken(home: string): Promise<CodexAuth>;
-  refreshAccessToken(home: string, current: CodexAuth): Promise<CodexAuth>;
+  /**
+   * Refresh the account's OAuth material through the egress selected for this
+   * attempt. The dispatcher is opaque here; the gateway callback owns adapting
+   * it to its injected fetch implementation.
+   */
+  refreshAccessToken(home: string, current: CodexAuth, dispatcher?: unknown): Promise<CodexAuth>;
   buildHeaders(args: {
     base: Record<string, string>;
     accessToken: string;
@@ -332,17 +337,21 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       context: GatewayKernelAttemptContext<CodexOAuthRouteValue>,
     ): Promise<CodexOAuthPreparedAttempt> {
       const { account, egress, reason, modelMode } = context.route.value;
+      const active = egressView(account, async () => auth?.accessToken ?? '');
+      let dispatcher: unknown;
 
       if (reason === 'refresh') {
-        if (!auth) {
+        const currentAuth = auth;
+        if (!currentAuth) {
           throw new GatewayRequestKernelError(
             `inference-gateway: codex OAuth refresh requested for '${account.accountId}' with no token in hand`,
             { code: 'gateway-error', outcome: 'gateway-error', status: 500 },
           );
         }
         try {
+          dispatcher = await opts.dispatcherFor(active, egress.entry);
           auth = await withPromiseDeadline(
-            opts.refreshAccessToken(account.home, auth),
+            opts.refreshAccessToken(account.home, currentAuth, dispatcher),
             opts.tokenTimeoutMs,
             `codex oauth refresh '${account.accountId}'`,
           );
@@ -373,6 +382,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
           );
         }
       }
+      if (reason !== 'refresh') dispatcher = await opts.dispatcherFor(active, egress.entry);
 
       const base: Record<string, string> = {};
       for (const [key, value] of Object.entries(opts.requestHeaders)) {
@@ -385,7 +395,6 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
         accountId: auth!.accountId,
       });
 
-      const active = egressView(account, async () => auth!.accessToken);
       return {
         url: opts.upstreamUrl,
         method: opts.method,
@@ -397,7 +406,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
               ? new Uint8Array(context.body)
               : null,
         accountId: account.accountId,
-        dispatcher: (await opts.dispatcherFor(active, egress.entry)) ?? undefined,
+        dispatcher: dispatcher ?? undefined,
       };
     },
 
