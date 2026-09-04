@@ -53,6 +53,11 @@ const MEASURED_EMPTY = {
       candidateSha: 'd165d7537d20',
       repairHeadSha: '424436e78826',
       stillBrokenCount: 0,
+      // EI-22260078732220798: the qualifier the `repairs-outstanding` prose tells the reader
+      // to compare against `stillBrokenCount`. Declared evidence now, so it has to be in the
+      // modelled payload too — a declared path the payload omits downgrades the whole read to
+      // `unavailable`, which is what this suite caught.
+      stillBrokenNeedsRunCount: 0,
       distinctFailingFiles: [],
       filesJudged: 0,
       scope: 'affected radius',
