@@ -178,11 +178,11 @@ describe('POST /workspace-hosts/action destroy', () => {
     expect(readTarget).not.toHaveBeenCalled();
   });
 
-  // WI-2143805: a run that FAILED cannot produce an approved contract report, settled cumulative
-  // cost, or a provider-delayed spend entry, so requiring them refused teardown for exactly the
-  // hosts that most needed it. The route admits an audited failedRunTeardown in their place — and
-  // only in their place.
-  it('admits a failed-run teardown that carries no economic evidence, and refuses one carrying both authorizations', async () => {
+  // WI-2143805 / D-274. Destroy evidence carries two orthogonal axes and the route parses both:
+  // AUTHORIZATION (contractApproval XOR failedRunTeardown) and SETTLEMENT (absent = billing settled,
+  // spendSettlement = not yet). Requiring settled economics unconditionally refused teardown for
+  // every real host, since provider billing lags hours behind the moment teardown is wanted.
+  it('parses both evidence axes: admits a deferred settlement and a failed-run authorization, refuses malformed or conflicting ones', async () => {
     const { dependencies, startDestroy } = harness();
     const failedRunTeardown = {
       actorId: 'operator:test',
@@ -190,27 +190,42 @@ describe('POST /workspace-hosts/action destroy', () => {
       procedureRef: 'runbook://workspace-host/gcp/failed-run-teardown-v1',
       failedOperationIds: ['op-run-1'],
     };
+    const spendSettlement = {
+      status: 'deferred' as const,
+      actorId: 'operator:test',
+      reason: 'provider billing has not settled; GCP lags hours behind teardown',
+      procedureRef: 'runbook://workspace-host/gcp/deferred-spend-reconciliation-v1',
+      reconcileAfter: '2026-08-26T00:00:00.000Z',
+    };
     const { contractApproval: _approval, lateObservedSpend: _late, ...base } = canary;
-    const failedRunCanary = { ...base, costEvidence: [], failedRunTeardown };
 
-    const admitted = await post(dependencies, { ...destroyBody, canary: failedRunCanary });
-    expect(admitted.status).toBe(200);
-    expect(startDestroy).toHaveBeenCalledWith(expect.objectContaining({ canary: failedRunCanary }));
+    // canary-15's shape: the run SUCCEEDED, so it keeps its contract report; only the spend defers.
+    const deferredCanary = { ...canary, costEvidence: [], lateObservedSpend: [], spendSettlement };
+    const deferred = await post(dependencies, { ...destroyBody, canary: deferredCanary });
+    expect(deferred.status).toBe(200);
+    expect(startDestroy).toHaveBeenCalledWith(expect.objectContaining({ canary: deferredCanary }));
+
+    // A failed run defers its spend too — it provisioned resources before it failed.
+    const failedRunCanary = { ...base, costEvidence: [], failedRunTeardown, spendSettlement };
+    expect((await post(dependencies, { ...destroyBody, canary: failedRunCanary })).status).toBe(200);
 
     // Presenting an approved report AND claiming the run failed would leave the audit record unable
     // to say which evidence the destroy was admitted on.
-    const both = await post(dependencies, {
-      ...destroyBody,
-      canary: { ...canary, failedRunTeardown },
-    });
-    expect(both.status).toBe(400);
+    expect((await post(dependencies, { ...destroyBody, canary: { ...canary, failedRunTeardown } })).status).toBe(400);
 
-    // Still not a blanket waiver: the audit context itself has to be complete.
+    // Neither axis is a blanket waiver: each attestation has to be complete.
     const unnamed = await post(dependencies, {
       ...destroyBody,
       canary: { ...failedRunCanary, failedRunTeardown: { ...failedRunTeardown, failedOperationIds: [] } },
     });
     expect(unnamed.status).toBe(400);
+
+    // A deferral with no real date is an obligation nobody can be shown to have missed.
+    const undated = await post(dependencies, {
+      ...destroyBody,
+      canary: { ...deferredCanary, spendSettlement: { ...spendSettlement, reconcileAfter: 'whenever' } },
+    });
+    expect(undated.status).toBe(400);
   });
 
   it('maps the host-scoped DBOS dedup conflict to 409 without leaking internals', async () => {
