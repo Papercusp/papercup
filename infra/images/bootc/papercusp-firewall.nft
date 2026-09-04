@@ -1,0 +1,64 @@
+#!/usr/sbin/nft -f
+#
+# P-306 — the workspace-host firewall policy, ported from ufw.
+#
+# `ufw` is NOT-IN-REPOS on CentOS Stream 9 (RPM-EQUIVALENCE.md §G), and the
+# bootstrap's five ufw invocations are a policy rather than a package name, so
+# this is a rewrite of the POLICY, not a substitution of a name. The four lines
+# being reproduced, verbatim from the generated bootstrap's `harden-os` phase:
+#
+#     ufw default deny incoming
+#     ufw default allow outgoing
+#     ufw allow 22/tcp
+#     ufw --force enable
+#
+# ⚠ Two rules below have no counterpart in that list because ufw supplies them
+# implicitly. They are the difference between a hardened host and an unreachable
+# one, so they are stated explicitly rather than inherited:
+#
+#   * the established/related accept — without it a default-deny input policy
+#     drops the REPLIES to the host's own outbound traffic, so the host cannot
+#     complete a single TCP connection it initiates;
+#   * the loopback accept — the operator is reached over an SSH local-forward to
+#     127.0.0.1 (`operatorIngress: 'ssh-local-forward'`), so dropping loopback
+#     severs the operator ingress path itself.
+#
+# Both failures present as "the host booted and sshd is running but nothing
+# works", which is the shape D-238 exists to keep out of this file.
+
+table inet papercusp_workspace_host {
+  chain input {
+    # `policy drop` IS `ufw default deny incoming`.
+    type filter hook input priority filter; policy drop;
+
+    # Replies to connections this host opened. See the note above — this is the
+    # rule whose absence is indistinguishable from a network fault.
+    ct state established,related accept
+    ct state invalid drop
+
+    # The operator ingress path (SSH local-forward to 127.0.0.1:$SERVICE_PORT).
+    iif lo accept
+
+    # ICMP/ICMPv6. v6 is not optional the way v4 is: Neighbour Discovery is
+    # carried over ICMPv6, so dropping it breaks IPv6 addressing outright rather
+    # than merely disabling ping.
+    ip protocol icmp accept
+    ip6 nexthdr icmpv6 accept
+
+    # `ufw allow 22/tcp`. This is the ONLY port opened to the network. The
+    # operator's port is deliberately absent: it is reached through the SSH
+    # forward above, never bound to a routable interface.
+    tcp dport 22 accept
+  }
+
+  chain forward {
+    # Not a router. The Ubuntu host had no forwarding policy of its own because
+    # ufw defaults it closed; stated here for the same reason as the rules above.
+    type filter hook forward priority filter; policy drop;
+  }
+
+  chain output {
+    # `ufw default allow outgoing`.
+    type filter hook output priority filter; policy accept;
+  }
+}
