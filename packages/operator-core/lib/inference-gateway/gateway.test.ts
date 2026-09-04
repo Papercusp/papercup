@@ -758,6 +758,17 @@ test('BARE-429 PERSISTENCE CIRCUIT: a sustained bare-429 streak on one account E
   // though it has quota"). Fix: consecutive bare-429s ESCALATE the pause (×2 past the threshold), so the
   // pool's pin-yield / soft-pin-failover / health-pick route AROUND the throttled IP.
   resetGovernorRegistry();
+  const circuitBackoffMs = 10;
+  class RecordingGovernor extends RateLimitGovernor {
+    readonly penaltyDurations: number[] = [];
+
+    override penalize(opts: Parameters<RateLimitGovernor['penalize']>[0]): void {
+      if (!opts.transport && opts.retryAfterMs !== undefined) this.penaltyDurations.push(opts.retryAfterMs);
+      super.penalize(opts);
+    }
+  }
+
+  const gov = new RecordingGovernor({ maxConcurrent: 20 });
   upstream = await startUpstream((_req, res) => {
     // This account's egress IP is persistently edge-throttled: ALWAYS a bare 429 (no rate-limit headers).
     res.writeHead(429, { 'content-type': 'application/json' });
@@ -771,26 +782,26 @@ test('BARE-429 PERSISTENCE CIRCUIT: a sustained bare-429 streak on one account E
   };
   gw = createInferenceGateway({
     pool,
+    governorFor: () => gov,
     upstreamBase: upstream.base,
     maxQueueWaitMs: 50,
     requestAbsorbMs: 0,
     internalRetryDeadlineMs: 2000,
-    bare429FailoverBackoffMs: 50,
+    bare429FailoverBackoffMs: circuitBackoffMs,
   });
   port = await gw.listen(0);
-  const gov = getGovernor('anthropic', 'opus', undefined, 'A');
-  // One request drives the consecutive-bare-429 retry ladder past the streak threshold (default 4).
+  // The short rig backoff keeps enough attempts inside the bounded retry deadline even when the box is
+  // under fleet load. Assert on the exact penalty input selected by the circuit, not on remaining wall-clock
+  // time after the request settles (which made the old >100ms check timing-sensitive).
   await ask('/v1/messages', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
   });
-  const pausedForMs = gov.state.pausedUntil - Date.now();
-  // Base backoff is 50ms; the circuit escalates it (×2 per step past the threshold), so the surviving pause
-  // is well beyond a single 50ms pace — which is what makes the pool durably route AROUND this IP.
+  const escalatedPauseMs = Math.max(...gov.penaltyDurations);
   assert.ok(
-    pausedForMs > 100,
-    `bare-429 circuit escalated A's pause to ${pausedForMs}ms (>> the 50ms base) so the pool routes around the throttled IP`,
+    escalatedPauseMs > circuitBackoffMs,
+    `bare-429 circuit escalated A's selected pause to ${escalatedPauseMs}ms (> the ${circuitBackoffMs}ms base) so the pool routes around the throttled IP`,
   );
   const stats = (await (await ask('/stats')).json()) as {
     edgeThrottleByAccount?: Record<string, { edgeThrottled: boolean; cooldownUntil: number; bare429Streak: number }>;
