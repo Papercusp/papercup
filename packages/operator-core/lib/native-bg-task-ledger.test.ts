@@ -38,7 +38,7 @@ const alive = () => ['4242'];
 const dead = () => [];
 
 function rec(over: Partial<NativeBgTaskRecord> = {}): NativeBgTaskRecord {
-  return { path: '/tmp/a.log', cmd: 'npm test', startedAtMs: NOW - 60_000, sid: SID, ...over };
+  return { path: '/tmp/a.log', startedAtMs: NOW - 60_000, sid: SID, ...over };
 }
 
 describe('parseNativeBgLedger', () => {
@@ -76,6 +76,15 @@ describe('parseNativeBgLedger', () => {
       JSON.stringify({ '/tmp/old.log': { started_at: NOW / 1000, cmd: 'legacy' } }),
     );
     expect(out[0].sid).toBeUndefined();
+  });
+
+  it('never carries legacy command text across the persistence boundary', () => {
+    const secret = 'Authorization: Bearer should-never-surface';
+    const out = parseNativeBgLedger(
+      JSON.stringify({ '/tmp/old.log': { started_at: NOW / 1000, cmd: secret, sid: SID } }),
+    );
+    expect(out).toEqual([{ path: '/tmp/old.log', startedAtMs: NOW, sid: SID }]);
+    expect(JSON.stringify(out)).not.toContain(secret);
   });
 });
 
@@ -183,7 +192,6 @@ describe('readLiveNativeBgTasks', () => {
         JSON.stringify({
           '/tmp/wi5936.log': {
             started_at: NOW / 1000 - 120,
-            cmd: 'npm run test:affected > /tmp/wi5936.log 2>&1',
             sid: SID,
           },
         }),
@@ -203,13 +211,13 @@ describe('renderNativeBgTaskWarning', () => {
     expect(renderNativeBgTaskWarning({ live: [], unattributed: [], degraded: false })).toBe('');
   });
 
-  it('names the command, the age, the pid, and the conversion route', () => {
+  it('names the output path, the age, the pid, and the conversion route', () => {
     const out = renderNativeBgTaskWarning({
       live: [{ ...rec(), ageSec: 300, pids: ['4242'] }],
       unattributed: [],
       degraded: false,
     });
-    expect(out).toContain('npm test');
+    expect(out).toContain('/tmp/a.log');
     expect(out).toContain('300s');
     expect(out).toContain('4242');
     expect(out).toContain('capability:bash');

@@ -19,16 +19,21 @@ import { isPossiblyWedged } from '../../fleet/spawn-reclaim';
 export default defineTool({
   name: 'fleet:tree',
   profile: 'engineer',
-  description: 'Read a spawn subtree (the nursery): every descendant with its status, owner, role, and the work it serves, plus whether the root can complete (no live child).',
+  description:
+    'Read a spawn subtree (the nursery): every descendant with its status, owner, role, and the work it serves, plus whether the root can complete (no live child). This is spawn-scoped, not fleet-scoped: `fleet` is not an accepted argument; use `fleet:assignments { fleet }` for a named-fleet state view.',
   guidance: {
     when: 'Before fleet:cancel (see what would be torn down) or before completing a nursery (the completion gate refuses while a child lives).',
+    notWhen: 'Reading every member of a named fleet — use `fleet:assignments { fleet }` instead; this tool requires a nursery `spawn_id` root.',
     chaining: 'fleet:tree → fleet:cancel { spawn_id }.',
   },
   capability: 'work_items:read',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    spawn_id: z.string().min(1),
+    spawn_id: z
+      .string()
+      .min(1)
+      .describe('Nursery root spawn id, not a fleet slug; use fleet:assignments { fleet } for a named-fleet state view.'),
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {

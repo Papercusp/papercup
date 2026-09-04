@@ -46,6 +46,14 @@ beforeEach(() => {
 });
 
 describe('fleet:tree handler', () => {
+  it('documents the spawn-root contract and routes named-fleet reads to assignments', () => {
+    expect(tool.description).toMatch(/spawn-scoped, not fleet-scoped/i);
+    expect(tool.description).toContain('`fleet` is not an accepted argument');
+    expect(tool.description).toContain('fleet:assignments { fleet }');
+    expect(tool.guidance?.notWhen).toMatch(/requires a nursery `spawn_id` root/i);
+    expect(tool.args.shape.spawn_id.description).toMatch(/not a fleet slug/i);
+  });
+
   it('projects nodes (camel→snake) and surfaces the completion gate', async () => {
     subtreeM.mockResolvedValue([baseNode] as never);
     const b = body(await call());

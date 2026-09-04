@@ -5,6 +5,12 @@ import { describe, expect, it } from 'vitest';
 const SCRIPTS_DIR = join(__dirname, '..');
 const BUNDLE_HOST = join(SCRIPTS_DIR, '..', 'bin', 'bundle-host.sh');
 const DROP_IN = join(SCRIPTS_DIR, 'systemd', 'papercup-bg-host.service.d', '95-bundled-entry.conf');
+const GATEWAY_AUTHORITY_DROP_IN = join(
+  SCRIPTS_DIR,
+  'systemd',
+  'papercup-bg-host.service.d',
+  '97-gateway-systemd-authority.conf',
+);
 const README = join(SCRIPTS_DIR, 'systemd', 'README.md');
 
 /**
@@ -34,6 +40,7 @@ const BUNDLE_HOST_UNIT_PATH = '%h/papercupai-workspace/papercusp/apps/operator/b
 describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', () => {
   const bundleHost = readFileSync(BUNDLE_HOST, 'utf8');
   const dropIn = readFileSync(DROP_IN, 'utf8');
+  const gatewayAuthorityDropIn = readFileSync(GATEWAY_AUTHORITY_DROP_IN, 'utf8');
   const readme = readFileSync(README, 'utf8');
 
   it('keeps the bundle-host consumer map aligned with the tracked bg-host drop-in', () => {
@@ -134,5 +141,20 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
     expect(readme).toMatch(/ln -sfn "\$\(pwd\)\/papercup-bg-host\.service\.d\/95-bundled-entry\.conf"/);
     expect(readme).toContain('systemctl --user daemon-reload');
     expect(readme).toMatch(/Do not restart bg-host\s+as part of this installation/);
+  });
+
+  it('pins the standalone systemd gateway as the single Linux :8788 authority (EI-22359055031706978)', () => {
+    expect(gatewayAuthorityDropIn).toContain('[Service]');
+    expect(gatewayAuthorityDropIn).toContain('Environment=PAPERCUSP_GATEWAY_SUPERVISE=0');
+    expect(gatewayAuthorityDropIn).toContain('papercup-inference-gateway.service');
+    expect(gatewayAuthorityDropIn).toContain('EADDRINUSE');
+    expect(gatewayAuthorityDropIn).not.toMatch(/\/home\/[a-z]/i);
+
+    expect(readme).toContain('97-gateway-systemd-authority.conf');
+    expect(readme).toMatch(
+      /ln -sfn "\$\(pwd\)\/papercup-bg-host\.service\.d\/97-gateway-systemd-authority\.conf"/,
+    );
+    expect(readme).toContain('PAPERCUSP_GATEWAY_SUPERVISE=0');
+    expect(readme).toContain('papercup-inference-gateway.service');
   });
 });

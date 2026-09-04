@@ -2107,36 +2107,56 @@ except Exception:
 #
 # Tracking is a tiny, best-effort, host-shared JSON file: every
 # `run_in_background` command that redirects (`>`/`>>`/`| tee`) to a file
-# records {path -> started_at, cmd}; every subsequent command (this one
+# records {path -> started_at, sid}; every subsequent command (this one
 # included) that mentions a tracked path has that path checked against a live
 # `/proc/*/fd` scan — if ANY process still holds it open, the job that writes
 # it has not finished, so a read right now proves nothing. No writer left open
 # ⇒ nothing to warn about (and the entry is dropped). Fail-open throughout:
 # any parse/IO/proc error silently skips the advisory and never blocks the
 # command — this is pure bookkeeping, not a safety gate.
-_BG_TRACK_FILE = os.path.expanduser('~/.papercusp/bg-output-tracking.json')
+_BG_TRACK_DIR = os.path.expanduser('~/.papercusp/tracking')
+_BG_TRACK_FILE = os.path.join(_BG_TRACK_DIR, 'bg-output-tracking.json')
+_BG_TRACK_LEGACY_FILE = os.path.expanduser('~/.papercusp/bg-output-tracking.json')
 _BG_TRACK_MAX_AGE_SEC = 2 * 60 * 60  # prune anything older than 2h regardless of liveness
 _BG_REDIRECT_RE = re.compile(r'(?<![<>&])\d*>{1,2}(?!&)\s*([^\s;&|)\n]+)')
 _BG_TEE_RE = re.compile(r'\btee\b\s+(?:-a\s+)?([^\s;&|)\n]+)')
 
 
 def _bg_track_load():
-    try:
-        with open(_BG_TRACK_FILE) as fh:
-            data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    data = {}
+    # EI-19363129598856926: merge the legacy root-level file once, then save into
+    # the tracking namespace below. New-state wins when both exist. Command text
+    # is deliberately discarded while loading too, so an old inline credential
+    # can never be copied into the new ledger or echoed by the read-side advisory.
+    for path in (_BG_TRACK_LEGACY_FILE, _BG_TRACK_FILE):
+        try:
+            with open(path) as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                data.update(loaded)
+        except Exception:
+            pass
+    for rec in data.values():
+        if isinstance(rec, dict):
+            rec.pop('cmd', None)
+    return data
 
 
 def _bg_track_save(data):
     try:
-        d = os.path.dirname(_BG_TRACK_FILE)
-        os.makedirs(d, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=d)
+        os.makedirs(_BG_TRACK_DIR, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=_BG_TRACK_DIR)
         with os.fdopen(fd, 'w') as fh:
             json.dump(data, fh)
         os.replace(tmp, _BG_TRACK_FILE)
+        # The root-level JSON both polluted config globs and may contain raw
+        # command text from the pre-fix writer. Delete it only after the new
+        # atomic replace succeeds; it is a bounded, reconstructible advisory
+        # ledger, not user-authored state.
+        try:
+            os.unlink(_BG_TRACK_LEGACY_FILE)
+        except FileNotFoundError:
+            pass
     except Exception:
         pass  # tracking is advisory bookkeeping — never let it raise
 
@@ -2203,7 +2223,10 @@ try:
         # is the same `identity.ownerId` the operator-side reader filters on.
         for _t in _bg_redirect_targets(command, _bg_cwd):
             _bg_state[_t] = {
-                'started_at': _bg_now, 'cmd': command[:200], 'sid': _session_key(),
+                # DATA MINIMIZATION: liveness needs only output path + time +
+                # owner. Persisting command text adds no evidence and can store
+                # inline credentials verbatim (EI-19363129598856926).
+                'started_at': _bg_now, 'sid': _session_key(),
             }
 
     # Bound growth regardless of whether anything below fires — age-based only;
@@ -2231,12 +2254,12 @@ try:
                 ADVISORY = (
                     'background-log-read-race advisory (EI-18764990059061608): `%s` is '
                     'still OPEN for writing by a running background job (pid %s, started '
-                    '%ss ago via `%s`) — an empty or short read right now is NOT evidence '
+                    '%ss ago) — an empty or short read right now is NOT evidence '
                     "the job finished cleanly (or at all); it may simply be mid-run and not "
                     "yet flushed. Wait for that job's own completion notification (or check "
                     '`ps -p %s`) before treating this read as a clean/green result. Advisory '
                     'only; this command is proceeding as issued.'
-                    % (_path, _writers[0], _elapsed, _rec.get('cmd', '?')[:120], _writers[0])
+                    % (_path, _writers[0], _elapsed, _writers[0])
                 )
                 break
             # No writer left holding it open — the job that wrote it is done

@@ -1311,7 +1311,7 @@ describe('session:request-compaction — native bg task warning (WI-5936)', () =
     injectIntoHost.mockResolvedValue(true);
     buildCarryBrief.mockResolvedValue(emptyBrief);
     bgHome = mkdtempSync(join(tmpdir(), 'reqcompact-bg-'));
-    mkdirSync(join(bgHome, '.papercusp'), { recursive: true });
+    mkdirSync(join(bgHome, '.papercusp', 'tracking'), { recursive: true });
     process.env.HOME = bgHome; // os.homedir() reads $HOME on POSIX
   });
 
@@ -1327,12 +1327,11 @@ describe('session:request-compaction — native bg task warning (WI-5936)', () =
 
   const writeLedger = (logPath: string, sid: string | null) =>
     writeFileSync(
-      join(bgHome, '.papercusp', 'bg-output-tracking.json'),
+      join(bgHome, '.papercusp', 'tracking', 'bg-output-tracking.json'),
       JSON.stringify({
         [logPath]: {
           // SECONDS — the shape the python hook writes.
           started_at: Date.now() / 1000 - 90,
-          cmd: `npm run test:affected > ${logPath} 2>&1`,
           ...(sid ? { sid } : {}),
         },
       }),
@@ -1347,7 +1346,7 @@ describe('session:request-compaction — native bg task warning (WI-5936)', () =
       const b = body(await call({ focus: 'x' }));
       expect(b.ok).toBe(true); // WARNS — never refuses the cut
       expect(b.note).toContain('native-bg-tasks');
-      expect(b.note).toContain('test:affected');
+      expect(b.note).toContain(log);
       expect(b.nativeBgTasks.live).toHaveLength(1);
     } finally {
       holder.kill();

@@ -37,7 +37,7 @@ import { join } from 'node:path';
 
 /** Matches the gate's `_BG_TRACK_FILE`. Both sides resolve `~` for the same user. */
 export function defaultLedgerPath(): string {
-  return join(homedir(), '.papercusp', 'bg-output-tracking.json');
+  return join(homedir(), '.papercusp', 'tracking', 'bg-output-tracking.json');
 }
 
 /** The gate prunes at 2h regardless of liveness; mirror it so the two agree. */
@@ -46,8 +46,6 @@ export const NATIVE_BG_TRACK_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 export interface NativeBgTaskRecord {
   /** Absolute path the background command redirects its output to. */
   path: string;
-  /** The launching command, clipped by the writer. */
-  cmd: string;
   startedAtMs: number;
   /** Owning session (PAPERCUSP_SID / ownerId). Absent on pre-WI-5936 records. */
   sid?: string;
@@ -95,7 +93,6 @@ export function parseNativeBgLedger(raw: string): NativeBgTaskRecord[] {
     if (!Number.isFinite(startedAtSec)) continue;
     out.push({
       path,
-      cmd: typeof rec.cmd === 'string' ? rec.cmd : '',
       startedAtMs: startedAtSec * 1000,
       ...(typeof rec.sid === 'string' && rec.sid ? { sid: rec.sid } : {}),
     });
@@ -215,7 +212,7 @@ export function renderNativeBgTaskWarning(report: NativeBgTaskReport): string {
     .slice(0, 5)
     .map(
       (t) =>
-        `\`${t.cmd || t.path}\` (→ ${t.path}, running ${t.ageSec}s, pid ${t.pids[0]})${
+        `\`${t.path}\` (running ${t.ageSec}s, pid ${t.pids[0]})${
           t.sid ? '' : ' [unattributed — may belong to another session]'
         }`,
     )

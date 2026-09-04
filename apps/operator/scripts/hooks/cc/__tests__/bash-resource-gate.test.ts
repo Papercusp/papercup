@@ -3455,13 +3455,36 @@ describe('native bg task dies on carry-respawn (WI-5936 / EI-16611)', () => {
     const log = join(bgDir, 'stamped.log');
     runBg(`npm run test:affected > ${log} 2>&1`, { run_in_background: true });
     const ledger = JSON.parse(
-      readFileSync(join(bgHome, '.papercusp', 'bg-output-tracking.json'), 'utf8'),
+      readFileSync(join(bgHome, '.papercusp', 'tracking', 'bg-output-tracking.json'), 'utf8'),
     );
     expect(ledger[log]).toBeTruthy();
     expect(ledger[log].sid).toBe('su-nativebg-test');
+    expect(ledger[log].cmd).toBeUndefined();
     // started_at stays SECONDS — the operator-side reader converts. If this ever
     // becomes ms, native-bg-task-ledger.ts silently dates every record to 1970.
     expect(ledger[log].started_at).toBeLessThan(1e12);
+  });
+
+  it('migrates the legacy root-level ledger without copying command text', () => {
+    const legacy = join(bgHome, '.papercusp', 'bg-output-tracking.json');
+    const log = join(bgDir, 'legacy.log');
+    const secret = 'Authorization: Bearer should-never-survive';
+    writeFileSync(
+      legacy,
+      JSON.stringify({
+        [log]: { started_at: Date.now() / 1000, sid: 'su-nativebg-test', cmd: `curl -H '${secret}' > ${log}` },
+      }),
+    );
+
+    runBg(`npm run test:affected > ${join(bgDir, 'new.log')} 2>&1`, { run_in_background: true });
+
+    const migratedPath = join(bgHome, '.papercusp', 'tracking', 'bg-output-tracking.json');
+    const raw = readFileSync(migratedPath, 'utf8');
+    const ledger = JSON.parse(raw);
+    expect(existsSync(legacy)).toBe(false);
+    expect(ledger[log]).toMatchObject({ sid: 'su-nativebg-test' });
+    expect(ledger[log].cmd).toBeUndefined();
+    expect(raw).not.toContain(secret);
   });
 
   it('is say-once per session — a second launch does not re-teach', () => {
