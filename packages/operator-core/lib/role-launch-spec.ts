@@ -162,7 +162,6 @@ export function stewardSeedToolNames(listings?: readonly { name: string }[]): st
   return [...new Set([...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES, ...familyNames])];
 }
 import { assembleRolePrompt, resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
-import { composeSuStackSource } from '@papercusp/orchestrator/blueprint';
 import { harnessRoot } from '@papercusp/harness/paths';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
 import { promptsDir } from './prompt-assembly';
@@ -756,6 +755,9 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
         // compose failure — a drifted tiling, a BLOCK-tier lint finding — falls back to su.md
         // as-is, loudly: the seal is the default, not a silent flag.
         try {
+          // Loaded lazily, like the flags above: the blueprint barrel pulls the loader (and its
+          // harness-path resolution) which this module otherwise never needs at import time.
+          const { composeSuStackSource } = await import('@papercusp/orchestrator/blueprint');
           const harnessDir = path.resolve(suBaseSource, '..', '..', '..', '..'); // <root>/blueprints/base/prompts/su.md
           suBaseText = composeSuStackSource({ harnessDir }).text;
         } catch (e) {

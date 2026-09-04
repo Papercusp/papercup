@@ -27,7 +27,12 @@ vi.mock('@papercusp/orchestrator/role-prompt', () => ({
   resolvePromptFile: (...args: unknown[]) => resolvePromptFileMock(...(args as [unknown, string])),
   resolvePromptFiles: (...args: unknown[]) => resolvePromptFilesMock(...(args as [unknown, string])),
 }));
-vi.mock('@papercusp/harness/paths', () => ({
+// Partial mock: pin `harnessRoot` and keep every other export real — the module graph under
+// test reaches the blueprint loader (`harnessRootCandidates`, `harnessPath`) through the
+// orchestrator's prompt-resolve → render-stack seam (identities-v1 P-003), and a full
+// replacement mock would fail collection on the first export it did not list.
+vi.mock('@papercusp/harness/paths', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/harness/paths')>()),
   harnessRoot: vi.fn(() => '/h'),
 }));
 // The chat-surface prompts dir for the workspace-level (harness-less) role
