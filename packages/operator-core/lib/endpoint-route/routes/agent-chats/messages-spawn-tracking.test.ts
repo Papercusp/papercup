@@ -177,6 +177,7 @@ describe('agent-chats messagesRoute spawn tracking (EI-259)', () => {
       projectDir: '/tmp/proj-x',
     });
     expect(h.capturedCtx.value?.spawnId).toBe('agent_chats-chat-1-abcd1234');
+    expect(h.capturedCtx.value?.interactiveCardCapability).toBe(true);
   });
 
   it('clean stream → resolve sees sawDone with no errors; finish carries the outcome + output tail', async () => {

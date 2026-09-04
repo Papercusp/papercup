@@ -207,6 +207,7 @@ export default defineTool({
           workspaceId,
           role,
           runId,
+          interactiveCardCapability: true,
           spawnId: globalThis.crypto.randomUUID(),
           transport: 'in_process',
           uiClientId: body.uiClientId ?? null,

@@ -689,6 +689,7 @@ const messagesRoute = defineTool({
         harnessSlug: itemHarness.harness,
         role: chat.role,
         runId: assembled.runId,
+        interactiveCardCapability: true,
         spawnId: `agent-loop-${chatId}`,
         log: () => {
           /* */
@@ -912,6 +913,7 @@ const messagesRoute = defineTool({
             harnessSlug: slug,
             role: 'operator' as const,
             runId: assembled.runId,
+            interactiveCardCapability: true,
             spawnId: spawnTracking?.spawnId ?? `agent_chats-${chatId}`,
             log: () => {
               /* */

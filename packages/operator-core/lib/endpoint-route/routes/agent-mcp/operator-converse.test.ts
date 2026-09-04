@@ -6,15 +6,30 @@ const budgetMocks = vi.hoisted(() => ({
     typeof uiClientId === 'string' && uiClientId.startsWith('llm-testing/')),
 }));
 
+const dispatchMocks = vi.hoisted(() => ({
+  dispatch: vi.fn(async function* (_tool: unknown, _name: unknown, _args: unknown, ctx: Record<string, unknown>) {
+    dispatchMocks.captured = ctx;
+  }),
+  captured: null as Record<string, unknown> | null,
+}));
+
 vi.mock('@papercusp/sse', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/sse')>()),
-  sseResponse: vi.fn(() => new Response('stream-started', { status: 200 })),
+  sseResponse: vi.fn((opts: { setup: (sink: unknown) => Promise<void> }) => {
+    void opts.setup({
+      closed: false,
+      event: vi.fn(),
+      onClose: vi.fn(),
+      close: vi.fn(),
+    });
+    return new Response('stream-started', { status: 200 });
+  }),
 }));
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (def: unknown) => def,
-  dispatchProjectedToolStream: vi.fn(async function* () {}),
+  dispatchProjectedToolStream: dispatchMocks.dispatch,
   emitToSseSink: vi.fn(),
   lookupByMcpName: vi.fn(() => ({ name: 'operator:converse' })),
   subscribeWorkspace: vi.fn(() => () => {}),
@@ -43,6 +58,7 @@ const handler = (body: unknown) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  dispatchMocks.captured = null;
   budgetMocks.checkBudget.mockResolvedValue({
     state: { dailyCapUsd: 5, spend: [] },
     exceeded: true,
@@ -82,5 +98,15 @@ describe('operator-converse route budget preflight', () => {
     expect(budgetMocks.shouldBypassOperatorBudget).toHaveBeenCalledWith('llm-testing/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
     expect(budgetMocks.checkBudget).not.toHaveBeenCalled();
     expect(sseResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the in-process chat context as an interactive-card responder', async () => {
+    const res = await handler({
+      messages: [],
+      uiClientId: 'llm-testing/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    });
+    expect(res.status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(dispatchMocks.captured?.interactiveCardCapability).toBe(true);
   });
 });
