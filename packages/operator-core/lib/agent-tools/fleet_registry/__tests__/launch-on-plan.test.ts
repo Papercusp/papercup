@@ -1114,6 +1114,15 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       carry: 'warm',
     });
     expect(setFleetLeaderMock.mock.invocationCallOrder[0]).toBeLessThan(
+      setPresenceFleetMock.mock.invocationCallOrder[0],
+    );
+    expect(setPresenceFleetMock).toHaveBeenCalledWith(
+      'ws-1',
+      payload.spawnedLeader.ownerId,
+      'spawn-led',
+      'leader',
+    );
+    expect(setPresenceFleetMock.mock.invocationCallOrder[0]).toBeLessThan(
       ensureFleetLeaderControlMock.mock.invocationCallOrder[0],
     );
     expect(payload.autoModeEntered).toBe(true);
@@ -1229,7 +1238,12 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       'dead-leader',
     );
     expect(spawnConsoleMock).toHaveBeenCalledTimes(2); // leader first, then the member
-    expect(setPresenceFleetMock).not.toHaveBeenCalled();
+    expect(setPresenceFleetMock).toHaveBeenCalledWith(
+      'ws-1',
+      payload.spawnedLeader.ownerId,
+      'absent-leader-recovery',
+      'leader',
+    );
     expect(payload.leaderSpawnIgnored).toBeNull();
   });
 
@@ -1330,6 +1344,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     );
     expect(payload.spawnedLeader).toMatchObject({ registered: false });
     expect(payload.leaderSpawnRecoveryWarning).toContain('leadership changed concurrently');
+    expect(setPresenceFleetMock).not.toHaveBeenCalled();
     expect(ensureFleetLeaderControlMock).not.toHaveBeenCalled();
     expect(payload.callerMembership.enrolled).toBe(false);
   });

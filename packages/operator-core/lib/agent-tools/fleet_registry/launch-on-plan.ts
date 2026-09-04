@@ -4534,6 +4534,10 @@ export default defineTool({
           'the concurrent registry leader was preserved and the spawned process was not reported as registered.';
       }
       if (leaderRegistered) {
+        // Keep the trigger-maintained presence projection coupled to the registry CAS.
+        // `coord_presence.fleet_role` is what role-keyed policy reads, so a spawned
+        // leader must append the same `lead` membership event as take-leadership.
+        await setPresenceFleet(workspaceId, spawnedLeaderOwnerId, fleetSlug, 'leader');
         leaderControl = await ensureFleetLeaderControl({
           workspaceId,
           ownerId: spawnedLeaderOwnerId,

@@ -1462,7 +1462,7 @@ export default defineTool({
                   auto_scoped_payload_filter: true,
                   payload_filter: effectivePayloadFilter,
                   payload_filter_source: autoScopedFrom,
-                  auto_scoped_payload_filter_advice: `EI-13846: no payload_filter was passed, so this "work-item:claimable" await was AUTOMATICALLY narrowed to your own ${autoScopedFrom.source} claim spec (${formatSpecRef(autoScopedFrom.specId, autoScopedFrom.revision)}) — it will fire only on claimable items your spec could actually admit, not on every hive-wide release. Pass an explicit payload_filter to override.`,
+                  auto_scoped_payload_filter_advice: `EI-13846: no payload_filter was passed, so this "work-item:claimable" await was AUTOMATICALLY narrowed to your own ${autoScopedFrom.source} claim spec (${formatSpecRef(autoScopedFrom.specId, autoScopedFrom.revision)}) — it fires on items matching the claim-spec payload filter, not on every hive-wide release. Claimability floors (for example plan reservations, claim holds, assignments, and owner-action gates) are checked separately by scheduler:get_next, so a matching wake is only a hint and may still be a guaranteed miss; re-run scheduler:get_next after waking. Pass an explicit payload_filter to override.`,
                 }
               : {}),
             ...(unscopedClaimableWarning

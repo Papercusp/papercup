@@ -1345,6 +1345,26 @@ describe('EI-13846 — default the `work-item:claimable` payload_filter to the c
     expect(out.unscoped_claimable_await).toBeUndefined();
   });
 
+  it('warns that an auto-scoped payload filter is a claimability hint, not a floor guarantee', async () => {
+    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce({
+      source: 'fleet',
+      spec: { specId: 'bug-drain-200k', revision: 2, view: { filter: { field: 'kind', op: '=', value: 'bug' } } } as never,
+      revision: 2,
+      updatedBy: 'su-leader',
+      updatedAt: '2026-07-19T00:00:00Z',
+      harnessSlug: 'papercusp',
+      fleetSlug: 'bug-drain-200k',
+    });
+
+    const out = await call({ event: 'work-item:claimable' });
+    const advice = String(out.auto_scoped_payload_filter_advice);
+
+    expect(advice).toMatch(/items matching the claim-spec payload filter/i);
+    expect(advice).toMatch(/claimability floors/i);
+    expect(advice).toMatch(/scheduler:get_next/i);
+    expect(advice).not.toMatch(/only on claimable items your spec could actually admit/i);
+  });
+
   it('no spec at all (source: default) registers UNSCOPED but WARNS instead of silently thrashing', async () => {
     vi.mocked(getClaimSpecRecord).mockResolvedValueOnce({
       source: 'default',
