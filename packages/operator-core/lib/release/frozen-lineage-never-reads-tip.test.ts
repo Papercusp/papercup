@@ -32,7 +32,7 @@ const PHASES: FrozenCandidateRepairPhase[] = ['ready-to-test', 'awaiting-fixer',
 
 function row(phase: FrozenCandidateRepairPhase, overrides: Partial<FrozenCandidateRepairQueue> = {}): FrozenCandidateRepairQueue {
   const base: FrozenCandidateRepairQueue = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     phase,
     candidate: C,
     base: null,
@@ -42,6 +42,7 @@ function row(phase: FrozenCandidateRepairPhase, overrides: Partial<FrozenCandida
     updatedAtMs: T0,
     fixerSpawnId: phase === 'ready-to-verify' || phase === 'ready-to-promote' ? 'spawn-1' : null,
     failingTests: ['lib/a.test.ts'],
+    signature: [],
     ...(phase === 'blocked' ? { blockedReason: 'attempts-exhausted' as const } : {}),
   };
   return { ...base, ...overrides };
