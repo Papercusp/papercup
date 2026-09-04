@@ -45,6 +45,7 @@ import { resolveCaptureScope } from './capture-scope';
 import { coerceCaptureArgs } from './capture-coerce';
 import {
   normalizeSuspectedToolFailure,
+  TOOL_FAILURE_DIRECT_EVIDENCE_KINDS,
   type SuspectedToolFailure,
 } from '../../harness/improvements/tool-error-classifier';
 import { getModes } from '../../modes/store';
@@ -357,6 +358,9 @@ export function deriveToolFailureCaptureText(input: ToolFailureCaptureTextInput)
     ['Reproduced', failure.reproduced],
     ['Clear server mismatch', failure.clearServerMismatch],
     ['Hard internal', failure.hardInternal],
+    ['Direct evidence kind', failure.directEvidence?.kind],
+    ['Direct evidence expected', failure.directEvidence?.expected],
+    ['Direct evidence actual', failure.directEvidence?.actual],
   ];
   const body = clampText(
     [
@@ -383,6 +387,14 @@ const suspectedToolFailureSchema = z
     reproduced: z.boolean().optional(),
     clearServerMismatch: z.boolean().optional(),
     hardInternal: z.boolean().optional(),
+    directEvidence: z
+      .object({
+        kind: z.enum(TOOL_FAILURE_DIRECT_EVIDENCE_KINDS),
+        expected: z.string().trim().min(1).max(2000),
+        actual: z.string().trim().min(1).max(2000),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -587,7 +599,7 @@ export default defineTool({
         toolFailure: suspectedToolFailureSchema
           .optional()
           .describe(
-            'Suspected tool-call failure. A one-off is captured immediately in non-claimable probation and correlated by tool/error/schema/field/runtime; a second independent reporter or the invocation watchdog promotes the SAME row. Put direct-evidence flags inside this object — toolFailure.reproduced, toolFailure.clearServerMismatch, or toolFailure.hardInternal — and do not pass them at the top level. Set them only with direct evidence to file claimable work immediately.',
+            'Suspected tool-call failure. A one-off is captured immediately in non-claimable probation and correlated by tool/error/schema/field/runtime; a second independent reporter or the invocation watchdog promotes the SAME row. Put legacy direct-evidence flags inside this object — toolFailure.reproduced, toolFailure.clearServerMismatch, or toolFailure.hardInternal — and do not pass them at the top level. For a caller-class refusal, those booleans alone stay in probation: pass toolFailure.directEvidence { kind, expected, actual } only when you can state the inspectable contract mismatch that makes it a tool defect.',
           ),
         // EI-12176 compatibility aliases. Older generated guidance advertised these at
         // top level. Declaring + normalising them prevents tools:invoke's permissive
@@ -1002,7 +1014,7 @@ export default defineTool({
           .join('\n\n')
       : captureText.body;
     const toolFailureKind: 'bug' | 'change' | undefined = normalizedToolFailure
-      ? args.toolFailure?.clearServerMismatch || args.toolFailure?.hardInternal
+      ? args.toolFailure?.directEvidence || args.toolFailure?.clearServerMismatch || args.toolFailure?.hardInternal
         ? 'bug'
         : normalizedToolFailure.class === 'caller' || normalizedToolFailure.class === 'rate-limit'
           ? 'change'
@@ -1068,7 +1080,8 @@ export default defineTool({
                   attestedDirect:
                     args.toolFailure?.reproduced === true ||
                     args.toolFailure?.clearServerMismatch === true ||
-                    args.toolFailure?.hardInternal === true,
+                    args.toolFailure?.hardInternal === true ||
+                    args.toolFailure?.directEvidence !== undefined,
                 },
               }
             : {}),
