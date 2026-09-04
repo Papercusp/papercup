@@ -1542,6 +1542,17 @@ export interface PipelinePosition {
      */
     targetIncludedInGreenPin?: boolean | null;
     /**
+     * Whether the exact requested target commit is an ancestor of the candidate named by
+     * `gate_health.observedCandidate` — i.e. whether that recorded gate verdict was produced
+     * from a tree that contains the caller's fix commit.
+     *
+     * This is deliberately a raw containment measurement, not a gate-health conclusion and
+     * not a lever recommendation. `false` means the observed candidate genuinely predates or
+     * diverges from the target; `null` means the relationship was not measurable (no target,
+     * no observed candidate, a submodule boundary, or a failed git read).
+     */
+    targetIncludedInObservedCandidate?: boolean | null;
+    /**
      * THE SAME MEASUREMENT AS `mainFastForwarded`, IN THE POLARITY AGENTS ASK IN:
      * `true` means main IS behind staging (a buffer exists). A PROJECTION, not a second
      * derivation (axis 5) — both are the one `greenPinAtStagingHead` read, negated from
@@ -2858,9 +2869,9 @@ export function evaluateChangeInCandidate(args: {
           `occurrence(s) your change added. It carries only PART of the change. Treat a RED from ` +
           `it as UNPROVEN, not as a verdict on your code. Note the marker cannot settle this on ` +
           `its own: it is a substring test, so a marker that already existed in the file reads as ` +
-          `"present" for a candidate cut before your fix. Settle it by ANCESTRY, which is exact ` +
-          `both ways: INTRO=$(git log --format=%H -1 -S'<a string your change ADDED>' -- <path>) ` +
-          `then git merge-base --is-ancestor $INTRO ${at}. Do NOT settle it with ` +
+          `"present" for a candidate cut before your fix. Settle it through the canonical ` +
+          `exact-ancestry reader: call release:trace { sha: '<the commit that introduced your fix>' } ` +
+          `and read gate.fixCommitContainment.verdict. Do NOT hand-run merge-base or settle it with ` +
           `release:checkpoint-run's callerEditsInCandidate: it compares the path's CURRENT ` +
           `content, so any peer commit to the same file after yours reports it missing even when ` +
           `your fix is in the candidate (EI-19326775809436764). Or re-call with a marker string ` +
@@ -2875,8 +2886,9 @@ export function evaluateChangeInCandidate(args: {
             `re-check each other changed path separately (its own dev:pipeline_position / marker call) before concluding no re-fire is needed for the whole change-set.` +
             (judgedCount !== null && judgedCount > 1
               ? ` (Caveat: the marker occurs ${times}, so it is not unique to your change — if it is a common identifier ` +
-                `rather than a string your edit introduced, confirm by ancestry: ` +
-                `git merge-base --is-ancestor $(git log --format=%H -1 -S'<a string your change ADDED>' -- <path>) ${at}.)`
+                `rather than a string your edit introduced, confirm exact ancestry through ` +
+                `release:trace { sha: '<the commit that introduced your fix>' } and read ` +
+                `gate.fixCommitContainment.verdict; do not derive it from a hand-run merge-base.)`
               : '')
         : `A checkpoint fired now would judge ${at}, which DOES carry your change TO ${relPath} (marker occurs ${times}). This is per-path — other changed files may not be in this same candidate.`;
     }
@@ -5741,14 +5753,26 @@ export async function gitPipelinePosition(
   // force-deployed commit can already be in main while remaining outside the last
   // full-suite-tested pin. Measure the ancestry in the same direction as
   // `deployedIsAncestorOfReady` below: does the green pin's history contain targetSha?
-  const targetIncludedInGreenPin =
-    !submodule && targetSha && ready ? await refContains(git, root, ready.sha, targetSha) : null;
+  // EI-19342701023112373: the green pin and the gate's observed candidate are different
+  // authorities. The former says whether a fix has ever been promoted; only the latter says
+  // whether the verdict an agent is looking at was computed from a tree containing that fix.
+  // Reuse the same absence-safe ancestry primitive as every position leg: a failed git read
+  // stays null and must never collapse into a confident `not_contained` verdict. The reads
+  // are independent, so keep them concurrent on this latency-sensitive diagnostic path.
+  const observedCandidateSha = snap.gate?.observedCandidate ?? null;
+  const [targetIncludedInGreenPin, targetIncludedInObservedCandidate] = await Promise.all([
+    !submodule && targetSha && ready ? refContains(git, root, ready.sha, targetSha) : Promise.resolve(null),
+    !submodule && targetSha && observedCandidateSha
+      ? refContains(git, root, observedCandidateSha, targetSha)
+      : Promise.resolve(null),
+  ]);
   const verdictProvenance: PipelinePosition['verdictProvenance'] = {
     lastGreenSha: ready?.sha ?? null,
     lastGreenShortSha: ready?.shortSha ?? null,
     lastGreenAgeMs: ready ? Date.now() - ready.committedAtMs : null,
     mainFastForwarded: greenPinAtStagingHead,
     targetIncludedInGreenPin,
+    targetIncludedInObservedCandidate,
     // The polarity the `git.mainBehindStaging` cell is NAMED after (EI-20046248345042252).
     // An unmeasured `null` stays `null` — negating it would manufacture a confident `true`.
     mainBehindStaging: greenPinAtStagingHead === null ? null : !greenPinAtStagingHead,
