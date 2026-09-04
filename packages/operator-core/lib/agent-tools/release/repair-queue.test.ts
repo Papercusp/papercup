@@ -95,6 +95,17 @@ describe('release:repair-queue', () => {
     expect(tool.guidance?.notWhen).toContain('Do not pass harness or workspace');
   });
 
+  it('defaults an empty args object to get while preserving strict branch validation', () => {
+    const omittedOp = tool.args.safeParse({});
+    expect(omittedOp.success).toBe(true);
+    expect(omittedOp.success && omittedOp.data).toEqual({ op: 'get' });
+    expect(tool.args.safeParse({ op: 'admit' }).success).toBe(false);
+    expect(tool.args.safeParse({ op: 'retire' }).success).toBe(false);
+    expect(tool.effectForCall?.({} as never)).toBe('read');
+    expect(tool.effectForCall?.({ op: 'admit', confirm: false } as never)).toBe('read');
+    expect(tool.effectForCall?.({ op: 'admit', confirm: true } as never)).toBe('write');
+  });
+
   it('get exposes one normalized queue and never advertises retire for a recoverable one', async () => {
     const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
     expect(result).toMatchObject({
