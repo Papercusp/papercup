@@ -42,9 +42,11 @@ import {
 import type {
   ScorecardCheckRun,
   ScorecardCoverageCheckRun,
+  ScorecardProbeCheckRun,
   ScorecardRequirementsCheckRun,
 } from './harness/improvements/observation-types';
 import { managedSpawn } from './task-manager/managed-spawn';
+import { continuityProbeSchema, runContinuityProbeBatch, type ContinuityProbe } from './continuity-probes';
 
 /** The minimal criterion shape this module reads — key + the optional check. */
 export interface CheckedCriterion {
@@ -382,8 +384,30 @@ export function assertCriterionCheckPathsResolve(
  *  `checkRuns[criterionKey]` so a rating the run contradicts is machine-detectable
  *  from the record itself (D-006). */
 export type CriterionCheckRun = ScorecardCheckRun;
+/** The probe-specific persisted run record, re-exported for evaluator callers. */
+export type ProbeCheckRun = ScorecardProbeCheckRun;
 
 export type CriterionCheckRefusal =
+  | {
+      ok: false;
+      error: 'probe_invalid';
+      criterionKey: string;
+      detail: string;
+    }
+  | {
+      ok: false;
+      error: 'probe_run_failed';
+      criterionKey: string;
+      detail: string;
+    }
+  | {
+      ok: false;
+      error: 'probe_contradicted';
+      criterionKey: string;
+      rating: string;
+      detail: string;
+      run: ProbeCheckRun;
+    }
   | {
       ok: false;
       error: 'check_path_unresolved';
@@ -456,6 +480,131 @@ export type CriterionCheckRunner = (opts: {
   root: string;
   timeoutMs?: number;
 }) => Promise<TestFilesCoreResult>;
+
+/** Injectable direct-dispatch seam for rubric ContinuityProbe checks. */
+export type CriterionProbeDispatcher = (
+  name: string,
+  args: Record<string, unknown>,
+) => Promise<unknown>;
+
+/**
+ * GRADING-time evaluation for kind:'probe' checks. Rubrics deliberately keep
+ * `check.probe` dependency-light (`unknown`) so the template does not import
+ * the continuity subsystem; this evaluator is the semantic boundary that
+ * parses the typed probe, executes it through the existing batch runner, and
+ * refuses any result that cannot be attributed to exactly one criterion.
+ *
+ * A probe status of `fresh` is a pass and `stale` is a fail. `error`,
+ * `unknown`, missing, and truncated results are all unjudgeable and refuse
+ * the emit. This is fail-closed: a criterion cannot silently fall back to
+ * grader prose when its machine check was declared.
+ */
+export async function evaluateCriterionProbeChecks(input: {
+  criteria: ReadonlyArray<CheckedCriterion>;
+  ratings: Record<string, { rating: string } | undefined>;
+  dispatchTool?: CriterionProbeDispatcher;
+  nowIso?: () => string;
+}): Promise<CriterionCheckEvaluation> {
+  const planned: Array<{ key: string; probe: ContinuityProbe }> = [];
+  for (const c of input.criteria) {
+    if (c.check?.kind !== 'probe' || input.ratings[c.key] === undefined) continue;
+    const parsed = continuityProbeSchema.safeParse(c.check.probe);
+    if (!parsed.success) {
+      const detail = parsed.error.issues
+        .slice(0, 4)
+        .map((issue) => `${issue.path.join('.') || '(probe)'}: ${issue.message}`)
+        .join('; ');
+      return {
+        ok: false,
+        error: 'probe_invalid',
+        criterionKey: c.key,
+        detail:
+          `criterion '${c.key}' carries a probe that is not executable against the current ` +
+          `read-only platform contract${detail ? ` (${detail})` : ''}. Fix the probe binding or ` +
+          'remove the check to leave the criterion fuzzy.',
+      };
+    }
+    planned.push({ key: c.key, probe: parsed.data });
+  }
+  if (planned.length === 0) return { ok: true, checkRuns: {} };
+  if (!input.dispatchTool) {
+    return {
+      ok: false,
+      error: 'probe_run_failed',
+      criterionKey: planned[0]!.key,
+      detail:
+        `criterion '${planned[0]!.key}' carries a probe check, but the internal read-only ` +
+        'dispatcher is unavailable; refusing an unexecuted machine-check rather than grading it from prose.',
+    };
+  }
+
+  const nowIso = input.nowIso ?? (() => new Date().toISOString());
+  const sources = planned.map((item, checkIndex) => ({
+    source: { kind: 'work-item' as const, id: `scorecard-probe:${item.key}` },
+    checkIndex,
+    check: {
+      id: item.key,
+      claim: `scorecard criterion '${item.key}' probe`,
+      probe: item.probe,
+    },
+  }));
+  const batch = await runContinuityProbeBatch(sources, { dispatchTool: input.dispatchTool });
+  if (batch.truncated > 0 || batch.results.length !== planned.length) {
+    return {
+      ok: false,
+      error: 'probe_run_failed',
+      criterionKey:
+        planned[Math.min(batch.results.length, planned.length - 1)]?.key ?? planned[0]!.key,
+      detail:
+        `the probe-check batch could not execute one result per declared criterion ` +
+        `(${planned.length} declared, ${batch.results.length} returned, ${batch.truncated} truncated). ` +
+        'A capped or partially executed probe set is unjudgeable, so scorecards:emit refuses rather ' +
+        'than silently accepting a criterion without distinct platform evidence.',
+    };
+  }
+
+  const checkRuns: Record<string, CriterionCheckRun> = {};
+  for (const [index, item] of planned.entries()) {
+    const result = batch.results.find((candidate) => candidate.checkIndex === index);
+    if (!result || !result.executed || (result.status !== 'fresh' && result.status !== 'stale')) {
+      const diagnostic = result?.diagnostic;
+      return {
+        ok: false,
+        error: 'probe_run_failed',
+        criterionKey: item.key,
+        detail:
+          `criterion '${item.key}' probe was not judgeable ` +
+          `(${diagnostic?.code ?? result?.status ?? 'missing result'}${diagnostic?.message ? `: ${diagnostic.message}` : ''}). ` +
+          'Probe checks fail closed: repair the live typed probe/dispatcher and re-emit.',
+      };
+    }
+    const record: ProbeCheckRun = {
+      kind: 'probe',
+      probe: item.probe,
+      verdict: result.status === 'fresh' ? 'pass' : 'fail',
+      status: result.status,
+      executed: true,
+      ...(result.observed !== undefined ? { observed: result.observed as string | number | boolean | null } : {}),
+      measuredAt: nowIso(),
+    };
+    const rating = input.ratings[item.key]?.rating ?? '';
+    if (record.verdict === 'fail' && ratingClaimsPass(rating)) {
+      return {
+        ok: false,
+        error: 'probe_contradicted',
+        criterionKey: item.key,
+        rating,
+        run: record,
+        detail:
+          `criterion '${item.key}' is rated '${rating}' but its platform probe predicate was ` +
+          'stale (the observed value did not match the declared expectation). A live probe outranks ' +
+          'grader prose — fix the signal or rate the criterion honestly.',
+      };
+    }
+    checkRuns[item.key] = record;
+  }
+  return { ok: true, checkRuns };
+}
 
 /** Distilled result of one native Cargo invocation. Cargo's stable runner reports
  * test names and counts at crate/binary scope, not the source file containing each

@@ -59,6 +59,7 @@ import { listTasks } from '../../task-manager/store';
 import { emitScorecardEmitted } from '../../scorecard-emitted-events';
 import {
   evaluateCriterionCargoChecks,
+  evaluateCriterionProbeChecks,
   evaluateCriterionTestChecks,
   evaluateCriterionCoverageChecks,
   evaluateCriterionRequirementChecks,
@@ -451,6 +452,10 @@ export async function emitScorecard(
   deps: {
     /** Injectable seam for tests — production runs the real router via the testing:run core. */
     evaluateChecks?: typeof evaluateCriterionTestChecks;
+    /** Injectable seam for tests — production replays typed ContinuityProbes. */
+    evaluateProbeChecks?: typeof evaluateCriterionProbeChecks;
+    /** Host-bound direct dispatcher used by ContinuityProbe checks. */
+    dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
     /** Injectable seam for tests — production runs the native Cargo crate runner. */
     evaluateCargoChecks?: typeof evaluateCriterionCargoChecks;
     evaluateCoverageChecks?: typeof evaluateCriterionCoverageChecks;
@@ -1292,6 +1297,30 @@ export async function emitScorecard(
       checkRuns = Object.keys(checkEvaluation.checkRuns).length > 0 ? checkEvaluation.checkRuns : undefined;
     }
 
+    // Typed ContinuityProbe criterion checks use the same read-only dispatcher
+    // and bounded batch executor as carried checks. They run after unchanged
+    // evidence deduplication and before persistence, so every filed card keeps
+    // the live predicate result that justified its rating.
+    const probeCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'probe');
+    if (probeCheckedCriteria.length > 0) {
+      const evaluateProbe = deps.evaluateProbeChecks ?? evaluateCriterionProbeChecks;
+      const probeEvaluation = await evaluateProbe({
+        criteria: rubric.criteria,
+        ratings,
+        dispatchTool: deps.dispatchTool,
+      });
+      if (!probeEvaluation.ok) {
+        return {
+          ok: false as const,
+          error: probeEvaluation.detail,
+          checkRefusal: probeEvaluation,
+        };
+      }
+      if (Object.keys(probeEvaluation.checkRuns).length > 0) {
+        checkRuns = { ...(checkRuns ?? {}), ...probeEvaluation.checkRuns };
+      }
+    }
+
     // ── P-011 (owner-ratified D-006): native Cargo criterion checks ──
     // Vitest's file router intentionally refuses Rust source paths. Cargo checks
     // use their own manifest boundary and preserve explicit source attribution in
@@ -1613,14 +1642,18 @@ export default defineTool({
     const ctxHarness =
       typeof ctx.harnessSlug === 'string' && ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : undefined;
     return {
-      data: await emitScorecard(args, {
-        createdBy: identity.ownerId,
-        ctxHarness,
-        role: ctx.role,
-        workspaceId: identity.workspaceId ?? undefined,
-        // P-011: tests-checks resolve + run against the tree the AGENT edits.
-        checkRoot: resolveAgentWorkspaceRoot(ctx),
-      }),
+      data: await emitScorecard(
+        args,
+        {
+          createdBy: identity.ownerId,
+          ctxHarness,
+          role: ctx.role,
+          workspaceId: identity.workspaceId ?? undefined,
+          // P-011: tests-checks resolve + run against the tree the AGENT edits.
+          checkRoot: resolveAgentWorkspaceRoot(ctx),
+        },
+        { dispatchTool: ctx.dispatchTool },
+      ),
     };
   },
 });
