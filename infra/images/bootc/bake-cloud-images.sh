@@ -169,7 +169,9 @@ bake_one() { # $1 cloud  $2 pinned ref
     echo "  $cloud: DRY_RUN would render --type $type from $ref -> $dest/${CLOUD_FILE[$cloud]}"
     return 0
   fi
-  "${PODMAN[@]}" run --rm -it --privileged --pull=newer \
+  # No `-it`: this runs unattended from the release pipeline and from probes, where there is no
+  # TTY and `-t` fails outright.
+  "${PODMAN[@]}" run --rm --privileged --pull=newer \
     --security-opt label=type:unconfined_t \
     -v "$dest":/output -v /var/lib/containers/storage:/var/lib/containers/storage \
     "$BIB_IMG" --type "$type" --local "$ref" >"$dest/build.log" 2>&1

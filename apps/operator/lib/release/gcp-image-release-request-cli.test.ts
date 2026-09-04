@@ -166,6 +166,13 @@ function cleanRoomReport(imageId: string, overrides: Record<string, unknown> = {
         contractVersion: "papercusp-workspace-host-bootstrap-v2",
         hostId: "fixture",
         action: "install",
+        // The discriminant P-306 added to WorkspaceHostBootstrapAttestationShape. This
+        // hand-rolled fixture predates it, and omitting it does not read as "unspecified" —
+        // the gate's `!== 'ubuntu-release-bundle'` matched `undefined` and refused the release
+        // as an unverifiable BOOTC artifact awaiting P-307, which this fixture is not. It is a
+        // signed-tarball host and says so in every other field (ubuntuVersion, bundleSha256,
+        // signingKeySha256), so the discriminant simply has to agree with them.
+        hostModel: "ubuntu-release-bundle",
         ubuntuVersion: "24.04",
         observedAt: "2026-08-30T02:39:29Z",
         status: "healthy",
