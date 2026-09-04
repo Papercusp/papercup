@@ -427,6 +427,36 @@ export function normalizeGuardRailSlot(key: string, body: string): { key: string
   return { key: k, body: b };
 }
 
+type FactSafetySlot = 'dead-end' | 'wall' | 'guard-rail';
+
+/** Normalize the exact body that the store will size, including safety-slot
+ * prefixes and tool-call neutralization. Shared by schema preflight and the
+ * handler so a caller cannot pass validation and then discover a different
+ * length contract at the write boundary. */
+function normalizeFactInput(key: string, body: string, slot?: FactSafetySlot): { key: string; body: string } {
+  const safeBody = neutralizeToolCallTags(body);
+  return slot === 'dead-end'
+    ? normalizeDeadEndSlot(key, safeBody)
+    : slot === 'wall'
+      ? normalizeWallSlot(key, safeBody)
+      : slot === 'guard-rail'
+        ? normalizeGuardRailSlot(key, safeBody)
+        : { key, body: safeBody };
+}
+
+/** The actionable pre-write refusal shared by args validation and the handler's
+ * defense-in-depth check. */
+function truncationRefusal(body: string): string | undefined {
+  const preview = truncationField(body, clampFactBody(body));
+  if (!preview) return undefined;
+  return (
+    `facts:assert — body is ${preview.droppedChars} char(s) over the ${FACT_BODY_MAX_CHARS}-char cap and would be ` +
+    `CLIPPED, silently dropping this operative tail: "${preview.droppedTail ?? '(tail unavailable)'}". No write ` +
+    `happened. Either shorten the body to front-load the operative clause within ${FACT_BODY_MAX_CHARS} chars, or ` +
+    `re-call with acceptTruncation:true to force the clipped write through anyway.`
+  );
+}
+
 export default defineTool({
   name: 'facts:assert',
   capability: 'coord:write',
@@ -556,6 +586,13 @@ export default defineTool({
       .describe(
         "P-018: HOW this convention is enforced (kind:'convention' only) — 'structural' (impossible to do wrong; no agent decision involved), 'gate' (refused at a chokepoint), or 'detector' (measured, never silently tolerated). gate/detector REQUIRE floor (a rate in (0,1]) + reviewBy: D-016 — \"a detector without a floor is prose exhortation in a costume\". 'structural' takes neither. There is deliberately no 'prompt' tier: a convention carried only by documentation omits this and reads as untiered.",
       ),
+    // EI-19302143721139535: keep the common duration-unit guess inside the
+    // schema so its targeted correction can be aggregated with independent
+    // ttlSec/body violations. It remains a refusal, not a silent alias.
+    ttlDays: z
+      .unknown()
+      .optional()
+      .describe('Not accepted. Use ttlSec (seconds, maximum 7776000 = 90 days).'),
     ttlSec: z
       .number()
       .int()
@@ -707,10 +744,37 @@ export default defineTool({
       .superRefine((value, ctx) => {
         if (!value || typeof value !== 'object') return;
         const candidate = value as {
+          key?: unknown;
+          body?: unknown;
+          slot?: unknown;
+          acceptTruncation?: unknown;
+          ttlDays?: unknown;
           subjectVolatile?: unknown;
           measuredAt?: unknown;
           measurement?: { measuredAt?: unknown } | null;
         };
+        if (candidate.ttlDays !== undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['ttlDays'],
+            message:
+              'facts:assert — ttlDays is not accepted; use ttlSec (seconds, maximum 7776000 = 90 days).',
+          });
+        }
+        if (
+          typeof candidate.key === 'string' &&
+          typeof candidate.body === 'string' &&
+          candidate.acceptTruncation !== true
+        ) {
+          const slot =
+            candidate.slot === 'dead-end' || candidate.slot === 'wall' || candidate.slot === 'guard-rail'
+              ? candidate.slot
+              : undefined;
+          const refusal = truncationRefusal(normalizeFactInput(candidate.key, candidate.body, slot).body);
+          if (refusal) {
+            ctx.addIssue({ code: 'custom', path: ['body'], message: refusal });
+          }
+        }
         if (candidate.subjectVolatile !== true) return;
         const flat = typeof candidate.measuredAt === 'string' ? candidate.measuredAt.trim() : '';
         const aliased =
@@ -794,7 +858,6 @@ export default defineTool({
     // Neutralize (cosmetic full-width `＜` swap, non-destructive, idempotent — never
     // drops or truncates content) rather than refuse: P-007's "never lose a write
     // outright" applies here exactly as it does to the truncation path below.
-    const safeBody = neutralizeToolCallTags(args.body);
     const safeSettledBy = neutralizeToolCallTags(args.settledBy);
     const safeRecheck = args.recheck
       ? {
@@ -802,14 +865,7 @@ export default defineTool({
           falsifier: neutralizeToolCallTags(args.recheck.falsifier),
         }
       : null;
-    const slotted =
-      args.slot === 'dead-end'
-        ? normalizeDeadEndSlot(args.key, safeBody)
-        : args.slot === 'wall'
-          ? normalizeWallSlot(args.key, safeBody)
-          : args.slot === 'guard-rail'
-            ? normalizeGuardRailSlot(args.key, safeBody)
-            : { key: args.key, body: safeBody };
+    const slotted = normalizeFactInput(args.key, args.body, args.slot);
     // WI-2142026: a caller who spells the slot intent into the KEY ITSELF
     // (`wall-unified-web-portal-blocked-on-byoc-gates`) instead of passing
     // `slot:` receives NONE of the slot's protection — the cap exemption, the
@@ -859,16 +915,8 @@ export default defineTool({
     // always has a path forward: shorten it, or explicitly opt in) while
     // closing the "silent after-the-fact" gap this item is about.
     if (args.acceptTruncation !== true) {
-      const wouldStore = clampFactBody(slotted.body);
-      const preview = truncationField(slotted.body, wouldStore);
-      if (preview) {
-        throw new InvalidInputError(
-          `facts:assert — body is ${preview.droppedChars} char(s) over the ${FACT_BODY_MAX_CHARS}-char cap and would be ` +
-            `CLIPPED, silently dropping this operative tail: "${preview.droppedTail ?? '(tail unavailable)'}". No write ` +
-            `happened. Either shorten the body to front-load the operative clause within ${FACT_BODY_MAX_CHARS} chars, or ` +
-            `re-call with acceptTruncation:true to force the clipped write through anyway.`,
-        );
-      }
+      const refusal = truncationRefusal(slotted.body);
+      if (refusal) throw new InvalidInputError(refusal);
     }
     // P-003 / WI-2141838 — the slot TTL defaults MOVED INTO THE STORE, keyed on the
     // key PREFIX rather than on this tool's `slot` argument. The line here used to read

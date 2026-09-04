@@ -115,6 +115,40 @@ describe('facts:assert — pre-write truncation refusal (EI-18685042986450096)',
     boundedTxnHarness.boundedOrgTxn.mockImplementation(async (fn) => fn(boundedTxnHarness.boundedTx));
   });
 
+  it('aggregates ttlDays, ttlSec, and body-cap violations in one args parse (EI-19302143721139535)', () => {
+    const parsed = assertTool.args.safeParse({
+      scope: 'owner',
+      scopeRef: 'su-test',
+      key: 'k-aggregate',
+      body: 'x'.repeat(FACT_BODY_MAX_CHARS + 147),
+      ttlDays: 180,
+      ttlSec: 180 * 24 * 3600,
+      dryRun: true,
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    const issues = JSON.stringify(parsed.error.issues);
+    expect(issues).toContain('ttlDays');
+    expect(issues).toContain('ttlSec');
+    expect(issues).toContain('body');
+    expect(issues).toContain(`${FACT_BODY_MAX_CHARS}-char cap`);
+  });
+
+  it('keeps the 4000-char transport headroom when truncation is explicitly accepted', () => {
+    expect(
+      assertTool.args.safeParse({
+        scope: 'owner',
+        scopeRef: 'su-test',
+        key: 'k-aggregate-accepted',
+        body: 'x'.repeat(FACT_BODY_MAX_CHARS + 147),
+        ttlSec: 3600,
+        acceptTruncation: true,
+        dryRun: true,
+      }).success,
+    ).toBe(true);
+  });
+
   it('REFUSES an over-cap body with no acceptTruncation — names the overage + previews the exact dropped tail', async () => {
     const body = `${'Front-loaded operative clause. '.repeat(50)}THE VERDICT SENTENCE THAT WOULD BE LOST.`;
     expect(body.length).toBeGreaterThan(FACT_BODY_MAX_CHARS);
