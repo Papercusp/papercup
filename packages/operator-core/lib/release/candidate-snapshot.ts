@@ -379,8 +379,8 @@ export function candidateSnapshotMatchesDispatch(
     maxAgeMs?: number;
   },
 ): boolean {
-  if (!isCandidateSnapshotFresh(snapshot, input.nowMs, input.maxAgeMs)) return false;
-  if (!sameSha(snapshot?.candidate, input.candidate)) return false;
+  if (!snapshot || !isCandidateSnapshotFresh(snapshot, input.nowMs, input.maxAgeMs)) return false;
+  if (!sameSha(snapshot.candidate, input.candidate)) return false;
   const expected = candidateSnapshotFailureSignature(input.failingTests, input.candidate);
   return expected != null && snapshot.failureSignature === expected;
 }
