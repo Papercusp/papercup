@@ -106,6 +106,15 @@ const AGENT_SUBJECT_RE = /\b(?:su|claude)-[0-9a-f]{4,}(?:-[0-9a-f]{4,})*\b/i;
  * event emitter" (EI-21392657495371064). */
 const PEER_OWNER_SUBJECT_RE = /\b(?:peer|item|work[-\s]?item)\s+owner\b/i;
 
+/**
+ * A `dev:why` diagnostic can quote the peer-owned repair wait verbatim in a
+ * carry note. The command marker, opening/closing quote, repair status, and
+ * both peer-coordination clauses are required together so this exemption
+ * cannot launder an ordinary owner wait (EI-22175896286054778).
+ */
+const DEV_WHY_PEER_REPAIR_NEXT_VERB_QUOTE_RE =
+  /^`?dev:why`?\s+nextVerb\s+[—:-]\s*["“]wait\s+for\s+the\s+owner\s+of\s+the\s+in-flight\s+repair\s+to\s+finish\s+\(repair-in-progress\)\s+—\s+there\s+is\s+nothing\s+for\s+you\s+to\s+clear\b[^"”\n]*\band\s+a\s+re-fire\s+contends\s+with\s+them\b[^"”\n]*["”]`?$/i;
+
 /** Clause delimiters bounding how far back a suppression check looks — a
  *  negation or subject in an earlier, unrelated clause must not mask a real
  *  question in a later one on the same line. */
@@ -182,6 +191,7 @@ export function lintOwnerQuestionSlots(text: string | null | undefined): TypedSl
     if (inWallsSection) continue; // EI-21762824239199233: walls rows ARE the typed form
     if (ASK_REF_RE.test(line)) continue; // the question IS a typed record
     if (WALL_MARKER_RE.test(line)) continue; // the walls slot is the typed form
+    if (DEV_WHY_PEER_REPAIR_NEXT_VERB_QUOTE_RE.test(line)) continue; // quoted peer-owned diagnostic, not a human ask
     const hasUnsuppressedMatch = OWNER_QUESTION_RES.some((re) => {
       const m = re.exec(line); // none of these patterns carry the /g flag, so exec is stateless here
       if (!m) return false;
