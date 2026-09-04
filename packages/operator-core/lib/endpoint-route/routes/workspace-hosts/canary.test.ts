@@ -2,12 +2,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
   WorkspaceHostDestroyEvidenceError,
+  workspaceHostCanaryIdentityLabels,
   type WorkspaceHostInitializationCanaryEvidence,
   type WorkspaceHostInitializationHostOperations,
 } from '@papercusp/deployment-driver';
 import type { RouteContext } from '../../define-route';
 import type { WorkspaceHostCanaryRunResult } from '../../../workspace-host/canary-runner';
 import { createWorkspaceHostCanaryRoute, type WorkspaceHostCanaryRouteDependencies } from './canary';
+
+/**
+ * What the provision route persists for this run. Built by the PRODUCTION synthesizer rather than
+ * hand-written, so a change to the identity contract cannot leave this stub agreeing with a
+ * contract that no longer exists (WI-2144027).
+ */
+const STORED_IDENTITY = workspaceHostCanaryIdentityLabels({ runId: 'run-1', workspaceId: 'workspace-1' });
 
 const CTX: RouteContext = {
   principal: null,
@@ -212,10 +220,17 @@ function requestBody() {
   };
 }
 
-function harness(adapted = false) {
+// `null` — not `undefined` — is how a caller asks for a host with NO stored labels: passing
+// `undefined` re-triggers the default parameter, which would silently hand the identity guard a
+// correctly-labelled host and make its test vacuous.
+function harness(adapted = false, storedLabels: Readonly<Record<string, string>> | null = STORED_IDENTITY) {
   const runCanary = vi.fn<WorkspaceHostCanaryRouteDependencies['runCanary']>(async () => resultFixture(adapted));
   const resolveOperationsForHost = vi.fn<WorkspaceHostCanaryRouteDependencies['resolveOperationsForHost']>(
-    async () => ({ desired: {} as never, operations, deliveryCapabilities: { fileTransfer: true } }),
+    async () => ({
+      desired: (storedLabels ? { labels: storedLabels } : {}) as never,
+      operations,
+      deliveryCapabilities: { fileTransfer: true },
+    }),
   );
   const dependencies: WorkspaceHostCanaryRouteDependencies = {
     activeWorkspaceId: () => 'workspace-1',
@@ -319,5 +334,39 @@ describe('POST /workspace-hosts/:hostId/canary', () => {
       error: 'destroy evidence rejected',
       problems: ['provider teardown orphan census is not clean'],
     });
+  });
+
+  // WI-2144027. A host with no identity labels can be driven all the way through a canary run and
+  // then be undestroyable through the product route — which is how four real GCP canaries had to
+  // be retired out of band. Refuse at bind, before a VM does any work.
+  it('refuses to bind a run to a host the provision route never marked as its canary', async () => {
+    const { dependencies, runCanary } = harness(false, null);
+    const response = await post(dependencies, requestBody());
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'workspace host is not provisioned as a canary for this run',
+      problems: [
+        `stored desired.labels must contain 'papercusp_canary=true'`,
+        `stored desired.labels must contain 'papercusp_run_id=run-1'`,
+        `stored desired.labels must contain 'papercusp_workspace_id=workspace-1'`,
+      ],
+    });
+    expect(runCanary).not.toHaveBeenCalled();
+  });
+
+  it('refuses to bind a run to a host provisioned for a different canary run', async () => {
+    const { dependencies, runCanary } = harness(
+      false,
+      workspaceHostCanaryIdentityLabels({ runId: 'run-2', workspaceId: 'workspace-1' }),
+    );
+    const response = await post(dependencies, requestBody());
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      problems: [`stored desired.labels must contain 'papercusp_run_id=run-1'`],
+    });
+    expect(runCanary).not.toHaveBeenCalled();
   });
 });

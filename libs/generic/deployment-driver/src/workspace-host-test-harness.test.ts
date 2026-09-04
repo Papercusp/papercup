@@ -10,10 +10,10 @@ import type {
   WorkspaceHostReconcileRequest,
   WorkspaceHostResourceRef,
 } from "./workspace-host-types";
+import { WORKSPACE_HOST_CANARY_TAG_KEYS } from "./workspace-host-canary-identity";
 import {
   type WorkspaceHostLiveCanarySpec,
   DeterministicWorkspaceHostFaultInjector,
-  WORKSPACE_HOST_CANARY_TAG_KEYS,
   WORKSPACE_HOST_LIVE_CANARY_MAX_SPEND_CENTS,
   WORKSPACE_HOST_PROVIDER_CONTRACT_CHECKS,
   WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
