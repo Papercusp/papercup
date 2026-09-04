@@ -59,6 +59,12 @@ function centsField(value: unknown): number | null {
   return Number.isFinite(cents) ? cents : null;
 }
 
+function integerField(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const integer = Number(value);
+  return Number.isInteger(integer) ? integer : null;
+}
+
 function sortedRefs(refs: readonly string[]): string[] {
   return [...refs].sort((a, b) => a.localeCompare(b));
 }
@@ -78,6 +84,15 @@ const goalUpdateArgs = z.object({
       'refresh the structured kill criterion — this is how a tripwire\'s `current` advances ("$310 of $500"). Pass null to drop them back to prose-only. Omit to leave untouched.',
     ),
   budgetCents: z.number().int().nonnegative().optional().describe('revise the declared ceiling'),
+  budgetWindowSec: z
+    .number()
+    .int()
+    .positive()
+    .nullable()
+    .optional()
+    .describe(
+      'revise the budget ceiling window in seconds; omit to leave it untouched, or pass null to restore a lifetime ceiling',
+    ),
   spentCents: z
     .number()
     .int()
@@ -156,14 +171,14 @@ const goalUpdateTool = defineTool({
   name: 'goals:update',
   needsWorkspaceTx: true,
   description:
-    'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, spentCents?, parentId?, installSlug?, launchSettings?, drainFleet? }. ' +
+    'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, budgetWindowSec?, spentCents?, parentId?, installSlug?, launchSettings?, drainFleet? }. ' +
     'Partial — omitted fields stay untouched. status:"killed" when the kill criterion trips, "achieved" when the outcome is met. ' +
     'status FANS OUT: "paused"|"killed"|"achieved" gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it; ' +
     '"active" re-opens placement on those same projects (nothing else can — the pause is marked deliberate so no watchdog undoes it). Read `stop` and `degraded` either way.',
   capability: 'goals:write',
   guidance: {
     when:
-      'Recording a verified child-fleet spend snapshot against a goal\'s declared ceiling, revising its statement or kill criterion, or CLOSING it (achieved / killed). A spend snapshot is accepted only when it exactly matches the measured goals:pots rollup.',
+      'Recording a verified child-fleet spend snapshot against a goal\'s declared ceiling, revising its statement, kill criterion, or budget window, or CLOSING it (achieved / killed). A spend snapshot is accepted only when it exactly matches the measured goals:pots rollup.',
     notWhen:
       'For per-pot progress or measured spend use goals:pots { goalId } and the pot/plan/work-item beneath the goal — this row carries the goal-level state only. Do not invent interactive-session cost. To read current state first, goals:get { id, detail:"full" }.',
     chaining:
@@ -267,14 +282,15 @@ const goalUpdateTool = defineTool({
         status: string;
         parent_id: string | null;
         budget_cents: string | null;
+        budget_window_sec: number | null;
         kill_criterion: string | null;
         tripwires: unknown;
         metadata: Record<string, unknown> | null;
         launch_settings: unknown;
       }>
     >`
-      SELECT workspace_id, install_slug, title, body, status, parent_id, budget_cents, kill_criterion,
-             tripwires, metadata, launch_settings
+      SELECT workspace_id, install_slug, title, body, status, parent_id, budget_cents, budget_window_sec,
+             kill_criterion, tripwires, metadata, launch_settings
         FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1
     `;
     if (!existing.length) {
@@ -416,6 +432,12 @@ const goalUpdateTool = defineTool({
       body: args.body ?? prev.body,
       status: args.status ?? prev.status,
       budgetCents: args.budgetCents ?? (prev.budget_cents === null ? null : Number(prev.budget_cents)),
+      budgetWindowSec:
+        args.budgetWindowSec === undefined
+          ? prev.budget_window_sec === null || prev.budget_window_sec === undefined
+            ? null
+            : Number(prev.budget_window_sec)
+          : args.budgetWindowSec,
       parentId: args.parentId === undefined ? prev.parent_id : args.parentId,
       installSlug: args.installSlug ?? prev.install_slug,
       // Omitted leaves it alone; a blank CLEARS it to null (see the gate above)
@@ -442,6 +464,7 @@ const goalUpdateTool = defineTool({
              body           = ${next.body},
              status         = ${next.status},
              budget_cents   = ${next.budgetCents},
+             budget_window_sec = ${next.budgetWindowSec},
              parent_id      = ${next.parentId},
              install_slug   = ${next.installSlug},
              kill_criterion = ${next.killCriterion},
@@ -524,14 +547,15 @@ const goalUpdateTool = defineTool({
         status: string;
         parent_id: string | null;
         budget_cents: string | null;
+        budget_window_sec: number | null;
         kill_criterion: string | null;
         tripwires: unknown;
         metadata: Record<string, unknown> | null;
         launch_settings: unknown;
       }>
     >`
-      SELECT id, workspace_id, title, body, status, parent_id, budget_cents, kill_criterion,
-             tripwires, metadata, launch_settings
+      SELECT id, workspace_id, title, body, status, parent_id, budget_cents, budget_window_sec,
+             kill_criterion, tripwires, metadata, launch_settings
         FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1
     `;
 
@@ -550,6 +574,12 @@ const goalUpdateTool = defineTool({
         'budgetCents',
         centsField(prev.budget_cents),
         centsField(row.budget_cents),
+      );
+      addGoalFieldChange(
+        changes,
+        'budgetWindowSec',
+        integerField(prev.budget_window_sec),
+        integerField(row.budget_window_sec),
       );
       addGoalFieldChange(changes, 'killCriterion', prev.kill_criterion, row.kill_criterion);
       addGoalFieldChange(changes, 'tripwires', jsonField(prev.tripwires), jsonField(row.tripwires));
