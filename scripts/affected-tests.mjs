@@ -6517,6 +6517,12 @@ if (RUN_CARGO_SUITE) {
           task: "papercusp-desktop :: cargo test",
           reason: cargoFailureClass.reason,
         });
+      } else if (cargoFailureClass.gating) {
+        // Quarantine demotes a cargo failure from the gating tally; it must not make the
+        // failure disappear. Keep this parallel with the quarantined Vitest branch above so
+        // AFFECTED_TESTS_RESULT still reports the observed failure in quarantinedFailed.
+        quarantinedFailed++;
+        errSync(`  papercusp-desktop :: cargo test (quarantined failure — not gating)`);
       }
     }
   } catch (err) {

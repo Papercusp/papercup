@@ -193,6 +193,20 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-1');
   });
 
+  it('routes an unpinned bearer request around a projection-known wall after a cold start', async () => {
+    await bootCodex(ok, [codexAcct('walled'), codexAcct('healthy')]);
+    // The pool cursor starts on `walled` and all live governors are blank, matching a gateway restart.
+    // Durable hints must steer the FIRST request to healthy without learning through another 429.
+    gw!.setAccountRateHints([
+      { accountId: 'walled', utilization7d: 1, windowResetAt7d: Date.now() + 86_400_000 },
+      { accountId: 'healthy', utilization7d: 0.2, windowResetAt7d: Date.now() + 86_400_000 },
+    ]);
+    const res = await postResponses({ model: 'gpt-5.6-sol', input: 'cold-start health pick' });
+    expect(res.status).toBe(200);
+    expect(openaiUpstream!.last.headers['authorization']).toBe('Bearer healthy-tok');
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('healthy');
+  });
+
   it('forwards the method, path+query, and body verbatim to the OpenAI upstream', async () => {
     await bootCodex(ok);
     const res = await ask('/v1/responses?stream=false&trace=9', {
@@ -1264,6 +1278,43 @@ describe('proxyOpenAi — ChatGPT OAuth initial account selection (D-010 catcher
     expect(routed).toEqual(['chatgpt-a']);
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-a');
     expect(res.headers.get(PIN_YIELDED_HEADER)).toBeNull();
+  });
+
+  it('uses restart-surviving health hints for the first unpinned ChatGPT OAuth account', async () => {
+    const homeA = await makeCodexHome('chatgpt-walled');
+    const homeB = await makeCodexHome('chatgpt-healthy');
+    const cliAccounts = [
+      { accountId: 'chatgpt-walled', home: homeA },
+      { accountId: 'chatgpt-healthy', home: homeB },
+    ];
+    const routed: string[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      routed.push(new Headers(init?.headers).get('chatgpt-account-id') ?? '');
+      return new Response(
+        `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_healthy', output: [] } })}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as typeof fetch;
+
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((a) => ({ accountId: a.accountId, token: async () => '' }))),
+      codexOAuthProxy: true,
+      fetchImpl,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+    gw.setAccountRateHints([
+      { accountId: 'chatgpt-walled', utilization7d: 1, windowResetAt7d: Date.now() + 86_400_000 },
+      { accountId: 'chatgpt-healthy', utilization7d: 0.1, windowResetAt7d: Date.now() + 86_400_000 },
+    ]);
+
+    const res = await postResponses({ model: 'gpt-5.6-sol', input: 'who serves the cold start', stream: true });
+    expect(res.status).toBe(200);
+    expect(routed).toEqual(['chatgpt-healthy']);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-healthy');
   });
 });
 
