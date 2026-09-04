@@ -13,9 +13,11 @@
  */
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parseWorkspaceHostBootcBakeManifest, workspaceHostBootcCloudArtifact } from './bootc-bake-manifest';
 
 const ROOT = resolve(__dirname, '../../../..');
 const SCRIPT = join(ROOT, 'infra/images/bootc/bake-cloud-images.sh');
@@ -31,11 +33,12 @@ function withoutSnapshotGuard(): string {
   return SOURCE.slice(0, start) + SOURCE.slice(end);
 }
 
-function runFixture(script: string): {
+function runFixture(script: string, render: 'raw' | 'archive' | 'empty' | 'stale' = 'raw'): {
   status: number;
   output: string;
   files: string[];
   outFiles: string[];
+  manifest: unknown;
 } {
   const dir = mkdtempSync(join(tmpdir(), 'ei-223550-bake-'));
   const source = join(dir, 'bake-cloud-images.sh');
@@ -50,6 +53,10 @@ function runFixture(script: string): {
 
   mkdirSync(bin, { recursive: true });
   mkdirSync(out, { recursive: true });
+  if (render === 'stale') {
+    mkdirSync(join(out, 'gcp', 'image'), { recursive: true });
+    writeFileSync(join(out, 'gcp', 'image', 'disk.raw'), 'previous run');
+  }
   writeFileSync(source, script, { mode: 0o755 });
   copyFileSync(HEALTH, health);
   chmodSync(source, 0o755);
@@ -103,8 +110,18 @@ case "$subcommand" in
       previous="$arg"
     done
     [ -n "$output_dir" ]
-    mkdir -p "$output_dir/image"
-    printf 'fake rendered disk\\n' > "$output_dir/image/disk.raw"
+    case "$BAKE_TEST_RENDER" in
+      archive)
+        mkdir -p "$output_dir/gce" "$output_dir/input"
+        printf 'fake rendered disk\\n' > "$output_dir/input/disk.raw"
+        tar -czf "$output_dir/gce/image.tar.gz" -C "$output_dir/input" disk.raw
+        ;;
+      empty|stale) ;;
+      *)
+        mkdir -p "$output_dir/image"
+        printf 'fake rendered disk\\n' > "$output_dir/image/disk.raw"
+        ;;
+    esac
     ;;
   *)
     printf 'unexpected fake podman subcommand: %s\\n' "$subcommand" >&2
@@ -153,6 +170,7 @@ set -euo pipefail
         BAKE_TEST_MUTATION_MARKER: mutationMarker,
         BAKE_TEST_BUILD_MARKER: buildMarker,
         BAKE_TEST_SUPPLY_CHAIN_MARKER: supplyChainMarker,
+        BAKE_TEST_RENDER: render,
         RELEASE_STORAGE_DRIVER: 'overlay',
         P307_BUILD_HEALTH_DISABLE: '1',
         TMPDIR: dir,
@@ -167,6 +185,9 @@ set -euo pipefail
     output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
     files: readdirSync(dir),
     outFiles: readdirSync(out, { recursive: true }).map(String),
+    manifest: existsSync(join(out, 'bake-manifest.json'))
+      ? JSON.parse(readFileSync(join(out, 'bake-manifest.json'), 'utf8'))
+      : null,
   };
 }
 
@@ -192,5 +213,22 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     expect(result.status).not.toBe(0);
     expect(result.output).not.toContain('BAKE_RESULT=PASS');
     expect(result.output).toMatch(/syntax error/i);
+  });
+
+  it('normalizes the real GCE archive layout into a releasable GCP-only manifest', () => {
+    const result = runFixture(SOURCE, 'archive');
+    expect(result.status, result.output).toBe(0);
+    const artifact = workspaceHostBootcCloudArtifact(parseWorkspaceHostBootcBakeManifest(result.manifest), 'gcp');
+    const bytes = Buffer.from('fake rendered disk\n');
+    expect(artifact.sizeBytes).toBe(bytes.length);
+    expect(artifact.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+    expect(result.outFiles).toContain('gcp/image/disk.raw');
+  });
+
+  it.each(['empty', 'stale'] as const)('refuses a %s render output instead of publishing success', (render) => {
+    const result = runFixture(SOURCE, render);
+    expect(result.status).not.toBe(0);
+    expect(result.output).not.toContain('BAKE_RESULT=PASS');
+    expect(() => parseWorkspaceHostBootcBakeManifest(result.manifest)).toThrow();
   });
 });
