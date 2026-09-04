@@ -31,6 +31,42 @@ import { readIdentity } from '../locks/identity';
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
 const target = () => ({ workspaceId: activeWorkspaceId(), installSlug: operatorHomeHarnessSlug() });
+const argsSchema = z.preprocess(
+  (value) => {
+    // The read branch has no arguments. Treat an omitted op on an otherwise
+    // empty object as the read operation, while leaving malformed branch
+    // payloads subject to the discriminated-union requirements below.
+    if (value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) {
+      return { op: 'get' };
+    }
+    return value;
+  },
+  z.discriminatedUnion('op', [
+    z.object({ op: z.literal('get') }),
+    z.object({
+      op: z.literal('admit'),
+      /** Repo-relative paths your fix touched — the admission allowlist. REQUIRED: an admission is by explicit path. */
+      paths: z.array(z.string().min(1)).min(1).max(50),
+      reason: z.string().min(8).max(2000).optional(),
+      confirm: z.boolean().optional(),
+    }),
+    z.object({
+      /** Alias of admit, kept so a stale runbook lands on the same door. Identical semantics. */
+      op: z.literal('converge'),
+      paths: z.array(z.string().min(1)).min(1).max(50),
+      reason: z.string().min(8).max(2000).optional(),
+      confirm: z.boolean().optional(),
+    }),
+    z.object({
+      op: z.literal('retire'),
+      expectedCandidate: z.string().regex(/^[0-9a-fA-F]{40,64}$/),
+      expectedRepairHead: z.string().regex(/^[0-9a-fA-F]{40,64}$/),
+      expectedUpdatedAtMs: z.number().int().nonnegative(),
+      reason: z.string().min(8).max(2000),
+      confirm: z.boolean().optional(),
+    }),
+  ]),
+);
 
 export type FrozenRepairFixerAuthorizationStatus =
   | 'not-applicable'
@@ -208,10 +244,12 @@ export default defineTool({
   description:
     'Inspect, admit onto, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. admit{paths} is THE door for landing a gate-red fix on the judged lineage: it replays EXACTLY the named paths from the integration branch onto repairHead as one proved commit (diff-tree == allowlist, or refused); never touches the immutable candidate, never reads the tip as a whole; dry-run unless confirm:true. converge is an alias of admit. retire: dry-run unless confirm:true, exact-identity JSONB CAS.',
   capability: 'operator:write',
-  effectForCall: (args) =>
-    args.op === 'get' || ((args.op === 'admit' || args.op === 'converge') && args.confirm !== true)
+  effectForCall: (args) => {
+    const op = (args as { op?: unknown }).op;
+    return op === undefined || op === 'get' || ((op === 'admit' || op === 'converge') && (args as { confirm?: unknown }).confirm !== true)
       ? 'read'
-      : 'write',
+      : 'write';
+  },
   requirePrincipal: false,
   // The release-fixer's runbook uses the read/dry-run and confirmed admit
   // paths; its existing operator:write cap keeps the write branch guarded.
@@ -228,31 +266,7 @@ export default defineTool({
       "get: phase/age/fixer/reservation/decision diagnostics plus callerAuthorization (a signed release-fixer is delegated only when its spawn id exactly equals repairQueue.fixerSpawnId). admit verdicts: no-frozen-queue (nothing frozen — an ordinary staging commit is already the judged lineage) | already-admitted (every named path already has its staging content on repairHead; idempotent) | would-admit (dry run: the commit was built and PROVED but not published — proof.diff is the exact diff-tree name set, proof.unchanged the allowlisted paths with no change, proof.blobs the source blob per path) | admitted (repairHead moved to movedRepairHead.to; persisted, phase ready-to-verify) | refused with reason: paths_required | invalid-paths | stray-paths (the built commit touched paths outside your allowlist — never published) | lineage-ref-moved (a concurrent admission won; re-read and admit onto the current repairHead) | source-unresolvable / repair-head-unresolvable / git-failed | persist_failed (the lineage ref was rolled back so ref and row still agree). containment[] reports, per requested path, whether the judged sha carries staging's current content — equal blobs prove that PATH is current, NOT that the candidate is. retire: refuses a live/unknown fixer and an active dispatch reservation; a CAS miss returns casMiss with the post-write diagnostic under current.",
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
   },
-  args: z.discriminatedUnion('op', [
-    z.object({ op: z.literal('get') }),
-    z.object({
-      op: z.literal('admit'),
-      /** Repo-relative paths your fix touched — the admission allowlist. REQUIRED: an admission is by explicit path. */
-      paths: z.array(z.string().min(1)).min(1).max(50),
-      reason: z.string().min(8).max(2000).optional(),
-      confirm: z.boolean().optional(),
-    }),
-    z.object({
-      /** Alias of admit, kept so a stale runbook lands on the same door. Identical semantics. */
-      op: z.literal('converge'),
-      paths: z.array(z.string().min(1)).min(1).max(50),
-      reason: z.string().min(8).max(2000).optional(),
-      confirm: z.boolean().optional(),
-    }),
-    z.object({
-      op: z.literal('retire'),
-      expectedCandidate: z.string().regex(/^[0-9a-fA-F]{40,64}$/),
-      expectedRepairHead: z.string().regex(/^[0-9a-fA-F]{40,64}$/),
-      expectedUpdatedAtMs: z.number().int().nonnegative(),
-      reason: z.string().min(8).max(2000),
-      confirm: z.boolean().optional(),
-    }),
-  ]),
+  args: argsSchema,
   result: z
     .object({
       ok: z.boolean().optional(),
