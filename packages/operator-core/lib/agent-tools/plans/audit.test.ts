@@ -16,6 +16,10 @@ vi.mock('../_harness-scope', async (orig) => ({
   ...(await orig<typeof import('../_harness-scope')>()),
   harnessScopedCtx: (_h: unknown, ctx: unknown) => ctx,
 }));
+vi.mock('./slug-scope', async (orig) => ({
+  ...(await orig<typeof import('./slug-scope')>()),
+  recoverHarnessFromSlugs: vi.fn(),
+}));
 vi.mock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: () => 'papercusp' }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-auditor' }),
@@ -55,6 +59,7 @@ import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
 import { getPlanRow } from './source';
 import { setSpecClause } from './spec-clauses-store';
 import { resolveSessionTurnRefs } from '../sessions/_shared';
+import { recoverHarnessFromSlugs } from './slug-scope';
 import tool from './audit';
 
 const mockItems = vi.mocked(getPlanItemStatuses);
@@ -67,6 +72,7 @@ const mockResolveSourceRefs = vi.mocked(resolveSessionTurnRefs);
 const mockRepairFiling = vi.mocked(ensureActivationAuditRepairFiling);
 const mockGetPlanRow = vi.mocked(getPlanRow);
 const mockSetSpecClause = vi.mocked(setSpecClause);
+const mockRecoverHarness = vi.mocked(recoverHarnessFromSlugs);
 
 const ctx = {
   log: vi.fn(),
@@ -117,6 +123,33 @@ beforeEach(() => {
   mockGetPlanRow.mockResolvedValue({
     content: `---\ntitle: Plan A\nslug: plan-a\nstatus: draft\ncreated: 2026-08-27\nupdated: 2026-08-27\nowner: test\n---\n\n## Items\n\n- **P-001** \`todo\` Implement the audit gate on staging.\n`,
   } as never);
+});
+
+describe('plans:audit exact-slug scope recovery', () => {
+  it('recovers the owning harness for a workspace-scoped call that omits harness', async () => {
+    mockRecoverHarness.mockResolvedValue({
+      status: 'resolved',
+      harnessSlug: 'papercusp',
+      bySlug: { 'plan-a': 'papercusp' },
+      ambiguous: {},
+    });
+
+    const result = await tool.handler({
+      slug: 'plan-a',
+      items: [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] }],
+    } as never, { ...(ctx as never as Record<string, unknown>), harnessSlug: '*' } as never) as { data: any };
+
+    expect(result.data).toMatchObject({
+      ok: true,
+      slug: 'plan-a',
+      coverage: { auditedItems: 1, verifiedItems: 1 },
+    });
+    expect(mockRecoverHarness).toHaveBeenCalledWith(
+      expect.objectContaining({ harnessSlug: '*' }),
+      ['plan-a'],
+    );
+    expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'papercusp' }));
+  });
 });
 
 const activationArgs = (over: Record<string, unknown> = {}) => ({

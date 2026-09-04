@@ -23,7 +23,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { execFileSync } from 'node:child_process';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
-import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { harnessArg, harnessScopedCtx, resolveHarnessScope } from '../_harness-scope';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import {
@@ -58,6 +58,11 @@ import { setSpecClause } from './spec-clauses-store';
 import { getPlanRow } from './source';
 import { parsePlan } from './parser';
 import { stagingFirstActivationProblems } from './staging-first-activation-guard';
+import {
+  recoverHarnessFromSlugs,
+  requireUnambiguousSlugScope,
+  slugScopeErrorResult,
+} from './slug-scope';
 
 const citationSchema = z.object({
   kind: z.enum(CITATION_KINDS).describe(
@@ -226,7 +231,27 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
-    const sctx = harnessScopedCtx(args.harness, ctx);
+    // EI-22078133656298536: an audit already names an exact plan slug, so a
+    // workspace-scoped operator call can recover its owning harness from the
+    // canonical plan index instead of failing with an undiscoverable
+    // `harness_required`. This is a write, so an ambiguous slug remains
+    // fail-loud rather than choosing the most-recently-updated copy.
+    const scope = resolveHarnessScope(args.harness, ctx);
+    let sctx: typeof ctx & { harnessSlug: string };
+    if (scope.kind === 'none') {
+      const recovered = await recoverHarnessFromSlugs(ctx, [args.slug]);
+      const decision = requireUnambiguousSlugScope(
+        recovered,
+        ((ctx as { workspaceId?: string }).workspaceId ?? '').trim(),
+      );
+      if (decision.status !== 'resolved') return slugScopeErrorResult('plans:audit', decision);
+      sctx = { ...ctx, harnessSlug: decision.harnessSlug };
+      (ctx as { metadata?: (d: Record<string, unknown>) => void }).metadata?.({
+        harnessAutoResolved: decision.bySlug,
+      });
+    } else {
+      sctx = harnessScopedCtx(args.harness, ctx);
+    }
     const harnessSlug = resolveCtxHarnessSlug(sctx);
 
     if (args.phase === 'activation') {
