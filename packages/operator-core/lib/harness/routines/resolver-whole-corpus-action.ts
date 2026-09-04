@@ -28,7 +28,15 @@ import {
   type AdmissionCensusItem,
   readCorpus,
 } from '../../work-items-admission-census';
-import { commentWorkItem, getWorkItem, linkWorkItem, resolveWorkItemRef, setWorkItemState, type OrgSql } from '../../work-items';
+import {
+  commentWorkItem,
+  getWorkItem,
+  linkWorkItem,
+  mergeWorkItemPayload,
+  resolveWorkItemRef,
+  setWorkItemState,
+  type OrgSql,
+} from '../../work-items';
 import { createOneWorkItem } from '../../agent-tools/work_items/_create-core';
 import { applyWholeCorpusVerdict, type ApplyWholeCorpusDeps } from '../../resolver/whole-corpus-apply';
 import {
@@ -90,7 +98,11 @@ export function liveApplyDeps(workspaceId: string, harnessSlug: string): ApplyWh
   return {
     getWorkItem: async (id) => {
       const wi = await getWorkItem(id, harnessSlug);
-      return wi ? { id: wi.id, state: wi.state } : null;
+      if (!wi) return null;
+      const payload = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
+        ? wi.payload as Record<string, unknown>
+        : null;
+      return { id: wi.id, state: wi.state, payload };
     },
     resolveWorkItemRef: (id) => resolveWorkItemRef(id, harnessSlug),
     linkWorkItem: async (id, dst, rel) => {
@@ -142,6 +154,14 @@ export function liveApplyDeps(workspaceId: string, harnessSlug: string): ApplyWh
       );
       if (result.ok) return { ok: true, id: result.workItem.id };
       return { ok: false, error: result.message ?? result.error };
+    },
+    mergePayload: async (id, patch) => {
+      try {
+        const updated = await mergeWorkItemPayload(id, patch, { harness: harnessSlug });
+        return updated ? { ok: true } : { ok: false, error: `work-item '${id}' not found` };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
     },
   };
 }

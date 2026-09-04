@@ -13,7 +13,8 @@
  *   2. this module's own ROOT resolving to `scripts/` instead of the repo root,
  *      which silently reduced the default enumeration to ~33 files.
  */
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -179,6 +180,32 @@ describe('tracked-files helper (WI-6730)', () => {
     expect(scan.files.some((f) => f.includes('//'))).toBe(false);
     for (const path of scan.scanned) {
       expect(scan.files.some((f) => f.startsWith(`${path}/${path}/`))).toBe(false);
+    }
+  });
+
+  it('falls back to a bounded filesystem walk for a non-git root', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tracked-files-non-git-'));
+    try {
+      mkdirSync(join(root, 'src', 'nested'), { recursive: true });
+      mkdirSync(join(root, 'node_modules', 'dependency'), { recursive: true });
+      writeFileSync(join(root, 'src', 'importer.ts'), 'export const importer = true;\n');
+      writeFileSync(join(root, 'src', 'nested', 'helper.mjs'), 'export const helper = true;\n');
+      writeFileSync(join(root, 'node_modules', 'dependency', 'ignored.ts'), 'export const ignored = true;\n');
+
+      const scan = listFilesIncludingUntracked(root) as {
+        files: string[];
+        declared: string[];
+        scanned: string[];
+        unscanned: string[];
+      };
+      expect(scan.files).toContain('src/importer.ts');
+      expect(scan.files).toContain('src/nested/helper.mjs');
+      expect(scan.files).not.toContain('node_modules/dependency/ignored.ts');
+      expect(scan.declared).toEqual([]);
+      expect(scan.scanned).toEqual([]);
+      expect(scan.unscanned).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

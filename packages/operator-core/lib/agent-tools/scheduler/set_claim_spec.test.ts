@@ -88,6 +88,9 @@ describe('published claim-spec guidance — WI-37997 severity ordering', () => {
     expect(description).toContain('severity_rank');
     expect(description).toContain('dependency_unlock_score');
     expect(description).toContain('dependencyUnlockScore');
+    expect(description).toContain('cluster_priority');
+    expect(description).toContain('payload.clusterPriority');
+    expect(description).toContain('never computes clustering at assignment time');
     expect(description).toContain('critical-first');
     expect(description).toContain('{ expr:"severity_rank", dir:"desc" }');
     expect(description).not.toContain('Filter on them instead');

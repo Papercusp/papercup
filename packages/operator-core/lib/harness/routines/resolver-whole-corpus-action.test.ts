@@ -93,6 +93,7 @@ function fakeApplyDeps(): { deps: ApplyWholeCorpusDeps; calls: { linked: unknown
     },
     findExistingClusterParentByKey: async () => null,
     createClusterParent: async (input) => ({ ok: true, id: `cluster-${input.payload.clusterKey}` }),
+    mergePayload: async () => ({ ok: true }),
   };
   return { deps, calls };
 }

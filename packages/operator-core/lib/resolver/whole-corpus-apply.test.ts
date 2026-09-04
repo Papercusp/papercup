@@ -23,6 +23,7 @@ interface FakeDepsState {
   createdParents: Array<{ title: string; summary: string; clusterKey: string }>;
   nextParentId: number;
   failLinkFor?: Set<string>;
+  failMergeFor?: Set<string>;
   failStateFor?: Set<string>;
   failCreateCluster?: boolean;
 }
@@ -51,9 +52,16 @@ function makeFakeDeps(state: FakeDepsState): ApplyWholeCorpusDeps {
       if (state.failCreateCluster) return { ok: false, error: 'create failed' };
       const id = `CLUSTER-${state.nextParentId++}`;
       state.clusterParents.set(input.payload.clusterKey, id);
-      state.items.set(id, { id, state: 'open' });
+      state.items.set(id, { id, state: 'open', payload: { resolverCluster: input.payload } });
       state.createdParents.push({ title: input.title, summary: input.summary, clusterKey: input.payload.clusterKey });
       return { ok: true, id };
+    },
+    mergePayload: async (id, patch): Promise<ApplyOutcome> => {
+      if (state.failMergeFor?.has(id)) return { ok: false, error: `merge failed for ${id}` };
+      const item = state.items.get(id);
+      if (!item) return { ok: false, error: `work-item '${id}' not found` };
+      state.items.set(id, { ...item, payload: { ...(item.payload ?? {}), ...patch } });
+      return { ok: true };
     },
   };
 }
@@ -185,6 +193,9 @@ describe('applyWholeCorpusVerdict — clusters', () => {
       ]),
     );
     expect(state.comments).toHaveLength(2);
+    expect(state.items.get('CLUSTER-1')?.payload?.clusterPriority).toBe(2);
+    expect(state.items.get('WI-1')?.payload?.clusterPriority).toBe(2);
+    expect(state.items.get('WI-2')?.payload?.clusterPriority).toBe(2);
   });
 
   it('is idempotent — the same member set never creates a second parent', async () => {
@@ -202,6 +213,27 @@ describe('applyWholeCorpusVerdict — clusters', () => {
       { clusterKey: clusterKeyFor(['WI-1', 'WI-2']), reason: 'already-exists', existingParentId: 'CLUSTER-1' },
     ]);
     expect(state.createdParents).toHaveLength(1);
+  });
+
+  it('backfills clusterPriority when the parent predates the P-008 projection', async () => {
+    const state = freshState(['WI-1', 'WI-2']);
+    const clusterKey = clusterKeyFor(['WI-1', 'WI-2']);
+    state.clusterParents.set(clusterKey, 'CLUSTER-OLD');
+    state.items.set('CLUSTER-OLD', { id: 'CLUSTER-OLD', state: 'open' });
+
+    const result = await applyWholeCorpusVerdict(
+      {
+        merges: [],
+        clusters: [{ label: 'old cluster', memberIds: ['WI-1', 'WI-2'], suspectedGenerator: 'g' }],
+      },
+      makeFakeDeps(state),
+    );
+
+    expect(result.clustersCreated).toEqual([]);
+    expect(result.clustersSkipped).toEqual([{ clusterKey, reason: 'already-exists', existingParentId: 'CLUSTER-OLD' }]);
+    expect(state.items.get('CLUSTER-OLD')?.payload?.clusterPriority).toBe(2);
+    expect(state.items.get('WI-1')?.payload?.clusterPriority).toBe(2);
+    expect(state.items.get('WI-2')?.payload?.clusterPriority).toBe(2);
   });
 
   it('records create-failed without throwing', async () => {
@@ -249,6 +281,41 @@ describe('applyWholeCorpusVerdict — clusters', () => {
     expect(new Set(result.clustersCreated.map((c) => c.parentId)).size).toBe(2);
   });
 
+  it('keeps the largest clusterPriority when one item belongs to overlapping clusters', async () => {
+    const state = freshState(['WI-1', 'WI-2', 'WI-3', 'WI-4']);
+    const deps = makeFakeDeps(state);
+    const verdict: WholeCorpusVerdict = {
+      merges: [],
+      // Larger first is deliberate: a naive last-write-wins merge would lower
+      // WI-1 from 4 to 2 on the second cluster.
+      clusters: [
+        { label: 'large', memberIds: ['WI-1', 'WI-2', 'WI-3', 'WI-4'], suspectedGenerator: 'g1' },
+        { label: 'small', memberIds: ['WI-1', 'WI-2'], suspectedGenerator: 'g2' },
+      ],
+    };
+    await applyWholeCorpusVerdict(verdict, deps);
+    expect(state.items.get('WI-1')?.payload?.clusterPriority).toBe(4);
+    expect(state.items.get('WI-2')?.payload?.clusterPriority).toBe(4);
+    expect(state.items.get('CLUSTER-1')?.payload?.clusterPriority).toBe(4);
+    expect(state.items.get('CLUSTER-2')?.payload?.clusterPriority).toBe(2);
+  });
+
+  it('surfaces a clusterPriority persistence failure without losing the materialized cluster', async () => {
+    const state = freshState(['WI-1', 'WI-2']);
+    state.failMergeFor = new Set(['WI-2']);
+    const result = await applyWholeCorpusVerdict(
+      {
+        merges: [],
+        clusters: [{ label: 'c', memberIds: ['WI-1', 'WI-2'], suspectedGenerator: 'g' }],
+      },
+      makeFakeDeps(state),
+    );
+    expect(result.clustersCreated).toHaveLength(1);
+    expect(result.errors).toContain('cluster priority: failed to stamp WI-2: merge failed for WI-2');
+    expect(state.items.get('WI-1')?.payload?.clusterPriority).toBe(2);
+    expect(state.items.get('WI-2')?.payload?.clusterPriority).toBeUndefined();
+  });
+
   it('stamps the resolver-cluster payload marker with schema version and sorted members', async () => {
     const state = freshState(['WI-1', 'WI-2']);
     let capturedPayload: unknown;
@@ -256,6 +323,7 @@ describe('applyWholeCorpusVerdict — clusters', () => {
       ...makeFakeDeps(state),
       createClusterParent: async (input) => {
         capturedPayload = input.payload;
+        state.items.set('CLUSTER-1', { id: 'CLUSTER-1', state: 'open', payload: { resolverCluster: input.payload } });
         return { ok: true, id: 'CLUSTER-1' };
       },
     };

@@ -132,6 +132,20 @@ describe('dependency_unlock_score is the one-hop dependency-leverage term (Phase
   });
 });
 
+describe('cluster_priority is the persisted resolver-cluster leverage term (P-008)', () => {
+  it('is a numeric rank function accepted in lexicographic and weighted modes', () => {
+    expect(RANK_FUNCTIONS).toContain('cluster_priority');
+    expect(validateClaimSpec(specWithRank('lexicographic', [{ expr: 'cluster_priority', dir: 'desc' }])).ok).toBe(true);
+    expect(validateClaimSpec(specWithRank('weighted', [{ expr: 'cluster_priority', dir: 'desc', weight: 4 }])).ok).toBe(
+      true,
+    );
+  });
+
+  it('keeps the default policy unchanged until a drain-fleet leader authors the term', () => {
+    expect(DEFAULT_CLAIM_SPEC.rank.terms.map((t) => t.expr)).not.toContain('cluster_priority');
+  });
+});
+
 describe('the DEFAULT spec actually ranks on severity (EI-19286355119013384)', () => {
   const termExprs = () => DEFAULT_CLAIM_SPEC.rank.terms.map((t) => (t as { expr: string }).expr);
 

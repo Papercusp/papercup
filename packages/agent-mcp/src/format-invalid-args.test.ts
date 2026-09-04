@@ -108,3 +108,60 @@ describe('formatInvalidArgs', () => {
     expect(message).toBe('threadLimit: too big — 15 over the 10 limit; use 10.; id: required');
   });
 });
+
+describe('formatInvalidArgs — invalid_union branch selection', () => {
+  it('chooses the closer facts-style branch on a depth tie (EI-21892816644875129)', () => {
+    // This is the reported facts:assert shape: the first sibling branch has
+    // unrelated federation requirements, while the later private-fact branch
+    // has only the missing settledBy issue. Both locate a top-level field, so
+    // depth alone incorrectly keeps the first branch.
+    const message = formatInvalidArgs(
+      [
+        {
+          message: 'Invalid input',
+          code: 'invalid_union',
+          path: [],
+          errors: [
+            [
+              { message: 'Invalid input: expected true', path: ['shareable'] },
+              { message: 'Required', path: ['settledBy'] },
+            ],
+            [{ message: 'Required', path: ['settledBy'] }],
+          ],
+        },
+      ],
+      { shareable: false, kind: 'conclusion' },
+    );
+
+    expect(message).toBe('settledBy: Required');
+    expect(message).not.toContain('shareable');
+  });
+
+  it('counts unrecognized_keys at the depth of the key they identify', () => {
+    const message = formatInvalidArgs([
+      {
+        message: 'Invalid input',
+        code: 'invalid_union',
+        path: [],
+        errors: [
+          [
+            { message: 'Required', path: ['harness'] },
+            { message: 'Invalid input: expected true', path: ['shareable'] },
+          ],
+          [
+            {
+              message: 'Unrecognized key: "ttlDays"',
+              code: 'unrecognized_keys',
+              keys: ['ttlDays'],
+              path: [],
+            },
+          ],
+        ],
+      },
+    ]);
+
+    expect(message).toBe('Unrecognized key: "ttlDays"');
+    expect(message).not.toContain('harness');
+    expect(message).not.toContain('shareable');
+  });
+});

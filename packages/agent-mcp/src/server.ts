@@ -82,6 +82,8 @@ interface ValidationIssue {
   readonly code?: string;
   readonly origin?: string;
   readonly maximum?: number;
+  /** Zod v4 `unrecognized_keys`: names of the offending object keys. */
+  readonly keys?: ReadonlyArray<PropertyKey>;
   /**
    * Zod v4 `invalid_union`: the per-branch issue lists. Not part of the
    * Standard-Schema Issue type, so read defensively — see `bestUnionBranch`.
@@ -101,24 +103,37 @@ interface ValidationIssue {
  * already written, and pushed the caller to DROP the structured field and restate
  * it as prose (losing the machine-readable disposition the field exists to carry).
  *
- * Which branch to believe: the one that got FURTHEST into the structure. A caller
- * who passed an array to `z.union([z.string(), z.array(section)])` produces a
- * shallow "expected string, received array" from the string branch and a deep
- * `[1, 'couldNotDetermine']` from the array branch — the deep one is the branch
- * they meant, so its path is the one worth printing. Requiring depth > 0 keeps the
- * union's own message when NO branch located a specific field (e.g. a plain scalar
- * mismatch), where the branch messages are no more useful than the union's.
+ * Which branch to believe: the one that got FURTHEST into the structure, with
+ * FEWEST ISSUES breaking a depth tie (and declaration order breaking a full tie).
+ * A caller who passed an array to `z.union([z.string(), z.array(section)])`
+ * produces a shallow "expected string, received array" from the string branch
+ * and a deep `[1, 'couldNotDetermine']` from the array branch — the deep one is
+ * the branch they meant, so its path is the one worth printing. Requiring depth
+ * > 0 keeps the union's own message when NO branch located a specific field (e.g.
+ * a plain scalar mismatch), where the branch messages are no more useful than
+ * the union's.
+ *
+ * A Zod `unrecognized_keys` issue names the offending field in `keys`, not in
+ * `path`. Count that key as one level below the issue path so a branch that
+ * matched everything except one stray key is not discarded as depth zero.
  */
+function issueDepth(issue: ValidationIssue): number {
+  const pathDepth = (issue.path ?? []).length;
+  return Array.isArray(issue.keys) && issue.keys.length > 0 ? pathDepth + 1 : pathDepth;
+}
+
 function bestUnionBranch(issue: ValidationIssue): ReadonlyArray<ValidationIssue> | null {
   const branches = issue.errors;
   if (!Array.isArray(branches) || branches.length === 0) return null;
   let best: ReadonlyArray<ValidationIssue> | null = null;
   let bestDepth = 0;
+  let bestCount = Infinity;
   for (const branch of branches) {
     if (!Array.isArray(branch) || branch.length === 0) continue;
-    const depth = Math.max(...branch.map((i) => (i.path ?? []).length));
-    if (depth > bestDepth) {
+    const depth = Math.max(...branch.map(issueDepth));
+    if (depth > bestDepth || (depth > 0 && depth === bestDepth && branch.length < bestCount)) {
       bestDepth = depth;
+      bestCount = branch.length;
       best = branch;
     }
   }

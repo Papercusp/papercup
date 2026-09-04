@@ -5,8 +5,11 @@
  * plans:get is the #3 tool-result payload fleet-wide, and the 2026-07-01 fleet
  * incident measured one mode:'full' read at ~15k tokens on a 200k-window member.
  * Shapers project each bulk result: prose capped with a heading-narrowing
- * pointer, per-item text capped, decisions capped to the NEWEST few, and
- * (trimmed) the UI decoration maps dropped with an explicit omission marker.
+ * pointer, browse-read item text capped, decisions capped to the NEWEST few,
+ * and (trimmed) the UI decoration maps dropped with an explicit omission marker.
+ * Explicit item/heading reads are narrow detail reads, so their selected text
+ * remains complete; genuinely oversized values fall through to the result door
+ * rather than being silently clipped by this domain shaper.
  *
  * Shape contract (D-004): nothing is silently dropped — every cut carries a
  * count + a fetch-pointer, and a full-tier `tools:invoke` dispatch restores
@@ -66,11 +69,25 @@ function shapeResult(res: unknown, tier: TierName): unknown {
   }
 
   // Heading-narrowed reads carry one section body. This is the read that serves
-  // `heading:'Decisions'` — a RECORD LEDGER in a single string — so it is cut at
-  // a `### ` boundary and counted in records, never mid-record at a char count
-  // (EI-20038981829684213: 30 decisions became a plausible-looking D-001..D-004).
+  // `heading:'Decisions'` — a RECORD LEDGER in a single string — so a browse
+  // read is cut at a `### ` boundary and counted in records, never mid-record
+  // at a char count (EI-20038981829684213: 30 decisions became a
+  // plausible-looking D-001..D-004).
+  //
+  // EXCEPT when the caller explicitly narrowed to a heading. That payload has
+  // already paid the identity-envelope reduction in narrowHeadingPayload and
+  // carries exactly the section the caller asked for. Clipping it again makes
+  // the narrow read unable to recover the very body it was selected to fetch;
+  // if the selected section is too large for the transport, the result door
+  // can spill the complete body with a durable cursor.
   const section = r.section as { body?: unknown } | null | undefined;
+  const isNarrowedHeadingRead =
+    typeof r.heading === "string" &&
+    section !== null &&
+    typeof section === "object" &&
+    typeof section.body === "string";
   if (
+    !isNarrowedHeadingRead &&
     section &&
     typeof section === "object" &&
     typeof section.body === "string" &&
@@ -94,13 +111,21 @@ function shapeResult(res: unknown, tier: TierName): unknown {
   }
 
   // Items: keep EVERY item (the plan's structure is the point of the read), but
-  // cap each text and drop the full-mode rawLine duplicate.
+  // cap each browse-read text and drop the full-mode rawLine duplicate.
+  //
+  // EXCEPT when `itemSelection` is present. `plans:get { items:[...] }` is the
+  // explicit detail-read escape hatch for one or more item records; the
+  // handler already removed every unrequested item and reports the selector
+  // in-band. Clipping the selected text here silently defeats that contract
+  // (EI-22296477863994941), while an exceptionally large selected value can
+  // still be handled honestly by the outer result door.
+  const isNarrowedItemRead = r.itemSelection != null;
   if (Array.isArray(r.items)) {
     out.items = r.items.map((it) => {
       if (!it || typeof it !== "object") return it;
       const { rawLine: _rawLine, ...rest } = it as Record<string, unknown>;
       const text = rest.text;
-      if (typeof text === "string" && text.length > c.itemText) {
+      if (!isNarrowedItemRead && typeof text === "string" && text.length > c.itemText) {
         return { ...rest, text: clip(text, c.itemText), text_truncated: true };
       }
       return rest;

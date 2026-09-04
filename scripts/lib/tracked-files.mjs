@@ -34,7 +34,7 @@
  */
 import { execSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 
 /**
  * Repo root. NOTE the '../..': this module lives at scripts/lib/, one level
@@ -53,6 +53,10 @@ function gitLines(args, cwd) {
     return execSync(`git ${args}`, {
       cwd,
       encoding: 'utf8',
+      // A missing git repository is an expected shape for archive/checkpoint
+      // snapshots. Keep that probe quiet; callers decide whether the empty
+      // result means "no entries" or requires the filesystem fallback.
+      stdio: ['ignore', 'pipe', 'ignore'],
       maxBuffer: 256 * 1024 * 1024,
     })
       .split('\n')
@@ -60,6 +64,94 @@ function gitLines(args, cwd) {
   } catch {
     return [];
   }
+}
+
+/** Maximum number of filesystem entries the non-git fallback will inspect. */
+const FALLBACK_MAX_ENTRIES = 100_000;
+
+/** Generated/runtime trees that Git's normal exclude-standard pass omits. */
+const FALLBACK_SKIP_DIRS = new Set([
+  '.git',
+  '.next',
+  '.next-build-cache',
+  '.next-prod',
+  '.papercusp',
+  '.tmp-claude',
+  '.turbo',
+  '.vitest-tmp',
+  '.vitest-tmpdir',
+  '.vite',
+  '.astro',
+  'build',
+  'coverage',
+  'dist',
+  'dist-host',
+  'dist-preview',
+  'dist-sidecar',
+  'node_modules',
+  'out',
+  'target',
+  'test-results',
+  'vitest-tmp',
+]);
+
+/**
+ * The error shape emitted by Git when `cwd` is an archive/non-git directory.
+ * This is intentionally narrower than "any git error": a corrupt or otherwise
+ * unreadable repository must not be silently replaced with a possibly partial
+ * filesystem view.
+ */
+function isNotGitRepository(error) {
+  const text = `${error?.message ?? ''}\n${error?.stderr ?? ''}`;
+  return error?.code === 'ENOENT' || /not a git repository|outside a repository|must be run in a work tree/i.test(text);
+}
+
+/**
+ * Enumerate a non-git checkout without following symlinks or generated trees.
+ *
+ * This is deliberately iterative and bounded. A missing/unreadable directory or
+ * a tree larger than the cap throws instead of returning a partial list: a partial
+ * list would recreate the false-clean/stale-baseline verdict this fallback exists
+ * to prevent. Paths are normalized to the same superproject-relative POSIX shape
+ * returned by `git ls-files`.
+ */
+function listFilesystemFiles(cwd) {
+  const root = resolve(cwd);
+  const files = [];
+  const pending = [{ dir: root, prefix: '' }];
+  let inspected = 0;
+
+  while (pending.length > 0) {
+    const { dir, prefix } = pending.pop();
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+    } catch (error) {
+      throw new Error(
+        `filesystem fallback could not enumerate ${dir}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    for (const entry of entries) {
+      inspected += 1;
+      if (inspected > FALLBACK_MAX_ENTRIES) {
+        throw new Error(
+          `filesystem fallback exceeded its ${FALLBACK_MAX_ENTRIES}-entry bound under ${root}; ` +
+            'refusing to return a partial scan',
+        );
+      }
+      if (entry.isSymbolicLink()) continue;
+
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (!FALLBACK_SKIP_DIRS.has(entry.name)) pending.push({ dir: join(dir, entry.name), prefix: rel });
+      } else if (entry.isFile()) {
+        files.push(rel.split(sep).join('/'));
+      }
+    }
+  }
+
+  return files.sort();
 }
 
 /** Submodule paths declared in .gitmodules, superproject-relative, sorted. */
@@ -120,17 +212,41 @@ export function listFilesIncludingUntracked(cwd = ROOT) {
   const FLAGS = ['ls-files', '-z', '--cached', '--others', '--exclude-standard'];
   const runZ = (dir) => {
     try {
-      return execSync(`git ${FLAGS.join(' ')}`, { cwd: dir, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
-        .split('\0')
-        .filter(Boolean);
-    } catch {
-      return [];
+      return {
+        files: execSync(`git ${FLAGS.join(' ')}`, {
+          cwd: dir,
+          encoding: 'utf8',
+          // Preserve stderr for classification without leaking expected
+          // "not a git repository" diagnostics into guard output.
+          stdio: ['ignore', 'pipe', 'pipe'],
+          maxBuffer: 256 * 1024 * 1024,
+        })
+          .split('\0')
+          .filter(Boolean),
+        error: null,
+      };
+    } catch (error) {
+      return { files: [], error };
     }
   };
 
-  const files = runZ(cwd);
+  const root = runZ(cwd);
+  // A git archive/checkpoint can be a perfectly valid source tree with no .git.
+  // The old [] result made scan() report every baseline entry stale. Enumerate
+  // that shape directly, but do not use this fallback for ordinary git repos.
+  if (root.error && isNotGitRepository(root.error)) {
+    const files = listFilesystemFiles(cwd);
+    return { files, ...coverageOf(files, cwd) };
+  }
+  if (root.error) throw root.error;
+
+  const files = root.files;
   for (const path of declaredSubmodules(cwd)) {
-    for (const rel of runZ(join(cwd, path))) files.push(`${path}/${rel}`);
+    const submodule = runZ(join(cwd, path));
+    // A root git worktree with an archive-extracted submodule intentionally keeps
+    // the existing unscanned coverage signal; only the root's non-git shape gets
+    // the filesystem fallback above.
+    for (const rel of submodule.files) files.push(`${path}/${rel}`);
   }
   return { files, ...coverageOf(files, cwd) };
 }
@@ -245,7 +361,8 @@ export function describeUnscanned(unscannedOrScan, cwd = ROOT) {
   // Cap the name list: in a release-shaped tree EVERY submodule lands in one
   // bucket for one by-design reason, and printing 39 paths every run buries the
   // ratio that actually matters.
-  const names = (list) => (list.length <= 4 ? list.join(', ') : `${list.slice(0, 4).join(', ')} +${list.length - 4} more`);
+  const names = (list) =>
+    list.length <= 4 ? list.join(', ') : `${list.slice(0, 4).join(', ')} +${list.length - 4} more`;
 
   const parts = [];
   if (present.length > 0) {

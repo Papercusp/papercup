@@ -203,6 +203,14 @@ export const RANK_FUNCTIONS = [
   // both lexicographic and weighted modes. The score is also projected by
   // work_items:claimable as `dependencyUnlockScore`, making the ordering inspectable.
   'dependency_unlock_score',
+  // `cluster_priority` (silent-intake-central-resolution P-008) — the size of the
+  // largest resolver cause-cluster this item belongs to. The whole-corpus resolver
+  // computes the cluster and persists this numeric projection as
+  // payload.clusterPriority on the cluster parent and each member. The scheduler
+  // deliberately does NO clustering or graph traversal at assignment time; it only
+  // reads the projection. Missing/malformed values score 0, so the term is safe on
+  // every ordinary item and in both lexicographic and weighted modes.
+  'cluster_priority',
 ] as const;
 export type RankFunction = (typeof RANK_FUNCTIONS)[number];
 

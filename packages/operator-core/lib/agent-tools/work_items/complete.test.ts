@@ -2615,10 +2615,73 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({
         id: 'F-12',
         state: 'passed',
-        completion: { summary: 'fixed it', testsRun: 'ran the suite: 3 passed, 2 skipped' },
+        completion: {
+          summary: 'fixed it',
+          testsRun: 'npm run test:file -- foo.test.ts — 3 passed, 2 skipped',
+        },
       });
       expect(r.skippedTestsWarning).toMatch(/2 test\(s\) SKIPPED/);
       expect(r.skippedTestsWarning).toContain('testsRun');
+    });
+
+    it('does NOT warn when testResult only contains skip-related prose, not a runner summary', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed it',
+          verifiedHow: 'integration',
+          testResult: 'the mirror refuses below a 40GB floor and alarms rather than skipping quietly',
+        },
+      });
+      expect(r.skippedTestsWarning).toBeUndefined();
+    });
+
+    it('does NOT warn when testsRun prose says a run skipped something but names no test command', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed it',
+          verifiedHow: 'integration',
+          testsRun: 'run 3 skipped it, exited 0, raised no repeat alarm',
+        },
+      });
+      expect(r.skippedTestsWarning).toBeUndefined();
+    });
+
+    it.each(['manual', 'live-drove-ui', 'live-service', 'already-passing'])(
+      'does NOT inspect skip-like prose for non-test verification mode %s',
+      async (verifiedHow) => {
+        getWorkItem.mockResolvedValue(item);
+        const r = await one({
+          id: 'F-12',
+          state: 'passed',
+          completion: {
+            summary: 'fixed it',
+            verifiedHow,
+            testResult: 'run 3 skipped it, exited 0, raised no repeat alarm',
+          },
+        });
+        expect(r.skippedTestsWarning).toBeUndefined();
+      },
+    );
+
+    it('still warns for an integration runner summary when testsRun names the test command', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed it',
+          verifiedHow: 'integration',
+          testsRun: 'npm run test:file -- foo.test.ts',
+          testResult: 'Tests 8 passed | 1 skipped (9)',
+        },
+      });
+      expect(r.skippedTestsWarning).toMatch(/1 test\(s\) SKIPPED/);
     });
 
     it('does NOT warn on a clean "N passed" with no skip', async () => {

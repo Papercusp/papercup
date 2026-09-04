@@ -47,6 +47,7 @@ function withFixture(run: (root: string) => void): void {
   try {
     mkdirSync(join(root, 'scripts'), { recursive: true });
     writeFileSync(join(root, 'scripts', 'helper.mjs'), 'export const x = 1;\n');
+    writeFileSync(join(root, 'tsconfig.declarations.json'), '{"files":[]}\n');
     run(root);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -63,6 +64,20 @@ describe('check-unenrolled-mjs-imports', () => {
       expect(found).toHaveLength(1);
       expect(found[0]!.target).toBe('scripts/helper.mjs');
       expect(found[0]!.line).toBe(1);
+    });
+  });
+
+  it('scans a non-git root instead of treating an empty git listing as clean', () => {
+    withFixture((root) => {
+      writeFileSync(join(root, 'a.ts'), "import { x } from './scripts/helper.mjs';\n");
+      expect(scan(root)).toEqual([
+        {
+          file: 'a.ts',
+          line: 1,
+          spec: './scripts/helper.mjs',
+          target: 'scripts/helper.mjs',
+        },
+      ]);
     });
   });
 

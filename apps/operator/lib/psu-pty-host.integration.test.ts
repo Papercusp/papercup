@@ -2431,6 +2431,10 @@ describe('SHUTDOWN — a finished agent session exits and closes its own window 
         TERM: 'xterm-256color',
       };
       delete env.PAPERCUSP_LAUNCHED_BY;
+      // A hand-started host is not bound to the fleet that runs this test process.
+      // Clear inherited provenance so the headless-fleet ownership fallback cannot
+      // classify this fixture as agent-owned.
+      delete env.PAPERCUSP_FLEET_SLUG;
 
       const done = hostThroughPty({
         command: execPath,

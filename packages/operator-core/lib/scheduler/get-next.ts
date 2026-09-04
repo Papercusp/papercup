@@ -2511,6 +2511,20 @@ function dependencyUnlockScoreSql(sql: OrgSql): SqlFragment {
   )`;
 }
 
+/**
+ * P-008's assignment-ready resolver-cluster projection. The resolver writes a
+ * JSON number once; claim paths only read it. Guard the cast by JSON type so a
+ * malformed/legacy payload degrades to the neutral score 0 instead of aborting
+ * the fleet's claim query.
+ */
+function clusterPrioritySql(sql: OrgSql): SqlFragment {
+  return sql`CASE
+    WHEN jsonb_typeof(payload->'clusterPriority') = 'number'
+      THEN GREATEST((payload->>'clusterPriority')::numeric, 0::numeric)
+    ELSE 0::numeric
+  END`;
+}
+
 function specUsesRankTerm(spec: ClaimSpec, head: string): boolean {
   return spec.rank.terms.some((term) => {
     const exprHead = term.expr.includes('(') ? term.expr.slice(0, term.expr.indexOf('(')).trim() : term.expr.trim();
@@ -2582,6 +2596,17 @@ function compileRankExpr(
   if (head === 'dependency_unlock_score') {
     return {
       value: dependencyUnlockScoreSql(sql),
+      inverted: false,
+      numeric: true,
+    };
+  }
+
+  // Resolver-cluster leverage (silent-intake-central-resolution P-008). This
+  // intentionally does not inspect coord links or derive clusters: P-007 owns
+  // that intelligence and stamps payload.clusterPriority on roots + members.
+  if (head === 'cluster_priority') {
+    return {
+      value: clusterPrioritySql(sql),
       inverted: false,
       numeric: true,
     };

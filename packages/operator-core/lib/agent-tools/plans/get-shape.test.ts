@@ -2,10 +2,11 @@
  * get-shape.test.ts — plans:get payload-tier shapers
  * (context-trimming-tiers-2026-07-01 P-012).
  *
- * Contract: prose/section bodies capped with a heading-narrowing pointer, item
- * text capped (rawLine dropped), decisions capped to the newest few, trimmed
- * drops the UI decoration maps LOUDLY (trimmedOmitted). Errors + junk pass
- * through untouched.
+ * Contract: prose/section bodies capped with a heading-narrowing pointer,
+ * browse-read item text capped (rawLine dropped), decisions capped to the
+ * newest few, trimmed drops the UI decoration maps LOUDLY (trimmedOmitted).
+ * Explicit item/heading detail reads preserve the selected text. Errors + junk
+ * pass through untouched.
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/plans/get-shape.test.ts
  */
@@ -69,6 +70,29 @@ describe("shapePlansGet trimmed", () => {
     expect(items[0]!.text_truncated).toBe(true);
   });
 
+  it("preserves complete text for an explicit item selection while dropping rawLine", () => {
+    const text = "selected item detail ".repeat(180);
+    const out = shapePlansGet(
+      {
+        ok: true,
+        results: [
+          {
+            ok: true,
+            slug: "big-plan",
+            itemSelection: { requested: ["P-019"], matched: ["P-019"], missing: [] },
+            items: [{ id: "P-019", text, rawLine: "- [ ] P-019 duplicate" }],
+          },
+        ],
+      },
+      "trimmed",
+    ) as { results: Array<Record<string, unknown>> };
+    const item = (out.results[0]!.items as Array<Record<string, unknown>>)[0]!;
+
+    expect(item.text).toBe(text);
+    expect(item.text_truncated).toBeUndefined();
+    expect(item.rawLine).toBeUndefined();
+  });
+
   it("keeps the NEWEST decisions with a truncation marker", () => {
     const decisions = r.decisions as Array<Record<string, unknown>>;
     expect(decisions).toHaveLength(8);
@@ -106,11 +130,25 @@ describe("shapePlansGet standard", () => {
     expect(r.decisionsTruncated).toBeUndefined();
   });
 
-  it("caps a heading-narrowed section body", () => {
+  it("preserves the complete body for a heading-narrowed read", () => {
     const env = {
       ok: true,
       results: [
         { ok: true, slug: "s", heading: "Now", section: { heading: "Now", level: 2, body: "b".repeat(30_000) } },
+      ],
+    };
+    const out = shapePlansGet(env, "standard") as { results: Array<Record<string, unknown>> };
+    const sec = out.results[0]!.section as Record<string, unknown>;
+    expect(sec.body).toBe("b".repeat(30_000));
+    expect(sec.body_truncated).toBeUndefined();
+    expect(sec.body_full_chars).toBeUndefined();
+  });
+
+  it("still caps an unmarked section body", () => {
+    const env = {
+      ok: true,
+      results: [
+        { ok: true, slug: "s", section: { heading: "Now", level: 2, body: "b".repeat(30_000) } },
       ],
     };
     const out = shapePlansGet(env, "standard") as { results: Array<Record<string, unknown>> };

@@ -27,6 +27,13 @@ import { ALL_TERMINAL_STATUSES } from '../work-item-blocking';
 import type { WholeCorpusCluster, WholeCorpusMerge, WholeCorpusVerdict } from './whole-corpus-pass';
 
 export const RESOLVER_CLUSTER_SCHEMA_VERSION = 'resolver-cluster-v1';
+/**
+ * Numeric, assignment-ready projection of resolver-cluster membership. The
+ * whole-corpus resolver computes it once; the scheduler's `cluster_priority`
+ * rank term only reads it. Keeping the projection on every member (and the
+ * parent) avoids rebuilding the cluster graph on each claim.
+ */
+export const RESOLVER_CLUSTER_PRIORITY_PAYLOAD_KEY = 'clusterPriority';
 
 export interface ClusterParentPayload {
   schemaVersion: typeof RESOLVER_CLUSTER_SCHEMA_VERSION;
@@ -54,6 +61,7 @@ export function clusterKeyFor(memberIds: readonly string[]): string {
 export interface ApplyWorkItemLike {
   id: string;
   state: string;
+  payload?: Record<string, unknown> | null;
 }
 
 export type ApplyOutcome = { ok: true } | { ok: false; error: string };
@@ -76,6 +84,8 @@ export interface ApplyWholeCorpusDeps {
   /** Idempotency check: an existing OPEN cluster parent carrying this exact key, if any. */
   findExistingClusterParentByKey: (clusterKey: string) => Promise<string | null>;
   createClusterParent: (input: CreateClusterParentInput) => Promise<CreateClusterParentOutcome>;
+  /** Additively merge a payload projection across either work-item family. */
+  mergePayload: (id: string, patch: Record<string, unknown>) => Promise<ApplyOutcome>;
 }
 
 // ── Result shape ─────────────────────────────────────────────────────────────
@@ -129,6 +139,34 @@ function emptyResult(): ApplyWholeCorpusResult {
   return { merged: [], skippedMerges: [], clustersCreated: [], clustersSkipped: [], errors: [] };
 }
 
+function clusterPriorityFromPayload(payload: Record<string, unknown> | null | undefined): number {
+  const value = payload?.[RESOLVER_CLUSTER_PRIORITY_PAYLOAD_KEY];
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+/**
+ * Persist the largest cluster this item belongs to. A verdict may legitimately
+ * mention one defect under more than one suspected generator, so a later,
+ * smaller cluster must never lower the rank projection written by an earlier
+ * one in the same pass.
+ */
+async function stampClusterPriority(
+  id: string,
+  clusterSize: number,
+  deps: ApplyWholeCorpusDeps,
+  result: ApplyWholeCorpusResult,
+): Promise<void> {
+  const item = await deps.getWorkItem(id);
+  if (!item) {
+    result.errors.push(`cluster priority: work-item '${id}' not found`);
+    return;
+  }
+  const current = clusterPriorityFromPayload(item.payload);
+  if (current >= clusterSize) return;
+  const merged = await deps.mergePayload(id, { [RESOLVER_CLUSTER_PRIORITY_PAYLOAD_KEY]: clusterSize });
+  if (!merged.ok) result.errors.push(`cluster priority: failed to stamp ${id}: ${merged.error}`);
+}
+
 async function applyOneMerge(merge: WholeCorpusMerge, deps: ApplyWholeCorpusDeps, result: ApplyWholeCorpusResult): Promise<void> {
   const canonical = await deps.getWorkItem(merge.canonicalId);
   if (!canonical) {
@@ -178,13 +216,19 @@ async function applyOneCluster(
   result: ApplyWholeCorpusResult,
 ): Promise<void> {
   const clusterKey = clusterKeyFor(cluster.memberIds);
+  const memberIds = [...new Set(cluster.memberIds)].sort();
+  const clusterSize = memberIds.length;
   const existing = await deps.findExistingClusterParentByKey(clusterKey);
   if (existing) {
+    // P-008 can roll out after P-007 has already materialized parents. Replaying
+    // the same verdict backfills the rank projection without creating a second
+    // parent or recomputing cluster structure in the scheduler.
+    await stampClusterPriority(existing, clusterSize, deps, result);
+    for (const memberId of memberIds) await stampClusterPriority(memberId, clusterSize, deps, result);
     result.clustersSkipped.push({ clusterKey, reason: 'already-exists', existingParentId: existing });
     return;
   }
 
-  const memberIds = [...cluster.memberIds].sort();
   const payload: ClusterParentPayload = {
     schemaVersion: RESOLVER_CLUSTER_SCHEMA_VERSION,
     clusterKey,
@@ -202,9 +246,10 @@ async function applyOneCluster(
     return;
   }
 
+  await stampClusterPriority(created.id, clusterSize, deps, result);
   const parentRef = await deps.resolveWorkItemRef(created.id);
   const linkFailures: string[] = [];
-  for (const memberId of cluster.memberIds) {
+  for (const memberId of memberIds) {
     if (!parentRef) {
       linkFailures.push(memberId);
       continue;
@@ -214,6 +259,7 @@ async function applyOneCluster(
       linkFailures.push(memberId);
       continue;
     }
+    await stampClusterPriority(memberId, clusterSize, deps, result);
     await deps
       .comment(
         memberId,
@@ -224,7 +270,7 @@ async function applyOneCluster(
   if (linkFailures.length > 0) {
     result.errors.push(`cluster ${clusterKey} (${created.id}): failed to link member(s) ${linkFailures.join(', ')}`);
   }
-  result.clustersCreated.push({ clusterKey, parentId: created.id, memberIds: cluster.memberIds, linkFailures });
+  result.clustersCreated.push({ clusterKey, parentId: created.id, memberIds, linkFailures });
 }
 
 /**

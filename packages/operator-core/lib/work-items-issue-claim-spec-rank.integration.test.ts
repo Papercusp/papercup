@@ -84,9 +84,18 @@ const UNLOCK_SCORE_MIGRATION = resolve(
  */
 async function seedIssue(
   id: string,
-  opts: { createdTs: number; severity?: string; featureOrder?: number | null; takenBy?: string | null },
+  opts: {
+    createdTs: number;
+    severity?: string;
+    featureOrder?: number | null;
+    takenBy?: string | null;
+    clusterPriority?: number | string;
+  },
 ) {
-  const payload = opts.severity === undefined ? {} : { _ei: { severity: opts.severity } };
+  const payload = {
+    ...(opts.severity === undefined ? {} : { _ei: { severity: opts.severity } }),
+    ...(opts.clusterPriority === undefined ? {} : { clusterPriority: opts.clusterPriority }),
+  };
   // Use postgres-js `sql.json()` here — the idiom every sibling work_items integration test
   // uses against this raw testcontainer client. A hand-rolled `${JSON.stringify(p)}::jsonb`
   // double-encodes into a jsonb STRING SCALAR, and the engineer_issues view's `payload - '_ei'`
@@ -192,6 +201,46 @@ describe('issue-family claim ordering WITH DEFAULT_CLAIM_SPEC’s compiled rank 
 
     const got = await claimIssue({ withSpecRank: true });
     expect(got?.id).toBe('WI-steered');
+  });
+});
+
+describe('cluster_priority ordering reaches the issue-family claim path (P-008)', () => {
+  const clusterSpec = {
+    ...DEFAULT_CLAIM_SPEC,
+    specId: 'largest-cluster-first',
+    revision: 1,
+    rank: {
+      mode: 'lexicographic' as const,
+      terms: [
+        { expr: 'cluster_priority', dir: 'desc' as const },
+        { expr: 'age', dir: 'asc' as const },
+      ],
+    },
+  };
+
+  it('serves a newer member of the larger persisted cluster ahead of older work', async () => {
+    await seedIssue('WI-standalone-old', { createdTs: 100, severity: 'major' });
+    await seedIssue('WI-small-cluster', { createdTs: 200, severity: 'major', clusterPriority: 3 });
+    await seedIssue('WI-large-cluster', { createdTs: 900, severity: 'minor', clusterPriority: 10 });
+    const order = compileRank(getOrgPg().sql, clusterSpec, { assignee: BEE });
+
+    const got = await wi.claimNextIssueWorkItem({ harness: H, assignee: BEE }, WS, {
+      issueKinds: ['bug'],
+      specOrderSql: order,
+    });
+    expect(got?.id).toBe('WI-large-cluster');
+  });
+
+  it('treats a malformed legacy payload as neutral instead of failing the issue claim query', async () => {
+    await seedIssue('WI-malformed-old', { createdTs: 100, clusterPriority: 'not-a-number' });
+    await seedIssue('WI-valid-new', { createdTs: 900, clusterPriority: 2 });
+    const order = compileRank(getOrgPg().sql, clusterSpec, { assignee: BEE });
+
+    const got = await wi.claimNextIssueWorkItem({ harness: H, assignee: BEE }, WS, {
+      issueKinds: ['bug'],
+      specOrderSql: order,
+    });
+    expect(got?.id).toBe('WI-valid-new');
   });
 });
 

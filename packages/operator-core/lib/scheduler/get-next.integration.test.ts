@@ -72,12 +72,15 @@ interface SeedOpts {
   estCost?: number;
   kind?: string;
   title?: string;
+  clusterPriority?: number | string;
 }
 async function seedFeature(id: string, opts: SeedOpts = {}) {
-  const payload =
-    opts.paths || opts.riskTier
-      ? JSON.stringify({ ...(opts.paths ? { paths: opts.paths } : {}), ...(opts.riskTier ? { risk_tier: opts.riskTier } : {}) })
-      : null;
+  const payloadValue = {
+    ...(opts.paths ? { paths: opts.paths } : {}),
+    ...(opts.riskTier ? { risk_tier: opts.riskTier } : {}),
+    ...(opts.clusterPriority !== undefined ? { clusterPriority: opts.clusterPriority } : {}),
+  };
+  const payload = Object.keys(payloadValue).length > 0 ? payloadValue : null;
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id,
@@ -85,7 +88,7 @@ async function seedFeature(id: string, opts: SeedOpts = {}) {
     VALUES (${H}, ${id}, ${opts.kind ?? 'feature'}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, ${WS},
        ${opts.createdTs ?? 0}, 0, ${opts.featureOrder ?? null},
        ${opts.tags ? db.sql.json(opts.tags) : null},
-       ${payload ? db.sql.json(JSON.parse(payload)) : null},
+       ${payload ? db.sql.json(payload) : null},
        ${opts.estCost ?? null}, ${opts.title ?? ''})`;
 }
 
@@ -254,6 +257,42 @@ describe('get_next — spec filter + rank selects the correct item', () => {
       rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
     });
     expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-hi');
+  });
+
+  it('cluster_priority desc drains the largest persisted resolver cluster first', async () => {
+    await seedFeature('F-standalone-old', { createdTs: 10 });
+    await seedFeature('F-small-cluster', { createdTs: 20, clusterPriority: 3 });
+    await seedFeature('F-large-cluster', { createdTs: 999, clusterPriority: 12 });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'largest-cluster-first',
+      revision: 1,
+      view: {},
+      rank: {
+        mode: 'lexicographic',
+        terms: [
+          { expr: 'cluster_priority', dir: 'desc' },
+          { expr: 'age', dir: 'asc' },
+        ],
+      },
+    });
+
+    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-large-cluster');
+    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-small-cluster');
+    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-standalone-old');
+  });
+
+  it('cluster_priority treats a malformed legacy payload as neutral instead of aborting the claim', async () => {
+    await seedFeature('F-malformed-old', { createdTs: 10, clusterPriority: 'not-a-number' });
+    await seedFeature('F-valid-new', { createdTs: 999, clusterPriority: 2 });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'malformed-cluster-priority-safe',
+      revision: 1,
+      view: {},
+      rank: { mode: 'lexicographic', terms: [{ expr: 'cluster_priority', dir: 'desc' }] },
+    });
+    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-valid-new');
   });
 
   it('a relational filter on risk_tier (payload) excludes over-ceiling items', async () => {

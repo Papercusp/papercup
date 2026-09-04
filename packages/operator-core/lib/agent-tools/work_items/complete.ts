@@ -509,28 +509,67 @@ export function mentionsWorkItemDuplicate(text: string): boolean {
  * assertion ran and passed" from "this assertion never ran at all" — the skip count
  * is DATA nobody reads; "passed" is what registers.
  *
- * Cheap, narrow catch: when the caller's OWN testsRun/testResult prose names a
- * NONZERO skip count, surface it loudly instead of accepting it silently. A skip is
- * often legitimate (a pre-existing, already-accounted-for quarantine) so this is
- * WARN-ONLY (EI-24 record-and-warn discipline, same as every other check in this
- * file) — it must never hard-reject evidence it cannot fully judge; it only makes
- * sure the caller (and any reviewer reading the completion record later) cannot miss
- * that a skip is in play. PURE — unit-tested without PG.
+ * Cheap, narrow catch: when the caller's OWN testsRun/testResult contains a
+ * NONZERO skip count in a recognizable test-runner summary, surface it loudly
+ * instead of accepting it silently. The old bare `\d+ skipped` matcher treated
+ * ordinary prose ("run 3 skipped it") as a parsed test count, which made the
+ * warning itself unreliable. A skip is often legitimate (a pre-existing,
+ * already-accounted-for quarantine) so this is WARN-ONLY (EI-24 record-and-warn
+ * discipline, same as every other check in this file) — it must never
+ * hard-reject evidence it cannot fully judge; it only makes sure the caller (and
+ * any reviewer reading the completion record later) cannot miss that a skip is
+ * in play. PURE — unit-tested without PG.
  */
+const NON_TEST_VERIFICATION_MODE_RE = /^(?:manual|live-drove-ui|live-service|already-passing)(?:\b|[(:])/i;
+const INTEGRATION_VERIFICATION_MODE_RE = /^integration(?:\b|[(:])/i;
+const TEST_RUNNER_COMMAND_RE =
+  /\b(?:npm|pnpm|yarn|bun)\s+(?:test|run\s+\S*test\b|exec\s+\S*test\b)|\b(?:npx|pnpx|bunx)\s+(?:vitest|jest|mocha|ava|pytest)\b|\b(?:vitest|jest|mocha|ava|pytest)\s+(?:run|--run)\b|\b(?:testing:run|node\s+--test|go\s+test|cargo\s+test)\b/i;
+
+/**
+ * Return the skipped/todo count only for a recognizable runner summary.
+ *
+ * The count must either follow a passed/failed count with runner punctuation
+ * (`8 passed | 1 skipped`) or be attached to an explicit `Tests`/`Test Files`
+ * summary marker (`Tests: 1 skipped, 8 passed`). A bare `3 skipped` is
+ * deliberately not enough: completion prose uses "skip" as an ordinary verb.
+ */
+function skippedTestSummaryCount(text: string): number | undefined {
+  const passedOrFailed = text.match(
+    /\b\d+\s+(?:passed|failed)\b\s*(?:[|,/;:]\s*|\band\b\s*)(\d+)\s+(?:skipped|todo)\b/i,
+  );
+  if (passedOrFailed) return Number(passedOrFailed[1]);
+
+  const testsMarker = text.match(
+    /(?:^|\n)\s*(?:tests?|test files?)\s*:?\s*(?:\d+\s+(?:passed|failed)\s*[|,/;:]\s*)*(\d+)\s+(?:skipped|todo)\b/im,
+  );
+  if (testsMarker) return Number(testsMarker[1]);
+
+  const fileSummary = text.match(/\b\d+\s+tests?\s*[|,/;:]\s*(\d+)\s+(?:skipped|todo)\b/i);
+  return fileSummary ? Number(fileSummary[1]) : undefined;
+}
+
 export function skippedTestsMentionedInEvidence(
-  evidence: Pick<CompletionVerificationEvidence, 'testsRun' | 'testResult'> | undefined,
+  evidence: Pick<CompletionVerificationEvidence, 'testsRun' | 'testResult' | 'verifiedHow'> | undefined,
 ): { count: number; source: 'testsRun' | 'testResult' } | undefined {
   if (!evidence) return undefined;
+  const verifiedHow = evidence.verifiedHow?.trim() ?? '';
+  // Manual/live-service/UI evidence is not a test-runner report. Integration
+  // evidence is eligible only when the evidence also names the runner command;
+  // otherwise a sentence such as "run 3 skipped it" is just prose from a live
+  // probe, not a measured test count.
+  if (NON_TEST_VERIFICATION_MODE_RE.test(verifiedHow)) return undefined;
+  if (INTEGRATION_VERIFICATION_MODE_RE.test(verifiedHow) && !TEST_RUNNER_COMMAND_RE.test(evidence.testsRun ?? '')) {
+    return undefined;
+  }
   // testResult first: when both fields are populated, testResult is more often the
   // literal vitest summary line (testsRun tends to be the COMMAND, e.g. "npm run
   // test:file -- foo.test.ts"), so it is the more likely source of a real count.
   for (const source of ['testResult', 'testsRun'] as const) {
     const text = evidence[source];
     if (!text) continue;
-    const match = text.match(/\b(\d+)\s+skip(?:ped)?\b/i);
-    if (!match) continue;
-    const count = Number(match[1]);
-    if (Number.isFinite(count) && count > 0) return { count, source };
+    if (source === 'testsRun' && !TEST_RUNNER_COMMAND_RE.test(text)) continue;
+    const count = skippedTestSummaryCount(text);
+    if (count !== undefined && Number.isFinite(count) && count > 0) return { count, source };
   }
   return undefined;
 }
