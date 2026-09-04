@@ -27,6 +27,7 @@ import { listScorecards } from '../../scorecards';
 import {
   areAcceptanceLineageRelated,
   isAcceptanceAuthorIdentity,
+  resolvePlanImplementerIdentities,
 } from '../../acceptance-author-identity';
 
 /** Refusal codes emitted by the acceptance lifecycle/grader rails, verbatim from `scorecards:emit`. */
@@ -44,6 +45,12 @@ export interface GraderEligibilityRefusal {
 export interface GraderEligibility {
   /** The rubric's implementer (its acceptance author), or null when unresolvable. */
   implementer: string | null;
+  /**
+   * Principal implementation identities recorded by the rubric's subject plan.
+   * These are independent-grader exclusion identities only; acceptance authority
+   * remains with `implementer` and audited seat succession.
+   */
+  principalImplementers: string[];
   /** True when the caller IS the implementer — they record acceptance, not ratings. */
   callerIsImplementer: boolean;
   /**
@@ -58,6 +65,7 @@ export interface GraderEligibility {
 export interface GraderEligibilityDeps {
   sameAcceptanceAuthor?: typeof isAcceptanceAuthorIdentity;
   lineageRelated?: typeof areAcceptanceLineageRelated;
+  resolvePlanImplementerIdentities?: typeof resolvePlanImplementerIdentities;
 }
 
 /** The identity fields the rails read — a structural subset of `Rubric`. */
@@ -66,6 +74,7 @@ export interface GraderEligibilityRubric {
   status?: string | null;
   proposedBy?: string | null;
   createdBy?: string | null;
+  subjectPlan?: string | null;
 }
 
 /** The lifecycle refusal shared by the terminal writer and its pre-flight. */
@@ -211,6 +220,8 @@ export async function resolveAcceptanceGraderEligibility(params: {
   const deps = params.deps ?? {};
   const sameAcceptanceAuthor = deps.sameAcceptanceAuthor ?? isAcceptanceAuthorIdentity;
   const lineageRelated = deps.lineageRelated ?? areAcceptanceLineageRelated;
+  const resolvePlanImplementers =
+    deps.resolvePlanImplementerIdentities ?? resolvePlanImplementerIdentities;
 
   // `createdBy` is the acceptance-author of record. `proposedBy` identifies
   // who authored the latest revision and must not silently transfer the right
@@ -220,35 +231,57 @@ export async function resolveAcceptanceGraderEligibility(params: {
   if (rubric.status === 'retired') {
     return {
       implementer,
+      principalImplementers: [],
       callerIsImplementer: false,
       refusal: retiredAcceptanceRubricRefusal(rubric),
     };
   }
 
+  const principalImplementers = [
+    ...new Set(
+      (await resolvePlanImplementers(rubric.subjectPlan, { workspaceId }))
+        .map((identity) => identity.trim())
+        .filter(Boolean),
+    ),
+  ];
   const callerIsImplementer =
     implementer != null && (await sameAcceptanceAuthor(implementer, callerId, { workspaceId }));
 
   // The implementer's own rails (they must supply acceptance, must not supersede,
   // must follow an independent grading) are about the CARD's shape, not about
   // eligibility, and stay with the writer.
-  if (callerIsImplementer) return { implementer, callerIsImplementer: true, refusal: null };
+  if (callerIsImplementer) {
+    return { implementer, principalImplementers, callerIsImplementer: true, refusal: null };
+  }
 
   // An AUTHOR-side verdict is not an offer of independent grading, so neither
   // the lineage rail nor the sole-vetting-critic rail below can speak to it.
   // The author-authority question is answered by the caller (`scorecards:emit`),
   // which checks identity and then seat succession.
-  if (intent === 'acceptance') return { implementer, callerIsImplementer: false, refusal: null };
+  if (intent === 'acceptance') {
+    return { implementer, principalImplementers, callerIsImplementer: false, refusal: null };
+  }
 
-  const callerInImplementerLineage =
-    implementer != null && (await lineageRelated(implementer, callerId, { workspaceId }));
-  if (callerInImplementerLineage) {
+  const lineageSources = [implementer, ...principalImplementers].filter(
+    (identity): identity is string => identity != null && identity.trim() !== '',
+  );
+  const relatedSources = await Promise.all(
+    lineageSources.map((identity) => lineageRelated(identity, callerId, { workspaceId })),
+  );
+  const relatedSource = lineageSources.find((_identity, index) => relatedSources[index]);
+  if (relatedSource) {
+    const sourceLabel =
+      implementer != null && relatedSource === implementer
+        ? `acceptance-rubric author '${implementer}'`
+        : `plan implementer '${relatedSource}'`;
     return {
       implementer,
+      principalImplementers,
       callerIsImplementer: false,
       refusal: {
         code: 'grader_in_implementer_lineage',
         error:
-          `grader '${callerId}' is in acceptance-rubric author '${implementer}'s spawn/rebind lineage — ` +
+          `grader '${callerId}' is in ${sourceLabel}'s spawn/rebind lineage — ` +
           'a related session cannot supply the independent grading; recruit an existing unrelated live session via ' +
           "coord:presence/coord:dispatch, then work_items:create the grading request WITH assign_to naming that peer " +
           '(bypass:explicit-assignment makes it born-admitted and claimable in the same write). Do NOT file it ' +
@@ -274,6 +307,7 @@ export async function resolveAcceptanceGraderEligibility(params: {
   if (!revisionRead.ok) {
     return {
       implementer,
+      principalImplementers,
       callerIsImplementer: false,
       refusal: {
         code: 'grader_is_sole_vetting_critic_revision_unreadable',
@@ -306,6 +340,7 @@ export async function resolveAcceptanceGraderEligibility(params: {
           : `is the only distinct party among the ${critics.length} recorded vetting critics`;
       return {
         implementer,
+        principalImplementers,
         callerIsImplementer: false,
         refusal: {
           code: 'grader_is_sole_vetting_critic',
@@ -319,5 +354,5 @@ export async function resolveAcceptanceGraderEligibility(params: {
     }
   }
 
-  return { implementer, callerIsImplementer: false, refusal: null };
+  return { implementer, principalImplementers, callerIsImplementer: false, refusal: null };
 }

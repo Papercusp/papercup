@@ -18,6 +18,7 @@ const listScorecards = vi.fn();
 const readRubricPlanRevision = vi.fn();
 const lineageRelated = vi.fn();
 const sameAcceptanceAuthor = vi.fn();
+const resolvePlanImplementerIdentities = vi.fn();
 
 vi.mock('../../scorecards', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../scorecards')>();
@@ -30,11 +31,18 @@ vi.mock('../../rubrics', async (importOriginal) => {
 vi.mock('../../acceptance-author-identity', () => ({
   isAcceptanceAuthorIdentity: (...a: unknown[]) => sameAcceptanceAuthor(...a),
   areAcceptanceLineageRelated: (...a: unknown[]) => lineageRelated(...a),
+  resolvePlanImplementerIdentities: (...a: unknown[]) => resolvePlanImplementerIdentities(...a),
 }));
 
 import { resolveAcceptanceGraderEligibility, resolveAggregatedVettingCritics } from './grader-eligibility';
 
-const RUBRIC = { rubricId: 'ar-some-plan', status: 'active', createdBy: 'su-author', proposedBy: 'su-author' };
+const RUBRIC = {
+  rubricId: 'ar-some-plan',
+  status: 'active',
+  createdBy: 'su-author',
+  proposedBy: 'su-author',
+  subjectPlan: 'some-plan-2026-08-11',
+};
 
 /** A minimal vetting scorecard row, shaped like `ScorecardRow`. */
 const vettingCard = (over: Record<string, unknown> = {}) => ({
@@ -58,6 +66,7 @@ beforeEach(() => {
   readRubricPlanRevision.mockReset().mockResolvedValue({ ok: true, revision: 7 });
   sameAcceptanceAuthor.mockReset().mockImplementation(async (a: unknown, b: unknown) => a === b);
   lineageRelated.mockReset().mockImplementation(async (a: unknown, b: unknown) => a === b);
+  resolvePlanImplementerIdentities.mockReset().mockResolvedValue([]);
 });
 
 describe('resolveAggregatedVettingCritics (EI-22182364716054326)', () => {
@@ -155,6 +164,53 @@ describe('resolveAcceptanceGraderEligibility sole-vetting-critic rail (EI-221823
       workspaceId: 'ws-test',
     });
     expect(result.refusal?.code).toBe('grader_is_sole_vetting_critic');
+  });
+});
+
+describe('principal plan implementers are independent-grader exclusions', () => {
+  it('refuses a plan implementer while keeping the rubric author as the acceptance seat', async () => {
+    resolvePlanImplementerIdentities.mockResolvedValue(['su-plan-implementer']);
+
+    const grading = await resolveAcceptanceGraderEligibility({
+      rubric: RUBRIC,
+      callerId: 'su-plan-implementer',
+      workspaceId: 'ws-test',
+    });
+    expect(grading).toMatchObject({
+      implementer: 'su-author',
+      principalImplementers: ['su-plan-implementer'],
+      callerIsImplementer: false,
+      refusal: { code: 'grader_in_implementer_lineage' },
+    });
+
+    const acceptance = await resolveAcceptanceGraderEligibility({
+      rubric: RUBRIC,
+      callerId: 'su-author',
+      workspaceId: 'ws-test',
+      intent: 'acceptance',
+    });
+    expect(acceptance).toMatchObject({
+      implementer: 'su-author',
+      principalImplementers: ['su-plan-implementer'],
+      callerIsImplementer: true,
+      refusal: null,
+    });
+  });
+
+  it('excludes a grader in a principal implementer lineage, not only the author lineage', async () => {
+    resolvePlanImplementerIdentities.mockResolvedValue(['su-plan-implementer']);
+    lineageRelated.mockImplementation(
+      async (a: unknown, b: unknown) =>
+        a === b || (a === 'su-plan-implementer' && b === 'su-plan-successor'),
+    );
+
+    const result = await resolveAcceptanceGraderEligibility({
+      rubric: RUBRIC,
+      callerId: 'su-plan-successor',
+      workspaceId: 'ws-test',
+    });
+    expect(result.refusal?.code).toBe('grader_in_implementer_lineage');
+    expect(result.refusal?.error).toContain("plan implementer 'su-plan-implementer'");
   });
 });
 
