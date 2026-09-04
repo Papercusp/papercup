@@ -84,12 +84,10 @@ const readPopulation = () =>
 
 describe('readFleetLaneHealth — feature-family-aware effective verdict (EI-211885)', () => {
   it('uses only the feature oracle for an explicitly feature-only exact-plan lane', async () => {
-    mocks.resolveFleetClaimSpec.mockResolvedValueOnce(
-      resolved({
-        ...spec,
-        view: { filter: { all: [planFilter, { field: 'kind', op: 'in', value: ['feature', 'chunk'] }] } },
-      }),
-    );
+    mocks.resolveFleetClaimSpec.mockResolvedValueOnce(resolved({
+      ...spec,
+      view: { filter: { all: [planFilter, { field: 'kind', op: 'in', value: ['feature', 'chunk'] }] } },
+    }));
     const health = await read();
 
     expect(health).toMatchObject({
@@ -97,11 +95,7 @@ describe('readFleetLaneHealth — feature-family-aware effective verdict (EI-211
       matchedByFilter: 0,
       excluded: {},
       issueFamily: { claimable: 0, matchedByFilter: 0, excluded: {} },
-      featureFamily: {
-        claimable: 4,
-        matchedByFilter: 6,
-        excluded: { claimFloors: 2, reservedPlanLane: 2 },
-      },
+      featureFamily: { claimable: 4, matchedByFilter: 6, excluded: { claimFloors: 2, reservedPlanLane: 2 } },
       effective: {
         claimable: 4,
         matchedByFilter: 6,
@@ -139,12 +133,10 @@ describe('readFleetLaneHealth — feature-family-aware effective verdict (EI-211
   });
 
   it('does not probe features for an explicitly issue-family-only spec', async () => {
-    mocks.resolveFleetClaimSpec.mockResolvedValueOnce(
-      resolved({
-        ...spec,
-        view: { filter: { all: [planFilter, { field: 'kind', op: 'in', value: ['bug', 'task'] }] } },
-      }),
-    );
+    mocks.resolveFleetClaimSpec.mockResolvedValueOnce(resolved({
+      ...spec,
+      view: { filter: { all: [planFilter, { field: 'kind', op: 'in', value: ['bug', 'task'] }] } },
+    }));
 
     const health = await read();
 

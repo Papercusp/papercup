@@ -23,6 +23,7 @@ import { isTerminalStatus } from '../plans/set-status';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { softText, clampText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveStableAgentTarget } from '../coordination/actionable-work-item-dispatch';
 import {
   admitSubjectForFleetTarget,
   notifyFleetScopeRefusal,
@@ -179,6 +180,47 @@ export default defineTool({
             item: it.item,
             refused: `agent-name '${it.assignee}' is owned by another user — cross-user assignment is pull-only (D-005). They join the work-group and claim it.`,
           };
+        }
+        // EI-2140304: coord:dispatch may pass a raw ownerId when its target
+        // has no stable-name handle. That spelling used to bypass both the
+        // stable-name ownership guard and liveness check, so a foreign or
+        // already-ended session could receive a durable assignment that no
+        // process would ever pick up. Only apply this guard when the targeted
+        // presence row proves the input is the exact ownerId; an absent target
+        // remains eligible as a fresh stable name (or a just-starting session).
+        const target = await resolveStableAgentTarget({
+          targetAgent: it.assignee,
+          workspaceId,
+          harness: harnessSlug,
+        });
+        const isExactRawOwnerId = target.present && target.ownerId === it.assignee;
+        if (isExactRawOwnerId && target.sessionState === 'ended') {
+          return {
+            ok: false,
+            plan: it.plan,
+            item: it.item,
+            refused:
+              `agent target '${it.assignee}' resolves to ended session '${target.ownerId}' ` +
+              '(sessionState=ended) — assignment would strand the plan item; relaunch/resume ' +
+              'the target or use a live/parked agent.',
+          };
+        }
+        if (isExactRawOwnerId) {
+          // Presence userId is the stronger power-user ownership signal. For
+          // superuser sessions it is null, so the best-effort ownerId fallback
+          // preserves the existing single-user identity contract.
+          const targetOwnerUser = target.userId ?? target.ownerId;
+          if (targetOwnerUser !== ownerUser) {
+            return {
+              ok: false,
+              plan: it.plan,
+              item: it.item,
+              refused:
+                `agent target '${it.assignee}' resolves to ownerId '${target.ownerId}' ` +
+                `owned by another user ('${targetOwnerUser}') — cross-user assignment is ` +
+                'pull-only (D-005). They join the work-group and claim it.',
+            };
+          }
         }
         // EI-2295 (push-assign leg): never (re)assign an ALREADY-TERMINAL plan item.
         // Re-assigning a done/dropped item is a no-op whose only effect is a stale

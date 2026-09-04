@@ -65,6 +65,8 @@ const call = async (latencyContract: 'proceed' | 'hard-blocked') => {
 
 beforeEach(() => {
   h.getFeedbackCore.mockReset();
+  h.routeConsult.mockReset();
+  h.resolveSessionStates.mockReset();
   h.reconcileInterestEventAwaits.mockReset().mockResolvedValue(handle);
   h.buildQueryEmbedder.mockClear();
   h.makeConsultReviver.mockClear();
@@ -88,5 +90,38 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
     const out = await call('proceed');
     expect(h.reconcileInterestEventAwaits).not.toHaveBeenCalled();
     expect(out).not.toHaveProperty('interest_watch');
+  });
+
+  it('uses a live PTY host as positive authority when annotating routing candidates', async () => {
+    h.resolveSessionStates.mockResolvedValue(
+      new Map([['peer-host-live', { ownerId: 'peer-host-live', sessionState: 'recorded' }]]),
+    );
+    h.routeConsult.mockImplementation(
+      async (
+        _params: unknown,
+        deps: { getLiveness: (ownerIds: string[]) => Promise<Record<string, string | null>> },
+      ) => {
+        expect(await deps.getLiveness(['peer-host-live'])).toEqual({
+          'peer-host-live': 'recorded',
+        });
+        return {};
+      },
+    );
+    h.getFeedbackCore.mockImplementation(
+      async (
+        _request: unknown,
+        deps: { route: (params: Record<string, unknown>) => Promise<unknown> },
+      ) => {
+        await deps.route({});
+        return routed('proceed');
+      },
+    );
+
+    await call('proceed');
+
+    expect(h.resolveSessionStates).toHaveBeenCalledWith(
+      [{ ownerId: 'peer-host-live' }],
+      { hydratePerId: true, psuHostPositiveAuthority: true },
+    );
   });
 });

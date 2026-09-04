@@ -188,6 +188,26 @@ export interface ReleaseTraceCandidateVerdict {
   rereadForCandidate?: { name: 'release:trace'; args: { sha: string } } | null;
 }
 
+/**
+ * The one branchable answer EI-19342701023112373 asks for: did the candidate that
+ * produced the recorded gate verdict contain the caller's exact fix commit?
+ *
+ * This object intentionally contains NO action, gate-health prediction, or lever. A
+ * containment verdict says only what ancestry proves; `release:trace.nextVerb` remains a
+ * separate projection over the complete release state.
+ */
+export interface ReleaseTraceFixCommitContainment {
+  fixSha: string | null;
+  observedCandidate: string | null;
+  verdict: 'contained' | 'not_contained' | 'unknown';
+  reason:
+    | 'target-unresolved'
+    | 'observed-candidate-unavailable'
+    | 'submodule-boundary'
+    | 'ancestry-unreadable'
+    | null;
+}
+
 function sameSha(a: string | null | undefined, b: string | null | undefined): boolean {
   if (!a || !b) return false;
   const left = a.toLowerCase();
@@ -372,6 +392,27 @@ function gateIsActivelyJudgingTarget(input: Pick<ReleaseTraceInput, 'position' |
   // outrank the live singleton: the exact SHA is already being tested.
   const checkpointRun = input.gate.checkpointRunInFlight ?? input.position.gate.checkpointRunInFlight;
   return checkpointRun?.active === true && sameSha(input.position.targetSha, checkpointRun.candidate);
+}
+
+function classifyFixCommitContainment(
+  input: Pick<ReleaseTraceInput, 'position' | 'gate'>,
+): ReleaseTraceFixCommitContainment {
+  const fixSha = input.position.targetSha;
+  const observedCandidate = input.gate.observedCandidate ?? input.position.gate.observedCandidate;
+  if (!fixSha) {
+    return { fixSha: null, observedCandidate: observedCandidate ?? null, verdict: 'unknown', reason: 'target-unresolved' };
+  }
+  if (!observedCandidate) {
+    return { fixSha, observedCandidate: null, verdict: 'unknown', reason: 'observed-candidate-unavailable' };
+  }
+  if (input.position.submodule) {
+    return { fixSha, observedCandidate, verdict: 'unknown', reason: 'submodule-boundary' };
+  }
+
+  const contained = input.position.verdictProvenance.targetIncludedInObservedCandidate;
+  if (contained === true) return { fixSha, observedCandidate, verdict: 'contained', reason: null };
+  if (contained === false) return { fixSha, observedCandidate, verdict: 'not_contained', reason: null };
+  return { fixSha, observedCandidate, verdict: 'unknown', reason: 'ancestry-unreadable' };
 }
 
 /** EI-210996: recognize a producer death from evidence written by systemd, not by the
@@ -919,6 +960,7 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
   const canonicalOwner = canonicalRedOwner(input);
   const effectiveInput = canonicalOwner ? { ...input, gate: { ...input.gate, redOwner: canonicalOwner } } : input;
   const candidateVerdict = classifyCandidateVerdict(effectiveInput);
+  const fixCommitContainment = classifyFixCommitContainment(effectiveInput);
   const targetSha = input.position.targetSha;
   const requesterWakes = input.requesterId
     ? input.wakes.filter((wake) => wake.subscriberId === input.requesterId)
@@ -955,7 +997,7 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
       presence: input.position.positions,
       runtime: input.position.runtime,
     },
-    gate: { ...effectiveInput.gate, candidateVerdict, consumedAuthority },
+    gate: { ...effectiveInput.gate, candidateVerdict, fixCommitContainment, consumedAuthority },
     greenPin: {
       sha: testedSha,
       targetIncluded: input.position.verdictProvenance.targetIncludedInGreenPin ?? null,

@@ -34,6 +34,7 @@ import {
 } from './lifecycle';
 import { trackDetached } from '../../detached-imports';
 import { enterAgentReview } from './agent-review';
+import { ISSUE_TERMINAL_STATUSES } from '../../work-item-blocking';
 
 export interface ApplyTriageInput {
   id: string;
@@ -149,8 +150,6 @@ export async function reopenRejectedTriageForCompensation(
   return restored ? 'reopened' : 'source_changed';
 }
 
-const TERMINAL_ISSUE_STATES = new Set(['resolved', 'closed']);
-
 /**
  * Evidence-staleness pre-check (EI-18696839552593260): a Scout-idea batch filed
  * 12 near-duplicate ideas, each citing a slightly different subset of the same
@@ -218,7 +217,7 @@ async function inspectEvidenceCitations(
     if (sourceRole && sourceRole !== 'human' && sourceRoleOf(cited) === sourceRole) {
       circularIds.push(id);
     }
-    if (TERMINAL_ISSUE_STATES.has(cited.state) && cited.terminalCompletionRef) {
+    if (ISSUE_TERMINAL_STATUSES.has(cited.state) && cited.terminalCompletionRef) {
       staleIds.push(id);
     }
   }
@@ -255,7 +254,13 @@ export async function applyTriageDecision(
 ): Promise<ApplyTriageResult> {
   const issue = await deps.getIssue(input.id);
   if (!issue) return { ok: false, id: input.id, error: `issue ${input.id} not found` };
-  if (issue.state !== 'open') {
+  // The improvement lifecycle is independent from work-item completion. A routed
+  // idea can remain untriaged after its backing work-item reaches any terminal
+  // status, so preserve that work-item status while recording the late triage.
+  // Non-terminal, non-open states still indicate an item actively owned by another
+  // lifecycle (wip/blocked/needs-human) and remain ineligible here.
+  const terminalBacking = ISSUE_TERMINAL_STATUSES.has(issue.state);
+  if (issue.state !== 'open' && !terminalBacking) {
     return { ok: false, id: input.id, error: `issue ${input.id} is ${issue.state} — only OPEN items are triaged` };
   }
 
@@ -346,7 +351,7 @@ export async function applyTriageDecision(
   }
 
   let closed = false;
-  if (decision === 'reject') {
+  if (decision === 'reject' && !terminalBacking) {
     // Completion-integrity gate (WI-1403, contract C-1): a triage reject is a genuine,
     // reasoned DECISION by a principal (`by`) — the durable rejection reason IS the
     // completion evidence, so it carries a real completionRef rather than a skip.

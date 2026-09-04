@@ -103,6 +103,46 @@ describe('release:trace tool contract', () => {
     expect(out.data.repairQueue).toMatchObject({ phase: 'blocked', retireAllowed: true });
   });
 
+  it('audits the exact fix/candidate/containment tuple with the resolved caller', async () => {
+    const metadata = vi.fn();
+    const fixSha = 'a'.repeat(40);
+    const observedCandidate = 'b'.repeat(40);
+    const snapshot = {
+      generatedAtMs: 123,
+      deploy: { integrationRoot: '/workspace/papercusp' },
+      gate: {
+        verdictStale: false,
+        consecutiveReds: 0,
+        failingTests: [],
+        fireStale: false,
+        observedCandidate,
+      },
+    };
+    mocks.gitPipelineSnapshot.mockResolvedValueOnce(snapshot);
+    mocks.gitPipelinePosition.mockResolvedValueOnce({ targetSha: fixSha });
+    mocks.computeDeployStatus.mockReturnValueOnce({ state: 'green' });
+    mocks.inspectEventKey.mockResolvedValue({ waiters: [], deliveries: [] });
+    mocks.resolveAgentIdentity.mockReturnValueOnce({ ownerId: 'test-owner' });
+    mocks.buildReleaseTrace.mockReturnValueOnce({
+      ok: false,
+      gate: {
+        fixCommitContainment: { fixSha, observedCandidate, verdict: 'contained', reason: null },
+      },
+    });
+
+    await tool.handler({ sha: fixSha } as never, { metadata } as never);
+
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(metadata).toHaveBeenCalledWith({
+      releaseTraceFixCommitContainment: {
+        callerId: 'test-owner',
+        fixSha,
+        observedCandidate,
+        verdict: 'contained',
+      },
+    });
+  });
+
   it('stamps the operator-home subject and warns a concrete foreign-harness caller', async () => {
     const snapshot = {
       generatedAtMs: 123,

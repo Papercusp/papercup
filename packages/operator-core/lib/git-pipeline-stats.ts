@@ -350,6 +350,12 @@ export interface GitPipelineSnapshot {
      *  of trusting the recorded list blind — see `verifyGateVerdict` in why-chain.ts.
      *  Null on a blob predating this field, or when there is no candidate to attribute. */
     observedCandidate: string | null;
+    /**
+     * D-013/P-011: where main ended for THIS recorded verdict, written beside
+     * `observedCandidate` by release-actions. This is the promotion operand; the staging
+     * buffer is a separate relation and must never stand in for it.
+     */
+    lastMainPin: string | null;
     /** EI-13288: when THIS verdict's own stale-candidate re-triage already proved its named
      *  `failingTests` pass at a newer tip (auto-refire cap reached before a full suite could
      *  confirm that tip green), the short sha of that tip — feeds Rule 3 of
@@ -649,6 +655,28 @@ export function resolverModel(): string {
 function num(v: unknown): number | null {
   const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * D-013/P-011: the gate writer's paired promotion identity.
+ *
+ * Both values come from the same gate_health blob. Keeping this as one projection prevents
+ * readers from pairing a judged candidate with a separately sampled staging relation and
+ * then calling that relation proof of promotion. Missing/malformed values remain null.
+ */
+export function projectGatePromotionIdentity(gateHealth: unknown): {
+  observedCandidate: string | null;
+  lastMainPin: string | null;
+} {
+  const row = gateHealth && typeof gateHealth === 'object' && !Array.isArray(gateHealth)
+    ? (gateHealth as Record<string, unknown>)
+    : {};
+  const stringOrNull = (value: unknown): string | null =>
+    typeof value === 'string' && value.trim().length > 0 ? value : null;
+  return {
+    observedCandidate: stringOrNull(row.observedCandidate),
+    lastMainPin: stringOrNull(row.lastMainPin),
+  };
 }
 
 /**
@@ -1231,6 +1259,7 @@ export async function gitPipelineSnapshot(
   const gcMeta = (byName('green-checkpoint')?.metadata ?? {}) as Record<string, unknown>;
   const qualification = projectCheckpointQualificationState(gcMeta.qualificationTransaction);
   const gateHealth = (gcMeta.gate_health ?? {}) as Record<string, unknown>;
+  const gatePromotionIdentity = projectGatePromotionIdentity(gateHealth);
   const lastFixer = (gcMeta.last_fixer ?? null) as Record<string, unknown> | null;
   const flakeHistory = (gcMeta.flake_history ?? {}) as Record<string, { flakes?: number }>;
 
@@ -1425,7 +1454,7 @@ export async function gitPipelineSnapshot(
   if (effectiveGate.consecutiveReds > 0) {
     const currentSignature = gateFailureSignature(
       effectiveGate.failingTests,
-      typeof gateHealth.observedCandidate === 'string' ? gateHealth.observedCandidate : null,
+      gatePromotionIdentity.observedCandidate,
     );
     const ownerSignature = typeof lastFixer?.signature === 'string' ? lastFixer.signature : null;
     const spawnId = typeof lastFixer?.spawnId === 'string' ? lastFixer.spawnId : null;
@@ -1595,7 +1624,8 @@ export async function gitPipelineSnapshot(
       // Not part of `RawGateCounters`/`pinProvenGateCorrection`: a proven pin-advance already
       // wipes `failingTests` to `[]` above, which alone makes `verifyGateVerdict`'s file-shaped
       // check a no-op — no separate reset needed for the candidate it was attributed to.
-      observedCandidate: typeof gateHealth.observedCandidate === 'string' ? gateHealth.observedCandidate : null,
+      observedCandidate: gatePromotionIdentity.observedCandidate,
+      lastMainPin: gatePromotionIdentity.lastMainPin,
       retriageStaleTip,
       retriageDetail,
       // EI-19399662484764592: the re-triage verdict for EVERY classification, from the
@@ -1604,7 +1634,7 @@ export async function gitPipelineSnapshot(
       // different run's re-triage to this red.
       retriageVerdict: pickRetriageVerdict(
         recent,
-        typeof gateHealth.observedCandidate === 'string' ? gateHealth.observedCandidate : null,
+        gatePromotionIdentity.observedCandidate,
       ),
       inFlightRetriage,
       inFlightCandidate,

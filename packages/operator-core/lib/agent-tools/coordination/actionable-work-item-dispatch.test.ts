@@ -480,4 +480,20 @@ describe('resolveStableAgentTarget', () => {
     expect(result.ownerId).toBe('su-direct');
     expect(d.snapshot).toHaveBeenCalledWith(expect.objectContaining({ wsId: 'ws' }), { owner: 'su-direct' });
   });
+
+  it('carries the presence userId for raw-owner cross-user checks', async () => {
+    const d = targetDeps([{ ownerId: 'su-direct', userId: 'alice', sessionState: 'live', wakeable: true }]);
+    d.listSessions = vi.fn(async () => []);
+
+    const result = await resolveStableAgentTarget({ targetAgent: 'su-direct', workspaceId: 'ws', harness: 'email' }, d);
+
+    expect(result).toMatchObject({
+      requested: 'su-direct',
+      ownerId: 'su-direct',
+      present: true,
+      sessionState: 'live',
+      wakeable: true,
+      userId: 'alice',
+    });
+  });
 });

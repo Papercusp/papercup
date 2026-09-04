@@ -9,10 +9,18 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import { ISSUE_FAMILY_KINDS, type HeldDependencyEscapeContext, type WorkItem } from '../work-items';
+import {
+  ISSUE_FAMILY_KINDS,
+  type HeldDependencyEscapeContext,
+  type WorkItem,
+} from '../work-items';
 import type { ClaimSpecRecord } from './claim-spec-store';
 import { resolveClaimSpecWorkspace } from './claim-spec-workspace';
-import { matchesClaimSpecFilter, matchesWorkItemClaimSpec, type ClaimSpecSubject } from './claim-spec-match';
+import {
+  matchesClaimSpecFilter,
+  matchesWorkItemClaimSpec,
+  type ClaimSpecSubject,
+} from './claim-spec-match';
 import { claimSpecFilterToClaimablePayloadFilter } from './claim-spec-payload-filter';
 import { claimSpecReferencesField, formatSpecRef, type ClaimSpec } from './claim-spec';
 import { boundedPgReadTxn, PG_READ_QUERY_CALL_OVERHEAD_MS } from '../pg-read-query';
@@ -185,7 +193,9 @@ export function buildFleetDependencyEscape(args: {
   const currentFilter = current.view.filter;
   const proposed: ClaimSpec = {
     ...current,
-    specId: admission.scope.record.source === 'default' ? `${admission.scope.fleetSlug}-lane` : current.specId,
+    specId: admission.scope.record.source === 'default'
+      ? `${admission.scope.fleetSlug}-lane`
+      : current.specId,
     revision: current.revision + 1,
     view: {
       ...current.view,
@@ -230,26 +240,22 @@ export function buildFleetDependencyEscape(args: {
               to: [outsideAssignee],
               expects: 'action',
               wake: 'required',
-              body: [
-                {
-                  text: `Claim dependency ${context.dependencyId}; it blocks ${context.blockedHeldItems.map((item) => item.id).join(', ')} held by ${admission.scope.ownerId}.`,
-                  forYouBecause: { relation: 'owns', ref: context.dependencyId },
-                },
-              ],
+              body: [{
+                text: `Claim dependency ${context.dependencyId}; it blocks ${context.blockedHeldItems.map((item) => item.id).join(', ')} held by ${admission.scope.ownerId}.`,
+                forYouBecause: { relation: 'owns', ref: context.dependencyId },
+              }],
             },
           },
         ],
       },
       {
         kind: 'leader_claim',
-        calls: [
-          {
-            tool: 'work_items:claim',
-            // No assignee on purpose: invoked by the fleet leader, this bypasses the
-            // MEMBER-only lane without changing/releasing the blocked member's claim.
-            args: { id: context.dependencyId, ...harnessArg },
-          },
-        ],
+        calls: [{
+          tool: 'work_items:claim',
+          // No assignee on purpose: invoked by the fleet leader, this bypasses the
+          // MEMBER-only lane without changing/releasing the blocked member's claim.
+          args: { id: context.dependencyId, ...harnessArg },
+        }],
       },
     ],
   };
@@ -283,9 +289,7 @@ export async function resolveFleetScopeContext(
   // plan_items:assign addresses a stable agent-name. Resolve it through the
   // canonical assignment/presence view before consulting append-only membership.
   if (!membership?.fleetSlug) {
-    const rows = await listFleetAssignments({ workspaceId: ws, agent: ownerIdOrName, activeOnly: true }).catch(
-      () => [],
-    );
+    const rows = await listFleetAssignments({ workspaceId: ws, agent: ownerIdOrName, activeOnly: true }).catch(() => []);
     const row = rows.find((r) => r.agentId && r.fleetSlug && r.fleetRole === 'member');
     if (row?.agentId) {
       ownerId = row.agentId;
@@ -314,7 +318,11 @@ export async function resolveFleetScopeContext(
  * re-arms the release-cooldown floor on) a fleet member's own valid claim —
  * every single call, since nothing about the mismatch ever self-corrects.
  */
-async function featureMatchesRecord(item: WorkItem, record: ClaimSpecRecord, workspaceId: string): Promise<boolean> {
+async function featureMatchesRecord(
+  item: WorkItem,
+  record: ClaimSpecRecord,
+  workspaceId: string,
+): Promise<boolean> {
   const { sql } = getOrgPg();
   const { compileFilter } = await import('./get-next');
   const filter = compileFilter(sql, record.spec.view.filter);
@@ -634,7 +642,12 @@ export async function admitSubjectForFleetTarget(args: {
   // identity is server-derived, so this remains narrow: peer-filed and non-bug creates
   // still receive the normal no-spec refusal.
   if (scope.record.source === 'default') {
-    if (selfFiledFalloutAdmission({ kind: args.subject.kind, createdBy: args.createdBy ?? null }, scope)) {
+    if (
+      selfFiledFalloutAdmission(
+        { kind: args.subject.kind, createdBy: args.createdBy ?? null },
+        scope,
+      )
+    ) {
       return { allowed: true, scoped: true, scope };
     }
     return denyMissing(scope);
@@ -646,7 +659,12 @@ export async function admitSubjectForFleetTarget(args: {
   // narrow predicate to the server-derived creator + requested kind. This keeps
   // work_items:create { kind:'bug', assign_to:'self' } atomic instead of filing the
   // fallout unassigned and requiring a second work_items:claim round-trip.
-  if (selfFiledFalloutAdmission({ kind: args.subject.kind, createdBy: args.createdBy ?? null }, scope)) {
+  if (
+    selfFiledFalloutAdmission(
+      { kind: args.subject.kind, createdBy: args.createdBy ?? null },
+      scope,
+    )
+  ) {
     return { allowed: true, scoped: true, scope };
   }
   if (await leaderDispatchedAdmission({ assignedBy: args.assignedBy ?? null }, scope)) {
@@ -697,7 +715,9 @@ export async function hasLiveFleetRouteTarget(
     if (!ws) return null;
     const { listFleetAssignments, groupByAgent } = await import('../fleet/assignments');
     const rows = await listFleetAssignments({ workspaceId: ws });
-    const members = groupByAgent(rows).filter((a) => a.fleetSlug === fleetSlug && a.agentId !== excludeOwnerId);
+    const members = groupByAgent(rows).filter(
+      (a) => a.fleetSlug === fleetSlug && a.agentId !== excludeOwnerId,
+    );
     return members.some((m) => m.present && m.alive);
   } catch {
     return null;
@@ -901,7 +921,9 @@ export async function diagnoseFleetScopePlanTerminality(args: {
  * leader is `false`; a registry/roster failure is unknown (`null`) so the old
  * escalation wording remains safe.
  */
-export async function diagnoseFleetScopeLeaderLiveness(args: { scope: FleetScopeContext }): Promise<boolean | null> {
+export async function diagnoseFleetScopeLeaderLiveness(args: {
+  scope: FleetScopeContext;
+}): Promise<boolean | null> {
   try {
     const ws = resolveClaimSpecWorkspace(args.scope.workspaceId);
     if (!ws) return null;
@@ -1015,9 +1037,7 @@ export function fleetScopeLeaderRemedy(
     );
   }
   const spec = admission.scope.record?.spec;
-  const specRef = spec?.specId
-    ? formatSpecRef(spec.specId, spec.revision)
-    : 'the fleet lane (no authored spec yet — default)';
+  const specRef = spec?.specId ? formatSpecRef(spec.specId, spec.revision) : 'the fleet lane (no authored spec yet — default)';
   const planScoped = specHasPlanPredicate(spec);
   const retiredPlanNote = retiredPlans?.length
     ? `⚠ RETIRED PLAN PIN — this spec still filters on ${retiredPlans
@@ -1035,23 +1055,24 @@ export function fleetScopeLeaderRemedy(
   // on a blocker silently makes the blocker disappear. Demoted to LAST, phrased as
   // a conditional test rather than an instruction, with the consequence stated
   // inline instead of left for the reader to infer at the decision point.
-  const planStampNote =
-    planScoped && !retiredPlans?.length
-      ? (() => {
-          const plans = planPredicateValues(spec);
-          const planScope = plans.length ? plans.map((plan) => `'${plan}'`).join(', ') : 'a plan/plan-item predicate';
-          const planSlug = plans.length === 1 ? `"${plans[0]}"` : '"<plan-slug>"';
-          return (
-            ` LAST RESORT — this member's lane is plan-scoped to ${planScope}. ONLY if the refused work-item's own ` +
-            `body describes it as IMPLEMENTING one of that plan's items (never a blocker merely discovered while ` +
-            `working the plan — leave that unlinked and route it via the options above instead), you may backfill ` +
-            `it before changing the lane: work_items:update { id: "<work-item-id>", plan_item: { slug: ${planSlug}, ` +
-            `item: "<P-NNN>" } } — the existing claim can then succeed without a spec revision. ⚠ CONSEQUENCE: the ` +
-            `stamp creates a coverage edge, so closing that plan item later auto-resolves this work-item as residue ` +
-            `even if its own work was never done — a wrong stamp on a blocker silently makes the blocker disappear.`
-          );
-        })()
-      : '';
+  const planStampNote = planScoped && !retiredPlans?.length
+    ? (() => {
+        const plans = planPredicateValues(spec);
+        const planScope = plans.length
+          ? plans.map((plan) => `'${plan}'`).join(', ')
+          : 'a plan/plan-item predicate';
+        const planSlug = plans.length === 1 ? `"${plans[0]}"` : '"<plan-slug>"';
+        return (
+          ` LAST RESORT — this member's lane is plan-scoped to ${planScope}. ONLY if the refused work-item's own ` +
+          `body describes it as IMPLEMENTING one of that plan's items (never a blocker merely discovered while ` +
+          `working the plan — leave that unlinked and route it via the options above instead), you may backfill ` +
+          `it before changing the lane: work_items:update { id: "<work-item-id>", plan_item: { slug: ${planSlug}, ` +
+          `item: "<P-NNN>" } } — the existing claim can then succeed without a spec revision. ⚠ CONSEQUENCE: the ` +
+          `stamp creates a coverage edge, so closing that plan item later auto-resolves this work-item as residue ` +
+          `even if its own work was never done — a wrong stamp on a blocker silently makes the blocker disappear.`
+        );
+      })()
+    : '';
   // EI-21906739799895413: "…whose view.filter admits this work" describes a repair without
   // naming it, and the shape it omits is exactly the one authors cannot guess — a leader who
   // needs to keep a plan fence AND admit one ad-hoc row invented `{ op:'any', of:[...] }`,
@@ -1071,7 +1092,9 @@ export function fleetScopeLeaderRemedy(
   // the worst of both. Computed once and reused below so the two can never drift apart.
   const classNote = planScoped ? '' : fleetScopeClassRefusalNote(classRefusal);
   const concreteWiden =
-    subjectId && spec && !classNote ? JSON.stringify(fencePreservingWidenFilter(spec.view?.filter, subjectId)) : null;
+    subjectId && spec && !classNote
+      ? JSON.stringify(fencePreservingWidenFilter(spec.view?.filter, subjectId))
+      : null;
   const laneAction = retiredPlans?.length
     ? `RE-STEER the fleet lane in ONE call: ` +
       `scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: { … a revision bump of ${specRef} ` +
@@ -1159,17 +1182,15 @@ export async function notifyFleetScopeRefusal(
     windingDown || !itemId || !member
       ? Promise.resolve(null)
       : import('../work-items')
-          .then((m) =>
-            m.readHeldDependencyEscapeContext({
-              dependencyId: itemId,
-              // Admission has already resolved a stable agent name to the canonical
-              // owner id. Query both because claimWorkItem stores explicit assignees
-              // verbatim, so older held work may use either representation.
-              member: admission.scope.ownerId,
-              memberAliases: [member],
-              harness: opts?.harness,
-            }),
-          )
+          .then((m) => m.readHeldDependencyEscapeContext({
+            dependencyId: itemId,
+            // Admission has already resolved a stable agent name to the canonical
+            // owner id. Query both because claimWorkItem stores explicit assignees
+            // verbatim, so older held work may use either representation.
+            member: admission.scope.ownerId,
+            memberAliases: [member],
+            harness: opts?.harness,
+          }))
           .catch(() => null),
   ]);
   const dependencyEscape = dependencyContext
@@ -1179,26 +1200,26 @@ export async function notifyFleetScopeRefusal(
   // Lazy, like every other agent-tools seam in this file: the constants live with
   // the READER (agent-tools/coordination), and a static edge would drag the coord
   // graph into every unit test that merely imports admission.
-  const { FLEET_ADMISSION_BLOCK_CATEGORY, FLEET_ADMISSION_BLOCK_STAMP } =
-    await import('../agent-tools/coordination/fleet-scope-admission-blocks');
+  const { FLEET_ADMISSION_BLOCK_CATEGORY, FLEET_ADMISSION_BLOCK_STAMP } = await import(
+    '../agent-tools/coordination/fleet-scope-admission-blocks'
+  );
   // EI-18680302159738037: stamp the block structurally alongside the prose. Only
   // when the caller named BOTH item and member — the reader requires the pair, so a
   // half stamp would be dead weight on the envelope.
-  const stamp =
-    itemId && member
-      ? {
-          [FLEET_ADMISSION_BLOCK_STAMP]: {
-            itemId,
-            member,
-            specId: admission.scope.record.spec.specId,
-            specRevision: admission.scope.record.spec.revision,
-            code: admission.code,
-            action,
-            reason: admission.reason,
-            ...(dependencyEscape ? { dependencyEscape } : {}),
-          },
-        }
-      : undefined;
+  const stamp = itemId && member
+    ? {
+        [FLEET_ADMISSION_BLOCK_STAMP]: {
+          itemId,
+          member,
+          specId: admission.scope.record.spec.specId,
+          specRevision: admission.scope.record.spec.revision,
+          code: admission.code,
+          action,
+          reason: admission.reason,
+          ...(dependencyEscape ? { dependencyEscape } : {}),
+        },
+      }
+    : undefined;
   await sendMessage(identity, {
     to: [`@fleet-leader:${admission.scope.fleetSlug}`],
     summary: `fleet-scope admission blocked ${action}`,
@@ -1240,9 +1261,7 @@ export async function reconcileFleetScopeClaims(args: {
     agent: scope.ownerId,
     activeOnly: true,
   });
-  const ids = [
-    ...new Set(rows.filter((r) => r.source === 'work_item_claim' && r.workItemId).map((r) => r.workItemId as string)),
-  ];
+  const ids = [...new Set(rows.filter((r) => r.source === 'work_item_claim' && r.workItemId).map((r) => r.workItemId as string))];
   const quarantinedIds: string[] = [];
   for (const id of ids) {
     const item = await getWorkItem(id);
@@ -1431,15 +1450,10 @@ export async function diagnoseFleetScopeCooldownMiss(args: {
  * this annotates a miss, it must never be able to turn one into a thrown error.
  */
 export interface FeatureFamilyClaimExclusionBreakdown {
-  /** Feature-family rows in this harness/workspace/state population matched by the spec before floors. */
   matchedByFilter: number;
-  /** Rows surviving the exact same feature-family floors as getNextWorkItem. */
   claimable: number;
-  /** Overlapping diagnostics: reservedPlanLane is a subset of the unique claimFloors total. */
-  excluded: {
-    claimFloors: number;
-    reservedPlanLane: number;
-  };
+  /** reservedPlanLane is an overlapping subset of the unique claimFloors total. */
+  excluded: { claimFloors: number; reservedPlanLane: number };
 }
 
 type FeatureFamilyDiagnosticArgs = {
@@ -1455,13 +1469,6 @@ type FeatureFamilyDiagnosticArgs = {
   cooldownAssignee?: string | null;
 };
 
-/**
- * Feature-family sibling of aggregateIssueClaimExclusions, bounded to the two
- * counts exact-plan admission needs to make an honest decision. The full floor
- * predicate is still the canonical claimFloorsWhereSql; this reader adds a
- * pre-floor matched count and identifies the reserved-plan-lane subset without
- * reimplementing the claim bar.
- */
 export async function diagnoseFleetScopeFeatureFamilyExclusions(
   args: FeatureFamilyDiagnosticArgs,
 ): Promise<FeatureFamilyClaimExclusionBreakdown | null> {
@@ -1478,7 +1485,9 @@ export async function diagnoseFleetScopeFeatureFamilyExclusions(
     // a fleet-stamped plan lane is admissible to its owning fleet, and a spec that
     // explicitly references `fleet` authorizes the matching stamped lane itself.
     const claimSpecReferencesFleet = claimSpecReferencesField(spec, 'fleet');
-    const cooldownAssignee = args.cooldownAssignee === null ? undefined : (args.cooldownAssignee ?? args.scope.ownerId);
+    const cooldownAssignee = args.cooldownAssignee === null
+      ? undefined
+      : args.cooldownAssignee ?? args.scope.ownerId;
     const floors = claimFloorsWhereSql(sql, {
       harness: args.harness,
       workspaceId: ws,
@@ -1499,21 +1508,12 @@ export async function diagnoseFleetScopeFeatureFamilyExclusions(
       claimantFleetSlug: args.scope.fleetSlug,
       claimSpecReferencesFleet,
     });
-    const rows = await sql<
-      {
-        matched: number;
-        claimable: number;
-        reserved_plan_lane: number;
-      }[]
-    >`
+    const rows = await sql<{ matched: number; claimable: number; reserved_plan_lane: number }[]>`
       SELECT count(*) FILTER (WHERE ${filter})::int AS matched,
              count(*) FILTER (WHERE ${floors} AND ${filter})::int AS claimable,
-             count(*) FILTER (
-               WHERE ${filter} AND NOT (${reservationEligible})
-             )::int AS reserved_plan_lane
+             count(*) FILTER (WHERE ${filter} AND NOT (${reservationEligible}))::int AS reserved_plan_lane
         FROM harness_shared.harness_features_consolidated
-       WHERE ${candidate}
-    `;
+       WHERE ${candidate}`;
     const matchedByFilter = rows[0]?.matched ?? 0;
     const claimable = rows[0]?.claimable ?? 0;
     return {
@@ -1529,7 +1529,7 @@ export async function diagnoseFleetScopeFeatureFamilyExclusions(
   }
 }
 
-/** Compatibility count used by scheduler miss diagnosis; lane-health consumes the richer sibling above. */
+/** Compatibility count used by scheduler miss diagnosis; lane-health consumes the richer sibling. */
 export async function diagnoseFleetScopeFeatureFamilyMatch(args: FeatureFamilyDiagnosticArgs): Promise<number | null> {
   return (await diagnoseFleetScopeFeatureFamilyExclusions(args))?.claimable ?? null;
 }
@@ -1721,7 +1721,7 @@ export function fleetScopedMiss(
      * issue-family breakdown is merely blind to the feature family — so it suppresses the
      * false `spec_matches_nothing` verdict below in favor of an honest, non-drain report.
      * `null`/`undefined`/`0` ⇒ no change from the pre-existing issue-family-only behavior.
-     */
+    */
     featureFamilyMatched?: number | null;
     /**
      * EI-20186990913643457: status-floor-free match counts for the spec. A positive count is
@@ -1829,10 +1829,7 @@ export function fleetScopedMiss(
   // nothing" — see diagnoseFleetScopeFeatureFamilyMatch's doc comment. Mutually exclusive
   // with `specEmpty` by construction (both require the same `matchedByFilter === 0` base).
   const featureFamilyMiss =
-    !paused &&
-    breakdown != null &&
-    breakdown.matchedByFilter === 0 &&
-    !!(opts?.featureFamilyMatched && opts.featureFamilyMatched > 0);
+    !paused && breakdown != null && breakdown.matchedByFilter === 0 && !!(opts?.featureFamilyMatched && opts.featureFamilyMatched > 0);
   // EI-20260781488788952: a plan-level terminality read closes the family blind spot in the
   // row-level exhaustion check. Only an explicitly positive all-terminal result is trusted;
   // false/null/absent leaves the old miss diagnosis in place.
@@ -1942,13 +1939,13 @@ export function fleetScopedMiss(
   // scoped to a single harness (args.harness) regardless of what the spec filter narrows on.
   const claimablePayloadFilter = opts?.harness
     ? ({
-        all: [{ harness: { equals: opts.harness } }, ...(specDerivedPayloadFilter ? [specDerivedPayloadFilter] : [])],
+        all: [
+          { harness: { equals: opts.harness } },
+          ...(specDerivedPayloadFilter ? [specDerivedPayloadFilter] : []),
+        ],
       } as const)
     : specDerivedPayloadFilter;
-  const cooldownExpirySec =
-    cooldown?.earliestExpiryMs != null
-      ? Math.max(0, Math.round((cooldown.earliestExpiryMs - Date.now()) / 1000))
-      : null;
+  const cooldownExpirySec = cooldown?.earliestExpiryMs != null ? Math.max(0, Math.round((cooldown.earliestExpiryMs - Date.now()) / 1000)) : null;
   // EI-14615: surface the ABSOLUTE cooldown expiry instant, not just the relative
   // `~Ns` (which is recomputed against Date.now() every poll and so reads the same
   // "~300s" whether the window is decaying normally OR being externally re-stamped).
@@ -1957,78 +1954,77 @@ export function fleetScopedMiss(
   // window is being re-stamped by the fleet round-robin re-releasing these rows faster
   // than the cooldown lapses (the livelock this ticket documents) — it will NEVER clear
   // on its own, and the do-not-escalate advice below is corrected to say so.
-  const cooldownExpiryAt =
-    cooldown?.earliestExpiryMs != null ? new Date(cooldown.earliestExpiryMs).toISOString() : null;
+  const cooldownExpiryAt = cooldown?.earliestExpiryMs != null ? new Date(cooldown.earliestExpiryMs).toISOString() : null;
   return {
     ok: false as const,
     error: paused
       ? `fleet '${scope.fleetSlug}' is winding-down (paused${opts?.pausedReason ? `: ${opts.pausedReason}` : ''}); ` +
-        "do NOT pull new work from this fleet's lanes — stand down until a fleet:resume (control_state=active) lands"
+        'do NOT pull new work from this fleet\'s lanes — stand down until a fleet:resume (control_state=active) lands'
       : divergent
         ? `CLAIM-PATH/READ-PATH DIVERGENCE: the claim path selected nothing, but the shared claimability oracle reports ` +
           `${breakdown!.claimable} of ${breakdown!.matchedByFilter} in-spec issue-family row(s) passing spec_match AND every claim floor ` +
           `for fleet scope ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}. Your lane is NOT drained and NOT floor-gated — ` +
-          "this is an internal inconsistency in the claim path's own spec narrowing (the EI-10062 / WI-4309 / WI-5275 / WI-5822 class). " +
+          'this is an internal inconsistency in the claim path\'s own spec narrowing (the EI-10062 / WI-4309 / WI-5275 / WI-5822 class). ' +
           'CONFIRMED across TWO claim attempts with survivors present in two independent readings, so this is not lane churn. ' +
           'windDown is deliberately NOT set: do not stand down.'
         : unconfirmedSurvivors
-          ? `POOL CHANGED UNDER YOU (not a drained lane, not a bug): the claim path selected nothing, but a reading taken just ` +
-            `afterwards reports ${breakdown!.claimable} of ${breakdown!.matchedByFilter} in-spec row(s) passing every claim floor for fleet scope ` +
-            `${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}. Those are two different instants on a table your whole ` +
-            'fleet is mutating, so the likeliest explanation by far is that a row became claimable in between (a peer released, a claim-hold ' +
-            'lapsed, a detector filed) — NOT a defect. This was NOT confirmed by a second claim attempt, so do not report it as one ' +
-            '(WI-5947). windDown is NOT set: there may well be work — just pull again.'
-          : featureFamilyMiss
-            ? `ISSUE-FAMILY DIAGNOSIS BLIND SPOT (WI-7151 / EI-19318364531323846): the claim path selected nothing, and the ` +
-              `issue-family-only breakdown reports 0 matching row(s) — but ${opts?.featureFamilyMatched} FEATURE-family row(s) ` +
-              `(the family every plans:start promotion mints) match claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
-              'view.filter and pass every claim floor. The issue-family breakdown is STRUCTURALLY blind to the feature family ' +
-              '(it only ever queries bug/change/task rows), so its `matchedByFilter: 0` is NOT evidence your spec matches ' +
-              'nothing — it only means "nothing in the issue family". This is NOT a drained lane and NOT a spec-authoring ' +
-              'problem: it is either a transient race (pull again) or a genuine claim-path defect in the tier-1 (feature-family) ' +
-              'narrowing. windDown is deliberately NOT set: do not stand down, and do not re-author the claim spec on this alone.'
-            : planComplete
-              ? `PLAN COMPLETE (EI-20260781488788952): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)} ` +
-                `is bound to plan predicate(s) ${opts!.planTerminality!.terminalPlanSlugs.join(', ')} and every bound plan is terminal. ` +
-                'This is a successful completed-plan wind-down, not a spec-authoring problem; checkpoint, release, and stop pulling.'
-              : specExhausted
-                ? `SPEC EXHAUSTED (EI-20186990913643457): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
-                  `view.filter matched ${opts!.terminalExhaustion!.matchedByFilter} row(s) without the claimable-state floor, and all ` +
-                  `${opts!.terminalExhaustion!.terminalMatchedByFilter} matching row(s) are terminal. This is a successful drain, not a ` +
-                  'spec-authoring problem: the lane is complete, so stand down and do not re-author or escalate the spec.'
-                : nonIssueSpecEmpty
-                  ? `ORDINARY DRAIN, NOT A SPEC-AUTHORING PROBLEM (EI-19393442073558754): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
-                    'view.filter references a plan/plan-item and is not restricted to issue-family kinds — a plan-scoped spec routinely and ' +
-                    'correctly admits ONLY feature-family rows for long stretches (D-009: a plan-promoted item is feature-family unless its ' +
-                    "own kind is bug/change/task), so the issue-family breakdown's `matchedByFilter: 0` is EXPECTED BY CONSTRUCTION here, " +
-                    'not a sign the spec itself is broken. ' +
-                    (opts?.featureFamilyMatched === 0
-                      ? 'The feature-family (tier-1) pool was ALSO checked and is genuinely empty right now — this is an ordinary drain.'
-                      : 'The feature-family (tier-1) pool could not be confirmed on this pull — treat this as a likely drain, but verify ' +
-                        'via plans:items / work_items:claimable before reporting a spec-authoring problem to your fleet leader.') +
-                    ' Do NOT re-author this claim spec off this signal alone.'
-                  : specEmpty
-                    ? `SPEC MATCHES NOTHING (EI-18663622382734446): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
-                      'view.filter matches 0 issue-family row(s) in this harness/workspace at all — this is a SPEC-AUTHORING problem ' +
-                      '(a stale id allowlist, an over-narrow plan/kind/tag scope, or a typo), NOT a genuinely drained or floor-gated queue. ' +
-                      (opts?.leaderLiveness === false
-                        ? 'The registered fleet leader is not live, so do not route this to a dead leader: take leadership as the sole live member or escalate to the fleet launcher/owner, quoting this spec id/revision. '
-                        : 'ESCALATE to your fleet leader NOW quoting this spec id/revision; ') +
-                      'do not silently treat this as a normal drain — a zero-match spec never self-heals the way a drained pool eventually does.'
-                    : cooldown
-                      ? `${cooldown.cooldownExcluded} in-spec row(s) matched fleet scope ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)} ` +
-                        `but ${cooldown.cooldownExcluded === 1 ? 'is' : 'are'} excluded ONLY by YOUR OWN release-cooldown floor` +
-                        (cooldownExpirySec != null ? ` (earliest expiry in ~${cooldownExpirySec}s)` : '') +
-                        '; this is NOT a scope/spec mismatch — do not re-author the claim spec for this miss.'
-                      : floorGated
-                        ? `POOL BLOCKED, NOT SPEC-BROKEN (EI-18741523426513509): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
-                          `view.filter matched ${breakdown!.matchedByFilter} issue-family row(s), but every one is presently excluded by a claim floor ` +
-                          "(see `excludedBreakdownSummary`) — an uncleared plan-lane blocker, a peer's claim-hold, needs-human, or similar. This is an " +
-                          'EFFECT (the pool is momentarily gated), not a CAUSE (a wrong/over-narrow spec) — the two have opposite remedies (await/re-poll ' +
-                          'vs. rewrite the spec), so do NOT treat this as a spec-authoring problem: it very likely self-clears once the gating condition ' +
-                          'lifts, with no spec change required.'
-                        : `no claimable work-item matched fleet scope ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}; ` +
-                          'the member was NOT allowed to fall through to the generic backlog',
+        ? `POOL CHANGED UNDER YOU (not a drained lane, not a bug): the claim path selected nothing, but a reading taken just ` +
+          `afterwards reports ${breakdown!.claimable} of ${breakdown!.matchedByFilter} in-spec row(s) passing every claim floor for fleet scope ` +
+          `${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}. Those are two different instants on a table your whole ` +
+          'fleet is mutating, so the likeliest explanation by far is that a row became claimable in between (a peer released, a claim-hold ' +
+          'lapsed, a detector filed) — NOT a defect. This was NOT confirmed by a second claim attempt, so do not report it as one ' +
+          '(WI-5947). windDown is NOT set: there may well be work — just pull again.'
+        : featureFamilyMiss
+          ? `ISSUE-FAMILY DIAGNOSIS BLIND SPOT (WI-7151 / EI-19318364531323846): the claim path selected nothing, and the ` +
+            `issue-family-only breakdown reports 0 matching row(s) — but ${opts?.featureFamilyMatched} FEATURE-family row(s) ` +
+            `(the family every plans:start promotion mints) match claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
+            'view.filter and pass every claim floor. The issue-family breakdown is STRUCTURALLY blind to the feature family ' +
+            '(it only ever queries bug/change/task rows), so its `matchedByFilter: 0` is NOT evidence your spec matches ' +
+            'nothing — it only means "nothing in the issue family". This is NOT a drained lane and NOT a spec-authoring ' +
+            'problem: it is either a transient race (pull again) or a genuine claim-path defect in the tier-1 (feature-family) ' +
+            'narrowing. windDown is deliberately NOT set: do not stand down, and do not re-author the claim spec on this alone.'
+        : planComplete
+          ? `PLAN COMPLETE (EI-20260781488788952): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)} ` +
+            `is bound to plan predicate(s) ${opts!.planTerminality!.terminalPlanSlugs.join(', ')} and every bound plan is terminal. ` +
+            'This is a successful completed-plan wind-down, not a spec-authoring problem; checkpoint, release, and stop pulling.'
+        : specExhausted
+          ? `SPEC EXHAUSTED (EI-20186990913643457): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
+            `view.filter matched ${opts!.terminalExhaustion!.matchedByFilter} row(s) without the claimable-state floor, and all ` +
+            `${opts!.terminalExhaustion!.terminalMatchedByFilter} matching row(s) are terminal. This is a successful drain, not a ` +
+            'spec-authoring problem: the lane is complete, so stand down and do not re-author or escalate the spec.'
+        : nonIssueSpecEmpty
+          ? `ORDINARY DRAIN, NOT A SPEC-AUTHORING PROBLEM (EI-19393442073558754): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
+            'view.filter references a plan/plan-item and is not restricted to issue-family kinds — a plan-scoped spec routinely and ' +
+            'correctly admits ONLY feature-family rows for long stretches (D-009: a plan-promoted item is feature-family unless its ' +
+            'own kind is bug/change/task), so the issue-family breakdown\'s `matchedByFilter: 0` is EXPECTED BY CONSTRUCTION here, ' +
+            'not a sign the spec itself is broken. ' +
+            (opts?.featureFamilyMatched === 0
+              ? 'The feature-family (tier-1) pool was ALSO checked and is genuinely empty right now — this is an ordinary drain.'
+              : 'The feature-family (tier-1) pool could not be confirmed on this pull — treat this as a likely drain, but verify ' +
+                'via plans:items / work_items:claimable before reporting a spec-authoring problem to your fleet leader.') +
+            ' Do NOT re-author this claim spec off this signal alone.'
+        : specEmpty
+          ? `SPEC MATCHES NOTHING (EI-18663622382734446): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
+            'view.filter matches 0 issue-family row(s) in this harness/workspace at all — this is a SPEC-AUTHORING problem ' +
+            '(a stale id allowlist, an over-narrow plan/kind/tag scope, or a typo), NOT a genuinely drained or floor-gated queue. ' +
+            (opts?.leaderLiveness === false
+              ? 'The registered fleet leader is not live, so do not route this to a dead leader: take leadership as the sole live member or escalate to the fleet launcher/owner, quoting this spec id/revision. '
+              : 'ESCALATE to your fleet leader NOW quoting this spec id/revision; ') +
+            'do not silently treat this as a normal drain — a zero-match spec never self-heals the way a drained pool eventually does.'
+        : cooldown
+        ? `${cooldown.cooldownExcluded} in-spec row(s) matched fleet scope ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)} ` +
+          `but ${cooldown.cooldownExcluded === 1 ? 'is' : 'are'} excluded ONLY by YOUR OWN release-cooldown floor` +
+          (cooldownExpirySec != null ? ` (earliest expiry in ~${cooldownExpirySec}s)` : '') +
+          '; this is NOT a scope/spec mismatch — do not re-author the claim spec for this miss.'
+        : floorGated
+          ? `POOL BLOCKED, NOT SPEC-BROKEN (EI-18741523426513509): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
+            `view.filter matched ${breakdown!.matchedByFilter} issue-family row(s), but every one is presently excluded by a claim floor ` +
+            '(see `excludedBreakdownSummary`) — an uncleared plan-lane blocker, a peer\'s claim-hold, needs-human, or similar. This is an ' +
+            'EFFECT (the pool is momentarily gated), not a CAUSE (a wrong/over-narrow spec) — the two have opposite remedies (await/re-poll ' +
+            'vs. rewrite the spec), so do NOT treat this as a spec-authoring problem: it very likely self-clears once the gating condition ' +
+            'lifts, with no spec change required.'
+        : `no claimable work-item matched fleet scope ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}; ` +
+          'the member was NOT allowed to fall through to the generic backlog',
     fleetScope: {
       fleet: scope.fleetSlug,
       specId: scope.record.spec.specId,
@@ -2055,36 +2051,28 @@ export function fleetScopedMiss(
     // response) can see the standing wake that would have fired on a peer's next
     // compliant release was actually retired, not merely refused-if-it-fires.
     ...(paused ? { claimableAwaitsCancelled: opts?.claimableAwaitsCancelled ?? 0 } : {}),
-    ...(cooldown
-      ? {
-          cooldownOnly: true as const,
-          cooldownExcluded: cooldown.cooldownExcluded,
-          cooldownExpirySec,
-          cooldownExpiryAt,
-          cooldownEarliestRowId: cooldown.earliestRowId,
-        }
-      : {}),
+    ...(cooldown ? { cooldownOnly: true as const, cooldownExcluded: cooldown.cooldownExcluded, cooldownExpirySec, cooldownExpiryAt, cooldownEarliestRowId: cooldown.earliestRowId } : {}),
     // EI-18663622382734446: named, top-level reason so a caller (or a leader reading a
     // relayed report) can branch on this WITHOUT digging into excludedBreakdown.matchedByFilter.
     // Absent for every other miss shape — this is deliberately the loud, rare case.
-    ...(specExhausted ? { reason: 'spec_exhausted' as const, terminalExhaustion: opts?.terminalExhaustion } : {}),
-    ...(planComplete ? { reason: 'plan_complete' as const, planTerminality: opts?.planTerminality } : {}),
+    ...(specExhausted
+      ? { reason: 'spec_exhausted' as const, terminalExhaustion: opts?.terminalExhaustion }
+      : {}),
+    ...(planComplete
+      ? { reason: 'plan_complete' as const, planTerminality: opts?.planTerminality }
+      : {}),
     ...(specEmpty ? { reason: 'spec_matches_nothing' as const } : {}),
     // WI-7151 (EI-19318364531323846): named, top-level reason for the issue-family-diagnosis
     // blind spot — a caller (or a leader reading a relayed report) can branch on this WITHOUT
     // digging into excludedBreakdown, and it is DELIBERATELY DISTINCT from `spec_matches_nothing`
     // (opposite remedy: this one means real work exists, do not touch the spec).
-    ...(featureFamilyMiss
-      ? { reason: 'issue_family_diagnosis_blind_spot' as const, featureFamilyMatched: opts?.featureFamilyMatched ?? 0 }
-      : {}),
+    ...(featureFamilyMiss ? { reason: 'issue_family_diagnosis_blind_spot' as const, featureFamilyMatched: opts?.featureFamilyMatched ?? 0 } : {}),
     // EI-19393442073558754: named, top-level reason for the non-issue-only-spec empty case —
     // deliberately distinct from `spec_matches_nothing` (opposite framing: this one means the
     // spec was never broken, only structurally incapable of matching the family it was judged
     // against). `featureFamilyMatched` is surfaced as-observed (0 = confirmed empty, null/undefined
     // = the tier-1 check did not run) so a caller can tell "confirmed drain" from "unconfirmed".
-    ...(nonIssueSpecEmpty
-      ? { reason: 'ordinary_drain' as const, featureFamilyMatched: opts?.featureFamilyMatched ?? null }
-      : {}),
+    ...(nonIssueSpecEmpty ? { reason: 'ordinary_drain' as const, featureFamilyMatched: opts?.featureFamilyMatched ?? null } : {}),
     // EI-18741523426513509: named, top-level reason for the floor-gated (transient) case — the
     // effect-vs-cause counterpart of `spec_matches_nothing` above. A caller (or a leader reading
     // a relayed report) can branch on this WITHOUT digging into excludedBreakdown to tell "your
@@ -2105,55 +2093,55 @@ export function fleetScopedMiss(
           excludedBreakdown: breakdown,
           excludedBreakdownSummary: featureFamilyMiss
             ? `Your spec's filter matches 0 issue-family row(s), but ${opts?.featureFamilyMatched} FEATURE-family row(s) match it and ` +
-              'pass every claim floor — this breakdown only ever queries bug/change/task rows, so its 0 says nothing about your ' +
-              "spec's feature-family matches. Do NOT treat this as a spec-authoring problem; see the top-level error/advice."
+              "pass every claim floor — this breakdown only ever queries bug/change/task rows, so its 0 says nothing about your " +
+              'spec\'s feature-family matches. Do NOT treat this as a spec-authoring problem; see the top-level error/advice.'
             : nonIssueSpecEmpty
-              ? "Your spec's filter matches 0 issue-family row(s), but the spec is not restricted to issue-family kinds, so this is " +
-                "EXPECTED BY CONSTRUCTION (e.g. a plan-scoped spec whose plan's items are feature-family) — NOT evidence the spec " +
-                'itself is broken. See the top-level error/advice for whether the feature-family pool was also confirmed empty.'
-              : planComplete
-                ? `Your spec's plan predicate(s) are all terminal (${opts!.planTerminality!.terminalPlanSlugs.join(', ')}), so the ` +
-                  'fleet completed its scoped plan; this is a successful wind-down, not a spec-authoring failure.'
-                : specExhausted
-                  ? `Your spec's status-floor-free filter read matched ${opts!.terminalExhaustion!.matchedByFilter} row(s), and all ` +
-                    `${opts!.terminalExhaustion!.terminalMatchedByFilter} are terminal — the fleet completed its scoped tranche; this is ` +
-                    'ordinary successful exhaustion, not a spec-authoring failure.'
-                  : specEmpty
-                    ? "Your spec's filter matches 0 issue-family row(s) at all — there is nothing for any floor to exclude. " +
-                      'The SPEC ITSELF is the problem (an over-narrow filter, a stale id allowlist, wrong plan/kind scoping), not the pool.'
-                    : `Your spec's filter matches ${breakdown.matchedByFilter} issue-family row(s); stranded by: ` +
-                      Object.entries(breakdown.excluded)
-                        .filter(([, n]) => (n as number) > 0)
-                        .sort((a, b) => (b[1] as number) - (a[1] as number))
-                        .map(([k, n]) => `${k}=${n}`)
-                        .join(', ') +
-                      (divergent
-                        ? ` — BUT ${breakdown.claimable} of them survive ALL floors, so this pool is NOT floor-gated. The floors below are ` +
-                          'informational only; they are not why you got nothing. The claim path failed to select rows the shared oracle ' +
-                          'reports as claimable, across two attempts (buckets are independent, a row can count under more than one).'
-                        : unconfirmedSurvivors
-                          ? ` — and ${breakdown.claimable} of them survived ALL floors at read time, so the pool is NOT floor-gated. This ` +
-                            'reading was taken AFTER the claim attempt, so it describes a later instant; treat it as "the pool moved", not ' +
-                            'as a floor story and not as a defect (WI-5947). Re-pull rather than re-authoring the spec.'
-                          : ' (buckets are independent, a row can count under more than one; 0 candidates surviving ALL floors means the pool is genuinely floor-gated, not a scope/spec bug — re-authoring the claim spec will not help).'),
+            ? "Your spec's filter matches 0 issue-family row(s), but the spec is not restricted to issue-family kinds, so this is " +
+              'EXPECTED BY CONSTRUCTION (e.g. a plan-scoped spec whose plan\'s items are feature-family) — NOT evidence the spec ' +
+              'itself is broken. See the top-level error/advice for whether the feature-family pool was also confirmed empty.'
+            : planComplete
+            ? `Your spec's plan predicate(s) are all terminal (${opts!.planTerminality!.terminalPlanSlugs.join(', ')}), so the ` +
+              'fleet completed its scoped plan; this is a successful wind-down, not a spec-authoring failure.'
+            : specExhausted
+            ? `Your spec's status-floor-free filter read matched ${opts!.terminalExhaustion!.matchedByFilter} row(s), and all ` +
+              `${opts!.terminalExhaustion!.terminalMatchedByFilter} are terminal — the fleet completed its scoped tranche; this is ` +
+              'ordinary successful exhaustion, not a spec-authoring failure.'
+            : specEmpty
+            ? "Your spec's filter matches 0 issue-family row(s) at all — there is nothing for any floor to exclude. " +
+              'The SPEC ITSELF is the problem (an over-narrow filter, a stale id allowlist, wrong plan/kind scoping), not the pool.'
+            : `Your spec's filter matches ${breakdown.matchedByFilter} issue-family row(s); stranded by: ` +
+            Object.entries(breakdown.excluded)
+              .filter(([, n]) => (n as number) > 0)
+              .sort((a, b) => (b[1] as number) - (a[1] as number))
+              .map(([k, n]) => `${k}=${n}`)
+              .join(', ') +
+            (divergent
+              ? ` — BUT ${breakdown.claimable} of them survive ALL floors, so this pool is NOT floor-gated. The floors below are ` +
+                'informational only; they are not why you got nothing. The claim path failed to select rows the shared oracle ' +
+                'reports as claimable, across two attempts (buckets are independent, a row can count under more than one).'
+              : unconfirmedSurvivors
+                ? ` — and ${breakdown.claimable} of them survived ALL floors at read time, so the pool is NOT floor-gated. This ` +
+                  'reading was taken AFTER the claim attempt, so it describes a later instant; treat it as "the pool moved", not ' +
+                  'as a floor story and not as a defect (WI-5947). Re-pull rather than re-authoring the spec.'
+                : ' (buckets are independent, a row can count under more than one; 0 candidates surviving ALL floors means the pool is genuinely floor-gated, not a scope/spec bug — re-authoring the claim spec will not help).'),
         }
       : {}),
     advice: paused
-      ? "Fleet is paused (winding-down): finish only the atomic step in hand, work_items:checkpoint + release your claims/locks, then call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true } for any armed loop if AUTO (or another autonomy-implying mode) remains active without a deliberate independent event await, and ack your leader. Do NOT re-park a work-item:claimable await while paused (any pre-pause await of yours was just cancelled server-side, EI-15777 — a peer's compliant release will no longer re-wake you for nothing). Resume normal pull cadence only after a fleet:resume cue."
+      ? 'Fleet is paused (winding-down): finish only the atomic step in hand, work_items:checkpoint + release your claims/locks, then call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true } for any armed loop if AUTO (or another autonomy-implying mode) remains active without a deliberate independent event await, and ack your leader. Do NOT re-park a work-item:claimable await while paused (any pre-pause await of yours was just cancelled server-side, EI-15777 — a peer\'s compliant release will no longer re-wake you for nothing). Resume normal pull cadence only after a fleet:resume cue.'
       : divergent
         ? 'DO NOT STAND DOWN, and do NOT re-author the claim spec — neither is the problem. TWO claim attempts returned nothing while ' +
           'two independent readings of the shared claimability oracle (the SAME floors, via aggregateIssueClaimExclusions) both reported ' +
-          "rows passing every one of them, so lane churn is ruled out and this is a genuine defect in the claim path's spec narrowing. " +
+          'rows passing every one of them, so lane churn is ruled out and this is a genuine defect in the claim path\'s spec narrowing. ' +
           'To keep working RIGHT NOW: list with work_items:claimable { harness, spec: <your fleet slug> } and take a specific row with ' +
           'work_items:claim { id } — the by-id path does not depend on the narrowing that is failing here (note a by-id claim has no ' +
-          "terminal-state floor by design, EI-8972, so check the returned item's state before building on it; and note the list itself " +
+          'terminal-state floor by design, EI-8972, so check the returned item\'s state before building on it; and note the list itself ' +
           'can come back EMPTY under a churning lane even when the count is nonzero — WI-5947 — so re-read it rather than concluding ' +
           'the workaround is broken too). ' +
           'Then report this verdict to your fleet leader as a CLAIM-PATH BUG (the EI-10062 / WI-4309 / WI-5275 / WI-5822 class), ' +
           'quoting excludedBreakdown.claimable AND divergenceRecheck:"confirmed-twice" — that pair is the reproduction, and the ' +
           'confirmation is what distinguishes it from ordinary churn. State it as an observation with its evidence, not as a settled ' +
           'diagnosis: verify the claim path against the CURRENT tree before anyone acts on it, since a relayed report hardens into ' +
-          "certainty on each hop and no one re-checks a claim that already carries someone else's confidence (WI-3532)."
+          'certainty on each hop and no one re-checks a claim that already carries someone else\'s confidence (WI-3532).'
         : unconfirmedSurvivors
           ? 'PULL AGAIN — that is the whole remedy. Do NOT stand down, do NOT re-author the claim spec, and do NOT report a claim-path ' +
             'bug: the survivor count was read AFTER your claim attempt, so it describes a later instant on a table your fleet is ' +
@@ -2161,45 +2149,45 @@ export function fleetScopedMiss(
             'if a row really did free up you will simply get it. Only a miss carrying divergenceRecheck:"confirmed-twice" — two claim ' +
             'attempts against two readings that both showed survivors — is worth escalating.'
           : featureFamilyMiss
-            ? `PULL AGAIN, and do NOT re-author the claim spec: ${opts?.featureFamilyMatched} feature-family row(s) match your spec and pass ` +
-              'every claim floor (WI-7151 / EI-19318364531323846) — the issue-family-only breakdown above cannot see them, so its ' +
-              '`matchedByFilter: 0` is not proof of a spec bug. This claim already retried once against the real tier-1 pool; if it ' +
-              'still misses after a couple more pulls, report it to your fleet leader as a possible claim-path defect in the tier-1 ' +
-              '(feature-family) narrowing — quoting `reason: "issue_family_diagnosis_blind_spot"` and `featureFamilyMatched` — rather ' +
-              'than a spec-authoring problem (do NOT quote spec_matches_nothing; that has the opposite remedy). Do NOT stand down.'
-            : planComplete
-              ? 'PLAN COMPLETE (EI-20260781488788952): every plan named by the claim spec is terminal. Checkpoint any final progress, release remaining lane resources, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the successful completed-plan wind-down. Do NOT escalate, widen, or re-author the claim spec.'
-              : specExhausted
-                ? 'LANE COMPLETE: the status-floor-free check found only terminal rows for this spec (reason: "spec_exhausted"). ' +
-                  'Checkpoint any final progress, release remaining lane resources, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the successful drain to your ' +
-                  'fleet leader. Do NOT escalate, widen, or re-author the claim spec.'
-                : nonIssueSpecEmpty
-                  ? 'Do NOT escalate this as a spec-authoring problem, and do NOT re-author the claim spec (EI-19393442073558754): your ' +
-                    'spec is not restricted to issue-family kinds, so an issue-family `matchedByFilter: 0` is expected by construction, ' +
-                    'not a sign the spec is broken. Checkpoint any atomic progress, release remaining lane resources, and call ' +
-                    'loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true } if AUTO (or another autonomy-implying mode) remains active without ' +
-                    'a deliberate independent event await — otherwise the wake-less stop will be refused. Quote `reason: "ordinary_drain"` ' +
-                    'if you report it. If you have reason to believe real work should exist, verify ' +
-                    'directly with plans:items / work_items:claimable before escalating.'
-                  : specEmpty
-                    ? opts?.leaderLiveness === false
-                      ? 'The registered fleet leader is not live (EI-20260781488788952), so do not route this miss to a dead leader. This remains a leader-alert-worthy spec-authoring bug: quote `reason: "spec_matches_nothing"` and excludedBreakdown.matchedByFilter=0 plus your spec id/revision, then take leadership as the sole live member or escalate to the fleet launcher/owner. You may checkpoint any atomic progress, release lane resources, and call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true } while that handoff is made — but do NOT quietly treat this as "the queue is drained"; unlike a genuine drain, a zero-match spec never clears on its own.'
-                      : 'ESCALATE to your fleet leader NOW (EI-18663622382734446) — this is a leader-alert-worthy spec-authoring bug, not a ' +
-                        'normal drain: quote `reason: "spec_matches_nothing"` and excludedBreakdown.matchedByFilter=0 plus your spec id/revision. ' +
-                        "The leader's remedy is scheduler:set_claim_spec { fleet, spec: <a revision whose view.filter actually admits work> } — " +
-                        'see fleetScopeLeaderRemedy for the exact one-call widen. You may checkpoint any atomic progress, release remaining lane ' +
-                        'resources, and call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true } while you wait — but do NOT quietly treat this as "the queue is drained"; unlike a genuine ' +
-                        'drain, a zero-match spec never clears on its own no matter how long you wait.'
-                    : cooldown
-                      ? 'Cooldown-only miss (EI-13520): the row(s) excluding you are held off ONLY by your own recent-release cooldown (PAPERCUSP_RELEASE_COOLDOWN_SEC, default 300s), not a scope/spec mismatch — for a NORMAL one-time cooldown, re-poll ONCE after cooldownExpiryAt (or park on a work-item:claimable await) and the row clears (or any OTHER fleet member can claim it immediately); do NOT re-author the claim spec for that. ' +
-                        '`cooldownEarliestRowId` names the SPECIFIC row driving `cooldownExpirySec` — compare it, not just the number, across polls (EI-16519): a mere advancing/never-shrinking `~Ns` is NOT by itself a livelock signal — `last_released_at` can only change via a genuine release-of-a-claimed-row (EI-16475), so when `cooldownExcluded > 1` the reported expiry is a MIN over MULTIPLE rows YOU released at different times, and it legitimately jumps to a LATER instant as the earlier one ages out and a fresher row becomes the new earliest (ordinary churn from actively completing/releasing several in-spec items, not a bug — keep polling, no escalation needed). Only escalate to your leader as a genuine EI-14615 livelock when `cooldownEarliestRowId` stays the SAME id across successive polls while its expiry keeps advancing — that combination is the one that cannot happen without something repeatedly re-claiming and re-releasing that exact row out from under you.'
-                      : breakdown
-                        ? 'This is a FLOOR-GATED miss (WI-5561 / EI-18741523426513509), not a scope/spec mismatch — quote `reason: "all_matches_gated"` if you report it (do NOT quote spec_matches_nothing; that is a different, spec-authoring problem with the opposite remedy). See `excludedBreakdownSummary` for which floors (federation-detector / owner-action / claim-hold / observation-lane / plan-lane externalBlocker / …) are excluding your spec\'s matched rows — these floors are commonly TRANSIENT (e.g. an uncleared plan-lane gate that clears the moment a dependency plan-item closes) and often self-resolve within seconds to minutes with no intervention. Checkpoint, release, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the breakdown to your fleet leader if it persists — a floor-gated pool needs a DIFFERENT lane/scope (or the gating condition itself resolved by whoever owns it), not a claim-spec re-author. ' +
-                          (claimablePayloadFilter
-                            ? 'You may still park ONE events:await { event: "work-item:claimable", payload_filter: <the `payloadFilter` returned in this response>, timeout_sec: 1800 } in case a floor lifts (a claim-hold or owner-action gate clears) and end your turn.'
-                            : 'Do NOT park an UNSCOPED work-item:claimable await — it would fire on every system-wide release for nothing (EI-15185).')
-                        : claimablePayloadFilter
-                          ? 'Checkpoint any atomic progress, release remaining lane resources, and call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }. To be woken ONLY on work your spec could admit (EI-15185), park ONE events:await { event: "work-item:claimable", payload_filter: <the `payloadFilter` returned in this response>, timeout_sec: 1800 } and end your turn — it is derived from your own claim spec\'s view, so it fires only on in-scope items instead of every system-wide release; the ~30-min on_timeout backstops a missed emit. The wake is a HINT: scheduler:get_next stays the authoritative claim (a re-miss just re-registers the await).'
-                          : 'Checkpoint any atomic progress, release remaining lane resources, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the scoped miss to the fleet leader. Do NOT park an UNSCOPED work-item:claimable await — your spec narrows only on fields the claimable event payload does not carry, so an unscoped await would fire (and waste a full wake) on every system-wide release (EI-15185). Resume only after a claim-spec revision or a leader/inbox wake.',
+          ? `PULL AGAIN, and do NOT re-author the claim spec: ${opts?.featureFamilyMatched} feature-family row(s) match your spec and pass ` +
+            'every claim floor (WI-7151 / EI-19318364531323846) — the issue-family-only breakdown above cannot see them, so its ' +
+            '`matchedByFilter: 0` is not proof of a spec bug. This claim already retried once against the real tier-1 pool; if it ' +
+            'still misses after a couple more pulls, report it to your fleet leader as a possible claim-path defect in the tier-1 ' +
+            '(feature-family) narrowing — quoting `reason: "issue_family_diagnosis_blind_spot"` and `featureFamilyMatched` — rather ' +
+            'than a spec-authoring problem (do NOT quote spec_matches_nothing; that has the opposite remedy). Do NOT stand down.'
+          : planComplete
+          ? 'PLAN COMPLETE (EI-20260781488788952): every plan named by the claim spec is terminal. Checkpoint any final progress, release remaining lane resources, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the successful completed-plan wind-down. Do NOT escalate, widen, or re-author the claim spec.'
+          : specExhausted
+          ? 'LANE COMPLETE: the status-floor-free check found only terminal rows for this spec (reason: "spec_exhausted"). ' +
+            'Checkpoint any final progress, release remaining lane resources, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the successful drain to your ' +
+            'fleet leader. Do NOT escalate, widen, or re-author the claim spec.'
+          : nonIssueSpecEmpty
+          ? 'Do NOT escalate this as a spec-authoring problem, and do NOT re-author the claim spec (EI-19393442073558754): your ' +
+            'spec is not restricted to issue-family kinds, so an issue-family `matchedByFilter: 0` is expected by construction, ' +
+            'not a sign the spec is broken. Checkpoint any atomic progress, release remaining lane resources, and call ' +
+            'loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true } if AUTO (or another autonomy-implying mode) remains active without ' +
+            'a deliberate independent event await — otherwise the wake-less stop will be refused. Quote `reason: "ordinary_drain"` ' +
+            'if you report it. If you have reason to believe real work should exist, verify ' +
+            'directly with plans:items / work_items:claimable before escalating.'
+          : specEmpty
+          ? opts?.leaderLiveness === false
+            ? 'The registered fleet leader is not live (EI-20260781488788952), so do not route this miss to a dead leader. This remains a leader-alert-worthy spec-authoring bug: quote `reason: "spec_matches_nothing"` and excludedBreakdown.matchedByFilter=0 plus your spec id/revision, then take leadership as the sole live member or escalate to the fleet launcher/owner. You may checkpoint any atomic progress, release lane resources, and call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true } while that handoff is made — but do NOT quietly treat this as "the queue is drained"; unlike a genuine drain, a zero-match spec never clears on its own.'
+            : 'ESCALATE to your fleet leader NOW (EI-18663622382734446) — this is a leader-alert-worthy spec-authoring bug, not a ' +
+              'normal drain: quote `reason: "spec_matches_nothing"` and excludedBreakdown.matchedByFilter=0 plus your spec id/revision. ' +
+              'The leader\'s remedy is scheduler:set_claim_spec { fleet, spec: <a revision whose view.filter actually admits work> } — ' +
+              'see fleetScopeLeaderRemedy for the exact one-call widen. You may checkpoint any atomic progress, release remaining lane ' +
+              'resources, and call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true } while you wait — but do NOT quietly treat this as "the queue is drained"; unlike a genuine ' +
+              'drain, a zero-match spec never clears on its own no matter how long you wait.'
+        : cooldown
+        ? 'Cooldown-only miss (EI-13520): the row(s) excluding you are held off ONLY by your own recent-release cooldown (PAPERCUSP_RELEASE_COOLDOWN_SEC, default 300s), not a scope/spec mismatch — for a NORMAL one-time cooldown, re-poll ONCE after cooldownExpiryAt (or park on a work-item:claimable await) and the row clears (or any OTHER fleet member can claim it immediately); do NOT re-author the claim spec for that. ' +
+          '`cooldownEarliestRowId` names the SPECIFIC row driving `cooldownExpirySec` — compare it, not just the number, across polls (EI-16519): a mere advancing/never-shrinking `~Ns` is NOT by itself a livelock signal — `last_released_at` can only change via a genuine release-of-a-claimed-row (EI-16475), so when `cooldownExcluded > 1` the reported expiry is a MIN over MULTIPLE rows YOU released at different times, and it legitimately jumps to a LATER instant as the earlier one ages out and a fresher row becomes the new earliest (ordinary churn from actively completing/releasing several in-spec items, not a bug — keep polling, no escalation needed). Only escalate to your leader as a genuine EI-14615 livelock when `cooldownEarliestRowId` stays the SAME id across successive polls while its expiry keeps advancing — that combination is the one that cannot happen without something repeatedly re-claiming and re-releasing that exact row out from under you.'
+        : breakdown
+          ? 'This is a FLOOR-GATED miss (WI-5561 / EI-18741523426513509), not a scope/spec mismatch — quote `reason: "all_matches_gated"` if you report it (do NOT quote spec_matches_nothing; that is a different, spec-authoring problem with the opposite remedy). See `excludedBreakdownSummary` for which floors (federation-detector / owner-action / claim-hold / observation-lane / plan-lane externalBlocker / …) are excluding your spec\'s matched rows — these floors are commonly TRANSIENT (e.g. an uncleared plan-lane gate that clears the moment a dependency plan-item closes) and often self-resolve within seconds to minutes with no intervention. Checkpoint, release, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the breakdown to your fleet leader if it persists — a floor-gated pool needs a DIFFERENT lane/scope (or the gating condition itself resolved by whoever owns it), not a claim-spec re-author. ' +
+            (claimablePayloadFilter
+              ? 'You may still park ONE events:await { event: "work-item:claimable", payload_filter: <the `payloadFilter` returned in this response>, timeout_sec: 1800 } in case a floor lifts (a claim-hold or owner-action gate clears) and end your turn.'
+              : 'Do NOT park an UNSCOPED work-item:claimable await — it would fire on every system-wide release for nothing (EI-15185).')
+          : claimablePayloadFilter
+            ? 'Checkpoint any atomic progress, release remaining lane resources, and call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }. To be woken ONLY on work your spec could admit (EI-15185), park ONE events:await { event: "work-item:claimable", payload_filter: <the `payloadFilter` returned in this response>, timeout_sec: 1800 } and end your turn — it is derived from your own claim spec\'s view, so it fires only on in-scope items instead of every system-wide release; the ~30-min on_timeout backstops a missed emit. The wake is a HINT: scheduler:get_next stays the authoritative claim (a re-miss just re-registers the await).'
+            : 'Checkpoint any atomic progress, release remaining lane resources, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the scoped miss to the fleet leader. Do NOT park an UNSCOPED work-item:claimable await — your spec narrows only on fields the claimable event payload does not carry, so an unscoped await would fire (and waste a full wake) on every system-wide release (EI-15185). Resume only after a claim-spec revision or a leader/inbox wake.',
   };
 }

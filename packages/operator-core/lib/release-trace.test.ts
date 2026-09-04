@@ -300,6 +300,62 @@ describe('buildReleaseTrace', () => {
     expect(out.constraints).toEqual([]);
     expect(out.nextVerb).toBeNull();
   });
+
+  describe('exact fix-commit containment in the recorded gate candidate', () => {
+    const observedCandidate = 'c'.repeat(40);
+
+    it('projects the canonical contained verdict without a lever or gate-health prediction', () => {
+      const out = buildReleaseTrace(
+        input({
+          position: position({
+            verdictProvenance: {
+              ...position().verdictProvenance,
+              targetIncludedInObservedCandidate: true,
+            },
+          }),
+          gate: { ...input().gate, observedCandidate },
+        }),
+      );
+
+      expect(out.gate.fixCommitContainment).toEqual({
+        fixSha: sha,
+        observedCandidate,
+        verdict: 'contained',
+        reason: null,
+      });
+      expect(out.gate.fixCommitContainment).not.toHaveProperty('nextVerb');
+      expect(out.gate.fixCommitContainment).not.toHaveProperty('shouldGreen');
+      expect(out.gate.fixCommitContainment).not.toHaveProperty('recommendation');
+    });
+
+    it('keeps a measured miss distinct from an unreadable ancestry probe', () => {
+      const withMeasurement = (targetIncludedInObservedCandidate: boolean | null) =>
+        buildReleaseTrace(
+          input({
+            position: position({
+              verdictProvenance: {
+                ...position().verdictProvenance,
+                targetIncludedInObservedCandidate,
+              },
+            }),
+            gate: { ...input().gate, observedCandidate },
+          }),
+        ).gate.fixCommitContainment;
+
+      expect(withMeasurement(false)).toEqual({
+        fixSha: sha,
+        observedCandidate,
+        verdict: 'not_contained',
+        reason: null,
+      });
+      expect(withMeasurement(null)).toEqual({
+        fixSha: sha,
+        observedCandidate,
+        verdict: 'unknown',
+        reason: 'ancestry-unreadable',
+      });
+    });
+  });
   it('accepts a target contained in a newer matching green/deployed pin', () => {
     const newer = 'c'.repeat(40);
     const out = buildReleaseTrace(

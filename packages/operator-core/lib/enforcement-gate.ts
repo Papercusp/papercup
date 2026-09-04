@@ -166,10 +166,15 @@ export function detectFlushTripwires(
     // consecutive checkpoints, each recording that no acceptance leg or
     // mutation ran before another compaction boundary). Strictly `=== 0`:
     // even ONE real tool call already satisfies "at least one scoped tool
-    // call before compaction" and must not re-trip this.
+    // call before compaction" and must not re-trip this. A live deliberate
+    // await is the other safe state: the named next action is intentionally
+    // conditional on that event, so zero post-note calls means PARKED, not
+    // spinning. `CarryBrief.awaits` already excludes the infrastructure
+    // inbox-wake keepalive; any remaining entry is an agent-owned event await.
     brief.loop &&
     brief.loop.active &&
     brief.loop.carry === 'cold' &&
+    brief.awaits.length === 0 &&
     agentToolCallsSinceNote === 0
   ) {
     const next = parseCarryNote(brief.loop.carryNote ?? '').next?.trim();

@@ -185,7 +185,14 @@ export default defineTool({
             getLiveness: async (ownerIds) => {
               const verdicts = await resolveSessionStates(
                 ownerIds.map((ownerId) => ({ ownerId })),
-                { hydratePerId: true },
+                {
+                  hydratePerId: true,
+                  // EI-22352972025329550: the reviver refuses to resume an
+                  // identity whose PTY host is already live. Use that same
+                  // positive witness while routing so a stale `ended` verdict
+                  // cannot empty the minimum and then contradict the reviver.
+                  psuHostPositiveAuthority: true,
+                },
               );
               return Object.fromEntries(
                 [...verdicts.values()].map((v) => [v.ownerId, v.sessionState]),

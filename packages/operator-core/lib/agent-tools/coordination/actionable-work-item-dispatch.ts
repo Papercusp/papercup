@@ -77,6 +77,8 @@ export interface StableAgentTargetState {
   present: boolean;
   sessionState: string | null;
   wakeable: boolean | null;
+  /** Acting-as user carried by the presence row, when available. */
+  userId?: string;
 }
 
 export interface StableAgentTargetDeps {
@@ -429,6 +431,7 @@ export async function resolveStableAgentTarget(
       present: true,
       sessionState: typeof row.sessionState === 'string' ? row.sessionState : null,
       wakeable: typeof row.wakeable === 'boolean' ? row.wakeable : null,
+      ...(typeof row.userId === 'string' && row.userId.trim() ? { userId: row.userId } : {}),
     };
   } catch {
     return {

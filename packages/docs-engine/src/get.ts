@@ -39,6 +39,17 @@ interface Window {
 }
 
 /**
+ * Search results from some docs surfaces may carry only the final path
+ * segment. Accept that compatibility form when it identifies exactly one
+ * listed page, while preserving canonical slugs whenever they were supplied.
+ */
+function uniqueBareLeafPage(slug: string, pages: readonly DocPage[]): DocPage | null {
+  if (slug.includes('/')) return null;
+  const matches = pages.filter((page) => page.slug.slice(page.slug.lastIndexOf('/') + 1) === slug);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/**
  * Clip one window out of a body at `offset`, appending the truncation tail when
  * bytes remain past the cap.
  *
@@ -143,7 +154,10 @@ export async function getDocs(source: DocSource, args: GetArgs, ctx: EngineCtx =
   const results: GetEntry[] = await Promise.all(
     slugs.map(async (slug): Promise<GetEntry> => {
       if (ctx.signal?.aborted) throw new Error('cancelled');
-      const page = await source.getPage(slug);
+      // Exact source lookup wins. If a search result supplied only a bare leaf,
+      // use the listed canonical page only when that leaf is unambiguous; never
+      // guess across sections.
+      const page = (await source.getPage(slug)) ?? uniqueBareLeafPage(slug, allPages);
       if (!page) {
         return {
           slug,

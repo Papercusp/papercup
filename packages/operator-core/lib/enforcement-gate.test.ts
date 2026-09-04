@@ -172,6 +172,19 @@ describe('detectFlushTripwires', () => {
     );
     expect(t).toEqual([]);
   });
+
+  it('does NOT fire cold-successor-no-progress while a deliberate event await is live', () => {
+    const loopBrief = coldLoopWithNote();
+    const t = detectFlushTripwires(
+      {
+        ...loopBrief,
+        awaits: [{ eventKey: 'fleet:item-completed:inbox-ladder', note: 'wait for the item' }],
+      },
+      NOW,
+      0,
+    );
+    expect(t).toEqual([]);
+  });
 });
 
 describe('decideFlushGate', () => {

@@ -39,7 +39,7 @@ vi.mock('../../agent-facts/store', async (importOriginal) => {
 // EI-10947 annotator: pure pass-through here so the shaping is what is measured.
 vi.mock('./stale-source', () => ({ markStaleSourceFacts: async (f: AgentFact[]) => f }));
 
-import factsListTool, { FACTS_LIST_MAX_LIMIT } from './list';
+import factsListTool, { FACTS_LIST_ALL_LIMIT, FACTS_LIST_MAX_LIMIT } from './list';
 
 const ctx = { isSuperuser: true, uiClientId: 'su-test-census-disclosure' } as never;
 
@@ -101,6 +101,27 @@ describe('facts:list distinguishes the page from the census (WI-38910)', () => {
     // The disclosure has to be legible without reading the source: both numbers.
     expect(String(data.note_truncated)).toContain('271');
     expect(String(data.note_truncated)).toContain(String(FACTS_LIST_MAX_LIMIT));
+  });
+
+  it('accepts a compatibility limit above the ordinary validator cap with all:true', async () => {
+    listFactsSpy.mockResolvedValue(page(FACTS_LIST_ALL_LIMIT));
+    countLiveFactsSpy.mockResolvedValue(500);
+
+    const limitSchema = (
+      factsListTool.args as unknown as {
+        shape: { limit: { safeParse(value: unknown): { success: boolean } } };
+      }
+    ).shape.limit;
+    expect(limitSchema.safeParse(500).success).toBe(true);
+
+    const data = await listWorkspace({ all: true, limit: 500 });
+
+    expect(data.ok).toBe(true);
+    expect(data.total).toBe(500);
+    expect(listFactsSpy).toHaveBeenCalledWith(
+      { scope: 'workspace', scopeRef: null },
+      { limit: FACTS_LIST_ALL_LIMIT },
+    );
   });
 
   it('stays quiet when the page IS the whole scope — a warning that always fires is one nobody reads', async () => {

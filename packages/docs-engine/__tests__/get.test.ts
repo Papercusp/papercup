@@ -38,6 +38,49 @@ describe('getDocs', () => {
     expect(out.results[1].found).toBe(false);
   });
 
+  it('resolves a unique bare leaf to its canonical page', async () => {
+    const pages = [makePage({ slug: 'agent-insights/testing-await-event-emit-paths' })];
+    const out = await getDocs(
+      makeSource({
+        pages,
+        contents: { 'agent-insights/testing-await-event-emit-paths': 'await event guidance' },
+      }),
+      { slugs: ['testing-await-event-emit-paths'] },
+    );
+
+    expect(out.results[0]).toMatchObject({
+      slug: 'testing-await-event-emit-paths',
+      found: true,
+      content: 'await event guidance',
+    });
+  });
+
+  it('prefers an exact page when a bare leaf also matches a nested page', async () => {
+    const pages = [
+      makePage({ slug: 'overview' }),
+      makePage({ slug: 'agent-insights/overview' }),
+    ];
+    const out = await getDocs(
+      makeSource({
+        pages,
+        contents: { overview: 'root overview', 'agent-insights/overview': 'insights overview' },
+      }),
+      { slugs: ['overview'] },
+    );
+
+    expect(out.results[0]).toMatchObject({ slug: 'overview', found: true, content: 'root overview' });
+  });
+
+  it('keeps an ambiguous bare leaf as not_found', async () => {
+    const pages = [
+      makePage({ slug: 'agent-insights/overview' }),
+      makePage({ slug: 'framework/overview' }),
+    ];
+    const out = await getDocs(makeSource({ pages }), { slugs: ['overview'] });
+
+    expect(out.results[0]).toMatchObject({ slug: 'overview', found: false, error: 'not_found' });
+  });
+
   it('slices by heading on single-slug calls', async () => {
     const pages = [
       makePage({

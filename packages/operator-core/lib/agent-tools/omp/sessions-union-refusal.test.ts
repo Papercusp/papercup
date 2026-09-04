@@ -127,4 +127,24 @@ describe('omp:sessions — a wrong-variant key is diagnosed as wrong-variant', (
     expect(message).not.toContain('Unrecognized key: "cwd"');
     expect(message).not.toContain('NOT on the variant');
   });
+
+  it('documents that indexed context windows belong to sessions:read, not raw op=get', async () => {
+    // `context` has meaningful window semantics on sessions:search/read. The raw
+    // OMP reader has no center/ref, so accepting it on op='get' would only hide a
+    // caller/tool mix-up rather than implement a useful operation.
+    const dispatched = await refuse(
+      { op: 'get', sessionId: 's1', context: 1 },
+      'omp-sessions-get-context',
+    );
+
+    expect(dispatched.ok).toBe(false);
+    const message = String(dispatched.error?.message ?? '');
+    expect(message).toContain('context');
+
+    const projected = lookupByMcpName('omp:sessions');
+    expect(projected?.guidance?.when).toContain('sessions:read');
+    expect(projected?.guidance?.when).toContain("not omp:sessions op='get'");
+    expect(projected?.guidance?.notWhen).toContain("Do not pass context to op='get'");
+    expect(projected?.guidance?.chaining).toContain('sessions:read { ref, context? }');
+  });
 });

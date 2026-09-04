@@ -20,6 +20,7 @@ import {
   isGitSyncConflictCurrent,
   currentGateInconclusive,
   projectFrozenRepairQueueRead,
+  projectGatePromotionIdentity,
   gateFailingTestsMeasurement,
   type RawGateCounters,
 } from './git-pipeline-stats';
@@ -63,6 +64,31 @@ describe('resolverModel', () => {
     expect(resolverModel()).toBe('opus:xhigh');
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'opus' })); // no merge-resolver key
     expect(resolverModel()).toBe('opus:xhigh');
+  });
+});
+
+describe('D-013/P-011 gate promotion identity', () => {
+  it('projects the judged candidate and the main pin written beside that verdict', () => {
+    expect(
+      projectGatePromotionIdentity({
+        observedCandidate: 'candidate-judged',
+        lastMainPin: 'main-after-verdict',
+      }),
+    ).toEqual({
+      observedCandidate: 'candidate-judged',
+      lastMainPin: 'main-after-verdict',
+    });
+  });
+
+  it('preserves unknown instead of substituting the staging or green pin', () => {
+    expect(projectGatePromotionIdentity({ observedCandidate: '', lastMainPin: 42 })).toEqual({
+      observedCandidate: null,
+      lastMainPin: null,
+    });
+    expect(projectGatePromotionIdentity(null)).toEqual({
+      observedCandidate: null,
+      lastMainPin: null,
+    });
   });
 });
 

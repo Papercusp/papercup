@@ -146,7 +146,7 @@ export default defineTool({
   name: 'release:trace',
   profile: 'engineer',
   description:
-    'One read-only, SHA-centric release truth: commit presence, exact gate + authoritative failing tests, green pin, deployed SHA, registered awaits, stale-wake lineage, tested/deployed parity, applicable safety constraints, and at most one safe nextVerb. Composes dev:pipeline_position, release:deploy status, and events:status authorities instead of creating another release state machine.',
+    'One read-only, SHA-centric release truth: exact fix-commit containment in the gate\'s observed candidate, commit presence, exact gate + authoritative failing tests, green pin, deployed SHA, registered awaits, stale-wake lineage, tested/deployed parity, applicable safety constraints, and at most one safe nextVerb. Composes dev:pipeline_position, release:deploy status, and events:status authorities instead of creating another release state machine.',
   capability: 'intel:read',
   requirePrincipal: false,
   // EI-20246294559310854: this diagnostic composes several independent admin-pool,
@@ -157,13 +157,13 @@ export default defineTool({
   skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES, 'cup', 'release-fixer', 'release-manager'],
   guidance: {
-    when: 'After a release/gate/deploy wake, or whenever one commit’s truth is scattered across pipeline, gate, deploy, and await reads. Pass path when runtime ownership matters; pass sha for an exact lineage audit.',
+    when: 'After a release/gate/deploy wake, or whenever one commit’s truth is scattered across pipeline, gate, deploy, and await reads. Pass path when runtime ownership matters; pass sha for the canonical exact ancestry answer at gate.fixCommitContainment — do not derive it from logs, working-tree diffs, or a hand-run merge-base.',
     notWhen:
       'To mutate the release pipeline. Follow the returned nextVerb; release:trace itself never commits, runs a gate, or deploys.',
     chaining:
       'release:trace { path | sha, work_item? } → follow the single non-null nextVerb → after a wake, call release:trace again with after_generation from the prior response.',
     returns:
-      '{ generatedAtMs, target, gate, greenPin, deploy, testedDeployedParity, awaits, staleWake, constraints, nextVerb, resync, summary }',
+      '{ generatedAtMs, target, gate: { candidateVerdict, fixCommitContainment, ... }, greenPin, deploy, testedDeployedParity, awaits, staleWake, constraints, nextVerb, resync, summary }',
     seeAlso: ['dev:pipeline_position', 'release:deploy', 'events:status', 'deploy:await', 'checkpoint:await'],
   },
   // Use a representable union rather than a refinement: the same schema is published to
@@ -408,6 +408,17 @@ export default defineTool({
         // the nextVerb of a diagnostic on a transient blip would degrade it exactly when the
         // pipeline is already unhealthy and agents most need it.
         manualRunAuthority: manualRunAuthority.value ?? null,
+      },
+    });
+    // `tool_invocations` already records the tool name, args, and coord_owner_id. Stamp the
+    // result-side ancestry tuple too so a wrong lever can be attributed to either a bad
+    // canonical read or a caller bypass without reconstructing the response body.
+    ctx.metadata?.({
+      releaseTraceFixCommitContainment: {
+        callerId: identity.ownerId,
+        fixSha: trace.gate.fixCommitContainment.fixSha,
+        observedCandidate: trace.gate.fixCommitContainment.observedCandidate,
+        verdict: trace.gate.fixCommitContainment.verdict,
       },
     });
     const plane = statePlaneForDoor(trace, 'release:trace', { path: args.path, sha: args.sha }, ctx);

@@ -36,6 +36,12 @@
 
 import type { CellOwnership } from './coord/gate-ownership';
 import type { GateFailingTestsProvenance } from './git-pipeline-stats';
+import type {
+  FrozenCandidateBlockedReason,
+  FrozenRepairAdmission,
+  RepairSignatureEntry,
+} from './release/frozen-candidate-repair-queue';
+import type { FrozenRepairLegState } from './release/repair-leg-lifecycle';
 
 /** The closed answer vocabulary — mirrored by the cell registration's assessment codes. */
 export type GateOwnerBriefAnswer =
@@ -127,12 +133,80 @@ export interface GateOwnerBriefAssessment {
   safeAction: string;
 }
 
+/** D-013: staging's relation to the exact main pin written for the judged verdict. */
+export type GateOwnerBriefStagingRelation =
+  | 'equal'
+  | 'ahead-after-absorption'
+  | 'absorption-pending'
+  | 'diverged'
+  | 'unknown';
+
+/** Human-readable, branchable lifecycle vocabulary requested by P-011. */
+export type GateOwnerBriefRepairStatus =
+  | 'red-at-candidate'
+  | `admitted-in-${number}`
+  | `green-at-${string}`;
+
+export interface GateOwnerBriefPromotionInput {
+  /** Candidate/repairHead the recorded verdict actually judged. */
+  judgedSha: string | null;
+  /** Where the gate writer observed main after that verdict completed. */
+  mainPin: string | null;
+  /** Exact ancestry result: does mainPin contain judgedSha? */
+  mainContainsJudgedSha: boolean | null;
+  /** Current staging head, sampled separately from the writer-owned verdict identity. */
+  stagingHead: string | null;
+  /** Does staging descend from the writer-owned main pin? */
+  stagingContainsMainPin: boolean | null;
+  /** Does staging descend from the judged sha? */
+  stagingContainsJudgedSha: boolean | null;
+  /** Ordinary uncheckpointed staging backlog; never promotion evidence. */
+  stagingBufferPresent: boolean | null;
+}
+
+/**
+ * D-013's closed staging relation. Equality is direct identity; every other positive
+ * classification is backed by ancestry booleans computed by gitPipelinePosition().
+ */
+export function classifyGateOwnerBriefStagingRelation(
+  input: GateOwnerBriefPromotionInput,
+): GateOwnerBriefStagingRelation {
+  const sameSha = (a: string, b: string): boolean => a === b || a.startsWith(b) || b.startsWith(a);
+  if (!input.mainPin || !input.stagingHead) return 'unknown';
+  if (sameSha(input.mainPin, input.stagingHead)) return 'equal';
+  if (input.stagingContainsMainPin === true) return 'ahead-after-absorption';
+  if (input.mainContainsJudgedSha === true && input.stagingContainsJudgedSha === false) {
+    return 'absorption-pending';
+  }
+  if (input.stagingContainsMainPin === false && input.stagingContainsJudgedSha !== null) {
+    return 'diverged';
+  }
+  return 'unknown';
+}
+
 export interface GateOwnerBrief {
   /** The composed verdict — the one word the owner asked for. */
   answer: GateOwnerBriefAnswer;
   assessment: GateOwnerBriefAssessment;
   /** Is the gate green about what it last judged? null = counters unmeasured. */
   mainGreen: { value: boolean | null; vintage: GateOwnerBriefVintage };
+  /**
+   * D-013: exact judged-SHA promotion and the staging buffer are orthogonal axes.
+   * `mainContainsJudgedSha` alone controls `green-not-promoted`; the staging relation
+   * remains visible even when ordinary commits have accumulated after absorption.
+   */
+  promotion: {
+    judgedSha: string | null;
+    mainPin: string | null;
+    mainContainsJudgedSha: boolean | null;
+    vintage: GateOwnerBriefVintage;
+    staging: {
+      headSha: string | null;
+      bufferPresent: boolean | null;
+      relation: GateOwnerBriefStagingRelation;
+      vintage: GateOwnerBriefVintage;
+    };
+  };
   /** Present exactly when the answer is a red/unknown family member with named legs. */
   whyNot: {
     failingLegs: string[];
@@ -168,7 +242,26 @@ export interface GateOwnerBrief {
   };
   /** Present when a frozen repair queue exists — the "is anyone actually fixing it" leg. */
   remediation: {
+    frozenCandidate: string | null;
+    repairHead: string | null;
     phase: string | null;
+    frozenSinceAtMs: number | null;
+    admissions: readonly FrozenRepairAdmission[];
+    admissionsMeasured: boolean;
+    signature: ReadonlyArray<RepairSignatureEntry & { status: GateOwnerBriefRepairStatus }>;
+    signatureMeasured: boolean;
+    legs: ReadonlyArray<FrozenRepairLegState & { status: GateOwnerBriefRepairStatus }>;
+    legsMeasured: boolean;
+    blockedReason: FrozenCandidateBlockedReason | null;
+    blockedReasonMeasured: boolean;
+    verdictProvenance: {
+      frozenCandidate: string;
+      repairHead: string;
+      phase: string;
+      currentStatus: 'no-suite' | 'isolated-suite-result';
+      frozenCandidateVerdict: 'not-judged' | 'full-gate-red';
+      repairHeadVerdict: 'not-judged' | 'same-as-frozen-full-gate-red' | 'isolated-repair-green';
+    } | null;
     attempts: number | null;
     fixerSpawnId: string | null;
     /** null = liveness unmeasurable; false = a dispatched fixer is DEAD (the 5h-gap case). */
@@ -215,6 +308,11 @@ export interface GateOwnerBriefInput {
    * un-promoted) but is named in `unknownLegs` rather than passing silently as `false`.
    */
   mainBehindStaging?: boolean | null | undefined;
+  /**
+   * D-013's exact promotion operands. Optional only for pre-P-011 fixtures/readers; an
+   * omitted value remains UNKNOWN and can never be reconstructed from mainBehindStaging.
+   */
+  promotion?: GateOwnerBriefPromotionInput | null | undefined;
   lastGreenAtMs: number | null | undefined;
   verdictObservedAtMs: number | null | undefined;
   fireStale: boolean | null | undefined;
@@ -222,7 +320,16 @@ export interface GateOwnerBriefInput {
   inconclusive: { status: string; detail: string | null; observedAtMs: number | null } | null | undefined;
   repairQueue:
     | {
+        frozenCandidate?: string | null;
+        candidate?: string | null;
+        repairHead?: string | null;
         phase: string;
+        openedAtMs?: number | null;
+        admissions?: readonly FrozenRepairAdmission[];
+        signature?: readonly RepairSignatureEntry[];
+        legs?: readonly FrozenRepairLegState[];
+        blockedReason?: FrozenCandidateBlockedReason | null;
+        verdictProvenance?: NonNullable<GateOwnerBrief['remediation']>['verdictProvenance'];
         attempts: number;
         updatedAtMs: number;
         ageMs: number;
@@ -298,6 +405,26 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
     'frozen-repair-queue diagnostic (incl. live fixer-spawn liveness)',
     inp.nowMs,
   );
+  const promotionVintage = vintage(
+    inp.verdictObservedAtMs,
+    'gate_health promotion identity (observedCandidate + lastMainPin)',
+    inp.nowMs,
+  );
+  const stagingVintage = vintage(inp.nowMs, 'devDeployState staging ancestry — resolved live at this read', inp.nowMs);
+
+  const promotionInput: GateOwnerBriefPromotionInput =
+    inp.promotion ?? {
+      judgedSha: null,
+      mainPin: null,
+      mainContainsJudgedSha: null,
+      stagingHead: null,
+      stagingContainsMainPin: null,
+      stagingContainsJudgedSha: null,
+      // Compatibility only: this preserves the ordinary buffer reading for old callers,
+      // but it is never used to derive exact promotion or a staging relation.
+      stagingBufferPresent: inp.mainBehindStaging ?? null,
+    };
+  const stagingRelation = classifyGateOwnerBriefStagingRelation(promotionInput);
 
   const reds = inp.consecutiveReds ?? null;
   if (reds === null) {
@@ -309,11 +436,46 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
   if (inp.repairQueue != null && inp.repairQueue.fixerAlive === null) {
     unknownLegs.push({ leg: 'remediation.fixerAlive', why: 'fixer-spawn liveness was unmeasurable on this read' });
   }
-  if (inp.mainBehindStaging == null) {
+  if (promotionInput.mainContainsJudgedSha == null) {
     unknownLegs.push({
-      leg: 'mainBehindStaging',
-      why: 'whether staging is ahead of the last green pin was unmeasurable on this read',
+      leg: 'promotion.mainContainsJudgedSha',
+      why: 'the writer-owned main pin and judged sha could not be compared on this read',
     });
+  }
+  if (promotionInput.stagingBufferPresent == null) {
+    unknownLegs.push({
+      leg: 'promotion.staging.bufferPresent',
+      why: 'whether staging has an uncheckpointed buffer was unmeasurable on this read',
+    });
+  }
+  if (stagingRelation === 'unknown') {
+    unknownLegs.push({
+      leg: 'promotion.staging.relation',
+      why: 'staging could not be related to the writer-owned main pin and judged sha on this read',
+    });
+  }
+  if (inp.repairQueue != null) {
+    if (!(inp.repairQueue.frozenCandidate ?? inp.repairQueue.candidate)) {
+      unknownLegs.push({ leg: 'remediation.frozenCandidate', why: 'the repair diagnostic omitted its immutable candidate' });
+    }
+    if (!inp.repairQueue.repairHead) {
+      unknownLegs.push({ leg: 'remediation.repairHead', why: 'the repair diagnostic omitted its mutable repair head' });
+    }
+    if (inp.repairQueue.openedAtMs == null) {
+      unknownLegs.push({ leg: 'remediation.frozenSinceAtMs', why: 'the repair diagnostic omitted when the freeze opened' });
+    }
+    if (inp.repairQueue.admissions === undefined) {
+      unknownLegs.push({ leg: 'remediation.admissions', why: 'the repair diagnostic omitted the admission ledger' });
+    }
+    if (inp.repairQueue.signature === undefined) {
+      unknownLegs.push({ leg: 'remediation.signature', why: 'the repair diagnostic omitted the typed failure signature' });
+    }
+    if (inp.repairQueue.legs === undefined) {
+      unknownLegs.push({ leg: 'remediation.legs', why: 'the repair diagnostic omitted per-leg lifecycle state' });
+    }
+    if (inp.repairQueue.blockedReason === undefined) {
+      unknownLegs.push({ leg: 'remediation.blockedReason', why: 'the repair diagnostic omitted blocked-state measurement' });
+    }
   }
 
   // `assessment` is the ownership oracle's closed string union (GateOwnershipAssessment).
@@ -352,7 +514,8 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
   // P-005: the green family splits on whether `main` actually moved. Only a POSITIVE
   // `true` splits it — `null` (unmeasurable) must not manufacture a promotion claim in
   // either direction, so it stays `green` and is named in `unknownLegs` below instead.
-  const greenAnswer: GateOwnerBriefAnswer = inp.mainBehindStaging === true ? 'green-not-promoted' : 'green';
+  const greenAnswer: GateOwnerBriefAnswer =
+    promotionInput.mainContainsJudgedSha === false ? 'green-not-promoted' : 'green';
   const failingTestsProvenance: GateFailingTestsProvenance =
     inp.failingTestsProvenance ??
     (inp.failingTestsMeasured === true
@@ -389,15 +552,15 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
   const ASSESSMENTS: Record<GateOwnerBriefAnswer, Omit<GateOwnerBriefAssessment, 'code'>> = {
     green: {
       meaning:
-        'The gate is green about what it last judged and no staging buffer was measured. If unknownLegs names mainBehindStaging, the promotion reading is withheld rather than guessed.',
+        'The gate is green about what it last judged. Read promotion for the exact judged-SHA/main relationship and the independent staging relation; an ordinary staging buffer does not make this not-promoted.',
       safeAction:
-        'Proceed. If mainBehindStaging is named in unknownLegs, re-read the instrument before claiming staging is fully promoted.',
+        'Proceed on the green verdict. If unknownLegs names promotion.mainContainsJudgedSha, do not claim the judged SHA reached main until that exact ancestry read succeeds.',
     },
     'green-not-promoted': {
       meaning:
-        'The gate is green about its last judged pin, but staging contains newer commits that have not yet reached that green pin. This is a promotion buffer, not a red verdict.',
+        'The gate is green about its last judged SHA, but exact ancestry says that SHA did not reach the writer-owned main pin. This is independent of whether staging has an ordinary buffer.',
       safeAction:
-        'The green-checkpoint is the single lever: let or trigger its next verdict after checking gate.greenCheckpoint.retriage; do not fast-forward main directly.',
+        'Resume the frozen-lineage promotion/absorption transaction after checking gate.greenCheckpoint.retriage; do not substitute a fresh staging-tip verdict or fast-forward main by hand.',
     },
     'red-owned-remediating': {
       meaning: 'The gate is red, a LIVE session owns the incident, and remediation shows signs of life.',
@@ -446,6 +609,12 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
     [
       { leg: 'mainGreen', vintage: verdictVintage },
       { leg: 'ownership', vintage: ownershipVintage },
+      ...(inp.promotion != null
+        ? [
+            { leg: 'promotion', vintage: promotionVintage },
+            { leg: 'promotion.staging', vintage: stagingVintage },
+          ]
+        : []),
       ...(inp.repairQueue != null ? [{ leg: 'remediation', vintage: remediationVintage }] : []),
       ...(inp.inconclusive?.observedAtMs != null
         ? [{ leg: 'whyNot', vintage: vintage(inp.inconclusive.observedAtMs, 'gate inconclusive record', inp.nowMs) }]
@@ -461,6 +630,18 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
       // P-007: a counter contradicted by a red leg answers `null`, never the counter's half.
       value: reds === null || noVerdict || legContradictsGreen ? null : green || !red,
       vintage: verdictVintage,
+    },
+    promotion: {
+      judgedSha: promotionInput.judgedSha,
+      mainPin: promotionInput.mainPin,
+      mainContainsJudgedSha: promotionInput.mainContainsJudgedSha,
+      vintage: promotionVintage,
+      staging: {
+        headSha: promotionInput.stagingHead,
+        bufferPresent: promotionInput.stagingBufferPresent,
+        relation: stagingRelation,
+        vintage: stagingVintage,
+      },
     },
     whyNot:
       answer === 'green' || answer === 'green-not-promoted'
@@ -490,7 +671,33 @@ export function composeGateOwnerBrief(inp: GateOwnerBriefInput): GateOwnerBrief 
       inp.repairQueue == null
         ? null
         : {
+            frozenCandidate: inp.repairQueue.frozenCandidate ?? inp.repairQueue.candidate ?? null,
+            repairHead: inp.repairQueue.repairHead ?? null,
             phase: inp.repairQueue.phase,
+            frozenSinceAtMs: inp.repairQueue.openedAtMs ?? null,
+            admissions: [...(inp.repairQueue.admissions ?? [])],
+            admissionsMeasured: inp.repairQueue.admissions !== undefined,
+            signature: (inp.repairQueue.signature ?? []).map((entry) => ({
+              ...entry,
+              status:
+                entry.admittedRound <= 1
+                  ? 'red-at-candidate'
+                  : (`admitted-in-${entry.admittedRound}` as const),
+            })),
+            signatureMeasured: inp.repairQueue.signature !== undefined,
+            legs: (inp.repairQueue.legs ?? []).map((leg) => ({
+              ...leg,
+              status:
+                leg.state === 'fixed'
+                  ? (`green-at-${leg.resolvedHead ?? leg.lastMeasuredHead}` as const)
+                  : leg.admittedRound <= 1
+                    ? 'red-at-candidate'
+                    : (`admitted-in-${leg.admittedRound}` as const),
+            })),
+            legsMeasured: inp.repairQueue.legs !== undefined,
+            blockedReason: inp.repairQueue.blockedReason ?? null,
+            blockedReasonMeasured: inp.repairQueue.blockedReason !== undefined,
+            verdictProvenance: inp.repairQueue.verdictProvenance ?? null,
             attempts: inp.repairQueue.attempts,
             fixerSpawnId: inp.repairQueue.fixerSpawnId,
             fixerAlive: inp.repairQueue.fixerAlive,

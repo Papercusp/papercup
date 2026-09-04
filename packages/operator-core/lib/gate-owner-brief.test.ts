@@ -11,6 +11,9 @@ import { describe, expect, it } from 'vitest';
 import { composeGateOwnerBrief, type GateOwnerBriefInput } from './gate-owner-brief';
 
 const NOW = 1_788_193_000_000;
+const CANDIDATE = '1111111111111111111111111111111111111111';
+const MAIN_PIN = '2222222222222222222222222222222222222222';
+const STAGING_HEAD = '3333333333333333333333333333333333333333';
 
 const heldLiveOwnership = {
   claimState: 'held',
@@ -46,6 +49,15 @@ const base: GateOwnerBriefInput = {
   failingTestsMeasured: true,
   failingTestsProvenance: 'measured',
   mainBehindStaging: false,
+  promotion: {
+    judgedSha: CANDIDATE,
+    mainPin: CANDIDATE,
+    mainContainsJudgedSha: true,
+    stagingHead: CANDIDATE,
+    stagingContainsMainPin: true,
+    stagingContainsJudgedSha: true,
+    stagingBufferPresent: false,
+  },
   lastGreenAtMs: NOW - 60_000,
   verdictObservedAtMs: NOW - 30_000,
   fireStale: false,
@@ -56,7 +68,16 @@ const base: GateOwnerBriefInput = {
 };
 
 const redQueue = (over: Partial<NonNullable<GateOwnerBriefInput['repairQueue']>> = {}) => ({
+  frozenCandidate: CANDIDATE,
+  candidate: CANDIDATE,
+  repairHead: MAIN_PIN,
   phase: 'awaiting-fixer',
+  openedAtMs: NOW - 3_600_000,
+  admissions: [],
+  signature: [],
+  legs: [],
+  blockedReason: null,
+  verdictProvenance: null,
   attempts: 1,
   updatedAtMs: NOW - 120_000,
   ageMs: 3_600_000,
@@ -75,20 +96,121 @@ describe('composeGateOwnerBrief', () => {
     expect(b.whyNot).toBeNull();
   });
 
-  it('P-005: distinguishes a green verdict with an unpromoted staging buffer in the headline itself', () => {
-    const b = composeGateOwnerBrief({ ...base, mainBehindStaging: true });
-    expect(b.answer).toBe('green-not-promoted');
-    expect(b.assessment.code).toBe('green-not-promoted');
-    expect(b.assessment.safeAction).toMatch(/green-checkpoint/i);
-    expect(b.assessment.safeAction).toMatch(/do not fast-forward main directly/i);
+  it('D-013: a promoted judged SHA stays green while staging has an ordinary post-absorption buffer', () => {
+    const b = composeGateOwnerBrief({
+      ...base,
+      mainBehindStaging: true,
+      promotion: {
+        judgedSha: CANDIDATE,
+        mainPin: MAIN_PIN,
+        mainContainsJudgedSha: true,
+        stagingHead: STAGING_HEAD,
+        stagingContainsMainPin: true,
+        stagingContainsJudgedSha: true,
+        stagingBufferPresent: true,
+      },
+    });
+    expect(b.answer).toBe('green');
+    expect(b.promotion.mainContainsJudgedSha).toBe(true);
+    expect(b.promotion.staging).toMatchObject({
+      bufferPresent: true,
+      relation: 'ahead-after-absorption',
+    });
     expect(b.mainGreen.value).toBe(true);
     expect(b.whyNot).toBeNull();
   });
 
+  it('D-013: green-not-promoted is reachable only from exact judged-SHA promotion evidence', () => {
+    const b = composeGateOwnerBrief({
+      ...base,
+      mainBehindStaging: false,
+      promotion: {
+        judgedSha: CANDIDATE,
+        mainPin: MAIN_PIN,
+        mainContainsJudgedSha: false,
+        stagingHead: MAIN_PIN,
+        stagingContainsMainPin: true,
+        stagingContainsJudgedSha: false,
+        stagingBufferPresent: false,
+      },
+    });
+    expect(b.answer).toBe('green-not-promoted');
+    expect(b.assessment.safeAction).toMatch(/frozen-lineage promotion/i);
+  });
+
   it('P-005: a missing promotion measurement is named instead of guessed', () => {
-    const b = composeGateOwnerBrief({ ...base, mainBehindStaging: null });
+    const b = composeGateOwnerBrief({ ...base, mainBehindStaging: null, promotion: null });
     expect(b.answer).toBe('green');
-    expect(b.unknownLegs.map((l) => l.leg)).toContain('mainBehindStaging');
+    expect(b.unknownLegs.map((l) => l.leg)).toContain('promotion.mainContainsJudgedSha');
+  });
+
+  it('P-011 exposes the frozen identity, admission ledger, signature lifecycle, phase and blocked reason', () => {
+    const admission = {
+      atMs: NOW - 20_000,
+      actor: 'su-fixer',
+      source: { ref: 'staging', sha: MAIN_PIN },
+      fromRepairHead: CANDIDATE,
+      toRepairHead: MAIN_PIN,
+      paths: ['lib/a.test.ts'],
+      unchanged: [],
+      blobs: { 'lib/a.test.ts': 'blob-a' },
+    };
+    const b = composeGateOwnerBrief({
+      ...base,
+      consecutiveReds: 2,
+      repairQueue: redQueue({
+        phase: 'blocked',
+        admissions: [admission],
+        blockedReason: 'attempts-exhausted',
+        signature: [
+          {
+            kind: 'test-file',
+            id: 'lib/a.test.ts',
+            recipe: 'npm run test:file -- lib/a.test.ts',
+            admittedRound: 1,
+            measuredHead: CANDIDATE,
+          },
+          {
+            kind: 'lint-leg',
+            id: 'lint:tsc',
+            recipe: 'npm run lint:tsc',
+            admittedRound: 2,
+            measuredHead: MAIN_PIN,
+          },
+        ],
+        legs: [
+          {
+            id: 'lint:tsc',
+            state: 'fixed',
+            admittedRound: 2,
+            admittedHead: MAIN_PIN,
+            admittedAtMs: NOW - 20_000,
+            lastMeasuredHead: STAGING_HEAD,
+            lastMeasuredAtMs: NOW - 10_000,
+            lastMeasuredRound: 3,
+            failingRounds: 1,
+            resolvedHead: STAGING_HEAD,
+            resolvedAtMs: NOW - 10_000,
+          },
+        ],
+      }),
+    });
+
+    expect(b.remediation).toMatchObject({
+      frozenCandidate: CANDIDATE,
+      repairHead: MAIN_PIN,
+      phase: 'blocked',
+      frozenSinceAtMs: NOW - 3_600_000,
+      admissions: [admission],
+      admissionsMeasured: true,
+      blockedReason: 'attempts-exhausted',
+      blockedReasonMeasured: true,
+    });
+    expect(b.remediation?.signature.map((entry) => entry.status)).toEqual([
+      'red-at-candidate',
+      'admitted-in-2',
+    ]);
+    expect(b.remediation?.legs[0]?.status).toBe(`green-at-${STAGING_HEAD}`);
   });
 
   it('not-judging outranks everything else when the gate is not firing', () => {

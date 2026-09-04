@@ -30,11 +30,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import {
-  HARNESS_FEATURES_CONSOLIDATED_DDL,
-  USER_TRUST_LIST_DDL,
-  WORK_ITEM_DEPS_DDL,
-} from '../../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import type { ClaimSpecRecord } from './claim-spec-store';
 import type { FleetScopeContext } from './fleet-scope-admission';
@@ -214,7 +210,7 @@ describe('diagnoseFleetScopeFeatureFamilyMatch against real Postgres (WI-7151)',
     expect(cnt).toBe(0);
   });
 
-  it("excludes a DIFFERENT plan's feature-family item — the spec filter itself must narrow correctly", async () => {
+  it('excludes a DIFFERENT plan\'s feature-family item — the spec filter itself must narrow correctly', async () => {
     await seedItem('WI-other-plan', { sourcePlanSlug: 'some-unrelated-plan' });
 
     const cnt = await diagnoseFleetScopeFeatureFamilyMatch({

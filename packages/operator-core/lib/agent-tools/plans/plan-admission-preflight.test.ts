@@ -80,12 +80,7 @@ const lane = (args: {
           basis: 'issue+feature-family',
         }
       : featureReachable
-        ? {
-            claimable: feature,
-            matchedByFilter: featureMatchedByFilter,
-            excluded: featureExcluded,
-            basis: 'feature-family',
-          }
+        ? { claimable: feature, matchedByFilter: featureMatchedByFilter, excluded: featureExcluded, basis: 'feature-family' }
         : issueReachable
           ? {
               claimable: issue,
@@ -108,7 +103,11 @@ const lane = (args: {
 
 describe('evaluateExactPlanAdmission', () => {
   it('surfaces probable-mistake findings without changing an otherwise ready verdict', () => {
-    const planItems = [item('P-001'), item('P-002', 'todo', ['P-001']), item('P-003', 'todo', ['P-002'])];
+    const planItems = [
+      item('P-001'),
+      item('P-002', 'todo', ['P-001']),
+      item('P-003', 'todo', ['P-002']),
+    ];
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',
       planItems,
@@ -253,9 +252,7 @@ describe('evaluateExactPlanAdmission', () => {
       lane: { effective: { claimable: 0 } },
     });
     expect(verdict.message).toContain('diagnostics do not expose matched-row or exclusion-floor counts');
-    expect(verdict.message).toContain(
-      'cannot identify whether the filter matched rows or which claim floor excluded them',
-    );
+    expect(verdict.message).toContain('cannot identify whether the filter matched rows or which claim floor excluded them');
     expect(verdict.message).not.toContain('every matched row is excluded by claim floors');
   });
 
@@ -276,13 +273,7 @@ describe('evaluateExactPlanAdmission', () => {
       ready: false,
       status: 'refused',
       reason: 'floor-gated',
-      lane: {
-        effective: {
-          claimable: 0,
-          matchedByFilter: 2,
-          excluded: { claimFloors: 2, reservedPlanLane: 2 },
-        },
-      },
+      lane: { effective: { claimable: 0, matchedByFilter: 2, excluded: { claimFloors: 2, reservedPlanLane: 2 } } },
     });
     expect(verdict.message).toContain('claimFloors=2');
     expect(verdict.message).toContain('reservedPlanLane=2');

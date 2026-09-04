@@ -164,9 +164,7 @@ function zeroClaimableLaneVerdict(
     .join(', ');
   return {
     reason: 'floor-gated',
-    message:
-      `Under ${scope}, the exact-plan lane is structurally reachable but every matched row is excluded by claim floors ` +
-      `(${activeExclusions}).`,
+    message: `Under ${scope}, the exact-plan lane is structurally reachable but every matched row is excluded by claim floors (${activeExclusions}).`,
   };
 }
 

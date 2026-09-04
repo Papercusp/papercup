@@ -199,11 +199,69 @@ describe('applyTriageDecision — the decision PERSISTS (the G1 fix)', () => {
     expect(deps.merged).toHaveLength(0);
   });
 
-  it('refuses non-open issues and unknown ids', async () => {
-    const resolvedDeps = depsOf(issueOf({ id: 'i5', state: 'resolved' }));
-    expect((await applyTriageDecision({ id: 'i5', decision: 'place', reason: 'x' }, resolvedDeps)).ok).toBe(false);
+  it('refuses non-terminal non-open issues and unknown ids', async () => {
+    const wipDeps = depsOf(issueOf({ id: 'i5', state: 'wip' }));
+    expect((await applyTriageDecision({ id: 'i5', decision: 'place', reason: 'x' }, wipDeps)).ok).toBe(false);
     const missingDeps = depsOf(null);
     expect((await applyTriageDecision({ id: 'nope', decision: 'place', reason: 'x' }, missingDeps)).ok).toBe(false);
+  });
+
+  it.each(['done', 'dropped', 'resolved', 'closed'] as const)(
+    'persists triage on a terminal backing work-item without changing its state (%s)',
+    async (state) => {
+      const deps = depsOf(
+        issueOf({
+          id: `terminal-${state}`,
+          state,
+          payload: { ideaLifecycle: { state: 'open', stateUpdatedAt: '2026-09-01T00:00:00Z' } },
+        }),
+      );
+      const res = await applyTriageDecision(
+        { id: `terminal-${state}`, decision: 'place', reason: 'late routed-idea triage' },
+        deps,
+      );
+
+      expect(res.ok).toBe(true);
+      expect(res.lifecycle?.state).toBe('triaged');
+      expect((deps.merged[0].ideaLifecycle as Record<string, unknown>).triageDecision).toBe('place');
+      expect(deps.states).toEqual([]);
+      expect(res.closed).toBe(false);
+    },
+  );
+
+  it('records a reject decision on a terminal backing item without re-closing it', async () => {
+    const deps = depsOf(
+      issueOf({
+        id: 'terminal-reject',
+        state: 'done',
+        payload: { ideaLifecycle: { state: 'open', stateUpdatedAt: '2026-09-01T00:00:00Z' } },
+      }),
+    );
+    const res = await applyTriageDecision(
+      { id: 'terminal-reject', decision: 'reject', reason: 'already completed elsewhere', comment: false },
+      deps,
+    );
+
+    expect(res.ok).toBe(true);
+    expect(res.closed).toBe(false);
+    expect(deps.states).toEqual([]);
+    expect(deps.merged[0].decidedReason).toBe('already completed elsewhere');
+  });
+
+  it('still refuses a terminal item whose improvement lifecycle is already terminal', async () => {
+    const deps = depsOf(
+      issueOf({
+        id: 'terminal-applied',
+        state: 'done',
+        payload: { ideaLifecycle: { state: 'applied', stateUpdatedAt: '2026-09-01T00:00:00Z' } },
+      }),
+    );
+    const res = await applyTriageDecision({ id: 'terminal-applied', decision: 'place', reason: 'x' }, deps);
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('applied');
+    expect(deps.merged).toHaveLength(0);
+    expect(deps.states).toEqual([]);
   });
 
   it('legacy item without a lifecycle initializes at open and triages cleanly', async () => {
