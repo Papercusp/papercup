@@ -390,6 +390,7 @@ import {
   isIntegratorActorAdmitted,
   mergeAttributionRosters,
   isGenericLockIntent,
+  runWithGitSyncPerInstallLease,
 } from './git-sync-action';
 import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners';
 import { intentToSubject, DEFAULT_GIT_SYNC_SUBJECT } from './git-sync-attribution';
@@ -1278,6 +1279,63 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(txQueries.find((q) => /INSERT\s+INTO\s+agent_resource_registry/i.test(q.text))?.text)
       .toContain('ON CONFLICT (resource) DO NOTHING');
     expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
+  });
+
+  it('WI-6500: re-acquires a distinct per-install lease around the bootstrap post-leg', async () => {
+    potGitMode = 'p2p-only';
+    registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
+    runGitSyncMock.mockResolvedValue({
+      status: 'nothing',
+      dirtyPathCount: 0,
+      committedCount: 0,
+      oversized: [],
+      contentErrors: [],
+      strandedSubmodules: [],
+    });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await action(ctx);
+    } finally {
+      log.mockRestore();
+    }
+
+    const perInstallAcquires = tryAcquireResourceMock.mock.calls
+      .map(([, opts]) => opts as { resource: string; mode: string; owner: string })
+      .filter(({ resource }) => resource === 'git-sync:papercup');
+    expect(perInstallAcquires).toHaveLength(2);
+    expect(perInstallAcquires.map(({ mode }) => mode)).toEqual(['exclusive', 'exclusive']);
+    expect(perInstallAcquires[1]?.owner).not.toBe(perInstallAcquires[0]?.owner);
+    expect(releasedResources()).toEqual([
+      'libs-papercusp-submodule',
+      'git-sync:papercup',
+      'git-sync',
+      'git-sync:papercup',
+    ]);
+  });
+
+  it('WI-6500: a refused per-install lease skips its operation instead of running an unlocked writer', async () => {
+    tryAcquireResourceMock.mockResolvedValue({
+      ok: false,
+      reason: 'held_exclusive',
+      holders: [],
+    });
+    const operation = vi.fn(async () => 'must-not-run');
+
+    const result = await runWithGitSyncPerInstallLease(
+      'papercup',
+      'ws-42',
+      operation,
+    );
+
+    expect(result).toMatchObject({
+      state: 'skipped',
+      reason: 'held_exclusive',
+      blockedOn: 'git-sync:papercup',
+    });
+    expect(operation).not.toHaveBeenCalled();
+    // acquireLocks cancels any stale FIFO ticket / late cascade grant even on
+    // a terminal refusal; that cleanup is not a lease the operation held.
+    expect(releasedResources()).toEqual(['git-sync:papercup']);
   });
 
   // WI-562584. The defect this pins: an agent's `resourceLockDomain()` inferred the

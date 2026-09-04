@@ -1146,6 +1146,95 @@ async function acquireLocks(
   return { state: 'acquired' };
 }
 
+export type GitSyncPerInstallLeaseResult<T> =
+  | { state: 'ran'; value: T }
+  | {
+      state: 'skipped';
+      reason: string;
+      blockedOn?: string;
+      holders?: GitSyncLockHolderSnapshot[];
+    };
+
+/**
+ * Run one post-local-sync operation under the existing per-install
+ * `git-sync:<slug>` lease.
+ *
+ * The main git pipeline releases its restart barrier and checkout lock before
+ * the post-legs begin, deliberately keeping a long P2P cold join out of the
+ * local commit critical section. That release also means two host processes
+ * can otherwise enter the bootstrap leg together and race-replace the whole
+ * `routines.metadata.bootstrap` object. Re-acquiring only the per-install
+ * resource closes that race without holding the restart barrier or configured
+ * repository extras during network transfer.
+ *
+ * This path is fail-closed: lock-store failure skips the post-leg rather than
+ * running a metadata writer without mutual exclusion. A scheduled next tick is
+ * the retry mechanism. The heartbeat stops when the action-level liveness
+ * signal aborts; the held row then expires at its ordinary TTL if the underlying
+ * operation never settles, instead of an abandoned callback renewing forever.
+ */
+export async function runWithGitSyncPerInstallLease<T>(
+  slug: string,
+  workspaceId: string,
+  operation: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<GitSyncPerInstallLeaseResult<T>> {
+  const coordinationDomain = workspaceId || '*';
+  const resources: GitSyncLockRequest[] = [
+    { resource: gitSyncResourceName(slug), mode: 'exclusive' },
+  ];
+  const acquired: GitSyncLockRequest[] = [];
+  const owner = newGitSyncLockOwner();
+  const lease = await acquireLocks(
+    coordinationDomain,
+    slug,
+    resources,
+    acquired,
+    owner,
+  );
+  if (lease.state !== 'acquired') {
+    return {
+      state: 'skipped',
+      reason:
+        lease.blockedReason ??
+        (lease.state === 'contended'
+          ? 'lock_contended'
+          : 'lock_infra_unavailable'),
+      ...(lease.blockedOn ? { blockedOn: lease.blockedOn } : {}),
+      ...(lease.holders ? { holders: lease.holders } : {}),
+    };
+  }
+
+  const stopHeartbeat = startLockHeartbeat(
+    coordinationDomain,
+    slug,
+    resources,
+    owner,
+  );
+  let heartbeatStop: Promise<void> | null = null;
+  const stopHeartbeatOnce = (): Promise<void> => {
+    if (!heartbeatStop) heartbeatStop = stopHeartbeat();
+    return heartbeatStop;
+  };
+  const onAbort = (): void => {
+    void stopHeartbeatOnce();
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+
+  try {
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new Error('git-sync per-install lease operation aborted');
+    }
+    return { state: 'ran', value: await operation() };
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    await stopHeartbeatOnce();
+    await releaseAll(coordinationDomain, owner, acquired);
+  }
+}
+
 /** The /invoke timeout for a merge-resolver run: it drains+takes the git-sync
  *  lock (≤120s) then merges, all within this ceiling. Used BOTH as the invoke
  *  `timeoutMs` AND as the floor the in-flight TTL must clear — one source of
@@ -2927,7 +3016,24 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // past it.
     if (gate.hiveGitMode) {
       await guardedPostLegs('git-sync:bootstrap', () =>
-        runCheckpointedStep('git-sync:bootstrap', () => runBootstrapLeg(slug, workspaceId)),
+        runCheckpointedStep('git-sync:bootstrap', async () => {
+          const bootstrap = await runWithGitSyncPerInstallLease(
+            slug,
+            workspaceId,
+            () => runBootstrapLeg(slug, workspaceId),
+            postLegsLiveness.signal,
+          );
+          if (bootstrap.state === 'skipped') {
+            const detail = bootstrap.blockedOn
+              ? `${bootstrap.reason} on ${bootstrap.blockedOn}`
+              : bootstrap.reason;
+            const message =
+              `[git-sync] ${slug}: bootstrap-tick stood down — per-install lease unavailable ` +
+              `(${detail}); the next scheduled tick retries`;
+            if (bootstrap.reason === 'lock_infra_unavailable') console.warn(message);
+            else console.log(message);
+          }
+        }),
       );
     }
 
@@ -4153,15 +4259,12 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
           // WI-37226: carried, not recomputed — see the note above the prior read.
           consecutiveMisses: priorStubBootstrap?.consecutiveMisses ?? 0,
           firstMissAt: priorStubBootstrap?.firstMissAt ?? null,
-          // EI-18799556647570956: two host processes CAN run this leg concurrently
-          // for the same install (nothing here takes a per-install lease), and each
-          // `patchRoutineMetadata` call replaces the WHOLE `bootstrap` key — so a
-          // stale process (older code, missing a field like `converged`) racing a
-          // freshly-restarted one silently erases fields tick-to-tick with no way
-          // to tell which process/build wrote the record you're looking at. This is
-          // the cheap half of the fix (self-evident staleness, not the lease): stamp
-          // the writer's identity so a reader can tell "this record came from a
-          // stale process" instead of "the fix regressed". `instance` reuses
+          // EI-18799556647570956: two host processes historically could run this
+          // leg concurrently for the same install, and each `patchRoutineMetadata`
+          // call replaces the WHOLE `bootstrap` key. WI-6500 now wraps both writer
+          // paths in the per-install lease; retain this stamp so a pre-upgrade stale
+          // process that does not yet honor the lease remains self-evident instead
+          // of reading as a field regression. `instance` reuses
           // PROCESS_INSTANCE_ID (pid + process-start stamp, already used for the
           // resolver/content-fixer dispatch markers above) so all three "who wrote
           // this" stamps in this file share one identity, never three.
@@ -4358,9 +4461,9 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
         // is persisted rather than only logged.
         consecutiveMisses: missRunLength,
         firstMissAt: missRunStartedAt,
-        // EI-18799556647570956: see the stub writer above — same writer stamp, same
-        // rationale (two processes CAN race this leg for one install; the stamp makes
-        // a stale-process overwrite self-evident instead of reading as a regression).
+        // EI-18799556647570956 / WI-6500: see the stub writer above — the shared
+        // per-install lease serializes current processes, while this stamp keeps a
+        // pre-upgrade writer that ignores the lease diagnosable.
         writer: { pid: process.pid, instance: PROCESS_INSTANCE_ID, sha: getBuildInfo().sha },
       },
     });
