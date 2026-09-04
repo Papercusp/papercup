@@ -1,0 +1,35 @@
+[Unit]
+Description=Papercusp workspace-host preparation (identities, roots, ACLs)
+Documentation=file:///usr/libexec/papercusp/host-prepare.sh
+
+# Ordered BEFORE the things that depend on the roots and ACLs it creates, and
+# after local filesystems are up. The workspace root lives under /srv, which is a
+# symlink into machine-local /var on this base, so running before local-fs would
+# write into the pre-mount directory and the work would vanish.
+After=local-fs.target
+Requires=local-fs.target
+Before=sshd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# The serial console is the only channel a converted cloud disk image offers
+# before SSH is up, and the boot test greps these lines. Same channel and same
+# reasoning as p303-boot-proof.service.
+StandardOutput=journal+console
+StandardError=journal+console
+
+ExecStart=/usr/libexec/papercusp/host-prepare.sh
+
+# ⚠ Deliberately NOT `RemainAfterExit` + `ConditionPathExists=!<stamp>`.
+#
+# This unit runs on EVERY boot. After `bootc upgrade` the host reboots into a new
+# deployment root, so the ACLs on /opt/papercusp are gone with the deployment that
+# carried them, while /var and /srv state persists. A stamp file would live in
+# /var, survive the update, and skip the run — leaving exactly the hosts that took
+# an update with an unreadable runtime root. The script is idempotent so the
+# repeat costs nothing.
+
+[Install]
+WantedBy=multi-user.target
