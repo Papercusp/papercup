@@ -1951,6 +1951,41 @@ describe('scoped-superuser hive clamp', () => {
   });
 
   it.each([
+    [
+      'an omitted ownerId',
+      { read: true, harness: 'hiveB-home' },
+      hiveScoped(),
+    ],
+    [
+      'the caller ownerId',
+      { read: true, harness: 'hiveB-home', ownerId: 'loop-owner' },
+      superuserExtra('&workspace=ws-test&harness=hiveA-home&client=loop-owner'),
+    ],
+  ])(
+    'flag ON: allows a self-owned loop:checkpoint READ to recover a concrete sibling-hive note (%s)',
+    async (_case, args, extra) => {
+      h.scopedClampFlag.value = true;
+      const res = await callTool('loop:checkpoint', args, extra);
+      // The real handler may report an empty/no-harness note in this PG-free
+      // matrix; transport gating is the assertion, so only the hive refusal is
+      // disallowed here.
+      expect(textOf(res)).not.toContain('harness_forbidden');
+    },
+  );
+
+  it.each([
+    ['the global `all` harness', { read: true, harness: 'all' }],
+    ['the wildcard `*` harness', { read: true, harness: '*' }],
+    ['another owner\'s note', { read: true, harness: 'hiveB-home', ownerId: 'other-owner' }],
+    ['a cross-hive WRITE', { did: 'must remain routine-scoped', harness: 'hiveB-home' }],
+  ])('flag ON: still rejects loop:checkpoint %s', async (_case, args) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('loop:checkpoint', args, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it.each([
     ['a broad canonical routine read', { installSlug: PLATFORM_POT_SLUG }],
     ['another canonical routine', { installSlug: PLATFORM_POT_SLUG, name: 'green-checkpoint' }],
     ['a rollup that ignores its exact filters', { installSlug: PLATFORM_POT_SLUG, name: 'git-sync', rollup: true }],
@@ -3181,6 +3216,33 @@ describe('tools:invoke re-dispatch inherits the scoped-superuser hive clamp (EI-
       hiveScoped(),
     );
     expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it('flag ON: allows a nested self-owned loop:checkpoint READ to recover a concrete sibling-hive note', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'loop:checkpoint',
+        args: { read: true, harness: 'hiveB-home', ownerId: 'nested-loop-owner' },
+      },
+      superuserExtra('&workspace=ws-test&harness=hiveA-home&client=nested-loop-owner'),
+    );
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it.each([
+    ['another owner\'s note', { read: true, harness: 'hiveB-home', ownerId: 'other-owner' }],
+    ['a cross-hive WRITE', { did: 'must remain routine-scoped', harness: 'hiveB-home' }],
+  ])('flag ON: nested loop:checkpoint still rejects %s', async (_case, args) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'loop:checkpoint', args },
+      hiveScoped(),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
   });
 
   it.each([
