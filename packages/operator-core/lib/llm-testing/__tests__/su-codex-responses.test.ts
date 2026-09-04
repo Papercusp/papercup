@@ -4,16 +4,27 @@ import { LEARNING_MODEL_SPEC } from '../../learning/model-policy';
 import { buildCatalog } from '../targets/su-catalog';
 import { SuTarget } from '../targets/su';
 
-function completed(output: unknown[], usage = { input_tokens: 10, output_tokens: 4 }): Response {
-  const event = { type: 'response.completed', response: { output, usage } };
-  return new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`, {
+type OutputDelivery = 'snapshot' | 'streamed-only' | 'both';
+
+function completed(output: unknown[], delivery: OutputDelivery): Response {
+  const events: unknown[] = delivery === 'snapshot' ? [] : output.map((item, output_index) => ({
+    type: 'response.output_item.done', output_index, item,
+  }));
+  events.push({
+    type: 'response.completed',
+    response: {
+      output: delivery === 'streamed-only' ? [] : output,
+      usage: { input_tokens: 10, output_tokens: 4 },
+    },
+  });
+  return new Response(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')}data: [DONE]\n\n`, {
     status: 200,
     headers: { 'content-type': 'text/event-stream' },
   });
 }
 
 describe('SuTarget Codex Responses tool loop', () => {
-  it('splits Sol xhigh, replays output items, and returns function results through Responses', async () => {
+  it.each<OutputDelivery>(['snapshot', 'streamed-only', 'both'])('replays reasoning, functions, and text exactly once with %s output', async (delivery) => {
     const bodies: Array<Record<string, unknown>> = [];
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
@@ -27,7 +38,7 @@ describe('SuTarget Codex Responses tool loop', () => {
             name: 'docs__get',
             arguments: JSON.stringify({ slugs: ['x'], harness: 'all' }),
           },
-        ]);
+        ], delivery);
       }
       return completed([
         {
@@ -35,7 +46,7 @@ describe('SuTarget Codex Responses tool loop', () => {
           role: 'assistant',
           content: [{ type: 'output_text', text: 'Done from Sol.' }],
         },
-      ]);
+      ], delivery);
     });
     const dispatch = vi.fn(async () => ({
       content: [{ text: JSON.stringify({ ok: true, results: [{ slug: 'x' }] }) }],

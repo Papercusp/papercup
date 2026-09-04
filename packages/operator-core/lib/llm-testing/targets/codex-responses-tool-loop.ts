@@ -116,7 +116,9 @@ export function parseCodexResponsesSse(raw: string): CodexResponsesTurn {
       doneItems.push(e.item as ResponsesInputItem);
     }
   }
-  const outputItems = Array.isArray(completed?.output)
+  // The ChatGPT stream can send every item through output_item.done and then
+  // finish with output: []. Preserve those items for text and tool replay.
+  const outputItems = Array.isArray(completed?.output) && completed.output.length > 0
     ? (completed!.output as ResponsesInputItem[])
     : doneItems;
   if (!completed && outputItems.length === 0) {

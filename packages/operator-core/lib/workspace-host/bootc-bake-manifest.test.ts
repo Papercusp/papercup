@@ -47,7 +47,26 @@ describe('bootc bake manifest', () => {
     });
   });
 
-  it('rejects missing providers, duplicate providers, wrong formats, and movable refs', () => {
+  it('accepts GCP-only v1 and refuses selecting a provider that was not baked', () => {
+    const candidate = manifest();
+    const parsed = parseWorkspaceHostBootcBakeManifest({ ...candidate, clouds: [candidate.clouds[0]] });
+    expect(workspaceHostBootcCloudArtifact(parsed, 'gcp')).toEqual(candidate.clouds[0]);
+    expect(() => workspaceHostBootcCloudArtifact(parsed, 'aws')).toThrow("clouds is missing provider 'aws'");
+    expect(validateWorkspaceHostBootcBakeManifest({ ...candidate, clouds: [] })).toContain(
+      'clouds must contain at least one provider artifact',
+    );
+  });
+
+  it('rejects unknown and inherited object properties as providers', () => {
+    const candidate = manifest();
+    for (const cloud of ['other', 'toString', '__proto__']) {
+      expect(validateWorkspaceHostBootcBakeManifest({
+        ...candidate, clouds: [{ ...candidate.clouds[0], cloud }],
+      })).toContain('clouds[0].cloud must be gcp, aws, or azure');
+    }
+  });
+
+  it('rejects duplicate providers, wrong formats, and movable refs', () => {
     const candidate = manifest();
     const errors = validateWorkspaceHostBootcBakeManifest({
       ...candidate,
@@ -62,7 +81,6 @@ describe('bootc bake manifest', () => {
       expect.arrayContaining([
         'pinnedRef must equal image@digest',
         "clouds contains duplicate provider 'gcp'",
-        "clouds is missing provider 'aws'",
         "clouds[2].type must be 'vhd' for azure",
         'clouds[2].sha256 must be a lowercase SHA-256 digest',
         'clouds[2].sizeBytes must be a positive safe integer',

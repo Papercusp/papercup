@@ -34,7 +34,7 @@ export interface WorkspaceHostBootcBakeManifest {
   registryNamespace: string;
   /** Dry-run plans deliberately carry zero-byte placeholders and are never releasable. */
   dryRun?: false;
-  /** Exactly one artifact per provider. All were rendered from pinnedRef. */
+  /** One artifact per selected provider. All were rendered from pinnedRef. */
   clouds: readonly WorkspaceHostBootcCloudArtifact[];
 }
 
@@ -70,7 +70,7 @@ function safeArtifactPath(value: unknown): value is string {
   return !parts.some((part, index) => part === '.' || part === '..' || (part === '' && index > 0));
 }
 
-/** Validate the one-digest, three-provider handoff emitted by bake-cloud-images.sh. */
+/** Validate the one-digest handoff for the providers selected in bake-cloud-images.sh. */
 export function validateWorkspaceHostBootcBakeManifest(value: unknown): readonly string[] {
   const errors: string[] = [];
   const candidate = object(value);
@@ -111,7 +111,7 @@ export function validateWorkspaceHostBootcBakeManifest(value: unknown): readonly
       return;
     }
     const provider = typeof cloud.cloud === 'string' ? cloud.cloud : '';
-    if (!(provider in WORKSPACE_HOST_BOOTC_CLOUD_TYPES)) {
+    if (!Object.hasOwn(WORKSPACE_HOST_BOOTC_CLOUD_TYPES, provider)) {
       errors.push(`clouds[${index}].cloud must be gcp, aws, or azure`);
       return;
     }
@@ -131,11 +131,8 @@ export function validateWorkspaceHostBootcBakeManifest(value: unknown): readonly
       errors.push(`clouds[${index}].sizeBytes must be a positive safe integer`);
     }
   });
-  for (const provider of Object.keys(WORKSPACE_HOST_BOOTC_CLOUD_TYPES)) {
-    if (!seen.has(provider)) errors.push(`clouds is missing provider '${provider}'`);
-  }
-  if (candidate.clouds.length !== Object.keys(WORKSPACE_HOST_BOOTC_CLOUD_TYPES).length) {
-    errors.push('clouds must contain exactly one artifact for each provider');
+  if (candidate.clouds.length === 0) {
+    errors.push('clouds must contain at least one provider artifact');
   }
   return errors;
 }
@@ -154,7 +151,7 @@ export function workspaceHostBootcCloudArtifact(
   manifest: WorkspaceHostBootcBakeManifest,
   provider: WorkspaceHostProviderTarget,
 ): WorkspaceHostBootcCloudArtifact {
-  if (!(provider in WORKSPACE_HOST_BOOTC_CLOUD_TYPES)) {
+  if (!Object.hasOwn(WORKSPACE_HOST_BOOTC_CLOUD_TYPES, provider)) {
     throw new WorkspaceHostBootcBakeManifestError(`unsupported bootc provider '${provider}'`);
   }
   const parsed = parseWorkspaceHostBootcBakeManifest(manifest);
