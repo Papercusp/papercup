@@ -520,6 +520,22 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
         'Google Pub/Sub Gmail polling imports this module from the `google-gmail-poll` system action, dispatched by routinesTick only when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host). It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it.',
     },
   },
+  // EI-22090053297465523: fleet-transition-sweep-action.ts dynamically imports
+  // this helper from a registered system action. It is therefore executed by
+  // routinesTick in bg-host even though it is not itself an `*-action.ts` file
+  // and is not one of the direct routines-workflow sweep targets. Keep this
+  // dependency mapping narrow: the surrounding routines directory still
+  // contains operator-served modules that must retain the default owner.
+  {
+    match: /^packages\/operator-core\/lib\/harness\/routines\/fleet-control-reconcile\.ts$/,
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        'This helper is dynamically imported by the `fleet-transition-sweep` system action, which routinesTick dispatches only when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host). It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it (EI-22090053297465523).',
+    },
+  },
   // EI-11120: `system:<action>` routine handlers (register-system-actions.ts's
   // side-effect registry + every `*-action.ts` it wires in — git-sync, scout-cycle,
   // blueprint-run, improvement-implement, ...) plus the dispatch machinery itself are

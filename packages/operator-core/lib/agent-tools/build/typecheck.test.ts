@@ -56,6 +56,7 @@ import buildTypecheck, {
   ambientTypePackages,
   projectDeclaresTypes,
   selectTypecheckRoot,
+  partitionScopedDiagnostics,
 } from './typecheck';
 // The EI-18776865728050036 class guard moved to capability/foreground-transport-cap.test.ts
 // (EI-20645849301780712) — it now lives beside the module it guards, and its tool list is
@@ -126,6 +127,129 @@ describe('bounded diagnostic serialization', () => {
     expect(bounded.errorsTruncated).toBe(false);
     expect(bounded.byFileTruncated).toBe(false);
     expect(bounded.filesWithErrors).toBe(1);
+  });
+});
+
+describe('scopeToFiles requested-file verdict (EI-19367920569086881)', () => {
+  let root: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'build-typecheck-scoped-verdict-'));
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'tsconfig.json'), '{}');
+    writeFileSync(join(root, 'src', 'target.ts'), 'export const target = 1;');
+    writeFileSync(join(root, 'src', 'dependency.ts'), 'export const dependency = 1;');
+  });
+
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  const diagnostic = (file: string | null, code = 'TS2322'): TscDiagnostic => ({
+    file,
+    line: file ? 1 : null,
+    column: file ? 1 : null,
+    code,
+    category: 'error',
+    message: 'synthetic',
+  });
+
+  const runScoped = async (lines: string[], maxErrors = 50) => {
+    const { child } = fakeChild();
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        child.stdout?.emit('data', Buffer.from(`${lines.join('\n')}\n`));
+        child.emit('close', 2);
+      });
+      return child;
+    });
+    try {
+      return await (
+        buildTypecheck as unknown as {
+          handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, unknown> }>;
+        }
+      ).handler(
+        { project: '.', files: ['src/target.ts'], scopeToFiles: true, maxErrors },
+        { projectDir: root },
+      );
+    } finally {
+      spawnMock.mockReset();
+    }
+  };
+
+  it('partitions requested, imported, and unattributed diagnostics without reordering them', () => {
+    const imported = diagnostic('src/dependency.ts');
+    const requested = diagnostic('src/target.ts');
+    const global = diagnostic(null, 'TS5023');
+    const out = partitionScopedDiagnostics(
+      [imported, requested, global],
+      [join(root, 'src', 'target.ts')],
+    );
+
+    expect(out).toEqual({
+      requested: [requested],
+      other: [imported, global],
+      unattributed: [global],
+    });
+  });
+
+  it('returns a clean requested-file verdict while keeping imported-file errors visible', async () => {
+    const raw = await runScoped([
+      "src/dependency.ts(1,1): error TS2322: Type 'string' is not assignable to type 'number'.",
+    ]);
+
+    expect(raw.data).toMatchObject({
+      ok: true,
+      scopedVerdict: 'requested-files-clean',
+      scopedVerdictIncomplete: false,
+      errorCount: 0,
+      errorsInRequestedFiles: 0,
+      totalErrorCount: 1,
+      otherErrorCount: 1,
+      unattributedErrorCount: 0,
+      exitCode: 0,
+      compilerExitCode: 2,
+    });
+    expect(raw.data.errors).toEqual([]);
+    expect((raw.data.otherErrors as TscDiagnostic[]).map((error) => error.file)).toEqual([
+      'src/dependency.ts',
+    ]);
+  });
+
+  it('keeps requested-file errors primary even when graph errors arrive first and exhaust the cap', async () => {
+    const raw = await runScoped(
+      [
+        "src/dependency.ts(1,1): error TS2322: Type 'string' is not assignable to type 'number'.",
+        "src/target.ts(2,3): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.",
+      ],
+      1,
+    );
+
+    expect(raw.data).toMatchObject({
+      ok: false,
+      scopedVerdict: 'requested-files-error',
+      errorCount: 1,
+      totalErrorCount: 2,
+      otherErrorCount: 1,
+      otherErrorsTruncated: true,
+      exitCode: 2,
+      compilerExitCode: 2,
+    });
+    expect((raw.data.errors as TscDiagnostic[]).map((error) => error.file)).toEqual(['src/target.ts']);
+  });
+
+  it('does not report clean when a global diagnostic makes requested-file coverage indeterminate', async () => {
+    const raw = await runScoped(["error TS5023: Unknown compiler option '--synthetic'."]);
+
+    expect(raw.data).toMatchObject({
+      ok: false,
+      scopedVerdict: 'incomplete',
+      scopedVerdictIncomplete: true,
+      errorCount: 0,
+      otherErrorCount: 1,
+      unattributedErrorCount: 1,
+      exitCode: 2,
+      compilerExitCode: 2,
+    });
   });
 });
 

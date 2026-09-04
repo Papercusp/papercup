@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ACCEPTANCE_CORPUS,
   CORPUS_BASELINE_COMMIT,
+  EXCLUDED_ACCEPTANCE_SIGNALS,
   coveredPlanCases,
   corpusCase,
   type PinnedSite,
@@ -305,6 +306,18 @@ describe('read-only invariants', () => {
 });
 
 describe('resource budgets', () => {
+  it('names only runtime-observable resource metrics in acceptance case 13 (WI-2143024)', () => {
+    const resourceCase = corpusCase('resource-budget-measured-from-runtime');
+    expect(resourceCase?.title).toBe('Cold start, warm latency, RSS, child count, and index disk');
+    expect(EXCLUDED_ACCEPTANCE_SIGNALS.map((signal) => signal.name)).toEqual([
+      'tool failures',
+      'packer selection',
+      'downstream reads',
+      'result tokens',
+    ]);
+    expect(EXCLUDED_ACCEPTANCE_SIGNALS.every((signal) => signal.reason.length > 40)).toBe(true);
+  });
+
   it('bounds child processes so fleet load cannot multiply them', () => {
     expect(DEFAULT_RESOURCE_BUDGET.childProcMax).toBeLessThanOrEqual(2);
   });

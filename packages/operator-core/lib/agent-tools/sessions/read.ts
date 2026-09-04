@@ -22,6 +22,8 @@ import {
 } from './_shared';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
+const SESSION_TURN_TEXT_CHUNK_CAP = 1_500;
+const SESSION_TURN_TEXT_CHUNK_MAX = 4_000;
 
 const readArgsSchema = z
   .object({
@@ -45,6 +47,19 @@ const readArgsSchema = z
       .describe(
         "Which END of the range to return when it has more turns than `limit`: 'desc' (DEFAULT) = the TAIL (newest — where a session left off); 'asc' = the HEAD (from turn 0 — the kickoff prompt / launch context / loop goal, i.e. what the session was FOR). Output is chronological either way.",
       ),
+    text_offset: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe('Character offset within each returned turn text; use a clipped turn’s readMore pointer for the next chunk.'),
+    text_limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(SESSION_TURN_TEXT_CHUNK_MAX)
+      .optional()
+      .describe(`Maximum characters per returned turn text chunk (default ${SESSION_TURN_TEXT_CHUNK_CAP}); clipped turns include a readMore continuation.`),
     tail: z
       .number()
       .int()
@@ -88,6 +103,7 @@ export default defineTool({
   capability: 'search:read',
   description:
     "Read a bounded window of turns from one indexed session transcript — pass a canonical `session_turn:…` ref directly, coordinates around a turn, a from/to range, or the tail. `tail:N` already means `order:'desc', limit:N`; do not combine `tail` with `order` or `limit`. session:'self' reads YOUR OWN current session (pre-compaction turns included). Search-only `query` and `mode` arguments belong to sessions:search and are rejected here. " +
+    `Turn text is returned in ${SESSION_TURN_TEXT_CHUNK_CAP}-character chunks by default; clipped turns carry text_truncated, text_full_chars, and a readMore continuation (text_offset/text_limit). ` +
     "NOTE ON `turn_count` (EI-9970): this is the number of rows in THIS response's window (bounded by `limit`, default 40) — NOT the session's total turn count. It is a DIFFERENT quantity from sessions:list's `turns` field (that session's full indexed-text-turn total) despite the similar name; do not compare them. For the session total, use sessions:list.",
   guidance: {
     when:
@@ -99,7 +115,7 @@ export default defineTool({
     // but return shapes were not, so the only way to learn the shape was to call
     // once and introspect — one guaranteed wasted round-trip per tool, per agent.
     returns:
-      '{ ok, session_id, turn_count (SIZE OF THIS WINDOW, not the session total), turns: [{ ref, turn_idx, speaker, owner?, ts, text }] } — each ref is directly reusable with sessions:read. Turns are ALWAYS returned oldest→newest.',
+      '{ ok, session_id, turn_count (SIZE OF THIS WINDOW, not the session total), turns: [{ ref, turn_idx, speaker, owner?, ts, text, text_truncated?, text_full_chars?, text_offset?, readMore? }] } — clipped text carries a directly runnable readMore pointer for the next character chunk; each ref is reusable with sessions:read. Turns are ALWAYS returned oldest→newest.',
     seeAlso: ['sessions:search', 'sessions:list', 'sessions:digest'],
   },
   requirePrincipal: false,
@@ -123,6 +139,13 @@ export default defineTool({
         owner: z.string().optional(),
         ts: z.string().optional(),
         text: z.string(),
+        text_truncated: z.boolean().optional(),
+        text_full_chars: z.number().int().nonnegative().optional(),
+        text_offset: z.number().int().nonnegative().optional(),
+        readMore: z.object({
+          tool: z.string(),
+          args: z.record(z.string(), z.unknown()),
+        }).optional(),
       }),
     ),
   }),
@@ -139,6 +162,8 @@ export default defineTool({
     }
     const refContext = parsedRef ? (args.context ?? 0) : null;
     const limit = args.tail ?? args.limit ?? (parsedRef ? refContext! * 2 + 1 : 40);
+    const textOffset = args.text_offset ?? 0;
+    const textLimit = args.text_limit ?? SESSION_TURN_TEXT_CHUNK_CAP;
 
     let sessionId = parsedRef?.sessionId ?? args.session!;
     let querySessionId: string | undefined = sessionId;
@@ -210,8 +235,21 @@ export default defineTool({
     // ALWAYS re-normalised to chronological below, so `order` never changes the
     // shape the caller reads — only which slice of a too-large range they get.
     const asc = args.order === 'asc';
-    const rows = await tx<Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; ts: string | null; text: string }>>`
-      SELECT source_kind, session_id, turn_idx, speaker, owner, ts::text AS ts, left(text, 1500) AS text
+    const rows = await tx<Array<{
+      source_kind: string;
+      session_id: string;
+      turn_idx: number;
+      speaker: string;
+      owner: string | null;
+      ts: string | null;
+      text: string;
+      text_full_chars: number;
+      text_offset: number;
+    }>>`
+      SELECT source_kind, session_id, turn_idx, speaker, owner, ts::text AS ts,
+             length(text)::int AS text_full_chars,
+             ${textOffset}::int AS text_offset,
+             substring(text FROM ${textOffset + 1} FOR ${textLimit}) AS text
         FROM harness_shared.session_turns
        WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
          AND (${querySessionId ?? null}::text IS NULL OR session_id = ${querySessionId ?? null})
@@ -264,7 +302,9 @@ export default defineTool({
               speaker: x.speaker,
               owner: x.owner,
               ts: x.ts,
-              text: x.text.slice(0, 1500),
+              text_full_chars: x.text.length,
+              text_offset: textOffset,
+              text: x.text.slice(textOffset, textOffset + textLimit),
             })),
           );
           archiveNote = `served from the permanent archive (index pruned/absent); source=${arch.sourceKind}`;
@@ -286,14 +326,49 @@ export default defineTool({
           // `limit`), NOT the session's total turn count — see the tool
           // description. sessions:list's `turns` is the total; do not conflate.
           turn_count: rows.length,
-          turns: rows.map((r: { source_kind: string; session_id?: string; turn_idx: number; speaker: string; owner: string | null; ts: string | null; text: string }) => ({
+          turns: rows.map((r: {
+            source_kind: string;
+            session_id?: string;
+            turn_idx: number;
+            speaker: string;
+            owner: string | null;
+            ts: string | null;
+            text: string;
+            text_full_chars?: number;
+            text_offset?: number;
+          }) => {
+            // The indexed query and archive path return a bounded chunk. A
+            // test-shaped/future row without the explicit offset is treated as
+            // full text and bounded here as a last-line defense.
+            const rowOffset = typeof r.text_offset === 'number' ? r.text_offset : null;
+            const offset = rowOffset ?? textOffset;
+            const text = rowOffset == null
+              ? r.text.slice(textOffset, textOffset + textLimit)
+              : r.text.slice(0, textLimit);
+            const fullChars = typeof r.text_full_chars === 'number' ? r.text_full_chars : r.text.length;
+            const nextOffset = offset + text.length;
+            const textTruncated = fullChars > nextOffset;
             // The indexed query always returns session_id; retain the requested
             // session as a defensive fallback for archive/test-shaped rows.
-            ref: formatSessionTurnRef(r.source_kind, r.session_id ?? sessionId, r.turn_idx),
-            turn_idx: r.turn_idx, speaker: r.speaker,
-            ...(r.owner ? { owner: r.owner } : {}), ...(r.ts ? { ts: r.ts } : {}),
-            text: r.text,
-          })),
+            const ref = formatSessionTurnRef(r.source_kind, r.session_id ?? sessionId, r.turn_idx);
+            return {
+              ref,
+              turn_idx: r.turn_idx, speaker: r.speaker,
+              ...(r.owner ? { owner: r.owner } : {}), ...(r.ts ? { ts: r.ts } : {}),
+              ...(offset > 0 ? { text_offset: offset } : {}),
+              ...(textTruncated
+                ? {
+                    text_truncated: true,
+                    text_full_chars: fullChars,
+                    readMore: {
+                      tool: 'sessions:read',
+                      args: { ref, text_offset: nextOffset, text_limit: textLimit },
+                    },
+                  }
+                : {}),
+              text,
+            };
+          }),
         }),
       }],
     };

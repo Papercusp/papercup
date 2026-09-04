@@ -593,7 +593,7 @@ export const workItemsSearch: SqlSubstitutionPair = {
     use: '`work_items:list { q, state, notTerminal, kind, assignee, sourcePlanSlug, createdSince, updatedSince, limit }` — add includeObservations:true to match a raw SELECT, and completionAuthority to list under-evidenced closes',
     // ⚠ Under 300 chars — routing-table.test.ts budgets this as a table cell.
     insteadOf:
-      "`SELECT … WHERE title ILIKE '%x%'`, or a hand-copied `status NOT IN ('done',…)` — that IS `notTerminal`. ⚠ `q` spans title+summary (a superset). No id filter; an exclusive `>`/`now()` window, a non-union exclusion set, a source_plan_slug PROJECTION, aggregates and JOINs stay SQL",
+      "`SELECT … WHERE title ILIKE '%x%'`, or a hand-copied `status NOT IN ('done',…)` — that IS `notTerminal`. ⚠ `q` is a case-insensitive literal substring over title+summary (not token search). No id filter; an exclusive `>`/`now()` window, a non-union exclusion set, a source_plan_slug PROJECTION, aggregates and JOINs stay SQL",
   },
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {

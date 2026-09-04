@@ -123,6 +123,42 @@ interface BoundedDiagnostics {
   filesWithErrors: number;
 }
 
+export interface ScopedDiagnosticPartition {
+  requested: TscDiagnostic[];
+  other: TscDiagnostic[];
+  unattributed: TscDiagnostic[];
+}
+
+/**
+ * Split a scoped program's diagnostics at the attribution boundary the caller
+ * actually asked about. `filterToFiles` already owns the path-normalisation
+ * contract; the Set preserves compiler order inside both buckets.
+ *
+ * Global diagnostics stay in `other` so they remain visible, and are also
+ * called out in `unattributed`: unlike an ordinary imported-file error, a
+ * config/global error may mean the requested files were never checked fully and
+ * therefore must keep the scoped verdict from reading green.
+ */
+export function partitionScopedDiagnostics(
+  errors: TscDiagnostic[],
+  resolvedFiles: string[],
+): ScopedDiagnosticPartition {
+  const requestedSet = new Set(filterToFiles(errors, resolvedFiles));
+  const requested: TscDiagnostic[] = [];
+  const other: TscDiagnostic[] = [];
+  const unattributed: TscDiagnostic[] = [];
+
+  for (const error of errors) {
+    if (requestedSet.has(error)) {
+      requested.push(error);
+      continue;
+    }
+    other.push(error);
+    if (error.file === null) unattributed.push(error);
+  }
+  return { requested, other, unattributed };
+}
+
 /**
  * Bound the two potentially large diagnostic arrays without making a bounded
  * response look complete. The full counts remain available to callers through
@@ -702,7 +738,7 @@ export function buildScopedTsconfig(
 export default defineTool({
   name: 'build:typecheck',
   description:
-    'Run `tsc --noEmit` for ONE project and return structured diagnostics — { ok, errorCount, errors:[{file,line,column,code,message}], byFile, syntaxBroken, semanticCheckIncomplete } — instead of a compiler log you pipe through grep/tail. When syntaxBroken is non-empty, semanticCheckIncomplete is true and the diagnostic counts are LOWER BOUNDS, not complete totals. REFUSES a run that checked nothing (TS5057/TS5058/TS18003) rather than reporting a clean zero: this repo has no root tsconfig.json, so `-p .` silently checks zero files. `files` filters diagnostics server-side. Runs with --incremental false so a warm tsbuildinfo cannot under-report.',
+    'Run `tsc --noEmit` for ONE project and return structured diagnostics — { ok, errorCount, errors:[{file,line,column,code,message}], byFile, syntaxBroken, semanticCheckIncomplete } — instead of a compiler log you pipe through grep/tail. In scopeToFiles mode, ok/errorCount/exitCode describe the requested files, while otherErrorCount/otherErrors preserve import-graph diagnostics separately. Parser/global/partial-scope failures remain incomplete, never green. When syntaxBroken is non-empty, semanticCheckIncomplete is true and the diagnostic counts are LOWER BOUNDS, not complete totals. REFUSES a run that checked nothing (TS5057/TS5058/TS18003) rather than reporting a clean zero: this repo has no root tsconfig.json, so `-p .` silently checks zero files. `files` filters diagnostics server-side. Runs with --incremental false so a warm tsbuildinfo cannot under-report.',
   guidance: {
     when: 'You edited TypeScript and want to know whether a project typechecks, and exactly which errors are where. Also the way to check a workspace OUTSIDE operator-core, which `npm run lint:tsc` does not cover.',
     notWhen: 'You want the baseline VERDICT on whether your change added errors — that is `npm run lint:tsc -- --mine` (per-file ratchet, peer-drift aware), which this tool does not replace. Not for building/emitting, eslint, or cargo.',
@@ -744,7 +780,7 @@ export default defineTool({
       .describe('Allow tsc to use a warm tsconfig.tsbuildinfo. Default false — EI-487: an incremental run UNDER-reports errors in files the cache has not reindexed, which read as green for days. Only set true when you want a fast re-check and already know the tree is warm.'),
     scopeToFiles: z.boolean().optional()
       .describe(
-        'Compile ONLY `files` + their import graph instead of the whole project, so a run still fits the foreground cap under fleet load. Requires `files`; each path may be repository-relative, relative to the selected project directory, or absolute. COST IS YOUR IMPORT GRAPH, NOT THE PROJECT — measured in operator-core: a leaf file (lib/tsc-diagnostics.ts) 2.6s vs a hub file (agent-tools/build/typecheck.ts) 63s, because a hub transitively pulls in most of the project. Great for a leaf, no help for a hub — a hub can still exceed the cap and time out. ⚠ NARROWER GUARANTEE: it cannot see errors your change caused in files that do NOT import yours (the classic case: adding a required field to a shared interface breaks distant fixtures). A clean scoped run means "these files and what they import compile", NOT "my change is safe" — for that verdict use the project-wide run or `npm run lint:tsc -- --files=...`.',
+        'Compile ONLY `files` + their import graph instead of the whole project, so a run still fits the foreground cap under fleet load. Requires `files`; each path may be repository-relative, relative to the selected project directory, or absolute. COST IS YOUR IMPORT GRAPH, NOT THE PROJECT — measured in operator-core: a leaf file (lib/tsc-diagnostics.ts) 2.6s vs a hub file (agent-tools/build/typecheck.ts) 63s, because a hub transitively pulls in most of the project. Great for a leaf, no help for a hub — a hub can still exceed the cap and time out. The primary ok/errorCount/errors/exitCode verdict is attributable to the requested files; diagnostics elsewhere in the loaded graph remain separately visible under otherErrorCount/otherErrors and the raw compiler status under compilerExitCode. Parser/global/partial-scope failures make scopedVerdict incomplete rather than green. ⚠ NARROWER GUARANTEE: it cannot see errors your change caused in files that do NOT import yours (the classic case: adding a required field to a shared interface breaks distant fixtures). For the gate verdict use the project-wide run or `npm run lint:tsc -- --files=...`.',
       ),
   }),
   async handler(args, ctx) {
@@ -913,14 +949,18 @@ export default defineTool({
     }
 
     const errors = errorsOnly(diagnostics);
-    const byFile = summariseByFile(errors);
+    const scopedPartition = scoped
+      ? partitionScopedDiagnostics(errors, scoped.resolvedFiles)
+      : null;
     // In scoped mode `files`/`dirs` defined the PROGRAM, so they must not also narrow the
     // OUTPUT: the scoped program deliberately includes the import graph, and an error your
     // change caused in a file you import is exactly what you need to see. Re-applying either
     // filter here would hide it and hand back a clean-looking zero — the same false-green
     // this mode exists to eliminate.
     const hasFilter = (args.files || args.dirs) && !args.scopeToFiles;
-    const shown = hasFilter
+    const shown = scopedPartition
+      ? scopedPartition.requested
+      : hasFilter
       ? [
           ...new Set([
             ...(args.files ? filterToFiles(errors, args.files) : []),
@@ -929,31 +969,62 @@ export default defineTool({
         ]
       : errors;
     const maxErrors = args.maxErrors ?? DEFAULT_MAX_ERRORS;
+    const byFile = summariseByFile(scopedPartition ? scopedPartition.requested : errors);
     const bounded = boundDiagnostics(shown, byFile, maxErrors);
     const reported = parseFoundSummary(outcome.output);
     const syntaxBroken = syntaxBrokenFiles(errors);
+    const scopedVerdictIncomplete = Boolean(
+      scoped
+      && (
+        scoped.missing.length > 0
+        || (scopedPartition?.unattributed.length ?? 0) > 0
+        || syntaxBroken.length > 0
+      )
+    );
+    const scopedOk = Boolean(
+      scoped
+      && scopedPartition
+      && scopedPartition.requested.length === 0
+      && !scopedVerdictIncomplete
+    );
+    const otherErrorCapacity = Math.max(0, maxErrors - bounded.errors.length);
+    const otherErrors = scopedPartition?.other ?? [];
+    const otherErrorsShown = otherErrors.slice(0, otherErrorCapacity);
+    const otherByFile = summariseByFile(otherErrors);
+    const otherByFileCapacity = Math.max(0, MAX_BY_FILE - bounded.byFile.length);
+    const otherByFileShown = otherByFile.slice(0, otherByFileCapacity);
 
     return {
       data: {
-        ok: errors.length === 0 && outcome.code === 0,
+        ok: scoped ? scopedOk : errors.length === 0 && outcome.code === 0,
         project: relative(root, resolved),
         errorCount: shown.length,
         // A scoped PASS is a weaker claim than a project-wide one, so it must never be
         // reported in the same shape. These fields travel with the result so a reader
         // (or a successor reading a checkpoint that quotes it) cannot mistake
         // "this file's import graph compiles" for "my change is safe".
-        ...(scoped
+        ...(scoped && scopedPartition
           ? {
               scopedToFiles: scoped.resolvedFiles.map((f) => relative(root, f)),
               ...(scoped.missing.length ? { scopeMissing: scoped.missing } : {}),
-              // Split the count so a HUB file stays navigable: its import graph can drag in
-              // most of the project along with that project's pre-existing error backlog, and
-              // without this you cannot tell "my file is broken" from "something I import
-              // already was". Errors in the graph are still REPORTED (hiding them is how the
-              // hand-rolled fallback lied) — this just says which ones are yours.
-              errorsInRequestedFiles: filterToFiles(errors, args.files ?? []).length,
+              scopedVerdict: scopedVerdictIncomplete
+                ? 'incomplete'
+                : scopedPartition.requested.length > 0
+                  ? 'requested-files-error'
+                  : 'requested-files-clean',
+              scopedVerdictIncomplete,
+              errorsInRequestedFiles: scopedPartition.requested.length,
+              totalErrorCount: errors.length,
+              otherErrorCount: otherErrors.length,
+              otherErrors: otherErrorsShown,
+              otherErrorsTruncated: otherErrors.length > otherErrorsShown.length,
+              otherByFile: otherByFileShown,
+              otherByFileTruncated: otherByFile.length > otherByFileShown.length,
+              otherFilesWithErrors: otherByFile.length,
+              unattributedErrorCount: scopedPartition.unattributed.length,
+              compilerExitCode: outcome.code,
               scopeCaveat:
-                'SCOPED RUN — only these files and their import graph were compiled. Errors your change caused in files that do not import these are NOT covered (e.g. adding a required field to a shared interface breaks distant fixtures). This is not the gate verdict.',
+                'SCOPED RUN — ok/errorCount/errors/exitCode describe the requested files. Other loaded import-graph diagnostics remain under otherErrorCount/otherErrors and do not fail that requested-file verdict; parser/global diagnostics or missing requested paths make scopedVerdict incomplete instead. Errors your change caused in files that do not import these are NOT covered (e.g. adding a required field to a shared interface breaks distant fixtures). This is not the gate verdict.',
             }
           : {}),
         ...(hasFilter
@@ -985,7 +1056,11 @@ export default defineTool({
             }
           : {}),
         durationMs,
-        exitCode: outcome.code,
+        exitCode: scoped
+          ? scopedOk
+            ? 0
+            : outcome.code || 2
+          : outcome.code,
         // Cross-check against tsc's own tally: a mismatch means the diagnostic
         // grammar drifted (a compiler upgrade), and the caller is told rather
         // than handed a silently wrong number.

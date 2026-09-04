@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -17,6 +18,10 @@ const REPO_ROOT = resolve(join(__dirname, '..', '..', '..', '..'));
  */
 const GUARD_REL = 'scripts/check-systemd-dropins-installed.mjs';
 const GUARD = join(REPO_ROOT, GUARD_REL);
+const AMBIENT_CURSOR_DROP_IN = join(
+  REPO_ROOT,
+  'apps/operator/scripts/systemd/papercup-dev-api.service.d/60-ambient-semantic-push.conf',
+);
 
 /**
  * Wires scripts/check-systemd-dropins-installed.mjs onto a blocking path.
@@ -72,6 +77,12 @@ function userSystemdReachable(): boolean {
 }
 
 describe('systemd drop-in install guard (scripts/check-systemd-dropins-installed.mjs)', () => {
+  it('ships the ambient semantic dead-end rail enabled, with an explicit kill switch', () => {
+    const dropIn = readFileSync(AMBIENT_CURSOR_DROP_IN, 'utf8');
+    expect(dropIn).toMatch(/^Environment=PAPERCUSP_AMBIENT_CURSOR=1$/m);
+    expect(dropIn).toContain('Set the value to 0');
+  });
+
   it('--list reports a well-formed population and never fails the build', () => {
     const { status, stdout } = runGuard(['--list']);
     expect(status).toBe(0);

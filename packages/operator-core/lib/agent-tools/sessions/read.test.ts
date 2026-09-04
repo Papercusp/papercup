@@ -91,6 +91,75 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     });
   });
 
+  it('marks clipped turn text and provides a runnable continuation for the next chunk', async () => {
+    const fullText = 'prefix '.repeat(520);
+    const ref = 'session_turn:codex:sess-long:9';
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { ref },
+      {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: 'default', runId: 'read-clipping-test', role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
+        tx: makeTx([{
+          source_kind: 'codex',
+          session_id: 'sess-long',
+          turn_idx: 9,
+          speaker: 'assistant',
+          owner: 'su-self',
+          ts: null,
+          text: fullText,
+        }]),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const turn = (dispatched.result?.structuredContent as { turns: Array<Record<string, unknown>> }).turns[0];
+    expect(turn.text).toBe(fullText.slice(0, 1_500));
+    expect(turn.text_truncated).toBe(true);
+    expect(turn.text_full_chars).toBe(fullText.length);
+    expect(turn.readMore).toEqual({
+      tool: 'sessions:read',
+      args: { ref, text_offset: 1_500, text_limit: 1_500 },
+    });
+  });
+
+  it('reads the continuation chunk at the supplied character offset', async () => {
+    const fullText = 'x'.repeat(1_800);
+    const ref = 'session_turn:codex:sess-long:9';
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { ref, text_offset: 1_500 },
+      {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: 'default', runId: 'read-continuation-test', role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
+        tx: makeTx([{
+          source_kind: 'codex',
+          session_id: 'sess-long',
+          turn_idx: 9,
+          speaker: 'assistant',
+          owner: 'su-self',
+          ts: null,
+          text: fullText,
+        }]),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const turn = (dispatched.result?.structuredContent as { turns: Array<Record<string, unknown>> }).turns[0];
+    expect(turn.text).toBe(fullText.slice(1_500));
+    expect(turn.text_offset).toBe(1_500);
+    expect(turn.text_truncated).toBeUndefined();
+    expect(turn.readMore).toBeUndefined();
+  });
+
   it('accepts a canonical ref with optional window controls and reads the exact turn', async () => {
     refreshTargetSessionBeforeRead.mockClear();
     const tx = makeTx([{

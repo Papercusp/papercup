@@ -61,6 +61,7 @@ vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 vi.mock('../../acceptance-author-identity', () => ({
   isAcceptanceAuthorIdentity: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
   areAcceptanceLineageRelated: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
+  resolvePlanImplementerIdentities: vi.fn(async () => []),
 }));
 // These tests own deterministic criterion checks, not the post-write wake bridge.
 // Keep the newly-created-card event from reaching its real PG-backed await latch.

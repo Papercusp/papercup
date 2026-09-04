@@ -15,7 +15,13 @@ import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 
 import { getLongLivedAdminPool } from '../long-lived-admin-pool';
 
-import type { RunReport, SingleRunReport } from '@papercusp/testing-shell/llm';
+import {
+  simActionToTurnContext,
+  type RunReport,
+  type SingleRunReport,
+  type SimHistoryEntry,
+  type SimTurnContext,
+} from '@papercusp/testing-shell/llm';
 
 /**
  * EI-9319: postgres.js's `sql.json()` param type is a structural JSONValue
@@ -86,7 +92,7 @@ async function persistSingleRun(
       ${s.startedAt}, ${s.finishedAt},
       ${s.totalCostUsd}, ${s.capBreaches},
       ${sql.json(r.judge.scores)}, ${sql.json(findingsCount)},
-      ${transcriptRawBytes}, ${sql.json(normalizeTurns(s.turns) as unknown as JSONValueCompat)},
+      ${transcriptRawBytes}, ${sql.json(normalizeTurns(s.turns, r.simHistory) as unknown as JSONValueCompat)},
       ${sql.json({ toolInvocations: s.toolInvocations, continueChainRows: s.continueChainRows, ...(s.variantId ? { variantId: s.variantId } : {}) } as unknown as JSONValueCompat)},
       ${sql.json({ asserts: 'see-scenario', violations: r.violations } as unknown as JSONValueCompat)},
       ${sql.json({ scores: r.judge.scores, findings: r.judge.findings, notes: r.judge.notes, judgeOverruledAssert: r.judge.judgeOverruledAssert, costUsd: r.judge.costUsd } as unknown as JSONValueCompat)}
@@ -159,16 +165,55 @@ export function decompressTranscript(bytes: Buffer | Uint8Array): unknown[] {
   return JSON.parse(decompressed.toString('utf8')) as unknown[];
 }
 
-function normalizeTurns(turns: SingleRunReport['summary']['turns']): unknown {
-  return turns.map((t, idx) => ({
-    idx,
-    assistantText: t.assistantText,
-    toolCalls: t.toolCalls,
-    cards: t.cards,
-    controlTags: t.controlTags,
-    finishReason: t.finishReason,
-    costUsd: t.costUsd,
-    latencyMs: t.latencyMs,
-    error: t.error,
-  }));
+function normalizeTurns(
+  turns: SingleRunReport['summary']['turns'],
+  simHistory?: SimHistoryEntry[],
+): unknown {
+  const contexts = simContextsForHistory(simHistory);
+  return turns.map((t, idx) => {
+    // Prefer the explicit history projection. The turn fallback keeps
+    // hand-built/in-memory reports and already-enriched callers readable.
+    const context = contexts[idx] ?? (
+      t.userText !== undefined
+        ? {
+            userText: t.userText,
+            simThought: t.simThought ?? '',
+            simKind: t.simKind ?? 'text',
+          }
+        : undefined
+    );
+    return {
+      idx,
+      assistantText: t.assistantText,
+      toolCalls: t.toolCalls,
+      cards: t.cards,
+      controlTags: t.controlTags,
+      finishReason: t.finishReason,
+      costUsd: t.costUsd,
+      latencyMs: t.latencyMs,
+      error: t.error,
+      ...(context ? {
+        userText: context.userText,
+        simThought: context.simThought,
+        simKind: context.simKind,
+      } : {}),
+    };
+  });
+}
+
+function simContextsForHistory(
+  simHistory?: SimHistoryEntry[],
+): Array<SimTurnContext | undefined> {
+  if (!simHistory) return [];
+  const contexts: Array<SimTurnContext | undefined> = [];
+  let pending: SimTurnContext | undefined;
+  for (const entry of simHistory) {
+    if (entry.who === 'sim') {
+      pending = simActionToTurnContext(entry.action);
+    } else {
+      contexts.push(pending);
+      pending = undefined;
+    }
+  }
+  return contexts;
 }

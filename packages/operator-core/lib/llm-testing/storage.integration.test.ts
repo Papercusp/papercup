@@ -38,18 +38,26 @@ function makeReport() {
     rawSseTape, assistantText: 'hi', toolCalls: [], cards: [], controlTags: [],
     finishReason: 'stop', costUsd: 0.1, latencyMs: 5, error: null,
   });
+  const firstTurn = turn([{ e: 'a' }]);
+  const secondTurn = turn([{ e: 'b' }, { e: 'c' }]);
   const summary = {
     runId: RUN_ID, scenarioId: 'sc-1', scenarioVersion: 1, identityHash: 'idh',
     matrixIndex: null, sutModel: 'opus', judgeModel: 'sonnet', personaId: 'p1',
     personaTraits: { tone: 'curt' }, workspaceMode: 'isolated', transportMode: 'sse',
     startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T00:01:00Z',
     totalCostUsd: 1.25, capBreaches: ['cap-x'],
-    turns: [turn([{ e: 'a' }]), turn([{ e: 'b' }, { e: 'c' }])],
+    turns: [firstTurn, secondTurn],
     toolInvocations: [], continueChainRows: [],
   };
   const run = {
     status: 'passed',
     summary,
+    simHistory: [
+      { who: 'sim', action: { kind: 'text', thought: 'needs approval', text: 'Please approve this write.' } },
+      { who: 'sut', turn: firstTurn },
+      { who: 'sim', action: { kind: 'choice', thought: 'approved', cardId: 'approval', optionId: 'yes', freeText: 'go' } },
+      { who: 'sut', turn: secondTurn },
+    ],
     violations: [
       { severity: 'error', assertKind: 'shape', evidenceTurnIdx: 0, claim: 'v-err', suggestion: 's', originatingFindingIds: [] },
       { severity: 'warn', assertKind: 'tone', evidenceTurnIdx: null, claim: 'v-warn', suggestion: null, originatingFindingIds: [] },
@@ -115,8 +123,8 @@ afterAll(async () => {
 describe('persistRunReport (PG)', () => {
   it('inserts the run row with the cross-source findings_count and round-trippable transcript', async () => {
     await persistRunReport(makeReport(), 'rubric-v3', 'scenhash');
-    const runs = await rootSql<{ status: string; findings_count: Record<string, number>; cost_usd: string; cap_breaches: string[]; rubric_version: string; transcript_raw_zstd: Buffer }[]>`
-      SELECT status, findings_count, cost_usd, cap_breaches, rubric_version, transcript_raw_zstd
+    const runs = await rootSql<{ status: string; findings_count: Record<string, number>; cost_usd: string; cap_breaches: string[]; rubric_version: string; transcript_raw_zstd: Buffer; transcript_norm_json: unknown }[]>`
+      SELECT status, findings_count, cost_usd, cap_breaches, rubric_version, transcript_raw_zstd, transcript_norm_json
         FROM harness_shared.llm_test_runs WHERE id = ${RUN_ID}`;
     expect(runs).toHaveLength(1);
     const r = runs[0]!;
@@ -127,6 +135,20 @@ describe('persistRunReport (PG)', () => {
     expect(r.rubric_version).toBe('rubric-v3');
     // transcript compressed on write → decompressTranscript restores the flattened rawSseTape.
     expect(decompressTranscript(r.transcript_raw_zstd)).toEqual([{ e: 'a' }, { e: 'b' }, { e: 'c' }]);
+    expect(r.transcript_norm_json).toEqual([
+      expect.objectContaining({
+        idx: 0,
+        userText: 'Please approve this write.',
+        simThought: 'needs approval',
+        simKind: 'text',
+      }),
+      expect.objectContaining({
+        idx: 1,
+        userText: '[card approval → yes]: go',
+        simThought: 'approved',
+        simKind: 'choice',
+      }),
+    ]);
   });
 
   it('writes one findings row per violation (assert) + per judge finding (judge)', async () => {

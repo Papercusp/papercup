@@ -2205,6 +2205,16 @@ describe('runtime-owner map (EI-10895)', () => {
     expect(own.activation).toMatch(/dev:restart.*bg-host/s);
   });
 
+  it('EI-22090053297465523: fleet-control-reconcile.ts is a bg-host dependency of the fleet transition system action', () => {
+    const own = classifyRuntimeOwner(
+      'packages/operator-core/lib/harness/routines/fleet-control-reconcile.ts',
+    )!;
+    expect(own.host).toBe('bg-host');
+    expect(own.releasePipelineApplies).toBe(false);
+    expect(own.restartTarget).toBe('bg-host');
+    expect(own.activation).toMatch(/dev:restart.*bg-host/s);
+  });
+
   it('EI-11120: a *-action.ts TEST file under harness/routines/ is NOT misclassified (only the handler itself is bg-host-exclusive)', () => {
     // improvement-actions.test.ts ends in `.test.ts`, not `-action.ts` — must not match.
     const own = classifyRuntimeOwner('packages/operator-core/lib/harness/routines/improvement-actions.test.ts')!;

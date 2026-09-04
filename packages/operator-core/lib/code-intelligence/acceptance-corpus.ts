@@ -76,6 +76,38 @@ const TS_BACKENDS: readonly CodeIntelBackend[] = [
   'omp-lsp',
 ];
 
+/**
+ * Names deliberately EXCLUDED from the runtime acceptance harness (WI-2143024).
+ *
+ * These appeared as acceptance aspirations without an observable subject. A
+ * name does not become a metric until a runner can read the event/value it
+ * claims to measure and a grader owns the comparison. Keeping the dispositions
+ * here prevents a future title or report from silently presenting one as
+ * measured; remove an entry only together with its real subject and grader.
+ */
+export const EXCLUDED_ACCEPTANCE_SIGNALS = Object.freeze([
+  {
+    name: 'tool failures',
+    reason:
+      'this harness observes backend answers; CodeIntelAnswer.error is not a tool-transport failure event',
+  },
+  {
+    name: 'packer selection',
+    reason:
+      'the current code-intelligence layer has explicit packer facades but no selection decision or event to observe',
+  },
+  {
+    name: 'downstream reads',
+    reason:
+      'the harness ends at the backend answer and has no instrumented downstream consumer-read event',
+  },
+  {
+    name: 'result tokens',
+    reason:
+      'resultTokensMax is enforced at facade output boundaries; the runtime bench calls adapters directly and never sees the serialized tool result',
+  },
+] as const);
+
 export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
   // ── 1. Definition across a package boundary ────────────────────────────
   {
@@ -266,7 +298,7 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
     eligibleBackends: TS_BACKENDS,
     falsifies:
       'A single shared stdio child multiplexing JSON-RPC ids can interleave ' +
-      'responses under fleet load and hand agent A the answer to agent B\'s ' +
+      "responses under fleet load and hand agent A the answer to agent B's " +
       'question — a correctness failure that only appears under concurrency.',
   },
   {
@@ -315,14 +347,16 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
     id: 'resource-budget-measured-from-runtime',
     planCase: 13,
     intent: 'definition',
-    title: 'Cold start, warm latency, RSS, child count, index disk, result tokens',
+    title: 'Cold start, warm latency, RSS, child count, and index disk',
     query: '(runner measures from the actual runtime, not from docs)',
     gradeMode: 'property',
     expectedSites: [],
     eligibleBackends: TS_BACKENDS,
     falsifies:
-      'Every figure must come from the running process (cgroup/proc), never ' +
-      'from a vendor README. Budgets in DEFAULT_RESOURCE_BUDGET are ceilings.',
+      'Every runtime figure named by this case must come from the running process ' +
+      '(cgroup/proc), never from a vendor README. Budgets in DEFAULT_RESOURCE_BUDGET ' +
+      'are ceilings. Signals the runner cannot observe are excluded rather than ' +
+      'reported as measured; see EXCLUDED_ACCEPTANCE_SIGNALS.',
   },
   {
     id: 'cross-check-against-compiler',

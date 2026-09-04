@@ -188,8 +188,10 @@ export interface Rubric {
   ratingScale: string[];
   /**
    * Stable hash over the fields that actually GRADE (characteristic, criteria,
-   * ratingScale, methodRef, description) — the field to pin/compare to prove "the
-   * rubric's graded substance did not change under my grade" (EI-21917124475387201).
+   * ratingScale, methodRef, description). For an acceptance rubric that delegates
+   * criteria to a standard class, the read path also folds in the class identity and
+   * current class revision — the field to pin/compare to prove "the rubric's graded
+   * substance did not change under my grade" (EI-21917124475387201).
    *
    * `harness_plans.content_hash` / `plan_revisions.content_hash` CANNOT answer that:
    * they hash only the plan's markdown prose body, and every rubric criterion lives in
@@ -357,7 +359,7 @@ export function rubricStatusToPlanStatus(status: RubricStatus): string {
  * ratifyRubric) and project from there; the owner column stays the createdBy + the
  * legacy fallback for rows written before the fix.
  */
-export function planRowToRubric(row: RubricPlanRow): Rubric | null {
+export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: number | null): Rubric | null {
   const parsed = rubricTemplateDataSchema.safeParse(row.template_data);
   if (!parsed.success) return null;
   const d = parsed.data;
@@ -422,7 +424,11 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
       };
     }),
     ratingScale: d.ratingScale,
-    criteriaHash: computeSeedContentHash(d),
+    criteriaHash: computeSeedContentHash({
+      ...d,
+      ...(d.classRef ? { delegatedClassRef: d.classRef } : {}),
+      ...(d.classRef && delegatedClassRevision !== undefined ? { delegatedClassRevision } : {}),
+    }),
     methodRef: d.methodRef ?? null,
     ...(d.releaseGating !== undefined ? { releaseGating: d.releaseGating } : {}),
     ...(d.stalenessWatched !== undefined ? { stalenessWatched: d.stalenessWatched } : {}),
@@ -436,6 +442,60 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
     createdAt: row.created ?? updatedAt,
     updatedAt,
   };
+}
+
+/**
+ * Map rubric plan rows while hydrating the CURRENT revision of any delegated standard
+ * class. `planRowToRubric` remains a synchronous, PG-free projection for unit tests and
+ * callers that already have a row; database-backed reads use this helper so an
+ * acceptance rubric's criteriaHash changes when its class rubric is revised.
+ */
+async function mapRubricPlanRows(rows: RubricPlanRow[]): Promise<Rubric[]> {
+  const mapped = rows.map((row) => planRowToRubric(row));
+  const classRefs = [
+    ...new Set(
+      mapped
+        .filter((rubric): rubric is Rubric => rubric !== null && Boolean(rubric.classRef))
+        .map((rubric) => rubric.classRef as string),
+    ),
+  ];
+  if (classRefs.length === 0) {
+    return mapped.filter((rubric): rubric is Rubric => rubric !== null);
+  }
+
+  try {
+    const { sql } = getOrgPg();
+    const classRows = await sql<{ plan_slug: string; version: string | number | null }[]>`
+      SELECT plan_slug, version
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${rubricsScopeWorkspace()}
+         AND template = ${RUBRIC_TEMPLATE_NAME}
+         AND template_slug IS NULL
+         AND (template_data->>'kind' IS DISTINCT FROM 'acceptance')
+         AND plan_slug = ANY(${sql.array(classRefs)}::text[])`;
+    const revisions = new Map<string, number | null>();
+    for (const row of classRows) {
+      if (row.version == null) {
+        revisions.set(row.plan_slug, null);
+        continue;
+      }
+      const revision = Number(row.version);
+      revisions.set(row.plan_slug, Number.isFinite(revision) ? revision : null);
+    }
+
+    return rows
+      .map((row, index) => {
+        const rubric = mapped[index];
+        if (!rubric?.classRef) return rubric;
+        // A missing class row is still represented as null revision so the class
+        // identity participates in the hash; a query failure falls through to the
+        // original hash below rather than pretending the revision was observed.
+        return planRowToRubric(row, revisions.get(rubric.classRef) ?? null);
+      })
+      .filter((rubric): rubric is Rubric => rubric !== null);
+  } catch {
+    return mapped.filter((rubric): rubric is Rubric => rubric !== null);
+  }
 }
 
 /** active → proposed → retired, then most-recently-updated first (the v1 SQL order). */
@@ -495,9 +555,7 @@ async function queryRubricPlans(kind: RubricKindFilter = 'standard'): Promise<Ru
          AND template_slug IS NULL
          AND ${kindCond}
        LIMIT 500`;
-    return rows
-      .map(planRowToRubric)
-      .filter((r): r is Rubric => r !== null && (kind === 'any' || r.kind === kind));
+    return (await mapRubricPlanRows(rows)).filter((r) => kind === 'any' || r.kind === kind);
   } catch (error) {
     return [];
   }
@@ -822,7 +880,8 @@ export async function getRubric(rubricId: string): Promise<Rubric | null> {
     // Client-side slug guard: keeps behavior identical under mocked-sql test fixtures
     // that return the full row set for any query.
     const row = rows.find((r) => r.plan_slug === rubricId);
-    return row ? planRowToRubric(row) : null;
+    if (!row) return null;
+    return (await mapRubricPlanRows([row]))[0] ?? null;
   } catch {
     return null;
   }
@@ -830,8 +889,9 @@ export async function getRubric(rubricId: string): Promise<Rubric | null> {
 
 /**
  * The rubric's `criteriaHash` (WI-1393208) — a stable hash over {characteristic,
- * criteria, ratingScale, methodRef, description}, computed fresh on every rubric
- * read (see {@link Rubric.criteriaHash}'s doc comment: "the field to pin/compare
+ * criteria, ratingScale, methodRef, description}, plus a delegated class identity and
+ * current class revision for class-only acceptance rubrics, computed fresh on every
+ * rubric read (see {@link Rubric.criteriaHash}'s doc comment: "the field to pin/compare
  * to prove the rubric's graded substance did not change under my grade"). Never
  * throws; null when the rubric is missing, the read failed, or the rare degraded
  * read could not compute a hash. Fail-open, mirroring `getRubricPlanRevision`'s
@@ -866,9 +926,9 @@ export async function getAcceptanceRubricsForPlan(planSlug: string): Promise<Rub
          AND template_data->>'kind' = 'acceptance'
          AND template_data->>'subjectPlan' = ${planSlug}
        ORDER BY updated_at DESC NULLS LAST, plan_slug ASC`;
-    return rows
-      .map(planRowToRubric)
-      .filter((r): r is Rubric => r !== null && r.kind === 'acceptance' && r.subjectPlan === planSlug);
+    return (await mapRubricPlanRows(rows)).filter(
+      (r) => r.kind === 'acceptance' && r.subjectPlan === planSlug,
+    );
   } catch {
     return [];
   }
@@ -911,12 +971,9 @@ export async function getRetiredAcceptanceRubricsForPlan(planSlug: string): Prom
          AND (archived = true OR status IN ('superseded', 'shipped'))
        ORDER BY updated_at DESC NULLS LAST, plan_slug ASC
        LIMIT 5`;
-    return rows
-      .map(planRowToRubric)
-      .filter(
-        (r): r is Rubric =>
-          r !== null && r.kind === 'acceptance' && r.subjectPlan === planSlug && r.status === 'retired',
-      );
+    return (await mapRubricPlanRows(rows)).filter(
+      (r) => r.kind === 'acceptance' && r.subjectPlan === planSlug && r.status === 'retired',
+    );
   } catch {
     return [];
   }
@@ -942,9 +999,9 @@ export async function getAcceptanceRubricForGoal(goalId: string): Promise<Rubric
          AND template_data->>'subjectGoal' = ${goalId}
        ORDER BY updated_at DESC
        LIMIT 5`;
-    const mapped = rows
-      .map(planRowToRubric)
-      .filter((r): r is Rubric => r !== null && r.kind === 'acceptance' && r.subjectGoal === goalId);
+    const mapped = (await mapRubricPlanRows(rows)).filter(
+      (r) => r.kind === 'acceptance' && r.subjectGoal === goalId,
+    );
     return mapped[0] ?? null;
   } catch {
     return null;
@@ -1469,10 +1526,12 @@ interface BuiltRubricTemplateData {
  *  Throws (fail-loud, D-004) if the rubric data is malformed — never persists a broken
  *  rubric. Returns the schema-coerced data. When a stored rubric is supplied, its
  *  ratingScale is the fallback for whole-document re-proposes that omit the field;
- *  brand-new rubrics still use DEFAULT_RATING_SCALE. */
+ *  a class-only acceptance rubric inherits its resolved class scale; brand-new
+ *  rubrics without a class still use DEFAULT_RATING_SCALE. */
 function buildRubricTemplateData(
   input: ProposeRubricInput,
   stored?: Pick<Rubric, 'ratingScale'> | null,
+  delegatedClass?: Pick<Rubric, 'ratingScale'> | null,
 ): BuiltRubricTemplateData {
   const instrumentContract = rubricInstrumentContract({
     releaseGating: input.releaseGating,
@@ -1496,7 +1555,12 @@ function buildRubricTemplateData(
   const normalized = normalizeAcceptanceRubricProposal(
     input.criteria,
     input.kind,
-    input.ratingScale ?? stored?.ratingScale ?? [...DEFAULT_RATING_SCALE],
+    input.ratingScale ??
+      (input.kind === 'acceptance' && input.criteria.length === 0 && input.classRef && delegatedClass
+        ? delegatedClass.ratingScale
+        : undefined) ??
+      stored?.ratingScale ??
+      [...DEFAULT_RATING_SCALE],
   );
   const criteria = normalized.criteria;
   assertRubricRatingVocabulary(criteria, normalized.ratingScale, { rubricId: input.rubricId });
@@ -1552,6 +1616,9 @@ function buildRubricTemplateData(
 export interface AcceptanceLinkResolution {
   /** The subject plan's stored `status` (`null` when no subjectPlan was named). */
   subjectPlanStatus: string | null;
+  /** The resolved standard class, used to inherit its vocabulary for class-only
+   * acceptance rubrics and to validate its current revision in read-side hashes. */
+  classRubric: Pick<Rubric, 'ratingScale' | 'revision'> | null;
 }
 
 /**
@@ -1651,6 +1718,7 @@ async function assertAcceptanceLinksResolve(input: ProposeRubricInput): Promise<
   const subjectPlan = input.subjectPlan;
   const subjectGoal = input.subjectGoal;
   let subjectPlanStatus: string | null = null;
+  let classRubric: Pick<Rubric, 'ratingScale' | 'revision'> | null = null;
   if (subjectPlan) {
     const { sql } = getOrgPg();
     const subj = await sql<{ plan_slug: string; template: string | null; status: string | null }[]>`
@@ -1694,7 +1762,9 @@ async function assertAcceptanceLinksResolve(input: ProposeRubricInput): Promise<
       );
     }
   }
-  if (!subjectPlan && !subjectGoal) return { subjectPlanStatus }; // schema already refuses acceptance without a subject
+  if (!subjectPlan && !subjectGoal) {
+    return { subjectPlanStatus, classRubric }; // schema already refuses acceptance without a subject
+  }
   if (input.classRef) {
     const cls = await getRubric(input.classRef);
     if (!cls) {
@@ -1710,8 +1780,9 @@ async function assertAcceptanceLinksResolve(input: ProposeRubricInput): Promise<
           'reference must point at a STANDARD-kind rubric (the reusable class carrying the shared invariants).',
       );
     }
+    classRubric = cls;
   }
-  return { subjectPlanStatus };
+  return { subjectPlanStatus, classRubric };
 }
 
 /** Keep one live acceptance contract per subject plan; migration 1004 is the
@@ -2020,11 +2091,12 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
     );
   }
   // `getRubric` intentionally runs after the initial validation because reads can
-  // trigger first-party seeding. Rebuild only when the caller omitted the
-  // whole-document ratingScale, preserving the existing rubric's vocabulary instead
-  // of silently reverting it to DEFAULT_RATING_SCALE.
-  if (input.ratingScale === undefined && stored?.ratingScale) {
-    builtTemplateData = buildRubricTemplateData(input, stored);
+  // trigger first-party seeding. Rebuild when the caller omitted the whole-document
+  // ratingScale so a class-only acceptance rubric inherits the RESOLVED class
+  // vocabulary, while ordinary re-proposes preserve the existing rubric's scale
+  // instead of silently reverting it to DEFAULT_RATING_SCALE.
+  if (input.ratingScale === undefined && (stored?.ratingScale || links?.classRubric)) {
+    builtTemplateData = buildRubricTemplateData(input, stored, links?.classRubric);
     templateData = builtTemplateData.data;
     compatibilityAudit = builtTemplateData.compatibility;
   }

@@ -20,6 +20,7 @@ import { getLongLivedAdminPool } from '../long-lived-admin-pool';
 
 import {
   evaluateAsserts,
+  loadFixtureTranscript,
   loadFixtureTelemetry,
   loadFixtureTurn,
   resolveFixturePath,
@@ -70,14 +71,14 @@ export async function replayFixture(opts: FixtureReplayOpts): Promise<ReplayResu
   const looksLikePath = path.startsWith('/') || path.includes('fixtures/');
   const resolved = looksLikePath ? path : resolveFixturePath(path);
 
-  const turn = loadFixtureTurn(resolved);
+  const turns = loadFixtureTranscript(resolved) ?? [loadFixtureTurn(resolved)];
   const telemetry = loadFixtureTelemetry(resolved);
   const persona = resolvePersona(opts.scenario.persona, lookupBlend);
   const summary = buildSummary({
     scenario: opts.scenario,
     persona,
     judgeModel: opts.judgeModel,
-    turns: [turn],
+    turns,
     workspaceMode: 'isolated',
     transportMode: 'http-sse',
   });
@@ -102,8 +103,10 @@ export interface ExportFixtureOpts {
 export interface ExportFixtureResult {
   ssePath: string;
   telemetryPath: string;
+  transcriptPath: string;
   bytesSse: number;
   bytesTelemetry: number;
+  bytesTranscript: number;
 }
 
 export async function exportFixtureFromRun(opts: ExportFixtureOpts): Promise<ExportFixtureResult> {
@@ -113,9 +116,10 @@ export async function exportFixtureFromRun(opts: ExportFixtureOpts): Promise<Exp
   const sql = db();
   const rows = await sql<Array<{
     transcript_raw_zstd: Buffer | null;
+    transcript_norm_json: unknown;
     telemetry_json: { toolInvocations?: unknown; continueChainRows?: unknown } | null;
   }>>`
-    SELECT transcript_raw_zstd, telemetry_json
+    SELECT transcript_raw_zstd, transcript_norm_json, telemetry_json
     FROM harness_shared.llm_test_runs
     WHERE id = ${opts.runId}
   `;
@@ -145,12 +149,21 @@ export async function exportFixtureFromRun(opts: ExportFixtureOpts): Promise<Exp
   writeFileSync(ssePath, sse, 'utf8');
   const telemetryJson = JSON.stringify(telemetry, null, 2);
   writeFileSync(telemetryPath, telemetryJson, 'utf8');
+  const transcriptPath = ssePath.replace(/\.sse$/, '.transcript.json');
+  const transcript = {
+    schemaVersion: 1,
+    turns: Array.isArray(row.transcript_norm_json) ? row.transcript_norm_json : [],
+  };
+  const transcriptJson = JSON.stringify(transcript, null, 2);
+  writeFileSync(transcriptPath, transcriptJson, 'utf8');
 
   return {
     ssePath,
     telemetryPath,
+    transcriptPath,
     bytesSse: Buffer.byteLength(sse, 'utf8'),
     bytesTelemetry: Buffer.byteLength(telemetryJson, 'utf8'),
+    bytesTranscript: Buffer.byteLength(transcriptJson, 'utf8'),
   };
 }
 
@@ -179,7 +192,20 @@ export async function reEvaluateRun(opts: ReEvaluateOpts): Promise<ReplayResult>
     judge_model: string;
     workspace_mode: string;
     transport_mode: string;
-    transcript_norm_json: { idx: number; assistantText: string; toolCalls: unknown; cards: unknown; controlTags: unknown; finishReason: string; costUsd: number; latencyMs: number; error: string | null }[] | null;
+    transcript_norm_json: {
+      idx: number;
+      assistantText: string;
+      toolCalls: unknown;
+      cards: unknown;
+      controlTags: unknown;
+      finishReason: string;
+      costUsd: number;
+      latencyMs: number;
+      error: string | null;
+      userText?: string;
+      simThought?: string;
+      simKind?: 'text' | 'choice';
+    }[] | null;
   }>>`
     SELECT id, scenario_id, scenario_version, persona_id, persona_traits_json,
            sut_model, judge_model, workspace_mode, transport_mode,
@@ -206,6 +232,9 @@ export async function reEvaluateRun(opts: ReEvaluateOpts): Promise<ReplayResult>
       finishReason: t.finishReason as TurnResult['finishReason'],
       error: t.error ?? undefined,
       rawSseTape: [],
+      ...(t.userText !== undefined ? { userText: t.userText } : {}),
+      ...(t.simThought !== undefined ? { simThought: t.simThought } : {}),
+      ...(t.simKind !== undefined ? { simKind: t.simKind } : {}),
     }))
     : [];
 

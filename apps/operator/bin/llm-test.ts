@@ -307,6 +307,7 @@ async function main(): Promise<void> {
     console.log(`exported run ${args.runId} → fixture '${args.fixtureSlug}'`);
     console.log(`  ${result.ssePath} (${result.bytesSse}B)`);
     console.log(`  ${result.telemetryPath} (${result.bytesTelemetry}B)`);
+    console.log(`  ${result.transcriptPath} (${result.bytesTranscript}B)`);
     return;
   }
 

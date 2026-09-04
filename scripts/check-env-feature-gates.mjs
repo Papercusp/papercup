@@ -239,8 +239,8 @@ const KNOWN_ENV_CAPABILITY_GATES = {
     reason: "Memory dedup-on-remember (top-k similarity, checked === 'on'). Built, OFF (re-verified 2026-08-02: no systemd drop-in, no .env.local entry anywhere). Still pending an explicit decision; DECIDE: enable or migrate to a FLAG.",
   },
   PAPERCUSP_AMBIENT_CURSOR: {
-    reviewBy: '2026-08-15',
-    reason: 'Ambient-semantic-push P-002: adds each active agent\'s lexical cursor (data, not directive) to coord presence + wake teasers. Built + extensively wired (topic/dead-end/collision/adjacency matchers, presence-cursor overlay, wake-executor teaser). Default-OFF, opt-in. Surfaced by the EI-2390 2026-07-18 audit (assign-then-compare detection-gap fix). DECIDE: enable or migrate to a FLAG.',
+    reviewBy: '2026-12-01',
+    reason: 'Ambient-semantic-push P-002: adds each active agent\'s lexical cursor (data, not directive) to coord presence + wake teasers. Built + extensively wired (topic/dead-end/collision/adjacency matchers, presence-cursor overlay, wake-executor teaser). ENABLED on the live operator by the versioned, host-attested papercup-dev-api.service.d/60-ambient-semantic-push.conf drop-in (EI-19363446107725373, 2026-09-04); PAPERCUSP_AMBIENT_CURSOR=0 remains the explicit kill switch. Re-review noise/volume after burn-in or migrate to a host flag if runtime toggling becomes necessary.',
   },
 };
 

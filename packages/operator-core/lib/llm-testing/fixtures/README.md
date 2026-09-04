@@ -13,6 +13,11 @@ Each scenario has two files:
 - `<id>.sse`  — raw SSE event tape (one event per `event: name` / `data: …` block)
 - `<id>.md`   — human-readable notes from the original run (which assertions were true, what the brain emitted)
 
+Exports from a stored run also include `<id>.transcript.json`, a normalized
+per-turn sidecar. It carries the simulated user's `userText`, `simKind`, and
+`simThought` alongside the assistant turn so authorization/approval findings
+remain auditable and replay preserves the user side of the conversation.
+
 Currently 7 scenarios:
 - `01-terminal-status-question` — terminal `?` followed by V8 auto-fire
 - `02-multistep-list-then-summarize` — caught the V8 F1 bug (narrate without `<continue/>`)
