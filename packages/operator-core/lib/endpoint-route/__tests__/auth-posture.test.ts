@@ -117,6 +117,9 @@ const RULES: ReadonlyArray<{
       // token. Strictly NARROWER than the family's `{}`. See the route's own
       // doc-comment (misc/managed-timers.ts).
       { method: 'GET', path: '/internal/managed-timers', auth: 'loopback' },
+      // Per-process live flag attestation. The only callers are same-box
+      // operator processes comparing one another's resolver/cache state.
+      { method: 'GET', path: '/internal/flags-attest', auth: 'loopback' },
       // Live head-snapshot probe, same subsystem and same contract as
       // managed-timers directly above: the ONLY caller is
       // sync/hyperbee/live-head-snapshot-client.ts, which posts to

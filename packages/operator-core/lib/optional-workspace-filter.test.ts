@@ -20,8 +20,7 @@ const SUBJECTS = [
 
 const legacyNullableScopeOr =
   /\$\{[^}]+\}::text IS NULL OR (?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:workspace_id|harness_slug) = \$\{/g;
-const directWorkspaceFragment =
-  /sql`(?:AND\s+)?(?:[A-Za-z_][A-Za-z0-9_]*\.)?workspace_id = \$\{/;
+const directWorkspaceFragment = /sql`(?:AND\s+)?(?:[A-Za-z_][A-Za-z0-9_]*\.)?workspace_id = \$\{/;
 
 describe('optional workspace filters use direct conditional predicates', () => {
   for (const path of SUBJECTS) {

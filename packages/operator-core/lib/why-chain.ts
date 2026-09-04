@@ -165,14 +165,7 @@ export async function recentFailingFiles(deps: WhyChainDeps = {}): Promise<strin
  * `inconclusive` is likewise not a verdict colour: the last checkpoint rendered no code verdict,
  * so any counters and failing tests beside it describe an older run.
  */
-export type GateLabel =
-  | 'green'
-  | 'red'
-  | 'stalled'
-  | 'wedged'
-  | 'stale-verdict'
-  | 'conflict'
-  | 'inconclusive';
+export type GateLabel = 'green' | 'red' | 'stalled' | 'wedged' | 'stale-verdict' | 'conflict' | 'inconclusive';
 
 export function gateLabel(snap: GitPipelineSnapshot): GateLabel {
   const g = snap.gate;
@@ -247,7 +240,10 @@ export function splitFailingSignature(entries: string[]): { failingFiles: string
  *  that happens to share the stamp. `recentFailingFiles` above is a time-windowed proxy
  *  ("something failed recently") and deliberately keeps dirty rows — sha precision doesn't
  *  matter there. */
-export async function ledgerFilesForCandidate(candidateShort: string | null, deps: WhyChainDeps = {}): Promise<string[]> {
+export async function ledgerFilesForCandidate(
+  candidateShort: string | null,
+  deps: WhyChainDeps = {},
+): Promise<string[]> {
   if (!candidateShort || candidateShort.length < 7) return [];
   let sql: SqlLike;
   try {
@@ -293,7 +289,10 @@ export async function ledgerFilesForCandidate(candidateShort: string | null, dep
  *  DISJOINT set (ledger has fail/error rows for this commit, and NONE match the gate's names) is
  *  distrusted — that is the live-observed misdirection (EI-17603): the gate named 4 files that
  *  all passed while 3 different files were the real, ledger-recorded reds for that same commit. */
-export function verifyGateFailingFiles(failingFiles: string[], ledgerFiles: string[]): 'confirmed' | 'disjoint' | 'unverifiable' {
+export function verifyGateFailingFiles(
+  failingFiles: string[],
+  ledgerFiles: string[],
+): 'confirmed' | 'disjoint' | 'unverifiable' {
   if (failingFiles.length === 0) return 'confirmed';
   if (ledgerFiles.length === 0) return 'unverifiable';
   const ledgerSet = new Set(ledgerFiles);
@@ -589,7 +588,8 @@ function admissionStage(adm: AdmissionSnapshotLite | null): WhyChainStage {
     return {
       stage: 'admission',
       status: 'degraded',
-      reason: 'inference gateway unreachable on :8788 (admission state unknown — is papercup-inference-gateway.service running?)',
+      reason:
+        'inference gateway unreachable on :8788 (admission state unknown — is papercup-inference-gateway.service running?)',
       nextVerb: 'gateway:status',
     };
   }
@@ -636,7 +636,11 @@ function admissionStage(adm: AdmissionSnapshotLite | null): WhyChainStage {
       nextVerb: 'accounts:status',
     };
   }
-  return { stage: 'admission', status: 'ok', reason: `gateway admission healthy — ${adm.running}/${adm.maxConcurrent} in flight, nothing queued` };
+  return {
+    stage: 'admission',
+    status: 'ok',
+    reason: `gateway admission healthy — ${adm.running}/${adm.maxConcurrent} in flight, nothing queued`,
+  };
 }
 
 function poolStage(accounts: AccountStatusRow[]): WhyChainStage {
@@ -669,7 +673,11 @@ function poolStage(accounts: AccountStatusRow[]): WhyChainStage {
       nextVerb: 'accounts:status',
     };
   }
-  return { stage: 'pool', status: 'ok', reason: `${available.length}/${accounts.length} accounts available, none sustained-limited` };
+  return {
+    stage: 'pool',
+    status: 'ok',
+    reason: `${available.length}/${accounts.length} accounts available, none sustained-limited`,
+  };
 }
 
 /** Read the live gateway admission snapshot (:8788/admin/stats). Fail-soft: null when unreachable. */
@@ -679,7 +687,13 @@ async function loadAdmissionDefault(): Promise<AdmissionSnapshotLite | null> {
     const res = await fetch(`http://127.0.0.1:${port}/admin/stats`, { signal: AbortSignal.timeout(2000) });
     if (!res.ok) return null;
     const d = (await res.json()) as {
-      admission?: { running?: number; queued?: number; maxConcurrent?: number; tier1Reserve?: number; byTier?: AdmissionSnapshotLite['byTier'] };
+      admission?: {
+        running?: number;
+        queued?: number;
+        maxConcurrent?: number;
+        tier1Reserve?: number;
+        byTier?: AdmissionSnapshotLite['byTier'];
+      };
       aimd?: { effective?: number; cap?: number };
     };
     const a = d.admission;
@@ -766,12 +780,9 @@ function withDisjointNote(stage: WhyChainStage, disjoint: boolean): WhyChainStag
   };
 }
 
-export async function computePipelineHealth(
-  deps: WhyChainDeps & { slug?: string } = {},
-): Promise<PipelineHealth> {
+export async function computePipelineHealth(deps: WhyChainDeps & { slug?: string } = {}): Promise<PipelineHealth> {
   const loadSnapshot =
-    deps.loadSnapshot ??
-    (() => gitPipelineSnapshot(deps.slug, { useSpawnerSidecar: deps.useSpawnerSidecar ?? false }));
+    deps.loadSnapshot ?? (() => gitPipelineSnapshot(deps.slug, { useSpawnerSidecar: deps.useSpawnerSidecar ?? false }));
   const rawSnap = await loadSnapshot();
   const now = Date.now();
   const diagnosticVintage = computeDiagnosticVintage({
@@ -784,7 +795,11 @@ export async function computePipelineHealth(
   // zero-red `gate_health` on a harness that never runs a checkpoint would otherwise render as a
   // confident "green" (the snapshot defaults consecutiveReds to 0).
   if (!rawSnap.routines.greenCheckpoint) {
-    const unknown: WhyChainStage = { stage: 'gate', status: 'degraded', reason: 'no green-checkpoint routine for this harness — gate state unknown' };
+    const unknown: WhyChainStage = {
+      stage: 'gate',
+      status: 'degraded',
+      reason: 'no green-checkpoint routine for this harness — gate state unknown',
+    };
     return {
       generatedAtMs: now,
       known: false,

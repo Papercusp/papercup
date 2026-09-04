@@ -509,10 +509,7 @@ function isPidAlive(pid: number): boolean {
  * Pure + injected `pidAlive` (the local idiom — see release-checkpoint-launch)
  * so the decision is unit-testable without real processes.
  */
-export function isDeadTerminalLaunch(
-  row: AdvSessionRow,
-  pidAlive: (pid: number) => boolean = isPidAlive,
-): boolean {
+export function isDeadTerminalLaunch(row: AdvSessionRow, pidAlive: (pid: number) => boolean = isPidAlive): boolean {
   if (row.display !== DISPLAY_TERMINAL_LAUNCH) return false;
   if (row.endedAt != null) return false; // already reconciled
   if (row.sessionId != null) return false; // it registered — it booted
@@ -531,9 +528,7 @@ export function isDeadTerminalLaunch(
  * the row rather than about one process's memory.
  */
 export function isFailedTerminalLaunch(row: AdvSessionRow): boolean {
-  return (
-    row.display === DISPLAY_TERMINAL_LAUNCH && row.endedAt != null && row.sessionId == null
-  );
+  return row.display === DISPLAY_TERMINAL_LAUNCH && row.endedAt != null && row.sessionId == null;
 }
 
 /**
@@ -727,11 +722,7 @@ export async function adoptStartingTerminalLaunch(opts: {
  * the launcher — has no pid or terminal yet, and fills both in here once the
  * spawn returns. Omitting it must never blank a value another writer set.
  */
-export async function setAdvSessionPid(
-  id: number,
-  pid: number | null,
-  terminalBin?: string | null,
-): Promise<void> {
+export async function setAdvSessionPid(id: number, pid: number | null, terminalBin?: string | null): Promise<void> {
   try {
     const { sql } = getOrgPg();
     await sql`
@@ -935,7 +926,7 @@ export function advSessionEndedAtCaveat(
     field,
     reliability: 'inferred',
     cannotAnswer: 'when did this session actually end?',
-    insteadRead: 'coord_presence.last_active_at for this session\'s owner — the last turn it actually took',
+    insteadRead: "coord_presence.last_active_at for this session's owner — the last turn it actually took",
     because: `written by ${who}. Measured 2026-08-02 (WI-7126): one sweep stamped 9 rows within 13ms, one of them gone since 20 July — an artificial cluster that read as a simultaneous mass kill.`,
   });
 }
@@ -950,9 +941,7 @@ export function advSessionEndedAtCaveat(
  * surface rendered a bare `endedAt`/`exitCode` with nothing attached. This is the one place
  * that combines them so a surface needs only one call, not two easy-to-forget ones.
  */
-export function advSessionRowCaveats(
-  row: Pick<AdvSessionRow, 'endedAt' | 'endedBy' | 'exitCode'>,
-): FieldCaveat[] {
+export function advSessionRowCaveats(row: Pick<AdvSessionRow, 'endedAt' | 'endedBy' | 'exitCode'>): FieldCaveat[] {
   const caveats: FieldCaveat[] = [];
   const endedAtCaveat = advSessionEndedAtCaveat(row);
   if (endedAtCaveat) caveats.push(endedAtCaveat);
@@ -1193,18 +1182,15 @@ export type AdvSessionLocalLivenessEvidence = {
 };
 
 /** Which `agent` each witness kind is allowed to reconcile. */
-export const ADV_SESSION_LIVENESS_EVIDENCE_AGENT: Readonly<
-  Record<AdvSessionLocalLivenessEvidenceKind, string>
-> = Object.freeze({
-  'no-live-codex-writer': 'codex',
-  'no-live-claude-process': 'claude',
-  'no-live-omp-process': 'omp',
-});
+export const ADV_SESSION_LIVENESS_EVIDENCE_AGENT: Readonly<Record<AdvSessionLocalLivenessEvidenceKind, string>> =
+  Object.freeze({
+    'no-live-codex-writer': 'codex',
+    'no-live-claude-process': 'claude',
+    'no-live-omp-process': 'omp',
+  });
 
 /** Strict runtime validation for the local-liveness trust-boundary payload. */
-export function isAdvSessionLocalLivenessEvidence(
-  value: unknown,
-): value is AdvSessionLocalLivenessEvidence {
+export function isAdvSessionLocalLivenessEvidence(value: unknown): value is AdvSessionLocalLivenessEvidence {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record);
@@ -1221,10 +1207,7 @@ export function isAdvSessionLocalLivenessEvidence(
  * Does this witness speak for this row's agent backend? False for an absent or
  * malformed witness, and false for a kind produced by another backend's oracle.
  */
-export function advSessionLivenessEvidenceCoversAgent(
-  agent: string | null,
-  evidence: unknown,
-): boolean {
+export function advSessionLivenessEvidenceCoversAgent(agent: string | null, evidence: unknown): boolean {
   if (!isAdvSessionLocalLivenessEvidence(evidence)) return false;
   return ADV_SESSION_LIVENESS_EVIDENCE_AGENT[evidence.kind] === agent;
 }
@@ -1269,14 +1252,16 @@ export async function acquireAdvSessionResume(
   const { sql } = getOrgPg();
 
   return sql.begin(async (tx) => {
-    const [row] = await tx<Array<{
-      agent: string | null;
-      ended_at: Date | string | null;
-      ended_by: string | null;
-      started_at: Date | string;
-      resume_claim_key: string | null;
-      resume_claimed_at: Date | string | null;
-    }>>`
+    const [row] = await tx<
+      Array<{
+        agent: string | null;
+        ended_at: Date | string | null;
+        ended_by: string | null;
+        started_at: Date | string;
+        resume_claim_key: string | null;
+        resume_claimed_at: Date | string | null;
+      }>
+    >`
       SELECT agent, ended_at, ended_by, started_at, resume_claim_key, resume_claimed_at
         FROM harness_shared.adv_sessions
        WHERE id = ${id}
@@ -1285,9 +1270,7 @@ export async function acquireAdvSessionResume(
     if (!row) return { status: 'missing', acquired: false } as const;
 
     const nowMs = Date.now();
-    const claimedAtMs = row.resume_claimed_at == null
-      ? null
-      : new Date(row.resume_claimed_at).getTime();
+    const claimedAtMs = row.resume_claimed_at == null ? null : new Date(row.resume_claimed_at).getTime();
     const leaseMs = boundedLeaseSec * 1_000;
     const leaseLive = claimedAtMs != null && claimedAtMs + leaseMs > nowMs;
 
@@ -1312,10 +1295,7 @@ export async function acquireAdvSessionResume(
     // witness is unresumable for the whole recent-active window with no override
     // at all — PSU_FORCE_RESUME gates only psu's local double-host guard, never
     // this check (WI-41663 for codex, WI-2141892 for claude).
-    const canReconcileRecentActive = advSessionLivenessEvidenceCoversAgent(
-      row.agent,
-      localLivenessEvidence,
-    );
+    const canReconcileRecentActive = advSessionLivenessEvidenceCoversAgent(row.agent, localLivenessEvidence);
     if (!replayed && !terminal && !staleActive && !canReconcileRecentActive && !expiredReservation) {
       return { status: 'live', acquired: false } as const;
     }
@@ -1824,12 +1804,14 @@ export async function readAdvSessionLaunchRecordByOwner(
   try {
     const { sql } = getOrgPg();
     const workspacePredicate = scope === null ? true : sql`workspace_id = ${scope}`;
-    const rows = await sql<{
-      workspace_id: string;
-      agent: string | null;
-      launch_spec: unknown;
-      launch_argv: unknown;
-    }[]>`
+    const rows = await sql<
+      {
+        workspace_id: string;
+        agent: string | null;
+        launch_spec: unknown;
+        launch_argv: unknown;
+      }[]
+    >`
       SELECT workspace_id,
              agent,
              -- to_jsonb keeps this reader parse-safe on pre-migration legacy
@@ -2084,34 +2066,35 @@ export async function listResumableSessions(
  */
 export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
   try {
-    const rows = await boundedOrgTxn((tx) => tx<
-      Array<{
-        id: number;
-        workspace_id: string;
-        harness_slug?: string | null;
-        plan_slug: string | null;
-        agent: string | null;
-        role: string | null;
-        feature: string | null;
-        mode: 'omp' | 'console';
-        terminal_bin: string | null;
-        pid: number | null;
-        window_id: string | null;
-        omp_thread_id: string | null;
-        label: string | null;
-        cwd: string | null;
-        coord_owner_id: string | null;
-        session_id: string | null;
-        started_at: string | Date;
-        ended_at: string | Date | null;
-        exit_code: number | null;
-        port_id?: string | null;
-        port_source_adv_session_id?: number | string | null;
-        port_status?: string | null;
-        port_metadata?: Record<string, unknown> | null;
-        launch_argv?: string[] | null;
-      }>
-    >`
+    const rows = await boundedOrgTxn(
+      (tx) => tx<
+        Array<{
+          id: number;
+          workspace_id: string;
+          harness_slug?: string | null;
+          plan_slug: string | null;
+          agent: string | null;
+          role: string | null;
+          feature: string | null;
+          mode: 'omp' | 'console';
+          terminal_bin: string | null;
+          pid: number | null;
+          window_id: string | null;
+          omp_thread_id: string | null;
+          label: string | null;
+          cwd: string | null;
+          coord_owner_id: string | null;
+          session_id: string | null;
+          started_at: string | Date;
+          ended_at: string | Date | null;
+          exit_code: number | null;
+          port_id?: string | null;
+          port_source_adv_session_id?: number | string | null;
+          port_status?: string | null;
+          port_metadata?: Record<string, unknown> | null;
+          launch_argv?: string[] | null;
+        }>
+      >`
       SELECT id, workspace_id,
              -- launch_spec was added after the base adv-session columns. Read it
              -- through to_jsonb so old schemas remain parse-safe while resumed
@@ -2128,7 +2111,8 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
        WHERE workspace_id = ${activeWorkspaceId()}
          AND id = ${id}
        LIMIT 1
-    `);
+    `,
+    );
     const r = rows[0];
     if (!r) return null;
     return mapAdvSessionRow(r);
@@ -2291,10 +2275,7 @@ export async function listRecordedLiveSessions(
   } = {},
 ): Promise<AdvSessionRow[]> {
   const ws = opts.workspaceId ?? null;
-  const maxAgeSec = Math.max(
-    1,
-    Math.round((opts.maxAgeMs ?? RECORDED_ADV_SESSION_FRESH_SEC * 1000) / 1000),
-  );
+  const maxAgeSec = Math.max(1, Math.round((opts.maxAgeMs ?? RECORDED_ADV_SESSION_FRESH_SEC * 1000) / 1000));
   const limit = opts.limit ?? 500;
   const ownerIds = [...new Set((opts.ownerIds ?? []).filter((ownerId) => ownerId.length > 0))];
   try {
@@ -2386,18 +2367,18 @@ export async function shutdownAcceptedOwnerIds(coordOwnerIds: string[]): Promise
   if (ids.length === 0) return new Set();
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{
-      coord_owner_id: string;
-      shutdown_accepted_at: string | Date | null;
-    }[]>`
+    const rows = await sql<
+      {
+        coord_owner_id: string;
+        shutdown_accepted_at: string | Date | null;
+      }[]
+    >`
       SELECT DISTINCT ON (coord_owner_id) coord_owner_id, shutdown_accepted_at
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ANY(${ids}::text[])
        ORDER BY coord_owner_id, started_at DESC
     `;
-    return new Set(
-      rows.filter((r) => r.shutdown_accepted_at != null).map((r) => r.coord_owner_id),
-    );
+    return new Set(rows.filter((r) => r.shutdown_accepted_at != null).map((r) => r.coord_owner_id));
   } catch (e) {
     warnUnlessMissingTable(e, 'shutdownAcceptedOwnerIds');
     return new Set();
@@ -2574,9 +2555,7 @@ export async function recordedLiveOwnerIds(coordOwnerIds: string[]): Promise<Set
  * and scoping here would make a cross-workspace row read as "never existed",
  * which floors to null and silently restores the count-from-epoch behaviour.
  */
-export async function firstAdvSessionStartByCoordOwner(
-  coordOwnerId: string,
-): Promise<string | null> {
+export async function firstAdvSessionStartByCoordOwner(coordOwnerId: string): Promise<string | null> {
   try {
     const { sql } = getOrgPg();
     const rows = await sql<Array<{ started_at: Date | string | null }>>`
@@ -2632,10 +2611,7 @@ export async function latestAdvSessionByCoordOwner(coordOwnerId: string): Promis
  * because a row without one is mid-boot (bootstrap-su sets it) and not yet
  * addressable. Most-recent first. Returns null on no match / a missing table.
  */
-export async function latestLiveAdvSessionByLabel(
-  label: string,
-  workspaceId: string,
-): Promise<AdvSessionRow | null> {
+export async function latestLiveAdvSessionByLabel(label: string, workspaceId: string): Promise<AdvSessionRow | null> {
   try {
     const { sql } = getOrgPg();
     const cutoffIso = new Date(Date.now() - RECORDED_LIVE_MAX_AGE_MS).toISOString();
@@ -2855,9 +2831,10 @@ export async function listPlanSessions(
  * open-key `id`) to session_turns hits (agents-pill-inactive-search-2026-07-09
  * P-002). Newest row per handle wins downstream (rows come back newest-first).
  */
-export async function advSessionsByTranscriptHandles(
-  handles: { sessionIds?: readonly string[]; ompThreadIds?: readonly string[] },
-): Promise<AdvSessionRow[]> {
+export async function advSessionsByTranscriptHandles(handles: {
+  sessionIds?: readonly string[];
+  ompThreadIds?: readonly string[];
+}): Promise<AdvSessionRow[]> {
   const sessionIds = handles.sessionIds && handles.sessionIds.length ? [...handles.sessionIds] : null;
   const ompThreadIds = handles.ompThreadIds && handles.ompThreadIds.length ? [...handles.ompThreadIds] : null;
   if (!sessionIds && !ompThreadIds) return [];
@@ -2920,10 +2897,7 @@ export async function advSessionsByTranscriptHandles(
  * caller-supplied text, and an unescaped `%` would turn a typo into a
  * whole-table scan that matches everything.
  */
-export async function advSessionsByIdToken(
-  token: string,
-  opts: { limit?: number } = {},
-): Promise<AdvSessionRow[]> {
+export async function advSessionsByIdToken(token: string, opts: { limit?: number } = {}): Promise<AdvSessionRow[]> {
   const t = token.trim().toLowerCase();
   if (!t) return [];
   const limit = Math.min(200, Math.max(1, opts.limit ?? 50));

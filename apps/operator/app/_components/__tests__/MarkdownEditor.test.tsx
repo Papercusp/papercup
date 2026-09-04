@@ -81,7 +81,12 @@ vi.mock('vditor', () => ({ default: MockVditor }));
 vi.mock('vditor/dist/index.css', () => ({}));
 
 // Import AFTER the mocks are registered.
-import { MarkdownEditor, MarkdownPreview, expandWikiLinks } from '../MarkdownEditor';
+import {
+  MarkdownEditor,
+  MarkdownPreview,
+  expandWikiLinks,
+  preloadVditor,
+} from '../MarkdownEditor';
 
 beforeEach(() => {
   instances.length = 0;
@@ -89,6 +94,17 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+describe('preloadVditor', () => {
+  it('reports a completed Vditor/Lute warm-up as successful', async () => {
+    await expect(preloadVditor()).resolves.toBe(true);
+    expect(MockVditor.preview).toHaveBeenCalledWith(
+      expect.any(HTMLDivElement),
+      'warm',
+      expect.objectContaining({ math: { engine: 'KaTeX' } }),
+    );
+  });
 });
 
 describe('MarkdownEditor — mount + config', () => {

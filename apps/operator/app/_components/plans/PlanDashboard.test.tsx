@@ -18,6 +18,8 @@ const {
   attentionItems,
   syncData,
   launchAgentSpy,
+  beginInteractionSpy,
+  preloadVditorSpy,
   toastSpies,
   cleanupFlag,
 } = vi.hoisted(() => ({
@@ -37,6 +39,8 @@ const {
     value: {} as Record<string, { data: unknown[]; loading?: boolean }>,
   },
   launchAgentSpy: vi.fn(async (_a?: unknown) => ({ ok: true as const })),
+  beginInteractionSpy: vi.fn(),
+  preloadVditorSpy: vi.fn(() => Promise.resolve()),
   toastSpies: { success: vi.fn(), error: vi.fn() },
   cleanupFlag: { value: true },
 }));
@@ -89,6 +93,13 @@ vi.mock('../inbox/use-inbox-pending', () => ({
 }));
 vi.mock('@papercusp/operator-core/lib/launch-agent', () => ({
   launchAgent: (a: unknown) => launchAgentSpy(a),
+}));
+vi.mock('../perf/perf-marks', () => ({
+  beginInteraction: beginInteractionSpy,
+  PERF_INTERACTIONS: { planPopupOpen: 'plan-popup-open' },
+}));
+vi.mock('@/app/_components/MarkdownEditor', () => ({
+  preloadVditor: preloadVditorSpy,
 }));
 vi.mock('sonner', () => ({ toast: toastSpies }));
 // The session chat is a heavy modal stack — assert the prop seam only.
@@ -275,6 +286,8 @@ afterEach(() => {
   for (const k of Object.keys(nuqs)) delete nuqs[k];
   for (const setter of Object.values(setters)) setter.mockClear();
   launchAgentSpy.mockClear();
+  beginInteractionSpy.mockClear();
+  preloadVditorSpy.mockClear();
   toastSpies.success.mockClear();
   toastSpies.error.mockClear();
   cleanupFlag.value = true;
@@ -282,6 +295,12 @@ afterEach(() => {
 });
 
 describe('PlanDashboard header', () => {
+  it('warms Vditor when the independently deep-linkable dashboard mounts', () => {
+    seed();
+    renderDash();
+    expect(preloadVditorSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('renders title, bucket, ✎/⚒ meta, progress and the needs-you line', () => {
     seed({ needsYou: true });
     renderDash();
@@ -339,7 +358,7 @@ describe('PlanDashboard header', () => {
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 
-  it('Open full plan writes the scoped ?wppop ref', () => {
+  it('Open full plan starts the popup timing before writing the scoped ?wppop ref', () => {
     seed();
     renderDash();
     const primary = screen.getByTestId('plan-dash-open-full');
@@ -349,6 +368,10 @@ describe('PlanDashboard header', () => {
       'pc-btn-primary',
     );
     fireEvent.click(primary);
+    expect(beginInteractionSpy).toHaveBeenCalledWith('plan-popup-open');
+    expect(beginInteractionSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      setters['wppop'].mock.invocationCallOrder[0]!,
+    );
     expect(setters['wppop']).toHaveBeenCalledWith('papercusp::p1');
   });
 

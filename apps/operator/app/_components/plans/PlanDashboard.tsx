@@ -40,7 +40,7 @@
  * `?pdsess` (the open session-chat owner), and `?opcln` (the selected clean-up
  * run) — deep-linkable + agent-driveable.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   Check,
@@ -62,6 +62,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { useFlag } from '@/lib/flag-hooks';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { Button } from '@/app/harness/Button';
+import { preloadVditor } from '@/app/_components/MarkdownEditor';
 import { bucketOf, usePlan } from '@/app/admin/plans/plans-api';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import SessionChatModal from '../chat/SessionChatModal';
@@ -70,6 +71,7 @@ import {
   CHAT_WORK_ITEM_POPUP_PARAM,
   encodeScopedRef,
 } from '../chat/chat-ref-popup-params';
+import { beginInteraction, PERF_INTERACTIONS } from '../perf/perf-marks';
 import { agoLabel, agoLabelMs, WORK_HOT_MS } from './PlansPane';
 import {
   collapsePlanActivity,
@@ -116,6 +118,11 @@ interface PlanWorkActivityRow {
   slug?: string;
   lastWorkAtMs?: number;
 }
+
+/** Page-side readiness signal for the packaged Tauri perf probe. This is a
+ * mark (not a budgeted interaction): it proves the async Vditor/Lute warm-up
+ * finished before a warm-route sample starts. */
+const VDITOR_READY_MARK = 'plan-dashboard-vditor-ready-success-v1';
 
 /** "2m" → "2m ago", "now" → "just now" — hover-title phrasing. */
 function agoPhrase(label: string): string {
@@ -261,7 +268,30 @@ export default function PlanDashboard({
   const [, setOpenWorkItem] = useQueryState(CHAT_WORK_ITEM_POPUP_PARAM, parseAsString);
   const [, setPopupView] = useQueryState('ppv', parseAsString);
 
+  // PlansPane starts this same idempotent warm-up before a sidebar row click,
+  // but the dashboard is also independently deep-linkable. Warm here too so
+  // its "Open full plan" action never depends on the caller having mounted the
+  // pane first (WI-5547's route changed from row → popup to row → dashboard →
+  // popup). preloadVditor memoizes the shared JS/CSS/Lute initialization, so
+  // the normal sidebar path reuses the already-running/completed promise.
+  useEffect(() => {
+    void preloadVditor().then((warmed) => {
+      if (!warmed) return;
+      try {
+        performance.clearMarks?.(VDITOR_READY_MARK);
+        performance.mark(VDITOR_READY_MARK);
+      } catch {
+        // Performance instrumentation must never break the dashboard.
+      }
+    });
+  }, []);
+
   const openFullPlan = useCallback(() => {
+    // Time the current "open a plan" path (WI-5547): the sidebar row now
+    // lands on this dashboard first, so THIS button is the event that opens
+    // PlanPopupModal. PlanEditor.handleParsed consumes the mark when Vditor
+    // finishes the first body render.
+    beginInteraction(PERF_INTERACTIONS.planPopupOpen);
     void setOpenPlanPopup(encodeScopedRef(harness, planSlug));
   }, [setOpenPlanPopup, harness, planSlug]);
 

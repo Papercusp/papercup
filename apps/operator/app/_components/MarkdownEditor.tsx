@@ -179,8 +179,8 @@ function loadVditorCss(): Promise<unknown> {
 // VditorUnavailable fallback). The throwaway preview renders into a DETACHED
 // node — no flash, no layout, no KaTeX/mermaid (minimal content) — but Lute's
 // WASM instance is process-global, so the real render reuses it.
-let _vditorPreloadPromise: Promise<void> | null = null;
-export function preloadVditor(): Promise<void> {
+let _vditorPreloadPromise: Promise<boolean> | null = null;
+export function preloadVditor(): Promise<boolean> {
   if (_vditorPreloadPromise) return _vditorPreloadPromise;
   _vditorPreloadPromise = (async () => {
     try {
@@ -204,8 +204,10 @@ export function preloadVditor(): Promise<void> {
         mode: 'dark',
         lang: 'en_US',
       } as never);
+      return true;
     } catch {
       _vditorPreloadPromise = null; // best-effort — allow a later retry
+      return false;
     }
   })();
   return _vditorPreloadPromise;

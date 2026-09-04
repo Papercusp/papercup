@@ -114,7 +114,7 @@ export default function PlanEditor({
     (root: HTMLElement) => {
       // Close the "open a plan" interaction timing the instant the plan body
       // is rendered (WI-5547 / desktop-performance-suite P-001). No-op unless a
-      // matching beginInteraction ran (only the Plans-face popup click sets it),
+      // matching beginInteraction ran (the Plans dashboard popup click sets it),
       // so this is inert in PlanDetail's other mount contexts.
       endInteraction(PERF_INTERACTIONS.planPopupOpen);
       if (promotedFeaturesRef.current?.length) {

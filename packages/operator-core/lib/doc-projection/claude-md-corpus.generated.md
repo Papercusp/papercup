@@ -2673,24 +2673,25 @@ scripts/mutation-probe.sh \
 Exit codes: `0` mutant/historical source CAUGHT (guard is falsifiable ✓) · `1` mutant/historical source SURVIVED (your guard is weaker than you think) · `2` misuse / missing historical control / failed calibration / no-op mutation / a mutant that no longer PARSES · `3` in-tree restore FAILED, act now. Note `0` means *the guard failed on the mutant or historical source* — "the probe succeeded" and "the test passed" mean OPPOSITE things here.
 
 
-For tier 3, pause the sweep from your agent session — git-sync's own tick takes this
-same lock and **skips when a peer holds it**:
+For tier 3, pause the sweep only for the files the probe mutates — git-sync excludes actively file-locked paths from its staging pathspecs, so probes on disjoint files and unrelated commits keep moving:
+
 
 ```
-locks:acquire_resource { resource: 'git-sync:papercusp', mode: 'exclusive',
-                         ttl_sec: 600, reason: 'mutation probe' }
+locks:acquire { paths: ['<repo-relative-mutated-file>'],
+                ttl_sec: 600, intent: 'mutation probe' }
 ```
 
-Keep the returned lock_id for the entire probe. Before half the TTL, and again every half-TTL while the probe runs:
+Use one repo-relative path for each file the probe mutates; do not take the global `git-sync:<slug>` resource for a single-file probe. Keep the returned lock_id for the entire probe. Before half the TTL, and again every half-TTL while the probe runs:
 ```
-locks:heartbeat_resource { lock_id: '<returned lock_id>', ttl_sec: 600 }
+locks:heartbeat { lock_id: '<returned lock_id>', ttl_sec: 600 }
 ```
-Repeat heartbeat_resource for each further interval; then release the lock when done:
+Repeat `locks:heartbeat` for each further interval; then release the file lock when done:
 ```
-locks:release_resource { lock_id: '<returned lock_id>' }
+locks:release { lock_id: '<returned lock_id>' }
 ```
 
-Holding it, pass `--sweep-lock-held` so the probe records which choice you made; `--accept-sweep-race` is the escape when the checkout is not swept.
+Holding the exact file lock, pass `--sweep-lock-held` so the probe records which choice you made; `--accept-sweep-race` is the escape when the checkout is not swept. A probe that genuinely mutates a subtree or whole checkout may still require the global resource lock, but that is not the normal one-file case.
+
 
 ⚠ **A `trap` alone does NOT restore promptly — bash will not run a trap handler while
 waiting on a FOREGROUND child.** Measured 2026-08-03: a SIGTERM during a 25s guard

@@ -31,7 +31,10 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
 
   function mockSql(impl: (...a: unknown[]) => Promise<unknown>): ReturnType<typeof vi.fn> {
     const sql = vi.fn(impl);
-    vi.doMock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) }));
+    vi.doMock('@papercusp/db-org', async (orig) => ({
+      ...(await orig<typeof import('@papercusp/db-org')>()),
+      getOrgPg: () => ({ sql }),
+    }));
     vi.doMock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     return sql;
   }
@@ -39,9 +42,7 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
   it('recordAdvSession passes coordOwnerId into the INSERT params', async () => {
     const sql = mockSql(async () => [{ id: 7 }]);
     const mod = await import('./adv-sessions');
-    await expect(
-      mod.recordAdvSession({ mode: 'console', coordOwnerId: 'su-abc', label: 't' }),
-    ).resolves.toBe(7);
+    await expect(mod.recordAdvSession({ mode: 'console', coordOwnerId: 'su-abc', label: 't' })).resolves.toBe(7);
     const values = sql.mock.calls[0]?.slice(1) ?? [];
     expect(values).toContain('su-abc'); // the SID lands in the row
   });
@@ -86,17 +87,21 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
     expect(rows[0]?.id).toBe(9);
     expect(rows[0]?.endedAt).toBe('2026-06-02T01:00:00.000Z');
     expect(rows[0]?.coordOwnerId).toBe('su-1');
-    const values = sql.mock.calls[0]?.slice(1) ?? [];
+    // WI-6055: workspace scope is carried by a nested postgres.js fragment;
+    // inspect both the fragment-construction and outer-query calls.
+    const values = sql.mock.calls.flatMap((call) => call.slice(1));
     expect(values).toContain('ws9'); // scope param interpolated
     expect(values).toContain(10); // limit
   });
 
   it('listResumableSessions restores harness scope from the persisted launch spec', async () => {
-    const sql = mockSql(async () => [dbRow({
-      id: 12,
-      harness_slug: 'papercusp',
-      launch_spec: { v: 1, workspaceId: 'ws1', harnessSlug: 'papercusp' },
-    })]);
+    const sql = mockSql(async () => [
+      dbRow({
+        id: 12,
+        harness_slug: 'papercusp',
+        launch_spec: { v: 1, workspaceId: 'ws1', harnessSlug: 'papercusp' },
+      }),
+    ]);
     const mod = await import('./adv-sessions');
     const rows = await mod.listResumableSessions();
     expect(rows[0]?.harnessSlug).toBe('papercusp');
@@ -140,7 +145,8 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
     const mod = await import('./adv-sessions');
     await mod.listEndedAdvSessions({ workspaceId: 'ws9', limit: 30 });
 
-    const strings = sql.mock.calls[0]?.[0] as TemplateStringsArray | undefined;
+    // The conditional workspace fragment is call 0; the SELECT is the final call.
+    const strings = sql.mock.calls.at(-1)?.[0] as TemplateStringsArray | undefined;
     const query = strings ? Array.from(strings).join(' ? ') : '';
     // `/api/adv/sessions/ended` feeds the Agents-running inactive dropdown.
     // A `resume · …` console-launch wrapper has none of these three handles,

@@ -44,7 +44,7 @@
  * In preference order, begin from:
  *   - the EVENT HANDLER that triggers the interaction (a click). Best: it runs
  *     before any render, and it measures what the user actually waited for.
- *     See PlansPane's planPopupOpen.
+ *     See PlanDashboard's planPopupOpen.
  *   - `useLayoutEffect`, when the trigger is a state/URL change with no single
  *     handler. ALL layout effects run before ANY passive effect, so this is
  *     ordered against every child settle. See LearningTab's learningViewSwitch.
@@ -60,9 +60,9 @@
 /** The curated set of named interactions we budget + measure. Keep this small
  *  and intentional — one entry per user-perceived interaction worth a budget. */
 export const PERF_INTERACTIONS = {
-  /** Sidebar Plans face: row click → plan body rendered in Vditor. The "several
-   *  seconds to load a plan" path (WI-5547); the measure spans click → the
-   *  first Vditor.preview parse of the plan body. */
+  /** Plans dashboard: "Open full plan" click → plan body rendered in Vditor.
+   *  The "several seconds to load a plan" path (WI-5547); the measure spans
+   *  click → the first Vditor.preview parse of the popup's plan body. */
   planPopupOpen: "plan-popup-open",
   /** Inbox command strip: Review decisions click → the grouped bulk report's
    *  first committed render. Guards the high-cardinality report-open path that

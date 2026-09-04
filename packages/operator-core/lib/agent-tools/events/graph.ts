@@ -37,15 +37,13 @@ interface ReactionAuditRow {
 export default defineTool({
   name: 'events:graph',
   description:
-    "Inspect the event-reaction reactive graph: every registered rule as an `on → fire` edge (the Events file + emits desugar + plugin/blueprint rules), with its condition kind, mode, and source. With recent:true, also returns the reactions that actually fired (from tool_invocations) with their cause-chain — the answer to \"why did this fire?\".",
+    'Inspect the event-reaction reactive graph: every registered rule as an `on → fire` edge (the Events file + emits desugar + plugin/blueprint rules), with its condition kind, mode, and source. With recent:true, also returns the reactions that actually fired (from tool_invocations) with their cause-chain — the answer to "why did this fire?".',
   capability: 'events:read',
   guidance: {
     when: 'You want to see the declarative "when X, fire Y" wiring — what reactions exist, what triggers them, and (recent:true) what has actually fired lately with its cause-chain. Pass `on` to see only the rules that fire on a given tool.',
-    notWhen: 'To register a rule, use the events registry API in code (registerReactionRule) or a tool\'s `emits` field — there is no runtime "add a rule" tool by design (rules are curated code). For the live worker activity stream use `activity:recent`.',
-    seeAlso: [
-      'events:status (live pending awaits / deliveries)',
-      'activity:recent (the live worker activity stream)',
-    ],
+    notWhen:
+      'To register a rule, use the events registry API in code (registerReactionRule) or a tool\'s `emits` field — there is no runtime "add a rule" tool by design (rules are curated code). For the live worker activity stream use `activity:recent`.',
+    seeAlso: ['events:status (live pending awaits / deliveries)', 'activity:recent (the live worker activity stream)'],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
@@ -59,19 +57,21 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const allRules = listReactionRules();
-    const rules = (args.on ? allRules.filter((r) => ([] as string[]).concat(r.on as string | string[]).includes(args.on as string)) : allRules).map(
-      (r) => ({
-        id: r.id,
-        on: r.on,
-        fire: r.fire,
-        mode: r.mode ?? 'durable',
-        onlyOnSuccess: r.onlyOnSuccess ?? true,
-        source: r.source ?? 'unknown',
-        capability: r.capability,
-        condition: describeCondition(r.when),
-        argsKind: typeof r.args === 'function' ? 'function' : r.args === undefined ? 'none' : 'static',
-      }),
-    );
+    const rules = (
+      args.on
+        ? allRules.filter((r) => ([] as string[]).concat(r.on as string | string[]).includes(args.on as string))
+        : allRules
+    ).map((r) => ({
+      id: r.id,
+      on: r.on,
+      fire: r.fire,
+      mode: r.mode ?? 'durable',
+      onlyOnSuccess: r.onlyOnSuccess ?? true,
+      source: r.source ?? 'unknown',
+      capability: r.capability,
+      condition: describeCondition(r.when),
+      argsKind: typeof r.args === 'function' ? 'function' : r.args === undefined ? 'none' : 'static',
+    }));
     const edges = args.on ? reactionGraph().filter((e) => e.on === args.on) : reactionGraph();
 
     const out: Record<string, unknown> = { rules, edges, ruleCount: rules.length };

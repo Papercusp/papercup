@@ -19,12 +19,10 @@ export default defineTool({
   capability: 'ui:read',
   guidance: {
     when: 'You need to know which browser tab(s) the user has open before calling `ui:dispatch`. Returns client ids the operator can target.',
-    notWhen: 'In the operator-converse path, ctx.uiClientId is already populated — you can target the user\'s current tab directly via `ui:dispatch`. Only list when you need to choose between multiple tabs.',
+    notWhen:
+      "In the operator-converse path, ctx.uiClientId is already populated — you can target the user's current tab directly via `ui:dispatch`. Only list when you need to choose between multiple tabs.",
     chaining: 'Pair with `ui:get_state` to see what each tab is on, then `ui:dispatch` to act.',
-    seeAlso: [
-      'ui:get_state (what each tab is on)',
-      'ui:dispatch (act on a chosen tab)',
-    ],
+    seeAlso: ['ui:get_state (what each tab is on)', 'ui:dispatch (act on a chosen tab)'],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
@@ -42,14 +40,16 @@ export default defineTool({
     const limit = args.limit ?? 50;
     const ws = args.workspace ?? null;
     const workspacePredicate = ws === null ? true : sql`workspace_id = ${ws}`;
-    const rows = await sql<Array<{
-      client_id: string;
-      workspace_id: string | null;
-      url: string;
-      title: string | null;
-      opened_at: Date | string;
-      last_seen_at: Date | string;
-    }>>`
+    const rows = await sql<
+      Array<{
+        client_id: string;
+        workspace_id: string | null;
+        url: string;
+        title: string | null;
+        opened_at: Date | string;
+        last_seen_at: Date | string;
+      }>
+    >`
       SELECT client_id, workspace_id, url, title, opened_at, last_seen_at
       FROM harness_shared.ui_clients
       WHERE last_seen_at > now() - (${sinceSec}::int * interval '1 second')
@@ -59,22 +59,24 @@ export default defineTool({
     `;
     const selfId = ctx.uiClientId ?? null;
     return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          self_client_id: selfId,
-          count: rows.length,
-          clients: rows.map((r) => ({
-            client_id: r.client_id,
-            workspace_id: r.workspace_id,
-            url: r.url,
-            title: r.title,
-            opened_at: new Date(r.opened_at).toISOString(),
-            last_seen_at: new Date(r.last_seen_at).toISOString(),
-            is_self: r.client_id === selfId,
-          })),
-        }),
-      }],
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            self_client_id: selfId,
+            count: rows.length,
+            clients: rows.map((r) => ({
+              client_id: r.client_id,
+              workspace_id: r.workspace_id,
+              url: r.url,
+              title: r.title,
+              opened_at: new Date(r.opened_at).toISOString(),
+              last_seen_at: new Date(r.last_seen_at).toISOString(),
+              is_self: r.client_id === selfId,
+            })),
+          }),
+        },
+      ],
     };
   },
 });

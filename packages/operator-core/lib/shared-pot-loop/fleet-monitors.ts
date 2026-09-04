@@ -214,7 +214,9 @@ export async function sweepOrphanedTakenBy(
       FROM victims v
      WHERE f.harness_slug = v.harness_slug AND f.feature_id = v.feature_id
     RETURNING v.feature_id, v.taken_by, v.updated_ts`;
-  return { cleared: rows.map((r) => ({ workItemId: r.feature_id, takenBy: r.taken_by, updatedTs: Number(r.updated_ts) })) };
+  return {
+    cleared: rows.map((r) => ({ workItemId: r.feature_id, takenBy: r.taken_by, updatedTs: Number(r.updated_ts) })),
+  };
 }
 
 // ── P-013: outbox health ─────────────────────────────────────────────────────
@@ -378,13 +380,7 @@ export interface PeerFederationHealth {
   /** False when there is nothing to judge; the caller must not infer health. */
   measured: boolean;
   /** Why we could not judge — so `measured:false` is never a bare shrug. */
-  unmeasuredReason:
-    | 'no-remote-logs'
-    | 'scope-dormant'
-    | 'scan-failed'
-    | 'own-log-only'
-    | 'own-log-unknown'
-    | null;
+  unmeasuredReason: 'no-remote-logs' | 'scope-dormant' | 'scan-failed' | 'own-log-only' | 'own-log-unknown' | null;
   /** Set with `scan-failed`: the error, kept so a broken scan is diagnosable. */
   scanError?: string;
   silent: PeerSilence[];
@@ -496,8 +492,7 @@ export function judgePeerFederationSilence(
   },
 ): PeerFederationHealth {
   const admittedSet = opts.admittedLogKeysHex ? new Set(opts.admittedLogKeysHex) : null;
-  const hostAdmitsAnyRemoteLog =
-    opts.hostAdmission == null ? null : opts.hostAdmission.remoteLogsAdmitted > 0;
+  const hostAdmitsAnyRemoteLog = opts.hostAdmission == null ? null : opts.hostAdmission.remoteLogsAdmitted > 0;
   if (rows.length === 0) {
     return {
       totalLogs: 0,
@@ -525,9 +520,7 @@ export function judgePeerFederationSilence(
   // active rows remain alertable even when they are not currently admitted.
   // Filter before choosing the live binding: a lifecycle transition has its own
   // timestamp and must never make a retired row's binding the monitor authority.
-  const monitorableRows = rows.filter(
-    (r): r is MonitorableMergeCursorRow => r.lifecycleState !== 'retired',
-  );
+  const monitorableRows = rows.filter((r): r is MonitorableMergeCursorRow => r.lifecycleState !== 'retired');
   const retiredCursors = rows.length - monitorableRows.length;
   if (monitorableRows.length === 0) {
     return {
@@ -611,9 +604,7 @@ export function judgePeerFederationSilence(
   // leaves a row that can never move again — indistinguishable, from the cursor
   // table alone, from a peer we are failing to fold. `null` (unknown) is kept
   // distinct from `0` (determined): only a determined zero may change a verdict.
-  const admittedRemoteLogs = admittedSet
-    ? judged.filter((r) => admittedSet.has(r.logKeyHex)).length
-    : null;
+  const admittedRemoteLogs = admittedSet ? judged.filter((r) => admittedSet.has(r.logKeyHex)).length : null;
 
   // No REMOTE log at all under the live binding. This is the honest shape of "we
   // have admitted no peers here" and it is the reading that was missing today —
@@ -689,7 +680,12 @@ export function judgePeerFederationSilence(
   // this host admits no remote log in ANY scope, "this scope's peers are absent"
   // is a true sentence about a false subject: the subject is the host.
   let hostWideAdmissionBreach: string | null = null;
-  if (admittedRemoteLogs === 0 && hostAdmitsAnyRemoteLog === false && unadmittedSilent != null && unadmittedSilent.length > 0) {
+  if (
+    admittedRemoteLogs === 0 &&
+    hostAdmitsAnyRemoteLog === false &&
+    unadmittedSilent != null &&
+    unadmittedSilent.length > 0
+  ) {
     const scopes = opts.hostAdmission?.scopesMeasured ?? 0;
     hostWideAdmissionBreach =
       `HOST ADMITS NO REMOTE LOGS: this host admits 0 remote log(s) across ALL ${scopes} booted scope(s) — its OWN log is the only member of every admitted set. ` +
@@ -859,8 +855,7 @@ async function readAndJudgePeerSilence(
   // (consume without writing) is indistinguishable from one we never joined, so
   // a genuine stall there reads as dormant. Every scope we actively federate
   // does write, so this trades an unreachable case for ~10 standing false majors.
-  const newestLocal =
-    local?.newest_ts == null ? Number.POSITIVE_INFINITY : Number(local.newest_ts);
+  const newestLocal = local?.newest_ts == null ? Number.POSITIVE_INFINITY : Number(local.newest_ts);
   // OUR OWN log's key in this scope, so the judge can take it out of the peer
   // population. `substrate_booted_handles_status` is this host publishing its own
   // boot registry (`log-stats.ts` walks `handle.admitted`, stamping `isOwn`
@@ -889,9 +884,7 @@ async function readAndJudgePeerSilence(
   // cross-population conflation this monitor keeps being bitten by. One read, one
   // snapshot, both readings. `perLog` is one row per admitted log per scope
   // (80 rows for this workspace on this host), so the widened read stays trivial.
-  const allAdmittedRows = await sql<
-    Array<{ key_hex: string; is_own: boolean | null; harness_slug: string }>
-  >`
+  const allAdmittedRows = await sql<Array<{ key_hex: string; is_own: boolean | null; harness_slug: string }>>`
     SELECT pl->>'keyHex' AS key_hex, (pl->>'isOwn')::boolean AS is_own,
            ls->>'harnessSlug' AS harness_slug
       FROM harness_shared.substrate_booted_handles_status s,
