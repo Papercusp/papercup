@@ -24,21 +24,22 @@ const criterion = z.object({
     .min(1)
     .optional()
     .describe(
-      'how this criterion is supposed to work (the MODEL). REQUIRED for a standard-kind rubric (the store refuses a standard criterion without it); optional on an acceptance-kind criterion (the light profile)',
+      'how this criterion is supposed to work (the MODEL). REQUIRED for a standard-kind rubric; optional on an acceptance-kind criterion only when the title, non-empty driftMarkers, and concrete verification check/procedure carry the outcome semantics the meta-acceptance-rubric vets',
     ),
   method: z
     .string()
     .min(1)
     .optional()
     .describe(
-      'how to investigate it (signals / queries — the METHOD). REQUIRED for standard kind; optional on acceptance-kind criteria',
+      'how to investigate it (signals / queries — the METHOD). REQUIRED for standard kind; optional on acceptance-kind criteria only when a concrete check/procedure makes the outcome independently falsifiable',
     ),
   ratingScale: z.array(z.string()).optional().describe('per-criterion override of the rubric default scale'),
   driftMarkers: z
     .string()
+    .min(1)
     .optional()
     .describe(
-      'what degraded / broken looks like — the concrete falsifier. REQUIRED for every bespoke criterion of BOTH kinds (standard AND acceptance); an acceptance rubric may only omit criteria entirely, via classRef with an empty criteria array (plan D-009)',
+      'what degraded / broken looks like — the concrete falsifier. REQUIRED and non-empty for every bespoke criterion of BOTH kinds (standard AND acceptance); an acceptance rubric may only omit criteria entirely, via classRef with an empty criteria array (plan D-009)',
     ),
   replication: z
     .string()
@@ -66,7 +67,8 @@ const criterion = z.object({
         "kind:'tests' { files:[...] } = deterministic must-pass — paths must resolve against the live tree or " +
         "THIS PROPOSE IS REFUSED, and scorecards:emit actually RUNS the files at grading time (a contradicted " +
         "pass-rating refuses the emit); kind:'instrument' { instrumentKey } = the generalized instrument binding. " +
-        'Omitted = fuzzy judgment criterion; when revising, intentionally removing a stored check requires allowMethodShrink:true plus shrinkReason',
+        "Omitted = fuzzy judgment criterion; for an acceptance rubric with bespoke criteria, AT LEAST ONE criterion must carry a structured check (and every objectively checkable outcome should carry its own); " +
+        'when revising, intentionally removing a stored check requires allowMethodShrink:true plus shrinkReason',
     ),
 });
 
@@ -172,17 +174,46 @@ export const rubricsProposeArgs = z.object({
         'releaseGating is standard-kind only — an acceptance rubric is one-shot and watchdog-exempt; set kind:\'standard\' for a reusable release bar',
     });
   }
+
+  // Keep dispatch validation aligned with the stricter acceptance authoring
+  // profile enforced by proposeRubric. Model/method intentionally remain
+  // optional for the light acceptance profile, but each bespoke criterion
+  // still needs a concrete falsifier and the rubric needs a machine- or
+  // explicitly-manual verification binding before meta-rubric vetting.
+  if (args.kind === 'acceptance' && args.criteria.length > 0) {
+    args.criteria.forEach((criterion, index) => {
+      if (!criterion.driftMarkers?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['criteria', index, 'driftMarkers'],
+          message:
+            `acceptance-kind criterion '${criterion.key}' requires non-empty driftMarkers ` +
+            '(the concrete degraded/broken state that falsifies the outcome)',
+        });
+      }
+    });
+    if (!args.criteria.some((criterion) => criterion.check != null)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['criteria'],
+        message:
+          'acceptance-kind rubrics with bespoke criteria require at least one structured check ' +
+          "(for example check:{kind:'tests'|'cargo'|'instrument'|'coverage'|'requirements'}); " +
+          'model/method may remain light only when the outcome is still concrete and independently falsifiable',
+      });
+    }
+  }
 });
 
 export default defineTool({
   name: 'rubrics:propose',
   profile: 'engineer',
   description:
-    'Propose a shared rubric → status "proposed". ⚠ WHOLE-DOCUMENT REPLACE: re-proposing an existing rubricRef replaces ALL content; call rubrics:get first, then resubmit EVERY criterion with full method/replication text and structured check (a partial list deletes the rest). Loss-guards require dropKeys for dropped keys; removing a stored structured check, shrinking method+replication >40%, or losing its REPLICATION DRILL marker requires allowMethodShrink + shrinkReason.',
+    'Propose/replace a rubric → status "proposed". ⚠ Whole-document replace: call rubrics:get first and resubmit all criteria/checks; omissions need dropKeys. Standard criteria require model/method/driftMarkers; acceptance criteria may omit model/method only with a concrete outcome, non-empty driftMarkers falsifier, and at least one structured check. Removing a stored structured check, shrinking method+replication >40%, or losing a REPLICATION DRILL requires allowMethodShrink + shrinkReason.',
   guidance: {
-    when: 'Use when a recurring characteristic lacks a rubric, or when revising one (rubrics:get first; resubmit ALL criteria and stored structured checks). Each criterion needs model, method, driftMarkers, and its own copy-runnable replication drill; methodRef names the rubric runbook. Omitting a stored structured check requires allowMethodShrink:true + shrinkReason because it weakens deterministic enforcement to fuzzy judgment.',
+    when: 'Use for a new/revised rubric (rubrics:get first; resubmit all criteria/checks). Standard criteria need model, method, and driftMarkers. Acceptance criteria are a light profile: use outcome-shaped titles, a non-empty driftMarkers falsifier, traceability to the plan goal/Decisions, regression coverage, and peer non-overlap; include at least one structured check and bind objective outcomes when possible. Each criterion should carry a replication drill; methodRef names the runbook. Stored structured check removal needs allowMethodShrink:true + shrinkReason. See /internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook.',
     notWhen: 'One-off finding → free-text observation; activating a proposed rubric → rubrics:ratify. Search first to avoid duplicates.',
-    chaining: 'rubrics:search (dedup) → rubrics:get (revision source; never memory) → rubrics:propose → independent reviewer: rubrics:ratify. Preserve every stored structured check; intentional removal requires allowMethodShrink:true + shrinkReason. Review `completeness` (missing replication drills/methodRef) and `replicationSqlCheck` (read `summary`; `findings` excludes bind-placeholder noise); fix gaps first.',
+    chaining: 'rubrics:search → rubrics:get → rubrics:propose → independent rubrics:ratify. Preserve every structured check; intentional removal needs allowMethodShrink + shrinkReason. Review completeness and replicationSqlCheck; fix gaps first.',
     returns:
       "{ ok, rubric, completeness, replicationSqlCheck, statusOverride }. statusOverride is non-null ONLY for kind:'acceptance' when the requested activation was silently discarded because that rubricRef is already retired against its shipped plan — content still lands (ok:true, statusOverride.contentApplied:true) but the rubric stays retired; your submitted criteria/description/title DID overwrite the retired document (recoverable via plans:revision-diff, not rubrics:get). A retired-with-the-ship rubric IS the shipped plan's validation record — a NEW acceptance rubric for a shipped subjectPlan is REFUSED (subject_plan_shipped); only a goal subject takes a new rubricRef.",
     seeAlso: [

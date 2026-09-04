@@ -1827,6 +1827,27 @@ describe('scoped-superuser hive clamp', () => {
     expect(textOf(res)).toContain('harness_forbidden');
   });
 
+  it('flag ON: allows git-sync:run to name the configured operator-home install explicitly (EI-22344259264889593)', async () => {
+    h.scopedClampFlag.value = true;
+    const operatorHome = process.env.PAPERCUSP_POT_HOME_SLUG?.trim() || 'papercusp';
+    const res = await callTool('git-sync:run', { installSlug: operatorHome, dryRun: true }, hiveScoped());
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it('flag ON: allows git-sync:run\'s documented `harness` alias for the exact operator home', async () => {
+    h.scopedClampFlag.value = true;
+    const operatorHome = process.env.PAPERCUSP_POT_HOME_SLUG?.trim() || 'papercusp';
+    const res = await callTool('git-sync:run', { harness: operatorHome, dryRun: true }, hiveScoped());
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it('flag ON: still rejects git-sync:run targeting any other foreign install', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('git-sync:run', { installSlug: 'hiveB-home', dryRun: true }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
   it('flag ON: rebinds a resumed exact-slug plans:get only after the owner proof passes', async () => {
     h.scopedClampFlag.value = true;
     h.verifyExplicitPlanHarness.mockResolvedValue(true);
@@ -2971,6 +2992,28 @@ describe('tools:invoke re-dispatch inherits the scoped-superuser hive clamp (EI-
     const res = await callTool(
       'tools:invoke',
       { name: 'gatingtest:scoped', args: { harness: 'hiveB-home' } },
+      hiveScoped(),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it('flag ON: allows nested git-sync:run to name the configured operator-home install explicitly', async () => {
+    h.scopedClampFlag.value = true;
+    const operatorHome = process.env.PAPERCUSP_POT_HOME_SLUG?.trim() || 'papercusp';
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'git-sync:run', args: { installSlug: operatorHome, dryRun: true } },
+      hiveScoped(),
+    );
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it('flag ON: nested git-sync:run still rejects any other foreign install', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'git-sync:run', args: { installSlug: 'hiveB-home', dryRun: true } },
       hiveScoped(),
     );
     expect(res.isError).toBe(true);

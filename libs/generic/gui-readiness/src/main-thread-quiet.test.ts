@@ -24,6 +24,23 @@ function fakeRuntime(deltas: number[]): MainThreadQuietRuntime {
 }
 
 describe('waitForMainThreadQuiet', () => {
+  it('runs from its serialized source without module-scope lexical captures', async () => {
+    const injected = globalThis.Function(
+      `return (${waitForMainThreadQuiet.toString()})`,
+    )() as typeof waitForMainThreadQuiet;
+    const result = await injected(
+      {},
+      fakeRuntime(Array(MAIN_THREAD_QUIET_DEFAULTS.consecutiveFrames).fill(16)),
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      framesObserved: MAIN_THREAD_QUIET_DEFAULTS.consecutiveFrames,
+      consecutiveFrames: MAIN_THREAD_QUIET_DEFAULTS.consecutiveFrames,
+      maxFrameMs: 16,
+    });
+  });
+
   it('passes after the default ten consecutive frames at the default budget', async () => {
     const result = await waitForMainThreadQuiet(
       {},

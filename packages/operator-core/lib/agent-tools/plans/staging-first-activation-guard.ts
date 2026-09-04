@@ -1,5 +1,6 @@
 import type { ParsedPlan, PlanDecision, PlanItem } from './parser';
 import { splitPlanSections } from './plan-sections';
+import { isTerminalItemStatus } from '../../fleet-drained-events';
 
 export interface StagingFirstActivationProblem {
   itemId: string;
@@ -204,6 +205,7 @@ export function stagingFirstActivationProblems(plan: ParsedPlan): StagingFirstAc
   const problems: StagingFirstActivationProblem[] = [];
 
   for (const item of plan.items) {
+    if (isTerminalItemStatus(item.storedStatus)) continue;
     if (!hasStrongDeployedGate(relatedGateText(plan, item))) continue;
     if (isFinalLifecycleItem(item)) continue;
     if (hasNarrowDeployedMainException(relatedExceptionText(item, plan.decisions))) continue;

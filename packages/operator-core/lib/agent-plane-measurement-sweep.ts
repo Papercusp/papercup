@@ -22,25 +22,23 @@
  * a 24h clarification rate with a 30-minute divergence rate would not describe
  * any window at all.
  *
- * ── WHAT IS DELIBERATELY NOT EVALUATED HERE ────────────────────────────────
+ * ── THE STALE-ACTION LEG REUSES THE SEND-TIME PRODUCER ─────────────────────
  *
- * The `acted-on-stale-or-wrong-value` VERDICT leg needs live cell reads
- * (`markStaleDependencyFacts` re-resolves each declared cell to re-digest it),
- * and a cell read passes two access gates keyed to a reader identity that a
- * background sweep does not have. Manufacturing a synthetic principal to get
- * one is precisely how P-030's enrichment broke (`resolveAgentIdentity` throws
- * for an unattributable caller), so the verdict leg is INJECTED
- * ({@link PlaneMeasurementDeps.evaluateStaleness}) and absent by default.
+ * WI-6548 replaces the original fact-dependency replay with the producer that
+ * now exists at the action boundary: `coord:send` persists `staleValueQuotes`
+ * for every registered-cell citation it can score against the sender's recent
+ * reads. That workflow already has the real reader identity, so the background
+ * sweep only aggregates stored verdicts. It never manufactures a principal or
+ * re-dispatches a cell under somebody else's access context.
  *
- * This is disclosed rather than hidden, and it cannot masquerade as a clean
- * result: with the leg absent, `comparable` is 0, so the metric reports
- * `nothing-comparable` — a STRUCTURAL zero that is explicitly not good news —
- * and never a rate. Today the question is moot in any case (`eligible` is 0:
- * no fact has ever declared `dependsOn`), and the counts that ARE computed here
- * (population, eligible) are exact.
+ * All detected citations are `eligible`; only the two declared verdict values
+ * are `comparable`, so malformed future rows cannot silently read as fresh.
+ * Messages are the population, making a citation-free window visibly
+ * `nothing-eligible` rather than a clean zero.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { STALE_QUOTE_FIELD } from './agent-tools/coordination/stale-quote-stamp';
 import { SWEEP_LOOKBACK_MS } from './agent-state-divergence-sweep';
 import type { DivergenceReport } from './agent-state-divergence';
 import {
@@ -81,7 +79,7 @@ export const PLANE_MEASUREMENT_INTERVAL_MS = SWEEP_LOOKBACK_MS;
 
 /** Bumped when the metric set or a derivation changes, so no trend is silently
  *  drawn across a definition change. */
-export const PLANE_MEASUREMENT_PRODUCER_VERSION = 2;
+export const PLANE_MEASUREMENT_PRODUCER_VERSION = 3;
 
 /**
  * The calls that count as an agent stopping to ask rather than proceeding on an
@@ -131,9 +129,11 @@ interface CallAggregateRow {
   enriched_bytes: string | number;
 }
 
-interface FactAggregateRow {
-  live_facts: string | number;
-  with_deps: string | number;
+interface StaleQuoteAggregateRow {
+  messages: string | number;
+  detected_quotes: string | number;
+  comparable_quotes: string | number;
+  stale_quotes: string | number;
 }
 
 /** postgres-js returns count()/sum() as strings; coercing at the boundary is the
@@ -241,25 +241,45 @@ export async function loadTelemetryHorizonMs(opts: {
 }
 
 /**
- * Live-fact totals — the POPULATION for the fact-backed metrics.
- *
- * Scoped with exactly the liveness predicate the fact reads use, so the population
- * and the eligible subset are counted over the same set. A population that included
- * retracted rows would deflate every fill rate by a drifting amount.
+ * WI-6548 — the persisted send-time stale-value verdicts for this measurement
+ * window. The send seam already resolved reader identity and cell access; this
+ * aggregate consumes that result instead of replaying live reads under a guessed
+ * background principal.
  */
-export async function loadFactAggregates(opts: {
+export async function loadStaleQuoteAggregates(opts: {
   workspaceId: string;
+  windowStartMs: number;
+  windowEndMs: number;
   sql?: Sql;
-}): Promise<FactAggregateRow> {
+}): Promise<StaleQuoteAggregateRow> {
   const sql = opts.sql ?? getOrgPg().sql;
-  const rows = await sql<FactAggregateRow[]>`
-    SELECT count(*)                                        AS live_facts,
-           count(*) FILTER (WHERE depends_on IS NOT NULL)   AS with_deps
-      FROM harness_shared.agent_facts
+  const start = new Date(opts.windowStartMs).toISOString();
+  const end = new Date(opts.windowEndMs).toISOString();
+  const rows = await sql<StaleQuoteAggregateRow[]>`
+    SELECT count(*) AS messages,
+           coalesce(sum(
+             CASE WHEN jsonb_typeof(body -> ${STALE_QUOTE_FIELD}) = 'array'
+               THEN jsonb_array_length(body -> ${STALE_QUOTE_FIELD}) ELSE 0 END
+           ), 0) AS detected_quotes,
+           coalesce(sum(
+             CASE WHEN jsonb_typeof(body -> ${STALE_QUOTE_FIELD}) = 'array'
+               THEN (SELECT count(*) FROM jsonb_array_elements(body -> ${STALE_QUOTE_FIELD}) q
+                      WHERE q->>'verdict' IN ('fresh-read', 'quoted-without-fresh-read'))
+               ELSE 0 END
+           ), 0) AS comparable_quotes,
+           coalesce(sum(
+             CASE WHEN jsonb_typeof(body -> ${STALE_QUOTE_FIELD}) = 'array'
+               THEN (SELECT count(*) FROM jsonb_array_elements(body -> ${STALE_QUOTE_FIELD}) q
+                      WHERE q->>'verdict' = 'quoted-without-fresh-read')
+               ELSE 0 END
+           ), 0) AS stale_quotes
+      FROM harness_shared.coord_event_log
      WHERE workspace_id = ${opts.workspaceId}
-       AND superseded_at IS NULL AND retracted_at IS NULL AND expires_at > now()
+       AND surface = 'messages'
+       AND ts >= ${start}
+       AND ts <  ${end}
   `;
-  return rows[0] ?? { live_facts: 0, with_deps: 0 };
+  return rows[0] ?? { messages: 0, detected_quotes: 0, comparable_quotes: 0, stale_quotes: 0 };
 }
 
 /**
@@ -413,16 +433,6 @@ function intOrNull(v: string | number | null | undefined): number | null {
   return Number.isFinite(n) ? Math.trunc(n) : null;
 }
 
-/** The verdict half of `acted-on-stale-or-wrong-value`, injected — see header. */
-export interface StalenessVerdictCounts {
-  /** Facts whose dependency comparison produced a usable verdict. EXCLUDES
-   *  `undeterminable`: counting a cell that no longer resolves as "fresh" turns
-   *  an instrument failure into a clean bill of health. */
-  determinable: number;
-  /** Of those, the ones resting on a value that has since moved. */
-  stale: number;
-}
-
 export interface PlaneMeasurementDeps {
   workspaceId?: string;
   harnessSlug?: string;
@@ -431,9 +441,7 @@ export interface PlaneMeasurementDeps {
   /** The divergence sweep's own report — CONSUMED, never recomputed. */
   divergence?: DivergenceReport | null;
   loadCallAggregates?: typeof loadCallAggregates;
-  loadFactAggregates?: typeof loadFactAggregates;
-  /** Absent by default; see the header for why the verdict leg is not run here. */
-  evaluateStaleness?: (facts: unknown[]) => Promise<StalenessVerdictCounts>;
+  loadStaleQuoteAggregates?: typeof loadStaleQuoteAggregates;
   /** WI-6465 / D-102 — injected for tests only; these DO run by default. */
   loadCommitmentBasisRows?: typeof loadCommitmentBasisRows;
   loadCommitmentDeclarationTotals?: typeof loadCommitmentDeclarationTotals;
@@ -540,8 +548,7 @@ async function defaultRecordMeasurement(
 export function composeCounts(input: {
   divergence: DivergenceReport | null;
   calls: CallAggregateRow;
-  facts: FactAggregateRow;
-  staleness: StalenessVerdictCounts | null;
+  staleQuotes: StaleQuoteAggregateRow;
   commitmentBasis: CommitmentBasisCounts | null;
 }): PlaneCounts {
   const cov = input.divergence?.coverage ?? null;
@@ -588,10 +595,10 @@ export function composeCounts(input: {
       num(input.calls.clarification_calls),
     ),
     'acted-on-stale-or-wrong-value': m(
-      num(input.facts.live_facts),
-      num(input.facts.with_deps),
-      input.staleness?.determinable ?? 0,
-      input.staleness?.stale ?? 0,
+      num(input.staleQuotes.messages),
+      num(input.staleQuotes.detected_quotes),
+      num(input.staleQuotes.comparable_quotes),
+      num(input.staleQuotes.stale_quotes),
     ),
     // WI-6465 / D-102. Both legs share a population (closes that declared
     // anything) and a fillRate numerator (closes that NAMED keys) — so the ~90%
@@ -645,26 +652,25 @@ export async function planeMeasurementSweep(
     }
 
     const windowStartMs = now - SWEEP_LOOKBACK_MS;
-    const [calls, facts] = await Promise.all([
+    const [calls, staleQuotes] = await Promise.all([
       (deps.loadCallAggregates ?? loadCallAggregates)({
         workspaceId,
         windowStartMs,
         windowEndMs: now,
         sql: deps.sql,
       }),
-      (deps.loadFactAggregates ?? loadFactAggregates)({ workspaceId, sql: deps.sql }),
+      (deps.loadStaleQuoteAggregates ?? loadStaleQuoteAggregates)({
+        workspaceId,
+        windowStartMs,
+        windowEndMs: now,
+        sql: deps.sql,
+      }),
     ]);
 
-    const staleness =
-      deps.evaluateStaleness && num(facts.with_deps) > 0
-        ? await deps.evaluateStaleness([])
-        : null;
-
-    // WI-6465 / D-102 — the commitment-backed legs. Run UNCONDITIONALLY here,
-    // unlike the cell-backed `evaluateStaleness` above: these need only SQL over
-    // stored declarations, no cell read and therefore no reader identity, which
-    // is exactly why the header's "not evaluated here" caveat does not reach
-    // them. Fail-soft on its own so a fault in the newest leg cannot cost the
+    // WI-6465 / D-102 — the commitment-backed legs. Run UNCONDITIONALLY here;
+    // like the stale-quote aggregate above, these need only SQL over stored
+    // declarations and no background cell read. Fail-soft on their own so a
+    // fault in the newest leg cannot cost the
     // window every OTHER metric — it degrades to the same null the injected leg
     // uses, which reports `nothing-comparable`, never a clean zero.
     let commitmentBasis: CommitmentBasisCounts | null = null;
@@ -685,9 +691,8 @@ export async function planeMeasurementSweep(
       counts: composeCounts({
         divergence: deps.divergence ?? null,
         calls,
-        facts,
+        staleQuotes,
         commitmentBasis,
-        staleness,
       }),
       windowStartMs,
       windowEndMs: now,

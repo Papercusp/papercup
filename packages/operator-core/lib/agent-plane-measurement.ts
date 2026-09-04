@@ -13,8 +13,8 @@
  * Every number here is produced by a detector that ALREADY computes it:
  * `agent-state-divergence.ts`'s {@link DivergenceCoverage} (which documents
  * `stampFillRate` as "THE number P-015 measures") and
- * `agent-tools/facts/dependency-staleness.ts`'s fresh/changed verdicts. This module
- * owns the FUNNEL and the disclosure; it owns no derivation of its own. D-046 also
+ * `coord:send`'s persisted `staleValueQuotes` verdicts. This module owns the
+ * FUNNEL and the disclosure; it owns no derivation of its own. D-046 also
  * forbids a fourth pull read over `tool_invocations`, so re-reading would be wrong
  * twice over. (A third source, `agent-facts/conflicts.ts`'s
  * `ConflictCoverage.comparedPairs`, was retired with its metric by WI-6545 / D-103.)
@@ -393,14 +393,14 @@ export const METRIC_SPECS: Readonly<Record<PlaneMetricId, MetricSpec>> = Object.
   'acted-on-stale-or-wrong-value': {
     id: 'acted-on-stale-or-wrong-value',
     question:
-      'How often does an agent act on a value that was ALREADY stale or wrong at the moment it acted? (D-032’s correction of this item’s literal text.)',
+      'How often does an agent quote a registered live-state cell into a coordination message without a fresh read of that cell’s canonical door?',
     inputProducer:
-      'facts:assert { dependsOn } → dependency-staleness capture (captureFactDependencies), re-digested by markStaleDependencyFacts',
-    unit: 'agent_facts row',
-    verdictUnit: 'fact carrying a dependency observation',
+      'coord:send → resolveStaleQuoteStamps → coord_event_log.body.staleValueQuotes',
+    unit: 'coordination message',
+    verdictUnit: 'registered-cell citation with a send-time read verdict',
     polarity: 'defect',
     vacuousPassWhen:
-      'No fact has ever declared `dependsOn` (0 of 2,148), so there is nothing to re-digest. Worse in the non-empty case: an `undeterminable` verdict — the declared cell no longer resolves — is EXCLUDED from `comparable` rather than counted fresh, because counting a broken resolver as fresh converts an instrument failure into a clean bill of health, which is this metric’s own failure mode.',
+      'A citation-free window has no comparable unit and is NOT a clean zero. The detector intentionally matches only registered cell identities and dotted projected paths, never bare values such as a SHA; the rate therefore measures the honest detectable subset, not every live value an agent may have quoted.',
   },
   'acted-on-stale-declared-basis': {
     id: 'acted-on-stale-declared-basis',

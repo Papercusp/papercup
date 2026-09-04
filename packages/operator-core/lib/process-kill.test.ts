@@ -69,21 +69,26 @@ describe('killProcess — kind allowlist', () => {
     expect(killSpy).toHaveBeenCalledWith(22, 'SIGKILL');
   });
 
-  it('EI-21557648906136137: signals an exact Codex CLI found by the raw PID probe', async () => {
-    // dev:processes deliberately keeps its frozen six-kind inventory, so Codex
-    // reaches this path as `other`. Exact argv[0] classification makes the psu
-    // orphan-thread recovery instruction executable without widening that read.
+  it.each([
+    ['claude', 'claude --output-format stream-json'],
+    ['claude', '/home/builduser/.local/bin/claude --model opus'],
+    ['codex', '/home/builduser/.local/bin/codex --model gpt-5.6-sol'],
+  ] as const)('signals an exact %s CLI found by the raw PID probe', async (kind, cmdline) => {
+    // dev:processes deliberately keeps its frozen six-kind inventory, so a
+    // bare/unclassified CLI reaches this path as `other`. Exact argv[0]
+    // classification makes the recovery instruction executable without
+    // widening that read.
     withProcs(proc(1, 'run.sh'));
-    withProbeHit('other', '/home/builduser/.local/bin/codex --model gpt-5.6-sol');
+    withProbeHit('other', cmdline);
     const r = await killProcess({ pid: 82464, ...BASE });
-    expect(r).toMatchObject({ ok: true, pid: 82464, kind: 'codex', signal: 'SIGTERM' });
+    expect(r).toMatchObject({ ok: true, pid: 82464, kind, signal: 'SIGTERM' });
     expect(probeProcessMock).toHaveBeenCalledWith(82464);
     expect(killSpy).toHaveBeenCalledWith(82464, 'SIGTERM');
   });
 
-  it('does not treat a later argument mentioning codex as the Codex executable', async () => {
+  it.each(['claude', 'codex'])('does not treat a later argument mentioning %s as the CLI executable', async (kind) => {
     withProcs(proc(1, 'run.sh'));
-    withProbeHit('other', '/usr/bin/node worker.mjs --backend codex');
+    withProbeHit('other', `/usr/bin/node worker.mjs --backend ${kind}`);
     const r = await killProcess({ pid: 82465, ...BASE });
     expect(r).toMatchObject({ ok: false, pid: 82465, kind: 'other', error: 'unsupported_kind' });
     expect(killSpy).not.toHaveBeenCalled();

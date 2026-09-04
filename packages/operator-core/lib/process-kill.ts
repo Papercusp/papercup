@@ -6,11 +6,12 @@
  *   1. Principal/capability gate (`processes:kill`, Tier 1) — enforced
  *      by the dispatcher wrapper before this code runs. Bearer-required.
  *      Agents that pass URL spawn ctx (no bearer) cannot reach here.
- *   2. Kind allowlist — only `run.sh | omp | claude | codex`. Codex is
- *      admitted by an exact argv[0] basename check on the raw PID probe rather
- *      than widening dev:processes' deliberately frozen inventory. `paperclip |
- *      next | pty | other` remain protected because killing them would break
- *      the user's autopilot or the operator itself.
+ *   2. Kind allowlist — only `run.sh | omp | claude | codex`. Bare or
+ *      otherwise-unclassified Claude/Codex commands are admitted by an exact
+ *      argv[0] basename check on the raw PID probe rather than widening
+ *      dev:processes' deliberately frozen inventory. `paperclip | next | pty |
+ *      other` remain protected because killing them would break the user's
+ *      autopilot or the operator itself.
  *   3. Audit log row written before signaling, so we have a record even
  *      if signaling crashes the process tree somehow.
  */
@@ -49,15 +50,17 @@ function targetAuditDetails(target: KillTarget): Record<string, unknown> {
 }
 
 /**
- * Codex is intentionally not added to dev:processes' frozen six-kind inventory.
- * The recovery path still needs to stop an orphan writer that owns one exact
- * Codex thread lock, so admit only a process whose argv[0] basename is exactly
- * `codex`. A command that merely mentions "codex" in a later argument remains
- * unsupported.
+ * Claude and Codex are intentionally not admitted here by widening
+ * dev:processes' frozen six-kind inventory. The recovery path still needs to
+ * stop an orphan agent when its raw PID probe exposes a bare or otherwise
+ * unclassified CLI command, so admit only a process whose argv[0] basename is
+ * exactly `claude` or `codex`. A command that merely mentions either name in a
+ * later argument remains unsupported.
  */
-function exactCodexCliKind(cmdline: string): 'codex' | null {
+function exactCliKind(cmdline: string): 'claude' | 'codex' | null {
   const executable = cmdline.trim().split(/\s+/, 1)[0];
-  return executable && basename(executable) === 'codex' ? 'codex' : null;
+  const command = executable ? basename(executable) : '';
+  return command === 'claude' || command === 'codex' ? command : null;
 }
 
 export interface KillProcessInput {
@@ -117,12 +120,12 @@ export async function killProcess(input: KillProcessInput): Promise<KillProcessR
     // "does not exist" — re-probe the raw pid before asserting that (see
     // EI-18698120633403217).
     const probe = await probeProcess(input.pid);
-    const codexKind = probe.exists ? exactCodexCliKind(probe.cmdline) : null;
-    if (codexKind) {
+    const exactKind = probe.exists ? exactCliKind(probe.cmdline) : null;
+    if (exactKind) {
       target = {
         pid: input.pid,
-        kind: codexKind,
-        executable: 'codex',
+        kind: exactKind,
+        executable: exactKind,
         role: null,
         build: null,
         started_at: null,

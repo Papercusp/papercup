@@ -158,6 +158,22 @@ describe('staging-first activation guard', () => {
     ]);
   });
 
+  it.each(['done', 'dropped'])('does not re-report a terminal %s item', (status) => {
+    expect(
+      stagingFirstActivationProblems(
+        plan([`- **P-001** \`${status}\` Wait for main to be green before continuing implementation.`]),
+      ),
+    ).toEqual([]);
+  });
+
+  it('does not skip a blocked item whose hosted acceptance still waits on deployment', () => {
+    expect(
+      stagingFirstActivationProblems(
+        plan(['- **P-029** `blocked` Hosted transport acceptance requires deployment before continuing validation.']),
+      ),
+    ).toEqual([expect.objectContaining({ itemId: 'P-029', code: 'non_final_deployed_main_wait' })]);
+  });
+
   it.each([
     '- **P-001** `todo` Run focused verification on staging, then continue implementation.',
     '- **P-001** `todo` Final shipment verification waits for green main and :3070.',

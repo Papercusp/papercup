@@ -135,12 +135,14 @@ export const METRIC_KNOWN_GAPS: Readonly<Partial<Record<PlaneMetricId, string>>>
   // nothing else. Do NOT re-add it: the metric id no longer exists.
   //
   // `acted-on-stale-or-wrong-value` DID NOT ride on that retirement — different
-  // producer (`dependsOn`, 0 of 2,217 rows), different question, and it is
+  // question, and it is
   // `clarification-rate`'s declared `interpretableOnlyWith` companion, so retiring
   // it would silently promote that metric to an unqualified pass. It was pointed at
   // WI-6545 only because that pointer was written too broadly while WI-6465 closed;
-  // WI-6548 owns it now and names the concrete fix (capture `dependsOn` inline in a
-  // workflow agents already perform, rather than asking for it voluntarily).
+  // WI-6548 owns it now. Its replacement producer is the send-time
+  // `staleValueQuotes` stamp already captured inline by `coord:send`; keep this
+  // exemption through the two-phase rollout until a producer-v3 measurement row
+  // proves that persisted verdict leg live, then close the item and remove it.
   'acted-on-stale-or-wrong-value': 'WI-6548',
   // ⚠ `acted-on-stale-declared-basis` and `closed-work-basis-moved` were listed here
   // under WI-6465 while their producer was still being built. They are deliberately NOT

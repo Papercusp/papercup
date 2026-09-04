@@ -60,15 +60,25 @@ export async function waitForMainThreadQuiet(
   options: MainThreadQuietOptions = {},
   runtime?: MainThreadQuietRuntime,
 ): Promise<MainThreadQuietResult> {
+  // Keep the defaults INSIDE the function body. WebDriver/Tauri callers inject
+  // this primitive into the page with `waitForMainThreadQuiet.toString()`, so a
+  // reference to the exported module constant would become an unbound lexical
+  // in the page realm (WI-5502). The exported constant remains the public/test
+  // contract; the serialization regression test pins these values together.
+  const defaults = {
+    quietFrameMs: 20,
+    consecutiveFrames: 10,
+    timeoutMs: 15_000,
+  } as const;
   const quietFrameMs = Math.max(
     0,
-    options.quietFrameMs ?? MAIN_THREAD_QUIET_DEFAULTS.quietFrameMs,
+    options.quietFrameMs ?? defaults.quietFrameMs,
   );
   const neededFrames = Math.max(
     1,
-    Math.floor(options.consecutiveFrames ?? MAIN_THREAD_QUIET_DEFAULTS.consecutiveFrames),
+    Math.floor(options.consecutiveFrames ?? defaults.consecutiveFrames),
   );
-  const timeoutMs = Math.max(0, options.timeoutMs ?? MAIN_THREAD_QUIET_DEFAULTS.timeoutMs);
+  const timeoutMs = Math.max(0, options.timeoutMs ?? defaults.timeoutMs);
 
   const globals = globalThis as unknown as {
     performance?: { now: () => number };

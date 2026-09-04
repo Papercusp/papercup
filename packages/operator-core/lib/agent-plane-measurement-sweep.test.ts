@@ -53,7 +53,7 @@ const NO_CALLS = {
   enriched_sized: 0,
   enriched_bytes: 0,
 };
-const NO_FACTS = { live_facts: 0, with_deps: 0 };
+const NO_STALE_QUOTES = { messages: 0, detected_quotes: 0, comparable_quotes: 0, stale_quotes: 0 };
 
 describe('composeCounts consumes the divergence report (D-038 axis 5)', () => {
   it('takes callsExamined from the REPORT, never from its own aggregate', () => {
@@ -63,8 +63,7 @@ describe('composeCounts consumes the divergence report (D-038 axis 5)', () => {
     const counts = composeCounts({
       divergence: report({ coverage: coverage({ callsExamined: 1234 }) }),
       calls: { ...NO_CALLS, calls: 9999 },
-      facts: NO_FACTS,
-      staleness: null,
+      staleQuotes: NO_STALE_QUOTES,
       commitmentBasis: null,
     });
     expect(counts['intent-action-divergence-sampling'].population).toBe(1234);
@@ -75,8 +74,7 @@ describe('composeCounts consumes the divergence report (D-038 axis 5)', () => {
     const counts = composeCounts({
       divergence: report({ coverage: coverage({ callsExamined: 176_784, failuresSeen: 601, thrashRuns: 39 }) }),
       calls: NO_CALLS,
-      facts: NO_FACTS,
-      staleness: null,
+      staleQuotes: NO_STALE_QUOTES,
       commitmentBasis: null,
     });
     const sampling = counts['intent-action-divergence-sampling'];
@@ -94,8 +92,7 @@ describe('composeCounts consumes the divergence report (D-038 axis 5)', () => {
         ],
       }),
       calls: NO_CALLS,
-      facts: NO_FACTS,
-      staleness: null,
+      staleQuotes: NO_STALE_QUOTES,
       commitmentBasis: null,
     });
     const stamped = counts['intent-action-divergence-stamped'];
@@ -109,8 +106,7 @@ describe('composeCounts consumes the divergence report (D-038 axis 5)', () => {
     const counts = composeCounts({
       divergence: null,
       calls: { ...NO_CALLS, calls: 42, attributed: 40 },
-      facts: NO_FACTS,
-      staleness: null,
+      staleQuotes: NO_STALE_QUOTES,
       commitmentBasis: null,
     });
     expect(counts['intent-action-divergence-sampling'].population).toBe(42);
@@ -118,13 +114,12 @@ describe('composeCounts consumes the divergence report (D-038 axis 5)', () => {
   });
 });
 
-describe('composeCounts — the fact-backed and cost metrics', () => {
+describe('composeCounts — the stale-quote and cost metrics', () => {
   it('counts clarification against every attributed call', () => {
     const counts = composeCounts({
       divergence: null,
       calls: { ...NO_CALLS, calls: 1000, attributed: 900, clarification_calls: 16 },
-      facts: NO_FACTS,
-      staleness: null,
+      staleQuotes: NO_STALE_QUOTES,
       commitmentBasis: null,
     });
     const c = counts['clarification-rate'];
@@ -134,14 +129,11 @@ describe('composeCounts — the fact-backed and cost metrics', () => {
     expect(c.observed).toBe(16);
   });
 
-  it('reports the staleness metric as UNCOMPARABLE when the verdict leg did not run', () => {
-    // The leg is injected and absent by default. With facts carrying dependsOn but
-    // no verdict, the honest reading is "could not compare" — never a rate.
+  it('reports the stale-action metric as UNCOMPARABLE when detected stamps carry no verdict', () => {
     const counts = composeCounts({
       divergence: null,
       calls: NO_CALLS,
-      facts: { live_facts: 2148, with_deps: 7 },
-      staleness: null,
+      staleQuotes: { messages: 2148, detected_quotes: 7, comparable_quotes: 0, stale_quotes: 0 },
       commitmentBasis: null,
     });
     const m = composePlaneMeasurement({ counts, windowStartMs: 0, windowEndMs: 1 })
@@ -152,13 +144,12 @@ describe('composeCounts — the fact-backed and cost metrics', () => {
     expect(m.zeroReason).toBe('nothing-comparable');
   });
 
-  it('excludes undeterminable verdicts from the staleness denominator', () => {
+  it('counts only declared send-time verdicts in the stale-action denominator', () => {
     const counts = composeCounts({
       divergence: null,
       calls: NO_CALLS,
-      facts: { live_facts: 100, with_deps: 10 },
-      // 10 eligible, but only 6 produced a usable verdict; 2 of those are stale.
-      staleness: { determinable: 6, stale: 2 },
+      // 10 detected citations, but only 6 carry a recognized verdict; 2 lacked a fresh read.
+      staleQuotes: { messages: 100, detected_quotes: 10, comparable_quotes: 6, stale_quotes: 2 },
       commitmentBasis: null,
     });
     const m = counts['acted-on-stale-or-wrong-value'];
@@ -171,8 +162,7 @@ describe('composeCounts — the fact-backed and cost metrics', () => {
     const counts = composeCounts({
       divergence: null,
       calls: { ...NO_CALLS, calls: 500, enriched_calls: 120, enriched_sized: 118, enriched_bytes: 1_000_000 },
-      facts: NO_FACTS,
-      staleness: null,
+      staleQuotes: NO_STALE_QUOTES,
       commitmentBasis: null,
     });
     const m = composePlaneMeasurement({ counts, windowStartMs: 0, windowEndMs: 1 })
@@ -187,8 +177,7 @@ describe('composeCounts — the fact-backed and cost metrics', () => {
     const counts = composeCounts({
       divergence: null,
       calls: { ...NO_CALLS, calls: '77', attributed: '70', clarification_calls: '3' } as never,
-      facts: { live_facts: '2148', with_deps: '0' } as never,
-      staleness: null,
+      staleQuotes: { messages: '2148', detected_quotes: '7', comparable_quotes: '6', stale_quotes: '2' } as never,
       commitmentBasis: null,
     });
     expect(counts['clarification-rate'].population).toBe(77);
@@ -199,7 +188,7 @@ describe('composeCounts — the fact-backed and cost metrics', () => {
 describe('planeMeasurementSweep', () => {
   const stubs = {
     loadCallAggregates: async () => NO_CALLS,
-    loadFactAggregates: async () => NO_FACTS,
+    loadStaleQuoteAggregates: async () => NO_STALE_QUOTES,
   } as const;
 
   it('records one reading and returns it', async () => {
@@ -259,8 +248,7 @@ describe('formatMeasurementLog', () => {
       counts: composeCounts({
         divergence: report({ coverage: coverage({ callsExamined: 176_784 }) }),
         calls: NO_CALLS,
-        facts: { live_facts: 2148, with_deps: 0 },
-        staleness: null,
+        staleQuotes: NO_STALE_QUOTES,
         commitmentBasis: null,
       }),
       windowStartMs: 0,
@@ -380,8 +368,7 @@ describe('the commitment legs reach the composed metrics', () => {
   const counts = composeCounts({
     divergence: null,
     calls: NO_CALLS,
-    facts: NO_FACTS,
-    staleness: null,
+    staleQuotes: NO_STALE_QUOTES,
     commitmentBasis: {
       closesDeclaring: 284,
       closesNamingKeys: 29,
@@ -425,8 +412,7 @@ describe('the commitment legs reach the composed metrics', () => {
     const nullCounts = composeCounts({
       divergence: null,
       calls: NO_CALLS,
-      facts: NO_FACTS,
-      staleness: null,
+      staleQuotes: NO_STALE_QUOTES,
       commitmentBasis: null,
     });
     const m = composePlaneMeasurement({ counts: nullCounts, windowStartMs: 0, windowEndMs: 1 });
