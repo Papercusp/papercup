@@ -239,6 +239,34 @@ export function detectUnderRead(input: DetectUnderReadInput): UnderReadVerdict {
 }
 
 /**
+ * How many turns one advisory pass will read. An activation audit can declare hundreds of
+ * turns and this runs on every one, so the read is bounded rather than unbounded — and
+ * because the verdict reports `unsuppliedTurns`, hitting the cap DEGRADES the verdict to
+ * inconclusive instead of silently narrowing the denominator. That is the whole reason
+ * the cap is safe to have.
+ */
+export const UNDER_READ_TURN_FETCH_CAP = 500;
+
+/** Reads turn text for the declared ranges, up to `cap` rows. Injected, so this is testable. */
+export type AuditTurnReader = (
+  ranges: ReadonlyArray<ActivationAuditSourceRange>,
+  cap: number,
+) => Promise<ReadonlyArray<AuditSourceTurn>>;
+
+/**
+ * Fetch-then-detect. Separated from {@link detectUnderRead} so the judgement stays pure
+ * and the read stays injectable.
+ */
+export async function detectUnderReadFromSource(
+  input: Omit<DetectUnderReadInput, 'turns'>,
+  read: AuditTurnReader,
+  cap: number = UNDER_READ_TURN_FETCH_CAP,
+): Promise<UnderReadVerdict> {
+  const turns = await read(input.sourceRanges, cap);
+  return detectUnderRead({ ...input, turns });
+}
+
+/**
  * Whether this verdict can support a "nothing was under-read" claim.
  *
  * FALSE whenever any declared turn went unsupplied: the detector read less than the audit

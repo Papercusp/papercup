@@ -128,7 +128,6 @@ function kickoffBriefs(): string[] {
     candidate: 'c0ffee1234567890c0ffee1234567890c0ffee12',
     base: null,
     repairHead: 'deadbeef1234567890deadbeef1234567890dead',
-    worktreePath: '/tmp/gate-repair-worktree',
     attempts: 1,
     openedAtMs: 0,
     updatedAtMs: 0,

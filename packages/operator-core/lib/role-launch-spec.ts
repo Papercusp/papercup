@@ -162,6 +162,7 @@ export function stewardSeedToolNames(listings?: readonly { name: string }[]): st
   return [...new Set([...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES, ...familyNames])];
 }
 import { assembleRolePrompt, resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
+import { composeSuStackSource } from '@papercusp/orchestrator/blueprint';
 import { harnessRoot } from '@papercusp/harness/paths';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
 import { promptsDir } from './prompt-assembly';
@@ -739,6 +740,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   // lives). Flag OFF ⇒ renderSuPlaybook resolves the playbook as today (byte-identical).
   let suBaseSource: string | undefined;
   let suOverlayDir: string | undefined;
+  let suBaseText: string | undefined;
   try {
     const { getFlag } = await import('@papercusp/flags/server');
     const { FLAGS } = await import('@papercusp/flags');
@@ -747,6 +749,18 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
       if (files.length > 0) {
         suBaseSource = files[files.length - 1];
         suOverlayDir = promptsDir();
+        // identities-v1 P-003 — the KERNEL SEAL: the su source is the SLOT STACK composed from
+        // su.md's tiles + the kernel base text (`agent-base-preamble.md`) rendered with the
+        // kernel LAST under an explicit precedence statement (`composeSuStackSource`). The
+        // generated sections still splice by marker below (the seams live in the tiles). A
+        // compose failure — a drifted tiling, a BLOCK-tier lint finding — falls back to su.md
+        // as-is, loudly: the seal is the default, not a silent flag.
+        try {
+          const harnessDir = path.resolve(suBaseSource, '..', '..', '..', '..'); // <root>/blueprints/base/prompts/su.md
+          suBaseText = composeSuStackSource({ harnessDir }).text;
+        } catch (e) {
+          console.warn(`[role-launch-spec] su slot-stack compose failed — rendering su.md unsealed: ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
     }
   } catch {
@@ -767,6 +781,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     tier: personaTier,
     projectGuideSource,
     baseSource: suBaseSource,
+    baseText: suBaseText,
     overlayDir: suOverlayDir,
   });
   // domain-generic-agent-personas-2026-06-17 P-008 (su-path hive-instance override): when the

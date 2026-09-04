@@ -733,3 +733,15 @@ import './oddsmith-error-triage-autofix-action';
 // ephemeral (tier:'ephemeral', 300s) operator-HOME cadence, same deviation reasoning as
 // supervision-reconcile-action. Seeded ACTIVE by seed-account-capacity-reprobe-routine.ts.
 import './account-capacity-reprobe-action';
+// WI-2143803: `system:hosted-lifecycle-reconcile` — `reconcileHostedLifecycleJobs` implements the
+// whole workspace-host recovery state machine (stuck / orphaned / exhausted + intervention notice)
+// and had ZERO production callers, so none of it ever ran: kill the controller mid-operation and the
+// workspace_host_operations row is stranded in `status='running'` forever (measured on the P-046 rig
+// — it survives a full controller restart, because the row is a ledger row, not an in-flight DBOS
+// workflow, so DBOS recovery does not cover it either). Scheduling it was only half the fix: the
+// sweep used to INNER JOIN customer_workspaces while every BYOC operation has
+// customer_workspace_id NULL, so it would have run, passed, and matched nothing. The joins are OUTER
+// now. A bespoke ephemeral (tier:'ephemeral', 120s — under the sweep's own 5min stuck threshold)
+// cadence, same deviation reasoning as supervision-reconcile-action. Seeded ACTIVE by
+// seed-hosted-lifecycle-reconcile-routine.ts.
+import './hosted-lifecycle-reconcile-action';

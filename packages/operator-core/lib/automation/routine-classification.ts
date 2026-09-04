@@ -607,6 +607,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'One minimal upstream request per already-walled account (a header read) plus a DB projection write and gateway readmit — no spawn/dispatch/wake',
   },
+  'system:hosted-lifecycle-reconcile': {
+    spend: 'none',
+    why: 'One bounded SELECT of the workspace’s queued/running workspace_host_operations plus recovery_state UPDATEs and a deduped intervention notice — no spawn/dispatch/wake. A notice can lead a HUMAN to act, but nothing this fire does bills a turn directly (same reading as worker-breaker-watch, which even broadcasts on coord, being none)',
+  },
   'system:readiness-drift-monitor': {
     spend: 'none',
     why: 'Reconciles the work_item_blocked readiness sidecar against its SQL oracle and repairs drift',

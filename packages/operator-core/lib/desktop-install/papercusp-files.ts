@@ -3761,7 +3761,7 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
         `(searched from operatorAppRoot=${operatorAppRoot})`,
     );
   }
-  const base = await fs.readFile(baseSource, 'utf8');
+  const base = input.baseText ?? (await fs.readFile(baseSource, 'utf8'));
   const overlay = await readAgentOverlay(baseSource, input.agent, input.overlayDir);
   const overlaySource = overlay
     ? path.join(input.overlayDir ?? path.dirname(baseSource), `papercusp-su.${input.agent}.md`)

@@ -27,7 +27,6 @@ function queue(over: Partial<FrozenCandidateRepairQueue> = {}): FrozenCandidateR
     candidate: 'a'.repeat(40),
     base: 'b'.repeat(40),
     repairHead: 'c'.repeat(40),
-    worktreePath: '/tmp/frozen-repair',
     attempts: 1,
     openedAtMs: NOW - 2 * FIXER_SUCCESSION_STALL_MS,
     updatedAtMs: NOW - FIXER_SUCCESSION_STALL_MS,
