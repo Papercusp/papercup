@@ -14,8 +14,8 @@
   },
   "scripts": {
     "test": "vitest run --passWithNoTests",
-    "test:lane-pure": "PC_TEST_LANE=pure vitest run --passWithNoTests",
-    "test:lane-stateful": "PC_TEST_LANE=stateful vitest run --passWithNoTests",
+    "test:lane-pure": "PC_TEST_LANE=pure ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests",
+    "test:lane-stateful": "PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests",
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
     "test:integration:prose-vector-dims": "vitest run --config vitest.integration.config.ts lib/search/prose-vector-dims.integration.test.ts",
     "lint:chunk-safe": "vitest run lib/child-output-guard.test.ts",

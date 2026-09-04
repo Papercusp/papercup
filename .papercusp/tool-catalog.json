@@ -25669,7 +25669,7 @@
           "POST"
         ]
       },
-      "description": "Inspect, admit onto, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. admit{paths} is THE door for landing a gate-red fix on the judged lineage: it replays EXACTLY the named paths from the integration branch onto repairHead as one proved commit (diff-tree == allowlist, or refused); never touches the immutable candidate, never reads the tip as a whole; dry-run unless confirm:true. converge is an alias of admit. retire: dry-run unless confirm:true, exact-identity JSONB CAS.",
+      "description": "Inspect, admit onto, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. A present queue this build cannot parse is rendered as unreadable and every mutation refuses; it is never treated as absent. admit{paths} is THE door for landing a gate-red fix on the judged lineage: it replays EXACTLY the named paths from the integration branch onto repairHead as one proved commit (diff-tree == allowlist, or refused); never touches the immutable candidate, never reads the tip as a whole; dry-run unless confirm:true. converge is an alias of admit. retire: dry-run unless confirm:true, exact-identity JSONB CAS.",
       "capabilities": [
         "operator:write"
       ],

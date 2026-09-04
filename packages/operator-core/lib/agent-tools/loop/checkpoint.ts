@@ -251,6 +251,43 @@ function normalizeWallInput(value: unknown): unknown {
   return normalizeCompactRowInput(value);
 }
 
+// Keep already-schema-valid boolean-result rows intact through the Zod boundary.
+// `coerceCarryRowShape` normally runs in this preprocessor so undeclared
+// compatibility aliases can be repaired before strict validation, but that
+// eagerly consumes the `ok` alias and its repair details. The handler runs the
+// same coercion again with its response-scoped repair list, so an explicit
+// `ok:false` paired with canonical `verified` evidence can be downgraded and
+// reported instead of becoming an unobservable preprocessor rewrite.
+const CHECK_ROW_SCHEMA_KEYS = new Set([
+  'claim',
+  'id',
+  'recheck',
+  'verified',
+  'ok',
+  'contested',
+  'probe',
+  'kind',
+  'command',
+  'result',
+  'tool',
+  'args',
+  'projection',
+  'schemaRevision',
+  'expect',
+  'cell',
+  'as',
+]);
+
+function canDeferCheckRowCoercion(row: unknown): boolean {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
+  const source = row as Record<string, unknown>;
+  return (
+    typeof source.ok === 'boolean' &&
+    typeof source.verified === 'string' &&
+    Object.keys(source).every((key) => CHECK_ROW_SCHEMA_KEYS.has(key))
+  );
+}
+
 /**
  * P-007 (fleet-member-dx-improvements-2026-07-10, EI-9035): the owner's most
  * recent coord:inbox / coord:orient invocation (ISO), or null. The continuation
@@ -550,9 +587,12 @@ export default defineTool({
             // compat shape work_items:checkpoint accepts, which this surface rejected
             // outright as `checks[0].tool is unrecognized` until this fix.
             return Array.isArray(rows)
-              ? rows.map((row, i) =>
-                  coerceCarryRowShape(normalizeFlattenedContinuityProbeRow(row), `checks[${i}]`, []),
-                )
+              ? rows.map((row, i) => {
+                  const normalized = normalizeFlattenedContinuityProbeRow(row);
+                  return canDeferCheckRowCoercion(normalized)
+                    ? normalized
+                    : coerceCarryRowShape(normalized, `checks[${i}]`, []);
+                })
               : rows;
           },
           z
@@ -1090,7 +1130,7 @@ export default defineTool({
       label: string,
     ): T[] | undefined =>
       rows?.map((row, i) => {
-        const out = { ...row };
+        const out = { ...(coerceCarryRowShape(row, `${label}[${i}]`, repairs) as T) };
         if (typeof out.id === 'string') {
           const originalId = out.id;
           const normalizedId = sanitizeCarryRowId(originalId);

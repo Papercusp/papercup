@@ -61,11 +61,14 @@ import { admitCheckpointMemory } from '../../release/checkpoint-memory-admission
 import {
   FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS,
   FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
+  describeUnreadableFrozenCandidateRepairQueue,
   parseFrozenCandidateRepairQueue,
+  parseFrozenCandidateRepairQueueRead,
   markFrozenRepairFixerDispatched,
   buildFrozenRepairConvergenceGateHealth,
   buildFrozenRepairStatusIdentity,
   type FrozenCandidateRepairQueue,
+  type FrozenCandidateRepairQueueRead,
 } from '../../release/frozen-candidate-repair-queue';
 import {
   buildIsolatedScopeArgv,
@@ -4455,9 +4458,9 @@ export async function checkReleaseFixerCandidateStale(
 /** D-001 / WI-39944: read/write the one serialized frozen-candidate repair queue
  * inside the green-checkpoint routine's EXISTING metadata row. This deliberately does
  * not create a parallel table, routine, or ownership record. */
-export async function readFrozenCandidateRepairQueue(
+export async function readFrozenCandidateRepairQueueState(
   target: GateVerdictTarget,
-): Promise<FrozenCandidateRepairQueue | null> {
+): Promise<FrozenCandidateRepairQueueRead> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const rows = (await sql.unsafe(
@@ -4468,7 +4471,26 @@ export async function readFrozenCandidateRepairQueue(
         AND target_role = 'system:green-checkpoint'`,
     [target.workspaceId, target.installSlug],
   )) as Array<{ repair_queue: unknown }>;
-  return parseFrozenCandidateRepairQueue(rows[0]?.repair_queue);
+  return parseFrozenCandidateRepairQueueRead(rows[0]?.repair_queue);
+}
+
+/**
+ * Compatibility reader for callers that still consume `queue | null`.
+ *
+ * A real absence remains null. A present row this build cannot parse THROWS so every legacy
+ * caller's existing failure path remains fail-closed; returning null here would tell the gate
+ * that no candidate is frozen and reopen the moving-tip treadmill during schema skew.
+ */
+export async function readFrozenCandidateRepairQueue(
+  target: GateVerdictTarget,
+): Promise<FrozenCandidateRepairQueue | null> {
+  const read = await readFrozenCandidateRepairQueueState(target);
+  if (read.status === 'value') return read.queue;
+  if (read.status === 'absent') return null;
+  throw new Error(
+    `${describeUnreadableFrozenCandidateRepairQueue(read)} — ` +
+      'refusing to treat a persisted row as absent',
+  );
 }
 
 export async function writeFrozenCandidateRepairQueue(

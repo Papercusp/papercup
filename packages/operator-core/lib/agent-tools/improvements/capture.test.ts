@@ -973,6 +973,7 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
       properties?: { toolFailure?: { description?: string } };
     };
     expect(json.properties?.toolFailure?.description).toContain('toolFailure.reproduced');
+    expect(json.properties?.toolFailure?.description).toContain('toolFailure.directEvidence');
     expect(json.properties?.toolFailure?.description).toContain('do not pass them at the top level');
 
     const misplaced = argsSchema.safeParse({

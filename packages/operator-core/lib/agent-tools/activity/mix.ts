@@ -357,7 +357,8 @@ export default defineTool({
       ? new Date(args.since).toISOString()
       : new Date(Date.parse(until) - 24 * 60 * 60 * 1000).toISOString();
     const maxRows = args.maxRows ?? 2000;
-    const workspace = ctx.workspaceId;
+    // `needsWorkspaceTx` resolves a concrete workspace before handler entry.
+    const workspace = ctx.workspaceId!;
     const automatic = automaticToolInvocationPredicate(tx, 'ti');
     const wrapper = dispatchWrapperExclusionPredicate(tx, 'ti');
     const rows = await tx<ActivityMixRow[]>`

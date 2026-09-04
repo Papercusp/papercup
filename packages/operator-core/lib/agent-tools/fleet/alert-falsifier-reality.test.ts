@@ -21,6 +21,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import ts from 'typescript';
 import {
   computeDarkFleetAlert,
   computeStrandedFleetAlert,
@@ -224,8 +225,21 @@ describe('alert falsifier reality (EI-19313376980892266 item C)', () => {
     // exactly the regression this item exists to prevent, and no fixture-based test
     // can see it because the fixture would never be written.
     const violations = auditAlertReturnTypes(readFileSync(SOURCE, 'utf8'));
-    expect(violations.scanned, 'found no alert return types — the census regex has rotted').
-      toBeGreaterThanOrEqual(4);
+    expect(violations.scanned, 'found no reason-bearing alert return types — the census has rotted').
+      toBe(9);
+    expect(violations.functions, 'the AST function census must cover every compute*Alert declaration').
+      toHaveLength(11);
+    expect(violations.boolean.sort()).toEqual(['computeDormantAlert', 'computeSpinningAlert']);
+    expect(violations.named.sort()).toEqual([
+      'computeDarkFleetAlert',
+      'computeFleetExecutionCollapseAlert',
+      'computeFleetHeadcountVsExecutableFrontierAlert',
+    ]);
+    expect(violations.inline).toHaveLength(6);
+    expect(
+      violations.unclassified,
+      'every non-boolean alert return must be inline or locally resolvable named output',
+    ).toEqual([]);
     expect(
       violations.bare,
       'an alert returns a bare { reason } with no falsifier — every alert must ship the ' +
@@ -253,17 +267,301 @@ describe('alert falsifier reality (EI-19313376980892266 item C)', () => {
     expect(mixed.scanned).toBe(2);
     expect(mixed.bare).toHaveLength(1);
   });
+
+  it('NEGATIVE CONTROL: resolves named aliases and catches a bare alerting branch', () => {
+    // A regex can only see the inline sibling. These controls prove that a named
+    // return type is resolved locally, while a true alert branch that drops the
+    // falsifier still reaches the same ratchet.
+    const good = [
+      'type GoodAlert =',
+      '  | { alert: true; reason: string; falsifier: AlertFalsifier }',
+      '  | { alert: false; reason?: undefined; falsifier?: undefined };',
+      'export function computeGoodAlert(): GoodAlert | undefined { return undefined; }',
+    ].join('\n');
+    const bad = [
+      'type BadAlert =',
+      '  | { alert: true; reason: string }',
+      '  | { alert: null; reason: string; falsifier?: undefined };',
+      'export function computeBadAlert(): BadAlert | undefined { return undefined; }',
+    ].join('\n');
+
+    const goodAudit = auditAlertReturnTypes(good);
+    expect(goodAudit.functions).toEqual(['computeGoodAlert']);
+    expect(goodAudit.named).toEqual(['computeGoodAlert']);
+    expect(goodAudit.scanned).toBe(1);
+    expect(goodAudit.bare).toEqual([]);
+    expect(goodAudit.unclassified).toEqual([]);
+
+    const badAudit = auditAlertReturnTypes(bad);
+    expect(badAudit.functions).toEqual(['computeBadAlert']);
+    expect(badAudit.named).toEqual(['computeBadAlert']);
+    expect(badAudit.scanned).toBe(1);
+    expect(badAudit.bare).toHaveLength(1);
+    expect(badAudit.bare[0]).toContain('computeBadAlert');
+    expect(badAudit.bare[0]).toContain('BadAlert');
+    // `alert: null` is an intentional unknown/non-alert branch; only the
+    // alerting `alert: true` branch requires a falsifier.
+  });
 });
 
 /**
- * Census over leader-brief source: every `compute*Alert` return type shaped
- * `{ reason: string ... } | undefined` must also declare a `falsifier`. PURE, so the
- * guard itself can be proven to fail on the regression (see the negative control).
+ * AST-backed census over leader-brief source. Every `compute*Alert` declaration is
+ * enumerated first, then its return type is resolved through local aliases/interfaces.
+ * Reason-bearing alert branches must declare a `falsifier`; boolean helpers are
+ * explicitly out of this contract, and unresolved/non-reason return shapes remain
+ * visible as `unclassified` rather than silently shrinking the scan.
  */
-export function auditAlertReturnTypes(src: string): { scanned: number; bare: string[] } {
-  const matches = [...src.matchAll(/\}\): \{ reason: string([^}]*)\} \| undefined \{/g)];
-  return {
-    scanned: matches.length,
-    bare: matches.filter((m) => !m[1].includes('falsifier')).map((m) => m[0]),
+interface AlertReturnVariant {
+  properties: Map<string, ts.TypeNode | undefined>;
+}
+
+interface ResolvedAlertReturn {
+  variants: AlertReturnVariant[];
+  unknown: boolean;
+  booleanOnly: boolean;
+}
+
+export interface AlertReturnAudit {
+  scanned: number;
+  bare: string[];
+  functions: string[];
+  boolean: string[];
+  inline: string[];
+  named: string[];
+  unclassified: string[];
+}
+
+type LocalTypeDeclaration = ts.TypeAliasDeclaration | ts.InterfaceDeclaration;
+
+function unwrapParenthesizedType(node: ts.TypeNode): ts.TypeNode {
+  let current = node;
+  while (ts.isParenthesizedTypeNode(current)) current = current.type;
+  return current;
+}
+
+function entityNameText(node: ts.EntityName): string {
+  return ts.isIdentifier(node) ? node.text : `${entityNameText(node.left)}.${node.right.text}`;
+}
+
+function propertyNameText(name: ts.PropertyName | undefined): string | undefined {
+  if (!name) return undefined;
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
+  return undefined;
+}
+
+function objectVariant(members: readonly ts.TypeElement[]): AlertReturnVariant {
+  const properties = new Map<string, ts.TypeNode | undefined>();
+  for (const member of members) {
+    if (!ts.isPropertySignature(member)) continue;
+    const name = propertyNameText(member.name);
+    if (name) properties.set(name, member.type);
+  }
+  return { properties };
+}
+
+function mergeVariants(left: AlertReturnVariant[], right: AlertReturnVariant[]): AlertReturnVariant[] {
+  if (left.length === 0) return right;
+  if (right.length === 0) return left;
+  return left.flatMap((a) =>
+    right.map((b) => ({
+      properties: new Map([...a.properties, ...b.properties]),
+    })),
+  );
+}
+
+function resolveInterface(
+  declaration: ts.InterfaceDeclaration,
+  declarations: Map<string, LocalTypeDeclaration>,
+  seen: Set<string>,
+): ResolvedAlertReturn {
+  let variants = [objectVariant(declaration.members)];
+  let unknown = false;
+  for (const heritage of declaration.heritageClauses ?? []) {
+    for (const type of heritage.types) {
+      const name = ts.isExpressionWithTypeArguments(type) && ts.isEntityName(type.expression)
+        ? entityNameText(type.expression)
+        : undefined;
+      if (!name) {
+        unknown = true;
+        continue;
+      }
+      const base = resolveNamedType(name, declarations, seen);
+      variants = mergeVariants(variants, base.variants);
+      unknown ||= base.unknown;
+    }
+  }
+  return { variants, unknown, booleanOnly: false };
+}
+
+function resolveNamedType(
+  name: string,
+  declarations: Map<string, LocalTypeDeclaration>,
+  seen: Set<string>,
+): ResolvedAlertReturn {
+  const declaration = declarations.get(name);
+  if (!declaration || seen.has(name)) {
+    return { variants: [], unknown: true, booleanOnly: false };
+  }
+  const nextSeen = new Set(seen);
+  nextSeen.add(name);
+  if (ts.isTypeAliasDeclaration(declaration)) {
+    return resolveAlertType(declaration.type, declarations, nextSeen);
+  }
+  return resolveInterface(declaration, declarations, nextSeen);
+}
+
+function resolveAlertType(
+  node: ts.TypeNode,
+  declarations: Map<string, LocalTypeDeclaration>,
+  seen: Set<string>,
+): ResolvedAlertReturn {
+  const type = unwrapParenthesizedType(node);
+  if (type.kind === ts.SyntaxKind.BooleanKeyword) {
+    return { variants: [], unknown: false, booleanOnly: true };
+  }
+  if (
+    type.kind === ts.SyntaxKind.UndefinedKeyword ||
+    type.kind === ts.SyntaxKind.NullKeyword ||
+    type.kind === ts.SyntaxKind.NeverKeyword ||
+    type.kind === ts.SyntaxKind.VoidKeyword
+  ) {
+    return { variants: [], unknown: false, booleanOnly: false };
+  }
+  if (ts.isTypeLiteralNode(type)) {
+    return { variants: [objectVariant(type.members)], unknown: false, booleanOnly: false };
+  }
+  if (ts.isUnionTypeNode(type)) {
+    const members = type.types.map((member) => resolveAlertType(member, declarations, seen));
+    return {
+      variants: members.flatMap((member) => member.variants),
+      unknown: members.some((member) => member.unknown),
+      booleanOnly:
+        members.some((member) => member.booleanOnly) &&
+        members.every((member) => member.booleanOnly || (member.variants.length === 0 && !member.unknown)),
+    };
+  }
+  if (ts.isIntersectionTypeNode(type)) {
+    const members = type.types.map((member) => resolveAlertType(member, declarations, seen));
+    return {
+      variants: members.reduce((current, member) => mergeVariants(current, member.variants), []),
+      unknown: members.some((member) => member.unknown),
+      booleanOnly: false,
+    };
+  }
+  if (ts.isTypeReferenceNode(type)) {
+    return resolveNamedType(entityNameText(type.typeName), declarations, seen);
+  }
+  return { variants: [], unknown: true, booleanOnly: false };
+}
+
+function collectLocalTypeDeclarations(sourceFile: ts.SourceFile): Map<string, LocalTypeDeclaration> {
+  const declarations = new Map<string, LocalTypeDeclaration>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node)) {
+      declarations.set(node.name.text, node);
+    }
+    ts.forEachChild(node, visit);
   };
+  visit(sourceFile);
+  return declarations;
+}
+
+function collectAlertFunctions(sourceFile: ts.SourceFile): ts.FunctionDeclaration[] {
+  const functions: ts.FunctionDeclaration[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isFunctionDeclaration(node) &&
+      node.name &&
+      /^compute[A-Za-z0-9]*Alert$/.test(node.name.text)
+    ) {
+      functions.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return functions;
+}
+
+function topLevelLocalTypeReferences(
+  node: ts.TypeNode,
+  declarations: Map<string, LocalTypeDeclaration>,
+): string[] {
+  const type = unwrapParenthesizedType(node);
+  if (ts.isUnionTypeNode(type) || ts.isIntersectionTypeNode(type)) {
+    return type.types.flatMap((member) => topLevelLocalTypeReferences(member, declarations));
+  }
+  if (ts.isTypeReferenceNode(type)) {
+    const name = entityNameText(type.typeName);
+    return declarations.has(name) ? [name] : [];
+  }
+  return [];
+}
+
+function isExplicitNonAlertBranch(type: ts.TypeNode | undefined): boolean {
+  if (!type) return false;
+  const alertType = unwrapParenthesizedType(type);
+  if (!ts.isLiteralTypeNode(alertType)) return false;
+  return (
+    alertType.literal.kind === ts.SyntaxKind.FalseKeyword ||
+    alertType.literal.kind === ts.SyntaxKind.NullKeyword
+  );
+}
+
+/**
+ * A reason without an `alert` discriminator is an alerting branch by definition.
+ * For discriminated named unions, `alert: false` and `alert: null` are the
+ * intentional non-alert/unknown branches; `alert: true` (or an ambiguous
+ * discriminator such as `boolean`) must carry the falsifier.
+ */
+export function auditAlertReturnTypes(src: string): AlertReturnAudit {
+  const sourceFile = ts.createSourceFile(
+    'leader-brief.ts',
+    src,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const declarations = collectLocalTypeDeclarations(sourceFile);
+  const alertFunctions = collectAlertFunctions(sourceFile);
+  const audit: AlertReturnAudit = {
+    scanned: 0,
+    bare: [],
+    functions: alertFunctions.map((fn) => fn.name!.text),
+    boolean: [],
+    inline: [],
+    named: [],
+    unclassified: [],
+  };
+
+  for (const fn of alertFunctions) {
+    const name = fn.name!.text;
+    if (!fn.type) {
+      audit.unclassified.push(`${name}: missing explicit return type`);
+      continue;
+    }
+    const resolved = resolveAlertType(fn.type, declarations, new Set());
+    if (resolved.booleanOnly && !resolved.unknown && resolved.variants.length === 0) {
+      audit.boolean.push(name);
+      continue;
+    }
+    if (resolved.unknown || resolved.variants.length === 0) {
+      audit.unclassified.push(`${name}: ${fn.type.getText(sourceFile)}`);
+      continue;
+    }
+    const reasonVariants = resolved.variants.filter((variant) => variant.properties.has('reason'));
+    if (reasonVariants.length === 0) {
+      audit.unclassified.push(`${name}: no resolvable reason-bearing return branch`);
+      continue;
+    }
+    audit.scanned += 1;
+    if (topLevelLocalTypeReferences(fn.type, declarations).length > 0) audit.named.push(name);
+    else audit.inline.push(name);
+    for (const variant of reasonVariants) {
+      if (isExplicitNonAlertBranch(variant.properties.get('alert'))) continue;
+      if (!variant.properties.has('falsifier')) {
+        audit.bare.push(`${name}: ${fn.type.getText(sourceFile)}`);
+      }
+    }
+  }
+  return audit;
 }

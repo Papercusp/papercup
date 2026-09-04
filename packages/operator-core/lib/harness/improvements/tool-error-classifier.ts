@@ -456,9 +456,10 @@ function correlationSegment(value: string | null | undefined, fallback: string):
  * `watchdogKey` deliberately uses the same tool/class/message-shape identity as
  * the invocation-ledger collector. `correlationFingerprint` additionally pins
  * error code, schema revision, field path, and runtime version for the
- * independent-agent leg. A caller must explicitly attest reproduction or a
- * clear server/internal mismatch to bypass probation; an unknown one-off never
- * becomes claimable merely because the classifier's safe fallback is structural.
+ * independent-agent leg. A non-caller report may use the legacy direct-evidence
+ * flags; a caller report must supply inspectable expected/actual evidence to
+ * override the classification. An unknown one-off never becomes claimable
+ * merely because the classifier's safe fallback is structural.
  *
  * WI-2143658: that bypass is denied for a DOCUMENTED EXTERNAL class. An honest
  * reporter attesting `reproduced: true` about a known Codex-side race is

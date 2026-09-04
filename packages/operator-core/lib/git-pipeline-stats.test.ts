@@ -19,6 +19,7 @@ import {
   GIT_SYNC_CONFLICT_MAX_AGE_MS,
   isGitSyncConflictCurrent,
   currentGateInconclusive,
+  projectFrozenRepairQueueRead,
   gateFailingTestsMeasurement,
   type RawGateCounters,
 } from './git-pipeline-stats';
@@ -119,6 +120,54 @@ describe('currentGateInconclusive', () => {
       ...mismatch,
       status: 'migrations-pending',
     });
+  });
+});
+
+describe('projectFrozenRepairQueueRead — P-025', () => {
+  it('exposes a current-plus-one queue as unreadable instead of null/none', () => {
+    const projected = projectFrozenRepairQueueRead(
+      { schemaVersion: 5, candidate: 'a'.repeat(40) },
+      {
+        freezeAndConverge: {
+          enabled: true,
+          state: 'none',
+          reason: 'no candidate is frozen this tick',
+          candidate: null,
+          holdUntilMs: null,
+          capacityRetryAtMs: null,
+          observedAtMs: 1,
+        },
+      },
+      123,
+    );
+    expect(projected.queue).toBeNull();
+    expect(projected.read).toEqual({
+      status: 'unreadable',
+      reason: 'schema-newer-than-reader',
+      schemaVersion: 5,
+    });
+    expect(projected.freezeAndConverge).toMatchObject({
+      state: 'unreadable',
+      observedAtMs: 123,
+    });
+    expect(projected.freezeAndConverge?.reason).toContain('refusing to report');
+  });
+
+  it('keeps true absence distinct and preserves the stored disposition', () => {
+    const stored = {
+      freezeAndConverge: {
+        enabled: true,
+        state: 'none' as const,
+        reason: 'nothing frozen',
+        candidate: null,
+        holdUntilMs: null,
+        capacityRetryAtMs: null,
+        observedAtMs: 1,
+      },
+    };
+    const projected = projectFrozenRepairQueueRead(null, stored, 123);
+    expect(projected.read).toEqual({ status: 'absent' });
+    expect(projected.freezeAndConverge).toEqual(stored.freezeAndConverge);
   });
 });
 

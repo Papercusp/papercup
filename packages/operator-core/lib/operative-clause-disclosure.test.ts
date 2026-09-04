@@ -177,7 +177,7 @@ describe('P-011 — excerpts preserve answer-bearing identifiers independently o
     );
 
     expect(identifiers.join(' ').length).toBeLessThanOrEqual(19);
-    expect(identifiers).toEqual(['WI-123456', ':3070']);
+    expect(identifiers).toEqual(['WI-123456', 'EI-987654']);
     expect(identifiers.join(' ')).not.toContain('…');
   });
 

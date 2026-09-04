@@ -19,6 +19,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import type { Sql } from 'postgres';
 import { z } from 'zod';
 
 /** A readable, collision-resistant id: `ship-paid-app-3f9a1c`. */
@@ -114,15 +115,12 @@ export const TripwireSchema = z.object({
 export type Tripwire = z.infer<typeof TripwireSchema>;
 
 /**
- * The narrowest structural type that both callers' SQL handles satisfy: a
- * tagged-template function returning rows. `goals:create` passes the MCP
- * request's `ctx.tx`; `goals:start` passes the org pool's `sql`. Typing it
- * structurally keeps this module free of a postgres.js import (and of any
- * opinion about which pool the caller is on).
+ * The real postgres.js SQL handle both callers use. `goals:create` passes the
+ * MCP request's typed `ctx.tx`; `goals:start` passes the org pool's `sql`.
+ * Keeping the actual `Sql` type here prevents the old structural Promise-only
+ * approximation from rejecting postgres.js's valid `PendingQuery` result.
  */
-export interface GoalSqlTag {
-  <T = unknown[]>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T>;
-}
+export type GoalSqlTag = Sql;
 
 export interface GoalRowInput {
   id: string;

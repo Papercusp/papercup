@@ -210,6 +210,7 @@ import {
   buildScheduledCheckpointShell,
   checkpointRunLogPaths,
   readFrozenCandidateRepairQueue,
+  readFrozenCandidateRepairQueueState,
   retireFrozenCandidateRepairQueue,
   reserveFrozenCandidateRepairFixer,
   renewFrozenCandidateRepairFixerReservation,
@@ -3162,6 +3163,24 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     failingTests: ['lib/broken.test.ts'],
     signature: [],
   };
+
+  it('P-025: returns explicit unreadable state and makes the legacy reader throw on schema skew', async () => {
+    const newer = {
+      ...queue,
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION + 1,
+    };
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ repair_queue: newer }]));
+    await expect(readFrozenCandidateRepairQueueState(target)).resolves.toEqual({
+      status: 'unreadable',
+      reason: 'schema-newer-than-reader',
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION + 1,
+    });
+
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ repair_queue: newer }]));
+    await expect(readFrozenCandidateRepairQueue(target)).rejects.toThrow(
+      /refusing to treat a persisted row as absent/,
+    );
+  });
 
   it('round-trips the queue and scopes every read/write/clear to its workspace routine row', async () => {
     fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ repair_queue: queue }]));
