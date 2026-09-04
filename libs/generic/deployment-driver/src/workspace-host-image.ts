@@ -6,13 +6,17 @@ import {
   verifyWorkspaceHostReleaseProvenance,
 } from "./workspace-host-build-manifest";
 import {
+  DEFAULT_WORKSPACE_HOST_MODEL,
+  WORKSPACE_HOST_BOOTC_BASE_IMAGE,
   DEFAULT_WORKSPACE_HOST_AGENT_USER,
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   workspaceHostBootstrapChecks,
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+  WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
   WORKSPACE_HOST_DATA_ROOT,
+  WORKSPACE_HOST_MODELS,
   WORKSPACE_HOST_RUNTIME_ROOT,
   WORKSPACE_HOST_STATE_ROOT,
   buildWorkspaceHostBootstrap,
@@ -24,6 +28,7 @@ import {
   type WorkspaceHostBootstrapIsolation,
   type WorkspaceHostBootstrapRelease,
   type WorkspaceHostBootstrapService,
+  type WorkspaceHostModel,
 } from "./workspace-host-bootstrap";
 import type {
   WorkspaceHostImageRef,
@@ -65,16 +70,31 @@ export const WORKSPACE_HOST_IMAGE_LIFECYCLE_STATES = [
 export type WorkspaceHostImageLifecycleState =
   (typeof WORKSPACE_HOST_IMAGE_LIFECYCLE_STATES)[number];
 
-/** One exact cell in the provider × architecture × OS acceptance matrix. */
-export interface WorkspaceHostImageCompatibilityRule {
+interface WorkspaceHostImageCompatibilityRuleBase {
   provider: WorkspaceHostProviderTarget;
   architecture: string;
-  ubuntuVersion: typeof WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION;
   bootstrapContractVersion: typeof WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION;
   actions: readonly WorkspaceHostImageAction[];
   /** Optional freshness ceiling for new installs/upgrades. Rollback uses supportEndsAt instead. */
   maximumArtifactAgeDays?: number;
 }
+
+/** One exact cell in the provider × architecture × host-model acceptance matrix. */
+export type WorkspaceHostImageCompatibilityRule =
+  WorkspaceHostImageCompatibilityRuleBase &
+    (
+      | {
+          /** Omitted preserves the shipped pre-bootc artifact wire shape. */
+          hostModel?: "ubuntu-release-bundle";
+          ubuntuVersion: typeof WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION;
+          bootcBaseImage?: never;
+        }
+      | {
+          hostModel: "bootc-image";
+          bootcBaseImage: string;
+          ubuntuVersion?: never;
+        }
+    );
 
 /** Immutable lifecycle edges. Every reference names both image id and version. */
 export interface WorkspaceHostImageLifecycleMetadata {
@@ -86,13 +106,16 @@ export interface WorkspaceHostImageLifecycleMetadata {
   rollbackTarget?: WorkspaceHostImageRef & { version: string };
 }
 
-/**
- * Provider-neutral acceptance metadata around one immutable VM image release.
- * The canonical build manifest owns reproducible inputs; the bootstrap release
- * owns signed install bytes. This contract joins and verifies those existing
- * identities instead of creating a parallel manifest.
- */
-export interface WorkspaceHostImageArtifact {
+/** The OCI identity a bootc host actually boots and verifies through containers/image. */
+export interface WorkspaceHostBootcImageIdentity {
+  /** Registry-qualified tagged source image; the digest below is the immutable identity. */
+  image: string;
+  imageDigest: `sha256:${string}`;
+  baseImage: string;
+  signaturePolicyPath: typeof WORKSPACE_HOST_CONTAINERS_POLICY_PATH;
+}
+
+interface WorkspaceHostImageArtifactBase {
   contractVersion: typeof WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION;
   image: WorkspaceHostImageRef & { version: string };
   buildManifest: WorkspaceHostBuildManifest;
@@ -100,6 +123,24 @@ export interface WorkspaceHostImageArtifact {
   lifecycle: WorkspaceHostImageLifecycleMetadata;
   compatibility: readonly WorkspaceHostImageCompatibilityRule[];
 }
+
+/**
+ * Provider-neutral acceptance metadata around one immutable VM image release.
+ * The canonical build manifest owns reproducible inputs; the bootstrap release
+ * owns the runtime payload; the model-specific member owns the host identity.
+ */
+export type WorkspaceHostImageArtifact = WorkspaceHostImageArtifactBase &
+  (
+    | {
+        /** Omitted preserves the shipped pre-bootc artifact wire shape. */
+        hostModel?: "ubuntu-release-bundle";
+        bootc?: never;
+      }
+    | {
+        hostModel: "bootc-image";
+        bootc: WorkspaceHostBootcImageIdentity;
+      }
+  );
 
 export type WorkspaceHostImageCompatibilityIssueCode =
   | "invalid-artifact"
@@ -119,15 +160,29 @@ export interface WorkspaceHostImageCompatibilityIssue {
   message: string;
 }
 
-export interface WorkspaceHostImageCompatibilityRequest {
+interface WorkspaceHostImageCompatibilityRequestBase {
   action: WorkspaceHostImageAction;
   provider: WorkspaceHostProviderTarget;
   architecture: string;
-  ubuntuVersion: typeof WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION;
   observedAt: string;
   /** Required for rollback so the current image's immutable edge can be checked. */
   currentArtifact?: WorkspaceHostImageArtifact;
 }
+
+export type WorkspaceHostImageCompatibilityRequest =
+  WorkspaceHostImageCompatibilityRequestBase &
+    (
+      | {
+          hostModel?: "ubuntu-release-bundle";
+          ubuntuVersion: typeof WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION;
+          bootcBaseImage?: never;
+        }
+      | {
+          hostModel: "bootc-image";
+          bootcBaseImage: string;
+          ubuntuVersion?: never;
+        }
+    );
 
 export interface WorkspaceHostImageCompatibilityResult {
   compatible: boolean;
@@ -140,6 +195,10 @@ export interface WorkspaceHostCleanRoomInstallSpec {
   action: WorkspaceHostImageAction;
   provider: WorkspaceHostProviderTarget;
   architecture: string;
+  /** Omitted preserves the shipped Ubuntu fixture. Bootc fixtures are explicit. */
+  hostModel?: WorkspaceHostModel;
+  /** Required by the bootc matrix; ignored nowhere and forbidden on the Ubuntu model. */
+  bootcBaseImage?: string;
   observedAt: string;
   hostId: string;
   migrationId: string;
@@ -192,7 +251,29 @@ export interface WorkspaceHostCleanRoomAcceptanceReport {
 }
 
 const SHA256 = /^[a-f0-9]{64}$/;
+const IMAGE_DIGEST = /^sha256:[a-f0-9]{64}$/;
+const REGISTRY_IMAGE =
+  /^[a-z0-9][a-z0-9._-]*(?::\d{1,5})?(?:\/[a-z0-9][a-z0-9._-]*)+(?::[A-Za-z0-9][A-Za-z0-9._-]{0,127})?$/;
 const DAY_MS = 24 * 60 * 60 * 1_000;
+
+export function workspaceHostImageModel(
+  artifact: Pick<WorkspaceHostImageArtifact, "hostModel">,
+): WorkspaceHostModel {
+  return artifact.hostModel ?? DEFAULT_WORKSPACE_HOST_MODEL;
+}
+
+function compatibilityModel(
+  value: Pick<WorkspaceHostImageCompatibilityRule, "hostModel"> |
+    Pick<WorkspaceHostImageCompatibilityRequest, "hostModel">,
+): WorkspaceHostModel {
+  return value.hostModel ?? DEFAULT_WORKSPACE_HOST_MODEL;
+}
+
+function compatibilityPlatform(value: WorkspaceHostImageCompatibilityRule): string {
+  return compatibilityModel(value) === "bootc-image"
+    ? value.bootcBaseImage ?? ""
+    : value.ubuntuVersion ?? "";
+}
 
 /**
  * Report a non-string as the validation failure it is, rather than crashing on it.
@@ -252,6 +333,33 @@ export function validateWorkspaceHostImageArtifact(
   const hasImage = section(artifact.image, "image");
   const hasManifest = section(artifact.buildManifest, "buildManifest");
   const hasRelease = section(artifact.release, "release");
+  const hostModel = workspaceHostImageModel(artifact);
+  if (!WORKSPACE_HOST_MODELS.includes(hostModel)) {
+    errors.push(`unsupported hostModel '${String(hostModel)}'`);
+  }
+  const bootc = (artifact as { bootc?: Partial<WorkspaceHostBootcImageIdentity> }).bootc;
+  if (hostModel === "bootc-image") {
+    if (!section(bootc, "bootc")) {
+      // The section helper already names the structural error.
+    } else {
+      if (!REGISTRY_IMAGE.test(bootc?.image ?? "")) {
+        errors.push("bootc.image must be a registry-qualified tagged image reference");
+      }
+      if (!IMAGE_DIGEST.test(bootc?.imageDigest ?? "")) {
+        errors.push("bootc.imageDigest must be a lowercase sha256 manifest digest");
+      }
+      if (!REGISTRY_IMAGE.test(bootc?.baseImage ?? "")) {
+        errors.push("bootc.baseImage must be a registry-qualified image reference");
+      }
+      if (bootc?.signaturePolicyPath !== WORKSPACE_HOST_CONTAINERS_POLICY_PATH) {
+        errors.push(
+          `bootc.signaturePolicyPath must be '${WORKSPACE_HOST_CONTAINERS_POLICY_PATH}'`,
+        );
+      }
+    }
+  } else if (bootc !== undefined) {
+    errors.push("bootc is valid only when hostModel is 'bootc-image'");
+  }
 
   if (hasImage) {
     requireText(artifact.image.id, "image.id", errors);
@@ -395,6 +503,7 @@ export function validateWorkspaceHostImageArtifact(
   );
   const seen = new Set<string>();
   artifact.compatibility.forEach((rule, index) => {
+    const ruleHostModel = compatibilityModel(rule);
     requireText(rule.provider, `compatibility[${index}].provider`, errors);
     requireText(
       rule.architecture,
@@ -411,10 +520,28 @@ export function validateWorkspaceHostImageArtifact(
         `compatibility[${index}].architecture must equal buildManifest.baseImage.architecture`,
       );
     }
-    if (rule.ubuntuVersion !== WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION) {
-      errors.push(
-        `compatibility[${index}].ubuntuVersion must be '${WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION}'`,
-      );
+    if (ruleHostModel !== hostModel) {
+      errors.push(`compatibility[${index}].hostModel must equal artifact hostModel '${hostModel}'`);
+    }
+    if (ruleHostModel === "ubuntu-release-bundle") {
+      if (rule.ubuntuVersion !== WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION) {
+        errors.push(
+          `compatibility[${index}].ubuntuVersion must be '${WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION}'`,
+        );
+      }
+      if (rule.bootcBaseImage !== undefined) {
+        errors.push(`compatibility[${index}].bootcBaseImage is invalid for the Ubuntu host model`);
+      }
+    } else {
+      if (!REGISTRY_IMAGE.test(rule.bootcBaseImage ?? "")) {
+        errors.push(`compatibility[${index}].bootcBaseImage must be a registry-qualified image reference`);
+      }
+      if (rule.bootcBaseImage !== bootc?.baseImage) {
+        errors.push(`compatibility[${index}].bootcBaseImage must equal bootc.baseImage`);
+      }
+      if (rule.ubuntuVersion !== undefined) {
+        errors.push(`compatibility[${index}].ubuntuVersion is invalid for the bootc host model`);
+      }
     }
     if (
       rule.bootstrapContractVersion !==
@@ -450,7 +577,8 @@ export function validateWorkspaceHostImageArtifact(
     const key = [
       rule.provider,
       rule.architecture,
-      rule.ubuntuVersion,
+      ruleHostModel,
+      compatibilityPlatform(rule),
       rule.bootstrapContractVersion,
     ].join("\u0000");
     if (seen.has(key)) {
@@ -490,11 +618,15 @@ export function evaluateWorkspaceHostImageCompatibility(
       ],
     };
   }
+  const requestHostModel = compatibilityModel(request);
+  const requestPlatform =
+    requestHostModel === "bootc-image" ? request.bootcBaseImage : request.ubuntuVersion;
   const matchedRule = artifact.compatibility.find(
     (rule) =>
       rule.provider === request.provider &&
       rule.architecture === request.architecture &&
-      rule.ubuntuVersion === request.ubuntuVersion &&
+      compatibilityModel(rule) === requestHostModel &&
+      compatibilityPlatform(rule) === requestPlatform &&
       rule.bootstrapContractVersion ===
         WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   );
@@ -504,7 +636,7 @@ export function evaluateWorkspaceHostImageCompatibility(
       issues: [
         {
           code: "matrix-miss",
-          message: `No compatibility row matches ${request.provider}/${request.architecture}/${request.ubuntuVersion}`,
+          message: `No compatibility row matches ${request.provider}/${request.architecture}/${requestHostModel}/${requestPlatform}`,
         },
       ],
     };
@@ -595,10 +727,26 @@ function fixtureBootstrapInput(
   artifact: WorkspaceHostImageArtifact,
   spec: WorkspaceHostCleanRoomInstallSpec,
 ): WorkspaceHostBootstrapInput {
+  const hostModel = workspaceHostImageModel(artifact);
+  const bootc = artifact.hostModel === "bootc-image" ? artifact.bootc : undefined;
+  if (hostModel === "bootc-image" && !bootc) {
+    throw new Error("bootc image artifact is missing its image identity");
+  }
   return {
     contractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
     action: spec.action,
     hostId: spec.hostId,
+    hostModel,
+    ...(hostModel === "bootc-image"
+      ? {
+          bootc: {
+            image: bootc!.image,
+            imageDigest: bootc!.imageDigest,
+            baseImage: bootc!.baseImage,
+            signaturePolicyPath: bootc!.signaturePolicyPath,
+          },
+        }
+      : {}),
     release: artifact.release,
     migrationId: spec.migrationId,
     minimumNodeMajor: spec.minimumNodeMajor,
@@ -622,19 +770,44 @@ function fixtureBootstrapInput(
   };
 }
 
+function cleanRoomCompatibilityRequest(
+  artifact: WorkspaceHostImageArtifact,
+  spec: WorkspaceHostCleanRoomInstallSpec,
+): WorkspaceHostImageCompatibilityRequest {
+  const hostModel = spec.hostModel ?? workspaceHostImageModel(artifact);
+  const common = {
+    action: spec.action,
+    provider: spec.provider,
+    architecture: spec.architecture,
+    observedAt: spec.observedAt,
+    currentArtifact: spec.currentArtifact,
+  } as const;
+  return hostModel === "bootc-image"
+    ? {
+        ...common,
+        hostModel,
+        bootcBaseImage:
+          spec.bootcBaseImage ??
+          (artifact.hostModel === "bootc-image"
+            ? artifact.bootc.baseImage
+            : WORKSPACE_HOST_BOOTC_BASE_IMAGE),
+      }
+    : {
+        ...common,
+        hostModel,
+        ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+      };
+}
+
 /** Build the exact deterministic script a clean-room executor must run. */
 export function buildWorkspaceHostCleanRoomInstallFixture(
   artifact: WorkspaceHostImageArtifact,
   spec: WorkspaceHostCleanRoomInstallSpec,
 ): WorkspaceHostCleanRoomInstallFixture {
-  const compatibility = evaluateWorkspaceHostImageCompatibility(artifact, {
-    action: spec.action,
-    provider: spec.provider,
-    architecture: spec.architecture,
-    ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
-    observedAt: spec.observedAt,
-    currentArtifact: spec.currentArtifact,
-  });
+  const compatibility = evaluateWorkspaceHostImageCompatibility(
+    artifact,
+    cleanRoomCompatibilityRequest(artifact, spec),
+  );
   if (!compatibility.compatible) {
     throw new Error(
       `Workspace-host image is incompatible: ${compatibility.issues
@@ -672,14 +845,10 @@ export async function runWorkspaceHostCleanRoomAcceptance(
   spec: WorkspaceHostCleanRoomInstallSpec,
   executor: WorkspaceHostCleanRoomExecutor,
 ): Promise<WorkspaceHostCleanRoomAcceptanceReport> {
-  const compatibility = evaluateWorkspaceHostImageCompatibility(artifact, {
-    action: spec.action,
-    provider: spec.provider,
-    architecture: spec.architecture,
-    ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
-    observedAt: spec.observedAt,
-    currentArtifact: spec.currentArtifact,
-  });
+  const compatibility = evaluateWorkspaceHostImageCompatibility(
+    artifact,
+    cleanRoomCompatibilityRequest(artifact, spec),
+  );
   const base = {
     contractVersion: WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
     fixtureId: spec.fixtureId,
@@ -788,25 +957,12 @@ export function workspaceHostCleanRoomFixtureAttestation(
     fixture.bootstrapInput.isolation?.agentUser ??
     DEFAULT_WORKSPACE_HOST_AGENT_USER;
   const agentGroup = fixture.bootstrapInput.isolation?.agentGroup ?? agentUser;
-  return {
+  const common = {
     contractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
     hostId: fixture.bootstrapInput.hostId,
     action: fixture.bootstrapInput.action,
-    // The clean-room acceptance fixture models the SHIPPED host, and the image compatibility
-    // matrix it feeds is expressed in Ubuntu releases (see WorkspaceHostImageCompatibilityRule).
-    // A bootc clean-room needs its own artifact matrix, which is P-307's leg — so this is pinned
-    // rather than parameterised, and the literal is what makes that visible.
-    hostModel: 'ubuntu-release-bundle',
-    ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
     observedAt,
     status: "healthy",
-    release: {
-      version: fixture.bootstrapInput.release.version,
-      source: fixture.bootstrapInput.release.bundleUrl,
-      bundleSha256: fixture.bootstrapInput.release.bundleSha256,
-      signingKeySha256: fixture.bootstrapInput.release.signingKeySha256,
-      signatureVerified: true,
-    },
     migration: { id: fixture.bootstrapInput.migrationId, applied: true },
     runtime: {
       nodeMajor,
@@ -847,12 +1003,50 @@ export function workspaceHostCleanRoomFixtureAttestation(
       sudo: false,
       serviceGroupMember: false,
       operatorIngress: "ssh-local-forward",
+    },
+  } as const;
+  if (fixture.bootstrapInput.hostModel === "bootc-image") {
+    const bootc = fixture.bootstrapInput.bootc;
+    if (!bootc) throw new Error("bootc clean-room fixture is missing its image identity");
+    return {
+      ...common,
+      hostModel: "bootc-image",
+      bootcBaseImage: bootc.baseImage ?? WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      release: {
+        version: fixture.bootstrapInput.release.version,
+        source: bootc.image,
+        imageDigest: bootc.imageDigest,
+        signaturePolicyPath: bootc.signaturePolicyPath,
+        signatureVerified: true,
+      },
+      isolation: {
+        ...common.isolation,
+        updateMode: "bootc-atomic-image-swap",
+      },
+      checks: workspaceHostBootstrapChecks("bootc-image").map((name) => ({
+        name,
+        ok: true as const,
+      })),
+    };
+  }
+  return {
+    ...common,
+    hostModel: "ubuntu-release-bundle",
+    ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+    release: {
+      version: fixture.bootstrapInput.release.version,
+      source: fixture.bootstrapInput.release.bundleUrl,
+      bundleSha256: fixture.bootstrapInput.release.bundleSha256,
+      signingKeySha256: fixture.bootstrapInput.release.signingKeySha256,
+      signatureVerified: true,
+    },
+    isolation: {
+      ...common.isolation,
       updateMode: "signed-atomic-release-swap",
     },
-    // Scoped to the model above. The old flat list is now a NAME SPACE spanning both models, so
-    // mapping it wholesale would fabricate a host that established every check of both.
-    checks: workspaceHostBootstrapChecks('ubuntu-release-bundle').map(
-      (name) => ({ name, ok: true as const }),
-    ),
+    checks: workspaceHostBootstrapChecks("ubuntu-release-bundle").map((name) => ({
+      name,
+      ok: true as const,
+    })),
   };
 }

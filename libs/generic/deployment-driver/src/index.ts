@@ -299,6 +299,7 @@ export type {
   WorkspaceHostImageLifecycleState,
   WorkspaceHostImageCompatibilityRule,
   WorkspaceHostImageLifecycleMetadata,
+  WorkspaceHostBootcImageIdentity,
   WorkspaceHostImageArtifact,
   WorkspaceHostImageCompatibilityIssueCode,
   WorkspaceHostImageCompatibilityIssue,
@@ -313,6 +314,7 @@ export type {
 export {
   WORKSPACE_HOST_CLEAN_ROOM_AUTHORIZED_KEY,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
+  workspaceHostImageModel,
   WORKSPACE_HOST_IMAGE_ACTIONS,
   WORKSPACE_HOST_IMAGE_LIFECYCLE_STATES,
   validateWorkspaceHostImageArtifact,

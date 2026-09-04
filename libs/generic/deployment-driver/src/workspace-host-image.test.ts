@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  WORKSPACE_HOST_BOOTC_BUILDER_KIND,
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
   WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
@@ -11,9 +12,11 @@ import {
   deriveWorkspaceHostCanonicalArtifactUrls,
 } from "./workspace-host-build-manifest";
 import {
+  WORKSPACE_HOST_BOOTC_BASE_IMAGE,
   WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX,
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+  WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
 } from "./workspace-host-bootstrap";
 import {
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
@@ -37,7 +40,10 @@ const KEY_DIGEST = createHash("sha256")
 
 function artifact(
   version = "2026.8.22-1",
-  overrides: Partial<WorkspaceHostImageArtifact> = {},
+  overrides: Partial<Omit<WorkspaceHostImageArtifact, "hostModel" | "bootc">> & {
+    hostModel?: "ubuntu-release-bundle";
+    bootc?: never;
+  } = {},
 ): WorkspaceHostImageArtifact {
   const buildManifest = buildWorkspaceHostBuildManifest({
     contractVersion: WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
@@ -156,6 +162,43 @@ function spec(
   };
 }
 
+function bootcArtifact(): Extract<WorkspaceHostImageArtifact, { hostModel: "bootc-image" }> {
+  const current = artifact();
+  const { schemaVersion: _schemaVersion, manifestIdentity: _identity, ...manifestInput } =
+    current.buildManifest;
+  return {
+    ...current,
+    hostModel: "bootc-image",
+    bootc: {
+      image: "registry.example.com/papercusp/workspace-host:2026.8.22-1",
+      imageDigest: `sha256:${"9".repeat(64)}`,
+      baseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      signaturePolicyPath: WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
+    },
+    buildManifest: buildWorkspaceHostBuildManifest({
+      ...manifestInput,
+      builder: {
+        strategy: "shared",
+        kind: WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+        version: "latest",
+        templatePath: "infra/images/bootc/workspace-host.Containerfile",
+        templateSha256: "d".repeat(64),
+      },
+    }),
+    compatibility: [
+      {
+        provider: "gcp",
+        architecture: "x86_64",
+        hostModel: "bootc-image",
+        bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+        bootstrapContractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
+        actions: ["install", "upgrade", "rollback"],
+        maximumArtifactAgeDays: 30,
+      },
+    ],
+  };
+}
+
 function stdoutFor(
   fixture: WorkspaceHostCleanRoomInstallFixture,
   observedAt: string,
@@ -174,6 +217,51 @@ function stdoutFor(
 }
 
 describe("workspace-host image compatibility", () => {
+  it("uses a bootc base-image matrix and emits an exact bootc clean-room fixture", async () => {
+    const candidate = bootcArtifact();
+    expect(validateWorkspaceHostImageArtifact(candidate)).toEqual([]);
+    expect(
+      evaluateWorkspaceHostImageCompatibility(candidate, {
+        action: "install",
+        provider: "gcp",
+        architecture: "x86_64",
+        hostModel: "bootc-image",
+        bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+        observedAt: "2026-08-23T00:00:00Z",
+      }),
+    ).toMatchObject({ compatible: true, issues: [] });
+
+    const fixture = buildWorkspaceHostCleanRoomInstallFixture(candidate, {
+      ...spec(),
+      hostModel: "bootc-image",
+      bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+    });
+    expect(fixture.bootstrapInput).toMatchObject({
+      hostModel: "bootc-image",
+      bootc: candidate.bootc,
+    });
+    const attestation = workspaceHostCleanRoomFixtureAttestation(
+      fixture,
+      "2026-08-23T00:00:00Z",
+    );
+    expect(attestation).toMatchObject({
+      hostModel: "bootc-image",
+      bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      release: {
+        source: candidate.bootc.image,
+        imageDigest: candidate.bootc.imageDigest,
+        signaturePolicyPath: WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
+      },
+      isolation: { updateMode: "bootc-atomic-image-swap" },
+    });
+    const report = await runWorkspaceHostCleanRoomAcceptance(
+      candidate,
+      { ...spec(), hostModel: "bootc-image", bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE },
+      { execute: async () => ({ stdout: stdoutFor(fixture, "2026-08-23T00:00:00Z") }) },
+    );
+    expect(report).toMatchObject({ passed: true, attestation: { hostModel: "bootc-image" } });
+  });
+
   it("joins the immutable build manifest, signed release, and exact matrix row", () => {
     const candidate = artifact();
     expect(validateWorkspaceHostImageArtifact(candidate)).toEqual([]);
