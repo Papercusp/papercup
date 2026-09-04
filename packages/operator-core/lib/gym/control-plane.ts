@@ -21,7 +21,7 @@ import { randomUUID } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
 import { recordBehaviorChange } from '../change-ledger/change-ledger';
-import type { LoopProposalRecord } from './loop';
+import type { CandidateVersionVerdict, LoopProposalRecord } from './loop';
 import { recordChampionAcceptance } from './post-acceptance-outcomes';
 import type { GymJudgedCorpus } from './task-corpus';
 import { trackDetached } from '../detached-imports';
@@ -65,6 +65,8 @@ export interface GymProposalRow {
    * stub can never be misread as one earned on real work.
    */
   taskCorpus: GymJudgedCorpus;
+  /** Hash-pinned candidate/version/gate record; null for historical proposals. */
+  candidateVersion: CandidateVersionVerdict | null;
 }
 
 export interface GymAutoloopConfig {
@@ -112,7 +114,15 @@ const numOrNull = (v: unknown): number | null => (v === null || v === undefined 
 const str = (v: unknown): string => String(v);
 const strOrNull = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
 
+async function proposalColumns(sql: Sql): Promise<Set<string>> {
+  const rows = (await sql`
+    SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'harness_shared' AND table_name = 'gym_proposals'`) as Array<{ column_name: string }>;
+  return new Set(rows.map((row) => row.column_name));
+}
+
 function mapProposal(r: Row): GymProposalRow {
+  const candidateVersion = r.candidate_verdict;
   return {
     id: str(r.id),
     workspaceId: str(r.workspace_id),
@@ -135,6 +145,19 @@ function mapProposal(r: Row): GymProposalRow {
       r.task_corpus === 'real' || r.task_corpus === 'mixed'
         ? (r.task_corpus as GymJudgedCorpus)
         : 'synthetic',
+    candidateVersion:
+      candidateVersion && typeof candidateVersion === 'object'
+        ? (candidateVersion as CandidateVersionVerdict)
+        : typeof candidateVersion === 'string'
+          ? (() => {
+              try {
+                const parsed = JSON.parse(candidateVersion);
+                return parsed && typeof parsed === 'object' ? (parsed as CandidateVersionVerdict) : null;
+              } catch {
+                return null;
+              }
+            })()
+          : null,
   };
 }
 
@@ -215,6 +238,8 @@ export interface RecordProposalInput {
    * never read as though it were earned on real work.
    */
   taskCorpus?: GymJudgedCorpus;
+  /** Immutable candidate/version/gate evidence produced by runOptimizationLoop. */
+  candidateVersion?: CandidateVersionVerdict | null;
 }
 
 /**
@@ -225,20 +250,52 @@ export interface RecordProposalInput {
 export async function recordProposal(sql: Sql, input: RecordProposalInput): Promise<string> {
   const id = input.id ?? (input.variantId ? `${input.variantId}__${input.role}` : randomUUID());
   const now = input.now ?? Date.now();
-  await sql`
-    INSERT INTO harness_shared.gym_proposals
-      (id, workspace_id, harness_slug, cycle, variant_id, role, original_md, proposed_md, rationale,
-       dev_anchor_delta, cost_delta, probe_status, status, task_corpus, created_at)
-    VALUES (${id}, ${input.workspaceId}, ${input.harnessSlug}, ${input.cycle}, ${input.variantId ?? null}, ${input.role},
-       ${input.originalMd ?? null}, ${input.proposedMd}, ${input.rationale ?? null},
-       ${input.devAnchorDelta ?? null}, ${input.costDelta ?? null}, ${input.probeStatus ?? null}, 'pending',
-       ${input.taskCorpus ?? 'synthetic'}, ${now})
-    ON CONFLICT (id) DO UPDATE SET
-       proposed_md = EXCLUDED.proposed_md, original_md = EXCLUDED.original_md, rationale = EXCLUDED.rationale,
-       dev_anchor_delta = EXCLUDED.dev_anchor_delta, cost_delta = EXCLUDED.cost_delta,
-       probe_status = EXCLUDED.probe_status, cycle = EXCLUDED.cycle,
-       task_corpus = EXCLUDED.task_corpus
-     WHERE gym_proposals.status = 'pending'`;
+  const columns = await proposalColumns(sql);
+  if (columns.has('task_corpus') && columns.has('candidate_verdict')) {
+    await sql`
+      INSERT INTO harness_shared.gym_proposals
+        (id, workspace_id, harness_slug, cycle, variant_id, role, original_md, proposed_md, rationale,
+         dev_anchor_delta, cost_delta, probe_status, status, task_corpus, candidate_verdict, created_at)
+      VALUES (${id}, ${input.workspaceId}, ${input.harnessSlug}, ${input.cycle}, ${input.variantId ?? null}, ${input.role},
+         ${input.originalMd ?? null}, ${input.proposedMd}, ${input.rationale ?? null},
+         ${input.devAnchorDelta ?? null}, ${input.costDelta ?? null}, ${input.probeStatus ?? null}, 'pending',
+         ${input.taskCorpus ?? 'synthetic'}, ${input.candidateVersion == null ? null : JSON.stringify(input.candidateVersion)}::text::jsonb, ${now})
+      ON CONFLICT (id) DO UPDATE SET
+         proposed_md = EXCLUDED.proposed_md, original_md = EXCLUDED.original_md, rationale = EXCLUDED.rationale,
+         dev_anchor_delta = EXCLUDED.dev_anchor_delta, cost_delta = EXCLUDED.cost_delta,
+         probe_status = EXCLUDED.probe_status, cycle = EXCLUDED.cycle,
+         task_corpus = EXCLUDED.task_corpus, candidate_verdict = EXCLUDED.candidate_verdict
+       WHERE gym_proposals.status = 'pending'`;
+  } else if (columns.has('task_corpus')) {
+    await sql`
+      INSERT INTO harness_shared.gym_proposals
+        (id, workspace_id, harness_slug, cycle, variant_id, role, original_md, proposed_md, rationale,
+         dev_anchor_delta, cost_delta, probe_status, status, task_corpus, created_at)
+      VALUES (${id}, ${input.workspaceId}, ${input.harnessSlug}, ${input.cycle}, ${input.variantId ?? null}, ${input.role},
+         ${input.originalMd ?? null}, ${input.proposedMd}, ${input.rationale ?? null},
+         ${input.devAnchorDelta ?? null}, ${input.costDelta ?? null}, ${input.probeStatus ?? null}, 'pending',
+         ${input.taskCorpus ?? 'synthetic'}, ${now})
+      ON CONFLICT (id) DO UPDATE SET
+         proposed_md = EXCLUDED.proposed_md, original_md = EXCLUDED.original_md, rationale = EXCLUDED.rationale,
+         dev_anchor_delta = EXCLUDED.dev_anchor_delta, cost_delta = EXCLUDED.cost_delta,
+         probe_status = EXCLUDED.probe_status, cycle = EXCLUDED.cycle, task_corpus = EXCLUDED.task_corpus
+       WHERE gym_proposals.status = 'pending'`;
+  } else {
+    // Compatibility with dedicated gym databases provisioned before the shared
+    // task-corpus migration. The live schema path takes the branch above.
+    await sql`
+      INSERT INTO harness_shared.gym_proposals
+        (id, workspace_id, harness_slug, cycle, variant_id, role, original_md, proposed_md, rationale,
+         dev_anchor_delta, cost_delta, probe_status, status, created_at)
+      VALUES (${id}, ${input.workspaceId}, ${input.harnessSlug}, ${input.cycle}, ${input.variantId ?? null}, ${input.role},
+         ${input.originalMd ?? null}, ${input.proposedMd}, ${input.rationale ?? null},
+         ${input.devAnchorDelta ?? null}, ${input.costDelta ?? null}, ${input.probeStatus ?? null}, 'pending', ${now})
+      ON CONFLICT (id) DO UPDATE SET
+         proposed_md = EXCLUDED.proposed_md, original_md = EXCLUDED.original_md, rationale = EXCLUDED.rationale,
+         dev_anchor_delta = EXCLUDED.dev_anchor_delta, cost_delta = EXCLUDED.cost_delta,
+         probe_status = EXCLUDED.probe_status, cycle = EXCLUDED.cycle
+       WHERE gym_proposals.status = 'pending'`;
+  }
   // Push-on-write for the Learning tab's Gym view (owner report 2026-07-26 —
   // learning.gym had no producer; pg_notify fans out cross-process).
   void trackDetached(import('../sync-sse'))
@@ -483,29 +540,46 @@ export interface DecideResult {
 /**
  * Auto-decide a run's freshly-recorded proposals (owner mandate 2026-07-19:
  * "there should be no human in the loop"): every still-pending proposal this
- * run recorded is decided by its measured result — a positive dev-anchor delta
- * auto-ACCEPTS (atomically promoting the challenger prompt to champion and
- * opening its post-acceptance outcome window, exactly the human-accept path),
- * anything else auto-REJECTS so nothing lingers pending. The ledger keeps every
- * decision auditable, and a promoted champion can still be reverted by
- * accepting a later counter-proposal (or editing the role's prompt override).
+ * run recorded is decided by its immutable candidate-version verdict. A positive
+ * dev-anchor delta is only a ranking signal; it can promote a candidate only when
+ * the complete hash-pinned gate verdict says accept. Anything else auto-REJECTS so
+ * nothing lingers pending. The ledger keeps every decision auditable, and a
+ * promoted champion can still be reverted by accepting a later counter-proposal
+ * (or editing the role's prompt override).
  */
 export async function autoDecideRunProposals(
   sql: Sql,
   q: { workspaceId: string; harnessSlug: string; sinceMs: number; now?: number },
 ): Promise<{ accepted: number; rejected: number }> {
-  const rows = (await sql`
-    SELECT id, dev_anchor_delta FROM harness_shared.gym_proposals
-     WHERE workspace_id = ${q.workspaceId}
-       AND harness_slug = ${q.harnessSlug}
-       AND status = 'pending'
-       AND created_at >= ${q.sinceMs}
-     ORDER BY created_at ASC`) as Array<{ id: string; dev_anchor_delta: unknown }>;
+  const hasVerdictColumn = (await proposalColumns(sql)).has('candidate_verdict');
+  const rows = hasVerdictColumn
+    ? ((await sql`
+        SELECT id, variant_id, candidate_verdict, dev_anchor_delta FROM harness_shared.gym_proposals
+         WHERE workspace_id = ${q.workspaceId}
+           AND harness_slug = ${q.harnessSlug}
+           AND status = 'pending'
+           AND created_at >= ${q.sinceMs}
+         ORDER BY created_at ASC`) as Array<{ id: string; variant_id: unknown; candidate_verdict: unknown; dev_anchor_delta: unknown }>)
+    : ((await sql`
+        SELECT id, variant_id, dev_anchor_delta FROM harness_shared.gym_proposals
+         WHERE workspace_id = ${q.workspaceId}
+           AND harness_slug = ${q.harnessSlug}
+           AND status = 'pending'
+           AND created_at >= ${q.sinceMs}
+         ORDER BY created_at ASC`) as Array<{ id: string; variant_id: unknown; dev_anchor_delta: unknown }>).map((row) => ({ ...row, candidate_verdict: null }));
   let accepted = 0;
   let rejected = 0;
   for (const row of rows) {
+    const candidate = parseCandidateVersion(row.candidate_verdict);
     const delta = row.dev_anchor_delta == null ? null : Number(row.dev_anchor_delta);
-    const wins = delta != null && Number.isFinite(delta) && delta > 0;
+    // P-002: positive dev-anchor movement is only a proposal signal. Promotion
+    // requires the same complete, hash-pinned gate verdict produced by the loop.
+    // A legacy database has no candidate-verdict column; retain its historical
+    // manual-compatible behavior until migration 1115 lands. The live schema
+    // always takes the fail-closed branch above.
+    const wins = (hasVerdictColumn
+      ? isPromotableCandidate(candidate, row.variant_id)
+      : true) && delta != null && Number.isFinite(delta) && delta > 0;
     const res = await decideProposal(sql, {
       id: row.id,
       workspaceId: q.workspaceId,
@@ -519,6 +593,25 @@ export async function autoDecideRunProposals(
     }
   }
   return { accepted, rejected };
+}
+
+function parseCandidateVersion(value: unknown): CandidateVersionVerdict | null {
+  if (value && typeof value === 'object') return value as CandidateVersionVerdict;
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? (parsed as CandidateVersionVerdict) : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPromotableCandidate(candidate: CandidateVersionVerdict | null, variantId: unknown): boolean {
+  if (!candidate || candidate.schemaVersion !== 1) return false;
+  if (!candidate.candidateId || String(variantId ?? '') !== candidate.candidateId || !candidate.parentId) return false;
+  const hashes = candidate.hashes;
+  if (!hashes || Object.values(hashes).some((value) => typeof value !== 'string' || value.trim().length === 0 || value === 'unresolved')) return false;
+  return candidate.verdict === 'accept' && candidate.gateResults.length > 0 && candidate.gateResults.every((gate) => gate.pass === true);
 }
 
 export async function decideProposal(
@@ -714,6 +807,7 @@ export function makeLoopProposalRecorder(
         devAnchorDelta: rec.devAnchorDelta,
         costDelta: rec.costDelta,
         probeStatus: rec.probeStatus,
+        candidateVersion: rec.candidateVersion,
         now: ts,
       });
     }
