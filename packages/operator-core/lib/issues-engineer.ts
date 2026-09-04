@@ -80,6 +80,10 @@ import { randomInt } from 'node:crypto';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { trackDetached } from './detached-imports';
 import {
+  projectWorkItemColumns,
+  type WorkItemReadOptions,
+} from './work-item-read-projection';
+import {
   AUTO_CLOSE_DEFAULT_MIN_TICKS,
   AUTO_CLOSE_ELIGIBLE_SOURCES,
 } from './harness/improvements/auto-close-sources';
@@ -149,6 +153,37 @@ function mintSelfFiledFalloutAdmission(args: {
 
 export function isSelfFiledFalloutAdmission(value: unknown): value is SelfFiledFalloutAdmission {
   return typeof value === 'object' && value !== null && selfFiledFalloutAdmissions.has(value);
+}
+
+/**
+ * EI-22345414208647835: carry a checked force takeover authorization across the
+ * claim writer's born-pending admission floor. Object identity is kept in a
+ * module-private WeakSet so callers cannot forge this capability by copying its
+ * fields. The writer still requires the exact expected-holder CAS, and the
+ * feature-family path retains its independent G2/origin floor.
+ */
+export interface ForceTakeoverAdmission {
+  readonly itemId: string;
+  readonly target: string;
+  readonly expectedAssignee: string;
+  readonly workspaceId: string;
+}
+
+const forceTakeoverAdmissions = new WeakSet<object>();
+
+export function mintForceTakeoverAdmission(args: {
+  itemId: string;
+  target: string;
+  expectedAssignee: string;
+  workspaceId: string;
+}): ForceTakeoverAdmission {
+  const admission = Object.freeze({ ...args });
+  forceTakeoverAdmissions.add(admission);
+  return admission;
+}
+
+export function isForceTakeoverAdmission(value: unknown): value is ForceTakeoverAdmission {
+  return typeof value === 'object' && value !== null && forceTakeoverAdmissions.has(value);
 }
 
 /**
@@ -2421,8 +2456,8 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
   return result;
 }
 
-export async function getIssue(id: string): Promise<EngineerIssue | null> {
-  return getIssueInWorkspace(await resolveIssueWorkspace(id), id);
+export async function getIssue(id: string, opts: WorkItemReadOptions = {}): Promise<EngineerIssue | null> {
+  return getIssueInWorkspace(await resolveIssueWorkspace(id), id, opts);
 }
 
 /**
@@ -2500,7 +2535,7 @@ export async function resolveIssueWorkspace(id: string, fallback?: string): Prom
 export async function getIssueInWorkspace(
   workspaceId: string,
   id: string,
-  opts: { baseHarnessSlug?: string | null } = {},
+  opts: { baseHarnessSlug?: string | null } & WorkItemReadOptions = {},
 ): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   // EI-7808: legacy/federated bugs left duplicate issue-family base rows with the
@@ -2517,8 +2552,12 @@ export async function getIssueInWorkspace(
   // `ORDER BY updated_at DESC NULLS LAST LIMIT 1` makes the get-path deterministic
   // (freshest twin wins) without touching the EI-6480 claim re-read path, which
   // already pins `baseHarnessSlug` to filter to exactly one physical row.
+  const columns = projectWorkItemColumns(
+    opts.includeBody === false ? ISSUE_COLS_BODYLESS : ISSUE_COLS,
+    opts.payloadProjection,
+  );
   const rows = await sql<IssueRowDb[]>`
-    SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
+    SELECT ${sql.unsafe(columns)} FROM harness_shared.engineer_issues
      WHERE workspace_id = ${workspaceId} AND issue_id = ${id}
        AND ${opts.baseHarnessSlug != null ? sql`base_harness_slug = ${opts.baseHarnessSlug}` : sql`TRUE`}
      ORDER BY updated_at DESC NULLS LAST
@@ -2701,6 +2740,13 @@ export async function claimIssue(
      * and CASes the durable created_by provenance.
      */
     selfFiledFalloutAdmission?: SelfFiledFalloutAdmission;
+    /**
+     * EI-22345414208647835: private capability minted only after the claim
+     * tool's checked force guard authorizes replacing a dead/expired holder.
+     * It bypasses only the born-pending admission floor and must agree with
+     * the exact holder CAS below.
+     */
+    forceTakeoverAdmission?: ForceTakeoverAdmission;
   } = {},
 ): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
@@ -2719,6 +2765,14 @@ export async function claimIssue(
     opts.selfFiledFalloutAdmission.target === assignee &&
     opts.selfFiledFalloutAdmission.workspaceId === ws
       ? opts.selfFiledFalloutAdmission
+      : null;
+  const forceTakeoverAdmission =
+    isForceTakeoverAdmission(opts.forceTakeoverAdmission) &&
+    opts.forceTakeoverAdmission.itemId === id &&
+    opts.forceTakeoverAdmission.target === assignee &&
+    opts.forceTakeoverAdmission.workspaceId === ws &&
+    opts.forceTakeoverAdmission.expectedAssignee === expectedAssignee
+      ? opts.forceTakeoverAdmission
       : null;
   // WI-2142171: capture the prior holder BEFORE the UPDATE, so a NO-OP re-claim does not
   // re-notify every subscriber. Claiming BY ID deliberately bypasses the claim floors (the
@@ -2773,7 +2827,7 @@ export async function claimIssue(
        -- self-filed fallout. Keep each durable provenance CAS in its exception so
        -- a row changed after capability derivation cannot inherit old authorization.
        AND ${
-         leaderDispatchAdmission || selfFiledFalloutAdmission
+         leaderDispatchAdmission || selfFiledFalloutAdmission || forceTakeoverAdmission
            ? sql`(
                ${admittedWhereSql(sql)}
                ${leaderDispatchAdmission ? sql`OR (
@@ -2784,6 +2838,10 @@ export async function claimIssue(
                  admission = 'pending'
                  AND kind = 'bug'
                  AND created_by = ${selfFiledFalloutAdmission.createdBy}
+               )` : sql``}
+               ${forceTakeoverAdmission ? sql`OR (
+                 admission = 'pending'
+                 AND assignee = ${forceTakeoverAdmission.expectedAssignee}
                )` : sql``}
              )`
            : admittedWhereSql(sql)
