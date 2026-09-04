@@ -678,23 +678,18 @@ const VERB_SPECIFIC_BINDING =
   'WI-1745363 adjudicated: verb-specific capability binding; the unbound seams are unreachable on this verb (and an absent mintGraduationWorkItem fails loud)';
 
 /**
- * `EngineCtx.progress` is a PROGRESS NOTIFIER, not a capability gate. It is consumed at
- * exactly three sites, all inside the docs-engine SEARCH function (search.ts:179, :192,
- * :198), always as `ctx.progress?.(pct, msg)`. The four sites below call the engine's
- * `get` / `outline` functions, which never read it on any path — so the seam is
- * unreachable there, and its absence carries the observer meaning ("this caller does not
+ * `EngineCtx.progress` is a PROGRESS NOTIFIER, not a capability gate. The
+ * consumption index classifies its three `ctx.progress?.(pct, msg)` uses in the
+ * docs-engine SEARCH function (search.ts:179, :192, :198) as discarded optional
+ * calls. The four docs `get` / `outline` construction sites never consume it;
+ * their omission therefore has the observer meaning ("this caller does not
  * watch"), never the gate meaning ("this path skips the concern").
  *
- * ⚠ RESIDUE (not fixed): the observer exclusion this guard already implements is keyed on
- * `on<Event>` NAMING. `progress` is semantically an observer that the name test does not
- * catch, so it lands in the reported population. Widening the test by adding names one at
- * a time trades a false positive for a blind spot — the durable discriminator is how the
- * seam is CONSUMED (optional-chained notification vs. `if (deps.x)` around real work),
- * which needs the cross-module consumer index the WI-1745363 fix introduced.
+ * Those four rows were historical baseline entries for the former name-based
+ * classifier. The consumption-based classifier now excludes them, so they are
+ * intentionally absent from FAIL_BASELINE rather than retained as stale
+ * suppressions.
  */
-const ENGINE_PROGRESS_NOTIFIER =
-  'benign: progress NOTIFIER read only by docs-engine search.ts:179/:192/:198 via `ctx.progress?.()`; ' +
-  'the get/outline engine paths these sites call never read it. Absence = "does not watch", not "skips a gate".';
 
 /**
  * An `*Override` / injectable-clock seam whose absence selects a REAL production
@@ -782,19 +777,16 @@ const XHIVE_ROLE_ASYMMETRY =
   'hive-B (:119) only receives, and cross-hive-wiring.ts:455 reads the seam only on the send leg.';
 
 const FAIL_BASELINE = new Map([
-  // Re-seeded from the measured `--list` run after the WI-1745363 attribution fix:
+  // Historical seed from the measured `--list` run after the WI-1745363 attribution fix:
   // 28 findings / 22 distinct rows over 7,150 files (was 44 / 33 under shape-based
   // attribution). The 11 rows that disappeared were NOT fixed divergences — they were
-  // misattributed literals that are no longer in the population at all, so re-seeding is
-  // the only correct move: hand-pruning would have implied an adjudication nobody made.
+  // misattributed literals that are no longer in the population at all. Four additional
+  // EngineCtx.progress rows became stale when observer classification became
+  // consumption-based and are intentionally omitted below.
   ['BootHarnessOpts|packages/operator-core/lib/sync/hyperbee/perf/scenarios/merge-cost.ts|verifyBindingOverride', OVERRIDE_WITH_REAL_DEFAULT],
   ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/close.ts|reach,revive', VERB_SPECIFIC_BINDING],
   ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/decline.ts|mintGraduationWorkItem,settleConversation', VERB_SPECIFIC_BINDING],
   ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/reply.ts|mintGraduationWorkItem,settleConversation', VERB_SPECIFIC_BINDING],
-  ['EngineCtx|packages/operator-core/lib/agent-tools/cross_harness/docs_get.ts|progress', ENGINE_PROGRESS_NOTIFIER],
-  ['EngineCtx|packages/operator-core/lib/agent-tools/cross_harness/docs_outline.ts|progress', ENGINE_PROGRESS_NOTIFIER],
-  ['EngineCtx|packages/operator-core/lib/agent-tools/docs/get.ts|progress', ENGINE_PROGRESS_NOTIFIER],
-  ['EngineCtx|packages/operator-core/lib/agent-tools/docs/outline.ts|progress', ENGINE_PROGRESS_NOTIFIER],
   ['GatewayServiceOptions|packages/operator-core/lib/inference-gateway/load-test.ts|resolveLocalBackends', HARNESS_VS_PRODUCTION],
   ['GatewayServiceOptions|packages/operator-core/lib/inference-gateway/sidecar-main.ts|log', HARNESS_VS_PRODUCTION],
   ['GetInProcessStatusOpts|packages/operator-core/lib/agent-tools/dev/dogfood_substrate_status.ts|resolveDhtBootstrapProbeStaleMs,resolveSidecarLive', STATUS_MEASURABLE_HALF],
