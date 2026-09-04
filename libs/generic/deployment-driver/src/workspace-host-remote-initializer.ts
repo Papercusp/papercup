@@ -572,9 +572,19 @@ export async function executeWorkspaceHostRemoteInitializerStep(
       // reporting the failure in evidence would reproduce the exact defect this work exists to
       // remove: a green verdict backed by a boolean nobody checked.
       if (failed.length > 0) {
-        throw new Error(
-          `agent readiness did not pass for: ${failed.join(", ")}`,
-        );
+        // Name each agent's REASON CODE, not just the agent. These codes are the closed
+        // `WorkspaceHostAgentProbeFailureReason` union — never CLI output — so this stays inside
+        // the same secret-isolation rule the evidence itself obeys, while telling the reader
+        // whether to look at a credential or at a provider account. WI-2144034: this message
+        // previously said only `codex`, and the real cause (an exhausted provider quota) cost two
+        // GCP canaries to rediscover.
+        const detail = failed
+          .map(
+            (agent) =>
+              `${agent} (${report.agents[agent]?.failure ?? "not-reported"})`,
+          )
+          .join(", ");
+        throw new Error(`agent readiness did not pass for: ${detail}`);
       }
       publicEvidence = {
         sourceKind,

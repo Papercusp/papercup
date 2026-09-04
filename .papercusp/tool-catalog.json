@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 846,
+  "count": 847,
   "tools": [
     {
       "name": "ablation:report",
@@ -29626,6 +29626,39 @@
         "when": "Discover trigger source ids before triggers:bind, or inspect which plans already have external-event bindings.",
         "notWhen": "For run/failure health and recent activity use triggers:status. To create a source use triggers:create.",
         "chaining": "triggers:list → triggers:bind { sourceId, harness, plan, eventPattern } → triggers:arm { bindingId, confirm:true }."
+      }
+    },
+    {
+      "name": "triggers:read-payload",
+      "http": {
+        "path": "/api/agent-tools/triggers/read-payload",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the external event that triggered one plan run — the inbound Gmail message, Slack mention, or calendar event — resolved server-side from planRunId.",
+      "capabilities": [
+        "operator:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "An external-trigger plan item tells you to read the triggering message. Pass payload.plan_run.runId as planRunId; the message is not embedded in the plan inputs.",
+        "notWhen": "A run that did not originate from an external trigger, or to browse other runs — this returns only the event for the planRunId you name, inside your own workspace.",
+        "chaining": "triggers:read-payload → compose the response → gmail:create-draft / slack:respond-in-thread with the SAME planRunId."
       }
     },
     {
