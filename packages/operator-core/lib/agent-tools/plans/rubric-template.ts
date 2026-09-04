@@ -250,6 +250,18 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
+      kind: z.literal('probe'),
+      probe: z
+        .unknown()
+        .describe(
+          'an existing typed ContinuityProbe ({ kind:"tool"|"state-cell", schemaRevision, expect, ... }). ' +
+            'The rubric template keeps this field dependency-light; the proposal and scorecard write paths ' +
+            'validate the live projected-tool/state-cell contract before persisting or executing it.',
+        ),
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal('coverage'),
       scope: z
         .object({
@@ -297,6 +309,22 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
 /** The validated structured-check type — see {@link rubricCriterionCheckSchema}. */
 export type RubricCriterionCheck = z.infer<typeof rubricCriterionCheckSchema>;
 
+/** Structural acceptance role — outcome truth and disclosure about truth are never
+ * interchangeable in coverage or at the ship floor. */
+export const acceptanceCriterionRoleSchema = z.enum(['outcome', 'disclosure']);
+export type AcceptanceCriterionRole = z.infer<typeof acceptanceCriterionRoleSchema>;
+
+/** Lifecycle provenance for a canonical acceptance BAR. Historical criteria omit it;
+ * post-adoption writers distinguish true predeclaration from honest legacy backfill. */
+export const acceptanceBarProvenanceSchema = z
+  .object({
+    lifecycle: z.enum(['pre-implementation', 'legacy-backfilled']),
+    declaredAt: z.string().datetime({ offset: true }),
+    declaredBy: z.string().trim().min(1),
+  })
+  .strict();
+export type AcceptanceBarProvenance = z.infer<typeof acceptanceBarProvenanceSchema>;
+
 /**
  * One gradeable criterion of a rubric. Field-for-field the v1 `RubricCriterion`
  * (rubrics.ts) so the re-pointed store maps templateData → Rubric 1:1 with no drift
@@ -311,6 +339,47 @@ export const rubricCriterionSchema = z
       .describe("stable kebab id; a structured observation's ratings Record is keyed by this"),
     title: z.string().min(1).describe('short human label for the criterion'),
     model: z.string().min(1).describe('how this criterion is supposed to work (the MODEL)'),
+    barKey: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('acceptance-kind only: stable BAR identity, normally the source R-N key'),
+    barHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional()
+      .describe(
+        'acceptance-kind only: server-derived SHA-256 binding key + model/bar text + falsifier + scope + role + pass semantics',
+      ),
+    role: acceptanceCriterionRoleSchema
+      .optional()
+      .describe("acceptance-kind only: 'outcome' is gradeable truth; 'disclosure' can report but never satisfy it"),
+    mandatory: z
+      .boolean()
+      .optional()
+      .describe('acceptance-kind only: whether this outcome belongs to the non-waivable ship floor'),
+    requiredScope: z
+      .array(z.string().trim().min(1))
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('acceptance-kind only: stable scope tokens the BAR promises to cover'),
+    passRatings: z
+      .array(z.string().trim().min(1))
+      .min(1)
+      .max(50)
+      .optional()
+      .describe('acceptance-kind only: explicit rating labels that satisfy this BAR'),
+    coversBarKeys: z
+      .array(z.string().trim().min(1))
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('acceptance disclosure only: outcome BAR keys this criterion reports on'),
+    barProvenance: acceptanceBarProvenanceSchema
+      .optional()
+      .describe('acceptance-kind only: whether the BAR was predeclared or explicitly legacy-backfilled'),
     method: z.string().min(1).describe('how to investigate it (the METHOD: signals / queries)'),
     driftMarkers: z.string().min(1).describe('what a degraded / broken state looks like'),
     ratingScale: z
@@ -574,6 +643,26 @@ export const rubricTemplateDataSchema = z
             });
           }
         }
+        for (const field of [
+          'barKey',
+          'barHash',
+          'role',
+          'mandatory',
+          'requiredScope',
+          'passRatings',
+          'coversBarKeys',
+          'barProvenance',
+        ] as const) {
+          if (c[field] !== undefined) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['criteria', i, field],
+              message:
+                `${field} is acceptance-kind only — a standard criterion's model is reusable guidance, ` +
+                'not a subject-plan BAR',
+            });
+          }
+        }
       });
     } else {
       // kind === 'acceptance'
@@ -680,14 +769,44 @@ export const rubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.superR
   }
 
   d.criteria.forEach((criterion, index) => {
-    if (criterion.driftMarkers?.trim()) return;
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['criteria', index, 'driftMarkers'],
-      message:
-        `acceptance-kind criterion '${criterion.key}' requires non-empty driftMarkers ` +
-        '(the concrete degraded/broken state that falsifies the outcome)',
-    });
+    if (!criterion.driftMarkers?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['criteria', index, 'driftMarkers'],
+        message:
+          `acceptance-kind criterion '${criterion.key}' requires non-empty driftMarkers ` +
+          '(the concrete degraded/broken state that falsifies the outcome)',
+      });
+    }
+
+    const carriesBarContract =
+      criterion.barKey !== undefined ||
+      criterion.barHash !== undefined ||
+      criterion.role !== undefined ||
+      criterion.mandatory !== undefined ||
+      criterion.requiredScope !== undefined ||
+      criterion.passRatings !== undefined ||
+      criterion.coversBarKeys !== undefined ||
+      criterion.barProvenance !== undefined;
+    if (!carriesBarContract) return; // explicit legacy compatibility
+    if (!criterion.model?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['criteria', index, 'model'],
+        message:
+          `acceptance BAR '${criterion.barKey ?? criterion.key}' requires canonical model text; ` +
+          '`bar` is only a wire alias and is never persisted',
+      });
+    }
+    if (!criterion.barHash) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['criteria', index, 'barHash'],
+        message:
+          `acceptance BAR '${criterion.barKey ?? criterion.key}' requires its server-derived barHash; ` +
+          'write through rubrics:propose/amend rather than hand-authoring partial template_data',
+      });
+    }
   });
 });
 
