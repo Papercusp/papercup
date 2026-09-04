@@ -60,7 +60,7 @@ import { getIssue, type EngineerIssue } from '../../issues-engineer';
 import { listScorecards } from '../../scorecards';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { emitScorecard, scorecardEmitArgs } from './emit';
-import evaluateTool, { evaluateScorecard } from './evaluate';
+import evaluateTool, { evaluateScorecard, scorecardEvaluateArgs } from './evaluate';
 import listTool from './list';
 import { collapseCriticsToSoleParty } from './grader-eligibility';
 
@@ -1748,5 +1748,25 @@ describe('scorecards result-shape contract is PUBLISHED, and matches what the co
       );
       expect(returns, `${name} must say it is an OBJECT, not a scalar`).toContain('OBJECT');
     }
+  });
+});
+
+describe('scorecards:evaluate input ownership is explicit', () => {
+  it('keeps emit-only subject strict on evaluate and documents the correct handoff', () => {
+    expect(
+      scorecardEvaluateArgs.safeParse({
+        rubricRef: 'test-rubric',
+        subject: { kind: 'plan', ref: 'test-plan' },
+      }).success,
+    ).toBe(false);
+
+    const evaluate = evaluateTool as unknown as {
+      description?: string;
+      guidance?: { when?: string; chaining?: string };
+    };
+    expect(evaluate.description).toContain('emit-only metadata such as subject');
+    expect(evaluate.guidance?.when).toContain('pass `subject` and other write metadata only to `scorecards:emit`');
+    expect(evaluate.guidance?.chaining).toContain('`subject` is an emit-only field');
+    expect(evaluate.guidance?.chaining).toContain('do not pass it to either evaluate call');
   });
 });
