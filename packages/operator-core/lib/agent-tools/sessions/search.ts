@@ -124,7 +124,10 @@ export default defineTool({
     include_coord: z.boolean().optional().describe('Also search coord messages (what agents said TO EACH OTHER), not just session transcripts. Default false.'),
     harness_slug: z.string().optional(),
     limit: z.number().int().min(1).max(20).optional().describe('Max hits (default 5, max 20).'),
-    context: z.number().int().min(0).max(5).optional().describe('Turns hydrated on EACH side of a hit (default 2).'),
+    // EI-22053600590865118: the serving validator caps this at five; expose
+    // that same boundary so callers can self-correct instead of retrying a
+    // request that the schema already knows will be rejected.
+    context: z.number().int().min(0).max(5).optional().describe('Turns hydrated on EACH side of a hit (default 2; maximum 5).'),
     cursor: z.string().min(1).max(512).optional().describe('Opaque nextCursor from a prior sessions:search call with the same query and filters.'),
     ...searchFilterArgs,
   }),
