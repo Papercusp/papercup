@@ -14,13 +14,14 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import {
-  readFrozenCandidateRepairQueue,
+  readFrozenCandidateRepairQueueState,
   retireFrozenCandidateRepairQueue,
   writeFrozenCandidateRepairQueue,
 } from '../../harness/routines/release-actions';
 import { integrationRoot } from '../../release-deploy-launch';
 import { releaseFixerSpawnAlive } from '../../release/fixer-liveness';
 import {
+  describeUnreadableFrozenCandidateRepairQueue,
   diagnoseFrozenCandidateRepairQueue,
   markFrozenRepairAdmitted,
   type FrozenCandidateRepairQueue,
@@ -76,6 +77,7 @@ export type FrozenRepairFixerAuthorizationStatus =
   | 'wrong-phase'
   | 'queue-unassigned'
   | 'different-fixer'
+  | 'queue-unreadable'
   | 'authorized-delegate';
 
 export interface FrozenRepairFixerAuthorization {
@@ -195,20 +197,22 @@ export function assessFrozenRepairFixerAuthorization(
 
 async function inspectQueue() {
   const queueTarget = target();
-  const queue = await readFrozenCandidateRepairQueue(queueTarget);
+  const read = await readFrozenCandidateRepairQueueState(queueTarget);
+  const queue = read.status === 'value' ? read.queue : null;
   let fixerAlive: boolean | null | undefined;
   if (queue?.fixerSpawnId) {
     fixerAlive = await releaseFixerSpawnAlive(getOrgPg().sql, queue.fixerSpawnId).catch(() => null);
   }
   return {
     target: queueTarget,
+    read,
     queue,
     fixerAlive,
     diagnostic: diagnoseFrozenCandidateRepairQueue(queue, { nowMs: Date.now(), fixerAlive }),
   };
 }
 
-async function inspectFixerLiveness(queue: Awaited<ReturnType<typeof readFrozenCandidateRepairQueue>>) {
+async function inspectFixerLiveness(queue: FrozenCandidateRepairQueue | null) {
   if (!queue?.fixerSpawnId) return null;
   return releaseFixerSpawnAlive(getOrgPg().sql, queue.fixerSpawnId).catch(() => null);
 }
@@ -273,6 +277,7 @@ export default defineTool({
       op: z.enum(['get', 'admit', 'retire']).optional(),
       target: z.unknown().optional(),
       repairQueue: z.unknown().nullable().optional(),
+      repairQueueRead: z.unknown().optional(),
       callerAuthorization: z.unknown().optional(),
       verdict: z.string().optional(),
       admitted: z.boolean().optional(),
@@ -304,18 +309,54 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     const inspected = await inspectQueue();
-    const callerAuthorization = assessFrozenRepairFixerAuthorization(inspected.queue, {
-      role: ctx.role,
-      spawnId: ctx.spawnId,
-      sigVerifiedSpawn: ctx.sigVerifiedSpawn,
-      isSuperuser: ctx.isSuperuser,
-    });
+    const compactRead = inspected.read.status === 'value'
+      ? { status: 'value' as const, schemaVersion: inspected.read.queue.schemaVersion }
+      : inspected.read;
+    const renderedQueue = inspected.read.status === 'unreadable'
+      ? inspected.read
+      : inspected.diagnostic;
+    const callerAuthorization: FrozenRepairFixerAuthorization =
+      inspected.read.status === 'unreadable'
+        ? {
+            status: 'queue-unreadable',
+            authorized: false,
+            callerSpawnId: typeof ctx.spawnId === 'string' && ctx.spawnId.trim() ? ctx.spawnId.trim() : null,
+            queueFixerSpawnId: null,
+            safeAction:
+              `STOP: ${describeUnreadableFrozenCandidateRepairQueue(inspected.read)}. ` +
+              'Do not infer that the queue is clear; use a reader that understands this schema.',
+          }
+        : assessFrozenRepairFixerAuthorization(inspected.queue, {
+            role: ctx.role,
+            spawnId: ctx.spawnId,
+            sigVerifiedSpawn: ctx.sigVerifiedSpawn,
+            isSuperuser: ctx.isSuperuser,
+          });
     if (args.op === 'get') {
       return json({
         ok: true,
         op: 'get',
         target: inspected.target,
-        repairQueue: inspected.diagnostic,
+        repairQueue: renderedQueue,
+        repairQueueRead: compactRead,
+        callerAuthorization,
+      });
+    }
+    if (inspected.read.status === 'unreadable') {
+      const op = args.op === 'retire' ? 'retire' : 'admit';
+      return json({
+        ok: false,
+        op,
+        ...(op === 'retire' ? { retired: false } : { admitted: false }),
+        refused: true,
+        verdict: 'refused',
+        reason: 'repair-queue-unreadable',
+        detail:
+          `${describeUnreadableFrozenCandidateRepairQueue(inspected.read)}; ` +
+          'no queue mutation or moving-tip fallback was attempted',
+        target: inspected.target,
+        repairQueue: inspected.read,
+        repairQueueRead: compactRead,
         callerAuthorization,
       });
     }
@@ -329,6 +370,7 @@ export default defineTool({
         target: inspected.target,
         source: { ref: branch, root },
         repairQueue: inspected.diagnostic,
+        repairQueueRead: compactRead,
         callerAuthorization,
       };
       if (!queue) {
