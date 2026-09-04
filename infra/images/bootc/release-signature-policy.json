@@ -24,6 +24,24 @@
     "COUPLING (D-262 condition 3): this policy and P-308's signing are ONE unit. Shipping this",
     "without the signature bricks upgrades; shipping the signature without this verifies nothing.",
     "",
+    "SIGNED-IDENTITY IS matchRepository ON PURPOSE, AND MUST NOT BE 'TIGHTENED' (D-287).",
+    "cosign v2.4.1 signing an image BY DIGEST records `critical.identity.docker-reference` as the",
+    "BARE REPOSITORY (measured: '<host>/papercusp/workspace-host' — no tag, no digest), and its",
+    "`sign` subcommand has NO --sign-identity flag to change that. So matchRepoDigestOrExact",
+    "REJECTS our own correctly signed image with 'Signature for identity ... is not accepted'.",
+    "This file USED to say matchRepoDigestOrExact; it would have failed on the first real host.",
+    "That is not a weakening: the scope key below already pins the repository, signatures are",
+    "discovered per-DIGEST (a sha256-<digest>.sig attachment), and the key check is real — a wrong",
+    "key fails with 'cryptographic signature verification failed'. matchRepository relaxes only the",
+    "recorded docker-reference field, which cosign fills with that same repository anyway.",
+    "",
+    "⛔ THIS POLICY IS INERT WITHOUT use-sigstore-attachments (D-287). On the docker: transport",
+    "containers/image does not even LOOK for a cosign signature unless the registry is listed in",
+    "/etc/containers/registries.d/ with `use-sigstore-attachments: true`. Without it a correctly",
+    "signed image reports 'A signature was required, but no signature exists' — byte-identical to",
+    "the message an UNSIGNED image produces. The image ships that fragment; see Containerfile",
+    "layer 3. Deleting it does not loosen the gate, it silently breaks every upgrade.",
+    "",
     "The `default: reject` below is load-bearing. Do NOT soften it to insecureAcceptAnything to",
     "make an unrelated pull work — add a narrow transport entry for that specific source instead."
   ],
@@ -36,7 +54,7 @@
         {
           "type": "sigstoreSigned",
           "keyPath": "/etc/pki/papercusp/release-signing.pub",
-          "signedIdentity": { "type": "matchRepoDigestOrExact" }
+          "signedIdentity": { "type": "matchRepository" }
         }
       ],
       "registry.access.redhat.com": [

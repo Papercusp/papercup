@@ -1,0 +1,28 @@
+# P-306 / D-287 — the half that makes the signature policy DO anything.
+#
+# `release-signature-policy.json` says a release image must carry a valid sigstore
+# signature. On the `docker:` transport, containers/image will not even LOOK for that
+# signature unless the registry appears here with `use-sigstore-attachments: true`.
+#
+# MEASURED (p308-cosign-policy-interop-probe.sh, 2026-09-04): with this file absent, a
+# correctly cosign-signed image is refused with
+#
+#     Source image rejected: A signature was required, but no signature exists
+#
+# which is the SAME message an UNSIGNED image produces. So the missing setting does not
+# look like a configuration gap — it looks like the signature was never made. That is why
+# the probe asserts the three refusal messages are DISTINCT from one another:
+#   no attachments configured -> "no signature exists"   (looks like B, but isn't)
+#   genuinely unsigned        -> "no signature exists"
+#   wrong key                 -> "cryptographic signature verification failed"
+#   wrong identity            -> "Signature for identity ... is not accepted"
+#
+# Direction of failure: FAIL-CLOSED. Omitting this file never admits an unsigned image; it
+# makes every upgrade fail instead. Safe, and completely opaque — hence this comment.
+#
+# `<RELEASE_REGISTRY_NAMESPACE>` is the same placeholder the policy uses and is P-307's to
+# establish. The registry key here is a HOST[:PORT], not a repository path, so when P-307
+# substitutes it, this file takes only the host part of that namespace.
+docker:
+  <RELEASE_REGISTRY_NAMESPACE>:
+    use-sigstore-attachments: true
