@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
 import { GOAL_SPEND_SNAPSHOT_SOURCE, goalSpend } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
+import type { PapercuspUnifiedToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
 import { HARNESS_SLUG_RE, isWildcardScopeToken } from '@papercusp/operator-core/lib/harness-slug';
 import {
@@ -199,7 +200,8 @@ const goalUpdateTool = defineTool({
       degraded: z.unknown().optional(),
     })
     .passthrough(),
-  async handler(args, ctx) {
+  async handler(args, ctx: PapercuspUnifiedToolContext) {
+    const tx = ctx.tx!;
     // ── The criterion gate (P-009) ───────────────────────────────────────────
     //
     // BEFORE the read, because it needs no row and a refusal should cost
@@ -256,7 +258,7 @@ const goalUpdateTool = defineTool({
       };
     }
 
-    const existing = await ctx.tx<
+    const existing = await tx<
       Array<{
         workspace_id: string;
         install_slug: string;
@@ -284,7 +286,7 @@ const goalUpdateTool = defineTool({
     // Missing legacy identity stays the pre-existing unattributable system path,
     // but any real agent identity must prove it is not an expired GOAL holder.
     try {
-      await assertGoalWriteAuthorityForCaller(ctx, prev.workspace_id, ctx.tx as unknown as Sql);
+      await assertGoalWriteAuthorityForCaller(ctx, prev.workspace_id, tx as unknown as Sql);
     } catch (error) {
       if (isGoalHolderAuthorityError(error)) {
         return {
@@ -301,7 +303,7 @@ const goalUpdateTool = defineTool({
     }
     let previousBlockedBy: string[] | null = null;
     if (args.blockedBy !== undefined) {
-      const edges = await readGoalBlockedByEdges(ctx.tx, prev.workspace_id);
+      const edges = await readGoalBlockedByEdges(tx, prev.workspace_id);
       previousBlockedBy = sortedRefs((edges.get(args.id) ?? []).map((edge) => edge.ref));
     }
 
@@ -316,7 +318,7 @@ const goalUpdateTool = defineTool({
     let measuredSpendCents: number | undefined;
     if (args.spentCents !== undefined) {
       const workspaceId = await resolveGoalWorkspace({
-        tx: ctx.tx,
+        tx,
         workspaceId: ctx.principal?.workspaceId,
       });
       if (!workspaceId) {
@@ -328,7 +330,7 @@ const goalUpdateTool = defineTool({
           ],
         };
       }
-      const spend = await goalSpend(ctx.tx as Sql, { workspaceId, goalId: args.id });
+      const spend = await goalSpend(tx as Sql, { workspaceId, goalId: args.id });
       if (!spend.measured || !Number.isFinite(spend.costUsd)) {
         return {
           data: null,
@@ -434,7 +436,7 @@ const goalUpdateTool = defineTool({
       metadata: Object.keys(pauseMetadata).length ? JSON.stringify(pauseMetadata) : null,
     };
 
-    await ctx.tx`
+    await tx`
       UPDATE harness_shared.goals
          SET title          = ${next.title},
              body           = ${next.body},
@@ -464,7 +466,7 @@ const goalUpdateTool = defineTool({
        omitted-vs-explicitly-null distinction `parentId` and `tripwires` make. */
     let launchSettingsError: string | null = null;
     if (args.launchSettings !== undefined) {
-      const w = await writeGoalLaunchSettings(args.id, args.launchSettings, ctx.tx);
+      const w = await writeGoalLaunchSettings(args.id, args.launchSettings, tx);
       if (!w.ok) launchSettingsError = `launch settings NOT saved: ${w.error ?? 'unknown error'}`;
     }
 
@@ -482,7 +484,7 @@ const goalUpdateTool = defineTool({
        written rather than into the one it replaced. */
     let holderError: string | null = null;
     if (args.holder !== undefined) {
-      const w = await declareGoalHolderPolicy(args.id, args.holder, ctx.tx);
+      const w = await declareGoalHolderPolicy(args.id, args.holder, tx);
       if (!w.ok) holderError = `holder policy NOT saved: ${w.error ?? 'unknown error'}`;
     }
 
@@ -496,13 +498,13 @@ const goalUpdateTool = defineTool({
     let blockedByApplied: string[] | null = null;
     if (args.blockedBy !== undefined) {
       const workspaceId = await resolveGoalWorkspace({
-        tx: ctx.tx,
+        tx,
         workspaceId: ctx.principal?.workspaceId,
       });
       if (!workspaceId) {
         blockedByError = 'blockedBy NOT saved: no concrete workspace in scope to resolve the refs against';
       } else {
-        const applied = await applyGoalBlockedBy(ctx.tx, {
+        const applied = await applyGoalBlockedBy(tx, {
           workspaceId,
           goalId: args.id,
           refs: args.blockedBy ?? [],
@@ -513,7 +515,7 @@ const goalUpdateTool = defineTool({
       }
     }
 
-    const [row] = await ctx.tx<
+    const [row] = await tx<
       Array<{
         id: string;
         workspace_id: string;
@@ -563,7 +565,7 @@ const goalUpdateTool = defineTool({
       }
       if (changes.length > 0) {
         const callerReason = args.reason?.trim();
-        await appendGoalHistory(ctx.tx, {
+        await appendGoalHistory(tx, {
           workspaceId: row.workspace_id,
           goalId: args.id,
           author: ctx.uiClientId ?? ctx.principal?.slug ?? ctx.role ?? 'unknown',
@@ -598,7 +600,7 @@ const goalUpdateTool = defineTool({
         // explicitly rather than the whole ctx. The GUC still wins inside the
         // resolver; this is only the fallback leg.
         const workspaceId = await resolveGoalWorkspace({
-          tx: ctx.tx,
+          tx,
           workspaceId: ctx.principal?.workspaceId,
         });
         if (!workspaceId) {

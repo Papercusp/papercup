@@ -5,6 +5,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import type { PapercuspUnifiedToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { appendGoalHistory } from './history';
 
@@ -35,15 +36,16 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_WRITE_ROLES, 'blender'],
   args: goalEvidenceArgs,
-  async handler(args, ctx) {
-    const rows = await ctx.tx<Array<{ workspace_id: string }>>`
+  async handler(args, ctx: PapercuspUnifiedToolContext) {
+    const tx = ctx.tx!;
+    const rows = await tx<Array<{ workspace_id: string }>>`
       SELECT workspace_id FROM harness_shared.goals WHERE id = ${args.goalId} LIMIT 1
     `;
     if (!rows.length) {
       return { data: null, degraded: true, degradedReasons: [`goal ${args.goalId} not found`] };
     }
     const author = ctx.uiClientId ?? ctx.principal?.slug ?? ctx.role ?? 'unknown';
-    const entry = await appendGoalHistory(ctx.tx, {
+    const entry = await appendGoalHistory(tx, {
       workspaceId: rows[0]!.workspace_id,
       goalId: args.goalId,
       author,

@@ -9,7 +9,7 @@ import { useLexicon } from '@/lib/useLexicon';
 import { openFeatureChat } from '@papercusp/papercusp-shared';
 import type { Issue, IssueNote } from '@papercusp/operator-core/lib/harness/issue-types';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
-import { StatusPill, SeverityPill, IssueStatusPill, AgentKindPill } from '../../harness/primitives';
+import { StatusPill, SeverityPill, IssueStatusPill, AgentKindPill, KindPill } from '../../harness/primitives';
 import { SEVERITY, type HarnessStatus, type IssueSeverityKey } from '../../harness/theme';
 import { Select } from '../../harness/Select';
 import { Tooltip } from '../../harness/Tooltip';
@@ -536,7 +536,7 @@ export function WorkItemDetail({
     [
       'Kind',
       <>
-        <span className="pc-adv-detail__kind-chip">{workItem.kind}</span>{' '}
+        <KindPill kind={workItem.kind} size="xs" />{' '}
         <span className="pc-adv-detail__muted">({workItem.family} family)</span>
       </>,
     ],
@@ -1943,17 +1943,6 @@ function DetailStyles() {
         text-transform: uppercase;
         letter-spacing: 0;
         color: var(--fg-mute, #7f9bb4);
-      }
-      .pc-adv-detail__kind-chip {
-        font-size: 9.5px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0;
-        padding: 1px 5px;
-        border-radius: 4px;
-        background: var(--bg-3, rgba(255, 255, 255, 0.075));
-        color: var(--fg-mute, #7f9bb4);
-        white-space: nowrap;
       }
       /* Hairline rhythm between stacked sections — scannability without cards. */
       .pc-adv-detail__section + .pc-adv-detail__section {

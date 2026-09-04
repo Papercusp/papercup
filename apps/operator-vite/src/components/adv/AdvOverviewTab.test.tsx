@@ -327,7 +327,9 @@ describe('AdvOverviewTab component', () => {
       refresh: vi.fn(),
     };
     render(<AdvOverviewTab />);
-    expect(screen.getByText('Auth refactor')).toBeTruthy();
+    const authTitle = screen.getByText('Auth refactor');
+    expect(authTitle).toBeTruthy();
+    expect(getComputedStyle(authTitle).textAlign).toBe('left');
     expect(screen.getByText('In flight')).toBeTruthy();
     expect(screen.queryByText('Old')).toBeNull();
     // both visible plans carry the same 2/4 item counts

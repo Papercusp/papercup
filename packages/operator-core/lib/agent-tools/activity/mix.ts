@@ -10,6 +10,7 @@
 
 import { z } from 'zod';
 import { AGENT_ROLES, defineTool } from '@papercusp/agent-mcp';
+import type { PapercuspUnifiedToolContext } from '../_tool-context';
 import { automaticToolInvocationPredicate, dispatchWrapperExclusionPredicate } from '../sessions/automatic-tool-names';
 import { resolveAgentIdentity } from '../coordination/identity';
 
@@ -344,7 +345,8 @@ export default defineTool({
     until: isoBoundary.optional(),
     maxRows: z.number().int().positive().max(2000).optional().describe('Bounded raw-row limit; default 2000.'),
   }),
-  async handler(args, ctx) {
+  async handler(args, ctx: PapercuspUnifiedToolContext) {
+    const tx = ctx.tx!;
     const identity = resolveAgentIdentity(ctx);
     const owner = args.owner === 'self' ? identity.ownerId : args.owner;
     if (!owner) {
@@ -356,9 +358,9 @@ export default defineTool({
       : new Date(Date.parse(until) - 24 * 60 * 60 * 1000).toISOString();
     const maxRows = args.maxRows ?? 2000;
     const workspace = ctx.workspaceId;
-    const automatic = automaticToolInvocationPredicate(ctx.tx, 'ti');
-    const wrapper = dispatchWrapperExclusionPredicate(ctx.tx, 'ti');
-    const rows = await ctx.tx<ActivityMixRow[]>`
+    const automatic = automaticToolInvocationPredicate(tx, 'ti');
+    const wrapper = dispatchWrapperExclusionPredicate(tx, 'ti');
+    const rows = await tx<ActivityMixRow[]>`
       SELECT extract(epoch FROM ti.invoked_at)::float8 AS ts,
              ti.tool_name,
              ti.args_json,

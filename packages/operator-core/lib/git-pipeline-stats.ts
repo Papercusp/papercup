@@ -35,10 +35,13 @@ import { evaluateGateVerdictFreshness, type GateVerdictFreshness } from './relea
 import { describeGateRedOwnership, gateFailureSignature, type GateRedOwnership } from './release/gate-red-ownership';
 import { releaseFixerSpawnAlive } from './release/fixer-liveness';
 import {
+  describeUnreadableFrozenCandidateRepairQueue,
   diagnoseFrozenCandidateRepairQueue,
   buildFrozenRepairStatusIdentity,
   parseFrozenCandidateRepairQueue,
+  parseFrozenCandidateRepairQueueRead,
   parseFrozenRepairConvergence,
+  type FrozenCandidateRepairQueueRead,
   type FrozenRepairQueueDiagnostic,
   type StoredFrozenRepairConvergence,
 } from './release/frozen-candidate-repair-queue';
@@ -52,6 +55,11 @@ import {
   type CheckpointQualificationState,
 } from './release/checkpoint-qualification-transaction';
 import type { CheckpointProcessAuthorityReading, CheckpointSystemdProbe } from './release-checkpoint-launch';
+
+/** Compact read health projected beside the normalized queue diagnostic. */
+export type FrozenRepairQueueReadProjection =
+  | { status: 'value'; schemaVersion: number }
+  | Exclude<FrozenCandidateRepairQueueRead, { status: 'value' }>;
 
 /** The operator's own integration harness (its git-sync/release routines). */
 const DEFAULT_SLUG = process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
@@ -269,6 +277,11 @@ export interface GitPipelineSnapshot {
     /** EI-21433366079878122: normalized persisted queue state, including live-fixer and
      * exact-CAS retirement guidance. Null means the routine row carries no readable queue. */
     repairQueue?: FrozenRepairQueueDiagnostic | null;
+    /**
+     * P-025: whether the persisted queue was read, absent, or present-but-unreadable.
+     * A newer schema must never disappear behind the compatibility `repairQueue: null`.
+     */
+    repairQueueRead?: FrozenRepairQueueReadProjection;
     /** P-007: one typed, routine-owned logical qualification view. */
     qualification?: CheckpointQualificationState;
     /**
@@ -1393,7 +1406,13 @@ export async function gitPipelineSnapshot(
     });
   }
 
-  const persistedRepairQueue = parseFrozenCandidateRepairQueue(gcMeta.repair_queue);
+  const persistedRepairQueueRead = parseFrozenCandidateRepairQueueRead(gcMeta.repair_queue);
+  const persistedRepairQueue =
+    persistedRepairQueueRead.status === 'value' ? persistedRepairQueueRead.queue : null;
+  const repairQueueRead: FrozenRepairQueueReadProjection =
+    persistedRepairQueueRead.status === 'value'
+      ? { status: 'value', schemaVersion: persistedRepairQueueRead.queue.schemaVersion }
+      : persistedRepairQueueRead;
   let repairQueueFixerAlive: boolean | null | undefined;
   if (persistedRepairQueue?.fixerSpawnId) {
     repairQueueFixerAlive = await releaseFixerSpawnAlive(
@@ -1405,6 +1424,21 @@ export async function gitPipelineSnapshot(
     nowMs: Date.now(),
     fixerAlive: repairQueueFixerAlive,
   });
+  const storedFreezeAndConverge = readFreezeAndConverge(gateHealth);
+  const freezeAndConverge =
+    persistedRepairQueueRead.status === 'unreadable'
+      ? {
+          enabled: storedFreezeAndConverge?.enabled ?? true,
+          state: 'unreadable' as const,
+          reason:
+            `${describeUnreadableFrozenCandidateRepairQueue(persistedRepairQueueRead)}; ` +
+            'refusing to report the queue as absent or freeze state none',
+          candidate: null,
+          holdUntilMs: null,
+          capacityRetryAtMs: null,
+          observedAtMs: Date.now(),
+        }
+      : storedFreezeAndConverge;
 
   // P-001: "judging vs idle" — probe the live checkpoint unit ONLY when opted in
   // (the dev.gitPipeline derived-read producer; see the interface note). Best-effort:
@@ -1562,11 +1596,12 @@ export async function gitPipelineSnapshot(
       // than as a half-populated abort a consumer would render with empty fields.
       inconclusive: gateInconclusive,
       repairQueue,
+      repairQueueRead,
       qualification,
       // P-004: shape-checked by the reader, never cast — a blob predating this field, or one
       // written by a version that shaped it differently, must read as "not measured" rather
       // than as a half-populated disposition a consumer would render as fact.
-      freezeAndConverge: readFreezeAndConverge(gateHealth),
+      freezeAndConverge,
       // P-004: same shape-checked discipline as the disposition above. The writer CLEARS
       // this to JSON null when a cycle retires, so an absent/null/unrecognized blob must
       // read as "not measured" rather than as a convergence summary with holes in it.

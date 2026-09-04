@@ -9,6 +9,9 @@
  * bug. So this file is deliberately `// @ts-expect-error`-driven: it fails
  * `npm run typecheck` (not `npm test`) if the binding regresses.
  */
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import * as ts from 'typescript';
 import { describe, it, expect } from 'vitest';
 import type { PapercuspToolContext, PapercuspUnifiedToolContext } from './_tool-context';
 
@@ -17,7 +20,74 @@ interface Row {
   count: number;
 }
 
+const REPO_ROOT = join(import.meta.dirname, '../../../..');
+
+function sourceFilesUnder(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return sourceFilesUnder(path);
+    return entry.isFile() && /\.[cm]?tsx?$/.test(entry.name) && !entry.name.endsWith('.d.ts')
+      ? [path]
+      : [];
+  });
+}
+
+function isFunctionLikeNode(node: ts.Node): node is ts.FunctionLikeDeclaration {
+  return ts.isFunctionDeclaration(node)
+    || ts.isMethodDeclaration(node)
+    || ts.isFunctionExpression(node)
+    || ts.isArrowFunction(node)
+    || ts.isConstructorDeclaration(node)
+    || ts.isGetAccessorDeclaration(node)
+    || ts.isSetAccessorDeclaration(node);
+}
+
+function untypedGenericCtxTxUses(file: string): string[] {
+  const source = ts.createSourceFile(
+    file,
+    readFileSync(file, 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const failures: string[] = [];
+
+  function visit(node: ts.Node): void {
+    if (
+      ts.isCallExpression(node)
+      && Boolean(node.typeArguments?.length)
+      && ts.isPropertyAccessExpression(node.expression)
+      && ts.isIdentifier(node.expression.expression)
+      && node.expression.expression.text === 'ctx'
+      && node.expression.name.text === 'tx'
+    ) {
+      let owner: ts.Node | undefined = node.parent;
+      while (owner && !isFunctionLikeNode(owner)) owner = owner.parent;
+      const ctxParam = owner && isFunctionLikeNode(owner)
+        ? owner.parameters.find((param) => ts.isIdentifier(param.name) && param.name.text === 'ctx')
+        : undefined;
+      if (!ctxParam?.type) {
+        const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
+        failures.push(`${relative(REPO_ROOT, file)}:${line + 1}:${character + 1}`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(source);
+  return failures;
+}
+
 describe('_tool-context — ctx.tx<T> actually binds T (EI-10968)', () => {
+  it('rejects generic ctx.tx calls whose containing ctx parameter is untyped', () => {
+    const files = [
+      ...sourceFilesUnder(join(REPO_ROOT, 'packages/operator-core/lib/agent-tools')),
+      ...sourceFilesUnder(join(REPO_ROOT, 'packages/agent-mcp/src')),
+    ];
+    const failures = files.flatMap(untypedGenericCtxTxUses);
+    expect(failures, 'Annotate ctx with a Papercusp context alias before using ctx.tx<T>').toEqual([]);
+  });
+
   it('PapercuspUnifiedToolContext: ctx.tx<Row[]> types the awaited result as Row[], not any', () => {
     async function _typeOnly(ctx: PapercuspUnifiedToolContext) {
       const rows = await ctx.tx!<Row[]>`SELECT 1`;

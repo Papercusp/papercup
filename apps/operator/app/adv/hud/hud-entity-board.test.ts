@@ -881,6 +881,7 @@ describe('cards', () => {
       NOW,
     );
     expect(card.badges.map((b) => b.label)).toEqual(['bug', 'critical', 'su-709bb0d6']);
+    expect(card.badges[0].workItemKind).toBe('bug');
     expect(card.badges.find((b) => b.label === 'critical')!.tone).toBe('bad');
   });
 

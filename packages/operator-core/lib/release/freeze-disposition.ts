@@ -24,7 +24,10 @@
  * This module performs no git, filesystem, database, or process work.
  */
 
-import type { FrozenCandidateRepairQueueRead } from './frozen-candidate-repair-queue';
+import {
+  describeUnreadableFrozenCandidateRepairQueue,
+  type FrozenCandidateRepairQueueRead,
+} from './frozen-candidate-repair-queue';
 
 /**
  * What the gate did with freeze-and-converge on this tick.
@@ -170,12 +173,11 @@ export function deriveTickFreezeDisposition(
   }
   if (observation.repairQueueRead?.status === 'unreadable') {
     const read = observation.repairQueueRead;
-    const schema = read.schemaVersion === null ? 'unknown' : String(read.schemaVersion);
     return {
       enabled: true,
       state: 'unreadable',
       reason:
-        `a persisted frozen repair queue is unreadable (${read.reason}, schema ${schema}); ` +
+        `${describeUnreadableFrozenCandidateRepairQueue(read)}; ` +
         'refusing to conclude that no candidate is frozen or to cut a moving candidate',
       candidate: null,
     };

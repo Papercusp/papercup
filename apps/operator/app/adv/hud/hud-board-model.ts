@@ -414,6 +414,8 @@ export interface HudBadge {
   id: string;
   label: string;
   tone: BadgeTone;
+  /** Work-item kind badges render through the canonical icon-bearing KindPill. */
+  workItemKind?: string;
   /** Hover text — the full explanation the short label compresses. */
   title?: string;
   /** 'mode' = a standing mode (rendered always, exempt from the chip cap);

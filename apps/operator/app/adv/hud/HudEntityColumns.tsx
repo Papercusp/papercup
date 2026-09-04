@@ -33,6 +33,7 @@ import { memo, type ReactNode } from 'react';
 import { RowBoundary, SectionBoundary } from '@/app/_components/RenderBoundary';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { Combobox, type ComboboxOption } from '@/app/harness/Combobox';
+import { KindPill } from '@/app/harness/primitives';
 import { formatAge, type HudBadge } from './hud-board-model';
 import HudSearchBox from './HudSearchBox';
 import {
@@ -341,7 +342,9 @@ function EntityCardBody({
               {chips.length > 0 ? (
                 <span className="hud__chips">
                   {chips.map((b) =>
-                    b.title ? (
+                    b.workItemKind ? (
+                      <KindPill key={b.id} kind={b.workItemKind} size="xs" />
+                    ) : b.title ? (
                       <Tooltip key={b.id} label={b.title}>
                         <span className={`hud__chip ${CHIP_TONE_CLASS[b.tone]}`}>{b.label}</span>
                       </Tooltip>

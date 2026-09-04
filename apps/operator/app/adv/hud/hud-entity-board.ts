@@ -1790,7 +1790,7 @@ export function toBadgeTone(tone: string | undefined | null): BadgeTone {
 export function toWorkItemCard(item: HudWorkItemInput, nowMs: number): HudEntityCard {
   const column = workItemColumn(item.state);
   const badges: HudBadge[] = [
-    { id: `${item.id}:kind`, label: item.kind, tone: 'neutral' },
+    { id: `${item.id}:kind`, label: item.kind, tone: 'neutral', workItemKind: item.kind },
   ];
   if (item.severity) {
     badges.push({

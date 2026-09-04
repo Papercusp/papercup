@@ -21,6 +21,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import type { PapercuspUnifiedToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
 import {
   goalHolderPolicyProblem,
@@ -147,13 +148,14 @@ export default defineTool({
       kickoff_consult: z.unknown().optional(),
     })
     .passthrough(),
-  async handler(args, ctx) {
+  async handler(args, ctx: PapercuspUnifiedToolContext) {
+    const tx = ctx.tx!;
     // The table declares workspace_id NOT NULL with a CHECK (workspace_id <> ''),
     // so — unlike harness_text_artifacts, whose blank-stamp fallback minted the
     // legacy rows EI-280 had to repair — there is no safe empty default here.
     // Resolve GUC-first, then ctx, and REFUSE rather than write a row the
     // constraint would reject with a less legible error.
-    const [gucRow] = await ctx.tx<Array<{ ws: string | null }>>`
+    const [gucRow] = await tx<Array<{ ws: string | null }>>`
       SELECT NULLIF(current_setting('app.workspace_id', true), '') AS ws
     `;
     const workspaceId =
@@ -167,7 +169,7 @@ export default defineTool({
         ],
       };
     }
-    await assertGoalWriteAuthorityForCaller(ctx, workspaceId, ctx.tx as never);
+    await assertGoalWriteAuthorityForCaller(ctx, workspaceId, tx as never);
     // EI-21563406996333542: the line above deliberately rejects the wildcard for
     // workspaceId; this one used to take `ctx.harnessSlug` RAW, so a session in
     // workspace-global scope wrote `install_slug = '*'`. That was accepted here and
@@ -258,7 +260,7 @@ export default defineTool({
       try {
         // Same predicate the provenance stamp below uses — one definition of
         // "this caller is running GOAL mode".
-        const modeRows = await ctx.tx<Array<{ owner_id: string }>>`
+        const modeRows = await tx<Array<{ owner_id: string }>>`
           SELECT owner_id
             FROM harness_shared.agent_modes
            WHERE workspace_id = ${workspaceId}
@@ -384,7 +386,7 @@ export default defineTool({
     // against a declaration that cannot be checked.
     if (args.propertySchema) {
       const propCheck = await validatePropertySchemaDeclaration(
-        ctx.tx as never,
+        tx as never,
         workspaceId,
         args.propertySchema,
       );
@@ -398,7 +400,7 @@ export default defineTool({
     }
 
     const id = goalId(args.title);
-    await insertGoalRow(ctx.tx, {
+    await insertGoalRow(tx, {
       id,
       installSlug,
       workspaceId,
@@ -422,7 +424,7 @@ export default defineTool({
     let blockedByProblem: string | null = null;
     let blockedByApplied: string[] = [];
     if (args.blockedBy?.length) {
-      const applied = await applyGoalBlockedBy(ctx.tx, {
+      const applied = await applyGoalBlockedBy(tx, {
         workspaceId,
         goalId: id,
         refs: args.blockedBy,
@@ -452,7 +454,7 @@ export default defineTool({
     let modeSubjectStamped = false;
     if (callerOwnerId) {
       try {
-        const stamped = await ctx.tx<Array<{ owner_id: string }>>`
+        const stamped = await tx<Array<{ owner_id: string }>>`
           UPDATE harness_shared.agent_modes
              SET subject = ${id}
            WHERE workspace_id = ${workspaceId}

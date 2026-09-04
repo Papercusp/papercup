@@ -78,6 +78,14 @@ function renderDetail(searchParams = '') {
 }
 
 describe('WorkItemDetail chat affordance', () => {
+  it('renders the canonical icon-bearing kind pill in the detail metadata', () => {
+    renderDetail();
+
+    const label = screen.getByText('Feature');
+    expect(label.parentElement?.querySelector('svg')).not.toBeNull();
+    expect(screen.queryByText(/^feature$/)).toBeNull();
+  });
+
   it('renders a Chat action that opens a discuss-mode worker chat for the item', async () => {
     openFeatureChat.mockResolvedValue({ chatId: 'chat-1' });
     renderDetail();

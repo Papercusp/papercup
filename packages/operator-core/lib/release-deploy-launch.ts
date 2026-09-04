@@ -293,6 +293,8 @@ export interface DeployStatus {
     failingTestsCarriedForward?: boolean | null;
     /** Normalized persisted frozen-repair queue; null/absent means no readable queue. */
     repairQueue?: GitPipelineSnapshot['gate']['repairQueue'];
+    /** P-025: explicit value/absent/unreadable state for the persisted queue read. */
+    repairQueueRead?: GitPipelineSnapshot['gate']['repairQueueRead'];
     /** WI-2141736 P-004: freeze-and-converge's own state + reason. Null = NOT MEASURED. */
     freezeAndConverge?: GitPipelineSnapshot['gate']['freezeAndConverge'];
     /** EI-10902: the most recent green-checkpoint TICK, from the append-only pipeline-events
@@ -758,6 +760,7 @@ export function computeDeployStatus(
       failingTestsMeasured,
       failingTestsCarriedForward,
       repairQueue: g.repairQueue ?? null,
+      repairQueueRead: g.repairQueueRead,
       // WI-2141736 P-004: the freeze's own state, for the case `repairQueue: null` cannot
       // distinguish — owner-suppressed, just-retired, or genuinely nothing frozen.
       freezeAndConverge: g.freezeAndConverge ?? null,

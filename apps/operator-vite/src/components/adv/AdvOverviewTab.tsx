@@ -1217,6 +1217,7 @@ export default function AdvOverviewTab() {
         .pc-overview__plan-title {
           flex: 1; min-width: 0;
           font-size: 12px; font-weight: 600; color: var(--fg, #e7f7ff);
+          text-align: left;
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .pc-overview__plan-frac { font-size: 10.5px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }

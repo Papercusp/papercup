@@ -142,6 +142,14 @@ describe('HudEntityColumns notice', () => {
 });
 
 describe('HudEntityColumns rendering', () => {
+  it('renders work-item kinds with the canonical icon-bearing pill', () => {
+    renderCols({}, { items: [item({ kind: 'change' })], asks: [] });
+
+    const label = screen.getByText('Change');
+    expect(label.parentElement?.querySelector('svg')).not.toBeNull();
+    expect(screen.queryByText(/^change$/)).toBeNull();
+  });
+
   it('renders all five columns, including empty ones', () => {
     renderCols({}, { items: [item()], asks: [] });
     for (const label of ['Needs you', 'Working', 'Blocked', 'Ready', 'Done']) {
