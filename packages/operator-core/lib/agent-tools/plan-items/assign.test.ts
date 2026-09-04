@@ -130,6 +130,38 @@ describe('plan_items:assign fleet admission', () => {
     expect(admission.notify).not.toHaveBeenCalled();
   });
 
+  it('keeps the refusal when the linked work-item also fails by-id admission', async () => {
+    admission.decision = {
+      allowed: false,
+      scoped: true,
+      code: 'fleet_scope_violation',
+      reason: 'plan subject is outside the fleet scope',
+      scope: { fleetSlug: 'exact-id', ownerId: 'su-member', fleetRole: 'member', record: { spec: { specId: 'exact-id', revision: 3 } } },
+    };
+    admission.findLinked.mockResolvedValue({ id: 'WI-out-of-scope', harness: 'papercusp' } as never);
+    admission.linkedDecision = {
+      allowed: false,
+      scoped: true,
+      code: 'fleet_scope_violation',
+      reason: 'linked work-item is outside the exact-id fleet scope',
+      scope: admission.decision.scope,
+    };
+
+    const b = await body({ plan: 'ops', item: 'P-001', assignee: 'builder' });
+
+    expect(b.results[0]).toMatchObject({ ok: false, plan: 'ops', item: 'P-001' });
+    expect(b.results[0].refused).toMatch(/fleet_scope_violation/);
+    expect(findLinkedM).toHaveBeenCalledWith('ops', 'P-001');
+    expect(linkedAdmissionM).toHaveBeenCalledWith({
+      target: 'builder',
+      workItemId: 'WI-out-of-scope',
+      harness: 'papercusp',
+      workspaceId: 'ws-1',
+    });
+    expect(admission.notify).toHaveBeenCalledOnce();
+    expect(assignM).not.toHaveBeenCalled();
+  });
+
   it('does not use the linked-work-item fallback for other refusal codes', async () => {
     admission.decision = {
       allowed: false,
