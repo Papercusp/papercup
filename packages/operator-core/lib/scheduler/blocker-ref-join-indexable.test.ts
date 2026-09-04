@@ -40,6 +40,11 @@ import { resolve } from 'node:path';
 const WORK_ITEMS_SRC = process.env.PROBE_WORK_ITEMS_SRC
   ? resolve(process.env.PROBE_WORK_ITEMS_SRC)
   : resolve(__dirname, '..', 'work-items.ts');
+const MIGRATION_1087_SRC = resolve(
+  __dirname,
+  '../../../..',
+  'libs/papercusp/libs/db/sql/1087-align-blocker-ref-indexability.sql',
+);
 
 /** The body of `unsatisfiedBlockerSql`, sliced from its declaration to the next top-level
  *  declaration. Sliced rather than imported because the assertions are about the SQL TEXT the
@@ -53,6 +58,38 @@ function unsatisfiedBlockerSource(): string {
   ).toBeGreaterThan(-1);
   const after = src.indexOf('\nexport function ', start);
   return src.slice(start, after === -1 ? start + 4000 : after);
+}
+
+/** The feature-family inline readiness floor, sliced at its stable following declaration. */
+function claimFloorsSource(): string {
+  const src = readFileSync(WORK_ITEMS_SRC, 'utf8');
+  const start = src.indexOf('export function claimFloorsWhereSql');
+  expect(
+    start,
+    'claimFloorsWhereSql not found in work-items.ts — it was renamed or moved; re-point this guard rather than deleting it',
+  ).toBeGreaterThan(-1);
+  const after = src.indexOf('\n/**\n * The tuple-space associative', start);
+  return src.slice(start, after === -1 ? start + 30_000 : after);
+}
+
+/**
+ * Migration 1087 is the runtime source for pg_get_functiondef(work_item_is_blocked).
+ * Keep a source-level check here so the unit guard can compare the two predicates
+ * without requiring a live Postgres container.
+ */
+function workItemIsBlockedMigrationSource(): string {
+  const src = readFileSync(MIGRATION_1087_SRC, 'utf8');
+  const start = src.indexOf('CREATE OR REPLACE FUNCTION harness_shared.work_item_is_blocked');
+  expect(
+    start,
+    'migration 1087 does not redefine work_item_is_blocked() — the maintained sidecar oracle would remain stale',
+  ).toBeGreaterThan(-1);
+  const after = src.indexOf('$function$;', start);
+  return src.slice(start, after === -1 ? start + 12_000 : after);
+}
+
+function normaliseSqlSource(source: string): string {
+  return source.replace(/\s+/g, ' ');
 }
 
 describe('WI-521425: the feature-family blocker join stays indexable', () => {
@@ -80,6 +117,45 @@ describe('WI-521425: the feature-family blocker join stays indexable', () => {
       "the position('#' ...) > 0 guard is gone: a blocker_ref carrying no separator would now " +
         'match differently than the concat form this replaced',
     ).toContain("position('#' in d.blocker_ref) > 0");
+  });
+});
+
+describe('EI-218628: every feature-family readiness oracle keeps the blocker join indexable', () => {
+  it('does NOT concatenate the candidate side against blocker_ref in claimFloorsWhereSql', () => {
+    const normalised = normaliseSqlSource(claimFloorsSource());
+    expect(
+      normalised,
+      'claimFloorsWhereSql reintroduced the non-indexable feature blocker concat; match by ' +
+        'splitting d.blocker_ref so the work_items primary key can serve the probe (EI-218628).',
+    ).not.toMatch(/bf\.harness_slug \|\| '#' \|\| bf\.feature_id\s*\)?\s*=\s*d\.blocker_ref/);
+  });
+
+  it('uses the same guarded dep-side scalar split as unsatisfiedBlockerSql', () => {
+    const normalised = normaliseSqlSource(claimFloorsSource());
+    expect(normalised).toContain("position('#' in d.blocker_ref) > 0");
+    expect(normalised).toContain("bf.harness_slug = split_part(d.blocker_ref, '#', 1)");
+    expect(normalised).toContain('bf.feature_id = substring(d.blocker_ref from position(');
+  });
+
+  it('keeps the migration-backed work_item_is_blocked() predicate in lockstep with TypeScript', () => {
+    const tsSource = normaliseSqlSource(claimFloorsSource());
+    const migrationSource = normaliseSqlSource(workItemIsBlockedMigrationSource());
+    const requiredShape = [
+      "position('#' in d.blocker_ref) > 0",
+      "bf.harness_slug = split_part(d.blocker_ref, '#', 1)",
+      'bf.feature_id = substring(d.blocker_ref from position(',
+    ];
+
+    for (const fragment of requiredShape) {
+      expect(tsSource, `claimFloorsWhereSql is missing ${fragment}`).toContain(fragment);
+      expect(migrationSource, `migration 1087 is missing ${fragment}`).toContain(fragment);
+    }
+
+    expect(
+      migrationSource,
+      'migration 1087 still carries the candidate-side blocker concat that pg_get_functiondef() ' +
+        'would expose after apply',
+    ).not.toMatch(/bf\.harness_slug \|\| '#' \|\| bf\.feature_id\s*\)?\s*=\s*d\.blocker_ref/);
   });
 });
 
