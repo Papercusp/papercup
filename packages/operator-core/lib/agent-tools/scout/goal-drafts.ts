@@ -85,6 +85,20 @@ export interface GoalDraftView {
   incidentalMatchOnly?: true;
   killCriterion: string;
   budgetCents: number;
+  /**
+   * This row is an artifact projection, not a routed-idea ledger row. Keep that
+   * distinction machine-readable next to every draft: proposal.id and
+   * sourceIdeaIds are provenance, not identifiers accepted by
+   * blender:grade-idea or improvements:triage.
+   */
+  gradeability: {
+    state: 'unroutable-pending-draft';
+    gradeable: false;
+    routedIdeaId: null;
+    artifactProposalId: string | null;
+    sourceIdeaIds: string[];
+    reason: string;
+  };
   proposal: unknown;
 }
 
@@ -97,6 +111,10 @@ const excerpt = (v: unknown): string => {
 export function toGoalDraftView(d: GoalDraft, detail: 'summary' | 'full'): GoalDraftView {
   const p = d.proposal as unknown as Record<string, unknown>;
   const incidental = d.markerHits.length > 0 && d.markerHits.every((h) => h.onlyInCodeSpan);
+  const artifactProposalId = typeof p.id === 'string' ? p.id : null;
+  const sourceIdeaIds = Array.isArray(p.sourceIdeaIds)
+    ? p.sourceIdeaIds.filter((id): id is string => typeof id === 'string')
+    : [];
   return {
     cycleId: d.cycleId,
     createdAt: d.createdAt.toISOString(),
@@ -108,11 +126,20 @@ export function toGoalDraftView(d: GoalDraft, detail: 'summary' | 'full'): GoalD
     ...(incidental ? { incidentalMatchOnly: true as const } : {}),
     killCriterion: d.killCriterion,
     budgetCents: d.budgetCents,
+    gradeability: {
+      state: 'unroutable-pending-draft',
+      gradeable: false,
+      routedIdeaId: null,
+      artifactProposalId,
+      sourceIdeaIds,
+      reason:
+        'This historical/override draft has no routed-idea identity on this surface. Treat it as an unroutable pending draft: proposal.id and sourceIdeaIds are artifact provenance only; do not pass them to blender:grade-idea or improvements:triage.',
+    },
     proposal:
       detail === 'full'
         ? d.proposal
         : {
-            id: p.id,
+            id: artifactProposalId,
             routeHint: p.routeHint,
             droppedRouteHint: p.droppedRouteHint,
             framing: excerpt(p.framing),
@@ -192,7 +219,7 @@ export async function runGoalDrafts(
 export default defineTool({
   name: 'blender:goal-drafts',
   description:
-    'Read-only historical/override projection of goal-scale work from persisted cycle artifacts. Writes NOTHING — creates no goal and mints no agent. Returns pre-D-016 dropped asks and plan-hinted proposals the live override would bump, with drafted rails (killCriterion, budgetCents) and marker provenance. Accepted post-D-016 direct goal hints route live and are intentionally absent. An EMPTY result comes with `empty.meaning` so it is not misread as a blocked current rail.',
+    'Read-only historical/override projection of goal-scale work from persisted cycle artifacts. Writes NOTHING — creates no goal and mints no agent. Returns pre-D-016 dropped asks and plan-hinted proposals the live override would bump, with drafted rails (killCriterion, budgetCents), marker provenance, and explicit gradeability metadata. Draft proposal/source ids are artifact provenance, never routed-idea ids. Accepted post-D-016 direct goal hints route live and are intentionally absent. An EMPTY result comes with `empty.meaning` so it is not misread as a blocked current rail.',
   capability: 'curation:read',
   guidance: {
     when:
@@ -200,7 +227,7 @@ export default defineTool({
     notWhen:
       'Creating or amending a goal (goals:create / goals:update), or reading accepted post-D-016 direct goal routes — use the routed-idea ledger for work that actually landed on a rail.',
     chaining:
-      'Read `summary` first. If total is 0, read `empty.meaning` before concluding anything is broken. For any draft you take seriously, check `markerHits` BEFORE the prose: a draft whose only marker sits in `mechanism` with onlyInCodeSpan:true is a vocabulary artifact (D-012 measured exactly one such draft in the whole corpus), and `incidentalMatchOnly` names that case at the row.',
+      'Read `summary` first. If total is 0, read `empty.meaning` before concluding anything is broken. Every returned row has gradeability.state="unroutable-pending-draft" and routedIdeaId:null: record it as pending and NEVER pass proposal.id or sourceIdeaIds to blender:grade-idea / improvements:triage. For any draft you take seriously, check `markerHits` BEFORE the prose: a draft whose only marker sits in `mechanism` with onlyInCodeSpan:true is a vocabulary artifact (D-012 measured exactly one such draft in the whole corpus), and `incidentalMatchOnly` names that case at the row.',
     seeAlso: [
       'blender:success-metrics (is the ideation substrate working at all)',
       'blender:route-idea (route an idea onto a rail)',

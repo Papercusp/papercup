@@ -130,6 +130,30 @@ describe('blender:goal-drafts', () => {
     expect(toGoalDraftView(draft, 'full').proposal).toBe(draft.proposal);
   });
 
+  it('marks artifact proposal/source ids as an unroutable pending draft, never a grade key', () => {
+    const draft = incidentalDraft({
+      proposal: {
+        id: 'SP-mt428ji9-003',
+        sourceIdeaIds: ['scout-idea-a', 'scout-idea-b'],
+        routeHint: 'plan',
+        framing: 'A historical goal-scale proposal',
+        mechanism: 'Do the work',
+      } as unknown as GoalDraft['proposal'],
+    });
+
+    const view = toGoalDraftView(draft, 'summary');
+
+    expect(view.gradeability).toMatchObject({
+      state: 'unroutable-pending-draft',
+      gradeable: false,
+      routedIdeaId: null,
+      artifactProposalId: 'SP-mt428ji9-003',
+      sourceIdeaIds: ['scout-idea-a', 'scout-idea-b'],
+    });
+    expect(view.gradeability.reason).toContain('do not pass them to blender:grade-idea');
+    expect(view.gradeability.reason).toContain('improvements:triage');
+  });
+
   it('passes the caller bounds through to the queue read', async () => {
     mockRead.mockResolvedValue([]);
     await runGoalDrafts({ limit: 5, includeCodeSpanMatches: true });
