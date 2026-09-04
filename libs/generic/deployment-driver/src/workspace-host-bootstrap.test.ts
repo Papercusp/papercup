@@ -7,7 +7,11 @@ import {
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX,
   WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES,
-  WORKSPACE_HOST_BOOTSTRAP_CHECKS,
+  WORKSPACE_HOST_BOOTSTRAP_CHECK_NAMES,
+  WORKSPACE_HOST_MODELS,
+  WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+  WORKSPACE_HOST_UPDATE_MODE_BY_MODEL,
+  workspaceHostBootstrapChecks,
   WORKSPACE_HOST_BOOTSTRAP_CHECK_EVIDENCE,
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_PHASES,
@@ -75,13 +79,27 @@ function input(
   };
 }
 
+// Pinned to ONE member rather than the union. `Partial<A | B>` distributes to
+// `Partial<A> | Partial<B>`, so a spread of it yields a union in which every model-specific field
+// is optional — which would let a fixture drop `updateMode` or `ubuntuVersion` and still compile,
+// silently weakening the very tests that exist to catch a malformed attestation.
+type UbuntuAttestation = Extract<
+  WorkspaceHostBootstrapAttestation,
+  { hostModel: 'ubuntu-release-bundle' }
+>;
+type BootcAttestation = Extract<
+  WorkspaceHostBootstrapAttestation,
+  { hostModel: 'bootc-image' }
+>;
+
 function attestation(
-  overrides: Partial<WorkspaceHostBootstrapAttestation> = {},
+  overrides: Partial<UbuntuAttestation> = {},
 ): WorkspaceHostBootstrapAttestation {
   return {
     contractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
     hostId: 'host-1',
     action: 'install',
+    hostModel: 'ubuntu-release-bundle',
     ubuntuVersion: '24.04',
     observedAt: '2026-08-22T06:00:00Z',
     status: 'healthy',
@@ -131,7 +149,26 @@ function attestation(
       operatorIngress: 'ssh-local-forward',
       updateMode: 'signed-atomic-release-swap',
     },
-    checks: WORKSPACE_HOST_BOOTSTRAP_CHECKS.map((name) => ({ name, ok: true })),
+    checks: workspaceHostBootstrapChecks('ubuntu-release-bundle').map(
+      (name) => ({ name, ok: true as const }),
+    ),
+    ...overrides,
+  };
+}
+
+/** A bootc render input. `bootc` is required by validateInput whenever the model is bootc. */
+function bootcInput(
+  overrides: Partial<WorkspaceHostBootstrapInput> = {},
+): WorkspaceHostBootstrapInput {
+  return {
+    ...input(),
+    hostModel: 'bootc-image',
+    bootc: {
+      image: 'registry.example.com/papercusp/workspace-host:2026.9.4-1',
+      imageDigest: `sha256:${'b'.repeat(64)}`,
+      baseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      signaturePolicyPath: '/etc/containers/policy.json',
+    },
     ...overrides,
   };
 }
