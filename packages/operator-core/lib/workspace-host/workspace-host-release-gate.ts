@@ -1,4 +1,5 @@
 import {
+  WORKSPACE_HOST_BOOTC_BUILDER_KIND,
   WORKSPACE_HOST_BUILDER_KINDS,
   WORKSPACE_HOST_BUILDER_TEMPLATE_SHAPES,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
@@ -6,6 +7,7 @@ import {
   evaluateWorkspaceHostImageCompatibility,
   validateWorkspaceHostImageArtifact,
   verifyWorkspaceHostBuildManifest,
+  workspaceHostImageModel,
   type WorkspaceHostBuildManifestVerification,
   type WorkspaceHostBuilderKind,
   type WorkspaceHostBuilderTemplateShape,
@@ -17,6 +19,11 @@ import {
 } from '@papercusp/deployment-driver';
 
 import type { ArtifactTrustReport } from './artifact-trust';
+import {
+  validateWorkspaceHostBootcBakeManifest,
+  workspaceHostReleaseSubjectSha256,
+  type WorkspaceHostBootcBakeManifest,
+} from './bootc-bake-manifest';
 
 export const WORKSPACE_HOST_RELEASE_GATE_VERSION = 'workspace-host-release-gate-v1';
 
@@ -48,6 +55,7 @@ export type WorkspaceHostReleaseGateFailureCode =
   | 'clean-room-rejected'
   | 'clean-room-subject-mismatch'
   | 'incompatible-image'
+  | 'invalid-bootc-bake-manifest'
   | 'invalid-build-manifest'
   | 'invalid-image-artifact'
   | 'trust-subject-mismatch'
@@ -61,6 +69,8 @@ export interface WorkspaceHostReleaseGateFailure {
 
 export interface WorkspaceHostReleaseGateInput {
   artifact: WorkspaceHostImageArtifact;
+  /** Required for bootc artifacts; forbidden for the Ubuntu/Packer model. */
+  bootcBakeManifest?: WorkspaceHostBootcBakeManifest;
   trustReport: ArtifactTrustReport;
   compatibilityRequest: WorkspaceHostImageCompatibilityRequest;
   cleanRoomReport: WorkspaceHostCleanRoomAcceptanceReport;
@@ -119,6 +129,8 @@ export function evaluateWorkspaceHostReleaseGate(
   // that named Packer rather than the manifest field that chose the file
   // (EI-21750653220169836; the r8 workspace-host artifact shipped exactly that way).
   const builder = input.artifact.buildManifest.builder;
+  const hostModel = workspaceHostImageModel(input.artifact);
+  const bootc = input.artifact.hostModel === 'bootc-image' ? input.artifact.bootc : undefined;
   const builderErrors: string[] = [];
   const shape = WORKSPACE_HOST_BUILDER_TEMPLATE_SHAPES[
     builder.kind as WorkspaceHostBuilderKind
@@ -136,11 +148,50 @@ export function evaluateWorkspaceHostReleaseGate(
       `builder.templatePath '${builder.templatePath}' is not ${shape.description}, which is what builder.kind '${builder.kind}' builds`,
     );
   }
+  if (hostModel === 'bootc-image' && builder.kind !== WORKSPACE_HOST_BOOTC_BUILDER_KIND) {
+    builderErrors.push(
+      `hostModel 'bootc-image' requires builder.kind '${WORKSPACE_HOST_BOOTC_BUILDER_KIND}'`,
+    );
+  } else if (hostModel === 'ubuntu-release-bundle' && builder.kind === WORKSPACE_HOST_BOOTC_BUILDER_KIND) {
+    builderErrors.push(
+      `builder.kind '${WORKSPACE_HOST_BOOTC_BUILDER_KIND}' requires hostModel 'bootc-image'`,
+    );
+  }
   if (builderErrors.length > 0) {
     failures.push({
       code: 'unsupported-builder',
       message: builderErrors.join('; '),
     });
+  }
+
+  const bakeErrors: string[] = [];
+  if (hostModel === 'bootc-image') {
+    if (!input.bootcBakeManifest) {
+      bakeErrors.push('bootcBakeManifest is required for a bootc image release');
+    } else {
+      bakeErrors.push(...validateWorkspaceHostBootcBakeManifest(input.bootcBakeManifest));
+      const manifest = input.bootcBakeManifest;
+      if (!bootc) {
+        bakeErrors.push('artifact.bootc is required for a bootc image release');
+      } else if (manifest.image !== bootc.image.replace(/:[^/:]+$/, '')) {
+        bakeErrors.push('bootcBakeManifest.image does not match artifact.bootc.image repository');
+      }
+      if (bootc && `${manifest.image}:${manifest.tag}` !== bootc.image) {
+        bakeErrors.push('bootcBakeManifest image:tag does not match artifact.bootc.image');
+      }
+      if (
+        bootc &&
+        (manifest.digest !== bootc.imageDigest ||
+          manifest.pinnedRef !== `${manifest.image}@${bootc.imageDigest}`)
+      ) {
+        bakeErrors.push('bootcBakeManifest is not bound to artifact.bootc.imageDigest');
+      }
+    }
+  } else if (input.bootcBakeManifest) {
+    bakeErrors.push('bootcBakeManifest is valid only for hostModel bootc-image');
+  }
+  if (bakeErrors.length > 0) {
+    failures.push({ code: 'invalid-bootc-bake-manifest', message: bakeErrors.join('; ') });
   }
 
   if (!input.trustReport.trusted || input.trustReport.failures.length > 0) {
@@ -153,14 +204,19 @@ export function evaluateWorkspaceHostReleaseGate(
   }
 
   const trustDigest = input.trustReport.subject.sha256;
-  const releaseDigest = input.artifact.release.bundleSha256;
+  const releaseDigest = workspaceHostReleaseSubjectSha256(input.artifact);
   const manifestDigest = input.artifact.buildManifest.releaseArtifact.sha256;
-  if (trustDigest !== releaseDigest || trustDigest !== manifestDigest) {
+  if (
+    trustDigest !== releaseDigest ||
+    (hostModel === 'ubuntu-release-bundle' && trustDigest !== manifestDigest)
+  ) {
     failures.push({
       code: 'trust-subject-mismatch',
       message:
-        `Trust subject ${trustDigest} must equal release.bundleSha256 ` +
-        `${releaseDigest} and buildManifest.releaseArtifact.sha256 ${manifestDigest}`,
+        hostModel === 'bootc-image'
+          ? `Trust subject ${trustDigest} must equal bootc image digest ${releaseDigest}`
+          : `Trust subject ${trustDigest} must equal release.bundleSha256 ` +
+            `${releaseDigest} and buildManifest.releaseArtifact.sha256 ${manifestDigest}`,
     });
   }
 
@@ -200,22 +256,30 @@ export function evaluateWorkspaceHostReleaseGate(
   if (!cleanRoom.attestation) {
     cleanRoomErrors.push('exact bootstrap attestation is missing');
   } else {
-    // P-306: this gate proves a SIGNED TARBALL identity — bundle digest against the artifact's
-    // digest, signing key against the artifact's key. A bootc attestation has neither, and its
-    // release identity is an image digest checked against an image artifact matrix that does not
-    // exist yet (P-307). Refuse it by name rather than letting it reach the comparisons below,
-    // where every `!==` against an absent field is true and the failure would be reported as a
-    // release-identity mismatch — a wrong diagnosis of a gate that simply cannot judge this host.
-    if (cleanRoom.attestation.hostModel !== 'ubuntu-release-bundle') {
+    if (cleanRoom.attestation.hostModel !== hostModel) {
       cleanRoomErrors.push(
-        `release gate cannot verify a '${cleanRoom.attestation.hostModel}' attestation: it proves a signed-tarball identity, and the bootc image artifact matrix is not built yet (P-307)`,
+        `bootstrap attestation hostModel '${cleanRoom.attestation.hostModel}' does not match artifact hostModel '${hostModel}'`,
       );
-    } else if (
-      cleanRoom.attestation.release.version !== input.artifact.release.version ||
-      cleanRoom.attestation.release.bundleSha256 !== releaseDigest ||
-      cleanRoom.attestation.release.signingKeySha256 !== input.artifact.release.signingKeySha256
-    ) {
-      cleanRoomErrors.push('bootstrap attestation release identity does not match');
+    } else if (cleanRoom.attestation.hostModel === 'bootc-image' && hostModel === 'bootc-image') {
+      if (!bootc) {
+        cleanRoomErrors.push('artifact bootc image identity is missing');
+      } else if (
+        cleanRoom.attestation.release.version !== input.artifact.release.version ||
+        cleanRoom.attestation.release.source !== bootc.image ||
+        cleanRoom.attestation.release.imageDigest !== bootc.imageDigest ||
+        cleanRoom.attestation.release.signaturePolicyPath !== bootc.signaturePolicyPath ||
+        cleanRoom.attestation.bootcBaseImage !== bootc.baseImage
+      ) {
+        cleanRoomErrors.push('bootstrap attestation bootc image identity does not match');
+      }
+    } else if (cleanRoom.attestation.hostModel === 'ubuntu-release-bundle') {
+      if (
+        cleanRoom.attestation.release.version !== input.artifact.release.version ||
+        cleanRoom.attestation.release.bundleSha256 !== releaseDigest ||
+        cleanRoom.attestation.release.signingKeySha256 !== input.artifact.release.signingKeySha256
+      ) {
+        cleanRoomErrors.push('bootstrap attestation release identity does not match');
+      }
     }
     if (!cleanRoom.attestation.release.signatureVerified) {
       cleanRoomErrors.push('bootstrap attestation did not verify the release signature');

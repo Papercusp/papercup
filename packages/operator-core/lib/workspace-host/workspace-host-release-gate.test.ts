@@ -3,12 +3,14 @@ import { createHash } from 'node:crypto';
 import {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+  WORKSPACE_HOST_BOOTC_BASE_IMAGE,
   WORKSPACE_HOST_BOOTC_BUILDER_KIND,
   WORKSPACE_HOST_BUILDER_KINDS,
   WORKSPACE_HOST_BUILDER_TEMPLATE_SHAPES,
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
   WORKSPACE_HOST_IMAGE_FAMILY_BUILDER_KINDS,
+  WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
   WORKSPACE_HOST_SIDECAR_BUILDER_KIND,
   buildWorkspaceHostBuildManifest,
@@ -25,12 +27,17 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { ARTIFACT_TRUST_PIPELINE_VERSION, type ArtifactTrustReport } from './artifact-trust';
+import {
+  WORKSPACE_HOST_BOOTC_BAKE_CONTRACT_VERSION,
+  type WorkspaceHostBootcBakeManifest,
+} from './bootc-bake-manifest';
 import { evaluateWorkspaceHostReleaseGate } from './workspace-host-release-gate';
 
 const RELEASE_DIGEST = 'a'.repeat(64);
 const SIGNING_PUBLIC_KEY = 'untrusted comment: Papercusp workspace-host release key\nRWQpublickey';
 const SIGNING_KEY_DIGEST = createHash('sha256').update(SIGNING_PUBLIC_KEY, 'utf8').digest('hex');
 const SBOM_DIGEST = 'b'.repeat(64);
+const BOOTC_DIGEST = '9'.repeat(64);
 
 // Taken from the contract's own kind union rather than restated: a builder kind added there
 // without a case here would otherwise be untestable without a compile error to say so.
@@ -106,6 +113,60 @@ function artifact(version = '2026.8.22-1', builderOverride: BuilderOverride = {}
         maximumArtifactAgeDays: 30,
       },
     ],
+  };
+}
+
+function bootcArtifact(version = '2026.8.22-1'): Extract<WorkspaceHostImageArtifact, { hostModel: 'bootc-image' }> {
+  const candidate = artifact(version, {
+    kind: WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+    templatePath: 'infra/images/bootc/workspace-host.Containerfile',
+  });
+  return {
+    ...candidate,
+    hostModel: 'bootc-image',
+    bootc: {
+      image: `registry.example.com/papercusp/workspace-host:${version}`,
+      imageDigest: `sha256:${BOOTC_DIGEST}`,
+      baseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      signaturePolicyPath: WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
+    },
+    compatibility: candidate.compatibility.map((rule) => ({
+      provider: rule.provider,
+      architecture: rule.architecture,
+      hostModel: 'bootc-image' as const,
+      bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      bootstrapContractVersion: rule.bootstrapContractVersion,
+      actions: rule.actions,
+      maximumArtifactAgeDays: rule.maximumArtifactAgeDays,
+    })),
+  };
+}
+
+function bootcBakeManifest(version = '2026.8.22-1'): WorkspaceHostBootcBakeManifest {
+  const image = 'registry.example.com/papercusp/workspace-host';
+  return {
+    contractVersion: WORKSPACE_HOST_BOOTC_BAKE_CONTRACT_VERSION,
+    image,
+    tag: version,
+    digest: `sha256:${BOOTC_DIGEST}`,
+    pinnedRef: `${image}@sha256:${BOOTC_DIGEST}`,
+    registryNamespace: 'registry.example.com/papercusp',
+    clouds: [
+      { cloud: 'gcp', type: 'gce', artifact: '/release/gcp/disk.raw', sha256: '1'.repeat(64), sizeBytes: 101 },
+      { cloud: 'aws', type: 'ami', artifact: '/release/aws/disk.raw', sha256: '2'.repeat(64), sizeBytes: 102 },
+      { cloud: 'azure', type: 'vhd', artifact: '/release/azure/disk.vhd', sha256: '3'.repeat(64), sizeBytes: 103 },
+    ],
+  };
+}
+
+function bootcCompatibilityRequest(): WorkspaceHostImageCompatibilityRequest {
+  return {
+    action: 'install',
+    provider: 'gcp',
+    architecture: 'x86_64',
+    observedAt: '2026-08-23T00:00:00Z',
+    hostModel: 'bootc-image',
+    bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
   };
 }
 
@@ -287,20 +348,32 @@ describe('evaluateWorkspaceHostReleaseGate', () => {
   describe('the bootc builder (P-307)', () => {
     const CONTAINERFILE = 'infra/images/bootc/workspace-host.Containerfile';
 
-    it('accepts the bootc builder kind paired with a Containerfile', () => {
-      const candidate = artifact('2026.8.22-1', {
-        kind: WORKSPACE_HOST_BOOTC_BUILDER_KIND,
-        templatePath: CONTAINERFILE,
-      });
+    it('accepts a digest-trusted bootc artifact with the complete three-cloud bake matrix', () => {
+      const candidate = bootcArtifact();
       const verdict = evaluateWorkspaceHostReleaseGate({
         artifact: candidate,
-        trustReport: trustReport(),
-        compatibilityRequest: compatibilityRequest(),
+        bootcBakeManifest: bootcBakeManifest(),
+        trustReport: trustReport(BOOTC_DIGEST),
+        compatibilityRequest: bootcCompatibilityRequest(),
         cleanRoomReport: cleanRoomReport(candidate),
       });
 
       expect(verdict.failures.filter((entry) => entry.code === 'unsupported-builder')).toEqual([]);
       expect(verdict.accepted).toBe(true);
+    });
+
+    it('rejects bootc when its bake matrix is missing or trust still names the tarball', () => {
+      const candidate = bootcArtifact();
+      const verdict = evaluateWorkspaceHostReleaseGate({
+        artifact: candidate,
+        trustReport: trustReport(),
+        compatibilityRequest: bootcCompatibilityRequest(),
+        cleanRoomReport: cleanRoomReport(candidate),
+      });
+      expect(verdict.accepted).toBe(false);
+      expect(verdict.failures.map((failure) => failure.code)).toEqual(
+        expect.arrayContaining(['invalid-bootc-bake-manifest', 'trust-subject-mismatch']),
+      );
     });
 
     it('rejects the bootc builder kind pointed at a Packer template', () => {
