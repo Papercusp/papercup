@@ -103,8 +103,16 @@ healthy — `podman build` exits 0, `bootc container lint` passes, the image con
 both service identities exist. Only the ACL is missing, and the ACL is what carries D-043 (the SSH
 user must not read the runtime) and D-251 (the third identity that enforces it).
 
-**Ruling for P-305 / P-306: apply the identity ACLs at FIRST BOOT from a systemd oneshot — never
-bake them into the image.** `systemd-tmpfiles` is not an escape hatch (tmpfiles.d has no ACL verb).
+**Ruling for P-305 / P-306: apply the identity ACLs from a systemd oneshot that runs on EVERY
+BOOT — never bake them into the image, and never gate the unit on a first-boot stamp.**
+`systemd-tmpfiles` is not an escape hatch (tmpfiles.d has no ACL verb).
+
+⚠ *Every* boot, not first — corrected while implementing P-306 half A, and the correction matters
+more than the original ruling. `bootc upgrade` reboots into a NEW deployment root: the ACLs on
+`/opt/papercusp` belonged to the OLD one and are gone, while `/var` persists. A first-boot stamp
+lives in `/var`, so it survives exactly the event that destroys the thing it is gating — and the
+unit would then skip precisely the hosts that took an update. The implementation
+(`papercusp-host-prepare.service`) is therefore unconditional and idempotent.
 This is essentially what the existing Ubuntu bootstrap already does on the live host
 (`libs/generic/deployment-driver/src/workspace-host-bootstrap.ts`), which is why today's production
 path is unaffected — this is a defect in a *future* port, filed because the natural way to write

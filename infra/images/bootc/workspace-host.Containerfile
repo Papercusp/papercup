@@ -22,13 +22,32 @@
 # (the `-i` is load-bearing: without it the container exits 0 having run NOTHING.)
 #
 # ── What is NOT here, and why ─────────────────────────────────────────────────
-# ACLs, the three machine-local roots, and the sshd drop-in are applied at FIRST
-# BOOT by `papercusp-firstboot.service`, not baked. That is not a stylistic
-# choice — see the header of `papercusp-firstboot.sh` for the two measured
+# ACLs, the three machine-local roots, and the sshd drop-in are applied ON EVERY
+# BOOT by `papercusp-host-prepare.service`, not baked. That is not a stylistic
+# choice — see the header of `papercusp-host-prepare.sh` for the two measured
 # reasons (POSIX ACLs do not survive a container commit; `/srv` and `/home` are
 # symlinks into machine-local `/var` on this base).
+#
+# EVERY boot, not first: `bootc upgrade` reboots into a NEW deployment root, and
+# the ACLs on /opt/papercusp went with the OLD one while /var persisted. A
+# first-boot stamp file would therefore skip precisely the hosts that took an
+# update — every file present and correctly sized, owned by the right names,
+# and unreadable by the identity that needs them, with the host reporting
+# healthy throughout.
 
 FROM quay.io/centos-bootc/centos-bootc:stream9
+
+# The image records the base it was built FROM, because a BOOTED host cannot
+# otherwise answer that question about itself: `bootc status` reports the ref
+# the host booted (this image), never what that image derives from, and image
+# LABELs need a local copy of the image to inspect. Writing it under /usr makes
+# it image content — read-only on a running bootc host, replaced atomically by
+# an upgrade — so the attested `bootc-base-image` check is reading a fact the
+# image carries rather than one the host was told.
+ARG PAPERCUSP_BASE_IMAGE=quay.io/centos-bootc/centos-bootc:stream9
+RUN install -d -m 0755 /usr/lib/papercusp \
+ && printf '%s\n' "${PAPERCUSP_BASE_IMAGE}" > /usr/lib/papercusp/base-image \
+ && chmod 0644 /usr/lib/papercusp/base-image
 
 # Identity names are BUILD-TIME on the bootc model, where the generated bootstrap
 # took them as per-host input. An image is one artifact shared by every host, so
