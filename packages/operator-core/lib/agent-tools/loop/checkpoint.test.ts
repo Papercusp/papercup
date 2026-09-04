@@ -1977,6 +1977,30 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(f.checks[0]).not.toHaveProperty('verified');
     });
 
+    it('keeps explicit ok:false from rendering canonical verified evidence as a green check', async () => {
+      const b = body(
+        await call({
+          did: 'checkpointed the failed gate',
+          checks: [{ claim: 'the gate exits 0', recheck: 'run the gate', ok: false, verified: 'the gate exited 1' }],
+        }),
+      );
+
+      expect(b.ok).toBe(true);
+      expect(b.repairs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            field: 'checks[0].verified',
+            kind: 'downgraded',
+            detail: expect.stringContaining('ok:false'),
+          }),
+        ]),
+      );
+      const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+      expect(written).toContain('- ⚠ ');
+      expect(written).toContain('the gate exited 1');
+      expect(written).not.toContain('- ✓ ');
+    });
+
     it('maps compact check claim strings to lossless `{ claim }` rows', () => {
       const out = parse({ checks: ['gate is green', 'main is at abc123'] }) as { checks: { claim: string }[] };
       expect(out.checks).toEqual([{ claim: 'gate is green' }, { claim: 'main is at abc123' }]);
