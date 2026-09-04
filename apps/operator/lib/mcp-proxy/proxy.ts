@@ -45,6 +45,7 @@ import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { normalizeMcpName } from "@papercusp/tooldef";
 import {
+  MCP_DATA_PLANE_DEGRADED_AT_HEADER,
   MCP_REQUEST_TRACE_HEADER,
   MAX_MCP_REQUEST_TRACE_ID_CHARS,
 } from "@papercusp/operator-core/lib/mcp-request-trace";
@@ -112,6 +113,43 @@ const UPSTREAM_AGENT = new http.Agent({
  */
 export const MCP_PROXY_TRACE_HEADER = MCP_REQUEST_TRACE_HEADER;
 export const MAX_MCP_PROXY_TRACE_ID_CHARS = MAX_MCP_REQUEST_TRACE_ID_CHARS;
+export const MCP_PROXY_DATA_PLANE_DEGRADED_AT_HEADER =
+  MCP_DATA_PLANE_DEGRADED_AT_HEADER;
+export const DEFAULT_DATA_PLANE_WARNING_WINDOW_MS = 30_000;
+
+/**
+ * Overwrite/remove any client-supplied diagnostic marker, then stamp the
+ * proxy's own recent-instability timestamp while it remains inside the short
+ * warning window. Pure so the trust boundary and expiry rule stay pinned.
+ */
+export function withDataPlaneDegradedHeader(
+  headers: http.IncomingHttpHeaders,
+  lastInstabilityAtMs: number,
+  nowMs = Date.now(),
+  windowMs = DEFAULT_DATA_PLANE_WARNING_WINDOW_MS,
+): http.IncomingHttpHeaders {
+  const forwarded = Object.fromEntries(
+    Object.entries(headers).filter(
+      ([name]) =>
+        name.toLowerCase() !== MCP_PROXY_DATA_PLANE_DEGRADED_AT_HEADER,
+    ),
+  );
+  const ageMs = nowMs - lastInstabilityAtMs;
+  if (
+    !Number.isSafeInteger(lastInstabilityAtMs) ||
+    lastInstabilityAtMs <= 0 ||
+    !Number.isFinite(windowMs) ||
+    windowMs <= 0 ||
+    ageMs < 0 ||
+    ageMs > windowMs
+  ) {
+    return forwarded;
+  }
+  return {
+    ...forwarded,
+    [MCP_PROXY_DATA_PLANE_DEGRADED_AT_HEADER]: String(lastInstabilityAtMs),
+  };
+}
 
 const configuredInitializeSlowMs = Number(
   process.env.PAPERCUSP_MCP_PROXY_INITIALIZE_SLOW_MS,
@@ -1763,6 +1801,7 @@ export function isReservedControlPlaneCall(
  *  startMcpProxy). Exposed for tests (drive it against a stub upstream). */
 export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const log = opts.log ?? ((s: string) => console.log(`[mcp-proxy] ${s}`));
+  let lastDataPlaneInstabilityAtMs = 0;
   const backoff = opts.retryBackoffMs ?? 500;
   // P-006 (mcp-reliability-hardening-2026-07-11): instance-tag every failure record with
   // pid + listenPort + the resolved target, so a forensic read of the shared ledger can
@@ -3348,7 +3387,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             { keyingEnabled, readonlyRetryEnabled, genKey: randomUUID },
           );
           const traceId = requestTraceId;
-          fwd.headers = { ...fwd.headers, [MCP_PROXY_TRACE_HEADER]: traceId };
+          fwd.headers = withDataPlaneDegradedHeader(
+            { ...fwd.headers, [MCP_PROXY_TRACE_HEADER]: traceId },
+            lastDataPlaneInstabilityAtMs,
+          );
           // WI-41042 detector gap: `klass:'idempotent'` folds initialize,
           // tools/list, ping, resources and prompts together. Preserve only the
           // bounded protocol method names in failure telemetry so the next
@@ -3404,6 +3446,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             // on a response nobody can read, during the exact windows when it is scarcest.
             // Checked at the TOP so it also covers a client that left between two attempts.
             if (clientGone) break;
+            // Re-evaluate the window immediately before every upstream hop. A delayed retry
+            // must not carry a timestamp that expired while it was queued/backing off.
+            fwd.headers = withDataPlaneDegradedHeader(
+              fwd.headers,
+              lastDataPlaneInstabilityAtMs,
+            );
             attempts++;
             const attemptStartedAt = Date.now();
             // WI-6740: bound the write-free control-plane batch tightly (see
@@ -3512,6 +3560,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 )
               ) {
                 backpressureRetries++;
+                lastDataPlaneInstabilityAtMs = Date.now();
+                fwd.headers = withDataPlaneDegradedHeader(
+                  fwd.headers,
+                  lastDataPlaneInstabilityAtMs,
+                );
                 const waitMs = retryAfterMs(
                   ures.headers["retry-after"],
                   backoff,
@@ -3580,6 +3633,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               return;
             }
             last = outcome;
+            lastDataPlaneInstabilityAtMs = Date.now();
+            fwd.headers = withDataPlaneDegradedHeader(
+              fwd.headers,
+              lastDataPlaneInstabilityAtMs,
+            );
             if (!outcome.connected) {
               // Refused / pre-connect: the request provably never reached :3070 → always safe to replay.
               if (shouldRetry(false, elapsed, retryWindowMs)) {

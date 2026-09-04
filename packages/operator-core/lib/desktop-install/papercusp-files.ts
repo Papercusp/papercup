@@ -858,6 +858,9 @@ function extensionCandidates(operatorAppRoot: string, explicitRoot: boolean): st
 export const CC_HOOK_FILES = [
   'pretooluse-locks-acquire.sh',
   'posttooluse-locks-release.sh',
+  // WI-7182: shared Claude/Codex/OMP edit-path filter + targeted declaration
+  // generator, invoked while the edited source's lock is still held.
+  'regenerate-declaration-before-lock-release.mjs',
   // EI-21220966892195714: PostToolUse byte-exact diagnostic for full Write calls.
   // The incoming-content guard cannot see corruption introduced after dispatch;
   // this hook compares the requested UTF-8 bytes with the resulting file.
