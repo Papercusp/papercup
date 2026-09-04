@@ -30,7 +30,7 @@ export default defineTool({
   }),
   async handler(args) {
     const conv = await getOrCreateActiveConversation();
-    const page = await listTurnsRecent({ conversationId: conv.conversationId, limit: args.limit ?? 20 });
+    const page = await listTurnsRecent({ conversationId: conv.id, limit: args.limit ?? 20 });
     const turns = page.turns.map((t) => ({ role: t.role, text: t.text, source: t.source, seq: t.seq }));
     return { data: { ok: true, turns } };
   },
