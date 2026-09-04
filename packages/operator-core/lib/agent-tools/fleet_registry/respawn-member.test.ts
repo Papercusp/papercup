@@ -377,6 +377,10 @@ describe('fleet:respawn-member (P-008)', () => {
     expect(tool.args.safeParse({ member: MEMBER, role: 'su' }).success).toBe(true);
   });
 
+  it('accepts carry as a boot-baked respawn setting at the tool boundary', () => {
+    expect(tool.args.safeParse({ member: MEMBER, carry: 'cold' }).success).toBe(true);
+  });
+
   it('accepts and honors an explicit per-call harness context for legacy recovery', async () => {
     getPresence.mockResolvedValueOnce(null);
     getSessionBrief.mockResolvedValueOnce(null);
@@ -420,6 +424,35 @@ describe('fleet:respawn-member (P-008)', () => {
     );
     expect(p.launched).toContain('Launched su-new');
     expect(p.newMember).toBe(p.replacementOwner);
+  });
+
+  it('overrides the saved carry mode and forwards it through the audited replacement launch', async () => {
+    const res = await tool.handler(
+      { member: MEMBER, carry: 'cold', verifySec: 0 } as never,
+      {} as never,
+    );
+    const p = parse(res);
+    const launchArgs = launchHandler.mock.calls[0][0] as Record<string, unknown> & {
+      members: Array<Record<string, unknown>>;
+    };
+
+    expect(p).toMatchObject({
+      ok: true,
+      fleet: SLUG,
+      oldMember: MEMBER,
+      changed: ['carry'],
+      verification: 'skipped',
+    });
+    expect(resolveSavedFleetLaunchSpec).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requested: expect.objectContaining({ carry: 'cold' }),
+        allowDeltas: expect.arrayContaining(['carry']),
+      }),
+    );
+    expect(launchArgs).toMatchObject({
+      __savedLaunchCarry: 'cold',
+      members: [expect.objectContaining({ carry: 'cold' })],
+    });
   });
 
   it('refuses to launch a replacement whose freshly-minted identity already has a live host (WI-2141730)', async () => {
@@ -526,7 +559,7 @@ describe('fleet:respawn-member (P-008)', () => {
       killed: false,
       launched: false,
     });
-    expect(p.message).toMatch(/not registered in the effective model tiers or CLOUD_MODEL_MENU/);
+    expect(p.message).toMatch(/not (?:present in|registered in) the effective model tiers or CLOUD_MODEL_MENU/);
     expect(readAgentConfig).toHaveBeenCalledTimes(1);
     expect(listFleetPresence).not.toHaveBeenCalled();
     expect(killHandler).not.toHaveBeenCalled();
@@ -565,6 +598,50 @@ describe('fleet:respawn-member (P-008)', () => {
     });
     expect(p.message).toMatch(/belongs to the `codex` backend/);
     expect(listFleetPresence).not.toHaveBeenCalled();
+    expect(killHandler).not.toHaveBeenCalled();
+    expect(launchHandler).not.toHaveBeenCalled();
+  });
+
+  it('accepts the open-set Codex model gpt-5.5:high before killing the old member', async () => {
+    const res = await tool.handler(
+      { member: MEMBER, agent: 'codex', model: 'gpt-5.5', effort: 'high', verifySec: 0 } as never,
+      {} as never,
+    );
+    const p = parse(res);
+
+    expect(p).toMatchObject({
+      ok: true,
+      fleet: SLUG,
+      oldMember: MEMBER,
+      launched: expect.stringContaining('Launched su-new'),
+      verification: 'skipped',
+    });
+    expect(p.killed).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(killHandler).toHaveBeenCalledWith(expect.objectContaining({ owner: MEMBER }), expect.anything());
+    expect(launchHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        members: [expect.objectContaining({ agent: 'codex', model: 'gpt-5.5', effort: 'high' })],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('still refuses an unrecognized model id before killing the old member', async () => {
+    const res = await tool.handler(
+      { member: MEMBER, agent: 'codex', model: 'unknown-full-id', effort: 'high' } as never,
+      {} as never,
+    );
+    const p = parse(res);
+
+    expect(p).toMatchObject({
+      ok: false,
+      error: 'saved_model_invalid',
+      model: 'unknown-full-id:high',
+      agent: 'codex',
+      killed: false,
+      launched: false,
+    });
+    expect(p.message).toMatch(/not registered in the effective model tiers or CLOUD_MODEL_MENU/);
     expect(killHandler).not.toHaveBeenCalled();
     expect(launchHandler).not.toHaveBeenCalled();
   });

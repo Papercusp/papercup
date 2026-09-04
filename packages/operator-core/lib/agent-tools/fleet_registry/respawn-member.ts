@@ -35,10 +35,10 @@ import { json, ROUTING_LADDER } from './_shared';
 import { resolveSavedFleetLaunchSpec } from './saved-launch-spec';
 import { readAgentConfig } from '../../agent-config';
 import {
+  backendForModelSpec,
   CLOUD_MODEL_MENU,
   composeLaunchModelSpec,
   DEFAULT_MODEL_TIERS,
-  launchAgentBackendForModel,
   splitModelSpec,
   type LaunchAgentBackend,
   type ModelTier,
@@ -726,7 +726,9 @@ type SavedModelPreflightResult =
  * healthy member and then discover that the replacement's first gateway request will 404. The
  * effective tier menu is the owner-configured catalog (falling back to the committed menu), while
  * CLOUD_MODEL_MENU covers the native aliases that are valid even when a custom tier menu omits
- * them. `launchAgentBackendForModel` remains the one backend classifier for known model ids.
+ * them. `backendForModelSpec` is the shared classifier: it recognizes both catalogued aliases and
+ * unambiguous open-set Codex/Claude ids (including `gpt-5.5`), while still returning null for an
+ * unrecognized model instead of guessing a backend.
  */
 async function preflightSavedModel(opts: {
   model?: string;
@@ -791,7 +793,11 @@ async function preflightSavedModel(opts: {
   // launch rows, provided any explicitly persisted agent is itself a recognized backend.
   if (!composedModel) return { ok: true, model: composedModel, backend: explicitAgent };
 
-  const backend = launchAgentBackendForModel(composedModel);
+  const modelBackend = backendForModelSpec(composedModel);
+  // `backendForModelSpec` uses the spawn vocabulary (`claude-code`), while this
+  // recovery tool's persisted launch records use the legacy `claude` spelling.
+  const backend: LaunchAgentBackend | null =
+    modelBackend?.backend === 'claude-code' ? 'claude' : modelBackend?.backend ?? null;
   const catalogModel = splitModelSpec(composedModel).model?.replace(/\[[^\]]+\]$/, '').toLowerCase() ?? null;
   const inEffectiveTiers = tiers.some(
     (tier) => splitModelSpec(tier.spec).model?.replace(/\[[^\]]+\]$/, '').toLowerCase() === catalogModel,
@@ -851,11 +857,11 @@ async function preflightSavedModel(opts: {
 export default defineTool({
   name: 'fleet:respawn-member',
   description:
-    "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader, an Overwatch pane, or the owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec (a new identity, the fleet's claim lane inherited). `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `carry`/`claimKinds` are not settable here.",
+    "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / carry / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader, an Overwatch pane, or the owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec (a new identity, the fleet's claim lane inherited). `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `claimKinds` is not settable here.",
   guidance: {
-    when: 'Move a member to a different model/effort/account/context-size/agent/role — anything fixed at launch. It kills the old session and relaunches a replacement in the same fleet.',
+    when: 'Move a member to a different model/effort/account/carry/context-size/agent/role — anything fixed at launch. It kills the old session and relaunches a replacement in the same fleet.',
     notWhen:
-      'For a RUNTIME tweak with no respawn (compaction limit, claim lane, a next-wake brief) — fleet:reconfigure-member. To change carry or seed claimKinds — fleet:launch-on-plan. To stand the whole fleet down — fleet:wind-down. To just kill (no replacement) — fleet:kill.',
+      'For a RUNTIME tweak with no respawn (compaction limit, claim lane, a next-wake brief) — fleet:reconfigure-member. To seed claimKinds — fleet:launch-on-plan. To stand the whole fleet down — fleet:wind-down. To just kill (no replacement) — fleet:kill.',
     chaining: ROUTING_LADDER,
     seeAlso: [
       'fleet:reconfigure-member (runtime settings, no respawn)',
@@ -898,6 +904,7 @@ export default defineTool({
       model: z.string().max(80).optional().describe('New model spec (e.g. "opus[1m]", "sonnet:high").'),
       effort: z.string().max(40).optional().describe('New reasoning effort (low|medium|high|xhigh|max) — composed onto the model spec.'),
       account: z.string().max(120).optional().describe('New account routing (default | auto | a pool account id).'),
+      carry: z.enum(['warm', 'cold']).optional().describe('New warm/cold auto-mode carry for the relaunched member.'),
       contextSize: z.literal('trimmed').optional().describe('New psu --context-size for the relaunched member.'),
       agent: z.string().max(40).optional().describe('New agent CLI backing the member (e.g. claude | codex).'),
       compactionLimit: z.number().int().min(20_000).max(900_000).optional().describe('New soft compaction limit (tokens) baked at launch.'),
@@ -935,16 +942,17 @@ export default defineTool({
         a.model != null ||
         a.effort != null ||
         a.account != null ||
+        a.carry != null ||
         a.contextSize != null ||
         a.agent != null ||
         a.compactionLimit != null ||
         a.role != null ||
         a.headless != null,
-      { message: 'pass at least one boot-baked setting to change (model/effort/account/contextSize/agent/compactionLimit/role/headless); for a runtime-only change use fleet:reconfigure-member' },
+      { message: 'pass at least one boot-baked setting to change (model/effort/account/carry/contextSize/agent/compactionLimit/role/headless); for a runtime-only change use fleet:reconfigure-member' },
     ),
   async handler(args, ctx) {
     // Defense-in-depth (zod refine covers the MCP path): a respawn must change ≥1 boot-baked field.
-    const changed = { model: args.model, effort: args.effort, account: args.account, contextSize: args.contextSize, agent: args.agent, compactionLimit: args.compactionLimit, role: args.role, headless: args.headless };
+    const changed = { model: args.model, effort: args.effort, account: args.account, carry: args.carry, contextSize: args.contextSize, agent: args.agent, compactionLimit: args.compactionLimit, role: args.role, headless: args.headless };
     const changedFields = Object.entries(changed).filter(([, v]) => v != null).map(([k]) => k);
     if (changedFields.length === 0) {
       return json({ ok: false, error: 'nothing_to_respawn', message: 'pass at least one boot-baked setting to change; for a runtime-only change use fleet:reconfigure-member' }, true);
@@ -977,6 +985,7 @@ export default defineTool({
         model: args.model,
         effort: args.effort,
         account: args.account,
+        carry: args.carry,
         contextSize: args.contextSize,
         agent: args.agent,
         compactionLimit: args.compactionLimit,
@@ -984,7 +993,7 @@ export default defineTool({
         headless: args.headless,
         brief: args.brief,
       },
-      allowDeltas: ['model', 'account', 'contextSize', 'agent', 'compactionLimit', 'role', 'headless', 'brief'],
+      allowDeltas: ['model', 'account', 'carry', 'contextSize', 'agent', 'compactionLimit', 'role', 'headless', 'brief'],
       reusePath: 'fleet:respawn-member -> capability:launch-agent',
       requireSaved: true,
       memberOwnerId,
