@@ -232,10 +232,19 @@ export function createWorkspaceHostActionRoute(
           })),
           ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {}),
           ...('evidence' in result && result.evidence ? { evidence: result.evidence } : {}),
+          // Read the runner's own verdict rather than re-deriving readiness from `action` here.
+          // A boot-disk-replacing action succeeds while leaving the host unable to serve until
+          // initialization is run again (WI-2143797); the runner already decided that, and a
+          // second copy of the rule at this edge is what let the ledger and the HTTP response
+          // disagree about the same operation.
+          ...(result.requiresInitialization ? { requiresInitialization: true } : {}),
           message: result.status === 'succeeded'
             ? action === 'destroy'
               ? 'Workspace-host discard teardown completed with terminal evidence'
-              : `Workspace-host ${action} completed`
+              : result.requiresInitialization
+                ? `Workspace-host ${action} completed its provider steps, but the host CANNOT SERVE yet: ` +
+                  `${action} replaced the boot disk, so initialization must be run again before use`
+                : `Workspace-host ${action} completed`
             : result.status === 'in-progress'
               ? `Workspace-host ${action} is in progress`
               : `Workspace-host ${action} failed; see the host timeline for details`,

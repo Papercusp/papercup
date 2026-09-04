@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   nextWorkspaceHostControllerAction,
+  workspaceHostActionInvalidatesInitialization,
   workspaceHostProviderRetryClass,
   type WorkspaceHostApplyResult,
   type WorkspaceHostImageRef,
@@ -448,12 +449,30 @@ export async function runWorkspaceHostLifecycle(
 
     if (action.kind === 'complete' && action.status === 'succeeded') {
       await observe(input, target, store, context);
+      /*
+       * This branch is generic across every lifecycle action, so on its own it can only ever
+       * describe the PROVIDER mutation — never whether the host can serve. For most actions
+       * those coincide. For a boot-disk-replacing action they do not: `upgrade` recreates the
+       * instance from the new image and `restore` builds a distinct host, so everything the
+       * initialization leg installed is gone, and initialization is a SEPARATE operation the
+       * caller must sequence. Saying only "completed" there is what let a ledger row read
+       * succeeded|100 while the host was still minutes away from serving.
+       *
+       * Say it instead of probing for it: a readiness gate here would have to ask the provider,
+       * and `attestHealth` cannot answer (GCP attests `unknown` — `agentOnline` has no producer),
+       * so gating would replace a premature success with a permanent hang.
+       */
+      const requiresInitialization = workspaceHostActionInvalidatesInitialization(input.action);
+      const message = requiresInitialization
+        ? `Workspace-host ${input.action} completed its provider steps, but the host CANNOT SERVE yet: ` +
+          `${input.action} replaced the boot disk, so initialization must be run again before use`
+        : `Workspace-host ${input.action} completed`;
       await store.updateOperation({
         workspaceId,
         operationId,
         status: 'succeeded',
         percent: 100,
-        message: `Workspace-host ${input.action} completed`,
+        message,
       });
       await store.appendEvent({
         workspaceId,
@@ -461,9 +480,9 @@ export async function runWorkspaceHostLifecycle(
         operationId,
         phase: 'complete',
         status: 'succeeded',
-        message: `Workspace-host ${input.action} completed`,
+        message,
       });
-      return { status: 'succeeded', operationId, hostId: resultHostId, plan, checkpoints };
+      return { status: 'succeeded', operationId, hostId: resultHostId, plan, checkpoints, requiresInitialization };
     }
 
     const reason = action.kind === 'blocked' ? action.reason : action.kind === 'complete' ? action.status : action.kind;

@@ -174,6 +174,19 @@ export interface WorkspaceHostProvisioningResult {
   plan: WorkspaceHostPlan;
   checkpoints: readonly WorkspaceHostResourceCheckpoint[];
   retryAfterMs?: number;
+  /**
+   * `true` when this operation succeeded but left the host UNABLE TO SERVE until
+   * `runWorkspaceHostInitialization` is run against it again — see
+   * `workspaceHostActionInvalidatesInitialization`. `status:'succeeded'` describes the
+   * provider mutation; this describes the host, and for a boot-disk-replacing action the
+   * two disagree.
+   *
+   * Every lifecycle completion sets this explicitly, true or false, so a reader never has
+   * to decide what an absent field meant. It is absent only on results that are not a
+   * lifecycle completion (a provision, or an in-progress/failed return), where the
+   * question does not arise.
+   */
+  requiresInitialization?: boolean;
 }
 
 /** External evidence the operator cannot manufacture from Compute Engine itself. */

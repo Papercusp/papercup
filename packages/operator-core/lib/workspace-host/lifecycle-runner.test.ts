@@ -169,6 +169,61 @@ describe('runWorkspaceHostLifecycle', () => {
     );
   });
 
+  it('reports upgrade as succeeded-but-not-yet-servable, in the result AND the ledger', async () => {
+    // WI-2143797: upgrade recreates the instance from the new image, so everything the
+    // initialization leg installed is gone. The provider steps genuinely succeeded; the HOST
+    // cannot serve. Both facts have to survive, which is why this is a flag beside
+    // status:'succeeded' rather than a different status.
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness();
+    apply.mockResolvedValue({
+      operationId: 'op-1',
+      stepId: 'start-instance',
+      state: 'applied',
+      observedAt: '2026-08-27T00:00:05Z',
+      resource: vm,
+    });
+
+    await expect(runWorkspaceHostLifecycle({
+      ...input(provider, store),
+      action: 'upgrade',
+      image: { id: 'projects/images/global/images/papercusp-v2' },
+    })).resolves.toMatchObject({ status: 'succeeded', requiresInitialization: true });
+
+    // The ledger row is what an operator actually reads; a flag only the caller sees would
+    // leave `succeeded | 100 | "completed"` sitting in the timeline saying the opposite.
+    expect(store.updateOperation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'succeeded',
+        percent: 100,
+        message: expect.stringContaining('CANNOT SERVE'),
+      }),
+    );
+    expect(store.appendEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ phase: 'complete', message: expect.stringContaining('CANNOT SERVE') }),
+    );
+  });
+
+  it('leaves a non-boot-disk action reporting a plain completion', async () => {
+    // The calibration case. Without it, a predicate stuck at `true` would pass the test above
+    // while declaring every stop and restart unusable.
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness();
+    apply.mockResolvedValue({
+      operationId: 'op-1',
+      stepId: 'start-instance',
+      state: 'applied',
+      observedAt: '2026-08-27T00:00:05Z',
+      resource: vm,
+    });
+
+    await expect(runWorkspaceHostLifecycle(input(provider, store)))
+      .resolves.toMatchObject({ status: 'succeeded', requiresInitialization: false });
+    expect(store.updateOperation).toHaveBeenLastCalledWith(
+      expect.objectContaining({ message: 'Workspace-host start completed' }),
+    );
+  });
+
   it('fails closed when restore does not name a distinct desired host', async () => {
     const { store } = storeHarness();
     const { provider } = providerHarness();

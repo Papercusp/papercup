@@ -90,6 +90,11 @@ export type {
 } from "./workspace-host-types";
 export { WORKSPACE_HOST_LIFECYCLE_ACTIONS, WORKSPACE_HOST_HEALTH_STATUSES } from "./workspace-host-types";
 export { resolveWorkspaceHostHealthStatus, unmeasuredHealthCheck } from "./workspace-host-health";
+export {
+  WORKSPACE_HOST_INITIALIZATION_INVALIDATING_ACTIONS,
+  workspaceHostActionInvalidatesInitialization,
+} from "./workspace-host-initialization-validity";
+export type { WorkspaceHostInitializationInvalidatingAction } from "./workspace-host-initialization-validity";
 export type {
   WorkspaceHostTransportRequirementObservation,
   WorkspaceHostTransportClientEnvironment,
