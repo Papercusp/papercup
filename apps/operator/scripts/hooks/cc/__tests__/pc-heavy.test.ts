@@ -3317,14 +3317,15 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
   }, 60_000);
 
   it('a later (non-concurrent) identical call within the window reuses the cached result, including stderr + exit code', () => {
-    const first = runSync(['bash', '-c', 'echo out-x; echo err-x >&2; exit 4'], {
+    const command = 'echo out-x; echo err-x >&2; exit 4';
+    const first = runSync(['bash', '-c', command], {
       PC_HEAVY_SLOTS: '2',
       PC_HEAVY_COALESCE_SEC: '30',
     });
     expect(first.status).toBe(4);
     expect(first.stderr).not.toContain('coalesced:');
 
-    const second = runSync(['bash', '-c', 'echo out-x; echo err-x >&2; exit 4'], {
+    const second = runSync(['bash', '-c', command], {
       PC_HEAVY_SLOTS: '2',
       PC_HEAVY_COALESCE_SEC: '30',
     });
@@ -3332,6 +3333,27 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     expect(second.stdout.trim()).toBe('out-x');
     expect(second.stderr).toContain('err-x');
     expect(second.stderr).toContain('coalesced:');
+    expect(second.stderr.trimEnd()).toMatch(
+      /\[pc-heavy\] PC_HEAVY_RESULT status=replayed reason=coalesced ageSec=\d+ exit=4$/,
+    );
+
+    // A tail-based gate merges both streams and intentionally discards the
+    // beginning. The replay provenance must remain the terminal line without
+    // contaminating stdout for callers that keep the streams separate.
+    const tailed = spawnSync(
+      'bash',
+      ['-c', 'bash "$1" bash -c "$2" 2>&1 | tail -n 1', 'probe', PC_HEAVY, command],
+      {
+        encoding: 'utf8',
+        env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }),
+        cwd: dir,
+        timeout: 30_000,
+      },
+    );
+    expect(tailed.status).toBe(0);
+    expect(tailed.stdout.trim()).toMatch(
+      /^\[pc-heavy\] PC_HEAVY_RESULT status=replayed reason=coalesced ageSec=\d+ exit=4$/,
+    );
   });
 
   it('does NOT coalesce different commands (different argv → different key)', () => {

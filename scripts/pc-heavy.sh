@@ -2715,12 +2715,19 @@ if [ "$_coalesce_enabled" = 1 ]; then
   }
 
   # Replays the cached run's stdout/stderr/exit-code and NEVER RETURNS.
+  #
+  # The machine-readable footer is deliberately LAST and remains on stderr.
+  # Keeping it off stdout preserves transparent command output, while placing
+  # it after the cached streams means a common `2>&1 | tail -n N` consumer
+  # cannot silently trim away the only evidence that this caller replayed a
+  # peer's result rather than running the command itself (EI-19311890864998461).
   _coalesce_replay() {
     echo "[pc-heavy] coalesced: reusing a ${_age}s-old identical run (same cwd+argv)" \
          "instead of spawning another — see EI-18685262961418231." \
          "Disable via PC_HEAVY_COALESCE=0." >&2
     cat "$_c_out" 2>/dev/null
     cat "$_c_err" >&2 2>/dev/null
+    echo "[pc-heavy] PC_HEAVY_RESULT status=replayed reason=coalesced ageSec=${_age} exit=${_c_rc:-1}" >&2
     exit "${_c_rc:-1}"
   }
 
