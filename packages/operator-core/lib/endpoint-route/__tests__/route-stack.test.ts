@@ -245,6 +245,95 @@ describe('auth step — native direct-remote policy (P-016 / D-025)', () => {
   });
 });
 
+describe('auth step — local browser mutation policy (WI-2144494)', () => {
+  const mutationRoute = (
+    options: { cors?: boolean | { origins: readonly string[] } } = {},
+    onInvoke?: () => void,
+  ) => defineTool({
+    method: 'POST',
+    path: '/mutate',
+    auth: 'loopback',
+    ...options,
+    input: z.object({ command: z.string() }),
+    handler: (_req, ctx) => {
+      onInvoke?.();
+      return Response.json({ command: ctx.input.command });
+    },
+  });
+
+  it('rejects a cross-site text/plain mutation before input or invoke', async () => {
+    const app = freshApp();
+    let handlerRan = false;
+    registerRoute(app, mutationRoute({}, () => { handlerRan = true; }));
+
+    const res = await app.request('/mutate', {
+      method: 'POST',
+      headers: {
+        origin: 'https://untrusted.example.test',
+        'sec-fetch-site': 'cross-site',
+        'content-type': 'text/plain',
+      },
+      body: JSON.stringify({ command: 'bash' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error.code).toBe('cross_origin_blocked');
+    expect(handlerRan).toBe(false);
+  });
+
+  it('rejects cross-site Fetch Metadata even when Origin is absent', async () => {
+    const app = freshApp();
+    let handlerRan = false;
+    registerRoute(app, mutationRoute({}, () => { handlerRan = true; }));
+
+    const res = await app.request('/mutate', {
+      method: 'POST',
+      headers: { 'sec-fetch-site': 'cross-site', 'content-type': 'text/plain' },
+      body: JSON.stringify({ command: 'bash' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).error.code).toBe('cross_origin_blocked');
+    expect(handlerRan).toBe(false);
+  });
+
+  it('allows no-Origin native requests and trusted default/custom origins', async () => {
+    const invoke = vi.fn();
+    const app = freshApp();
+    registerRoute(app, mutationRoute({ cors: { origins: ['https://trusted.example.test'] } }, invoke));
+
+    const native = await app.request('/mutate', {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: JSON.stringify({ command: 'native' }),
+    });
+    expect(native.status).toBe(200);
+
+    const custom = await app.request('/mutate', {
+      method: 'POST',
+      headers: {
+        origin: 'https://trusted.example.test',
+        'sec-fetch-site': 'cross-site',
+        'content-type': 'text/plain',
+      },
+      body: JSON.stringify({ command: 'custom' }),
+    });
+    expect(custom.status).toBe(200);
+
+    // The route's explicit CORS origins replace the default allowlist.
+    const defaultOrigin = await app.request('/mutate', {
+      method: 'POST',
+      headers: {
+        origin: 'http://127.0.0.1:3170',
+        'content-type': 'text/plain',
+      },
+      body: JSON.stringify({ command: 'default' }),
+    });
+    expect(defaultOrigin.status).toBe(403);
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+});
+
 /**
  * Gap 5 — the `?token=` → `Authorization: Bearer` lift (route-stack.ts
  * `authHeaders`). SECURITY-sensitive: a query token may only become a

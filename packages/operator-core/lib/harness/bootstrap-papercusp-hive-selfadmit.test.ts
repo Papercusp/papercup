@@ -23,7 +23,10 @@ import { join } from 'node:path';
 
 // defaultSelfAdmitCanonical lazy-imports these two; override ONLY the verbs it
 // calls (importOriginal keeps the rest real for the module graph).
-type RegistryState = { projects: Array<Record<string, unknown>> };
+type RegistryState = {
+  projects: Array<Record<string, unknown>>;
+  hiveDirectoryMeta?: Record<string, Record<string, unknown>>;
+};
 let registryState: RegistryState = { projects: [] };
 const mutateMock = vi.fn(
   async (
@@ -147,6 +150,37 @@ describe('defaultSelfAdmitCanonical — the registry entry is git-syncable (EI-8
     }).projects;
     expect(out).toHaveLength(1);
     expect(out[0]).toMatchObject({ self_repo: true, remote_hive: true, extra_field: 'kept' });
+  });
+
+  it('drops copied owner-only directory metadata when this install becomes a remote_hive view', async () => {
+    registryState = {
+      projects: [],
+      hiveDirectoryMeta: {
+        [PAPERCUSP_HIVE_SLUG]: {
+          potId: PAPERCUSP_HIVE_SLUG,
+          title: 'Copied owner listing',
+          visibility: 'public',
+          createdAt: 1,
+        },
+        locallyOwned: {
+          potId: 'locallyOwned',
+          title: 'Local listing',
+          visibility: 'private',
+          createdAt: 2,
+        },
+      },
+    };
+
+    await defaultSelfAdmitCanonical(invite);
+
+    expect(registryState.hiveDirectoryMeta).toEqual({
+      locallyOwned: {
+        potId: 'locallyOwned',
+        title: 'Local listing',
+        visibility: 'private',
+        createdAt: 2,
+      },
+    });
   });
 });
 

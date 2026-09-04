@@ -11,7 +11,7 @@
  * pre-fix control keeps the behavioral assertion falsifiable without mutating the
  * shared checkout.
  */
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -22,7 +22,11 @@ import { parseWorkspaceHostBootcBakeManifest, workspaceHostBootcCloudArtifact } 
 const ROOT = resolve(__dirname, '../../../..');
 const SCRIPT = join(ROOT, 'infra/images/bootc/bake-cloud-images.sh');
 const HEALTH = join(ROOT, 'infra/images/bootc/p307-build-health.sh');
+const CONTAINERFILE = join(ROOT, 'infra/images/bootc/workspace-host.Containerfile');
+const HOST_PREPARE = join(ROOT, 'infra/images/bootc/papercusp-host-prepare.sh');
 const SOURCE = readFileSync(SCRIPT, 'utf8');
+const CONTAINERFILE_SOURCE = readFileSync(CONTAINERFILE, 'utf8');
+const HOST_PREPARE_SOURCE = readFileSync(HOST_PREPARE, 'utf8');
 const SNAPSHOT_MARKER = '# EI-22355025813361885 — freeze the entrypoint';
 
 function withoutSnapshotGuard(): string {
@@ -33,12 +37,17 @@ function withoutSnapshotGuard(): string {
   return SOURCE.slice(0, start) + SOURCE.slice(end);
 }
 
-function runFixture(script: string, render: 'raw' | 'archive' | 'empty' | 'stale' = 'raw'): {
+function runFixture(
+  script: string,
+  render: 'raw' | 'archive' | 'empty' | 'stale' = 'raw',
+  release?: { root?: string; version?: string },
+): {
   status: number;
   output: string;
   files: string[];
   outFiles: string[];
   manifest: unknown;
+  buildArgs: string[];
 } {
   const dir = mkdtempSync(join(tmpdir(), 'ei-223550-bake-'));
   const source = join(dir, 'bake-cloud-images.sh');
@@ -48,11 +57,15 @@ function runFixture(script: string, render: 'raw' | 'archive' | 'empty' | 'stale
   const mutationMarker = join(dir, 'source-mutated');
   const buildMarker = join(dir, 'build-started');
   const supplyChainMarker = join(dir, 'supply-chain-ran');
+  const buildArgsPath = join(dir, 'build-args');
   const key = join(dir, 'release.key');
   const pubkey = join(dir, 'release.pub');
+  const releaseRoot = release?.root ?? join(dir, 'release-root');
 
   mkdirSync(bin, { recursive: true });
   mkdirSync(out, { recursive: true });
+  mkdirSync(releaseRoot, { recursive: true });
+  writeFileSync(join(releaseRoot, 'serve.mjs'), 'fixture release\n');
   if (render === 'stale') {
     mkdirSync(join(out, 'gcp', 'image'), { recursive: true });
     writeFileSync(join(out, 'gcp', 'image', 'disk.raw'), 'previous run');
@@ -78,6 +91,7 @@ case "$subcommand" in
     ;;
   build)
     : > "$BAKE_TEST_BUILD_MARKER"
+    printf '%s\\n' "$@" > "$BAKE_TEST_BUILD_ARGS"
     sleep 0.15
     mutation_tmp="$(mktemp "$BAKE_TEST_SOURCE.XXXXXX")"
     sed '/^bake_one() {/a if (' "$BAKE_TEST_SOURCE" > "$mutation_tmp"
@@ -146,6 +160,10 @@ set -euo pipefail
 `, { mode: 0o755 });
   chmodSync(join(dir, 'release-supply-chain.sh'), 0o755);
 
+  const optionalArgs: string[] = [];
+  if (release?.root !== undefined) optionalArgs.push('--release-root', release.root);
+  if (release?.version !== undefined) optionalArgs.push('--release-version', release.version);
+
   const result = spawnSync(
     'bash',
     [
@@ -160,6 +178,7 @@ set -euo pipefail
       'gcp',
       '--out',
       out,
+      ...optionalArgs,
     ],
     {
       cwd: dir,
@@ -169,6 +188,7 @@ set -euo pipefail
         BAKE_TEST_SOURCE: source,
         BAKE_TEST_MUTATION_MARKER: mutationMarker,
         BAKE_TEST_BUILD_MARKER: buildMarker,
+        BAKE_TEST_BUILD_ARGS: buildArgsPath,
         BAKE_TEST_SUPPLY_CHAIN_MARKER: supplyChainMarker,
         BAKE_TEST_RENDER: render,
         RELEASE_STORAGE_DRIVER: 'overlay',
@@ -188,6 +208,9 @@ set -euo pipefail
     manifest: existsSync(join(out, 'bake-manifest.json'))
       ? JSON.parse(readFileSync(join(out, 'bake-manifest.json'), 'utf8'))
       : null,
+    buildArgs: existsSync(buildArgsPath)
+      ? readFileSync(buildArgsPath, 'utf8').split(/\r?\n/).filter(Boolean)
+      : [],
   };
 }
 
@@ -230,5 +253,45 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     expect(result.status).not.toBe(0);
     expect(result.output).not.toContain('BAKE_RESULT=PASS');
     expect(() => parseWorkspaceHostBootcBakeManifest(result.manifest)).toThrow();
+  });
+
+  it('selects the optional named release context only when both P-305 release options are present', () => {
+    const releaseRoot = mkdtempSync(join(tmpdir(), 'p305-release-root-'));
+    try {
+      const result = runFixture(SOURCE, 'raw', { root: releaseRoot, version: '0.0.18-r21' });
+      expect(result.status, result.output).toBe(0);
+      expect(result.buildArgs).toEqual(
+        expect.arrayContaining([
+          '--target',
+          'workspace-host-release',
+          '--build-context',
+          `papercusp-release=${releaseRoot}`,
+          '--build-arg',
+          'PAPERCUSP_RELEASE_VERSION=0.0.18-r21',
+        ]),
+      );
+    } finally {
+      rmSync(releaseRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a half-configured named release context before invoking Podman', () => {
+    const result = runFixture(SOURCE, 'raw', { version: '0.0.18-r21' });
+    // The fixture above supplies the version without a root, so this is the
+    // negative control for the parser.  (The successful pair is exercised by
+    // the test immediately below.)
+    expect(result.status).toBe(2);
+    expect(result.output).toContain('--release-root and --release-version must be supplied together');
+    expect(result.files).not.toContain('build-started');
+  });
+
+  it('keeps the OS-only target as the default and puts the release layer behind an explicit target', () => {
+    const releaseStage = CONTAINERFILE_SOURCE.indexOf('FROM workspace-host-os AS workspace-host-release');
+    const defaultStage = CONTAINERFILE_SOURCE.indexOf('FROM workspace-host-os AS workspace-host\n');
+    expect(releaseStage).toBeGreaterThan(-1);
+    expect(defaultStage).toBeGreaterThan(releaseStage);
+    expect(CONTAINERFILE_SOURCE).toContain('COPY --from=papercusp-release / /opt/papercusp/releases/${PAPERCUSP_RELEASE_VERSION}/');
+    expect(SOURCE).toContain('--target workspace-host-release');
+    expect(HOST_PREPARE_SOURCE).toContain('setfacl -R -m "u:$AGENT_USER:rX" "$RUNTIME_ROOT/releases"');
   });
 });

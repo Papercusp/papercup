@@ -54,6 +54,7 @@ import {
   projectCheckpointQualificationState,
   type CheckpointQualificationState,
 } from './release/checkpoint-qualification-transaction';
+import { parseCandidateSnapshot, type CandidateSnapshot } from './release/candidate-snapshot';
 import type { CheckpointProcessAuthorityReading, CheckpointSystemdProbe } from './release-checkpoint-launch';
 
 /** Compact read health projected beside the normalized queue diagnostic. */
@@ -229,6 +230,13 @@ export interface GitPipelineSnapshot {
     lastFixerStatus: string | null;
     lastFixerAtMs: number | null;
     lastFixerCandidate: string | null;
+    /**
+     * EI-22344736163383832: the single persisted candidate/failure/ownership
+     * record produced by the green-checkpoint writer. A malformed, unknown, or
+     * torn JSONB value is deliberately null; readers must not reconstruct this
+     * authority by pairing unrelated gate_health keys.
+     */
+    candidateSnapshot: CandidateSnapshot | null;
     /** EI-18672078222841101: WHO, if anyone, already owns this red — the question every
      *  recipient of a gate-red alert asks first and that no read surface answered. The
      *  three `lastFixer*` fields above look like they answer it and do not: they are keyed
@@ -683,6 +691,15 @@ export function projectGatePromotionIdentity(gateHealth: unknown): {
     observedCandidate: stringOrNull(row.observedCandidate),
     lastMainPin: stringOrNull(row.lastMainPin),
   };
+}
+
+/**
+ * EI-22344736163383832: project the producer's canonical candidate snapshot
+ * without falling back to the older disconnected gate_health fields.
+ */
+export function projectGateCandidateSnapshot(gateHealth: unknown): CandidateSnapshot | null {
+  if (!gateHealth || typeof gateHealth !== 'object' || Array.isArray(gateHealth)) return null;
+  return parseCandidateSnapshot((gateHealth as Record<string, unknown>).candidateSnapshot);
 }
 
 /**
@@ -1266,6 +1283,7 @@ export async function gitPipelineSnapshot(
   const qualification = projectCheckpointQualificationState(gcMeta.qualificationTransaction);
   const gateHealth = (gcMeta.gate_health ?? {}) as Record<string, unknown>;
   const gatePromotionIdentity = projectGatePromotionIdentity(gateHealth);
+  const candidateSnapshot = projectGateCandidateSnapshot(gateHealth);
   const lastFixer = (gcMeta.last_fixer ?? null) as Record<string, unknown> | null;
   const flakeHistory = (gcMeta.flake_history ?? {}) as Record<string, { flakes?: number }>;
 
@@ -1611,6 +1629,7 @@ export async function gitPipelineSnapshot(
       lastFixerStatus: typeof lastFixer?.status === 'string' ? lastFixer.status : null,
       lastFixerAtMs: num(lastFixer?.at),
       lastFixerCandidate: typeof lastFixer?.candidate === 'string' ? lastFixer.candidate : null,
+      candidateSnapshot,
       redOwner,
       // WI-4533: the gate's OWN verdict about what is failing (see the type's note) — never the
       // names behind a streak already proven reset (they'd misdirect a fixer at passing tests).

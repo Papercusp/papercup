@@ -170,6 +170,7 @@ import {
   normalizeCheckEntries,
   normalizeFlattenedContinuityProbeRow,
   patchExistingCheckEntries,
+  renderCheckLine,
   renderCarryNote,
   sanitizeCarryRowId,
   splitCarryNoteChecks,
@@ -178,6 +179,7 @@ import {
   withCarryNoteChecks,
 } from '../../carry-note';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
+import { uncoveredAbsencePremises } from '../../premises-claim-port';
 import { postLearnedAtLevel, describeCaptureGaps } from '../../effort-thread';
 
 /**
@@ -795,6 +797,7 @@ export default defineTool({
     'Single: `{ id, checkpoint? }`; many: `items:[{ id, checkpoint?, harness? }]`. ' +
     'Checkpoints preserve successor continuity across task boundaries; replace-on-write by default, `append:true` joins prior text. ' +
     'Writes verify-read and block suspicious shrink; peer-held/terminal-item writes are refused while explicit clears remain allowed. ' +
+    'An uncovered absence premise returns advisory `absenceLint`; a matching stored check row suppresses it. ' +
     '`rowsMode:"merge"` adds check rows while replacing the body; `"replace"` retires rows. ' +
     'Full body+rows replacement requires `append:false, rowsMode:"replace", confirmShrink:true, confirmRetire:true`.',
   guidance: {
@@ -812,6 +815,7 @@ export default defineTool({
       'Doubles as a liveness pulse — a claim held through long local-only tool use can go presence-stale and be reclaimed.',
     returns:
       'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
+      'A body that asserts a missing surface without a matching stored check returns `absenceLint { flagged, claims }`; the write is kept. ' +
       'Every write is verify-read: a suspicious shrink is retried as a safe append, a disagreeing append is BLOCKED, ' +
       'and every refusal carries `errorCode` + recovery args. ' +
       'A non-clear write to a terminal item is refused with `errorCode:"terminal_item"`; reopen it explicitly with ' +
@@ -1973,6 +1977,36 @@ export default defineTool({
                         'is what the next holder reads INSTEAD of re-checking. Narrow the claim to what the ' +
                         'probe saw, or widen the probe and re-run it. Advisory only; the write was kept.',
                       rows,
+                    },
+                  }
+                : {};
+            } catch {
+              return {};
+            }
+          })(),
+          /**
+           * WI-7238: the work-item-scoped checkpoint is the sibling of
+           * loop:checkpoint's carry note: a future holder receives this prose as its
+           * continuity authority. Flag only absence assertions supplied by THIS call,
+           * and suppress them when the final stored check rows already carry a matching
+           * falsifier. Advisory + fail-open; the write is never lost to a lint fault.
+           */
+          ...(() => {
+            try {
+              if (stored === null || typeof checkpoint !== 'string' || !checkpoint.trim()) return {};
+              const submittedBody = splitCarryNoteChecks(checkpoint).body;
+              const probeText = splitCarryNoteChecks(stored).checks.map(renderCheckLine).join('\n');
+              const claims = uncoveredAbsencePremises(submittedBody, 'carry-note', probeText);
+              return claims.length > 0
+                ? {
+                    absenceLint: {
+                      flagged: true as const,
+                      note:
+                        'absence_lint: this checkpoint asserts that something DOES NOT EXIST. The next holder ' +
+                        'will receive it as continuity authority, so run each recheck now. If it holds, park the ' +
+                        'claim and evidence in checks:[{ claim, recheck, verified }]; if it does not, correct the ' +
+                        'checkpoint before handoff. Advisory only; the write was kept.',
+                      claims,
                     },
                   }
                 : {};

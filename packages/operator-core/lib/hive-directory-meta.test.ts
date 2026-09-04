@@ -76,4 +76,22 @@ describe('hive-directory-meta (P-004 persistence)', () => {
     expect((store.reg as { projects: unknown[] }).projects).toHaveLength(1);
     expect((store.reg as { hiveControlFrames: object }).hiveControlFrames).toBeTruthy();
   });
+
+  it('does not treat copied directory metadata for a remote_hive view as owned', async () => {
+    store.reg = {
+      projects: [
+        { slug: 'remote', harness_kind: 'hive', remote_hive: true },
+        { slug: 'owned', harness_kind: 'hive' },
+      ],
+      hiveDirectoryMeta: {
+        remote: meta({ potId: 'remote', createdAt: 3000 }),
+        owned: meta({ potId: 'owned', createdAt: 2000 }),
+        legacy: meta({ potId: 'legacy', createdAt: 1000 }),
+      },
+    };
+
+    expect((await listOwnedHiveMeta()).map((entry) => entry.potId)).toEqual(['owned', 'legacy']);
+    expect(await getOwnedHiveMeta('remote')).toBeNull();
+    expect(await getOwnedHiveMeta('owned')).toEqual(meta({ potId: 'owned', createdAt: 2000 }));
+  });
 });

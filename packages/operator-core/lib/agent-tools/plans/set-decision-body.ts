@@ -113,7 +113,7 @@ const text = (payload: Record<string, unknown>, isError = false) => ({
 export default defineTool({
   name: 'plans:set-decision-body',
   description:
-    "Replace an existing decision's body — preserves the `### D-NNN — title` head, the `Date:` line, and existing generated `Related:` refs by default. Pass refs to replace them or [] to clear them. Inside the plan lock, records a revision. The structured editor decisions lacked (plans:add-decision could only append; editing meant a plans:edit string-replace).",
+    "Replace an existing decision's body — preserves the `### D-NNN — title` head, the `Date:` line, and existing generated `Related:` refs by default. Pass refs to replace them or [] to clear them. Inside the plan lock, records a revision. An uncovered absence premise returns advisory `absenceLint`; add a concrete `Measured: <scope + result>` line after running its recheck. The structured editor decisions lacked (plans:add-decision could only append; editing meant a plans:edit string-replace).",
   guidance: {
     when: "A decision's body needs revising — a correction, a clarification, an added caveat — keeping its id, title, date, and related item refs. Pass refs only when intentionally changing those refs. The structured alternative to a plans:edit on the decision block.",
     notWhen:

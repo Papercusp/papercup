@@ -423,7 +423,21 @@ export async function defaultSelfAdmitCanonical(
       const projects = cur.projects.some((p) => p.slug === PAPERCUSP_HIVE_SLUG)
         ? cur.projects.map((p) => (p.slug === PAPERCUSP_HIVE_SLUG ? { ...p, ...nextEntry } : p))
         : [...cur.projects, nextEntry];
-      return { ...cur, projects };
+      // WI-2142873: a release seed is cut on the OWNER box, so its registry can
+      // carry owner-only directory metadata for the canonical Papercusp hive.
+      // This install is deliberately self-admitted as a remote_hive VIEW: it
+      // must use the published hive identity and must never announce the hive
+      // or require the owner's private key. Retaining the copied metadata made
+      // hive-directory boot classify the VM as an owner on every restart,
+      // repeatedly logging a missing `hive:<workspace>:papercusp` key and
+      // publishing an identity-less directory frame. Remove only this hive's
+      // owner metadata; unrelated locally-owned hive listings survive.
+      const next = { ...cur, projects };
+      if (next.hiveDirectoryMeta?.[PAPERCUSP_HIVE_SLUG]) {
+        next.hiveDirectoryMeta = { ...next.hiveDirectoryMeta };
+        delete next.hiveDirectoryMeta[PAPERCUSP_HIVE_SLUG];
+      }
+      return next;
     },
     PAPERCUSP_WORKSPACE_ID,
   );

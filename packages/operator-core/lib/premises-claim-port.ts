@@ -640,6 +640,36 @@ export function detectAbsencePremises(text: string, source: PremiseSource): Deri
   return out;
 }
 
+/**
+ * Keep the absence classification in {@link detectAbsencePremises}, while giving
+ * every prescriptive write surface the same answer to the separate question:
+ * "did the artifact already carry a probe for this claim?"
+ *
+ * The word-overlap rule is intentionally the one first shipped by
+ * `loop:checkpoint` (outage-must-not-be-silent P-009). Exact substring matching
+ * re-flags a parked check as soon as prose and check-row wording differ by a
+ * rendering prefix or rewrap; duplicating the rule at each producer lets those
+ * thresholds drift. `probeText` is rendered evidence/check prose, never the
+ * narrative itself.
+ */
+export function uncoveredAbsencePremises(
+  text: string,
+  source: PremiseSource,
+  probeText: string = '',
+): Array<{ claim: string; recheck?: string }> {
+  const probeWords = new Set(probeText.toLowerCase().match(/[a-z0-9_.:/-]{4,}/g) ?? []);
+  const covered = (claim: string): boolean => {
+    const words = claim.toLowerCase().match(/[a-z0-9_.:/-]{4,}/g) ?? [];
+    if (words.length === 0) return false;
+    const hits = words.filter((word) => probeWords.has(word)).length;
+    return hits / words.length >= 0.6;
+  };
+
+  return detectAbsencePremises(text, source)
+    .filter((premise) => !covered(premise.claim))
+    .map((premise) => ({ claim: premise.claim, recheck: premise.recheck }));
+}
+
 /** Declared premises stored on the artifact, in the shared CheckEntry shape. */
 function readDeclaredPremises(payload: unknown): CheckEntry[] {
   const p = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};

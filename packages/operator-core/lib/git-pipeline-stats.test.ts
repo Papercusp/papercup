@@ -20,11 +20,13 @@ import {
   isGitSyncConflictCurrent,
   currentGateInconclusive,
   projectFrozenRepairQueueRead,
+  projectGateCandidateSnapshot,
   projectGatePromotionIdentity,
   gateFailingTestsMeasurement,
   type RawGateCounters,
 } from './git-pipeline-stats';
 import type { PipelineEventRow } from './harness/git-sync/pipeline-events';
+import { buildCandidateSnapshot } from './release/candidate-snapshot';
 
 describe('gitPipelineSnapshot latency topology', () => {
   it('starts every independent snapshot read before consuming the routines result', () => {
@@ -89,6 +91,45 @@ describe('D-013/P-011 gate promotion identity', () => {
       observedCandidate: null,
       lastMainPin: null,
     });
+  });
+});
+
+describe('EI-22344736163383832 canonical candidate snapshot projection', () => {
+  const snapshot = buildCandidateSnapshot(
+    {
+      candidate: 'a'.repeat(40),
+      base: 'b'.repeat(40),
+      runId: 'run-1',
+      source: 'pinned',
+      selectedAtMs: 123,
+      candidateCommittedAt: '2026-09-04T12:00:00.000Z',
+      commitsBehindTip: 2,
+      failingTests: ['packages/example.test.ts'],
+      failingTestsMeasured: true,
+      postSuiteMeasured: true,
+      postSuiteLegs: [{ id: 'typecheck', status: 'passed', durationMs: 10 }],
+      repairQueue: {
+        candidate: 'a'.repeat(40),
+        repairHead: 'c'.repeat(40),
+        phase: 'awaiting-fixer',
+        fixerSpawnId: 'fixer-1',
+      },
+      retriage: { classification: 'real-red', tip: 'd'.repeat(40) },
+    },
+    456,
+  );
+
+  it('projects only the parsed canonical snapshot from gate_health', () => {
+    expect(projectGateCandidateSnapshot({ candidateSnapshot: snapshot })).toEqual(snapshot);
+  });
+
+  it('fails closed for absent or malformed snapshot values', () => {
+    expect(projectGateCandidateSnapshot({})).toBeNull();
+    expect(
+      projectGateCandidateSnapshot({
+        candidateSnapshot: { ...snapshot, identity: 'torn' },
+      }),
+    ).toBeNull();
   });
 });
 

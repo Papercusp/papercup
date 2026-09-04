@@ -369,6 +369,7 @@ describe('plans:add-decision — retry-safety (EI-19383795443003151)', () => {
 describe('plans:add-decision — exact-slug harness recovery', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    handlerMocks.carryProvenanceFields.mockResolvedValue({});
     handlerMocks.planRevisionCapture.mockReturnValue({
       afterWrite: undefined,
       recorded: { current: null },
@@ -533,6 +534,45 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
     expect(result.results[0]).toMatchObject({ ok: true, decisionId: 'D-001' });
     expect(result.results[0]).not.toHaveProperty('provenanceLint');
     expect(result.results[0]).not.toHaveProperty('turnProvenance');
+  });
+
+  it('WI-7238: returns an advisory for an uncovered absence premise while preserving the decision', async () => {
+    const result = await handlerBody(
+      {
+        harness: 'explicit-harness',
+        slug: 'handler-plan',
+        title: 'Add the reader',
+        body: 'There is no exported reader for the offers table, so the plan must add one.',
+      },
+      handlerContext(),
+    );
+
+    expect(handlerMocks.withPlanLock).toHaveBeenCalled();
+    expect(result.results[0]).toMatchObject({
+      ok: true,
+      decisionId: 'D-001',
+      absenceLint: {
+        flagged: true,
+        claims: [{ claim: expect.stringContaining('no exported reader'), recheck: expect.any(String) }],
+      },
+    });
+  });
+
+  it('WI-7238: a concrete Measured line suppresses the mixed-precision decision advisory', async () => {
+    const result = await handlerBody(
+      {
+        harness: 'explicit-harness',
+        slug: 'handler-plan',
+        title: 'Reader inventory',
+        body:
+          'There is no exported reader for the offers table.\n' +
+          'Measured (whole repository): rg -n "offers reader" packages apps returned zero matches.',
+      },
+      handlerContext(),
+    );
+
+    expect(result.results[0]).toMatchObject({ ok: true, decisionId: 'D-001' });
+    expect(result.results[0]).not.toHaveProperty('absenceLint');
   });
 
   it('returns a machine-visible measurement advisory on the decision write that needs review', async () => {

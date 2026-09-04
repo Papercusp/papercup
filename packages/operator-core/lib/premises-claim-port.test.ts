@@ -13,6 +13,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   stripNonProse,
   detectAbsencePremises,
+  uncoveredAbsencePremises,
   buildPremisesBrief,
   evidenceNamesScope,
   getClaimTimePremises,
@@ -260,6 +261,27 @@ describe('detectAbsencePremises', () => {
       const [b] = derive('The note said "there is no such helper." Then the author moved on.');
       expect(b.claim).not.toContain('moved on');
     });
+  });
+});
+
+describe('uncoveredAbsencePremises', () => {
+  const claim =
+    'The mcp-proxy failure ledger has been written since W8 and there is no reader for it — nothing ingests the file.';
+
+  it('returns the shared detector result when no evidence row covers it', () => {
+    expect(uncoveredAbsencePremises(claim, 'carry-note')).toEqual([
+      expect.objectContaining({ claim: expect.stringContaining('no reader'), recheck: expect.any(String) }),
+    ]);
+  });
+
+  it('suppresses a parked probe by word overlap instead of brittle substring identity', () => {
+    const probe =
+      '✓ VERIFIED — mcp-proxy failure ledger has been written since W8; reader absent; nothing ingests that file';
+    expect(uncoveredAbsencePremises(claim, 'carry-note', probe)).toEqual([]);
+  });
+
+  it('does not let an unrelated check row silence the absence premise', () => {
+    expect(uncoveredAbsencePremises(claim, 'carry-note', '✓ VERIFIED — release gate is green')).toHaveLength(1);
   });
 });
 

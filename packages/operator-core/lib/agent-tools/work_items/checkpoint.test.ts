@@ -3350,6 +3350,52 @@ describe('work_items:checkpoint — current-vs-retained provenance (EI-211652356
   });
 });
 
+describe('work_items:checkpoint — absence-premise continuity lint (WI-7238)', () => {
+  const claim =
+    'The mcp-proxy failure ledger has been written since W8 and there is no reader for it — nothing ingests the file.';
+
+  it('returns an advisory with a concrete recheck while preserving the write', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-ABSENCE', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: claim, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(claim);
+
+    const result = await one({ id: 'WI-ABSENCE', checkpoint: claim });
+
+    expect(result.ok).toBe(true);
+    expect(result.absenceLint).toMatchObject({
+      flagged: true,
+      claims: [{ claim: expect.stringContaining('no reader'), recheck: expect.any(String) }],
+    });
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalled();
+  });
+
+  it('stays absent for an ordinary progress checkpoint', async () => {
+    const body = 'Implemented the compatibility path and the focused test passes 7/7.';
+    getWorkItem.mockResolvedValue({ id: 'WI-CLEAN', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    expect(await one({ id: 'WI-CLEAN', checkpoint: body })).not.toHaveProperty('absenceLint');
+  });
+
+  it('suppresses the advisory when the stored check rows already carry the falsifier', async () => {
+    const check = {
+      claim,
+      recheck: "rg -n 'mcp-proxy failure ledger reader' packages apps libs",
+      verified: 'whole-repo importer search completed; no reader found',
+    };
+    const stored = withCarryNoteChecks(claim, [check]);
+    getWorkItem.mockResolvedValue({ id: 'WI-COVERED', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+
+    const result = await one({ id: 'WI-COVERED', checkpoint: claim, checks: [check] });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('absenceLint');
+  });
+});
+
 describe('work_items:checkpoint — same-turn action proof (EI-21375032920365268)', () => {
   it('queries the caller spawn and clears only a successful matching coord action', async () => {
     const stored = 'Messaged fleet leader su-bce40c51 directly';

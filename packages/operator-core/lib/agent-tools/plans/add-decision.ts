@@ -35,7 +35,11 @@ import { emitDecisionAdded } from '../../harness/usage-emitters';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
 import { recoverHarnessFromSlugs, requireUnambiguousSlugScope } from './slug-scope';
-import { decisionProvenance, FALSIFIED_OWNER_ANCHOR_NOTE } from './decision-provenance';
+import {
+  decisionProvenance,
+  FALSIFIED_OWNER_ANCHOR_NOTE,
+  hasConcreteDecisionMeasurement,
+} from './decision-provenance';
 import { neutralizeToolCallTags } from '../../text-safety';
 
 const REFS = z
@@ -141,12 +145,9 @@ const SOURCE_PATH_RE = /\b(?:[A-Za-z0-9_@.-]+\/)*[A-Za-z0-9_@.-]+\.(?:ts|tsx|js|
 // label, an optional `(...)`/`[...]` qualifier up to 200 chars (or a short bare
 // one, as before), and evidence that may begin on the following line.
 // Still rejects: a label with nothing after it — a promise is not a measurement.
-const MEASURED_LINE_RE =
-  /^[ \t]*(?:(?:[-*+>]|\d+[.)])[ \t]*)?(?:\*\*|__|\*|_)?[ \t]*Measured\b(?:[ \t]*[(\[][^\n]{0,200}[)\]]|[^:\n]{0,80})?[ \t]*:(?:\*\*|__|\*|_)?\s+\S.+$/im;
-
 export function decisionMeasurementAdvisory(body: string): DecisionMeasurementAdvisory | null {
   const paths = [...new Set(body.match(SOURCE_PATH_RE) ?? [])].slice(0, 12);
-  if (paths.length === 0 || MEASURED_LINE_RE.test(body)) return null;
+  if (paths.length === 0 || hasConcreteDecisionMeasurement(body)) return null;
   return {
     code: 'tree_fact_measurement_missing',
     paths,
@@ -604,7 +605,7 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
 export default defineTool({
   name: 'plans:add-decision',
   description:
-    "Append one or many decisions to a plan. Allocates the next D-NNN inside a lock and bumps frontmatter `updated:`; concurrent calls stay collision-free. Single: `{ slug, title, body }`; bulk: `items:[{ slug, title, body, refs?, affects? }]`. `itemRefs` aliases `refs` (refs wins). Tree-fact decisions require `Measured: <file:line or command + result>`; source-like paths without it return `measurementAdvisory`. Returns `{ ok, results:[{ ok, slug, decisionId, deduped?, propagated_to?, measurementAdvisory? | error }], counts }`; correlate each result by `decisionId`, and one failure never fails the rest. Exact `{ title, body }` retries dedupe against the plan's most recent decision instead of appending.",
+    "Append one or many decisions to a plan. Allocates the next D-NNN inside a lock and bumps frontmatter `updated:`; concurrent calls stay collision-free. Single: `{ slug, title, body }`; bulk: `items:[{ slug, title, body, refs?, affects? }]`. `itemRefs` aliases `refs` (refs wins). Tree-fact decisions require `Measured: <file:line or command + result>`; source-like paths without it return `measurementAdvisory`, and an uncovered absence premise returns advisory `absenceLint`. Returns `{ ok, results:[{ ok, slug, decisionId, deduped?, propagated_to?, measurementAdvisory?, absenceLint? | error }], counts }`; correlate each result by `decisionId`, and one failure never fails the rest. Exact `{ title, body }` retries dedupe against the plan's most recent decision instead of appending.",
   guidance: {
     when: "A decision-shaped output: trade-off resolved, scope ratified, or a choice made. Record it so fresh agents do not relitigate. For current-tree claims, open the tree and add `Measured: <file:line or command + result>`. Design authority is not tree evidence. Use items:[…] for bulk.",
     notWhen:

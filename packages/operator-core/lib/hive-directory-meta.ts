@@ -16,15 +16,34 @@
 import { loadHarnessRegistry, mutateHarnessRegistry } from './harness-registry';
 import type { HiveDirectoryMeta } from './hive-publish';
 
+/** A joined remote_hive is a VIEW, never an owned directory publisher. A
+ * release seed can contain stale owner metadata copied from the source box;
+ * treat the registry's explicit role as authoritative so legacy installs do
+ * not announce someone else's hive or ask for its private key. */
+function isRemoteHiveView(
+  reg: Awaited<ReturnType<typeof loadHarnessRegistry>>,
+  potId: string,
+): boolean {
+  return reg.projects.some(
+    (project) =>
+      project.slug === potId &&
+      project.harness_kind === 'hive' &&
+      project.remote_hive === true,
+  );
+}
+
 /** All owned hive metadata for a workspace, newest-created first. */
 export async function listOwnedHiveMeta(workspaceId?: string): Promise<HiveDirectoryMeta[]> {
   const reg = await loadHarnessRegistry(workspaceId);
-  return Object.values(reg.hiveDirectoryMeta ?? {}).sort((a, b) => b.createdAt - a.createdAt);
+  return Object.values(reg.hiveDirectoryMeta ?? {})
+    .filter((meta) => !isRemoteHiveView(reg, meta.potId))
+    .sort((a, b) => b.createdAt - a.createdAt);
 }
 
 /** One hive's metadata, or null. */
 export async function getOwnedHiveMeta(potId: string, workspaceId?: string): Promise<HiveDirectoryMeta | null> {
   const reg = await loadHarnessRegistry(workspaceId);
+  if (isRemoteHiveView(reg, potId)) return null;
   return reg.hiveDirectoryMeta?.[potId] ?? null;
 }
 

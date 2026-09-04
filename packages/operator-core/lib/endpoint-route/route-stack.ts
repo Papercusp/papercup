@@ -21,6 +21,7 @@ import type { Principal } from '@papercusp/agent-mcp';
 import { PrincipalCheckError, requirePrincipal } from '../auth/require-principal';
 import { principalFromCookie } from '../auth/principal/from-cookie';
 import type { RouteDefinition } from './define-route';
+import { defaultCorsOrigin } from './cors';
 import { requireLoopbackOr403 } from './loopback-guard';
 import { recordRouteInvocation } from './telemetry';
 import { recordHttpTraffic } from '../coverage-census/attribution/sink';
@@ -135,6 +136,50 @@ async function endpointAuthTiersEnabled(): Promise<boolean> {
 
 const SAFE_BROWSER_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+function allowsBrowserOrigin(
+  def: RouteDefinition<ZodTypeAny | undefined>,
+  origin: string,
+): boolean {
+  if (typeof def.cors === 'object') return def.cors.origins.includes(origin);
+  if (def.cors === false) return false;
+  return Boolean(defaultCorsOrigin(origin));
+}
+
+/**
+ * Cross-origin simple requests bypass CORS preflight when they use a
+ * safelisted content type such as `text/plain`. Protect every local
+ * mutation at the route-stack choke point instead of relying on individual
+ * handlers to remember a CSRF guard.
+ *
+ * Requests without an Origin remain valid for CLI/native transports. Fetch
+ * Metadata closes the browser case where a cross-site request omits Origin;
+ * an explicitly trusted route Origin is still admitted even when the
+ * browser reports it as cross-site (for example, a paired device).
+ */
+function enforceBrowserMutationPolicy(exec: RouteExecution): Response | null {
+  if (SAFE_BROWSER_METHODS.has(exec.def.method)) return null;
+
+  const origin = exec.req.headers.get('origin')?.trim() ?? '';
+  const originTrusted = Boolean(origin) && allowsBrowserOrigin(exec.def, origin);
+  if (origin && !originTrusted) {
+    return errorResponse(
+      403,
+      'cross_origin_blocked',
+      'browser mutation Origin is not allowed for this route',
+    );
+  }
+
+  const fetchSite = exec.req.headers.get('sec-fetch-site')?.trim().toLowerCase();
+  if (fetchSite === 'cross-site' && !originTrusted) {
+    return errorResponse(
+      403,
+      'cross_origin_blocked',
+      'cross-site browser mutations require a trusted Origin',
+    );
+  }
+  return null;
+}
+
 function remotePeerAddress(hono: Context): string | null {
   try {
     return getConnInfo(hono).remote.address ?? null;
@@ -230,6 +275,17 @@ const authStep: RouteStep = {
     if (remote.denial) {
       exec.status = remote.denial.status === 401 ? 'unauthorized' : 'forbidden';
       return remote.denial;
+    }
+    // Direct-remote requests have already passed the exact configured
+    // authority/Origin policy above. Local requests need the same browser
+    // mutation protection so a simple text/plain POST cannot reach input or
+    // invoke (WI-2144494).
+    if (!remote.remote) {
+      const browserMutation = enforceBrowserMutationPolicy(exec);
+      if (browserMutation) {
+        exec.status = 'forbidden';
+        return browserMutation;
+      }
     }
     // Direct-remote public/loopback declarations are local compatibility
     // metadata, not authorization. The central verified-cookie gate above is

@@ -35,8 +35,16 @@ const hiveMocks = vi.hoisted(() => ({
   potHomeSlugForHarness: vi.fn(),
 }));
 
+const pluginHostMocks = vi.hoisted(() => ({
+  getPluginHost: vi.fn(),
+}));
+
 vi.mock('../../hive-federation', () => ({
   potHomeSlugForHarness: hiveMocks.potHomeSlugForHarness,
+}));
+
+vi.mock('../../plugin-host-runtime', () => ({
+  getPluginHost: pluginHostMocks.getPluginHost,
 }));
 
 import toolFind, {
@@ -80,6 +88,8 @@ async function callHandler(args: Record<string, unknown>, ctx: Record<string, un
 beforeEach(() => {
   hiveMocks.potHomeSlugForHarness.mockReset();
   hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
+  pluginHostMocks.getPluginHost.mockReset();
+  pluginHostMocks.getPluginHost.mockResolvedValue({ loaded: [] });
 });
 
 describe('tools:find tool registration', () => {
@@ -559,6 +569,33 @@ describe('confirmed hive discovery visibility (WI-39255)', () => {
 });
 
 describe('handler — graceful degrade + result shape', () => {
+  it('waits for plugin-host readiness before snapshotting the projected registry', async () => {
+    const toolName = 'test:tools-find-readiness';
+    let releaseHost!: () => void;
+    pluginHostMocks.getPluginHost.mockReturnValueOnce(
+      new Promise((resolve) => {
+        releaseHost = () => {
+          defineTool({
+            name: toolName,
+            capability: 'test:read',
+            requirePrincipal: false,
+            args: z.object({}),
+            handler: async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }),
+          });
+          resolve({ loaded: [] });
+        };
+      }),
+    );
+
+    const pending = callHandler({ query: toolName });
+    await vi.waitFor(() => expect(pluginHostMocks.getPluginHost).toHaveBeenCalledOnce());
+    expect(await Promise.race([pending.then(() => true), Promise.resolve(false)])).toBe(false);
+
+    releaseHost();
+    const out = await pending;
+    expect(out.hits.some((hit) => hit.tool === toolName)).toBe(true);
+  });
+
   it('runs lexical-only when no embedder is configured, marking semantic accordingly', async () => {
     const out = await callHandler({ query: 'find tools by intent' });
     expect(out.semantic).toBe('lexical-only'); // never silently pretends semantic ran

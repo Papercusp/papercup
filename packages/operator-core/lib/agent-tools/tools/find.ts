@@ -860,6 +860,19 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
+    // host-bootstrap starts plugin discovery fire-and-forget. Join the same
+    // single-flight readiness promise before snapshotting the projected
+    // registry, otherwise a first post-restart request can build a corpus
+    // while plugin tools are still being wired. Keep this import dynamic so
+    // the plugin host does not become part of the agent-tools registry cycle.
+    try {
+      const { getPluginHost } = await import('../../plugin-host-runtime');
+      await getPluginHost();
+    } catch {
+      // Discovery/wiring failures are recorded by the plugin host where
+      // possible. The base projected registry remains searchable if startup
+      // failed before a host state could be produced.
+    }
     const registry = {
       source: PROJECTED_TOOL_REGISTRY_SOURCE,
       revision: projectedToolRegistryRevision(),
