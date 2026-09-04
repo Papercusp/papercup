@@ -692,4 +692,89 @@ describe('validateScorecardPoorRatingDisposition (scorecard-poor-rating-disposit
       disregard: 'accepted: bounded historical artifact',
     });
   });
+
+  // design-to-code-coverage-seam P-026. This parse is an explicit ALLOWLIST, so a new
+  // check kind that is not added here PERSISTS fine and is silently dropped on READ —
+  // a data loss with no error anywhere. These cases exist because that failure is
+  // invisible to the writing side's own tests.
+  describe("kind:'requirements' check runs survive the read-side narrowing", () => {
+    it('round-trips a complete requirements run', () => {
+      const out = asStructuredObservation({
+        rubricRef: 'r',
+        checkRuns: {
+          realized: {
+            kind: 'requirements',
+            verdict: 'fail',
+            mappingsJudged: 9,
+            checkedTargets: 14,
+            unrealized: 2,
+            unrealizedEntries: 3,
+            exemptMappings: 1,
+            droppedTargets: 4,
+            droppedTargetsVouchedByStaleAudit: 2,
+            unrealizedRequirements: ['requirement M-003', 42, 'requirement M-007'],
+            measuredAt: '2026-09-03T00:00:00.000Z',
+          },
+        },
+      });
+      expect(out?.checkRuns?.realized).toEqual({
+        kind: 'requirements',
+        verdict: 'fail',
+        mappingsJudged: 9,
+        checkedTargets: 14,
+        unrealized: 2,
+        unrealizedEntries: 3,
+        exemptMappings: 1,
+        droppedTargets: 4,
+        droppedTargetsVouchedByStaleAudit: 2,
+        // The non-string entry is filtered, not preserved and not fatal.
+        unrealizedRequirements: ['requirement M-003', 'requirement M-007'],
+        measuredAt: '2026-09-03T00:00:00.000Z',
+      });
+    });
+
+    it('keeps the verdict when the reported-population fields are absent, defaulting them to 0', () => {
+      // A card written before those fields existed still carries a real judgement;
+      // discarding it to gain a field nobody wrote would lose more than it protects.
+      const out = asStructuredObservation({
+        rubricRef: 'r',
+        checkRuns: {
+          realized: {
+            kind: 'requirements',
+            verdict: 'pass',
+            mappingsJudged: 3,
+            checkedTargets: 3,
+            unrealized: 0,
+            measuredAt: '2026-09-03T00:00:00.000Z',
+          },
+        },
+      });
+      expect(out?.checkRuns?.realized).toMatchObject({
+        verdict: 'pass',
+        exemptMappings: 0,
+        droppedTargets: 0,
+        droppedTargetsVouchedByStaleAudit: 0,
+        // Falls back to `unrealized`, which is exact for single-target mappings and
+        // can never overstate the entry count.
+        unrealizedEntries: 0,
+      });
+    });
+
+    it('DISCARDS a run that cannot say how it came out', () => {
+      const out = asStructuredObservation({
+        rubricRef: 'r',
+        checkRuns: {
+          realized: {
+            kind: 'requirements',
+            verdict: 'inconclusive',
+            mappingsJudged: 3,
+            checkedTargets: 3,
+            unrealized: 0,
+            measuredAt: '2026-09-03T00:00:00.000Z',
+          },
+        },
+      });
+      expect(out?.checkRuns).toBeUndefined();
+    });
+  });
 });
