@@ -258,7 +258,6 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
       const queue = createFrozenCandidateRepairQueue({
         candidate: CANDIDATE,
         base: BASE,
-        worktreePath: join(root, ".papercusp", "worktrees", "repair"),
         affectedTestProofGroup: INITIAL_RUN,
         nowMs: 100,
       });
@@ -605,7 +604,6 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
     let queue = createFrozenCandidateRepairQueue({
       candidate: CANDIDATE,
       base: BASE,
-      worktreePath: "/checkpoint/.papercusp/worktrees/repair",
       affectedTestProofGroup: INITIAL_RUN,
       nowMs: 100,
     });

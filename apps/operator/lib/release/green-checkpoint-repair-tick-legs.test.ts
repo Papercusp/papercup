@@ -46,7 +46,6 @@ function awaitingFixerQueue() {
     ...createFrozenCandidateQueue({
       candidate: OTHER,
       base: null,
-      worktreePath: "/tmp/repair-worktree",
       nowMs: 1_000,
       failingTests: ["a/one.test.ts"],
     }),
