@@ -42,6 +42,7 @@ type Hit = { line: number | null; col: number | null; code: number; reason: stri
 type HookMod = {
   findParseError: (ts: unknown, fileName: string, text: string, compilerOptions?: Record<string, unknown>) => Hit | null;
   isCandidateFile: (f: string) => boolean;
+  isWithinRepo: (repoRoot: string, filePath: string) => boolean;
   nudgeFor: (f: string, deps?: Record<string, unknown>) => Promise<string | null>;
   formatNudge: (rel: string, hit: Hit) => string;
 };
@@ -217,6 +218,24 @@ describe('posttooluse-ts-parse-nudge', () => {
     }
   });
 
+  it('stays silent when the edited file is outside the protected repository', async () => {
+    const { isWithinRepo, nudgeFor } = await hookMod();
+    const ts = (await import('typescript')).default;
+    expect(isWithinRepo('/repo', '/repo/packages/x/a.ts')).toBe(true);
+    expect(isWithinRepo('/repo', '/other-repo/packages/x/a.ts')).toBe(false);
+
+    const msg = await nudgeFor('/other-repo/packages/x/agent.ts', {
+      repoRoot: '/repo',
+      exists: () => true,
+      sizeOf: () => 100,
+      readFile: () => {
+        throw new Error('outside-repo target must be rejected before reading');
+      },
+      loadTs: async () => ts,
+    });
+    expect(msg).toBeNull();
+  });
+
   it('is SILENT on a clean file, a type error, and an unresolved import', async () => {
     const { nudgeFor } = await hookMod();
     const ts = (await import('typescript')).default;
@@ -268,8 +287,12 @@ describe('posttooluse-ts-parse-nudge', () => {
       symlinkSync(resolve(ROOT, 'node_modules/typescript'), join(dir, 'node_modules/typescript'));
       return dir;
     }
-    const run = (payload: unknown) =>
-      execFileSync('node', [HOOK], { input: JSON.stringify(payload), encoding: 'utf8' });
+    const run = (payload: Record<string, unknown>, cwd = process.cwd()) =>
+      execFileSync('node', [HOOK], {
+        cwd,
+        input: JSON.stringify({ ...payload, cwd }),
+        encoding: 'utf8',
+      });
 
     it('emits PostToolUse additionalContext for a broken edit, and nothing for a clean one', () => {
       const dir = sandbox();
@@ -277,16 +300,31 @@ describe('posttooluse-ts-parse-nudge', () => {
         writeFileSync(join(dir, 'pkg/broken.ts'), OUTAGE_SHAPE);
         writeFileSync(join(dir, 'pkg/clean.ts'), 'export const a = 1;\n');
 
-        const broken = run({ tool_name: 'Edit', tool_input: { file_path: join(dir, 'pkg/broken.ts') } });
+        const broken = run({ tool_name: 'Edit', tool_input: { file_path: join(dir, 'pkg/broken.ts') } }, dir);
         const parsed = JSON.parse(broken);
         expect(parsed.hookSpecificOutput.hookEventName).toBe('PostToolUse');
         expect(parsed.hookSpecificOutput.additionalContext).toMatch(/does NOT PARSE/);
 
-        expect(run({ tool_name: 'Edit', tool_input: { file_path: join(dir, 'pkg/clean.ts') } }).trim()).toBe('');
+        expect(run({ tool_name: 'Edit', tool_input: { file_path: join(dir, 'pkg/clean.ts') } }, dir).trim()).toBe('');
         // A non-edit tool must never be inspected.
-        expect(run({ tool_name: 'Read', tool_input: { file_path: join(dir, 'pkg/broken.ts') } }).trim()).toBe('');
+        expect(run({ tool_name: 'Read', tool_input: { file_path: join(dir, 'pkg/broken.ts') } }, dir).trim()).toBe('');
       } finally {
         rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('stays silent for a TypeScript file outside the active repository', () => {
+      const activeRepo = sandbox();
+      const foreignRepo = sandbox();
+      try {
+        const foreignFile = join(foreignRepo, 'pkg/foreign.ts');
+        writeFileSync(foreignFile, 'const api = import.meta.env.VITE_API_URL; export default api;\n');
+        expect(
+          run({ tool_name: 'Edit', tool_input: { file_path: foreignFile } }, activeRepo).trim(),
+        ).toBe('');
+      } finally {
+        rmSync(activeRepo, { recursive: true, force: true });
+        rmSync(foreignRepo, { recursive: true, force: true });
       }
     });
 

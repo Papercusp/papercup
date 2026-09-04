@@ -509,8 +509,18 @@ describe('renderCarryDoc (pure)', () => {
   // reading it WITH an owner present correctly resolved to "fine" — and then inherited the
   // halt when the owner left. These pin that the two cases read differently.
   describe('the AUTO × no-loop combination escalates', () => {
-    const render = (modes: { mode: string; ownerDirected: boolean; reason: string }[], loopActive: boolean) =>
-      renderCarryDoc(doc({ sessionMode: { modes, loopActive, loopIntervalSec: loopActive ? 60 : null } }), NOW);
+    const render = (
+      modes: { mode: string; ownerDirected: boolean; reason: string }[],
+      loopActive: boolean,
+      awaits: CarryBrief['awaits'] = [],
+    ) =>
+      renderCarryDoc(
+        doc({
+          brief: brief({ awaits }),
+          sessionMode: { modes, loopActive, loopIntervalSec: loopActive ? 60 : null },
+        }),
+        NOW,
+      );
 
     it('shouts when an autonomy mode is on and no loop is armed', () => {
       const text = render([{ mode: 'auto', ownerDirected: true, reason: 'owner said keep going' }], false);
@@ -535,6 +545,17 @@ describe('renderCarryDoc (pure)', () => {
       const text = render([{ mode: 'auto', ownerDirected: true, reason: 'r' }], true);
       expect(text).not.toContain('NOT ARMED');
       expect(text).toContain('loop: ARMED');
+    });
+
+    it('does NOT claim there is NO wake source when a live await is carried', () => {
+      const text = render(
+        [{ mode: 'auto', ownerDirected: true, reason: 'owner said keep going' }],
+        false,
+        [{ eventKey: 'work-item:claimable', note: 'lane refilled' }],
+      );
+      expect(text).toContain('LIVE EVENT AWAITS PROVIDE A WAKE SOURCE RIGHT NOW');
+      expect(text).toContain('Your armed awaits are still live and WILL wake you');
+      expect(text).not.toContain('You have NO wake source');
     });
 
     it('even the no-modes line names the owner as a wake source that can disappear', () => {

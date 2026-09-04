@@ -939,9 +939,12 @@ exec "$MUTATION_PROBE_REAL_PS" "$@"
  * pinned here, each from both sides (refusal fires; the sanctioned path works):
  *
  *   1. The DESTRUCTIVE-SUBJECT GATE — a subject file or --test command containing
- *      destructive primitives is REFUSED before anything executes, unless the
- *      caller picks --fake-destructive (PATH shims, nothing deletes) or
- *      --i-know-this-deletes --sandbox-root <dir> (bwrap, / read-only).
+ *      destructive primitives is REFUSED before anything executes in mutation
+ *      modes, unless the caller picks --fake-destructive (PATH shims, nothing
+ *      deletes) or --i-know-this-deletes --sandbox-root <dir> (bwrap, / read-only).
+ *      Historical mode executes an unmutated source, so it warns instead of
+ *      refusing; otherwise a real before-fix comparison is impossible for a
+ *      subject that cleans up its own scratch file.
  *   2. The STRICT PRE-FLIGHT — a --mutate whose replacement references an
  *      undeclared perl variable is a hard refusal, never a silent empty.
  */
@@ -974,6 +977,36 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
     ]);
     expect(code).toBe(2);
     expect(out).toMatch(/--fake-destructive/);
+  });
+
+  it('warns but allows an unmutated historical source containing rm', () => {
+    const repo = join(dir, 'historical-destructive-repo');
+    mkdirSync(repo);
+    const file = join(repo, 'subject.sh');
+    git(repo, ['init', '-q']);
+    git(repo, ['config', 'user.email', 'mutation-probe-test@example.invalid']);
+    git(repo, ['config', 'user.name', 'mutation-probe-test']);
+    writeFileSync(file, '#!/usr/bin/env bash\nrm -f "$1"\necho stable-control\n');
+    git(repo, ['add', 'subject.sh']);
+    git(repo, ['commit', '-qm', 'historical source']);
+    writeFileSync(
+      file,
+      '#!/usr/bin/env bash\nrm -f "$1"\necho stable-control\necho NEW_GUARD\n',
+    );
+
+    const { code, out } = runProbeIO([
+      '--file', file,
+      '--against-last-without', 'NEW_GUARD',
+      '--positive-control', 'stable-control',
+      '--calibration', 'bash -n {}',
+      '--test', 'grep -q "echo NEW_GUARD" {}',
+    ]);
+
+    expect(code).toBe(0);
+    expect(out).toMatch(/historical mode: destructive primitives detected/i);
+    expect(out).toMatch(/no mutant is produced/i);
+    expect(out).toMatch(/HISTORICAL SOURCE CAUGHT/);
+    expect(out).toMatch(/destructive_primitives=rm/);
   });
 
   it('--fake-destructive runs the probe with shimmed deleters: the mutant is caught and the victim SURVIVES', () => {

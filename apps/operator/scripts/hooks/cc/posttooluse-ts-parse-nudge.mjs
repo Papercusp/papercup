@@ -70,7 +70,7 @@
 //
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
 
@@ -101,7 +101,16 @@ async function main() {
     const filePath = (hook.tool_input || {}).file_path || '';
     if (!filePath) return done();
 
-    const msg = await nudgeFor(filePath);
+    // The hook is installed globally, so the edited path may belong to a different
+    // repository than the one whose PostToolUse hook is running. Derive the protected
+    // repository from the client's cwd and pass it explicitly; otherwise nudgeFor would
+    // discover a foreign repository from the target path and judge it with this repo's
+    // bundling warning.
+    const cwd = typeof hook.cwd === 'string' && hook.cwd ? hook.cwd : process.cwd();
+    const repoRoot = findRepoRootFromDirectory(cwd);
+    if (!repoRoot) return done();
+
+    const msg = await nudgeFor(filePath, { repoRoot });
     if (msg) {
       process.stdout.write(
         JSON.stringify({
@@ -133,13 +142,28 @@ export function isCandidateFile(filePath) {
  * the hook stays silent rather than guessing).
  */
 export function findRepoRoot(filePath, exists = existsSync) {
-  let dir = dirname(resolve(filePath));
+  return findRepoRootFromDirectory(dirname(resolve(filePath)), exists);
+}
+
+/**
+ * Walk up from a directory until it carries the TypeScript dependency used by this
+ * hook. The PostToolUse entrypoint uses the client's cwd, while direct nudgeFor callers
+ * retain the target-file behavior for backwards-compatible tests and tooling.
+ */
+export function findRepoRootFromDirectory(directory, exists = existsSync) {
+  let dir = resolve(directory);
   for (;;) {
     if (exists(join(dir, TS_REL))) return dir;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
   }
+}
+
+/** True only when the target resolves inside the repository being protected. */
+export function isWithinRepo(repoRoot, filePath) {
+  const rel = relative(resolve(repoRoot), resolve(filePath));
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
 }
 
 /**
@@ -156,11 +180,7 @@ export function findNearestTsConfig(ts, filePath, repoRoot, exists = existsSync)
     : findNearestTsConfigFallback(start, exists);
   if (!found) return null;
 
-  const rel = relative(root, resolve(found));
-  if (rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith('../'))) {
-    return resolve(found);
-  }
-  return null;
+  return isWithinRepo(root, found) ? resolve(found) : null;
 }
 
 function findNearestTsConfigFallback(start, exists) {
@@ -356,6 +376,7 @@ export async function nudgeFor(filePath, deps = {}) {
 
   const repoRoot = deps.repoRoot ?? findRepoRoot(filePath, exists);
   if (!repoRoot) return null;
+  if (!isWithinRepo(repoRoot, filePath)) return null;
 
   let text;
   try {

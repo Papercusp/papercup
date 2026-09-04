@@ -773,7 +773,7 @@ function renderIdentity(id: CarryDocIdentity): string {
   return `## Identity\n${lines.join('\n')}`;
 }
 
-function renderSessionMode(sm: CarryDocSessionMode): string {
+function renderSessionMode(sm: CarryDocSessionMode, hasLiveAwaits = false): string {
   const lines: string[] = [];
   if (sm.modes.length > 0) {
     for (const m of sm.modes) {
@@ -794,7 +794,9 @@ function renderSessionMode(sm: CarryDocSessionMode): string {
   lines.push(
     sm.loopActive
       ? `- loop: ARMED${sm.loopIntervalSec != null ? ` (every ${sm.loopIntervalSec}s)` : ''} — verify loop:status.active before ending the turn`
-      : autonomyOn
+      : hasLiveAwaits
+        ? '- loop: ⚠ NOT ARMED, BUT LIVE EVENT AWAITS PROVIDE A WAKE SOURCE RIGHT NOW. They are one-shot; verify events:status and arm loop:arm for continued autonomous work.'
+        : autonomyOn
         ? '- loop: ⚠ NOT ARMED, AND AN AUTONOMY MODE IS ON. You have NO wake source. If you end a turn without loop:arm, this session HALTS and nothing re-wakes it — the mode grants you authorization to keep working, not the means. Arm it (loop:arm { intervalSec, goal, workItem }) as your FIRST act unless you will finish inside this turn.'
         : '- loop: not armed — your only wake source is the owner speaking. If they stop, ending a turn halts this session for good; arm a loop before you go autonomous.',
   );
@@ -972,7 +974,7 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
     // time — the mandatory re-orient caught it, but only after the fact).
     renderBuiltAtStamp(now),
     renderIdentity(doc.identity),
-    renderSessionMode(doc.sessionMode),
+    renderSessionMode(doc.sessionMode, doc.brief.awaits.length > 0),
   ];
   // EI-18684357744098956: the carry doc (unlike the bare brief) also carries the
   // verbatim tail — the one place a held item's checkpoint write-time can be
