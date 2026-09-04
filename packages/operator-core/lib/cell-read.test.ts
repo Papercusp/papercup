@@ -178,8 +178,10 @@ describe('readCell — the happy path', () => {
     if (r.status === 'value') {
       expect(r.value).toBeNull();
       expect(r.assessment?.status).toBe('unavailable');
-      expect(r.assessment?.unknown.detail).toContain('explicit null parent');
-      expect(r.assessment?.unknown.detail).not.toContain('drifted apart');
+      if (r.assessment?.status === 'unavailable') {
+        expect(r.assessment.unknown.detail).toContain('explicit null parent');
+        expect(r.assessment.unknown.detail).not.toContain('drifted apart');
+      }
       expect(r.unknownHoist).toEqual({
         key: 'gate.candidateFailures.unavailable',
         value: null,
