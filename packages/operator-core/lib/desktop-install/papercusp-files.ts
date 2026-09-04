@@ -3649,6 +3649,13 @@ export interface RenderSuPlaybookInput {
   operatorAppRoot?: string;
   /** Override the resolved base path directly (tests / explicit callers). */
   baseSource?: string;
+  /**
+   * identities-v1 P-003: the base playbook TEXT, when the caller composed it in memory
+   * (`composeSuStackSource` — the slot stack rendered under the kernel seal) rather than
+   * reading `baseSource` off disk. `baseSource` is still resolved/required: the sibling
+   * files (per-agent overlay, compaction protocol, project guide) resolve relative to it.
+   */
+  baseText?: string;
   /** Dir to resolve the per-agent overlay (`papercusp-su.<agent>.md`) from. Defaults to
    *  dirname(baseSource). Set when baseSource is a blueprint persona whose dir has no
    *  client overlays (domain-generic-agent-personas P-006) — point it at the operator
