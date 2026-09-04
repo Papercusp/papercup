@@ -1,0 +1,76 @@
+{
+  "operation": "GET /api/health",
+  "method": "POST",
+  "path_template": "/api/health",
+  "fingerprint": "76666341",
+  "case_id": "lM4NOo",
+  "code_sample": "curl -X POST http://127.0.0.1:3070/api/health",
+  "sequence": [
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:3070/api/health",
+      "url_template": "http://127.0.0.1:3070/api/health",
+      "headers": {
+        "User-Agent": "schemathesis/4.25.2",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "X-Schemathesis-TestCaseId": "lM4NOo",
+        "Content-Length": "0"
+      },
+      "response": {
+        "status_code": 404,
+        "headers": {
+          "content-type": "text/plain; charset=UTF-8",
+          "content-length": "9",
+          "date": "Fri, 04 Sep 2026 03:37:34 GMT",
+          "connection": "keep-alive",
+          "keep-alive": "timeout=61"
+        },
+        "body": "Not found"
+      },
+      "link": null,
+      "checks": [
+        {
+          "name": "unsupported_method",
+          "status": "failure",
+          "message": "Unsupported methods\n\nUnsupported method POST returned 404, expected 405 Method Not Allowed\n\nReturn 405 for methods not listed in the OpenAPI spec"
+        }
+      ],
+      "meta": {
+        "generation": {
+          "time": 1.7739948816597462e-06,
+          "mode": "negative"
+        },
+        "components": {},
+        "phase": {
+          "name": "coverage",
+          "data": {
+            "type": "CoveragePhaseData",
+            "description": "Unspecified HTTP method: POST",
+            "location": null,
+            "parameter": null,
+            "parameter_location": null,
+            "scenario": "unspecified_http_method"
+          }
+        },
+        "pool_draws": [],
+        "pool_misses": [],
+        "semantic_draws": [],
+        "dictionary_draws": [],
+        "constants_draws": [],
+        "raw_containers": {}
+      },
+      "path": "/api/health",
+      "path_parameters": {},
+      "query": {},
+      "case_headers": {},
+      "cookies": {},
+      "case_body": {
+        "encoding": "none"
+      },
+      "media_type": null,
+      "parent_index": null
+    }
+  ]
+}

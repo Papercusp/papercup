@@ -123,7 +123,7 @@ function declaredDependencyTools(): string[] {
  *  frozen-candidate delegated-repair dispatch (which is where the six incidents happened). */
 function kickoffBriefs(): string[] {
   const queue: FrozenCandidateRepairQueue = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     phase: 'awaiting-fixer',
     candidate: 'c0ffee1234567890c0ffee1234567890c0ffee12',
     base: null,
@@ -133,6 +133,7 @@ function kickoffBriefs(): string[] {
     updatedAtMs: 0,
     fixerSpawnId: 's-test-fixer',
     failingTests: ['packages/operator-core/lib/example.test.ts'],
+    signature: [],
   };
   return [
     buildReleaseFixerKickoff({ candidate: 'c0ffee1234567890c0ffee1234567890c0ffee12' }),

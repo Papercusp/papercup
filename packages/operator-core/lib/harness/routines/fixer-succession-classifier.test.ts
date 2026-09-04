@@ -32,6 +32,7 @@ function queue(over: Partial<FrozenCandidateRepairQueue> = {}): FrozenCandidateR
     updatedAtMs: NOW - FIXER_SUCCESSION_STALL_MS,
     fixerSpawnId: 'fixer-dead',
     failingTests: ['lib/broken.test.ts'],
+    signature: [],
     ...over,
   };
 }

@@ -304,6 +304,7 @@ describe('releaseFixerSpawnAlive (P-014 / D-009 — the liveness-detection half)
       updatedAtMs: 2,
       fixerSpawnId: 's-fixer-concurrent-retire',
       failingTests: ['packages/operator-core/lib/red.test.ts'],
+      signature: [],
     };
     await seedSpawn(queue.fixerSpawnId, 'failed', 30, { startedAgoMin: 30 });
     await seedTaskScope(queue.fixerSpawnId, 'exited');
