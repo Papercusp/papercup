@@ -87,7 +87,6 @@ import {
   type DependencyPrebuildState,
   type DependencyPrebuildTarget,
 } from "@papercusp/operator-core/lib/release/dependency-generation-prebuild";
-import { stagingContainsFrozenRepairPatch } from "@papercusp/operator-core/lib/release/checkpoint-required-ancestor";
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
 import {
   reapAbandonedCandidateWorktrees,
@@ -129,7 +128,6 @@ import {
   markFrozenRepairFixerDead,
   markFrozenRepairFixerDispatched,
   markFrozenRepairFixerFinished,
-  markFrozenRepairStagingMismatch,
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
   buildFrozenRepairStatusIdentity,
@@ -906,6 +904,18 @@ export interface CheckpointDeps {
     from: string,
     to: string,
   ): Promise<TargetedReVerdictSelection | null>;
+  /** P-005 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03, D-004): the selective
+   *  radius of the paths ADMITTED onto the frozen lineage, computed AT `ref` (the queue's
+   *  repairHead) — `affected-tests --changed-paths <paths> --related --print-affected` run in
+   *  the checkpoint tree after it is pointed at `ref`, so the graph walk reads the lineage's own
+   *  package graph. Returns the related test files and the lint/check legs the run attaches
+   *  (both re-runnable at the same `ref` via `runTestsAtRef` / `runGateAtRef`), or null when the
+   *  selector widened or a task cannot be narrowed — the caller then runs the FULL gate at `ref`.
+   *  Optional: absent ⇒ that same full-run fall-through. Never reads the integration tip. */
+  affectedTestsAtRef?(
+    ref: string,
+    paths: string[],
+  ): Promise<RepairHeadRadius | null>;
   /** WI-38422: run the candidate-scoped operator-core typecheck BEFORE the expensive
    *  affected-test sweep. The caller passes the exact committed diff from the last
    *  green pin to the candidate; the real dep invokes the existing `lint:tsc --files`
@@ -1146,9 +1156,6 @@ export interface CheckpointDeps {
     queue: FrozenCandidateRepairQueue,
     fired: { spawnId: string | null; runId: string | null } | null | undefined,
   ): Promise<FrozenCandidateRepairQueue | null>;
-  stagingContainsFrozenRepair?(
-    queue: FrozenCandidateRepairQueue,
-  ): Promise<boolean | null>;
   /** EI-21007486441633274 / WI-40081: publish an additive integration-history join only
    * after the exact frozen repair passes its isolated verification. The returned SHA is an
    * immutable CANONICAL candidate for a fresh full-gate run: it must be the integration head,
@@ -1225,6 +1232,11 @@ export interface CheckpointResult {
     | "skipped-locked"
     | "migrations-pending"
     | "repair-in-progress"
+    /** LEGACY — no longer emitted since P-005 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03):
+     *  the repair head is now verified AT ITS OWN SHA (`verifyRepairHead`), so "the patch is not
+     *  observable on staging" is no longer a condition the gate can be in. Kept in the union
+     *  because persisted checkpoint events and gate_health rows written before P-005 still
+     *  carry it, and every reader's classification table keys on the full status set. */
     | "repair-staging-mismatch"
     | "disk-headroom"
     /** An external managed signal stopped the run before it could render a suite verdict. */
@@ -4590,7 +4602,9 @@ export function rescueGateIdsFrom(
   );
 }
 
-type FrozenRepairOutcomeProof =
+/** P-005 / D-004: the verdict of {@link verifyRepairHead} — every arm is about the repair head
+ *  ITSELF; no arm names, resolves, or judges the integration tip. */
+export type RepairHeadVerification =
   /** Every selective leg passed AT the repair head; the full canonical gate at that same sha
    *  is the promotion proof (P-007). */
   | { kind: "green"; summary: string }
@@ -8718,7 +8732,6 @@ async function runGreenCheckpointInner(
   // A queue created by this pass is still provisional until the red verdict's moving-tip
   // re-triage completes. Automatic candidates must not launch repair against a stale cut.
   let repairQueueCreatedThisPass = false;
-  let repairOutcomeReconciled = false;
   let repairPromotionAdvance: AdvanceResult | null = null;
   const reserveFrozenRepairFixer = deps.reserveFrozenRepairFixer;
   const renewFrozenRepairFixerReservation =
@@ -9672,111 +9685,62 @@ async function runGreenCheckpointInner(
     } else if (decision.kind === "verify-repair") {
       candidate = await revParse(cfg.integrationRoot, decision.candidate);
       repairVerification = true;
-      const onStaging = await deps
-        .stagingContainsFrozenRepair?.(repairQueue)
-        .catch(() => null);
-      if (onStaging !== true) {
-        const outcomeProof = await proveFrozenRepairOutcomeAtStableTip(
-          deps,
-          repairQueue,
-        );
-        const transportedCandidateOutlivesMovingProof =
-          outcomeProof.kind === "tip-moved" &&
-          opts.candidate !== undefined &&
-          opts.diagnostic === undefined;
-        // WI-2143595: the full-suite arm used to judge the STAGING TIP unconditionally. That is
-        // the re-cut-at-tip treadmill freeze-and-converge (D-007) exists to prevent: every commit
-        // between the converged repairHead and the tip is re-admitted, and a red among them opens
-        // a NEW queue further downstream (observed 2026-09-03T18:23Z: d165d753 → 761d0a85, 62
-        // commits past the frozen candidate, on a 13-file + cargo/seed signature). When
-        // `release:repair-queue admit` (pre-D-004: converge) advanced the repairHead onto the judged lineage it
-        // is a STAGING commit (an ancestor of the tip) descending from the frozen candidate, so the
-        // full suite can decide THAT sha and a green promotes exactly the converged fixes. An
-        // ISOLATED worktree repair (not on staging) still yields to the tip — main may only
-        // fast-forward to a staging commit (see "keeps an isolated repair off release") — and so
-        // does an unmoved repairHead (nothing converged; re-judging the frozen sha is the pin
-        // EI-211596 removed). An ancestry probe that cannot answer (a sha the integration root
-        // cannot see) is a fall-through to the tip, never a promotion of the isolated head.
-        const convergedRepairHeadOnStaging =
-          outcomeProof.kind === "full-suite-required" &&
-          repairQueue.repairHead !== repairQueue.candidate &&
-          (await isAncestor(
-            cfg.integrationRoot,
-            repairQueue.candidate,
-            repairQueue.repairHead,
-          ).catch(() => false)) &&
-          (await isAncestor(
-            cfg.integrationRoot,
-            repairQueue.repairHead,
-            outcomeProof.tip,
-          ).catch(() => false));
-        if (
-          outcomeProof.kind === "proved" ||
-          outcomeProof.kind === "full-suite-required" ||
-          transportedCandidateOutlivesMovingProof
-        ) {
-          const reconciledQueue = repairQueue;
-          await deps.writeFrozenRepairQueue?.(null);
-          await deps
-            .cleanupFrozenRepairWorktree?.(reconciledQueue)
-            .catch((e) =>
-              deps.log(
-                `warn: outcome-reconciled repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
-              ),
-            );
-          repairQueue = null;
-          repairVerification = false;
-          repairOutcomeReconciled = true;
-          candidate = await revParse(
-            cfg.integrationRoot,
-            outcomeProof.kind === "proved"
-              ? outcomeProof.tip
-              : convergedRepairHeadOnStaging
-                ? reconciledQueue.repairHead
-                : transportedCandidate,
-          );
-          deps.log(
-            outcomeProof.kind === "proved"
-              ? `${outcomeProof.summary}; cleared the obsolete exact-patch queue and continuing with a normal gate at that exact tip`
-              : outcomeProof.kind === "full-suite-required"
-                ? convergedRepairHeadOnStaging
-                  ? `${outcomeProof.summary}; repairHead ${reconciledQueue.repairHead.slice(0, 8)} is a STAGING commit converged past frozen candidate ${reconciledQueue.candidate.slice(0, 8)}, so retired the obsolete exact-patch queue inside the run lock and continuing with the full canonical gate at that converged head — not at tip ${outcomeProof.tip.slice(0, 8)} (WI-2143595: a re-cut at tip re-admits every commit in between)`
-                  : `${outcomeProof.summary}; retired the obsolete exact-patch queue inside the run lock and continuing with the full canonical gate at that exact tip`
-                : `${outcomeProof.summary}; the run already transported canonical candidate ${transportedCandidate.slice(0, 8)}, so retired the obsolete exact-patch queue inside the run lock and continuing with the full canonical gate at that exact transported candidate`,
-          );
-        } else {
-          deps.log(
-            `frozen repair outcome reconciliation did not prove canonical staging green (${outcomeProof.summary}); falling back to exact-patch alignment`,
-          );
-          const canRequeue = Boolean(deps.writeFrozenRepairQueue);
-          const requeued = canRequeue
-            ? markFrozenRepairStagingMismatch(repairQueue, {
-                repairHead: candidate,
-                nowMs: Date.now(),
-              })
-            : repairQueue;
-          if (canRequeue) {
-            await deps.writeFrozenRepairQueue?.(requeued);
-            repairQueue = requeued;
-          }
-          const summary =
-            `frozen repair ${candidate.slice(0, 8)} is ready to verify, but its exact ` +
-            `${repairQueue.candidate.slice(0, 8)}..${candidate.slice(0, 8)} patch is not yet observable on staging; ` +
-            (canRequeue
-              ? `re-queued the isolated head for a queue-authorized alignment fixer without spending a suite`
-              : `holding without spending a suite because no queue writer is available`);
-          deps.log(summary);
-          return withFossilAbandonment({
-            advanced: false,
-            candidate,
-            from: lastReady,
-            green: null,
-            reason: "repair-staging-mismatch",
-            summary,
-            repairQueue,
+      // P-005 / D-004 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the repair
+      // head is verified AT ITS OWN SHA — the frozen candidate plus the admitted fix blobs —
+      // never at the integration tip. `verifyRepairHead` re-runs the signature (and the admitted
+      // paths' radius) selectively at `candidate`; a red re-queues the row without spending a
+      // full suite, a green or an un-narrowable signature proceeds to the full canonical gate at
+      // that same sha below. The retired `proveFrozenRepairOutcomeAtStableTip` proved the
+      // signature at the STAGING TIP and, on success, retired the queue and re-cut the gate at the
+      // tip (or at a "converged" head that had to be an ancestor of the tip) — the treadmill
+      // freeze-and-converge (D-007) exists to prevent. Its "not observable on staging" re-queue
+      // (`repair-staging-mismatch`) is gone with it: the lineage is not required to be on
+      // staging to be judged; P-008 folds a promoted lineage back INTO staging afterwards.
+      const verification = await verifyRepairHead(deps, repairQueue);
+      deps.log(`repair head ${candidate.slice(0, 8)}: ${verification.summary}`);
+      if (verification.kind === "red") {
+        const canRequeue = Boolean(deps.writeFrozenRepairQueue);
+        if (canRequeue) {
+          repairQueue = markFrozenRepairVerificationRed(repairQueue, {
+            repairHead: candidate,
+            failingTests: verification.failingTests,
+            nowMs: Date.now(),
           });
+          await deps.writeFrozenRepairQueue?.(repairQueue);
         }
+        const summary =
+          `frozen repair head ${candidate.slice(0, 8)} is still red at its own sha (${verification.summary}); ` +
+          (canRequeue
+            ? `re-queued it for the next fixer without spending a full suite`
+            : `holding without spending a suite because no queue writer is available`);
+        deps.log(summary);
+        return withFossilAbandonment({
+          advanced: false,
+          candidate,
+          from: lastReady,
+          green: null,
+          reason: "repair-in-progress",
+          summary,
+          repairQueue,
+        });
       }
+      if (verification.kind === "unavailable") {
+        const summary =
+          `frozen repair head ${candidate.slice(0, 8)} could not be verified this tick (${verification.summary}); ` +
+          `holding the ready-to-verify queue without spending a suite`;
+        deps.log(summary);
+        return withFossilAbandonment({
+          advanced: false,
+          candidate,
+          from: lastReady,
+          green: null,
+          reason: "repair-in-progress",
+          summary,
+          repairQueue,
+        });
+      }
+      // "green" / "full-run-required": the full canonical gate runs at `candidate` (the repair
+      // head) below — that run, not the selective pass, is the promotion proof (P-007).
     }
   }
 
@@ -9800,7 +9764,6 @@ async function runGreenCheckpointInner(
     !opts.candidate &&
     !repairVerification &&
     !initialCandidateVerification &&
-    !repairOutcomeReconciled &&
     quietCutSecFromEnv() > 0
   ) {
     try {
@@ -16007,9 +15970,6 @@ export function realCheckpointDeps(
               queue,
             );
           },
-          async stagingContainsFrozenRepair(queue: FrozenCandidateRepairQueue) {
-            return stagingContainsFrozenRepairPatch(queue, cfg.integrationRoot);
-          },
           async reconcileFrozenRepairIntoStaging(
             queue: FrozenCandidateRepairQueue,
           ) {
@@ -17546,6 +17506,31 @@ export function realCheckpointDeps(
       return probe.code === 0
         ? parseTargetedReVerdictSelection(probe.stdout)
         : null;
+    },
+    // P-005 / D-004: the ADMITTED paths' selective radius, resolved AT `ref` (the frozen
+    // lineage's repair head). The checkpoint tree is pointed at `ref` FIRST, so the selector's
+    // graph walk reads the lineage's own package graph — never the integration tree's, whose
+    // tip may carry workspaces the lineage lacks. Same honest-absence contract as runTestsAtRef:
+    // a setupTree throw propagates to the caller's .catch(() => null) → full run at `ref`.
+    async affectedTestsAtRef(ref, paths) {
+      await this.setupTree(ref);
+      const probe = await exec(
+        process.execPath,
+        [
+          path.join(cfg.checkpointRoot, "scripts/affected-tests.mjs"),
+          "--changed-paths",
+          paths.join(","),
+          "--related",
+          "--print-affected",
+        ],
+        {
+          cwd: cfg.checkpointRoot,
+          allowNonZero: true,
+          timeoutMs: SETUP_TREE_TIMEOUT_MS,
+          killProcessGroupOnTimeout: true,
+        },
+      );
+      return probe.code === 0 ? parseRepairHeadRadius(probe.stdout) : null;
     },
     async detectSplitSourceTestPairs(input) {
       return detectSplitSourceTestPairs({
