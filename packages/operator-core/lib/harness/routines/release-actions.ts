@@ -1975,9 +1975,10 @@ export interface FrozenRepairFixerSuccession {
  * Only an `awaiting-fixer` queue can qualify. A live fixer is progress; unknown liveness fails
  * closed against a false death alarm; an active dispatch reservation is a real owner during
  * the launch handoff. The remaining two shapes are actionable: a recorded spawn is confirmed
- * dead, or no spawn exists after the reservation window. `updatedAtMs` is the canonical queue
- * transition timestamp and is part of the key, so each replacement attempt earns its own first
- * rung while repeated observations of the SAME gap remain geometrically sparse.
+ * dead, or no spawn exists after the reservation window. `fixerStateChangedAtMs` is the
+ * canonical fixer-succession transition timestamp and is part of the key, so bookkeeping on the
+ * generic queue row cannot reset an attempt's first rung while repeated observations of the SAME
+ * gap remain geometrically sparse. Legacy rows fall back to `updatedAtMs`.
  */
 export function classifyFrozenRepairFixerSuccession(
   queue: FrozenCandidateRepairQueue | null,
@@ -1996,16 +1997,30 @@ export function classifyFrozenRepairFixerSuccession(
   }
 
   const spawnId = queue.fixerSpawnId ?? null;
+  const stateChangedAtMs =
+    typeof queue.fixerStateChangedAtMs === 'number' &&
+    Number.isFinite(queue.fixerStateChangedAtMs) &&
+    queue.fixerStateChangedAtMs >= 0 &&
+    queue.fixerStateChangedAtMs <= queue.updatedAtMs
+      ? queue.fixerStateChangedAtMs
+      : queue.updatedAtMs;
+  // A reservation is intentionally invisible while active. Once it expires, an absent fixer
+  // becomes actionable only after the handoff window; using the expiry as the lower bound keeps
+  // a long-lived launch lease from generating an immediate stale alarm.
+  const successionStartedAtMs =
+    queue.dispatchReservation && queue.dispatchReservation.expiresAtMs <= nowMs
+      ? Math.max(stateChangedAtMs, queue.dispatchReservation.expiresAtMs)
+      : stateChangedAtMs;
   return {
     key: [
       queue.candidate,
       queue.repairHead,
       String(queue.attempts),
-      String(queue.updatedAtMs),
+      String(successionStartedAtMs),
       spawnId ?? 'absent',
     ].join(':'),
     state,
-    ageMs: Math.max(0, nowMs - queue.updatedAtMs),
+    ageMs: Math.max(0, nowMs - successionStartedAtMs),
     spawnId,
     candidate: queue.candidate,
     repairHead: queue.repairHead,
@@ -4842,6 +4857,11 @@ export async function reserveFrozenCandidateRepairFixer(
   };
   const reservedQueue: FrozenCandidateRepairQueue = {
     ...expectedQueue,
+    // Taking the launch lease is the start of a new fixer-state handoff. Bump both clocks:
+    // `updatedAtMs` remains the row-version CAS identity, while the dedicated field prevents
+    // later manifest/leg bookkeeping from resetting the succession age.
+    updatedAtMs: nowMs,
+    fixerStateChangedAtMs: nowMs,
     dispatchReservation: reservation,
   };
   const { getOrgPg } = await import('@papercusp/db-org');
@@ -4970,7 +4990,12 @@ export async function finalizeFrozenCandidateRepairFixer(
       markFrozenRepairFixerDispatched(withoutReservation, { spawnId: fired.spawnId, nowMs }),
     );
   } else {
-    finalizedQueue = { ...queueWithoutDispatchReservation(queue), updatedAtMs: nowMs };
+    finalizedQueue = {
+      ...queueWithoutDispatchReservation(queue),
+      updatedAtMs: nowMs,
+      // A failed launch ends the reservation and starts the absent-fixer succession state now.
+      fixerStateChangedAtMs: nowMs,
+    };
   }
 
   const { getOrgPg } = await import('@papercusp/db-org');
