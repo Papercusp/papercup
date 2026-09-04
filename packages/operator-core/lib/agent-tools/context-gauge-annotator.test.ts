@@ -24,12 +24,17 @@ const gaugeText = (r: { content: Array<{ type: string; text?: string }> }) =>
  *  owner a real temp transcript of `tokens*4` bytes + a cached limit. */
 let dir: string;
 let n = 0;
-function trackOwner(ownerId: string, tokens: number, limit: number): void {
+function trackOwner(
+  ownerId: string,
+  tokens: number,
+  limit: number,
+  observedPromptFloor?: { tokens: number; observations: number },
+): void {
   const file = path.join(dir, `${++n}.jsonl`);
   const overhead = '{"t":""}\n'.length;
   fs.writeFileSync(file, `{"t":"${'x'.repeat(tokens * 4 - overhead)}"}\n`);
   if (!seedContextAnchorForTests(ownerId, file)) throw new Error('anchor seed failed');
-  recordContextUsage(ownerId, tokens, limit);
+  recordContextUsage(ownerId, tokens, limit, Date.now(), observedPromptFloor);
 }
 
 beforeEach(() => {
@@ -94,6 +99,14 @@ describe('contextGaugeAnnotator (P-013 wiring logic)', () => {
     const texts = gaugeText(out);
     expect(texts[1]).toBe('context: 210000/300000 (70%)');
     expect(texts[1]).not.toContain('⚠');
+  });
+
+  it('renders conservative working-room evidence from the watchdog cache', () => {
+    trackOwner('su-runway', 200_000, 250_000, { tokens: 167_686, observations: 3 });
+    const out = contextGaugeAnnotator(ok('body'), ctx('su-runway'));
+    const line = gaugeText(out)[1];
+    expect(line).toContain('observed-input floor 167686 (3 samples)');
+    expect(line).toContain('conservative usable runway 82314');
   });
 
   it('renders the CURRENT transcript state, not the cached tokens (WI-4154)', () => {

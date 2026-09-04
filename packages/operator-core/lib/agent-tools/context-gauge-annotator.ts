@@ -62,7 +62,13 @@ export const contextGaugeAnnotator: ResultAnnotator = (result, ctx) => {
   const pct = contextUsagePct(tokens, usage.limit);
   const selfCompactionAvailable =
     pct != null && pct >= CONTEXT_GAUGE_LOUD_PCT ? selfCompactionAvailability(ownerId).available : null;
-  const line = renderBandedContextGauge(tokens, usage.limit, selfCompactionAvailable);
+  const line = renderBandedContextGauge(
+    tokens,
+    usage.limit,
+    selfCompactionAvailable,
+    null,
+    usage.observedPromptFloor ?? null,
+  );
   if (!line) return result; // below the quiet band — silent
   if (resultCarriesContextLine(result)) return result; // don't double-render (coord:inbox)
   return {

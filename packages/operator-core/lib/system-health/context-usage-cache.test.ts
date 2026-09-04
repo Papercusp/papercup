@@ -46,6 +46,20 @@ describe('context-usage-cache', () => {
     expect(getContextUsage('su-a', 2_000)).toEqual({ tokens: 250_000, limit: 300_000 });
   });
 
+  it('carries validated observed-prompt-floor evidence for runway rendering', () => {
+    recordContextUsage('su-a', 199_236, 250_000, 1_000, { tokens: 167_686, observations: 3 });
+    expect(getContextUsage('su-a', 1_000)).toEqual({
+      tokens: 199_236,
+      limit: 250_000,
+      observedPromptFloor: { tokens: 167_686, observations: 3 },
+    });
+  });
+
+  it('drops malformed prompt-floor evidence without dropping the ordinary gauge', () => {
+    recordContextUsage('su-a', 100_000, 250_000, 1_000, { tokens: Number.NaN, observations: 0 });
+    expect(getContextUsage('su-a', 1_000)).toEqual({ tokens: 100_000, limit: 250_000 });
+  });
+
   describe('gauge-enabled mirror', () => {
     it('defaults to enabled', () => {
       expect(isContextGaugeEnabled()).toBe(true);

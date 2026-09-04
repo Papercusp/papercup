@@ -7,11 +7,13 @@
  * Under the launch spec (`claude-fable-5-1[1m]` ⇒ 1M window ⇒ 400k limit) the
  * watchdog read it as under-limit while every request died on the 200k window.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   estimateContextTokensForOwner,
   estimateContextWindowForOwner,
   gatewayServedRouteForOwner,
+  observedPromptFloorForOwner,
+  resetContextAnchorsForTests,
   servedWindowForRoute,
   type GatewayServedRoute,
   type SessionRef,
@@ -39,10 +41,12 @@ const route = (over: Partial<GatewayServedRoute> = {}): GatewayServedRoute => ({
   model: 'claude-opus-5',
   context1m: false,
   nativeSessionId: NATIVE,
-  usage: { inputTotal: 248_703, at: 1 },
+  usage: { inputTotal: 248_703, observedInputFloor: 167_686, observations: 2, at: 1 },
   at: 1,
   ...over,
 });
+
+afterEach(() => resetContextAnchorsForTests());
 
 describe('servedWindowForRoute', () => {
   it('is the 200k default when the beta was NOT forwarded and 1M when it was', () => {
@@ -115,6 +119,15 @@ describe('estimateContextTokensForOwner — exact gateway usage beats bytes/4', 
     expect(est!).toBeGreaterThanOrEqual(servedLimit);
     expect(est!).toBeGreaterThan(MODEL_WINDOW_DEFAULT);
   });
+  it('retains the route-bound observed prompt floor for the existing context gauge writer', async () => {
+    await estimateContextTokensForOwner(OWNER, {
+      resolveRef: async () => claudeRef(NATIVE),
+      servedRoute: async () => route({
+        usage: { inputTotal: 199_236, observedInputFloor: 167_686, observations: 3, at: 50 },
+      }),
+    });
+    expect(observedPromptFloorForOwner(OWNER, 50)).toEqual({ tokens: 167_686, observations: 3, at: 50 });
+  });
   it('a successor (new native id) never inherits the predecessor usage', async () => {
     const est = await estimateContextTokensForOwner(OWNER, {
       resolveRef: async () => claudeRef(SUCCESSOR),
@@ -146,7 +159,15 @@ describe('gatewayServedRouteForOwner — /admin/route client', () => {
           model: 'claude-opus-5',
           context1m: false,
           nativeSessionId: NATIVE,
-          usage: { inputTotal: 248703, inputTokens: 3, cacheRead: 248000, cacheCreate: 700, at: 5 },
+          usage: {
+            inputTotal: 248703,
+            inputTokens: 3,
+            cacheRead: 248000,
+            cacheCreate: 700,
+            observedInputFloor: 167686,
+            observations: 4,
+            at: 5,
+          },
           at: 6,
         });
       },
@@ -156,7 +177,7 @@ describe('gatewayServedRouteForOwner — /admin/route client', () => {
       model: 'claude-opus-5',
       context1m: false,
       nativeSessionId: NATIVE,
-      usage: { inputTotal: 248703, at: 5 },
+      usage: { inputTotal: 248703, observedInputFloor: 167686, observations: 4, at: 5 },
       at: 6,
     });
   });

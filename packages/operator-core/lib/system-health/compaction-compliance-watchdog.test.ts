@@ -16,6 +16,7 @@ import { join } from 'node:path';
 
 const {
   estimateMock,
+  observedPromptFloorMock,
   contextWindowMock,
   specMock,
   setEstimateMock,
@@ -52,6 +53,7 @@ const {
       },
   ),
   estimateMock: vi.fn(),
+  observedPromptFloorMock: vi.fn(() => null as null | { tokens: number; observations: number; at: number }),
   contextWindowMock: vi.fn(async (_owner: string) => null as number | null),
   specMock: vi.fn(),
   setEstimateMock: vi.fn(async () => {}),
@@ -100,6 +102,7 @@ const {
 }));
 vi.mock('../compaction-usage', () => ({
   estimateContextTokensForOwner: estimateMock,
+  observedPromptFloorForOwner: observedPromptFloorMock,
   estimateContextWindowForOwner: contextWindowMock,
   resolveModelSpecForOwner: specMock,
   detectContextDeathForOwner: deathMock,
@@ -253,6 +256,7 @@ function fakeSql(opts: {
 beforeEach(() => {
   vi.clearAllMocks();
   estimateMock.mockResolvedValue(null);
+  observedPromptFloorMock.mockReturnValue(null);
   contextWindowMock.mockResolvedValue(null);
   specMock.mockResolvedValue(null);
   setEstimateMock.mockResolvedValue(undefined);
@@ -1518,6 +1522,17 @@ describe('gauge cache + flag mirror wiring (agent-managed-compaction P-013)', ()
     const out = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(out.estimated).toEqual(['hot']);
     expect(getContextUsage('hot')).toEqual({ tokens: 210_000, limit: 300_000 });
+  });
+
+  it('threads route-bound prompt-floor evidence into the existing gauge cache', async () => {
+    estimateMock.mockResolvedValue(199_236);
+    observedPromptFloorMock.mockReturnValue({ tokens: 167_686, observations: 3, at: Date.now() });
+    await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(getContextUsage('hot')).toEqual({
+      tokens: 199_236,
+      limit: 300_000,
+      observedPromptFloor: { tokens: 167_686, observations: 3 },
+    });
   });
 
   it('does not cache a session whose estimate is unresolvable (null)', async () => {

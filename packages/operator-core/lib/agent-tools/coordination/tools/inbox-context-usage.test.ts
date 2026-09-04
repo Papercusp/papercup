@@ -7,7 +7,19 @@ import {
   contextGaugeBand,
   renderBandedContextGauge,
   renderContextUsageLine,
+  usableRunwayFromObservedPromptFloor,
 } from './inbox-context-usage';
+
+describe('usableRunwayFromObservedPromptFloor', () => {
+  it('derives a conservative runway without changing the total-prompt limit', () => {
+    expect(usableRunwayFromObservedPromptFloor(250_000, { tokens: 167_686, observations: 3 })).toBe(82_314);
+  });
+  it('never reports negative room and rejects malformed evidence', () => {
+    expect(usableRunwayFromObservedPromptFloor(250_000, { tokens: 260_000, observations: 1 })).toBe(0);
+    expect(usableRunwayFromObservedPromptFloor(250_000, { tokens: Number.NaN, observations: 1 })).toBeNull();
+    expect(usableRunwayFromObservedPromptFloor(250_000, { tokens: 100, observations: 0 })).toBeNull();
+  });
+});
 
 describe('renderContextUsageLine (WI-1795 compaction affordance)', () => {
   it('returns null when usage cannot be computed', () => {
@@ -22,6 +34,16 @@ describe('renderContextUsageLine (WI-1795 compaction affordance)', () => {
     const line = renderContextUsageLine(50_000, 158_000); // ~32%
     expect(line).toBe('context: 50000/158000 (32%)');
     expect(line).not.toMatch(/request-compaction/);
+  });
+
+  it('reports the observed prompt floor and conservative usable runway when measured', () => {
+    const line = renderContextUsageLine(199_236, 250_000, null, null, {
+      tokens: 167_686,
+      observations: 3,
+    });
+    expect(line).toBe(
+      'context: 199236/250000 (80%); observed-input floor 167686 (3 samples), conservative usable runway 82314',
+    );
   });
 
   it('stays a bare fact JUST below the threshold', () => {
@@ -101,6 +123,16 @@ describe('renderBandedContextGauge (P-013/P-015 ambient gauge)', () => {
     expect(line).toBe('context: 70/100 (70%)');
     expect(line).not.toMatch(/request-compaction/);
     expect(line).not.toMatch(/⚠/);
+  });
+
+  it('keeps runway evidence on the ambient banded gauge', () => {
+    const line = renderBandedContextGauge(200_000, 250_000, null, null, {
+      tokens: 167_686,
+      observations: 2,
+    });
+    expect(line).toContain('context: 200000/250000 (80%)');
+    expect(line).toContain('observed-input floor 167686 (2 samples)');
+    expect(line).toContain('conservative usable runway 82314');
   });
 
   it('renders a LOUD ⚠ action line in 80–89%', () => {

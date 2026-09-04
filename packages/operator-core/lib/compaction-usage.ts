@@ -583,6 +583,7 @@ export async function estimateContextTokensForOwner(
   // exact reading is a floor and the larger of the two is the safe estimate. Bound to the native
   // session id: a carry-respawn successor (same owner, new id) never inherits its predecessor's 248k.
   const served = await servedRouteBoundToRef(ownerId, ref, deps);
+  rememberObservedPromptFloor(ownerId, served);
   const exact = served?.usage?.inputTotal;
   if (exact != null && exact > 0) return Math.max(exact, primary ?? 0);
   if (primary != null) return primary;
@@ -626,9 +627,61 @@ export interface GatewayServedRoute {
   context1m: boolean | null;
   /** The caller's native session id (from the CLI's `metadata.user_id`); null for non-CLI callers. */
   nativeSessionId: string | null;
-  /** Exact input usage from the last `message_start` for that native session. */
-  usage: { inputTotal: number; at: number } | null;
+  /** Exact input usage from the last `message_start` plus the session's lowest observed total. */
+  usage: {
+    inputTotal: number;
+    /** Smallest exact input total observed for this native session; null on a pre-upgrade gateway. */
+    observedInputFloor?: number | null;
+    /** Number of exact samples contributing to observedInputFloor; null on a pre-upgrade gateway. */
+    observations?: number | null;
+    at: number;
+  } | null;
   at: number | null;
+}
+
+/** Prompt-floor evidence cached by the existing compaction estimator for the gauge writer. */
+export interface ObservedPromptFloor {
+  tokens: number;
+  observations: number;
+  at: number;
+}
+
+const OBSERVED_PROMPT_FLOOR_STALE_MS = 6 * 60_000;
+const observedPromptFloors = new Map<string, ObservedPromptFloor>();
+
+/**
+ * Cache the route-bound measurement only after native-session validation. The value
+ * is an observed TOTAL-prompt floor, not an exact decomposition of the fixed prefix.
+ */
+function rememberObservedPromptFloor(ownerId: string, route: GatewayServedRoute | null): void {
+  const usage = route?.usage;
+  if (
+    usage?.observedInputFloor == null ||
+    usage.observations == null ||
+    !Number.isFinite(usage.observedInputFloor) ||
+    usage.observedInputFloor < 0 ||
+    !Number.isInteger(usage.observations) ||
+    usage.observations < 1
+  ) return;
+  observedPromptFloors.set(ownerId, {
+    tokens: Math.floor(usage.observedInputFloor),
+    observations: usage.observations,
+    at: usage.at,
+  });
+}
+
+/** Sync read for the watchdog immediately after its ordinary context estimate. */
+export function observedPromptFloorForOwner(
+  ownerId: string,
+  now: number = Date.now(),
+): ObservedPromptFloor | null {
+  const value = observedPromptFloors.get(ownerId);
+  if (!value) return null;
+  if (now - value.at > OBSERVED_PROMPT_FLOOR_STALE_MS) {
+    observedPromptFloors.delete(ownerId);
+    return null;
+  }
+  return { ...value };
 }
 
 function gatewayPortForRouteRead(): number {
@@ -653,7 +706,23 @@ export async function gatewayServedRouteForOwner(
     if (!j || j.ok !== true || typeof j.model !== 'string') return null;
     const usage =
       j.usage && typeof j.usage.inputTotal === 'number' && Number.isFinite(j.usage.inputTotal)
-        ? { inputTotal: j.usage.inputTotal, at: typeof j.usage.at === 'number' ? j.usage.at : 0 }
+        ? {
+            inputTotal: j.usage.inputTotal,
+            observedInputFloor:
+              typeof j.usage.observedInputFloor === 'number' &&
+              Number.isFinite(j.usage.observedInputFloor) &&
+              j.usage.observedInputFloor >= 0 &&
+              j.usage.observedInputFloor <= j.usage.inputTotal
+                ? j.usage.observedInputFloor
+                : null,
+            observations:
+              typeof j.usage.observations === 'number' &&
+              Number.isInteger(j.usage.observations) &&
+              j.usage.observations > 0
+                ? j.usage.observations
+                : null,
+            at: typeof j.usage.at === 'number' ? j.usage.at : 0,
+          }
         : null;
     return {
       account: typeof j.account === 'string' ? j.account : null,
@@ -1130,6 +1199,7 @@ export function currentContextTokensSyncForOwner(ownerId: string): number | null
 export function clearContextAnchor(ownerId: string): void {
   anchors.delete(ownerId);
   seedInFlight.delete(ownerId);
+  observedPromptFloors.delete(ownerId);
 }
 
 /** Test seams: reset anchor state / seed an anchor for a known file directly
@@ -1137,6 +1207,7 @@ export function clearContextAnchor(ownerId: string): void {
 export function resetContextAnchorsForTests(): void {
   anchors.clear();
   seedInFlight.clear();
+  observedPromptFloors.clear();
 }
 export function seedContextAnchorForTests(ownerId: string, pathStr: string): boolean {
   const seeded = seedAnchorFromFile(pathStr);

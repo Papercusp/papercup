@@ -23,6 +23,7 @@ export const CONTEXT_USAGE_STALE_MS = 6 * 60_000;
 interface Entry {
   tokens: number;
   limit: number;
+  observedPromptFloor?: { tokens: number; observations: number };
   at: number;
 }
 
@@ -34,9 +35,21 @@ export function recordContextUsage(
   tokens: number,
   limit: number,
   now: number = Date.now(),
+  observedPromptFloor?: { tokens: number; observations: number } | null,
 ): void {
   if (!ownerId || !Number.isFinite(tokens) || !Number.isFinite(limit) || limit <= 0) return;
-  cache.set(ownerId, { tokens, limit, at: now });
+  const measured =
+    observedPromptFloor &&
+    Number.isFinite(observedPromptFloor.tokens) &&
+    observedPromptFloor.tokens >= 0 &&
+    Number.isInteger(observedPromptFloor.observations) &&
+    observedPromptFloor.observations > 0
+      ? {
+          tokens: Math.floor(observedPromptFloor.tokens),
+          observations: observedPromptFloor.observations,
+        }
+      : undefined;
+  cache.set(ownerId, { tokens, limit, ...(measured ? { observedPromptFloor: measured } : {}), at: now });
 }
 
 /** Respawn invalidation: a carry-respawn/recycle keeps the coord ownerId but
@@ -53,14 +66,22 @@ export function clearContextUsage(ownerId: string): void {
 export function getContextUsage(
   ownerId: string,
   now: number = Date.now(),
-): { tokens: number; limit: number } | null {
+): {
+  tokens: number;
+  limit: number;
+  observedPromptFloor?: { tokens: number; observations: number };
+} | null {
   const e = cache.get(ownerId);
   if (!e) return null;
   if (now - e.at > CONTEXT_USAGE_STALE_MS) {
     cache.delete(ownerId);
     return null;
   }
-  return { tokens: e.tokens, limit: e.limit };
+  return {
+    tokens: e.tokens,
+    limit: e.limit,
+    ...(e.observedPromptFloor ? { observedPromptFloor: { ...e.observedPromptFloor } } : {}),
+  };
 }
 
 /* ── P-013 flag mirror ──────────────────────────────────────────────────────

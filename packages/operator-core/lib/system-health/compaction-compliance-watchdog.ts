@@ -22,6 +22,7 @@ import {
   detectContextDeathForOwner,
   estimateContextTokensForOwner,
   estimateContextWindowForOwner,
+  observedPromptFloorForOwner,
   resolveLaunchCompactionLimitForOwner,
   resolveModelSpecForOwner,
   resolveSessionRefReconciled,
@@ -2352,7 +2353,8 @@ export async function checkCompactionCompliance(
       // P-013/P-015: mirror the fresh estimate into the in-process gauge cache so the
       // result-annotator + native-tool hook render the banded gauge with ZERO per-call
       // DB cost (the watchdog is the single writer; readers never touch PG).
-      recordContextUsage(r.owner_id, est, r.compaction_limit);
+      const observedPromptFloor = observedPromptFloorForOwner(r.owner_id);
+      recordContextUsage(r.owner_id, est, r.compaction_limit, Date.now(), observedPromptFloor);
       out.estimated.push(r.owner_id);
 
       // WI-2143843: a limit change is an explicit re-arm, while a stale streak is

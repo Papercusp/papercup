@@ -168,6 +168,7 @@ import {
   type GatewayAdmissionGovernor,
 } from './admission-context';
 import { PayloadSpoolPersistenceError, PayloadTooLargeError, type GatewayPayloadSpool } from './payload-spool';
+import { assertKnownFlagKey, buildProcessFlagAttestation, GATEWAY_FLAG_ATTEST_PATH } from '../flag-attestation';
 
 /** `RequestInit` plus undici's `dispatcher` extension (per-account egress routing). The standard
  *  lib `RequestInit` type omits it, but Node's global `fetch` honors it. */
@@ -1796,6 +1797,43 @@ export async function peekBody(
   return { head, rest };
 }
 
+/** One exact prompt-usage sample observed on the upstream `message_start`. */
+export interface GatewayRouteUsageSample {
+  inputTotal: number;
+  inputTokens: number;
+  cacheRead: number;
+  cacheCreate: number;
+}
+
+/**
+ * Per-native-session prompt measurement exposed by `GET /admin/route`.
+ *
+ * `observedInputFloor` is deliberately named as an OBSERVATION, not an exact
+ * fixed-prefix size: it is the smallest total prompt the gateway has served for
+ * this native session, so it can still include first-turn conversation content.
+ * Consequently `limit - observedInputFloor` is a conservative lower bound on
+ * usable conversation runway. `observations` makes the evidence depth explicit.
+ */
+export interface GatewayRouteUsage extends GatewayRouteUsageSample {
+  observedInputFloor: number;
+  observations: number;
+  at: number;
+}
+
+/** Pure accumulator for the bounded route entry's per-session prompt telemetry. */
+export function accumulateGatewayRouteUsage(
+  prior: GatewayRouteUsage | null | undefined,
+  sample: GatewayRouteUsageSample,
+  at: number = Date.now(),
+): GatewayRouteUsage {
+  return {
+    ...sample,
+    observedInputFloor: Math.min(prior?.observedInputFloor ?? sample.inputTotal, sample.inputTotal),
+    observations: (prior?.observations ?? 0) + 1,
+    at,
+  };
+}
+
 export function createInferenceGateway(deps: GatewayDeps) {
   const processStartedAt = Date.now();
   // EI-22038414992051268: the FALLBACK admission idempotency keys below are derived from
@@ -2837,15 +2875,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // already strips the routing headers, so the caller never sees the response header directly). Updated on the
   // served-response chokepoint; a bounded Map keyed by ownerId (delete-oldest over the cap). Read-only on
   // GET /admin/route?owner=<id>. Cheap: one Map.set on the hot path.
-  /** Exact per-request input usage read from the upstream `message_start` (WI-2140943 lane 2): the
-   *  real context size the model just held — `inputTotal` = input + cache_read + cache_creation. */
-  interface RouteUsage {
-    inputTotal: number;
-    inputTokens: number;
-    cacheRead: number;
-    cacheCreate: number;
-    at: number;
-  }
   interface RouteEntry {
     account: string;
     /** The model AS FORWARDED (after `[1m]` normalization and any WI-1073 downgrade) — the SERVED model. */
@@ -2855,7 +2884,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     /** The caller's native session id from `metadata.user_id` (null for non-CLI callers). */
     nativeSessionId: string | null;
     /** Latest exact usage for this route's native session; null until the first `message_start`. */
-    usage: RouteUsage | null;
+    usage: GatewayRouteUsage | null;
     at: number;
   }
   const ROUTE_MAP_MAX = 4096;
@@ -3220,7 +3249,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       context1m: served.context1m ?? false,
       nativeSessionId,
       // A usage reading belongs to ONE native session: keep it across requests of the same session
-      // (the next message_start overwrites it), drop it the moment the caller's native id changes.
+      // (the next message_start updates latest usage + the observed floor), drop it the moment the
+      // caller's native id changes.
       usage: prior && prior.nativeSessionId === nativeSessionId ? prior.usage : null,
       at: Date.now(),
     });
@@ -3228,11 +3258,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
   /** Attach the exact `message_start` usage to the caller's current route entry (WI-2140943 lane 2).
    *  The entry is written by `recordRoute` synchronously on the response headers, BEFORE the stream's
    *  first data event, so this always finds it unless the map evicted it in between (then: no-op). */
-  function recordOwnerUsage(ownerId: string | undefined, usage: Omit<RouteUsage, 'at'>): void {
+  function recordOwnerUsage(ownerId: string | undefined, usage: GatewayRouteUsageSample): void {
     if (!ownerId) return;
     const e = lastRouteByOwner.get(ownerId);
     if (!e) return;
-    e.usage = { ...usage, at: Date.now() };
+    e.usage = accumulateGatewayRouteUsage(e.usage, usage);
   }
   /** AUTO-ROUTE SESSION AFFINITY (WI-2140943): the account that last served `key`, when it is still a usable
    *  SOFT-pin candidate — remembered within AUTO_AFFINITY_TTL_MS, and NOT from before an explicit dynamic
@@ -8355,6 +8385,46 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const dispatchRequest = (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = req.url ?? '/';
     const requestPath = url.split('?', 1)[0] || '/';
+    if (req.method === 'GET' && requestPath === GATEWAY_FLAG_ATTEST_PATH) {
+      const requestUrl = new URL(url, 'http://127.0.0.1');
+      const key = requestUrl.searchParams.get('key')?.trim() ?? '';
+      if (!key) {
+        sendJson(res, 400, { ok: false, error: 'missing key' });
+        return;
+      }
+      try {
+        assertKnownFlagKey(key);
+      } catch (error) {
+        sendJson(res, 400, {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+
+      const address = server.address();
+      const servingPort = typeof address === 'object' && address ? address.port : null;
+      void buildProcessFlagAttestation(key, requestUrl.searchParams.get('distinctId')?.trim() || 'flags-attest', {
+        role: 'inference-gateway',
+        label: 'inference-gateway:' + (servingPort ?? 'unknown'),
+        port: servingPort,
+      })
+        .then((attestation) => sendJson(res, 200, attestation))
+        .catch((error) => {
+          sendJson(res, 200, {
+            ok: false,
+            process: {
+              role: 'inference-gateway',
+              label: 'inference-gateway:' + (servingPort ?? 'unknown'),
+              port: servingPort,
+              pid: process.pid,
+            },
+            key,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      return;
+    }
     if (req.method === 'GET' && requestPath === '/healthz') {
       const s = stats();
       // EI-19303809952284205: `ok` used to be a HARDCODED literal `true` — it described only whether
@@ -9120,38 +9190,38 @@ export function createInferenceGateway(deps: GatewayDeps) {
           pri,
           async () => {
             markProviderAdmitted();
-          if (providerId !== 'codex') return task();
-          const reqId = ++reqSeq;
-          inFlightReg.set(reqId, {
-            id: reqId,
-            provider: 'codex',
-            startedAt: Date.now(),
-            isStream: url.startsWith('/v1/responses'),
-            reclaimed: false,
-            abort: () => {
-              // Destroying either side triggers proxyOpenAi's existing request-aborted/response-close
-              // listeners, which abort the current upstream fetch. Do not attach an Error here: an
-              // IncomingMessage with no error listener would turn a recovery action into an uncaught event.
-              try {
-                req.destroy();
-              } catch {
-                /* already torn down */
+            if (providerId !== 'codex') return task();
+            const reqId = ++reqSeq;
+            inFlightReg.set(reqId, {
+              id: reqId,
+              provider: 'codex',
+              startedAt: Date.now(),
+              isStream: url.startsWith('/v1/responses'),
+              reclaimed: false,
+              abort: () => {
+                // Destroying either side triggers proxyOpenAi's existing request-aborted/response-close
+                // listeners, which abort the current upstream fetch. Do not attach an Error here: an
+                // IncomingMessage with no error listener would turn a recovery action into an uncaught event.
+                try {
+                  req.destroy();
+                } catch {
+                  /* already torn down */
+                }
+                try {
+                  res.destroy();
+                } catch {
+                  /* already torn down */
+                }
+              },
+            });
+            try {
+              return await task();
+            } finally {
+              const entry = inFlightReg.get(reqId);
+              if (entry) {
+                inFlightReg.delete(reqId);
+                if (!entry.reclaimed) lastDrainAt.codex = Date.now();
               }
-              try {
-                res.destroy();
-              } catch {
-                /* already torn down */
-              }
-            },
-          });
-          try {
-            return await task();
-          } finally {
-            const entry = inFlightReg.get(reqId);
-            if (entry) {
-              inFlightReg.delete(reqId);
-              if (!entry.reclaimed) lastDrainAt.codex = Date.now();
-            }
             }
           },
           { signal: abandoned.signal, ...(tier !== undefined ? { tier } : {}) },

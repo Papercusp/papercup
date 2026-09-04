@@ -3840,6 +3840,83 @@ test('[#0 cache] a cold prefix (cache_read=0, large input) counts as a MISS', as
   assert.equal(s.cache.create, 4000, 'the cold cache-creation is still tallied');
 });
 
+test('GET /admin/route retains the lowest exact input total per native session as an observed prompt floor', async () => {
+  const totals = [168_100, 199_236, 180_000];
+  let call = 0;
+  await boot((_req, res) => {
+    const total = totals[call++]!;
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write(
+      `event: message_start\ndata: ${JSON.stringify({
+        type: 'message_start',
+        message: {
+          id: `m-${call}`,
+          usage: {
+            input_tokens: 10,
+            cache_read_input_tokens: total - 20,
+            cache_creation_input_tokens: 10,
+            output_tokens: 1,
+          },
+        },
+      })}\n\n`,
+    );
+    res.end();
+  });
+
+  const owner = 'su-runway';
+  const firstNative = '00000000-0000-4000-8000-00000000a001';
+  const successorNative = '00000000-0000-4000-8000-00000000a002';
+  const send = async (nativeSessionId: string) => {
+    const response = await ask('/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'anthropic-beta': 'fine-grained-2025',
+        'x-papercusp-owner': owner,
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-4',
+        max_tokens: 8,
+        metadata: { user_id: JSON.stringify({ session_id: nativeSessionId }) },
+        messages: [{ role: 'user', content: 'x' }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    await response.text();
+  };
+
+  await send(firstNative);
+  await send(firstNative);
+  const sameSession = (await (await ask(`/admin/route?owner=${owner}`)).json()) as {
+    usage: {
+      inputTotal: number;
+      inputTokens: number;
+      cacheRead: number;
+      cacheCreate: number;
+      observedInputFloor: number;
+      observations: number;
+      at: number;
+    };
+  };
+  assert.deepEqual(sameSession.usage, {
+    inputTotal: 199_236,
+    inputTokens: 10,
+    cacheRead: 199_216,
+    cacheCreate: 10,
+    observedInputFloor: 168_100,
+    observations: 2,
+    at: sameSession.usage.at,
+  });
+
+  await send(successorNative);
+  const successor = (await (await ask(`/admin/route?owner=${owner}`)).json()) as {
+    usage: { inputTotal: number; observedInputFloor: number; observations: number };
+  };
+  assert.equal(successor.usage.inputTotal, 180_000);
+  assert.equal(successor.usage.observedInputFloor, 180_000, 'a successor never inherits its predecessor floor');
+  assert.equal(successor.usage.observations, 1, 'the sample count resets at the native-session boundary');
+});
+
 test('[stall-autowake P-002] an all-throttled shed to an IDENTIFIED bee records a stall event on /admin/stalls', async () => {
   const gov = new RateLimitGovernor({ maxConcurrent: 20 });
   await boot(

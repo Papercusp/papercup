@@ -13,6 +13,45 @@
  *  model window, so 85% of it is a genuine "wrap up + compact soon" signal, not a panic. */
 export const COMPACTION_HINT_PCT = 85;
 
+/** Route-bound evidence used to distinguish total prompt pressure from working room. */
+export interface ObservedPromptFloor {
+  tokens: number;
+  observations: number;
+}
+
+/**
+ * A conservative lower bound on conversation room. The observed floor can
+ * include first-turn conversation content, so it may overstate the fixed prefix;
+ * subtracting it therefore understates (never over-promises) usable runway.
+ */
+export function usableRunwayFromObservedPromptFloor(
+  compactionLimit: number | null | undefined,
+  observedPromptFloor: ObservedPromptFloor | null | undefined,
+): number | null {
+  if (
+    !compactionLimit ||
+    !observedPromptFloor ||
+    !Number.isFinite(observedPromptFloor.tokens) ||
+    observedPromptFloor.tokens < 0 ||
+    !Number.isInteger(observedPromptFloor.observations) ||
+    observedPromptFloor.observations < 1
+  ) return null;
+  return Math.max(0, Math.floor(compactionLimit - observedPromptFloor.tokens));
+}
+
+function renderContextFact(
+  contextTokens: number,
+  compactionLimit: number,
+  pct: number,
+  observedPromptFloor?: ObservedPromptFloor | null,
+): string {
+  const runway = usableRunwayFromObservedPromptFloor(compactionLimit, observedPromptFloor);
+  const measured = runway == null || !observedPromptFloor
+    ? ''
+    : `; observed-input floor ${Math.floor(observedPromptFloor.tokens)} (${observedPromptFloor.observations} sample${observedPromptFloor.observations === 1 ? '' : 's'}), conservative usable runway ${runway}`;
+  return `context: ${contextTokens}/${compactionLimit} (${pct}%)${measured}`;
+}
+
 /**
  * The rounded percent-of-soft-limit for a session, or null when it can't be computed
  * (no limit / no estimate). Split out (flush-to-proceed-stretch-discipline P-002) so the
@@ -42,10 +81,11 @@ export function renderContextUsageLine(
   compactionLimit: number | null | undefined,
   selfCompactionAvailable: boolean | null = null,
   fleetWindDownLoopEndAuthorized: boolean | null = null,
+  observedPromptFloor: ObservedPromptFloor | null = null,
 ): string | null {
   const pct = contextUsagePct(contextTokens, compactionLimit);
-  if (pct == null) return null;
-  let line = `context: ${contextTokens}/${compactionLimit} (${pct}%)`;
+  if (pct == null || contextTokens == null || !compactionLimit) return null;
+  let line = renderContextFact(contextTokens, compactionLimit, pct, observedPromptFloor);
   if (pct >= COMPACTION_HINT_PCT) {
     const windDownLoopEnd =
       pct >= CONTEXT_GAUGE_CRITICAL_PCT &&
@@ -96,11 +136,12 @@ export function renderBandedContextGauge(
   compactionLimit: number | null | undefined,
   selfCompactionAvailable: boolean | null = null,
   fleetWindDownLoopEndAuthorized: boolean | null = null,
+  observedPromptFloor: ObservedPromptFloor | null = null,
 ): string | null {
   const pct = contextUsagePct(contextTokens, compactionLimit);
   const band = contextGaugeBand(pct);
-  if (band == null) return null;
-  const fact = `context: ${contextTokens}/${compactionLimit} (${pct}%)`;
+  if (band == null || pct == null || contextTokens == null || !compactionLimit) return null;
+  const fact = renderContextFact(contextTokens, compactionLimit, pct, observedPromptFloor);
   switch (band) {
     case 'quiet':
       return fact;
