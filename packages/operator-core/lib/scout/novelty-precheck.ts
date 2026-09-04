@@ -50,9 +50,9 @@ export interface NoveltyPriorArtOptions {
  */
 export async function noveltyPriorArt(text: string, opts: NoveltyPriorArtOptions = {}): Promise<PriorArtMatch[]> {
   const corpus = opts.corpus ?? (await readNoveltyCorpus());
-  const { matches } = await corpusNoveltyHybrid(text, corpus, opts.novelty, opts.semanticDeps);
+  const { matches, evaluatedCorpus } = await corpusNoveltyHybrid(text, corpus, opts.novelty, opts.semanticDeps);
   const titleByRef = new Map<string, string>();
-  for (const e of corpus) if (!titleByRef.has(e.ref)) titleByRef.set(e.ref, e.text);
+  for (const e of evaluatedCorpus) if (!titleByRef.has(e.ref)) titleByRef.set(e.ref, e.text);
   return matches.map((m) => ({
     kind: m.kind,
     ref: m.ref,

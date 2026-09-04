@@ -25,7 +25,7 @@ import {
   type CorpusNoveltyOptions,
   type BucketOptions,
 } from './critique-core';
-import { corpusNoveltyHybrid } from './semantic-novelty-leg';
+import { corpusNoveltyHybrid, type SemanticNoveltyDeps } from './semantic-novelty-leg';
 import { parseLlmJson } from './llm-json';
 import { DEFAULT_SCOUT_CRITIC_MODEL } from './models';
 import { callScoutPhaseLlm, DEFAULT_SCOUT_CRITIC_TIMEOUT_MS } from './llm-deadline';
@@ -82,6 +82,9 @@ export interface CriticRawScores {
 
 export interface CritiqueOptions {
   novelty?: CorpusNoveltyOptions;
+  /** Injectable query-time implementation corpus/semantic seams (tests and
+   * callers already holding a compatible search backend). */
+  semanticDeps?: SemanticNoveltyDeps;
   bucket?: BucketOptions;
   critic?: CriticContext;
 }
@@ -97,6 +100,19 @@ export interface CritiqueResult {
   rejected: ScoredIdea[];
 }
 
+export interface CriticPrior {
+  ref: string;
+  similarity: number;
+  state?: string;
+  /** Realized-work narrative recovered from structured completion evidence. */
+  evidence?: string;
+  /** True means nearest-neighbour candidate only, not an above-floor match. */
+  implementationCandidate?: boolean;
+}
+
+const MAX_IMPLEMENTATION_CANDIDATES_FOR_CRITIC = 3;
+const CRITIC_EVIDENCE_EXCERPT_CHARS = 500;
+
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
@@ -108,7 +124,7 @@ function clamp01(n: unknown, fallback: number): number {
 
 export function buildCriticPrompt(
   idea: Idea,
-  nearestPriors: ReadonlyArray<{ ref: string; similarity: number; state?: string }>,
+  nearestPriors: readonly CriticPrior[],
   ctx: CriticContext,
 ): { system: string; user: string } {
   const system = [
@@ -116,7 +132,7 @@ export function buildCriticPrompt(
     // mechanism + JSON output contract below stay hardcoded.
     ctx.mission ?? DEFAULT_CRITIC_MISSION,
     '',
-    '• NOVELTY critic (skeptic): is this genuinely NEW, or the obvious move dressed up / something already tried? Be harsh — penalise ideas close to what already exists. This is a mature, actively-developed platform: a well-known operational category (rate-limit ladders, per-account throttling, egress rotation, circuit breakers, retries, caching, scheduling) is MORE LIKELY to already exist than not, so an idea that confidently asserts such a gap without hedging or evidence should be scored LOW, not taken at face value. Score conceptualNovelty 0 (obvious / already done) … 1 (a real leap).',
+    '• NOVELTY critic (skeptic): is this genuinely NEW, or the obvious move dressed up / something already tried? Be harsh — penalise ideas close to what already exists. This is a mature, actively-developed platform: a well-known operational category (rate-limit ladders, per-account throttling, egress rotation, circuit breakers, retries, caching, scheduling) is MORE LIKELY to already exist than not, so an idea that confidently asserts such a gap without hedging or evidence should be scored LOW, not taken at face value. Retrieved implementation candidates are evidence to inspect, not automatic duplicate verdicts: an irrelevant candidate or no candidate at all is NEVER proof of novelty. Score conceptualNovelty 0 (obvious / already done) … 1 (a real leap).',
     "• FEASIBILITY critic: could this actually work in THIS architecture, and is the cost worth the upside? Also check the idea's OWN cited evidence (specific incidents/logs/tickets) actually supports the mechanism it claims — e.g. a citation describing a local rate-governor pause is NOT evidence of an upstream HTTP 429, and citing the wrong event class undermines the whole premise. If the citations contradict or fail to support the claim, score feasibility LOW and say so explicitly in the rationale. Score feasibility 0 (impractical / no clear payoff, or premise contradicted by its own evidence) … 1 (clearly buildable, high payoff).",
     '',
     'A great idea is novel AND feasible; a leap may be novel but not-yet-feasible (that is fine — it is preserved separately). Reason briefly, then output ONLY this JSON (no prose, no fences):',
@@ -125,9 +141,17 @@ export function buildCriticPrompt(
 
   const priorLines = nearestPriors.length
     ? nearestPriors
-        .map((p) => `  - ${p.ref}${p.state ? ` [${p.state}]` : ''} (similarity ${p.similarity})`)
+        .map((p) => {
+          const score = p.implementationCandidate
+            ? `semantic implementation candidate; retrieval score ${p.similarity}; NOT a duplicate verdict`
+            : `similarity ${p.similarity}`;
+          const evidence = p.evidence
+            ? `\n    Completion evidence: ${p.evidence.replace(/\s+/g, ' ').slice(0, CRITIC_EVIDENCE_EXCERPT_CHARS)}`
+            : '';
+          return `  - ${p.ref}${p.state ? ` [${p.state}]` : ''} (${score})${evidence}`;
+        })
         .join('\n')
-    : '  (none — the search-first pass found nothing close)';
+    : '  (none — the bounded evidence-backed corpus found no positive match; coverage is incomplete, so absence is not evidence that the mechanism is new)';
 
   const user = [
     `## Idea (lens: ${idea.lens})`,
@@ -139,7 +163,7 @@ export function buildCriticPrompt(
     'Proposed mechanism:',
     idea.mechanism,
     '',
-    '## Closest things the Hive has already considered (search-first)',
+    '## Closest prior designs and realized work (search-first)',
     priorLines,
     '',
     '## Architecture context',
@@ -152,7 +176,7 @@ export function buildCriticPrompt(
 /** Run the LLM critic for one idea (injected llmCall — testable with a fake). */
 export async function runCritic(
   idea: Idea,
-  nearestPriors: ReadonlyArray<{ ref: string; similarity: number; state?: string }>,
+  nearestPriors: readonly CriticPrior[],
   ctx: CriticContext,
   deps: { llmCall: ScoutLlmCall },
 ): Promise<CriticRawScores> {
@@ -201,7 +225,12 @@ export async function runCritic(
   if (parsed == null) {
     // Fail safe: an unparseable critic cannot smuggle an idea through to KEEP —
     // feasibility 0 forbids 'keep'; novelty 1 leaves the search-first ceiling intact.
-    return { conceptualNovelty: 1, feasibility: 0, rationale: 'critic produced no parseable JSON', costUsd: res.costUsd };
+    return {
+      conceptualNovelty: 1,
+      feasibility: 0,
+      rationale: 'critic produced no parseable JSON',
+      costUsd: res.costUsd,
+    };
   }
   return {
     conceptualNovelty: clamp01(parsed.conceptualNovelty, 1),
@@ -224,13 +253,26 @@ export async function critiqueIdea(
 ): Promise<ScoredIdea> {
   // P-017: the deterministic search-first novelty, now blended with the hybrid
   // embedding leg (fail-open to pure lexical). Still a CEILING the LLM may only lower.
-  const cn = await corpusNoveltyHybrid(`${idea.title} ${idea.body}`, corpus, opts.novelty);
-  const raw = await runCritic(
-    idea,
-    cn.matches.map((m) => ({ ref: m.ref, similarity: m.similarity, state: m.state })),
-    opts.critic ?? {},
-    deps,
-  );
+  const cn = await corpusNoveltyHybrid(`${idea.title} ${idea.body}`, corpus, opts.novelty, opts.semanticDeps);
+  const corpusByRef = new Map(cn.evaluatedCorpus.map((entry) => [entry.ref, entry]));
+  const matchedRefs = new Set(cn.matches.map((match) => match.ref));
+  const criticPriors: CriticPrior[] = cn.matches.map((match) => ({
+    ref: match.ref,
+    similarity: match.similarity,
+    ...(match.state ? { state: match.state } : {}),
+    ...(corpusByRef.get(match.ref)?.kind === 'implementation' ? { evidence: corpusByRef.get(match.ref)?.text } : {}),
+  }));
+  for (const candidate of cn.implementationCandidates.slice(0, MAX_IMPLEMENTATION_CANDIDATES_FOR_CRITIC)) {
+    if (matchedRefs.has(candidate.entry.ref)) continue;
+    criticPriors.push({
+      ref: candidate.entry.ref,
+      similarity: candidate.similarity,
+      state: 'shipped',
+      evidence: candidate.entry.text,
+      implementationCandidate: true,
+    });
+  }
+  const raw = await runCritic(idea, criticPriors, opts.critic ?? {}, deps);
   // Search-first novelty is the CEILING: the LLM may only LOWER it.
   const novelty = round2(Math.min(cn.novelty, raw.conceptualNovelty));
   const feasibility = round2(raw.feasibility);
@@ -266,9 +308,7 @@ export async function critiqueIdeas(
   // instead (mirrors runIdeators' Promise.all roster fan-out): wall time is now
   // bounded by the SLOWEST single critique, not their sum. runCritic's catch
   // above keeps one failed call from crashing the batch.
-  const critiques: ScoredIdea[] = await Promise.all(
-    ideas.map((idea) => critiqueIdea(idea, corpus, deps, opts)),
-  );
+  const critiques: ScoredIdea[] = await Promise.all(ideas.map((idea) => critiqueIdea(idea, corpus, deps, opts)));
   const buckets = bucketByCritique(
     critiques.map((c) => ({ id: c.idea.id, novelty: c.novelty, feasibility: c.feasibility })),
     opts.bucket,

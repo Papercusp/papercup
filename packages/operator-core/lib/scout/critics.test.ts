@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest';
 import type { Idea, ScoutLlmCall } from './types';
 import { buildCriticPrompt, critiqueIdea, critiqueIdeas, DEFAULT_CRITIC_MISSION, runCritic } from './critics';
 import type { CorpusEntry } from './critique-core';
+import { PROSE_VECTOR_DIMS } from '../search/prose-vector-dims';
 
 function idea(over: Partial<Idea> = {}): Idea {
   return {
@@ -24,7 +25,9 @@ function idea(over: Partial<Idea> = {}): Idea {
 
 /** A fake critic LLM returning fixed scores (optionally varying by idea title). */
 function fakeCritic(
-  pick: { conceptualNovelty: number; feasibility: number } | ((title: string) => { conceptualNovelty: number; feasibility: number }),
+  pick:
+    | { conceptualNovelty: number; feasibility: number }
+    | ((title: string) => { conceptualNovelty: number; feasibility: number }),
 ): ScoutLlmCall {
   return async (opts) => {
     const userText = opts.messages.map((m) => m.content).join('\n');
@@ -56,13 +59,102 @@ describe('critiqueIdea', () => {
     expect(c.noveltyMatches[0]?.ref).toBe('plan:dup');
   });
 
+  it('WI-6773: a shipped implementation found at query time reaches the critic novelty ceiling', async () => {
+    const dup = idea({
+      title: 'graduated per-account throttle ladder',
+      body: 'rotate egress on bare 429s before pausing the account',
+    });
+    const c = await critiqueIdea(
+      dup,
+      [],
+      { llmCall: fakeCritic({ conceptualNovelty: 1, feasibility: 0.9 }) },
+      {
+        semanticDeps: {
+          resolveEmbedder: async () => ({
+            mode: 'test',
+            dims: PROSE_VECTOR_DIMS,
+            embed: async () => new Array(PROSE_VECTOR_DIMS).fill(0.01),
+          }),
+          queryPlanSims: async () => new Map(),
+          queryWorkItemSims: async () => new Map(),
+          queryImplementationCorpus: async () => [
+            {
+              entry: {
+                ref: 'wi:WI-SHIPPED',
+                kind: 'implementation',
+                text: `${dup.title}\n${dup.body}`,
+                state: 'shipped',
+              },
+              similarity: 0.99,
+            },
+          ],
+        },
+      },
+    );
+    expect(c.novelty).toBe(0);
+    expect(c.verdict).toBe('reject');
+    expect(c.noveltyMatches[0]).toMatchObject({
+      ref: 'wi:WI-SHIPPED',
+      kind: 'implementation',
+      state: 'shipped',
+    });
+  });
+
+  it('WI-6773: below-floor implementation candidates still reach the LLM skeptic with completion evidence', async () => {
+    let criticPrompt = '';
+    const llm: ScoutLlmCall = async (opts) => {
+      criticPrompt = opts.messages.map((message) => message.content).join('\n');
+      return {
+        text: JSON.stringify({ conceptualNovelty: 0.2, feasibility: 0.9, rationale: 'existing mechanism' }),
+        costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+      };
+    };
+    await critiqueIdea(
+      idea({ title: 'novel phrasing with no lexical overlap', body: 'another vocabulary entirely' }),
+      [],
+      { llmCall: llm },
+      {
+        semanticDeps: {
+          resolveEmbedder: async () => ({
+            mode: 'test',
+            dims: PROSE_VECTOR_DIMS,
+            embed: async () => new Array(PROSE_VECTOR_DIMS).fill(0.01),
+          }),
+          queryPlanSims: async () => new Map(),
+          queryWorkItemSims: async () => new Map(),
+          queryImplementationCorpus: async () => [
+            {
+              entry: {
+                ref: 'wi:WI-REALIZED',
+                kind: 'implementation',
+                text: 'A verified graduated throttle ladder shipped and rotates egress before account pause.',
+                state: 'shipped',
+              },
+              similarity: 0.41,
+            },
+          ],
+        },
+      },
+    );
+    expect(criticPrompt).toContain('wi:WI-REALIZED [shipped]');
+    expect(criticPrompt).toContain('NOT a duplicate verdict');
+    expect(criticPrompt).toContain('Completion evidence: A verified graduated throttle ladder shipped');
+  });
+
   it('preserves a high-novelty / low-feasibility idea as a moonshot (D-005)', async () => {
     const c = await critiqueIdea(idea(), [], { llmCall: fakeCritic({ conceptualNovelty: 1, feasibility: 0.2 }) });
     expect(c.verdict).toBe('moonshot');
   });
 
   it('a critic that fails to produce JSON cannot smuggle an idea to KEEP', async () => {
-    const brokenLlm: ScoutLlmCall = async () => ({ text: 'not json at all', costUsd: 0, inputTokens: 0, outputTokens: 0 });
+    const brokenLlm: ScoutLlmCall = async () => ({
+      text: 'not json at all',
+      costUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+    });
     const c = await critiqueIdea(idea(), [], { llmCall: brokenLlm });
     expect(c.feasibility).toBe(0);
     expect(c.verdict).not.toBe('keep');
@@ -89,12 +181,11 @@ describe('critiqueIdea', () => {
 
 describe('critiqueIdeas (batch + moonshot cap + no-human-prompt)', () => {
   it('partitions a batch into keep / moonshot / reject', async () => {
-    const ideas = [
-      idea({ id: 'keep', title: 'keep me' }),
-      idea({ id: 'leap', title: 'leap one' }),
-    ];
+    const ideas = [idea({ id: 'keep', title: 'keep me' }), idea({ id: 'leap', title: 'leap one' })];
     const llm = fakeCritic((title) =>
-      title.startsWith('keep') ? { conceptualNovelty: 0.9, feasibility: 0.8 } : { conceptualNovelty: 0.9, feasibility: 0.2 },
+      title.startsWith('keep')
+        ? { conceptualNovelty: 0.9, feasibility: 0.8 }
+        : { conceptualNovelty: 0.9, feasibility: 0.2 },
     );
     const r = await critiqueIdeas(ideas, [], { llmCall: llm });
     expect(r.kept.map((c) => c.idea.id)).toEqual(['keep']);
@@ -123,7 +214,13 @@ describe('critiqueIdeas (batch + moonshot cap + no-human-prompt)', () => {
     let calls = 0;
     const llm: ScoutLlmCall = async () => {
       calls += 1;
-      return { text: '{}', json: { conceptualNovelty: 0.9, feasibility: 0.9 }, costUsd: 0, inputTokens: 0, outputTokens: 0 };
+      return {
+        text: '{}',
+        json: { conceptualNovelty: 0.9, feasibility: 0.9 },
+        costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+      };
     };
     await critiqueIdeas(ideas, [], { llmCall: llm });
     expect(calls).toBe(2);
@@ -131,6 +228,12 @@ describe('critiqueIdeas (batch + moonshot cap + no-human-prompt)', () => {
 });
 
 describe('buildCriticPrompt — mission framing (P-010 prompt-overlay seam)', () => {
+  it('states that a bounded corpus miss is incomplete coverage, never proof of novelty', () => {
+    const { user } = buildCriticPrompt(idea(), [], {});
+    expect(user).toContain('coverage is incomplete');
+    expect(user).toContain('absence is not evidence');
+  });
+
   it('defaults to the coding-platform critic mission when none is supplied', () => {
     const { system } = buildCriticPrompt(idea(), [], {});
     expect(system.startsWith(DEFAULT_CRITIC_MISSION)).toBe(true);

@@ -24,11 +24,11 @@
  */
 import { dedupSignature, titleSimilarity } from '../harness/improvements/digest';
 
-export type CorpusKind = 'plan' | 'decision' | 'idea' | 'improvement' | 'memory' | 'digest-pattern';
+export type CorpusKind = 'plan' | 'decision' | 'idea' | 'improvement' | 'implementation' | 'memory' | 'digest-pattern';
 
 /** A prior the Hive has already considered — what novelty is measured against. */
 export interface CorpusEntry {
-  /** Drill-in reference: a plan slug, D-id, idea/EI-id. */
+  /** Drill-in reference: a plan slug, D-id, idea/EI-id, or settled work-item id. */
   ref: string;
   kind: CorpusKind;
   /** The comparable text (title, optionally + a short body) of the prior. */
@@ -230,8 +230,7 @@ export function corpusNovelty(
 
   const top = scored[0];
   const maxSim = top ? top.similarity : 0;
-  const alreadyTried =
-    !!top && top.similarity >= matchFloor && !!top.state && decidedStates.includes(top.state);
+  const alreadyTried = !!top && top.similarity >= matchFloor && !!top.state && decidedStates.includes(top.state);
 
   let novelty = 1 - maxSim;
   if (alreadyTried) novelty -= decidedPenalty;
@@ -315,10 +314,7 @@ const MIN_BATCH_FOR_RELATIVE_MOONSHOT_FLOOR = 4;
  *
  * Batches below MIN_BATCH_FOR_RELATIVE_MOONSHOT_FLOOR use the absolute floor unchanged.
  */
-export function effectiveMoonshotFloor(
-  novelties: readonly number[],
-  opts: BucketOptions = {},
-): number {
+export function effectiveMoonshotFloor(novelties: readonly number[], opts: BucketOptions = {}): number {
   const absoluteFloor = opts.moonshotNoveltyFloor ?? DEFAULT_BUCKET_OPTIONS.moonshotNoveltyFloor;
   if (novelties.length < MIN_BATCH_FOR_RELATIVE_MOONSHOT_FLOOR) return absoluteFloor;
   const q = opts.moonshotFloorQuantile ?? DEFAULT_BUCKET_OPTIONS.moonshotFloorQuantile;
@@ -342,10 +338,7 @@ export interface CritiqueBuckets<T extends CritiqueScores> {
  * The two-critics-in-tension verdict for one idea (pre-cap). Novelty is the
  * gate; feasibility decides keep-vs-moonshot among the novel.
  */
-export function verdictFor(
-  s: CritiqueScores,
-  opts: BucketOptions = {},
-): { verdict: CritiqueVerdict; reason: string } {
+export function verdictFor(s: CritiqueScores, opts: BucketOptions = {}): { verdict: CritiqueVerdict; reason: string } {
   const noveltyFloor = opts.noveltyFloor ?? DEFAULT_BUCKET_OPTIONS.noveltyFloor;
   const feasibilityFloor = opts.feasibilityFloor ?? DEFAULT_BUCKET_OPTIONS.feasibilityFloor;
   const moonshotNoveltyFloor = opts.moonshotNoveltyFloor ?? DEFAULT_BUCKET_OPTIONS.moonshotNoveltyFloor;

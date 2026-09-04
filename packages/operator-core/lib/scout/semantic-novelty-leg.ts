@@ -23,22 +23,97 @@
  * load-scar class).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { withIterativeScan } from '../agent-tools/search/hnsw-iterative-scan';
 
-import {
-  corpusNovelty,
-  type CorpusEntry,
-  type CorpusNovelty,
-  type CorpusNoveltyOptions,
-} from './critique-core';
+import { corpusNovelty, type CorpusEntry, type CorpusNovelty, type CorpusNoveltyOptions } from './critique-core';
 
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
 import { fitsProseColumns } from '../search/prose-vector-dims';
-/** Whole-leg budget (embed + both join queries). A warm sidecar answers in ~10ms;
+/** Whole-leg budget (embed + corpus joins). A warm sidecar answers in ~10ms;
  *  a cold in-process model load (~2.8s) simply forfeits THIS pass's semantic leg. */
 const BUDGET_MS = 2500;
 
+/**
+ * Query-time implementation priors. This is deliberately a semantic top-K over
+ * the WHOLE evidence-backed terminal corpus, never a newest-N window: a shipped
+ * mechanism does not become novel merely because it is old. The cap bounds the
+ * lexical comparison and prompt payload after retrieval without imposing an
+ * age-based coverage cliff.
+ */
+export const IMPLEMENTATION_CORPUS_TOP_K = 64;
+const IMPLEMENTATION_CORPUS_TEXT_MAX = 2_000;
+
 /** Per-corpus-ref cosine similarity [0,1] in the active embedding space. */
 export type SemanticSimByRef = Map<string, number>;
+
+export interface ImplementationCorpusCandidate {
+  entry: CorpusEntry;
+  similarity: number;
+}
+
+export interface ImplementationCorpusRow {
+  id: string;
+  title: string | null;
+  completion_evidence: unknown;
+  similarity: number | string;
+}
+
+function nonEmpty(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/**
+ * Convert one settled ledger row into the corpus vocabulary Scout already
+ * understands. The comparable body is evidence of what landed, not the task's
+ * original aspiration; rows without a descriptive completion narrative are
+ * excluded even when some other verification field exists.
+ */
+export function implementationCorpusCandidateFromRow(
+  row: ImplementationCorpusRow,
+): ImplementationCorpusCandidate | null {
+  const evidence =
+    row.completion_evidence && typeof row.completion_evidence === 'object' && !Array.isArray(row.completion_evidence)
+      ? (row.completion_evidence as Record<string, unknown>)
+      : null;
+  if (!evidence || !row.id.trim()) return null;
+  const summary = nonEmpty(evidence.summary);
+  const whatLanded = Array.isArray(evidence.whatLanded)
+    ? evidence.whatLanded.map(nonEmpty).filter((value): value is string => value !== null)
+    : [];
+  if (!summary && whatLanded.length === 0) return null;
+  const parts = [nonEmpty(row.title), summary, ...whatLanded].filter((value): value is string => value !== null);
+  const text = [...new Set(parts)].join('\n').slice(0, IMPLEMENTATION_CORPUS_TEXT_MAX);
+  const similarity = Number(row.similarity);
+  if (!text || !Number.isFinite(similarity)) return null;
+  return {
+    entry: { ref: `wi:${row.id.trim()}`, kind: 'implementation', text, state: 'shipped' },
+    similarity: clamp01(round2(similarity)),
+  };
+}
+
+/** Merge query-time implementation priors by ref so a routed idea that later
+ * shipped occupies one corpus slot and gains its completion narrative/state. */
+export function mergeImplementationCorpus(
+  corpus: readonly CorpusEntry[],
+  candidates: readonly ImplementationCorpusCandidate[],
+): CorpusEntry[] {
+  const out = [...corpus];
+  const indexByRef = new Map(out.map((entry, index) => [entry.ref, index]));
+  for (const candidate of candidates) {
+    const index = indexByRef.get(candidate.entry.ref);
+    if (index === undefined) {
+      indexByRef.set(candidate.entry.ref, out.length);
+      out.push(candidate.entry);
+      continue;
+    }
+    const prior = out[index];
+    const text = [...new Set([prior.text, candidate.entry.text].filter(Boolean))]
+      .join('\n')
+      .slice(0, IMPLEMENTATION_CORPUS_TEXT_MAX);
+    out[index] = { ...candidate.entry, text };
+  }
+  return out;
+}
 
 /** Injectable seams (tests + any future non-backfill space). */
 export interface SemanticNoveltyDeps {
@@ -51,6 +126,9 @@ export interface SemanticNoveltyDeps {
   queryPlanSims: (vec: number[], mode: string, slugs: string[]) => Promise<Map<string, number>>;
   /** feature_id → cosine similarity for the ids that HAVE a vector in `mode`'s space. */
   queryWorkItemSims: (vec: number[], mode: string, ids: string[]) => Promise<Map<string, number>>;
+  /** Query-time semantic neighbours from the full settled implementation corpus.
+   * Optional so isolated callers/tests retain the pre-WI-6773 behavior. */
+  queryImplementationCorpus?: (vec: number[], mode: string) => Promise<ImplementationCorpusCandidate[]>;
 }
 
 function clamp01(n: number): number {
@@ -110,12 +188,55 @@ async function queryWorkItemSimsReal(vec: number[], mode: string, ids: string[])
   return new Map(rows.map((r) => [r.id, Number(r.similarity)]));
 }
 
+/**
+ * Bounded semantic retrieval over realized work. Selection is by distance over
+ * the full eligible corpus—not closed/updated recency—so old shipped mechanisms
+ * remain discoverable. Completion authority is the inclusion gate and the
+ * structured close narrative is the comparable text.
+ */
+export async function queryImplementationCorpusReal(
+  vec: number[],
+  mode: string,
+): Promise<ImplementationCorpusCandidate[]> {
+  const { sql } = getOrgPg();
+  const vecLit = `[${vec.join(',')}]`;
+  const rows = await withIterativeScan(
+    sql,
+    (scanSql) => scanSql<ImplementationCorpusRow[]>`
+    SELECT feature_id AS id,
+           title,
+           payload -> '_completionEvidence' AS completion_evidence,
+           1 - (embedding <=> ${vecLit}::vector) AS similarity
+      FROM harness_shared.work_items
+     WHERE harness_shared.work_item_status_is_terminal(status)
+       AND authority IN ('committed', 'validated')
+       AND lane IS DISTINCT FROM 'observation'
+       AND embedding IS NOT NULL
+       AND embedding_mode = ${mode}
+       AND jsonb_typeof(payload -> '_completionEvidence') = 'object'
+       AND (
+         NULLIF(BTRIM(payload -> '_completionEvidence' ->> 'summary'), '') IS NOT NULL
+         OR CASE
+              WHEN jsonb_typeof(payload -> '_completionEvidence' -> 'whatLanded') = 'array'
+                THEN jsonb_array_length(payload -> '_completionEvidence' -> 'whatLanded') > 0
+              ELSE false
+            END
+       )
+  ORDER BY embedding <=> ${vecLit}::vector
+     LIMIT ${IMPLEMENTATION_CORPUS_TOP_K}`,
+  );
+  return rows
+    .map(implementationCorpusCandidateFromRow)
+    .filter((candidate): candidate is ImplementationCorpusCandidate => candidate !== null);
+}
+
 const realDeps: SemanticNoveltyDeps = {
   // The DOCUMENT-side resolver the backfill sweep stores with — the one seam that
   // guarantees the query text and the stored ledger share space AND prompt.
   resolveEmbedder: async () => (await import('../search/embed-backfill')).resolveBackfillEmbedder(),
   queryPlanSims: queryPlanSimsReal,
   queryWorkItemSims: queryWorkItemSimsReal,
+  queryImplementationCorpus: queryImplementationCorpusReal,
 };
 
 /**
@@ -142,21 +263,28 @@ function partitionRefs(corpus: readonly CorpusEntry[]): {
   return { planSlugToRefs, wiIdToRefs };
 }
 
-async function resolveSims(
+interface SemanticNoveltyContext {
+  corpus: CorpusEntry[];
+  sims: SemanticSimByRef;
+  implementationCandidates: ImplementationCorpusCandidate[];
+}
+
+async function resolveContext(
   text: string,
   corpus: readonly CorpusEntry[],
   deps: SemanticNoveltyDeps,
-): Promise<SemanticSimByRef | null> {
+): Promise<SemanticNoveltyContext | null> {
   const { planSlugToRefs, wiIdToRefs } = partitionRefs(corpus);
-  if (planSlugToRefs.size === 0 && wiIdToRefs.size === 0) return null;
+  if (planSlugToRefs.size === 0 && wiIdToRefs.size === 0 && !deps.queryImplementationCorpus) return null;
   const resolved = await deps.resolveEmbedder();
   if (!resolved || resolved.mode === 'disabled' || !('embed' in resolved)) return null;
   if (!fitsProseColumns(resolved.dims)) return null; // dims-ineligible for the prose columns (harrier@1024, local@384) — no verdict possible
   const vec = await resolved.embed(text.slice(0, 2000));
   if (!fitsProseColumns(vec.length)) return null;
-  const [planSims, wiSims] = await Promise.all([
+  const [planSims, wiSims, implementationCandidates] = await Promise.all([
     deps.queryPlanSims(vec, resolved.mode, [...planSlugToRefs.keys()]),
     deps.queryWorkItemSims(vec, resolved.mode, [...wiIdToRefs.keys()]),
+    deps.queryImplementationCorpus?.(vec, resolved.mode).catch(() => []) ?? [],
   ]);
   const out: SemanticSimByRef = new Map();
   for (const [slug, refs] of planSlugToRefs) {
@@ -167,7 +295,30 @@ async function resolveSims(
     const s = wiSims.get(id);
     if (typeof s === 'number') for (const ref of refs) out.set(ref, clamp01(round2(s)));
   }
-  return out.size > 0 ? out : null;
+  for (const candidate of implementationCandidates) {
+    out.set(candidate.entry.ref, candidate.similarity);
+  }
+  const evaluatedCorpus = mergeImplementationCorpus(corpus, implementationCandidates);
+  return out.size > 0 ? { corpus: evaluatedCorpus, sims: out, implementationCandidates } : null;
+}
+
+/** One guarded entry to the impure leg. Both public callers must pass through
+ * this seam so the kill switch, Vitest isolation, budget, and fail-open behavior
+ * cannot drift when the resolved context grows new corpus sources. */
+async function resolveContextFailOpen(
+  text: string,
+  corpus: readonly CorpusEntry[],
+  deps?: SemanticNoveltyDeps,
+): Promise<SemanticNoveltyContext | null> {
+  if (process.env.PAPERCUSP_SU_SEMANTIC_NOVELTY === 'off') return null;
+  // Inert under vitest unless a test injects deps: the real resolver lazy-loads an
+  // ONNX model, which unrelated tool tests must never pay.
+  if (process.env.VITEST && !deps) return null;
+  try {
+    return await withBudget(BUDGET_MS, resolveContext(text, corpus, deps ?? realDeps));
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -181,15 +332,22 @@ export async function resolveSemanticNoveltySims(
   corpus: readonly CorpusEntry[],
   deps?: SemanticNoveltyDeps,
 ): Promise<SemanticSimByRef | null> {
-  if (process.env.PAPERCUSP_SU_SEMANTIC_NOVELTY === 'off') return null;
-  // Inert under vitest unless a test injects deps: the real resolver lazy-loads an
-  // ONNX model, which unrelated tool tests must never pay.
-  if (process.env.VITEST && !deps) return null;
-  try {
-    return await withBudget(BUDGET_MS, resolveSims(text, corpus, deps ?? realDeps));
-  } catch {
-    return null;
-  }
+  const context = await resolveContextFailOpen(text, corpus, deps);
+  if (!context) return null;
+  // Preserve this function's original contract: it resolves similarities only
+  // for refs the caller supplied. Query-time implementation rows are exposed by
+  // corpusNoveltyHybrid's richer result, not leaked through this legacy map.
+  const inputRefs = new Set(corpus.map((entry) => entry.ref));
+  const sims = new Map([...context.sims].filter(([ref]) => inputRefs.has(ref)));
+  return sims.size > 0 ? sims : null;
+}
+
+export interface CorpusNoveltyHybridResult extends CorpusNovelty {
+  /** The exact corpus scored, including bounded query-time implementation priors. */
+  evaluatedCorpus: readonly CorpusEntry[];
+  /** Nearest realized-work rows for the LLM skeptic to inspect. These are
+   * retrieval candidates, not deterministic duplicate verdicts. */
+  implementationCandidates: readonly ImplementationCorpusCandidate[];
 }
 
 /**
@@ -206,8 +364,13 @@ export async function corpusNoveltyHybrid(
   corpus: readonly CorpusEntry[],
   opts: CorpusNoveltyOptions = {},
   deps?: SemanticNoveltyDeps,
-): Promise<CorpusNovelty> {
-  const semanticSimByRef =
-    opts.semanticSimByRef ?? (await resolveSemanticNoveltySims(text, corpus, deps)) ?? undefined;
-  return corpusNovelty(text, corpus, { ...opts, semanticSimByRef });
+): Promise<CorpusNoveltyHybridResult> {
+  const context = opts.semanticSimByRef ? null : await resolveContextFailOpen(text, corpus, deps);
+  const evaluatedCorpus = context?.corpus ?? corpus;
+  const semanticSimByRef = opts.semanticSimByRef ?? context?.sims ?? undefined;
+  return {
+    ...corpusNovelty(text, evaluatedCorpus, { ...opts, semanticSimByRef }),
+    evaluatedCorpus,
+    implementationCandidates: context?.implementationCandidates ?? [],
+  };
 }
