@@ -294,13 +294,21 @@ same command from the Portal checkout manually; do not stop the `:3081` proxy.
 
 ---
 
-# Dedicated bg-host bundled entry — installation (EI-21434335931587523)
+# Dedicated bg-host drop-ins — installation (EI-21434335931587523, EI-22359055031706978)
 
 `papercup-bg-host.service` owns the DBOS routines, git-sync, and substrate
 background machinery. Its versioned `95-bundled-entry.conf` rebuilds the host
 bundle from the shared checkout in `ExecStartPre`, then starts
 `dist-host/hono-host.mjs` with the base unit's complete port/DBOS environment.
-The drop-in must be installed as a symlink so the checked-in contract remains
+Its `97-gateway-systemd-authority.conf` sets
+`PAPERCUSP_GATEWAY_SUPERVISE=0` on this Linux/systemd host so the dedicated
+`papercup-inference-gateway.service` is the single `:8788` authority. Without
+that pin, a bg-host boot while the dedicated unit is absent can spawn the
+cross-platform fallback first; the later systemd start then crash-loops on
+`EADDRINUSE` even though the fallback gateway is serving. Packaged
+macOS/Windows hosts do not load this drop-in and retain the fallback supervisor.
+
+Both drop-ins must be installed as symlinks so the checked-in contracts remain
 the source of truth.
 
 ## Install (one-time, on the shared development host)
@@ -310,6 +318,8 @@ cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
 mkdir -p ~/.config/systemd/user/papercup-bg-host.service.d
 ln -sfn "$(pwd)/papercup-bg-host.service.d/95-bundled-entry.conf" \
   ~/.config/systemd/user/papercup-bg-host.service.d/95-bundled-entry.conf
+ln -sfn "$(pwd)/papercup-bg-host.service.d/97-gateway-systemd-authority.conf" \
+  ~/.config/systemd/user/papercup-bg-host.service.d/97-gateway-systemd-authority.conf
 systemctl --user daemon-reload
 ```
 
