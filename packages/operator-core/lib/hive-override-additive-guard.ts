@@ -13,7 +13,16 @@
  * Heuristic, not exhaustive: it keys on stable, base-OWNED section headings + the generated
  * splice markers — content that lives in the generated chain and therefore should never be
  * re-stated in an additive override. Cheap (pure string scan); no prompt-resolve needed.
+ *
+ * identities-v1-2026-08-30 P-003 / D-009: this guard is the WARN-tier seed of the composed-
+ * stack `identity-lint` (`@papercusp/orchestrator/blueprint`), which generalizes it from one
+ * layer (the instance override) to the whole stack and adds the STRUCTURAL block tier above
+ * it. The heading scanner and the generated-marker literal live THERE now (one heuristic,
+ * two callers); this module keeps its own base-owned heading list — the instance override
+ * is checked against the GENERATED base as a whole, which is wider than the kernel's own
+ * headings the stack lint derives at render time.
  */
+import { detectHeadingOverlap, GENERATED_MARKER } from '@papercusp/orchestrator/blueprint';
 
 /** Stable section headings the GENERATED su base / its splices own — an override that
  *  re-states one is duplicating, not adding. (Substring match on a `## ` heading line.) */
@@ -26,10 +35,8 @@ const BASE_OWNED_HEADINGS: readonly string[] = [
   'Engineering discipline',
   'Coordination glyph legend',
   'Wire schemas',
+  'Kernel precedence', // the P-003 seal heading — rendered by the stack, never authored
 ];
-
-/** Generated splice markers — never belong in an override (they're the base's seams). */
-const GENERATED_MARKER = 'PAPERCUSP-SU:';
 
 export interface AdditiveOverlap {
   /** Base-owned section headings the override appears to re-state. */
@@ -43,14 +50,7 @@ export interface AdditiveOverlap {
  * Returns the overlap; empty headings + no marker ⇒ the override looks purely additive.
  */
 export function detectGeneratedBaseOverlap(md: string): AdditiveOverlap {
-  const headingLines = md
-    .split('\n')
-    .filter((l) => /^#{1,3}\s/.test(l.trim()))
-    .map((l) => l.trim());
-  const headings = BASE_OWNED_HEADINGS.filter((owned) =>
-    headingLines.some((h) => h.toLowerCase().includes(owned.toLowerCase())),
-  );
-  return { headings, hasGeneratedMarker: md.includes(GENERATED_MARKER) };
+  return { headings: detectHeadingOverlap(md, BASE_OWNED_HEADINGS), hasGeneratedMarker: md.includes(GENERATED_MARKER) };
 }
 
 /**
