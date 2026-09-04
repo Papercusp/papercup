@@ -41,6 +41,7 @@ vi.mock('./activation-audit-repair', () => ({
   ensureActivationAuditRepairFiling: vi.fn(),
 }));
 vi.mock('./source', () => ({ getPlanRow: vi.fn() }));
+vi.mock('./spec-clauses-store', () => ({ setSpecClause: vi.fn() }));
 
 import {
   getEffectiveItemAudits,
@@ -52,6 +53,7 @@ import {
 } from '../../plan-audits';
 import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
 import { getPlanRow } from './source';
+import { setSpecClause } from './spec-clauses-store';
 import { resolveSessionTurnRefs } from '../sessions/_shared';
 import tool from './audit';
 
@@ -64,6 +66,7 @@ const mockRecordActivation = vi.mocked(recordCurrentActivationAudit);
 const mockResolveSourceRefs = vi.mocked(resolveSessionTurnRefs);
 const mockRepairFiling = vi.mocked(ensureActivationAuditRepairFiling);
 const mockGetPlanRow = vi.mocked(getPlanRow);
+const mockSetSpecClause = vi.mocked(setSpecClause);
 
 const ctx = {
   log: vi.fn(),
@@ -80,6 +83,12 @@ const body = async (items: Array<Record<string, unknown>>) =>
 beforeEach(() => {
   vi.clearAllMocks();
   mockItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'ship the audit gate' }]);
+  mockSetSpecClause.mockResolvedValue({
+    status: 'created',
+    specId: 'AUTO-REQ-M-001-P-001',
+    revision: 1,
+    contentHash: 'c'.repeat(64),
+  });
   mockPrevious.mockResolvedValue([]);
   mockPreviousActivation.mockResolvedValue(null);
   mockContext.mockResolvedValue({
@@ -474,7 +483,58 @@ describe('plans:audit phase:activation', () => {
         activation: expect.objectContaining({ mappings: [expect.objectContaining({ id: 'M-001' })] }),
       }),
     );
-    expect(mockItems).not.toHaveBeenCalled();
+    // Was `expect(mockItems).not.toHaveBeenCalled()` until P-019 / D-047 wired draft
+    // spec-clause derivation into this branch, which reads plan items for its liveness
+    // filter. "Never called" was only ever a proxy for the invariant that MATTERS and is
+    // asserted directly below: an activation audit's outcome does not depend on plan
+    // items being readable. Read here, but only AFTER the audit is durably recorded.
+    expect(mockItems).toHaveBeenCalledWith('plan-a');
+    expect(mockRecordActivation.mock.invocationCallOrder[0]!).toBeLessThan(
+      mockItems.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('records the activation audit even when plan items are unreadable, and reports the derivation', async () => {
+    // getPlanItemStatuses swallows its own errors and answers [] — an EMPTY list means
+    // UNKNOWN, not "this plan has no items" (D-040). The deriver fails OPEN on unknown
+    // rather than skipping every mapping, because skipping would make a failed read
+    // indistinguishable from a plan with no realizing mappings. setSpecClause's
+    // plan_item_not_found is the backstop that keeps an invalid target from landing.
+    mockItems.mockResolvedValue([]);
+
+    const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: true, phase: 'activation', auditSeq: 2 });
+    expect(result.derivedSpecClauses).toMatchObject({ attempted: 1, created: 1, skipped: [] });
+  });
+
+  it('a derivation failure is REPORTED, never propagated — the audit is already recorded', async () => {
+    // The audit is durably written before derivation runs. Throwing here would turn a
+    // successful audit into a caller-visible failure and invite a retry that re-records
+    // nothing — strictly worse than deriving no clauses.
+    mockSetSpecClause.mockRejectedValue(new Error('spec clause store unavailable'));
+
+    const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: true, phase: 'activation', auditSeq: 2 });
+    expect(result.derivedSpecClauses).toEqual({ error: 'spec clause store unavailable' });
+  });
+
+  it('derives DRAFT clauses only, so a derivation pass can never gate another plan ship', async () => {
+    // plan-spec-coverage-gate enforces only {accepted, active}. An enforceable lifecycle
+    // here would let this bulk pass refuse ships it has no business judging.
+    await tool.handler(activationArgs() as never, ctx);
+
+    expect(mockSetSpecClause).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planSlug: 'plan-a',
+        planItemId: 'P-001',
+        lifecycleStatus: 'draft',
+        behaviorClass: 'happy-path',
+        expectedRevision: 0,
+      }),
+    );
+    expect(mockSetSpecClause.mock.calls[0]![0]).not.toHaveProperty('falsifier');
   });
 
   it('carries prior activation mappings and source ranges into a partial additive re-audit', async () => {
