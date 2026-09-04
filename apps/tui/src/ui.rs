@@ -2895,8 +2895,8 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     // Computed once up front (pure over `app`) so the read-only branch below
     // doesn't call `su_dispatch_decision()` a second time to get the reason.
     let chat_dispatch = app.su_dispatch_decision();
-    let chat_dispatch_readonly = app.chat_composing
-        && chat_dispatch.target == crate::su_session::SuDispatchTarget::ReadOnly;
+    let chat_dispatch_readonly =
+        app.chat_composing && chat_dispatch.target == crate::su_session::SuDispatchTarget::ReadOnly;
     let (ctitle, ctext, cstyle) = if app.card_state.has_card() {
         // A blocking card is open — the composer is suspended; the card owns the
         // keys (arrows/number/space/Enter). Tell the user where to act.
