@@ -7,7 +7,6 @@ import {
 
 const NON_CRITICAL_ASSETS = [
   'assets/InboxPane-a1b2c3d4.js',
-  '/assets/PlansPane-deadbeef.css',
   'assets/PlanDetail-01234567.js?direct',
   'assets/WorkItemDiscussion-89abcdef.css',
   'assets/triggers-00112233.css',
@@ -26,6 +25,11 @@ describe('operator-vite initial preload policy', () => {
     }
 
     expect(isNonCriticalLazyAsset('assets/InboxPane.css')).toBe(false);
+    // PlansPane is imported by the focused /plans entry and its CSS is required
+    // to establish the scroll viewport that makes its existing virtualizer
+    // effective. Removing this stylesheet from index.html leaves every row
+    // mounted on a cold direct entry (WI-2144580).
+    expect(isNonCriticalLazyAsset('assets/PlansPane-deadbeef.css')).toBe(false);
     expect(isNonCriticalLazyAsset('assets/InboxPaneExtra-a1b2c3d4.css')).toBe(false);
     expect(isNonCriticalLazyAsset('assets/index-a1b2c3d4.css')).toBe(false);
   });
@@ -42,7 +46,6 @@ describe('operator-vite initial preload policy', () => {
   <head>
     <link rel="modulepreload" crossorigin href="/assets/InboxPane-a1b2c3d4.js">
     <link rel="stylesheet" crossorigin href="/assets/InboxPane-a1b2c3d4.css">
-    <link href='/assets/PlansPane-deadbeef.css' rel='stylesheet'>
     <link rel=stylesheet href=/assets/SessionsRosterView-abcdef01.css>
     <link rel="stylesheet" href="/assets/index-11223344.css">
   </head>

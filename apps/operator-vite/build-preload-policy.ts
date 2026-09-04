@@ -13,7 +13,7 @@
  */
 
 const NON_CRITICAL_LAZY_ASSET_RE =
-  /(?:^|\/)(?:InboxPane|PlansPane|PlanDetail|WorkItemDiscussion|triggers|review-report|plan-cleanup-report|inbox-bulk(?:-report)?|BulkResolverStrip|SessionsRosterView)-[^/]+\.(?:js|css)(?:[?#].*)?$/;
+  /(?:^|\/)(?:InboxPane|PlanDetail|WorkItemDiscussion|triggers|review-report|plan-cleanup-report|inbox-bulk(?:-report)?|BulkResolverStrip|SessionsRosterView)-[^/]+\.(?:js|css)(?:[?#].*)?$/;
 
 const LINK_TAG_RE = /[ \t]*<link\b[^>]*>\s*/gi;
 const STYLESHEET_REL_RE = /\brel\s*=\s*(?:"stylesheet"|'stylesheet'|stylesheet)(?=\s|\/?>)/i;
