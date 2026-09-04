@@ -44,7 +44,7 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { parsePlan } from '@papercusp/plan-parser';
+import { NOTE_SUFFIX_RE, parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
 import {
   PLAN_ADVISORY_LOCK_NAMESPACE,
@@ -1326,9 +1326,16 @@ export interface PlanItemStatus {
   itemText: string;
 }
 
-/** Stable fingerprint of the exact plan-item requirement text audited. */
+/**
+ * Stable fingerprint of the plan-item requirement text audited.
+ *
+ * `plans:set-status` may append a mutable ` — note: …` reflection suffix to the
+ * indexed item text after an audit. Keep that note in the display/index data,
+ * but exclude it from the completion fingerprint so an ownership/status
+ * reflection does not masquerade as a requirement edit.
+ */
 export function planItemTextHash(itemText: string): string {
-  return createHash('sha256').update(itemText).digest('hex');
+  return createHash('sha256').update(itemText.replace(NOTE_SUFFIX_RE, '')).digest('hex');
 }
 
 /**
