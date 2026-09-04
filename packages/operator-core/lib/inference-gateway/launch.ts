@@ -1198,8 +1198,12 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     // so a known-dead account is disqualified immediately after a restart. Independent try so it works even
     // before the owner-pins table (migration 416) exists.
     try {
-      const { loadAccountPool } = await import('../deployment/account-pool-store');
+      const [{ loadAccountPool }, { accountBurnAction }] = await Promise.all([
+        import('../deployment/account-pool-store'),
+        import('../deployment/account-pool'),
+      ]);
       const poolFull = await loadAccountPool(ws);
+      const hintNow = Date.now();
       gateway.setAccountRateHints(
         (poolFull.accounts ?? []).map((a) => ({
           accountId: a.id,
@@ -1208,6 +1212,10 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
           utilization7d: a.rate?.utilization7d,
           windowResetAt: a.rate?.windowResetAt,
           windowResetAt7d: a.rate?.windowResetAt7d,
+          // Re-evaluate at the hint-read seam instead of trusting the persisted transition stamp:
+          // accountBurnAction applies the canonical freshness gate, so a days-old SHED verdict cannot
+          // strand an otherwise recovered account after its projection has gone stale.
+          burnAction: accountBurnAction(a, hintNow),
         })),
       );
       recordDbOutcome('rate-hints', true);

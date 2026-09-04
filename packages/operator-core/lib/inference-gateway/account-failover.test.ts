@@ -3,11 +3,16 @@ import {
   createFailoverPool,
   accountLoadKey,
   ACCOUNT_INFLIGHT_LOAD_WEIGHT,
+  BURN_THROTTLE_LOAD_BUCKET,
   SOFT_PIN_AFFINITY_CREDIT,
 } from './account-failover';
 import type { ActiveAccount } from './provider-contracts';
 
-const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
+const acct = (id: string): ActiveAccount => ({
+  accountId: id,
+  token: async () => `${id}-tok`,
+  invalidateToken: () => {},
+});
 
 describe('createFailoverPool (EI-535) — load distribution', () => {
   it('throws with an empty account list', () => {
@@ -140,6 +145,44 @@ describe('accountLoadKey — load-aware selection (load-aware-routing-2026-06-29
     expect(accountLoadKey({ inFlight: NaN, utilization: NaN })).toBe(0);
     expect(accountLoadKey({ inFlight: -5, utilization: -1 })).toBe(0); // clamped to 0
     expect(accountLoadKey({ inFlight: 0, utilization: 5 })).toBe(1); // utilization clamped to 1
+  });
+
+  it('folds every active capacity window and expires a window exactly at its reset', () => {
+    const now = 1_000_000;
+    expect(
+      accountLoadKey({
+        now,
+        capacityWindows: [
+          { utilization: 0.15, resetAt: now + 60_000 },
+          { utilization: 0.85, resetAt: now + 7 * 86_400_000 },
+        ],
+      }),
+    ).toBeCloseTo(0.85, 6);
+    expect(
+      accountLoadKey({
+        now,
+        capacityWindows: [
+          { utilization: 0.99, resetAt: now },
+          { utilization: 0.25, resetAt: now + 60_000 },
+        ],
+      }),
+    ).toBeCloseTo(0.25, 6);
+  });
+
+  it('treats an active full window, SHED, or unavailable transport as unusable', () => {
+    const now = 1_000_000;
+    expect(accountLoadKey({ now, capacityWindows: [{ utilization: 0.99, resetAt: now + 1 }] })).toBe(Infinity);
+    expect(accountLoadKey({ burnAction: 'shed' })).toBe(Infinity);
+    expect(accountLoadKey({ transportHealth: 'unavailable' })).toBe(Infinity);
+  });
+
+  it('ranks burn THROTTLE behind healthy capacity but ahead of a degraded transport', () => {
+    const healthy = accountLoadKey({ utilization: 0.9 });
+    const burning = accountLoadKey({ burnAction: 'throttle', utilization: 0.1 });
+    const degraded = accountLoadKey({ transportHealth: 'degraded' });
+    expect(burning).toBe(BURN_THROTTLE_LOAD_BUCKET + 0.1);
+    expect(healthy).toBeLessThan(burning);
+    expect(burning).toBeLessThan(degraded);
   });
 });
 

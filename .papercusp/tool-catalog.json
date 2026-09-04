@@ -197,7 +197,7 @@
           "POST"
         ]
       },
-      "description": "List the inference gateway's account pool: each account's id/label/credentialRef, the member harness slugs bound to it, and its rate-limit projection (pausedUntil / penaltyCount). Returns {ok, accounts}.",
+      "description": "List the inference gateway's account pool: each account's id/label/credentialRef, the member harness slugs bound to it, and its rate-limit projection (pausedUntil / penaltyCount). Optionally filter by provider ('claude' or 'codex'). Returns {ok, accounts}.",
       "capabilities": [
         "harness:read"
       ],
@@ -221,7 +221,7 @@
         "content-fixer"
       ],
       "guidance": {
-        "when": "Seeing which accounts the gateway can draw from and what each is bound to.",
+        "when": "Seeing which accounts the gateway can draw from and what each is bound to; pass provider to inspect one provider pool.",
         "notWhen": "Wanting live headroom + sustained-limit flags — accounts:status."
       }
     },

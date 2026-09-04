@@ -48,6 +48,22 @@ export const SOFT_PIN_AFFINITY_CREDIT = Number(process.env.PAPERCUSP_GATEWAY_SOF
  *  paused / exhausted account (which scores Infinity). Large enough to dominate any realistic in-flight
  *  count, finite so two flaky accounts still order by their own load. */
 const FLAKY_LOAD_BUCKET = 1e6;
+/** A burn-governor THROTTLE is a pacing warning, not a measured wall. Keep it selectable when the
+ *  whole pool is under pressure, but rank it behind every account whose projected burn is healthy.
+ *  The bucket stays below the transport-degraded bucket: a serviceable-but-burning credential is a
+ *  safer fallback than a credential whose upstream transport is actively failing. */
+export const BURN_THROTTLE_LOAD_BUCKET = 1e5;
+
+export type AccountBurnAction = 'none' | 'throttle' | 'shed';
+export type AccountTransportHealth = 'healthy' | 'degraded' | 'unavailable';
+
+/** One provider-reported capacity window. The scorer deliberately does not name a duration: Claude
+ *  and Codex both expose 5h/7d windows today, while another provider may expose a different ladder.
+ *  A window whose reset is at/before `now` describes expired budget and contributes zero load. */
+export interface AccountCapacityWindow {
+  utilization?: number;
+  resetAt?: number;
+}
 
 /** Inputs to the pure load-aware selection key. All optional + defaulted so a partial / cold-start
  *  snapshot degrades gracefully (an unknown field reads as idle/healthy). */
@@ -64,6 +80,16 @@ export interface AccountLoadInputs {
   inFlight?: number;
   /** Observed unified utilization fraction [0,1] — the residual-budget tiebreak among equal-load peers. */
   utilization?: number;
+  /** Provider-reported capacity windows (for example 5h + 7d). The tightest ACTIVE window wins. */
+  capacityWindows?: readonly AccountCapacityWindow[];
+  /** At/above this utilization an active capacity window is a measured wall. Default 0.99. */
+  capacityFullAt?: number;
+  /** Clock used to expire capacity windows at their reset boundary. Omit only for timeless snapshots. */
+  now?: number;
+  /** Burn-governor pacing verdict. `shed` is out of the race; `throttle` is a finite fallback bucket. */
+  burnAction?: AccountBurnAction;
+  /** Transport health independent of quota. `unavailable` is out; `degraded` is the flaky bucket. */
+  transportHealth?: AccountTransportHealth;
 }
 
 /**
@@ -72,22 +98,40 @@ export interface AccountLoadInputs {
  * so it is exhaustively unit-testable in isolation.
  *
  * Ordering, strongest first:
- *   1. paused / exhausted        → Infinity (out of the race entirely);
- *   2. flaky (clean otherwise)   → bucketed behind every clean account (`FLAKY_LOAD_BUCKET`);
- *   3. in-flight count           → the PRIMARY load term (weighted ≥ the whole utilization range), so
+ *   1. paused / exhausted / SHED / unavailable transport / active full window → Infinity;
+ *   2. degraded transport        → bucketed behind every serviceable transport (`FLAKY_LOAD_BUCKET`);
+ *   3. burn THROTTLE             → bucketed behind non-burning accounts, but remains a fallback;
+ *   4. in-flight count           → the PRIMARY load term (weighted ≥ the whole utilization range), so
  *                                  selection lands on the account with the LEAST live load — never piling
  *                                  onto one account while siblings idle;
- *   4. utilization               → residual-budget tiebreak among equally-loaded healthy accounts.
+ *   5. tightest active capacity-window utilization → residual-budget tiebreak among equal-load peers.
  *
  * An idle, clean, fresh-proxy account scores 0 (the happy path), so a caller can cheaply gate "is the
  * current pick already optimal?" on `key === 0`.
  */
 export function accountLoadKey(i: AccountLoadInputs): number {
-  if (i.paused || i.exhausted) return Infinity;
+  const now = Number.isFinite(i.now) ? (i.now as number) : undefined;
+  const fullAtRaw = Number.isFinite(i.capacityFullAt) ? (i.capacityFullAt as number) : 0.99;
+  const fullAt = Math.min(1, Math.max(0, fullAtRaw));
+  let capacityUtil = 0;
+  let capacityExhausted = false;
+  for (const window of i.capacityWindows ?? []) {
+    const resetAt = Number.isFinite(window.resetAt) ? (window.resetAt as number) : undefined;
+    if (now !== undefined && resetAt !== undefined && resetAt <= now) continue;
+    const raw = Number.isFinite(window.utilization) ? (window.utilization as number) : 0;
+    const util = Math.min(1, Math.max(0, raw));
+    capacityUtil = Math.max(capacityUtil, util);
+    if (util >= fullAt) capacityExhausted = true;
+  }
+  if (i.paused || i.exhausted || capacityExhausted || i.burnAction === 'shed' || i.transportHealth === 'unavailable') {
+    return Infinity;
+  }
   const inFlight = Number.isFinite(i.inFlight) ? Math.max(0, i.inFlight as number) : 0;
   const utilRaw = Number.isFinite(i.utilization) ? (i.utilization as number) : 0;
-  const util = Math.min(1, Math.max(0, utilRaw));
-  return (i.flaky ? FLAKY_LOAD_BUCKET : 0) + inFlight * ACCOUNT_INFLIGHT_LOAD_WEIGHT + util;
+  const util = Math.max(capacityUtil, Math.min(1, Math.max(0, utilRaw)));
+  const transportBucket = i.flaky || i.transportHealth === 'degraded' ? FLAKY_LOAD_BUCKET : 0;
+  const burnBucket = i.burnAction === 'throttle' ? BURN_THROTTLE_LOAD_BUCKET : 0;
+  return transportBucket + burnBucket + inFlight * ACCOUNT_INFLIGHT_LOAD_WEIGHT + util;
 }
 
 export function createFailoverPool(entries: readonly ActiveAccount[], opts: FailoverPoolOptions = {}): AccountPool {
@@ -161,7 +205,10 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
         return live[idx];
       }
     }
-    log('error', `inference-gateway: '${exhaustedId}' exhausted and no other account has budget — egress pauses until reset`);
+    log(
+      'error',
+      `inference-gateway: '${exhaustedId}' exhausted and no other account has budget — egress pauses until reset`,
+    );
     return null;
   }
 
@@ -247,5 +294,16 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     return live;
   }
 
-  return { active, onExhausted, select, reload, readmit, msSinceReadmit, healthyCount, peek, size, entries: entriesSnapshot };
+  return {
+    active,
+    onExhausted,
+    select,
+    reload,
+    readmit,
+    msSinceReadmit,
+    healthyCount,
+    peek,
+    size,
+    entries: entriesSnapshot,
+  };
 }

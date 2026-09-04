@@ -23,6 +23,7 @@ import {
   type BurnDisposition,
   type BurnVerdict,
 } from '../inference-gateway/burn-governor';
+import { accountLoadKey } from '../inference-gateway/account-failover';
 
 /**
  * Per-account upstream egress binding — per-account IP routing (D-003). Each registered Claude Max
@@ -1079,6 +1080,7 @@ export function selectAccountForSpawn(pool: AccountPool, now: number, opts: Spaw
   // the verdict is pure over the row, and one spawn selection consults it up to 3×/account.
   const burnOn = opts.burnGovernor !== false;
   const burnActionCache = new Map<string, BurnAction>();
+  const healthKeyCache = new Map<string, number>();
   const burnActionOf = (a: ClaudeAccount, t: number): BurnAction => {
     if (!burnOn) return 'none';
     let v = burnActionCache.get(a.id);
@@ -1088,8 +1090,24 @@ export function selectAccountForSpawn(pool: AccountPool, now: number, opts: Spaw
     }
     return v;
   };
-  const hardPinUnsafe = (a: ClaudeAccount, t: number): boolean =>
-    accountFull(a, t) || isSustainedlyLimited(a, t) || burnActionOf(a, t) === 'shed';
+  const healthKeyOf = (a: ClaudeAccount, t: number): number => {
+    let key = healthKeyCache.get(a.id);
+    if (key !== undefined) return key;
+    key = accountLoadKey({
+      paused: !isAvailable(a, t),
+      exhausted: isSustainedlyLimited(a, t),
+      capacityWindows: [
+        { utilization: drainUtil(a, t), resetAt: a.rate.windowResetAt },
+        { utilization: drainUtil7d(a, t), resetAt: a.rate.windowResetAt7d },
+      ],
+      capacityFullAt: DRAIN_FULL_UTIL,
+      now: t,
+      burnAction: burnActionOf(a, t),
+    });
+    healthKeyCache.set(a.id, key);
+    return key;
+  };
+  const hardPinUnsafe = (a: ClaudeAccount, t: number): boolean => healthKeyOf(a, t) === Infinity;
   // 1. Sticky to the prior account while it is still usable (cache affinity dominates cost).
   if (opts.priorAccountId) {
     const prior = getAccount(pool, opts.priorAccountId);

@@ -48,7 +48,7 @@ import {
   ProviderAdmissionLifecycle,
   type ProviderLaneId,
 } from './provider-admission-lifecycle';
-import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT } from './account-failover';
+import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT, type AccountBurnAction } from './account-failover';
 import { selectAffectedOwners } from './affected-owners';
 import { CLAUDE_CONTEXT_1M_BETA, withOAuthBeta, scrubSecrets } from './credential-store';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
@@ -2801,6 +2801,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       utilization7d?: number;
       windowResetAt?: number;
       windowResetAt7d?: number;
+      burnAction?: AccountBurnAction;
     }
   >();
   function recordRoute(
@@ -3931,18 +3932,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const now0 = Date.now();
     const keyOf = (cgov: RateLimitGovernor, account: ActiveAccount): number => {
       const accountId = account.accountId;
-      if (cgov.state.pausedUntil > now0) return Infinity;
-      if ((egressPauseUntil.get(accountId) ?? 0) > now0) return Infinity;
+      const governorPaused = cgov.state.pausedUntil > now0;
+      const transportPaused = (egressPauseUntil.get(accountId) ?? 0) > now0;
       // COLD-START fallback: the live governor is blank right after a gateway restart, so consult the durable
       // rate hint — disqualify an account the projection knows is paused (403/429/transport) or at/over a
       // still-open 5h/7d window. Without this the selector bounces requests onto known-dead accounts until it
       // re-learns by failing on each (and burst-throttles the one healthy survivor with the retry churn).
       const h = accountRateHints.get(accountId);
-      if (h) {
-        if ((h.pausedUntil ?? 0) > now0) return Infinity;
-        if ((h.utilization7d ?? 0) >= 0.99 && (h.windowResetAt7d ?? 0) > now0) return Infinity;
-        if ((h.utilization ?? 0) >= 0.99 && (h.windowResetAt ?? 0) > now0) return Infinity;
-      }
       const unified = cgov.snapshot().unified;
       const u = unified?.utilization ?? 0;
       // DISQUALIFY a budget-EXHAUSTED account — its binding 5h/7d window is REJECTING or essentially full,
@@ -3961,10 +3957,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // happy path), so the `bestKey > 0` gates below skip the walk exactly as before — the change only
       // bites once an account actually carries concurrent load, which is precisely when we want to spread.
       const base = accountLoadKey({
-        exhausted: !!unified?.rejected || u >= 0.99,
-        flaky: (egressFailStreak.get(accountId) ?? 0) > 0,
+        paused: governorPaused || transportPaused || (h?.pausedUntil ?? 0) > now0,
+        exhausted: !!unified?.rejected && !(unified.resetAt > 0 && unified.resetAt <= now0),
+        transportHealth: (egressFailStreak.get(accountId) ?? 0) > 0 ? 'degraded' : 'healthy',
         inFlight: cgov.state.inFlight,
         utilization: u,
+        capacityWindows: [
+          { utilization: unified?.utilization, resetAt: unified?.resetAt },
+          { utilization: h?.utilization, resetAt: h?.windowResetAt },
+          { utilization: h?.utilization7d, resetAt: h?.windowResetAt7d },
+        ],
+        now: now0,
+        burnAction: h?.burnAction,
       });
       if (base === Infinity) return base;
       // egress-ip-pool DE-CONCENTRATION (P-005, gateway-per-account-egress-ip-pool): when an account has a
@@ -8946,6 +8950,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         utilization7d?: number;
         windowResetAt?: number;
         windowResetAt7d?: number;
+        burnAction?: AccountBurnAction;
       }>,
     ): void {
       accountRateHints.clear();
@@ -8957,6 +8962,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             utilization7d: h.utilization7d,
             windowResetAt: h.windowResetAt,
             windowResetAt7d: h.windowResetAt7d,
+            burnAction: h.burnAction,
           });
         }
       }

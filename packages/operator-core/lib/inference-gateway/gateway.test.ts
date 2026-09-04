@@ -1398,6 +1398,36 @@ test('COLD-START rate hint disqualifies a projection-known-exhausted account eve
   resetGovernorRegistry();
 });
 
+test('COLD-START health score routes around a burn-THROTTLE account while keeping it as a fallback (intelligent-account-routing P-002)', async () => {
+  resetGovernorRegistry();
+  upstream = await startUpstream((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  const burning: ActiveAccount = { accountId: 'burning', token: async () => 'tburning', invalidateToken: () => {} };
+  const healthy: ActiveAccount = { accountId: 'healthy', token: async () => 'thealthy', invalidateToken: () => {} };
+  const ring = [burning, healthy];
+  let i = 0;
+  const pool: AccountPool = {
+    active: () => ring[i++ % ring.length]!,
+    onExhausted: () => null,
+    select: (id) => (id === 'burning' ? burning : id === 'healthy' ? healthy : null),
+  };
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 50 });
+  port = await gw.listen(0);
+  gw.setAccountRateHints([
+    { accountId: 'burning', utilization7d: 0.4, burnAction: 'throttle' },
+    { accountId: 'healthy', utilization7d: 0.6, burnAction: 'none' },
+  ]);
+  await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(upstream.last.headers['authorization'], 'Bearer thealthy');
+  resetGovernorRegistry();
+});
+
 test('DYNAMIC owner route can override a static pin with another account or auto, and unpin restores the static route (WI-4402)', async () => {
   const acct = (id: string, tok: string): ActiveAccount => ({
     accountId: id,
