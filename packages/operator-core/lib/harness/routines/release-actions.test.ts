@@ -1569,7 +1569,6 @@ describe('P-003: classifyFrozenRepairFixerSuccession', () => {
     candidate: 'a'.repeat(40),
     base: 'b'.repeat(40),
     repairHead: 'c'.repeat(40),
-    worktreePath: '/tmp/frozen-repair',
     attempts: 1,
     openedAtMs: NOW - 2 * FIXER_SUCCESSION_STALL_MS,
     updatedAtMs: NOW - FIXER_SUCCESSION_STALL_MS,
@@ -1651,7 +1650,6 @@ describe('frozenRepairHasNoMeasuredFailures (WI-2140605: no reproduce-fixer with
     candidate: 'a'.repeat(40),
     base: 'b'.repeat(40),
     repairHead: 'c'.repeat(40),
-    worktreePath: '/tmp/frozen-repair',
     attempts: 1,
     openedAtMs: 1_800_000_000_000,
     updatedAtMs: 1_800_000_000_000,
@@ -2572,7 +2570,6 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
         base: 'b'.repeat(40),
         repairHead: 'c'.repeat(40),
         affectedTestProofGroup: 'initial-proof-run',
-        worktreePath: '/tmp/repair',
         attempts: 2,
         openedAtMs: 1,
         updatedAtMs: 2,
@@ -2604,7 +2601,6 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
         candidate: 'a'.repeat(40),
         base: 'b'.repeat(40),
         repairHead: 'c'.repeat(40),
-        worktreePath: '/tmp/repair',
         attempts: 1,
         openedAtMs: 1,
         updatedAtMs: 2,
@@ -2659,7 +2655,6 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
         candidate: 'a'.repeat(40),
         base: 'b'.repeat(40),
         repairHead: 'c'.repeat(40),
-        worktreePath: '/tmp/repair',
         attempts: 1,
         openedAtMs: 1,
         updatedAtMs: 2,
@@ -3142,7 +3137,6 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     base: 'b'.repeat(40),
     repairHead: 'c'.repeat(40),
     affectedTestProofGroup: 'initial-proof-run',
-    worktreePath: '/tmp/frozen-repair',
     attempts: 1,
     openedAtMs: 1,
     updatedAtMs: 2,
@@ -3558,7 +3552,6 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       base: 'b'.repeat(40),
       repairHead: 'c'.repeat(40),
       affectedTestProofGroup: 'proof-1',
-      worktreePath: '/tmp/frozen-repair',
       attempts: 2,
       openedAtMs: 1,
       updatedAtMs: 2,
@@ -3578,7 +3571,11 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     expect(brief).toContain("callerAuthorization.status='authorized-delegate'");
     expect(brief).toContain('VERIFIED signed spawn id must exactly equal repairQueue.fixerSpawnId');
     expect(brief).toContain('status is queue-unassigned');
-    expect(brief).toContain('/tmp/frozen-repair');
+    // P-003 / D-010: the brief names the ONE admission door and says outright that there is
+    // no worktree to look for — the old brief pointed the fixer at a per-queue worktree path.
+    expect(brief).toContain("release:repair-queue { op: 'admit', paths: [...] }");
+    expect(brief).toContain('there is NO repair worktree');
+    expect(brief).not.toMatch(/\/\.papercusp\/worktrees\//);
     expect(brief).toContain('historical flake: none');
   });
 
@@ -3637,7 +3634,6 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       base: 'b'.repeat(40),
       repairHead: 'c'.repeat(40),
       affectedTestProofGroup: 'initial-proof-run',
-      worktreePath: '/tmp/frozen-repair',
       attempts: 1,
       openedAtMs: 1,
       updatedAtMs: 2,
