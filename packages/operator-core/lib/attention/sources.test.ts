@@ -362,7 +362,7 @@ describe('dropDuplicateQuestionConversations (EI-19401034233741994)', () => {
       from: 'su-x',
     });
     const conversation = conversationToAttention({ conversationId: 'conv-z', title: 'q' });
-    const smoke = smokeFailToAttention({ harnessSlug: 'h', failing: 1, total: 3 });
+    const smoke = smokeFailToAttention({ harnessSlug: 'h' });
     const items = [unlinked, conversation, smoke];
 
     const kept = dropDuplicateQuestionConversations(items);
