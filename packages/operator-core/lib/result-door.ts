@@ -456,6 +456,45 @@ function buildSpillAdvisoryPrefix(
   );
 }
 
+const STRUCTURAL_PROJECTION_WARNING_MAX_CHARS = 1_200;
+
+/**
+ * Keep a trust-degrading projection verdict in the model-facing result when
+ * the result door replaces the projection's text body with a structural JSON
+ * preview.
+ *
+ * `applyResultProjection` deliberately emits degraded verdicts as a leading
+ * `⚠` text item so a downstream head-truncation cannot hide them. The result
+ * door used to keep only the parsed JSON item, undoing that guarantee exactly
+ * when the fail-open body was large enough to overflow. Courtesy/advisory
+ * text (including a clean projection footer) is still intentionally dropped:
+ * only a leading warning from the projection stage is load-bearing here.
+ *
+ * The warning is bounded independently of the JSON preview. An unusually
+ * verbose upstream footer must not consume the entire result door.
+ */
+function extractStructuralProjectionWarning(
+  result: Pick<DoorableResult, '_meta'>,
+  textItems: ReadonlyArray<{ text: string }>,
+  jsonItemIndex: number,
+): string | null {
+  const projection = (
+    result._meta as
+      | { resultProjection?: { applied?: unknown; notes?: unknown } }
+      | undefined
+  )?.resultProjection;
+  if (projection?.applied !== true || jsonItemIndex <= 0) return null;
+  if (!Array.isArray(projection.notes) && projection.notes !== undefined) return null;
+
+  const warning = textItems
+    .slice(0, jsonItemIndex)
+    .find((item) => item.text.trimStart().startsWith('⚠'))
+    ?.text;
+  if (!warning) return null;
+  if (warning.length <= STRUCTURAL_PROJECTION_WARNING_MAX_CHARS) return warning;
+  return warning.slice(0, STRUCTURAL_PROJECTION_WARNING_MAX_CHARS - 1) + '…';
+}
+
 const EVIDENCE_KEY_CLASS: Readonly<Record<string, OutputEvidenceClass>> = {
   workitem: 'work-item', workitems: 'work-item', issue: 'work-item', issues: 'work-item',
   event: 'event', events: 'event', eventstatus: 'event', eventstatuses: 'event',
@@ -1225,12 +1264,22 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
       ...(opts.preservePaths ?? []),
     ];
+    const structuralProjectionWarning = extractStructuralProjectionWarning(result, textItems, jsonItemIndex);
+    // The warning is a separate model-facing content item, so reserve its
+    // UTF-8 bytes before asking the generic projector to fill the result door.
+    // Without this reservation, preserving the warning can make the combined
+    // result exceed the same cap this branch is enforcing.
+    const structuralTargetChars = Math.max(
+      1_500,
+      budgetChars -
+        (structuralProjectionWarning ? Buffer.byteLength(structuralProjectionWarning, 'utf8') : 0),
+    );
     const projected = projectBoundedPayload(parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }, {
       toolName: opts.toolName,
       tier: 'trimmed',
       forced: true,
       originalChars: totalChars,
-      targetChars: budgetChars,
+      targetChars: structuralTargetChars,
       recovery,
       // The generic payload-tier projection wraps arrays so its `_projection`
       // metadata can survive JSON serialization. At this model-facing door the
@@ -1261,6 +1310,12 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       } else {
         structuralContent.push(item as Record<string, unknown>);
       }
+    }
+    if (structuralProjectionWarning) {
+      // Degraded projection verdicts are intentionally kept ahead of the
+      // structural JSON so a caller cannot mistake a fail-open body for a
+      // successful selection. Ordinary advisory text remains spill-only.
+      structuralContent.unshift({ type: 'text', text: structuralProjectionWarning });
     }
     return {
       ...result,

@@ -524,6 +524,111 @@ describe('applyResultDoor', () => {
     expect(spill).toContain(`# advisory-text-items-json: ${JSON.stringify([advisory])}`);
   });
 
+  it('preserves a degraded projection warning when structurally bounding its oversized JSON body', () => {
+    const original = JSON.stringify({
+      results: Array.from({ length: 300 }, (_, i) => ({
+        id: `WI-${i}`,
+        title: `work item ${i}`,
+        detail: 'x'.repeat(120),
+      })),
+    });
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const parsed = parseProjection({ pick: ['results[].missing'] });
+    if (!parsed.ok) throw new Error(parsed.error);
+    const projected = applyResultProjection(
+      { content: [{ type: 'text' as const, text: original }] },
+      parsed.spec,
+      { toolName: 'work_items:list', effect: 'read' },
+    );
+    const projectedWarning = (projected.content[0] as { text: string }).text;
+    expect(projectedWarning).toMatch(/^⚠/);
+    expect(projectedWarning).toContain('matched NOTHING');
+
+    const doored = applyResultDoor(projected, {
+      toolName: 'work_items:list',
+      workspaceId: 'ws-1',
+      runId: RUN_ID,
+    });
+    const textItems = doored.content.filter(
+      (item) => (item as { type?: string }).type === 'text',
+    ) as Array<{ text: string }>;
+
+    // The warning is the first model-facing item; the bounded JSON remains a
+    // separately parseable second item. The old implementation returned only
+    // the latter and silently erased the degraded verdict.
+    expect(textItems).toHaveLength(2);
+    expect(textItems[0].text).toBe(projectedWarning);
+    const bounded = JSON.parse(textItems[1].text) as {
+      results: Array<Record<string, unknown>>;
+      _projection: { truncated: boolean };
+    };
+    expect(bounded._projection.truncated).toBe(true);
+    expect(measureResultContextBytes(doored)).toBeLessThanOrEqual(BUDGET_CHARS);
+    expect(readSpill('ws-1', 'work_items:list', RUN_ID)).toContain('matched NOTHING');
+  });
+
+  it('CONTROL: a clean projection footer remains spill-only during structural bounding', () => {
+    const original = JSON.stringify({
+      results: Array.from({ length: 300 }, (_, i) => ({
+        id: `WI-${i}`,
+        detail: 'x'.repeat(120),
+      })),
+    });
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const parsed = parseProjection({ pick: ['results[].detail'] });
+    if (!parsed.ok) throw new Error(parsed.error);
+    const projected = applyResultProjection(
+      { content: [{ type: 'text' as const, text: original }] },
+      parsed.spec,
+      { toolName: 'work_items:list', effect: 'read' },
+    );
+    expect((projected._meta?.resultProjection as { notes: string[] }).notes).toEqual([]);
+
+    const doored = applyResultDoor(projected, {
+      toolName: 'work_items:list',
+      workspaceId: 'ws-1',
+      runId: RUN_ID,
+    });
+    const textItems = doored.content.filter(
+      (item) => (item as { type?: string }).type === 'text',
+    ) as Array<{ text: string }>;
+
+    expect(textItems).toHaveLength(1);
+    expect(textItems[0].text).not.toMatch(/^⚠/);
+    expect(JSON.parse(textItems[0].text)).toMatchObject({
+      _projection: { truncated: true },
+    });
+  });
+
+  it('caps an unusually verbose degraded projection warning before preserving it', () => {
+    const warning = `⚠ ${'warning '.repeat(400)}`;
+    const original = JSON.stringify({
+      results: Array.from({ length: 300 }, (_, i) => ({
+        id: `WI-${i}`,
+        detail: 'x'.repeat(120),
+      })),
+    });
+    const doored = applyResultDoor(
+      {
+        content: [
+          { type: 'text' as const, text: warning },
+          { type: 'text' as const, text: original },
+        ],
+        _meta: { resultProjection: { applied: true, notes: ['synthetic degraded warning'] } },
+      },
+      { toolName: 'work_items:list', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const warningItem = doored.content.find(
+      (item) => (item as { type?: string }).type === 'text' &&
+        (item as { text?: string }).text?.startsWith('⚠'),
+    ) as { text: string } | undefined;
+    expect(warningItem?.text).toHaveLength(1_200);
+    expect(warningItem?.text.startsWith('⚠')).toBe(true);
+    expect(measureResultContextBytes(doored)).toBeLessThanOrEqual(BUDGET_CHARS);
+  });
+
   it('every truncation footer teaches `projection` — the knob that would have avoided the spill (P-020)', () => {
     // The projection stage is a DISPATCH-level reserved arg, so it is in no
     // tool's inputSchema and an agent can only learn it exists from a moment
