@@ -241,7 +241,7 @@ export function stampForcedPastWaiver(
   }
 
   const preamble =
-    `_This plan was shipped without fully satisfying the acceptance gate. Each entry records ` +
+    `_This plan reached a terminal status without fully satisfying its lifecycle gate. Each entry records ` +
     `an explicit, reasoned waiver — what was skipped, and why — so the exception stays visible ` +
     `to anyone who later treats this plan as evidence that the work was verified._`;
 

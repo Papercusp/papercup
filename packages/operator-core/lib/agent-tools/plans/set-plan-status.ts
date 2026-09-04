@@ -5,7 +5,7 @@
  *   draft → ready      (approve — unlocks Start; does NOT start the plan)
  *   ready → draft      (demote — reverse approval)
  *   any  → shipped     (ship)
- *   any  → superseded  (reject)
+ *   any  → superseded  (reject; refuses non-terminal items — EI-19403437795858863)
  *
  * The agent-facing counterpart of the UI's approve / demote / reject
  * affordances — gives scoper/operator/etc. parity with the buttons in
@@ -29,6 +29,10 @@ import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-
 import { stampTerminalNowBlock } from './terminal-now-stamp';
 import { stampGreenlitNowBlock } from './greenlit-now-stamp';
 import { stampForcedPastWaiver, type ForcedPastRecord } from './forced-past-stamp';
+import {
+  evaluateSupersedeItemGate,
+  shouldEvaluateSupersedeItemGate,
+} from './supersede-item-gate';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
@@ -135,7 +139,7 @@ const argsSchema = z
       .object({ reason: z.string().min(1).max(2000) })
       .optional()
       .describe(
-        "status='shipped' only: ship past the acceptance gate's code-truth checks, recording the reason on the plan (`forcedPast`). A waived ship is deliberately loud, never silent. Does NOT waive the independently-flagged checks the gate marks non-waivable.",
+        "status='shipped' or 'superseded': pass the gate anyway, recording the reason on the plan (`forcedPast`). A waived ship skips the acceptance gate's code-truth checks; a waived deprecate skips the unfinished-items refusal. Deliberately loud, never silent. Does NOT waive the independently-flagged checks the gate marks non-waivable.",
       ),
   })
   .refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
@@ -388,6 +392,35 @@ export default defineTool({
               message: gate.message,
               ...(gate.rubricId ? { rubricId: gate.rubricId } : {}),
               ...(acceptanceGrader ? { acceptanceGrader } : {}),
+            };
+          }
+        }
+        // EI-19403437795858863 — the deprecate counterpart. The acceptance gate above
+        // fires only on `shipped`, so until now a supersede could strand every one of
+        // its non-terminal items silently; measured 2026-09-04, that is 266 stranded
+        // items under 26 superseded plans versus 38 under 17 shipped. This runs ONLY
+        // the unfinished-items leg (see supersede-item-gate.ts for why widening
+        // shouldEvaluateAcceptanceGate instead would demand a graded acceptance rubric
+        // to deprecate a dead draft), and shares `forcedPast` with the ship path so a
+        // waived deprecate is stamped on the plan by the same writer below.
+        if (shouldEvaluateSupersedeItemGate(status, args.expectedCurrent)) {
+          const gate = await evaluateSupersedeItemGate(slug, {
+            ...(args.force ? { force: args.force } : {}),
+          });
+          if (gate.forcedPast) {
+            const actor = resolveAgentIdentity(ctx);
+            forcedPast = {
+              ...gate.forcedPast,
+              forcedAt: new Date().toISOString(),
+              forcedBy: { ownerId: actor.ownerId, ownerLabel: actor.ownerLabel },
+            };
+          }
+          if (!gate.satisfied) {
+            return {
+              ok: false as const,
+              slug,
+              error: gate.code ?? 'supersede_gate_failed',
+              message: gate.message,
             };
           }
         }
