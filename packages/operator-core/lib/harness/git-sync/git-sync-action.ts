@@ -95,13 +95,16 @@ import {
 } from '../../sync/pot-git/ref-announce';
 import {
   formatConvergenceVerdict,
+  formatReleaseConsistencyVerdict,
   judgeConvergence,
+  judgeReleaseConsistency,
   type AnnouncedSnapshot,
   type ConvergenceState,
   type ConvergenceVerdict,
   type LocalMirror,
+  type ReleaseConsistencyVerdict,
 } from '../../sync/pot-git/convergence-probe';
-import { readSigrefs } from '../../sync/pot-git/sigrefs';
+import { readSigrefs, SIGREFS_REF } from '../../sync/pot-git/sigrefs';
 import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAdvance, type EpochSeq } from '../../sync/pot-git/staging-advance';
 // EI-19332963201820362: the ONLY sanctioned way to build a `worktree_bridge`
 // metadata value. patchRoutineMetadata is a top-level jsonb merge, so writing
@@ -1518,10 +1521,20 @@ async function readEscalationCounters(
 }> {
   const { sql } = getOrgPg();
   const rows = await sql<
-    { et: number; lo: string[] | null; ct: number; cpt: number; pubrefused: string | null; pubblocked: string | null; lastpub: string | null }[]
+    {
+      et: number;
+      lo: string[] | null;
+      lb: string[] | null;
+      ct: number;
+      cpt: number;
+      pubrefused: string | null;
+      pubblocked: string | null;
+      lastpub: string | null;
+    }[]
   >`
     SELECT coalesce((metadata->>'consecutive_error_ticks')::int, 0) AS et,
            array(SELECT jsonb_array_elements_text(coalesce(metadata->'last_oversized', '[]'::jsonb))) AS lo,
+           array(SELECT jsonb_array_elements_text(coalesce(metadata->'last_bulk_excluded', '[]'::jsonb))) AS lb,
            coalesce((metadata->>'consecutive_content_error_ticks')::int, 0) AS ct,
            coalesce((metadata->>'consecutive_cumulative_peel_ticks')::int, 0) AS cpt,
            metadata->'own_head_publish'->>'refused' AS pubrefused,
@@ -1534,7 +1547,11 @@ async function readEscalationCounters(
   const refused = rows[0]?.pubrefused ?? null;
   return {
     errTicks: rows[0]?.et ?? 0,
-    oversizedKeys: rows[0]?.lo ?? [],
+    // The escalation edge trigger historically read only last_oversized. The
+    // reader now stores the two exclusion families separately, so retain the
+    // union here to avoid re-broadcasting a cumulative peel as "new" on every
+    // tick. Old rows simply have no `lb` and remain backwards compatible.
+    oversizedKeys: [...new Set([...(rows[0]?.lo ?? []), ...(rows[0]?.lb ?? [])])],
     contentTicks: rows[0]?.ct ?? 0,
     cumulativePeelTicks: rows[0]?.cpt ?? 0,
     publishRefusal: refused ? { refused, blockedAtCommit: rows[0]?.pubblocked ?? null } : null,
@@ -1927,6 +1944,14 @@ async function recordOutcome(
   const errors = 'errors' in outcome ? outcome.errors : [];
   const errorMessage = errors.map((e) => `${e.scope}: ${e.message}`).join('; ');
   const skippedPaths = outcome.skippedPaths ?? [];
+  // Keep the public outcome's complete quarantine union for the commit/escalation
+  // pipeline, but persist the two byte-guard families separately. `bulkExcluded`
+  // is supplied by runGitSync; the reason-based fallback keeps injected callers
+  // and older checkpoint payloads compatible.
+  const bulkExcluded = (outcome.bulkExcluded ?? outcome.oversized.filter((f) => f.exclusionReason === 'cumulative-limit')).filter(
+    (f) => f.exclusionReason === 'cumulative-limit',
+  );
+  const oversized = outcome.oversized.filter((f) => f.exclusionReason !== 'cumulative-limit');
   const localSyncRecordedAt = Date.now();
   await patchRoutineMetadata(slug, workspaceId, {
     last_status: outcome.status,
@@ -1967,9 +1992,17 @@ async function recordOutcome(
     last_errors: errors.map((e) => `${e.scope}: ${e.message}`),
     // GAP-3: clear the stale single error on any non-error outcome (JSONB `||` keeps old keys).
     last_error: outcome.status === 'error' ? errorMessage : null,
-    // EI-18 counters: ticks-of-uninterrupted-error + the oversized set (scope:path keys).
+    // EI-18 counters: ticks-of-uninterrupted-error + the true per-file oversized
+    // set (scope:path keys). Cumulative-budget victims have a distinct field so a
+    // reader cannot tell an individually-unpushable blob to "raise the total cap"
+    // or vice versa.
     consecutive_error_ticks: consecutiveErrorTicks,
-    last_oversized: outcome.oversized.map(oversizedKey),
+    last_oversized: oversized.map(oversizedKey),
+    last_bulk_excluded: bulkExcluded.map(oversizedKey),
+    // Both exclusion arrays are replaced on every completed outcome. This stamp
+    // lets readers distinguish the latest measured sweep from legacy/stale rows
+    // that only carried last_oversized.
+    last_exclusions_at: localSyncRecordedAt,
     // EI-21906459740652039: the cumulative-limit guard's own consecutive-tick counter.
     // `last_oversized` alone cannot answer "has this been peeled every tick for hours?",
     // which is the condition that ran 13h unnoticed.
@@ -3933,13 +3966,20 @@ async function resolveHiveGitDialContext(
  * Best-effort by contract: a probe failure must never break the tick (it is a
  * detector, not a gate), so everything here is caught and reported.
  */
+type ConvergenceProbeVerdict = ConvergenceVerdict & {
+  /** Health is tolerant of a progressing mirror; it is never release acceptance. */
+  healthState: 'unknown' | 'level' | 'advancing' | 'stalled';
+  /** Fail-closed exact snapshot agreement for release acceptance. */
+  releaseConsistency: ReleaseConsistencyVerdict;
+};
+
 async function runConvergenceProbe(input: {
   slug: string;
   workspaceId: string;
   potHomeSlug: string;
   repoPath: string;
   candidateDevicePubkeys: string[];
-}): Promise<ConvergenceVerdict | null> {
+}): Promise<ConvergenceProbeVerdict | null> {
   const { slug, workspaceId, potHomeSlug, repoPath, candidateDevicePubkeys } = input;
   try {
     const { sql } = getOrgPg();
@@ -3957,8 +3997,8 @@ async function runConvergenceProbe(input: {
     // recency key that survives a re-key: `version` restarts on a fresh store
     // lineage, so ordering by it latches a permanent false alarm (WI-6372 fix D
     // defect — see convergence-probe.ts GUARD 7).
-    const rows = await sql<{ id: string | number; body: Record<string, unknown> }[]>`
-      SELECT id, body
+    const rows = await sql<{ id: string | number; ts: Date | string; body: Record<string, unknown> }[]>`
+      SELECT id, ts, body
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${potHomeSlug}
@@ -3983,11 +4023,19 @@ async function runConvergenceProbe(input: {
       // `id` is a bigint and may arrive as a string — coerce, and drop an
       // unparseable one rather than passing NaN into the recency comparison.
       const seq = typeof row.id === 'number' ? row.id : Number.parseInt(String(row.id), 10);
+      const observedAtMs = row.ts instanceof Date ? row.ts.getTime() : Date.parse(String(row.ts));
+      const storeGenerationRaw = (payload as SignedRefAnnouncement & { store_generation?: unknown }).store_generation;
       announced.push({
         devicePubkeyBase64: payload.device_pubkey,
         version: payload.version,
         sequence: Number.isSafeInteger(seq) ? seq : undefined,
         sigrefsOid: payload.sigrefs_oid,
+        observedAtMs: Number.isFinite(observedAtMs) ? observedAtMs : undefined,
+        signedAtMs: payload.ts,
+        storeGeneration:
+          typeof storeGenerationRaw === 'string' && storeGenerationRaw.length > 0
+            ? storeGenerationRaw
+            : undefined,
       });
     }
 
@@ -4001,8 +4049,20 @@ async function runConvergenceProbe(input: {
     const local: LocalMirror[] = [];
     for (const device of candidateDevicePubkeys) {
       if (!announcingDevices.has(device)) continue;
-      const stored = await readSigrefs(repoPath, device).catch(() => null);
-      local.push({ devicePubkeyBase64: device, version: stored?.version ?? null });
+      const [stored, sigrefsOid] = await Promise.all([
+        readSigrefs(repoPath, device).catch(() => null),
+        readNamespaceRef(repoPath, device, SIGREFS_REF).catch(() => null),
+      ]);
+      const storeGenerationRaw = (stored as (typeof stored & { store_generation?: unknown }) | null)?.store_generation;
+      local.push({
+        devicePubkeyBase64: device,
+        version: stored?.version ?? null,
+        sigrefsOid,
+        storeGeneration:
+          typeof storeGenerationRaw === 'string' && storeGenerationRaw.length > 0
+            ? storeGenerationRaw
+            : undefined,
+      });
     }
 
     const stateRows = await sql<{ convergence: { devices?: ConvergenceState } | null }[]>`
@@ -4013,19 +4073,40 @@ async function runConvergenceProbe(input: {
     `;
     const priorState = stateRows[0]?.convergence?.devices ?? null;
 
-    const verdict = judgeConvergence({
+    const nowMs = Date.now();
+    const healthVerdict = judgeConvergence({
       candidateDevicePubkeys,
       announced,
       local,
       priorState,
-      nowMs: Date.now(),
+      nowMs,
     });
+    const releaseConsistency = judgeReleaseConsistency({
+      expectedDevicePubkeys: candidateDevicePubkeys,
+      announced,
+      local,
+      nowMs,
+    });
+    const verdict: ConvergenceProbeVerdict = {
+      ...healthVerdict,
+      healthState:
+        healthVerdict.judged === 0
+          ? 'unknown'
+          : !healthVerdict.converged
+            ? 'stalled'
+            : healthVerdict.behind.length > 0
+              ? 'advancing'
+              : 'level',
+      releaseConsistency,
+    };
 
     await patchRoutineMetadata(slug, workspaceId, {
       convergence: {
-        at: Date.now(),
-        // THE field a release reviewer must read instead of `bootstrap.ok`.
+        at: nowMs,
+        // Backwards-compatible health alias. This deliberately remains tolerant
+        // of a progressing mirror and MUST NOT be used as release acceptance.
         converged: verdict.converged,
+        healthState: verdict.healthState,
         judged: verdict.judged,
         behindCount: verdict.behind.length,
         notConverged: verdict.notConverged.map((d) => ({
@@ -4045,6 +4126,23 @@ async function runConvergenceProbe(input: {
         })),
         // The per-device persistence watermark the NEXT tick carries forward.
         devices: verdict.state,
+        // P-512: THE field release acceptance reads. V1 announcements have no
+        // signed store generation, so they correctly remain UNKNOWN until the
+        // P-513 versioned protocol supplies one; missing evidence never passes.
+        releaseConsistency: {
+          state: verdict.releaseConsistency.state,
+          evaluatedAtMs: verdict.releaseConsistency.evaluatedAtMs,
+          maxObservationAgeMs: verdict.releaseConsistency.maxObservationAgeMs,
+          watermarkSequence: verdict.releaseConsistency.watermarkSequence,
+          expectedDevicePubkeys: verdict.releaseConsistency.expectedDevicePubkeys,
+          currentDevicePubkeys: verdict.releaseConsistency.currentDevicePubkeys,
+          issues: verdict.releaseConsistency.issues.map((issue) => ({
+            devicePubkeyBase64: issue.devicePubkeyBase64,
+            code: issue.code,
+            detail: issue.detail,
+          })),
+          summary: formatReleaseConsistencyVerdict(verdict.releaseConsistency),
+        },
       },
     });
 
@@ -4256,11 +4354,12 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
           // reviewer uses to decide whether the live cold join ever ran.
           path: 'no-topic-stub',
           ok: outcome.ok,
-          // WI-6372: `ok` means A FETCH COMPLETED. `converged` is the question a
-          // release reviewer actually cares about, carried here so the two can
-          // never again be read as the same thing from this record. `null` =
-          // the probe could not judge (no announcements to compare against).
+          // `converged` remains the tolerant lag-health signal. P-512 adds the
+          // fail-closed release predicate beside it so a reviewer cannot turn a
+          // progressing/no-evidence health green into release acceptance.
           converged: convergence?.converged ?? null,
+          healthState: convergence?.healthState ?? 'unknown',
+          releaseConsistency: convergence?.releaseConsistency.state ?? 'unknown',
           namespaceCount: outcome.namespaces.length,
           skippedExisting: outcome.skippedExisting.length,
           // WI-37226: carried, not recomputed — see the note above the prior read.
@@ -4449,9 +4548,11 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
         // a real dial rather than leaving a reader to infer it from key presence.
         path: 'dialed',
         ok: outcome?.ok ?? false,
-        // WI-6372: see the stub writer above — `ok` is "a fetch completed",
-        // `converged` is "we are level with the pot". Never the same question.
+        // See the stub writer above: fetch completion, lag health, and exact
+        // release consistency are three distinct statements.
         converged: convergence?.converged ?? null,
+        healthState: convergence?.healthState ?? 'unknown',
+        releaseConsistency: convergence?.releaseConsistency.state ?? 'unknown',
         namespaceCount: outcome?.namespaces.length ?? priorBootstrap?.namespaceCount ?? 0,
         skippedExisting: outcome?.skippedExisting.length ?? 0,
         // WI-6189 ladder telemetry — the burn-down a watcher needs to tell a
@@ -4575,18 +4676,25 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // `harness_shared.routines.metadata->'bootstrap'` on a later wake. A
       // release whose open question is "does the live cold join work" cannot
       // have success be the silent case.
-      // WI-6372: this line is the single most-trusted artifact this feature
-      // produces, and for 7 days it said COMPLETE about a mirror that was a
-      // week stale. It must never again assert completion while the probe
-      // says we are not level with the pot.
+      // WI-6372/P-512: this line is the single most-trusted artifact this
+      // feature produces. Fetch completion, tolerant health, and exact release
+      // consistency must remain visibly separate; only exact CURRENT may say
+      // the release snapshot is current.
+      const completionLabel =
+        convergence?.converged === false
+          ? 'FETCH COMPLETE BUT HEALTH STALLED'
+          : convergence?.releaseConsistency.state === 'current'
+            ? 'COLD JOIN CURRENT'
+            : `FETCH COMPLETE; RELEASE CONSISTENCY ${
+                (convergence?.releaseConsistency.state ?? 'unknown').toUpperCase()
+              }`;
       console.log(
-        `[git-sync] ${slug}: bootstrap-tick ${
-          convergence?.converged === false ? 'FETCH COMPLETE BUT NOT CONVERGED' : 'COLD JOIN COMPLETE'
-        } (dialed: ${dialLog.join(', ')}): ` +
+        `[git-sync] ${slug}: bootstrap-tick ${completionLabel} (dialed: ${dialLog.join(', ')}): ` +
           `seeded ${outcome.namespaces.length} namespace(s) in ${outcome.steps ?? 0} rung(s)` +
           `${outcome.skippedExisting.length > 0 ? `, ${outcome.skippedExisting.length} already present` : ''}` +
           `${outcome.shallow ? ' — still shallow' : ' — history complete'}` +
-          `${convergence?.converged === false ? ` — ${formatConvergenceVerdict(convergence)}` : ''}`,
+          `${convergence?.converged === false ? ` — ${formatConvergenceVerdict(convergence)}` : ''}` +
+          `${convergence ? ` — ${formatReleaseConsistencyVerdict(convergence.releaseConsistency)}` : ''}`,
       );
     }
   } catch (e) {
@@ -5797,6 +5905,10 @@ async function recordAndEscalateTick(a: {
 }): Promise<void> {
   const { slug, workspaceId, outcome, errTicks, contentTicks } = a;
   const mergeCompleted = outcome.mergeCompleted ?? [];
+  const bulkExcluded = (
+    outcome.bulkExcluded ?? outcome.oversized.filter((f) => f.exclusionReason === 'cumulative-limit')
+  ).filter((f) => f.exclusionReason === 'cumulative-limit');
+  const oversized = outcome.oversized.filter((f) => f.exclusionReason !== 'cumulative-limit');
   await recordOutcome(
     slug,
     workspaceId,
@@ -5824,7 +5936,8 @@ async function recordAndEscalateTick(a: {
           ? outcome.conflicts.map((c) => ({ scope: c.scope, files: c.conflictedFiles }))
           : [],
       errors: ('errors' in outcome ? outcome.errors : []).map((e) => ({ scope: e.scope, message: e.message.slice(0, 300) })),
-      oversized: outcome.oversized.length,
+      oversized: oversized.length,
+      bulkExcluded: bulkExcluded.length,
       contentErrors: outcome.contentErrors.length,
       dirtyPathCount: outcome.dirtyPathCount,
       committedCount: outcome.committedCount,
