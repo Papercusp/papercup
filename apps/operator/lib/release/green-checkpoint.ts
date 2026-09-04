@@ -235,10 +235,7 @@ export function parseEarlyTypecheckEvidence(
   const knownBySuffix = new Map<string, string[]>();
   for (const file of normalizedFiles) {
     const suffix = `/${file}`;
-    knownBySuffix.set(suffix, [
-      ...(knownBySuffix.get(suffix) ?? []),
-      file,
-    ]);
+    knownBySuffix.set(suffix, [...(knownBySuffix.get(suffix) ?? []), file]);
   }
   const rootPrefix = root
     ? `${path.resolve(root).replaceAll("\\", "/").replace(/\/+$/, "")}/`
@@ -691,7 +688,10 @@ export interface CheckpointDeps {
    *  failing set, not a floor. `null` ⇒ the measurement could not honestly attribute results
    *  to `ref` (setup/head mismatch) — callers must treat that as UNMEASURED, never as green.
    *  Optional: absent ⇒ hold ticks behave exactly as before (stubs/older deps unaffected). */
-  runRepairTickLegs?(ref: string, gateIds: string[]): Promise<RepairTickLegs | null>;
+  runRepairTickLegs?(
+    ref: string,
+    gateIds: string[],
+  ): Promise<RepairTickLegs | null>;
   /** P-005 / D-008: the root package.json `scripts` map, supplied rather than read, so the
    *  hygiene classifier stays pure and its `gen:X:check` ⇄ `gen:X` pair derivation is testable
    *  against synthetic script sets. Optional: ABSENT ⇒ no hygiene split is computed at all and
@@ -3852,6 +3852,11 @@ export interface RedTriage {
     | "absolute-ceiling"
     | "deadline"
     | null;
+  /** When the tip re-run finished. Null means this re-triage did not successfully execute a
+   *  tip measurement; absent is accepted only for pre-EI-19381533152721724 payloads. A verdict
+   *  is a point-in-time observation, not standing authority, so durable readers carry this
+   *  beside `tip` and can judge whether newer commits have made it stale. */
+  tipObservedAtMs?: number | null;
   detail: string;
 }
 
@@ -4079,6 +4084,9 @@ export function classifyRedAgainstTip(input: {
   absoluteCeiling?: number;
   /** Would one more pass overrun the run's wall-clock budget (see `refireDeadlineExceeded`)? */
   deadlineExceeded?: boolean;
+  /** Completion time of the tip measurement. Injectable so the pure classifier's wording and
+   *  machine-readable provenance share one exact instant. */
+  tipObservedAtMs?: number;
 }): RedTriage {
   const {
     candidate,
@@ -4113,6 +4121,11 @@ export function classifyRedAgainstTip(input: {
       detail: "tip re-run unavailable",
     };
   }
+  const tipObservedAtMs =
+    typeof input.tipObservedAtMs === "number" &&
+    Number.isFinite(input.tipObservedAtMs)
+      ? input.tipObservedAtMs
+      : Date.now();
   if (tipRetest.pass) {
     // EI-19343532231631821 — CHARGE THE FAILED RESCUE, NOT THE REFIRE.
     //
@@ -4171,6 +4184,7 @@ export function classifyRedAgainstTip(input: {
       autoRefire,
       chargeRefire,
       refireBlockedBy,
+      tipObservedAtMs,
       detail:
         `${failingTests.length} failing file(s) PASS at tip ${tip.slice(0, 8)} — the red is stale ` +
         `(candidate ${candidate.slice(0, 8)} predates the fix)` +
@@ -4191,6 +4205,7 @@ export function classifyRedAgainstTip(input: {
     autoRefire: false,
     chargeRefire: false,
     refireBlockedBy: null,
+    tipObservedAtMs,
     // ALL-OR-NOTHING caveat (EI-19324146335802876). `tipRetest` collapses a GROUP re-run of
     // EVERY named failing file into one boolean, so ONE still-broken file produces this
     // verdict even when every other file is already fixed at tip. The old wording —
@@ -4200,7 +4215,12 @@ export function classifyRedAgainstTip(input: {
     // tip, and four agents each independently re-triaged all five. Say it in the DETAIL, not
     // just the log: `detail` is what lands in the stored verdict a reader acts on, whereas
     // tipRun.summary's per-workspace breakdown only ever reaches the log line below.
-    detail: describeRealRedAtTip(tip, failingTests, tipRetest.perFile),
+    detail: describeRealRedAtTip(
+      tip,
+      failingTests,
+      tipRetest.perFile,
+      tipObservedAtMs,
+    ),
   };
 }
 
@@ -4357,8 +4377,15 @@ export function describeRealRedAtTip(
   tip: string,
   failingTests: readonly string[],
   perFile?: readonly TipPerFileResult[],
+  tipObservedAtMs: number = Date.now(),
 ): string {
-  const head = `failures REPRODUCE at tip ${tip.slice(0, 8)} — genuine red, holding the gate.`;
+  const observedAt = Number.isFinite(tipObservedAtMs)
+    ? new Date(tipObservedAtMs).toISOString()
+    : "unknown time";
+  const head =
+    `failures reproduced at tip ${tip.slice(0, 8)} AS OF ${observedAt} — ` +
+    "re-verify against current tip before acting; this measurement is not standing authority. " +
+    "The observed tip was genuinely red, so the gate remains held.";
   if (!perFile?.length) {
     return (
       `${head} NOTE: the ${failingTests.length} failing file(s) were re-run as a GROUP, so this means ` +
@@ -4431,6 +4458,7 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
   // failing set vetoes the rescue for every registered leg beside it.
   "lint:tsc:papercusp-libs": ["lint:tsc:papercusp-libs"],
   "lint:tsc:workspaces": ["lint:tsc:workspaces"],
+  "lint:tsc:operator": ["lint:tsc:operator"],
   "lint:identity-leak": [
     "lint:no-owner-name-tags",
     "lint:no-box-identity",
@@ -4676,7 +4704,9 @@ export async function foldPromotedLineageIntoStaging(
 
   const withGitSyncLock =
     deps.withGitSyncLock ??
-    (async <T>(run: () => Promise<T>): Promise<T | { busy: true; reason?: string }> => {
+    (async <T>(
+      run: () => Promise<T>,
+    ): Promise<T | { busy: true; reason?: string }> => {
       const [
         { inWorkspaceTxn },
         { tryAcquireResource, tryReleaseResource },
@@ -4758,9 +4788,9 @@ export async function foldPromotedLineageIntoStaging(
             "--",
             rel,
           ]);
-          const line = raw.split("\0").find((entry) =>
-            entry.endsWith(`\t${rel}`),
-          );
+          const line = raw
+            .split("\0")
+            .find((entry) => entry.endsWith(`\t${rel}`));
           if (!line) return null;
           const match = /^(\d{6}) (?:blob|commit) ([0-9a-f]{40,64})\t/.exec(
             line,
@@ -4774,10 +4804,7 @@ export async function foldPromotedLineageIntoStaging(
         };
 
         const repairHead = await resolveCommit(input.repairHead);
-        const branchRef = input.integrationBranch.replace(
-          /^refs\/heads\//,
-          "",
-        );
+        const branchRef = input.integrationBranch.replace(/^refs\/heads\//, "");
         const stagingBefore = await resolveCommit(branchRef);
         const currentBranch = (
           await runGit(input.integrationRoot, [
@@ -4968,9 +4995,9 @@ export function partitionRepairSignatureEntries(
     }
   }
   if (unpaired.length > 0) {
-    const inferred = inferFailingFilesFromEntries(entries.map((e) => e.id)).filter(
-      (f) => unpaired.includes(f.file),
-    );
+    const inferred = inferFailingFilesFromEntries(
+      entries.map((e) => e.id),
+    ).filter((f) => unpaired.includes(f.file));
     if (inferred.length === unpaired.length) {
       for (const f of inferred) {
         files.set(failingFileKey(f), f);
@@ -6581,9 +6608,8 @@ export async function attemptFlakeAbsorption(
         (row) => row.classification === "deterministic",
       ).length,
       timeout: rows.filter((row) => row.classification === "timeout").length,
-      unclassified: rows.filter(
-        (row) => row.classification === "unclassified",
-      ).length,
+      unclassified: rows.filter((row) => row.classification === "unclassified")
+        .length,
       maxLoadavgPerCore: loads.length ? Math.max(...loads) : null,
     };
   };
@@ -6747,8 +6773,7 @@ export async function attemptFlakeAbsorption(
         // The observation is captured immediately after the attempt, including the FINAL
         // attempt for which no retry line is printed. Reuse its sample here so the detailed
         // line and the aggregate summary can never disagree about the same attempt.
-        const load =
-          failureShapeObservation?.loadavgPerCore ?? loadPerCore();
+        const load = failureShapeObservation?.loadavgPerCore ?? loadPerCore();
         const loadNote = `loadavg/core ${load.toFixed(2)}`;
         // EI-19369790810564409: an AssertionError signature is DIRECT, POSITIVE evidence
         // of a deterministic failure — checked FIRST and unconditionally (independent of
@@ -7234,7 +7259,9 @@ export function classifyInfraFault(
           `path, after the workspace re-run declined or was inapplicable). A pool crash with no signature ` +
           `measures nothing about the code — the honest verdict is INCONCLUSIVE, not a red that names no ` +
           `files` +
-          (workspaces.length ? ` (crashed workspace(s): ${workspaces.join(", ")})` : "") +
+          (workspaces.length
+            ? ` (crashed workspace(s): ${workspaces.join(", ")})`
+            : "") +
           `. Measured failures stay red: a crash that still named failing files keeps its red.`,
       };
     }
@@ -7824,7 +7851,8 @@ export function buildGreenCheckpointEnv(
   // contention (device-store's own beforeAll already hardcodes 120s locally and
   // still flaked once). 180s mirrors VITEST_UNIT_TIMEOUT_MS's precedent above; dev
   // keeps the tighter 90s default (libs/test-config reads this env; unset ⇒ 90s).
-  env.VITEST_INTEGRATION_HOOK_TIMEOUT_MS = env.VITEST_INTEGRATION_HOOK_TIMEOUT_MS ?? "180000";
+  env.VITEST_INTEGRATION_HOOK_TIMEOUT_MS =
+    env.VITEST_INTEGRATION_HOOK_TIMEOUT_MS ?? "180000";
   return env;
 }
 
@@ -7878,7 +7906,10 @@ export function frozenRepairCapacityHoldSummary(
  * exception, not the recipe.
  */
 export function frozenRepairHoldEscalationBody(
-  queue: Pick<FrozenCandidateRepairQueue, "candidate" | "repairHead" | "attempts" | "failingTests">,
+  queue: Pick<
+    FrozenCandidateRepairQueue,
+    "candidate" | "repairHead" | "attempts" | "failingTests"
+  >,
   reason: string,
 ): string {
   const failing =
@@ -7904,7 +7935,10 @@ export function frozenRepairHoldEscalationBody(
  * admission onto the lineage or an owner retire.
  */
 export function frozenRepairAgeEscalationBody(
-  queue: Pick<FrozenCandidateRepairQueue, "candidate" | "repairHead" | "phase" | "attempts" | "failingTests">,
+  queue: Pick<
+    FrozenCandidateRepairQueue,
+    "candidate" | "repairHead" | "phase" | "attempts" | "failingTests"
+  >,
   rung: number,
 ): string {
   const failing =
@@ -8024,8 +8058,8 @@ export interface CheckpointOpts {
 export { quietCutSecFromEnv };
 
 /**
- * Plan D-004: is the verdict we are about to publish about a candidate that an ACTIVE repair
- * deliberately pinned?
+ * frozen-candidate-outlives-its-repair-2026-08-27 D-004: is the verdict we are about to publish
+ * about the current head of an ACTIVE pinned repair?
  *
  * Split out as a pure predicate because it is the risky half of the fossil verdict-withholding
  * decision (gate-verdict-freshness rule 5), and the surrounding code is mechanical. Note there is
@@ -8039,21 +8073,23 @@ export { quietCutSecFromEnv };
  * signature the repair needs in order to advance. Withholding it is precisely what froze `main`
  * for 6 days with `gate_health.failingTests: []` and no fixer ever dispatched.
  *
- * Returns FALSE unless the pin is BOTH the candidate being judged AND still live, so an
- * accidentally-stale candidate, a mismatched pin, and a repair that has already given up all keep
- * the historical withholding behaviour untouched.
+ * `candidate` is the immutable base of the lineage; `repairHead` is the exact admitted descendant
+ * the gate actually judges. Returns FALSE unless the latter is BOTH the candidate being judged AND
+ * still live, so the frozen base after the head moves, an accidentally-stale candidate, a
+ * mismatched pin, and a repair that has already given up all keep the historical withholding
+ * behaviour untouched.
  */
 export function isJudgingPinnedActiveRepair(input: {
   candidate: string;
-  repairCandidate?: string | null;
-  repairPhase?: FrozenCandidateRepairQueue["phase"] | null;
-  repairBlockedReason?: FrozenCandidateRepairQueue["blockedReason"] | null;
+  repairQueue?: Pick<
+    FrozenCandidateRepairQueue,
+    "candidate" | "repairHead" | "phase" | "blockedReason"
+  > | null;
 }): boolean {
-  const { candidate, repairCandidate } = input;
-  if (repairCandidate == null || repairCandidate !== candidate) return false;
-  if (input.repairPhase == null || input.repairPhase === "blocked")
-    return false;
-  return input.repairBlockedReason == null;
+  const { candidate, repairQueue } = input;
+  if (repairQueue == null || repairQueue.repairHead !== candidate) return false;
+  if (repairQueue.phase === "blocked") return false;
+  return repairQueue.blockedReason == null;
 }
 
 export function partialGreenGateEnabledFromEnv(
@@ -9126,7 +9162,9 @@ async function runGreenCheckpointInner(
       next = {
         ...next,
         ...identity,
-        ...(result.green == null ? { candidate: result.repairQueue.candidate } : {}),
+        ...(result.green == null
+          ? { candidate: result.repairQueue.candidate }
+          : {}),
       } as T;
     }
     return next;
@@ -9436,7 +9474,10 @@ async function runGreenCheckpointInner(
   // into a joined staging sha so the whole gate could re-run there, because D-001 held that an
   // isolated repair head was verification-only. D-004 promotes the lineage commit itself, so the
   // join — and the second full suite it cost — is gone. See `assessFrozenLineagePromotion`.
-  if (!diagnosticOnly && (deps.readFrozenRepairQueueState || deps.readFrozenRepairQueue)) {
+  if (
+    !diagnosticOnly &&
+    (deps.readFrozenRepairQueueState || deps.readFrozenRepairQueue)
+  ) {
     try {
       if (deps.readFrozenRepairQueueState) {
         const read = await deps.readFrozenRepairQueueState();
@@ -9484,8 +9525,7 @@ async function runGreenCheckpointInner(
     const pendingQueue = repairQueue;
     let absorption: StagingLineageAbsorptionResult;
     try {
-      absorption =
-        await deps.absorbPromotedLineageIntoStaging(pendingQueue);
+      absorption = await deps.absorbPromotedLineageIntoStaging(pendingQueue);
     } catch (error) {
       absorption = {
         ok: false,
@@ -9622,7 +9662,7 @@ async function runGreenCheckpointInner(
         if (repairQueue.attempts < attemptsBefore) {
           deps.log(
             `FIXER_ATTEMPT_REFUNDED: fixer ${deadSpawnId} died of infrastructure without doing ` +
-              `any repair work (${deathClass?.reason ?? 'unclassified'}); attempt refunded ` +
+              `any repair work (${deathClass?.reason ?? "unclassified"}); attempt refunded ` +
               `(${repairQueue.attempts} spent, free retry ${repairQueue.freeRetries ?? 0} of the ` +
               `refund budget). The retry is free — the spawn plane, not the repair, failed here.`,
           );
@@ -9647,7 +9687,10 @@ async function runGreenCheckpointInner(
     {
       const ageRung = frozenRepairAgeEscalationRung(repairQueue, Date.now());
       if (ageRung > (repairQueue.ageEscalatedRung ?? 0)) {
-        repairQueue = markFrozenRepairAgeEscalated(repairQueue, { rung: ageRung, nowMs: Date.now() });
+        repairQueue = markFrozenRepairAgeEscalated(repairQueue, {
+          rung: ageRung,
+          nowMs: Date.now(),
+        });
         await deps.writeFrozenRepairQueue?.(repairQueue);
         await deps
           .escalate?.(
@@ -9744,7 +9787,10 @@ async function runGreenCheckpointInner(
                 capacityRetryAtMs: dispatch.capacityHold.retryAtMs ?? null,
               })
             : null;
-        if (dispatchInfeasible && dispatchInfeasible.kind === "test-candidate") {
+        if (
+          dispatchInfeasible &&
+          dispatchInfeasible.kind === "test-candidate"
+        ) {
           // WI-2141347: the repairHead already converged past the frozen candidate (an
           // ancestor of staging — already vetted, never unpushed fixer content), so it is
           // a structurally sound candidate to test even though no fixer can be dispatched.
@@ -9774,7 +9820,10 @@ async function runGreenCheckpointInner(
               `testing that converged head rather than falling back to the staging tip`,
             candidate: abandonedQueue.candidate,
           });
-        } else if (dispatchInfeasible && dispatchInfeasible.kind === "wait-for-dispatch-capacity") {
+        } else if (
+          dispatchInfeasible &&
+          dispatchInfeasible.kind === "wait-for-dispatch-capacity"
+        ) {
           // WI-2141736 Layer 2: the wall hasn't persisted long enough yet to treat this
           // zero-attempt queue as a structural dead end (see decideFrozenRepairDispatchInfeasible).
           // Hold the frozen candidate exactly like an already-attempted queue's capacity hold
@@ -9866,8 +9915,10 @@ async function runGreenCheckpointInner(
           await deps
             .escalate?.(
               `frozen candidate ${repairQueue.candidate.slice(0, 8)} held: no fixer dispatchable (${dispatchInfeasible.reason})`,
-              frozenRepairHoldEscalationBody(repairQueue, dispatchInfeasible.reason) +
-                ` Measured wall: ${dispatch.capacityHold.summary}`,
+              frozenRepairHoldEscalationBody(
+                repairQueue,
+                dispatchInfeasible.reason,
+              ) + ` Measured wall: ${dispatch.capacityHold.summary}`,
             )
             .catch((e) =>
               deps.log(
@@ -10645,7 +10696,8 @@ async function runGreenCheckpointInner(
                 diagnostics: typecheckPreflight.diagnostics,
                 summary: earlySummary,
               });
-              if (earlyLogPath) deps.log(`early typecheck evidence → ${earlyLogPath}`);
+              if (earlyLogPath)
+                deps.log(`early typecheck evidence → ${earlyLogPath}`);
               earlyPreflightFailure = {
                 green: false,
                 summary: earlySummary,
@@ -10830,9 +10882,7 @@ async function runGreenCheckpointInner(
   // keeps the existing behaviour; so does a pin whose repair has already given up.
   const judgingPinnedActiveRepair = isJudgingPinnedActiveRepair({
     candidate,
-    repairCandidate: repairQueue?.candidate ?? null,
-    repairPhase: repairQueue?.phase ?? null,
-    repairBlockedReason: repairQueue?.blockedReason ?? null,
+    repairQueue,
   });
   if (
     !diagnosticOnly &&
@@ -11188,7 +11238,9 @@ async function runGreenCheckpointInner(
         // unambiguously the SAME queue in the SAME writable phase; any mismatch (a
         // concurrent retire, a phase advance, a read fault) falls back to today's
         // behaviour (the in-memory snapshot) rather than risk operating on the wrong row.
-        const freshQueue = await deps.readFrozenRepairQueue?.().catch(() => null);
+        const freshQueue = await deps
+          .readFrozenRepairQueue?.()
+          .catch(() => null);
         const queueForRedTransition =
           freshQueue &&
           freshQueue.candidate === repairQueue.candidate &&
@@ -11202,10 +11254,13 @@ async function runGreenCheckpointInner(
               `(was ${repairQueue.repairHead.slice(0, 8)} in the pre-suite snapshot)`,
           );
         }
-        repairQueue = markFrozenCandidateVerificationRed(queueForRedTransition, {
-          ...measuredSignature,
-          nowMs: Date.now(),
-        });
+        repairQueue = markFrozenCandidateVerificationRed(
+          queueForRedTransition,
+          {
+            ...measuredSignature,
+            nowMs: Date.now(),
+          },
+        );
         await deps.writeFrozenRepairQueue(repairQueue);
         repairQueueRedPersisted = true;
       } else if (!repairQueue) {
@@ -11610,11 +11665,11 @@ async function runGreenCheckpointInner(
         candidateSource,
         summary:
           verdictSummary +
-            lineageNote +
-            failingSetNote +
-            alreadyFixedNote +
-            residueNote +
-            historicalFlakeNote,
+          lineageNote +
+          failingSetNote +
+          alreadyFixedNote +
+          residueNote +
+          historicalFlakeNote,
         failingTests: failingTests ?? [],
         splitSourceTestPairs,
         logPath: logPath ?? null,
@@ -11767,6 +11822,12 @@ async function runGreenCheckpointInner(
                 return null;
               })
             : undefined;
+        // EI-19381533152721724: the re-run is a point-in-time observation. Capture its
+        // completion before the second HEAD read so the durable verdict can say exactly when
+        // the evidence was measured; an execution failure leaves the provenance explicitly
+        // null rather than fabricating an observation time.
+        const tipObservedAtMs =
+          fileRun === null || gateRun === null ? null : Date.now();
         // EI-20273810951781385: the re-run above is a snapshot of `tip`, not a lock on the
         // integration branch. On a busy fleet another commit can land before this verdict is
         // classified, making even a successful tip re-run stale again. Re-resolve HEAD only after
@@ -11800,6 +11861,7 @@ async function runGreenCheckpointInner(
                 autoRefire: false,
                 chargeRefire: false,
                 refireBlockedBy: null,
+                tipObservedAtMs,
                 detail: describeRetriageCurrentTipUnavailable(tip),
               }
             : currentTipAfterRetriage !== tip
@@ -11808,6 +11870,7 @@ async function runGreenCheckpointInner(
                   autoRefire: false,
                   chargeRefire: false,
                   refireBlockedBy: null,
+                  tipObservedAtMs,
                   detail: describeRetriageTipMoved(
                     tip,
                     currentTipAfterRetriage,
@@ -11818,6 +11881,7 @@ async function runGreenCheckpointInner(
                   tip,
                   failingTests: failingTests ?? [],
                   tipRetest,
+                  ...(tipObservedAtMs !== null ? { tipObservedAtMs } : {}),
                   refireAttempts: opts.refireAttempts ?? 0,
                   maxRefires: autoRefireCapFromEnv(),
                   ...refireBudgetInputs(
@@ -11827,7 +11891,11 @@ async function runGreenCheckpointInner(
                     passStartedAtMs,
                   ),
                 });
-        retriage = { ...verdict, tip };
+        retriage = {
+          ...verdict,
+          tip,
+          tipObservedAtMs: verdict.tipObservedAtMs ?? tipObservedAtMs,
+        };
         // WI-5366: each runner's summary carries the verified-head note (+ per-workspace
         // pass/FAIL) but was previously computed and discarded — log it alongside the
         // classification so a future "REPRODUCE at tip <sha>" verdict always shows the sha
@@ -11922,6 +11990,7 @@ async function runGreenCheckpointInner(
         chargeRefire: false,
         refireBlockedBy: null,
         tip,
+        tipObservedAtMs: null,
         detail: describeSkippedRetriage({
           candidate,
           tip,
@@ -12484,7 +12553,9 @@ async function runGreenCheckpointInner(
       judgedOnLineageRef: await refExists(cfg.integrationRoot, lineageRef)
         .then((exists) =>
           exists
-            ? isAncestor(cfg.integrationRoot, candidate, lineageRef).catch(() => null)
+            ? isAncestor(cfg.integrationRoot, candidate, lineageRef).catch(
+                () => null,
+              )
             : (false as boolean | null),
         )
         .catch(() => null),
@@ -12779,7 +12850,9 @@ export async function measureRepairTickLegs(
         const r = await io.runScript(script);
         if (r.code !== 0) {
           if (worst === "pass") worst = "fail";
-          tails.push(`${script}: exit ${r.code}${r.tail ? ` — ${r.tail}` : ""}`);
+          tails.push(
+            `${script}: exit ${r.code}${r.tail ? ` — ${r.tail}` : ""}`,
+          );
         }
       } catch (e) {
         worst = "errored";
@@ -12790,7 +12863,9 @@ export async function measureRepairTickLegs(
       id: gateId,
       status: worst,
       durationMs: Math.max(0, now() - startedAt),
-      ...(worst === "pass" ? {} : { outputTail: tails.join(" | ").slice(-500) }),
+      ...(worst === "pass"
+        ? {}
+        : { outputTail: tails.join(" | ").slice(-500) }),
     });
   }
   const failingSignatures = legs
@@ -12872,7 +12947,9 @@ export async function runGreenCheckpoint(
     ...(repairIdentity
       ? {
           ...repairIdentity,
-          ...(result.green == null ? { candidate: repairIdentity.frozenCandidate } : {}),
+          ...(result.green == null
+            ? { candidate: repairIdentity.frozenCandidate }
+            : {}),
         }
       : {}),
     candidateSource,
@@ -12889,7 +12966,8 @@ export async function runGreenCheckpoint(
   // entrypoint would miss both. The implementation no-ops when a branch already recorded a
   // disposition, so the recursion's own (inner, final) record wins over the outer frame's.
   await deps.recordDerivedFreezeDisposition?.({
-    flagEnabled: (await deps.freezeAndConvergeEnabled?.().catch(() => true)) ?? true,
+    flagEnabled:
+      (await deps.freezeAndConvergeEnabled?.().catch(() => true)) ?? true,
     repairQueue: finalResult.repairQueue ?? null,
     repairQueueRead: finalResult.repairQueueRead,
     summary: finalResult.summary ?? null,
@@ -13799,6 +13877,8 @@ interface PostSuiteLegs {
    *  libs/generic/*) that neither `lint:tsc` (operator-core only) nor the libs/papercusp
    *  fan-out reached. 8 packages, every one a measured strict zero when wired. */
   typecheckWorkspaces: LegOutcome;
+  /** EI-19391297380137349: apps/operator's baseline-ratcheted project. */
+  typecheckOperator: LegOutcome;
   /** WI-7140: libs/papercusp/packages/orchestrator, at a STRICT ZERO baseline. */
   typecheckOrchestrator: LegOutcome;
   /** WI-38284: root `scripts/*.ts` CLIs, which are load-bearing but outside every package project. */
@@ -13870,6 +13950,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     typecheck: skipped,
     typecheckPapercuspLibs: skipped,
     typecheckWorkspaces: skipped,
+    typecheckOperator: skipped,
     typecheckOrchestrator: skipped,
     typecheckScripts: skipped,
     lintMigrations: skipped,
@@ -14296,6 +14377,48 @@ export async function runPostSuiteLegs(
         "\n\n=== WORKSPACE TYPECHECK FAILED (npm run lint:tsc:workspaces) — a type regression in an apps/*, packages/* or libs/generic/* package blocks the release ===\n" +
           workspacesTypecheck.stdout +
           workspacesTypecheck.stderr,
+      );
+    }
+  }
+
+  // EI-19391297380137349: apps/operator is not covered by operator-core's lint:tsc,
+  // and the workspace discovery leg cannot substitute for its dedicated baseline-ratcheted
+  // project. Run the canonical script as its own soft leg so a new operator type regression
+  // is visible in the same verdict without hiding later inexpensive diagnostics.
+  const operatorTypecheckCheck = haltedBy
+    ? null
+    : checkNpmScript(treeDir, "lint:tsc:operator");
+  if (haltedBy) {
+    legs.typecheckOperator = { status: "skipped", skipReason: haltedBy };
+  } else if (operatorTypecheckCheck === "unreadable") {
+    legs.typecheckOperator = { status: "failed" };
+    haltedBy = "package.json unreadable (checking for lint:tsc:operator)";
+    failingSignatures.push("package.json-unreadable");
+    outputs.push(
+      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:tsc:operator ===\n`,
+    );
+  } else if (operatorTypecheckCheck === "absent") {
+    legs.typecheckOperator = {
+      status: "skipped",
+      skipReason: "candidate provides no lint:tsc:operator script",
+    };
+  } else {
+    const operatorTypecheck = await exec("npm", ["run", "lint:tsc:operator"], {
+      cwd: treeDir,
+      env,
+      allowNonZero: true,
+      heavy: true,
+    });
+    legs.typecheckOperator = {
+      status: operatorTypecheck.code === 0 ? "passed" : "failed",
+    };
+    if (operatorTypecheck.code !== 0) {
+      softFailures.push("lint:tsc:operator");
+      failingSignatures.push("lint:tsc:operator");
+      outputs.push(
+        "\n\n=== OPERATOR TYPECHECK FAILED (npm run lint:tsc:operator) — a new apps/operator type regression blocks the release ===\n" +
+          operatorTypecheck.stdout +
+          operatorTypecheck.stderr,
       );
     }
   }
@@ -14914,6 +15037,7 @@ export async function runPostSuiteLegs(
     legs.typecheck,
     legs.typecheckPapercuspLibs,
     legs.typecheckWorkspaces,
+    legs.typecheckOperator,
     legs.typecheckOrchestrator,
     legs.typecheckScripts,
     legs.lintMigrations,
@@ -15029,6 +15153,7 @@ export async function runPostSuiteLegs(
     record("lint:tsc:workspaces", legs.typecheckWorkspaces, [
       "lint:tsc:workspaces",
     ]),
+    record("lint:tsc:operator", legs.typecheckOperator, ["lint:tsc:operator"]),
     record("lint:tsc:orchestrator", legs.typecheckOrchestrator, [
       "lint:tsc:orchestrator",
     ]),
@@ -15156,11 +15281,12 @@ export function selectFixerCapacityRows<
  * Exported for unit testing: the call site's own tests stub `checkFixerProviderCapacity`
  * wholesale and therefore cannot observe this mapping at all.
  */
-export async function resolveReleaseFixerProvider(): Promise<string | undefined> {
+export async function resolveReleaseFixerProvider(): Promise<
+  string | undefined
+> {
   try {
-    const { readAgentConfig } = await import(
-      "@papercusp/operator-core/lib/agent-config"
-    );
+    const { readAgentConfig } =
+      await import("@papercusp/operator-core/lib/agent-config");
     const cfg = await readAgentConfig();
     const backend = cfg.roleBackends?.["release-fixer"] ?? cfg.backend;
     // Only backends that map onto a real account-pool `provider` may answer.
@@ -15628,12 +15754,10 @@ export function realCheckpointDeps(
       // hold holds, so the condition-staleness sweep closing it on absence is the correct
       // recovery path. See the contract note in frozen-repair-agent-routing.ts.
       try {
-        const { buildFrozenRepairConvergenceBroadcast } = await import(
-          "@papercusp/operator-core/lib/release/frozen-repair-agent-routing"
-        );
-        const { broadcastSevereEvent } = await import(
-          "@papercusp/operator-core/lib/severe-event-broadcast"
-        );
+        const { buildFrozenRepairConvergenceBroadcast } =
+          await import("@papercusp/operator-core/lib/release/frozen-repair-agent-routing");
+        const { broadcastSevereEvent } =
+          await import("@papercusp/operator-core/lib/severe-event-broadcast");
         const ev = buildFrozenRepairConvergenceBroadcast({
           ...input,
           nowMs: Date.now(),
@@ -15883,12 +16007,11 @@ export function realCheckpointDeps(
             // record the raw blob comparison and let the next candidate's gate decide. Filing
             // is best-effort observability and cannot relabel a verified ancestry bridge.
             let captureImprovement:
-              | typeof import("@papercusp/operator-core/lib/harness/improvements/capture-core")["captureImprovement"]
+              | (typeof import("@papercusp/operator-core/lib/harness/improvements/capture-core"))["captureImprovement"]
               | null = null;
             try {
-              ({ captureImprovement } = await import(
-                "@papercusp/operator-core/lib/harness/improvements/capture-core"
-              ));
+              ({ captureImprovement } =
+                await import("@papercusp/operator-core/lib/harness/improvements/capture-core"));
             } catch (error) {
               log(
                 `P-008 could not load the observation writer for ${outcome.differences.length} ` +
