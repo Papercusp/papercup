@@ -1137,6 +1137,28 @@ dependency_generation_refresh_retention_state_locked() {
 
 DEPENDENCY_GENERATION_PRUNE_QUARANTINES=()
 
+# Input selectors are durable lookup records, not retention roots. When a
+# generation ages out, remove every selector that names it while the same
+# publish lock is still held. Leaving the selector behind creates a permanent
+# fail-closed trap: an exact-candidate consumer keeps resolving the deleted
+# identity and reports an invalid publication token instead of the ordinary
+# "no prewarmed generation" miss that lets the producer rebuild the key.
+dependency_generation_remove_input_selectors_for_identity_locked() {
+  local generation_root="$1" identity="$2" selector selected_identity
+  for selector in "$generation_root"/.inputs/*; do
+    [ -f "$selector" ] || continue
+    selected_identity="$(dependency_generation_read_field "$selector" identity)"
+    [ "$selected_identity" = "$identity" ] || continue
+    if ! rm -f -- "$selector"; then
+      dependency_generation_log \
+        "FATAL: could not remove input selector $(basename "$selector") for pruned generation $identity"
+      return 1
+    fi
+    dependency_generation_log \
+      "removed input selector $(basename "$selector") for pruned generation $identity"
+  done
+}
+
 dependency_generation_quarantine_unretained_locked() {
   local generation_root="$1" retain_count="${DEPENDENCY_GENERATION_RETAIN_COUNT:-2}"
   local protected=' ' generation identity created pin lease kept=0 quarantine
@@ -1201,6 +1223,8 @@ dependency_generation_quarantine_unretained_locked() {
     [ -d "$generation" ] || continue
     identity="$(basename "$generation")"
     case "$protected" in *" $identity "*) continue ;; esac
+    dependency_generation_remove_input_selectors_for_identity_locked \
+      "$generation_root" "$identity" || return $?
     quarantine="$generation_root/.prune-$identity-$(date +%s)-$$"
     if mv "$generation" "$quarantine"; then
       dependency_generation_log "quarantined unretained generation $identity"

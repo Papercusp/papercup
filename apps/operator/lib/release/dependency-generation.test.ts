@@ -1375,6 +1375,44 @@ describe('immutable dependency generation', () => {
     expect(existsSync(orphan)).toBe(false);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it('removes input selectors before pruning the generation they reference (WI-2144343)', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const originalLockfile = readFileSync(join(integration, 'package-lock.json'), 'utf8');
+    const first = publish(integration, {
+      DEPENDENCY_GENERATION_RETAIN_COUNT: '1',
+    });
+    expect(first.status, first.stderr).toBe(0);
+    const firstPath = publishedPath(first.stdout);
+    const firstInput = publishedInputFingerprint(first.stdout);
+    const firstSelector = join(generationRoot, '.inputs', firstInput);
+    expect(existsSync(firstSelector)).toBe(true);
+
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/new-input":{}}}\n',
+    );
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'new-generation\n');
+    const second = publish(integration, {
+      DEPENDENCY_GENERATION_RETAIN_COUNT: '1',
+    });
+    expect(second.status, second.stderr).toBe(0);
+    expect(existsSync(firstPath)).toBe(false);
+    expect(existsSync(firstSelector)).toBe(false);
+    expect(second.stderr).toContain(
+      `removed input selector ${firstInput} for pruned generation`,
+    );
+
+    // Restoring the old dependency inputs now produces a rebuildable miss. The
+    // pre-fix dangling selector instead resolved the deleted identity forever
+    // and failed as an invalid publication token.
+    writeFileSync(join(integration, 'package-lock.json'), originalLockfile);
+    const oldInput = selectPrewarmed(generationRoot, integration);
+    expect(oldInput.status).toBe(74);
+    expect(oldInput.stderr).toContain('no prewarmed dependency generation');
+    expect(oldInput.stderr).not.toContain('invalid publication token');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   // WI-888766. The sibling case above has guarded `.prune-*` collection for a long
   // time while `.invalid-*` leaked permanently, which is precisely why the leak
   // survived: the only other `.invalid-` assertion in this file checks that the
