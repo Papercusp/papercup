@@ -47,6 +47,32 @@ export default defineTool({
       'You need the full fleet-wide coordination timeline — auditing what agents said to each other, tracing a broadcast/handoff/escalation chain, or backing an observer UI. The all-traffic counterpart to the per-owner coord:inbox.',
     notWhen:
       'For YOUR addressed messages use coord:inbox; for open human escalations use coord:escalations; for live "who is active" use coord:presence. coord:feed is the read-everything firehose, not a working inbox.',
+    // EI-22057308172107761: these are deliberately coord:inbox-only VIEW-shaping
+    // controls. Keep the redirect on the failure path instead of expanding this
+    // tool's prompt-weight-capped description or accepting args the firehose
+    // cannot honor.
+    argRedirects: {
+      include_ambient: {
+        tool: 'coord:inbox',
+        args: { include_ambient: true },
+        note: 'coord:feed does not accept inbox VIEW shaping controls; use coord:inbox { include_ambient: true } to include ambient system broadcasts.',
+      },
+      includeAmbient: {
+        tool: 'coord:inbox',
+        args: { includeAmbient: true },
+        note: 'coord:feed does not accept inbox VIEW shaping controls; use coord:inbox { includeAmbient: true } (compatibility alias) to include ambient system broadcasts.',
+      },
+      include_intents: {
+        tool: 'coord:inbox',
+        args: { include_intents: true },
+        note: 'coord:feed does not accept inbox VIEW shaping controls; use coord:inbox { include_intents: true } to include auto intent-declare messages.',
+      },
+      max_body_chars: {
+        tool: 'coord:inbox',
+        args: { max_body_chars: 200 },
+        note: 'coord:feed does not accept inbox VIEW shaping controls; use coord:inbox { max_body_chars } to bound entry body, summary, and section text.',
+      },
+    },
   },
   // High-tier: this surfaces every agent's traffic — same trust boundary as
   // audit:list (a forensic, all-actor read), NOT the low-tier coord:read the

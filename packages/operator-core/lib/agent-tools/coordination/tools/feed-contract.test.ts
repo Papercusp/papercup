@@ -82,6 +82,22 @@ describe('coord:feed — fleet compatibility alias', () => {
   });
 });
 
+describe('coord:feed — inbox-only shaping redirects (EI-22057308172107761)', () => {
+  it.each([
+    ['include_ambient', { include_ambient: true }],
+    ['includeAmbient', { includeAmbient: true }],
+    ['include_intents', { include_intents: true }],
+    ['max_body_chars', { max_body_chars: 200 }],
+  ] as const)('redirects `%s` to coord:inbox with a valid example', (key, args) => {
+    expect(Object.keys(tool.args.shape)).not.toContain(key);
+    expect(tool.guidance?.argRedirects?.[key]).toEqual({
+      tool: 'coord:inbox',
+      args,
+      note: expect.stringContaining('coord:inbox'),
+    });
+  });
+});
+
 describe('coord:feed — canonical kind filter parity', () => {
   it('accepts every canonical CoordKind, including executable yield', () => {
     const canonicalKinds = [...COORD_EXECUTABLE_KINDS, ...COORD_CONVERSATIONAL_KINDS];
