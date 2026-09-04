@@ -45,7 +45,7 @@
 
 import type { Sql } from 'postgres';
 
-import { getOrgPg, potsForGoal } from '@papercusp/db-org';
+import { getOrgPg, potsForGoal, unlinkPot } from '@papercusp/db-org';
 import {
   setGoalTransitionExecutor,
   isStoppingStatus,
@@ -128,7 +128,10 @@ async function readGoalDrainFleet(
 }
 
 export async function executeGoalStop(input: GoalStopInput): Promise<GoalStopReport> {
-  const { sql } = getOrgPg();
+  // goals:update supplies its transaction so the terminal goal status and the
+  // relationship tombstones commit or roll back together. Watchdog and rollup
+  // callers omit it and retain the normal host-connection behavior.
+  const sql = input.sql ?? getOrgPg().sql;
   const { goalId, workspaceId, status } = input;
 
   const links = await potsForGoal(sql, { workspaceId, goalId });
@@ -195,6 +198,22 @@ export async function executeGoalStop(input: GoalStopInput): Promise<GoalStopRep
     } catch (error) {
       drainFleetWoundDown = false;
       drainFleetWindDownError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  // A terminal goal no longer owns any pot. Tombstone only this goal's owner
+  // links: contributing links describe a secondary relationship and are not
+  // part of this stop fan-out's ownership authority. Use the canonical writer
+  // so cleanup is idempotent and preserves the historical row. Paused goals
+  // deliberately keep their links so the active transition can resume them.
+  if (isTerminalStatus(status)) {
+    for (const harnessSlug of owned) {
+      await unlinkPot(sql as unknown as Sql, {
+        workspaceId,
+        goalId,
+        harnessSlug,
+        by: input.actor ?? 'goal-stop-fanout',
+      });
     }
   }
 
