@@ -1,13 +1,24 @@
-# bootc host image — P-303 gate-spike artifact (PROVEN, not yet the product image)
+# bootc host image — proven artifacts for the D-254 migration (not yet the product image)
 
-These three files are the **exact artifacts that passed the P-303 gate spike** on plan
-`byoc-cloud-workspaces-gcp-aws-azure-2026-08-22`. They are committed here because they were
-proven on real hardware and then lived only in a scratch directory
-(`~/.papercusp/p303-bootc-spike/`) outside version control — one cleanup away from being lost,
-at a re-derivation cost of a full GCP spike in time and real money.
+Working artifacts for the bootc host-image phase (P-303..P-309) of plan
+`byoc-cloud-workspaces-gcp-aws-azure-2026-08-22`. Everything here was **proven before it was
+committed**, and every file is byte-identical to the artifact that was actually run. Do not "tidy"
+any of them without re-proving them.
 
-They are byte-identical to the artifacts that were actually run. Do not "tidy" them without
-re-proving them.
+| file | owner item | what it is |
+|---|---|---|
+| `Containerfile`, `p303-boot-proof.service`, `gcp-boot-proof.sh` | P-303 | the gate spike that booted on real GCP |
+| `RPM-EQUIVALENCE.md` | P-304 | the verified Ubuntu-24.04 → CentOS-Stream-9 assumption table |
+| `verify-rpm-equivalents.sh` | P-304 | the probe that produced that table — re-run it, don't trust it |
+| `release-signature-policy.json` | P-306 / D-262 | the signature policy the image must ship |
+| `p306-signature-policy-probe.sh` | P-306 / D-262 | proof that policy is enforced and fails closed |
+
+> ⚠ **Every artifact in this directory was rescued from `~/.papercusp/` scratch directories, in two
+> separate incidents two days apart** (P-303's spike files on 2026-09-04, P-304's table and probe
+> the same day). Both items were marked `done` while their only copy sat outside version control,
+> and P-304's plan-item note cited the scratch path *as the deliverable*. If you finish a spike
+> here, committing the artifact is part of the proof, not cleanup afterwards — a proven artifact
+> that lives outside version control is indistinguishable from one that was never built.
 
 **Re-verified 2026-09-04**, after committing, against the files in this directory: `podman build`
 completes all 7 steps including `bootc container lint` (exit 0), and the ACL repro at the bottom of
@@ -63,12 +74,55 @@ the GCP control plane, so the proof needs **no external IP, no firewall rule, no
 key** — it is independent of all the networking P-306 still owns. Reuse this pattern for the port's
 ACL assertion.
 
+## ⛔ Adopting bootc gives you signature verification DEFAULTED OFF
+
+The second constraint to read before writing the port, and it runs the opposite way to the ACL one:
+there, a green build hid a missing property; here, a **working update path hides a missing check**.
+
+The centos-bootc base ships `/etc/containers/policy.json` with `"default": [{"type":
+"insecureAcceptAnything"}]` and `signedBy` entries for the Red Hat registries only. So `bootc
+upgrade`/`switch` will pull and boot **any** image from our registry with no signature check at all.
+If the port drops the tarball's `minisign` verification because "bootc verifies now" and nobody
+ships a policy, the customer host verifies *nothing* — strictly weaker than the path it replaced,
+while the attestation's `signatureVerified: true` keeps being emitted by code nobody updated
+(D-262; the unbacked-boolean class of D-252).
+
+**Measured 2026-09-04** by `p306-signature-policy-probe.sh`, which discharges the clause D-262 left
+as NOT ESTABLISHED — "whether a sigstoreSigned policy against our registry actually passes end to
+end". It is a *paired* probe with a positive control, because a policy that rejects everything would
+pass a rejection-only test while being useless:
+
+| probe | policy | image | exit | meaning |
+|---|---|---|---|---|
+| A | ours (`sigstoreSigned`) | signed | `0` ACCEPT | the policy is satisfiable — not reject-everything |
+| B | ours (`sigstoreSigned`) | **unsigned** | `1` REJECT | `A signature was required, but no signature exists` — **fails closed** |
+| C | the base's shipped default | unsigned | `0` ACCEPT | D-262's trap, reproduced live |
+
+Costs nothing and reaches no cloud: signing and verification both run inside the base image with the
+`skopeo` it already carries (1.23.0), against a few-KB throwaway image over the `dir:` transport.
+
+That skopeo is the same one `bootc` itself shells out to — `rpm -q --requires bootc` lists `skopeo`,
+and the `bootc` binary embeds `containers-image-proxy`, which spawns `skopeo
+experimental-image-proxy` and carries `--insecure-policy` as an explicit *opt-out*. **Still not
+established, and deliberately not claimed here:** a booted end-to-end `bootc upgrade` refusing a
+mis-signed image. The evidence above is the enforcement path plus bootc's dependency on it, not a
+booted assertion — and this directory's own P-303 lesson is that a booted assertion is the one that
+counts. Prove it on the first bootc host P-305 boots.
+
+`release-signature-policy.json` is that policy, as a **template**: the registry namespace and the
+public-key path are placeholders, because P-307 establishes the namespace and P-308's `cosign sign`
+produces the signature. A placeholder fails *closed*, which is the right direction for an unfinished
+supply chain. Per D-262 the two items are coupled — shipping the policy without the signature bricks
+upgrades, shipping the signature without the policy verifies nothing — and until both hold, **the
+tarball's minisign verification must not be removed** (EPEL 9 carries minisign for the transition).
+
 ## What this is NOT
 
 Not the product image, and not the bootstrap port. The Containerfile says so in its own header: it
-installs only what proves the model works. Re-deriving the real package set on this base is P-304;
-porting the bootstrap is P-306; collapsing the three per-cloud bake paths (today
-`infra/images/workspace-host.pkr.hcl`) into one `bootc-image-builder` pipeline is P-307.
+installs only what proves the model works — it is **not** built from `RPM-EQUIVALENCE.md`'s package
+set, and deliberately so: it is the P-303 proof artifact and stays byte-identical to what booted.
+Porting the bootstrap onto that package set is P-306; collapsing the three per-cloud bake paths
+(today `infra/images/workspace-host.pkr.hcl`) into one `bootc-image-builder` pipeline is P-307.
 
 ## Reproduce the ACL defect (no VM, no cloud, ~3 min)
 
@@ -83,6 +137,26 @@ sudo podman run --rm --entrypoint /usr/bin/getfacl papercusp-bootc-spike:p303 -p
 
 `gcp-boot-proof.sh` drives the full convert → upload → create-image → boot → read-serial → teardown
 cycle. `PROJECT` is env-overridable; it defaults to the spike's project.
+
+## Re-run the other two probes (no VM, no cloud, seconds each)
+
+```bash
+# Is the signature policy enforced, and does it fail closed?  Expect PROBE_RESULT=PASS.
+sudo -n bash infra/images/bootc/p306-signature-policy-probe.sh
+
+# Do the RPM equivalents in RPM-EQUIVALENCE.md still hold on today's base?
+sudo -n podman run --rm -i --entrypoint /bin/bash quay.io/centos-bootc/centos-bootc:stream9 -s \
+  < infra/images/bootc/verify-rpm-equivalents.sh
+```
+
+Both are worth re-running rather than trusting, for the same reason the `podman build` above is:
+`centos-bootc:stream9` is a **moving tag**, so "byte-identical to what was proven" and "still true"
+are different claims that only happen to agree today.
+
+⚠ The `-i` in that second command is load-bearing. Without it `podman run` never attaches stdin, the
+script is never delivered, and the container **exits 0 having run nothing** — a green result from an
+instrument that measured nothing. That mistake was made and caught while writing these probes; if
+you adapt them, keep a line of output that proves the payload actually arrived.
 
 ## References
 
