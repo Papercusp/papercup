@@ -25,8 +25,8 @@ import type { CodeIntelBackend, CodeIntelIntent } from './contracts.ts';
  * The commit the ground truth below was measured against.
  * Re-pin this together with any fixture re-measurement.
  */
-export const CORPUS_BASELINE_COMMIT = '44fee4e831dcabceab5c4b1263a46d96f7d524ab';
-export const CORPUS_BASELINE_MEASURED_AT = '2026-08-23T06:12:00Z';
+export const CORPUS_BASELINE_COMMIT = 'e443b3026823fd8b5ff23d9d22b27d61606a3464';
+export const CORPUS_BASELINE_MEASURED_AT = '2026-09-04T17:47:50Z';
 
 /**
  * A location this corpus asserts exists in the tree, ONE-indexed.
@@ -175,12 +175,12 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
     expectedSites: [
       {
         path: 'papercusp-desktop/src-tauri/src/endpoint_ipc.rs',
-        line1: 295,
+        line1: 319,
         symbolOnLine: 'impl AsyncRead for IpcStream',
       },
       {
         path: 'papercusp-desktop/src-tauri/src/endpoint_ipc.rs',
-        line1: 311,
+        line1: 335,
         symbolOnLine: 'impl AsyncWrite for IpcStream',
       },
     ],
@@ -207,7 +207,7 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
       },
       {
         path: 'packages/operator-core/lib/fleet/spawner-sidecar-spawn.ts',
-        line1: 332,
+        line1: 341,
         symbolOnLine: 'await managedSpawn',
       },
     ],
