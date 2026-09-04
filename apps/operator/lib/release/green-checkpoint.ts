@@ -7547,7 +7547,7 @@ export function frozenRepairHoldEscalationBody(
 
 /**
  * P-010 / D-011: the 8h-cadence AGE escalation for an open frozen candidate. It replaces the
- * deleted `maxAgeMs` retirement: the pin is never cleared for being old, so the escalation has to
+ * deleted 8h age-budget retirement: the pin is never cleared for being old, so the escalation has to
  * carry the whole story — how long it has been held, where it is, and that the ONLY movers are an
  * admission onto the lineage or an owner retire.
  */

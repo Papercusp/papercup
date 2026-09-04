@@ -842,14 +842,19 @@ describe('frozen-candidate repair queue', () => {
     expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 102 })).toEqual(decision);
   });
 
-  it('holds at the wall-clock boundary but never blocks an already-green head', () => {
-    const expiresAt = T0 + DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS.maxAgeMs;
-    expect(
-      decideFrozenCandidateRepairQueue(fresh(), { nowMs: expiresAt }),
-    ).toMatchObject({
-      kind: 'hold-exhausted',
-      reason: 'wall-clock-exhausted',
+  it('P-010: age is not an input — past the former 8h budget a queue still verifies, and an already-green head still promotes', () => {
+    // The FORMER wall-clock boundary. It used to decide `hold-exhausted (wall-clock-exhausted)`
+    // here; now nothing reads the age except the escalation rung.
+    const expiresAt = T0 + 8 * 60 * 60 * 1_000;
+    const ancient = expiresAt + 30 * 24 * 60 * 60 * 1_000;
+    const decision = decideFrozenCandidateRepairQueue(fresh(), { nowMs: ancient });
+    expect(decision.kind).not.toBe('hold-exhausted');
+    expect(JSON.stringify(decision)).not.toMatch(/wall-clock/);
+    expect(diagnoseFrozenCandidateRepairQueue(fresh(), { nowMs: ancient })).toMatchObject({
+      ageEscalationRung: 91,
+      ageEscalationIntervalMs: 8 * 60 * 60 * 1_000,
     });
+    expect(diagnoseFrozenCandidateRepairQueue(fresh(), { nowMs: ancient })).not.toHaveProperty('ageExpired');
 
     let green = markFrozenRepairFixerDispatched(fresh(), {
       spawnId: 'spawn-1',
@@ -937,7 +942,6 @@ describe('frozen-candidate repair queue', () => {
  * re-wired one site shows up as a changed reason rather than a vacuous "it holds".
  */
 describe('D-005 — an exhausted frozen candidate HOLDS; it never re-cuts (P-048 hatch deleted)', () => {
-  const EXPIRES_AT = T0 + DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS.maxAgeMs;
   const HOLD = {
     kind: 'hold-exhausted',
     gateDisposition: 'blocked',
@@ -969,15 +973,15 @@ describe('D-005 — an exhausted frozen candidate HOLDS; it never re-cuts (P-048
   /** A queue already PERSISTED as blocked — the steady state of the hold. */
   function persistedBlocked(): FrozenCandidateRepairQueue {
     return markFrozenRepairExhausted(fresh(), {
-      reason: 'wall-clock-exhausted',
+      reason: 'attempts-exhausted',
       nowMs: T0 + 5,
     });
   }
 
-  /** The three exhaustion sites, each with the queue + observation that reaches it. */
+  /** The two exhaustion sites, each with the queue + observation that reaches it. (The third,
+   * the 8h wall clock, was deleted by P-010: age is not an exhaustion site any more.) */
   const SITES = [
-    { site: 'persisted-blocked', queue: persistedBlocked, nowMs: T0 + 6, reason: 'wall-clock-exhausted', repairHead: C },
-    { site: 'wall-clock', queue: fresh, nowMs: EXPIRES_AT, reason: 'wall-clock-exhausted', repairHead: C },
+    { site: 'persisted-blocked', queue: persistedBlocked, nowMs: T0 + 6, reason: 'attempts-exhausted', repairHead: C },
     { site: 'attempt-bound', queue: attemptsExhausted, nowMs: T0 + 100, reason: 'attempts-exhausted', repairHead: '3'.repeat(40) },
   ] as const;
 
@@ -993,9 +997,10 @@ describe('D-005 — an exhausted frozen candidate HOLDS; it never re-cuts (P-048
   it.each(SITES)('$site: holds under ANY limits — no limit object re-opens a re-cut', ({ queue, nowMs }) => {
     const variants = [
       DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
-      { maxAttempts: 1, maxAgeMs: 1 },
-      { maxAttempts: 99, maxAgeMs: 1 },
+      { maxAttempts: 1 },
       { ...DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS, maxFreeRetries: 0 },
+      // A stale caller still passing the P-010-deleted age budget: ignored, never honoured.
+      { ...DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS, maxAgeMs: 1 } as unknown as typeof DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
       // A stale caller still passing the deleted budget field: ignored, never honoured.
       { ...DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS, maxCandidateEscapes: 5 } as unknown as typeof DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
     ];

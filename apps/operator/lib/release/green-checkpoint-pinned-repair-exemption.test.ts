@@ -71,7 +71,7 @@ describe("isJudgingPinnedActiveRepair — the fossil verdict exemption (plan D-0
         candidate: CAND,
         repairCandidate: CAND,
         repairPhase: "ready-to-test",
-        repairBlockedReason: "wall-clock-exhausted",
+        repairBlockedReason: "attempts-exhausted",
       }),
     ).toBe(false);
   });

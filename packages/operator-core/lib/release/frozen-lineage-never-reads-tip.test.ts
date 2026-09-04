@@ -16,8 +16,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
+  FROZEN_REPAIR_AGE_ESCALATION_INTERVAL_MS,
   FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
   decideFrozenCandidateRepairQueue,
+  parseFrozenCandidateRepairQueue,
   type FrozenCandidateRepairPhase,
   type FrozenCandidateRepairQueue,
   type FrozenRepairQueueObservation,
@@ -26,7 +28,10 @@ import {
 const C = '1111111111111111111111111111111111111111';
 const R = '2222222222222222222222222222222222222222';
 const T0 = 1_800_000_000_000;
-const { maxAgeMs, maxAttempts } = DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS;
+const { maxAttempts } = DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS;
+// The FORMER 8h wall-clock budget, deleted in P-010. Kept only as an observation EDGE: every row
+// below is also driven past it, and nothing may hold, clear or re-cut on it any more.
+const maxAgeMs = FROZEN_REPAIR_AGE_ESCALATION_INTERVAL_MS;
 
 const PHASES: FrozenCandidateRepairPhase[] = ['ready-to-test', 'awaiting-fixer', 'ready-to-verify', 'ready-to-promote', 'blocked'];
 
@@ -67,7 +72,15 @@ const ROW_VARIANTS: Array<{ label: string; make: (phase: FrozenCandidateRepairPh
   { label: 'attempts exhausted, fixer named', make: (p) => row(p, { attempts: maxAttempts, fixerSpawnId: 'spawn-x' }) },
   { label: 'attempts exhausted, unassigned', make: (p) => row(p, { attempts: maxAttempts, fixerSpawnId: null }) },
   { label: 'zero attempts, unassigned', make: (p) => row(p, { attempts: 0, fixerSpawnId: null }) },
-  { label: 'blocked on wall clock', make: (p) => row(p, p === 'blocked' ? { blockedReason: 'wall-clock-exhausted' } : {}) },
+  // P-010: a row PERSISTED blocked by the deleted wall-clock hold, as the parser now returns it
+  // (phase ready-to-verify, no blockedReason) — the legacy shape still never judges the tip.
+  {
+    label: 'legacy blocked-on-wall-clock row, as parsed',
+    make: (p) =>
+      p === 'blocked'
+        ? parseFrozenCandidateRepairQueue({ ...row(p), blockedReason: 'wall-clock-exhausted' } as unknown as FrozenCandidateRepairQueue)!
+        : row(p),
+  },
 ];
 
 const TIP_JUDGING_KINDS = new Set(['run-normal-gate', 'recut-at-tip']);
@@ -98,7 +111,8 @@ describe('a queue row in any phase never lets the gate judge the tip (P-013(b))'
     // A zeroed budget would be a switch someone could flip back on; the field's ABSENCE is
     // the property. A stray value on a stale caller's limits object is ignored, never honoured.
     expect(DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS).not.toHaveProperty('maxCandidateEscapes');
-    expect(Object.keys(DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS).sort()).toEqual(['maxAgeMs', 'maxAttempts']);
+    // P-010 deleted `maxAgeMs` the same way: absent, not zeroed.
+    expect(Object.keys(DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS).sort()).toEqual(['maxAttempts']);
   });
 
   it('no queue row at all is the ONLY input that judges the tip', () => {
@@ -223,9 +237,34 @@ describe('no age, stall or fossil clock ever clears a queue row (P-009/P-010)', 
     }
   });
 
-  it('the queue limits carry no wall-clock retirement input the gate could act on', () => {
-    // P-010 proper (deleting `maxAgeMs`) lands separately; until then this pins that the GATE
-    // never reads the queue's age against a threshold to decide a clear.
-    expect(GATE_SOURCE).not.toMatch(/maxAgeMs\s*\)\s*\{[\s\S]{0,400}writeFrozenRepairQueue/);
+  it('P-010: no age budget survives anywhere the gate or the queue policy could act on', () => {
+    // Structure: the limits carry no age field, and the gate source names neither the deleted
+    // budget nor its diagnostic projection.
+    expect(DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS).not.toHaveProperty('maxAgeMs');
+    expect(GATE_SOURCE).not.toMatch(/maxAgeMs|ageExpired|wall-clock-exhausted/);
+    // The one age read the gate is allowed — the escalation rung — may never sit beside a queue
+    // clear: every rung read must be followed by a NON-null queue write, not a null one.
+    for (const m of GATE_SOURCE.matchAll(/frozenRepairAgeEscalationRung\(/g)) {
+      const after = GATE_SOURCE.slice(m.index!, m.index! + 1200);
+      expect(after, `rung read at offset ${m.index} is followed by a queue clear`).not.toMatch(/writeFrozenRepairQueue\?\.\(\s*null/);
+    }
+    // Behaviour: no open phase, however old, ever decides to hold on the clock — and a stale
+    // caller still passing the deleted budget is ignored, never honoured.
+    const ancient = { nowMs: T0 + 1000 * maxAgeMs };
+    for (const phase of PHASES) {
+      if (phase === 'blocked') continue;
+      for (const limits of [DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS, { maxAttempts, maxAgeMs: 1 } as unknown as typeof DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS]) {
+        const decision = decideFrozenCandidateRepairQueue(row(phase), ancient, limits);
+        expect(decision.kind, `${phase} held on age`).not.toBe('hold-exhausted');
+        expect(JSON.stringify(decision)).not.toMatch(/wall-clock/);
+      }
+    }
+    // Migration: a row persisted blocked by the deleted hold comes back to verification on read,
+    // so no queue stays wedged behind a reason nothing can produce any more.
+    const legacy = parseFrozenCandidateRepairQueue({ ...row('blocked'), blockedReason: 'wall-clock-exhausted' } as unknown as FrozenCandidateRepairQueue);
+    expect(legacy?.phase).toBe('ready-to-verify');
+    expect(legacy).not.toHaveProperty('blockedReason');
+    // And a genuinely attempt-exhausted blocked row is untouched by that migration.
+    expect(parseFrozenCandidateRepairQueue(row('blocked'))?.phase).toBe('blocked');
   });
 });

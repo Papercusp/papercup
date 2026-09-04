@@ -438,6 +438,11 @@ export interface FrozenCandidateRepairQueue {
   fixerSpawnId: string | null;
   /** Automation may stop, but the queue head remains immutable until it is green. */
   blockedReason?: FrozenCandidateBlockedReason;
+  /**
+   * P-010: the highest 8h age rung the gate has already escalated for this queue (absent = none
+   * yet). A monotone high-water mark so the age alert fires once per rung, never per tick.
+   */
+  ageEscalatedRung?: number;
   /** Short-lived CAS lease held only while one process launches this queue's fixer. */
   dispatchReservation?: FrozenRepairDispatchReservation;
   /**
