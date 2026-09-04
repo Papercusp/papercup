@@ -541,6 +541,7 @@ import './dev/claude_session';
 import './flags/list';
 import './flags/get';
 import './flags/set';
+import './flags/attest';
 
 // Queen autonomy policy — per-category risk ceilings (queen-autonomy-policy B-03).
 import './autonomy/get';

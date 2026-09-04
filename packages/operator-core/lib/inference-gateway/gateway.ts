@@ -686,7 +686,12 @@ export const AUTO_AFFINITY_TTL_MS = Number(process.env.PAPERCUSP_GATEWAY_AUTO_AF
  *  per-user-only id can never collapse every headerless session onto one account. Pure; exported for tests. */
 export function autoAffinityKey(ownerId: string | undefined, metaUserId: unknown): string | undefined {
   if (ownerId) return ownerId;
-  if (typeof metaUserId === 'string' && metaUserId.length > 0 && metaUserId.length <= 512 && /session/i.test(metaUserId)) {
+  if (
+    typeof metaUserId === 'string' &&
+    metaUserId.length > 0 &&
+    metaUserId.length <= 512 &&
+    /session/i.test(metaUserId)
+  ) {
     return `meta:${metaUserId}`;
   }
   return undefined;
@@ -739,7 +744,8 @@ export function supportsContext1m(model: string, priorContext1mModel?: string | 
  *  ("does not support effort level 'xhigh'" on the sonnet downgrade, then "Prompt is too long"). The
  *  estimate under-reads real usage by ~28% on code-heavy bodies (720KB ⇒ 180k est vs 248,703 real), so
  *  the floor sits well under 200k. */
-export const CONTEXT_1M_STICKY_MIN_EST_TOKENS = Number(process.env.PAPERCUSP_GATEWAY_CONTEXT_1M_STICKY_MIN_EST) || 120_000;
+export const CONTEXT_1M_STICKY_MIN_EST_TOKENS =
+  Number(process.env.PAPERCUSP_GATEWAY_CONTEXT_1M_STICKY_MIN_EST) || 120_000;
 
 /** STICKY 1M WINDOW (WI-2140943 lane 2). A caller whose recent requests were served at 1M, now sending
  *  the same family WITHOUT the marker while carrying a body too large for 200k, gets the beta restored:
@@ -1132,6 +1138,81 @@ export interface GatewayDeps {
   ensureLocalBackendRunning?: (backend: LocalBackend) => Promise<{ ok: boolean; error?: string }>;
 }
 
+export type GatewayRoutingSelectionMode = 'automatic' | 'affinity' | 'soft-pin' | 'hard-pin';
+
+/** One bounded, privacy-safe explanation of the gateway's INITIAL account choice for a logical request.
+ * Retries remain attempt telemetry; keeping them out of this ring makes `upstream429s / picks` a useful
+ * amplification ratio instead of silently changing the denominator on every internal failover. */
+export interface GatewayRoutingDecision {
+  sequence: number;
+  at: number;
+  provider: 'claude' | 'codex';
+  owner: string | null;
+  selectedAccount: string;
+  mode: GatewayRoutingSelectionMode;
+  reason: 'health-ranked' | 'fallback-list-order' | 'affinity-kept' | 'pin-kept' | 'pin-yield';
+  requestedAccount: string | null;
+  yieldedFrom: string | null;
+  /** accountLoadKey is lower-is-better. null means the account was not serviceable (Infinity), never 0. */
+  selectedScore: number | null;
+  selectedServiceable: boolean;
+  bestAvailableAccount: string | null;
+  bestAvailableScore: number | null;
+  /** null means no serviceable comparator existed at pick time. */
+  divergedFromBest: boolean | null;
+  /** Intentional affinity/hard/soft pins are evidence, but never automatic-router defects. */
+  includedInAutomaticDivergence: boolean;
+}
+
+export interface GatewayRoutingQualitySnapshot {
+  countersSinceMs: number;
+  recentLimit: number;
+  scoreSemantics: 'accountLoadKey; lower-is-better; null=unserviceable';
+  picks: number;
+  /** True HTTP 429 attempts only. Unlike legacy GatewayStats.upstream429, this excludes HTTP 529. */
+  upstream429s: number;
+  /** May exceed 1 when one logical pick produces multiple throttled retry attempts. */
+  upstream429PerPick: number | null;
+  automatic: {
+    picks: number;
+    comparablePicks: number;
+    divergences: number;
+    divergenceRate: number | null;
+  };
+  pins: {
+    picks: number;
+    explicitPicks: number;
+    affinityPicks: number;
+    yields: number;
+    yieldRate: number | null;
+  };
+  byProvider: Record<
+    'claude' | 'codex',
+    {
+      picks: number;
+      upstream429s: number;
+      upstream429PerPick: number | null;
+      automatic: {
+        picks: number;
+        comparablePicks: number;
+        divergences: number;
+        divergenceRate: number | null;
+      };
+      pins: {
+        picks: number;
+        explicitPicks: number;
+        affinityPicks: number;
+        yields: number;
+        yieldRate: number | null;
+      };
+      byAccount: Record<string, { picks: number; upstream429s: number; upstream429PerPick: number | null }>;
+    }
+  >;
+  /** null on /stats and the owner-report overview; an owner id on ?owner= filters only this bounded ring. */
+  recentScope: string | null;
+  recent: GatewayRoutingDecision[];
+}
+
 export interface GatewayStats {
   accountId: string;
   upstreamBase: string;
@@ -1149,6 +1230,9 @@ export interface GatewayStats {
    * every `/stats` read. The same collector augments `/admin/owner-report`.
    */
   requestStages?: GatewayRequestTelemetrySnapshot;
+  /** Routing-quality evidence and ratios since this gateway process started (P-007). Optional only for
+   * deploy-skew readers of an older live gateway; this implementation emits it on every stats read. */
+  routingQuality?: GatewayRoutingQualitySnapshot;
   /** Prompt-cache-policy telemetry (gateway-cache-plane-shared-prefix-ttl-2026-07-19 P-002):
    *  what the request-body rewrite did, as a byproduct of doing it. `breakpointHistogram[n]` =
    *  requests that arrived carrying n cache_control markers (the headroom for the opt-in
@@ -2811,6 +2895,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     account: ActiveAccount,
     at: number,
     cgov?: RateLimitGovernor,
+    inFlightAdjustment = 0,
   ): number => {
     const accountId = account.accountId;
     const h = accountRateHints.get(accountId);
@@ -2820,10 +2905,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         (cgov?.state.pausedUntil ?? 0) > at ||
         (egressPauseUntil.get(accountId) ?? 0) > at ||
         (h?.pausedUntil ?? 0) > at,
-      exhausted:
-        !!unified?.rejected && !(unified.resetAt > 0 && unified.resetAt <= at),
+      exhausted: !!unified?.rejected && !(unified.resetAt > 0 && unified.resetAt <= at),
       transportHealth: (egressFailStreak.get(accountId) ?? 0) > 0 ? 'degraded' : 'healthy',
-      inFlight: cgov?.state.inFlight,
+      inFlight: cgov ? Math.max(0, cgov.state.inFlight + inFlightAdjustment) : undefined,
       utilization: unified?.utilization,
       capacityWindows: [
         { utilization: unified?.utilization, resetAt: unified?.resetAt },
@@ -2845,14 +2929,229 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     return base;
   };
+
+  // ROUTING-QUALITY OBSERVABILITY (intelligent-account-routing P-007): one bounded decision ring plus
+  // process-local aggregates, attached to the existing /stats + /admin/owner-report plane. A "pick" is the
+  // final INITIAL account decision for one logical inference request. Internal retries increment only their
+  // attempted account's true-429 numerator, so `upstream429PerPick` exposes retry amplification rather than
+  // hiding it by growing both sides of the ratio.
+  interface RoutingQualityTally {
+    picks: number;
+    upstream429s: number;
+    automaticPicks: number;
+    comparableAutomaticPicks: number;
+    automaticDivergences: number;
+    pinPicks: number;
+    explicitPinPicks: number;
+    affinityPicks: number;
+    pinYields: number;
+  }
+  const newRoutingQualityTally = (): RoutingQualityTally => ({
+    picks: 0,
+    upstream429s: 0,
+    automaticPicks: 0,
+    comparableAutomaticPicks: 0,
+    automaticDivergences: 0,
+    pinPicks: 0,
+    explicitPinPicks: 0,
+    affinityPicks: 0,
+    pinYields: 0,
+  });
+  const ROUTING_DECISION_RECENT_MAX = 128;
+  const routingQualityTotal = newRoutingQualityTally();
+  const routingQualityByProvider: Record<'claude' | 'codex', RoutingQualityTally> = {
+    claude: newRoutingQualityTally(),
+    codex: newRoutingQualityTally(),
+  };
+  const routingQualityByAccount: Record<'claude' | 'codex', Map<string, { picks: number; upstream429s: number }>> = {
+    claude: new Map(),
+    codex: new Map(),
+  };
+  const recentRoutingDecisions: GatewayRoutingDecision[] = [];
+  let routingDecisionSequence = 0;
+  const routingRatio = (numerator: number, denominator: number): number | null =>
+    denominator > 0 ? Math.round((numerator / denominator) * 1_000_000) / 1_000_000 : null;
+  const routingAccountRow = (provider: 'claude' | 'codex', accountId: string) => {
+    let row = routingQualityByAccount[provider].get(accountId);
+    if (!row) {
+      row = { picks: 0, upstream429s: 0 };
+      routingQualityByAccount[provider].set(accountId, row);
+    }
+    return row;
+  };
+  const routingAccountScore = (
+    provider: 'claude' | 'codex',
+    source: AccountPool | undefined,
+    account: ActiveAccount,
+    model: string | undefined,
+    at: number,
+    inFlightAdjustment = 0,
+  ): number => {
+    const inRotation = source?.healthyCount
+      ? source.healthyCount((accountId) => accountId === account.accountId) > 0
+      : true;
+    if (!inRotation) return Infinity;
+    return accountHealthKey(
+      account,
+      at,
+      provider === 'claude' ? governorForAccount(model ?? SERVICEABLE_CLAMP_MODEL, account.accountId) : undefined,
+      inFlightAdjustment,
+    );
+  };
+  function recordRoutingPick(input: {
+    provider: 'claude' | 'codex';
+    ownerId?: string;
+    source?: AccountPool;
+    selected: ActiveAccount;
+    model?: string;
+    mode: GatewayRoutingSelectionMode;
+    reason: GatewayRoutingDecision['reason'];
+    requestedAccount?: string | null;
+    yieldedFrom?: string | null;
+    /** Claude records after governor admission; subtract this request's own slot from decision-time evidence. */
+    selectedAdmissionHeld?: boolean;
+  }): void {
+    const at = Date.now();
+    const sourceEntries = input.source?.entries?.();
+    const candidates = sourceEntries?.length ? [...sourceEntries] : [input.selected];
+    if (!candidates.some((account) => account.accountId === input.selected.accountId)) candidates.push(input.selected);
+    const scores = candidates.map((account) => ({
+      account,
+      score: routingAccountScore(
+        input.provider,
+        input.source,
+        account,
+        input.model,
+        at,
+        input.selectedAdmissionHeld && account.accountId === input.selected.accountId ? -1 : 0,
+      ),
+    }));
+    const selectedScoreRaw = routingAccountScore(
+      input.provider,
+      input.source,
+      input.selected,
+      input.model,
+      at,
+      input.selectedAdmissionHeld ? -1 : 0,
+    );
+    const best = scores
+      .filter((candidate) => Number.isFinite(candidate.score))
+      .sort((a, b) => a.score - b.score || a.account.accountId.localeCompare(b.account.accountId))[0];
+    const divergedFromBest = best ? selectedScoreRaw > best.score : null;
+    const includedInAutomaticDivergence = input.mode === 'automatic' && divergedFromBest !== null;
+    const decision: GatewayRoutingDecision = {
+      sequence: ++routingDecisionSequence,
+      at,
+      provider: input.provider,
+      owner: input.ownerId ?? null,
+      selectedAccount: input.selected.accountId,
+      mode: input.mode,
+      reason: input.reason,
+      requestedAccount: input.requestedAccount ?? null,
+      yieldedFrom: input.yieldedFrom ?? null,
+      selectedScore: Number.isFinite(selectedScoreRaw) ? Math.round(selectedScoreRaw * 1000) / 1000 : null,
+      selectedServiceable: Number.isFinite(selectedScoreRaw),
+      bestAvailableAccount: best?.account.accountId ?? null,
+      bestAvailableScore: best ? Math.round(best.score * 1000) / 1000 : null,
+      divergedFromBest,
+      includedInAutomaticDivergence,
+    };
+    recentRoutingDecisions.push(decision);
+    if (recentRoutingDecisions.length > ROUTING_DECISION_RECENT_MAX) {
+      recentRoutingDecisions.splice(0, recentRoutingDecisions.length - ROUTING_DECISION_RECENT_MAX);
+    }
+    const account = routingAccountRow(input.provider, input.selected.accountId);
+    account.picks++;
+    for (const tally of [routingQualityTotal, routingQualityByProvider[input.provider]]) {
+      tally.picks++;
+      if (input.mode === 'automatic') {
+        tally.automaticPicks++;
+        if (includedInAutomaticDivergence) {
+          tally.comparableAutomaticPicks++;
+          if (divergedFromBest) tally.automaticDivergences++;
+        }
+      } else {
+        tally.pinPicks++;
+        if (input.mode === 'affinity') tally.affinityPicks++;
+        else tally.explicitPinPicks++;
+        if (input.yieldedFrom) tally.pinYields++;
+      }
+    }
+  }
+  function recordRoutingUpstream429(provider: 'claude' | 'codex', accountId: string): void {
+    routingQualityTotal.upstream429s++;
+    routingQualityByProvider[provider].upstream429s++;
+    routingAccountRow(provider, accountId).upstream429s++;
+  }
+  const routingQualitySnapshot = (recentOwner?: string): GatewayRoutingQualitySnapshot => {
+    const snapshotTally = (provider: 'claude' | 'codex') => {
+      const tally = routingQualityByProvider[provider];
+      return {
+        picks: tally.picks,
+        upstream429s: tally.upstream429s,
+        upstream429PerPick: routingRatio(tally.upstream429s, tally.picks),
+        automatic: {
+          picks: tally.automaticPicks,
+          comparablePicks: tally.comparableAutomaticPicks,
+          divergences: tally.automaticDivergences,
+          divergenceRate: routingRatio(tally.automaticDivergences, tally.comparableAutomaticPicks),
+        },
+        pins: {
+          picks: tally.pinPicks,
+          explicitPicks: tally.explicitPinPicks,
+          affinityPicks: tally.affinityPicks,
+          yields: tally.pinYields,
+          yieldRate: routingRatio(tally.pinYields, tally.pinPicks),
+        },
+        byAccount: Object.fromEntries(
+          [...routingQualityByAccount[provider]].map(([accountId, row]) => [
+            accountId,
+            {
+              ...row,
+              upstream429PerPick: routingRatio(row.upstream429s, row.picks),
+            },
+          ]),
+        ),
+      };
+    };
+    return {
+      countersSinceMs: processStartedAt,
+      recentLimit: ROUTING_DECISION_RECENT_MAX,
+      scoreSemantics: 'accountLoadKey; lower-is-better; null=unserviceable',
+      picks: routingQualityTotal.picks,
+      upstream429s: routingQualityTotal.upstream429s,
+      upstream429PerPick: routingRatio(routingQualityTotal.upstream429s, routingQualityTotal.picks),
+      automatic: {
+        picks: routingQualityTotal.automaticPicks,
+        comparablePicks: routingQualityTotal.comparableAutomaticPicks,
+        divergences: routingQualityTotal.automaticDivergences,
+        divergenceRate: routingRatio(
+          routingQualityTotal.automaticDivergences,
+          routingQualityTotal.comparableAutomaticPicks,
+        ),
+      },
+      pins: {
+        picks: routingQualityTotal.pinPicks,
+        explicitPicks: routingQualityTotal.explicitPinPicks,
+        affinityPicks: routingQualityTotal.affinityPicks,
+        yields: routingQualityTotal.pinYields,
+        yieldRate: routingRatio(routingQualityTotal.pinYields, routingQualityTotal.pinPicks),
+      },
+      byProvider: { claude: snapshotTally('claude'), codex: snapshotTally('codex') },
+      recentScope: recentOwner ?? null,
+      recent: recentOwner
+        ? recentRoutingDecisions.filter((decision) => decision.owner === recentOwner)
+        : [...recentRoutingDecisions],
+    };
+  };
+
   /** Request-local view of a Codex pool: pins remain strict through select(), while every unpinned
    *  initial pick and post-failure rotation asks the pool to rank with the shared health key. */
   const healthAwareCodexPool = (source: AccountPool): AccountPool => {
     const keyOf = (account: ActiveAccount) => accountHealthKey(account, Date.now());
     return {
       active: (override) => source.active(override ?? keyOf),
-      onExhausted: (accountId, resetAt, override) =>
-        source.onExhausted(accountId, resetAt, override ?? keyOf),
+      onExhausted: (accountId, resetAt, override) => source.onExhausted(accountId, resetAt, override ?? keyOf),
       select: (accountId) => source.select?.(accountId) ?? null,
       readmit: (accountId) => source.readmit?.(accountId),
       healthyCount: (extra) => source.healthyCount?.(extra) ?? 0,
@@ -2987,15 +3286,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const ownerLedger = new Map<string, OwnerLedgerEntry>();
   function recordOwnerOutcome(
     ownerId: string | undefined,
-    kind:
-      | 'request'
-      | 'ok'
-      | 'upstream_error'
-      | 'upstream_429'
-      | 'shed'
-      | 'stall'
-      | 'pin_yield'
-      | 'context_1m_restored',
+    kind: 'request' | 'ok' | 'upstream_error' | 'upstream_429' | 'shed' | 'stall' | 'pin_yield' | 'context_1m_restored',
     opts: { account?: string; status?: number; detail?: string } = {},
   ): void {
     if (!ownerId) return;
@@ -3325,6 +3616,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       scheduledTimers: listManaged(),
       totalRequests,
       requestStages: requestStageTelemetry.snapshot(),
+      routingQuality: routingQualitySnapshot(),
       // P-002: the live breakpoint-layout measurement (see recordCachePolicy).
       cachePolicy: {
         enabled: cachePolicyEnabled,
@@ -4028,8 +4320,38 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // lowest unified utilization (most residual budget). u ∈ [0,1] keeps the flaky bucket disjoint; a clean,
     // idle, fresh-proxy account scores 0. SHARED by the unpinned proactive pick AND the soft-pin failover.
     const now0 = Date.now();
-    const keyOf = (cgov: RateLimitGovernor, account: ActiveAccount): number =>
-      accountHealthKey(account, now0, cgov);
+    const keyOf = (cgov: RateLimitGovernor, account: ActiveAccount): number => accountHealthKey(account, now0, cgov);
+    let routingPickRecorded = false;
+    const recordClaudeRoutingPick = (selectedAdmissionHeld = false): void => {
+      if (routingPickRecorded) return;
+      routingPickRecorded = true;
+      const mode: GatewayRoutingSelectionMode = hardPin
+        ? 'hard-pin'
+        : headerPinned
+          ? 'soft-pin'
+          : affinityPinned
+            ? 'affinity'
+            : 'automatic';
+      const yieldedFrom = pinned && active.accountId !== pinned.accountId ? pinned.accountId : null;
+      recordRoutingPick({
+        provider: 'claude',
+        ownerId: wantOwner,
+        source: pool,
+        selected: active,
+        model,
+        mode,
+        reason: yieldedFrom
+          ? 'pin-yield'
+          : mode === 'automatic'
+            ? 'health-ranked'
+            : mode === 'affinity'
+              ? 'affinity-kept'
+              : 'pin-kept',
+        requestedAccount: pinned?.accountId ?? null,
+        yieldedFrom,
+        selectedAdmissionHeld,
+      });
+    };
     if (pinned === null) {
       // SEED with the round-robin pick so a healthy active() is KEPT — round-robin fairness is preserved and
       // only a STRICTLY-better account displaces it. A key-0 active (healthy, idle, fresh proxy) can't be beaten
@@ -4190,6 +4512,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // short transient for an in-process caller — AIMD (above), not this shed, bounds that absorb's blast
       // radius by shrinking how many slots are admitted at once.
       if (!found && soonestPaused - Date.now() > maxQueueWaitMs) {
+        recordClaudeRoutingPick();
         totalRequests++;
         shedAllThrottled++;
         recordOwnerOutcome(wantOwner, 'shed', { detail: 'all-throttled fail-fast' }); // P-008 ledger
@@ -4241,6 +4564,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       release = await gov.acquire(est, { maxWaitMs: maxQueueWaitMs, allowSoftPaused: serveSoft });
     }
     if (!release) {
+      recordClaudeRoutingPick();
       queued429++;
       recordOwnerOutcome(wantOwner, 'shed', { account: active.accountId, detail: 'admission timeout' }); // P-008 ledger
       const retryAfterSec = Math.min(
@@ -4263,6 +4587,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       );
       return;
     }
+
+    recordClaudeRoutingPick(true);
 
     // Downstream-idle guard (2026-06-20 wedge #2): a hung/half-open bee that stopped reading mid-stream
     // had no deadline — the upstream stall-guard aborts UPSTREAM only, so a completed-upstream + dead
@@ -4979,6 +5305,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
                 if (status === 429 || status === 529) {
                   upstream429++;
+                  if (status === 429) recordRoutingUpstream429('claude', account.accountId);
                   throttled429AccountId = account.accountId;
                   const reset = parseRateReset(hobj);
                   const unifiedRejected = accountGov.snapshot().unified?.rejected === true;
@@ -5849,7 +6176,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     let effort = parsedBridgeModel.effort;
     if (body.reasoning && typeof body.reasoning === 'object' && !Array.isArray(body.reasoning)) {
       const requestedEffort = (body.reasoning as Record<string, unknown>).effort;
-      if (typeof requestedEffort === 'string' && /^(minimal|low|medium|high|xhigh|max)$/i.test(requestedEffort.trim())) {
+      if (
+        typeof requestedEffort === 'string' &&
+        /^(minimal|low|medium|high|xhigh|max)$/i.test(requestedEffort.trim())
+      ) {
         effort = requestedEffort.trim().toLowerCase();
       }
     }
@@ -6027,6 +6357,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             lastFailureDetail = error.message;
             if (isCodexRateLimitFailure(error.message)) {
               codexUpstream429++;
+              recordRoutingUpstream429('codex', account);
               providerAdmission.recordThrottle('codex');
               recordOwnerOutcome(routing.ownerId, 'upstream_429', { account, status: 429, detail: 'cli-bridge' });
               log('warn', `inference-gateway: codex-cli bridge rate-limited on '${account}': ${error.message}`);
@@ -6108,7 +6439,29 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // response.completed alone records usage but drops the text.
               openSse();
               stopKeepalive();
-              res.end(codexCliResponsesCompletionSse(served));
+              // The SSE head was committed before the kernel ran, so its routed-account
+              // headers still describe the first attempt when the CLI ladder fails over.
+              // Preserve the HTTP headers for compatibility, but carry the final route
+              // truth in the response.completed response metadata, the last client-visible
+              // payload on this already-committed streaming path.
+              const responseMetadata =
+                served &&
+                typeof (served as { metadata?: unknown }).metadata === 'object' &&
+                (served as { metadata?: unknown }).metadata !== null &&
+                !Array.isArray((served as { metadata?: unknown }).metadata)
+                  ? (served as unknown as { metadata: Record<string, unknown> }).metadata
+                  : {};
+              const streamResponse = {
+                ...served,
+                metadata: {
+                  ...responseMetadata,
+                  [ROUTED_ACCOUNT_HEADER]: metadata.accountId,
+                  ...(metadata.pinYieldedFrom
+                    ? { [PIN_YIELDED_HEADER]: `${metadata.pinYieldedFrom}->${metadata.accountId}` }
+                    : {}),
+                },
+              } as CodexCliSyntheticResponse;
+              res.end(codexCliResponsesCompletionSse(streamResponse));
               stageSpan?.endStage('stream');
             } else if (!res.headersSent) {
               sendJson(res, 200, served, headers);
@@ -6211,7 +6564,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     stageSpan?.beginStage('bodyRead');
     let bodyBuf: Buffer;
     try {
-      bodyBuf = preBody ?? await withPromiseDeadline(readBody(req), requestCeilingMs, `codex-oauth readBody '${cli.accountId}'`);
+      bodyBuf =
+        preBody ??
+        (await withPromiseDeadline(readBody(req), requestCeilingMs, `codex-oauth readBody '${cli.accountId}'`));
     } catch {
       try {
         req.destroy();
@@ -6517,6 +6872,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               deps.onResponse?.(response.metadata.headers, response.status, bodyModel, account);
               if (response.status === 429) {
                 codexUpstream429++;
+                recordRoutingUpstream429('codex', account);
                 providerAdmission.recordThrottle('codex');
                 recordOwnerOutcome(routing.ownerId, 'upstream_429', { account, status: 429 });
               } else if (response.status >= 200 && response.status < 300) {
@@ -6906,7 +7262,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (!res.headersSent) {
           sendJson(res, 503, {
             type: 'error',
-            error: { type: 'overloaded_error', message: 'inference-gateway: Codex request body read stalled; retry shortly' },
+            error: {
+              type: 'overloaded_error',
+              message: 'inference-gateway: Codex request body read stalled; retry shortly',
+            },
             gateway: true,
           });
         }
@@ -6916,7 +7275,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       }
       try {
         const parsed = JSON.parse(preBody.toString('utf8')) as Record<string, unknown>;
-        if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('request body must be a JSON object');
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object')
+          throw new Error('request body must be a JSON object');
         const modelSpec = typeof parsed.model === 'string' ? parsed.model : undefined;
         // Reuse the bridge parser as the one request-boundary policy seam. It
         // resolves omitted models, normalizes aliases/effort, and throws on the
@@ -6930,7 +7290,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
               : {};
           const existingEffort = typeof reasoning.effort === 'string' ? reasoning.effort.trim() : '';
           const existingEffortValid = /^(minimal|low|medium|high|xhigh|max)$/i.test(existingEffort);
-          const modelCarriesEffort = typeof modelSpec === 'string' && /:(minimal|low|medium|high|xhigh|max)$/i.test(modelSpec.trim());
+          const modelCarriesEffort =
+            typeof modelSpec === 'string' && /:(minimal|low|medium|high|xhigh|max)$/i.test(modelSpec.trim());
           parsed.reasoning = {
             ...reasoning,
             effort: modelCarriesEffort || !existingEffortValid ? parsedModel.effort : existingEffort.toLowerCase(),
@@ -6986,9 +7347,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const pinnedCli = wantAccount ? (cliList.find((a) => a.accountId === wantAccount) ?? null) : null;
     let cli: CodexCliAccount | null = null;
     let cliPin: CodexCliAccount | null = null;
+    let cliPinIsAffinity = false;
     let cliInitialPinYieldedFrom: string | null = null;
     const applyCliPin = (pin: CodexCliAccount, hardPin: boolean, affinityPin: boolean): void => {
       cliPin = pin;
+      cliPinIsAffinity = affinityPin;
       const poolPin = codexCliPool?.select?.(pin.accountId) ?? null;
       if (!poolPin) {
         cli = pin;
@@ -7103,6 +7466,33 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     if (cli) {
       const hardPin = pinnedCli !== null && requestedHardPin;
+      const mode: GatewayRoutingSelectionMode = hardPin
+        ? 'hard-pin'
+        : cliPin
+          ? cliPinIsAffinity
+            ? 'affinity'
+            : 'soft-pin'
+          : 'automatic';
+      recordRoutingPick({
+        provider: 'codex',
+        ownerId: wantOwner,
+        source: codexCliPool,
+        selected:
+          codexCliPool?.select?.(cli.accountId) ??
+          ({ accountId: cli.accountId, token: async () => '' } satisfies ActiveAccount),
+        mode,
+        reason: cliInitialPinYieldedFrom
+          ? 'pin-yield'
+          : mode === 'automatic'
+            ? codexCliPool
+              ? 'health-ranked'
+              : 'fallback-list-order'
+            : mode === 'affinity'
+              ? 'affinity-kept'
+              : 'pin-kept',
+        requestedAccount: (cliPin as CodexCliAccount | null)?.accountId ?? null,
+        yieldedFrom: cliInitialPinYieldedFrom,
+      });
       const transport = codexOAuthProxyEnabled ? 'oauth-http' : 'cli-exec';
       await executeCodexLegacyTransport(
         legacyExecutorForGatewayTransport(adapter.lane, transport),
@@ -7112,6 +7502,29 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return;
     }
     const hardPin = pinnedBearer !== null && !bearerPinIsAffinity && requestedHardPin;
+    const bearerMode: GatewayRoutingSelectionMode = hardPin
+      ? 'hard-pin'
+      : pinnedBearer
+        ? bearerPinIsAffinity
+          ? 'affinity'
+          : 'soft-pin'
+        : 'automatic';
+    recordRoutingPick({
+      provider: 'codex',
+      ownerId: wantOwner,
+      source: adapter.pool ?? undefined,
+      selected: active,
+      mode: bearerMode,
+      reason: bearerInitialPinYieldedFrom
+        ? 'pin-yield'
+        : bearerMode === 'automatic'
+          ? 'health-ranked'
+          : bearerMode === 'affinity'
+            ? 'affinity-kept'
+            : 'pin-kept',
+      requestedAccount: pinnedBearer?.accountId ?? null,
+      yieldedFrom: bearerInitialPinYieldedFrom,
+    });
     stageSpan?.setTransport('bearer-http');
 
     /*
@@ -7361,6 +7774,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 // Counted here even when the kernel goes on to rotate: the old path
                 // recorded the throttle against the account that emitted it.
                 codexUpstream429++;
+                recordRoutingUpstream429('codex', account);
                 providerAdmission.recordThrottle('codex');
                 recordOwnerOutcome(wantOwner, 'upstream_429', { account, status: 429 });
               } else if (response.status >= 200 && response.status < 300) {
@@ -7895,8 +8309,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const path = (req.url ?? '/').split('?', 1)[0] || '/';
     const sequence = ++gatewayAdmissionRequestSeq;
     const idempotencyKey =
-      requestHeader(req, 'x-papercusp-request-id') ??
-      `gateway:${kind}:${gatewayProcessInstanceId}:${sequence}:${path}`;
+      requestHeader(req, 'x-papercusp-request-id') ?? `gateway:${kind}:${gatewayProcessInstanceId}:${sequence}:${path}`;
     const accountId = requestHeader(req, ACCOUNT_HEADER);
     const pinMode = accountId
       ? requestHeader(req, ACCOUNT_PIN_HEADER)?.toLowerCase() === 'hard'
@@ -8011,6 +8424,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           lastRoute: route,
           pin,
           stageTelemetry: requestStageTelemetry.snapshotForOwner(owner),
+          routingQuality: routingQualitySnapshot(owner),
         });
         return;
       }
@@ -8023,7 +8437,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         }))
         .sort((a, b) => b.bad - a.bad || b.lastAt - a.lastAt)
         .slice(0, 25);
-      sendJson(res, 200, { ok: true, now: Date.now(), owners: top });
+      sendJson(res, 200, { ok: true, now: Date.now(), owners: top, routingQuality: routingQualitySnapshot() });
       return;
     }
     if (req.method === 'GET' && requestPath === '/admin/config') {
@@ -8701,10 +9115,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
         req.off('aborted', onCallerGone);
         res.off('close', onCallerGone);
       };
-      return admissionQueue.run(
-        pri,
-        async () => {
-          markProviderAdmitted();
+      return admissionQueue
+        .run(
+          pri,
+          async () => {
+            markProviderAdmitted();
           if (providerId !== 'codex') return task();
           const reqId = ++reqSeq;
           inFlightReg.set(reqId, {
@@ -8737,10 +9152,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
               inFlightReg.delete(reqId);
               if (!entry.reclaimed) lastDrainAt.codex = Date.now();
             }
-          }
-        },
-        { signal: abandoned.signal, ...(tier !== undefined ? { tier } : {}) },
-      ).finally(detach);
+            }
+          },
+          { signal: abandoned.signal, ...(tier !== undefined ? { tier } : {}) },
+        )
+        .finally(detach);
     };
     const providerLaneAdmission: GatewayLaneAdmission = {
       run: async (_context, initialTask) => {

@@ -140,6 +140,15 @@ function scheduleRespawn(socketPath: string): void {
       console.error('[spawner-sidecar] auto-respawn failed:', err);
     });
   }, backoffMs);
+  // EI-22349064282832134: crash recovery is background resilience for a host
+  // that still has real work; it must not BECOME the work keeping that host
+  // alive. A short-lived green-checkpoint process had already rendered its
+  // candidate-fossil decision when an inherited pid-keyed socket noticed its
+  // owner was gone. The sidecar exited cleanly, this referenced backoff kept the
+  // checkpoint process (and its serializer lock) alive, and each respawn repeated
+  // the owner-gone cycle. Long-lived hosts have their own referenced handles, so
+  // unref preserves their auto-respawn while letting a finished CLI exit normally.
+  respawnTimer.unref?.();
 }
 
 /**

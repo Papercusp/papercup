@@ -2325,66 +2325,29 @@ try:
 except Exception:
     pass  # a teaching advisory must never wedge a command
 
-# EI-10940: the refusal must answer the INTENT, not the token. `systemd-run` is
-# BOTH the scheduler (`--on-calendar=…`) and the only stock way to ask for cgroup
-# resource control (`-p CPUQuota=…`, `--scope`). An agent reaching for the SECOND
-# one is not scheduling anything — pointing it at `pot:declare-wake` (a WAKE
-# scheduler) is a non-sequitur that costs a real debugging detour before it works
-# out that the tool it was told to use cannot do the thing it wanted. The deny
-# itself is correct either way (agent sessions cannot create transient units), so
-# branch only the REASON: name the actual alternatives (`taskset` / pc-heavy.sh).
-# Mirrors isResourceLimitInvocation()/osSchedulerDenyReason() in the OMP hook
-# (scripts/hooks/omp/coord-hook.ts) — a guard fixed in one path must be fixed in
-# both, since Claude/Codex hit THIS one and OMP hits that one.
-_SYSTEMD_RESOURCE_PROP_RE = (
-    r'(?:-p|--property)[=\s]*'
-    r'(?:CPUQuota|CPUWeight|AllowedCPUs|AllowedMemoryNodes|MemoryMax|MemoryHigh'
-    r'|MemoryLimit|IOWeight|TasksMax)\b'
-    r'|--scope\b'
-)
+# EI-21924747520941481: `systemd-run` is also the cgroup-isolation mechanism
+# used by the execution guards. Only its timer-backed forms create a persistent
+# OS schedule; transient services/scopes, `--pipe --wait`, and resource-control
+# properties must remain available. The OMP hook mirrors this classification.
 _SYSTEMD_SCHEDULE_FLAG_RE = (
     r'--on-(?:calendar|active|boot|startup|unit-active|unit-inactive)\b'
     r'|--timer-property\b'
 )
 
 
-def _is_resource_limit_invocation(cmd):
-    # True only for a `systemd-run` asking for RESOURCE CONTROL, not a schedule.
-    # A schedule flag WINS (`systemd-run --on-calendar=… -p CPUQuota=…` really is
-    # creating a timer) so the scheduling advice stays correct for the hybrid.
+def _is_systemd_schedule_invocation(cmd):
+    """True only when a systemd-run command requests a persistent timer."""
     c = _strip_quotes_and_comments(cmd)
-    if not re.search(r'\bsystemd-run\b', c):
+    marker = re.search(r'\bsystemd-run\b', c)
+    if not marker:
         return False
-    if re.search(_SYSTEMD_SCHEDULE_FLAG_RE, c, re.I):
-        return False  # scheduling wins
-    return bool(re.search(_SYSTEMD_RESOURCE_PROP_RE, c, re.I))
+    # `--` terminates systemd-run's own options; a payload argument named
+    # `--on-calendar` is not a timer request.
+    options = re.split(r'\s+--(?:\s|$)', c[marker.end():], maxsplit=1)[0]
+    return bool(re.search(_SYSTEMD_SCHEDULE_FLAG_RE, options, re.I))
 
 
 def _os_scheduler_deny_reason(cmd):
-    if _is_resource_limit_invocation(cmd):
-        # EI-19485881710808774: describe the REFUSED OPERATION, not the caller's
-        # presumed goal — `--scope` alone (no resource property) is also how an
-        # agent asks for a plain transient cgroup for reasons that have nothing
-        # to do with resource limiting (e.g. probing cgroup lifetime/parenting),
-        # and "You are trying to LIMIT RESOURCES" was flatly wrong for that
-        # caller. Name the alternatives for the resource-limiting case without
-        # asserting that is what the caller wanted; a caller with a different,
-        # legitimate use of `--scope`/resource props is still refused (this gate
-        # cannot honor that request either way) but is not told a false story
-        # about its own intent.
-        return (
-            'native-scheduler lockout: agent sessions cannot create transient systemd '
-            'units, so `systemd-run` cgroup/resource-control usage (`--scope`, `-p '
-            'CPUQuota=…`, `-p MemoryMax=…`, etc.) is refused here regardless of why it '
-            'was invoked. If your goal is limiting CPU/memory, use `taskset -c <cores> '
-            '<cmd>` to pin CPUs (no scheduler, no root, no daemon), or run heavy '
-            'commands through `scripts/pc-heavy.sh` (nice + a concurrency semaphore) on '
-            'the shared box. If your goal is something else (e.g. cgroup lifetime or '
-            'parenting behavior), neither of those substitutes for `systemd-run` — this '
-            'guard has no alternative for that case, the operation is simply unavailable '
-            'in an agent session. (`pot:declare-wake` is for SCHEDULING, a different '
-            'refusal below, and is not an alternative for either case here.)'
-        )
     return (
         'native-scheduler lockout: agent sessions must not create OS schedules '
         '(crontab / at / batch / systemd-run). Declare your wake via '
@@ -2546,6 +2509,9 @@ def _is_readonly_scheduler_invocation(seg):
     s = _strip_output_redirections(s)
     if s is None:
         return False
+    if re.match(r'^systemd-run\b', s):
+        # Transient service/scope/resource-control units are not schedules.
+        return not _is_systemd_schedule_invocation(s)
     m = _CRONTAB_READONLY_ARGS_RE.match(s)
     if m:
         # `-l` must be PRESENT, not merely permitted by the arg shape: bare

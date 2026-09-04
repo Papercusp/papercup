@@ -124,10 +124,10 @@ describe('scout grading feedback loop (real PG, migrations 194+208+234)', () => 
     expect(after.reframing - before.reframing).toBeCloseTo(3 / 13 - 0.25, 6);
   });
 
-  it("Queen grade-1 keyed by routedRef (D-007) resolves the ideaId and drags that lens's weight down (1/6)", async () => {
+  it("automated grade-1 keyed by routedRef (D-007) resolves the ideaId and drags that lens's weight down (1/6)", async () => {
     const out = await runGradeIdea({ routedRef: 'wi:EI-G2', grade: 1, feedback: 'derivative' }, { role: 'mug' });
     expect(out.applied).toBe(true);
-    expect(out.gradedBy).toBe('Queen');
+    expect(out.gradedBy).toBe('auto-grader');
     expect(out.ideaId).toBe('g2');
 
     await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
@@ -182,7 +182,7 @@ describe('scout grading feedback loop (real PG, migrations 194+208+234)', () => 
     expect(entries).toHaveLength(3);
     // Graded order was g1 → g2 → g3 (separate round-trips), so newest-first:
     expect(entries[0]).toBe('- [★3 · Owner · first-principles] rebuild the cadence gate');
-    expect(entries[1]).toBe('- [★1 · Queen · reframing] invert the triage queue: derivative');
+    expect(entries[1]).toBe('- [★1 · Auto-grader · reframing] invert the triage queue: derivative');
     expect(entries[2]).toBe('- [★5 · Owner · analogical] borrow the gym ladder: exactly right');
   });
 

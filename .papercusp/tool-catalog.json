@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 847,
+  "count": 848,
   "tools": [
     {
       "name": "ablation:report",
@@ -1895,7 +1895,7 @@
           "POST"
         ]
       },
-      "description": "Read-only historical/override projection of goal-scale work from persisted cycle artifacts. Writes NOTHING — creates no goal and mints no agent. Returns pre-D-016 dropped asks and plan-hinted proposals the live override would bump, with drafted rails (killCriterion, budgetCents) and marker provenance. Accepted post-D-016 direct goal hints route live and are intentionally absent. An EMPTY result comes with `empty.meaning` so it is not misread as a blocked current rail.",
+      "description": "Read-only historical/override projection of goal-scale work from persisted cycle artifacts. Writes NOTHING — creates no goal and mints no agent. Returns pre-D-016 dropped asks and plan-hinted proposals the live override would bump, with drafted rails (killCriterion, budgetCents), marker provenance, and explicit gradeability metadata. Draft proposal/source ids are artifact provenance, never routed-idea ids. Accepted post-D-016 direct goal hints route live and are intentionally absent. An EMPTY result comes with `empty.meaning` so it is not misread as a blocked current rail.",
       "capabilities": [
         "curation:read"
       ],
@@ -1914,7 +1914,7 @@
       "guidance": {
         "when": "Auditing historical pre-D-016 goal asks or reviewing which persisted plan-hinted proposals the current override classifies as goal-scale, without writing anything.",
         "notWhen": "Creating or amending a goal (goals:create / goals:update), or reading accepted post-D-016 direct goal routes — use the routed-idea ledger for work that actually landed on a rail.",
-        "chaining": "Read `summary` first. If total is 0, read `empty.meaning` before concluding anything is broken. For any draft you take seriously, check `markerHits` BEFORE the prose: a draft whose only marker sits in `mechanism` with onlyInCodeSpan:true is a vocabulary artifact (D-012 measured exactly one such draft in the whole corpus), and `incidentalMatchOnly` names that case at the row."
+        "chaining": "Read `summary` first. If total is 0, read `empty.meaning` before concluding anything is broken. Every returned row has gradeability.state=\"unroutable-pending-draft\" and routedIdeaId:null: record it as pending and NEVER pass proposal.id or sourceIdeaIds to blender:grade-idea / improvements:triage. For any draft you take seriously, check `markerHits` BEFORE the prose: a draft whose only marker sits in `mechanism` with onlyInCodeSpan:true is a vocabulary artifact (D-012 measured exactly one such draft in the whole corpus), and `incidentalMatchOnly` names that case at the row."
       }
     },
     {
@@ -5488,8 +5488,8 @@
         "content-fixer"
       ],
       "guidance": {
-        "when": "Open-ended coordination with no single answer (\"how should we approach X?\"), or contributing to an existing thread via conversation_id (or its id alias). For a question that wants an answer, use coord:ask instead.",
-        "notWhen": "A factual question → coord:ask (it tries knowledge first). To accept an answer + close a question → conversations:resolve.",
+        "when": "Open-ended coordination with no single answer (\"how should we approach X?\"), or contributing to an existing thread via conversation_id (or its id alias). For a directed peer question, use coord:send with expects:\"answer\" or coord:message-agent for a durable thread.",
+        "notWhen": "A quick directed question → coord:send with expects:\"answer\". To accept an answer + close a question → conversations:resolve.",
         "chaining": "conversations:post (start) → others conversations:post (reply) / conversations:join. conversations:get to read the thread."
       }
     },
@@ -5538,7 +5538,7 @@
           "POST"
         ]
       },
-      "description": "Resolve one OR many questions: accept an answer (by text or by accepted_post_id) and close it. The accepted answer is captured to the knowledge layer (mem0 by default) so the next coord:ask finds it synchronously. Notifies subscribers. Single: { id, accepted_answer | accepted_post_id, capture? }. Many heterogeneous: items:[{ id, accepted_answer | accepted_post_id, capture? }] (each carries its own answer). Returns { ok, results:[{ ok, id, state? | error }], counts } — correlate by id; one item that lacks an answer or is not found never fails the rest.",
+      "description": "Resolve one OR many questions: accept an answer (by text or by accepted_post_id) and close it. The accepted answer is preserved for semantic recall (mem0 by default). Notifies subscribers. Single: { id, accepted_answer | accepted_post_id, capture? }. Many heterogeneous: items:[{ id, accepted_answer | accepted_post_id, capture? }] (each carries its own answer). Returns { ok, results:[{ ok, id, state? | error }], counts } — correlate by id; one item that lacks an answer or is not found never fails the rest.",
       "capabilities": [
         "coord:write"
       ],
@@ -5600,7 +5600,7 @@
       ],
       "guidance": {
         "when": "An open question was framed on a premise that is now false, stale, or otherwise not answerable; use this to replace the gate durably so the correction is visible in conversations and the old gate cannot continue to block work.",
-        "notWhen": "You are merely notifying someone → coord:send. The original question is answered → conversations:resolve. The replacement is an unrelated new question → coord:ask-owner or coord:ask. An owner question may only be superseded by the agent that asked it; ask that agent to make a correction when it is not yours.",
+        "notWhen": "You are merely notifying someone → coord:send. The original question is answered → conversations:resolve. An unrelated new owner question → coord:ask-owner; a peer question → coord:send with expects:\"answer\". An owner question may only be superseded by the agent that asked it; ask that agent to make a correction when it is not yours.",
         "chaining": "conversations:get → conversations:supersede → events:await { event: \"conversation:answered:<replacement_id>\" } or conversations:resolve on the replacement."
       }
     },
@@ -5651,25 +5651,6 @@
       "description": "Ask ONE named agent a question, opening a `question` conversation addressed to them. `to` is REQUIRED — an unaddressed question reaches nobody and is refused. Backs the owner's \"Ask an agent\" UI; non-blocking (the answer lands in your inbox).",
       "capabilities": [
         "coord:write"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "operator",
-        "documenter",
-        "curator",
-        "cup",
-        "mug",
-        "papercup",
-        "papercup-deep",
-        "kettle",
-        "doc-steward",
-        "release-fixer",
-        "content-fixer"
       ],
       "guidance": {
         "when": "You need a SPECIFIC named agent to answer something only they know (resolve ids via coord:presence). Normally reached from the owner's Ask-an-agent UI, not from agent code.",
@@ -9468,7 +9449,7 @@
           "POST"
         ]
       },
-      "description": "Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim. Unbounded LIKE/ILIKE searches over tool_invocations JSONB text are refused unless `allowUnboundedJsonSearch: true`; prefer indexed scalar predicates or activity:tool-log/dev:telemetry. PostgreSQL regex repetition bounds are limited to 255; use `left()` or `substring()` for larger excerpts. Rubrics are plan-backed in `harness_shared.harness_plans` (`template = 'rubric'`); `harness_shared.rubrics` is retired.",
+      "description": "Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim. PostgreSQL regex repetition bounds are limited to 255; use `left()` or `substring()` for larger excerpts. Rubrics are plan-backed in `harness_shared.harness_plans` (`template = 'rubric'`); `harness_shared.rubrics` is retired.",
       "capabilities": [
         "intel:read"
       ],
@@ -10903,6 +10884,32 @@
       "guidance": {
         "when": "You need the set of known feature tags before tagging a new one — keeps tags consistent across the harness.",
         "notWhen": "For finding features BY a tag, use `features:search` (free-text) or `features:list_related`."
+      }
+    },
+    {
+      "name": "flags:attest",
+      "http": {
+        "path": "/api/agent-tools/flags/attest",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Ask the calling operator, every discovered operator-shaped sibling, and the inference gateway what they ACTUALLY resolve for one feature flag. Returns per-process value, compiled default, resolution source, cache generation/age/TTL, process identity/build SHA, cross-process mismatches, and explicit unknown targets. This diagnoses runtime flag divergence without inferring live state from source files.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A flag appears to ignore flags:set, two services behave as though a flag differs, or you need runtime proof before attributing behavior to a flag/default/TTL cache.",
+        "notWhen": "To discover flag keys use flags:list. To change a value use flags:set. A partial report has UNKNOWN coverage; do not read it as agreement from an unreachable process."
       }
     },
     {
@@ -14331,7 +14338,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation): file it (kind:bug, evidence in the top-level body) even with no fix and even if it self-recovered. Only fix-now-vs-leave-filed is a judgment call; filing is not. DX/tooling/code friction counts too. Include `paths` — the auto-implement risk gate reads them. Free-text observation evidence belongs in the top-level body; observation.evidence is not a valid field. For a rubric scorecard, put evidence in each observation.ratings[criterion].evidence.",
-        "notWhen": "A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask. Do not pass internal provenance fields (createdBy, source, sourceRole, filedByRole): the server derives filer identity and role; use assign_to:\"self\" to claim and observation.refs for evidence attribution.",
+        "notWhen": "A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing peer question — coord:send with expects:\"answer\"; an owner decision — coord:ask-owner. Do not pass internal provenance fields (createdBy, source, sourceRole, filedByRole): the server derives filer identity and role; use assign_to:\"self\" to claim and observation.refs for evidence attribution.",
         "chaining": "improvements:capture { kind, title, paths? } → improvements:digest triages it → an agent claims + fixes it, or the auto-implement loop picks up bugs and improvements:resolve closes them."
       }
     },
@@ -15094,7 +15101,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "An ambient push told you a peer is converging on your topic (pull: session:<sid>) and you want the detail before deciding whether to coordinate — who holds what claim, what their checkpoint says, which files they touched.",
-        "notWhen": "You want to TALK to the peer (coord:send / coord:ask) or read their raw transcript (sessions:read) — the brief is the bounded distillate, not a channel. Also not for arbitrary session archaeology: it briefs live ambient presences (sessions with a current cursor), not history.",
+        "notWhen": "You want to TALK to the peer (coord:send / coord:message-agent) or read their raw transcript (sessions:read) — the brief is the bounded distillate, not a channel. Also not for arbitrary session archaeology: it briefs live ambient presences (sessions with a current cursor), not history.",
         "chaining": "journal:peer-brief → the brief shows a genuine overlap → coord:send the peer (cite the shared work item) or de-duplicate your lane; the pull is tallied so P-011's utilization report sees the handle earned its push."
       }
     },
@@ -23472,7 +23479,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "You or the owner need an answer another Pot is the authority on (it owns that domain). Find the peer via discovery:pots, then pot:ask, then events:await the returned answeredEvent.",
-        "notWhen": "Handing the peer WORK to do (use pot:request_work). Within-Pot questions (coord:ask / conversations). Granting a peer to send asks INTO this Pot (that is the inbound pot:cross_grant).",
+        "notWhen": "Handing the peer WORK to do (use pot:request_work). Within-Pot questions (coord:send / coord:message-agent). Granting a peer to send asks INTO this Pot (that is the inbound pot:cross_grant).",
         "chaining": "discovery:pots (find the peer Pot pubkey) → pot:ask { pot, peerPotPubkey, subject, body } → events:await { event: <answeredEvent> }. Review outstanding asks with pot:asks."
       }
     },
@@ -24887,7 +24894,7 @@
       ],
       "guidance": {
         "when": "Actually provisioning a local inference backend after reviewing provisioner:plan_install's output.",
-        "notWhen": "A GPU-resident process may already be running — check coord:presence / coord:ask before `start:true`. Config-write + registry-registration alone (start omitted/false) is always safe. To preview without committing to a download/build, use provisioner:plan_install.",
+        "notWhen": "A GPU-resident process may already be running — check coord:presence and send a directed coord:send when coordination is needed before `start:true`. Config-write + registry-registration alone (start omitted/false) is always safe. To preview without committing to a download/build, use provisioner:plan_install.",
         "chaining": "provisioner:plan_install (review) → provisioner:install (start:false default; add provisionBinary:true / pullVllmImage:true on first run) → once verified idle, provisioner:install again with start:true, or start the unit manually."
       }
     },
@@ -26695,7 +26702,7 @@
       "guidance": {
         "when": "Filing a GRADE-mode or release-readiness scorecard. Prefer this typed surface over hand-assembling improvements:capture observation payloads.",
         "notWhen": "Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.",
-        "chaining": "scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance still supplies schema-complete ratings; do not pass supersedes on the author acceptance."
+        "chaining": "scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with that same canonical payload → scorecards:list / rubrics:trend. `testedSha` is required when a releaseGating rubric has a pass-like rating. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance still supplies schema-complete ratings; do not pass supersedes on the author acceptance."
       }
     },
     {
@@ -30772,7 +30779,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Track a unit of work an agent will do. Pick the kind by what it IS: bug (code is broken), change (a code change / fix / refactor / DX ask — the DEFAULT for coding work-items), feature (a pipeline-sized coding work-unit), or task (NON-CODE work only — research, a decision, an ops step). The retired `chunk` kind is history, not an option. A suspected bug is filed (kind:bug) the MOMENT you notice it — filing is unconditional; fixing is the judgment call. File several via items:[…]; inline links:[{ rel, target_id }] beats a follow-up link call.",
-        "notWhen": "NEVER use `task` for anything that edits code — that is `change` (or `feature` if pipeline-sized); `task` is non-code only. A passing question with no owner → coord:ask. A validator finding inside a live pipeline run → the validator pipeline, not here.",
+        "notWhen": "NEVER use `task` for anything that edits code — that is `change` (or `feature` if pipeline-sized); `task` is non-code only. A passing peer question → coord:send with expects:\"answer\". A validator finding inside a live pipeline run → the validator pipeline, not here.",
         "chaining": "work_items:list (dedup) → work_items:create → work_items:claim/claim_next when you start → work_items:set_state on progress; work_items:promote to give a bug/change a pipeline run."
       }
     },

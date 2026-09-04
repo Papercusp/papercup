@@ -1,12 +1,12 @@
 /**
- * blender:grade-idea — record an owner/Queen grade (1–5 + optional critique) on a
+ * blender:grade-idea — record a human/automated grade (1–5 + optional critique) on a
  * routed Scout idea (scout-idea-grading-2026-06-12 B-03 / P-003, contract C-3).
  *
  * The thin tool projection over the C-2 write seam ({@link gradeRoutedIdea}).
  * Two invariants live HERE rather than in any prompt:
  *
  *   - `gradedBy` is DERIVED from the caller, never caller-supplied (D-004):
- *     a Queen spawn ctx grades as 'Queen'; an identified SU/psu agent grades
+ *     a Mug/Queen spawn ctx grades as the neutral 'auto-grader'; an identified SU/psu agent grades
  *     under its resolved ownerId; only an unidentifiable human-surface call
  *     falls back to the literal 'owner'.
  *   - The idea key is `ideaId` OR the routed artifact's change-feed ref
@@ -84,10 +84,7 @@ export interface GradeIdeaOutcome extends Omit<GradeRoutedIdeaResult, 'reason'> 
    * a guard that lives ABOVE the write seam — the ledger's gradeRoutedIdea never
    * produces it — so it widens `reason` only here, keeping the seam type clean.
    */
-  reason?:
-    | GradeRoutedIdeaResult['reason']
-    | 'no-self-grade'
-    | NonNullable<AgentReviewGradePreflight['refusal']>;
+  reason?: GradeRoutedIdeaResult['reason'] | 'no-self-grade' | NonNullable<AgentReviewGradePreflight['refusal']>;
   gradedBy: GradedBy;
   /** The resolved ledger key (null when a routedRef resolved to nothing). */
   ideaId: string | null;
@@ -361,8 +358,7 @@ async function deliverRevisionNotice(notice: RevisionNotice): Promise<{ woken: n
     workspaceId: notice.workspaceId,
     userId: null,
   };
-  const send = () =>
-    sendMessage(identity, { to: notice.to, summary: notice.summary, body: notice.body });
+  const send = () => sendMessage(identity, { to: notice.to, summary: notice.summary, body: notice.body });
   if (notice.workspaceId) await runWithWorkspace(notice.workspaceId, send);
   else await send();
   if (!notice.wake) return { woken: 0 };
@@ -583,7 +579,7 @@ function resolveCallerOwnerId(ctx: ResolveIdentityCtx | undefined): string | nul
 export default defineTool({
   name: 'blender:grade-idea',
   description:
-    "Grade a routed Blender idea 1–5 with optional feedback (≤2000 chars). Grades steer learning: fractional win credit in lens weights + critique primed into later ideator prompts. Key by ideaId or routedRef. On a su-ideate filing, a grade ≤3 with feedback wakes the originator to revise or defend (higher grades + feedback deliver an unwoken FYI) — best-effort, reported as revisionWake.",
+    'Grade a routed Blender idea 1–5 with optional feedback (≤2000 chars). Grades steer learning: fractional win credit in lens weights + critique primed into later ideator prompts. Key by ideaId or routedRef. On a su-ideate filing, a grade ≤3 with feedback wakes the originator to revise or defend (higher grades + feedback deliver an unwoken FYI) — best-effort, reported as revisionWake.',
   capability: 'harness:write',
   guidance: {
     when: "You want to score a routed Blender idea 1–5 (optional one-line critique) so Blender learns which lenses to favor. Key by ideaId (Blender view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the triage path: grade each ungraded routed draft).",

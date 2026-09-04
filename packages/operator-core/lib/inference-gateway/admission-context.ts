@@ -83,10 +83,12 @@ export const GATEWAY_ADMISSION_BYPASS_KEYS = Object.freeze({
   ownerPins: 'gateway.admin.owner-pins',
   models: 'gateway.models',
   backendContext: 'gateway.maintenance.backend-context',
+  flagAttest: 'gateway.flags.attest',
   notFound: 'gateway.not-found',
 } as const);
 
-export type GatewayAdmissionBypassKey = (typeof GATEWAY_ADMISSION_BYPASS_KEYS)[keyof typeof GATEWAY_ADMISSION_BYPASS_KEYS];
+export type GatewayAdmissionBypassKey =
+  (typeof GATEWAY_ADMISSION_BYPASS_KEYS)[keyof typeof GATEWAY_ADMISSION_BYPASS_KEYS];
 
 /** The set passed to the default Governor; exported for tests and launch wiring. */
 export const GATEWAY_ADMISSION_BYPASS_REGISTRY: ReadonlySet<string> = new Set(
@@ -338,11 +340,13 @@ export function gatewayAdmissionBypassKeyForRequest(
   if (verb === 'POST' && path === '/admin/clamp-mode') return GATEWAY_ADMISSION_BYPASS_KEYS.clampMode;
   if (verb === 'POST' && path === '/admin/reload') return GATEWAY_ADMISSION_BYPASS_KEYS.reload;
   if (verb === 'GET' && path === '/admin/local-backends') return GATEWAY_ADMISSION_BYPASS_KEYS.localBackends;
-  if ((verb === 'GET' || verb === 'POST') && path === '/admin/egress-mode') return GATEWAY_ADMISSION_BYPASS_KEYS.egressMode;
+  if ((verb === 'GET' || verb === 'POST') && path === '/admin/egress-mode')
+    return GATEWAY_ADMISSION_BYPASS_KEYS.egressMode;
   if (verb === 'POST' && path === '/admin/owner-pin') return GATEWAY_ADMISSION_BYPASS_KEYS.ownerPin;
   if (verb === 'GET' && path === '/admin/owner-pins') return GATEWAY_ADMISSION_BYPASS_KEYS.ownerPins;
   if (verb === 'GET' && path === '/v1/models') return GATEWAY_ADMISSION_BYPASS_KEYS.models;
   if (verb === 'GET' && path === '/maintenance/backend-context') return GATEWAY_ADMISSION_BYPASS_KEYS.backendContext;
+  if (verb === 'GET' && path === '/internal/flags-attest') return GATEWAY_ADMISSION_BYPASS_KEYS.flagAttest;
   if (!path.startsWith('/v1/') && path !== '/maintenance/summarize') return GATEWAY_ADMISSION_BYPASS_KEYS.notFound;
   return null;
 }
@@ -353,7 +357,11 @@ export const gatewayBypassKeyForRequest = gatewayAdmissionBypassKeyForRequest;
 /** Map a registered bypass key to the corresponding non-resident request kind. */
 export function gatewayAdmissionKindForBypassKey(key: GatewayAdmissionBypassKey): GatewayAdmissionKind {
   if (key === GATEWAY_ADMISSION_BYPASS_KEYS.healthz) return 'health';
-  if (key === GATEWAY_ADMISSION_BYPASS_KEYS.models || key === GATEWAY_ADMISSION_BYPASS_KEYS.backendContext) {
+  if (
+    key === GATEWAY_ADMISSION_BYPASS_KEYS.models ||
+    key === GATEWAY_ADMISSION_BYPASS_KEYS.backendContext ||
+    key === GATEWAY_ADMISSION_BYPASS_KEYS.flagAttest
+  ) {
     return 'metadata';
   }
   return 'control';

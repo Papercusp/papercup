@@ -4794,8 +4794,9 @@ describe("roleLaunchArgs (interactive role session)", () => {
     expect(bin).toBe("claude");
     expect(args).toEqual([
       "--dangerously-skip-permissions",
-      "--append-system-prompt-file",
+      "--system-prompt-file",
       "/lc/session-7.md",
+      "--exclude-dynamic-system-prompt-sections",
       "--mcp-config",
       "/proj/.mcp.json",
       "--strict-mcp-config",
@@ -4865,9 +4866,6 @@ describe("roleLaunchArgs (interactive role session)", () => {
     expect(roleLaunchArgs("claude", files).args).toContain(
       NO_SUBAGENTS_DENY_FLAG,
     );
-    expect(
-      roleLaunchArgs("claude", { ...files, replaceClaudeBase: true }).args,
-    ).toContain(NO_SUBAGENTS_DENY_FLAG);
     expect(
       roleLaunchArgs("claude", { ...files, allowSubagents: true }).args,
     ).not.toContain(NO_SUBAGENTS_DENY_FLAG);
@@ -4958,7 +4956,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
       "--approval-mode",
       "yolo",
       "--no-lsp",
-      "--append-system-prompt",
+      "--system-prompt",
       "/lc/session-7.md",
       "--no-title",
     ]);
@@ -4970,7 +4968,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
     expect(args).toEqual([
       "--approval-mode",
       "yolo",
-      "--append-system-prompt",
+      "--system-prompt",
       "/lc/session-7.md",
       "--no-title",
     ]);
@@ -4985,7 +4983,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
       "--approval-mode",
       "yolo",
       "--no-lsp",
-      "--append-system-prompt",
+      "--system-prompt",
       "/lc/session-7.md",
       "--no-title",
       "-e",
@@ -5036,26 +5034,9 @@ describe("roleLaunchArgs (interactive role session)", () => {
     expect(() => roleLaunchArgs("gemini", files)).toThrow();
   });
 
-  // domain-generic-agent-personas-2026-06-17 P-014: REPLACE_CLAUDE_BASE (default-off) — coherent
-  // with suLaunchArgs so flipping the flag replaces the base for interactive role sessions too.
-  it("replaceClaudeBase OFF (default): claude/omp append (byte-identical to today)", () => {
-    expect(roleLaunchArgs("claude", files).args).toContain(
-      "--append-system-prompt-file",
-    );
-    expect(roleLaunchArgs("claude", files).args).not.toContain(
-      "--system-prompt-file",
-    );
-    expect(roleLaunchArgs("omp", files).args).toContain(
-      "--append-system-prompt",
-    );
-    expect(roleLaunchArgs("omp", files).args).not.toContain("--system-prompt");
-  });
-
-  it("replaceClaudeBase ON: claude REPLACES the base (--system-prompt-file + --exclude-dynamic), MCP + lockout intact", () => {
-    const { args } = roleLaunchArgs("claude", {
-      ...files,
-      replaceClaudeBase: true,
-    });
+  // identities-v1 D-018 / D-021 / WI-2143907: sealed replacement has no append branch.
+  it("claude unconditionally REPLACES the base (--system-prompt-file + --exclude-dynamic), MCP + lockout intact", () => {
+    const { args } = roleLaunchArgs("claude", files);
     expect(args).toEqual([
       "--dangerously-skip-permissions",
       "--system-prompt-file",
@@ -5073,11 +5054,10 @@ describe("roleLaunchArgs (interactive role session)", () => {
     expect(args).not.toContain("--append-system-prompt-file");
   });
 
-  it("replaceClaudeBase ON: omp uses --system-prompt (replace) instead of --append", () => {
+  it("omp unconditionally uses --system-prompt (replace) instead of --append", () => {
     const { args } = roleLaunchArgs("omp", {
       ...files,
       coordExtPath: "/h/coord.ts",
-      replaceClaudeBase: true,
     });
     expect(args).toEqual([
       "--approval-mode",
@@ -5091,10 +5071,8 @@ describe("roleLaunchArgs (interactive role session)", () => {
     ]);
   });
 
-  it("replaceClaudeBase ON: codex is a no-op (CODEX_HOME AGENTS.md is already the whole prompt)", () => {
-    expect(
-      roleLaunchArgs("codex", { ...files, replaceClaudeBase: true }).args,
-    ).toEqual([
+  it("codex needs no replacement switch (CODEX_HOME AGENTS.md is already the whole prompt)", () => {
+    expect(roleLaunchArgs("codex", files).args).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
       "-m",
@@ -5126,8 +5104,9 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
     expect(bin).toBe("claude");
     expect(args).toEqual([
       "--dangerously-skip-permissions",
-      "--append-system-prompt-file",
+      "--system-prompt-file",
       "/lc/session-9.md",
+      "--exclude-dynamic-system-prompt-sections",
       "--permission-mode",
       "bypassPermissions",
       // Subagent deny is DEFAULT-ON as of the 2026-07-02 owner mandate.
@@ -5166,7 +5145,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       "--approval-mode",
       "yolo",
       "--no-lsp",
-      "--append-system-prompt",
+      "--system-prompt",
       "/lc/session-9.md",
       "--no-title",
       "-e",
@@ -5180,7 +5159,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       "--approval-mode",
       "yolo",
       "--no-lsp",
-      "--append-system-prompt",
+      "--system-prompt",
       "/lc/s.md",
       "--no-title",
     ]);
@@ -5201,12 +5180,13 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
       promptFile: "/lc/s.md",
       nativeSessionId: "uuid-9",
     });
-    // --session-id sits between the appended prompt and the permission mode; it
+    // --session-id sits between the replacement prompt and the permission mode; it
     // makes `psu --resume uuid-9` match the tracked adv row + resume the EXACT session.
     expect(args).toEqual([
       "--dangerously-skip-permissions",
-      "--append-system-prompt-file",
+      "--system-prompt-file",
       "/lc/s.md",
+      "--exclude-dynamic-system-prompt-sections",
       "--session-id",
       "uuid-9",
       "--permission-mode",
@@ -5239,26 +5219,9 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
     expect(() => suLaunchArgs("gemini", files)).toThrow();
   });
 
-  // domain-generic-agent-personas-2026-06-17 P-014: REPLACE_CLAUDE_BASE (default-off).
-  it("replaceClaudeBase OFF (default): claude/omp append (byte-identical to today)", () => {
-    expect(suLaunchArgs("claude", files).args).toContain(
-      "--append-system-prompt-file",
-    );
-    expect(suLaunchArgs("claude", files).args).not.toContain(
-      "--system-prompt-file",
-    );
-    expect(suLaunchArgs("claude", files).args).not.toContain(
-      "--exclude-dynamic-system-prompt-sections",
-    );
-    expect(suLaunchArgs("omp", files).args).toContain("--append-system-prompt");
-    expect(suLaunchArgs("omp", files).args).not.toContain("--system-prompt");
-  });
-
-  it("replaceClaudeBase ON: claude REPLACES the base (--system-prompt-file + --exclude-dynamic)", () => {
-    const { args } = suLaunchArgs("claude", {
-      ...files,
-      replaceClaudeBase: true,
-    });
+  // identities-v1 D-018 / D-021 / WI-2143907: sealed replacement has no append branch.
+  it("claude unconditionally REPLACES the base (--system-prompt-file + --exclude-dynamic)", () => {
+    const { args } = suLaunchArgs("claude", files);
     expect(args).toEqual([
       "--dangerously-skip-permissions",
       "--system-prompt-file",
@@ -5272,8 +5235,8 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
     expect(args).not.toContain("--append-system-prompt-file");
   });
 
-  it("replaceClaudeBase ON: omp uses --system-prompt (replace) instead of --append", () => {
-    const { args } = suLaunchArgs("omp", { ...files, replaceClaudeBase: true });
+  it("omp unconditionally uses --system-prompt (replace) instead of --append", () => {
+    const { args } = suLaunchArgs("omp", files);
     expect(args).toEqual([
       "--approval-mode",
       "yolo",
@@ -5287,20 +5250,17 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
     expect(args).not.toContain("--append-system-prompt");
   });
 
-  it("replaceClaudeBase ON: codex is a no-op (AGENTS.md is already the whole prompt — no Claude base)", () => {
-    expect(
-      suLaunchArgs("codex", { ...files, replaceClaudeBase: true }).args,
-    ).toEqual([
+  it("codex needs no replacement switch (AGENTS.md is already the whole prompt)", () => {
+    expect(suLaunchArgs("codex", files).args).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
     ]);
   });
 
-  it("replaceClaudeBase ON: claude still forces --session-id when given", () => {
+  it("unconditional Claude replacement still forces --session-id when given", () => {
     const { args } = suLaunchArgs("claude", {
       promptFile: "/lc/s.md",
       nativeSessionId: "uuid-9",
-      replaceClaudeBase: true,
     });
     expect(args).toEqual([
       "--dangerously-skip-permissions",

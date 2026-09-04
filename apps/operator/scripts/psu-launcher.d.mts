@@ -369,10 +369,9 @@ export function subagentGatewayRiskNotice(agent: any, allowSubagents: any, envel
  *
  * `allowNativeLsp` is NOT read here. It is resolved server-side in
  * bootstrap-{su,role}.ts as `FLAGS.OMP_NATIVE_LSP_BUILTIN && !isLocalModelSpec(model)`
- * and threaded in via `envelopeEnv.PAPERCUSP_OMP_NATIVE_LSP` — the same
- * resolve-server-side-thread-through-envelopeEnv shape P-014 uses for
- * REPLACE_CLAUDE_BASE, and the reason this bare-node script needs no flag read
- * (and so no launch-time network dependency) of its own. Absent/false ⇒ strip,
+ * and threaded in via `envelopeEnv.PAPERCUSP_OMP_NATIVE_LSP` — the reason this
+ * bare-node script needs no flag read (and so no launch-time network dependency)
+ * of its own. Absent/false ⇒ strip,
  * byte-identical to the pre-P-021 hard-coded behaviour.
  *
  * Pure — exported for tests.
@@ -381,7 +380,7 @@ export function subagentGatewayRiskNotice(agent: any, allowSubagents: any, envel
  * @returns {string[]}
  */
 export function ompLspArgs(allowNativeLsp?: boolean): string[];
-export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents, model, allowNativeLsp, }?: {}): {
+export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, allowSubagents, model, allowNativeLsp, }?: {}): {
     bin: string;
     args: any[];
 };
@@ -410,7 +409,7 @@ export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExt
  * ours) + the approvals/sandbox bypass Papercusp still uses for managed
  * Codex launches pending a current MCP-under-sandbox live smoke.
  */
-export function suLaunchArgs(backend: any, { promptFile, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents, allowNativeLsp, }?: {}): {
+export function suLaunchArgs(backend: any, { promptFile, coordExtPath, injectHookPath, nativeSessionId, allowSubagents, allowNativeLsp, }?: {}): {
     bin: string;
     args: any[];
 };

@@ -350,29 +350,21 @@ const UNDECLARED_BASELINE: readonly string[] = [
   'knowledgePacks.candidates',
   'knowledgePacks.list',
   'kpis.all',
-  'learning.analyze',
-  'learning.analyzeCycle',
-  'learning.apiary',
   'learning.bakeoff',
   'learning.demand',
   'learning.efficacy',
   'learning.ekg',
   'learning.experiments',
-  'learning.frontier',
   'learning.gym',
   'learning.health',
   'learning.hive',
-  'learning.hiveEvalTrend',
   'learning.hiveList',
   'learning.hiveThroughput',
   'learning.improvements',
   'learning.knowledge',
-  'learning.mugWakeEfficiency',
   'learning.redQueen',
   'learning.releaseReadiness',
-  'learning.retain',
   'learning.scout',
-  'learning.scoutDrafts',
   'network.board',
   'network.federationStatus',
   'network.fleet.wakes',
@@ -452,7 +444,7 @@ const UNDECLARED_BASELINE: readonly string[] = [
  * a quiet append (the DARK_FLAGS_HIGH_WATERMARK pattern, and for the same reason — that watermark
  * got silently bumped 22→24→25→26 for the same bug class until it was split and pinned).
  */
-const UNDECLARED_CEILING = 199;
+const UNDECLARED_CEILING = 191;
 
 /** Does a write to `table` invalidate `name`, through either invalidation surface? */
 function tableInvalidates(table: string, name: string): boolean {
@@ -500,6 +492,46 @@ describe('sync resolvers — every declared backing table actually invalidates i
     expect(declaredTables('workItemAdmission.runs')).toEqual([
       'harness_shared.admission_runs',
       'harness_shared.work_items',
+    ]);
+  });
+
+  it('WI-6182: all eight Learning-tab stragglers declare complete push-backed sources', () => {
+    expect(declaredTables('learning.retain')).toEqual([
+      'harness_shared.work_items',
+      'harness_shared.coord_links',
+      'harness_shared.harness_plans',
+      'harness_shared.scout_lens_weights',
+    ]);
+    expect(declaredTables('learning.apiary')).toEqual([
+      'harness_shared.cup_keeper_instances',
+      'harness_shared.cup_keeper_runs',
+      'harness_shared.cup_keeper_scores',
+    ]);
+    expect(declaredTables('learning.hiveEvalTrend')).toEqual([
+      'harness_shared.pot_eval_instances',
+      'harness_shared.pot_eval_runs',
+      'harness_shared.pot_eval_scores',
+    ]);
+    expect(declaredTables('learning.mugWakeEfficiency')).toEqual(['harness_shared.agent_usage_samples']);
+    expect(declaredTables('learning.scoutDrafts')).toEqual([
+      'harness_shared.scout_routed_ideas',
+      'harness_shared.harness_plans',
+    ]);
+    const analyzeSources = [
+      'harness_shared.scout_cycle_stage_artifacts',
+      'harness_shared.scout_ticks',
+      'harness_shared.scout_routed_ideas',
+    ];
+    expect(declaredTables('learning.analyze')).toEqual(analyzeSources);
+    expect(declaredTables('learning.analyzeCycle')).toEqual(analyzeSources);
+    expect(declaredTables('learning.frontier')).toEqual([
+      'harness_shared.routines',
+      'harness_shared.scout_ticks',
+      'harness_shared.learning_governor_loops',
+      'harness_shared.calibration_predictions',
+      'harness_shared.regret_findings',
+      'harness_shared.transfer_lessons',
+      'harness_shared.prompt_ablation_runs',
     ]);
   });
 

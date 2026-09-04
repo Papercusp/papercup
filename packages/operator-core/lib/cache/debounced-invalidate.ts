@@ -42,6 +42,9 @@ export const APPEND_HEAVY_TABLES: ReadonlySet<string> = new Set<string>([
   "harness_hook_logs",
   "toast_log",
   "feature_audit_consolidated",
+  // WI-6182: one row per governed model call. The append-heavy detector emits
+  // a coalesced table event; cache invalidation must stay on the same path.
+  "agent_usage_samples",
 ]);
 
 /** Default coalescing window — bounds worst-case staleness for a debounced tag. */

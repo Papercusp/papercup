@@ -5059,8 +5059,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // the ideator lens weights. Everything ELSE the colony keeps now flows
   // through learning.retainFeed below as one recency-interleaved ledger.
   // Every leg degrades independently (learning-retain-read).
-  // NOT table-backed — refreshes on mount + the panel's manual invalidate().
+  // Push-backed by the four visible stores below (WI-6182): work_items is the
+  // engineer_issues compat view's real producer; the other three are direct.
   'learning.retain': {
+    backingTables: [
+      'harness_shared.work_items',
+      'harness_shared.coord_links',
+      'harness_shared.harness_plans',
+      'harness_shared.scout_lens_weights',
+    ] as const,
     argsSchema: z.object({ hive: z.string().max(120).optional() }).optional(),
     resolve: async (args) => {
       const a = (args ?? {}) as { hive?: string };
@@ -5444,10 +5451,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // (instance), newest-first, over the canonical beekeeper_instances/runs/scores tables.
   // The yardstick for "are the agents actually getting better" (D-004). Reuses the
   // readApiaryInstanceSummaries reader. Returns a 1-element array { instances }. NOT
-  // table-backed for PG-trigger invalidation — refreshes on mount + manual invalidate.
+  // Push-backed by all three canonical benchmark relations (WI-6182).
   // Best-effort (learning-system-audit P-042): pre-baseline (gen-0 is owner-gated) a
   // missing table / PG error degrades to instances:[] — the clean empty state, not a 500.
   'learning.apiary': {
+    backingTables: [
+      'harness_shared.cup_keeper_instances',
+      'harness_shared.cup_keeper_runs',
+      'harness_shared.cup_keeper_scores',
+    ] as const,
     resolve: async () => {
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
@@ -5471,11 +5483,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // newest-first, over the hive_eval instances/runs/scores tables (migrations 264/268). The
   // SIBLING of learning.apiary — its OWN tables, so Hive-run scores never contaminate the apiary
   // instance-evolution trend (D-011). Scoped to the current rubric so incomparable scores never
-  // mix. Returns a 1-element array { instances }. NOT table-backed — refreshes on mount + manual
-  // invalidate (the cadence fires notifySyncInvalidate on a new generation). Best-effort: the live
+  // mix. Returns a 1-element array { instances }. Push-backed by all three Hive-eval relations
+  // (WI-6182). Best-effort: the live
   // cadence is owner-gated (P-051), so pre-baseline a missing table / PG error degrades to
   // instances:[] — the clean empty state, not a 500 (mirrors learning.apiary's P-042 degrade).
   'learning.hiveEvalTrend': {
+    backingTables: [
+      'harness_shared.pot_eval_instances',
+      'harness_shared.pot_eval_runs',
+      'harness_shared.pot_eval_scores',
+    ] as const,
     resolve: async () => {
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
@@ -5883,9 +5900,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // cachedWakes (the "cache is real" signal, P-003), and token/cost totals. Workspace-wide (all
   // Queen wakes). PG failure OR a not-yet-applied migration (272 turn_count) degrades to the empty
   // aggregate — the panel renders its no-wakes state, never a 500. Returns a 1-element array (client
-  // reads data[0]). NOT table-backed — refreshes on mount + the panel's manual invalidate() (the
-  // metric is sparse, mirroring learning.ekg / learning.redQueen).
+  // reads data[0]). The append-heavy telemetry table is watched by the existing debounced
+  // change detector (never a per-row trigger), which pushes this query on new samples (WI-6182).
   'learning.mugWakeEfficiency': {
+    backingTables: ['harness_shared.agent_usage_samples'] as const,
     resolve: async () => {
       const { mugWakeEfficiency, EMPTY_MUG_WAKE_EFFICIENCY } = await import('../pot/mug-wake-efficiency');
       try {
@@ -6210,6 +6228,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // args at all, so the Improvements view rendered two pot-scoped reads beside
   // this workspace-wide one and nothing on screen distinguished them.
   'learning.scoutDrafts': {
+    backingTables: ['harness_shared.scout_routed_ideas', 'harness_shared.harness_plans'] as const,
     argsSchema: z.object({ hive: z.string().max(120).optional() }).optional(),
     resolve: async (args) => {
       const { hive } = (args ?? {}) as { hive?: string };
@@ -6292,8 +6311,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // cycle's scout_ticks economics + routed-ledger rows by cycle_id.
   // 42P01-tolerant — a substrate without the migration renders the
   // explain-empty state, never a 500. Returns a 1-element array (client reads
-  // data[0]). NOT table-backed — refreshes on mount + manual `invalidate()`.
+  // data[0]). Push-backed by the artifact row and both enrichment ledgers (WI-6182).
   'learning.analyze': {
+    backingTables: [
+      'harness_shared.scout_cycle_stage_artifacts',
+      'harness_shared.scout_ticks',
+      'harness_shared.scout_routed_ideas',
+    ] as const,
     resolve: async () => {
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
@@ -6314,6 +6338,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // artifacts (ideas / scored / proposals / ideator slots) for the ONE cycle
   // whose Analyze disclosure is expanded. Returns a 0-or-1-element array.
   'learning.analyzeCycle': {
+    backingTables: [
+      'harness_shared.scout_cycle_stage_artifacts',
+      'harness_shared.scout_ticks',
+      'harness_shared.scout_routed_ideas',
+    ] as const,
     argsSchema: z.object({ cycleId: z.string().min(1) }),
     resolve: async (args) => {
       const { cycleId } = args as { cycleId: string };
@@ -6348,6 +6377,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // empty snapshot, never a 500. Returns a 1-element array (client reads
   // data[0]).
   'learning.frontier': {
+    backingTables: [
+      'harness_shared.routines',
+      'harness_shared.scout_ticks',
+      'harness_shared.learning_governor_loops',
+      'harness_shared.calibration_predictions',
+      'harness_shared.regret_findings',
+      'harness_shared.transfer_lessons',
+      'harness_shared.prompt_ablation_runs',
+    ] as const,
     argsSchema: z.object({ hive: z.string().max(120).optional() }).optional(),
     resolve: async (args) => {
       const { hive } = (args ?? {}) as { hive?: string };

@@ -2629,29 +2629,12 @@ const post = defineTool({
       }
     }
 
-    // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE — its DEFAULT is
-    // FLAG_DEFAULTS in libs/flags/src/types.ts, ON since 2026-06-18; never restate it here, the
-    // restated "default-off" drifted — identities-v1 D-018): resolve the flag server-side and
-    // thread it to the launcher via envelopeEnv (same env name the fleet path reads). The psu
-    // launcher reads it to make the playbook REPLACE the Claude base (--system-prompt-file +
-    // --exclude-dynamic) instead of appending. Fail-soft: a flag-lookup throw ⇒ off ⇒ the
-    // launcher uses --append. D-018 retires the append branch once P-003 renders the stack.
-    let replaceClaudeBase = false;
-    try {
-      const { getFlag } = await import('@papercusp/flags/server');
-      const { FLAGS } = await import('@papercusp/flags');
-      replaceClaudeBase = await getFlag(FLAGS.REPLACE_CLAUDE_BASE, workspace);
-    } catch {
-      /* flag miss ⇒ replace-base stays off (Claude base + --append stands) */
-    }
-
     // code-intelligence-routing-lsp-gitnexus-2026-08-20 P-021 (D-013): may this
     // omp session KEEP its native `lsp` builtin? Resolved HERE, not in the
     // launcher — psu-launcher.mjs is bare node and cannot import the TS flags
-    // lib, so this follows the REPLACE_CLAUDE_BASE shape directly above:
-    // resolve server-side, thread the answer through envelopeEnv, and the
-    // launcher stays free of any launch-time flag read (and so of any network
-    // dependency at spawn).
+    // lib, so the decision resolves server-side and threads through envelopeEnv;
+    // the launcher stays free of any launch-time flag read (and therefore any
+    // network dependency at spawn).
     //
     // The decision itself — including the local-model TIER GATE that is what
     // makes OMP_NATIVE_LSP_BUILTIN safe to ship default-ON — lives in ONE place,
@@ -2840,7 +2823,6 @@ const post = defineTool({
 
     const envelopeEnv: Record<string, string> = {
       ...envelope.env,
-      ...(replaceClaudeBase ? { PAPERCUSP_REPLACE_CLAUDE_BASE: '1' } : {}),
       // P-021/D-013 — see the ompNativeLsp resolution above. Set-when-true, so
       // ABSENT is the safe reading: the launcher strips omp's native `lsp`
       // builtin unless this explicitly says it may keep it.

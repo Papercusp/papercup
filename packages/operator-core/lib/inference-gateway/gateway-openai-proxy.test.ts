@@ -29,7 +29,7 @@ import {
   ROUTED_ACCOUNT_HEADER,
   resolveCodexOAuthNonStreamTimeoutMs,
 } from './gateway';
-import type { ActiveAccount } from './provider-contracts';
+import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
 
@@ -207,6 +207,51 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('healthy');
   });
 
+  it('measures an automatic pick that diverges from the best available account without changing routing', async () => {
+    const best = codexAcct('best');
+    const picked = codexAcct('picked');
+    const accounts = [best, picked];
+    // A deliberately non-conforming pool that ignores the supplied health key is the observation target:
+    // P-007 must REPORT this quality defect, not silently repair it in the telemetry layer.
+    const fixedPool: AccountPool = {
+      active: () => picked,
+      onExhausted: () => null,
+      select: (id) => accounts.find((account) => account.accountId === id) ?? null,
+      entries: () => accounts,
+      peek: () => picked,
+      size: () => accounts.length,
+      healthyCount: (extra) => accounts.filter((account) => !extra || extra(account.accountId)).length,
+    };
+    await bootCodex(ok, accounts, { codexPool: fixedPool });
+    gw!.setAccountRateHints([
+      { accountId: 'best', utilization7d: 0.1, windowResetAt7d: Date.now() + 86_400_000 },
+      { accountId: 'picked', utilization7d: 0.8, windowResetAt7d: Date.now() + 86_400_000 },
+    ]);
+
+    const res = await postResponses(
+      { model: 'gpt-5.6-sol', input: 'measure the picker' },
+      { [OWNER_HEADER]: 'su-routing-divergence' },
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('picked');
+
+    const quality = gw!.stats().routingQuality!;
+    expect(quality.automatic).toEqual({ picks: 1, comparablePicks: 1, divergences: 1, divergenceRate: 1 });
+    expect(quality.recent).toEqual([
+      expect.objectContaining({
+        provider: 'codex',
+        owner: 'su-routing-divergence',
+        selectedAccount: 'picked',
+        mode: 'automatic',
+        reason: 'health-ranked',
+        bestAvailableAccount: 'best',
+        divergedFromBest: true,
+        includedInAutomaticDivergence: true,
+      }),
+    ]);
+    expect(quality.recent[0]!.selectedScore).toBeGreaterThan(quality.recent[0]!.bestAvailableScore!);
+  });
+
   it('yields a projection-walled bearer SOFT pin before the first attempt, then returns when it recovers', async () => {
     const routed: string[] = [];
     await bootCodex(
@@ -242,6 +287,26 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     expect(routed).toEqual(['Bearer healthy-tok', 'Bearer pinned-tok']);
     expect(recovered.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('pinned');
     expect(recovered.headers.get(PIN_YIELDED_HEADER)).toBeNull();
+    const quality = gw!.stats().routingQuality!;
+    expect(quality.automatic).toEqual({ picks: 0, comparablePicks: 0, divergences: 0, divergenceRate: null });
+    expect(quality.pins).toEqual({
+      picks: 2,
+      explicitPicks: 2,
+      affinityPicks: 0,
+      yields: 1,
+      yieldRate: 0.5,
+    });
+    expect(
+      quality.recent.map(({ mode, reason, requestedAccount, yieldedFrom }) => ({
+        mode,
+        reason,
+        requestedAccount,
+        yieldedFrom,
+      })),
+    ).toEqual([
+      { mode: 'soft-pin', reason: 'pin-yield', requestedAccount: 'pinned', yieldedFrom: 'pinned' },
+      { mode: 'soft-pin', reason: 'pin-kept', requestedAccount: 'pinned', yieldedFrom: null },
+    ]);
   });
 
   it('keeps a projection-walled bearer HARD pin strict', async () => {
@@ -547,6 +612,52 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     expect(calls).toEqual(['/tmp/chatgpt-a', '/tmp/chatgpt-b']);
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-b');
     expect(res.headers.get(PIN_YIELDED_HEADER)).toBe('chatgpt-a->chatgpt-b');
+  });
+
+  it('a streaming ChatGPT CLI bridge failover carries final route metadata in response.completed', async () => {
+    const cliAccounts = [
+      { accountId: 'chatgpt-a', home: '/tmp/chatgpt-a' },
+      { accountId: 'chatgpt-b', home: '/tmp/chatgpt-b' },
+    ];
+    const calls: string[] = [];
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((a) => ({ accountId: a.accountId, token: async () => '' }))),
+      codexCliRun: async (opts) => {
+        calls.push(opts.home);
+        if (opts.home === '/tmp/chatgpt-a') throw new Error('account unavailable');
+        return { text: 'served by b', inputTokens: 5, outputTokens: 3 };
+      },
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+
+    const res = await postResponses({ model: 'gpt-5.5', input: 'hi', stream: true }, { [ACCOUNT_HEADER]: 'chatgpt-a' });
+    expect(res.status).toBe(200);
+    // The early SSE header is irrevocably committed for attempt 1; the in-band
+    // response.completed metadata is the final serving-account truth.
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-a');
+    expect(res.headers.get(PIN_YIELDED_HEADER)).toBeNull();
+    expect(calls).toEqual(['/tmp/chatgpt-a', '/tmp/chatgpt-b']);
+
+    const wire = await res.text();
+    const completedFrame = wire
+      .split('\n')
+      .find((line) => line.startsWith('data: ') && line.includes('"type":"response.completed"'));
+    expect(completedFrame).toBeDefined();
+    const completed = JSON.parse(completedFrame!.slice('data: '.length)) as {
+      response: {
+        metadata?: Record<string, unknown>;
+        output_text?: string;
+      };
+    };
+    expect(completed.response.output_text).toBe('served by b');
+    expect(completed.response.metadata).toMatchObject({
+      [ROUTED_ACCOUNT_HEADER]: 'chatgpt-b',
+      [PIN_YIELDED_HEADER]: 'chatgpt-a->chatgpt-b',
+    });
   });
 
   it('yields a projection-walled ChatGPT CLI SOFT pin before launch and returns after recovery', async () => {
@@ -1919,6 +2030,24 @@ describe('proxyOpenAi — owner-outcome taxonomy (pinned directly, not via respo
     expect(ledger.ok).toBe(1);
     expect(ledger.recent.map((entry) => entry.kind)).toEqual(['upstream_429', 'ok']);
     expect(ledger.recent[0].account).toBe('cdx-1');
+
+    const quality = gw!.stats().routingQuality!;
+    expect(quality.picks).toBe(1);
+    expect(quality.upstream429s).toBe(1);
+    expect(quality.upstream429PerPick).toBe(1);
+    expect(quality.byProvider.codex.upstream429PerPick).toBe(1);
+    expect(quality.byProvider.codex.byAccount['cdx-1']).toEqual({
+      picks: 1,
+      upstream429s: 1,
+      upstream429PerPick: 1,
+    });
+    const report = (await (await ask('/admin/owner-report?owner=bee-throttled')).json()) as {
+      routingQuality: { recentScope: string | null; recent: Array<{ owner: string | null; selectedAccount: string }> };
+    };
+    expect(report.routingQuality.recentScope).toBe('bee-throttled');
+    expect(report.routingQuality.recent).toEqual([
+      expect.objectContaining({ owner: 'bee-throttled', selectedAccount: 'cdx-1' }),
+    ]);
   });
 });
 

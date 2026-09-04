@@ -1269,6 +1269,10 @@ export function isReadOnlySchedulerInvocation(seg: string): boolean {
   const bare = seg.trim().replace(/^sudo\s+/, '').trim();
   const s = stripOutputRedirections(bare);
   if (s === null) return false;
+  if (/^systemd-run\b/.test(s)) {
+    // Transient service/scope/resource-control units are not schedules.
+    return !isSystemdScheduleInvocation(s);
+  }
   const m = CRONTAB_READONLY_ARGS_RE.exec(s);
   // `-l` must be PRESENT, not merely permitted by the shape: bare
   // `crontab -u bob` installs bob's crontab FROM STDIN.
@@ -1296,65 +1300,26 @@ export function isOsSchedulerCommand(cmd: string): boolean {
 }
 
 /**
- * EI-10940 — `systemd-run` has TWO unrelated uses, and the lockout only ever
- * imagined one of them.
- *
- * The block itself is right either way (an agent session must not create transient
- * systemd units). But the REASON we hand back assumed the only motive for touching
- * `systemd-run` is scheduling, so it told an agent who wanted a **cgroup CPU quota**
- * to "declare your wake via pot:declare-wake" — advice that is not merely unhelpful
- * but points AWAY from the answer. Observed live: an agent reproducing a
- * load-sensitive test flake needed `--property=CPUQuota=`, got the wake guidance,
- * and burned a dead end before finding `taskset` on its own.
- *
- * A guard that blocks the right thing for the wrong stated reason teaches a false
- * model of the system. So classify the invocation and name the ACTUAL alternative.
- *
- * Resource-limit intent = systemd-run carrying cgroup resource properties
- * (CPUQuota / AllowedCPUs / MemoryMax / MemoryHigh / IOWeight / TasksMax, via
- * `-p`/`--property`) or `--scope`, with NO scheduling flag present. Scheduling
- * flags (`--on-*`, `--timer-property`) always win the classification — a command
- * that does both is a schedule.
+ * EI-21924747520941481 — `systemd-run` is also the cgroup-isolation mechanism
+ * used by the execution guards. Only its timer-backed forms create a persistent
+ * OS schedule; transient services/scopes, `--pipe --wait`, and resource-control
+ * properties must remain available. The lockout therefore denies only explicit
+ * timer options.
  */
-const SYSTEMD_RESOURCE_PROP_RE =
-  /(?:-p|--property)[=\s]*(?:CPUQuota|CPUWeight|AllowedCPUs|AllowedMemoryNodes|MemoryMax|MemoryHigh|MemoryLimit|IOWeight|TasksMax)\b|--scope\b/i;
 const SYSTEMD_SCHEDULE_FLAG_RE = /--on-(?:calendar|active|boot|startup|unit-active|unit-inactive)\b|--timer-property\b/i;
 
-export function isResourceLimitInvocation(cmd: string): boolean {
+function isSystemdScheduleInvocation(cmd: string): boolean {
   const c = stripShellQuotes(cmd);
-  if (!/\bsystemd-run\b/.test(c)) return false;
-  if (SYSTEMD_SCHEDULE_FLAG_RE.test(c)) return false; // scheduling wins
-  return SYSTEMD_RESOURCE_PROP_RE.test(c);
+  const marker = /\bsystemd-run\b/.exec(c);
+  if (!marker) return false;
+  // `--` terminates systemd-run's own options; a payload argument named
+  // `--on-calendar` is not a timer request.
+  const options = c.slice((marker.index ?? 0) + marker[0].length).split(/\s+--(?:\s|$)/, 1)[0] ?? '';
+  return SYSTEMD_SCHEDULE_FLAG_RE.test(options);
 }
 
-/** The refusal text for a blocked OS-scheduler command, branched on actual intent. */
-export function osSchedulerDenyReason(cmd: string): string {
-  if (isResourceLimitInvocation(cmd)) {
-    // EI-19485881710808774: describe the REFUSED OPERATION, not the caller's
-    // presumed goal — `--scope` alone (no resource property) is also how an
-    // agent asks for a plain transient cgroup for reasons that have nothing
-    // to do with resource limiting (e.g. probing cgroup lifetime/parenting),
-    // and "You are trying to LIMIT RESOURCES" was flatly wrong for that
-    // caller. Name the alternatives for the resource-limiting case without
-    // asserting that is what the caller wanted; a caller with a different,
-    // legitimate use of `--scope`/resource props is still refused (this gate
-    // cannot honor that request either way) but is not told a false story
-    // about its own intent. Mirrors _os_scheduler_deny_reason() in the CC/Codex
-    // hook (scripts/hooks/cc/pretooluse-bash-resource-gate.sh) — fix one, fix both.
-    return (
-      'native-scheduler lockout: agent sessions cannot create transient systemd ' +
-      'units, so `systemd-run` cgroup/resource-control usage (`--scope`, `-p ' +
-      'CPUQuota=…`, `-p MemoryMax=…`, etc.) is refused here regardless of why it ' +
-      'was invoked. If your goal is limiting CPU/memory, use `taskset -c <cores> ' +
-      '<cmd>` to pin CPUs (no scheduler, no root, no daemon), or run heavy ' +
-      'commands through `scripts/pc-heavy.sh` (nice + a concurrency semaphore) on ' +
-      'the shared box. If your goal is something else (e.g. cgroup lifetime or ' +
-      'parenting behavior), neither of those substitutes for `systemd-run` — this ' +
-      'guard has no alternative for that case, the operation is simply unavailable ' +
-      'in an agent session. (`pot:declare-wake` is for SCHEDULING, a different ' +
-      'refusal below, and is not an alternative for either case here.)'
-    );
-  }
+/** The refusal text for a blocked OS-scheduler command. */
+export function osSchedulerDenyReason(_cmd: string): string {
   return (
     'native-scheduler lockout: agent sessions must not create OS schedules ' +
     '(crontab / at / batch / systemd-run). Declare your wake via ' +
@@ -4337,8 +4302,8 @@ export async function onToolCall(
   ) {
     const cmd = typeof event.input?.command === 'string' ? (event.input.command as string) : '';
     if (isOsSchedulerCommand(cmd)) {
-      // EI-10940: same block, but the reason now names the alternative that
-      // actually applies to what the agent was trying to do.
+      // EI-21924747520941481: only timer-backed systemd-run forms reach this
+      // branch; transient units/scopes are intentionally allowed.
       return { block: true, reason: osSchedulerDenyReason(cmd) };
     }
     // EI-2376 follow-up (a): the shell hook's destructive tree-wide git guard,

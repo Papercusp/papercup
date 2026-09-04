@@ -799,18 +799,10 @@ describe('native-scheduler lockout: fleet-slug backstop (EI-18815668439722436)',
 });
 
 /**
- * EI-10940 — the refusal must answer the INTENT, not the token.
- *
- * `systemd-run` is overloaded: it is BOTH the OS scheduler (`--on-calendar=…`)
- * AND the only stock way to ask for cgroup resource control (`-p CPUQuota=…`,
- * `--scope`). The lockout denied both with one hardcoded message telling you to
- * "declare your wake via pot:declare-wake" — a non-sequitur when what you were
- * actually doing was capping CPU on a heavy test run, and one that costs a real
- * detour before you work out the suggested tool cannot do the thing you wanted.
- *
- * The DENY is right either way (agent sessions cannot create transient units).
- * Only the REASON branches. These are recurrence guards: they fail against the
- * old single hardcoded message.
+ * EI-21924747520941481 — `systemd-run` is also the cgroup-isolation mechanism
+ * used by execution guards. Only timer-backed forms create a persistent OS
+ * schedule; transient services/scopes, `--pipe --wait`, and resource-control
+ * properties must remain available.
  */
 function denyReason(out: { stdout: string; stderr?: string; status: number | null }): string {
   expect(out.status).toBe(0);
@@ -819,58 +811,43 @@ function denyReason(out: { stdout: string; stderr?: string; status: number | nul
   return decision.hookSpecificOutput.permissionDecisionReason as string;
 }
 
-describe('native-scheduler lockout: the refusal answers the INTENT (EI-10940)', () => {
+describe('native-scheduler lockout: systemd-run blocks timers, not transient units (EI-21924747520941481)', () => {
   it.each([
-    ['-p CPUQuota', 'systemd-run -p CPUQuota=200% node_modules/.bin/vitest run'],
-    ['--property=CPUQuota', 'systemd-run --property=CPUQuota=800% npm run build'],
-    ['-p MemoryMax', 'systemd-run -p MemoryMax=4G ./heavy.sh'],
-    ['--scope (transient cgroup, no props)', 'systemd-run --scope ./heavy.sh'],
-    ['-p AllowedCPUs (cpuset)', 'systemd-run -p AllowedCPUs=0-7 ./heavy.sh'],
-    ['sudo form', 'sudo systemd-run -p CPUWeight=50 ./heavy.sh'],
-  ])('a RESOURCE-LIMIT systemd-run (%s) is refused with the resource answer, not the wake answer', (_l, command) => {
-    const reason = denyReason(runGate(bashCmd(command), AGENT));
-    // Points at the tools that actually do this here…
-    expect(reason).toMatch(/taskset/);
-    expect(reason).toMatch(/pc-heavy\.sh/);
-    // …says WHY systemd-run can't work in an agent session…
-    expect(reason).toMatch(/cannot create transient systemd units/);
-    // …and never asserts the false premise that you were scheduling something.
-    expect(reason).not.toMatch(/must not create OS schedules/);
+    ['plain transient service', 'systemd-run ./thing.sh'],
+    ['transient scope', 'systemd-run --scope ./heavy.sh'],
+    ['pipe/wait scope with properties', 'systemd-run --pipe --wait --property=NoNewPrivileges=yes ./probe.sh'],
+    ['CPU resource control', 'systemd-run -p CPUQuota=200% node_modules/.bin/vitest run'],
+    ['memory resource control', 'systemd-run --property=MemoryMax=4G npm run build'],
+    ['sudo transient scope', 'sudo systemd-run --scope --collect ./probe.sh'],
+  ])('allows %s', (_label, command) => {
+    expectAllow(runGate(bashCmd(command), AGENT));
   });
 
   it.each([
     ['--on-calendar', 'systemd-run --on-calendar=daily echo hi'],
     ['--on-active', 'systemd-run --on-active=30m ./wake.sh'],
-    ['crontab', 'crontab -e'],
-    ['at', 'echo done | at midnight'],
-    ['batch', 'batch < jobs.txt'],
-    ['bare systemd-run (no props, no timer)', 'systemd-run ./thing.sh'],
-  ])('a genuine SCHEDULE (%s) still gets the wake answer', (_l, command) => {
+    ['--on-boot', 'systemd-run --on-boot=5m ./wake.sh'],
+    ['--on-startup', 'systemd-run --on-startup=5m ./wake.sh'],
+    ['--on-unit-active', 'systemd-run --on-unit-active=5m ./wake.sh'],
+    ['--on-unit-inactive', 'systemd-run --on-unit-inactive=5m ./wake.sh'],
+    ['--timer-property', 'systemd-run --timer-property=AccuracySec=1s --on-calendar=daily ./wake.sh'],
+  ])('a timer form (%s) still gets the wake answer', (_l, command) => {
     const reason = denyReason(runGate(bashCmd(command), AGENT));
     expect(reason).toMatch(/must not create OS schedules/);
     expect(reason).toMatch(/pot:declare-wake/);
-    expect(reason).not.toMatch(/taskset/);
   });
 
-  it('a HYBRID (timer flag + resource prop) is a schedule — scheduling advice wins', () => {
-    // `systemd-run --on-calendar=daily -p CPUQuota=50% x` really is creating a
-    // timer; the resource prop is incidental. Misreading it as resource-only
-    // would hand back advice (taskset) that ignores the persistent-unit problem
-    // the lockout exists to prevent.
-    const reason = denyReason(
-      runGate(bashCmd('systemd-run --on-calendar=daily -p CPUQuota=50% /usr/bin/backup'), AGENT),
-    );
-    expect(reason).toMatch(/must not create OS schedules/);
-    expect(reason).not.toMatch(/taskset/);
+  it('does not treat a timer-looking payload after `--` as a timer', () => {
+    expectAllow(runGate(bashCmd('systemd-run --scope -- echo --on-calendar=daily'), AGENT));
   });
 
-  it('the resource branch does not weaken the deny — it is still a deny', () => {
-    const out = runGate(bashCmd('systemd-run -p CPUQuota=200% ./heavy.sh'), AGENT);
-    const decision = JSON.parse(out.stdout);
-    expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
+  it('keeps non-systemd schedulers denied', () => {
+    for (const command of ['crontab -e', 'echo done | at midnight', 'batch < jobs.txt']) {
+      expectDeny(runGate(bashCmd(command), AGENT));
+    }
   });
 
-  it('quoted prose naming CPUQuota is not a systemd-run at all (no false deny)', () => {
+  it('quoted prose naming CPUQuota is not a systemd-run at all', () => {
     expectAllow(runGate(bashCmd('echo "we could use -p CPUQuota=200% here"'), AGENT));
   });
 });

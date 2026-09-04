@@ -873,9 +873,15 @@ async function applyScopedSuperuserTransportClamp(
           (requestedHarness === 'all' ||
             requestedHarness === '*' ||
             (await potHomeSlugForHarness(spawnCtx.workspaceId, requestedHarness)) !== scopeHive);
+        // A resumed session may retain an ambient Hive while naming one exact,
+        // store-backed plan. Read/decision recovery and the structured plan-lane
+        // declaration share the same owner proof; every other tool keeps the
+        // normal sibling-Hive rejection.
         const verifiedExactPlanRebind =
           escapesHive &&
-          (toolName === 'plans:get' || toolName === 'plans:add-decision') &&
+          (toolName === 'plans:get' ||
+            toolName === 'plans:add-decision' ||
+            toolName === 'coord:declare-intent') &&
           (await verifyExplicitPlanHarness(spawnCtx, requestedHarness, args));
         if (verifiedExactPlanRebind) {
           effectiveHarnessSlug = requestedHarness;
@@ -1694,6 +1700,7 @@ function projectionMaterializationContext(
   ctx: UnifiedToolContext,
   needsFullSource: boolean,
   needsStructuredSource = false,
+  sourceProjection?: ProjectionSpec | null,
 ): UnifiedToolContext {
   // A structured `pick` still needs JSON even when the caller explicitly
   // supplied a payload tier. Previously the full-source promotion flag also
@@ -1712,6 +1719,7 @@ function projectionMaterializationContext(
     : {};
   return {
     ...ctx,
+    ...(sourceProjection ? { sourceProjection } : {}),
     // `pick` classifies the materialized text as JSON. MCP's implicit compact
     // default may select TOON, so force JSON only for this in-process source;
     // the caller's explicit format remains the final wire-format choice.
@@ -2062,6 +2070,7 @@ async function buildMcpToolContext(
         ctx,
         projectionNeedsFullSource,
         projectionSpec?.pick !== undefined,
+        projectionSpec,
       );
       return dispatchProjectedToolToMcp(target, canonicalName, dispatchToolArgs, materializationCtx, PROJECTED_DEPS);
     })) as McpCallResult;
@@ -2775,12 +2784,15 @@ const handler = createMcpHandler(
                 // naming the owning harness of one exact plan. Verify the row
                 // in this workspace BEFORE rebinding dispatch. Keep this
                 // exemption deliberately narrow: plans:get is the exact-plan
-                // read recovery surface, while plans:add-decision is the one
-                // cross-lane write leaders are required to make durable. Every
-                // other tool/query keeps the normal sibling-Hive rejection.
+                // read recovery surface, plans:add-decision is the cross-lane
+                // ruling writer, and coord:declare-intent is the structured
+                // plan-lane claim whose current_plan_slug is verified here.
+                // Every other tool/query keeps the normal sibling-Hive rejection.
                 const verifiedExactPlanRebind =
                   escapes &&
-                  (toolName === 'plans:get' || toolName === 'plans:add-decision') &&
+                  (toolName === 'plans:get' ||
+                    toolName === 'plans:add-decision' ||
+                    toolName === 'coord:declare-intent') &&
                   (await verifyExplicitPlanHarness(spawnRes.ctx, argHarness, args));
                 if (verifiedExactPlanRebind) {
                   effectiveHarnessSlug = argHarness;
@@ -3366,6 +3378,7 @@ const handler = createMcpHandler(
                       deltaCtx,
                       projectionNeedsFullSource,
                       projectionSpec?.pick !== undefined,
+                      projectionSpec,
                     );
                     return (await dispatchProjectedToolToMcp(
                       projected,

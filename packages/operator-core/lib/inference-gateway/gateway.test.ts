@@ -4982,6 +4982,68 @@ test('[P-008] /admin/owner-report returns the per-owner outcome ledger', async (
   assert.equal(top.routingQuality.picks, 1);
 }, 20_000);
 
+test('[P-007] routing evidence excludes the request being measured from Claude selected-account load', async () => {
+  resetGovernorRegistry();
+  const acct = (accountId: string): ActiveAccount => ({ accountId, token: async () => `${accountId}-tok` });
+  // B is the fair round-robin pick while A wins the stable evidence tie-break. Both are equally healthy,
+  // so merely admitting this request on B must not manufacture a selected>winner divergence.
+  const pool = createFailoverPool([acct('B'), acct('A')]);
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    },
+    { pool, governorFor: undefined },
+  );
+
+  const res = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'su-self-load' },
+    body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(res.status, 200);
+  await res.text();
+
+  const quality = (await (await ask('/stats')).json()) as {
+    routingQuality: {
+      automatic: { picks: number; comparablePicks: number; divergences: number; divergenceRate: number | null };
+      recent: Array<{
+        selectedAccount: string;
+        selectedScore: number | null;
+        bestAvailableAccount: string | null;
+        bestAvailableScore: number | null;
+        divergedFromBest: boolean | null;
+      }>;
+    };
+  };
+  assert.deepEqual(quality.routingQuality.automatic, {
+    picks: 1,
+    comparablePicks: 1,
+    divergences: 0,
+    divergenceRate: 0,
+  });
+  assert.deepEqual(
+    quality.routingQuality.recent.map(
+      ({ selectedAccount, selectedScore, bestAvailableAccount, bestAvailableScore, divergedFromBest }) => ({
+        selectedAccount,
+        selectedScore,
+        bestAvailableAccount,
+        bestAvailableScore,
+        divergedFromBest,
+      }),
+    ),
+    [
+      {
+        selectedAccount: 'B',
+        selectedScore: 0,
+        bestAvailableAccount: 'A',
+        bestAvailableScore: 0,
+        divergedFromBest: false,
+      },
+    ],
+  );
+}, 20_000);
+
 test('[egress kill-switch] ?proxy=off means NO request builds a proxy dispatcher — including proxy-only accounts (the default-param leak)', async () => {
   // Account A is PROXY-ONLY (no direct pool entry). With proxy egress disabled, its requests must ride
   // the DEFAULT box egress (init.dispatcher undefined). Before the chokepoint guard, pickEgress filtered

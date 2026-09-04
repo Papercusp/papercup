@@ -369,6 +369,7 @@ describe('resolveSessionRefReconciled — rung 4: unlogged native-session transi
         sessionId: '1b5b38ae-current',
         startedAtMs: Date.parse('2026-09-04T15:02:05.756Z'),
       }),
+      latestRespawn: () => 'cb3e6dba-stale',
       latestRespawnInfo: () => ({
         nativeId: 'cb3e6dba-stale',
         atMs: Date.parse('2026-09-03T13:25:33.769Z'),
@@ -386,6 +387,7 @@ describe('resolveSessionRefReconciled — rung 4: unlogged native-session transi
         sessionId: 'predecessor',
         startedAtMs: Date.parse('2026-09-03T12:00:00.000Z'),
       }),
+      latestRespawn: () => 'successor',
       latestRespawnInfo: () => ({
         nativeId: 'successor',
         atMs: Date.parse('2026-09-03T13:25:33.769Z'),

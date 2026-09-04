@@ -4,9 +4,8 @@
  *
  * Both bootstrap routes (bootstrap-su.ts, bootstrap-role.ts) resolve this and
  * thread the answer to psu-launcher.mjs via `envelopeEnv.PAPERCUSP_OMP_NATIVE_LSP`
- * — the same resolve-server-side/thread-through-envelopeEnv shape P-014 uses for
- * REPLACE_CLAUDE_BASE, and the reason the bare-node launcher needs no flag read
- * (and so no launch-time network dependency) of its own.
+ * — the reason the bare-node launcher needs no flag read (and therefore no
+ * launch-time network dependency) of its own.
  *
  * WHY THIS IS A FILE AND NOT A THREE-TERM BOOLEAN INLINE IN EACH ROUTE: the
  * `!isLocalModelSpec` term is a SAFETY GATE, and the two routes drifting would

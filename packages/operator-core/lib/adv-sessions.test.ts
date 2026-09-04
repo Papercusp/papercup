@@ -35,9 +35,7 @@ beforeEach(() => {
   advSessionRowsMock.mockReset();
   advSessionRowsMock.mockResolvedValue([]);
   advSessionBeginMock.mockReset();
-  advSessionBeginMock.mockImplementation(async (fn: (tx: typeof advSessionRowsMock) => unknown) =>
-    fn(advSessionRowsMock),
-  );
+  advSessionBeginMock.mockImplementation(async (fn: (tx: typeof advSessionRowsMock) => unknown) => fn(advSessionRowsMock));
 });
 
 describe('readAdvSessionLaunchRecordByOwner', () => {
@@ -76,7 +74,7 @@ describe('accepted session shutdown marker (EI-21266145962856513)', () => {
     expect((template as readonly string[]).join(' ')).toContain('ORDER BY started_at DESC');
   });
 
-  it("reads the marker only from each owner's newest row", async () => {
+  it('reads the marker only from each owner\'s newest row', async () => {
     advSessionRowsMock.mockResolvedValueOnce([
       { coord_owner_id: 'su-marked', shutdown_accepted_at: '2026-08-23T19:00:00Z' },
       { coord_owner_id: 'su-live', shutdown_accepted_at: null },
@@ -200,12 +198,10 @@ describe('fallbackCodexLaunchSpecFromAdvSession', () => {
 
 describe('Codex resume local-liveness evidence (EI-21584243912058462)', () => {
   it('accepts exactly the closed positive discriminant', () => {
-    expect(
-      isAdvSessionLocalLivenessEvidence({
-        version: 1,
-        kind: 'no-live-codex-writer',
-      }),
-    ).toBe(true);
+    expect(isAdvSessionLocalLivenessEvidence({
+      version: 1,
+      kind: 'no-live-codex-writer',
+    })).toBe(true);
     for (const value of [
       null,
       undefined,
@@ -222,16 +218,14 @@ describe('Codex resume local-liveness evidence (EI-21584243912058462)', () => {
     const tx = vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
       const sql = strings.join(' ');
       if (sql.includes('SELECT agent, ended_at')) {
-        return [
-          {
-            agent: 'codex',
-            ended_at: null,
-            ended_by: null,
-            started_at: new Date(),
-            resume_claim_key: null,
-            resume_claimed_at: null,
-          },
-        ];
+        return [{
+          agent: 'codex',
+          ended_at: null,
+          ended_by: null,
+          started_at: new Date(),
+          resume_claim_key: null,
+          resume_claimed_at: null,
+        }];
       }
       if (sql.includes('UPDATE harness_shared.adv_sessions')) {
         return [{ lease_expires_at: new Date(Date.now() + 60_000).toISOString() }];
@@ -240,39 +234,37 @@ describe('Codex resume local-liveness evidence (EI-21584243912058462)', () => {
     });
     advSessionBeginMock.mockImplementation(async (fn) => fn(tx as typeof advSessionRowsMock));
 
-    await expect(
-      acquireAdvSessionResume(42, 'resume-key', 60, 300, { version: 1, kind: 'no-live-codex-writer' }),
-    ).resolves.toMatchObject({ status: 'acquired', acquired: true });
+    await expect(acquireAdvSessionResume(
+      42,
+      'resume-key',
+      60,
+      300,
+      { version: 1, kind: 'no-live-codex-writer' },
+    )).resolves.toMatchObject({ status: 'acquired', acquired: true });
     expect(tx.mock.calls.some(([strings]) => strings.join(' ').includes('FOR UPDATE'))).toBe(true);
-    expect(tx.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE harness_shared.adv_sessions'))).toBe(
-      true,
-    );
+    expect(tx.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE harness_shared.adv_sessions'))).toBe(true);
   });
 
   it('keeps a recent row live when the evidence is malformed or unknown', async () => {
     const tx = vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
       if (strings.join(' ').includes('SELECT agent, ended_at')) {
-        return [
-          {
-            agent: 'codex',
-            ended_at: null,
-            ended_by: null,
-            started_at: new Date(),
-            resume_claim_key: null,
-            resume_claimed_at: null,
-          },
-        ];
+        return [{
+          agent: 'codex',
+          ended_at: null,
+          ended_by: null,
+          started_at: new Date(),
+          resume_claim_key: null,
+          resume_claimed_at: null,
+        }];
       }
       throw new Error('unexpected write');
     });
     advSessionBeginMock.mockImplementation(async (fn) => fn(tx as typeof advSessionRowsMock));
 
-    await expect(
-      acquireAdvSessionResume(42, 'resume-key', 60, 300, {
-        version: 1,
-        kind: 'unknown',
-      }),
-    ).resolves.toEqual({ status: 'live', acquired: false });
+    await expect(acquireAdvSessionResume(42, 'resume-key', 60, 300, {
+      version: 1,
+      kind: 'unknown',
+    })).resolves.toEqual({ status: 'live', acquired: false });
   });
 });
 
@@ -354,12 +346,10 @@ describe('Claude resume local-liveness evidence (WI-2141892)', () => {
     const tx = txFor(recentActiveClaudeRow());
     advSessionBeginMock.mockImplementation(async (fn) => fn(tx as typeof advSessionRowsMock));
 
-    await expect(
-      acquireAdvSessionResume(22127, 'resume-key', 60, 300, {
-        version: 1,
-        kind: 'no-live-claude-process',
-      }),
-    ).resolves.toMatchObject({ status: 'acquired', acquired: true });
+    await expect(acquireAdvSessionResume(22127, 'resume-key', 60, 300, {
+      version: 1,
+      kind: 'no-live-claude-process',
+    })).resolves.toMatchObject({ status: 'acquired', acquired: true });
   });
 
   it('POSITIVE CONTROL — the same row without a witness still refuses live', async () => {
@@ -368,10 +358,8 @@ describe('Claude resume local-liveness evidence (WI-2141892)', () => {
     const tx = txFor(recentActiveClaudeRow());
     advSessionBeginMock.mockImplementation(async (fn) => fn(tx as typeof advSessionRowsMock));
 
-    await expect(acquireAdvSessionResume(22127, 'resume-key', 60, 300)).resolves.toEqual({
-      status: 'live',
-      acquired: false,
-    });
+    await expect(acquireAdvSessionResume(22127, 'resume-key', 60, 300))
+      .resolves.toEqual({ status: 'live', acquired: false });
   });
 
   it('refuses a CLAUDE row presented with a codex witness', async () => {
@@ -381,12 +369,10 @@ describe('Claude resume local-liveness evidence (WI-2141892)', () => {
     });
     advSessionBeginMock.mockImplementation(async (fn) => fn(tx as typeof advSessionRowsMock));
 
-    await expect(
-      acquireAdvSessionResume(22127, 'resume-key', 60, 300, {
-        version: 1,
-        kind: 'no-live-codex-writer',
-      }),
-    ).resolves.toEqual({ status: 'live', acquired: false });
+    await expect(acquireAdvSessionResume(22127, 'resume-key', 60, 300, {
+      version: 1,
+      kind: 'no-live-codex-writer',
+    })).resolves.toEqual({ status: 'live', acquired: false });
   });
 
   it('refuses a CODEX row presented with a claude witness', async () => {
@@ -398,12 +384,10 @@ describe('Claude resume local-liveness evidence (WI-2141892)', () => {
     });
     advSessionBeginMock.mockImplementation(async (fn) => fn(tx as typeof advSessionRowsMock));
 
-    await expect(
-      acquireAdvSessionResume(22127, 'resume-key', 60, 300, {
-        version: 1,
-        kind: 'no-live-claude-process',
-      }),
-    ).resolves.toEqual({ status: 'live', acquired: false });
+    await expect(acquireAdvSessionResume(22127, 'resume-key', 60, 300, {
+      version: 1,
+      kind: 'no-live-claude-process',
+    })).resolves.toEqual({ status: 'live', acquired: false });
   });
 
   it('never lets a witness override a HELD reservation or a missing row', async () => {
@@ -411,32 +395,26 @@ describe('Claude resume local-liveness evidence (WI-2141892)', () => {
     // touch the single-winner lease or invent a row.
     const held = vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
       if (strings.join(' ').includes('SELECT agent, ended_at')) {
-        return [
-          {
-            ...recentActiveClaudeRow(),
-            resume_claim_key: 'another-launchers-key',
-            resume_claimed_at: new Date(),
-          },
-        ];
+        return [{
+          ...recentActiveClaudeRow(),
+          resume_claim_key: 'another-launchers-key',
+          resume_claimed_at: new Date(),
+        }];
       }
       throw new Error('unexpected write');
     });
     advSessionBeginMock.mockImplementation(async (fn) => fn(held as typeof advSessionRowsMock));
-    await expect(
-      acquireAdvSessionResume(22127, 'my-key', 60, 300, {
-        version: 1,
-        kind: 'no-live-claude-process',
-      }),
-    ).resolves.toMatchObject({ status: 'reserved', acquired: false });
+    await expect(acquireAdvSessionResume(22127, 'my-key', 60, 300, {
+      version: 1,
+      kind: 'no-live-claude-process',
+    })).resolves.toMatchObject({ status: 'reserved', acquired: false });
 
     const missing = vi.fn(async () => []);
     advSessionBeginMock.mockImplementation(async (fn) => fn(missing as typeof advSessionRowsMock));
-    await expect(
-      acquireAdvSessionResume(22127, 'my-key', 60, 300, {
-        version: 1,
-        kind: 'no-live-claude-process',
-      }),
-    ).resolves.toEqual({ status: 'missing', acquired: false });
+    await expect(acquireAdvSessionResume(22127, 'my-key', 60, 300, {
+      version: 1,
+      kind: 'no-live-claude-process',
+    })).resolves.toEqual({ status: 'missing', acquired: false });
   });
 });
 
@@ -611,7 +589,9 @@ describe('terminal-launch death detection (WI-6821)', () => {
     });
 
     it('leaves an already-reconciled row alone', () => {
-      expect(isDeadTerminalLaunch(launch({ endedAt: '2026-08-02T02:25:00.000Z' }), gone)).toBe(false);
+      expect(isDeadTerminalLaunch(launch({ endedAt: '2026-08-02T02:25:00.000Z' }), gone)).toBe(
+        false,
+      );
     });
 
     // Only `display='terminal'` rows are local by construction, which is what
@@ -634,7 +614,9 @@ describe('terminal-launch death detection (WI-6821)', () => {
     // A session that booted and later ended is an ORDINARY end and belongs in the
     // `ended` list — calling it a failed launch would be a second kind of lie.
     it('is false for a session that registered before it ended', () => {
-      expect(isFailedTerminalLaunch(launch({ endedAt: '2026-08-02T02:25:00.000Z', sessionId: 'sess-1' }))).toBe(false);
+      expect(
+        isFailedTerminalLaunch(launch({ endedAt: '2026-08-02T02:25:00.000Z', sessionId: 'sess-1' })),
+      ).toBe(false);
     });
   });
 

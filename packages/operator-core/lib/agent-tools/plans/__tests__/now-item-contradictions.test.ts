@@ -31,6 +31,18 @@ updated: 2026-08-23
 ## Decisions
 `;
 
+const EXACT_REPRO_SLUG = 'deterministic-plan-state-derivation-2026-08-31';
+const EXACT_REPORTED_COMPLETIONS = [
+  'P-002 (WI-1744270) made the `## Now` next-pointer DERIVED at read time',
+  'P-002 landed, making the `## Now` next-pointer DERIVED at read time',
+];
+const EXACT_REPRO_CURRENT = CURRENT.replace(`slug: ${SLUG}`, `slug: ${EXACT_REPRO_SLUG}`)
+  .replace(
+    '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
+    '**State:** P-001 is done.\n\n**Next:** Continue with acceptance review.',
+  )
+  .replace('- **P-002** `todo` Open item.', '- **P-002** `done` Finished item.');
+
 const GROUPED_COMPLETION = CURRENT.replace(
   '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
   '**State:** NOT COMPLETE: The engineering half (P-001/P-002/P-003/P-004/P-005/P-007) is code-truth audited and independently accepted; P-008 remains blocked.\n\n**Next:** Continue with P-008.',
@@ -487,6 +499,40 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
 
     expect(result.value).toEqual({ ok: true });
     expect(result.newBody).toContain('**Next:** Continue with P-002.');
+  });
+
+  it.each(EXACT_REPORTED_COMPLETIONS)(
+    'accepts the reported completion narration at current HEAD: %s',
+    (state) => {
+      const result = evaluateNowUpdate(
+        EXACT_REPRO_CURRENT,
+        state,
+        'Continue with acceptance review.',
+        EXACT_REPRO_SLUG,
+      );
+
+      expect(result.value).toEqual({ ok: true });
+    },
+  );
+
+  it.each([
+    'P-002 did not make the `## Now` next-pointer DERIVED at read time',
+    'P-002 will make the `## Now` next-pointer DERIVED at read time',
+    'P-002 made the `## Now` next-pointer stale at read time',
+  ])('keeps non-completion resulting-state prose contradictory: %s', (state) => {
+    const result = evaluateNowUpdate(
+      EXACT_REPRO_CURRENT,
+      state,
+      'Continue with acceptance review.',
+      EXACT_REPRO_SLUG,
+    );
+
+    expect(result.newBody).toBeNull();
+    expect(result.value).toEqual({
+      ok: false,
+      code: 'now_item_status_contradiction',
+      contradictions: [expect.objectContaining({ id: 'P-002', status: 'done' })],
+    });
   });
 
   it('accepts staging completion before the item reaches main/deployed', () => {

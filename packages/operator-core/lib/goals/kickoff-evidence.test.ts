@@ -14,6 +14,7 @@ import {
   readGoalKickoffEvidence,
   type GoalKickoffRead,
 } from './kickoff-evidence';
+import { PORTFOLIO_CREATE_TOOLS, PORTFOLIO_PLACE_TOOLS } from './portfolio-acts';
 
 const WINDOW = '2026-08-29T21:40:51.000Z';
 const GOAL = 'work-on-everything-070565';
@@ -205,25 +206,27 @@ describe('GOAL kickoff required-leg gate', () => {
 describe('shared dispatch coverage', () => {
   it('covers every create/launch/placement door named by WI-939561', () => {
     expect(GOAL_KICKOFF_GUARDED_TOOLS).toEqual(
-      expect.arrayContaining([
-        'goals:create',
-        'pot:create',
-        'plans:new',
-        'plans:start',
-        'work_items:create',
-        'coord:dispatch',
-        'fleet:place_batch',
-        'fleet:launch-on-plan',
-        'capability:launch-agent',
-      ]),
+      [...new Set([...PORTFOLIO_CREATE_TOOLS, ...PORTFOLIO_PLACE_TOOLS])].sort(),
     );
     for (const name of GOAL_KICKOFF_GUARDED_TOOLS) expect(isGoalKickoffGuardedTool(name)).toBe(true);
     expect(isGoalKickoffGuardedTool('goals:list')).toBe(false);
   });
 
+  it('gates conditional create/place acts by arguments without blocking their read-only forms', () => {
+    expect(isGoalKickoffGuardedTool('improvements:capture', { title: 'real filing' })).toBe(true);
+    expect(
+      isGoalKickoffGuardedTool('improvements:capture', { title: 'reflection', lane: 'observation' }),
+    ).toBe(false);
+    expect(
+      isGoalKickoffGuardedTool('improvements:capture', { title: 'probe', checkDuplicatesOnly: true }),
+    ).toBe(false);
+    expect(isGoalKickoffGuardedTool('work_items:update', { id: 'WI-1', goal: 'goal-1' })).toBe(true);
+    expect(isGoalKickoffGuardedTool('work_items:update', { id: 'WI-1', title: 'rename only' })).toBe(false);
+  });
+
   it('wires the evaluator and telemetry flush at the one projected dispatch seam', () => {
     const source = readFileSync(new URL('../projected-tool-deps.ts', import.meta.url), 'utf8');
-    expect(source).toContain('if (isGoalKickoffGuardedTool(toolName))');
+    expect(source).toContain('if (isGoalKickoffGuardedTool(toolName, args))');
     expect(source).toContain('readGoalKickoffEvidence({');
     expect(source).toContain('flushTelemetry: flushPendingTelemetry');
     expect(source).toContain('goalKickoffRefusalPayload(toolName, evidence)');

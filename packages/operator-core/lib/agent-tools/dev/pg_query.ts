@@ -138,7 +138,7 @@ export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
   description:
-    "Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim. Unbounded LIKE/ILIKE searches over tool_invocations JSONB text are refused unless `allowUnboundedJsonSearch: true`; prefer indexed scalar predicates or activity:tool-log/dev:telemetry. PostgreSQL regex repetition bounds are limited to 255; use `left()` or `substring()` for larger excerpts. Rubrics are plan-backed in `harness_shared.harness_plans` (`template = 'rubric'`); `harness_shared.rubrics` is retired.",
+    "Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim. PostgreSQL regex repetition bounds are limited to 255; use `left()` or `substring()` for larger excerpts. Rubrics are plan-backed in `harness_shared.harness_plans` (`template = 'rubric'`); `harness_shared.rubrics` is retired.",
   capability: 'intel:read',
   guidance: {
     when:

@@ -54,6 +54,13 @@ const NOW_CLOSED_RE =
   /\b(?:done|complete(?:d)?|closed|shipped|dropped|finished|terminal|accepted|landed|merged|resolved)\b|\bno\s+longer\s+(?:active|open|pending|in\s+progress)\b/i;
 const NOW_NEGATED_OR_FUTURE_RE =
   /\b(?:not|never|still|yet|will|would|should|must|need(?:s)?(?:\s+to)?|to)\b/i;
+// EI-21987261152536728: P-002's completion can be narrated as a resulting
+// derived state rather than with a terminal-status verb, e.g. "P-002 made the
+// `## Now` next-pointer DERIVED at read time". Keep this separate from the
+// broad closure vocabulary so ordinary "made ... stale/failed" prose remains
+// guarded, and require the same affirmative, non-future window checks below.
+const NOW_DERIVATION_COMPLETION_RE =
+  /\bmade\s+(?:the\s+)?[^.!?;:\n]{0,120}\bderived\b/i;
 // Staging is the implementation/acceptance plane; a terminal item can be
 // truthfully complete there before its commit reaches main/deployed. Keep the
 // exemption tied to affirmative completion grammar and explicit release-plane
@@ -220,6 +227,8 @@ export function detectNowItemContradictions(
     const before = clause.slice(0, refOffset);
     const after = clause.slice(refOffset + id.length);
     const closeAfter = NOW_CLOSED_RE.test(after) && !NOW_NEGATED_OR_FUTURE_RE.test(after);
+    const derivationCompletionAfter =
+      NOW_DERIVATION_COMPLETION_RE.test(after) && !NOW_NEGATED_OR_FUTURE_RE.test(after);
     const closeBefore = NOW_CLOSED_RE.test(before) && !NOW_NEGATED_OR_FUTURE_RE.test(before.slice(-120));
     const stagingOnlyCompletion = isStagingOnlyCompletion(after);
     const clauseItemIds = [...clause.matchAll(PLAN_ITEM_REF_RE)].map((itemMatch) => itemMatch[0]);
@@ -296,6 +305,7 @@ export function detectNowItemContradictions(
       precedingSlugMatch !== null && precedingSlugMatch[1].toLowerCase() !== parsed.slug.toLowerCase();
     if (
       closeAfter ||
+      derivationCompletionAfter ||
       closeBefore ||
       stagingOnlyCompletion ||
       historicalReference ||

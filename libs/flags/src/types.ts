@@ -1517,11 +1517,6 @@ export const FLAGS = {
   // papercusp-su playbook. DEFAULT ON (owner-authorized 2026-06-18; the papercup-hive su instance
   // override is seeded — P-008 met). OFF = legacy renderSuPlaybook, byte-identical.
   SU_BLUEPRINT_PERSONA: "papercusp-su-blueprint-persona",
-  // domain-generic-agent-personas-2026-06-17 P-013/P-014: deliver the agent prompt by REPLACING
-  // the Claude Code base (--system-prompt-file / --system-prompt) instead of append/stdin, so OUR
-  // persona is the whole system prompt. DEFAULT ON (owner-authorized 2026-06-18) — OFF =
-  // legacy stdin/append, byte-identical. Full per-role×backend e2e smoke infra-gated (EI-1433).
-  REPLACE_CLAUDE_BASE: "papercusp-replace-claude-base",
   // watchdog-and-exposed-systems-improvement-2026-06-18 P-009: the watchdog auto-CLOSES
   // an EI whose signal stopped firing for N ran-ticks. DEFAULT OFF — auto-closing real
   // improvement items autonomously is unsafe until the owner reviews; OFF = today's

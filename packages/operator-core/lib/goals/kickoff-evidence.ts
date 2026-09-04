@@ -25,6 +25,11 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { getModes } from '../modes/store';
+import {
+  portfolioActFacet,
+  PORTFOLIO_CREATE_TOOLS,
+  PORTFOLIO_PLACE_TOOLS,
+} from './portfolio-acts';
 
 export const GOAL_KICKOFF_REQUIRED_READS = ['goals:list', 'pot:list', 'plans:list', 'search:semantic'] as const;
 
@@ -32,33 +37,19 @@ export type GoalKickoffRead = (typeof GOAL_KICKOFF_REQUIRED_READS)[number];
 
 /**
  * Creation, launch and placement doors a GOAL holder may not cross before the
- * kickoff evidence exists. Keep this at the shared dispatch seam: an inner call
- * through tools:invoke is re-dispatched under its canonical name and is covered
- * exactly like a direct MCP/HTTP/IPC call.
+ * kickoff evidence exists. The unconditional names are derived from the same
+ * facet registry that measures portfolio activity; args-sensitive acts are
+ * resolved by {@link isGoalKickoffGuardedTool}. Keep this at the shared dispatch
+ * seam: an inner call through tools:invoke is re-dispatched under its canonical
+ * name and is covered exactly like a direct MCP/HTTP/IPC call.
  */
-export const GOAL_KICKOFF_GUARDED_TOOLS = [
-  'goals:create',
-  'goals:attach-pot',
-  'pot:create',
-  'pot:create_from_repo',
-  'templates:new-app',
-  'harness:generate-from-repo',
-  'plans:new',
-  'plans:add-item',
-  'plans:start',
-  'work_items:create',
-  'plan_items:assign',
-  'coord:dispatch',
-  'fleet:create',
-  'fleet:place_batch',
-  'fleet:launch-on-plan',
-  'capability:launch-agent',
-] as const;
+export const GOAL_KICKOFF_GUARDED_TOOLS: readonly string[] = Object.freeze(
+  [...new Set<string>([...PORTFOLIO_CREATE_TOOLS, ...PORTFOLIO_PLACE_TOOLS])].sort(),
+);
 
-const GUARDED = new Set<string>(GOAL_KICKOFF_GUARDED_TOOLS);
-
-export function isGoalKickoffGuardedTool(toolName: string): boolean {
-  return GUARDED.has(toolName);
+export function isGoalKickoffGuardedTool(toolName: string, args?: unknown): boolean {
+  const facet = portfolioActFacet(toolName, args);
+  return facet === 'create' || facet === 'place';
 }
 
 export type GoalKickoffMissingLeg =

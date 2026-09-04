@@ -1505,10 +1505,9 @@ export const BRAIN_TOMBSTONE_MESSAGE =
  *
  * `allowNativeLsp` is NOT read here. It is resolved server-side in
  * bootstrap-{su,role}.ts as `FLAGS.OMP_NATIVE_LSP_BUILTIN && !isLocalModelSpec(model)`
- * and threaded in via `envelopeEnv.PAPERCUSP_OMP_NATIVE_LSP` — the same
- * resolve-server-side-thread-through-envelopeEnv shape P-014 uses for
- * REPLACE_CLAUDE_BASE, and the reason this bare-node script needs no flag read
- * (and so no launch-time network dependency) of its own. Absent/false ⇒ strip,
+ * and threaded in via `envelopeEnv.PAPERCUSP_OMP_NATIVE_LSP` — the reason this
+ * bare-node script needs no flag read (and so no launch-time network dependency)
+ * of its own. Absent/false ⇒ strip,
  * byte-identical to the pre-P-021 hard-coded behaviour.
  *
  * Pure — exported for tests.
@@ -1528,27 +1527,20 @@ export function roleLaunchArgs(
     coordExtPath,
     injectHookPath,
     nativeSessionId,
-    replaceClaudeBase,
     allowSubagents,
     model,
     allowNativeLsp,
   } = {},
 ) {
   if (backend === "claude") {
-    // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE — its DEFAULT is
-    // FLAG_DEFAULTS in libs/flags/src/types.ts, ON since 2026-06-18; never restate it here,
-    // the restated "default-off" drifted — identities-v1 D-018): mirror suLaunchArgs — when
-    // armed, the role prompt REPLACES the Claude coding base (--system-prompt-file +
-    // --exclude-dynamic-system-prompt-sections) so an interactive role session runs on OUR
-    // base too (coherent with the fleet + su/brain paths). Flag-off ⇒
-    // --append-system-prompt-file (D-018 retires this branch once P-003 renders the stack).
-    const systemPromptArgs = replaceClaudeBase
-      ? [
-          "--system-prompt-file",
-          promptFile,
-          "--exclude-dynamic-system-prompt-sections",
-        ]
-      : ["--append-system-prompt-file", promptFile];
+    // identities-v1 D-018 / D-021 / WI-2143907: the sealed role prompt always
+    // REPLACES Claude's coding base. Appending would put unsealed client prose
+    // above the kernel and violate the seal.
+    const systemPromptArgs = [
+      "--system-prompt-file",
+      promptFile,
+      "--exclude-dynamic-system-prompt-sections",
+    ];
     return {
       bin: "claude",
       args: [
@@ -1591,7 +1583,7 @@ export function roleLaunchArgs(
     // files + whose activity belongs in the fleet view, so it gets the same hook the
     // su omp launch + role codex/claude do. (claude/codex role hooks are user-level /
     // baked; omp's is the `-e` module.)
-    // P-014: --system-prompt (replace) when REPLACE_CLAUDE_BASE armed, else --append.
+    // D-021: the sealed prompt is the whole system prompt; no append branch.
     const args = [
       "--approval-mode",
       "yolo",
@@ -1600,7 +1592,7 @@ export function roleLaunchArgs(
       // it. See ompLspArgs — it carries the full attractor rationale and the
       // reason this is NOT the same switch as our `lsp.*` facade.
       ...ompLspArgs(allowNativeLsp),
-      replaceClaudeBase ? "--system-prompt" : "--append-system-prompt",
+      "--system-prompt",
       promptFile,
       ...modelArgsFor("omp", model),
       ...ompTitleMitigationArgs(model),
@@ -1671,26 +1663,18 @@ export function suLaunchArgs(
     coordExtPath,
     injectHookPath,
     nativeSessionId,
-    replaceClaudeBase,
     allowSubagents,
     allowNativeLsp,
   } = {},
 ) {
   if (backend === "claude") {
-    // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE — its DEFAULT is
-    // FLAG_DEFAULTS in libs/flags/src/types.ts, ON since 2026-06-18; never restate it here,
-    // the restated "default-off" drifted — identities-v1 D-018): when armed, the playbook
-    // REPLACES the Claude coding base (--system-prompt-file +
-    // --exclude-dynamic-system-prompt-sections to drop the residual env block) instead of
-    // appending to it. Flag-off ⇒ --append-system-prompt-file (D-018 retires this branch
-    // once P-003 renders the stack).
-    const systemPromptArgs = replaceClaudeBase
-      ? [
-          "--system-prompt-file",
-          promptFile,
-          "--exclude-dynamic-system-prompt-sections",
-        ]
-      : ["--append-system-prompt-file", promptFile];
+    // identities-v1 D-018 / D-021 / WI-2143907: the sealed playbook always
+    // REPLACES Claude's coding base; exclude the residual dynamic sections too.
+    const systemPromptArgs = [
+      "--system-prompt-file",
+      promptFile,
+      "--exclude-dynamic-system-prompt-sections",
+    ];
     return {
       bin: "claude",
       args: [
@@ -1718,7 +1702,7 @@ export function suLaunchArgs(
     // omp's papercusp-su is user-level (~/.omp/agent/mcp.json);
     // --append-system-prompt takes a file path; -e loads the coordination
     // extension (P-021) for lock enforcement when one is provided.
-    // P-014: --system-prompt (replace) when REPLACE_CLAUDE_BASE armed, else --append.
+    // D-021: the sealed playbook is the whole system prompt; no append branch.
     const args = [
       "--approval-mode",
       "yolo",
@@ -1727,7 +1711,7 @@ export function suLaunchArgs(
       // it. See ompLspArgs — it carries the full attractor rationale and the
       // reason this is NOT the same switch as our `lsp.*` facade.
       ...ompLspArgs(allowNativeLsp),
-      replaceClaudeBase ? "--system-prompt" : "--append-system-prompt",
+      "--system-prompt",
       promptFile,
       // adv 21150 — the SAME title-request mitigation the fresh-role
       // (roleLaunchArgs) and resume paths already apply. ompTitleMitigationArgs'
@@ -1753,8 +1737,8 @@ export function suLaunchArgs(
   }
   if (backend === "codex") {
     // codex has no --system-prompt flag: its system prompt IS the per-session
-    // CODEX_HOME AGENTS.md (the playbook), so codex already carries no Claude base —
-    // REPLACE_CLAUDE_BASE is a no-op here (nothing to switch from append to replace).
+    // CODEX_HOME AGENTS.md (the playbook), so Codex already carries no client base
+    // that needs a replace-vs-append decision.
     return {
       bin: "codex",
       args: [
@@ -12598,15 +12582,12 @@ async function roleFlow(args, role, rolesMeta) {
     // EXACTLY it — never `--continue`'s most-recent-in-cwd peer on the shared
     // tree (unify-launch-mechanics P-003 invariant d).
     nativeSessionId: res.envelopeEnv?.PAPERCUSP_NATIVE_SESSION_ID || null,
-    // P-014: REPLACE_CLAUDE_BASE — bootstrap-role resolves the flag server-side and threads
-    // it via envelopeEnv (same env the fleet + su paths read). Off/absent ⇒ --append (today).
-    replaceClaudeBase: res.envelopeEnv?.PAPERCUSP_REPLACE_CLAUDE_BASE === "1",
     // Subagent-launch deny is DEFAULT-ON; `--allow-subagents` (or the picker) opts in.
     allowSubagents: args.allowSubagents,
     // P-021/D-013: may this omp session KEEP its native `lsp` builtin? bootstrap-role
     // resolves FLAGS.OMP_NATIVE_LSP_BUILTIN *and* the local-model tier gate
-    // server-side and threads the answer here (same shape as REPLACE_CLAUDE_BASE
-    // above). Absent ⇒ strip, byte-identical to today. See ompLspArgs.
+    // server-side and threads the answer here. Absent ⇒ strip, byte-identical to
+    // the pre-P-021 behavior. See ompLspArgs.
     allowNativeLsp: res.envelopeEnv?.PAPERCUSP_OMP_NATIVE_LSP === "1",
     // P-019/D-007: thread --model into the role launch argv (claude branch splits
     // effort via modelArgsFor). Without this the spec was env-only (PAPERCUSP_MODEL,
@@ -13276,17 +13257,13 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     // --resume/--continue *unless* --fork-session is also present (that exception
     // is what launchTrackedFork relies on; see resumeArgsFor).
     nativeSessionId: args.resumeSession ? null : res.nativeSessionId,
-    // P-014: REPLACE_CLAUDE_BASE — bootstrap-su resolves the flag server-side and
-    // threads it via envelopeEnv (same env name the fleet path reads). Off/absent ⇒
-    // suLaunchArgs uses --append (byte-identical to today).
-    replaceClaudeBase: res.envelopeEnv?.PAPERCUSP_REPLACE_CLAUDE_BASE === "1",
     // Subagent-launch deny is DEFAULT-ON (claude-only); `--allow-subagents` (or the
     // picker) opts THIS su launch back in. See suLaunchArgs / NO_SUBAGENTS_DENY_FLAG.
     allowSubagents: args.allowSubagents,
     // P-021/D-013: may this omp session KEEP its native `lsp` builtin? bootstrap-su
     // resolves FLAGS.OMP_NATIVE_LSP_BUILTIN *and* the local-model tier gate
-    // server-side and threads the answer here (same shape as REPLACE_CLAUDE_BASE
-    // above). Absent ⇒ strip, byte-identical to today. See ompLspArgs.
+    // server-side and threads the answer here. Absent ⇒ strip, byte-identical to
+    // the pre-P-021 behavior. See ompLspArgs.
     allowNativeLsp: res.envelopeEnv?.PAPERCUSP_OMP_NATIVE_LSP === "1",
   });
   const requestedLaunchModel =

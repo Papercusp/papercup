@@ -171,6 +171,56 @@ describe('reconcileLoopRoutines — stale pure-loop parked snapshot cannot overw
   });
 });
 
+describe('reconcileLoopRoutines — expired completion re-arm is normalized to a future fire (EI-22346847925961653)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  it('does not advertise a completion-relative next fire that is already past when reconcile is delayed', async () => {
+    const updates: unknown[][] = [];
+    const nowMs = T0 + 31 * 60_000;
+    const intervalMs = 60_000;
+    const sql = fakeSql(
+      [
+        {
+          id: 'rt-expired-rearm',
+          target_owner_id: 'su-expired-rearm',
+          interval_sec: 60,
+          parked: true,
+          is_cron: false,
+          install_slug: 'papercusp',
+          name: 'loop-su-expired-rearm',
+          routine_workspace_id: 'ws-papercusp',
+          last_fired_at: pgString(T0),
+          lifecycle_completed_at: pgString(T0 + 5_000),
+          turn_journal_completed_at: null,
+          lifecycle_started_at: null,
+          presence_last_active_at: null,
+          last_assistant_text_after_fire: null,
+          turns_ingest_watermark: null,
+        },
+      ],
+      updates,
+    );
+
+    const res = await reconcile({
+      sql,
+      nowMs,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+
+    const expectedNextFireAt = nowMs + intervalMs;
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({
+      id: 'rt-expired-rearm',
+      via: 'lifecycle',
+      nextFireAt: expectedNextFireAt,
+    });
+    // The SQL bind and the returned diagnostic must agree on the normalized future timestamp.
+    expect(updates[0]?.[0]).toBe(new Date(expectedNextFireAt).toISOString());
+    expect(res.loops[0]!.nextFireAt).toBeGreaterThan(nowMs);
+  });
+});
+
 describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)', () => {
   const T0 = 1_782_000_000_000;
   const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
@@ -567,7 +617,9 @@ describe('reconcileLoopRoutines — strict per-fire loop-origin completion (EI-2
       id: 'rt-loop-origin',
       via: 'delivered-wake-no-loop-turn',
       completedAt: T0 + 1_000,
-      nextFireAt: T0 + 61_000,
+      // The delivery clock is stale by this pass, so normalization schedules one
+      // full interval from the current reconcile clock instead of persisting a past fire.
+      nextFireAt: T0 + 3 * 60_000 + 60_000,
     });
     expect(recordFire).toHaveBeenCalledWith(
       'papercusp',
@@ -888,7 +940,7 @@ describe('reconcileLoopRoutines — stuck-backstop (no-signal) death reclassific
     );
   });
 
-  it('a stuck-backstop row with ORDINARY (or absent) captured text is unaffected — still the plain bare-interval backstop rearm (no regression)', async () => {
+  it('a stuck-backstop row with ORDINARY (or absent) captured text keeps the plain interval but never a past fire', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const updates: unknown[][] = [];
     const recordFire = vi.fn(async () => {});
@@ -921,7 +973,8 @@ describe('reconcileLoopRoutines — stuck-backstop (no-signal) death reclassific
     });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('stuck-backstop');
-    expect(res.loops[0].nextFireAt).toBe(T0 + 120_000); // byte-identical to the pre-fix math
+    // The old last-fired + interval candidate is already stale at this delayed pass.
+    expect(res.loops[0].nextFireAt).toBe(T0 + 31 * 60_000 + 120_000);
     expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-dead', expect.stringContaining('stuck-backstop'), 'error');
     expect(escalateLifecycleDeath).not.toHaveBeenCalled();
   });
@@ -1198,7 +1251,7 @@ describe('reconcileLoopRoutines — presence-quiescence death reclassification (
     );
   });
 
-  it('a presence-quiescence settle with ORDINARY (or absent) turn text is unaffected — still feeds `ok` at the bare interval', async () => {
+  it('a presence-quiescence settle with ORDINARY (or absent) turn text still feeds `ok` without a past next fire', async () => {
     const updates: unknown[][] = [];
     const recordFire = vi.fn(async () => {});
     const escalateLifecycleDeath = vi.fn(async () => {});
@@ -1230,7 +1283,7 @@ describe('reconcileLoopRoutines — presence-quiescence death reclassification (
     });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('presence-quiescence');
-    expect(res.loops[0].nextFireAt).toBe(T0 + 4_000 + 60_000); // byte-identical to the pre-EI-15722 math
+    expect(res.loops[0].nextFireAt).toBe(T0 + 70_000 + 60_000);
     expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-healthy', expect.stringContaining('presence-quiescence'), 'ok');
     expect(escalateLifecycleDeath).not.toHaveBeenCalled();
   });
@@ -1672,7 +1725,7 @@ describe('reconcileLoopRoutines — WI-2714 quick-retry leg (recover-then-escala
     expect(res.rearmed).toBe(1);
     expect(res.terminated).toEqual([]);
     expect(res.loops[0]).toMatchObject({ id: 'rt-parked', via: 'claim-dispatch-gap' });
-    expect(res.loops[0].nextFireAt).toBe(T0 + 60_000);
+    expect(res.loops[0].nextFireAt).toBe(T0 + 2 * 60_000 + 60_000);
     expect(guard).not.toHaveBeenCalled();
     expect(recordFire).toHaveBeenCalledWith(
       'papercusp',

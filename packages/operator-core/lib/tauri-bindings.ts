@@ -296,7 +296,7 @@ export type DesktopWindow = {
  * 
  *  The TS shape (apps/operator):
  *    { kind: 'event', name: string, data: unknown }
- *    | { kind: 'binary', name: string, data: number[] }
+ *    | ArrayBuffer // raw EVENT_BIN payload; decoded by ipc-stream.ts
  *    | { kind: 'done', result: ToolResult }
  *    | { kind: 'error', code: string, message: string }
  */
@@ -304,13 +304,16 @@ export type EndpointEvent =
 // JSON-valued event (delta, tool_call, suggestion, cost, etc.).
 { kind: "event"; name: string; data: "Null" | ({ Bool: boolean }) & { Array?: never; Number?: never; Object?: never; String?: never } | ({ Number: ({ f64: number }) & { i64?: never; u64?: never } | ({ i64: number }) & { f64?: never; u64?: never } | ({ u64: number }) & { f64?: never; i64?: never } }) & { Array?: never; Bool?: never; Object?: never; String?: never } | ({ String: string }) & { Array?: never; Bool?: never; Number?: never; Object?: never } | ({ Array: Value[] }) & { Bool?: never; Number?: never; Object?: never; String?: never } | ({ Object: { [key in string]: Value } }) & { Array?: never; Bool?: never; Number?: never; String?: never } } | 
 /**
- *  Binary event — Uint8Array on the wire, base64 string in JSON
- *  for transport across Tauri's IPC serializer. Frontend hook
- *  decodes back into Uint8Array.
+ *  Binary event. `payload` is the original EVENT_BIN wire payload:
+ *  `[8B call id BE][4B name length BE][name UTF-8][binary]`.
+ * 
+ *  Its custom `IpcResponse` implementation sends this variant as
+ *  `InvokeResponseBody::Raw`, so Tauri delivers an ArrayBuffer without a
+ *  base64 or JSON-array round trip. Keeping control and raw messages on the
+ *  SAME Channel preserves Tauri's per-channel ordering index; a second raw
+ *  channel would let a small JSON `done` overtake a large binary fetch.
  */
-{ kind: "binary"; name: string; 
-// Base64-encoded binary payload.
-data: string } | 
+{ kind: "binary"; payload: number[] } | 
 // Tool returned successfully.
 { kind: "done"; result: "Null" | ({ Bool: boolean }) & { Array?: never; Number?: never; Object?: never; String?: never } | ({ Number: ({ f64: number }) & { i64?: never; u64?: never } | ({ i64: number }) & { f64?: never; u64?: never } | ({ u64: number }) & { f64?: never; i64?: never } }) & { Array?: never; Bool?: never; Object?: never; String?: never } | ({ String: string }) & { Array?: never; Bool?: never; Number?: never; Object?: never } | ({ Array: Value[] }) & { Bool?: never; Number?: never; Object?: never; String?: never } | ({ Object: { [key in string]: Value } }) & { Array?: never; Bool?: never; Number?: never; String?: never } } | 
 // Dispatch or handler failed (role gate, quota, timeout, throw).

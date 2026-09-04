@@ -30,6 +30,9 @@ export interface SessionRef {
   agent: string | null;
   /** The backend session id (Claude UUID / OMP thread / codex rollout). */
   sessionId: string | null;
+  /** `adv_sessions.started_at` as epoch ms when the row exposes it. Used only
+   *  to reject a respawn event that predates a later DB row/rebind. */
+  startedAtMs?: number | null;
   /** adv_sessions numeric key; Codex homes are keyed by this value rather than
    *  by the rollout UUID stored in sessionId. */
   sessionKey?: number | null;
@@ -492,8 +495,13 @@ export async function estimateContextTokens(
 export async function resolveSessionRef(ownerId: string): Promise<SessionRef | null> {
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
-    const rows = await getOrgPg().sql<{ id: number; agent: string | null; session_id: string | null }[]>`
-      SELECT id, agent, session_id
+    const rows = await getOrgPg().sql<{
+      id: number;
+      agent: string | null;
+      session_id: string | null;
+      started_at?: unknown;
+    }[]>`
+      SELECT id, agent, session_id, started_at
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${ownerId}
          AND (session_id IS NOT NULL OR agent = 'codex')
@@ -501,7 +509,21 @@ export async function resolveSessionRef(ownerId: string): Promise<SessionRef | n
        LIMIT 1
     `;
     if (!rows.length) return null;
-    return { agent: rows[0].agent, sessionId: rows[0].session_id, sessionKey: rows[0].id };
+    const rawStartedAt = rows[0].started_at;
+    const startedAtMs =
+      rawStartedAt instanceof Date
+        ? rawStartedAt.getTime()
+        : typeof rawStartedAt === 'number'
+          ? rawStartedAt
+          : typeof rawStartedAt === 'string'
+            ? Date.parse(rawStartedAt)
+            : NaN;
+    return {
+      agent: rows[0].agent,
+      sessionId: rows[0].session_id,
+      sessionKey: rows[0].id,
+      ...(Number.isFinite(startedAtMs) ? { startedAtMs } : {}),
+    };
   } catch {
     return null;
   }
@@ -695,6 +717,12 @@ export function servedWindowForRoute(route: GatewayServedRoute | null | undefine
 export interface ResolveReconciledDeps {
   resolveRef?: (ownerId: string) => Promise<SessionRef | null>;
   latestRespawn?: (ownerId: string, opts?: { allowWithoutHost?: boolean }) => string | null;
+  /** Timestamped form of the host respawn read. When supplied it supersedes
+   *  `latestRespawn`; the legacy id-only seam remains for existing callers/tests. */
+  latestRespawnInfo?: (
+    ownerId: string,
+    opts?: { allowWithoutHost?: boolean },
+  ) => { nativeId: string; atMs: number } | null;
   newestTranscript?: (ownerId: string) => string | null;
   isFresh?: (p: string) => boolean;
 }
@@ -718,15 +746,25 @@ export async function resolveSessionRefReconciled(
   // id, trust it (and skip rung 4, which could otherwise re-pin to the frozen
   // predecessor whose transcript is still the newest on disk for a few seconds).
   try {
-    const hostNativeId = deps.latestRespawn
-      ? deps.latestRespawn(ownerId, { allowWithoutHost: !ref })
-      : (await import('./events/await/psu-pty-discovery')).latestRespawnNativeId(ownerId, undefined, {
-          allowWithoutHost: !ref,
-        });
-    if (hostNativeId && hostNativeId !== ref?.sessionId) {
+    const hostRespawn = deps.latestRespawnInfo
+      ? deps.latestRespawnInfo(ownerId, { allowWithoutHost: !ref })
+      : deps.latestRespawn
+        ? (() => {
+            const nativeId = deps.latestRespawn!(ownerId, { allowWithoutHost: !ref });
+            return nativeId ? { nativeId, atMs: null } : null;
+          })()
+        : await (async () => {
+            const { latestRespawnNativeSession } = await import('./events/await/psu-pty-discovery');
+            return latestRespawnNativeSession(ownerId, undefined, { allowWithoutHost: !ref });
+          })();
+    const respawnNewerThanRef =
+      hostRespawn?.atMs == null ||
+      ref?.startedAtMs == null ||
+      hostRespawn.atMs > ref.startedAtMs;
+    if (hostRespawn?.nativeId && hostRespawn.nativeId !== ref?.sessionId && respawnNewerThanRef) {
       return ref
-        ? { ...ref, sessionId: hostNativeId }
-        : { agent: 'claude', sessionId: hostNativeId, sessionKey: null, transcriptOwner: null };
+        ? { ...ref, sessionId: hostRespawn.nativeId }
+        : { agent: 'claude', sessionId: hostRespawn.nativeId, sessionKey: null, transcriptOwner: null };
     }
   } catch {
     /* fall through to rung 4 */

@@ -81,6 +81,12 @@ describe('loop:status — ambient workspace transaction safety (EI-2022929284875
   });
 });
 
+describe('loop:status result-door policy (EI-21927463826765541)', () => {
+  it('keeps the complete liveness envelope out of the generic aggregate result door', () => {
+    expect((statusTool as { skipResultDoor?: string }).skipResultDoor).toBe('oversize-by-design');
+  });
+});
+
 describe('loop:status concurrency (EI-21869094231635430)', () => {
   it('runs the four independent probes concurrently, not as a sequential sum of round-trips', async () => {
     getLoopStatusMock.mockResolvedValue({

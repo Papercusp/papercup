@@ -364,6 +364,24 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
   // caller to lazily re-spawn it. This block locks in the added mechanism,
   // cloned from substrate-sidecar-spawn.ts's (same shared helpers, same numbers).
   describe('auto-respawn-on-crash (P-006)', () => {
+    it('does not let the respawn backoff keep a finished short-lived host alive', async () => {
+      const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+      const first = makeChild();
+      spawnMock.mockReturnValueOnce(first);
+
+      const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
+      first.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+      await ready;
+
+      first.emit('exit', 0);
+
+      const backoffCall = timeoutSpy.mock.calls.findIndex(([, delay]) => delay === respawnBackoffMs(1));
+      expect(backoffCall).toBeGreaterThanOrEqual(0);
+      const timer = timeoutSpy.mock.results[backoffCall]?.value as ReturnType<typeof setTimeout>;
+      expect(typeof timer.hasRef).toBe('function');
+      expect(timer.hasRef()).toBe(false);
+    });
+
     it('auto-respawns after an unexpected post-ready exit', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const first = makeChild();

@@ -910,7 +910,7 @@ const overrideToolImpl: ToolDispatchOverrideFn = async (toolName, args, ctx) => 
   // handler, at the ONE chokepoint shared by MCP, HTTP, IPC and tools:invoke's
   // inner re-dispatch. Ordinary callers and goal-descendant implementers have no
   // active mode='goal' row and pass through unchanged.
-  if (isGoalKickoffGuardedTool(toolName)) {
+  if (isGoalKickoffGuardedTool(toolName, args)) {
     const workspaceId =
       ctx.workspaceId && ctx.workspaceId !== '*'
         ? ctx.workspaceId

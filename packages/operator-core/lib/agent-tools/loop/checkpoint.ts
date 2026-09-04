@@ -352,17 +352,20 @@ export default defineTool({
   description:
     'Read, write, or clear the COLD su loop carry-note. Read with { read:true, ownerId?, harness? }; write compressed ' +
     '{ did,left,insight,next } (goal,keyInsight,nextAction alias them), { note }, or { checkpoint }; blank/null clears. ' +
-    'Optional workItem is metadata. walls/checks default to rowsMode:"merge"; rowsMode:"replace" retires omitted rows. ' +
-    'Returns note metadata plus walls/checks.',
+    'Optional workItem is metadata. The default merge mode preserves rows; rowsMode:\'merge\' is preserving, while ' +
+    "rowsMode:'replace' retires rows; empty list with replace clears. Probe rows use kind:'tool' or kind:'state-cell' " +
+    'with args and schemaRevision. Returns note metadata plus walls/checks.',
   guidance: {
     when:
       "At a COLD loop turn's end, save compressed facts, not a transcript. Pair with work_items:checkpoint; use " +
-      '[turn:<session>@<iso-ts>] refs for owner directives/completed coordination and label other sources [self-imposed], ' +
-      '[peer:<sid>], or [inferred].',
+      'Add a same-line [turn:<session>@<iso-ts>] ref for owner directives/completed coordination; never invent a ref. Mark other sources ' +
+      '[self-imposed], [peer:<sid>], or [inferred]. Default merge mode preserves them; use rowsMode:\'replace\' only ' +
+      "when retiring rows. Probe kind:'tool' or kind:'state-cell' with args and schemaRevision.",
     notWhen: "WARM loops (carry:'warm', default) carry the live transcript; use work_items:checkpoint for work-item state.",
     chaining:
       'Write last before a cold turn ends; refresh work_items:checkpoint and facts:assert. To retune an active loop, ' +
-      'read loop:status, then loop:arm with intervalSec, goal, and carry.',
+      "read loop:status, then loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; intervalSec " +
+      'and goal are required even when only carry changes.',
     seeAlso: [
       "loop:arm (arm the loop; carry:'cold' opts into the cold lifecycle)",
       'loop:status (inspect the loop, incl. carry mode)',

@@ -22,6 +22,7 @@ import {
   hostCodeVersionMatches,
   shutdownViaPty,
   latestRespawnNativeId,
+  latestRespawnNativeSession,
   mcpReconnectViaPty,
   injectIntoHost,
   injectIntoHostWithConfirmation,
@@ -850,6 +851,15 @@ describe('latestRespawnNativeId (WI-5075 rung 3: reconcile a stale adv_sessions 
       { ts: at(3), kind: 'respawned', mode: 'carry-respawn', nativeId: 'newest-2' },
     ]);
     expect(latestRespawnNativeId(owner, dir)).toBe('newest-2');
+  });
+
+  it('returns the newest respawn nativeId with its event timestamp for chronology checks', () => {
+    const dir = tmpDir();
+    write(dir, [{ ts: at(3), kind: 'respawned', nativeId: 'newest-2' }]);
+    expect(latestRespawnNativeSession(owner, dir)).toEqual({
+      nativeId: 'newest-2',
+      atMs: Date.parse(at(3)),
+    });
   });
 
   it('ignores non-respawn lifecycle events between respawns', () => {

@@ -33,6 +33,12 @@ node_modules.old*/
 # that merely look like PEM material (P-302 / WI-1326481).
 .tmp-claude/
 **/.tmp-claude/
+# The content-fixer writes repository-local V8 compile-cache artifacts while
+# repairing generated docs. They are disposable binary output, never source;
+# ignoring both root and nested roots keeps git-sync and source lints from
+# treating them as shippable files.
+.content-fixer-tmp/
+**/.content-fixer-tmp/
 # Stray nested lockfiles (workspace members must ride the root lock) stay
 # ignored, but the ROOT lockfile is the npm-ci source of truth for CI +
 # fresh clones (regenerated + validated 2026-06-11, audit P-024/EI-84) —

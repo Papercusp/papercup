@@ -95,6 +95,16 @@ describe('exactPlanSlugsFromArgs', () => {
     ).toEqual(['primary-plan', 'secondary-plan']);
   });
 
+  it('reads coord:declare-intent current_plan_slug as an explicit plan identity', () => {
+    expect(
+      exactPlanSlugsFromArgs({
+        current_plan_slug: ' recovered-plan ',
+        items: ['P-006'],
+        intent: 'continue the bound plan lane',
+      }),
+    ).toEqual(['recovered-plan']);
+  });
+
   it('returns no scope when the argument is not a plans:get identity object', () => {
     expect(exactPlanSlugsFromArgs(null)).toEqual([]);
     expect(exactPlanSlugsFromArgs({ plan: { slug: 'nested-plan' } })).toEqual([]);

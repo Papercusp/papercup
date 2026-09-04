@@ -220,6 +220,19 @@ function tsMs(v: Date | string | null | undefined): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
+/**
+ * Keep every completion-rebase on a future schedule. A delayed reconcile pass can observe a
+ * valid completion marker whose `completed_at + interval` is already past; persisting that
+ * candidate leaves an active loop due immediately and can make cadence status report a stale
+ * next fire while the next routine tick is absent or delayed. Preserve the completion-relative
+ * cadence when it is still future, otherwise give the loop a full interval from this pass's
+ * clock instead of writing another expired timestamp.
+ */
+function futureRearmAtMs(completedAtMs: number, rearmMs: number, nowMs: number, intervalMs: number): number {
+  const requestedAtMs = completedAtMs + rearmMs;
+  return Number.isFinite(requestedAtMs) && requestedAtMs > nowMs ? requestedAtMs : nowMs + intervalMs;
+}
+
 /** A dropped lifecycle report is inferred only once the session's last GENUINE activity
  *  (coord_presence.last_active_at — NOT the keepalive heartbeat_at) has been quiet for at
  *  least this long, so we never mistake a mid-turn pause for a settle. */
@@ -2015,7 +2028,11 @@ export async function reconcileLoopRoutines(
       // pooled `prepare: false` connection rejects a Date bind param ("the string argument must
       // be … Received an instance of Date") — the write-side mirror of the string-read quirk
       // (EI-2549). A string + cast binds cleanly on BOTH that connection and a direct one.
-      const reArmIso = new Date(completedAt + rearmMs).toISOString();
+      // EI-22346847925961653: reconcile can run long after a completion signal landed. Never
+      // leave an active AUTO loop with an already-expired finite next_fire_at; if the
+      // completion-relative candidate is stale, start a fresh interval from this pass's clock.
+      const rearmAtMs = futureRearmAtMs(completedAt, rearmMs, nowMs, intervalMs);
+      const reArmIso = new Date(rearmAtMs).toISOString();
 
       // WI-6852: a USAGE-LIMIT death is the one case that must be allowed to push next_fire_at
       // LATER. The general statement below is never-later BY CONSTRUCTION (LEAST, plus a WHERE
@@ -2077,7 +2094,7 @@ export async function reconcileLoopRoutines(
           id: row.id,
           targetOwnerId: row.target_owner_id,
           completedAt,
-          nextFireAt: completedAt + rearmMs,
+          nextFireAt: rearmAtMs,
           via,
           ...(quickRetry ? { quickRetry: true } : {}),
         });

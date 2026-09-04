@@ -205,6 +205,14 @@ export interface LatestRespawnNativeIdOptions {
   allowWithoutHost?: boolean;
 }
 
+/** The newest current-host respawn plus its event timestamp. The timestamp is
+ * needed by reconciler callers that must distinguish a valid historical event
+ * from one that is newer than the host but older than a later adv-session row. */
+export interface LatestRespawnNativeSession {
+  nativeId: string;
+  atMs: number;
+}
+
 /**
  * The tail of an owner's lifecycle ledger, parsed, OLDEST-FIRST.
  *
@@ -279,11 +287,11 @@ export function readHostEventTail(
  * Events older than the CURRENT host's `startedAt` are therefore ignored. No
  * discovery file (no live host) ⇒ null: nothing to reconcile against.
  */
-export function latestRespawnNativeId(
+export function latestRespawnNativeSession(
   ownerId: string,
   dir: string = PSU_PTY_DIR,
   opts: LatestRespawnNativeIdOptions = {},
-): string | null {
+): LatestRespawnNativeSession | null {
   try {
     const startedAt = hostStartedAt(ownerId, dir);
     if (startedAt == null && !opts.allowWithoutHost) return null;
@@ -302,12 +310,23 @@ export function latestRespawnNativeId(
       // A respawn from a PREVIOUS host (and everything before it) is history.
       const ts = typeof ev.ts === 'string' ? Date.parse(ev.ts) : NaN;
       if (!Number.isFinite(ts) || (startedAt != null && ts < startedAt)) return null;
-      return typeof ev.nativeId === 'string' && ev.nativeId ? ev.nativeId : null;
+      const nativeId = typeof ev.nativeId === 'string' && ev.nativeId ? ev.nativeId : null;
+      return nativeId ? { nativeId, atMs: ts } : null;
     }
     return null;
   } catch {
     return null;
   }
+}
+
+/** WI-5075 compatibility wrapper: return only the native id while the
+ * chronology-carrying form is used by newer reconciler callers. */
+export function latestRespawnNativeId(
+  ownerId: string,
+  dir: string = PSU_PTY_DIR,
+  opts: LatestRespawnNativeIdOptions = {},
+): string | null {
+  return latestRespawnNativeSession(ownerId, dir, opts)?.nativeId ?? null;
 }
 
 /**

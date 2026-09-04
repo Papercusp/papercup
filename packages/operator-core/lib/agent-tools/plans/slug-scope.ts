@@ -112,20 +112,23 @@ export async function recoverHarnessFromSlugs(
 }
 
 /**
- * Return the exact plan slugs carried by a plans:get argument object.
+ * Return the exact plan slugs carried by a plan-targeting argument object.
  *
- * This is deliberately limited to the identity fields that plans:get itself
- * accepts. Transport scope recovery must never infer a plan from free text or
+ * This is deliberately limited to explicit plan-identity fields accepted by
+ * the transport's allow-listed recovery surfaces. `slug` / `slugs` cover the
+ * plans:* tools; `current_plan_slug` covers coord:declare-intent's structured
+ * plan lane. Transport scope recovery must never infer a plan from free text or
  * from a result-shaped argument: the caller has to name the row it is asking
- * to read. `slug` and `slugs` use the same merge semantics as the handler, with
- * stable de-duplication so the index lookup remains one bounded query.
+ * to read or claim. Values use stable de-duplication so the index lookup remains
+ * one bounded query.
  */
 export function exactPlanSlugsFromArgs(args: unknown): string[] {
   if (!args || typeof args !== 'object') return [];
-  const value = args as { slug?: unknown; slugs?: unknown };
+  const value = args as { slug?: unknown; slugs?: unknown; current_plan_slug?: unknown };
   const requested = [
     ...(typeof value.slug === 'string' ? [value.slug] : []),
     ...(Array.isArray(value.slugs) ? value.slugs.filter((slug): slug is string => typeof slug === 'string') : []),
+    ...(typeof value.current_plan_slug === 'string' ? [value.current_plan_slug] : []),
   ];
   return [...new Set(requested.map((slug) => slug.trim()).filter(Boolean))];
 }

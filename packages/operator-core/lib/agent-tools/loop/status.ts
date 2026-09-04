@@ -53,6 +53,12 @@ export default defineTool({
   // those awaits; pool contention would make loop:status itself time out at
   // withWorkspace:acquire(app).
   skipWorkspaceTx: true,
+  // loop:status is a model-facing liveness read whose complete diagnostics can
+  // legitimately exceed the generic per-result/aggregate door during a
+  // parallel reconciliation fan-out. Keep its JSON envelope intact so the
+  // caller can inspect the full loop record instead of receiving an
+  // aggregate-output-budget-exceeded spill reference.
+  skipResultDoor: 'oversize-by-design',
   agentRoles: [...COORD_ROLES],
   args: z.object({
     ownerId: z

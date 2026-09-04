@@ -305,6 +305,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'learning.retainFeed',
     'learning.retainFeed.summary',
     'learning.retainDetail',
+    // WI-6182: the Retain strip's 7d plan count and the Scout draft-plan
+    // join both render columns from this row.
+    'learning.retain',
+    'learning.scoutDrafts',
     // WI-39900: the tab badges are their own query now. A plan write changes
     // the plans/rubrics corpus SIZE, so it must bust the counts too — otherwise
     // the badge and the ledger it labels drift apart until the next mount.
@@ -521,6 +525,9 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'learning.retainFeed.summary',
     'learning.retainPlanChildren',
     'learning.retainDetail',
+    // WI-6182: engineer_issues is a compat view over this table; a new
+    // improvement changes the Retain strip's trailing-7d count.
+    'learning.retain',
     // WI-39900: see the harness_plans entry above — the wi badge is a corpus
     // count, so a work-item write moves it.
     'learning.retainCounts',
@@ -699,6 +706,9 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'rubrics.trend',
     'conversations.questionsList',
     'conversations.questionDetail',
+    // WI-6182: the Retain strip counts only issue rows carrying the
+    // papercusp-improvement topic edge, so an edge add/remove is visible data.
+    'learning.retain',
   ],
   'harness_shared.agent_runs_consolidated': [
     'agentRunsConsolidated.bySlug',
@@ -753,7 +763,36 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // rides the same synthesized sweep tick; its pause/resume half is invalidated
     // explicitly by routines:group-set.
     'learning.loopControl',
+    // WI-6182: Queen/Mug wake efficiency is a projection of these samples.
+    // This table stays trigger-less; APPEND_HEAVY_POLL_SPECS below synthesizes
+    // one coalesced change event as its monotonic id advances.
+    'learning.mugWakeEfficiency',
   ],
+
+  // ── Learning-tab push audit stragglers (WI-6182) ─────────────────
+  // These are low-churn content/state relations. Migration 1000 attaches the
+  // generic change trigger (with a learning-row predicate for routines), so a
+  // raw-SQL or federated writer cannot bypass the same push contract.
+  'harness_shared.scout_lens_weights': ['learning.retain'],
+  'harness_shared.cup_keeper_instances': ['learning.apiary'],
+  'harness_shared.cup_keeper_runs': ['learning.apiary'],
+  'harness_shared.cup_keeper_scores': ['learning.apiary'],
+  'harness_shared.pot_eval_instances': ['learning.hiveEvalTrend'],
+  'harness_shared.pot_eval_runs': ['learning.hiveEvalTrend'],
+  'harness_shared.pot_eval_scores': ['learning.hiveEvalTrend'],
+  'harness_shared.scout_cycle_stage_artifacts': ['learning.analyze', 'learning.analyzeCycle'],
+  'harness_shared.scout_ticks': ['learning.analyze', 'learning.analyzeCycle', 'learning.frontier'],
+  'harness_shared.scout_routed_ideas': [
+    'learning.analyze',
+    'learning.analyzeCycle',
+    'learning.scoutDrafts',
+  ],
+  'harness_shared.learning_governor_loops': ['learning.frontier'],
+  'harness_shared.calibration_predictions': ['learning.frontier'],
+  'harness_shared.regret_findings': ['learning.frontier'],
+  'harness_shared.transfer_lessons': ['learning.frontier'],
+  'harness_shared.prompt_ablation_runs': ['learning.frontier'],
+  'harness_shared.routines': ['learning.frontier'],
   'harness_shared.bench_runs': ['evals.benchRuns', 'evals.benchRun', 'evals.benchRunLive'],
   'harness_shared.bench_run_tasks': ['evals.benchRun', 'evals.benchRunLive'],
   // fleetAssignments.byHarness (progress-tab-agents-convergence P-001) reads the
@@ -999,6 +1038,10 @@ export const APPEND_HEAVY_POLL_SPECS: readonly AppendHeavyTableSpec[] = [
   { table: 'harness_hook_logs', changeKey: 'ts' }, // no id column
   { table: 'toast_log', changeKey: 'id' },
   { table: 'feature_audit_consolidated', changeKey: 'id' },
+  // WI-6182: already mapped above but previously omitted from the producer
+  // list, so its consumers had no event at all. id is the identity PK and
+  // advances once per governed model-call sample.
+  { table: 'agent_usage_samples', changeKey: 'id' },
 ] as const;
 
 /**
