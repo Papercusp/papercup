@@ -23,7 +23,12 @@ describe('pui-loop prompt profile (D-034 / WI-583183)', () => {
     });
 
     expect(rendered.text).toContain('# Superuser engineer-collaborator (su)');
-    expect(rendered.text).toContain('## AUTO mode');
+    // identities-v1 P-021 / D-024 §3: the AUTO-MODE seam splices the KERNEL stub only
+    // (registry-derived, identical on both tiers); the `## AUTO mode` DEFINITION is the
+    // `su.mode-auto` identity, bound only when a session REGISTERS auto. The owned loop
+    // registers no modes, so its render carries the stub and none of the definitions.
+    expect(rendered.text).toContain('## Operating modes — state in the registry, definitions as identity layers');
+    expect(rendered.text).not.toContain('## AUTO mode — the owner\'s switch');
     expect(rendered.text).toContain('## Project guide — repo conventions');
     expect(rendered.text).toContain('## Available tools');
     expect(rendered.text).toContain('`capability:read`');
