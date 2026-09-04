@@ -95,51 +95,55 @@ RUN dnf -y install --setopt=install_weak_deps=False epel-release \
          zlib          `# libz.so.1       <- zlib1g` \
          libzstd       `# libzstd.so.1    <- libzstd1` \
     && dnf clean all \
-    && rm -rf /var/cache/dnf
+    `# Scrub dnf/subscription-manager residue from /var and /run.` \
+    `# Not tidiness. bootc container lint fails three separate checks on it` \
+    `# (var-log, var-tmpfiles, nonempty-run-tmp) and the reason is structural:` \
+    `# /var is MACHINE-LOCAL state on a bootc host, seeded once, so image content` \
+    `# there is not image content in any useful sense — it is either discarded or` \
+    `# it shadows the host's own state. A dnf repo cache baked into /var/lib/dnf is` \
+    `# the "looks present, is not deployed" class this port keeps running into.` \
+    && rm -rf /var/cache/dnf /var/lib/dnf /var/log/dnf.* /var/log/hawkey.log \
+              /var/log/rhsm /var/lib/rhsm /run/rhsm /var/cache/ldconfig
 
 # ── Layer 2: the three identities (D-043 / D-248 / D-251) ─────────────────────
 #
-# Replaces the groupadd/useradd/usermod block of `harden-os`. Baked because
-# uid/gid assignments DO survive the ostree commit (unlike ACLs) and a fixed uid
-# across every host is strictly better than one that varies with package install
-# order.
+# Replaces the groupadd/useradd/usermod block of `harden-os` with a sysusers.d
+# declaration. See `papercusp-sysusers.conf` for why the uid/gid numbers are
+# PINNED there rather than allocated by `useradd` — in short, `useradd` counts
+# down from 999 in package install order, `/var` persists across `bootc upgrade`
+# while `/etc/passwd` comes from the image, and a renumbering upgrade therefore
+# orphans the agent's credential home while every signal still reads healthy.
 #
 # The third identity is the load-bearing one: it exists so exactly one account
 # both reads the signed runtime and holds the agent credentials, and that account
 # is NOT the customer's SSH login. Do not collapse it back into the workspace user
 # — that is the D-246 regression D-248 exists to undo.
 #
-# The two `if` guards at the end assert the memberships the bootstrap REFUSES, so
-# a bad edit to this file fails the BUILD instead of shipping a host with the
-# isolation contract quietly inverted. $SERVICE_GROUP would hand the agent runtime
-# $STATE_ROOT (embedded PG plus every delivered credential); $WORKSPACE_GROUP would
-# let the SSH account reach the agent's 0700 credential home through the group bits.
+# `systemd-sysusers` is invoked explicitly so the entries exist in THIS image
+# rather than only on first boot; the file stays in /usr/lib/sysusers.d so systemd
+# also re-applies it on the deployed host.
 #
-# ⚠ Those guards are why this block carries no inline `# …` shell comments the way
-# layer 1 does. A Containerfile RUN collapses to ONE line, so a backtick-comment is
-# a command substitution expanding to nothing — harmless between words in a package
+# The `if` guards assert the two memberships the bootstrap REFUSES, so a bad edit
+# fails the BUILD instead of shipping a host with the isolation contract quietly
+# inverted. $SERVICE_GROUP would hand the agent runtime $STATE_ROOT (embedded PG
+# plus every delivered credential); $WORKSPACE_GROUP would let the SSH account
+# reach the agent's 0700 credential home through the group bits.
+#
+# ⚠ That is why this block carries no inline `# …` shell comments the way layer 1
+# does. A Containerfile RUN collapses to ONE line, so a backtick-comment is a
+# command substitution expanding to nothing — harmless between words in a package
 # list, but placed before a compound statement it leaves `<empty> if …` with no
 # separator and the shell fails to parse. Keep prose for this layer up here.
+COPY papercusp-sysusers.conf /usr/lib/sysusers.d/papercusp.conf
 RUN set -eux; \
-    groupadd --system "$PAPERCUSP_SERVICE_GROUP"; \
-    useradd  --system --gid "$PAPERCUSP_SERVICE_GROUP" \
-             --home-dir /var/lib/papercusp --no-create-home \
-             --shell /usr/sbin/nologin "$PAPERCUSP_SERVICE_USER"; \
-    usermod  --lock --shell /usr/sbin/nologin "$PAPERCUSP_SERVICE_USER"; \
-    groupadd "$PAPERCUSP_WORKSPACE_GROUP"; \
-    useradd  --gid "$PAPERCUSP_WORKSPACE_GROUP" \
-             --home-dir "/home/$PAPERCUSP_WORKSPACE_USER" --no-create-home \
-             --shell /bin/bash "$PAPERCUSP_WORKSPACE_USER"; \
-    usermod  --lock --gid "$PAPERCUSP_WORKSPACE_GROUP" --groups "" \
-             --home "/home/$PAPERCUSP_WORKSPACE_USER" --shell /bin/bash \
-             "$PAPERCUSP_WORKSPACE_USER"; \
-    groupadd --system "$PAPERCUSP_AGENT_GROUP"; \
-    useradd  --system --gid "$PAPERCUSP_AGENT_GROUP" \
-             --home-dir "/home/$PAPERCUSP_AGENT_USER" --no-create-home \
-             --shell /usr/sbin/nologin "$PAPERCUSP_AGENT_USER"; \
-    usermod  --lock --gid "$PAPERCUSP_AGENT_GROUP" --groups "" \
-             --home "/home/$PAPERCUSP_AGENT_USER" --shell /usr/sbin/nologin \
-             "$PAPERCUSP_AGENT_USER"; \
+    systemd-sysusers /usr/lib/sysusers.d/papercusp.conf; \
+    getent passwd "$PAPERCUSP_SERVICE_USER" "$PAPERCUSP_WORKSPACE_USER" "$PAPERCUSP_AGENT_USER"; \
+    test "$(id -u "$PAPERCUSP_SERVICE_USER")"   = 910; \
+    test "$(id -g "$PAPERCUSP_SERVICE_USER")"   = 910; \
+    test "$(id -u "$PAPERCUSP_AGENT_USER")"     = 911; \
+    test "$(id -g "$PAPERCUSP_AGENT_USER")"     = 911; \
+    test "$(id -u "$PAPERCUSP_WORKSPACE_USER")" = 1500; \
+    test "$(id -g "$PAPERCUSP_WORKSPACE_USER")" = 1500; \
     if id -nG "$PAPERCUSP_WORKSPACE_USER" | tr ' ' '\n' | grep -Fx "$PAPERCUSP_SERVICE_GROUP"; then \
       echo 'FATAL: workspace SSH user must not belong to the runtime service group' >&2; exit 1; \
     fi; \
@@ -179,11 +183,26 @@ RUN chmod 0644 /etc/containers/policy.json \
 # The established connection clause is not in the ufw list because ufw supplies it
 # implicitly; stated explicitly here, a default-deny input chain without it drops
 # the replies to the host's own outbound traffic and the host is unreachable.
+#
+# ⚠ The ruleset is NOT syntax-checked here, and cannot be: `nft --check` still
+# initializes a netlink cache, which the build sandbox denies
+# (`cache initialization failed: Operation not permitted`) — a build container has
+# no CAP_NET_ADMIN. Requiring `podman build --cap-add=NET_ADMIN` would push that
+# onto P-307's pipeline as an easily-forgotten flag.
+#
+# It is checked in TWO places instead, and the second is the one that matters:
+#   * `p306-image-build-probe.sh` runs `nft --check` with a negative control, so a
+#     malformed ruleset fails the probe;
+#   * `papercusp-host-prepare.sh` asserts on the BOOTED host that the table is
+#     actually loaded.
+# The boot-time assertion is not redundant. If nftables.service fails to start,
+# a default-deny design does not fail closed — it loads NO rules at all and the
+# host is wide open, while sshd and the service still come up healthy. Syntax was
+# never the risk worth guarding; "the rules are absent" is.
 COPY papercusp-firewall.nft /etc/nftables/papercusp-workspace-host.nft
 RUN set -eux; \
     printf 'include "/etc/nftables/papercusp-workspace-host.nft"\n' \
       > /etc/sysconfig/nftables.conf; \
-    nft --check --file /etc/nftables/papercusp-workspace-host.nft; \
     systemctl enable nftables.service
 
 # ── Layer 5: unattended security updates ──────────────────────────────────────

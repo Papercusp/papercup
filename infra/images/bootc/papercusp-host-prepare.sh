@@ -135,4 +135,19 @@ if id -nG "$WORKSPACE_USER" | tr ' ' '\n' | grep -Fx "$SERVICE_GROUP" >/dev/null
 fi
 say "identity-separation PASS"
 
+# ── 5. The firewall is actually LOADED ────────────────────────────────────────
+#
+# This is the assertion the image build could not make (no CAP_NET_ADMIN there),
+# and it guards the direction that actually hurts. A default-deny ruleset that
+# fails to load does not leave the host closed — it leaves it with NO rules, so
+# every port the service binds is reachable from the network while sshd, the
+# service and the attestation all still read healthy. "Absent" is the dangerous
+# failure here, not "malformed".
+if ! nft list table inet papercusp_workspace_host >/dev/null 2>&1; then
+  die "firewall table 'inet papercusp_workspace_host' is NOT loaded — the host is" \
+      "accepting traffic on every bound port. Check nftables.service:" \
+      "systemctl status nftables.service"
+fi
+say "firewall-loaded PASS"
+
 say "complete"
