@@ -38,6 +38,10 @@ import { shapeWorkItemsGet } from "./get-shape";
 import { CARRY_NOTE_MAX_CHECKS, splitCarryNoteChecks, shortCarryHash } from '../../carry-note';
 import { completionFreshnessForEvidence } from './completion-freshness';
 import { deploymentPositionForEvidence } from './deployment-position';
+import type {
+  WorkItemPayloadProjection,
+  WorkItemReadOptions,
+} from '../../work-item-read-projection';
 
 /**
  * SWR backstop for work_items:get (cache-expensive-tool-reads-2026-06-22 P-005).
@@ -63,6 +67,115 @@ import { deploymentPositionForEvidence } from './deployment-position';
  * thread posts / links). Not on the claim hot path (D-004-safe).
  */
 const WORK_ITEMS_GET_SOFT_TTL_MS = 20_000;
+
+type SourceProjectionContext = { sourceProjection?: unknown };
+
+/**
+ * Return the result-row-relative part of a keyed-array pick path.
+ *
+ * `work_items:get` has a keyed result envelope, so a source-aware read can
+ * inspect `results[].workItem.*` without treating an unrelated top-level pick
+ * such as `counts` as a request for the full row. Indexed result paths are
+ * accepted too, matching the dispatch projection parser.
+ */
+function resultRowPath(pick: string): string | null {
+  const match = /^results(?:\[\]|\[\d+\])(?:\.(.*))?$/.exec(pick.trim());
+  return match ? match[1] ?? '' : null;
+}
+
+/**
+ * Translate a caller `pick` into the smallest safe physical-row read.
+ *
+ * The result projection still runs after the handler, but this source plan
+ * prevents a projection-only read from first materializing the large JSONB
+ * payload. Unknown or payload-derived fields fail open to the existing full
+ * read; a partial source row must never change the meaning of a selected field.
+ *
+ * `detail:true` intentionally stays full: its coord-substrate render has
+ * separate read semantics and is not the hot path reported by EI-219266.
+ */
+export function workItemsGetSourceReadOptions(
+  sourceProjection: unknown,
+  detail: boolean,
+): WorkItemReadOptions | undefined {
+  if (
+    detail ||
+    sourceProjection === null ||
+    typeof sourceProjection !== 'object' ||
+    Array.isArray(sourceProjection)
+  ) {
+    return undefined;
+  }
+  const picks = (sourceProjection as { pick?: unknown }).pick;
+  if (!Array.isArray(picks) || picks.length === 0 || !picks.every((pick) => typeof pick === 'string')) {
+    return undefined;
+  }
+
+  let includeBody = false;
+  let payloadProjection: WorkItemPayloadProjection = 'none';
+  for (const rawPick of picks as string[]) {
+    const pick = rawPick.trim();
+    // Selecting the whole result collection/row includes the complete workItem,
+    // so source narrowing would be lossy.
+    if (pick === 'results' || /^results(?:\[\]|\[\d+\])$/.test(pick)) return undefined;
+    const path = resultRowPath(pick);
+    if (path === null || path === '') continue;
+
+    if (path === 'workItem.summary') {
+      includeBody = true;
+      continue;
+    }
+    if (
+      path === 'workItem.terminalCompletionEvidence' ||
+      path.startsWith('workItem.terminalCompletionEvidence.')
+    ) {
+      payloadProjection = 'completionEvidence';
+      continue;
+    }
+    if (path.startsWith('workItem.payload.')) {
+      const payloadPath = path.slice('workItem.payload.'.length);
+      if (payloadPath === '_completionEvidence' || payloadPath.startsWith('_completionEvidence.')) {
+        payloadProjection = 'completionEvidence';
+        continue;
+      }
+      // `payload` is intentionally opaque to this policy. A future payload
+      // field must opt in explicitly rather than accidentally reading NULL.
+      return undefined;
+    }
+    if (path === 'workItem.payload' || path === 'workItem.externalBlockers') return undefined;
+    if (
+      path === 'completion' ||
+      path.startsWith('completion.') ||
+      path === 'hasCompletionEvidence' ||
+      path === 'completionFreshness' ||
+      path.startsWith('completionFreshness.') ||
+      path === 'deploymentPosition' ||
+      path.startsWith('deploymentPosition.')
+    ) {
+      payloadProjection = 'completionEvidence';
+      continue;
+    }
+    if (
+      path === 'planItemBlocked' ||
+      path.startsWith('planItemBlocked.') ||
+      path === 'planItemClaimCollision' ||
+      path.startsWith('planItemClaimCollision.') ||
+      path === 'planItemTextDrift' ||
+      path.startsWith('planItemTextDrift.')
+    ) {
+      // These enrichments resolve payload-backed plan linkage. Keep the source
+      // complete so the returned selected field remains authoritative.
+      return undefined;
+    }
+    // All remaining known workItem identity/lifecycle columns, and the
+    // independent checkpoint/holder/prior-work fields, do not require payload.
+  }
+
+  return {
+    includeBody,
+    payloadProjection,
+  };
+}
 
 export default defineTool({
   name: 'work_items:get',
@@ -203,6 +316,10 @@ export default defineTool({
         // projection-only form: do not call the low-level window reader, whose
         // COUNT(*) OVER query must clamp LIMIT 0 to one row to retain its total.
         const readDetail = args.detail === true && !hasThreadLimit;
+        const sourceReadOptions = workItemsGetSourceReadOptions(
+          (ctx as SourceProjectionContext).sourceProjection,
+          readDetail,
+        );
         const workItem = await cachedRead(
           ctx as CachedReadCtx,
           {
@@ -211,6 +328,7 @@ export default defineTool({
               id,
               harness: args.harness ?? null,
               detail: readDetail,
+              ...(sourceReadOptions ? { sourceReadOptions } : {}),
             },
             tags: [
               'work_items',
@@ -219,7 +337,12 @@ export default defineTool({
             ],
             softTtlMs: WORK_ITEMS_GET_SOFT_TTL_MS,
           },
-          () => (readDetail ? getWorkItemDetail(id, args.harness) : getWorkItem(id, args.harness)),
+          () =>
+            readDetail
+              ? getWorkItemDetail(id, args.harness)
+              : sourceReadOptions
+                ? getWorkItem(id, args.harness, sourceReadOptions)
+                : getWorkItem(id, args.harness),
         );
         if (!workItem) {
           return { ok: false as const, id, error: `work_item '${id}' not found` };
