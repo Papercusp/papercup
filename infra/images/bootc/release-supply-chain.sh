@@ -106,7 +106,16 @@ step "1/6  resolve the DIGEST from the registry (D-288 / D-287)"
 # A tag is a NAME. Everything downstream must be pinned to the object, so the tag is resolved
 # exactly once, here, against the registry — not against the local store, which is a claim about
 # the local store and was measured pointing at another repository's manifest entry.
-REPO="${IMAGE%@*}"; REPO="${REPO%:*}"
+# ⚠ A PORT'S COLON IS NOT A TAG'S COLON. The obvious `REPO="${REPO%:*}"` strips the shortest
+# `:*` suffix, so on a ported registry it eats the port AND the whole path:
+#   127.0.0.1:5096/papercusp/workspace-host  ->  127.0.0.1
+# cosign then resolved that as a Docker Hub repo (`index.docker.io/v2/library/127.0.0.1`) and
+# failed with UNAUTHORIZED — an auth error that names a registry nobody asked for, so it reads
+# as a credentials problem rather than a parsing one. Measured 2026-09-04 by P-307's end-to-end
+# bake, the first run to point this script at a registry with a port.
+# A tag's colon is always in the LAST path segment; a port's colon is always before a `/`.
+REPO="${IMAGE%@*}"
+case "${REPO##*/}" in *:*) REPO="${REPO%:*}";; esac
 DIGEST=""
 case "$IMAGE" in
   *@sha256:*) DIGEST="${IMAGE#*@}"; echo "input was already digest-pinned";;
