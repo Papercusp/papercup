@@ -8,6 +8,7 @@
 
 import { defineResource } from '@papercusp/tooldef';
 import type { ResourceContents } from '@papercusp/tooldef';
+import type { PapercuspToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
 
 export default defineResource({
   name: 'harness:list',
@@ -17,8 +18,9 @@ export default defineResource({
   description:
     'List of harnesses in the current workspace: slug, name, status, last-activity timestamp.',
 
-  async read(uri, ctx): Promise<ResourceContents> {
-    const rows = await ctx.tx<
+  async read(uri, ctx: PapercuspToolContext): Promise<ResourceContents> {
+    const tx = ctx.tx!;
+    const rows = await tx<
       Array<{ slug: string; name: string; status: string; updated_ts: number }>
     >`
       SELECT slug, name, status, updated_ts

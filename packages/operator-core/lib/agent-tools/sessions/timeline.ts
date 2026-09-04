@@ -8,6 +8,7 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import type { PapercuspUnifiedToolContext } from '../_tool-context';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { isSessionShapedOwnerId } from '../coordination/dead-session-recipient-guidance';
 import {
@@ -592,7 +593,8 @@ export default defineTool({
     cursor: z.string().min(1).max(512).optional().describe('Opaque nextCursor from a prior sessions:timeline call with the same filters.'),
   }),
   result: timelineResultSchema,
-  async handler(args, ctx) {
+  async handler(args, ctx: PapercuspUnifiedToolContext) {
+    const tx = ctx.tx!;
     if (!(await sessionSearchEnabled())) return disabledResult();
     const workspaceId = ctx.workspaceId ?? '';
     const identity = resolveAgentIdentity(ctx);
@@ -632,11 +634,11 @@ export default defineTool({
     const since = args.since ?? cursor.bounds.since ?? new Date(Date.parse(until) - 24 * 3600 * 1000).toISOString();
     const offset = cursor.offset;
     const fetchLimit = offset + limit + 1;
-    await refreshLiveSessionsBeforeRead(ctx.tx, [owner]);
-    const automaticToolPredicate = automaticToolInvocationPredicate(ctx.tx);
-    const agentToolPredicate = agentToolInvocationPredicate(ctx.tx);
+    await refreshLiveSessionsBeforeRead(tx, [owner]);
+    const automaticToolPredicate = automaticToolInvocationPredicate(tx);
+    const agentToolPredicate = agentToolInvocationPredicate(tx);
 
-    const rows = await ctx.tx<TimelineEntry[]>`
+    const rows = await tx<TimelineEntry[]>`
       (
         SELECT 'turn' AS kind, COALESCE(ts, ingested_at)::text AS ts,
                CONCAT(${SESSION_TURN_REF_PREFIX}::text, source_kind, ':', session_id, ':', turn_idx) AS ref,
@@ -718,7 +720,7 @@ export default defineTool({
     if (args.goalRef) {
       const wanted = assumptionSetIdsToResolve(pageRows);
       if (wanted.length > 0) {
-        const countRows = await ctx.tx<AssumptionCountRow[]>`
+        const countRows = await tx<AssumptionCountRow[]>`
           SELECT w.watermark::bigint AS watermark,
                  count(f.id)::int AS n
             FROM unnest(${wanted}::bigint[]) AS w(watermark)
@@ -747,7 +749,7 @@ export default defineTool({
       // producer exists" from "this agent never asserted one", and the whole
       // failure being prevented is an empty set that reads as the latter.
       if (assumptionSetsResolved > 0 && assumptionsObserved === 0) {
-        const [existsRow] = await ctx.tx<{ any_exists: boolean }[]>`
+        const [existsRow] = await tx<{ any_exists: boolean }[]>`
           SELECT EXISTS (
             SELECT 1 FROM harness_shared.agent_facts f
              WHERE f.retracted_at IS NULL
@@ -767,7 +769,7 @@ export default defineTool({
       anyAssumptionExists,
     });
 
-    const [auditRow = { total_tool_calls: 0, automatic_calls: 0, agent_calls: 0 }] = await ctx.tx<AutomaticCallAuditRow[]>`
+    const [auditRow = { total_tool_calls: 0, automatic_calls: 0, agent_calls: 0 }] = await tx<AutomaticCallAuditRow[]>`
       SELECT count(*)::int AS total_tool_calls,
              count(*) FILTER (WHERE ${automaticToolPredicate})::int AS automatic_calls,
              count(*) FILTER (WHERE ${agentToolPredicate})::int AS agent_calls

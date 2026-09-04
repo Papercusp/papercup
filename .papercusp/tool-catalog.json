@@ -12440,7 +12440,7 @@
           "POST"
         ]
       },
-      "description": "Per-owner inference-gateway outcome report (GET :8788/admin/owner-report) — gateway-rayobyte-hardening P-008. With `agent` (an owner/spawn id): that agent's ledger {requests, ok, upstream429, upstreamErrors, sheds, stalls, pinYields, lastAccount, lastStatus, recent events} + its last-routed account + live pin — this IS the 'what account is this session actually routed to right now' read (the dual of accounts:pin). Without `agent`: the top ~25 owners ranked by bad outcomes (429s+errors+sheds+stalls) — 'who is having a bad time right now' in one call. Counters are since the last gateway restart.",
+      "description": "Per-owner inference-gateway outcome + routing-quality report (GET :8788/admin/owner-report). With `agent` (an owner/spawn id): that agent's ledger {requests, ok, upstream429, upstreamErrors, sheds, stalls, pinYields, lastAccount, lastStatus, recent events} + its last-routed account + live pin + owner-filtered recent routing decisions explaining why each account was picked. Without `agent`: the top ~25 owners ranked by bad outcomes plus the bounded all-owner routing-quality snapshot. `routingQuality` measures true upstream HTTP 429s per logical initial pick, automatic pick-vs-best-available divergence, and explicit/affinity pin-yield frequency; intentional pins are labeled and excluded from automatic-divergence counts. Counters are since the last gateway restart.",
       "capabilities": [
         "harness:read"
       ],

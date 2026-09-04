@@ -7,6 +7,7 @@
 
 import { defineResource } from '@papercusp/tooldef';
 import type { ResourceContents } from '@papercusp/tooldef';
+import type { PapercuspToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
 
 export default defineResource({
   name: 'audit:recent',
@@ -16,8 +17,9 @@ export default defineResource({
   description:
     'Most-recent 100 audit log entries (id, ts, actor, action, subject, details).',
 
-  async read(uri, ctx): Promise<ResourceContents> {
-    const rows = await ctx.tx<
+  async read(uri, ctx: PapercuspToolContext): Promise<ResourceContents> {
+    const tx = ctx.tx!;
+    const rows = await tx<
       Array<{
         id: string;
         ts: number;

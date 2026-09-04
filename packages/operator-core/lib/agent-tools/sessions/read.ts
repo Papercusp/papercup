@@ -8,6 +8,7 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import type { PapercuspUnifiedToolContext } from '../_tool-context';
 import { resolveAgentIdentity } from '../coordination/identity';
 import {
   sessionSearchEnabled,
@@ -125,7 +126,8 @@ export default defineTool({
       }),
     ),
   }),
-  async handler(args, ctx) {
+  async handler(args, ctx: PapercuspUnifiedToolContext) {
+    const tx = ctx.tx!;
     if (!(await sessionSearchEnabled())) return disabledResult();
     const workspaceId = ctx.workspaceId ?? '';
     const parsedRef = args.ref ? parseTurnRef(args.ref) : null;
@@ -158,7 +160,7 @@ export default defineTool({
       const callerOwnerId = resolveAgentIdentity(ctx).ownerId ?? '';
       const { resolveSearchFilters } = await import('../search/filters');
       const resolved = await resolveSearchFilters(
-        ctx.tx,
+        tx,
         { session: 'self' },
         callerOwnerId,
         { workspaceId },
@@ -179,7 +181,7 @@ export default defineTool({
       // Keep the historical/indexed read and archive fall-through unchanged;
       // the helper refreshes only an active target found in adv_sessions.
       try {
-        await refreshTargetSessionBeforeRead(ctx.tx, sourceKind, sessionId);
+        await refreshTargetSessionBeforeRead(tx, sourceKind, sessionId);
       } catch {
         /* target freshness is best-effort; never make an indexed read fail */
       }
@@ -208,7 +210,7 @@ export default defineTool({
     // ALWAYS re-normalised to chronological below, so `order` never changes the
     // shape the caller reads — only which slice of a too-large range they get.
     const asc = args.order === 'asc';
-    const rows = await ctx.tx<Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; ts: string | null; text: string }>>`
+    const rows = await tx<Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; ts: string | null; text: string }>>`
       SELECT source_kind, session_id, turn_idx, speaker, owner, ts::text AS ts, left(text, 1500) AS text
         FROM harness_shared.session_turns
        WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')

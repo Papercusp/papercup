@@ -10,6 +10,7 @@
 import { defineResource } from '@papercusp/tooldef';
 import { matchResource } from '@papercusp/tooldef';
 import type { ResourceContents, ResourceListEntry } from '@papercusp/tooldef';
+import type { PapercuspToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
 
 export default defineResource({
   name: 'harness:issues',
@@ -19,8 +20,9 @@ export default defineResource({
   description:
     'Validator-filed issues for a specific harness. Reads the harness_<slug>.issues table.',
 
-  async list(ctx): Promise<ResourceListEntry[]> {
-    const rows: Array<{ slug: string; name: string }> = await ctx.tx`
+  async list(ctx: PapercuspToolContext): Promise<ResourceListEntry[]> {
+    const tx = ctx.tx!;
+    const rows: Array<{ slug: string; name: string }> = await tx`
       SELECT slug, name FROM harness_shared.projects ORDER BY slug
     `;
     return rows.map((r) => ({
@@ -31,7 +33,8 @@ export default defineResource({
     }));
   },
 
-  async read(uri, ctx): Promise<ResourceContents> {
+  async read(uri, ctx: PapercuspToolContext): Promise<ResourceContents> {
+    const tx = ctx.tx!;
     const matched = matchResource(uri);
     const slug = matched?.vars.slug;
     if (!slug) {
@@ -44,9 +47,9 @@ export default defineResource({
     let degraded = false;
     let degradedReason: string | undefined;
     try {
-      rows = await ctx.tx<Array<Record<string, unknown>>>`
+      rows = await tx<Array<Record<string, unknown>>>`
         SELECT id, task_id, filed_by, severity, body, created_at
-          FROM ${ctx.tx(schema)}.issues
+          FROM ${tx(schema)}.issues
          ORDER BY created_at DESC
          LIMIT 200
       `;

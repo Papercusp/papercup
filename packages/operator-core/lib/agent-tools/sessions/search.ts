@@ -16,6 +16,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runHybridSearch } from '@papercusp/search';
+import type { PapercuspUnifiedToolContext } from '../_tool-context';
 import { SEARCH_SOURCES } from '../search/sources';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { searchFilterArgs, resolveSearchFilters } from '../search/filters';
@@ -127,7 +128,8 @@ export default defineTool({
     cursor: z.string().min(1).max(512).optional().describe('Opaque nextCursor from a prior sessions:search call with the same query and filters.'),
     ...searchFilterArgs,
   }),
-  async handler(args, ctx) {
+  async handler(args, ctx: PapercuspUnifiedToolContext) {
+    const tx = ctx.tx!;
     if (!(await sessionSearchEnabled())) return disabledResult();
     const limit = args.limit ?? 5;
     const context = args.context ?? 2;
@@ -158,7 +160,7 @@ export default defineTool({
     const effectiveArgs = { ...args, until: snapshotUntil };
 
     const { filters, selfSession: resolvedSelfSession } = await resolveSearchFilters(
-      ctx.tx, effectiveArgs, callerOwnerId, { workspaceId },
+      tx, effectiveArgs, callerOwnerId, { workspaceId },
     );
     // EI-21699129692862363: this refresh is what makes session:'self' able to
     // find a turn written seconds ago — it tails the live transcript into the
@@ -174,8 +176,8 @@ export default defineTool({
     // path enumerates up to 20 open Codex owners before the actual query,
     // turning a targeted read into unrelated filesystem work (EI-217206...).
     const liveRefresh = filters?.sessionId
-      ? await refreshTargetSessionBeforeRead(ctx.tx, filters.sourceKind, filters.sessionId)
-      : await refreshLiveSessionsBeforeRead(ctx.tx, filters?.owners ?? null);
+      ? await refreshTargetSessionBeforeRead(tx, filters.sourceKind, filters.sessionId)
+      : await refreshLiveSessionsBeforeRead(tx, filters?.owners ?? null);
     const refreshDegraded = liveRefresh.attempted > liveRefresh.refreshed;
 
     interface RawHit {
@@ -188,7 +190,7 @@ export default defineTool({
     if (mode === 'verbatim') {
       const f = filters ?? {};
       const owners = f.owners && f.owners.length ? f.owners : null;
-      const rows = await ctx.tx<Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string }>>`
+      const rows = await tx<Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string }>>`
         SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts::text AS ts,
                left(text, 700) AS text
           FROM harness_shared.session_turns
@@ -223,7 +225,7 @@ export default defineTool({
       // call inside runHybridSearch, not just the acquisition above.
       const { results } = await runHybridSearch(sources, {
         caller: 'sessions:search',
-        sql: ctx.tx,
+        sql: tx,
         query: args.query,
         workspaceId,
         scopeFilter: args.harness_slug ?? null,
@@ -338,7 +340,7 @@ export default defineTool({
 
     if (!zeroHitCaveat && args.session === 'self' && pageHits.length === 0 && filters?.owners?.length) {
       try {
-        const [row] = await ctx.tx<Array<{ session_count: string; earliest: string | null }>>`
+        const [row] = await tx<Array<{ session_count: string; earliest: string | null }>>`
           SELECT COUNT(DISTINCT session_id)::text AS session_count,
                  MIN(COALESCE(ts, ingested_at))::text AS earliest
             FROM harness_shared.session_turns
@@ -376,7 +378,7 @@ export default defineTool({
       try {
         const pf = filters ?? {};
         const pOwners = pf.owners && pf.owners.length ? pf.owners : null;
-        const [row] = await ctx.tx<Array<{ hits: string }>>`
+        const [row] = await tx<Array<{ hits: string }>>`
           SELECT COUNT(*)::text AS hits
             FROM harness_shared.session_turn_parts
            WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
@@ -418,7 +420,7 @@ export default defineTool({
       .map((h) => ({ sourceKind: h.sourceKind, sessionId: h.sessionId, turnIdx: h.turnIdx }));
     if (originKeys.length) {
       try {
-        turnOrigins = await resolveHitTurnOrigins(ctx.tx, workspaceId, originKeys);
+        turnOrigins = await resolveHitTurnOrigins(tx, workspaceId, originKeys);
       } catch {
         turnOriginsResolved = false; // every hit falls through to `unknown`
       }
@@ -439,7 +441,7 @@ export default defineTool({
       if (h.source === 'session_turn' && context > 0) {
         try {
           window = await hydrateWindow(
-            ctx.tx,
+            tx,
             workspaceId,
             h.sourceKind,
             h.sessionId,
