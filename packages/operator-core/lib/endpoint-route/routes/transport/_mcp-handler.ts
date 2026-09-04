@@ -110,6 +110,7 @@ import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-to
 import { workspaceForCoordOwner } from '../../../adv-sessions';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loopPressure } from '../../../event-loop-lag-monitor';
+import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
 import { isEngineeringDocsSentinel, resolveInheritedHarnessScope } from '../../../agent-tools/_harness-scope';
 import { verifyExplicitPlanHarness } from '../../../agent-tools/plans/slug-scope';
 import { withMcpAdmission, ADMISSION_CONTROL_ENABLED } from './mcp-admission';
@@ -627,6 +628,29 @@ export function crossHiveLaunchHint(toolName: string, scopeHive: string): string
 }
 
 /**
+ * EI-22344259264889593: `git-sync:run` defaults to the workspace's operator-home
+ * install when its target is omitted. The generic hive clamp nevertheless rejected
+ * the byte-equivalent explicit spelling (`installSlug`, or the tool's documented
+ * `harness` alias) from a session executing in another Hive. That made the manual
+ * COMMIT lever unreachable exactly when an sb-devboard execution session needed to
+ * commit the shared canonical staging checkout.
+ *
+ * This is deliberately NOT a general cross-hive exception. It admits only the one
+ * tool, only its two target spellings, and only the exact configured home slug. An
+ * arbitrary sibling target remains forbidden. Because the omitted call already
+ * selects this same slug inside git-sync:run, accepting the explicit spelling adds
+ * no authority; it only makes the transport agree with the handler's existing
+ * default.
+ */
+function isExplicitOperatorHomeGitSyncTarget(toolName: string, arg: string, slug: string): boolean {
+  return (
+    toolName === 'git-sync:run' &&
+    (arg === 'installSlug' || arg === 'harness') &&
+    slug === operatorHomeHarnessSlug()
+  );
+}
+
+/**
  * Parse the seven per-spawn URL params and return a partial
  * UnifiedToolContext fragment. Returns null if any required params are
  * missing — the caller falls back to built-in-only listing (e.g. dev
@@ -859,8 +883,14 @@ async function applyScopedSuperuserTransportClamp(
             toolName === 'docs:search' ||
             toolName === 'docs:outline' ||
             toolName === 'docs:author');
+        const isOperatorHomeGitSyncTarget = isExplicitOperatorHomeGitSyncTarget(
+          toolName,
+          'harness',
+          requestedHarness,
+        );
         const escapesHive =
           !isEngineeringDocsSurface &&
+          !isOperatorHomeGitSyncTarget &&
           (requestedHarness === 'all' ||
             requestedHarness === '*' ||
             (await potHomeSlugForHarness(spawnCtx.workspaceId, requestedHarness)) !== scopeHive);
@@ -980,6 +1010,7 @@ async function applyScopedSuperuserTransportClamp(
       }
 
       for (const { arg, slug } of collectHarnessSlugArgs(args, { toolName })) {
+        if (isExplicitOperatorHomeGitSyncTarget(toolName, arg, slug)) continue;
         const escapesHive =
           slug === 'all' || slug === '*' || (await potHomeSlugForHarness(spawnCtx.workspaceId, slug)) !== scopeHive;
         if (escapesHive) {
@@ -2780,8 +2811,14 @@ const handler = createMcpHandler(
                     toolName === 'docs:search' ||
                     toolName === 'docs:outline' ||
                     toolName === 'docs:author');
+                const isOperatorHomeGitSyncTarget = isExplicitOperatorHomeGitSyncTarget(
+                  toolName,
+                  'harness',
+                  argHarness,
+                );
                 const escapes =
                   !isEngineeringDocsSurface &&
+                  !isOperatorHomeGitSyncTarget &&
                   (argHarness === 'all' ||
                     argHarness === '*' ||
                     (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness)) !== scopeHive);
@@ -2987,6 +3024,7 @@ const handler = createMcpHandler(
               // but "the pot's home-harness slug" on pot:* — and pot:obliterate
               // is the sharp end of getting that wrong.
               for (const { arg, slug } of collectHarnessSlugArgs(args, { toolName })) {
+                if (isExplicitOperatorHomeGitSyncTarget(toolName, arg, slug)) continue;
                 const escapesHive =
                   slug === 'all' ||
                   slug === '*' ||
@@ -3206,22 +3244,40 @@ const handler = createMcpHandler(
                   // Same window the dispatcher would have resolved (initExecution),
                   // so a replay row groups with the real calls it accompanies.
                   const roleQuota = baseCtx.role ? projected.rolesQuota?.[baseCtx.role] : undefined;
-                  await PROJECTED_DEPS.recordInvocation?.({
-                    toolName,
-                    pluginName: projected.pluginName,
-                    ctx: baseCtx,
-                    windowKey: PROJECTED_DEPS.computeQuotaWindow?.(baseCtx, roleQuota, toolName).key ?? '',
-                    durationMs: Date.now() - callStartedAt,
-                    // NOT 'ok' — quota counts `status='ok'` rows, and a replay does
-                    // no work, so 'ok' would charge the caller for a call that never
-                    // ran. See the RecordInvocationInput['status'] note.
-                    status: 'replayed',
-                    args: dispatchArgs,
-                    // The retry key, so a storm is groupable by the key being
-                    // re-sent — the one field the row cannot otherwise recover.
-                    metadataJson: { replayIdempotencyKey: idempotencyKey },
-                  });
+                  const recordInvocation = PROJECTED_DEPS.recordInvocation;
+                  // Telemetry is best-effort and must not hold a replay hostage:
+                  // the stored mutation result is already available, while this
+                  // write can contend on the invocation ledger under load. Start
+                  // the call in a microtask so synchronous throws are captured too,
+                  // then detach both the telemetry promise and its rejection.
+                  void Promise.resolve()
+                    .then(() =>
+                      recordInvocation?.({
+                        toolName,
+                        pluginName: projected.pluginName,
+                        ctx: baseCtx,
+                        windowKey: PROJECTED_DEPS.computeQuotaWindow?.(baseCtx, roleQuota, toolName).key ?? '',
+                        durationMs: Date.now() - callStartedAt,
+                        // NOT 'ok' — quota counts `status='ok'` rows, and a replay does
+                        // no work, so 'ok' would charge the caller for a call that never
+                        // ran. See the RecordInvocationInput['status'] note.
+                        status: 'replayed',
+                        args: dispatchArgs,
+                        // The retry key, so a storm is groupable by the key being
+                        // re-sent — the one field the row cannot otherwise recover.
+                        metadataJson: { replayIdempotencyKey: idempotencyKey },
+                      }),
+                    )
+                    .catch((err) => {
+                      console.warn(
+                        `[mcp-replay] telemetry failed for ${toolName} (key=${idempotencyKey}): ` +
+                          (err instanceof Error ? err.message : String(err)),
+                      );
+                    });
                 } catch (err) {
+                  // Building the detached telemetry chain is best-effort too.
+                  // Keep this guard for unusual synchronous failures such as a
+                  // throwing getter on the projected dependency object.
                   console.warn(
                     `[mcp-replay] telemetry failed for ${toolName} (key=${idempotencyKey}): ` +
                       (err instanceof Error ? err.message : String(err)),
