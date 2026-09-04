@@ -94,8 +94,11 @@ import {
   decideVerdictlessRefire,
   readGateFireOwnerWall,
   resolveVerdictlessRefireEpisode,
+  wakeAbandonedCheckpointAwaits,
   type CheckpointEvidence,
 } from './green-stall-watchdog';
+import type { StoredInFlightCandidate } from './in-flight-candidate';
+import type { EmitAwaitedEventOpts } from '../events/await/engine';
 // Imported, never restated: the re-fire tests enumerate the REAL abort table, so adding a
 // status there (or reclassifying one) is reported by these tests instead of silently changing
 // what the gate will automatically fire on.
@@ -103,6 +106,118 @@ import { RECORDED_INCONCLUSIVE_STATUSES, classifyGateAbort } from './gate-abort-
 
 const H = 60 * 60 * 1000;
 const NOW = 1_750_000_000_000; // fixed epoch ms
+
+const deadCheckpointMarker = (over: Partial<StoredInFlightCandidate> = {}): StoredInFlightCandidate => ({
+  candidate: 'deadbeef00112233445566778899aabbccddeeff',
+  candidateSource: 'tip',
+  base: 'cafe0000112233445566778899aabbccddeeff00',
+  selectedAtMs: NOW - 120_000,
+  quietCutApplied: false,
+  tipAtSelection: null,
+  refireDepth: 0,
+  pid: 424242,
+  observedAtMs: NOW - 120_000,
+  ...over,
+});
+
+describe('wakeAbandonedCheckpointAwaits (WI-6989)', () => {
+  it('emits the existing global + pipeline inconclusive keys for an unscoped or candidate-bound waiter', async () => {
+    const order: string[] = [];
+    const emit = vi.fn(async (opts: EmitAwaitedEventOpts) => {
+      order.push(`emit:${opts.key}`);
+      return { ok: true };
+    });
+    const recordLostRun = vi.fn(async () => {
+      order.push('record');
+    });
+    const clearIfUnchanged = vi.fn(async () => {
+      order.push('clear');
+      return true;
+    });
+
+    await expect(
+      wakeAbandonedCheckpointAwaits(
+        {
+          installSlug: 'papercusp',
+          workspaceId: 'papercusp-workspace',
+          rawMarker: deadCheckpointMarker(),
+        },
+        { nowMs: NOW, selfPid: 7, pidAlive: () => false, emit, recordLostRun, clearIfUnchanged },
+      ),
+    ).resolves.toEqual({
+      status: 'woken',
+      candidate: deadCheckpointMarker().candidate,
+      markerCleared: true,
+    });
+
+    expect(order).toEqual([
+      'record',
+      'emit:green-checkpoint:inconclusive',
+      'emit:green-checkpoint:inconclusive:papercusp',
+      'clear',
+    ]);
+    expect(emit).toHaveBeenCalledTimes(2);
+    for (const [opts] of emit.mock.calls) {
+      expect(opts.payload).toMatchObject({
+        sha: deadCheckpointMarker().candidate,
+        pipeline: 'papercusp',
+        reason: 'process-disappeared',
+      });
+      expect(opts.cancelSiblingKeysFor).toEqual([
+        'release:green',
+        'release:green:papercusp',
+        'green-checkpoint:red',
+        'green-checkpoint:red:papercusp',
+        'green-checkpoint:held',
+        'green-checkpoint:held:papercusp',
+      ]);
+    }
+  });
+
+  it('leaves a live checkpoint marker and all await registrations untouched', async () => {
+    const emit = vi.fn();
+    const recordLostRun = vi.fn();
+    const clearIfUnchanged = vi.fn();
+    await expect(
+      wakeAbandonedCheckpointAwaits(
+        {
+          installSlug: 'papercusp',
+          workspaceId: 'papercusp-workspace',
+          rawMarker: deadCheckpointMarker(),
+        },
+        { nowMs: NOW, selfPid: 7, pidAlive: () => true, emit, recordLostRun, clearIfUnchanged },
+      ),
+    ).resolves.toEqual({ status: 'not-abandoned', reason: 'pid-alive' });
+    expect(emit).not.toHaveBeenCalled();
+    expect(recordLostRun).not.toHaveBeenCalled();
+    expect(clearIfUnchanged).not.toHaveBeenCalled();
+  });
+
+  it('retains the dead marker when event delivery fails so the next watchdog pass retries', async () => {
+    const clearIfUnchanged = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(
+      wakeAbandonedCheckpointAwaits(
+        {
+          installSlug: 'papercusp',
+          workspaceId: 'papercusp-workspace',
+          rawMarker: deadCheckpointMarker(),
+        },
+        {
+          nowMs: NOW,
+          selfPid: 7,
+          pidAlive: () => false,
+          recordLostRun: vi.fn().mockResolvedValue(undefined),
+          emit: vi.fn().mockRejectedValue(new Error('event store unavailable')),
+          clearIfUnchanged,
+        },
+      ),
+    ).resolves.toEqual({ status: 'emit-failed', candidate: deadCheckpointMarker().candidate });
+    expect(clearIfUnchanged).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('will retry'));
+    warn.mockRestore();
+  });
+});
 
 describe('evaluateGreenStall', () => {
   it('a fresh install (never fired, never green) does not alarm', () => {

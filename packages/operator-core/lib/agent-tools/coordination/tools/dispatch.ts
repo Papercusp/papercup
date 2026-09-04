@@ -33,6 +33,7 @@ import { hardText } from '../../limits';
 import type { HydratableRef } from '../ref-hydrate';
 import { renderHydratedRefs } from '../ref-hydrate';
 import { hydrateRefs, makePlanItemResolver } from '../ref-hydrate-resolve';
+import { DEFAULT_INBOX_BODY_CAP } from './inbox-content-bounds';
 import {
   assignActionableWorkItems,
   type ActionableWorkItemAssignment,
@@ -426,6 +427,9 @@ export async function composeDispatch(
   //     ~200 chars/item, ≤3 items) and fail-soft BY CONTRACT — a resolve hiccup
   //     degrades to the plain note, never blocks delivery (the critical leg is
   //     coord:send below, unaffected either way).
+  // coord:send refuses load-bearing bodies that exceed the largest normal inbox
+  // projection. Keep the required handoff note as the safe fallback whenever
+  // optional hydration/enrichment would push the body over that limit.
   let hydratedBody = args.body;
   let itemsHydrated = 0;
   if (args.planSlug && itemsToAssign && itemsToAssign.length > 0) {
@@ -440,7 +444,15 @@ export async function composeDispatch(
       });
       itemsHydrated = hydrated.filter((h) => h.ok).length;
       const block = renderHydratedRefs(hydrated);
-      if (block) hydratedBody = [args.body, block].filter(Boolean).join('\n\n');
+      if (block) {
+        const candidate = [args.body, block].filter(Boolean).join('\n\n');
+        if (candidate.length <= DEFAULT_INBOX_BODY_CAP) {
+          hydratedBody = candidate;
+        } else {
+          // The snippets were not delivered, so do not report them as hydrated.
+          itemsHydrated = 0;
+        }
+      }
     } catch {
       /* fail-soft: dispatch still delivers the plain note */
     }
@@ -451,7 +463,8 @@ export async function composeDispatch(
       `Actionable work-items assigned to this stable agent: ` +
       workItems.executionWorkItemIds.map((id) => `\`${id}\``).join(', ') +
       '. Blocked or otherwise ineligible requested descendants were left unassigned.';
-    hydratedBody = [args.body, executionBlock].filter(Boolean).join('\n\n');
+    const candidate = [hydratedBody, executionBlock].filter(Boolean).join('\n\n');
+    if (candidate.length <= DEFAULT_INBOX_BODY_CAP) hydratedBody = candidate;
   }
 
   // A work-item direct dispatch with no executable frontier MUST NOT wake the
@@ -695,8 +708,9 @@ export default defineTool({
       note: z
         .string()
         .min(1)
+        .max(DEFAULT_INBOX_BODY_CAP)
         .describe(
-          'The directed instruction the target reads in its inbox on waking — what to pick up and do. Name the plan + items explicitly.',
+          `The directed instruction the target reads in its inbox on waking — what to pick up and do. Name the plan + items explicitly; max ${DEFAULT_INBOX_BODY_CAP} characters so the required action body fits the inbox.`,
         ),
       planSlug: z
         .string()
@@ -716,7 +730,9 @@ export default defineTool({
         .describe(
           'Concrete promoted work-item ids to assign to the stable target. Re-read through canonical readiness; only actionable ids are claimed and included in the required wake. Mutually exclusive with `items`.',
         ),
-      body: hardText(8000).optional().describe('Optional longer body for the inbox note.'),
+      body: hardText(DEFAULT_INBOX_BODY_CAP)
+        .optional()
+        .describe(`Optional body for the inbox note (max ${DEFAULT_INBOX_BODY_CAP} characters).`),
       harness: z
         .string()
         .max(120)

@@ -691,6 +691,12 @@ export function classifyTestProcessOutcome(outcome: TestProcessOutcome): Governe
  *  typed refusal naming why nothing could be judged. Discriminate on `error`. */
 export type TestFilesCoreResult =
   | ({ ok: boolean; runId: string; root: string; error?: undefined } & DistilledTestRun & {
+        /** The router produced a complete verdict after this tool's foreground budget elapsed. */
+        budgetExceeded?: boolean;
+        /** The foreground budget that elapsed before the complete verdict was surfaced. */
+        budgetMs?: number;
+        /** Router-reported elapsed time for the completed test process, when available. */
+        runElapsedMs?: number;
         failuresReturned?: number;
         failuresOmitted?: number;
         truncationNote?: string;
@@ -760,6 +766,29 @@ function zeroExecutedRefusal(
       'typically env-gated (`describe.skipIf` / `it.skip`): set the suite\'s env var to actually ' +
       'run it, or record the check as NOT EXECUTED.',
   };
+}
+
+/** Read every JSON report written by one router invocation, preserving group order. */
+async function readRunReportTexts(dir: string): Promise<string[]> {
+  try {
+    const names = (await readdir(dir))
+      .filter((name) => name.endsWith('.json') && name !== TEST_FAILURE_DETAILS_FILENAME)
+      .sort();
+    return (await Promise.all(names.map((name) => readFile(join(dir, name), 'utf8').catch(() => null)))).filter(
+      (text): text is string => text !== null,
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** Read the optional assertion-detail sidecar without making it a run prerequisite. */
+async function readFailureDetails(path: string, root: string): Promise<ReturnType<typeof parseFailureDetailsSidecar>> {
+  try {
+    return parseFailureDetailsSidecar(await readFile(path, 'utf8'), root);
+  } catch {
+    return [];
+  }
 }
 
 interface RouterOutcome extends TestProcessOutcome {

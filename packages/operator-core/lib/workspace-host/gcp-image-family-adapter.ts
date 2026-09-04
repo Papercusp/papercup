@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 
 // Leaf module on purpose: workspace-host-clean-room-executor (where this helper used to live)
@@ -8,6 +9,7 @@ import { isAbsolute, relative, resolve } from 'node:path';
 import { excerptDiagnostic, spillDiagnostic } from './diagnostic-excerpt';
 
 import {
+  WORKSPACE_HOST_BOOTC_BUILDER_KIND,
   buildWorkspaceHostCleanRoomInstallFixture,
   validateWorkspaceHostBootstrapAttestation,
   type WorkspaceHostCleanRoomInstallFixture,
@@ -34,6 +36,7 @@ import {
   type GcpImageScanEvidence,
 } from './gcp-image-family';
 import { evaluateImageScanPolicy, GCP_IMAGE_SCAN_POLICY } from './image-scan-policy';
+import { workspaceHostReleaseSubjectSha256 } from './bootc-bake-manifest';
 import {
   IAP_TCP_FORWARDING_SOURCE_RANGE,
   iapSshRuleAdmits,
@@ -1101,7 +1104,7 @@ function provenanceDescription(
     contractVersion: GCP_IMAGE_FAMILY_RELEASE_CONTRACT_VERSION,
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
     releaseVersion: artifact.image.version,
-    releaseSha256: artifact.release.bundleSha256,
+    releaseSha256: workspaceHostReleaseSubjectSha256(artifact),
     baseImage: artifact.buildManifest.baseImage,
     architecture: artifact.buildManifest.baseImage.architecture,
     guestTools: GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.map((name) => ({ name, version: guestToolVersions[name] })),
@@ -1124,6 +1127,7 @@ function labels(artifact: WorkspaceHostImageArtifact, state: 'candidate' | 'acti
 function inputMatchesContext(
   input: {
     projectId: string;
+    builderKind?: string;
     buildManifestIdentity: string;
     releaseSha256: string;
     releaseVersion?: string;
@@ -1134,13 +1138,52 @@ function inputMatchesContext(
   const artifact = context.artifact;
   if (
     input.projectId !== context.request.projectId ||
+    (input.builderKind !== undefined && input.builderKind !== artifact.buildManifest.builder.kind) ||
     input.buildManifestIdentity !== artifact.buildManifest.manifestIdentity ||
-    input.releaseSha256 !== artifact.release.bundleSha256 ||
+    input.releaseSha256 !== workspaceHostReleaseSubjectSha256(artifact) ||
     (input.releaseVersion !== undefined && input.releaseVersion !== artifact.image.version) ||
     (input.architecture !== undefined && input.architecture !== artifact.buildManifest.baseImage.architecture)
   ) {
     fail('GCP image adapter input is not bound to the release context');
   }
+}
+
+async function sha256File(path: string): Promise<string> {
+  return await new Promise<string>((resolveHash, reject) => {
+    const hash = createHash('sha256');
+    const stream = createReadStream(path);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.once('error', reject);
+    stream.once('end', () => resolveHash(hash.digest('hex')));
+  });
+}
+
+async function verifyBootcGceArtifact(
+  artifact: NonNullable<Parameters<GcpImageFamilyReleaseAdapter['buildCandidate']>[0]['bootcArtifact']>,
+  repositoryRoot: string,
+): Promise<string> {
+  if (artifact.cloud !== 'gcp' || artifact.type !== 'gce') {
+    fail('bootcArtifact must be the GCP/gce row from the canonical bake manifest');
+  }
+  const path = isAbsolute(artifact.artifact)
+    ? resolve(artifact.artifact)
+    : resolve(repositoryRoot, artifact.artifact);
+  if (!isAbsolute(artifact.artifact) && relative(repositoryRoot, path).startsWith('..')) {
+    fail('bootcArtifact.artifact escapes repositoryRoot');
+  }
+  let metadata: Awaited<ReturnType<typeof stat>>;
+  try {
+    metadata = await stat(path);
+  } catch {
+    fail(`bootc GCE disk does not exist: ${path}`);
+  }
+  if (!metadata.isFile() || metadata.size !== artifact.sizeBytes) {
+    fail(`bootc GCE disk size does not match the bake manifest: ${path}`);
+  }
+  if ((await sha256File(path)) !== artifact.sha256) {
+    fail(`bootc GCE disk digest does not match the bake manifest: ${path}`);
+  }
+  return path;
 }
 
 /** Concrete seven-operation GCP image-family release adapter. */
@@ -1368,6 +1411,44 @@ export class GoogleComputeGcpImageFamilyReleaseAdapter implements GcpImageFamily
       fail(
         `template ${template} digest ${templateDigest} does not match pinned ${context.artifact.buildManifest.builder.templateSha256}`,
       );
+    }
+    if (input.builderKind === WORKSPACE_HOST_BOOTC_BUILDER_KIND) {
+      if (!input.bootcArtifact) fail('bootc-image-builder requires the GCP bake artifact');
+      const disk = await verifyBootcGceArtifact(input.bootcArtifact, root);
+      const gcloud = safeExecutable(
+        this.options.gcloudExecutable,
+        'gcloud',
+        'gcloudExecutable',
+      );
+      const imported = await this.commands.run(
+        gcloud,
+        [
+          'compute',
+          'images',
+          'import',
+          candidateName,
+          `--project=${project(input.projectId, 'projectId')}`,
+          `--source-file=${disk}`,
+          '--os=centos-stream-9',
+          '--guest-os-features=UEFI_COMPATIBLE',
+          `--description=${provenanceDescription(context.artifact, versions)}`,
+          '--quiet',
+          '--format=json',
+        ],
+        { cwd: root, timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS },
+      );
+      assertSuccess(imported, 'gcloud compute images import');
+      const image = await this.getImage(input.projectId, candidateName);
+      if (image.family) fail('bootc candidate must not be assigned to a production image family');
+      return {
+        imageId: assertGcpImmutableImageId(
+          `projects/${input.projectId}/global/images/${image.name}`,
+          'buildCandidate.imageId',
+        ),
+      };
+    }
+    if (input.bootcArtifact) {
+      fail(`bootcArtifact is invalid for builder.kind '${input.builderKind}'`);
     }
     const builderNetworkTags = parseBuilderNetworkTags(bytes.toString('utf8'));
     const vars: Readonly<Record<string, string | number | boolean>> = {

@@ -3,20 +3,28 @@ import { createHash } from 'node:crypto';
 import {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+  WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+  WORKSPACE_HOST_BOOTC_BUILDER_KIND,
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
+  WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
   buildWorkspaceHostBuildManifest,
   deriveWorkspaceHostCanonicalArtifactUrls,
   workspaceHostRequiredReleaseMaterialFixtures,
   buildWorkspaceHostCleanRoomInstallFixture,
   workspaceHostCleanRoomFixtureAttestation,
   type WorkspaceHostCleanRoomAcceptanceReport,
+  type WorkspaceHostCleanRoomInstallSpec,
   type WorkspaceHostImageArtifact,
 } from '@papercusp/deployment-driver';
 import { describe, expect, it } from 'vitest';
 
 import { ARTIFACT_TRUST_PIPELINE_VERSION, type ArtifactTrustReport } from './artifact-trust';
+import {
+  WORKSPACE_HOST_BOOTC_BAKE_CONTRACT_VERSION,
+  type WorkspaceHostBootcBakeManifest,
+} from './bootc-bake-manifest';
 import {
   AWS_AMI_REQUIRED_GUEST_TOOLS,
   AwsAmiReleaseError,
@@ -39,6 +47,7 @@ const VERSION = '2026.8.23-1';
 const PUBLISHER = '111111111111';
 const CLEAN_ACCOUNT = '222222222222';
 const REGIONS = ['us-east-1', 'us-west-2'] as const;
+const BOOTC_SHA = '9'.repeat(64);
 
 function artifact(): WorkspaceHostImageArtifact {
   const buildManifest = buildWorkspaceHostBuildManifest({
@@ -98,24 +107,24 @@ function artifact(): WorkspaceHostImageArtifact {
   };
 }
 
-function trustReport(): ArtifactTrustReport {
+function trustReport(subjectSha256 = RELEASE_SHA): ArtifactTrustReport {
   return {
     version: ARTIFACT_TRUST_PIPELINE_VERSION,
     subject: {
       path: '/release/papercusp-server.tgz',
       name: 'papercusp-server.tgz',
       bytes: 42_000,
-      sha256: RELEASE_SHA,
+      sha256: subjectSha256,
       signed: true,
     },
     policy: { denyVulnerabilitiesAtOrAbove: 'high', maxSecretFindings: 0, maxAttestationAgeMs: 60 * 60 * 1_000 },
     trusted: true,
     failures: [],
     evidence: [
-      { kind: 'signature', subjectSha256: RELEASE_SHA, tool: { name: 'minisign', version: '0.12' }, valid: true },
+      { kind: 'signature', subjectSha256, tool: { name: 'minisign', version: '0.12' }, valid: true },
       {
         kind: 'sbom',
-        subjectSha256: RELEASE_SHA,
+        subjectSha256,
         tool: { name: 'syft', version: '1.30' },
         format: 'cyclonedx-json',
         documentSha256: SBOM_SHA,
@@ -123,15 +132,15 @@ function trustReport(): ArtifactTrustReport {
       },
       {
         kind: 'vulnerability-scan',
-        subjectSha256: RELEASE_SHA,
+        subjectSha256,
         tool: { name: 'grype', version: '0.99' },
         sbomSha256: SBOM_SHA,
         findings: [],
       },
-      { kind: 'secret-scan', subjectSha256: RELEASE_SHA, tool: { name: 'gitleaks', version: '8.28' }, findings: [] },
+      { kind: 'secret-scan', subjectSha256, tool: { name: 'gitleaks', version: '8.28' }, findings: [] },
       {
         kind: 'provenance-attestation',
-        subjectSha256: RELEASE_SHA,
+        subjectSha256,
         tool: { name: 'cosign', version: '2.5' },
         valid: true,
         predicateType: 'https://slsa.dev/provenance/v1',
@@ -142,9 +151,12 @@ function trustReport(): ArtifactTrustReport {
   };
 }
 
-function request(): AwsAmiReleaseRequest {
-  const candidate = artifact();
-  const cleanSpec = {
+function request(
+  candidate: WorkspaceHostImageArtifact = artifact(),
+  bootcBakeManifest?: WorkspaceHostBootcBakeManifest,
+): AwsAmiReleaseRequest {
+  const hostModel = candidate.hostModel ?? 'ubuntu-release-bundle';
+  const cleanSpec: WorkspaceHostCleanRoomInstallSpec = {
     fixtureId: 'aws-clean-room',
     action: 'install' as const,
     provider: 'aws',
@@ -154,6 +166,9 @@ function request(): AwsAmiReleaseRequest {
     migrationId: 'schema-1042',
     minimumNodeMajor: 22,
     service: { name: 'papercusp-workspace', port: 3070 },
+    ...(hostModel === 'bootc-image'
+      ? { hostModel, bootcBaseImage: candidate.hostModel === 'bootc-image' ? candidate.bootc.baseImage : '' }
+      : {}),
   };
   const fixture = buildWorkspaceHostCleanRoomInstallFixture(candidate, cleanSpec);
   const cleanRoomReport: WorkspaceHostCleanRoomAcceptanceReport = {
@@ -174,14 +189,29 @@ function request(): AwsAmiReleaseRequest {
   return {
     releaseGate: {
       artifact: candidate,
-      trustReport: trustReport(),
-      compatibilityRequest: {
-        action: 'install',
-        provider: 'aws',
-        architecture: 'x86_64',
-        ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
-        observedAt: '2026-08-23T00:20:00Z',
-      },
+      ...(bootcBakeManifest ? { bootcBakeManifest } : {}),
+      trustReport: trustReport(
+        candidate.hostModel === 'bootc-image'
+          ? candidate.bootc.imageDigest.replace(/^sha256:/, '')
+          : RELEASE_SHA,
+      ),
+      compatibilityRequest:
+        candidate.hostModel === 'bootc-image'
+          ? {
+              action: 'install',
+              provider: 'aws',
+              architecture: 'x86_64',
+              hostModel: 'bootc-image',
+              bootcBaseImage: candidate.bootc.baseImage,
+              observedAt: '2026-08-23T00:20:00Z',
+            }
+          : {
+              action: 'install',
+              provider: 'aws',
+              architecture: 'x86_64',
+              ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+              observedAt: '2026-08-23T00:20:00Z',
+            },
       cleanRoomReport,
     },
     publisherAccountId: PUBLISHER,
@@ -207,6 +237,59 @@ function request(): AwsAmiReleaseRequest {
   };
 }
 
+function bootcArtifact(): Extract<WorkspaceHostImageArtifact, { hostModel: 'bootc-image' }> {
+  const current = artifact();
+  const { schemaVersion: _schemaVersion, manifestIdentity: _manifestIdentity, ...manifestInput } =
+    current.buildManifest;
+  return {
+    ...current,
+    hostModel: 'bootc-image',
+    bootc: {
+      image: `registry.example.com/papercusp/workspace-host:${VERSION}`,
+      imageDigest: `sha256:${BOOTC_SHA}`,
+      baseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      signaturePolicyPath: WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
+    },
+    buildManifest: buildWorkspaceHostBuildManifest({
+      ...manifestInput,
+      baseImage: { reference: WORKSPACE_HOST_BOOTC_BASE_IMAGE, architecture: 'x86_64', sha256: 'd'.repeat(64) },
+      builder: {
+        strategy: 'shared',
+        kind: WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+        version: 'latest',
+        templatePath: 'infra/images/bootc/workspace-host.Containerfile',
+        templateSha256: 'e'.repeat(64),
+      },
+    }),
+    compatibility: current.compatibility.map((rule) => ({
+      provider: rule.provider,
+      architecture: rule.architecture,
+      hostModel: 'bootc-image' as const,
+      bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      bootstrapContractVersion: rule.bootstrapContractVersion,
+      actions: rule.actions,
+      maximumArtifactAgeDays: rule.maximumArtifactAgeDays,
+    })),
+  };
+}
+
+function bootcBakeManifest(): WorkspaceHostBootcBakeManifest {
+  const image = 'registry.example.com/papercusp/workspace-host';
+  return {
+    contractVersion: WORKSPACE_HOST_BOOTC_BAKE_CONTRACT_VERSION,
+    image,
+    tag: VERSION,
+    digest: `sha256:${BOOTC_SHA}`,
+    pinnedRef: `${image}@sha256:${BOOTC_SHA}`,
+    registryNamespace: 'registry.example.com/papercusp',
+    clouds: [
+      { cloud: 'gcp', type: 'gce', artifact: '/release/gcp/disk.raw', sha256: '1'.repeat(64), sizeBytes: 101 },
+      { cloud: 'aws', type: 'ami', artifact: '/release/aws/disk.raw', sha256: '2'.repeat(64), sizeBytes: 102 },
+      { cloud: 'azure', type: 'vhd', artifact: '/release/azure/disk.vhd', sha256: '3'.repeat(64), sizeBytes: 103 },
+    ],
+  };
+}
+
 class FakeAdapter implements AwsAmiReleaseAdapter {
   readonly calls: string[] = [];
   readonly permissions = new Map<string, readonly string[]>();
@@ -215,10 +298,12 @@ class FakeAdapter implements AwsAmiReleaseAdapter {
   badKmsRegion?: string;
   proofResidue: readonly string[] = [];
 
-  async buildWithPacker(input: Parameters<AwsAmiReleaseAdapter['buildWithPacker']>[0]) {
+  async buildCandidate(input: Parameters<AwsAmiReleaseAdapter['buildCandidate']>[0]) {
     this.calls.push(`build:${input.sourceRegion}`);
     expect(input.requiredGuestTools).toEqual(AWS_AMI_REQUIRED_GUEST_TOOLS);
+    expect(input.builderKind).toBe(WORKSPACE_HOST_SHARED_BUILDER_KIND);
     expect(input.templatePath).toBe('infra/images/workspace-host.pkr.hcl');
+    expect(input.bootcArtifact).toBeUndefined();
     return { imageId: 'ami-source1' };
   }
 
@@ -323,6 +408,21 @@ class FakeAdapter implements AwsAmiReleaseAdapter {
 }
 
 describe('AWS workspace-host AMI release', () => {
+  it('hands the AWS disk from the one bootc bake to the publisher instead of a Packer-only build', async () => {
+    const adapter = new FakeAdapter();
+    adapter.buildCandidate = async (input) => {
+      expect(input).toMatchObject({
+        builderKind: WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+        templatePath: 'infra/images/bootc/workspace-host.Containerfile',
+        bootcArtifact: { cloud: 'aws', type: 'ami', artifact: '/release/aws/disk.raw' },
+      });
+      throw new Error('bootc-consumer-observed');
+    };
+    await expect(executeAwsAmiRelease(request(bootcArtifact(), bootcBakeManifest()), adapter)).rejects.toThrow(
+      'bootc-consumer-observed',
+    );
+  });
+
   it('builds, scans, copies, verifies encrypted sharing, proves a clean-account launch, pins, then deprecates', async () => {
     const adapter = new FakeAdapter();
     const result = await executeAwsAmiRelease(request(), adapter);

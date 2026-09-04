@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 
 import { canonicalize } from '@papercusp/publish-auth/jcs';
-import type { WorkspaceHostImageArtifact } from '@papercusp/deployment-driver';
+import {
+  WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+  type WorkspaceHostBuilderKind,
+  type WorkspaceHostImageArtifact,
+} from '@papercusp/deployment-driver';
 
 import { AWS_IMAGE_SCAN_POLICY, evaluateImageScanPolicy } from './image-scan-policy';
 import {
@@ -9,6 +13,11 @@ import {
   type WorkspaceHostReleaseGateInput,
   type WorkspaceHostReleaseGateVerdict,
 } from './workspace-host-release-gate';
+import {
+  workspaceHostBootcCloudArtifact,
+  workspaceHostReleaseSubjectSha256,
+  type WorkspaceHostBootcCloudArtifact,
+} from './bootc-bake-manifest';
 
 export const AWS_AMI_RELEASE_CONTRACT_VERSION = 'papercusp-aws-ami-release-v1';
 export const AWS_AMI_VERSION_MANIFEST_SCHEMA_VERSION = 1;
@@ -146,10 +155,13 @@ export interface AwsAmiVersionManifest extends AwsAmiVersionManifestPayload {
 }
 
 export interface AwsAmiReleaseAdapter {
-  buildWithPacker(input: {
+  buildCandidate(input: {
     sourceRegion: string;
     imageName: string;
+    builderKind: WorkspaceHostBuilderKind;
     templatePath: string;
+    /** Present exactly for bootc builds: the already-rendered AMI disk to import. */
+    bootcArtifact?: WorkspaceHostBootcCloudArtifact;
     buildManifestIdentity: string;
     releaseVersion: string;
     releaseSha256: string;
@@ -275,7 +287,7 @@ function tagsFor(artifact: WorkspaceHostImageArtifact): Readonly<Record<string, 
     'papercusp:build-manifest': artifact.buildManifest.manifestIdentity,
     'papercusp:image-version': artifact.image.version,
     'papercusp:managed': 'true',
-    'papercusp:release-sha256': artifact.release.bundleSha256,
+    'papercusp:release-sha256': workspaceHostReleaseSubjectSha256(artifact),
   };
 }
 
@@ -361,7 +373,7 @@ function validateScan(
     scan.imageId !== imageId ||
     scan.region !== sourceRegion ||
     scan.buildManifestIdentity !== artifact.buildManifest.manifestIdentity ||
-    scan.releaseSha256 !== artifact.release.bundleSha256
+    scan.releaseSha256 !== workspaceHostReleaseSubjectSha256(artifact)
   ) {
     fail('AMI scan evidence is not bound to the exact source AMI, build manifest, and release digest');
   }
@@ -446,7 +458,7 @@ function validateCleanProof(
     proof.imageId !== imageId ||
     proof.buildManifestIdentity !== artifact.buildManifest.manifestIdentity ||
     proof.releaseVersion !== artifact.image.version ||
-    proof.releaseSha256 !== artifact.release.bundleSha256
+    proof.releaseSha256 !== workspaceHostReleaseSubjectSha256(artifact)
   ) {
     fail('clean-account launch proof is not bound to the exact account, region, AMI, manifest, and release');
   }
@@ -510,23 +522,32 @@ export async function executeAwsAmiRelease(
 
   const imageName = `papercusp-workspace-host-${artifact.image.version}`;
   const tags = tagsFor(artifact);
-  const built = await adapter.buildWithPacker({
+  const built = await adapter.buildCandidate({
     sourceRegion,
     imageName,
+    builderKind: artifact.buildManifest.builder.kind,
     templatePath: artifact.buildManifest.builder.templatePath,
+    ...(artifact.buildManifest.builder.kind === WORKSPACE_HOST_BOOTC_BUILDER_KIND
+      ? {
+          bootcArtifact: workspaceHostBootcCloudArtifact(
+            request.releaseGate.bootcBakeManifest!,
+            'aws',
+          ),
+        }
+      : {}),
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
     releaseVersion: artifact.image.version,
-    releaseSha256: artifact.release.bundleSha256,
+    releaseSha256: workspaceHostReleaseSubjectSha256(artifact),
     architecture: artifact.buildManifest.baseImage.architecture,
     requiredGuestTools: AWS_AMI_REQUIRED_GUEST_TOOLS,
     tags,
   });
-  requireAmiId(built.imageId, 'buildWithPacker.imageId');
+  requireAmiId(built.imageId, 'buildCandidate.imageId');
   const sourceScan = await adapter.scanImage({
     region: sourceRegion,
     imageId: built.imageId,
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
-    releaseSha256: artifact.release.bundleSha256,
+    releaseSha256: workspaceHostReleaseSubjectSha256(artifact),
   });
   validateScan(sourceScan, artifact, sourceRegion, built.imageId);
 
@@ -570,7 +591,7 @@ export async function executeAwsAmiRelease(
     ...request.cleanAccount,
     imageId: cleanImageId,
     releaseVersion: artifact.image.version,
-    releaseSha256: artifact.release.bundleSha256,
+    releaseSha256: workspaceHostReleaseSubjectSha256(artifact),
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
   });
   validateCleanProof(cleanProof, request, artifact, cleanImageId);
@@ -586,7 +607,7 @@ export async function executeAwsAmiRelease(
   );
   const manifest = buildAwsAmiVersionManifest({
     releaseVersion: artifact.image.version,
-    releaseSha256: artifact.release.bundleSha256,
+    releaseSha256: workspaceHostReleaseSubjectSha256(artifact),
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
     architecture: artifact.buildManifest.baseImage.architecture,
     sourceRegion,

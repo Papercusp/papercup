@@ -133,6 +133,39 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     expect(getM).toHaveBeenCalledWith('r-1');
   });
 
+  it('accepts legacy { id } at projected dispatch as a single-rubric alias', async () => {
+    getM.mockResolvedValue({ id: 'r-1', criteria: [] } as never);
+    const projected = lookupByMcpName('rubrics:get');
+    expect(projected).toBeDefined();
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      'rubrics:get',
+      { id: 'r-1' },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'rubrics-get-id-alias-test',
+        isSuperuser: true,
+        uiClientId: 'su-rubrics-get-id-alias-test',
+        role: 'su',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        contextTier: 'trimmed',
+        tx: {},
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const payload = readJsonResult<{ results: Array<{ rubricRef: string; ok: boolean }> }>(dispatched.result!);
+    expect(payload?.results).toEqual([{ ok: true, rubricRef: 'r-1', rubric: { id: 'r-1', criteria: [] } }]);
+    expect(getM).toHaveBeenCalledWith('r-1');
+  });
+
   it('accepts an optional harness hint without filtering the workspace-wide read', async () => {
     mockResolvedTyped(getM, RUBRIC_R1);
     const projected = lookupByMcpName('rubrics:get');
@@ -168,11 +201,12 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
 
   it('prefers canonical rubricRef when ref is also supplied', async () => {
     getM.mockImplementation(async (id: string) => ({ id } as never));
-    const b = await body(getTool, { rubricRef: 'canonical', ref: 'alias', slug: 'slug-alias' });
+    const b = await body(getTool, { rubricRef: 'canonical', ref: 'alias', slug: 'slug-alias', id: 'legacy-id' });
     expect(b.results.map((r: { rubricRef: string }) => r.rubricRef)).toEqual(['canonical']);
     expect(getM).toHaveBeenCalledWith('canonical');
     expect(getM).not.toHaveBeenCalledWith('alias');
     expect(getM).not.toHaveBeenCalledWith('slug-alias');
+    expect(getM).not.toHaveBeenCalledWith('legacy-id');
   });
 
   it('rubricRefs:[…] fetches many; a not-found item fails only itself', async () => {

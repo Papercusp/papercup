@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 
 import { canonicalize } from '@papercusp/publish-auth/jcs';
-import type { WorkspaceHostImageArtifact } from '@papercusp/deployment-driver';
+import {
+  WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+  type WorkspaceHostBuilderKind,
+  type WorkspaceHostImageArtifact,
+} from '@papercusp/deployment-driver';
 
 import { AZURE_IMAGE_SCAN_POLICY, evaluateImageScanPolicy } from './image-scan-policy';
 import {
@@ -9,6 +13,11 @@ import {
   type WorkspaceHostReleaseGateInput,
   type WorkspaceHostReleaseGateVerdict,
 } from './workspace-host-release-gate';
+import {
+  workspaceHostBootcCloudArtifact,
+  workspaceHostReleaseSubjectSha256,
+  type WorkspaceHostBootcCloudArtifact,
+} from './bootc-bake-manifest';
 
 export const AZURE_COMPUTE_GALLERY_RELEASE_CONTRACT_VERSION = 'papercusp-azure-compute-gallery-release-v1';
 export const AZURE_COMPUTE_GALLERY_VERSION_MANIFEST_SCHEMA_VERSION = 1;
@@ -150,12 +159,15 @@ export interface AzureComputeGalleryVersionManifest extends AzureComputeGalleryV
 }
 
 export interface AzureComputeGalleryReleaseAdapter {
-  buildWithPacker(input: {
+  buildCandidate(input: {
     subscriptionId: string;
     resourceGroup: string;
     sourceRegion: string;
     imageName: string;
+    builderKind: WorkspaceHostBuilderKind;
     templatePath: string;
+    /** Present exactly for bootc builds: the already-rendered fixed VHD to import. */
+    bootcArtifact?: WorkspaceHostBootcCloudArtifact;
     buildManifestIdentity: string;
     releaseVersion: string;
     releaseSha256: string;
@@ -315,7 +327,7 @@ function tagsFor(artifact: WorkspaceHostImageArtifact): Readonly<Record<string, 
     'papercusp:build-manifest': artifact.buildManifest.manifestIdentity,
     'papercusp:image-version': artifact.image.version,
     'papercusp:managed': 'true',
-    'papercusp:release-sha256': artifact.release.bundleSha256,
+    'papercusp:release-sha256': workspaceHostReleaseSubjectSha256(artifact),
   };
 }
 
@@ -426,7 +438,7 @@ function validateScan(
   if (
     scan.sourceImageId !== sourceImageId ||
     scan.buildManifestIdentity !== artifact.buildManifest.manifestIdentity ||
-    scan.releaseSha256 !== artifact.release.bundleSha256
+    scan.releaseSha256 !== workspaceHostReleaseSubjectSha256(artifact)
   ) {
     fail('Azure image scan evidence is not bound to the exact source image, build manifest, and release digest');
   }
@@ -499,7 +511,7 @@ function validateCleanProof(
     proof.versionResourceId !== versionResourceId(request) ||
     proof.buildManifestIdentity !== artifact.buildManifest.manifestIdentity ||
     proof.releaseVersion !== artifact.image.version ||
-    proof.releaseSha256 !== artifact.release.bundleSha256
+    proof.releaseSha256 !== workspaceHostReleaseSubjectSha256(artifact)
   ) {
     fail(
       'clean-subscription proof is not bound to the exact tenant, subscription, region, gallery version, manifest, and release',
@@ -600,24 +612,33 @@ export async function executeAzureComputeGalleryRelease(
   }
 
   const tags = tagsFor(artifact);
-  const built = await adapter.buildWithPacker({
+  const built = await adapter.buildCandidate({
     subscriptionId: request.publisherSubscriptionId,
     resourceGroup: request.resourceGroup,
     sourceRegion: request.sourceRegion,
     imageName: `papercusp-workspace-host-${artifact.image.version}`,
+    builderKind: artifact.buildManifest.builder.kind,
     templatePath: artifact.buildManifest.builder.templatePath,
+    ...(artifact.buildManifest.builder.kind === WORKSPACE_HOST_BOOTC_BUILDER_KIND
+      ? {
+          bootcArtifact: workspaceHostBootcCloudArtifact(
+            request.releaseGate.bootcBakeManifest!,
+            'azure',
+          ),
+        }
+      : {}),
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
     releaseVersion: artifact.image.version,
-    releaseSha256: artifact.release.bundleSha256,
+    releaseSha256: workspaceHostReleaseSubjectSha256(artifact),
     architecture: artifact.buildManifest.baseImage.architecture,
     requiredGuestTools: AZURE_COMPUTE_GALLERY_REQUIRED_GUEST_TOOLS,
     tags,
   });
-  requireAzureResourceId(built.sourceImageId, 'Microsoft.Compute/images', 'buildWithPacker.sourceImageId');
+  requireAzureResourceId(built.sourceImageId, 'Microsoft.Compute/images', 'buildCandidate.sourceImageId');
   const scan = await adapter.scanImage({
     sourceImageId: built.sourceImageId,
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
-    releaseSha256: artifact.release.bundleSha256,
+    releaseSha256: workspaceHostReleaseSubjectSha256(artifact),
   });
   validateScan(scan, artifact, built.sourceImageId);
 
@@ -663,7 +684,7 @@ export async function executeAzureComputeGalleryRelease(
     versionResourceId: published.versionResourceId,
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
     releaseVersion: artifact.image.version,
-    releaseSha256: artifact.release.bundleSha256,
+    releaseSha256: workspaceHostReleaseSubjectSha256(artifact),
   });
   validateCleanProof(cleanProof, request, artifact);
 
@@ -676,7 +697,7 @@ export async function executeAzureComputeGalleryRelease(
   const manifest = buildAzureComputeGalleryVersionManifest({
     releaseVersion: artifact.image.version,
     galleryVersion: request.galleryVersion,
-    releaseSha256: artifact.release.bundleSha256,
+    releaseSha256: workspaceHostReleaseSubjectSha256(artifact),
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
     architecture: artifact.buildManifest.baseImage.architecture,
     sourceRegion: request.sourceRegion,

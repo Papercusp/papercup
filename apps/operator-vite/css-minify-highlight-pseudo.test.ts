@@ -39,6 +39,11 @@ describe('operator-vite CSS minification does not warn on ::highlight() pseudo-e
     expect(resolved.build?.cssMinify).toBe('esbuild');
   });
 
+  it('keeps stale optimized-dependency requests from blanking long-open embeds', () => {
+    const resolved = typeof viteConfig === 'function' ? viteConfig({ command: 'serve', mode: 'development' }) : viteConfig;
+    expect(resolved.optimizeDeps?.ignoreOutdatedRequests).toBe(true);
+  });
+
   it('esbuild minifies the real find-in-page.css ::highlight() selectors with zero warnings', async () => {
     const css = readFileSync(resolve(__dirname, '../operator/app/find-in-page.css'), 'utf-8');
     const { code, warnings } = await transform(css, { loader: 'css', minify: true });

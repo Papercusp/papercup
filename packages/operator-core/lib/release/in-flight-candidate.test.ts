@@ -3,10 +3,17 @@
  * these tests are written against the misreadings that inference actually produced — each case
  * names the real incident it prevents rather than just exercising a branch.
  */
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const sqlUnsafeMock = vi.fn();
+
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({ sql: { unsafe: sqlUnsafeMock } }),
+}));
 
 import {
   IN_FLIGHT_CANDIDATE_MAX_AGE_MS,
+  clearInFlightCandidateIfUnchanged,
   describeAbandonedInFlightCandidate,
   describeInFlightCandidate,
   isPidAlive,
@@ -16,6 +23,10 @@ import {
 } from './in-flight-candidate';
 
 const NOW = 1_785_000_000_000;
+
+beforeEach(() => {
+  sqlUnsafeMock.mockReset();
+});
 
 function marker(over: Partial<StoredInFlightCandidate> = {}): StoredInFlightCandidate {
   return {
@@ -219,5 +230,53 @@ describe('describeAbandonedInFlightCandidate', () => {
     expect(
       describeAbandonedInFlightCandidate({ abandoned: false, reason: 'pid-alive' }),
     ).toBeNull();
+  });
+});
+
+describe('clearInFlightCandidateIfUnchanged', () => {
+  it('retires only the exact dead marker generation inspected by the watchdog', async () => {
+    sqlUnsafeMock.mockResolvedValue({ count: 1 });
+    const expected = marker();
+
+    await expect(
+      clearInFlightCandidateIfUnchanged(
+        { workspaceId: 'papercusp-workspace', installSlug: 'papercusp' },
+        expected,
+      ),
+    ).resolves.toBe(true);
+
+    expect(sqlUnsafeMock).toHaveBeenCalledOnce();
+    const [query, values] = sqlUnsafeMock.mock.calls[0];
+    expect(query).toContain("target_role = 'system:green-checkpoint'");
+    expect(query).toContain("inFlightCandidate'->>'candidate' = $3");
+    expect(query).toContain("inFlightCandidate'->>'pid' = $4");
+    expect(query).toContain("inFlightCandidate'->>'observedAtMs' = $5");
+    expect(values).toEqual([
+      'papercusp',
+      'papercusp-workspace',
+      expected.candidate,
+      String(expected.pid),
+      String(expected.observedAtMs),
+    ]);
+  });
+
+  it('reports a raced replacement marker as not cleared', async () => {
+    sqlUnsafeMock.mockResolvedValue({ count: 0 });
+    await expect(
+      clearInFlightCandidateIfUnchanged(
+        { workspaceId: 'papercusp-workspace', installSlug: 'papercusp' },
+        marker(),
+      ),
+    ).resolves.toBe(false);
+  });
+
+  it('fails closed on database uncertainty', async () => {
+    sqlUnsafeMock.mockRejectedValue(new Error('database unavailable'));
+    await expect(
+      clearInFlightCandidateIfUnchanged(
+        { workspaceId: 'papercusp-workspace', installSlug: 'papercusp' },
+        marker(),
+      ),
+    ).resolves.toBe(false);
   });
 });

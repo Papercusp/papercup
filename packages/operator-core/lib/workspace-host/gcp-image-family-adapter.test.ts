@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -30,9 +32,12 @@ function varsIsNested(executeCommand: string): boolean {
 import {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+  WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+  WORKSPACE_HOST_BOOTC_BUILDER_KIND,
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
+  WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
   buildWorkspaceHostBuildManifest,
   buildWorkspaceHostCleanRoomInstallFixture,
   deriveWorkspaceHostCanonicalArtifactUrls,
@@ -148,6 +153,48 @@ function artifact(templateSha256: string): WorkspaceHostImageArtifact {
         provider: 'gcp',
         architecture: 'x86_64',
         ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+        bootstrapContractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
+        actions: ['install', 'upgrade', 'rollback'],
+        maximumArtifactAgeDays: 30,
+      },
+    ],
+  };
+}
+
+function bootcArtifact(templateSha256: string): Extract<WorkspaceHostImageArtifact, { hostModel: 'bootc-image' }> {
+  const current = artifact(templateSha256);
+  const { schemaVersion: _schemaVersion, manifestIdentity: _manifestIdentity, ...manifestInput } =
+    current.buildManifest;
+  return {
+    ...current,
+    hostModel: 'bootc-image',
+    bootc: {
+      image: `registry.example.com/papercusp/workspace-host:${VERSION}`,
+      imageDigest: `sha256:${'9'.repeat(64)}`,
+      baseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      signaturePolicyPath: WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
+    },
+    buildManifest: buildWorkspaceHostBuildManifest({
+      ...manifestInput,
+      baseImage: {
+        reference: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+        architecture: 'x86_64',
+        sha256: BASE_SHA,
+      },
+      builder: {
+        strategy: 'shared',
+        kind: WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+        version: 'latest',
+        templatePath: 'infra/images/bootc/workspace-host.Containerfile',
+        templateSha256,
+      },
+    }),
+    compatibility: [
+      {
+        provider: 'gcp',
+        architecture: 'x86_64',
+        hostModel: 'bootc-image',
+        bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
         bootstrapContractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
         actions: ['install', 'upgrade', 'rollback'],
         maximumArtifactAgeDays: 30,
@@ -377,6 +424,7 @@ describe('GCP image-family production adapter', () => {
     const built = await adapter.buildCandidate({
       projectId: PROJECT,
       candidateImageName: CANDIDATE_NAME,
+      builderKind: WORKSPACE_HOST_SHARED_BUILDER_KIND,
       templatePath: 'infra/images/workspace-host.pkr.hcl',
       buildManifestIdentity: candidateArtifact.buildManifest.manifestIdentity,
       releaseVersion: VERSION,
@@ -426,6 +474,83 @@ describe('GCP image-family production adapter', () => {
     });
   });
 
+  it('imports the digest-checked GCE disk for bootc instead of invoking Packer', async () => {
+    const temporary = await mkdtemp(join(tmpdir(), 'papercusp-bootc-gce-'));
+    try {
+      const disk = join(temporary, 'disk.raw');
+      const bytes = Buffer.from('bootc-gce-disk-fixture');
+      await writeFile(disk, bytes);
+      const template = await readFile(new URL('infra/images/bootc/workspace-host.Containerfile', REPO_ROOT_URL));
+      const candidateArtifact = bootcArtifact(createHash('sha256').update(template).digest('hex'));
+      const context: GcpImageFamilyReleaseContext = {
+        ...CONTEXT,
+        artifact: candidateArtifact,
+        request: {
+          ...CONTEXT.request,
+          releaseGate: { ...CONTEXT.request.releaseGate, artifact: candidateArtifact },
+        },
+      };
+      const compute = new ComputeFake();
+      const calls: Array<{ command: string; args: readonly string[] }> = [];
+      const commandRunner: GcpImageFamilyCommandRunner = {
+        run: async (command, args = []) => {
+          const executable = typeof command === 'string' ? command : command.command;
+          const argv = typeof command === 'string' ? args : command.args;
+          calls.push({ command: executable, args: argv });
+          if (argv[0] === 'compute' && argv[1] === 'images' && argv[2] === 'import') {
+            const description = argv.find((entry) => entry.startsWith('--description='))?.slice('--description='.length);
+            compute.images.set(CANDIDATE_NAME, {
+              name: CANDIDATE_NAME,
+              description,
+              architecture: 'X86_64',
+              state: 'ACTIVE',
+            });
+          }
+          return { exitCode: 0, stdout: '{}', stderr: '' };
+        },
+      };
+      const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
+        baseOptions(compute, { repositoryRoot: REPO_ROOT, commandRunner }),
+      );
+      await adapter.bindReleaseContext(context);
+      const built = await adapter.buildCandidate({
+        projectId: PROJECT,
+        candidateImageName: CANDIDATE_NAME,
+        builderKind: WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+        templatePath: 'infra/images/bootc/workspace-host.Containerfile',
+        bootcArtifact: {
+          cloud: 'gcp',
+          type: 'gce',
+          artifact: disk,
+          sha256: createHash('sha256').update(bytes).digest('hex'),
+          sizeBytes: bytes.byteLength,
+        },
+        buildManifestIdentity: candidateArtifact.buildManifest.manifestIdentity,
+        releaseVersion: VERSION,
+        releaseSha256: '9'.repeat(64),
+        architecture: 'x86_64',
+        requiredGuestTools: GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS,
+      });
+      expect(built.imageId).toBe(CANDIDATE_ID);
+      expect(calls.some((call) => call.command.includes('packer'))).toBe(false);
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          command: 'gcloud',
+          args: expect.arrayContaining([
+            'compute',
+            'images',
+            'import',
+            CANDIDATE_NAME,
+            `--source-file=${disk}`,
+            '--os=centos-stream-9',
+          ]),
+        }),
+      );
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
   it('refuses before ADC or Packer when no IAP firewall rule admits the template builder tag', async () => {
     const template = await readFile(new URL('infra/images/workspace-host.pkr.hcl', REPO_ROOT_URL));
     const candidateArtifact = artifact(createHash('sha256').update(template).digest('hex'));
@@ -466,6 +591,7 @@ describe('GCP image-family production adapter', () => {
       adapter.buildCandidate({
         projectId: PROJECT,
         candidateImageName: CANDIDATE_NAME,
+        builderKind: WORKSPACE_HOST_SHARED_BUILDER_KIND,
         templatePath: 'infra/images/workspace-host.pkr.hcl',
         buildManifestIdentity: candidateArtifact.buildManifest.manifestIdentity,
         releaseVersion: VERSION,
@@ -512,6 +638,7 @@ describe('GCP image-family production adapter', () => {
       return adapter.buildCandidate({
         projectId: PROJECT,
         candidateImageName: CANDIDATE_NAME,
+        builderKind: WORKSPACE_HOST_SHARED_BUILDER_KIND,
         templatePath: 'infra/images/workspace-host.pkr.hcl',
         buildManifestIdentity: candidateArtifact.buildManifest.manifestIdentity,
         releaseVersion: VERSION,
@@ -582,6 +709,7 @@ describe('GCP image-family production adapter', () => {
       return adapter.buildCandidate({
         projectId: PROJECT,
         candidateImageName: CANDIDATE_NAME,
+        builderKind: WORKSPACE_HOST_SHARED_BUILDER_KIND,
         templatePath: 'infra/images/workspace-host.pkr.hcl',
         buildManifestIdentity: candidateArtifact.buildManifest.manifestIdentity,
         releaseVersion: VERSION,

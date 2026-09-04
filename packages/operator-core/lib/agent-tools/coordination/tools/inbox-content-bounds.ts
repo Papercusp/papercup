@@ -36,6 +36,9 @@ export function inboxBodyCharCap(
   return Math.min(defaults.bodyChars, Math.floor(INBOX_ENTRY_BUDGET / count));
 }
 
+/** The largest body a one-entry default `coord:inbox` read can show. */
+export const DEFAULT_INBOX_BODY_CAP = inboxBodyCharCap('full', 1);
+
 export interface SenderBodyDeliveryDiagnostics {
   /** True when even the one-entry default inbox view clips the body. */
   bodyTruncated: boolean;

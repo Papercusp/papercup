@@ -3,20 +3,28 @@ import { createHash } from 'node:crypto';
 import {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+  WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+  WORKSPACE_HOST_BOOTC_BUILDER_KIND,
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
+  WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
   buildWorkspaceHostBuildManifest,
   deriveWorkspaceHostCanonicalArtifactUrls,
   workspaceHostRequiredReleaseMaterialFixtures,
   buildWorkspaceHostCleanRoomInstallFixture,
   workspaceHostCleanRoomFixtureAttestation,
   type WorkspaceHostCleanRoomAcceptanceReport,
+  type WorkspaceHostCleanRoomInstallSpec,
   type WorkspaceHostImageArtifact,
 } from '@papercusp/deployment-driver';
 import { describe, expect, it } from 'vitest';
 
 import { ARTIFACT_TRUST_PIPELINE_VERSION, type ArtifactTrustReport } from './artifact-trust';
+import {
+  WORKSPACE_HOST_BOOTC_BAKE_CONTRACT_VERSION,
+  type WorkspaceHostBootcBakeManifest,
+} from './bootc-bake-manifest';
 import {
   AZURE_COMPUTE_GALLERY_REQUIRED_GUEST_TOOLS,
   AzureComputeGalleryReleaseError,
@@ -46,6 +54,7 @@ const SBOM_SHA = 'b'.repeat(64);
 const SIGNING_PUBLIC_KEY = 'untrusted comment: Papercusp workspace-host release key\nRWQpublickey';
 const SIGNING_KEY_SHA = createHash('sha256').update(SIGNING_PUBLIC_KEY, 'utf8').digest('hex');
 const REGIONS = ['eastus2', 'westus2'] as const;
+const BOOTC_SHA = '9'.repeat(64);
 
 function imageDefinitionId(subscriptionId = PUBLISHER_SUBSCRIPTION): string {
   return (
@@ -130,14 +139,14 @@ function artifact(): WorkspaceHostImageArtifact {
   };
 }
 
-function trustReport(): ArtifactTrustReport {
+function trustReport(subjectSha256 = RELEASE_SHA): ArtifactTrustReport {
   return {
     version: ARTIFACT_TRUST_PIPELINE_VERSION,
     subject: {
       path: '/release/papercusp-server.tgz',
       name: 'papercusp-server.tgz',
       bytes: 42_000,
-      sha256: RELEASE_SHA,
+      sha256: subjectSha256,
       signed: true,
     },
     policy: {
@@ -148,10 +157,10 @@ function trustReport(): ArtifactTrustReport {
     trusted: true,
     failures: [],
     evidence: [
-      { kind: 'signature', subjectSha256: RELEASE_SHA, tool: { name: 'minisign', version: '0.12' }, valid: true },
+      { kind: 'signature', subjectSha256, tool: { name: 'minisign', version: '0.12' }, valid: true },
       {
         kind: 'sbom',
-        subjectSha256: RELEASE_SHA,
+        subjectSha256,
         tool: { name: 'syft', version: '1.30' },
         format: 'cyclonedx-json',
         documentSha256: SBOM_SHA,
@@ -159,20 +168,20 @@ function trustReport(): ArtifactTrustReport {
       },
       {
         kind: 'vulnerability-scan',
-        subjectSha256: RELEASE_SHA,
+        subjectSha256,
         tool: { name: 'grype', version: '0.99' },
         sbomSha256: SBOM_SHA,
         findings: [],
       },
       {
         kind: 'secret-scan',
-        subjectSha256: RELEASE_SHA,
+        subjectSha256,
         tool: { name: 'gitleaks', version: '8.28' },
         findings: [],
       },
       {
         kind: 'provenance-attestation',
-        subjectSha256: RELEASE_SHA,
+        subjectSha256,
         tool: { name: 'cosign', version: '2.5' },
         valid: true,
         predicateType: 'https://slsa.dev/provenance/v1',
@@ -183,9 +192,12 @@ function trustReport(): ArtifactTrustReport {
   };
 }
 
-function request(): AzureComputeGalleryReleaseRequest {
-  const candidate = artifact();
-  const cleanSpec = {
+function request(
+  candidate: WorkspaceHostImageArtifact = artifact(),
+  bootcBakeManifest?: WorkspaceHostBootcBakeManifest,
+): AzureComputeGalleryReleaseRequest {
+  const hostModel = candidate.hostModel ?? 'ubuntu-release-bundle';
+  const cleanSpec: WorkspaceHostCleanRoomInstallSpec = {
     fixtureId: 'azure-clean-subscription',
     action: 'install' as const,
     provider: 'azure',
@@ -195,6 +207,9 @@ function request(): AzureComputeGalleryReleaseRequest {
     migrationId: 'schema-1042',
     minimumNodeMajor: 22,
     service: { name: 'papercusp-workspace', port: 3070 },
+    ...(hostModel === 'bootc-image'
+      ? { hostModel, bootcBaseImage: candidate.hostModel === 'bootc-image' ? candidate.bootc.baseImage : '' }
+      : {}),
   };
   const fixture = buildWorkspaceHostCleanRoomInstallFixture(candidate, cleanSpec);
   const cleanRoomReport: WorkspaceHostCleanRoomAcceptanceReport = {
@@ -215,14 +230,29 @@ function request(): AzureComputeGalleryReleaseRequest {
   return {
     releaseGate: {
       artifact: candidate,
-      trustReport: trustReport(),
-      compatibilityRequest: {
-        action: 'install',
-        provider: 'azure',
-        architecture: 'x86_64',
-        ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
-        observedAt: cleanSpec.observedAt,
-      },
+      ...(bootcBakeManifest ? { bootcBakeManifest } : {}),
+      trustReport: trustReport(
+        candidate.hostModel === 'bootc-image'
+          ? candidate.bootc.imageDigest.replace(/^sha256:/, '')
+          : RELEASE_SHA,
+      ),
+      compatibilityRequest:
+        candidate.hostModel === 'bootc-image'
+          ? {
+              action: 'install',
+              provider: 'azure',
+              architecture: 'x86_64',
+              hostModel: 'bootc-image',
+              bootcBaseImage: candidate.bootc.baseImage,
+              observedAt: cleanSpec.observedAt,
+            }
+          : {
+              action: 'install',
+              provider: 'azure',
+              architecture: 'x86_64',
+              ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+              observedAt: cleanSpec.observedAt,
+            },
       cleanRoomReport,
     },
     publisherTenantId: PUBLISHER_TENANT,
@@ -258,6 +288,63 @@ function request(): AzureComputeGalleryReleaseRequest {
   };
 }
 
+function bootcArtifact(): Extract<WorkspaceHostImageArtifact, { hostModel: 'bootc-image' }> {
+  const current = artifact();
+  const { schemaVersion: _schemaVersion, manifestIdentity: _manifestIdentity, ...manifestInput } =
+    current.buildManifest;
+  return {
+    ...current,
+    hostModel: 'bootc-image',
+    bootc: {
+      image: `registry.example.com/papercusp/workspace-host:${RELEASE_VERSION}`,
+      imageDigest: `sha256:${BOOTC_SHA}`,
+      baseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      signaturePolicyPath: WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
+    },
+    buildManifest: buildWorkspaceHostBuildManifest({
+      ...manifestInput,
+      baseImage: {
+        reference: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+        architecture: 'x86_64',
+        sha256: 'd'.repeat(64),
+      },
+      builder: {
+        strategy: 'shared',
+        kind: WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+        version: 'latest',
+        templatePath: 'infra/images/bootc/workspace-host.Containerfile',
+        templateSha256: 'e'.repeat(64),
+      },
+    }),
+    compatibility: current.compatibility.map((rule) => ({
+      provider: rule.provider,
+      architecture: rule.architecture,
+      hostModel: 'bootc-image' as const,
+      bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      bootstrapContractVersion: rule.bootstrapContractVersion,
+      actions: rule.actions,
+      maximumArtifactAgeDays: rule.maximumArtifactAgeDays,
+    })),
+  };
+}
+
+function bootcBakeManifest(): WorkspaceHostBootcBakeManifest {
+  const image = 'registry.example.com/papercusp/workspace-host';
+  return {
+    contractVersion: WORKSPACE_HOST_BOOTC_BAKE_CONTRACT_VERSION,
+    image,
+    tag: RELEASE_VERSION,
+    digest: `sha256:${BOOTC_SHA}`,
+    pinnedRef: `${image}@sha256:${BOOTC_SHA}`,
+    registryNamespace: 'registry.example.com/papercusp',
+    clouds: [
+      { cloud: 'gcp', type: 'gce', artifact: '/release/gcp/disk.raw', sha256: '1'.repeat(64), sizeBytes: 101 },
+      { cloud: 'aws', type: 'ami', artifact: '/release/aws/disk.raw', sha256: '2'.repeat(64), sizeBytes: 102 },
+      { cloud: 'azure', type: 'vhd', artifact: '/release/azure/disk.vhd', sha256: '3'.repeat(64), sizeBytes: 103 },
+    ],
+  };
+}
+
 class FakeAdapter implements AzureComputeGalleryReleaseAdapter {
   readonly calls: string[] = [];
   readonly readers = new Set<string>();
@@ -267,10 +354,12 @@ class FakeAdapter implements AzureComputeGalleryReleaseAdapter {
   omitReaderAccess = false;
   proofResidue: readonly string[] = [];
 
-  async buildWithPacker(input: Parameters<AzureComputeGalleryReleaseAdapter['buildWithPacker']>[0]) {
+  async buildCandidate(input: Parameters<AzureComputeGalleryReleaseAdapter['buildCandidate']>[0]) {
     this.calls.push(`build:${input.sourceRegion}`);
     expect(input.requiredGuestTools).toEqual(AZURE_COMPUTE_GALLERY_REQUIRED_GUEST_TOOLS);
+    expect(input.builderKind).toBe(WORKSPACE_HOST_SHARED_BUILDER_KIND);
     expect(input.templatePath).toBe('infra/images/workspace-host.pkr.hcl');
+    expect(input.bootcArtifact).toBeUndefined();
     return { sourceImageId: sourceImageId() };
   }
 
@@ -379,6 +468,21 @@ class FakeAdapter implements AzureComputeGalleryReleaseAdapter {
 }
 
 describe('Azure Compute Gallery workspace-host release', () => {
+  it('hands the Azure VHD from the one bootc bake to the publisher instead of a Packer-only build', async () => {
+    const adapter = new FakeAdapter();
+    adapter.buildCandidate = async (input) => {
+      expect(input).toMatchObject({
+        builderKind: WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+        templatePath: 'infra/images/bootc/workspace-host.Containerfile',
+        bootcArtifact: { cloud: 'azure', type: 'vhd', artifact: '/release/azure/disk.vhd' },
+      });
+      throw new Error('bootc-consumer-observed');
+    };
+    await expect(
+      executeAzureComputeGalleryRelease(request(bootcArtifact(), bootcBakeManifest()), adapter),
+    ).rejects.toThrow('bootc-consumer-observed');
+  });
+
   it('builds, scans, replicates, grants readers, proves a clean-subscription boot, pins, then deprecates', async () => {
     const adapter = new FakeAdapter();
     const result = await executeAzureComputeGalleryRelease(request(), adapter);

@@ -112,6 +112,55 @@ export async function clearInFlightCandidate(target: GateVerdictTarget): Promise
 }
 
 /**
+ * Clear a dead run's marker only while the exact marker we inspected is still current.
+ *
+ * The process-level watchdog can prove a checkpoint pid is gone at the same instant a
+ * replacement run is publishing its own marker. A plain {@link clearInFlightCandidate}
+ * after that race would erase the replacement and turn a healthy run back into an
+ * unobservable one. Candidate + pid + observation time form the marker generation; the
+ * conditional UPDATE makes losing the race a harmless `false` instead of a stale clear.
+ *
+ * Unlike the diagnostic writers above, callers need the boolean because it distinguishes
+ * "retired the dead generation" from "a newer run already owns the field". Database
+ * uncertainty therefore returns false (unknown), never a fabricated success.
+ */
+export async function clearInFlightCandidateIfUnchanged(
+  target: GateVerdictTarget,
+  expected: Pick<StoredInFlightCandidate, 'candidate' | 'pid' | 'observedAtMs'>,
+): Promise<boolean> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const result = await sql.unsafe(
+      `UPDATE harness_shared.routines
+          SET metadata = jsonb_set(
+                COALESCE(metadata, '{}'::jsonb),
+                '{gate_health}',
+                COALESCE(metadata->'gate_health', '{}'::jsonb) || '{"inFlightCandidate":null}'::jsonb,
+                true
+              ),
+              updated_at = now()
+        WHERE install_slug = $1
+          AND workspace_id = $2
+          AND target_role = 'system:green-checkpoint'
+          AND metadata->'gate_health'->'inFlightCandidate'->>'candidate' = $3
+          AND metadata->'gate_health'->'inFlightCandidate'->>'pid' = $4
+          AND metadata->'gate_health'->'inFlightCandidate'->>'observedAtMs' = $5`,
+      [
+        target.installSlug,
+        target.workspaceId,
+        expected.candidate,
+        String(expected.pid),
+        String(expected.observedAtMs),
+      ],
+    );
+    return result.count === 1;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * PURE: interpret the raw `gate_health.inFlightCandidate` value. Returns null for anything not
  * trustworthy right now — missing, malformed, or older than
  * {@link IN_FLIGHT_CANDIDATE_MAX_AGE_MS}. Unit-testable without PG.

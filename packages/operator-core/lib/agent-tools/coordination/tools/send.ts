@@ -128,7 +128,7 @@ import {
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../../bounded-timeout';
-import { inboxBodyCharCap, senderBodyDeliveryDiagnostics } from './inbox-content-bounds';
+import { DEFAULT_INBOX_BODY_CAP, senderBodyDeliveryDiagnostics } from './inbox-content-bounds';
 import { withDbCallDeadline, DEFAULT_DB_CALL_DEADLINE_MS } from '@papercusp/db-org';
 
 /** Settle window between an endTurn ESC and the following wake (coord-end-turn D-003): lets each recipient's
@@ -352,9 +352,6 @@ function isOwnerIdAlias(address: string, ownerId: string): boolean {
     (address === ownerId || ownerId.startsWith(address) || ownerId.includes(address))
   );
 }
-
-/** The largest body a one-entry default `coord:inbox` read can show. */
-const DEFAULT_INBOX_BODY_CAP = inboxBodyCharCap('full', 1);
 
 /**
  * Return the flattened body length used by the receiver's inbox projection.

@@ -10,6 +10,7 @@ import {
   type DispatchArgs,
   type DispatchResult,
 } from './dispatch';
+import dispatch from './dispatch';
 import type { HydratableRef, HydratedRef } from '../ref-hydrate';
 import type { RefResolvers } from '../ref-hydrate-resolve';
 
@@ -140,6 +141,13 @@ function expectQueuedWake(result: { queued?: number; woken: number; pickupConfir
 }
 
 describe('composeDispatch', () => {
+  it('caps the required note and optional body at coord:send\'s inbox limit', () => {
+    const base = { to: 'su-target', note: 'take the assigned lane' };
+    expect(dispatch.args.safeParse({ ...base, body: 'x'.repeat(600) }).success).toBe(true);
+    expect(dispatch.args.safeParse({ ...base, body: 'x'.repeat(601) }).success).toBe(false);
+    expect(dispatch.args.safeParse({ ...base, note: 'x'.repeat(601) }).success).toBe(false);
+  });
+
   it('full dispatch to a PARKED target: assigns lane + delivers note + queues wake without pickup', async () => {
     const { call, calls } = mockCall({
       'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
@@ -414,6 +422,28 @@ describe('composeDispatch', () => {
       const sendArgs = calls[calls.length - 1].args as { body?: Array<{ text?: string }> };
       const text = sendArgs.body?.[0]?.text ?? '';
       expect(text.indexOf('extra context up top')).toBeLessThan(text.indexOf('Wire the DHT bootstrap fixture.'));
+    });
+
+    it('keeps the explicit body when hydration would exceed coord:send\'s inbox cap', async () => {
+      const explicitBody = 'x'.repeat(550);
+      const { call, calls } = mockCall({
+        'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
+        'plan_items:assign': { ok: true, results: [{ ok: true }] },
+        'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
+      });
+      const hydrateRefs = vi.fn(async () => [hydratedRef('P-001', 'y'.repeat(100))]);
+
+      const res = await composeDispatch(
+        { ...baseArgs, items: ['P-001'], body: explicitBody },
+        call,
+        { hydrateRefs },
+      );
+
+      const sendArgs = calls[calls.length - 1].args as { body?: Array<{ text?: string }> };
+      expect(sendArgs.body?.[0]?.text).toBe(explicitBody);
+      expect(sendArgs.body?.[0]?.text?.length).toBe(550);
+      expect(res.itemsHydrated).toBeUndefined();
+      expectQueuedWake(res);
     });
 
     it('fail-soft: a hydrate error still delivers the plain note (falls back to the note, wake unaffected)', async () => {

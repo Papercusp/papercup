@@ -13,9 +13,10 @@
  * off a result can be passed straight back (P-005/EI-11400 retired `rubricId`
  * as a public argument; emitting it here re-taught the rejected key —
  * EI-22084112133846580). The
- * generic read-tool `ref` and caller-natural `slug` spellings are accepted as
- * compatibility aliases for the single-rubric form. An optional `harness`
- * compatibility hint is accepted but does not filter this workspace-wide read.
+ * generic read-tool `ref`, caller-natural `slug`, and legacy `id` spellings are
+ * accepted as compatibility aliases for the single-rubric form. An optional
+ * `harness` compatibility hint is accepted but does not filter this workspace-wide
+ * read.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -28,9 +29,9 @@ export default defineTool({
   name: 'rubrics:get',
   profile: 'engineer',
   description:
-    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug` as compatibility aliases for one (`rubricRef` wins when both are supplied). An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricRef, rubric? | error }], counts } — correlate by rubricRef, not by position; a missing ref never fails the rest.",
+    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug`, and legacy callers may use `id`, as compatibility aliases for one (`rubricRef` wins, then ref, slug, and id). An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricRef, rubric? | error }], counts } — correlate by rubricRef, not by position; a missing ref never fails the rest.",
   guidance: {
-    when: 'You have one or more rubric refs (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`.',
+    when: 'You have one or more rubric refs (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`; legacy single-rubric callers may pass `id`.',
     notWhen: 'Scanning many — rubrics:list (summary rows).',
     chaining: "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricRef not position; one failure never fails the rest.",
     seeAlso: [
@@ -65,21 +66,27 @@ export default defineTool({
         .min(1)
         .optional()
         .describe('Caller-natural compatibility alias for rubricRef; rubricRef wins, then ref, when multiple single-rubric keys are supplied.'),
+      id: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Legacy compatibility alias for rubricRef; used after rubricRef, ref, and slug.'),
       harness: z
         .string()
         .min(1)
         .optional()
         .describe('Optional caller scope hint accepted for compatibility; rubric reads remain workspace/template scoped and are not filtered by harness.'),
     })
-    .refine((a) => Boolean(a.rubricRef ?? a.ref ?? a.slug) || (a.rubricRefs?.length ?? 0) > 0, {
-      message: 'pass `rubricRef`/`ref`/`slug` (one) or `rubricRefs` (many)',
+    .refine((a) => Boolean(a.rubricRef ?? a.ref ?? a.slug ?? a.id) || (a.rubricRefs?.length ?? 0) > 0, {
+      message: 'pass `rubricRef`/`ref`/`slug`/`id` (one) or `rubricRefs` (many)',
     }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
     // Keep the canonical field authoritative when a caller supplies both it and
-    // the generic/caller-natural compatibility aliases (the same rule used by
-    // other aliased reads). `ref` wins over `slug` when neither canonical key is set.
-    const ids = mergeIds(args.rubricRef ?? args.ref ?? args.slug, args.rubricRefs);
+    // the generic/caller-natural/legacy compatibility aliases (the same rule
+    // used by other aliased reads). `ref` wins over `slug`, and `slug` wins over
+    // legacy `id`, when neither canonical key is set.
+    const ids = mergeIds(args.rubricRef ?? args.ref ?? args.slug ?? args.id, args.rubricRefs);
     const env = await runBulk(
       ids,
       async (rubricRef) => {
