@@ -122,6 +122,13 @@ const ROWS: SeedRow[] = [
       risk_tier: 'high',
       est_cost: 500,
       redundancy: 3,
+      // EI-16052: `triage_gate` is payload-only (`payload.ideaLifecycle.triageDecision`), so
+      // it is only covered NON-VACUOUSLY if some row actually carries a decision. Without
+      // this stamp both engines resolve null on every row and agree for the trivial reason —
+      // a green that proves nothing, which is exactly the failure this corpus exists to
+      // catch. With it, F-agree exercises the 'gate' value and F-absent (no payload at all)
+      // exercises the null/negation polarity, on both engines, for every op.
+      ideaLifecycle: { triageDecision: 'gate' },
     },
   },
   {

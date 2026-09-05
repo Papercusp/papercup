@@ -110,6 +110,67 @@ describe('substitution prefilter projection', () => {
     expect(heads).not.toContain('npm');
   });
 
+  // ── WI-2145714: gate 1 of the launch-site delivery chain ───────────────────
+  // WI-2145718 made a LAUNCH_SITE_ADVISORY_INTENTS row deliverable in the
+  // MATCHER. That alone delivered nothing, because this projection runs upstream
+  // of it: no head here means the hook's local pre-filter short-circuits and the
+  // `locks:check_command` round-trip never happens, so the matcher is never
+  // reached. Measured before the fix (tool_invocations, 24h to 2026-09-05,
+  // commands whose first atom is ps/pgrep/pidof): 10 reached the gate, all 10
+  // only because they also carried an already-present head (grep/head); 0 bare.
+  //
+  // The member/non-member PAIR is the point. Test 1 alone would pass just as
+  // happily if someone deleted the not-a-substitute filter outright — which is
+  // exactly what D-069(b) forbids, because it would resurrect the ~5,100
+  // Grep/Glob advisories D-007 suppressed. Only the second test can fail on that,
+  // so the two must stay together.
+  describe('launch-site advisory opt-in (WI-2145714)', () => {
+    const launchSite = pair({
+      id: 'process.ps-pgrep',
+      intentLabel: 'host-job-liveness-query',
+      bashPattern: /^(?:ps|pgrep)(?=\s|$)/,
+      expectedVerdict: 'not-a-substitute',
+    }) as BashSubstitutionPair;
+
+    const plainNegative = pair({
+      id: 'test.documented-negative',
+      intentLabel: 'not-a-launch-site-intent',
+      bashPattern: /^grepish\b/,
+      expectedVerdict: 'not-a-substitute',
+    }) as BashSubstitutionPair;
+
+    it('derives heads for an opted-in not-a-substitute pair, so the hook actually calls the gate', () => {
+      expect(
+        deriveSubstitutionPrefilterHeads([
+          { pair: launchSite, fixture: { sample: [sample('ps -p 4242'), sample('pgrep -f worker')] } },
+        ]),
+      ).toEqual(['pgrep', 'ps']);
+    });
+
+    it('CONTROL: a not-a-substitute pair that is NOT opted in still yields no heads (D-007 intact)', () => {
+      expect(
+        deriveSubstitutionPrefilterHeads([
+          { pair: plainNegative, fixture: { sample: [sample('grepish --all')] } },
+        ]),
+      ).toEqual([]);
+    });
+
+    it('the real audited pairs put ps and pgrep in the committed head set', () => {
+      const heads = deriveSubstitutionPrefilterHeads(loadPairFixtures(BASH_GATE_PAIRS));
+      expect(heads).toEqual(expect.arrayContaining(['ps', 'pgrep']));
+    });
+
+    it('does NOT leak the launch-site pair into the CLAUDE.md routing table', () => {
+      // Delivery and routing are separate questions. A launch-site advisory is
+      // not a "use tool X instead of bash Y" row — its verdict is correct and its
+      // advice concerns a DIFFERENT command — so renderRoutingBlock must keep
+      // excluding it even though the pre-filter now admits it.
+      expect(renderRoutingBlock([launchSite])).not.toContain('dev:processes');
+      const committed = readFileSync(CLAUDE_MD, 'utf8');
+      expect(committed).not.toContain('| `ps -p <pid>` / `pgrep -f <job>`');
+    });
+  });
+
   it('throws when an actionable pair has no matching fixture evidence', () => {
     const unmatched = pair({
       id: 'test.unmatched',

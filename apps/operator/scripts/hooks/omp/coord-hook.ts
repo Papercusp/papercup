@@ -1664,6 +1664,8 @@ export const SUBSTITUTION_PREFILTER_HEADS = new Set([
   'netstat',
   'nproc',
   'npx',
+  'pgrep',
+  'ps',
   'psql',
   'sed',
   'ss',
