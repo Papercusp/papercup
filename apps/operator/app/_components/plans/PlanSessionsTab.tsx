@@ -29,6 +29,7 @@ import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import { useSyncQuery } from '@papercusp/sync';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
+import { hitDisplayHtml } from '@/lib/search-highlight';
 import { useDebouncedValue } from '@/app/harness/picker-kit';
 import SessionChatModal from '../chat/SessionChatModal';
 import { agoLabel } from './PlansPane';
@@ -215,8 +216,12 @@ export default function PlanSessionsTab({
                           <span
                             key={h.turnIdx}
                             className="plan-sessions__excerpt"
-                            // ts_headline <mark> markup from the search engine (trusted server output).
-                            dangerouslySetInnerHTML={{ __html: h.highlight || h.excerpt }}
+                            // The ENGINE is trusted; the TRANSCRIPT it quotes is not. A hit is a
+                            // slice of an agent turn, and turns routinely contain HTML/JS, so the
+                            // headline must be escaped down to its own <mark> tags before it can
+                            // touch innerHTML (P-003). The `|| excerpt` fallback is escaped by the
+                            // same helper — see `@/lib/search-highlight`.
+                            dangerouslySetInnerHTML={{ __html: hitDisplayHtml(h) }}
                           />
                         ))}
                       </button>

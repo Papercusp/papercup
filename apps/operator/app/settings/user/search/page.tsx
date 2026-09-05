@@ -4,6 +4,7 @@ import { useState, useCallback, FormEvent } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { hitDisplayHtml } from '@/lib/search-highlight';
 
 // Neutral memory entry from /api/user/search (generalize-memory-backend-
 // swappable D-003) — backend-agnostic shape, `text` not a mem0 row.
@@ -137,7 +138,16 @@ export default function SearchPage() {
                 </div>
                 <div
                   style={{ wordBreak: 'break-word' }}
-                  dangerouslySetInnerHTML={{ __html: h.highlight }}
+                  data-testid="prose-hit-body"
+                  // Prose hits are drawn from escalations / brainstorm notes / operator turns —
+                  // corpora that quote markup as a matter of course — so the headline is escaped
+                  // down to its own <mark> tags before it touches innerHTML (P-003).
+                  //
+                  // `|| excerpt` is not cosmetic: in `hybrid` mode a purely SEMANTIC hit has no
+                  // matched term to mark, and any hit whose source deferred highlight hydration
+                  // (WI-4734) can arrive with `highlight: ''`. Without the fallback those rows
+                  // render as blank cards. Both arms go through the same escaper.
+                  dangerouslySetInnerHTML={{ __html: hitDisplayHtml(h) }}
                 />
               </li>
             ))}

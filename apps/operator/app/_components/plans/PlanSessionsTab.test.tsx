@@ -113,4 +113,56 @@ describe('PlanSessionsTab', () => {
     fireEvent.click(hit);
     expect(screen.getByTestId('chat-modal').textContent).toBe('su-hit');
   });
+
+  /**
+   * security-boundary-remediation-and-usability-2026-09-04 P-003, under D-001
+   * ("verify a hostile path fails before the protected effect AND the
+   * legitimate path still succeeds"). This row renders through
+   * `dangerouslySetInnerHTML`, so the escaping is the ONLY thing between an
+   * agent transcript and script execution — and transcripts quote markup
+   * constantly, so the hostile input here is an ordinary turn, not an attack.
+   */
+  it('renders transcript markup inert while keeping <mark> highlighting', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          plan: 'p1',
+          sessions: [
+            {
+              sourceKind: 'claude', sessionId: 's9', topScore: 1,
+              hits: [
+                // A marked term (must survive) sitting next to markup (must not).
+                { turnIdx: 1, excerpt: 'x', highlight: 'the <mark>deploy</mark> ran <img src=x onerror="alert(1)">', score: 1 },
+                // highlight EMPTY → the excerpt fallback arm, which is raw
+                // document head and gets no engine post-processing at all.
+                { turnIdx: 2, excerpt: '<script>alert(2)</script>', highlight: '', score: 0.5 },
+              ],
+              active: { ownerId: 'su-hit', label: 'Hit agent' }, session: null,
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    nuqs.ppq = 'deploy';
+    render(<PlanSessionsTab planSlug="p1" harnessSlug="papercusp" />);
+    const hit = await screen.findByTestId('plan-sessions-hit');
+
+    // HOSTILE PATH FAILS: neither payload became a live element. `<img
+    // onerror>` is the vector that matters — it fires with no <script> tag and
+    // survives any filter that only strips <script>.
+    expect(hit.querySelector('img')).toBeNull();
+    expect(hit.querySelector('script')).toBeNull();
+
+    // …and it is still SHOWN, as text. Escaping must not silently eat content:
+    // a transcript search that drops the markup you searched for is broken too.
+    expect(hit.textContent).toContain('<img src=x onerror="alert(1)">');
+    expect(hit.textContent).toContain('<script>alert(2)</script>');
+
+    // LEGITIMATE PATH SUCCEEDS: the engine's own <mark> is a real element.
+    const marks = hit.querySelectorAll('mark');
+    expect(marks).toHaveLength(1);
+    expect(marks[0].textContent).toBe('deploy');
+  });
 });
