@@ -24,7 +24,9 @@ import { readWorkItemReleaseRequest, resolveWorkItemReleaseRequest } from '../..
 import { getWorkItemCheckpointWithMeta } from '../../work-item-checkpoint';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { readOutbox } from '../coordination/messages';
+import { listEscalations, type EscalationRecord } from '../coordination/escalations';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
 import { STALE_CLAIM_GRACE_MS } from '../../work-items-stale-claims';
 import { clampText, softText } from '../limits';
 import { readEventConditionReachability } from '../../external-condition-reachability';
@@ -124,7 +126,13 @@ function sectionText(section: unknown): string {
   return parts.join('\n');
 }
 
-function completionAssertionText(message: unknown): string[] {
+/**
+ * Flatten a coord envelope (message OR escalation) to its readable text segments.
+ * Shared by BOTH release-time detectors — the completion-assertion read below and
+ * the open-escalation read (EI-14883) — so they cannot drift on which fields count
+ * as "what the sender actually said".
+ */
+function coordMessageText(message: unknown): string[] {
   if (!message || typeof message !== 'object') return [];
   const record = message as Record<string, unknown>;
   const parts: string[] = [];
@@ -215,7 +223,7 @@ function completionClauses(segment: string): string[] {
 function assertsCompletionForItem(message: unknown, itemId: string): boolean {
   if (hasStructuredCompletionPremise(message, itemId)) return true;
   const itemRef = escapedRegExp(itemId);
-  return completionAssertionText(message).some((segment) => {
+  return coordMessageText(message).some((segment) => {
     return completionClauses(segment).some((clause) => {
       if (!itemRef.test(clause)) return false;
       if (!COMPLETION_ASSERTION_PATTERNS.some((pattern) => pattern.test(clause))) return false;
@@ -236,6 +244,61 @@ async function readPriorCompletionAssertion(
     // A coord read outage must never turn a voluntary release into a failed release.
     return null;
   }
+}
+
+/** An open escalation reduced to what the release disclosure needs to cite. */
+type OpenEscalationRef = { msgId: string; ts: string; from: string; severity: string };
+
+/**
+ * Widened alias of the claim allowlist. `CLAIM_STATES_ALLOWLIST` is `as const`, so a
+ * membership test against an arbitrary status string needs the readonly-string[] view
+ * rather than an inline cast at the call site. Deliberately the SAME constant the
+ * scheduler enforces, so "will this row be re-offered?" cannot drift from what
+ * scheduler:get_next / claim_next actually select.
+ */
+const CLAIMABLE_AFTER_RELEASE: readonly string[] = CLAIM_STATES_ALLOWLIST;
+
+/**
+ * EI-14883 (observed live on WI-3627, 2026-07-17): an item whose escalation is still
+ * OPEN is not "someone else can just pick this up as-is" — the only thing a fresh
+ * claimant can do is re-derive "already escalated, awaiting a decision" from the
+ * comment thread. There, the holder did the owner-gated steps correctly (enumerate +
+ * coord:escalate) and then plain-released; scheduler:get_next handed the row to the
+ * next drive-by fleet member ~2.5h later, who had no new information.
+ *
+ * Match ANY open escalation naming the item, not only the RELEASING holder's. The
+ * ping-pong is precisely the case where the escalator and the current holder DIFFER:
+ * hop 1 escalates and releases, hop 2 claims, re-discovers the same wall, releases.
+ * Scoping this to the prior holder — as the completion-assertion read above does,
+ * where the assertion is inherently that holder's own claim — would catch only hop 1
+ * and stay silent for every repeat, which is the part that actually burns turns.
+ */
+function escalationNamesItem(record: unknown, itemId: string): boolean {
+  const itemRef = escapedRegExp(itemId);
+  return coordMessageText(record).some((segment) => itemRef.test(segment));
+}
+
+/**
+ * One open-escalation read per TOOL CALL, not per item: release is bulk (up to 200
+ * items) and listEscalations({status:'open'}) folds the workspace's whole open set,
+ * so a per-item read would multiply it by 200. Lazy, so a release that never reaches
+ * the disclosure path pays nothing. Fail-soft for the same reason as its sibling: a
+ * coord read outage resolves to an empty set (no warning), never a failed release.
+ */
+function openEscalationReader(): (itemId: string) => Promise<OpenEscalationRef | null> {
+  let pending: Promise<EscalationRecord[]> | null = null;
+  return async (itemId: string) => {
+    pending ??= listEscalations({ status: 'open' }).catch(() => [] as EscalationRecord[]);
+    const open = await pending;
+    const match = open.find((record) => escalationNamesItem(record, itemId));
+    if (!match) return null;
+    return {
+      msgId: match.msg_id,
+      ts: match.ts,
+      from: typeof match.from === 'string' && match.from.trim() ? match.from : 'unknown',
+      severity: typeof match.severity === 'string' ? match.severity : 'advisory',
+    };
+  };
 }
 
 const itemSpec = z.object({
@@ -262,7 +325,7 @@ export default defineTool({
     'Release one OR many work-items (clear assignee / taken_by) so another agent can pick them up. Single: { id }. Many: { ids:[…] } or items:[{ id, harness? }]. `claimHold:true` (both families) ALSO durably parks the item out of claim_next/scheduler:get_next self-select (WI-2797) and requires `claimHoldRelease:{condition,trigger,owner?}`; the writer resolves reachability/evidence from the event ledger. The park survives your session ending, remains claimable by id, and `claimHold:false` clears it.',
   guidance: {
     returns:
-      'Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a not-found item never fails the rest. Refuses to clear ANOTHER agent\'s live claim (`{ ok:false, error:"not_holder", holder }` per item); `force:true` is a CHECKED override (WI-4198), not a bypass — non-live holder / queen / the holder\'s fleet leader only, requires `reason`, audited + notifies holder and owner (full rules on the `force` arg); anything else refuses with `force_unauthorized`. A voluntary release records a short re-claim cooldown.',
+      'Returns { ok, results:[{ ok, id, workItem? | error, holder? }], counts } — correlate by id; a not-found item never fails the rest. Refuses to clear ANOTHER agent\'s live claim (`{ ok:false, error:"not_holder", holder }` per item); `force:true` is a CHECKED override (WI-4198), not a bypass — non-live holder / queen / the holder\'s fleet leader only, requires `reason`, audited + notifies holder and owner (full rules on the `force` arg); anything else refuses with `force_unauthorized`. A voluntary release records a short re-claim cooldown. A plain release that puts the row back into a CLAIMABLE state while an escalation naming it is still open also returns advisory `openEscalation { msgId, ts, from, severity }` + `openEscalationWarning` (EI-14883): the row will be re-offered to a claimant who inherits no new information, so make the disposition durable with state:"needs-human" or claimHold:true. Advisory only — it never blocks the release, and an already-parked (needs-human/blocked) row is not flagged.',
     when: 'You claimed work-item(s) but are no longer working them. Add claimHold:true plus claimHoldRelease when the item must NOT be opportunistically re-claimed until a named event condition changes — plain release lets it re-surface immediately.',
     notWhen:
       "A per-item `not_holder` means a LIVE peer currently holds it — coordinate with the `holder` (coord:send), do not blind-force: force is for reclaiming a dead/stuck agent's item, never for clearing a peer's in-flight claim.",
@@ -339,6 +402,8 @@ export default defineTool({
   result: bulkEnvelopeSchema(),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    // EI-14883: memoized per tool call, shared across every item in the bulk.
+    const readOpenEscalationForItem = openEscalationReader();
     const list = args.items?.length
       ? args.items
       : args.ids?.length
@@ -677,6 +742,38 @@ export default defineTool({
                 `state) so this finished work is not re-dispatched.`,
             }
           : {};
+        // EI-14883: a plain release re-pools the row for the next drive-by claimant.
+        // When an escalation naming this item is still OPEN, that claimant inherits no
+        // new information — they can only re-derive "already escalated, awaiting a
+        // decision" from the comment thread, which is the ping-pong observed on WI-3627.
+        //
+        // Gate on the POST-RELEASE state being CLAIMABLE rather than on a parked-state
+        // denylist: `open`/`failing` is what the scheduler actually offers, so a holder
+        // who already flipped the row to needs-human/blocked — the correct fix — is not
+        // nagged for having done it right. WARN, never refuse: the open escalation may be
+        // incidental to this release, and a false positive only prompts a check the
+        // releasing agent is uniquely placed to make cheaply.
+        const openEscalation =
+          !force && claimHold === undefined && wasHeld && CLAIMABLE_AFTER_RELEASE.includes(workItem.state)
+            ? await readOpenEscalationForItem(it.id)
+            : null;
+        const escalationPark = openEscalation
+          ? {
+              openEscalation,
+              openEscalationWarning:
+                `'${it.id}' went back into the claimable pool (state '${workItem.state}') while escalation ` +
+                `${openEscalation.msgId}, raised by '${openEscalation.from}' at ${openEscalation.ts}, is still OPEN. ` +
+                `A plain release means "someone else can just pick this up as-is", which an item awaiting a decision ` +
+                `is not: the next claimant gets no new information and can only re-derive "already escalated, ` +
+                `awaiting a decision" from the thread (WI-3627 was re-dispatched that way ~2.5h after its ` +
+                `escalation, and every later hop repeats it). Make the disposition durable now — either ` +
+                `work_items:set_state { id:'${it.id}', state:'needs-human' } when only the owner can progress it, or ` +
+                `work_items:release { id:'${it.id}', claimHold:true, reason:'awaiting escalation ${openEscalation.msgId}', ` +
+                `claimHoldRelease:{ condition:'escalation ${openEscalation.msgId} is resolved', trigger:'<exact event key>' } }; ` +
+                `both work while the item is unassigned. If this escalation is unrelated to why you released, no action ` +
+                `is needed.`,
+            }
+          : {};
         // EI-16289: a checkpoint/reason records WHY a holder put work down, but a plain
         // release does not make that disposition sticky — it applies only the short
         // same-agent cooldown and leaves the row immediately self-selectable by every
@@ -712,6 +809,7 @@ export default defineTool({
             ...delta,
             ...stranding,
             ...completion,
+            ...escalationPark,
             ...claimHoldNudge,
             ...reasonDisclosure,
           };
