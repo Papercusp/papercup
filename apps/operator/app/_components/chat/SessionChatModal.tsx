@@ -1484,11 +1484,27 @@ export default function SessionChatModal({
   onSelectPeer?: (ownerId: string) => void;
 }) {
   const open = sessionOwnerId !== null;
-  // P-008: this owner's pending coord-escalation(s) with named options — the
-  // SAME shared `plans.attention` feed InboxPane/the Queue read (no new
-  // query), filtered to what's actionable for THIS agent right now. Disabled
-  // while closed so a hidden modal never holds an extra live query open.
-  const { items: attentionItems, refresh: refreshAttention } = useInboxAttention(open);
+  // P-008: this owner's pending coord-escalation(s) — the same `plans.attention`
+  // feed InboxPane/the Queue read, SCOPED to this agent.
+  //
+  // WI-2144754: the scoping is server-side (`ownerAgentId`) and that is
+  // load-bearing, not an optimization. This used to read the shared unscoped
+  // feed and filter the result in `pendingEscalations` below. But that feed is
+  // PAGED — 100 items, offset 0, and this component never calls `loadMore` —
+  // so the client filter ran over page one of a fleet-wide list rather than
+  // over this agent's items. Measured 2026-09-05: 145 open agent-filed
+  // decision-tier escalations against that 100-item page, so at minimum ~45
+  // owner-owed asks could not appear in the popup the owner opens to ANSWER
+  // them, and 13 of 13 live sessions driven showed an empty shelf — including
+  // one holding two genuinely open `question` escalations that sat 97 places
+  // past the page boundary. An empty shelf and "nothing needs you" render
+  // identically, which is why this failed silently for so long.
+  //
+  // Scoped here rather than by paging to the item: paging pulls the whole ~1MB
+  // feed to find a handful of rows, and still has no bound that guarantees
+  // reaching them. Disabled while closed so a hidden modal never holds an
+  // extra live query open.
+  const { items: attentionItems, refresh: refreshAttention } = useInboxAttention(open, sessionOwnerId);
   // EI-19403137552594870 (2026-08-03): this USED to require
   // `kind === 'coord-escalation' && isEscalationWithOptions(i)` — so an
   // agent's own `kind:'conversation'` question to the owner (no named

@@ -85,3 +85,26 @@ export function buildAttentionGroups(items: readonly AttentionItem[]): Attention
   );
   return groups;
 }
+
+/**
+ * Narrow a built feed to the items owed by ONE agent (WI-2144754). PURE.
+ *
+ * Regroups rather than splicing, so `maxImportance`, group ordering and the
+ * dropped-empty-group set stay DERIVED from the surviving items instead of
+ * being patched — a spliced group can otherwise keep a `maxImportance` no
+ * remaining item justifies, and an emptied group keeps rendering its header.
+ *
+ * The reason this exists on the server at all: its caller applies it BEFORE
+ * `paginateAttentionGroups`. Scoping AFTER the page is a different function
+ * with the same name in English — it answers "which of the newest 100 items
+ * fleet-wide happen to be this agent's", which is not a question anyone asked
+ * and returns the empty set for most agents once the feed is busy.
+ */
+export function scopeGroupsToOwner(
+  groups: readonly AttentionGroup[],
+  ownerAgentId: string,
+): AttentionGroup[] {
+  return buildAttentionGroups(
+    groups.flatMap((g) => g.items.filter((it) => it.ownerAgentId === ownerAgentId)),
+  );
+}

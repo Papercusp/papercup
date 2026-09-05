@@ -60,7 +60,7 @@ import {
   dropDuplicateBlockedWorkItems,
   dropDuplicateQuestionConversations,
 } from '../../attention/sources';
-import { buildAttentionGroups } from '../../attention/group';
+import { buildAttentionGroups, scopeGroupsToOwner } from '../../attention/group';
 import { MAX_ATTENTION_OFFSET, MAX_ATTENTION_PAGE_SIZE, paginateAttentionGroups } from '../../attention/window';
 import { applyTriage, deriveAuthorization, groupByTier, type AttentionItem } from '../../attention/types';
 import { readTriageByWorkspace } from '../../attention/triage-store';
@@ -986,11 +986,7 @@ export default defineTool({
     // to survive it. Regroup rather than splice, so `maxImportance` and the
     // dropped-empty-group set stay derived rather than patched.
     const ownerFilter = args.ownerAgentId ?? null;
-    const scopedGroups = ownerFilter
-      ? buildAttentionGroups(
-          groups.flatMap((g) => g.items.filter((it) => it.ownerAgentId === ownerFilter)),
-        )
-      : groups;
+    const scopedGroups = ownerFilter ? scopeGroupsToOwner(groups, ownerFilter) : groups;
     // Counts must describe the set they were computed over. `tierCounts` is
     // documented below as "the complete-feed count, not the page count" — with
     // a scope argument in play, the complete feed IS the scoped one, and

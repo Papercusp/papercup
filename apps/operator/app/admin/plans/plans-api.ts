@@ -1628,8 +1628,9 @@ export function usePlanAttention(params?: {
       ...(params?.includeArchived !== undefined
         ? { includeArchived: params.includeArchived }
         : {}),
+      ...(ownerAgentId ? { ownerAgentId } : {}),
     }),
-    [params?.harnessSlug, params?.includeArchived],
+    [params?.harnessSlug, params?.includeArchived, ownerAgentId],
   );
   const firstArgs = useMemo(
     () => ({ ...baseArgs, limit: pageSize, offset: 0 }),

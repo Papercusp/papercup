@@ -100,8 +100,17 @@ export interface InboxAttention {
 
 /** The flattened attention feed (every kind, every tier). One shared sync
  *  cache entry with the Queue/Overview — mounting this adds no new query. */
-export function useInboxAttention(enabled = true): InboxAttention {
-  const q = usePlanAttention({ enabled });
+/**
+ * @param ownerAgentId WI-2144754 — narrow the feed to the items owed by ONE
+ * agent, filtered server-side before the page is cut. The session popup needs
+ * this: it renders "what does THIS session's agent need the human for", and a
+ * client-side filter over page one of the fleet-wide feed answered that
+ * question only by luck (at 145 open agent decision-escalations against a
+ * 100-item page, ~a third of asks could never appear in their own popup).
+ * Omit for the whole feed, which is what the Inbox pane wants.
+ */
+export function useInboxAttention(enabled = true, ownerAgentId?: string | null): InboxAttention {
+  const q = usePlanAttention({ enabled, ownerAgentId: ownerAgentId ?? null });
   const groups = q.data?.groups;
   // Dedupe by id via the shared helper (WI-5337 fix, centralized in
   // plans-api.ts so every consumer — this pane, badge, plans-needing-you,
