@@ -1,5 +1,6 @@
 import { isAbsolute, join, normalize } from "node:path";
 import { withWorkspaceHostCredentialFilesystemLock } from "./workspace-host-credential-delivery";
+import { WORKSPACE_HOST_OMP_LOCAL_MODEL } from "./workspace-host-agent-authentication";
 
 /** The sealed material format installed into one workspace user's native agent homes. */
 export const WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION =
@@ -14,6 +15,43 @@ export const WORKSPACE_HOST_AGENT_HOME_FILES = {
   codex: [".codex", "auth.json"],
   omp: [".omp", "agent", "auth.json"],
 } as const;
+
+/**
+ * OMP's user-level model registry is separate from its credential file.  Keep the relative path
+ * here, next to the native-home layout, so the bind and probe cannot silently disagree about
+ * where a local provider is written.  This file contains no credentials; it only points OMP at
+ * the host's loopback Ollama API and enables its model discovery protocol.
+ */
+export const WORKSPACE_HOST_AGENT_HOME_OMP_MODELS_RELATIVE_PATH =
+  ".omp/agent/models.yml";
+
+/** The direct, loopback-only Ollama endpoint installed by the host bootstrap. */
+export const WORKSPACE_HOST_AGENT_HOME_OLLAMA_BASE_URL =
+  "http://127.0.0.1:11434/v1";
+
+/**
+ * OMP models.yml for a credential-free agent bundle.  Do not add an API key here: `auth: none`
+ * keeps the OMP credential contract honest.  Keep both discovery and the one pinned local model:
+ * discovery refreshes a host whose model set changes, while the explicit entry makes a cold agent
+ * home usable before OMP has created its model catalog (the readiness probe is the first OMP call
+ * on a freshly provisioned host and cannot assume `omp models` ran first).
+ */
+export const WORKSPACE_HOST_AGENT_HOME_OMP_LOCAL_MODELS_YML = [
+  "providers:",
+  "  ollama:",
+  `    baseUrl: ${WORKSPACE_HOST_AGENT_HOME_OLLAMA_BASE_URL}`,
+  "    api: openai-completions",
+  "    auth: none",
+  "    discovery:",
+  "      type: ollama",
+  "    models:",
+  `      - id: ${WORKSPACE_HOST_OMP_LOCAL_MODEL}`,
+  `        name: ${WORKSPACE_HOST_OMP_LOCAL_MODEL}`,
+  "        api: openai-completions",
+  "        input:",
+  "          - text",
+  "",
+].join("\n");
 
 export const WORKSPACE_HOST_AGENT_HOME_STATE_VERSION =
   "papercusp-workspace-host-agent-home-state-v1";
@@ -226,6 +264,15 @@ export function workspaceHostAgentHomePaths(
     codex: join(home, ...WORKSPACE_HOST_AGENT_HOME_FILES.codex),
     omp: join(home, ...WORKSPACE_HOST_AGENT_HOME_FILES.omp),
   };
+}
+
+/** Resolve OMP's model registry below the explicit agent identity home. */
+export function workspaceHostAgentHomeOmpModelsPath(home: string): string {
+  requireExplicitWorkspaceHostHome(home);
+  return join(
+    home,
+    ...WORKSPACE_HOST_AGENT_HOME_OMP_MODELS_RELATIVE_PATH.split("/"),
+  );
 }
 
 /**
@@ -452,16 +499,8 @@ export class WorkspaceHostAgentHomeConsumer {
   }
 
   private async own(path: string): Promise<void> {
-    if (
-      this.agentUser &&
-      this.agentGroup &&
-      this.filesystem.setOwnership
-    ) {
-      await this.filesystem.setOwnership(
-        path,
-        this.agentUser,
-        this.agentGroup,
-      );
+    if (this.agentUser && this.agentGroup && this.filesystem.setOwnership) {
+      await this.filesystem.setOwnership(path, this.agentUser, this.agentGroup);
     }
   }
 
@@ -488,11 +527,7 @@ export class WorkspaceHostAgentHomeConsumer {
       for (const directory of directories) {
         await this.filesystem.ensureDirectory(directory);
         await this.requireRealDirectory(directory);
-        if (
-          this.agentUser &&
-          this.agentGroup &&
-          this.filesystem.setOwnership
-        ) {
+        if (this.agentUser && this.agentGroup && this.filesystem.setOwnership) {
           await this.filesystem.setOwnership(directory, "root", "root");
         }
         secured.push(directory);
@@ -513,6 +548,86 @@ export class WorkspaceHostAgentHomeConsumer {
     for (const path of files) await this.own(path);
     for (const directory of [...directories].reverse())
       await this.own(directory);
+  }
+
+  /**
+   * Reconcile the non-secret OMP registry required by the credential-free local-inference path.
+   *
+   * The agent home is a platform-owned identity home, so this managed registry is deliberately
+   * deterministic rather than merged with an ambient service-user config.  A stale gateway or
+   * malformed registry would otherwise make the readiness probe select the wrong endpoint while
+   * still looking like a valid OMP installation.  The write is idempotent and is performed while
+   * secureHomeLayout() has pinned every parent directory root-owned.
+   */
+  private async ensureLocalOmpModelsConfig(
+    family: WorkspaceHostAgentHomeFamily,
+    generation: number,
+  ): Promise<string> {
+    const path = workspaceHostAgentHomeOmpModelsPath(this.agentHome);
+    const expected = Buffer.from(
+      WORKSPACE_HOST_AGENT_HOME_OMP_LOCAL_MODELS_YML,
+      "utf8",
+    );
+    let kind: "missing" | "directory" | "file" | "symlink" | "other" =
+      "missing";
+    if (this.filesystem.pathKind) {
+      kind = await this.filesystem.pathKind(path);
+      if (kind !== "missing" && kind !== "file") {
+        throw new WorkspaceHostAgentHomeStateError(
+          "workspace agent-home OMP models registry is not a regular file",
+          { family, generation },
+        );
+      }
+    }
+    // When pathKind is unavailable (the hermetic seam), readFileIfPresent is the only presence
+    // signal; do not treat its default `missing` sentinel as proof that a file is absent or the
+    // idempotent path would rewrite the registry on every bind.
+    const existing =
+      kind === "missing" && this.filesystem.pathKind
+        ? null
+        : await this.filesystem.readFileIfPresent(path);
+    if (existing === null || !compareBytes(existing, expected)) {
+      await this.filesystem.writePrivateFile(path, expected);
+    }
+    if (this.filesystem.pathKind) {
+      const finalKind = await this.filesystem.pathKind(path);
+      if (finalKind !== "file") {
+        throw new WorkspaceHostAgentHomeStateError(
+          "workspace agent-home OMP models registry is not a regular file after write",
+          { family, generation },
+        );
+      }
+    }
+    return path;
+  }
+
+  private async verifyLocalOmpModelsConfig(
+    family: WorkspaceHostAgentHomeFamily,
+    generation: number,
+  ): Promise<void> {
+    const path = workspaceHostAgentHomeOmpModelsPath(this.agentHome);
+    if (this.filesystem.pathKind) {
+      const kind = await this.filesystem.pathKind(path);
+      if (kind !== "file") {
+        throw new WorkspaceHostAgentHomeStateError(
+          "workspace agent-home OMP models registry is absent or not a regular file",
+          { family, generation },
+        );
+      }
+    }
+    const existing = await this.filesystem.readFileIfPresent(path);
+    if (
+      existing === null ||
+      !compareBytes(
+        existing,
+        Buffer.from(WORKSPACE_HOST_AGENT_HOME_OMP_LOCAL_MODELS_YML, "utf8"),
+      )
+    ) {
+      throw new WorkspaceHostAgentHomeStateError(
+        "workspace agent-home OMP models registry is absent or stale",
+        { family, generation },
+      );
+    }
   }
 
   private lockPath(family: WorkspaceHostAgentHomeFamily): string {
@@ -605,15 +720,19 @@ export class WorkspaceHostAgentHomeConsumer {
         }
         installedFiles.push(paths[label]);
       }
+      // A credential-free OMP bundle must still have a model registry.  Without this file OMP
+      // falls back to its built-in providers and reports the local model as "not found" even
+      // though bootstrap pulled it into the host's loopback Ollama service.
+      if (bundle.files.omp === null) {
+        installedFiles.push(
+          await this.ensureLocalOmpModelsConfig(family, generation),
+        );
+      }
       // State is the commit marker and is intentionally written after every native file succeeds.
       await this.filesystem.ensureDirectory(join(this.materialRoot, "active"));
       await this.filesystem.writePrivateFile(
         workspaceHostAgentHomeStatePath(this.materialRoot),
-        encodeWorkspaceHostAgentHomeState(
-          family,
-          generation,
-          this.agentHome,
-        ),
+        encodeWorkspaceHostAgentHomeState(family, generation, this.agentHome),
       );
     } finally {
       await this.restoreHomeLayout(securedDirectories, installedFiles);
@@ -711,6 +830,9 @@ export class WorkspaceHostAgentHomeConsumer {
                 { family, generation },
               );
             }
+          }
+          if (bundle.files.omp === null) {
+            await this.verifyLocalOmpModelsConfig(family, generation);
           }
         } finally {
           await this.restoreHomeLayout(securedDirectories);
