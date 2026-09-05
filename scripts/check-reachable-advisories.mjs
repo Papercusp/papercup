@@ -47,6 +47,31 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+
+/**
+ * `semver` is loaded through createRequire, NOT a static import, on purpose.
+ *
+ * It is not declared by any package.json in this repo — it is present only as a hoisted
+ * transitive. A static import would therefore turn a future hoist reshuffle into a hard
+ * crash of the whole gate, and the reflex fix for a crashing gate is to disable it. With
+ * the require guarded, a missing semver instead degrades every feasibility verdict to
+ * UNDETERMINED, which is loud, fails closed, and names its own repair — the same doctrine
+ * measureJson() applies to an unreachable registry.
+ *
+ * The durable fix is to declare semver as a root devDependency; that needs an install, so
+ * it is batched with the lodash-es override (see the baseline's lodash-es entry).
+ */
+const requireFromHere = createRequire(import.meta.url);
+/** @type {any} */
+let semver = null;
+/** @type {string|null} */
+let semverLoadError = null;
+try {
+  semver = requireFromHere('semver');
+} catch (err) {
+  semverLoadError = err && err.message ? String(err.message) : String(err);
+}
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE_PATH = join(ROOT, 'scripts', 'reachable-advisories-baseline.json');
@@ -107,6 +132,156 @@ export function attributeAdvisories(lsTree, advisoryNames) {
   return reach;
 }
 
+/**
+ * Collect EVERY installed version of each advisory package from the `npm ls` tree.
+ *
+ * A package is often installed more than once, and the vulnerable copy is not always the
+ * hoisted one. Measured 2026-09-05: langsmith is 0.8.7 at `node_modules/langsmith` (clean)
+ * and 0.3.87 nested under `@browserbasehq/stagehand` (vulnerable); lodash-es is installed
+ * at both 4.17.21 (vulnerable) and 4.18.1 (clean). Deriving fix feasibility from a single
+ * copy therefore answers about the wrong object, in whichever direction that copy happens
+ * to sit — so collect them all and let the advisory range select the relevant ones.
+ *
+ * @param {any} lsTree parsed `npm ls --omit=dev --all --json`
+ * @param {Iterable<string>|Set<string>} advisoryNames packages to collect versions for
+ * @returns {Map<string, string[]>} package name -> every installed version, ascending
+ */
+export function collectInstalledVersions(lsTree, advisoryNames) {
+  const advisory = advisoryNames instanceof Set ? advisoryNames : new Set(advisoryNames);
+  /** @type {Map<string, Set<string>>} */
+  const versions = new Map();
+  const seen = new Set();
+
+  const walk = (node, depth) => {
+    if (!node || depth > 64) return;
+    for (const [name, child] of Object.entries(node.dependencies || {})) {
+      if (!child || typeof child !== 'object') continue;
+      if (advisory.has(name) && typeof child.version === 'string' && child.version) {
+        if (!versions.has(name)) versions.set(name, new Set());
+        versions.get(name).add(child.version);
+      }
+      // Same cycle guard as attributeAdvisories, keyed by identity rather than owner: the
+      // same name+version subtree cannot contribute a version we have not already taken.
+      const key = `${name}@${child.version ?? '?'}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      walk(child, depth + 1);
+    }
+  };
+  walk(lsTree, 0);
+
+  const ascending = (a, b) => {
+    if (!semver) return a.localeCompare(b);
+    try {
+      return semver.compare(a, b, { loose: true });
+    } catch {
+      return a.localeCompare(b);
+    }
+  };
+  return new Map([...versions].map(([name, set]) => [name, [...set].sort(ascending)]));
+}
+
+/**
+ * Derive fix feasibility from the ADVISORY RANGE — the derived-truth-ladder replacement
+ * for reading npm's `fixAvailable` field (CLAUDE.md: derive, pin, or attest).
+ *
+ * WHY THIS EXISTS. `fixAvailable` is a second copy of a truth the range already owns, and
+ * it drifts. The two-lens reconciliation above only bites when npm returns `fixAvailable`
+ * as an OBJECT carrying `isSemVerMajor`; when npm returns the BARE BOOLEAN `true` there is
+ * no version to compare and BOTH lenses read "patch-compatible". Observed live on
+ * 2026-09-05: style-dictionary's npm record moved from `{version:5.5.2, isSemVerMajor:true}`
+ * to the range `>=4.3.0 <5.4.4` plus a bare `true` within hours, so an entry that had just
+ * been CORRECTED silently reverted to reading patch-compatible with nothing failing. Keying
+ * on the shape of a third party's payload gives a fix an expiry date; key on the invariant.
+ *
+ * THE INVARIANT. If `^<installed>` is a semver SUBSET of the vulnerable range, then every
+ * version reachable without a breaking bump is still vulnerable — no compatible version
+ * escapes, so the fix is necessarily semver-major. If it is NOT a subset, some
+ * semver-compatible version lies outside the advisory. That is computable from the audit
+ * payload plus the installed versions alone: no manifest read, no registry call.
+ *
+ * Verified against published-registry ground truth on all four of this tree's bare-boolean
+ * rows (2026-09-05): lodash-es 4.17.21 / `<=4.17.23` -> escapable (4.18.1 exists);
+ * style-dictionary 4.4.0 / `4.3.0 - 5.4.3`, stagehand 3.4.0 / `3.0.0 - 4.0.0-alpha-...`,
+ * and langsmith 0.3.87 / `<=0.5.26` -> requires-major. Under 0.x semver a minor bump is
+ * breaking, which is why `^0.3.87` collapses to `>=0.3.87 <0.4.0` and is trapped.
+ *
+ * THE THIRD VERDICT. Anything unmeasurable returns `undetermined` rather than falling back
+ * to the optimistic reading — an unparseable range, a package absent from the ls tree, an
+ * advisory whose range no installed copy satisfies, or a missing semver. A guard that
+ * cannot measure must say so; silently keeping the optimistic answer is the exact failure
+ * this function replaces.
+ *
+ * @param {string} vulnerableRange the advisory's vulnerable range (npm audit `range`)
+ * @param {string[]} installedVersions every installed version of the package
+ * @returns {{verdict:'escapable'|'requires-major'|'undetermined', reason:string, vulnerableCopies:string[]}}
+ */
+export function deriveFixFeasibility(vulnerableRange, installedVersions) {
+  const undetermined = (reason, vulnerableCopies = []) => ({ verdict: 'undetermined', reason, vulnerableCopies });
+
+  if (!semver) {
+    return undetermined(`semver is unavailable (${semverLoadError ?? 'not installed'}), so no range subset can be computed`);
+  }
+
+  const range = typeof vulnerableRange === 'string' ? vulnerableRange.trim() : '';
+  if (!range) return undetermined('the advisory carries no vulnerable range');
+  if (!semver.validRange(range, { loose: true })) {
+    return undetermined(`advisory range "${range}" is not parseable as semver`);
+  }
+
+  const versions = (installedVersions || []).filter((v) => typeof v === 'string' && semver.valid(v, { loose: true }));
+  if (!versions.length) {
+    return undetermined('no installed copy of this package was found in the npm ls tree, so no caret range can be tested');
+  }
+
+  // Only copies actually IN the range need a fix; a clean sibling copy must not vote.
+  const vulnerableCopies = versions.filter((v) => {
+    try {
+      return semver.satisfies(v, range, { includePrerelease: true, loose: true });
+    } catch {
+      return false;
+    }
+  });
+  if (!vulnerableCopies.length) {
+    return undetermined(
+      `npm reports this package vulnerable over "${range}" but no installed copy (${versions.join(', ')}) satisfies that range`,
+    );
+  }
+
+  const trapped = [];
+  for (const v of vulnerableCopies) {
+    let isSubset;
+    try {
+      isSubset = semver.subset(`^${v}`, range, { includePrerelease: true });
+    } catch (err) {
+      return undetermined(
+        `semver.subset("^${v}", "${range}") could not be evaluated: ${err && err.message ? err.message : err}`,
+        vulnerableCopies,
+      );
+    }
+    if (isSubset) trapped.push(v);
+  }
+
+  if (trapped.length) {
+    return {
+      verdict: 'requires-major',
+      reason:
+        `${trapped.map((v) => `^${v}`).join(' and ')} ` +
+        `${trapped.length > 1 ? 'are semver SUBSETS' : 'is a semver SUBSET'} of the vulnerable range "${range}" — ` +
+        'no version reachable without a breaking bump escapes the advisory',
+      vulnerableCopies,
+    };
+  }
+  return {
+    verdict: 'escapable',
+    reason:
+      `${vulnerableCopies.map((v) => `^${v}`).join(' and ')} ` +
+      `${vulnerableCopies.length > 1 ? 'are' : 'is'} NOT a subset of the vulnerable range "${range}" — ` +
+      'a semver-compatible version outside the advisory exists',
+    vulnerableCopies,
+  };
+}
+
 /** Severity ordering, for fail-closed reconciliation between the two audit lenses. */
 const SEVERITY_RANK = { unknown: 0, info: 1, low: 2, moderate: 3, high: 4, critical: 5 };
 const worseSeverity = (a, b) => ((SEVERITY_RANK[b] ?? 0) > (SEVERITY_RANK[a] ?? 0) ? b : a);
@@ -146,6 +321,7 @@ export function analyze(auditJson, lsJson, baseline, fullAuditJson = null) {
   const vulns = auditJson?.vulnerabilities || {};
   const names = Object.keys(vulns);
   const reach = attributeAdvisories(lsJson || {}, names);
+  const installed = collectInstalledVersions(lsJson || {}, names);
   const fullVulns = fullAuditJson?.vulnerabilities || null;
 
   const findings = [];
@@ -175,9 +351,35 @@ export function analyze(auditJson, lsJson, baseline, fullAuditJson = null) {
         : authoritative && typeof authoritative === 'object'
           ? `${authoritative.name}@${authoritative.version}${authoritative.isSemVerMajor ? ' [SEMVER-MAJOR]' : ''}`
           : 'none';
-    const patchCompatible = authoritative === true;
-    // Visible when the prod-only lens claimed a compatible fix the real tree contradicts.
-    const fixDisagreement = fa === true && majorOf(faFull) ? `--omit=dev said patch-compatible; installed tree requires ${faFull.name}@${faFull.version} (MAJOR)` : null;
+    // DERIVED fix feasibility — authoritative over `fixAvailable`, which is a second copy
+    // of a truth the advisory range already owns and which drifts (see
+    // deriveFixFeasibility). Prefer the prod-lens range; fall back to the full-tree lens.
+    const vulnerableRange =
+      typeof v.range === 'string' && v.range.trim()
+        ? v.range
+        : full && typeof full.range === 'string'
+          ? full.range
+          : '';
+    const fixFeasibility = {
+      ...deriveFixFeasibility(vulnerableRange, installed.get(name) || []),
+      vulnerableRange,
+    };
+
+    // Fail closed on BOTH inputs: a fix is patch-compatible only when the lenses agree it
+    // is AND the range derivation proves a compatible version actually escapes. `undetermined`
+    // therefore reads as not-patch-compatible — never as the optimistic answer.
+    const lensSaysCompatible = authoritative === true;
+    const patchCompatible = lensSaysCompatible && fixFeasibility.verdict === 'escapable';
+
+    // Visible when a lens claimed a compatible fix that a stricter reading contradicts.
+    // The two-lens disagreement is reported first because it names a concrete version; the
+    // derivation catches the case that reconciliation structurally cannot see (bare `true`).
+    const fixDisagreement =
+      fa === true && majorOf(faFull)
+        ? `--omit=dev said patch-compatible; installed tree requires ${faFull.name}@${faFull.version} (MAJOR)`
+        : lensSaysCompatible && fixFeasibility.verdict !== 'escapable'
+          ? `npm reported fixAvailable:true, but the advisory range says otherwise — ${fixFeasibility.reason}`
+          : null;
 
     findings.push({
       name,
@@ -189,6 +391,13 @@ export function analyze(auditJson, lsJson, baseline, fullAuditJson = null) {
       gating: shipping && GATING_SEVERITIES.has(severity),
       fix,
       patchCompatible,
+      fixFeasibility,
+      disposition:
+        fixFeasibility.verdict === 'undetermined'
+          ? 'undetermined'
+          : patchCompatible
+            ? 'patch-eligible'
+            : 'deferred-semver-major',
       ...(fixDisagreement ? { fixDisagreement } : {}),
     });
   }

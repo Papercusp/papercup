@@ -1,7 +1,5 @@
 import { withWorkspace } from '@papercusp/db-org';
-import {
-  seedAcceptanceBarsInTransaction,
-} from './acceptance-bar-seed';
+import { seedAcceptanceBarsInTransaction } from './acceptance-bar-seed';
 import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
 import type { SpecClauseSql } from './agent-tools/plans/spec-clauses-store';
 
@@ -17,14 +15,7 @@ import type { SpecClauseSql } from './agent-tools/plans/spec-clauses-store';
 
 export const ACCEPTANCE_BAR_MIGRATION_DEFAULT_BATCH_SIZE = 25;
 
-const TERMINAL_STATUSES = new Set([
-  'shipped',
-  'superseded',
-  'retired',
-  'deprecated',
-  'closed',
-  'done',
-]);
+const TERMINAL_STATUSES = new Set(['shipped', 'superseded', 'retired', 'deprecated', 'closed', 'done']);
 
 export type AcceptanceBarMigrationAction =
   | 'skip-historical-terminal'
@@ -61,9 +52,7 @@ export function hasRequirementBars(content: string): boolean {
 }
 
 /** Classify one plan without inventing a BAR source. */
-export function classifyAcceptanceBarMigration(
-  plan: AcceptanceBarMigrationPlan,
-): AcceptanceBarMigrationDecision {
+export function classifyAcceptanceBarMigration(plan: AcceptanceBarMigrationPlan): AcceptanceBarMigrationDecision {
   const status = plan.status?.trim().toLowerCase() ?? null;
   if (status && TERMINAL_STATUSES.has(status)) {
     return {
@@ -114,6 +103,8 @@ export interface AcceptanceBarMigrationPage {
 export interface AcceptanceBarMigrationDatabaseOptions {
   workspaceId: string;
   harnessSlug: string;
+  /** Optional single-plan scope for a controlled dogfood/revalidation pass. */
+  planSlug?: string;
   actorId: string;
   cursor?: string | null;
   batchSize?: number;
@@ -148,10 +139,7 @@ function legacyCriterionFromTemplateData(templateData: unknown): LegacyCriterion
   };
 }
 
-function appendLegacyCriterionSource(
-  content: string,
-  source: LegacyCriterionSource,
-): string {
+function appendLegacyCriterionSource(content: string, source: LegacyCriterionSource): string {
   const barKey = source.criterion.barKey ?? 'R-1';
   const title = barKey;
   const evidencePlane = source.criterion.evidencePlane ?? 'tree';
@@ -180,7 +168,13 @@ export async function runAcceptanceBarMigrationInDatabase(
   options: AcceptanceBarMigrationDatabaseOptions,
 ): Promise<AcceptanceBarMigrationRun> {
   const now = options.now ?? new Date();
-  const readPage = async ({ cursor, limit }: { cursor: string | null; limit: number }): Promise<AcceptanceBarMigrationPage> => {
+  const readPage = async ({
+    cursor,
+    limit,
+  }: {
+    cursor: string | null;
+    limit: number;
+  }): Promise<AcceptanceBarMigrationPage> => {
     return withWorkspace(options.workspaceId, async (tx) => {
       const after = cursor ? tx`AND p.plan_slug > ${cursor}` : tx``;
       const rows = await tx<AcceptanceBarMigrationDbRow[]>`
@@ -191,6 +185,7 @@ export async function runAcceptanceBarMigrationInDatabase(
            AND p.harness_slug = ${options.harnessSlug}
            AND p.archived = false
            AND p.template IS DISTINCT FROM 'rubric'
+           AND (${options.planSlug ?? null}::text IS NULL OR p.plan_slug = ${options.planSlug ?? null})
            AND (p.acceptance_bar_set_hash IS NULL OR p.acceptance_bar_epoch IS NULL)
            ${after}
          ORDER BY p.plan_slug ASC
@@ -284,12 +279,13 @@ export async function runAcceptanceBarMigrationInDatabase(
              AND plan_slug = ${plan.planSlug}
              AND acceptance_bar_set_hash IS NULL`;
 
-        const seedContent = plan.explicitLegacyCriterion && plan.legacyPlanItemIds?.length
-          ? appendLegacyCriterionSource(current.content, {
-              criterion: plan.explicitLegacyCriterion,
-              planItemIds: plan.legacyPlanItemIds,
-            })
-          : current.content;
+        const seedContent =
+          plan.explicitLegacyCriterion && plan.legacyPlanItemIds?.length
+            ? appendLegacyCriterionSource(current.content, {
+                criterion: plan.explicitLegacyCriterion,
+                planItemIds: plan.legacyPlanItemIds,
+              })
+            : current.content;
         const seeded = await seedAcceptanceBarsInTransaction({
           executor: tx as unknown as SpecClauseSql,
           workspaceId: options.workspaceId,
@@ -335,10 +331,7 @@ export interface AcceptanceBarMigrationRunnerOptions {
   dryRun?: boolean;
   readPage: (input: { cursor: string | null; limit: number }) => Promise<AcceptanceBarMigrationPage>;
   /** Apply one plan in its own transaction. Throwing marks only that plan failed. */
-  applyPlan: (input: {
-    plan: AcceptanceBarMigrationPlan;
-    decision: AcceptanceBarMigrationDecision;
-  }) => Promise<string>;
+  applyPlan: (input: { plan: AcceptanceBarMigrationPlan; decision: AcceptanceBarMigrationDecision }) => Promise<string>;
 }
 
 /** Run one bounded page. Repeating with `nextCursor` is safe and resumable. */
@@ -346,7 +339,10 @@ export async function runAcceptanceBarMigration(
   options: AcceptanceBarMigrationRunnerOptions,
 ): Promise<AcceptanceBarMigrationRun> {
   const startCursor = options.cursor ?? null;
-  const limit = Math.max(1, Math.min(500, Math.floor(options.batchSize ?? ACCEPTANCE_BAR_MIGRATION_DEFAULT_BATCH_SIZE)));
+  const limit = Math.max(
+    1,
+    Math.min(500, Math.floor(options.batchSize ?? ACCEPTANCE_BAR_MIGRATION_DEFAULT_BATCH_SIZE)),
+  );
   const dryRun = options.dryRun === true;
   const page = await options.readPage({ cursor: startCursor, limit });
   const outcomes: AcceptanceBarMigrationOutcome[] = [];

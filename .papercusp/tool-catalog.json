@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 851,
+  "count": 852,
   "tools": [
     {
       "name": "ablation:report",
@@ -31530,6 +31530,37 @@
         "when": "Checking how one or more high-stakes items are progressing across their Swarms — how many replicas completed, whether judged, which replica won.",
         "notWhen": "A normal item (it has no replicas). The plain item state — that is work_items:get.",
         "chaining": "work_items:redundancy_status → (if ≥2 complete) work_items:judge_redundancy."
+      }
+    },
+    {
+      "name": "work_items:rehome",
+      "http": {
+        "path": "/api/agent-tools/work_items/rehome",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Move a work-item to another harness — base row + dependent claim/blocked/note rows in ONE transaction, `payload.rehomed_from` audit, nothing deleted. The NON-NAIVE half of the workspace work-scope policy: a platform defect filed under the pot where it surfaced is re-homed to papercusp instead of parked. { op:'classify', id } previews the classifier verdict; { op:'move', id, harness, reason } moves (dryRun previews).",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "An out-of-scope work-item references the papercusp platform (repo paths, tool verbs, a system-role creator) — classify, then move it to papercusp so the claim gates admit it.",
+        "notWhen": "To change WHICH harnesses are allowed, use workspace:work_scope. A genuinely other-pot item stays where it is (held by the policy), never moved to make it claimable.",
+        "chaining": "workspace:work_scope { op:'get' } → work_items:rehome { op:'classify', id } → work_items:rehome { op:'move', id, harness:'papercusp', reason } → work_items:claim."
       }
     },
     {

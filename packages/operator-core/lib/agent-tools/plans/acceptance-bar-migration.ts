@@ -16,9 +16,13 @@ import { runAcceptanceBarMigrationInDatabase } from '../../acceptance-bar-migrat
 
 const argsSchema = z.object({
   harness: harnessArg,
+  planSlug: z.string().min(1).max(200).optional().describe('Optional single-plan scope for a controlled dogfood pass.'),
   cursor: z.string().min(1).max(500).optional().describe('Slug cursor returned by a prior page.'),
   batchSize: z.number().int().positive().max(500).optional().describe('Plans per page (default 25).'),
-  dryRun: z.boolean().optional().describe('Classify and report the page without writing markers, rubrics, or projections.'),
+  dryRun: z
+    .boolean()
+    .optional()
+    .describe('Classify and report the page without writing markers, rubrics, or projections.'),
 });
 
 export default defineTool({
@@ -27,8 +31,10 @@ export default defineTool({
     'Run one bounded, cursor-resumable acceptance BAR cohort migration page. Terminal history is skipped, drafts use strict post-epoch seeding, legacy Requirements use legacy-backfilled seeding, and untrusted sources are refused. Each plan writes through the canonical transactional BAR seed writer and rolls back independently on refusal. Run with dryRun:true first.',
   guidance: {
     when: 'Adopting the acceptance BAR contract for existing plans after the gate/writer rollout; repeat with the returned nextCursor until complete.',
-    notWhen: 'Routine plan edits, rubric amendments, or a plan that is already fully seeded. This is a bounded migration door.',
-    chaining: 'plans:migrate-acceptance-bars { dryRun:true } → repeat with nextCursor → plans:get / plans:items to verify the seeded rubric and projections.',
+    notWhen:
+      'Routine plan edits, rubric amendments, or a plan that is already fully seeded. This is a bounded migration door.',
+    chaining:
+      'plans:migrate-acceptance-bars { dryRun:true } → repeat with nextCursor → plans:get / plans:items to verify the seeded rubric and projections.',
   },
   capability: 'plans:write',
   requirePrincipal: false,
@@ -42,6 +48,7 @@ export default defineTool({
     const result = await runAcceptanceBarMigrationInDatabase({
       workspaceId,
       harnessSlug,
+      planSlug: args.planSlug,
       actorId,
       cursor: args.cursor,
       batchSize: args.batchSize,

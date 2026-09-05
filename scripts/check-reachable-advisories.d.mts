@@ -13,6 +13,61 @@ export function isNonShipping(workspace: any): boolean;
  */
 export function attributeAdvisories(lsTree: any, advisoryNames: any): Map<any, any>;
 /**
+ * Collect EVERY installed version of each advisory package from the `npm ls` tree.
+ *
+ * A package is often installed more than once, and the vulnerable copy is not always the
+ * hoisted one. Measured 2026-09-05: langsmith is 0.8.7 at `node_modules/langsmith` (clean)
+ * and 0.3.87 nested under `@browserbasehq/stagehand` (vulnerable); lodash-es is installed
+ * at both 4.17.21 (vulnerable) and 4.18.1 (clean). Deriving fix feasibility from a single
+ * copy therefore answers about the wrong object, in whichever direction that copy happens
+ * to sit — so collect them all and let the advisory range select the relevant ones.
+ *
+ * @param {any} lsTree parsed `npm ls --omit=dev --all --json`
+ * @param {Iterable<string>|Set<string>} advisoryNames packages to collect versions for
+ * @returns {Map<string, string[]>} package name -> every installed version, ascending
+ */
+export function collectInstalledVersions(lsTree: any, advisoryNames: Iterable<string> | Set<string>): Map<string, string[]>;
+/**
+ * Derive fix feasibility from the ADVISORY RANGE — the derived-truth-ladder replacement
+ * for reading npm's `fixAvailable` field (CLAUDE.md: derive, pin, or attest).
+ *
+ * WHY THIS EXISTS. `fixAvailable` is a second copy of a truth the range already owns, and
+ * it drifts. The two-lens reconciliation above only bites when npm returns `fixAvailable`
+ * as an OBJECT carrying `isSemVerMajor`; when npm returns the BARE BOOLEAN `true` there is
+ * no version to compare and BOTH lenses read "patch-compatible". Observed live on
+ * 2026-09-05: style-dictionary's npm record moved from `{version:5.5.2, isSemVerMajor:true}`
+ * to the range `>=4.3.0 <5.4.4` plus a bare `true` within hours, so an entry that had just
+ * been CORRECTED silently reverted to reading patch-compatible with nothing failing. Keying
+ * on the shape of a third party's payload gives a fix an expiry date; key on the invariant.
+ *
+ * THE INVARIANT. If `^<installed>` is a semver SUBSET of the vulnerable range, then every
+ * version reachable without a breaking bump is still vulnerable — no compatible version
+ * escapes, so the fix is necessarily semver-major. If it is NOT a subset, some
+ * semver-compatible version lies outside the advisory. That is computable from the audit
+ * payload plus the installed versions alone: no manifest read, no registry call.
+ *
+ * Verified against published-registry ground truth on all four of this tree's bare-boolean
+ * rows (2026-09-05): lodash-es 4.17.21 / `<=4.17.23` -> escapable (4.18.1 exists);
+ * style-dictionary 4.4.0 / `4.3.0 - 5.4.3`, stagehand 3.4.0 / `3.0.0 - 4.0.0-alpha-...`,
+ * and langsmith 0.3.87 / `<=0.5.26` -> requires-major. Under 0.x semver a minor bump is
+ * breaking, which is why `^0.3.87` collapses to `>=0.3.87 <0.4.0` and is trapped.
+ *
+ * THE THIRD VERDICT. Anything unmeasurable returns `undetermined` rather than falling back
+ * to the optimistic reading — an unparseable range, a package absent from the ls tree, an
+ * advisory whose range no installed copy satisfies, or a missing semver. A guard that
+ * cannot measure must say so; silently keeping the optimistic answer is the exact failure
+ * this function replaces.
+ *
+ * @param {string} vulnerableRange the advisory's vulnerable range (npm audit `range`)
+ * @param {string[]} installedVersions every installed version of the package
+ * @returns {{verdict:'escapable'|'requires-major'|'undetermined', reason:string, vulnerableCopies:string[]}}
+ */
+export function deriveFixFeasibility(vulnerableRange: string, installedVersions: string[]): {
+    verdict: "escapable" | "requires-major" | "undetermined";
+    reason: string;
+    vulnerableCopies: string[];
+};
+/**
  * Core analysis. Pure: takes parsed audit + ls JSON, returns the classified population.
  *
  * `fullAuditJson` is the OPTIONAL second lens — `npm audit --json` over the tree as it is
@@ -56,6 +111,13 @@ export function analyze(auditJson: any, lsJson: any, baseline: any, fullAuditJso
         gating: boolean;
         fix: string;
         patchCompatible: boolean;
+        fixFeasibility: {
+            vulnerableRange: any;
+            verdict: "escapable" | "requires-major" | "undetermined";
+            reason: string;
+            vulnerableCopies: string[];
+        };
+        disposition: string;
     }[];
     gating: {
         fixDisagreement?: string | undefined;
@@ -68,6 +130,13 @@ export function analyze(auditJson: any, lsJson: any, baseline: any, fullAuditJso
         gating: boolean;
         fix: string;
         patchCompatible: boolean;
+        fixFeasibility: {
+            vulnerableRange: any;
+            verdict: "escapable" | "requires-major" | "undetermined";
+            reason: string;
+            vulnerableCopies: string[];
+        };
+        disposition: string;
     }[];
     offenders: {
         fixDisagreement?: string | undefined;
@@ -80,6 +149,13 @@ export function analyze(auditJson: any, lsJson: any, baseline: any, fullAuditJso
         gating: boolean;
         fix: string;
         patchCompatible: boolean;
+        fixFeasibility: {
+            vulnerableRange: any;
+            verdict: "escapable" | "requires-major" | "undetermined";
+            reason: string;
+            vulnerableCopies: string[];
+        };
+        disposition: string;
     }[];
     stale: any[];
     unattributed: string[];

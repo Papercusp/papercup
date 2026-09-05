@@ -33,8 +33,16 @@ describe('acceptance BAR cohort migration policy (P-010)', () => {
       action: 'legacy-backfill',
       cohort: 'legacy-backfilled',
     });
-    expect(classifyAcceptanceBarMigration(plan({ content: '', explicitLegacyCriterion: { model: 'x' }, hasLiveMapping: true }))).toMatchObject({ action: 'legacy-backfill' });
-    expect(classifyAcceptanceBarMigration(plan({ content: '', explicitLegacyCriterion: { model: 'x' }, hasLiveMapping: false }))).toMatchObject({ action: 'bar-backfill-required' });
+    expect(
+      classifyAcceptanceBarMigration(
+        plan({ content: '', explicitLegacyCriterion: { model: 'x' }, hasLiveMapping: true }),
+      ),
+    ).toMatchObject({ action: 'legacy-backfill' });
+    expect(
+      classifyAcceptanceBarMigration(
+        plan({ content: '', explicitLegacyCriterion: { model: 'x' }, hasLiveMapping: false }),
+      ),
+    ).toMatchObject({ action: 'bar-backfill-required' });
   });
 
   it('refuses to fabricate a BAR source', () => {
@@ -54,7 +62,10 @@ describe('runAcceptanceBarMigration', () => {
       readPage: async ({ cursor, limit }) => {
         expect(cursor).toBe('after-0');
         expect(limit).toBe(2);
-        return { plans: [plan({ planSlug: 'a' }), plan({ planSlug: 'b', status: 'shipped', content: '' })], nextCursor: 'after-b' };
+        return {
+          plans: [plan({ planSlug: 'a' }), plan({ planSlug: 'b', status: 'shipped', content: '' })],
+          nextCursor: 'after-b',
+        };
       },
       applyPlan,
     });

@@ -45,6 +45,7 @@ type HookMod = {
   isWithinRepo: (repoRoot: string, filePath: string) => boolean;
   nudgeFor: (f: string, deps?: Record<string, unknown>) => Promise<string | null>;
   formatNudge: (rel: string, hit: Hit) => string;
+  logFiring: (rel: string, hit: Hit | null, deps?: Record<string, unknown>) => void;
 };
 
 async function hookMod(): Promise<HookMod> {
@@ -276,6 +277,166 @@ describe('posttooluse-ts-parse-nudge', () => {
   it('passes its own embedded --self-test', () => {
     const out = execFileSync('node', [HOOK, '--self-test'], { encoding: 'utf8' });
     expect(out).toMatch(/all cases passed/);
+  });
+
+  /**
+   * EI-19899815073760910 — the hook is ADVISORY, so whether it WORKS is a behavioural
+   * question ("does the agent repair the file before the next bundle?"). It used to
+   * persist nothing, so that question was unanswerable: occurrence #3 landed ~7.5h after
+   * the guard was authored and it was impossible to tell whether the hook had fired and
+   * been ignored, or had never been registered. These pin the instrument.
+   *
+   * The fail-open cases carry the real weight. This runs AFTER an edit has succeeded,
+   * so a throwing logger would convert a good edit into a hook error — the guard would
+   * start causing the class of harm it exists to prevent.
+   */
+  describe('firing log (EI-19899815073760910)', () => {
+    const HIT: Hit = { line: 3, col: 21, code: 1109, reason: 'Expression expected.' };
+
+    async function fireOnce(deps: Record<string, unknown>) {
+      const { nudgeFor } = await hookMod();
+      const ts = (await import('typescript')).default;
+      return nudgeFor('/repo/pkg/watchdog.ts', {
+        repoRoot: '/repo',
+        exists: () => true,
+        sizeOf: () => OUTAGE_SHAPE.length,
+        readFile: () => OUTAGE_SHAPE,
+        loadTs: async () => ts,
+        ...deps,
+      });
+    }
+
+    it('reports the firing with the file and the STRUCTURED diagnostic, not just a message', async () => {
+      const seen: Array<[string, Hit]> = [];
+      const msg = await fireOnce({ onFire: (rel: string, hit: Hit) => seen.push([rel, hit]) });
+      expect(msg).toBeTruthy();
+      expect(seen).toHaveLength(1);
+      const [rel, hit] = seen[0];
+      // The path must be the REPO-RELATIVE one, not the absolute input: an absolute path
+      // from a foreign checkout is exactly what makes a log unaggregatable later.
+      expect(rel).toBe('pkg/watchdog.ts');
+      // TS1005 is the MEASURED code for OUTAGE_SHAPE under these options (not 1109, which
+      // the filing's prose quoted from a differently-configured run) — pinned deliberately,
+      // as this file pins TS2451 elsewhere, so a renumbering surfaces rather than hides.
+      expect(hit.code).toBe(1005);
+      expect(typeof hit.line).toBe('number');
+    });
+
+    it('does NOT report when the hook stays silent — otherwise the log measures edits, not firings', async () => {
+      const seen: unknown[] = [];
+      const clean = 'export const a = 1;\n';
+      const msg = await fireOnce({
+        sizeOf: () => clean.length,
+        readFile: () => clean,
+        onFire: () => seen.push(1),
+      });
+      expect(msg).toBeNull();
+      expect(seen).toHaveLength(0);
+    });
+
+    it('a THROWING onFire cannot break the nudge — an instrument must not break what it measures', async () => {
+      const msg = await fireOnce({
+        onFire: () => {
+          throw new Error('logger exploded');
+        },
+      });
+      expect(msg).toBeTruthy();
+      expect(msg).toMatch(/does NOT PARSE/);
+    });
+
+    it('writes ONE json line carrying ts, file, code and line:col', async () => {
+      const { logFiring } = await hookMod();
+      const lines: string[] = [];
+      logFiring('pkg/watchdog.ts', HIT, {
+        mkdir: () => {},
+        sizeOf: () => 0,
+        rename: () => {},
+        append: (_p: string, s: string) => lines.push(s),
+        homedir: () => '/tmp/fake-home',
+      });
+      expect(lines).toHaveLength(1);
+      expect(lines[0].endsWith('\n')).toBe(true);
+      const rec = JSON.parse(lines[0]);
+      expect(rec.file).toBe('pkg/watchdog.ts');
+      expect(rec.code).toBe(1109);
+      expect(rec.at).toBe('3:21');
+      expect(rec.ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    });
+
+    it('FAILS OPEN when the append throws — the edit already succeeded', async () => {
+      const { logFiring } = await hookMod();
+      expect(() =>
+        logFiring('pkg/watchdog.ts', HIT, {
+          mkdir: () => {},
+          sizeOf: () => 0,
+          rename: () => {},
+          append: () => {
+            throw new Error('EACCES');
+          },
+          homedir: () => '/tmp/fake-home',
+        }),
+      ).not.toThrow();
+    });
+
+    it('FAILS OPEN when the log directory cannot be created', async () => {
+      const { logFiring } = await hookMod();
+      const lines: string[] = [];
+      expect(() =>
+        logFiring('pkg/watchdog.ts', HIT, {
+          mkdir: () => {
+            throw new Error('EROFS');
+          },
+          append: (_p: string, s: string) => lines.push(s),
+          homedir: () => '/tmp/fake-home',
+        }),
+      ).not.toThrow();
+      expect(lines).toHaveLength(0);
+    });
+
+    it('rotates past 1 MiB, and still appends when the rotation probe throws', async () => {
+      const { logFiring } = await hookMod();
+      const renamed: Array<[string, string]> = [];
+      const lines: string[] = [];
+      logFiring('pkg/a.ts', HIT, {
+        mkdir: () => {},
+        sizeOf: () => (1 << 20) + 1,
+        rename: (from: string, to: string) => renamed.push([from, to]),
+        append: (_p: string, s: string) => lines.push(s),
+        homedir: () => '/tmp/fake-home',
+      });
+      expect(renamed).toHaveLength(1);
+      expect(renamed[0][1]).toBe(`${renamed[0][0]}.1`);
+      expect(lines).toHaveLength(1);
+
+      // A missing file (first write) makes the size probe throw; the sibling appends
+      // anyway, and so must this — otherwise the log never gets its first line.
+      const first: string[] = [];
+      logFiring('pkg/a.ts', HIT, {
+        mkdir: () => {},
+        sizeOf: () => {
+          throw new Error('ENOENT');
+        },
+        rename: () => {},
+        append: (_p: string, s: string) => first.push(s),
+        homedir: () => '/tmp/fake-home',
+      });
+      expect(first).toHaveLength(1);
+    });
+
+    it('tolerates a null hit rather than throwing on a malformed finding', async () => {
+      const { logFiring } = await hookMod();
+      const lines: string[] = [];
+      expect(() =>
+        logFiring('pkg/a.ts', null, {
+          mkdir: () => {},
+          sizeOf: () => 0,
+          rename: () => {},
+          append: (_p: string, s: string) => lines.push(s),
+          homedir: () => '/tmp/fake-home',
+        }),
+      ).not.toThrow();
+      expect(JSON.parse(lines[0]).at).toBeNull();
+    });
   });
 
   describe('end-to-end through the real hook binary', () => {
