@@ -1682,12 +1682,41 @@ button.hud__pkgcard:focus-visible {
   overscroll-behavior: contain;
 }
 
+/* NO `border-top` here, deliberately (EI-20074873467125847) — and the absence is
+   the point, so it is written down rather than left to look like an omission.
+
+   Until P-024 these sections were headed by the bare `.hud-goal__h` text idiom,
+   which carried no edge of its own; a top rule was then the ONLY thing marking
+   where one section ended and the next began. P-024 replaced that heading with
+   the conversation popup's FILLED `.pc-zone-title` plate, which brings its own
+   `border-bottom: 1px solid var(--pc-zone-rule)` — and the rule above it was
+   left behind as a second, mismatched separator doing the same job in a
+   different vocabulary.
+
+   Measured in a running shell against this rail's own ground rgb(17,34,53):
+   the old `var(--border)` rule composited to rgb(33,59,83) = 1.39:1, while the
+   plate's edge sits at rgb(62,106,135) = 2.77:1 — the plate separates 1.99x
+   more strongly. 1.39:1 is also at the ~1.35:1 AgentOrders.css measured as the
+   point where a plate "would effectively dissolve", so this rule was paying for
+   a whole second idiom while contributing almost no visible separation.
+
+   Retinting it to `var(--pc-zone-rule)` so the two at least AGREE was the other
+   candidate, and it was rejected BY LOOKING, not by argument: `padding-top`
+   holds the plate 14px clear of the rule, so matching their colour yields two
+   strong parallel lines with bare ground between them — the doubled divider,
+   made louder. The popup never does that. There (`.pc-zone--activity
+   .pc-dossier__section`) the cap is FLUSH against the card's own border, in the
+   SAME token — "a bar bounded by the frame". A rule floating 14px above its
+   plate bounds nothing.
+
+   `padding-top` stays: it is the rhythm, and it was never the separator. The
+   `--ends` card below is untouched — it already carries the popup's bounded-card
+   form, and its own `border-top: none` stays as a harmless explicit no-op. */
 .hud-goal__section {
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding-top: 14px;
-  border-top: 1px solid var(--border);
 }
 
 /* The kill criterion is the one section that says when this goal STOPS, so it
