@@ -380,3 +380,56 @@ describe('retractAdmission — the compensating step when the queue-row write fa
     expect(refAt(root, frozenLineageRef(candidate))).toBe(second.commit);
   });
 });
+
+describe('preflight — P-004: runs on the PROVED commit, before publish, on dry run and confirm alike', () => {
+  type Preflight = NonNullable<Parameters<typeof admitPathsOntoRepairHead>[0]['preflight']>;
+
+  it('a refusing preflight sees the proved commit + admitted set, returns admission-incomplete with that commit, and the lineage ref never moves', () => {
+    const { root, candidate } = repo();
+    sweep(root, { 'lib/a.ts': 'a2\n' }, 'fix a');
+    const seen: Parameters<Preflight>[0][] = [];
+    const preflight: Preflight = (built) => {
+      seen.push(built);
+      return {
+        code: 'admission-incomplete',
+        detail: 'lib/a.ts imports ./b',
+        missing: [{ from: 'lib/a.ts', specifier: './b', wanted: 'lib/b.ts', tried: ['lib/b.ts'], atProbeRef: 'present' }],
+      };
+    };
+    const confirmed = admit(root, candidate, candidate, ['lib/a.ts'], { preflight });
+    expect(confirmed.ok).toBe(false);
+    if (confirmed.ok) return;
+    expect(confirmed.code).toBe('admission-incomplete');
+    expect(confirmed.missing?.[0]?.wanted).toBe('lib/b.ts');
+    expect(confirmed.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.admitted).toEqual(['lib/a.ts']);
+    expect(seen[0]?.commit).toBe(confirmed.commit);
+    // Built and proved — the object exists — but unreferenced: ordinary garbage.
+    expect(git(root, ['cat-file', '-t', confirmed.commit ?? ''])).toBe('commit');
+    expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
+
+    const dry = admit(root, candidate, candidate, ['lib/a.ts'], { preflight, dryRun: true });
+    expect(dry.ok).toBe(false);
+    if (!dry.ok) expect(dry.code).toBe('admission-incomplete');
+    expect(seen).toHaveLength(2);
+    expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
+  });
+
+  it('an accepting preflight (null) publishes exactly as before; a git-failed preflight fails CLOSED and publishes nothing', () => {
+    const { root, candidate } = repo();
+    sweep(root, { 'lib/a.ts': 'a2\n' }, 'fix a');
+    const accepted = admit(root, candidate, candidate, ['lib/a.ts'], { preflight: () => null });
+    expect(accepted.ok).toBe(true);
+    if (!accepted.ok) return;
+    expect(refAt(root, frozenLineageRef(candidate))).toBe(accepted.commit);
+
+    sweep(root, { 'lib/b.ts': 'b2\n' }, 'fix b');
+    const broken = admit(root, candidate, accepted.commit, ['lib/b.ts'], {
+      preflight: () => ({ code: 'git-failed', step: 'completeness preflight: cat-file --batch-check', detail: 'exited 128' }),
+    });
+    expect(broken.ok).toBe(false);
+    if (!broken.ok) expect(broken).toMatchObject({ code: 'git-failed', step: expect.stringContaining('completeness preflight') });
+    expect(refAt(root, frozenLineageRef(candidate))).toBe(accepted.commit);
+  });
+});

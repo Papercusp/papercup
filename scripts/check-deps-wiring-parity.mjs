@@ -890,7 +890,15 @@ function main() {
   const liveKeys = new Set(allFindings.map(findingKey));
   const newFindings = allFindings.filter((f) => !FAIL_BASELINE.has(findingKey(f)));
   const baselined = allFindings.filter((f) => FAIL_BASELINE.has(findingKey(f)));
-  const staleBaseline = [...FAIL_BASELINE.keys()].filter((k) => !liveKeys.has(k));
+  // Staleness is only meaningful for rows whose FILE was in the scanned population: a
+  // `--files=` scoped run cannot see a divergence outside its scope, so reporting every
+  // out-of-scope row as "stale — prune it" would tell the reader to destroy a valid
+  // baseline (and leaks unrelated interface names into a scoped run's output — the
+  // real-tree Scout test asserts on exactly that output).
+  const scannedFiles = new Set(sources.map((s) => s.fileName));
+  const staleBaseline = [...FAIL_BASELINE.keys()].filter(
+    (k) => !liveKeys.has(k) && (opts.files === null || scannedFiles.has(k.split('|')[1])),
+  );
 
   if (opts.json) {
     console.log(
