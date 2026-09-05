@@ -2247,6 +2247,82 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         expect(r.ok).toBe(true);
         expect(r.checksDropped).toBeUndefined();
       });
+
+      // EI-22385255026192781: the ONLY place an agent ever SEES a stored row id is the
+      // rendered `[#id]` anchor, and '#' is outside CARRY_ROW_ID_ALLOWED, so the stored
+      // side sanitizes it away. Copying the id straight out of the note you just read
+      // therefore refused on a difference the renderer itself introduced.
+      describe('EI-22385255026192781: retireIds accepts the rendered [#id] form', () => {
+        const KEYED = [
+          { id: 'gate-green', claim: 'gate is green', recheck: 'state:read' },
+          { id: 'main-sha', claim: 'main is at abc123', recheck: 'git rev-parse main' },
+        ];
+
+        async function seedKeyed() {
+          withPrior(null);
+          await one({ id: 'WI-7', checkpoint: 'prior body', checks: KEYED });
+          return lastStored();
+        }
+
+        it("accepts '#id' — the form the rendered note shows — as the bare stored id", async () => {
+          const prior = await seedKeyed();
+          withPrior(await prior);
+          const r = await one({
+            id: 'WI-7',
+            checkpoint: 'new body',
+            checks: [{ claim: 'a brand new claim' }],
+            rowsMode: 'replace',
+            retireIds: ['#gate-green', '#main-sha'],
+          });
+          expect(r.ok).toBe(true);
+          expect(r.checksDropped).toEqual(['gate is green', 'main is at abc123']);
+        });
+
+        it('still accepts the bare stored id — the pre-fix form keeps working', async () => {
+          const prior = await seedKeyed();
+          withPrior(await prior);
+          const r = await one({
+            id: 'WI-7',
+            checkpoint: 'new body',
+            checks: [{ claim: 'a brand new claim' }],
+            rowsMode: 'replace',
+            retireIds: ['gate-green', 'main-sha'],
+          });
+          expect(r.ok).toBe(true);
+          expect(r.checksDropped).toEqual(['gate is green', 'main is at abc123']);
+        });
+
+        it('does NOT weaken the guard — a wrong id still refuses in the #-prefixed form', async () => {
+          const prior = await seedKeyed();
+          withPrior(await prior);
+          const r = await one({
+            id: 'WI-7',
+            checkpoint: 'new body',
+            checks: [{ claim: 'a brand new claim' }],
+            rowsMode: 'replace',
+            retireIds: ['#gate-green', '#no-such-row'],
+          });
+          expect(r).toMatchObject({ ok: false, errorCode: 'checkpoint_retire_ids_mismatch' });
+        });
+
+        it('leaves raw CLAIM TEXT identity untouched — normalizing it would mangle punctuation', async () => {
+          // An id-less row's identity is its claim text VERBATIM. Sanitizing every
+          // requested key would rewrite 'gate #4 is green' to 'gate-4-is-green' and
+          // silently stop matching, so the raw form is tried before the id form.
+          withPrior(null);
+          await one({ id: 'WI-7', checkpoint: 'prior body', checks: [{ claim: 'gate #4 is green' }] });
+          withPrior(await lastStored());
+          const r = await one({
+            id: 'WI-7',
+            checkpoint: 'new body',
+            checks: [{ claim: 'a brand new claim' }],
+            rowsMode: 'replace',
+            retireIds: ['gate #4 is green'],
+          });
+          expect(r.ok).toBe(true);
+          expect(r.checksDropped).toEqual(['gate #4 is green']);
+        });
+      });
     });
 
     it('EI-20232161144151845: a dependency-only patch preserves the body and bypasses shrink protection', async () => {
