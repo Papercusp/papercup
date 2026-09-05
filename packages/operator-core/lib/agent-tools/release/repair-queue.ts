@@ -36,6 +36,7 @@ import {
 } from '../../release/frozen-repair-edit-ledger';
 import { buildHunkExactSource, summarizeForeignHunks, type HunkExactSuccess } from '../../release/hunk-exact-admission';
 import { containmentForPaths, integrationBranch } from '../../release/judged-sha-containment';
+import { importCompletenessPreflight } from '../../release/admission-import-completeness';
 import { admitPathsOntoRepairHead, retractAdmission } from '../../release/repair-head-admission';
 import { claimRepairManifestLeg, renderAdmitCommand } from '../../release/repair-manifest';
 import { readIdentity } from '../locks/identity';
@@ -312,7 +313,7 @@ export default defineTool({
     chaining:
       'Landing a fix: admit{paths} (dry run) → verdict would-admit + proof → re-call confirm:true → admitted, phase ready-to-verify; the gate re-verifies at the new repairHead next tick. Retiring: get → verify exact identity + retireAllowed → retire with those fields and confirm:true.',
     returns:
-      "get: explicit repairQueueRead value|absent|unreadable plus phase/age/fixer/reservation/decision diagnostics, callerAuthorization (a signed release-fixer is delegated only when its spawn id exactly equals repairQueue.fixerSpawnId), and repairQueue.manifest (P-021 / D-007 #1: one row per leg — legId, kind, subjectPaths, statusLabel red-at-candidate|admitted-in-#N@sha|green-at-sha, admitCommand, claim) + manifestSummary {legs,red,admitted,green,claimed,pathless}. claim-leg{leg, release?}: verdict claimed|released with row, paths, admitCommand and presenceFiles (your presence current_files set to the leg's subject paths); refused with reason no-such-leg (legIds listed) | held-by-other (holder) | already-green | no-manifest (the gate derives it on its next queue write) | persist_failed. An unreadable persisted row renders in-band and admit/retire refuse with repair-queue-unreadable. admit verdicts: no-frozen-queue (nothing frozen — an ordinary staging commit is already the judged lineage) | already-admitted (every named path already has its staging content on repairHead; idempotent) | would-admit (dry run: the commit was built and PROVED but not published — proof.diff is the exact diff-tree name set, proof.unchanged the allowlisted paths with no change, proof.blobs the source blob per path) | admitted (repairHead moved to movedRepairHead.to; persisted, phase ready-to-verify) | refused with reason: paths_required | invalid-paths | stray-paths (the built commit touched paths outside your allowlist — never published) | lineage-ref-moved (a concurrent admission won; re-read and admit onto the current repairHead) | source-unresolvable / repair-head-unresolvable / git-failed | persist_failed (the lineage ref was rolled back so ref and row still agree). containment[] reports, per requested path, whether the judged sha carries staging's current content — equal blobs prove that PATH is current, NOT that the candidate is. retire: refuses a live/unknown fixer and an active dispatch reservation; a CAS miss returns casMiss with the post-write diagnostic under current. record-edit (P-019 / D-008 layer 1 — hook plumbing, never called by hand): the PostToolUse edit hook's ledger write; recorded true|false (no-frozen-queue when nothing is frozen), inserted (false on an idempotent retry), oversize, ledgerId, path, agent, inRepairRadius, admitCommand, candidateMismatch {marker, queue} when the hook's marker named a different candidate than the live queue.",
+      "get: explicit repairQueueRead value|absent|unreadable plus phase/age/fixer/reservation/decision diagnostics, callerAuthorization (a signed release-fixer is delegated only when its spawn id exactly equals repairQueue.fixerSpawnId), and repairQueue.manifest (P-021 / D-007 #1: one row per leg — legId, kind, subjectPaths, statusLabel red-at-candidate|admitted-in-#N@sha|green-at-sha, admitCommand, claim) + manifestSummary {legs,red,admitted,green,claimed,pathless}. claim-leg{leg, release?}: verdict claimed|released with row, paths, admitCommand and presenceFiles (your presence current_files set to the leg's subject paths); refused with reason no-such-leg (legIds listed) | held-by-other (holder) | already-green | no-manifest (the gate derives it on its next queue write) | persist_failed. An unreadable persisted row renders in-band and admit/retire refuse with repair-queue-unreadable. admit verdicts: no-frozen-queue (nothing frozen — an ordinary staging commit is already the judged lineage) | already-admitted (every named path already has its staging content on repairHead; idempotent) | would-admit (dry run: the commit was built and PROVED but not published — proof.diff is the exact diff-tree name set, proof.unchanged the allowlisted paths with no change, proof.blobs the source blob per path) | admitted (repairHead moved to movedRepairHead.to; persisted, phase ready-to-verify) | refused with reason: paths_required | invalid-paths | stray-paths (the built commit touched paths outside your allowlist — never published) | admission-incomplete (P-004: an admitted TS/JS file imports a relative path that resolves to nothing at the proved commit — missing[] names each {from, specifier, wanted, tried, atProbeRef}, admitCommand is the same admit widened by exactly those paths; the tip is never widened for you) | lineage-ref-moved (a concurrent admission won; re-read and admit onto the current repairHead) | source-unresolvable / repair-head-unresolvable / git-failed | persist_failed (the lineage ref was rolled back so ref and row still agree). containment[] reports, per requested path, whether the judged sha carries staging's current content — equal blobs prove that PATH is current, NOT that the candidate is. retire: refuses a live/unknown fixer and an active dispatch reservation; a CAS miss returns casMiss with the post-write diagnostic under current. record-edit (P-019 / D-008 layer 1 — hook plumbing, never called by hand): the PostToolUse edit hook's ledger write; recorded true|false (no-frozen-queue when nothing is frozen), inserted (false on an idempotent retry), oversize, ledgerId, path, agent, inRepairRadius, admitCommand, candidateMismatch {marker, queue} when the hook's marker named a different candidate than the live queue.",
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
   },
   args: argsSchema,
@@ -651,6 +652,11 @@ export default defineTool({
         reason: args.reason,
         nowMs: Date.now(),
         dryRun,
+        // P-004: the proved commit must resolve every relative import of every admitted TS/JS
+        // file, or the door refuses `admission-incomplete` naming the sibling to admit. The
+        // branch is only CONSULTED to say whether that sibling exists there; nothing from it
+        // is ever admitted on the caller's behalf.
+        preflight: importCompletenessPreflight({ root, probeRef: branch }),
       });
       const hunksRecord: Record<string, { applied: number; agents: string[] }> | null = hunkExact
         ? Object.fromEntries(hunkExact.perPath.map((p) => [p.path, { applied: p.applied, agents: p.agents }]))
@@ -693,6 +699,17 @@ export default defineTool({
           ...(outcome.stray ? { stray: outcome.stray } : {}),
           ...(outcome.paths ? { invalidPaths: outcome.paths } : {}),
           ...(outcome.step ? { step: outcome.step } : {}),
+          ...(outcome.missing
+            ? {
+                missing: outcome.missing,
+                // The same admission, widened by exactly the missing paths — and nothing else.
+                admitCommand: renderAdmitCommand([...new Set([...paths, ...outcome.missing.map((m) => m.wanted)])]),
+                note:
+                  'P-004: an admitted file imports a path that does not exist at the proved commit. The tip is never ' +
+                  'widened for you — re-run admitCommand (your hunks for the added paths must be in the edit ledger, ' +
+                  'i.e. you authored them on staging).',
+              }
+            : {}),
           judgedSha: queue.repairHead,
           containment: containmentAt(queue.repairHead),
           ...base,

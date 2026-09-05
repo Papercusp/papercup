@@ -112,12 +112,14 @@ export interface AdmissionMissingImport {
   atProbeRef: 'present' | 'absent' | 'unknown';
 }
 
-/** What a `preflight` hook returns to stop an admission: the proved commit stays unpublished garbage. */
-export interface AdmissionPreflightRefusal {
-  code: 'admission-incomplete';
-  detail: string;
-  missing: AdmissionMissingImport[];
-}
+/**
+ * What a `preflight` hook returns to stop an admission: the proved commit stays unpublished
+ * garbage. `git-failed` is the instrument failing (the check could not run) — the door fails
+ * CLOSED, because "could not verify" is not "verified".
+ */
+export type AdmissionPreflightRefusal =
+  | { code: 'admission-incomplete'; detail: string; missing: AdmissionMissingImport[] }
+  | { code: 'git-failed'; step: string; detail: string };
 
 export interface AdmissionRefusal {
   ok: false;
@@ -445,7 +447,9 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     if (input.preflight) {
       const stop = input.preflight({ commit, tree, admitted: proof.admitted });
       if (stop) {
-        return { ok: false, code: stop.code, detail: stop.detail, missing: stop.missing, commit };
+        return stop.code === 'git-failed'
+          ? { ok: false, code: 'git-failed', step: stop.step, detail: stop.detail, commit }
+          : { ok: false, code: 'admission-incomplete', detail: stop.detail, missing: stop.missing, commit };
       }
     }
 

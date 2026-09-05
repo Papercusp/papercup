@@ -1,0 +1,381 @@
+/**
+ * P-004 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): admission COMPLETENESS.
+ *
+ * An admission lands EXACTLY the paths the caller named onto the frozen lineage (P-001) and
+ * nothing else from the tip. That exactness has one predictable failure: a fix that spans two
+ * files admitted one at a time, or a new sibling the caller forgot to name. The admitted file
+ * then imports a path that does not exist at repairHead, and the gate only finds out a full
+ * verification round later, when lint:tsc at repairHead fails on an unresolved module — after
+ * the fixer has already exited.
+ *
+ * This is the cheap, synchronous DOOR check that names that sibling before publish. For every
+ * admitted TS/JS blob at the proved admission commit, each RELATIVE import specifier
+ * (`./x`, `../y`) is resolved the way TypeScript's bundler / node16 resolution would —
+ * extension probe, `.js` → `.ts` rewrite, `/index.*` — against the commit's tree, in ONE
+ * `git cat-file --batch-check` call. Anything unresolved comes back with the path to admit.
+ *
+ * It is deliberately NOT a typechecker. Bare specifiers (packages, `@/` aliases), type errors,
+ * a file at repairHead that imports something this admission DELETES, and everything else
+ * `lint:tsc` sees remain the gate's verification round (P-005 `verifyRepairHead` runs the lint
+ * legs at repairHead). And it never widens the admission on the caller's behalf: "admit this
+ * too" is the caller's explicit second call, which is the whole point of P-004's last clause.
+ *
+ * The scanner skips comments, string and template literals and only reads a specifier from a
+ * string sitting in import position (`from`, `import`, `import(`, `require(`), so a test file
+ * that QUOTES import statements — this module's own test does — is not misread as importing.
+ */
+import { posix } from 'node:path';
+
+import {
+  realAdmissionGit,
+  type AdmissionGitRunner,
+  type AdmissionMissingImport,
+  type AdmissionPreflightRefusal,
+  type AdmitPathsInput,
+} from './repair-head-admission';
+
+/** Files whose imports are scanned. Anything else admitted (docs, sql, json, assets) is skipped. */
+const SCANNED_EXTENSIONS: ReadonlySet<string> = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.jsx']);
+
+/** Extensions probed, in order, for an extensionless (or unknown-extension) specifier. */
+const PROBE_EXTENSIONS: readonly string[] = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.jsx', '.d.ts'];
+
+/** TS ESM convention: `./x.js` in source means `./x.ts` (or `.tsx`) on disk; the emitted `.js` may also exist. */
+const JS_TO_TS: Readonly<Record<string, readonly string[]>> = {
+  '.js': ['.ts', '.tsx'],
+  '.mjs': ['.mts'],
+  '.cjs': ['.cts'],
+  '.jsx': ['.tsx'],
+};
+
+/** A specifier ending in one of these names exactly one file; no probe. */
+const EXPLICIT_EXTENSIONS: ReadonlySet<string> = new Set([
+  ...SCANNED_EXTENSIONS,
+  '.json', '.css', '.scss', '.sass', '.less', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico',
+  '.wasm', '.md', '.mdx', '.txt', '.html', '.yaml', '.yml', '.sql', '.node', '.woff', '.woff2', '.ttf',
+]);
+
+const IMPORT_POSITION_RE = /(?:^|[^.\w$])(?:from|import)\s*$|(?:^|[^.\w$])(?:import|require)\s*\(\s*$/;
+
+function scanQuoted(source: string, start: number, quote: string): number {
+  // Returns the index just past the closing quote; an unterminated string ends at the newline.
+  let i = start + 1;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === '\\') {
+      i += 2;
+      continue;
+    }
+    if (ch === quote) return i + 1;
+    if (ch === '\n') return i;
+    i++;
+  }
+  return source.length;
+}
+
+function skipTemplate(source: string, start: number): number {
+  // Returns the index just past the closing backtick, honouring `${ … }` nesting (which may
+  // itself hold strings and templates). The contents are never scanned for specifiers.
+  let i = start + 1;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === '\\') {
+      i += 2;
+      continue;
+    }
+    if (ch === '`') return i + 1;
+    if (ch === '$' && source[i + 1] === '{') {
+      i += 2;
+      let depth = 1;
+      while (i < source.length && depth > 0) {
+        const c = source[i]!;
+        if (c === '{') depth++;
+        else if (c === '}') depth--;
+        else if (c === '`') {
+          i = skipTemplate(source, i);
+          continue;
+        } else if (c === "'" || c === '"') {
+          i = scanQuoted(source, i, c);
+          continue;
+        }
+        i++;
+      }
+      continue;
+    }
+    i++;
+  }
+  return source.length;
+}
+
+/**
+ * Every RELATIVE module specifier (`./…`, `../…`) that `source` imports, in first-seen order,
+ * deduplicated. Comments, string and template literals are skipped; a quoted path counts only
+ * when it sits in import position — `from '…'`, `import '…'`, `import('…')`, `require('…')`.
+ * A regex literal containing a quote character can desynchronise the scanner for the rest of
+ * that statement (rare; the failure is a missed or spurious specifier, never a crash).
+ */
+export function extractRelativeImportSpecifiers(source: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  let code = '';
+  let i = 0;
+  const n = source.length;
+  while (i < n) {
+    const ch = source[i]!;
+    const next = source[i + 1];
+    if (ch === '/' && next === '/') {
+      const end = source.indexOf('\n', i);
+      i = end === -1 ? n : end;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const end = source.indexOf('*/', i + 2);
+      i = end === -1 ? n : end + 2;
+      continue;
+    }
+    if (ch === '`') {
+      i = skipTemplate(source, i);
+      code += ' `` ';
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      const end = scanQuoted(source, i, ch);
+      const closed = source[end - 1] === ch && end - 1 > i;
+      const value = closed ? source.slice(i + 1, end - 1) : '';
+      if (closed && /^\.\.?\//.test(value) && IMPORT_POSITION_RE.test(code.slice(-48))) {
+        if (!seen.has(value)) {
+          seen.add(value);
+          out.push(value);
+        }
+      }
+      code += ' "" ';
+      i = end;
+      continue;
+    }
+    code += ch;
+    if (code.length > 256) code = code.slice(-96);
+    i++;
+  }
+  return out;
+}
+
+/**
+ * The repo-relative paths a relative specifier from `fromPath` may name, in probe order, or
+ * null when it escapes the repository root (nothing in the tree can satisfy it; the gate's
+ * typecheck owns that error). `?raw` / `?url` / `#…` suffixes are stripped first.
+ */
+export function resolveImportCandidates(fromPath: string, specifier: string): string[] | null {
+  const bare = specifier.replace(/[?#].*$/, '');
+  const joined = posix.normalize(posix.join(posix.dirname(fromPath), bare));
+  if (joined === '..' || joined.startsWith('../') || posix.isAbsolute(joined)) return null;
+  const ext = posix.extname(joined);
+  const candidates: string[] = [];
+  const push = (p: string) => {
+    if (!candidates.includes(p)) candidates.push(p);
+  };
+  const rewrites = ext ? JS_TO_TS[ext] : undefined;
+  if (rewrites) {
+    for (const t of rewrites) push(joined.slice(0, -ext.length) + t);
+    push(joined);
+    return candidates;
+  }
+  if (ext && EXPLICIT_EXTENSIONS.has(ext)) {
+    push(joined);
+    return candidates;
+  }
+  // Extensionless, or an unknown "extension" that is really part of the name (`./foo.service`).
+  if (ext) push(joined);
+  for (const e of PROBE_EXTENSIONS) push(joined + e);
+  for (const e of PROBE_EXTENSIONS) push(posix.join(joined, 'index' + e));
+  return candidates;
+}
+
+export interface ImportCompletenessInput {
+  /** Repository root holding `commit` (and `probeRef`). */
+  root: string;
+  /** The proved admission commit whose tree the imports must resolve against. */
+  commit: string;
+  /** The admitted paths (the proved name set); non-scannable ones are reported in `skipped`. */
+  paths: readonly string[];
+  /**
+   * A ref to consult for the MISSING paths only — the shared staging tip — so `wanted` names
+   * the candidate that actually exists there and `atProbeRef` says whether admitting it closes
+   * the gap. Omit and every missing import reports `atProbeRef: 'unknown'`.
+   */
+  probeRef?: string;
+  git?: AdmissionGitRunner;
+}
+
+export interface ImportCompletenessSkip {
+  path: string;
+  reason: 'not-scanned-extension' | 'not-a-blob' | 'escapes-repo' | 'inside-submodule';
+  /** escapes-repo / inside-submodule: the specifier this refers to. */
+  specifier?: string;
+}
+
+export type ImportCompletenessOutcome =
+  | { ok: true; checked: string[]; imports: number; skipped: ImportCompletenessSkip[] }
+  | { ok: false; code: 'admission-incomplete'; missing: AdmissionMissingImport[]; checked: string[]; imports: number; skipped: ImportCompletenessSkip[] }
+  | { ok: false; code: 'git-failed'; step: string; detail: string };
+
+type ObjectKind = 'blob' | 'tree' | 'commit' | 'tag' | 'missing';
+
+/** ONE `git cat-file --batch-check` over every `<rev>:<path>` question, answered positionally. */
+function batchKinds(
+  git: AdmissionGitRunner,
+  root: string,
+  questions: readonly string[],
+): { ok: true; kinds: Map<string, ObjectKind> } | { ok: false; step: string; detail: string } {
+  const kinds = new Map<string, ObjectKind>();
+  if (questions.length === 0) return { ok: true, kinds };
+  const unique = [...new Set(questions)];
+  const r = git(['cat-file', '--batch-check=%(objecttype)'], { cwd: root, input: unique.join('\n') + '\n' });
+  if (r.status !== 0) {
+    return { ok: false, step: 'cat-file --batch-check', detail: `exited ${r.status}: ${(r.stderr || r.stdout).trim().slice(0, 400)}` };
+  }
+  const lines = r.stdout.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  if (lines.length !== unique.length) {
+    return {
+      ok: false,
+      step: 'cat-file --batch-check',
+      detail: `asked ${unique.length} question(s), got ${lines.length} answer(s)`,
+    };
+  }
+  unique.forEach((q, idx) => {
+    const line = lines[idx]!.trim();
+    if (line.endsWith(' missing') || line.endsWith(' ambiguous')) kinds.set(q, 'missing');
+    else if (line === 'blob' || line === 'tree' || line === 'commit' || line === 'tag') kinds.set(q, line);
+    else kinds.set(q, 'missing');
+  });
+  return { ok: true, kinds };
+}
+
+function ancestors(path: string): string[] {
+  const parts = path.split('/');
+  const out: string[] = [];
+  for (let i = 1; i < parts.length; i++) out.push(parts.slice(0, i).join('/'));
+  return out;
+}
+
+/**
+ * Resolve every relative import of every admitted TS/JS blob at `commit`. Synchronous and
+ * bounded: one `cat-file blob` per admitted file, one batch-check for all candidates, one more
+ * for the ancestors of anything unresolved (to tell a submodule path from a missing file), and
+ * one against `probeRef` for the missing set.
+ */
+export function checkAdmissionImportCompleteness(input: ImportCompletenessInput): ImportCompletenessOutcome {
+  const git = input.git ?? realAdmissionGit;
+  const skipped: ImportCompletenessSkip[] = [];
+  const checked: string[] = [];
+  type Ask = { from: string; specifier: string; candidates: string[] };
+  const asks: Ask[] = [];
+
+  for (const path of input.paths) {
+    const ext = posix.extname(path);
+    if (!SCANNED_EXTENSIONS.has(ext)) {
+      skipped.push({ path, reason: 'not-scanned-extension' });
+      continue;
+    }
+    const blob = git(['cat-file', 'blob', `${input.commit}:${path}`], { cwd: input.root });
+    if (blob.status !== 0) {
+      // Deleted by this admission, a symlink/gitlink, or otherwise not a blob at the commit.
+      skipped.push({ path, reason: 'not-a-blob' });
+      continue;
+    }
+    checked.push(path);
+    for (const specifier of extractRelativeImportSpecifiers(blob.stdout)) {
+      const candidates = resolveImportCandidates(path, specifier);
+      if (!candidates) {
+        skipped.push({ path, reason: 'escapes-repo', specifier });
+        continue;
+      }
+      asks.push({ from: path, specifier, candidates });
+    }
+  }
+
+  const at = (rev: string, p: string) => `${rev}:${p}`;
+  const first = batchKinds(git, input.root, asks.flatMap((a) => a.candidates.map((c) => at(input.commit, c))));
+  if (!first.ok) return { ok: false, code: 'git-failed', step: first.step, detail: first.detail };
+
+  const unresolved: Ask[] = [];
+  for (const ask of asks) {
+    const hit = ask.candidates.some((c) => first.kinds.get(at(input.commit, c)) === 'blob');
+    if (!hit) unresolved.push(ask);
+  }
+  if (unresolved.length === 0) return { ok: true, checked, imports: asks.length, skipped };
+
+  // A path under a SUBMODULE cannot be read through the superproject's tree: the candidate
+  // pins a gitlink there. That is not a missing sibling, so it is skipped, not refused.
+  const ancestorQuestions = unresolved.flatMap((a) => ancestors(a.candidates[0]!).map((d) => at(input.commit, d)));
+  const second = batchKinds(git, input.root, ancestorQuestions);
+  if (!second.ok) return { ok: false, code: 'git-failed', step: second.step, detail: second.detail };
+  const reallyMissing: Ask[] = [];
+  for (const ask of unresolved) {
+    const underGitlink = ancestors(ask.candidates[0]!).some((d) => second.kinds.get(at(input.commit, d)) === 'commit');
+    if (underGitlink) skipped.push({ path: ask.from, reason: 'inside-submodule', specifier: ask.specifier });
+    else reallyMissing.push(ask);
+  }
+  if (reallyMissing.length === 0) return { ok: true, checked, imports: asks.length, skipped };
+
+  let probe: Map<string, ObjectKind> | null = null;
+  if (input.probeRef) {
+    const third = batchKinds(git, input.root, reallyMissing.flatMap((a) => a.candidates.map((c) => at(input.probeRef!, c))));
+    if (third.ok) probe = third.kinds;
+  }
+  const missing: AdmissionMissingImport[] = reallyMissing.map((ask) => {
+    const present = probe ? ask.candidates.find((c) => probe!.get(at(input.probeRef!, c)) === 'blob') : undefined;
+    return {
+      from: ask.from,
+      specifier: ask.specifier,
+      wanted: present ?? ask.candidates[0]!,
+      tried: ask.candidates,
+      atProbeRef: probe ? (present ? 'present' : 'absent') : 'unknown',
+    };
+  });
+  return { ok: false, code: 'admission-incomplete', missing, checked, imports: asks.length, skipped };
+}
+
+/** One line per missing import, for a refusal `detail`. */
+export function renderMissingImports(missing: readonly AdmissionMissingImport[]): string {
+  return missing
+    .map((m) => {
+      const where =
+        m.atProbeRef === 'present' ? 'exists on the shared tip — admit it too'
+        : m.atProbeRef === 'absent' ? 'does not exist on the shared tip either — write it, let git-sync commit it, then admit it'
+        : 'admit it too';
+      return `${m.from} imports ${JSON.stringify(m.specifier)} → ${m.wanted} (${where})`;
+    })
+    .join('; ');
+}
+
+/**
+ * The `preflight` the admit door wires into `admitPathsOntoRepairHead` (P-004). Refuses an
+ * admission whose files import paths that do not exist at the proved commit, naming them;
+ * an instrument failure refuses too (fail closed).
+ */
+export function importCompletenessPreflight(opts: {
+  root: string;
+  probeRef?: string;
+  git?: AdmissionGitRunner;
+}): NonNullable<AdmitPathsInput['preflight']> {
+  return (built): AdmissionPreflightRefusal | null => {
+    const r = checkAdmissionImportCompleteness({
+      root: opts.root,
+      commit: built.commit,
+      paths: built.admitted,
+      probeRef: opts.probeRef,
+      git: opts.git,
+    });
+    if (r.ok) return null;
+    if (r.code === 'git-failed') return { code: 'git-failed', step: `completeness preflight: ${r.step}`, detail: r.detail };
+    return {
+      code: 'admission-incomplete',
+      missing: r.missing,
+      detail:
+        `REFUSED: admission ${built.commit.slice(0, 12)} is incomplete — ${r.missing.length} import(s) resolve to nothing at ` +
+        `the proved commit (${renderMissingImports(r.missing)}). It was NOT published and repairHead did not move; ` +
+        'the tip is never widened for you — admit the named path(s) alongside yours.',
+    };
+  };
+}

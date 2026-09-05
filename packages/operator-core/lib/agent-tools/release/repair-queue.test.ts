@@ -415,6 +415,44 @@ describe('release:repair-queue', () => {
     expect(mocks.write).not.toHaveBeenCalled();
   });
 
+  it('P-004: an admission-incomplete refusal surfaces missing[] and an admitCommand widened by exactly the wanted paths; the door wires the preflight; nothing is written', async () => {
+    mocks.admit.mockReturnValue({
+      ok: false,
+      code: 'admission-incomplete',
+      detail: 'REFUSED: admission is incomplete',
+      commit: 'e'.repeat(40),
+      missing: [
+        {
+          from: 'lib/red.test.ts',
+          specifier: './red-helper',
+          wanted: 'lib/red-helper.ts',
+          tried: ['lib/red-helper.ts', 'lib/red-helper.tsx'],
+          atProbeRef: 'present',
+        },
+      ],
+    });
+    const result = body(
+      await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      refused: true,
+      verdict: 'refused',
+      reason: 'admission-incomplete',
+      missing: [{ from: 'lib/red.test.ts', wanted: 'lib/red-helper.ts', atProbeRef: 'present' }],
+      judgedSha: queue.repairHead,
+    });
+    const admitCommand = (result as { admitCommand?: string }).admitCommand ?? '';
+    expect(admitCommand).toMatch(/op: 'admit'/);
+    expect(admitCommand).toContain('"lib/red.test.ts"');
+    expect(admitCommand).toContain('"lib/red-helper.ts"');
+    expect((admitCommand.match(/lib\/red-helper\.ts/g) ?? []).length).toBe(1);
+    expect(String((result as { note?: string }).note)).toContain('never widened');
+    // The door hands the primitive the P-004 preflight on every admission.
+    expect(mocks.admit.mock.calls[0]?.[0]).toMatchObject({ preflight: expect.any(Function) });
+    expect(mocks.write).not.toHaveBeenCalled();
+  });
+
   it('nothing-to-admit reads as already-admitted: idempotent, ok:true, no write', async () => {
     mocks.admit.mockReturnValue({ ok: false, code: 'nothing-to-admit', detail: 'every named path already has its staging content' });
     const result = body(
