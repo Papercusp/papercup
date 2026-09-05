@@ -138,6 +138,52 @@ function principalId(user: { id: number }): string {
   return `gh:${user.id}`;
 }
 
+/**
+ * May `actingUserId` act as `buyerId`? The ONE copy of that rule in the Worker.
+ *
+ * Two doors ask it — checkout (spend this buyer's money, WI-2146391) and the
+ * entitlements read (see what this buyer owns, WI-2146412) — and they must
+ * answer identically. A buyer who may not open an order must not be readable
+ * either, and the reverse would be worse: a door that refuses a purchase while
+ * a sibling door hands back the purchase history is an authorization boundary
+ * with a window cut in it.
+ *
+ * Two, and only two, ways to pass:
+ *   1. SELF — the buyer named IS the authenticated principal. Explicit string
+ *      equality against the id we just authenticated, so it is unspoofable: a
+ *      caller can only ever name themselves.
+ *   2. ORG — `authorizeOrgActor` (D-045 §3d) confirms the org exists AND the
+ *      actor is a member. That rule stays in the shared gate; this function
+ *      composes it with the self case rather than restating it, so there is
+ *      still exactly one membership rule in the tree.
+ *
+ * We deliberately do NOT reach case 2 through `resolveBuyerPrincipal`'s
+ * individual fallback. That resolver never fails — an id matching no
+ * organization comes back as an INDIVIDUAL buyer with that id — so leaning on
+ * it would make "org that does not exist" and "person" indistinguishable at a
+ * door deciding who may see or spend.
+ */
+async function authorizeBuyer(
+  buyerId: string,
+  actingUserId: string,
+  loadOrgs: (db: D1Database) => Promise<ReadonlyMap<string, Organization>>,
+  db: D1Database,
+): Promise<{ ok: true } | { ok: false; code: string; detail: string }> {
+  if (buyerId === actingUserId) return { ok: true };
+  const verdict = authorizeOrgActor(buyerId, actingUserId, await loadOrgs(db));
+  if (verdict.ok) return { ok: true };
+  // The gate's vocabulary, mapped to the wire contract. `unknown-org` is
+  // reported as a membership question rather than a 404: telling an
+  // unauthorized caller which ids exist would make either door an
+  // enumeration oracle — a refusal must not distinguish "no such buyer"
+  // from "not your buyer".
+  return {
+    ok: false,
+    code: verdict.code === 'actor-not-in-org' ? 'not_org_member' : 'org_membership_unknown',
+    detail: verdict.detail,
+  };
+}
+
 export function commerceRoute(
   options: {
     fetchImpl?: typeof fetch;
@@ -190,37 +236,16 @@ export function commerceRoute(
     }
     const request = parsed.value;
 
-    // AUTHORIZATION (WI-2146391). Ordered BEFORE the idempotent-replay branch
-    // on purpose: replay returns the original order's Checkout URL, so running
-    // this check afterwards would let a non-member replay a member's key and
-    // read back a live payment handle with a 200. An authorization check that
-    // sits behind a cache is not an authorization check.
-    //
-    // Two, and only two, ways to pass:
-    //   1. SELF — the buyer named IS the authenticated principal. Compared by
-    //      explicit string equality against the id we just authenticated, so it
-    //      is unspoofable: a caller can only ever name themselves.
-    //   2. ORG — `authorizeOrgActor` (D-045 §3d) confirms the org exists AND
-    //      the actor is a member. That rule lives in the shared gate and is not
-    //      restated here; a second copy of a membership rule is exactly the
-    //      drift the gate exists to prevent.
-    //
-    // Note we do NOT reach case 2 via `resolveBuyerPrincipal`'s individual
-    // fallback. That resolver never fails — an id matching no organization
-    // comes back as an INDIVIDUAL buyer with that id — so leaning on it would
-    // make "org that does not exist" and "person" indistinguishable at a door
-    // that is deciding whose money may be spent.
-    if (request.buyerOrgId !== actingUserId) {
-      const orgs = await loadOrgs(c.env.DB);
-      const verdict = authorizeOrgActor(request.buyerOrgId, actingUserId, orgs);
-      if (!verdict.ok) {
-        // The gate's vocabulary, mapped to this route's wire contract.
-        // `unknown-org` is reported as a membership question rather than as a
-        // 404: telling an unauthorized caller which org ids exist would make
-        // this endpoint an org-enumeration oracle.
-        const code = verdict.code === 'actor-not-in-org' ? 'not_org_member' : 'org_membership_unknown';
-        return c.json({ error: code, detail: verdict.detail }, 403);
-      }
+    // AUTHORIZATION (WI-2146391). The rule itself is `authorizeBuyer` above,
+    // shared with the entitlements read. What is specific to THIS door is the
+    // ORDERING: it runs BEFORE the idempotent-replay branch on purpose, because
+    // replay returns the original order's Checkout URL, so running this check
+    // afterwards would let a non-member replay a member's key and read back a
+    // live payment handle with a 200. An authorization check that sits behind a
+    // cache is not an authorization check.
+    const authorized = await authorizeBuyer(request.buyerOrgId, actingUserId, loadOrgs, c.env.DB);
+    if (!authorized.ok) {
+      return c.json({ error: authorized.code, detail: authorized.detail }, 403);
     }
 
     const events = await loadLedgerEvents(c.env.DB);
@@ -356,8 +381,34 @@ export function commerceRoute(
   });
 
   route.get('/commerce/entitlements', async (c) => {
+    // WI-2146412. This route used to take a `buyer` query param and answer it,
+    // full stop — so anyone who could reach the Worker could read any buyer's
+    // purchase history by guessing an id, with no bearer at all. Entitlements
+    // are what someone paid for; the read side of a commerce boundary needs the
+    // same door as the write side, and it had none.
+    //
+    // Authenticate FIRST, before even validating `buyer`: an anonymous caller
+    // should learn nothing from this endpoint, including whether their guess
+    // was well-formed.
+    let actingUserId: string;
+    try {
+      actingUserId = principalId(await resolveGithubBearer(c.req.raw));
+    } catch (err) {
+      if (err instanceof AuthError) return c.json({ error: 'unauthorized', reason: err.reason }, 401);
+      throw err;
+    }
+
     const buyer = c.req.query('buyer');
     if (!buyer) return c.json({ error: 'buyer_required' }, 400);
+
+    // Same rule as checkout, same single copy of it: you may read yourself, or
+    // an organization you belong to. A caller asking after a buyer that is
+    // neither gets the SAME 403 whether or not that buyer exists.
+    const authorized = await authorizeBuyer(buyer, actingUserId, loadOrgs, c.env.DB);
+    if (!authorized.ok) {
+      return c.json({ error: authorized.code, detail: authorized.detail }, 403);
+    }
+
     const entitlements = await listActiveEntitlements(c.env.DB, buyer);
     return c.json({ buyer, entitlements });
   });

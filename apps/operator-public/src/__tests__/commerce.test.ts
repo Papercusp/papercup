@@ -41,7 +41,10 @@ function sign(rawBody: string, timestampSec: number, material = SIGNING_FIXTURE)
   return `t=${timestampSec},v1=${mac}`;
 }
 
-function harness(overrides: Partial<Env> = {}, options: { fetchImpl?: typeof fetch } = {}) {
+function harness(
+  overrides: Partial<Env> = {},
+  options: Parameters<typeof buildApi>[0] = {},
+) {
   const { db, raw } = makeSqliteDb();
   const { env } = makeEnv({ STRIPE_WEBHOOK_SECRET: SIGNING_FIXTURE, ...overrides });
   env.DB = db;
@@ -224,39 +227,141 @@ describe('POST /commerce/webhooks/:provider — ingestion', () => {
   });
 });
 
+/**
+ * `buyer-1` is the buyer the ledger fixture books its order to (`seedOrder`),
+ * so it is the org whose entitlements these tests read. `loadOrgs` is injected
+ * for the same reason as in the checkout suite: production has no org writer
+ * yet, so the member-permitted branch would otherwise be unreachable.
+ */
 describe('GET /commerce/entitlements', () => {
+  const BUYER_ORG = 'buyer-1';
+  const MEMBER = 'gh:42'; // what the mocked bearer below resolves to
+  const STRANGER = 'gh:99';
+
+  function entitlementsHarness(memberships: Array<{ userId: string; role: 'owner' | 'member' }> = [{ userId: MEMBER, role: 'member' }]) {
+    const orgs = new Map([
+      [BUYER_ORG, { orgId: BUYER_ORG, displayName: 'Buyer One', memberships: memberships.map((m) => ({ ...m, addedAtMs: 1_000 })) }],
+    ]);
+    // STRIPE_SECRET_KEY is set so the checkout door in the agreement test below
+    // reaches its authorization check rather than short-circuiting on a 503.
+    return harness({ STRIPE_SECRET_KEY: 'test-secret-material' }, { loadOrgs: async () => orgs });
+  }
+
+  /** Grant the entitlement the reads below look for. */
+  async function grant(api: ReturnType<typeof buildApi>, env: Env, raw: ReturnType<typeof makeSqliteDb>['raw']) {
+    seedOrder(raw);
+    const body = stripeBody();
+    await post(api, env, body, sign(body, NOW_SEC));
+  }
+
+  beforeEach(() => {
+    auth.resolveGithubBearer.mockReset();
+    auth.resolveGithubBearer.mockResolvedValue({ id: 42, login: 'buyer-user' });
+  });
+
+  // THE REGRESSION TEST (WI-2146412). This route once answered any caller who
+  // named a buyer, with no bearer at all — a stranger could read anyone's
+  // purchase history by guessing an id.
+  it('401s an ANONYMOUS caller, disclosing no entitlements', async () => {
+    const { api, env, raw } = entitlementsHarness();
+    await grant(api, env, raw);
+    auth.resolveGithubBearer.mockRejectedValue(new AuthError('missing_bearer'));
+
+    const res = await api.request(`/commerce/entitlements?buyer=${BUYER_ORG}`, {}, env);
+    expect(res.status).toBe(401);
+    const json = await res.json() as { error: string; reason: string; entitlements?: unknown };
+    expect(json.error).toBe('unauthorized');
+    expect(json.reason).toBe('missing_bearer');
+    // The entitlement really does exist — this is a refusal, not an empty read.
+    expect(json.entitlements).toBeUndefined();
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM commerce_entitlements WHERE state = 'active'").get())
+      .toMatchObject({ n: 1 });
+  });
+
+  it('authenticates BEFORE validating the buyer param — an anonymous caller learns nothing', async () => {
+    const { api, env } = entitlementsHarness();
+    auth.resolveGithubBearer.mockRejectedValue(new AuthError('github_rejected'));
+    const res = await api.request('/commerce/entitlements', {}, env);
+    expect(res.status).toBe(401);
+    expect((await res.json() as { error: string }).error).toBe('unauthorized');
+  });
+
   it('requires a buyer', async () => {
-    const { api, env } = harness();
+    const { api, env } = entitlementsHarness();
     const res = await api.request('/commerce/entitlements', {}, env);
     expect(res.status).toBe(400);
     expect((await res.json() as { error: string }).error).toBe('buyer_required');
   });
 
-  it('serves only ACTIVE entitlements, and only the asking buyer’s', async () => {
-    const { api, env, raw } = harness();
-    seedOrder(raw);
-    const body = stripeBody();
-    await post(api, env, body, sign(body, NOW_SEC));
+  it('serves only ACTIVE entitlements to a MEMBER of the buying org', async () => {
+    const { api, env, raw } = entitlementsHarness();
+    await grant(api, env, raw);
 
-    const mine = await api.request('/commerce/entitlements?buyer=buyer-1', {}, env);
+    const mine = await api.request(`/commerce/entitlements?buyer=${BUYER_ORG}`, {}, env);
     expect(mine.status).toBe(200);
     const json = await mine.json() as { buyer: string; entitlements: Array<{ product_id: string; state: string }> };
-    expect(json.buyer).toBe('buyer-1');
+    expect(json.buyer).toBe(BUYER_ORG);
     expect(json.entitlements).toHaveLength(1);
     expect(json.entitlements[0]).toMatchObject({ product_id: 'prod-1', state: 'active' });
+  });
 
-    const other = await api.request('/commerce/entitlements?buyer=buyer-2', {}, env);
-    expect((await other.json() as { entitlements: unknown[] }).entitlements).toEqual([]);
+  it('permits the SELF case: the buyer named IS the authenticated principal', async () => {
+    const { api, env } = entitlementsHarness([]);
+    const res = await api.request(`/commerce/entitlements?buyer=${MEMBER}`, {}, env);
+    expect(res.status).toBe(200);
+    expect((await res.json() as { buyer: string }).buyer).toBe(MEMBER);
+  });
+
+  it('403s a NON-MEMBER of the buying org, disclosing no entitlements', async () => {
+    const { api, env, raw } = entitlementsHarness([{ userId: STRANGER, role: 'owner' }]);
+    await grant(api, env, raw);
+
+    const res = await api.request(`/commerce/entitlements?buyer=${BUYER_ORG}`, {}, env);
+    expect(res.status).toBe(403);
+    const json = await res.json() as { error: string; entitlements?: unknown };
+    expect(json.error).toBe('not_org_member');
+    expect(json.entitlements).toBeUndefined();
+  });
+
+  it('403s a buyer that is neither the principal nor an org they belong to', async () => {
+    // `resolveBuyerPrincipal` would have resolved this to an INDIVIDUAL buyer
+    // named 'someone-else'; the shared gate asserts kind === 'organization'
+    // instead, which is what makes this a refusal rather than a comparison
+    // that lets one person read another's purchases.
+    const { api, env } = entitlementsHarness([]);
+    const res = await api.request('/commerce/entitlements?buyer=someone-else', {}, env);
+    expect(res.status).toBe(403);
+    expect((await res.json() as { error: string }).error).toBe('org_membership_unknown');
+  });
+
+  it('refuses a principal naming ANOTHER user’s id — self is equality, not a namespace', async () => {
+    const { api, env } = entitlementsHarness([]);
+    const res = await api.request(`/commerce/entitlements?buyer=${STRANGER}`, {}, env);
+    expect(res.status).toBe(403);
+  });
+
+  // The read door and the write door must answer the same question the same
+  // way: a buyer you may not spend for is a buyer you may not read either.
+  it('agrees with the checkout door: same buyer, same principal, same verdict', async () => {
+    const { api, env } = entitlementsHarness([{ userId: STRANGER, role: 'owner' }]);
+    const read = await api.request(`/commerce/entitlements?buyer=${BUYER_ORG}`, {}, env);
+    const write = await api.request(
+      '/commerce/checkout-sessions',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...CHECKOUT_BODY, buyerOrgId: BUYER_ORG }) },
+      env,
+    );
+    expect(read.status).toBe(403);
+    expect(write.status).toBe(403);
+    expect((await read.json() as { error: string }).error).toBe((await write.json() as { error: string }).error);
   });
 
   it('stops serving an entitlement once it is revoked', async () => {
-    const { api, env, raw } = harness();
-    seedOrder(raw);
-    const paid = stripeBody();
-    await post(api, env, paid, sign(paid, NOW_SEC));
+    const { api, env, raw } = entitlementsHarness();
+    await grant(api, env, raw);
     raw.prepare("UPDATE commerce_entitlements SET state = 'revoked' WHERE entitlement_id = 'ent:order-1'").run();
 
-    const res = await api.request('/commerce/entitlements?buyer=buyer-1', {}, env);
+    const res = await api.request(`/commerce/entitlements?buyer=${BUYER_ORG}`, {}, env);
+    expect(res.status).toBe(200);
     expect((await res.json() as { entitlements: unknown[] }).entitlements).toEqual([]);
   });
 });
