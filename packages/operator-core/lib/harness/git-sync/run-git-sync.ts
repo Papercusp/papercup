@@ -1005,12 +1005,12 @@ export interface GitSyncConfig {
   /** Sync submodules too (default true). When true, ALL submodules are synced
    *  recursively — discovery is dynamic, never a fixed list. */
   pushSubmodules?: boolean;
-  /** Push SUBMODULE repos to THEIR OWN origins (default true) — independent of `push`,
+  /** Push SUBMODULE repos to THEIR OWN origins (defaults to `push`) — independent of `push`,
    *  which now controls the superproject only (EI-18689553108460319). A bridged/p2p-only
    *  hive's `push:false` exists so the bridge writer stays the sole pusher of the hive's
    *  own canonical superproject refs (github-bridge-hive-egress P-003/S-1); that rationale
    *  does not extend to submodules, each an independent GitHub repo the bridge never
-   *  touches — so they keep pushing normally unless this is explicitly set false too. */
+   *  touches. Non-legacy callers also require owning-hive authorization at each push. */
   pushSubmoduleOrigins?: boolean;
   /** Reconcile the SUPERPROJECT worktree with its configured Git remote
    *  (fetch + merge) before an optional push. Default true.
@@ -1286,6 +1286,10 @@ export interface RunGitSyncOpts {
   repoPath?: string | null;
   /** Inject the git runner (tests). */
   runGit?: RunGit;
+  /** Authorize every push at the child-process boundary, including transport and
+   * non-fast-forward retries. Non-legacy hive callers must supply the owner gate.
+   * A refusal leaves local commits intact and is reported as a publication error. */
+  beforePush?: (args: readonly string[], cwd: string) => Promise<void>;
   /** Called whenever the default git runner observes command progress. */
   onProgress?: () => void;
   /** Abort a default git child when the owning fire is declared stalled. */
@@ -4021,6 +4025,15 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const runGit: RunGit = async (args, cwd) => {
     throwIfAborted();
     reportProgress();
+    if (gitSubcommand(args) === 'push' && opts.beforePush) {
+      try {
+        await opts.beforePush(args, cwd);
+      } catch (error) {
+        throwIfAborted();
+        return { code: 1, stdout: '', stderr: `git-sync publication refused: ${error instanceof Error ? error.message : String(error)}` };
+      }
+      throwIfAborted();
+    }
     const result = await baseRunGit(args, cwd);
     reportProgress();
     throwIfAborted();
