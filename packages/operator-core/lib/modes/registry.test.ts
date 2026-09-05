@@ -481,6 +481,10 @@ describe('GOAL mode', () => {
     expect(c).toContain('SETTINGS ARE DATA');
     expect(c).toMatch(/editable by\s*\n?the owner|goal's detail popup/i);
     expect(c).toMatch(/never hardcode a number/i);
+    expect(c).toMatch(/YOU choose each launch's count and role models/i);
+    expect(c).toMatch(/profiles are the current policy\/default layer/i);
+    expect(c).toMatch(/pass any deliberate override/i);
+    expect(c).toMatch(/Never delegate that choice to the child fleet\s*\n?leader/i);
     // a value remembered from an earlier wake is stale by construction
     expect(c).toMatch(/may have changed it while/i);
   });
@@ -499,6 +503,8 @@ describe('GOAL mode', () => {
     // becomes the leader) and this guard asserted THAT phrasing. D-012 bound P-009 to
     // replace the argument and the clause together; this is the tightened form.
     expect(c).toMatch(/leader:\s*'spawn'/);
+    expect(c).toMatch(/select the plan,\s*\n?\s*fleet width, and leader\/member model/i);
+    expect(c).toMatch(/spawned leader executes and\s*\n?\s*supervises.*does not choose/i);
     // The two-hop route must be GONE, not merely supplemented. A contract is re-injected
     // on every wake, so a superseded route left standing beside the current one is not
     // harmless redundancy — it is a second, WRONG answer carrying equal authority, and a
