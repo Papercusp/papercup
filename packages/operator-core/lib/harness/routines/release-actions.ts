@@ -27,7 +27,13 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { appendPipelineEvent } from '../git-sync/pipeline-events';
-import { recordGateFire } from '../../release/gate-fire-ledger';
+import {
+  GATE_FIRE_ID_ENV,
+  gateFireIdFromEnv,
+  isGateFireId,
+  mintGateFireId,
+  recordGateFire,
+} from '../../release/gate-fire-ledger';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../../release/gate-verdict-target';
 import { pipelineName, pipelineRef, pipelineTag } from '../../release/pipeline-name';
@@ -704,6 +710,8 @@ export interface CheckpointVerdict {
   /** WI-4957: this run's own identity (structural mirror of CheckpointResult.runId) —
    *  distinguishes two runs that happen to judge the same candidate sha. */
   runId?: string;
+  /** Stable identity shared by this fire's anchor and terminal/pending outcome rows. */
+  gateFireId?: string;
   /** WI-22344736163383832: candidate-selection timestamp, when the producer can attest it. */
   selectedAtMs?: number;
   /** WI-4957: the full-suite output log this run wrote (structural mirror of
@@ -1182,8 +1190,14 @@ export async function publishSignedGateVerdicts(
 /** The pipeline-event `detail` blob for a checkpoint verdict. Shared by BOTH recorders (the CLI's
  *  producer-side write and the routine's fallback) so a manual run's history row is identical to a
  *  routine run's — the /admin/git timeline must not be able to tell who launched the suite. */
-export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unknown> {
+export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?: string): Record<string, unknown> {
   const detail: Record<string, unknown> = { green: v.green ?? null };
+  const gateFireId = isGateFireId(v.gateFireId)
+    ? v.gateFireId
+    : isGateFireId(fallbackGateFireId)
+      ? fallbackGateFireId
+      : gateFireIdFromEnv();
+  if (gateFireId) detail.gateFireId = gateFireId;
   if (isPinnedCheckpointVerdict(v)) detail.candidateSource = 'pinned';
   else if (v.candidateSource) detail.candidateSource = v.candidateSource;
   if (v.diagnostic) detail.diagnostic = v.diagnostic;
@@ -1642,9 +1656,14 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // a visible noop). `root` is the best-known-at-entry default — per-hive routing hasn't
   // resolved yet, and MUST NOT run first: its dynamic import can throw, which is exactly the
   // vanished-fire class the anchor exists to record.
+  const gateFireId = mintGateFireId();
+  const withGateFireId = (detail: Record<string, unknown>): Record<string, unknown> => ({
+    ...detail,
+    gateFireId,
+  });
   await recordGateFire(
     { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug },
-    { route: 'scheduled', root: integrationRoot() },
+    { route: 'scheduled', root: integrationRoot(), gateFireId },
   );
   const routing = await resolveCheckpointRouting(ctx, integrationRoot());
   if (routing.skip) {
@@ -1654,7 +1673,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       installSlug: ctx.installSlug,
       kind: 'green_checkpoint',
       status: 'skipped-disabled',
-      detail: { reason: routing.skip.reason },
+      detail: withGateFireId({ reason: routing.skip.reason }),
     });
     // EI-17065: a green-checkpoint-{stall,watchdog} escalation for THIS installSlug can
     // never self-clear once the gate stops being routable — trackGateStall (the only
@@ -1707,7 +1726,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       installSlug: ctx.installSlug,
       kind: 'green_checkpoint',
       status: 'skipped-no-tooling',
-      detail: { reason: tooling.reason, root },
+      detail: withGateFireId({ reason: tooling.reason, root }),
     });
     return;
   }
@@ -1736,7 +1755,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       installSlug: ctx.installSlug,
       kind: 'green_checkpoint',
       status: held ? 'skipped-held' : 'skipped-admission-unknown',
-      detail: held
+      detail: withGateFireId(held
         ? {
             governingRef: admission.hold.governingRef,
             blockingItems: admission.hold.blockingItems ?? [],
@@ -1744,7 +1763,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
             placedBy: admission.hold.placedBy ?? null,
             placedAtMs: admission.hold.placedAtMs ?? null,
           }
-        : { reason: admission.reason },
+        : { reason: admission.reason }),
     });
     return;
   }
@@ -1772,7 +1791,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       installSlug: ctx.installSlug,
       kind: 'green_checkpoint',
       status: 'skipped-memory-budget',
-      detail: {
+      detail: withGateFireId({
         reason: memoryAdmission.reason,
         requestG: memoryAdmission.requestG,
         committedG: memoryAdmission.committedG,
@@ -1780,7 +1799,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
         scopes: memoryAdmission.scopes,
         unbounded: memoryAdmission.unbounded,
         retryAfterMinutes: TRANSIENT_ABORT_REQUEUE_MINS,
-      },
+      }),
     });
     // A capacity refusal is safe but not terminal: the competing scopes are expected to
     // drain before the next hourly cron. Reuse the same forward-only/pause-aware requeue
@@ -1811,6 +1830,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     // exactly as before. The env is what makes that skew safe in both directions.
     {
       ...routing.extraEnv,
+      [GATE_FIRE_ID_ENV]: gateFireId,
       ...gateVerdictEnv({ workspaceId: ctx.workspaceId, installSlug: ctx.installSlug }),
       // WI-4310: the suite's child process must not inherit a large host pool and
       // starve routinesTick's shared org-admin pool. The checkpoint-specific knob
@@ -1882,9 +1902,9 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       kind: 'green_checkpoint',
       status,
       detail: parsed?.reason
-        ? buildCheckpointDetail(parsed)
+        ? buildCheckpointDetail(parsed, gateFireId)
         : // No parseable result marker (crash before print / non-zero exit) → 'error'.
-          { code: r.code, stderr: (r.stderr || r.stdout).slice(-300) },
+          withGateFireId({ code: r.code, stderr: (r.stderr || r.stdout).slice(-300) }),
     });
     // EI-20981232855780375: an old CLI can record the red result but cannot emit the
     // candidate-bound awaitable wake. Keep this strictly on the parsed red fallback;
@@ -5165,6 +5185,24 @@ export async function dispatchReleaseFixer(
   failingTests?: string[],
   repairQueue?: FrozenCandidateRepairQueue,
 ): Promise<{ spawnId: string | null; runId: string | null } | null> {
+  // workspace-work-scope-policy-2026-09-04 P-008: an out-of-scope install's gate still runs
+  // (verdict-only) but never SPAWNS a release-fixer for it. Denials land on the policy
+  // ledger; with no policy set this is one cached read and byte-identical behaviour.
+  {
+    const { gateWorkScope } = await import('../../work-scope-policy');
+    const scope = await gateWorkScope('release-fixer', { harness: ctx.installSlug, actor: 'green-checkpoint' });
+    if (!scope.allowed) {
+      console.log(`${orchestratorStdoutTag()} release-fixer dispatch skipped for ${ctx.installSlug}: ${scope.message}`);
+      await appendPipelineEvent({
+        workspaceId: ctx.workspaceId,
+        installSlug: ctx.installSlug,
+        kind: 'green_checkpoint',
+        status: 'release-fixer-skipped-scope',
+        detail: { candidate: candidate.slice(0, 12), allowHarnesses: scope.allowHarnesses },
+      }).catch(() => {});
+      return null;
+    }
+  }
   // EI-8718: cheap re-verify BEFORE touching dedup state — a candidate that's gone stale
   // between the checkpoint run reporting it and this dispatch call gets a no-op skip
   // instead of a wasted fixer spawn. Best-effort: a check failure (e.g. no repo at
