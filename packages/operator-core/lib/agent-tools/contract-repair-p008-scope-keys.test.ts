@@ -177,6 +177,97 @@ describe('P-008 scheduler scope keys', () => {
     expect(note).toMatch(/inverted|does take|DOES take/i);
   });
 
+  /**
+   * The second get_claim_spec population, measured 2026-09-05 on the OPEN filings rather
+   * than on the plan manifest: of 24 open rows against this tool, 11 are the `harness`
+   * key above and 3 are an id the caller was ALREADY HOLDING and could not spend —
+   * `specId` and `spec` off a claim receipt (EI-21659569223378788, EI-21825767595982783)
+   * and `goalId` from a goal-named fleet (EI-21834535376765161). These are not scope
+   * forwarding: the caller has a legitimate handle on the right lane and no way to turn
+   * it into a selector, which is why every one of the three filings reports a retry that
+   * eventually SUCCEEDED with `fleet`. The redirect exists to make that translation the
+   * first move instead of the third.
+   */
+  it('scheduler:get_claim_spec translates receipt/goal handles (`specId`, `spec`, `goalId`) back to a selector', () => {
+    expectRedirectsStayRedirects(getClaimSpecTool as ToolLike, 'scheduler:get_claim_spec', [
+      'specId',
+      'spec',
+      'goalId',
+    ]);
+
+    // specId: the note must kill the by-id read outright. A caller told only "use fleet"
+    // still reasonably assumes a by-id read exists somewhere and goes looking for it.
+    const specIdNote = expectCorrectiveCall(
+      getClaimSpecTool as ToolLike,
+      'scheduler:get_claim_spec',
+      'specId',
+      { tool: 'scheduler:get_claim_spec', args: { fleet: '<fleet-slug>' } },
+    );
+    expect(specIdNote).toMatch(/no by-id read|not by its own id/i);
+    // …and must name where PRIOR revisions actually live, since that is what a caller
+    // holding a superseded specId is usually after.
+    expect(specIdNote).toContain('history');
+
+    // spec: a read verb being handed the thing it returns. The remedy is the WRITE verb,
+    // and naming it has to carry the inverted scope args or it just moves the failure.
+    const specNote = expectCorrectiveCall(
+      getClaimSpecTool as ToolLike,
+      'scheduler:get_claim_spec',
+      'spec',
+      { tool: 'scheduler:get_claim_spec', args: { fleet: '<fleet-slug>' } },
+    );
+    expect(specNote).toContain('scheduler:set_claim_spec');
+
+    // goalId: the trap is that the fleet is frequently NAMED after the goal, so the two
+    // strings look interchangeable and are not. Say that, not just "wrong key".
+    const goalNote = expectCorrectiveCall(
+      getClaimSpecTool as ToolLike,
+      'scheduler:get_claim_spec',
+      'goalId',
+      { tool: 'scheduler:get_claim_spec', args: { fleet: '<fleet-slug>' } },
+    );
+    expect(goalNote).toMatch(/named after the goal/i);
+  });
+
+  /**
+   * The third population: 8 of the 24 open rows never reach argRedirects at all, because
+   * they pass a DECLARED key (or none). Both selectors are `.optional()` — the only
+   * truthful JSON-schema encoding of "exactly one of", since neither is required alone —
+   * so a schema reader calls with neither (a fleet member expecting an implicit "my
+   * lane": EI-21546528545704078, EI-21557878574461629, EI-21663089310545461) or with
+   * both (EI-21510124313278983). `invalidInputCorrections` runs only over UNRECOGNIZED
+   * keys, so the refusal text is the single surface these callers ever meet — and the
+   * old text restated the rule they had just misread without naming a next call.
+   *
+   * Asserting on the parse output, not on source: this is the string the caller sees.
+   */
+  it('scheduler:get_claim_spec names a concrete next call for BOTH exactly-one failures', () => {
+    const schema = getClaimSpecTool.args as {
+      safeParse: (v: unknown) => { success: boolean; error?: { issues: { message: string }[] } };
+    };
+
+    const neither = schema.safeParse({});
+    expect(neither.success, 'a no-selector call must still be refused').toBe(false);
+    const neitherMsg = neither.error!.issues.map((i) => i.message).join(' ');
+    // The remedy the three fleet-member filings needed: where their own slug comes from.
+    expect(neitherMsg).toMatch(/fleetSlug/);
+    expect(neitherMsg).toMatch(/no implicit/i);
+
+    const both = schema.safeParse({ cupId: 'cup-1', fleet: 'fleet-a' });
+    expect(both.success, 'a both-selectors call must still be refused').toBe(false);
+    const bothMsg = both.error!.issues.map((i) => i.message).join(' ');
+    expect(bothMsg).toMatch(/BOTH/);
+    // The two branches must actually DIFFER — a single static string trivially satisfies
+    // any one-sided assertion here, which is exactly what this replaced.
+    expect(bothMsg).not.toBe(neitherMsg);
+
+    // Falsifiability control: the valid single-selector calls must still PASS, or the
+    // two refusals above prove nothing about the refinement (a schema that rejects
+    // everything would satisfy them both).
+    expect(schema.safeParse({ fleet: 'fleet-a' }).success).toBe(true);
+    expect(schema.safeParse({ cupId: 'cup-1' }).success).toBe(true);
+  });
+
   it('scheduler:running sends `fleet`/`plan` to fleet:assignments, the fleet-scoped roster', () => {
     expectRedirectsStayRedirects(scopedRunning(), 'scheduler:running', ['fleet', 'plan']);
     // It DOES declare harness/cup — that is why the redirects point elsewhere rather
