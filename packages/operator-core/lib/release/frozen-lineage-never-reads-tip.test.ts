@@ -223,14 +223,20 @@ describe('no age, stall or fossil clock ever clears a queue row (P-009/P-010)', 
 
   it('every queue-clearing write sits on a sanctioned path: promotion, or the WI-2141347 converged-head retest', () => {
     const sites = [...GATE_SOURCE.matchAll(/writeFrozenRepairQueue!?\??\.?\(\s*null\s*\)/g)];
-    // Exactly the two sanctioned shapes. A new one must be argued into this list, not added.
-    expect(sites.length, 'a new writeFrozenRepairQueue(null) site appeared').toBe(2);
+    // Exactly the sanctioned shapes. A new one must be argued into this list, not added.
+    // 2 (P-013) + 2 (P-008, 2026-09-04: the post-promotion staging bridge and its crash
+    // recovery — both run only AFTER `main` has already advanced to the proven lineage).
+    expect(sites.length, 'a new writeFrozenRepairQueue(null) site appeared').toBe(4);
     const SANCTIONED = [
       // The lineage's own repairHead has converged past the frozen candidate: its bookkeeping row
       // is dropped but the CONVERGED repairHead (a sha on the lineage) is what gets tested next.
       /WI-2141347/,
       // `main` was fast-forwarded to the lineage: the queue has done its job.
       /repairPromotionAdvance/,
+      // P-008 (D-004): staging absorbs the ALREADY-PROMOTED lineage (`merge -s ours`), then the
+      // ready-to-promote row is cleared — on the promotion pass, or on the next pass when the
+      // process died between main's fast-forward and the bridge. Never before main advanced.
+      /P-008 post-promotion|absorbPromotedLineageIntoStaging/,
     ];
     for (const site of sites) {
       const window = GATE_SOURCE.slice(Math.max(0, site.index! - 2500), site.index!);
@@ -451,7 +457,9 @@ describe('a green repair head promotes; it is never joined into the tip (P-007, 
  */
 describe('re-triage never re-runs at, or refires on, the integration tip while a queue row exists (P-024)', () => {
   const start = GATE_SOURCE.indexOf('// Stale-candidate re-triage:');
-  const end = GATE_SOURCE.indexOf('"superseded-by-refire"');
+  // The CALL, not the reason string: `"superseded-by-refire"` is also a member of the promotion
+  // reason union declared thousands of lines earlier.
+  const end = GATE_SOURCE.indexOf('stampPromotion(false, "superseded-by-refire")', Math.max(0, start));
   const block = start > -1 && end > start ? GATE_SOURCE.slice(start, end) : '';
 
   it('the re-triage block exists and ends in the refire recursion', () => {
@@ -468,11 +476,20 @@ describe('re-triage never re-runs at, or refires on, the integration tip while a
   });
 
   it('every remaining mention of the tip resolver in the block is the resolver INPUT, not a read the block performs', () => {
-    const mentions = [...block.matchAll(/deps\.resolveTip/g)];
+    // CODE only — the block's own docblock names `deps.resolveTip` to explain this rule.
+    const code = block
+      .split('\n')
+      .filter((line) => !/^\s*\/\//.test(line))
+      .join('\n');
+    const mentions = [...code.matchAll(/deps\.resolveTip/g)];
     expect(mentions.length, 'the resolver must be handed the tip reader as its no-row input').toBeGreaterThan(0);
     for (const m of mentions) {
-      const before = block.slice(Math.max(0, m.index! - 160), m.index!);
-      expect(before, `bare deps.resolveTip read at block offset ${m.index}`).toMatch(/resolveIntegrationTip|deps\.resolveTip\s*$/);
+      // The mention must sit INSIDE the resolver's `resolveIntegrationTip:` input (the guard and
+      // the call share one line), never as a value assigned to something the block then judges.
+      const around = code.slice(Math.max(0, m.index! - 160), m.index! + 160);
+      expect(around, `bare deps.resolveTip read at block offset ${m.index}`).toMatch(/resolveIntegrationTip/);
+      const line = code.slice(code.lastIndexOf('\n', m.index!) + 1, code.indexOf('\n', m.index!));
+      expect(line, `deps.resolveTip assigned to a judged value at block offset ${m.index}`).not.toMatch(/^\s*(const|let)\s+\w+\s*=/);
     }
   });
 
