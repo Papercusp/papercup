@@ -315,6 +315,7 @@ function compactSummary(value: unknown, ultra = false): unknown {
     'fleetExecutionCollapseAlert',
     'fleetHeadcountVsExecutableFrontierAlert',
     'leaderBlockerStallAlert',
+    'customInvariantAlert',
     'unowned_criticals',
     'unowned_criticals_federated',
     'abandoned_unclaimed',
