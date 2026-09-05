@@ -2151,11 +2151,15 @@ export async function resolveGoalLaunchForGoal(args: {
   // P-006 (D-001/D-003): goals.budget_cents is a BINDING ceiling over the
   // platform spend snapshot, checked FIRST — an exhausted budget refuses the
   // launch regardless of agent headroom, and a formed refusal skips the
-  // headcount read entirely. Same fail-open stance as the agent ceilings (see
-  // the module header): a truth this gate cannot read is reported degraded,
-  // never silently enforced and never silently skipped. `>=` and not `>`: the
-  // budget is a ceiling, so a goal that has REACHED it is out of budget — an
-  // off-by-one here admits one launch past every budget in the workspace.
+  // headcount read entirely. The snapshot is authoritative only when its
+  // provenance marker identifies one of the platform writers; a legacy or
+  // otherwise unmarked value is reported degraded and fails OPEN rather than
+  // refusing launches on a population the gate cannot verify. Same fail-open
+  // stance as the agent ceilings (see the module header): a truth this gate
+  // cannot read is reported degraded, never silently enforced and never
+  // silently skipped. `>=` and not `>`: the budget is a ceiling, so a goal
+  // that has REACHED it is out of budget — an off-by-one here admits one launch
+  // past every budget in the workspace.
   let refusal: GoalLaunchRefusal | null = null;
   if (budget?.budgetCents != null) {
     const gate = await budgetLaunchGateEnabled();
@@ -2167,6 +2171,12 @@ export async function resolveGoalLaunchForGoal(args: {
           `budget ceiling not enforced — goal ${goalId} declares budget_cents=${budget.budgetCents} but has no ` +
             `platform spend snapshot yet (metadata.spentCents is written by the goal-spend-rollup tick; D-003 ` +
             `forbids inventing one)`,
+        );
+      } else if (budgetSpendScope(budget.spentCentsSource) !== REFUSAL_SCOPES.BUDGET_POT) {
+        degradedReasons.push(
+          `budget ceiling not enforced — goal ${goalId} has spentCents=${budget.spentCents} but no recognized ` +
+            `platform spend provenance marker (metadata.spentCentsSource must be 'goal-pots-rollup' or ` +
+            `'goal-spend-tick'; D-003 forbids treating an unmarked legacy value as authoritative)`,
         );
       } else if (budget.spentCents >= budget.budgetCents) {
         const spendScope = budgetSpendScope(budget.spentCentsSource);

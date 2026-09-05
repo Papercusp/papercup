@@ -92,7 +92,12 @@ interface MockOpts {
    *  ⇒ string) and spent_cents as the jsonb scalar `metadata->'spentCents'`. */
   budget?: Record<
     string,
-    { budget_cents?: number | string | null; spent_cents?: unknown; spent_cents_at?: string | null }
+    {
+      budget_cents?: number | string | null;
+      spent_cents?: unknown;
+      spent_cents_at?: string | null;
+      spent_cents_source?: string | null;
+    }
   >;
   /** Goal-owned fields that share the launch-policy row read. */
   brief?: Record<
@@ -192,6 +197,7 @@ function mockSql(opts: MockOpts = {}): Sql {
           budget_cents: b?.budget_cents ?? null,
           spent_cents: b?.spent_cents ?? null,
           spent_cents_at: b?.spent_cents_at ?? null,
+          spent_cents_source: b?.spent_cents_source ?? null,
         },
       ]);
     }
@@ -1811,7 +1817,12 @@ describe('P-006: the budget launch gate', () => {
   });
 
   const launchWithBudget = (
-    budget: { budget_cents?: number | string | null; spent_cents?: unknown; spent_cents_at?: string | null },
+    budget: {
+      budget_cents?: number | string | null;
+      spent_cents?: unknown;
+      spent_cents_at?: string | null;
+      spent_cents_source?: string | null;
+    },
     seen?: string[],
   ) =>
     resolveGoalLaunch({
@@ -1827,7 +1838,12 @@ describe('P-006: the budget launch gate', () => {
   it('refuses at spent == budget (the ceiling is inclusive) and skips the headcount read', async () => {
     const seen: string[] = [];
     const r = await launchWithBudget(
-      { budget_cents: 5000, spent_cents: 5000, spent_cents_at: '2026-08-17T03:00:00Z' },
+      {
+        budget_cents: 5000,
+        spent_cents: 5000,
+        spent_cents_at: '2026-08-17T03:00:00Z',
+        spent_cents_source: 'goal-pots-rollup',
+      },
       seen,
     );
     expect(r.refusal).not.toBeNull();
@@ -1845,26 +1861,38 @@ describe('P-006: the budget launch gate', () => {
     // the control PASSES a spent==budget launch that the real gate refuses.
     const wrongExceeds = (spent: number, budget: number): boolean => spent > budget;
     expect(wrongExceeds(5000, 5000)).toBe(false); // the mutant admits it…
-    const r = await launchWithBudget({ budget_cents: 5000, spent_cents: 5000 });
+    const r = await launchWithBudget({
+      budget_cents: 5000,
+      spent_cents: 5000,
+      spent_cents_source: 'goal-pots-rollup',
+    });
     expect(r.refusal?.reason).toBe('goal_budget_exceeded'); // …the real gate refuses it
   });
 
   it('admits under budget, surfaces the truth for display, and the agent ceilings still apply', async () => {
     const seen: string[] = [];
-    const r = await launchWithBudget({ budget_cents: 5000, spent_cents: 4999 }, seen);
+    const r = await launchWithBudget(
+      { budget_cents: 5000, spent_cents: 4999, spent_cents_source: 'goal-pots-rollup' },
+      seen,
+    );
     expect(r.refusal).toBeNull();
+    expect(r.degraded).toBe(false);
     expect(r.budget).toEqual({
       budgetCents: 5000,
       spentCents: 4999,
       spentCentsAt: null,
-      spentCentsSource: null,
+      spentCentsSource: 'goal-pots-rollup',
     });
     // Under budget the D-015 default ceilings still get their headcount.
     expect(seen.some((s) => s.includes('FROM harness_shared.session_briefs b'))).toBe(true);
   });
 
   it('coerces the bigint string budget_cents pg actually hands over', async () => {
-    const r = await launchWithBudget({ budget_cents: '7000', spent_cents: 7000 });
+    const r = await launchWithBudget({
+      budget_cents: '7000',
+      spent_cents: 7000,
+      spent_cents_source: 'goal-spend-tick',
+    });
     expect(r.refusal?.reason).toBe('goal_budget_exceeded');
     expect(r.refusal?.limit).toBe(7000);
   });
@@ -1875,6 +1903,23 @@ describe('P-006: the budget launch gate', () => {
     expect(r.degraded).toBe(true);
     expect(r.degradedReasons.some((s) => s.includes('budget ceiling not enforced'))).toBe(true);
     expect(r.degradedReasons.some((s) => s.includes('no platform spend snapshot'))).toBe(true);
+  });
+
+  it('fails OPEN when spentCents has no recognized provenance — legacy values cannot enforce the ceiling', async () => {
+    for (const spent_cents_source of [null, 'legacy-import']) {
+      const seen: string[] = [];
+      const r = await launchWithBudget(
+        { budget_cents: 5000, spent_cents: 6000, spent_cents_source },
+        seen,
+      );
+      expect(r.refusal).toBeNull();
+      expect(r.degraded).toBe(true);
+      expect(r.degradedReasons.some((s) => s.includes('no recognized platform spend provenance marker'))).toBe(true);
+      expect(r.budget?.spentCents).toBe(6000);
+      expect(r.budget?.spentCentsSource).toBe(spent_cents_source);
+      // Without a trustworthy refusal, the normal agent-ceiling read still runs.
+      expect(seen.some((s) => s.includes('FROM harness_shared.session_briefs b'))).toBe(true);
+    }
   });
 
   it('garbage spentCents reads as UNKNOWN (degraded), never as 0-spent (admit-on-garbage)', async () => {
@@ -1912,7 +1957,11 @@ describe('P-006: the budget launch gate', () => {
   });
 
   it('escalates the owner on refusal: blocker severity, deduped per goal, attributed to the launcher', async () => {
-    await launchWithBudget({ budget_cents: 5000, spent_cents: 6000 });
+    await launchWithBudget({
+      budget_cents: 5000,
+      spent_cents: 6000,
+      spent_cents_source: 'goal-pots-rollup',
+    });
     await vi.waitFor(() => expect(escalated.calls.length).toBe(1));
     const call = escalated.calls[0]!;
     expect(call.severity).toBe('blocker');
