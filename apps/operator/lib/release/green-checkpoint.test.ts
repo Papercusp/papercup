@@ -13356,6 +13356,53 @@ describe("WI-42350: a sha that already reached a RED verdict is not re-judged", 
     };
   };
 
+  it("EI-22430783328866306: persists a first red when the fixer dispatcher is absent", async () => {
+    // P-005 production wiring intentionally supplies the queue writer without a fixer
+    // dispatcher. The writer is still load-bearing: a red must remain resumable even when
+    // dispatch is unavailable, rather than silently skipping the frozen queue entirely.
+    vi.stubEnv("PAPERCUSP_QUIET_CUT", "0");
+    try {
+      const ready = await commit("a", "1", "ready");
+      await git(repo, ["branch", "ready", ready]);
+      const candidate = await commit("b", "2", "candidate");
+      const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
+      const writes: FrozenCandidateRepairQueue[] = [];
+      deps.writeFrozenRepairQueue = async (next) => {
+        if (next) writes.push(next);
+      };
+
+      // Deliberately leave dispatchFrozenRepairFixer, reserve, and finalize absent.
+      const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+      expect(result).toMatchObject({
+        advanced: false,
+        candidate,
+        green: false,
+        reason: "not-green",
+        repairQueue: {
+          phase: "awaiting-fixer",
+          candidate,
+          repairHead: candidate,
+        },
+      });
+      expect(writes).toHaveLength(2);
+      expect(writes[0]).toMatchObject({
+        phase: "ready-to-test",
+        candidate,
+        repairHead: candidate,
+      });
+      expect(writes[1]).toMatchObject({
+        phase: "awaiting-fixer",
+        candidate,
+        repairHead: candidate,
+        failingTests: ["lib/broken.test.ts"],
+      });
+      expect(calls).toContain("runGreen");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("EI-22430783328866306: a frozen repair head the QUEUE has not judged is judged even when the marker names it", async () => {
     const { ready, candidate: frozen } = await readyAndCandidate();
     const head = await commit("c", "3", "fix admitted onto the frozen lineage");
