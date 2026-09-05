@@ -48,6 +48,18 @@ export function shapePlansItems(data: unknown, tier: ItemsTier): unknown {
   const items = (data as { items?: unknown[] } | null | undefined)?.items;
   if (!Array.isArray(items)) return data;
   const c = PLANS_ITEMS_TIER_CAPS[tier];
+  const rawDiagnostics = (data as { specTriadDiagnostics?: unknown })?.specTriadDiagnostics;
+  const specTriadDiagnostics = Array.isArray(rawDiagnostics)
+    ? rawDiagnostics.map((diagnostic) => {
+        const d = (diagnostic ?? {}) as Record<string, unknown>;
+        return {
+          plan: d.plan ?? null,
+          missing: joined(d.missing),
+          scopeReason: d.scopeReason ?? null,
+          note: clip(d.note, c.text),
+        };
+      })
+    : undefined;
 
   const project = (row: unknown): Record<string, unknown> => {
     const r = (row ?? {}) as Record<string, unknown>;
@@ -153,5 +165,9 @@ export function shapePlansItems(data: unknown, tier: ItemsTier): unknown {
       text: `showing top ${c.rows} of ${items.length} by importance — narrow with status/actionable/slug, plans:get-item for detail, or ${RECOVER_HINT}`,
     });
   }
-  return { ...(data as Record<string, unknown>), items: rows };
+  return {
+    ...(data as Record<string, unknown>),
+    items: rows,
+    ...(specTriadDiagnostics !== undefined ? { specTriadDiagnostics } : {}),
+  };
 }

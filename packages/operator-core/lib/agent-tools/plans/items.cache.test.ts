@@ -9,6 +9,7 @@
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { setFlagOverridesForTest } from "@papercusp/flags/test";
+import { FLAGS } from "@papercusp/flags";
 
 const M = vi.hoisted(() => ({
   planHarnessesForSlugs: vi.fn(async () => new Map<string, string[]>()),
@@ -315,5 +316,72 @@ describe("plans:items — cache wiring", () => {
       data: { items: Array<{ coverage?: { links?: Array<{ blocked?: boolean }> } }> };
     };
     expect(all.data.items[0]?.coverage?.links?.[0]?.blocked).toBe(true);
+  });
+
+  it("surfaces a gated plan diagnostic when actionable filtering removes every row", async () => {
+    setFlagOverridesForTest({
+      [CACHE_LAYER]: true,
+      [CACHE_L2]: false,
+      [FLAGS.SPEC_TRIAD_REQUIRED]: true,
+    });
+    await _refreshCacheLayerForTests();
+
+    const planItem = {
+      id: "P-001",
+      text: "triad-gated item",
+      storedStatus: "todo",
+      importance: "normal",
+      blockedBy: [],
+      decisionRefs: [],
+      phase: "Phase 1",
+      lineNumber: 0,
+      rawLine: "",
+      effectiveStatus: "todo",
+      unresolvedBlockers: [],
+      needsHuman: false,
+      staleBlockedHint: null,
+    };
+    M.listPlanIndexRows.mockResolvedValue([{
+      planSlug: "triad-gated-plan",
+      archived: false,
+      isLegacy: false,
+      status: "active",
+      content: "",
+      created: "2026-08-10T00:00:00.000Z",
+    }]);
+    M.getPlanContentsBySlugs.mockResolvedValue(new Map([
+      ["triad-gated-plan", "---\nslug: triad-gated-plan\n---\n"],
+    ]));
+    M.planItemsForRow.mockReturnValue([planItem]);
+
+    const actionable = await run({ actionable: true }) as {
+      data: {
+        items: unknown[];
+        specTriadDiagnostics: Array<{
+          plan: string;
+          missing: string[];
+          scopeReason: string;
+          note: string;
+        }>;
+      };
+    };
+    expect(actionable.data.items).toEqual([]);
+    expect(actionable.data.specTriadDiagnostics).toEqual([
+      expect.objectContaining({
+        plan: "triad-gated-plan",
+        missing: ["requirements", "design"],
+        scopeReason: "created-after-epoch",
+        note: expect.stringContaining("triad-gated-plan"),
+      }),
+    ]);
+
+    const all = await run({}) as {
+      data: {
+        items: Array<{ specTriadMissing?: string[] }>;
+        specTriadDiagnostics: unknown[];
+      };
+    };
+    expect(all.data.items[0]?.specTriadMissing).toEqual(["requirements", "design"]);
+    expect(all.data.specTriadDiagnostics).toHaveLength(1);
   });
 });

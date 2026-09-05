@@ -58,6 +58,52 @@ describe('shapePlansItems — coverageDivergence -> diverged', () => {
   });
 });
 
+describe('shapePlansItems — specTriadDiagnostics', () => {
+  it('flattens diagnostics to scalar records and clips the note in both tiers', () => {
+    const note = 'triad explanation '.repeat(100);
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapePlansItems(
+        {
+          items: [],
+          specTriadDiagnostics: [{
+            plan: 'triad-gated-plan',
+            missing: ['requirements', 'design'],
+            scopeReason: 'created-after-epoch',
+            note,
+          }],
+        },
+        tier,
+      ) as {
+        specTriadDiagnostics: Array<{
+          plan: string;
+          missing: string | null;
+          scopeReason: string | null;
+          note: string | null;
+        }>;
+      };
+      expect(out.specTriadDiagnostics).toEqual([
+        {
+          plan: 'triad-gated-plan',
+          missing: 'requirements,design',
+          scopeReason: 'created-after-epoch',
+          note: expect.stringContaining('TRUNCATED'),
+        },
+      ]);
+      expect(out.specTriadDiagnostics[0].note?.length).toBeLessThanOrEqual(
+        PLANS_ITEMS_TIER_CAPS[tier].text,
+      );
+    }
+  });
+
+  it('preserves an empty diagnostic list for an unknown-scope read', () => {
+    const out = shapePlansItems(
+      { items: [], specTriadDiagnostics: [] },
+      'trimmed',
+    ) as { specTriadDiagnostics: unknown[] };
+    expect(out.specTriadDiagnostics).toEqual([]);
+  });
+});
+
 describe('shapePlansItems — citedTerminalRefs / citedWorkItems (EI-22173576329267385)', () => {
   it('trimmed tier surfaces citedTerminalRefs as a count, but never the detail list', () => {
     const out = shapePlansItems(
