@@ -4,6 +4,8 @@ import {
   auditQuery,
   registerAuditFlush,
   __drainAuditForTests,
+  __burstWindowSizeForTests,
+  BURST_PRUNE_AT,
   type ActionRow,
   type QueryRow,
 } from './audit';
@@ -94,5 +96,52 @@ describe('flush callback', () => {
     expect(__drainAuditForTests().actions.length).toBeGreaterThanOrEqual(1);
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+});
+
+describe('burst-window retention (WI-2145588)', () => {
+  it('reclaims entries for agents that have gone quiet', () => {
+    // Force every sampled row past the 1-in-20 gate so burstAllow always runs.
+    const rand = vi.spyOn(Math, 'random').mockReturnValue(0);
+    // Anchor to real time: earlier tests in this module already put a couple of
+    // keys in the map, and a clock that started below them would make those
+    // entries look permanently fresh.
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      // Churn: each agent id is seen once and never again — sessions die and
+      // respawn with fresh ids, which is what made this key set grow forever.
+      const churned = BURST_PRUNE_AT * 2;
+      for (let i = 0; i < churned; i++) {
+        auditQuery(queryRow({ agent: `agent-${i}` as QueryRow['agent'], sample: true }));
+      }
+      // >= rather than ==: a couple of keys survive from earlier tests here.
+      expect(__burstWindowSizeForTests()).toBeGreaterThanOrEqual(churned);
+
+      // Every one of those agents is now long gone.
+      clock += 60_000;
+      auditQuery(queryRow({ agent: 'fresh-agent' as QueryRow['agent'], sample: true }));
+
+      // Pre-fix nothing was ever deleted, so this was churned + 1 and grew
+      // without bound for the process lifetime.
+      expect(__burstWindowSizeForTests()).toBeLessThanOrEqual(2);
+    } finally {
+      now.mockRestore();
+      rand.mockRestore();
+      __drainAuditForTests();
+    }
+  });
+
+  it('still rate-limits a single hot key to 2 per second', () => {
+    const rand = vi.spyOn(Math, 'random').mockReturnValue(0);
+    try {
+      __drainAuditForTests();
+      for (let i = 0; i < 10; i++) auditQuery(queryRow({ agent: 'hot-agent', sample: true }));
+      // The burst cap admits 2; the rest are dropped before reaching the buffer.
+      expect(__drainAuditForTests().queries).toHaveLength(2);
+    } finally {
+      rand.mockRestore();
+      __drainAuditForTests();
+    }
   });
 });
