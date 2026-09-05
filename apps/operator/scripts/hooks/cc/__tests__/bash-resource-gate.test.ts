@@ -2236,11 +2236,26 @@ describe('foreground shell-backgrounding advisory (EI-20202551640426512)', () =>
     expect(ctx).not.toContain('KillMode=process');
   });
 
-  it('is silent when the native same-session background mode is used', () => {
+  // THIS advisory stands down when the native background mode is used — that is
+  // its own premise and still holds. But the command below is not therefore
+  // benign: `run_in_background: true` PLUS `nohup … &` is the double-backgrounding
+  // trap (EI-19408257709127659), so the hand-off is to that advisory rather than
+  // to silence. This case asserted a bare silence until 2026-09-05, which encoded
+  // the hazard as safe.
+  it('hands the native same-session background mode to the double-background advisory', () => {
+    const out = runGate(
+      bashWithInput({ command: 'nohup npm run lint:tsc > /tmp/tsc.log 2>&1 &', run_in_background: true }),
+    );
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow'); // soft — command proceeds
+    expect(hso.additionalContext).not.toContain('foreground shell-backgrounding advisory');
+    expect(hso.additionalContext).toContain('double-background advisory');
+  });
+
+  it('is silent when the native background mode is used WITHOUT a second fork', () => {
     expectAllow(
-      runGate(
-        bashWithInput({ command: 'nohup npm run lint:tsc > /tmp/tsc.log 2>&1 &', run_in_background: true }),
-      ),
+      runGate(bashWithInput({ command: 'npm run lint:tsc > /tmp/tsc.log 2>&1', run_in_background: true })),
     );
   });
 
