@@ -19,7 +19,45 @@ vi.mock('./source', async (importOriginal) => {
   };
 });
 
-import { listSpecEvidence } from './spec-evidence-store';
+import { classifySpecEvidenceCurrentness, listSpecEvidence } from './spec-evidence-store';
+
+describe('classifySpecEvidenceCurrentness self-copy guard', () => {
+  it('does not treat a byte-identical echo of every binding fingerprint as current', () => {
+    const currentness = classifySpecEvidenceCurrentness(
+      {
+        spec_is_current: true,
+        source_fingerprint: 'git:one',
+        test_fingerprint: 'sha256:test',
+        fixture_fingerprint: null,
+        rubric_fingerprint: null,
+        environment_fingerprint: null,
+        coverage_evidence_ref: null,
+        coverage_evidence_present: false,
+        test_run_id: null,
+        test_run_present: false,
+      },
+      {
+        evidenceKind: 'test',
+        evidenceRef: 'vitest:one',
+        sourceFingerprint: 'git:one',
+        testFingerprint: 'sha256:test',
+      },
+    );
+
+    expect(currentness).toMatchObject({
+      overall: 'unknown',
+      dimensions: {
+        spec: 'current',
+        source: 'current',
+        test: 'current',
+        fixture: 'not-applicable',
+      },
+      staleReasons: [],
+      unknownReasons: ['self-referential-current-fingerprint'],
+      comparisonSupplied: true,
+    });
+  });
+});
 
 describe('listSpecEvidence timestamp normalization', () => {
   beforeEach(() => {
@@ -73,7 +111,10 @@ describe('listSpecEvidence timestamp normalization', () => {
     expect(row).toMatchObject({
       observedAt: '2026-08-20T21:10:00.000Z',
       createdAt: '2026-08-20T21:10:01.000Z',
-      currentness: { overall: 'current' },
+      currentness: {
+        overall: 'unknown',
+        unknownReasons: ['self-referential-current-fingerprint'],
+      },
     });
   });
 });
