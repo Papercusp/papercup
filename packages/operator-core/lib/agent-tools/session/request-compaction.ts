@@ -56,6 +56,7 @@ import { renderFocusIntegrityWarning, unverifiedFocusRefs } from '../../carry-br
 import {
   isJudgeCarryRole,
   postCompactionRecoveryInstruction,
+  renderRetractionGuard,
 } from '../../carry-doc';
 import { addressContinuationToOwner } from '../../carry-respawn-addressing';
 import {
@@ -353,6 +354,14 @@ function defaultContinueNote(focus: string, role?: string | null): string {
         'a watchdog pass (~2 min) and describe your DEAD predecessor; never re-compact on it alone. ') +
     `Then resume: ${focus}`
   );
+}
+
+function retractionSafeContinueNote(refs: readonly string[], role?: string | null): string {
+  const ids = refs.join(', ');
+  const body = isJudgeCarryRole(role)
+    ? `Continue only the assigned evaluation using permitted evidence; do NOT execute, claim, or re-broadcast the withdrawn directive for ${ids}.`
+    : `Re-orient from the automatically delivered carry document and your live lane; do NOT execute or claim the withdrawn directive for ${ids}.`;
+  return `${renderRetractionGuard(refs)}\n\n${body}`;
 }
 
 /**
@@ -691,12 +700,17 @@ export default defineTool({
         // instruction. Flag a WI-/EI-/F- id or carry-note hash this owner does
         // not itself hold (fail-open: a hit only PREPENDS a caution, never
         // rewrites or blocks the caller's text).
-        const integrityWarning = renderFocusIntegrityWarning(
-          unverifiedFocusRefs([focus, args.continueNote ?? ''].join('\n'), brief),
+        const role = (ctx as { role?: string | null }).role;
+        const hint = args.continueNote ?? focus;
+        const retractedHintRefs = (spec.retractedContinuationRefs ?? []).filter((id) =>
+          hint.toUpperCase().includes(id.toUpperCase()),
         );
-        const rawNote = (
-          args.continueNote ?? defaultContinueNote(focus, (ctx as { role?: string | null }).role)
-        ).trim();
+        const integrityWarning = retractedHintRefs.length
+          ? ''
+          : renderFocusIntegrityWarning(unverifiedFocusRefs([focus, args.continueNote ?? ''].join('\n'), brief));
+        const rawNote = retractedHintRefs.length
+          ? retractionSafeContinueNote(retractedHintRefs, role)
+          : (args.continueNote ?? defaultContinueNote(focus, role)).trim();
         // WI-2140968: address the note to the owner it was written for BEFORE
         // tagging, so the line is inside the payload the ledger hashes and
         // travels with the text down whichever path delivers it.
