@@ -24,6 +24,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/locks/acquire-arg-redirect.test.ts
  */
 import { describe, it, expect } from 'vitest';
+import { splitLocalSchemaTarget } from '@papercusp/tooldef';
 import acquireTool from './acquire';
 
 describe('locks:acquire guidance.argRedirects', () => {
@@ -69,5 +70,67 @@ describe('locks:acquire guidance.argRedirects', () => {
       mode: 'exclusive',
     });
     expect(parsed.success).toBe(false);
+  });
+});
+
+/**
+ * EI-22380017954531073 — `ttlSec` rejected; the schema spells it `ttl_sec`.
+ *
+ * Kept a REDIRECT rather than an accepted alias: this tool's args are snake_case
+ * throughout (ttl_sec, external_paths, wake_on_grant, pending_edit,
+ * coordination_domain), so accepting one camelCase spelling would leave the other four
+ * just as surprising while adding exactly the undeclared-arg surface the strict-args
+ * rail exists to prevent.
+ *
+ * Pins the D-004 RENDER contract, not merely the redirect's presence: a target that
+ * fails `splitLocalSchemaTarget` still renders, but as "`ttlSec` is not an arg of this
+ * tool — it is written by <the whole sentence>", which tells a caller who used the
+ * wrong key on the RIGHT tool that some other tool owns their data.
+ */
+describe('locks:acquire guidance.argRedirects.ttlSec (EI-22380017954531073)', () => {
+  /** `.refine()`/`.superRefine()` wrap a ZodObject in ZodEffects, so `.shape` can be one
+   *  or more `_def` hops down. Walk rather than assume today's depth. */
+  function argKeys(schema: unknown): string[] {
+    let node: unknown = schema;
+    for (let hop = 0; hop < 8 && node; hop += 1) {
+      const shape = (node as { shape?: Record<string, unknown> }).shape;
+      if (shape && typeof shape === 'object') return Object.keys(shape);
+      const def = (node as { _def?: { schema?: unknown; innerType?: unknown } })._def;
+      node = def?.schema ?? def?.innerType;
+    }
+    throw new Error("could not read an object shape from locks:acquire's args schema");
+  }
+
+  const declared = argKeys(acquireTool.args);
+
+  it('declares ttl_sec and NOT ttlSec, so the redirect stays a redirect', () => {
+    expect(declared).toContain('ttl_sec');
+    expect(declared).not.toContain('ttlSec');
+    expect(
+      acquireTool.args.safeParse({ paths: ['a.ts'], intent: 'probe', ttlSec: 600 }).success,
+    ).toBe(false);
+  });
+
+  it('renders as a SAME-TOOL relocation to ttl_sec, not a cross-tool misattribution (D-004)', () => {
+    const target = acquireTool.guidance?.argRedirects?.ttlSec;
+    expect(typeof target).toBe('string');
+
+    const split = splitLocalSchemaTarget(target as string, declared);
+    // A null split IS the D-004 defect: the caller is already on the right tool and
+    // would be sent somewhere that cannot help them.
+    expect(split, 'ttlSec redirect must be authored as `ttl_sec — explanation`').not.toBeNull();
+    expect(split?.path).toBe('ttl_sec');
+  });
+
+  it('says to RENAME, and that dropping the key silently takes the default TTL', () => {
+    const split = splitLocalSchemaTarget(
+      acquireTool.guidance?.argRedirects?.ttlSec as string,
+      declared,
+    );
+    // The load-bearing half. "Unrecognized key" reads as "this tool has no TTL", whose
+    // honest remedy is to drop it — and dropping it SUCCEEDS, with the wrong lifetime,
+    // so the caller never learns they were refused anything.
+    expect(split?.note).toMatch(/rename/i);
+    expect(split?.note).toMatch(/default TTL/i);
   });
 });

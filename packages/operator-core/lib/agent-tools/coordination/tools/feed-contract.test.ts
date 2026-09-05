@@ -5,6 +5,7 @@
  * `since_ts` remains a compatibility alias for existing callers and docs.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { splitLocalSchemaTarget } from '@papercusp/tooldef';
 import {
   COORD_CONVERSATIONAL_KINDS,
   COORD_EXECUTABLE_KINDS,
@@ -95,6 +96,49 @@ describe('coord:feed — inbox-only shaping redirects (EI-22057308172107761)', (
       args,
       note: expect.stringContaining('coord:inbox'),
     });
+  });
+});
+
+/**
+ * EI-21830525619029268 — a read was rejected for passing `after` as the lower time bound.
+ *
+ * WHY THE GUESS IS THE TOOL'S OWN FAULT, not an API habit imported from elsewhere: this
+ * tool declares `before_ts` / `before_msg_id` for the UPPER bound but spells the lower
+ * bound `since`. A caller who has just read the `before_*` pair infers the symmetric
+ * `after` from THIS schema. The bare rejection could only list accepted keys, and `since`
+ * does not look like the counterpart of `before_ts` unless you already know it is.
+ *
+ * Kept a redirect, not an accepted alias: `since`/`since_ts` is the spelling shared across
+ * the coordination reads, and a third accepted spelling here would widen the drift the
+ * neighbouring tools are converging away from.
+ */
+describe('coord:feed — `after` lower-bound redirect (EI-21830525619029268)', () => {
+  const declared = Object.keys(tool.args.shape);
+
+  it('does not accept `after`, and does declare the `since` it redirects to', () => {
+    expect(declared).not.toContain('after');
+    expect(declared).toContain('since');
+    expect(tool.args.safeParse({ after: '2026-09-05T00:00:00.000Z' }).success).toBe(false);
+  });
+
+  it('renders as a SAME-TOOL relocation to `since`, not a cross-tool misattribution (D-004)', () => {
+    const target = tool.guidance?.argRedirects?.after;
+    expect(typeof target).toBe('string');
+
+    const split = splitLocalSchemaTarget(target as string, declared);
+    // Null is the D-004 defect: the renderer would attribute the caller's own time
+    // filter to some other tool while they are already in an error path.
+    expect(split, '`after` redirect must be authored as `since — explanation`').not.toBeNull();
+    expect(split?.path).toBe('since');
+  });
+
+  it('explains the before_ts asymmetry and that dropping the key widens the window', () => {
+    const split = splitLocalSchemaTarget(tool.guidance?.argRedirects?.after as string, declared);
+    // Without this, "unrecognized key" reads as "this tool has no lower bound", whose
+    // honest remedy is to drop it — and dropping it SUCCEEDS, silently returning the
+    // whole retained stream instead of the window that was asked for.
+    expect(split?.note).toContain('before_ts');
+    expect(split?.note).toMatch(/rename/i);
   });
 });
 

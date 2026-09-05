@@ -52,6 +52,18 @@ export default defineTool({
     // tool's prompt-weight-capped description or accepting args the firehose
     // cannot honor.
     argRedirects: {
+      // EI-21830525619029268. This tool declares a `before_ts` / `before_msg_id` upper
+      // bound but names its lower bound `since`, so a caller who has just read the
+      // `before_*` pair reaches for the symmetric `after` — a reasonable inference from
+      // this tool's OWN arg names, not a guess imported from another API. The rejection
+      // could only list accepted keys, and `since` does not look like the counterpart of
+      // `before_ts` unless you already know it is.
+      //
+      // Local target (`since — …`) per D-004 of tool-contract-repair-2026-09-05: a bare
+      // prose target misrenders as "written by <the sentence>", i.e. it sends a caller
+      // who is on the right tool somewhere else.
+      after:
+        'since — the lower (older) time bound is spelled `since` here, even though the UPPER bound is the symmetric-looking `before_ts` / `before_msg_id` pair; RENAME the key rather than dropping it, or the window silently widens to the whole retained stream. Legacy `since_ts` is also accepted.',
       include_ambient: {
         tool: 'coord:inbox',
         args: { include_ambient: true },

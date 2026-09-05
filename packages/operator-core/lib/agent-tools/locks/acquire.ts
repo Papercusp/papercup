@@ -142,6 +142,17 @@ export default defineTool({
       // has no counterpart here) the remedy is a RENAME, not a drop: dropping it loses the
       // required field and produces a second rejection.
       reason: 'this tool spells that `intent` (required, one line, shown to a peer whose edit this lock blocks) — RENAME the key rather than dropping it, or the retry fails again on a missing `intent`. `reason` is the spelling used by the named-resource family, locks:acquire_resource { resource, mode, reason }.',
+      // EI-22380017954531073. Authored as a LOCAL target (`ttl_sec — …`) per D-004 of
+      // tool-contract-repair-2026-09-05: a bare prose target fails the path regex and
+      // renders "it is written by <the sentence>", telling a caller who used the wrong
+      // key on the RIGHT tool that some other tool owns their data.
+      //
+      // Why a redirect and not an accepted alias: this tool's args are deliberately
+      // snake_case throughout (ttl_sec, external_paths, wake_on_grant, pending_edit,
+      // coordination_domain), so a camelCase guess is SYSTEMATIC here rather than a
+      // one-off typo, and accepting one spelling would leave the other five surprising.
+      ttlSec:
+        'ttl_sec — this tool spells every arg snake_case (ttl_sec, external_paths, wake_on_grant, pending_edit), unlike most of the catalog: RENAME the key rather than dropping it. Dropping it is not harmless — the lock silently takes the DEFAULT TTL instead of the lifetime you asked for, so a long edit can have its lock expire underneath it.',
       resource: {
         tool: 'locks:acquire_resource',
         args: { resource: '<registered resource>', mode: 'exclusive', reason: '<why>' },
