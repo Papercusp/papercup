@@ -3,6 +3,7 @@ import type { Rubric } from './rubrics';
 import type { ScorecardRow } from './scorecards';
 import {
   dispatchPendingGradingAudits,
+  GRADING_AUDIT_BACKLOG_SCAN_LIMIT,
   GRADING_AUDIT_DISPATCH_LIMIT,
   GRADING_INTEGRITY_RUBRIC_REF,
   type DispatchPendingGradingAuditsDeps,
@@ -112,6 +113,34 @@ describe('dispatchPendingGradingAudits', () => {
       expect.objectContaining({ idempotencyKey: 'grading-audit:EI-audit-1' }),
       ctx,
     );
+  });
+
+  it('selects a bounded oldest-first backlog when no explicit targets are supplied', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([
+      card('EI-new', { createdAt: '2026-09-05T00:00:00.000Z' }),
+      card('EI-old', { createdAt: '2026-09-01T00:00:00.000Z' }),
+      card('EI-tie-b', { createdAt: '2026-09-02T00:00:00.000Z' }),
+      card('EI-tie-a', { createdAt: '2026-09-02T00:00:00.000Z' }),
+      card('EI-superseded', { createdAt: '2026-08-01T00:00:00.000Z', supersededBy: 'EI-replacement' }),
+      card('EI-retracted', { createdAt: '2026-08-02T00:00:00.000Z', retracted: {} as ScorecardRow['retracted'] }),
+      card('EI-meta', { createdAt: '2026-08-03T00:00:00.000Z', rubricRef: GRADING_INTEGRITY_RUBRIC_REF }),
+    ]);
+
+    const result = await dispatchPendingGradingAudits({ ctx, harness: 'papercusp' }, d);
+
+    expect(result.requestedTargetIds).toEqual(['EI-old', 'EI-tie-a', 'EI-tie-b', 'EI-new']);
+    expect(d.listScorecards).toHaveBeenCalledWith({
+      includeSuperseded: true,
+      includeRetracted: true,
+      limit: GRADING_AUDIT_BACKLOG_SCAN_LIMIT,
+    });
+    expect(d.launch.mock.calls.map(([args]) => (args as { idempotencyKey?: string }).idempotencyKey)).toEqual([
+      'grading-audit:EI-old',
+      'grading-audit:EI-tie-a',
+      'grading-audit:EI-tie-b',
+      'grading-audit:EI-new',
+    ]);
   });
 
   it('skips superseded, retracted, meta-rubric, missing-rubric, and nonstandard targets', async () => {
