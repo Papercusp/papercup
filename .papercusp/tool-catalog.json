@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 860,
+  "count": 861,
   "tools": [
     {
       "name": "ablation:report",
@@ -7410,6 +7410,24 @@
       "guidance": {
         "when": "You need the supervisor's annotations on a harness — context the supervisor logged that's not in audit_log.",
         "notWhen": "For escalation flags + raw notes from the on-disk files, use `harness:escalation`. supervisor_notes is the PG-backed view."
+      }
+    },
+    {
+      "name": "cupboard:bind-wallet",
+      "http": {
+        "path": "/api/agent-tools/cupboard/bind-wallet",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Bind, rotate, inspect, or unbind the authenticated Papercusp principal’s EVM wallet through a short-lived server-issued signed nonce. Use op=challenge, have that wallet personal_sign the exact message, then op=verify. A wallet address alone never identifies a principal; replayed or expired challenges are refused.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "A Cupboard commerce or settlement flow needs a verified EVM wallet for the currently authenticated Papercusp principal.",
+        "notWhen": "Sending a transaction, proving treasury authority, or looking up who owns an arbitrary address. This tool only establishes the principal↔wallet binding.",
+        "chaining": "Call op=challenge with the wallet address, present message to that wallet for personal_sign, then call op=verify with the returned challengeId and signature. A second verified challenge rotates the binding. Use op=unbind to remove it."
       }
     },
     {
