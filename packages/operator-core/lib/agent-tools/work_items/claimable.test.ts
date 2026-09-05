@@ -500,6 +500,24 @@ describe('work_items:claimable handler', () => {
     expect(readM.mock.calls[0]![1]).toEqual(expect.objectContaining({ rigAvailable: true }));
   });
 
+  it('EI-22390504942653694: rejects includeObservations deliberately and routes observation reads to curation/exclusion surfaces', () => {
+    // `claimable` is a verdict over rows that survive every claim floor. Observation-lane
+    // rows are a permanent floor by design, so accepting this sibling list/search flag would
+    // either lie that notes are work or silently ignore the caller's request.
+    const parsed = (tool.args as { safeParse: (value: unknown) => { success: boolean } }).safeParse({
+      harness: 'papercup',
+      includeObservations: true,
+    });
+    expect(parsed.success).toBe(false);
+
+    const notWhen = tool.guidance?.notWhen ?? '';
+    expect(notWhen).toContain('`includeObservations` is intentionally unsupported');
+    expect(notWhen).toContain('observation-lane rows are never claimable');
+    expect(notWhen).toContain('work_items:list/work_items:search { includeObservations:true }');
+    expect(notWhen).toContain('sampleExcluded');
+    expect(notWhen).toContain('observationLane');
+  });
+
   describe('WI-6673: admittedBreakdown + the composition warning', () => {
     it('surfaces admittedBreakdown UNCONDITIONALLY — no opt-in flag, because the failure is quoting a count without asking what is in it', async () => {
       const out = await run({ harness: 'papercup' });
