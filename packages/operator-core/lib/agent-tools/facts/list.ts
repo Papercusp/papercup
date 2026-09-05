@@ -12,6 +12,7 @@ import {
   factVersions,
   listFactEvictionDisclosures,
   FACT_SCOPES,
+  FACTS_PER_SCOPE_CAP,
   DEAD_END_KEY_PREFIX,
   WALL_KEY_PREFIX,
   GUARD_RAIL_KEY_PREFIX,
@@ -56,7 +57,23 @@ function projectUnverifiedSourceProvenance(
 export const FACTS_LIST_DEFAULT_LIMIT = 4;
 /** Keep caller-supplied pages inside the same result-door-safe row ceiling. */
 export const FACTS_LIST_MAX_LIMIT = FACTS_LIST_DEFAULT_LIMIT;
-/** Explicit census escape hatch. The result door may spill this response, but no rows are hidden. */
+/**
+ * Explicit census escape hatch: the widest PAGE this tool will return.
+ *
+ * ⚠ THIS IS NOT THE ENFORCED PER-SCOPE CAP, and calling it one is how an agent
+ * concludes a scope holds at most 200 facts. That cap is
+ * {@link FACTS_PER_SCOPE_CAP} (5000) and lives in the store; this is a
+ * result-door row ceiling and lives here. The two are unrelated numbers, and on
+ * 2026-09-05 they were 25x apart while `workspace` held 513 live facts — so
+ * `all:true` returned 200 of 513 and any text promising "the complete
+ * population" was false for the busiest scope on the box.
+ *
+ * A population larger than this is therefore NORMAL, not a runaway. When it
+ * happens the response still says so via `truncatedByLimit` + `note_truncated`
+ * (WI-38910), which is what keeps a short page honest — but the remedy offered
+ * there must never be "pass all:true", because above this ceiling that is a
+ * dead end. Narrow by `key`/scope instead.
+ */
 export const FACTS_LIST_ALL_LIMIT = 200;
 
 /** Clamp a caller's page size to the result-door-safe row ceiling. PURE. */
@@ -275,7 +292,7 @@ export default defineTool({
       .positive()
       .optional()
       .describe(
-        `Max facts (default ${FACTS_LIST_DEFAULT_LIMIT}; positive values are clamped to ${FACTS_LIST_MAX_LIMIT} for ordinary result-door pages). With all:true, the complete-population cap of ${FACTS_LIST_ALL_LIMIT} applies.`,
+        `Max facts (default ${FACTS_LIST_DEFAULT_LIMIT}; positive values are clamped to ${FACTS_LIST_MAX_LIMIT} for ordinary result-door pages). With all:true, the wider page ceiling of ${FACTS_LIST_ALL_LIMIT} applies — a PAGE bound, not the enforced per-scope cap (${FACTS_PER_SCOPE_CAP}); a scope may legitimately hold more facts than one page can return.`,
       ),
     full: z
       .boolean()
@@ -287,7 +304,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        `Return the complete live population (up to the enforced ${FACTS_LIST_ALL_LIMIT}-fact per-scope cap) instead of the result-door-safe ${FACTS_LIST_MAX_LIMIT}-row page. Large results may spill to the result-door scratch cursor; use projection or key for a smaller read. Orthogonal to full:true, which controls body excerpts.`,
+        `Widen the page to at most ${FACTS_LIST_ALL_LIMIT} rows instead of the result-door-safe ${FACTS_LIST_MAX_LIMIT}-row page. ⚠ This is a PAGE ceiling, NOT the enforced per-scope cap (${FACTS_PER_SCOPE_CAP}) — a scope can hold more live facts than this returns, so all:true is not a guarantee of completeness. Check \`truncatedByLimit\`/\`total\` in the response before treating the result as the whole population; above ${FACTS_LIST_ALL_LIMIT} narrow by \`key\` or scope rather than re-requesting all:true. Large results may spill to the result-door scratch cursor; use projection or key for a smaller read. Orthogonal to full:true, which controls body excerpts.`,
       ),
     key: z
       .string()
@@ -497,10 +514,17 @@ export default defineTool({
                 `Showing ${rows.length} of ${census.total} live facts in this scope — ` +
                 `\`count\` is the PAGE SIZE, not the census. The page is the ${rows.length} most ` +
                 `recently updated. Pass \`key\` to check one specific fact (the read to make ` +
-                `before asserting, since a duplicate assert evicts a peer's fact), or narrow ` +
-                `the scope. To enumerate the complete population, pass \`all:true\`; large ` +
-                `responses may spill to the result-door scratch cursor. The ordinary page is ` +
-                `capped at ${FACTS_LIST_MAX_LIMIT} to stay inside the result door.`,
+                `before asserting, so you amend the existing row instead of racing it), or ` +
+                `narrow the scope. ` +
+                ((census.total ?? 0) > FACTS_LIST_ALL_LIMIT
+                  ? `⚠ This scope holds ${census.total} live facts, MORE than the ` +
+                    `${FACTS_LIST_ALL_LIMIT}-row ceiling \`all:true\` can return — so all:true ` +
+                    `would still truncate and is NOT a way to enumerate this population. ` +
+                    `Narrow by \`key\` or scope instead. `
+                  : `To enumerate the complete population, pass \`all:true\`; large ` +
+                    `responses may spill to the result-door scratch cursor. `) +
+                `The ordinary page is capped at ${FACTS_LIST_MAX_LIMIT} to stay inside the ` +
+                `result door.`,
             }
           : {}),
         ...(limitDisclosure ?? {}),
