@@ -84,6 +84,7 @@ import {
   type ManagedHandle,
 } from "@papercusp/scheduled-registry";
 import { gateVerdictTargetFromEnv } from "@papercusp/operator-core/lib/release/gate-verdict-target";
+import { gateFireIdFromEnv } from "@papercusp/operator-core/lib/release/gate-fire-ledger";
 import {
   DEPENDENCY_PREBUILD_WAIT_MS,
   awaitDependencyPrebuildState,
@@ -1195,6 +1196,8 @@ export interface CheckpointDeps {
   runId?: string;
   /** Logical qualification transported by the detached launcher. */
   qualificationAttemptId?: string;
+  /** Stable identity shared by this fire's anchor and terminal/pending outcome rows. */
+  gateFireId?: string;
 }
 
 export interface CheckpointResult {
@@ -1380,6 +1383,8 @@ export interface CheckpointResult {
    *  verdict so a consumer can distinguish two runs that happen to judge the same
    *  candidate, and so an events:await can bind to an EXACT run when that matters. */
   runId?: string;
+  /** Stable identity shared by this fire's anchor and terminal/pending outcome rows. */
+  gateFireId?: string;
   /** Structured provenance for a managed SIGTERM/SIGINT cancellation. */
   termination?: CheckpointTermination;
   /** WI-4957: the full-suite output log THIS run wrote, when produced (not-green paths
@@ -11065,6 +11070,7 @@ async function runGreenCheckpointInner(
       ...(checkpointEvidence ? { checkpointEvidence } : {}),
       ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
       ...(deps.runId ? { runId: deps.runId } : {}),
+      ...(deps.gateFireId ? { gateFireId: deps.gateFireId } : {}),
       ...(logPath ? { logPath } : {}),
     })
     .catch((e) =>
@@ -12934,6 +12940,7 @@ export async function runGreenCheckpoint(
     ...opts,
     candidateSource,
     ...(diagnostic ? { diagnostic } : {}),
+    ...(deps.gateFireId ? { gateFireId: deps.gateFireId } : {}),
   };
   const result = await runGreenCheckpointInner(cfg, deps, innerOpts);
   const repairIdentity = result.repairQueue
@@ -15324,6 +15331,8 @@ export function realCheckpointDeps(
   sampleDiskSnapshotsOverride?: () => Promise<CheckpointDiskSnapshot[]>,
   /** WI-41491 / D-081: exact candidate selector produced before the checkpoint run-lock. */
   prewarmedDependencyGeneration?: PrewarmedCheckpointDependencyGeneration,
+  /** Stable identity transported by the scheduled or detached launcher. */
+  gateFireId: string | undefined = gateFireIdFromEnv(),
 ): CheckpointDeps {
   const notifyProgress = (detail?: string) => {
     try {
@@ -15741,6 +15750,7 @@ export function realCheckpointDeps(
     concurrentRun,
     workspaceRerun,
     runId,
+    gateFireId,
     qualificationAttemptId:
       process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined,
     async routeFrozenRepairToAgents(input) {
@@ -18248,6 +18258,7 @@ if (require.main === module) {
   // own event payload independently) — so every event this process could possibly emit
   // carries the SAME run identity.
   const runId = randomUUID();
+  const gateFireId = gateFireIdFromEnv();
   let resolvedCandidateForRun: string | null = null;
 
   /**
@@ -18280,6 +18291,7 @@ if (require.main === module) {
       ...buildTerminalFailureCheckpointResult({ candidate, error: e, runId }),
       candidateSource,
       ...(diagnostic ? { diagnostic } : {}),
+      ...(gateFireId ? { gateFireId } : {}),
     });
   };
 
@@ -18584,6 +18596,7 @@ if (require.main === module) {
         watchdog.progress,
         undefined,
         prewarmedDependencyGeneration,
+        gateFireId,
       );
       runGreenCheckpoint(cfg, checkpointDeps, {
         candidate: candidateArg,
