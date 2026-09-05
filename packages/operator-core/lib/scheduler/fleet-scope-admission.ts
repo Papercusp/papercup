@@ -24,9 +24,10 @@ import {
 import { claimSpecFilterToClaimablePayloadFilter } from './claim-spec-payload-filter';
 import { claimSpecReferencesField, formatSpecRef, type ClaimSpec } from './claim-spec';
 import { boundedPgReadTxn, PG_READ_QUERY_CALL_OVERHEAD_MS } from '../pg-read-query';
+import { interpretFleetClaimability } from '../fleet/lane-health';
 
 /**
- * EI-19393442073558754: pull the `kind in [...]` leaf's value out of a claim spec's
+ * EI-19393442073558754: pull the `kind in [...]` / `kind = ...` leaf's value out of a claim spec's
  * view filter (top-level or nested one level inside an `all`) — the SAME shape
  * `specKindFilterValues` in agent-tools/scheduler/get_next.ts extracts (duplicated
  * here rather than imported, to avoid a fleet-scope-admission -> agent-tools import
@@ -42,6 +43,9 @@ function specKindFilterValues(spec: unknown): string[] | undefined {
     const cl = c as { field?: string; op?: string; value?: unknown };
     if (cl?.field === 'kind' && cl?.op === 'in' && Array.isArray(cl.value)) {
       return cl.value.filter((v): v is string => typeof v === 'string');
+    }
+    if (cl?.field === 'kind' && cl?.op === '=' && typeof cl.value === 'string') {
+      return [cl.value];
     }
   }
   return undefined;
@@ -2038,6 +2042,61 @@ export function fleetScopedMiss(
   // than the cooldown lapses (the livelock this ticket documents) — it will NEVER clear
   // on its own, and the do-not-escalate advice below is corrected to say so.
   const cooldownExpiryAt = cooldown?.earliestExpiryMs != null ? new Date(cooldown.earliestExpiryMs).toISOString() : null;
+  // WI-2146345 / P-001: the old miss contract exposed a zero plus several
+  // independent hints, leaving every caller to infer whether it meant pause,
+  // filter-zero, floor gating, or a completed lane. Preserve the original fields
+  // for compatibility, but add one bounded aggregate whose state is explicit and
+  // whose exactness says when the issue-family diagnostic is only a lower bound.
+  const statusFreeEmpty = opts?.terminalExhaustion?.matchedByFilter === 0;
+  const evidenceComplete = specIssueOnly || statusFreeEmpty;
+  const claimableValue = breakdown
+    ? breakdown.claimable + (opts?.featureFamilyMatched ?? 0)
+    : null;
+  const matchedByFilter = breakdown?.matchedByFilter ?? null;
+  const excluded = breakdown?.excluded as Record<string, number> | null ?? null;
+  const claimabilityInterpretation = interpretFleetClaimability({
+    claimable: claimableValue,
+    matchedByFilter,
+    excluded,
+    fleetPaused: paused,
+    planScoped: specPlanScoped,
+    drainConfirmed: planComplete || specExhausted,
+    evidenceComplete,
+  });
+  const claimability = {
+    value: claimableValue,
+    population: {
+      kind: 'fleet-claim-spec' as const,
+      fleet: scope.fleetSlug,
+      harness: opts?.harness ?? scope.record.harnessSlug ?? null,
+      spec: {
+        ref: formatSpecRef(scope.record.spec.specId, scope.record.spec.revision),
+        revision: scope.record.spec.revision,
+        source: scope.record.source,
+        planScoped: specPlanScoped,
+      },
+      basis: evidenceComplete ? (specIssueOnly ? 'issue-family' : 'issue+feature-family') : 'partial-family',
+      matchedByFilter,
+      excluded,
+      families: {
+        issue: breakdown
+          ? {
+              claimable: breakdown.claimable,
+              matchedByFilter: breakdown.matchedByFilter,
+              excluded: breakdown.excluded,
+            }
+          : null,
+        feature: opts?.featureFamilyMatched == null
+          ? null
+          : {
+              claimable: opts.featureFamilyMatched,
+              matchedByFilter: statusFreeEmpty ? 0 : null,
+              excluded: statusFreeEmpty ? { claimFloors: 0, reservedPlanLane: 0 } : null,
+            },
+      },
+    },
+    interpretation: claimabilityInterpretation,
+  };
   return {
     ok: false as const,
     error: paused
@@ -2128,6 +2187,7 @@ export function fleetScopedMiss(
       revision: scope.record.spec.revision,
       source: scope.record.source,
     },
+    claimability,
     quarantinedIds,
     // EI-18666093519248020: a claim-path/read-path divergence is NOT a drained lane, so it must
     // never be certified as one. `windDown` is THE signal a member stands its loop down on, so

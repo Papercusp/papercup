@@ -718,6 +718,15 @@ describe('fleet scope assignment admission (P-016)', () => {
         { pausedReason: 'owner pause' },
       );
       expect(miss).toMatchObject({ windDown: true, paused: true, fleetScope: { fleet: 'bugs' } });
+      expect(miss.claimability).toMatchObject({
+        value: null,
+        population: { fleet: 'bugs', spec: { revision: fleetSpec.spec.revision } },
+        interpretation: {
+          state: 'paused',
+          exactness: { status: 'exact' },
+          evidence: { fleetPaused: true },
+        },
+      });
       expect(miss.error).toMatch(/winding-down/);
       expect(miss.error).toMatch(/owner pause/);
       expect(miss.advice).toMatch(/fleet:resume/);
@@ -1085,6 +1094,15 @@ describe('fleet scope assignment admission (P-016)', () => {
     it('fleetScopedMiss surfaces excludedBreakdown + excludedBreakdownSummary + floor-gated advice when an issueBreakdown is present', () => {
       const miss = fleetScopedMiss(issueScope, [], { issueBreakdown: floorGatedBreakdown });
       expect(miss.windDown).toBe(true);
+      expect(miss.claimability).toMatchObject({
+        value: 0,
+        population: {
+          basis: 'issue-family',
+          matchedByFilter: 302,
+          excluded: expect.objectContaining({ federationDetector: 169, claimHold: 33 }),
+        },
+        interpretation: { state: 'floor-gated', exactness: { status: 'exact' } },
+      });
       expect(miss.excludedBreakdown).toEqual(floorGatedBreakdown);
       expect(miss.excludedBreakdownSummary).toMatch(/federationDetector=169/);
       expect(miss.excludedBreakdownSummary).toMatch(/needsOwnerAction=80/);
@@ -1283,6 +1301,14 @@ describe('fleet scope assignment admission (P-016)', () => {
     it('sets a distinct top-level reason + loud error + escalate advice, but still windDown:true (correct to stop pulling)', () => {
       const miss = fleetScopedMiss(issueScope, [], { issueBreakdown: zeroMatchBreakdown });
       expect(miss.reason).toBe('spec_matches_nothing');
+      expect(miss.claimability).toMatchObject({
+        value: 0,
+        population: {
+          spec: { ref: 'p2p-release-lane (spec rev 8)', revision: 8, planScoped: false },
+          matchedByFilter: 0,
+        },
+        interpretation: { state: 'spec-empty', exactness: { status: 'partial' } },
+      });
       // EI-18741523426513509: a genuinely empty spec (matchedByFilter === 0) must never also
       // carry the floor-gated token — the two are mutually exclusive by construction (floorGated
       // requires matchedByFilter > 0).
@@ -1307,6 +1333,10 @@ describe('fleet scope assignment admission (P-016)', () => {
       });
 
       expect(miss.reason).toBe('spec_exhausted');
+      expect(miss.claimability.interpretation).toMatchObject({
+        state: 'drained',
+        exactness: { status: 'exact' },
+      });
       expect(miss.reason).not.toBe('spec_matches_nothing');
       expect(miss.windDown).toBe(true);
       expect(miss.error).toMatch(/SPEC EXHAUSTED/);
@@ -1558,6 +1588,11 @@ describe('fleet scope assignment admission (P-016)', () => {
         featureFamilyMatched: 0,
       });
       expect(miss.reason).toBe('ordinary_drain');
+      expect(miss.claimability).toMatchObject({
+        value: 0,
+        population: { spec: { planScoped: true }, matchedByFilter: 0 },
+        interpretation: { state: 'drained', exactness: { status: 'partial' } },
+      });
       expect(miss.reason).not.toBe('spec_matches_nothing');
       expect(miss.windDown).toBe(true);
       expect(miss.error).toMatch(/ORDINARY DRAIN/);
@@ -1575,6 +1610,10 @@ describe('fleet scope assignment admission (P-016)', () => {
           featureFamilyMatched: fam,
         });
         expect(miss.reason).toBe('ordinary_drain');
+        expect(miss.claimability.interpretation).toMatchObject({
+          state: 'drained',
+          exactness: { status: 'partial' },
+        });
         expect(miss.windDown).toBe(true);
         expect(miss.error).toMatch(/ORDINARY DRAIN/);
         expect(miss.error).toMatch(/could not be confirmed/);
