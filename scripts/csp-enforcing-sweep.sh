@@ -11,10 +11,12 @@
 # reader can re-execute it and get their own evidence rather than re-reading someone
 # else's assertion that it passed.
 #
-# Report-only mode could only ever show "nothing WOULD have been blocked". This run
-# adds the evidence that phase could not produce: under real enforcement, a foreign
-# fetch is actually BLOCKED, so a route that still renders its DOM is proof the
-# policy does not break the shell.
+# Report-only mode could only ever show "nothing WOULD have been blocked". D-002
+# now splits the policies by directive: code/content origins enforce, while the
+# strict local-only connect-src remains report-only so voice signaling is not
+# disabled. This run proves the enforcing half with a foreign IMAGE control: it is
+# actually BLOCKED by default-src, so a route that still renders its DOM is proof
+# the code/content policy does not break the shell.
 #
 # Per route: navigate -> re-install the violation listener ON THE NEW DOCUMENT ->
 # prove it live with controls -> only then record a verdict. A zero from an
@@ -34,8 +36,8 @@ ENF="$(printf '%s' "$HDRS" | grep -ci '^content-security-policy:' || true)"
 RPT="$(printf '%s' "$HDRS" | grep -ci '^content-security-policy-report-only:' || true)"
 echo "enforcing_header_present=$ENF  report_only_header_present=$RPT"
 printf '%s' "$HDRS" | grep -i '^content-security-policy' | cut -c1-160
-if [ "$ENF" != "1" ] || [ "$RPT" != "0" ]; then
-  echo "HEADER_VERDICT=FAIL (want enforcing=1 report_only=0)"
+if [ "$ENF" != "1" ] || [ "$RPT" != "1" ]; then
+  echo "HEADER_VERDICT=FAIL (want enforcing=1 report_only=1 per D-002)"
 else
   echo "HEADER_VERDICT=PASS"
 fi
