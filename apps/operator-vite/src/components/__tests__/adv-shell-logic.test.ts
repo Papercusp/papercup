@@ -30,6 +30,7 @@ import {
   nextAdvMaxLevel,
   prevAdvMaxLevel,
   advMaxToggleLabel,
+  ADV_TAB_IDS,
   PORTAL_EMBED_ADV_CONTENT_IDS,
   PORTAL_EMBED_ADV_TAB_IDS,
   portalEmbedAdvTab,
