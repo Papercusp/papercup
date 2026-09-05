@@ -13320,6 +13320,75 @@ describe("WI-42350: a sha that already reached a RED verdict is not re-judged", 
     expect(calls).toContain("runGreen");
     expect(result).toMatchObject({ green: true, reason: "advanced" });
   });
+
+  // EI-22430783328866306 — the marker and the frozen queue can disagree about a repair head.
+  // The marker is stamped by a terminal red; the queue learns that red only if the same run
+  // also reaches markFrozenRepairVerificationRed. A run killed between the two leaves a head
+  // the marker calls judged and the queue calls unjudged; skipping on the marker alone then
+  // starves the convergence forever (measured 2026-09-05: 20 verdictless runs in one day).
+  const frozenQueueAt = (input: {
+    ready: string;
+    frozen: string;
+    repairHead: string;
+    judgedHeads: string[];
+  }): FrozenCandidateRepairQueue => {
+    const now = Date.now();
+    return {
+      schemaVersion: 3,
+      phase: "ready-to-verify",
+      candidate: input.frozen,
+      base: input.ready,
+      repairHead: input.repairHead,
+      attempts: 1,
+      openedAtMs: now - 2_000,
+      updatedAtMs: now - 1_000,
+      fixerSpawnId: null,
+      failingTests: ["lint:tsc"],
+      // Gate-level red with no file paths: nothing is selectively re-runnable, so the full
+      // gate at the repair head is what decides — the exact shape that livelocked.
+      signature: [],
+      convergenceRounds: input.judgedHeads.map((head, i) => ({
+        round: i + 1,
+        head,
+        failingCount: 1,
+        atMs: now - 2_000 + i,
+      })),
+    };
+  };
+
+  it("EI-22430783328866306: a frozen repair head the QUEUE has not judged is judged even when the marker names it", async () => {
+    const { ready, candidate: frozen } = await readyAndCandidate();
+    const head = await commit("c", "3", "fix admitted onto the frozen lineage");
+    const queue = frozenQueueAt({ ready, frozen, repairHead: head, judgedHeads: [frozen] });
+    const logs: string[] = [];
+    const { deps, calls } = stubDeps(true);
+    deps.log = (line: string) => {
+      logs.push(line);
+    };
+    deps.readFrozenRepairQueue = async () => queue;
+    // The run that stamped this marker died before the queue received its verdict.
+    deps.lastJudgedRed = async () => head;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.reason).not.toBe("unchanged-since-verdict");
+    expect(calls).toContain("runGreen");
+    expect(logs.some((line) => line.includes("EI-22430783328866306"))).toBe(true);
+  });
+
+  it("EI-22430783328866306: the skip still holds for a frozen repair head the queue DID record a verdict for", async () => {
+    const { ready, candidate: frozen } = await readyAndCandidate();
+    const head = await commit("c", "3", "fix admitted onto the frozen lineage");
+    const queue = frozenQueueAt({ ready, frozen, repairHead: head, judgedHeads: [frozen, head] });
+    const { deps, calls } = stubDeps(true);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.lastJudgedRed = async () => head;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.reason).toBe("unchanged-since-verdict");
+    expect(calls).not.toContain("runGreen");
+  });
 });
 
 describe("WI-42350: the judged-red marker is stamped ONLY by a verdict that actually judged the code", () => {
