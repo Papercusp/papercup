@@ -43,7 +43,17 @@ import {
 // installer stages exactly what the probe asks for, which only means something if both sides
 // read the same constant.
 import { WORKSPACE_HOST_OMP_LOCAL_MODEL } from './workspace-host-agent-authentication';
-import { deriveWorkspaceHostCanonicalArtifactUrls } from './workspace-host-build-manifest';
+import {
+  deriveWorkspaceHostCanonicalArtifactUrls,
+  WORKSPACE_HOST_ARTIFACT_ORIGIN,
+  WORKSPACE_HOST_ARTIFACT_PATH_PREFIX,
+} from './workspace-host-build-manifest';
+
+/**
+ * Composed from the shipped constants rather than hardcoded, so these fixtures cannot drift off
+ * the real origin — and so no account-bearing hostname is reintroduced into source (WI-38321).
+ */
+const ARTIFACT_BASE = `${WORKSPACE_HOST_ARTIFACT_ORIGIN}${WORKSPACE_HOST_ARTIFACT_PATH_PREFIX}`;
 import { WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV } from './workspace-host-remote-initializer';
 import { WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV } from './workspace-host-credential-delivery';
 
@@ -1319,9 +1329,8 @@ describe('buildWorkspaceHostBootstrap', () => {
           input({
             release: {
               ...input().release,
-              bundleUrl: 'https://papercusp-cupboard.aviynw.workers.dev/artifacts/workspace-host/latest/server.tgz',
-              signatureUrl:
-                'https://papercusp-cupboard.aviynw.workers.dev/artifacts/workspace-host/latest/server.tgz.minisig',
+              bundleUrl: `${ARTIFACT_BASE}/latest/server.tgz`,
+              signatureUrl: `${ARTIFACT_BASE}/latest/server.tgz.minisig`,
             },
           }),
         ),
@@ -1367,8 +1376,8 @@ describe('buildWorkspaceHostBootstrap', () => {
           input({
             release: {
               ...input().release,
-              bundleUrl: `https://papercusp-cupboard.aviynw.workers.dev/artifacts/workspace-host/server.tgz?digest=${DIGEST}`,
-              signatureUrl: `https://papercusp-cupboard.aviynw.workers.dev/artifacts/workspace-host/server.tgz?digest=${DIGEST}.minisig`,
+              bundleUrl: `${ARTIFACT_BASE}/server.tgz?digest=${DIGEST}`,
+              signatureUrl: `${ARTIFACT_BASE}/server.tgz?digest=${DIGEST}.minisig`,
             },
           }),
         ),
