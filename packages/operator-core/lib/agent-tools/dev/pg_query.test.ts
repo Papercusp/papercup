@@ -207,6 +207,41 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(pgReadQueryMock).toHaveBeenCalledOnce();
   });
 
+  // EI-20261038811991822. The builder itself is unit-tested in
+  // pg-read-query.test.ts; what THIS pair proves is the wiring — that the
+  // advisory actually reaches the caller's payload, which is the half a
+  // builder-only test cannot show. The module mock above is PARTIAL
+  // (`...importOriginal()`), so the real builder runs here.
+  it('surfaces the unused-CTE advisory on a query whose CTE is never joined', async () => {
+    const res = await pgQueryTool.handler(
+      {
+        sql:
+          "WITH targets AS (SELECT unnest(ARRAY['su-a','su-b']) AS owner_id) " +
+          'SELECT owner_id FROM harness_shared.coord_presence LIMIT 5',
+        allowUnscoped: true,
+      } as never,
+      { workspaceId: 'ws-1', harnessSlug: 'h-1' } as never,
+    );
+    const payload = payloadOf(res as never);
+    expect(String(payload.advisory)).toContain('unused CTE');
+    expect(String(payload.advisory)).toContain('`targets`');
+    // It ADVISES, it does not refuse — the rows still come back.
+    expect(payload).toMatchObject({ rowCount: 1 });
+  });
+
+  it('emits no unused-CTE advisory once that CTE is joined', async () => {
+    const res = await pgQueryTool.handler(
+      {
+        sql:
+          "WITH targets AS (SELECT unnest(ARRAY['su-a','su-b']) AS owner_id) " +
+          'SELECT p.owner_id FROM harness_shared.coord_presence p JOIN targets t ON t.owner_id = p.owner_id',
+        allowUnscoped: true,
+      } as never,
+      { workspaceId: 'ws-1', harnessSlug: 'h-1' } as never,
+    );
+    expect(payloadOf(res as never).advisory).toBeUndefined();
+  });
+
   it('refuses an unbounded JSON-text search before pgReadQuery', async () => {
     const sql =
       "SELECT id FROM harness_shared.tool_invocations WHERE args_json::text ILIKE '%EI-22033266394507364%'";
