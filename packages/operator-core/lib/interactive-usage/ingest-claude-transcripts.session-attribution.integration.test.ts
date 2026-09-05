@@ -322,3 +322,170 @@ describe('ingestInteractiveUsage — harness_slug stamped at INSERT (WI-2144763)
     expect(rows[0].harness_slug).toBe('a-different-harness');
   });
 });
+
+describe('ingestInteractiveUsage — goal_id stamped via the adv_sessions PK (WI-2145149)', () => {
+  // THE DEFECT. Both routes of the 2-arg `goal_id_for_usage_session` join
+  // adv_sessions on `a.session_id = p_session_id`. A psu-launched codex session's
+  // sample carries the ROLLOUT UUID in session_id, while the key it is actually
+  // indexed by is `adv_sessions.id` — the bigint PK carried by its per-session
+  // CODEX_HOME dir `<base>/session-<advId>/`. So both routes returned NULL for
+  // every codex row: measured 0 of 134 resolving in production. Migration 1121
+  // adds a 3-arg overload that tries the adv-id key first, in each semantic tier.
+  //
+  // HONEST CEILING, so nobody reads these tests as closing the goal gap: the fix
+  // moves codex goal attribution 0 -> 3 of 134 — which IS 100% of the achievable
+  // set (feeding the OLD function a key it can match yields the same 3). The other
+  // 131 owners have no goal on any brief or mode row; workspace-wide only 344 of
+  // 22,229 adv_sessions (1.55%) resolve a goal by ANY route. A NULL goal_id is
+  // overwhelmingly ABSENT GOAL DATA, not a resolver failure (EI-22391659152296045).
+  //
+  // Fixtures use an EXPLICIT adv_sessions.id (a plain bigint with a sequence
+  // default, not an identity column) so the CODEX_HOME dir name and the PK agree.
+
+  it('resolves the goal through the CODEX_HOME adv id when the session route provably cannot', async () => {
+    const advId = 987654321;
+    const uuid = '01a0aaaa-1111-7e10-9079-bb0000000001';
+    // session_id is DELIBERATELY not the rollout uuid — this is what every real psu
+    // codex row looks like, and it is what makes the session route unable to match.
+    await sql`INSERT INTO harness_shared.adv_sessions
+      (id, workspace_id, mode, coord_owner_id, session_id)
+      VALUES (${advId}, ${WS}, 'console', 'codex-goal-owner', ${'some-other-native-session-id'})`;
+    await sql`INSERT INTO harness_shared.agent_modes
+      (workspace_id, owner_id, axis_key, mode, subject, set_by)
+      VALUES (${WS}, 'codex-goal-owner', 'overlay:goal', 'goal', 'goal-via-adv-id', 'test')`;
+
+    // CONTROL, asserted BEFORE the ingest: the pre-fix 2-arg form — still live, still
+    // called by the deployed release checkout and the desktop sidecar — cannot resolve
+    // this session. Without this line a passing test below would be equally consistent
+    // with a fixture that the OLD function could already have resolved, so this is what
+    // makes the stamp evidence of the new argument rather than of the fixture.
+    const [preFix] = await sql<Array<{ goal_id: string | null }>>`
+      SELECT harness_shared.goal_id_for_usage_session(${WS}, ${uuid}) AS goal_id`;
+    expect(preFix.goal_id).toBeNull();
+
+    const claudeBase = await fs.mkdtemp(path.join(os.tmpdir(), 'wi2145149-claude-empty-'));
+    const codexBase = await fs.mkdtemp(path.join(os.tmpdir(), 'wi2145149-codex-homes-'));
+    tmpDirs.push(claudeBase, codexBase);
+    const day = path.join(codexBase, `session-${advId}`, 'sessions', '2026', '09', '05');
+    await fs.mkdir(day, { recursive: true });
+    await fs.writeFile(
+      path.join(day, `rollout-2026-09-05T03-40-00-${uuid}.jsonl`),
+      JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-5.6-sol' } }) +
+        '\n' +
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'token_count',
+            info: { last_token_usage: { input_tokens: 500, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 40 } },
+          },
+        }) +
+        '\n',
+    );
+
+    await ingestInteractiveUsage({
+      adapters: [],
+      includeIsolationRoots: true,
+      isolationBase: claudeBase, // empty — keeps the claude sweep off the real $HOME
+      codexIsolationBase: codexBase,
+    });
+
+    const rows = await sql<Array<{ goal_id: string | null; session_id: string | null }>>`
+      SELECT goal_id, session_id FROM harness_shared.agent_usage_samples
+       WHERE workspace_id = ${WS} AND session_id = ${uuid}`;
+    expect(rows).toHaveLength(1);
+    // The sample still carries the rollout uuid — 1121 resolves the goal WITHOUT
+    // re-signing session_id, which the P3 path above pins as load-bearing.
+    expect(rows[0].session_id).toBe(uuid);
+    expect(rows[0].goal_id).toBe('goal-via-adv-id');
+  });
+
+  it('leaves goal_id NULL when the adv session carries no goal — the 131-of-134 case, never a fabricated goal', async () => {
+    // The dominant real-world shape: a genuine adv_sessions row and a real coord
+    // owner whose agent_modes/session_briefs simply record no goal. The resolver must
+    // return NULL rather than inventing one or falling back to another session's goal
+    // — the latter is exactly what a naive "nearest row" fix would do.
+    const advId = 987654322;
+    const uuid = '01a0aaaa-1111-7e10-9079-bb0000000002';
+    await sql`INSERT INTO harness_shared.adv_sessions
+      (id, workspace_id, mode, coord_owner_id, session_id)
+      VALUES (${advId}, ${WS}, 'console', 'codex-goalless-owner', ${'another-native-session-id'})`;
+
+    const claudeBase = await fs.mkdtemp(path.join(os.tmpdir(), 'wi2145149-claude-empty-2-'));
+    const codexBase = await fs.mkdtemp(path.join(os.tmpdir(), 'wi2145149-codex-homes-2-'));
+    tmpDirs.push(claudeBase, codexBase);
+    const day = path.join(codexBase, `session-${advId}`, 'sessions', '2026', '09', '05');
+    await fs.mkdir(day, { recursive: true });
+    await fs.writeFile(
+      path.join(day, `rollout-2026-09-05T03-41-00-${uuid}.jsonl`),
+      JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-5.6-sol' } }) +
+        '\n' +
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'token_count',
+            info: { last_token_usage: { input_tokens: 300, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 20 } },
+          },
+        }) +
+        '\n',
+    );
+
+    await ingestInteractiveUsage({
+      adapters: [],
+      includeIsolationRoots: true,
+      isolationBase: claudeBase,
+      codexIsolationBase: codexBase,
+    });
+
+    const rows = await sql<Array<{ goal_id: string | null }>>`
+      SELECT goal_id FROM harness_shared.agent_usage_samples
+       WHERE workspace_id = ${WS} AND session_id = ${uuid}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].goal_id).toBeNull();
+  });
+
+  it('CONTROL: the goal is resolved per-session, not a constant — a second CODEX_HOME gets its own goal', async () => {
+    // Calibration for the positive pin above. If the writer stamped one hardcoded
+    // value, or the fixture leaked between cases, that test would still pass.
+    // Ingesting a DIFFERENT adv id in the same file must yield ITS goal.
+    const advId = 987654323;
+    const uuid = '01a0aaaa-1111-7e10-9079-bb0000000003';
+    await sql`INSERT INTO harness_shared.adv_sessions
+      (id, workspace_id, mode, coord_owner_id, session_id)
+      VALUES (${advId}, ${WS}, 'console', 'codex-second-goal-owner', ${'third-native-session-id'})`;
+    await sql`INSERT INTO harness_shared.agent_modes
+      (workspace_id, owner_id, axis_key, mode, subject, set_by)
+      VALUES (${WS}, 'codex-second-goal-owner', 'overlay:goal', 'goal', 'a-different-goal', 'test')`;
+
+    const claudeBase = await fs.mkdtemp(path.join(os.tmpdir(), 'wi2145149-claude-empty-3-'));
+    const codexBase = await fs.mkdtemp(path.join(os.tmpdir(), 'wi2145149-codex-homes-3-'));
+    tmpDirs.push(claudeBase, codexBase);
+    const day = path.join(codexBase, `session-${advId}`, 'sessions', '2026', '09', '05');
+    await fs.mkdir(day, { recursive: true });
+    await fs.writeFile(
+      path.join(day, `rollout-2026-09-05T03-42-00-${uuid}.jsonl`),
+      JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-5.6-sol' } }) +
+        '\n' +
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'token_count',
+            info: { last_token_usage: { input_tokens: 200, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 10 } },
+          },
+        }) +
+        '\n',
+    );
+
+    await ingestInteractiveUsage({
+      adapters: [],
+      includeIsolationRoots: true,
+      isolationBase: claudeBase,
+      codexIsolationBase: codexBase,
+    });
+
+    const rows = await sql<Array<{ goal_id: string | null }>>`
+      SELECT goal_id FROM harness_shared.agent_usage_samples
+       WHERE workspace_id = ${WS} AND session_id = ${uuid}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].goal_id).toBe('a-different-goal');
+  });
+});
