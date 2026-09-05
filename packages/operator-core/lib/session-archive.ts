@@ -172,7 +172,6 @@ export interface SessionArchiveRef {
   /** Abs root the collected relpaths resolve against: the CLAUDE_CONFIG_DIR,
    *  the CODEX_HOME, or the omp sessions root. */
   sessionRoot: string;
-  workspaceId?: string;
   owner?: string | null;
   harnessSlug?: string | null;
   cwd?: string | null;
@@ -227,8 +226,19 @@ export interface ArchiveStampRow {
 export interface SessionArchiveStore {
   /** MUST be atomic: file rows + stale-relpath prune + stamp, one tx. */
   upsertArchive(files: ArchiveFileRow[], stamp: ArchiveStampRow): Promise<void>;
-  readStamp(sourceKind: string, sessionId: string, workspaceId?: string): Promise<ArchiveStampRow | null>;
-  readFiles(sourceKind: string, sessionId: string, workspaceId?: string): Promise<ArchiveFileRow[]>;
+  /**
+   * Reads are keyed by (source_kind, session_id) ALONE and always resolve under
+   * WS_DEFAULT, because that is the only workspace a write can ever produce.
+   *
+   * There is deliberately NO workspace parameter (WI-38236 / EI-20271441524331244).
+   * It used to be optional, which made passing a real slug — the natural move when
+   * you are holding an adv row whose `workspaceId` is right there — return null
+   * rather than raise: indistinguishable from "this session has no archive". That
+   * silently produced the SAME bug at two independent call sites. Removing the
+   * parameter makes the mistake a COMPILE error instead of a wrong answer.
+   */
+  readStamp(sourceKind: string, sessionId: string): Promise<ArchiveStampRow | null>;
+  readFiles(sourceKind: string, sessionId: string): Promise<ArchiveFileRow[]>;
   stampAdvSessionArchived(advSessionId: number): Promise<void>;
 }
 
@@ -455,7 +465,9 @@ export async function archiveSession(
   const totalRaw = collected.reduce((s, f) => s + f.bytes, 0);
   if (totalRaw > MAX_TOTAL_RAW_BYTES) return { ok: false, reason: 'too_large', ...none };
 
-  const ws = ref.workspaceId ?? WS_DEFAULT;
+  // Writers key every row under WS_DEFAULT, unconditionally. The ref carries no
+  // workspace: a ref-supplied one could mint a row no reader is able to address.
+  const ws = WS_DEFAULT;
   const fileRows: ArchiveFileRow[] = [];
   const manifest: ArchiveManifestEntry[] = [];
   let bytesRaw = 0;
@@ -534,10 +546,10 @@ export interface DeleteArchivedResult {
 }
 
 export async function deleteArchivedSessionFiles(
-  ref: Pick<SessionArchiveRef, 'sourceKind' | 'sessionId' | 'workspaceId'> & { sessionRoot?: string },
+  ref: Pick<SessionArchiveRef, 'sourceKind' | 'sessionId'> & { sessionRoot?: string },
   store: SessionArchiveStore = pgSessionArchiveStore(),
 ): Promise<DeleteArchivedResult> {
-  const stamp = await store.readStamp(ref.sourceKind, ref.sessionId, ref.workspaceId ?? WS_DEFAULT);
+  const stamp = await store.readStamp(ref.sourceKind, ref.sessionId);
   if (!stamp) {
     return { ok: false, reason: 'not_archived', deleted: 0, missing: 0, refused: [], retained: [] };
   }
@@ -636,17 +648,16 @@ export interface ArchiveReadinessResult {
  * or interprets an in-flight POST as `not_archived`.
  */
 export async function inspectArchiveReadiness(
-  key: { sourceKind: ArchiveSourceKind; sessionId: string; workspaceId?: string },
+  key: { sourceKind: ArchiveSourceKind; sessionId: string },
   store: SessionArchiveStore = pgSessionArchiveStore(),
 ): Promise<ArchiveReadinessResult> {
   const missing = new Set<string>();
   const conflicts = new Set<string>();
   let shaMismatch = false;
-  const ws = key.workspaceId ?? WS_DEFAULT;
-  const stamp = await store.readStamp(key.sourceKind, key.sessionId, ws);
+  const stamp = await store.readStamp(key.sourceKind, key.sessionId);
   if (!stamp) return { archived: false, ready: false, reason: 'not_archived', missing: [], conflicts: [] };
 
-  const rows = await store.readFiles(key.sourceKind, key.sessionId, ws);
+  const rows = await store.readFiles(key.sourceKind, key.sessionId);
   const byRel = new Map(rows.map((row) => [row.relpath, row]));
   const root = stamp.session_root;
   let realRoot: string | null = null;
@@ -721,14 +732,13 @@ export async function inspectArchiveReadiness(
 }
 
 export async function rematerializeSession(
-  key: { sourceKind: ArchiveSourceKind; sessionId: string; workspaceId?: string; targetRoot?: string },
+  key: { sourceKind: ArchiveSourceKind; sessionId: string; targetRoot?: string },
   store: SessionArchiveStore = pgSessionArchiveStore(),
 ): Promise<RematerializeResult> {
   const none = { written: 0, skippedExisting: 0, conflicts: [] as string[] };
-  const ws = key.workspaceId ?? WS_DEFAULT;
-  const stamp = await store.readStamp(key.sourceKind, key.sessionId, ws);
+  const stamp = await store.readStamp(key.sourceKind, key.sessionId);
   if (!stamp) return { ok: false, reason: 'not_archived', ...none };
-  const rows = await store.readFiles(key.sourceKind, key.sessionId, ws);
+  const rows = await store.readFiles(key.sourceKind, key.sessionId);
   const byRel = new Map(rows.map((r) => [r.relpath, r]));
   const root = key.targetRoot ?? stamp.session_root;
   await mkdir(root, { recursive: true });
@@ -844,7 +854,8 @@ export function pgSessionArchiveStore(): SessionArchiveStore {
       });
     },
 
-    async readStamp(sourceKind, sessionId, workspaceId = WS_DEFAULT) {
+    async readStamp(sourceKind, sessionId) {
+      const workspaceId = WS_DEFAULT;
       const { sql } = getOrgPg();
       const rows = await sql<
         Array<Omit<ArchiveStampRow, 'file_count' | 'bytes_raw' | 'bytes_stored' | 'adv_session_id'> & {
@@ -871,7 +882,8 @@ export function pgSessionArchiveStore(): SessionArchiveStore {
       };
     },
 
-    async readFiles(sourceKind, sessionId, workspaceId = WS_DEFAULT) {
+    async readFiles(sourceKind, sessionId) {
+      const workspaceId = WS_DEFAULT;
       const { sql } = getOrgPg();
       const rows = await sql<
         Array<Omit<ArchiveFileRow, 'bytes_raw' | 'bytes_stored'> & {

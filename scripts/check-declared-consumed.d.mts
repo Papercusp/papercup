@@ -182,6 +182,41 @@ export function rollupSweep(rows: any): {
     failures: any;
 };
 export function walkSource(dir: any, rel?: string): any;
+/**
+ * Parse every exported string-literal union in one COMMENT-STRIPPED source.
+ * Unions of a single variant are skipped: there is no branch to be phantom.
+ */
+export function enumVariantDeclarations(stripped: any): {
+    name: any;
+    variants: any[];
+    declText: any;
+}[];
+/** Count non-overlapping occurrences of `needle` in `hay`. */
+export function countOccurrences(hay: any, needle: any): number;
+/**
+ * Decide which declared variants nothing can produce.
+ *
+ * `decls` is [{ file, name, variants, declText }]; `strippedByFile` is a Map of
+ * comment-stripped sources; `quoted` is a Map of quoted-literal counts over the
+ * same sources (the cheap stage-1 shortlist).
+ */
+export function judgeEnumVariants({ decls, strippedByFile, quoted }: {
+    decls: any;
+    strippedByFile: any;
+    quoted: any;
+}): {
+    variantCount: number;
+    shortlisted: number;
+    rescued: number;
+    mirrors: {
+        id: string;
+        file: any;
+    }[];
+    phantoms: {
+        id: string;
+        file: any;
+    }[];
+};
 /** Directories a live consumer cannot live in. `_retired` is vacuous-pass (4). */
 export const SKIP_DIRS: Set<string>;
 /**
@@ -224,3 +259,16 @@ export const DB_MIGRATION_DIR: "libs/papercusp/libs/db/sql";
 /** This module, repo-relative — a registry row edited here is a policed edit too. */
 export const REGISTRY_SOURCE_PATH: string;
 export const CONSUMPTION_VERDICTS: string[];
+/** Enums whose variants mirror an external API's vocabulary (false-finding 2). */
+export const PROVIDER_MIRROR_RE: RegExp;
+/** Only unions declared under this prefix are swept (the agent-facing core). */
+export const ENUM_SWEEP_PREFIX: "packages/operator-core/lib";
+/**
+ * SHRINK-ONLY BASELINE. Every variant here is declared and unreachable TODAY.
+ * The gate fails on a NEW one, and equally on a row that is no longer phantom —
+ * so the list can only shrink, and a fix must retire its row rather than leave a
+ * ratchet that quietly watches nothing (the `stale` rule the field axis uses).
+ *
+ * Re-seed it from a measuring run (`--list-phantom-variants`), never by hand.
+ */
+export const PHANTOM_VARIANT_BASELINE: Set<string>;

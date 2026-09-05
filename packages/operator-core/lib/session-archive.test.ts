@@ -87,14 +87,15 @@ class WorkspaceKeyedStore implements SessionArchiveStore {
     this.stamps.set(`${stamp.workspace_id}:${stamp.source_kind}:${stamp.session_id}`, stamp);
   }
 
-  // Mirrors pgSessionArchiveStore: `workspaceId = WS_DEFAULT` when omitted.
-  async readStamp(kind: string, id: string, workspaceId = 'default'): Promise<ArchiveStampRow | null> {
-    return this.stamps.get(`${workspaceId}:${kind}:${id}`) ?? null;
+  // Mirrors pgSessionArchiveStore: reads resolve under WS_DEFAULT, and there is
+  // deliberately no workspace parameter to get wrong (EI-20271441524331244).
+  async readStamp(kind: string, id: string): Promise<ArchiveStampRow | null> {
+    return this.stamps.get(`default:${kind}:${id}`) ?? null;
   }
 
-  async readFiles(kind: string, id: string, workspaceId = 'default'): Promise<ArchiveFileRow[]> {
+  async readFiles(kind: string, id: string): Promise<ArchiveFileRow[]> {
     return [...this.files.values()].filter(
-      (f) => f.workspace_id === workspaceId && f.source_kind === kind && f.session_id === id,
+      (f) => f.workspace_id === 'default' && f.source_kind === kind && f.session_id === id,
     );
   }
 
@@ -145,14 +146,32 @@ describe('archive workspace key — the WRITER and every READER must agree (WI-3
     expect(await store.readStamp('claude', SID)).not.toBeNull();
   });
 
-  it('CONTROL: reading that same stamp with a workspace SLUG misses — the defect this pins', async () => {
-    // Permanent wrong-implementation control: if this ever starts finding the
-    // stamp, the store double has stopped honouring the key and the test above
-    // has quietly become unfalsifiable.
-    const { root } = await claudeFixture();
+  it('CONTROL: a stamp under a NON-default workspace is unreachable — the key really is pinned', async () => {
+    // Permanent wrong-implementation control. Reads resolve under WS_DEFAULT, so a
+    // row keyed anywhere else must be invisible. If this ever starts finding the
+    // stamp, the store double has stopped honouring the key and the test above has
+    // quietly become unfalsifiable.
+    //
+    // This used to pass a slug as a third readStamp argument. It no longer can:
+    // that parameter is gone, which is the fix. The control now writes the wrong
+    // key directly instead, so it still fails if the keying breaks.
     const store = new WorkspaceKeyedStore();
-    await archiveSession({ sourceKind: 'claude', sessionId: SID, sessionRoot: root }, store);
-    expect(await store.readStamp('claude', SID, 'papercusp-workspace')).toBeNull();
+    await store.upsertArchive([], {
+      workspace_id: 'papercusp-workspace',
+      source_kind: 'claude',
+      session_id: SID,
+      owner: null,
+      harness_slug: null,
+      cwd: null,
+      adv_session_id: null,
+      session_root: '/nowhere',
+      file_count: 0,
+      bytes_raw: 0,
+      bytes_stored: 0,
+      manifest: [],
+      archived_by: null,
+    });
+    expect(await store.readStamp('claude', SID)).toBeNull();
   });
 });
 
@@ -164,40 +183,43 @@ describe('archive key — CLASS guard: no production reader may key by a workspa
   // archive not found". Two instances of one class means the class needs the
   // guard, not each instance. Writers key by (source_kind, session_id) under
   // WS_DEFAULT; any reader passing a workspace slug silently matches nothing.
-  const readerFiles = [
-    'endpoint-route/routes/adv/sessions.ts',
-    'session-port/source.ts',
-    'session-archive-read.ts',
-    'session-archive-reconciler.ts',
-    'session-dir-gc.ts',
-  ];
+  // This guard USED to be a regex over a hand-maintained list of five reader
+  // files. That list was itself the footgun it policed: it never covered
+  // iq-battery/bee-instance.ts, and `\(([^)]*)\)` cannot see a multi-line call, a
+  // nested paren in an argument, or an aliased/destructured reference — each of
+  // which reads as a clean pass. The parameter is now GONE from the interface, so
+  // the compiler is the guard: total, over every file, for every call shape.
+  //
+  // Absence is not self-guarding, though — someone can re-add the parameter and
+  // nothing would notice. These legs make that re-addition fail loudly.
 
-  it('no reader passes a workspace slug to readStamp/readFiles', () => {
-    const offenders: string[] = [];
-    for (const rel of readerFiles) {
-      const src = readFileSync(join(__dirname, rel), 'utf8');
-      for (const m of src.matchAll(/\.(readStamp|readFiles)\(([^)]*)\)/g)) {
-        const args = m[2].split(',').map((a) => a.trim());
-        // A third argument is only legitimate when it is explicitly defaulted to
-        // WS_DEFAULT by the caller (the writer-symmetric form used inside
-        // session-archive.ts itself, which is not in this reader set).
-        if (args.length >= 3 && !/WS_DEFAULT/.test(args[2])) {
-          offenders.push(`${rel}: ${m[0]}`);
-        }
-      }
-    }
-    expect(offenders).toEqual([]);
+  it('the store interface declares NO workspace parameter (the one declaration site)', () => {
+    const src = readFileSync(join(__dirname, 'session-archive.ts'), 'utf8');
+    const decls = [...src.matchAll(/^ {2}(readStamp|readFiles)\(([^)]*)\)/gm)];
+    expect(decls.map((d) => d[1]).sort()).toEqual(['readFiles', 'readStamp']);
+    for (const d of decls) expect(d[2]).not.toMatch(/workspace/i);
   });
 
-  it('CONTROL: the same scan DOES flag a workspace-slug third argument', () => {
-    // Falsifiability: proves the matcher above can actually see the defect,
-    // rather than passing because the regex never matches anything.
-    const sample = `const stamp = await store.readStamp('claude', key.sessionId, key.workspaceId);`;
-    const hits = [...sample.matchAll(/\.(readStamp|readFiles)\(([^)]*)\)/g)].filter((m) => {
-      const args = m[2].split(',').map((a) => a.trim());
-      return args.length >= 3 && !/WS_DEFAULT/.test(args[2]);
-    });
-    expect(hits).toHaveLength(1);
+  it('CONTROL: the same scan DOES flag a re-added workspace parameter', () => {
+    // Falsifiability: proves the matcher can see the defect, rather than passing
+    // because it never matches anything.
+    const sample = '  readStamp(sourceKind: string, sessionId: string, workspaceId?: string): Promise<null>;';
+    const decls = [...sample.matchAll(/^ {2}(readStamp|readFiles)\(([^)]*)\)/gm)];
+    expect(decls).toHaveLength(1);
+    expect(decls[0][2]).toMatch(/workspace/i);
+  });
+
+  it('passing a workspace argument is a COMPILE error, not a silent wrong answer', () => {
+    const store: SessionArchiveStore = new WorkspaceKeyedStore();
+    // @ts-expect-error — a third (workspace) argument must not typecheck. If the
+    // parameter is ever re-added, this line stops erroring and tsc then fails on
+    // the now-unused @ts-expect-error. That inversion is what keeps this guard
+    // falsifiable instead of vacuously true. NOTE: vitest never typechecks, so
+    // this leg is enforced by `npm run lint:tsc`, not by running this suite.
+    void store.readStamp('claude', SID, 'papercusp-workspace');
+    // @ts-expect-error — same contract for readFiles.
+    void store.readFiles('claude', SID, 'papercusp-workspace');
+    expect(true).toBe(true);
   });
 });
 

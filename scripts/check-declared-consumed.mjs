@@ -684,6 +684,169 @@ export function* walkSource(dir, rel = '') {
   }
 }
 
+// ── THE ENUM-VARIANT AXIS (EI-20269641894152536) ────────────────────────────
+//
+// The two axes above ask "is this declared FIELD written and read?". This one
+// asks the same question one level down, of a declared string-literal union:
+// CAN ANY CODE PATH PRODUCE THIS VARIANT? A variant that appears nowhere but
+// its own declaration cannot be emitted, so an agent branching on it is
+// branching on an unreachable state — the defect the filing reported.
+//
+// ⚠ WHY THIS AXIS IS DERIVED AND THE OTHER TWO ARE CURATED. DECLARED_FIELDS and
+// DECLARED_COLUMNS are hand-listed because a field's MEANING picks it out.
+// Variants need no such list: they are parsed from the declaration itself, so
+// this axis is rung 1 of the derived-truth ladder and cannot silently watch a
+// renamed subject the way a stale hand-kept row can.
+//
+// ⚠ FOUR MEASURED FALSE-FINDING MODES, each of which produced a wrong answer
+// before it was closed. They are recorded because every one of them reads as a
+// discovery rather than as a broken instrument:
+//   1. EXCLUDING THE DECLARING FILE. A resolver beside its own enum is the
+//      normal case; excluding that file reported ~100 phantoms that emit
+//      themselves a few lines below the declaration.
+//   2. PROVIDER MIRRORS. AwsPartition / GcpComputeInstanceStatus and friends
+//      describe an EXTERNAL API's vocabulary. They are inbound PARSE TARGETS,
+//      absent from our code by design, and are excluded rather than reported.
+//   3. QUOTED-ONLY COUNTING. A variant that doubles as an object PROPERTY NAME
+//      is written unquoted, so a `'variant'` search reports it as phantom:
+//      VerdictBucketName scored 6 of 6 "phantom" while testing-verdict-diff.ts
+//      declares `newlyFailing: DiffEntry[]` and emits `newlyFailing: []`.
+//      Stage 2 re-checks as a bare substring, which cannot miss unquoted use.
+//   4. NOT STRIPPING COMMENTS. The densest concentration of a variant's name is
+//      the prose explaining it — the same vacuous pass (2) the field axis
+//      closed. This axis counts against `stripComments` output for that reason.
+//
+// Substring counting can only OVER-count, so this axis UNDER-reports phantoms.
+// That is the deliberate direction: every name it prints is one that no file in
+// the tree mentions outside its declaration, quoted or not, code or prose.
+
+/** Enums whose variants mirror an external API's vocabulary (false-finding 2). */
+export const PROVIDER_MIRROR_RE = /workspace-host\/(aws|azure|gcp)-/;
+
+/** Only unions declared under this prefix are swept (the agent-facing core). */
+export const ENUM_SWEEP_PREFIX = 'packages/operator-core/lib';
+
+const ENUM_DECL_RE = /export\s+type\s+([A-Za-z0-9_]+)\s*=\s*((?:\s*\|?\s*'[^']*')+)\s*;/g;
+
+/**
+ * Parse every exported string-literal union in one COMMENT-STRIPPED source.
+ * Unions of a single variant are skipped: there is no branch to be phantom.
+ */
+export function enumVariantDeclarations(stripped) {
+  const out = [];
+  for (const m of stripped.matchAll(ENUM_DECL_RE)) {
+    const variants = [...m[2].matchAll(/'([^']*)'/g)].map((v) => v[1]).filter((v) => v.length > 0);
+    if (variants.length >= 2) out.push({ name: m[1], variants, declText: m[0] });
+  }
+  return out;
+}
+
+/** Count non-overlapping occurrences of `needle` in `hay`. */
+export function countOccurrences(hay, needle) {
+  if (!needle) return 0;
+  let n = 0;
+  let i = hay.indexOf(needle);
+  while (i !== -1) {
+    n++;
+    i = hay.indexOf(needle, i + needle.length);
+  }
+  return n;
+}
+
+/**
+ * Decide which declared variants nothing can produce.
+ *
+ * `decls` is [{ file, name, variants, declText }]; `strippedByFile` is a Map of
+ * comment-stripped sources; `quoted` is a Map of quoted-literal counts over the
+ * same sources (the cheap stage-1 shortlist).
+ */
+export function judgeEnumVariants({ decls, strippedByFile, quoted }) {
+  const shortlist = [];
+  let variantCount = 0;
+  for (const d of decls) {
+    for (const v of d.variants) {
+      variantCount++;
+      const inDecl = countOccurrences(d.declText, `'${v}'`);
+      if ((quoted.get(v) ?? 0) - inDecl <= 0) shortlist.push({ decl: d, variant: v });
+    }
+  }
+
+  const phantoms = [];
+  const mirrors = [];
+  let rescued = 0;
+  for (const cand of shortlist) {
+    let total = 0;
+    for (const src of strippedByFile.values()) total += countOccurrences(src, cand.variant);
+    if (total - countOccurrences(cand.decl.declText, cand.variant) > 0) {
+      rescued++;
+      continue;
+    }
+    const row = { id: `${cand.decl.name}.'${cand.variant}'`, file: cand.decl.file };
+    if (PROVIDER_MIRROR_RE.test(cand.decl.file)) mirrors.push(row);
+    else phantoms.push(row);
+  }
+  phantoms.sort((a, b) => a.id.localeCompare(b.id));
+  return { variantCount, shortlisted: shortlist.length, rescued, mirrors, phantoms };
+}
+
+/**
+ * SHRINK-ONLY BASELINE. Every variant here is declared and unreachable TODAY.
+ * The gate fails on a NEW one, and equally on a row that is no longer phantom —
+ * so the list can only shrink, and a fix must retire its row rather than leave a
+ * ratchet that quietly watches nothing (the `stale` rule the field axis uses).
+ *
+ * Re-seed it from a measuring run (`--list-phantom-variants`), never by hand.
+ */
+export const PHANTOM_VARIANT_BASELINE = new Set(PHANTOM_VARIANT_BASELINE_SEED());
+
+function PHANTOM_VARIANT_BASELINE_SEED() {
+  // 42 of 6184 declared variants (0.68%), measured 2026-09-05.
+  return [
+    "ActionKind.'plugin.disable'", // packages/operator-core/lib/user-actions.ts
+    "ActionKind.'plugin.enable'", // packages/operator-core/lib/user-actions.ts
+    "ActionKind.'plugin.install'", // packages/operator-core/lib/user-actions.ts
+    "ActivationRuntime.'operator-staging'", // packages/operator-core/lib/activation-receipt.ts
+    "AuthAuditKind.'change_password_no_session'", // packages/operator-core/lib/auth-audit.ts
+    "AutoMergeSkipReason.'checks_not_green'", // packages/operator-core/lib/pr-host/auto-review-decision-types.ts
+    "BlueskyCursorRefusal.'cursor-too-old'", // packages/operator-core/lib/external-triggers/social/bluesky-adapter.ts
+    "CapacityCompatibilityDisposition.'remove-after-gate'", // packages/operator-core/lib/inference-gateway/capacity-inventory.ts
+    "Channel2FailureReason.'branch_not_found'", // packages/operator-core/lib/identity/contributor-file-types.ts
+    "Channel2FailureReason.'commit_author_login_mismatch'", // packages/operator-core/lib/identity/contributor-file-types.ts
+    "Channel2FailureReason.'commit_not_verified_by_github'", // packages/operator-core/lib/identity/contributor-file-types.ts
+    "Channel2FailureReason.'contributor_file_body_invalid'", // packages/operator-core/lib/identity/contributor-file-types.ts
+    "Channel2FailureReason.'contributor_file_not_found'", // packages/operator-core/lib/identity/contributor-file-types.ts
+    "Channel2FailureReason.'device_pubkey_invalid'", // packages/operator-core/lib/identity/contributor-file-types.ts
+    "Channel2FailureReason.'git_fetch_failed'", // packages/operator-core/lib/identity/contributor-file-types.ts
+    "Channel2FailureReason.'login_segment_unsafe'", // packages/operator-core/lib/identity/contributor-file-types.ts
+    "ChannelFailReason.'channel2_attestation_invalid'", // packages/operator-core/lib/identity/binding-verifier-types.ts
+    "ChannelFailReason.'channel2_attestation_missing'", // packages/operator-core/lib/identity/binding-verifier-types.ts
+    "ChannelFailReason.'channel2_file_missing'", // packages/operator-core/lib/identity/binding-verifier-types.ts
+    "ChannelFailReason.'channel2_signature_invalid'", // packages/operator-core/lib/identity/binding-verifier-types.ts
+    "ChannelFailReason.'oauth_token_mismatch'", // packages/operator-core/lib/identity/binding-verifier-types.ts
+    "ChannelPendingReason.'channel2_rate_limit_retry'", // packages/operator-core/lib/identity/binding-verifier-types.ts
+    "ChannelPendingReason.'channel2_transient_network'", // packages/operator-core/lib/identity/binding-verifier-types.ts
+    "ChannelPendingReason.'just_joined_channel2_propagating'", // packages/operator-core/lib/identity/binding-verifier-types.ts
+    "CpuUnavailableReason.'not-a-background-job'", // packages/operator-core/lib/agent-tools/capability/cgroup-cpu.ts
+    "HostedSessionRevocationReason.'membership_revocation'", // packages/operator-core/lib/auth/hosted/provider.ts
+    "HostedSessionRevocationReason.'upstream_revocation'", // packages/operator-core/lib/auth/hosted/provider.ts
+    "KeylessDisposition.'convert-to-keyed'", // packages/operator-core/lib/harness/improvements/keyless-ei-policy.ts
+    "PaymentRail.'lightning'", // packages/operator-core/lib/p2p/payment-channel.ts
+    "PipeFilterPolicy.'producer-aware'", // packages/operator-core/lib/bash-substitution/census.ts
+    "QueueDrainTriggerKind.'health-transition'", // packages/operator-core/lib/resource-governor/queue-drainer.ts
+    "RecipeContractDiagnosticCode.'recipe_authority_mismatch'", // packages/operator-core/lib/recipe-contract.ts
+    "RecipeContractDiagnosticCode.'recipe_authority_required'", // packages/operator-core/lib/recipe-contract.ts
+    "RecipeContractDiagnosticCode.'replayability_mismatch'", // packages/operator-core/lib/recipe-contract.ts
+    "RecipeContractDiagnosticCode.'timeout_invalid'", // packages/operator-core/lib/recipe-contract.ts
+    "ReleaseArtifactErrorCode.'ticket-expired'", // packages/operator-core/lib/cupboard/artifact-store.ts
+    "ShardCapability.'llm-credentials'", // packages/operator-core/lib/sync/pot-git/gate/hermeticity.ts
+    "StaleClaimAction.'freed-issue'", // packages/operator-core/lib/work-items-stale-claims.ts
+    "WorkingFailureReason.'pr_closed_without_merge'", // packages/operator-core/lib/harness/feature-state-types.ts
+    "WorkingFailureReason.'user_abandoned'", // packages/operator-core/lib/harness/feature-state-types.ts
+    "WorkingFailureReason.'worker_crashed'", // packages/operator-core/lib/harness/feature-state-types.ts
+    "WorkspaceHostPublicationFailureCode.'secret-material'", // packages/operator-core/lib/workspace-host/publication-manifest.ts
+  ];
+}
+
 const ROOTS = ['packages', 'libs', 'apps', 'scripts', 'bin'];
 
 /** Every identifier any target cares about — the cheap pre-filter in `main`. */
@@ -705,13 +868,36 @@ async function main() {
   const fieldAcc = new Map(DECLARED_FIELDS.map((t) => [t.id, { declarations: [], writes: [], reads: [] }]));
   const columnAcc = new Map(DECLARED_COLUMNS.map((t) => [t.id, { writes: [], reads: [] }]));
 
+  // Enum-variant axis accumulators. Unlike the field/column axes, this one has
+  // no cheap name prefilter to hide behind: a variant can be produced ANYWHERE,
+  // so every non-generated file must be offered to it.
+  const enumDecls = [];
+  const strippedByFile = new Map();
+  const quotedCount = new Map();
+  const QUOTED_LIT_RE = /'([^'\\\n]{1,60})'/g;
+
   // ONE pass over the tree: each file is read once and offered to every target.
   for (const f of files) {
     let src;
     try { src = readFileSync(f.abs, 'utf8'); } catch { continue; }
+    const isGenerated = isBuildOutput(f.rel) || looksGenerated(src);
+
+    // Enum axis runs BEFORE the TARGET_NAMES prefilter (it needs every file),
+    // and counts against comment-stripped text (false-finding 4).
+    if (!isGenerated) {
+      const stripped = stripComments(src);
+      strippedByFile.set(f.rel, stripped);
+      for (const m of stripped.matchAll(QUOTED_LIT_RE)) {
+        quotedCount.set(m[1], (quotedCount.get(m[1]) ?? 0) + 1);
+      }
+      if (f.rel.startsWith(ENUM_SWEEP_PREFIX)) {
+        for (const d of enumVariantDeclarations(stripped)) enumDecls.push({ ...d, file: f.rel });
+      }
+    }
+
     // Cheap gate before the expensive normalisation: most files name no target.
     if (!TARGET_NAMES.some((n) => src.includes(n))) continue;
-    if (isBuildOutput(f.rel) || looksGenerated(src)) { generated++; continue; }
+    if (isGenerated) { generated++; continue; }
     const prepared = prepareSource(src);
 
     for (const target of DECLARED_FIELDS) {
@@ -759,6 +945,15 @@ async function main() {
       sites: { declarations: declared ? [target.migration] : [], ...acc },
       verdict: judgeConsumption({ declarations: declared, writes: acc.writes.length, reads: acc.reads.length }),
     });
+  }
+
+  const enums = judgeEnumVariants({ decls: enumDecls, strippedByFile, quoted: quotedCount });
+
+  // Re-seeding mode: print the baseline literal and exit without judging.
+  if (process.argv.includes('--list-phantom-variants')) {
+    console.log(`# ${enums.phantoms.length} phantom variant(s) of ${enums.variantCount} declared`);
+    for (const p of enums.phantoms) console.log(`    ${JSON.stringify(p.id)}, // ${p.file}`);
+    return;
   }
 
   const roll = rollupSweep(rows);
