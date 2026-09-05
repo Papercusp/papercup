@@ -39,16 +39,9 @@ const argsSchema = z.object({
   harness: harnessArg,
   slug: z.string().min(1).optional(),
   slugs: z.array(z.string().min(1)).min(1).max(200).optional().describe('Plan slugs to update with the same Now block in one call.'),
-  state: z
-    .string()
-    .min(1)
-    .max(
-      2000,
-      'state must be ≤2000 chars. The Now block is a cold-resume ANCHOR, not a log — trim to the essentials; move long-form detail (backlog, history, design notes) into the plan body via plans:set-content / set-content-chunk, or onto plan items / decisions.',
-    )
-    .describe(
-      'One paragraph (≤2000 chars) describing where the plan currently stands. Keep it tight — the Now block is a cold-resume anchor, NOT a log. If it would exceed 2000 chars, trim to essentials and put the long-form detail in the plan body via plans:set-content / set-content-chunk (or on items/decisions); do not pad the Now block.',
-    ),
+  state: softText(2000, { min: 1 }).describe(
+    'One paragraph (≤2000 chars) describing where the plan currently stands. Keep it tight — the Now block is a cold-resume anchor, NOT a log. Auto-truncated to 2000 chars if longer (reported as `clamped`); put long-form detail in the plan body via plans:set-content / set-content-chunk, not here.',
+  ),
   next: softText(8000, { min: 1 })
     .describe('One sentence (≤8000 chars) — the single next concrete action and who should do it. Auto-truncated to 8000 chars if longer; multi-step detail belongs in plan items or the body.'),
   rationale: z
@@ -141,13 +134,13 @@ export function evaluateNowUpdate(
 export default defineTool({
   name: 'plans:set-now',
   description:
-    "Replace the `## Now` block atomically. The Now block is the cold-resume anchor — the single most-read field, NOT a log: keep State ≤2000 chars + Next ≤800 (trim hard; long-form backlog/history/design detail belongs in the plan body via plans:set-content / set-content-chunk, not the Now block). Auto-bumps frontmatter updated:.",
+    "Replace the `## Now` block atomically. The Now block is the cold-resume anchor — the single most-read field, NOT a log: keep State ≤2000 chars + Next ≤800 (both auto-truncate, reported as `clamped`; long-form detail belongs in the plan body via plans:set-content / set-content-chunk). Auto-bumps frontmatter updated:.",
   guidance: {
     when: 'Plan state advances meaningfully — phase boundaries, blocking discovery, finishing a chunk of work, picking up a new direction.',
     notWhen:
       'Per-item flip — that\'s plans:set-status. Or a decision — that\'s plans:add-decision.',
     chaining:
-      'plans:set-status to flip current item → plans:set-now reflecting the new state. Keep State ≤2000 chars / Next ≤800 — if either overflows, trim it and offload the detail to plans:set-content / set-content-chunk rather than retrying a too-long Now.',
+      'plans:set-status to flip current item → plans:set-now reflecting the new state. Keep State ≤2000 chars / Next ≤800 — an overflow auto-truncates (see `clamped`); offload long-form detail to plans:set-content / set-content-chunk.',
     seeAlso: [
       'plans:set-status (flip an item\'s lifecycle, not the narration)',
       'plans:add-decision (record a durable decision, not a now-note)',
@@ -162,8 +155,22 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
-    // softText `next` (P-002): never bounced on length — clamp to cap here.
+    // softText `next` + `state` (P-002): never bounced on length — clamp to cap
+    // here. `state` was a hardText reject until EI-20020322245949080: the Now
+    // block is echoed prose with no downstream bound, so per limits.ts policy it
+    // is a soft field, and bouncing it cost a full round-trip per attempt (five
+    // in a row, shaving 4-14 chars each). The clamp is REPORTED rather than
+    // silent — this is the cold-resume anchor, so a dropped tail must be visible.
     const next = clampText(args.next, 8000);
+    const state = clampText(args.state, 2000);
+    const clamped = [
+      ...(args.state.length > 2000
+        ? [{ field: 'state' as const, fromChars: args.state.length, toChars: 2000 }]
+        : []),
+      ...(args.next.length > 8000
+        ? [{ field: 'next' as const, fromChars: args.next.length, toChars: 8000 }]
+        : []),
+    ];
     const slugs = mergeIds(args.slug, args.slugs);
     const env = await runBulk(
       slugs,
@@ -183,7 +190,7 @@ export default defineTool({
             afterWrite: rev.afterWrite,
           },
           async (current): Promise<{ newBody: string | null; value: SetNowValue }> =>
-            evaluateNowUpdate(current, args.state, next, slug),
+            evaluateNowUpdate(current, state, next, slug),
         );
 
         if (result.kind === 'busy') {
@@ -255,7 +262,7 @@ export default defineTool({
         // detector fault must never lose the state update it exists to protect.
         let provenanceLint: ReturnType<typeof provenanceLintField>;
         try {
-          provenanceLint = provenanceLintField(`${args.state}\n${next}`);
+          provenanceLint = provenanceLintField(`${state}\n${next}`);
         } catch {
           /* fail-open: the Now write already landed */
         }
@@ -264,7 +271,7 @@ export default defineTool({
           planSlug: slug,
           event: 'now_updated',
           after: next,
-          detail: args.state.slice(0, 200),
+          detail: state.slice(0, 200),
         });
 
         return {
@@ -275,6 +282,7 @@ export default defineTool({
           ...(result.activationAudit ? { activationAudit: result.activationAudit } : {}),
           ...(ephemeralDeliverableWarning ? { ephemeralDeliverableWarning } : {}),
           ...(provenanceLint ? { provenanceLint } : {}),
+          ...(clamped.length ? { clamped } : {}),
         };
       },
       { keyOf: (slug) => ({ slug }) },
