@@ -318,10 +318,36 @@ interface CurrentnessRow {
   test_run_present: boolean;
 }
 
+const SELF_REFERENTIAL_CURRENTNESS_REASON = 'self-referential-current-fingerprint';
+
 function compareFingerprint(stored: string | null, current: string | null | undefined): FingerprintState {
   if (stored === null) return 'not-applicable';
   if (current == null) return 'unknown';
   return stored === current ? 'current' : 'stale';
+}
+
+/**
+ * Caller-supplied fingerprints are useful only when they came from an independent
+ * derivation. If every applicable stored fingerprint is echoed byte-for-byte in the
+ * current input, the comparison is circular and must not manufacture a current verdict.
+ *
+ * This is deliberately a narrow guard: partial inputs still report the ordinary
+ * per-dimension unknown state, and any actual mismatch remains stale.
+ */
+function fingerprintsAreSelfReferential(row: CurrentnessRow, current?: EvidenceCurrentInput): boolean {
+  if (current == null) return false;
+  const fingerprints: Array<[string, string | null, string | null | undefined]> = [
+    ['source', row.source_fingerprint, current.sourceFingerprint],
+    ['test', row.test_fingerprint, current.testFingerprint],
+    ['fixture', row.fixture_fingerprint, current.fixtureFingerprint],
+    ['rubric', row.rubric_fingerprint, current.rubricFingerprint],
+    ['environment', row.environment_fingerprint, current.environmentFingerprint],
+  ];
+  const applicable = fingerprints.filter(([, stored]) => stored !== null);
+  return (
+    applicable.length > 0 &&
+    applicable.every(([, stored, supplied]) => supplied != null && stored === supplied)
+  );
 }
 
 /** Pure, four-state currentness classifier; no drifting boolean is persisted. */
@@ -346,6 +372,15 @@ export function classifySpecEvidenceCurrentness(
   const unknownReasons = Object.entries(dimensions)
     .filter(([, state]) => state === 'unknown')
     .map(([dimension]) => `${dimension}-current-fingerprint-not-supplied`);
+  if (
+    fingerprintsAreSelfReferential(row, current) &&
+    staleReasons.length === 0 &&
+    unknownReasons.length === 0
+  ) {
+    // A byte-identical echo is not evidence of independent freshness. Keep the
+    // per-dimension matches visible, but downgrade the aggregate and record why.
+    unknownReasons.push(SELF_REFERENTIAL_CURRENTNESS_REASON);
+  }
   return {
     overall: staleReasons.length > 0 ? 'stale' : unknownReasons.length > 0 ? 'unknown' : 'current',
     dimensions,
