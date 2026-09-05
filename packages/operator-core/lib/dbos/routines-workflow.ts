@@ -54,7 +54,13 @@ import {
   type SystemActionResult,
 } from '../harness/routines/system-actions';
 import { clearStaleReaperLastError } from './dbos-executor-reaper';
-import { poolPressure, recordPoolShed, lastPoolProbeMs, recordPoolShedEvent } from './pool-pressure';
+import {
+  poolPressure,
+  recordPoolShed,
+  lastPoolProbeMs,
+  recordPoolShedEvent,
+  type PoolPressure,
+} from './pool-pressure';
 import { activeWorkspaceId } from '../workspace-registry';
 import { shouldShedSchedulerTickUnderLoopPressure } from './tick-load-shed';
 import { anotherRoutinesTickInFlight, ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS } from './routine-tick-overlap-guard';
@@ -464,7 +470,41 @@ async function runLoopRebaseSweep(sql: ReturnType<typeof getOrgPg>['sql']): Prom
   );
 }
 
-/** The scheduled tick: list due routines, claim + enqueue a deduped fire for each. */
+export interface RoutineDispatchAdmissionDecision {
+  /** A first start in each durable queue is the liveness floor; later starts are feedback-gated. */
+  readonly admitted: boolean;
+  /** null means the first start was admitted without spending a diagnostic probe. */
+  readonly pressure: PoolPressure | null;
+}
+
+/**
+ * Feedback admission for one DBOS routine queue.
+ *
+ * P-015 removed every fixed WorkflowQueue ceiling so productive capacity can
+ * probe upward. The missing half was an admission check at the actual fan-out
+ * seam: one recovered scheduler tick consequently started 27 git-sync
+ * workflows, with 14 DBOS operations active together when the org-admin pool's
+ * SELECT 1 probe timed out. Durable workflow rows preserved the work, but
+ * durability alone did not pace it.
+ *
+ * Admit the first start in a queue unconditionally so a pressured system can
+ * still make forward progress. Before every additional start, ask the physical
+ * resource itself. Healthy service expands naturally; elevated/critical service
+ * pauses only that queue for the rest of this tick, leaving every unclaimed row
+ * due for the next 30-second recovery probe. This is feedback credit, not a
+ * configured maximum, and it reuses the exact org-admin probe that protects the
+ * scheduler's own heavy sweeps.
+ */
+export async function evaluateRoutineDispatchAdmission(
+  startedInQueue: number,
+  probe: () => Promise<PoolPressure> = poolPressure,
+): Promise<RoutineDispatchAdmissionDecision> {
+  if (startedInQueue <= 0) return { admitted: true, pressure: null };
+  const pressure = await probe();
+  return { admitted: pressure === 'ok', pressure };
+}
+
+/** The scheduled tick: list due routines, claim + enqueue feedback-paced deduped fires. */
 async function routinesTickImpl(): Promise<void> {
   // WI-3351: routinesTick is the LIGHTWEIGHT scheduler. Heavy periodic jobs
   // shed in tick-load-shed.ts, and routine bodies can self-gate; shedding this
@@ -545,10 +585,37 @@ async function routinesTickImpl(): Promise<void> {
   }
 
   const due = await DBOS.runStep(() => listDueCronRoutines(sql), { name: 'list-due-routines' });
+  const startedByQueue = new Map<string, number>();
+  const pausedQueues = new Set<string>();
+  let criticalShedRecorded = poolCritical;
   for (const r of due) {
     // EI-11171 critical-routine floor: under a pool-starvation shed, fire ONLY the protected
     // critical-queue routines (git-sync); everything else sheds with the heavy sweeps below.
     if (poolCritical && !shouldFireUnderPoolShed(r.targetRole)) continue;
+    const queueName = queueForRoutine(r.targetRole, r.installSlug);
+    if (pausedQueues.has(queueName)) continue;
+
+    // EI-224330: queueConcurrency() intentionally installs no fixed DBOS cap. Pace
+    // the ACTUAL fan-out with fresh physical feedback instead: each queue gets one
+    // liveness-floor start, then must keep proving the shared org-admin pool healthy.
+    // A withheld row has not been claimed, so it remains durably due for the next tick.
+    const startedInQueue = startedByQueue.get(queueName) ?? 0;
+    const admission = await evaluateRoutineDispatchAdmission(startedInQueue);
+    if (!admission.admitted) {
+      pausedQueues.add(queueName);
+      if (admission.pressure === 'critical' && !criticalShedRecorded) {
+        const shedCount = recordPoolShed();
+        criticalShedRecorded = true;
+        recordPoolShedEvent(activeWorkspaceId(), shedCount);
+      }
+      console.warn(
+        `[routines-tick] PAUSED ${queueName} dispatch after ${startedInQueue} start(s) — ` +
+          `fresh org-admin probe is ${admission.pressure} (${lastPoolProbeMs()}ms); ` +
+          `unclaimed routines remain due for the next feedback probe (EI-224330)`,
+      );
+      continue;
+    }
+
     const claimed = await DBOS.runStep(() => claimDueRoutine(sql, r), { name: 'claim-routine' });
     if (!claimed) {
       // WI-40883: a bare `continue` here is what let 11 routines sit unclaimable and silent —
@@ -577,7 +644,7 @@ async function routinesTickImpl(): Promise<void> {
       await DBOS.startWorkflow(routineFireWorkflow, {
         // Queue classification isolates both must-never-starve persistence work (git-sync)
         // and deadline-sensitive loop wakes; long/unknown work stays on the shared lane.
-        queueName: queueForRoutine(r.targetRole, r.installSlug),
+        queueName,
         enqueueOptions: { deduplicationID: `routine:${r.id}` },
         // A fire PENDING on a DEAD executor holds this dedup ID forever (DBOS
         // recovery is per-executor), silently collapsing every later fire while
@@ -600,6 +667,7 @@ async function routinesTickImpl(): Promise<void> {
         r.rescheduleIntervalSec ?? null,
         r.targetOwnerId ?? null,
       );
+      startedByQueue.set(queueName, startedInQueue + 1);
     } catch (e) {
       // Already enqueued/active for this routine — collapse (back-pressure).
       if (!/Duplicat/i.test(String(e))) throw e;
