@@ -850,12 +850,19 @@ export const ENGINEER_ISSUES_MIN_DDL = `
  */
 export const CARRY_NOTES_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.carry_notes (
-    workspace_id TEXT NOT NULL,
-    scope        TEXT NOT NULL,
-    note         TEXT,
-    journal      JSONB NOT NULL DEFAULT '[]'::jsonb,
-    updated_ts   BIGINT NOT NULL,
-    deps         JSONB,
+    workspace_id   TEXT NOT NULL,
+    scope          TEXT NOT NULL,
+    note           TEXT,
+    journal        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    updated_ts     BIGINT NOT NULL,
+    deps           JSONB,
+    -- migration 1118 (P-007/R-06 unchanged attestation). This fixture hand-rolls the
+    -- table, so it does not inherit real migrations and falls silently one column
+    -- behind every time one is added -- the exact stranding this block already had to
+    -- be fixed for once. setCarryNoteWithPrior now writes both of these on every body
+    -- write, so omitting them breaks every integration test that checkpoints.
+    body_ts        BIGINT,
+    attested_count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace_id, scope)
   )`;
 
