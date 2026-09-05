@@ -114,7 +114,7 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
       composes: [' goal-mode-e2e ', 'pot-coordination-health'],
     });
     expect(parsed.success).toBe(true);
-    if (parsed.success) expect(parsed.data.composes).toEqual([' goal-mode-e2e ', 'pot-coordination-health']);
+    if (parsed.success) expect(parsed.data.composes).toEqual(['goal-mode-e2e', 'pot-coordination-health']);
 
     expect(
       rubricsProposeArgs.safeParse({
