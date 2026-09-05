@@ -973,7 +973,7 @@ describe('loop surface round-trip (real PG)', () => {
     expect(await deactivateLoop('su-nobody', { sql })).toBe(false);
   });
 
-  it('EI-21178284518430314: loop:end retires fleet leadership watches even when already inactive', async () => {
+  it('EI-22379628359419691: loop:end disarms only the loop and preserves independent fleet watches', async () => {
     const fleet = { kind: 'fleet-leadership', ref: 'fleet-alpha' };
     const other = { kind: 'work-item-claim', ref: 'WI-1' };
     await materializeLoop({
@@ -1005,7 +1005,7 @@ describe('loop surface round-trip (real PG)', () => {
          WHERE subscriber_id = ${OWNER}
          ORDER BY event_key`,
     ).toEqual([
-      { event_key: 'fleet:member-dead:fleet-alpha', cancelled_at: expect.any(Date) },
+      { event_key: 'fleet:member-dead:fleet-alpha', cancelled_at: null },
       { event_key: 'work-item:claim:WI-1', cancelled_at: null },
     ]);
     expect(
@@ -1015,12 +1015,12 @@ describe('loop surface round-trip (real PG)', () => {
          WHERE owner_id = ${OWNER}
          ORDER BY event_key`,
     ).toEqual([
-      { event_key: 'predicate:fleet-alpha', active: false },
+      { event_key: 'predicate:fleet-alpha', active: true },
       { event_key: 'predicate:WI-1', active: true },
     ]);
 
-    // Re-seed a fleet watch after the row is inactive: loop:end must still clean
-    // the predecessor's residue even though the routine UPDATE returns no row.
+    // Re-seed a fleet watch after the row is inactive: a repeated loop:end remains
+    // a no-op for the loop and must not take ownership of independent watch cleanup.
     await sql`
       INSERT INTO harness_shared.event_awaits
         (workspace_id, subscriber_id, event_key, once, bound_to)
@@ -1033,7 +1033,7 @@ describe('loop surface round-trip (real PG)', () => {
           FROM harness_shared.event_awaits
          WHERE subscriber_id = ${OWNER}
            AND event_key = 'fleet:member-dead:fleet-alpha-2'`,
-    ).toEqual([{ cancelled_at: expect.any(Date) }]);
+    ).toEqual([{ cancelled_at: null }]);
   });
 
   it('EI-3748: deactivateLoop clears a stale last_error stamp — the routine can no longer fire, so a residual error is moot', async () => {
