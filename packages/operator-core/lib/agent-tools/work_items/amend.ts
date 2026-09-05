@@ -32,6 +32,18 @@ export default defineTool({
       'A routine progress update / finding → work_items:comment. Re-prioritizing the frontier (re-derivable, costs nothing to lose) → no amend needed. Finishing a node → work_items:complete / set_state.',
     chaining:
       'work_items:get → work_items:amend { id, kind, rationale }. The executing agent PROPOSES (disposition=proposed); a steerer DISPOSES. requiresCompensation=true ⇒ a worker is mid-execution on the node — coordinate (coord:send) before/with the change.',
+    // EI-21307426619986295: re-parenting a completed duplicate under the item that
+    // supersedes it is a structural change to the graph, so amend is a reasonable first
+    // guess — but amend RECORDS a decision about a node and never edits a field, and its
+    // four-key schema could only answer with what it accepts. The distinction is the
+    // whole point of the verb, so the fix is to name the field writer, not widen amend.
+    argRedirects: {
+      parent: {
+        tool: 'work_items:update',
+        args: { id: '<work-item-id>', parent: '<parent-work-item-id>' },
+        note: 'amend records a structural DECISION about a node (split | drop | reapproach | expand | note) and edits no fields. The parent edge is a field: work_items:update writes it, and `parent: null` there clears it. Record the reasoning as an amend `note` if it is worth keeping.',
+      },
+    },
   },
   capability: 'work_items:write',
   requirePrincipal: false,
