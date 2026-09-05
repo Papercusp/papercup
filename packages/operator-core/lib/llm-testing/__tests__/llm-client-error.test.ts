@@ -325,4 +325,48 @@ describe('llmCall priority default (EI-315: llm-testing lane starvation)', () =>
       'system:work-item-admission-bulk-dedup:run-1',
     );
   });
+
+  // WI-2144763. This is THE chokepoint for headers-source spend attribution: every
+  // `source:'headers'` usage row gets its identity from the single `usageAttribution`
+  // object built here, so if this forwarding regresses, all 18,228 such rows (~$755)
+  // silently go back to harness_slug NULL / '(unattributed)' with nothing failing.
+  // Asserted at runAgentChat's boundary for the same reason the priority tests above are:
+  // the anthropic-direct path has no HTTP layer to spy on. The `role` half is pinned
+  // alongside so a future edit cannot drop one while keeping the other.
+  it('WI-2144763: forwards the caller harness into usageAttribution alongside the role label', async () => {
+    events.length = 0;
+    events.push({ type: 'result', finalText: 'ok', tokensIn: 1, tokensOut: 1, costUsd: 0 });
+    lastRunAgentChatOpts = undefined;
+    const { llmCall } = await import('../llm-client');
+    await llmCall({
+      system: 's',
+      messages: [{ role: 'user', content: 'u' }],
+      model: 'claude-haiku-4-5-20251001',
+      priority: 'scout',
+      harnessSlug: 'papercusp-public-site-pot',
+    });
+    expect((lastRunAgentChatOpts as Record<string, unknown> | undefined)?.usageAttribution).toEqual({
+      role: 'scout',
+      harnessSlug: 'papercusp-public-site-pot',
+    });
+  });
+
+  // The other side of the contract: a caller that genuinely does not know its harness
+  // (workspace-global work) must leave the field undefined so the host records an honest
+  // NULL. A fix that fabricated a slug here would be worse than the gap it closed.
+  it('WI-2144763: leaves usageAttribution.harnessSlug undefined when the caller does not supply one', async () => {
+    events.length = 0;
+    events.push({ type: 'result', finalText: 'ok', tokensIn: 1, tokensOut: 1, costUsd: 0 });
+    lastRunAgentChatOpts = undefined;
+    const { llmCall } = await import('../llm-client');
+    await llmCall({
+      system: 's',
+      messages: [{ role: 'user', content: 'u' }],
+      model: 'claude-haiku-4-5-20251001',
+    });
+    const attribution = (lastRunAgentChatOpts as Record<string, unknown> | undefined)
+      ?.usageAttribution as Record<string, unknown> | undefined;
+    expect(attribution?.role).toBe('llm-testing');
+    expect(attribution?.harnessSlug).toBeUndefined();
+  });
 });
