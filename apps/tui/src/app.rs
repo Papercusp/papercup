@@ -4861,6 +4861,17 @@ impl App {
         } else {
             member.label.clone()
         };
+        let member_agent = member.agent.clone().or_else(|| {
+            matches!(member.source.as_str(), "claude" | "codex" | "omp")
+                .then(|| member.source.clone())
+        });
+        if kind == crate::fleet::FleetControlKind::Relaunch && member_agent.is_none() {
+            self.fleet.control_outcome = Some(crate::fleet::FleetControlOutcome {
+                ok: false,
+                message: "selected member has no known agent backend; relaunch refused".into(),
+            });
+            return Action::Render;
+        }
         let gate = matches!(
             kind,
             crate::fleet::FleetControlKind::Bench | crate::fleet::FleetControlKind::FireGate
@@ -4883,6 +4894,7 @@ impl App {
             fleet,
             member: member_id,
             member_label,
+            agent: member_agent,
             gate,
         });
         self.fleet.control_outcome = None;
@@ -6928,7 +6940,7 @@ impl App {
                 Action::Render
             }
             Event::PipelineStatus(s) => {
-                self.pipeline_status = Some(s);
+                self.pipeline_status = Some(*s);
                 Action::Render
             }
             Event::LaunchClaimRetry(id) => {
@@ -7339,18 +7351,14 @@ impl App {
                     Ok(message) => {
                         self.status = message.clone();
                         self.last_error = None;
-                        self.fleet.control_outcome = Some(crate::fleet::FleetControlOutcome {
-                            ok: true,
-                            message,
-                        });
+                        self.fleet.control_outcome =
+                            Some(crate::fleet::FleetControlOutcome { ok: true, message });
                     }
                     Err(error) => {
                         let message = format!("fleet control ({fleet}): {error}");
                         self.last_error = Some(message.clone());
-                        self.fleet.control_outcome = Some(crate::fleet::FleetControlOutcome {
-                            ok: false,
-                            message,
-                        });
+                        self.fleet.control_outcome =
+                            Some(crate::fleet::FleetControlOutcome { ok: false, message });
                     }
                 }
                 // Every terminal action result re-reads the roster/frontier and
@@ -13360,6 +13368,157 @@ mod tests {
             current_plan_slug: None,
             heartbeat_at: None,
             ..Default::default()
+        }
+    }
+
+    fn cockpit_app() -> App {
+        let mut app = App::new();
+        app.tab = Tab::Fleet;
+        app.hive_agent_tabs = true;
+
+        let mut leader = roster_entry("codex");
+        leader.owner_id = "su-leader".into();
+        leader.label = "fleet leader".into();
+        leader.session_state = Some("live".into());
+        leader.fleet_slug = Some("cockpit".into());
+        leader.fleet_role = Some("leader".into());
+
+        let mut member = roster_entry("codex");
+        member.owner_id = "su-member".into();
+        member.label = "worker lane".into();
+        member.session_state = Some("parked".into());
+        member.fleet_slug = Some("cockpit".into());
+        member.fleet_role = Some("member".into());
+
+        app.set_roster(vec![leader, member]);
+        app.fleet.leader_brief = Some(crate::models::FleetLeaderBrief {
+            ok: true,
+            summary: crate::models::FleetLeaderSummary {
+                fleet: "cockpit".into(),
+                ..Default::default()
+            },
+            announced_gates: Some(vec![
+                crate::models::FleetLeaderGate {
+                    event: "fleet:cockpit:already-open".into(),
+                    fired: true,
+                    ..Default::default()
+                },
+                crate::models::FleetLeaderGate {
+                    event: "fleet:cockpit:contract-ready".into(),
+                    fired: false,
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        });
+        app.fleet.agent_sel = app
+            .visible_roster()
+            .iter()
+            .position(|row| row.owner_id == "su-member")
+            .expect("member is visible");
+        app
+    }
+
+    #[test]
+    fn cockpit_action_keys_arm_exact_targets_and_only_y_dispatches() {
+        use crate::fleet::FleetControlKind;
+
+        for (key_code, expected) in [
+            ('b', FleetControlKind::Bench),
+            ('w', FleetControlKind::Wake),
+            ('r', FleetControlKind::Relaunch),
+            ('g', FleetControlKind::FireGate),
+            ('s', FleetControlKind::BumpSpec),
+        ] {
+            let mut app = cockpit_app();
+            assert_eq!(
+                app.update(key(key_code, KeyModifiers::NONE)),
+                Action::Render
+            );
+            let pending = app
+                .fleet
+                .control_pending
+                .as_ref()
+                .expect("first key only arms");
+            assert_eq!(pending.kind, expected);
+            assert_eq!(pending.fleet, "cockpit");
+            assert_eq!(pending.member, "su-member");
+            if matches!(
+                expected,
+                FleetControlKind::Bench | FleetControlKind::FireGate
+            ) {
+                assert_eq!(
+                    pending.gate.as_deref(),
+                    Some("fleet:cockpit:contract-ready"),
+                    "must skip already-fired gates"
+                );
+            }
+
+            match app.update(key('y', KeyModifiers::NONE)) {
+                Action::RunFleetControl { intent } => {
+                    assert_eq!(intent.kind, expected);
+                    assert_eq!(intent.member, "su-member");
+                    if expected == FleetControlKind::Relaunch {
+                        assert_eq!(intent.agent.as_deref(), Some("codex"));
+                    }
+                }
+                other => panic!("expected confirmed fleet control, got {other:?}"),
+            }
+            assert!(app.fleet.control_pending.is_none());
+            assert_eq!(app.fleet.control_running.as_ref().unwrap().kind, expected);
+        }
+    }
+
+    #[test]
+    fn cockpit_confirmation_n_and_escape_cancel_without_dispatch() {
+        let mut app = cockpit_app();
+        app.update(key('b', KeyModifiers::NONE));
+        assert_eq!(app.update(key('x', KeyModifiers::NONE)), Action::Render);
+        assert!(app.fleet.control_pending.is_some());
+        assert_eq!(app.update(key('n', KeyModifiers::NONE)), Action::Render);
+        assert!(app.fleet.control_pending.is_none());
+        assert!(app.fleet.control_running.is_none());
+
+        app.update(key('g', KeyModifiers::NONE));
+        assert_eq!(app.update(ev(KeyCode::Esc)), Action::Render);
+        assert!(app.fleet.control_pending.is_none());
+        assert!(app.fleet.control_running.is_none());
+    }
+
+    #[test]
+    fn cockpit_gate_actions_fail_closed_without_an_unfired_announcement() {
+        let mut app = cockpit_app();
+        app.fleet.leader_brief.as_mut().unwrap().announced_gates = Some(vec![]);
+        assert_eq!(app.update(key('b', KeyModifiers::NONE)), Action::Render);
+        assert!(app.fleet.control_pending.is_none());
+        assert!(app
+            .fleet
+            .control_outcome
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("no unfired announced gate"));
+    }
+
+    #[test]
+    fn cockpit_result_refreshes_server_truth_and_legacy_w_remains_fallback() {
+        let mut app = cockpit_app();
+        app.update(key('w', KeyModifiers::NONE));
+        let _ = app.update(key('y', KeyModifiers::NONE));
+        assert_eq!(
+            app.update(Event::FleetControlFinished {
+                fleet: "cockpit".into(),
+                result: Ok("coord:wake audited · queued 1 · pickup false".into()),
+            }),
+            Action::FetchFleetAssignments
+        );
+        assert!(app.fleet.control_running.is_none());
+        assert!(app.fleet.control_outcome.as_ref().unwrap().ok);
+
+        app.fleet.leader_brief = None;
+        match app.update(key('w', KeyModifiers::NONE)) {
+            Action::SetWakeMode { agent, .. } => assert_eq!(agent, "su-member"),
+            other => panic!("legacy wake-mode binding must remain the fallback: {other:?}"),
         }
     }
 

@@ -1023,11 +1023,8 @@ impl OperatorClient {
     /// (`coord:wake-mode` / `coord:wake-queue`, hive-agent-tabs P-008/P-009) + any
     /// future pui tool-call go through it.
     pub async fn run_tool(&self, name: &str, args: serde_json::Value) -> Result<serde_json::Value> {
-        self.post_json(
-            "/api/agent-mcp/run-tool",
-            run_tool_body(name, args, false),
-        )
-        .await
+        self.post_json("/api/agent-mcp/run-tool", run_tool_body(name, args, false))
+            .await
     }
 
     /// Execute a mutation the TUI already confirmed in its own y/n modal. The
@@ -1040,10 +1037,7 @@ impl OperatorClient {
         name: &str,
         args: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        self.post_json(
-            "/api/agent-mcp/run-tool",
-            run_tool_body(name, args, true),
-        )
+        self.post_json("/api/agent-mcp/run-tool", run_tool_body(name, args, true))
             .await
     }
 

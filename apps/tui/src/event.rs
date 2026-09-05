@@ -93,7 +93,7 @@ pub enum Event {
     /// Fresh fleet rate/usage read-model (Overview top-bar, Brief 23 P-005).
     FleetRate(FleetRateStatus),
     /// Four registered release-pipeline cells for the Overview pipeline tile.
-    PipelineStatus(PipelineStatus),
+    PipelineStatus(Box<PipelineStatus>),
     /// EI-358: a pending-launch CLAIM failed in transport (operator blip) — the
     /// reducer un-tracks the id so a later roster tick retries. A LOST claim
     /// (another pui instance won) never emits this; it stays tracked/skipped.

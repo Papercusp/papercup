@@ -5388,7 +5388,6 @@ mod tests {
             walled_fresh: 1,
             unknown: 1,
             pacing: 1,
-            ..Default::default()
         }];
         app.account_rows = vec![AccountRow {
             id: "acct-1".into(),

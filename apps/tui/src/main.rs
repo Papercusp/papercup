@@ -1420,6 +1420,15 @@ async fn run<B: Backend>(
                     }
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
+                Action::RunFleetControl { intent } => {
+                    let harness = app
+                        .active_harness
+                        .lock()
+                        .map(|value| value.clone())
+                        .unwrap_or_default();
+                    tokio::spawn(run_fleet_control(intent, harness, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
                 Action::SetWakeMode { agent, mode } => {
                     // P-008: set the agent's wake mode via coord:wake-mode (run_tool).
                     // Best-effort; the next roster poll refreshes the ⏸MANUAL badge.
@@ -2416,7 +2425,7 @@ async fn set_max_agents(n: u32, tx: UnboundedSender<Event>) {
     if let Ok(s) = client.fleet_rate_status().await {
         let _ = tx.send(Event::FleetRate(s));
     }
-    let _ = tx.send(Event::PipelineStatus(client.pipeline_status().await));
+    let _ = tx.send(Event::PipelineStatus(Box::new(client.pipeline_status().await)));
 }
 
 // (mark_session_launched moved inline into the LaunchPanes arm — EI-358
@@ -4029,6 +4038,233 @@ async fn fetch_fleet_leader_brief(fleet: String, harness: String, tx: UnboundedS
     let _ = tx.send(Event::FleetLeaderBrief { fleet, result });
 }
 
+/// Execute one y-confirmed leader-cockpit mutation. Every write uses the
+/// existing loopback projected-tool dispatcher with `confirmed:true`, retaining
+/// its authorization, safety checks and audit log. The spec bump is the sole
+/// composite action: read the current fleet sentinel, clone its exact JSON
+/// object, change only `revision`, then write it back.
+async fn run_fleet_control(
+    intent: crate::fleet::FleetControlIntent,
+    harness: String,
+    tx: UnboundedSender<Event>,
+) {
+    let fleet = intent.fleet.clone();
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => execute_fleet_control(&client, &intent, &harness)
+            .await
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    let _ = tx.send(Event::FleetControlFinished { fleet, result });
+}
+
+async fn execute_fleet_control(
+    client: &OperatorClient,
+    intent: &crate::fleet::FleetControlIntent,
+    harness: &str,
+) -> Result<String> {
+    use crate::fleet::FleetControlKind;
+
+    let (verb, outcome) = match intent.kind {
+        FleetControlKind::Bench => {
+            let gate = intent
+                .gate
+                .as_deref()
+                .context("bench intent lost its announced gate")?;
+            let value = run_confirmed_fleet_tool(
+                client,
+                "fleet:bench",
+                serde_json::json!({
+                    "fleet": intent.fleet,
+                    "harness": harness,
+                    "member": intent.member,
+                    "wakeEvent": gate,
+                    "stagedAssignment": format!(
+                        "Resume the current fleet lane after announced gate {gate} fires"
+                    ),
+                }),
+            )
+            .await?;
+            (
+                "fleet:bench",
+                summarize_control_result("fleet:bench", &value),
+            )
+        }
+        FleetControlKind::Wake => {
+            let value = run_confirmed_fleet_tool(
+                client,
+                "coord:wake",
+                serde_json::json!({
+                    "to": intent.member,
+                    "note": format!("Fleet leader requested resume in {}", intent.fleet),
+                }),
+            )
+            .await?;
+            ("coord:wake", summarize_control_result("coord:wake", &value))
+        }
+        FleetControlKind::Relaunch => {
+            let agent = intent
+                .agent
+                .as_deref()
+                .context("relaunch intent lost the selected member's agent backend")?;
+            let value = run_confirmed_fleet_tool(
+                client,
+                "fleet:respawn-member",
+                serde_json::json!({
+                    "fleet": intent.fleet,
+                    "harness": harness,
+                    "member": intent.member,
+                    "agent": agent,
+                    "reason": "y-confirmed relaunch from the pui Fleet cockpit",
+                }),
+            )
+            .await?;
+            (
+                "fleet:respawn-member",
+                summarize_control_result("fleet:respawn-member", &value),
+            )
+        }
+        FleetControlKind::FireGate => {
+            let gate = intent
+                .gate
+                .as_deref()
+                .context("fire-gate intent lost its announced gate")?;
+            let value = run_confirmed_fleet_tool(
+                client,
+                "events:emit",
+                serde_json::json!({
+                    "event": gate,
+                    "summary": format!("Gate fired from the pui Fleet cockpit for {}", intent.fleet),
+                }),
+            )
+            .await?;
+            (
+                "events:emit",
+                summarize_control_result("events:emit", &value),
+            )
+        }
+        FleetControlKind::BumpSpec => {
+            let read_envelope = client
+                .run_tool(
+                    "scheduler:get_claim_spec",
+                    serde_json::json!({ "fleet": intent.fleet }),
+                )
+                .await?;
+            let current = crate::client::run_tool_inner_json(&read_envelope)?;
+            ensure_tool_ok("scheduler:get_claim_spec", &current)?;
+            let (spec, previous, next) = bumped_claim_spec(&current)?;
+            let value = run_confirmed_fleet_tool(
+                client,
+                "scheduler:set_claim_spec",
+                serde_json::json!({
+                    "fleet": intent.fleet,
+                    "harness": harness,
+                    "spec": spec,
+                }),
+            )
+            .await?;
+            let reported = value
+                .get("revision")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(next);
+            (
+                "scheduler:set_claim_spec",
+                format!("revision {previous}→{reported}"),
+            )
+        }
+    };
+    Ok(format!("{verb} audited · {outcome}"))
+}
+
+async fn run_confirmed_fleet_tool(
+    client: &OperatorClient,
+    name: &str,
+    args: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let envelope = client.run_tool_confirmed(name, args).await?;
+    let value = crate::client::run_tool_inner_json(&envelope)?;
+    ensure_tool_ok(name, &value)?;
+    Ok(value)
+}
+
+fn ensure_tool_ok(name: &str, value: &serde_json::Value) -> Result<()> {
+    if value.get("ok").and_then(serde_json::Value::as_bool) != Some(false) {
+        return Ok(());
+    }
+    let detail = value
+        .get("message")
+        .or_else(|| value.get("reason"))
+        .or_else(|| value.get("error"))
+        .or_else(|| value.get("errors"))
+        .map(|part| match part.as_str() {
+            Some(text) => text.to_string(),
+            None => part.to_string(),
+        })
+        .unwrap_or_else(|| "tool returned ok:false".into());
+    anyhow::bail!("{name}: {detail}")
+}
+
+fn bumped_claim_spec(value: &serde_json::Value) -> Result<(serde_json::Value, i64, i64)> {
+    let mut spec = value
+        .get("spec")
+        .cloned()
+        .context("scheduler:get_claim_spec returned no spec")?;
+    let previous = spec
+        .get("revision")
+        .and_then(serde_json::Value::as_i64)
+        .context("scheduler:get_claim_spec returned a spec without an integer revision")?;
+    let next = previous
+        .checked_add(1)
+        .context("claim-spec revision overflow")?;
+    spec.as_object_mut()
+        .context("scheduler:get_claim_spec returned a non-object spec")?
+        .insert("revision".into(), serde_json::Value::from(next));
+    Ok((spec, previous, next))
+}
+
+fn summarize_control_result(name: &str, value: &serde_json::Value) -> String {
+    let fields: &[(&str, &str)] = match name {
+        "fleet:bench" => &[("registered", "registered"), ("forced", "forced")],
+        "coord:wake" => &[
+            ("queued", "queued"),
+            ("woken", "woken"),
+            ("pickupConfirmed", "pickup"),
+            ("recipient_dead", "recipient-dead"),
+        ],
+        "fleet:respawn-member" => &[
+            ("verified", "verified"),
+            ("replacementOwner", "replacement"),
+        ],
+        "events:emit" => &[("waiters", "waiters"), ("woken", "woken")],
+        _ => &[],
+    };
+    let mut parts = Vec::new();
+    for (key, label) in fields {
+        if let Some(item) = value.get(*key) {
+            if item.is_string() || item.is_number() || item.is_boolean() {
+                let rendered = item
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| item.to_string());
+                parts.push(format!("{label} {rendered}"));
+            }
+        }
+    }
+    if name == "fleet:bench" {
+        if let Some(verdict) = value
+            .pointer("/lane/verdict")
+            .and_then(serde_json::Value::as_str)
+        {
+            parts.push(format!("lane {verdict}"));
+        }
+    }
+    if parts.is_empty() {
+        "ok".into()
+    } else {
+        parts.join(" · ")
+    }
+}
+
 /// Fetch one bee's dossier — its ranked work-list (`fleet:assignments { agent }`)
 /// + coord inbox/outbox (`fleet:bee_mail`) — and emit `Event::BeeDossier`. Each
 ///   half is best-effort: a failure of one still ships the other (the reducer
@@ -5606,7 +5842,7 @@ async fn refetch_all(
     // P-008: registered state cells, read through the operator's generic tool
     // bridge. Per-cell failures remain in-band in the model, so this never
     // converts an unavailable measurement into an all-clear.
-    let _ = tx.send(Event::PipelineStatus(client.pipeline_status().await));
+    let _ = tx.send(Event::PipelineStatus(Box::new(client.pipeline_status().await)));
     // Deployed cloud frames (per-frame dock tabs, hive-agent-tabs P-013).
     // Quietly optional: nothing deployed / an older host → no tabs, no toasts.
     if let Ok(fr) = client.deploy_frames().await {
@@ -5810,6 +6046,41 @@ async fn refetch_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claim_spec_bump_changes_only_revision() {
+        let current = serde_json::json!({
+            "ok": true,
+            "source": "fleet",
+            "spec": {
+                "specVersion": "1.0",
+                "specId": "fleet-plan",
+                "revision": 7,
+                "view": { "filter": { "field": "plan", "op": "=", "value": "p-1" } },
+                "rank": { "mode": "lexicographic", "terms": [{ "expr": "age", "dir": "asc" }] },
+                "states": ["open"]
+            }
+        });
+        let original = current["spec"].clone();
+        let (mut bumped, previous, next) = bumped_claim_spec(&current).unwrap();
+        assert_eq!((previous, next), (7, 8));
+        assert_eq!(bumped["revision"], 8);
+        bumped["revision"] = serde_json::json!(7);
+        assert_eq!(bumped, original, "no field besides revision may change");
+    }
+
+    #[test]
+    fn tool_level_refusal_is_not_reported_as_a_successful_http_call() {
+        let refusal = serde_json::json!({
+            "ok": false,
+            "error": "bench_refused_queue_nonempty",
+            "message": "member still has two claimable rows"
+        });
+        let error = ensure_tool_ok("fleet:bench", &refusal).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("member still has two claimable rows"));
+    }
 
     // --- P-003 first paint (pui-psu-exact-launch-and-task-latency-2026-09-01, D-004) ---
 
