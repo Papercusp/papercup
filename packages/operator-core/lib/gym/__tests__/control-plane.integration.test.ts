@@ -21,6 +21,7 @@ import {
   makeLoopProposalRecorder,
 } from '../control-plane';
 import { createCandidateVersionVerdict } from '../loop';
+import { passingCandidateVerdict } from './_candidate-verdict';
 
 let sql: postgres.Sql;
 let containerUri: string;
@@ -75,6 +76,11 @@ describe('gym control plane — proposals', () => {
       workspaceId: WS, harnessSlug: 'beta', cycle: 1, variantId: 'v-1', role: 'validator',
       originalMd: 'old validator', proposedMd: 'new validator', rationale: 'tighter checks',
       devAnchorDelta: 0.12, costDelta: -0.01, probeStatus: 'pass',
+      // P-002 / D-004(3): accept installs a live prompt, so it now requires a verdict
+      // showing the real-anchor pool held. This test is about the WRITE, so it carries
+      // the passing verdict rather than the override — the override would stop it
+      // exercising the path production actually takes.
+      candidateVersion: passingCandidateVerdict('v-1'),
     });
     const pending = await listProposals(sql, { workspaceId: WS, harnessSlug: 'beta', status: 'pending' });
     expect(pending.map((r) => r.id)).toContain(id);
@@ -100,12 +106,68 @@ describe('gym control plane — proposals', () => {
     // transaction there — it should run directly in the outer tx. (Caught by live e2e.)
     const id = await recordProposal(sql, {
       workspaceId: WS, harnessSlug: 'tx', cycle: 1, variantId: 'v-tx', role: 'reviewer', proposedMd: 'tx reviewer',
+      candidateVersion: passingCandidateVerdict('v-tx'),
     });
     const res = await sql.begin((tx) => decideProposal(tx as unknown as typeof sql, { id, workspaceId: WS, harnessSlug: 'tx', decision: 'accepted' }));
     expect(res.ok).toBe(true);
     expect(res.promoted).toBe(true);
     const prompts = await getPrompts(sql, { workspaceId: WS, harnessSlug: 'tx' });
     expect(prompts.roles.reviewer).toBe('tx reviewer');
+  });
+
+  /**
+   * P-002 / D-004(3). The hole this closes was NOT the auto-promote path (which was
+   * already fail-closed) — it was this one: a human accept took a decision and wrote the
+   * live prompt table with no gate at all, which is the same ungated install the ruling
+   * was about, reached by a click instead of a cycle.
+   */
+  it('refuses to install a challenger with no real-anchor evidence, and leaves it PENDING', async () => {
+    const id = await recordProposal(sql, {
+      workspaceId: WS, harnessSlug: 'gated', cycle: 1, variantId: 'v-ungated', role: 'worker',
+      proposedMd: 'ungated worker', // no candidateVersion: exactly a pre-P-002 proposal
+    });
+    const res = await decideProposal(sql, { id, workspaceId: WS, harnessSlug: 'gated', decision: 'accepted' });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('real_anchor_unproven');
+
+    // The prompt table is untouched — the whole point.
+    const prompts = await getPrompts(sql, { workspaceId: WS, harnessSlug: 'gated' });
+    expect(prompts.roles.worker).not.toBe('ungated worker');
+    // PENDING, not rejected: missing evidence is a gap someone can still close by
+    // running the pool, not a verdict on the candidate. A reject would throw that away.
+    const pending = await listProposals(sql, { workspaceId: WS, harnessSlug: 'gated', status: 'pending' });
+    expect(pending.map((r) => r.id)).toContain(id);
+  });
+
+  it('refuses a MEASURED real-anchor regression, distinguishably from missing evidence', async () => {
+    const failing = passingCandidateVerdict('v-regressed');
+    const id = await recordProposal(sql, {
+      workspaceId: WS, harnessSlug: 'gated', cycle: 2, variantId: 'v-regressed', role: 'worker',
+      proposedMd: 'regressing worker',
+      candidateVersion: {
+        ...failing,
+        gateResults: [{ gate: 'real-anchor-no-regress', pass: false, status: 'fail', detail: 'margin -0.4' }],
+      },
+    });
+    const res = await decideProposal(sql, { id, workspaceId: WS, harnessSlug: 'gated', decision: 'accepted' });
+    expect(res.ok).toBe(false);
+    // Not the same refusal as the test above: this candidate WAS measured and lost.
+    expect(res.reason).toBe('real_anchor_regressed');
+  });
+
+  it('installs on an explicit override, which is what makes the gate a gate and not a wall', async () => {
+    const id = await recordProposal(sql, {
+      workspaceId: WS, harnessSlug: 'gated', cycle: 3, variantId: 'v-override', role: 'validator',
+      proposedMd: 'deliberately installed',
+    });
+    const res = await decideProposal(sql, {
+      id, workspaceId: WS, harnessSlug: 'gated', decision: 'accepted',
+      override: { reason: 'hand-authored rollback, gym pool offline' },
+    });
+    expect(res.ok).toBe(true);
+    expect(res.promoted).toBe(true);
+    const prompts = await getPrompts(sql, { workspaceId: WS, harnessSlug: 'gated' });
+    expect(prompts.roles.validator).toBe('deliberately installed');
   });
 
   it('rejects a proposal without promoting', async () => {
