@@ -512,6 +512,14 @@ export const rubricTemplateDataSchema = z
           '(feature-ship / bugfix / migration / investigation) — it carries the shared invariants so bespoke ' +
           'criteria stay short. With classRef an acceptance rubric may carry ZERO bespoke criteria (plan D-009)',
       ),
+    composes: z
+      .array(z.string().trim().min(1))
+      .min(1)
+      .max(16)
+      .optional()
+      .describe(
+        'unpinned rubric composition: refs of reusable rubrics whose scorecards/methods this rubric composes; refs resolve independently at read/grading time',
+      ),
     barSetHash: z
       .string()
       .regex(/^[a-f0-9]{64}$/)
