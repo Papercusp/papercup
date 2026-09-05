@@ -320,32 +320,6 @@ async function runPreSnapshotHookNow(ctx: HookContext): Promise<PreSnapshotHookR
   }
   await unlink(`${outPath}.tmp`).catch(() => {});
 
-  // The dump is written beside the workspace, not in the Kopia repository.
-  // Refuse before spawning pg_dump when that filesystem cannot fit the dump —
-  // sized to the dump's own need, never to disk capacity (see
-  // requiredFreeBytes). This keeps backup work from turning low space into an
-  // unrecoverable ENOSPC incident without disabling backups outright.
-  try {
-    const previousDumpBytes = await stat(outPath).then(
-      (s) => BigInt(s.size),
-      () => null,
-    );
-    const fs = await statfs(ctx.workspaceRoot);
-    const blockSize = BigInt(fs.bsize);
-    const freeBytes = blockSize * BigInt(fs.bavail);
-    const reserveBytes = requiredFreeBytes(previousDumpBytes);
-    if (freeBytes < reserveBytes) {
-      const error = `insufficient free space (${freeBytes} available; ${reserveBytes} needed for a dump of ${previousDumpBytes ?? 'unknown'} bytes)`;
-      await log(`pg SKIP: ${error}`);
-      await log('hook done (degraded)');
-      return { ok: false, error };
-    }
-  } catch (err) {
-    // A statfs failure should not disable backups on an unusual filesystem;
-    // dumpPg still handles ENOSPC and cleans its transaction file.
-    await log(`free-space probe unavailable: ${String(err)}`);
-  }
-
   // --- embedded-pg (port discovered at runtime) ---
   const { url, source } = backupHost().getHarnessAdminUrl();
   await log(`embedded-pg URL source: ${source}`);
@@ -381,6 +355,34 @@ async function runPreSnapshotHookNow(ctx: HookContext): Promise<PreSnapshotHookR
     return { ok: true, skipped: coverage.reason };
   }
   if (hostStatus) await log(`host-dump coverage not established: ${coverage.reason}`);
+
+  // The dump is written beside the workspace, not in the Kopia repository.
+  // Refuse before spawning pg_dump when that filesystem cannot fit the dump —
+  // sized to the dump's own need, never to disk capacity (see
+  // requiredFreeBytes). This check deliberately follows the proven
+  // host-coverage skip above: when the host backup already captured this exact
+  // database, no local dump will be written and local filesystem headroom is
+  // irrelevant. Uncertain coverage still falls through to this guard.
+  try {
+    const previousDumpBytes = await stat(outPath).then(
+      (s) => BigInt(s.size),
+      () => null,
+    );
+    const fs = await statfs(ctx.workspaceRoot);
+    const blockSize = BigInt(fs.bsize);
+    const freeBytes = blockSize * BigInt(fs.bavail);
+    const reserveBytes = requiredFreeBytes(previousDumpBytes);
+    if (freeBytes < reserveBytes) {
+      const error = `insufficient free space (${freeBytes} available; ${reserveBytes} needed for a dump of ${previousDumpBytes ?? 'unknown'} bytes)`;
+      await log(`pg SKIP: ${error}`);
+      await log('hook done (degraded)');
+      return { ok: false, error };
+    }
+  } catch (err) {
+    // A statfs failure should not disable backups on an unusual filesystem;
+    // dumpPg still handles ENOSPC and cleans its transaction file.
+    await log(`free-space probe unavailable: ${String(err)}`);
+  }
 
   const result = await dumpPg({
     ...target,

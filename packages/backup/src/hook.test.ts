@@ -38,6 +38,9 @@ const h = vi.hoisted(() => ({
   // so stat() rejects ENOENT exactly as the real fs would.
   previousDumpSize: null as number | null,
   readdirNames: [] as string[],
+  hostCoverageCovered: false,
+  hostCoverageReason: 'no host-dump receipt',
+  statfsCalls: 0,
 }));
 
 // Fake child: EventEmitter-backed stdout/stderr/stdin (so the real code's
@@ -102,7 +105,10 @@ vi.mock('node:fs/promises', () => ({
     }
     return { size: h.previousDumpSize };
   }),
-  statfs: vi.fn(async () => ({ bsize: 4096, bavail: h.availableBlocks, blocks: 200_000_000 })),
+  statfs: vi.fn(async () => {
+    h.statfsCalls += 1;
+    return { bsize: 4096, bavail: h.availableBlocks, blocks: 200_000_000 };
+  }),
   appendFile: vi.fn(async (_p: string, line: string) => {
     h.logLines.push(line);
   }),
@@ -110,6 +116,16 @@ vi.mock('node:fs/promises', () => ({
     h.renameCalls.push({ from, to });
   }),
   unlink: vi.fn(async (path: string) => { h.unlinkCalls.push(path); }),
+}));
+
+vi.mock('./host-dump-coverage', () => ({
+  hostDumpStatusPath: vi.fn(() => '/host/STATUS.json'),
+  readHostDumpStatus: vi.fn(async () => (h.hostCoverageCovered ? { ok: true } : null)),
+  probeSystemIdentifier: vi.fn(async () => (h.hostCoverageCovered ? 'cluster-1' : null)),
+  evaluateHostDumpCoverage: vi.fn(() => ({
+    covered: h.hostCoverageCovered,
+    reason: h.hostCoverageReason,
+  })),
 }));
 
 vi.mock('./config', () => ({
@@ -134,6 +150,9 @@ beforeEach(() => {
   h.availableBlocks = 100_000_000;
   h.previousDumpSize = null;
   h.readdirNames = [];
+  h.hostCoverageCovered = false;
+  h.hostCoverageReason = 'no host-dump receipt';
+  h.statfsCalls = 0;
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -283,6 +302,22 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
 });
 
 describe('runPreSnapshotHook outcome logging', () => {
+  it('skips before free-space admission when host backup proves the database is covered', async () => {
+    h.hostCoverageCovered = true;
+    h.hostCoverageReason = 'host PG is covered by db-backup.sh';
+    h.availableBlocks = 1;
+    h.previousDumpSize = 2_567_922_002;
+
+    await expect(runPreSnapshotHook(ctx)).resolves.toMatchObject({
+      ok: true,
+      skipped: h.hostCoverageReason,
+    });
+
+    expect(h.statfsCalls).toBe(0);
+    expect(h.spawnCalls).toHaveLength(0);
+    expect(h.logLines.join('')).toMatch(/hook done \(skipped: host-covered\)/);
+  });
+
   it('does not spawn a dump when the workspace filesystem is below its emergency reserve', async () => {
     h.availableBlocks = 1;
     await expect(runPreSnapshotHook(ctx)).resolves.toMatchObject({

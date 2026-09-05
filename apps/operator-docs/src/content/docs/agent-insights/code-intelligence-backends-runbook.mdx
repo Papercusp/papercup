@@ -567,7 +567,7 @@ Recipe for a genuinely cold pass, with the SAME argv and env the routine uses:
 # 1. routines:set { name:'gitnexus-reindex', installSlug:'papercusp', active:false, reason:'…' }
 #    and wait for any in-flight tick to finish (no lbug.shadow in <root>/.gitnexus).
 # 2. one supervised pass:
-ROOT=$(git rev-parse --show-toplevel)   # run from anywhere inside the checkout
+ROOT=$(git rev-parse --show-superproject-working-tree); ROOT=${ROOT:-$(git rev-parse --show-toplevel)}
 systemd-run --user --unit="gitnexus-bootstrap-$(date +%s)" -p MemoryMax=24G bash -c "
   cd $ROOT && [ ! -e .gitnexus/lbug.shadow ] || exit 3
   export NODE_OPTIONS='--max-old-space-size=16384 --max-semi-space-size=128'
@@ -658,3 +658,39 @@ catches. Read the record with `routines:list { name:'gitnexus-reindex',
 installSlug:'papercusp' }` → `health.gitnexus_health.vectorSearch`; it is written
 only by a tick that actually ran analyze — a cadence skip leaves the previous
 record in place, so its `checkedAt` is the tick it describes.
+
+### 8.6 The failure that is NOT gitnexus's: a full disk (2026-09-05, D-006)
+
+A routine tick that runs its whole ~1h50 pass and then exits 1 with a stack frame at
+the vendored `run-analyze.js:1035` (`runEmbeddingPipeline`), minutes before the
+bg-host log fills with `database system is in recovery mode`, reads like a native
+crash coincident with a Postgres outage. It was one event: the root filesystem hit
+100% at ~22:24Z (an unrelated Operator Vite production build, EI-22462478663416972),
+the analyze's stderr says `Cannot write to file … .gitnexus/lbug.wal … No space left
+on device` → `Analysis failed: Batch execution failed for rows 5-8` inside
+`batchInsertEmbeddings`, and Postgres — which shares `/` on this box — PANICked on
+`pg_wal` in the same minute (WAL writer SIGABRT 22:29:36Z, recovery until 22:30:40Z),
+so the tick's own health write failed too. **Read `df /` before reading gitnexus
+code.** The incomplete-index marker (§8.2) then did its job: the next fire cleaned the
+orphan WAL and ran a full rebuild.
+
+What the routine does about it now: `decideReindex` has a LOW DISK step (after load
+and memory pressure, before the cold-build override). A `--force` rebuild writes a
+second database (`lbug.shadow`, 5.28 GB on this graph) plus a streamed WAL BESIDE the
+live one and promotes only at the end, so it needs roughly one more database than it
+holds. When the free space on the `.gitnexus` filesystem is below
+`max(GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES = 16 GiB, 2 × live lbug size)` the tick logs
+`[gitnexus-reindex] skip: low disk (N GiB free on the index filesystem < M GiB a full
+rebuild needs) — deferring to the next tick …` and leaves the complete old index
+serving. The floor is per-install trigger config `min_free_disk_bytes`; an
+unmeasurable reading (statfs failure) is fail-soft — unknown is not low. The gate
+cannot rescue a run that is already in flight when the disk fills; that case is the
+marker + full-rebuild-on-next-fire path above, and the fleet-wide signal is the
+`[disk-space-alarm]` line in the same journal.
+
+One restart trap sits next to this: a `dev:restart { target:'bg-host' }` does NOT
+kill a routine-owned analyze (it runs in its own `pc-…` systemd scope and
+`detectLiveAnalyzeWriter` makes the new host yield to it), but it DOES lose the
+in-process await — no `ok in` line, no canary, no `vectorSearch` health record for
+that tick, and the next fire skips on freshness. Restart between ticks, never during
+one you need evidence from.
