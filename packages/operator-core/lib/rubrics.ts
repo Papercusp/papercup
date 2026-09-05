@@ -156,6 +156,7 @@ export interface RubricCriterion {
   requiredScope?: string[];
   /** Structural evidence plane; tree proof cannot satisfy deployed/live promises. */
   evidencePlane?: AcceptanceEvidencePlane;
+  requiredTestLayers?: string[];
   /** Ratings that satisfy this BAR. Empty/absent remains legacy/unbound. */
   passRatings?: string[];
   /** Disclosure-only mapping to the outcome BAR keys it reports on. */
@@ -453,6 +454,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
         ...(barFields.mandatory !== undefined ? { mandatory: barFields.mandatory } : {}),
         ...(barFields.requiredScope ? { requiredScope: barFields.requiredScope } : {}),
         ...(barFields.evidencePlane ? { evidencePlane: barFields.evidencePlane } : {}),
+        ...(c.requiredTestLayers ? { requiredTestLayers: c.requiredTestLayers } : {}),
         ...(barFields.passRatings ? { passRatings: barFields.passRatings } : {}),
         ...(barFields.coversBarKeys ? { coversBarKeys: barFields.coversBarKeys } : {}),
         ...(barFields.barProvenance ? { barProvenance: barFields.barProvenance } : {}),
@@ -1080,6 +1082,7 @@ type AcceptanceBarHashInput = Pick<
   | 'driftMarkers'
   | 'requiredScope'
   | 'evidencePlane'
+  | 'requiredTestLayers'
   | 'role'
   | 'mandatory'
   | 'passRatings'
@@ -1127,6 +1130,7 @@ export function computeAcceptanceBarHash(criterion: AcceptanceBarHashInput): str
     ['falsifier', normalizedBarText(criterion.driftMarkers)],
     ['requiredScope', normalizedBarSet(criterion.requiredScope)],
     ...(criterion.evidencePlane ? ([['evidencePlane', criterion.evidencePlane]] as const) : []),
+    ...(criterion.requiredTestLayers ? [['requiredTestLayers', normalizedBarSet(criterion.requiredTestLayers, true)]] : []),
     ['role', criterion.role ?? null],
     ['mandatory', criterion.mandatory ?? false],
     ['passRatings', normalizedBarSet(criterion.passRatings, true)],
@@ -1175,6 +1179,7 @@ export function normalizeAcceptanceBarCriterion(criterion: ProposeRubricCriterio
     criterion.mandatory !== undefined ||
     criterion.requiredScope !== undefined ||
     criterion.evidencePlane !== undefined ||
+    criterion.requiredTestLayers !== undefined ||
     criterion.passRatings !== undefined ||
     criterion.coversBarKeys !== undefined ||
     criterion.barProvenance !== undefined;
@@ -1198,6 +1203,7 @@ export function normalizeAcceptanceBarCriterion(criterion: ProposeRubricCriterio
     ...(model || alias ? { model: model || alias } : {}),
     ...(criterion.barKey?.trim() ? { barKey: criterion.barKey.trim() } : {}),
     ...(criterion.requiredScope ? { requiredScope: normalizedBarSet(criterion.requiredScope) } : {}),
+    ...(criterion.requiredTestLayers ? { requiredTestLayers: normalizedBarSet(criterion.requiredTestLayers, true) } : {}),
     ...(criterion.passRatings ? { passRatings: normalizedBarSet(criterion.passRatings, true) } : {}),
     ...(criterion.coversBarKeys ? { coversBarKeys: normalizedBarSet(criterion.coversBarKeys) } : {}),
   };
@@ -2342,6 +2348,13 @@ export type AmendableCriterionField = (typeof AMENDABLE_CRITERION_FIELDS)[number
 
 export interface AmendRubricInput {
   rubricId: string;
+  /** Target one requirement while preserving every other criterion and its history. */
+  requirement?: {
+    key: string;
+    intent?: RequirementIntent;
+    acceptance?: Partial<RequirementAcceptance>;
+    verification?: Partial<RequirementVerification>;
+  };
   /**
    * Acceptance-kind only: replace the COMPLETE criterion set through the
    * cross-plan BAR amendment transaction. This is the post-seed escape hatch
@@ -2411,6 +2424,7 @@ export interface AmendRubricInput {
 export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): ProposeRubricInput {
   if (
     !input.criteria &&
+    !input.requirement &&
     !input.criterion &&
     !input.criterionClass &&
     !input.criterionEvidencePlane &&
@@ -2420,6 +2434,9 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     throw new Error(
       'amendRubric: nothing to amend — pass criteria, criterion, criterionClass, criterionEvidencePlane, methodRef, and/or composes',
     );
+  }
+  if (input.requirement && (input.criteria || input.criterion || input.criterionClass || input.criterionEvidencePlane)) {
+    throw new Error('invalid_args: requirement amendment cannot be combined with other criterion patches');
   }
   if (input.criteria && (input.criterion || input.criterionClass || input.criterionEvidencePlane)) {
     throw new Error(
@@ -2435,6 +2452,32 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
   let criteria: ProposeRubricCriterion[] = input.criteria
     ? input.criteria.map((criterion) => ({ ...criterion }))
     : stored.criteria;
+  if (input.requirement) {
+    const patch = input.requirement;
+    const target = criteria.find((criterion) => criterion.key === patch.key);
+    if (stored.kind !== 'acceptance' || !target) {
+      throw new Error('invalid_args: requirement amendment requires an existing acceptance criterion');
+    }
+    if (![patch.intent, patch.acceptance, patch.verification].some((section) => section && Object.keys(section).length)) {
+      throw new Error('invalid_args: requirement amendment is empty');
+    }
+    // Remove read aliases before replacing canonical fields; an old projected BAR
+    // must not masquerade as conflicting new input. Unspecified fields survive.
+    const { bar: _bar, acceptance: _acceptance, verification: _verification, ...canonical } = target;
+    const acceptance = patch.acceptance;
+    const verification = patch.verification;
+    const next: ProposeRubricCriterion = {
+      ...canonical,
+      ...(patch.intent ? { intent: patch.intent } : {}),
+      ...(acceptance ? {
+        ...Object.fromEntries(Object.entries(acceptance).filter(([key]) => !['condition', 'falsifier'].includes(key))),
+        ...(acceptance.condition !== undefined ? { model: acceptance.condition } : {}),
+        ...(acceptance.falsifier !== undefined ? { driftMarkers: acceptance.falsifier } : {}),
+      } : {}),
+      ...(verification ?? {}),
+    };
+    criteria = criteria.map((criterion) => criterion.key === patch.key ? next : criterion);
+  }
   if (input.criterion) {
     const { key, field, mode, text } = input.criterion;
     const target = stored.criteria.find((c) => c.key === key);
@@ -2618,6 +2661,7 @@ function amendmentRequestHash(input: AmendRubricInput): string {
       input.actorId ?? input.by ?? null,
       input.reason ?? null,
       input.criteria ?? null,
+      input.requirement ?? null,
       input.criterion ? [input.criterion.key, input.criterion.field, input.criterion.mode, input.criterion.text] : null,
       input.criterionClass ? [input.criterionClass.key, input.criterionClass.class] : null,
       input.criterionEvidencePlane
@@ -3251,6 +3295,7 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
     currentForRouting?.kind === 'acceptance' &&
     currentForRouting.barContract &&
     (input.criteria ||
+      input.requirement ||
       input.criterionEvidencePlane ||
       (input.criterion && (input.criterion.field === 'model' || input.criterion.field === 'driftMarkers')))
   ) {
