@@ -11,7 +11,9 @@ import {
   encodeWorkspaceHostAgentHomeState,
   encodeWorkspaceHostAgentHomeBundle,
   parseWorkspaceHostAgentHomeBundle,
+  WORKSPACE_HOST_AGENT_HOME_OMP_LOCAL_MODELS_YML,
   workspaceHostAgentHomePaths,
+  workspaceHostAgentHomeOmpModelsPath,
   workspaceHostAgentHomeStatePath,
   type WorkspaceHostAgentHomeFilesystem,
 } from "./workspace-host-agent-home";
@@ -60,11 +62,13 @@ class MemoryAgentHomeFilesystem implements WorkspaceHostAgentHomeFilesystem {
   readonly directories = new Set<string>();
   readonly ownership: Array<{ path: string; owner: string; group: string }> =
     [];
+  readonly writes: string[] = [];
 
   async ensureDirectory(path: string): Promise<void> {
     this.directories.add(path);
   }
   async writePrivateFile(path: string, bytes: Buffer): Promise<void> {
+    this.writes.push(path);
     this.files.set(path, Buffer.from(bytes));
   }
   async readFileIfPresent(path: string): Promise<Buffer | null> {
@@ -238,6 +242,84 @@ describe("workspace-host sealed agent-home bundle", () => {
       consumer(filesystem).verify("agent-encrypted-reference", 2, material),
     ).resolves.toMatchObject({ generation: 2, present: true });
     expect(filesystem.files.has(ompPath)).toBe(false);
+  });
+
+  it("seeds and verifies a direct loopback Ollama discovery provider for credential-free OMP", async () => {
+    const filesystem = new MemoryAgentHomeFilesystem();
+    const material = encodeWorkspaceHostAgentHomeBundle({
+      ...files,
+      omp: null,
+    });
+    const modelsPath = workspaceHostAgentHomeOmpModelsPath(HOME);
+
+    await consumer(filesystem).install(
+      "agent-encrypted-reference",
+      1,
+      material,
+    );
+    expect(filesystem.files.get(modelsPath)?.toString("utf8")).toBe(
+      WORKSPACE_HOST_AGENT_HOME_OMP_LOCAL_MODELS_YML,
+    );
+    await expect(
+      consumer(filesystem).verify("agent-encrypted-reference", 1, material),
+    ).resolves.toMatchObject({ generation: 1, present: true });
+    expect(
+      filesystem.ownership.filter((entry) => entry.path === modelsPath),
+    ).toEqual(
+      expect.arrayContaining([
+        {
+          path: modelsPath,
+          owner: "papercusp-agent",
+          group: "papercusp-agent",
+        },
+      ]),
+    );
+  });
+
+  it("reconciles a stale local OMP registry idempotently", async () => {
+    const filesystem = new MemoryAgentHomeFilesystem();
+    const material = encodeWorkspaceHostAgentHomeBundle({
+      ...files,
+      omp: null,
+    });
+    const modelsPath = workspaceHostAgentHomeOmpModelsPath(HOME);
+    filesystem.files.set(modelsPath, Buffer.from("providers:\n  ollama: {}\n"));
+
+    await consumer(filesystem).install(
+      "agent-encrypted-reference",
+      1,
+      material,
+    );
+    await consumer(filesystem).install(
+      "agent-encrypted-reference",
+      1,
+      material,
+    );
+    expect(filesystem.files.get(modelsPath)?.toString("utf8")).toBe(
+      WORKSPACE_HOST_AGENT_HOME_OMP_LOCAL_MODELS_YML,
+    );
+    expect(
+      filesystem.writes.filter((path) => path === modelsPath),
+    ).toHaveLength(1);
+  });
+
+  it("fails verification when the credential-free OMP registry is removed or changed", async () => {
+    const filesystem = new MemoryAgentHomeFilesystem();
+    const material = encodeWorkspaceHostAgentHomeBundle({
+      ...files,
+      omp: null,
+    });
+    const modelsPath = workspaceHostAgentHomeOmpModelsPath(HOME);
+    await consumer(filesystem).install(
+      "agent-encrypted-reference",
+      1,
+      material,
+    );
+
+    filesystem.files.set(modelsPath, Buffer.from("providers: {}\n"));
+    await expect(
+      consumer(filesystem).verify("agent-encrypted-reference", 1, material),
+    ).rejects.toThrow(/models registry is absent or stale/);
   });
 
   it("rejects an omitted, extra, malformed, or non-JSON member without echoing bytes", () => {
