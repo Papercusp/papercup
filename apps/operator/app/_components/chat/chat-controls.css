@@ -1463,6 +1463,23 @@ button.pc-ctl-name:not(:disabled):focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+/* An EMPTY section's heading, dimmed (GoalSessionsRail). That rail deliberately
+ * keeps all five headings even when a section has nothing in it — the five
+ * types ARE the goal's coverage model, so "no drain fleet" is a FINDING, and a
+ * hidden section would render it as "no drain section exists" instead. The
+ * Work rail hides its empty sections; this one must not.
+ *
+ * The dimming is what makes that model scannable: with every heading at equal
+ * weight the reader has to read five counts to find the gap, which is exactly
+ * the work the rail is supposed to have already done. Dimmed, the populated
+ * sections come forward and a gap reads at a glance.
+ *
+ * Set as an attribute by the component, styled here, so the rule stays with the
+ * rest of the rail's vocabulary rather than becoming an inline style. */
+.pc-peers__cap[data-muted='true'] {
+  opacity: 0.55;
+}
+
 .pc-peers__empty {
   padding: 7px 9px;
   font-size: 10px;
@@ -1722,6 +1739,35 @@ button.pc-ctl-name:not(:disabled):focus-visible {
 }
 .pc-peer__state[data-col='blocked'] {
   color: var(--bad);
+}
+
+/* An ENDED session (GoalSessionsRail) keeps the board's own state word as
+ * HISTORY — it is evidence of what the agent was doing when it stopped — but it
+ * must never wear a LIVE colour. `column` is preserved verbatim by
+ * `goal-sessions.ts`, so a session that died mid-`working` would otherwise
+ * render the green `--good` dot on a rail whose heading asks who is *working on
+ * it*: a corpse reading as a live worker, which is the one thing this rail
+ * exists to answer correctly.
+ *
+ * Selector specificity is load-bearing: `[data-ended] .pc-peer__dot[data-col]`
+ * is (0,3,0) against the per-column rules' (0,2,0), so it wins for every column
+ * without having to enumerate them — a new column added above inherits the
+ * ended treatment automatically instead of silently reintroducing the bug.
+ *
+ * Colour is the SECONDARY cue only. The row also says the word "ended"
+ * (GoalSessionsRail renders it into the state line), because greying a dot is a
+ * colour-only signal and would be invisible to a colour-blind or high-contrast
+ * reader — the same reason SessionChatModal spells out "This session has ended"
+ * rather than tinting the composer. */
+[data-ended='true'] .pc-peer__dot[data-col] {
+  background: var(--fg-mute);
+  box-shadow: none;
+}
+[data-ended='true'] .pc-peer__state[data-col] {
+  color: var(--fg-mute);
+}
+[data-ended='true'] .pc-peer {
+  opacity: 0.72;
 }
 
 /* ═══ DECISIONS shelf ═══════════════════════════════════════════════════════
