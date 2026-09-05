@@ -44,6 +44,7 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { NOTE_SUFFIX_RE, parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
 import {
@@ -650,6 +651,126 @@ export function registeredCitationRepoRoots(
   return roots;
 }
 
+interface TrackedRepoSnapshot {
+  indexIdentity: string;
+  tracked: ReadonlySet<string>;
+}
+
+interface RepoCitationTrackingCacheState {
+  snapshots: Map<string, TrackedRepoSnapshot>;
+  loads: number;
+}
+
+// WI-2146577: `repoCitationDeps()` is constructed repeatedly while one acceptance
+// sweep selects a root, revalidates it, and evaluates every plan. A cache local to
+// one deps object therefore still ran synchronous `git ls-files --error-unmatch`
+// once per citation on the bg-host main thread. A CPU profile attributed 1.2s of a
+// 5s sample to those probes. Cache the complete tracked set per ACTUAL Git root and
+// key it to the index identity: staged/committed changes invalidate immediately,
+// while repeated resolver contexts pay no child-process spawn at all.
+const __repoCitationTrackingCache = pinModuleState<RepoCitationTrackingCacheState>(
+  '@papercusp/operator-core.repoCitationTrackingCache',
+  () => ({ snapshots: new Map(), loads: 0 }),
+);
+const TRACKED_REPO_SNAPSHOT_MAX_ROOTS = 16;
+const TRACKED_REPO_SNAPSHOT_MAX_BUFFER = 32 * 1024 * 1024;
+
+function gitDirForRoot(root: string): string | null {
+  const marker = path.join(root, '.git');
+  try {
+    const stat = fs.statSync(marker);
+    if (stat.isDirectory()) return marker;
+    if (!stat.isFile()) return null;
+    const match = /^gitdir:\s*(.+)$/im.exec(fs.readFileSync(marker, 'utf8'));
+    return match?.[1] ? path.resolve(root, match[1].trim()) : null;
+  } catch {
+    return null;
+  }
+}
+
+function gitRootForFile(abs: string): { root: string; gitDir: string; rel: string } | null {
+  let root = path.dirname(abs);
+  while (true) {
+    const gitDir = gitDirForRoot(root);
+    if (gitDir) {
+      const rel = path.relative(root, abs).split(path.sep).join('/');
+      return rel && !rel.startsWith('../') ? { root, gitDir, rel } : null;
+    }
+    const parent = path.dirname(root);
+    if (parent === root) return null;
+    root = parent;
+  }
+}
+
+function gitIndexIdentity(gitDir: string): string | null {
+  try {
+    const stat = fs.statSync(path.join(gitDir, 'index'), { bigint: true });
+    return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(':');
+  } catch {
+    return null;
+  }
+}
+
+function touchTrackedRepoSnapshot(root: string, snapshot: TrackedRepoSnapshot): void {
+  __repoCitationTrackingCache.snapshots.delete(root);
+  __repoCitationTrackingCache.snapshots.set(root, snapshot);
+  while (__repoCitationTrackingCache.snapshots.size > TRACKED_REPO_SNAPSHOT_MAX_ROOTS) {
+    const oldest = __repoCitationTrackingCache.snapshots.keys().next().value as string | undefined;
+    if (!oldest) break;
+    __repoCitationTrackingCache.snapshots.delete(oldest);
+  }
+}
+
+function trackedFromRepoSnapshot(abs: string): boolean | null {
+  const repo = gitRootForFile(abs);
+  if (!repo) return null;
+  const before = gitIndexIdentity(repo.gitDir);
+  if (!before) return null;
+
+  const cached = __repoCitationTrackingCache.snapshots.get(repo.root);
+  if (cached?.indexIdentity === before) {
+    touchTrackedRepoSnapshot(repo.root, cached);
+    return cached.tracked.has(repo.rel);
+  }
+
+  try {
+    const probe = spawnSync('git', ['-C', repo.root, 'ls-files', '-z', '--full-name'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5_000,
+      killSignal: 'SIGKILL',
+      maxBuffer: TRACKED_REPO_SNAPSHOT_MAX_BUFFER,
+    });
+    const after = gitIndexIdentity(repo.gitDir);
+    // If Git rewrote the index while the snapshot was being read, do not cache or
+    // answer from a mixed generation. The existing per-path probe below remains
+    // the fail-soft fallback for this rare race.
+    if (probe.status !== 0 || typeof probe.stdout !== 'string' || after !== before) return null;
+    const snapshot: TrackedRepoSnapshot = {
+      indexIdentity: before,
+      tracked: new Set(probe.stdout.split('\0').filter(Boolean)),
+    };
+    __repoCitationTrackingCache.loads += 1;
+    touchTrackedRepoSnapshot(repo.root, snapshot);
+    return snapshot.tracked.has(repo.rel);
+  } catch {
+    return null;
+  }
+}
+
+/** Test-only observability for the spawn-collapse and index-invalidation contract. */
+export function __repoCitationTrackingCacheStatsForTests(): { roots: number; loads: number } {
+  return {
+    roots: __repoCitationTrackingCache.snapshots.size,
+    loads: __repoCitationTrackingCache.loads,
+  };
+}
+
+export function __resetRepoCitationTrackingCacheForTests(): void {
+  __repoCitationTrackingCache.snapshots.clear();
+  __repoCitationTrackingCache.loads = 0;
+}
+
 /** Real-filesystem deps rooted at the monorepo, plus admitted sibling/registered repos. */
 export function repoCitationDeps(
   repoRoot: string = REPO_ROOT,
@@ -747,20 +868,23 @@ export function repoCitationDeps(
       let tracked: boolean | null = null;
       const repoDir = path.dirname(abs);
       if (fs.existsSync(abs) && fs.existsSync(repoDir)) {
-        try {
-          const probe = spawnSync(
-            'git',
-            ['-C', repoDir, 'ls-files', '--error-unmatch', '--', abs],
-            {
-              encoding: 'utf8',
-              stdio: ['ignore', 'ignore', 'ignore'],
-              timeout: 5_000,
-              killSignal: 'SIGKILL',
-            },
-          );
-          tracked = probe.status === 0 ? true : probe.status === 1 ? false : null;
-        } catch {
-          tracked = null;
+        tracked = trackedFromRepoSnapshot(abs);
+        if (tracked === null) {
+          try {
+            const probe = spawnSync(
+              'git',
+              ['-C', repoDir, 'ls-files', '--error-unmatch', '--', abs],
+              {
+                encoding: 'utf8',
+                stdio: ['ignore', 'ignore', 'ignore'],
+                timeout: 5_000,
+                killSignal: 'SIGKILL',
+              },
+            );
+            tracked = probe.status === 0 ? true : probe.status === 1 ? false : null;
+          } catch {
+            tracked = null;
+          }
         }
       }
       trackedCache.set(abs, tracked);

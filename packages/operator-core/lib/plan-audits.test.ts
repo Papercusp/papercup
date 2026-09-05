@@ -18,6 +18,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  __repoCitationTrackingCacheStatsForTests,
+  __resetRepoCitationTrackingCacheForTests,
   citationBlobSha,
   foldEffectiveItemAudits,
   gitBlobSha,
@@ -536,6 +538,30 @@ describe('repoCitationDeps — Git trackedness (EI-21729074760905025)', () => {
       ok: false,
       reason: 'file_untracked',
     });
+  });
+
+  it('reuses one tracked-file snapshot across resolver contexts and reloads it when the Git index changes', () => {
+    const trackedRoot = path.join(workspaceRoot, 'tracked-cache-repo');
+    fs.mkdirSync(trackedRoot, { recursive: true });
+    fs.writeFileSync(path.join(trackedRoot, 'tracked.ts'), 'export const tracked = true;\n');
+    fs.writeFileSync(path.join(trackedRoot, 'newly-tracked.ts'), 'export const later = true;\n');
+    git(trackedRoot, 'init', '-q');
+    git(trackedRoot, 'add', '--', 'tracked.ts');
+
+    __resetRepoCitationTrackingCacheForTests();
+    try {
+      expect(repoCitationDeps(trackedRoot).isTracked?.('tracked.ts')).toBe(true);
+      // A NEW deps object shares the index snapshot instead of spawning Git once
+      // per citation/root-selection/gate-evaluation context.
+      expect(repoCitationDeps(trackedRoot).isTracked?.('newly-tracked.ts')).toBe(false);
+      expect(__repoCitationTrackingCacheStatsForTests()).toEqual({ roots: 1, loads: 1 });
+
+      git(trackedRoot, 'add', '--', 'newly-tracked.ts');
+      expect(repoCitationDeps(trackedRoot).isTracked?.('newly-tracked.ts')).toBe(true);
+      expect(__repoCitationTrackingCacheStatsForTests()).toEqual({ roots: 1, loads: 2 });
+    } finally {
+      __resetRepoCitationTrackingCacheForTests();
+    }
   });
 });
 
