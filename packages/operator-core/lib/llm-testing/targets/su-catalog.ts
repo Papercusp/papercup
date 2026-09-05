@@ -228,7 +228,7 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   {
     name: 'harness:overview',
     description:
-      "One 'state of X' read: a harness's status + escalations (with `harness`) or the harness index (without), PLUS the cross-cutting open-issues snapshot — harness:status + harness:escalation [+ harness:list] + work_items:list folded into ONE round-trip. Prefer it over calling those separately for a 'what's the state of X' question.",
+      "One COMPOUND 'state of X' read: a harness's status + escalations (with `harness`) or the harness index (without), PLUS the cross-cutting open-issues snapshot — harness:status + harness:escalation [+ harness:list] + work_items:list folded into ONE round-trip. Use it for a multi-part/full-picture request. A single fact such as active/current phase is one direct harness:status call, not this wrapper.",
     input: obj({
       harness: { type: 'string' },
       issueState: { type: 'string' },

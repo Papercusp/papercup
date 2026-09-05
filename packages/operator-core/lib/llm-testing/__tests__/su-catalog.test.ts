@@ -150,6 +150,14 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     expect(e.description).not.toMatch(/headerless/i);
   });
 
+  it('reserves harness:overview for a compound picture and routes one status fact directly (SU-S19/S20)', () => {
+    const e = SU_CATALOG.find((entry) => entry.name === 'harness:overview')!;
+    expect(e.description).toContain("COMPOUND 'state of X'");
+    expect(e.description).toContain('multi-part/full-picture');
+    expect(e.description).toContain('single fact such as active/current phase');
+    expect(e.description).toContain('direct harness:status call');
+  });
+
   it('includes the design-phase group the playbook mandates for UI work', () => {
     expect(names.some((n) => n.startsWith('design-phase:'))).toBe(true);
   });
