@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import {
   startMemoryWatchdog,
+  readSelfSwapMb,
   resolveMemoryWatchdogLimitMb,
   resolveMemoryWatchdogProactiveGcMb,
   MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND,
@@ -20,6 +21,17 @@ describe('startMemoryWatchdog', () => {
     vi.useRealTimers();
   });
 
+  /**
+   * WI-2145659: the thresholds compare COMMITTED memory (`VmRSS + VmSwap`), so a
+   * test that stubs only `process.memoryUsage()` would have the REAL test
+   * process's swap silently added to its intended RSS. On this box, under fleet
+   * load, that is not hypothetical — it would make every threshold assertion
+   * below depend on how much the kernel happened to page out during the run.
+   * Injecting a zero swap reader pins committed == the stubbed RSS, preserving
+   * each existing test's original meaning. The swap term gets its own tests.
+   */
+  const noSwap = () => 0;
+
   function withRss(mb: number) {
     vi.spyOn(process, 'memoryUsage').mockReturnValue({
       rss: mb * 1024 * 1024,
@@ -34,7 +46,7 @@ describe('startMemoryWatchdog', () => {
     withRss(800); // healthy first — a grow-into-limit process, not born over budget
     const onTrip = vi.fn();
     const log = vi.fn();
-    const h = startMemoryWatchdog({ intervalMs: 1000, tripsToRecycle: 2, warnMb: 2400, onTrip, log });
+    const h = startMemoryWatchdog({ readSwapMb: noSwap, intervalMs: 1000, tripsToRecycle: 2, warnMb: 2400, onTrip, log });
 
     vi.advanceTimersByTime(1000); // sample 1 — healthy (marks sawHealthySample)
     withRss(4000); // over the 3200 default
@@ -42,7 +54,7 @@ describe('startMemoryWatchdog', () => {
     expect(onTrip).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1000); // sample 3 — over, debounce met → trips
     expect(onTrip).toHaveBeenCalledTimes(1);
-    expect(onTrip.mock.calls[0][0]).toMatchObject({ rssLimitMb: 3200 });
+    expect(onTrip.mock.calls[0][0]).toMatchObject({ limitMb: 3200 });
 
     // Idempotent: no further trips after recycle latches.
     vi.advanceTimersByTime(3000);
@@ -60,10 +72,11 @@ describe('startMemoryWatchdog', () => {
     const onTrip = vi.fn();
     const log = vi.fn();
     const h = startMemoryWatchdog({
+      readSwapMb: noSwap,
       intervalMs: 1000,
       tripsToRecycle: 2,
       warnMb: 2400,
-      rssLimitMb: 3200,
+      limitMb: 3200,
       onTrip,
       log,
     });
@@ -85,10 +98,11 @@ describe('startMemoryWatchdog', () => {
     withRss(3300);
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const h = startMemoryWatchdog({
+      readSwapMb: noSwap,
       intervalMs: 1000,
       tripsToRecycle: 1,
       warnMb: 2400,
-      rssLimitMb: 3200,
+      limitMb: 3200,
       log: vi.fn(),
     });
     vi.advanceTimersByTime(1000); // would trip → suppressed (never healthy)
@@ -104,9 +118,10 @@ describe('startMemoryWatchdog', () => {
     withRss(10_600);
     const onTrip = vi.fn();
     const h = startMemoryWatchdog({
+      readSwapMb: noSwap,
       intervalMs: 1000,
       tripsToRecycle: 1,
-      rssLimitMb: MEMORY_WATCHDOG_LIMIT_MB_DESKTOP,
+      limitMb: MEMORY_WATCHDOG_LIMIT_MB_DESKTOP,
       proactiveGcMb: 0,
       onTrip,
       log: vi.fn(),
@@ -115,7 +130,7 @@ describe('startMemoryWatchdog', () => {
     withRss(17_000);
     vi.advanceTimersByTime(1000); // growth past 16 GiB → recycle
     expect(onTrip).toHaveBeenCalledTimes(1);
-    expect(onTrip.mock.calls[0][0]).toMatchObject({ rssLimitMb: MEMORY_WATCHDOG_LIMIT_MB_DESKTOP });
+    expect(onTrip.mock.calls[0][0]).toMatchObject({ limitMb: MEMORY_WATCHDOG_LIMIT_MB_DESKTOP });
     h.stop();
   });
 
@@ -123,10 +138,11 @@ describe('startMemoryWatchdog', () => {
     withRss(3300); // born over budget
     const onTrip = vi.fn();
     const h = startMemoryWatchdog({
+      readSwapMb: noSwap,
       intervalMs: 1000,
       tripsToRecycle: 1,
       warnMb: 2400,
-      rssLimitMb: 3200,
+      limitMb: 3200,
       onTrip,
       log: vi.fn(),
     });
@@ -144,10 +160,11 @@ describe('startMemoryWatchdog', () => {
     withRss(3300);
     const onTrip = vi.fn();
     const h = startMemoryWatchdog({
+      readSwapMb: noSwap,
       intervalMs: 1000,
       tripsToRecycle: 1,
       warnMb: 2400,
-      rssLimitMb: 3200,
+      limitMb: 3200,
       suppressBornOverBudgetRecycle: false,
       onTrip,
       log: vi.fn(),
@@ -159,7 +176,7 @@ describe('startMemoryWatchdog', () => {
 
   it('a transient spike that drops back under the limit does NOT recycle (debounce reset)', () => {
     const onTrip = vi.fn();
-    const h = startMemoryWatchdog({ intervalMs: 1000, tripsToRecycle: 2, onTrip, log: vi.fn() });
+    const h = startMemoryWatchdog({ readSwapMb: noSwap, intervalMs: 1000, tripsToRecycle: 2, onTrip, log: vi.fn() });
 
     withRss(4000);
     vi.advanceTimersByTime(1000); // over (count=1)
@@ -175,7 +192,7 @@ describe('startMemoryWatchdog', () => {
     withRss(800);
     const onTrip = vi.fn();
     const log = vi.fn();
-    const h = startMemoryWatchdog({ intervalMs: 1000, warnMb: 2400, onTrip, log });
+    const h = startMemoryWatchdog({ readSwapMb: noSwap, intervalMs: 1000, warnMb: 2400, onTrip, log });
     vi.advanceTimersByTime(10_000);
     expect(onTrip).not.toHaveBeenCalled();
     expect(log).not.toHaveBeenCalled(); // below warn threshold → silent
@@ -186,7 +203,7 @@ describe('startMemoryWatchdog', () => {
     withRss(2600);
     const onTrip = vi.fn();
     const log = vi.fn();
-    const h = startMemoryWatchdog({ intervalMs: 1000, warnMb: 2400, rssLimitMb: 3200, onTrip, log });
+    const h = startMemoryWatchdog({ readSwapMb: noSwap, intervalMs: 1000, warnMb: 2400, limitMb: 3200, onTrip, log });
     vi.advanceTimersByTime(1000);
     expect(log).toHaveBeenCalled();
     expect(onTrip).not.toHaveBeenCalled();
@@ -197,7 +214,7 @@ describe('startMemoryWatchdog', () => {
     withRss(800); // healthy first — a grow-into-limit process (born-over-budget is suppressed)
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     // no onTrip injected → exercise the default recycle path
-    const h = startMemoryWatchdog({ intervalMs: 1000, tripsToRecycle: 1, warnMb: 2400, log: vi.fn() });
+    const h = startMemoryWatchdog({ readSwapMb: noSwap, intervalMs: 1000, tripsToRecycle: 1, warnMb: 2400, log: vi.fn() });
     vi.advanceTimersByTime(1000); // sample 1 — healthy (marks sawHealthySample)
     withRss(4000);
     vi.advanceTimersByTime(1000); // trips → schedules the 250ms flush-then-exit
@@ -210,7 +227,7 @@ describe('startMemoryWatchdog', () => {
   it('honors an explicit recycleExitCode in the default recycle', () => {
     withRss(800); // healthy first — a grow-into-limit process
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
-    const h = startMemoryWatchdog({ intervalMs: 1000, tripsToRecycle: 1, warnMb: 2400, recycleExitCode: 42, log: vi.fn() });
+    const h = startMemoryWatchdog({ readSwapMb: noSwap, intervalMs: 1000, tripsToRecycle: 1, warnMb: 2400, recycleExitCode: 42, log: vi.fn() });
     vi.advanceTimersByTime(1000); // sample 1 — healthy
     withRss(4000);
     vi.advanceTimersByTime(1000);
@@ -225,8 +242,9 @@ describe('startMemoryWatchdog', () => {
     const onTrip = vi.fn();
     const log = vi.fn();
     const h = startMemoryWatchdog({
+      readSwapMb: noSwap,
       intervalMs: 1000,
-      rssLimitMb: 12288,
+      limitMb: 12288,
       proactiveGcMb: 1920,
       gcCooldownMs: 0,
       forceGc,
@@ -239,7 +257,7 @@ describe('startMemoryWatchdog', () => {
     expect(onTrip).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith(
       '[memory-watchdog] proactive GC (heap kept out of the stall zone)',
-      expect.objectContaining({ proactiveGcMb: 1920, rssLimitMb: 12288 }),
+      expect.objectContaining({ proactiveGcMb: 1920, limitMb: 12288 }),
     );
     h.stop();
   });
@@ -260,8 +278,9 @@ describe('startMemoryWatchdog', () => {
     withMemory(2500, 1800);
     const log = vi.fn();
     const h = startMemoryWatchdog({
+      readSwapMb: noSwap,
       intervalMs: 1000,
-      rssLimitMb: 12288,
+      limitMb: 12288,
       warnMb: 2400,
       proactiveGcMb: 0,
       log,
@@ -269,7 +288,7 @@ describe('startMemoryWatchdog', () => {
 
     vi.advanceTimersByTime(1000);
     expect(log).toHaveBeenCalledWith(
-      '[memory-watchdog] RSS above soft threshold',
+      '[memory-watchdog] committed memory above soft threshold',
       expect.objectContaining({
         rssMb: 2500,
         heapUsedMb: 1800,
@@ -302,8 +321,9 @@ describe('startMemoryWatchdog', () => {
     });
 
     const h = startMemoryWatchdog({
+      readSwapMb: noSwap,
       intervalMs: 1000,
-      rssLimitMb: 12288,
+      limitMb: 12288,
       proactiveGcMb: 1920,
       gcCooldownMs: 0,
       forceGc,
@@ -317,6 +337,144 @@ describe('startMemoryWatchdog', () => {
     // The load-bearing assertion: 400 (survivors), never 2000 (pre-GC heap).
     expect((call?.[1] as { heapUsedMb: number }).heapUsedMb).toBe(400);
     h.stop();
+  });
+
+  // WI-2145659 — the swap-blindness fix. The measured live case: :3070 worker
+  // 3415868 held 1779 MB resident + 1210 MB swapped = 2989 MB committed, i.e. 93%
+  // of its 3200 MB limit, while `process.memoryUsage().rss` reported 56%. It sat
+  // below the warn line AND below the proactive-GC trigger, so it warned nothing,
+  // was never GC'd, and could not recycle — unbounded and invisible.
+  describe('committed memory = RSS + swap (WI-2145659)', () => {
+    it('warns on a swapped process that RSS alone reports as healthy', () => {
+      withRss(1779); // 56% of 3200 — comfortably under the 2400 warn line
+      const log = vi.fn();
+      const onTrip = vi.fn();
+      const h = startMemoryWatchdog({
+        readSwapMb: () => 1210, // 2989 MB committed — 93% of the limit
+        intervalMs: 1000,
+        warnMb: 2400,
+        limitMb: 3200,
+        onTrip,
+        log,
+      });
+
+      vi.advanceTimersByTime(1000);
+      const warn = log.mock.calls.find((c) => String(c[0]).includes('above soft threshold'));
+      expect(warn).toBeDefined();
+      // Both halves reported, so a reader sees the split instead of inferring it.
+      expect(warn?.[1]).toMatchObject({ committedMb: 2989, rssMb: 1779, swapMb: 1210 });
+      // Still under the recycle limit — this is the warn, not the trip.
+      expect(onTrip).not.toHaveBeenCalled();
+      h.stop();
+    });
+
+    it('recycles on committed memory crossing the limit, which RSS never reaches', () => {
+      // RSS is pinned at 2000 for the whole test — 62% of the 3200 limit, never
+      // crossing it. Only the swap term moves, which is the real shape: the
+      // kernel pages growth out, so the process grows while `rss` looks flat.
+      // Pre-fix this process could climb forever without warning or recycling.
+      withRss(2000);
+      // The first sample must land BELOW warnMb so `sawHealthySample` is set and
+      // the EI-11522 born-over-budget guard does not suppress the later trip —
+      // this is a process that GREW into the limit, which is the case that
+      // legitimately recycles.
+      let swap = 0;
+      const onTrip = vi.fn();
+      const h = startMemoryWatchdog({
+        readSwapMb: () => swap,
+        intervalMs: 1000,
+        tripsToRecycle: 1,
+        warnMb: 2400, // committed 2000 on sample 1 → healthy
+        limitMb: 3200,
+        onTrip,
+        log: vi.fn(),
+      });
+
+      vi.advanceTimersByTime(1000); // committed 2000 — under the limit
+      expect(onTrip).not.toHaveBeenCalled();
+
+      swap = 1400; // committed 3400 — over the limit, with RSS unchanged
+      vi.advanceTimersByTime(1000);
+      expect(onTrip).toHaveBeenCalledTimes(1);
+      expect(onTrip.mock.calls[0][0]).toMatchObject({
+        committedMb: 3400,
+        rssMb: 2000,
+        swapMb: 1400,
+        limitMb: 3200,
+      });
+      h.stop();
+    });
+
+    it('runs proactive GC on a swapped process that RSS keeps below the trigger', () => {
+      withRss(1200); // under the 1920 trigger on RSS alone
+      const log = vi.fn();
+      const forceGc = vi.fn();
+      const h = startMemoryWatchdog({
+        readSwapMb: () => 800, // 2000 MB committed — over the trigger
+        intervalMs: 1000,
+        proactiveGcMb: 1920,
+        limitMb: 3200,
+        warnMb: 2400,
+        forceGc,
+        onTrip: vi.fn(),
+        log,
+      });
+
+      vi.advanceTimersByTime(1000);
+      expect(forceGc).toHaveBeenCalledTimes(1);
+      const gc = log.mock.calls.find((c) => String(c[0]).includes('proactive GC'));
+      // The RSS trio keeps its pre-fix meaning (1300+ records/worker/14h are read
+      // as a time series); the committed trio is added beside it, not swapped in.
+      expect(gc?.[1]).toMatchObject({
+        rssMbBefore: 1200,
+        committedMbBefore: 2000,
+        committedMbAfter: 2000,
+      });
+      h.stop();
+    });
+
+    // The inversion this whole change is about: an unmeasurable value must never
+    // read as a healthy one. On a host with no /proc the watchdog degrades to
+    // exactly its pre-fix RSS-only behaviour rather than to a falsely-low
+    // committed figure that would suppress the thresholds all over again.
+    it('an UNMEASURABLE swap term (-1) degrades to RSS-only, never to a zero it did not measure', () => {
+      withRss(2600);
+      const log = vi.fn();
+      const h = startMemoryWatchdog({
+        readSwapMb: () => -1,
+        intervalMs: 1000,
+        warnMb: 2400,
+        limitMb: 3200,
+        onTrip: vi.fn(),
+        log,
+      });
+
+      vi.advanceTimersByTime(1000);
+      const warn = log.mock.calls.find((c) => String(c[0]).includes('above soft threshold'));
+      expect(warn?.[1]).toMatchObject({ committedMb: 2600, rssMb: 2600, swapMb: -1 });
+      h.stop();
+    });
+
+    it('exposes committedMb() on the handle alongside rssMb()', () => {
+      withRss(500);
+      const h = startMemoryWatchdog({
+        readSwapMb: () => 250,
+        intervalMs: 1000,
+        onTrip: vi.fn(),
+        log: vi.fn(),
+      });
+      expect(h.rssMb()).toBe(500);
+      expect(h.committedMb()).toBe(750);
+      h.stop();
+    });
+  });
+});
+
+describe('readSelfSwapMb', () => {
+  it('returns a non-negative MiB figure or -1, never NaN', () => {
+    const v = readSelfSwapMb();
+    expect(Number.isInteger(v)).toBe(true);
+    expect(v === -1 || v >= 0).toBe(true);
   });
 });
 

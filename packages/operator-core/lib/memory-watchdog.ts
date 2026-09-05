@@ -101,7 +101,7 @@ export const MEMORY_WATCHDOG_PROACTIVE_GC_MB_STAGING = Math.round(MEMORY_WATCHDO
 export const MEMORY_WATCHDOG_PROACTIVE_GC_MB_BACKGROUND = Math.round(MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND * 0.6);
 
 /**
- * The RSS high-water mark (MiB) THIS process should recycle at. An explicit
+ * The COMMITTED-memory high-water mark (MiB) THIS process should recycle at. An explicit
  * `PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB` always wins; otherwise the default is
  * role-aware (see above), so a FRESH box's bg-host — and the :3170 staging
  * operator — are correct WITHOUT a box-local systemd drop-in (EI-1613 — the
