@@ -1430,7 +1430,7 @@ const defaultTerminateDeps: TerminateDeps = {
       return false;
     }
   },
-  markEnded: (advSessionId) => markAdvSessionEnded(advSessionId, null, 'reaper'),
+  markEnded: async (advSessionId) => { await markAdvSessionEnded(advSessionId, null, 'reaper'); },
   wait: (ms) => new Promise((r) => setTimeout(r, ms)),
   windowProtects: (ownerId) => {
     try {
