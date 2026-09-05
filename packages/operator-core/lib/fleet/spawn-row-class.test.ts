@@ -35,7 +35,14 @@ import { isInProcessLaunchRow } from '../harness/improvements/watchdog';
  */
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
-const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: HERE, encoding: 'utf8' }).trim();
+// WI-41180: a sync spawn in the PURE lane blocks the worker's event loop, so vitest cannot time
+// it out and one block wedges the ~2,740-file fork. Every sync call here carries an explicit bound.
+const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+  cwd: HERE,
+  encoding: 'utf8',
+  timeout: 30_000,
+  killSignal: 'SIGKILL',
+}).trim();
 
 const SPAWN_ROW_CLASS_PATH =
   process.env.PROBE_SPAWN_ROW_CLASS_PATH ?? join(REPO_ROOT, 'packages/operator-core/lib/fleet/spawn-row-class.ts');
