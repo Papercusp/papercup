@@ -67,6 +67,43 @@ describe('shapeLogsRead — keeps the NEWEST rows (the inversion this fixes)', (
   });
 });
 
+/**
+ * PERMANENT FALSIFIABILITY CONTROL.
+ *
+ * A guard that has never failed is a guard nobody has tested, and every
+ * assertion above passes trivially if the shaper simply returns fewer rows. What
+ * makes them meaningful is that they REJECT the specific wrong behaviour this
+ * fix removes — the generic result door's head-keeping. So that wrong behaviour
+ * is kept here as a deliberately-incorrect reference implementation, per the
+ * repo's mutation-probe guidance for an imported subject (mutate a control, never
+ * the shared tree). If a future refactor reintroduces head-keeping, the real
+ * subject starts behaving like `keepHeadLikeTheDoorDid` and the calibration case
+ * below fails.
+ */
+function keepHeadLikeTheDoorDid(data: { entries: Entry[] }, keep: number): { entries: Entry[] } {
+  return { entries: data.entries.slice(0, keep) };
+}
+
+describe('shapeLogsRead — falsifiability control (the assertions discriminate)', () => {
+  const all = entries(120);
+  const survivingRows = (out: Shaped) => seqOf(out.entries);
+  /** The load-bearing assertion pair, as a predicate. */
+  const newestKept = (kept: number[]) => kept.includes(119) && !kept.includes(0);
+
+  it('CALIBRATION — the real subject satisfies the assertion', () => {
+    expect(newestKept(survivingRows(shapeLogsRead({ entries: all }, 'trimmed') as Shaped))).toBe(true);
+  });
+
+  it('CONTROL — the old head-keeping behaviour FAILS the same assertion', () => {
+    const keep = survivingRows(shapeLogsRead({ entries: all }, 'trimmed') as Shaped).length;
+    // Same row COUNT as the real shaper, so the control isolates ORDER alone —
+    // a test that only counted rows would pass here, which is the point.
+    const mutant = seqOf(keepHeadLikeTheDoorDid({ entries: all }, keep).entries);
+    expect(mutant.length).toBe(keep);
+    expect(newestKept(mutant)).toBe(false);
+  });
+});
+
 describe('shapeLogsRead — the budget is in BYTES, which is the actual defect', () => {
   it('bounds the serialized payload when messages are long', () => {
     const out = shapeLogsRead({ entries: entries(120, 500) }, 'trimmed') as Shaped;
