@@ -74,7 +74,7 @@ import {
   runWorktreeBridgeTick,
   WORKTREE_BRIDGE_RETRY_TTL_MS,
 } from '../../sync/pot-git/worktree-bridge-tick';
-import { loadHiveEffectAuthority, nextHivePublicationTerm } from '../../sync/pot-git/hive-effect-authority';
+import { HiveEffectAuthorityError, loadHiveEffectAuthority, nextHivePublicationTerm, requireHiveEffectAuthority } from '../../sync/pot-git/hive-effect-authority';
 import { publishHandoffToken } from '../../sync/pot-git/handoff-token';
 import {
   runRefAnnouncePublishTick,
@@ -2549,7 +2549,11 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // recorded), never escalate.
   const gate = await runCheckpointedStep(
     'git-sync:eligibility',
-    async (): Promise<GitSyncEligibility & { hiveGitMode?: PotGitMode; repoPath?: string }> => {
+    async (): Promise<GitSyncEligibility & {
+      hiveGitMode?: PotGitMode;
+      hiveGitIdentity?: { potHomeSlug: string; repoKey: string };
+      repoPath?: string;
+    }> => {
       await patchRoutineMetadata(slug, workspaceId, { fire_started_at: Date.now() });
       const { gate: g, entry } = await gitSyncRuntimeGate(slug, workspaceId, repoPathOverride);
       if (!g.eligible) {
@@ -2569,7 +2573,11 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       const potHomeSlug = entry ? (entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined)) : undefined;
       if (potHomeSlug && workspaceId) {
         const mode = await getPotGitMode(workspaceId, potHomeSlug);
-        if (mode !== 'legacy') return { ...g, hiveGitMode: mode, ...(entry?.path ? { repoPath: entry.path } : {}) };
+        if (mode !== 'legacy' && entry) return {
+          ...g, hiveGitMode: mode,
+          hiveGitIdentity: { potHomeSlug, repoKey: canonicalRepoKey(entry) },
+          ...(entry.path ? { repoPath: entry.path } : {}),
+        };
       }
       return { ...g, ...(entry?.path ? { repoPath: entry.path } : {}) };
     },
@@ -2614,7 +2622,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // library that nothing else ever pushes. Only a runtime legacy→P2P flip
       // opts this previously-pushing member back in. A joiner whose persisted
       // config was already push:false and omitted this key must still push
-      // nothing anywhere (AH-6).
+      // nothing anywhere (AH-6). This opt-in requests publication; the fresh
+      // owning-hive proof below still authorizes each submodule-origin push.
       if (cfg.pushSubmoduleOrigins === undefined) cfg.pushSubmoduleOrigins = true;
     }
   }
@@ -2890,6 +2899,20 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     outcome = await guarded('run-git-sync', () => runGitSync(slug, {
       repoPath,
       config: cfg,
+      beforePush: gate.hiveGitMode ? async (args, cwd) => {
+        // F6/D-022 covers independent submodule origins too. Resolve a live
+        // owner signer for EACH attempt, bound to the tick's parent identity
+        // and exact child argv/path, never to a member's advisory election.
+        if (!gate.hiveGitIdentity) throw new HiveEffectAuthorityError();
+        const { potHomeSlug, repoKey } = gate.hiveGitIdentity;
+        const scope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
+        const owner = await loadHiveEffectAuthority(workspaceId, potHomeSlug, scope);
+        const actor = owner ? await resolveHiveGitActor(workspaceId, slug, potHomeSlug, repoKey) : null;
+        await requireHiveEffectAuthority(owner && actor ? { ...owner, sign: async bytes => {
+          await actor.assertServing();
+          return owner.sign(bytes);
+        } } : null, scope, ['git-sync-push', cwd, ...args]);
+      } : undefined,
       contentDetectors: contentGuardOn ? undefined : [],
       deletionGuard: deletionGuardOn,
       diffSubjects: diffSubjectsOn,
