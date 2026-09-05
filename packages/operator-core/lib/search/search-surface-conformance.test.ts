@@ -34,12 +34,14 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { dirname, resolve, join, relative } from 'node:path';
+import ts from 'typescript';
 import { importGraph, stripComments } from './import-graph';
 import {
   SEARCH_SURFACES,
   FLOOR_GAP_CEILING,
   RESULTS_DISCARDED_CEILING,
   UNRELATED_ENGINE_MODULE_CEILING,
+  EMBEDDER_WRAP_CEILING,
   CENSUS_EXCLUSIONS,
   type SearchSurface,
 } from './surface-registry';
@@ -157,6 +159,89 @@ function consumesEngineResultIn(raw: string): boolean {
     if (before !== '') return true;
   }
   return false;
+}
+
+/**
+ * Every place a module binds `embedder` to a FUNCTION LITERAL — i.e. wraps it.
+ *
+ * The P-017 floor is resolved by `embedderModeOf`, a `WeakMap` lookup on the
+ * exact function OBJECT the factory stamped. Any intermediary that wraps the
+ * resolved embedder — a width guard, a timer, a log line, a retry, a lazy
+ * acquire — hands over a DIFFERENT object, the lookup misses, and
+ * `proseMinScoreFloors(undefined)` floors nothing. The surface then ranks
+ * completely unfloored while every observable signal still looks healthy: both
+ * legs report `status:'ran'`, `legs.degraded` is false, `applied` renders.
+ *
+ * This is why the check has to be STATIC. It is structurally invisible to a
+ * fixture-driven test: a mocked embedder is never stamped either, so a fusion
+ * test passes identically with and without the bug. Reference identity is the
+ * only property that discriminates, and by the time a value reaches a test it
+ * is just a function. (EI-19484071702281877 / D-024.)
+ *
+ * An AST walk rather than a regex, because the shapes that must NOT be flagged
+ * are exactly the ones a regex confuses with the bug — `let embedder: ((t:
+ * string) => Promise<number[]>) | null` is a TYPE annotation containing a fat
+ * arrow, and an interface member is another. Neither is an initializer, so the
+ * compiler separates them for free.
+ */
+function embedderWrapSitesIn(raw: string, label = 'fixture.ts'): string[] {
+  const sf = ts.createSourceFile(label, raw, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const isFnLit = (n: ts.Node | undefined): n is ts.ArrowFunction | ts.FunctionExpression =>
+    !!n && (ts.isArrowFunction(n) || ts.isFunctionExpression(n));
+
+  // A literal whose body ONLY throws is the sanctioned "no embedder resolved"
+  // signal (D-023), not a wrapper: it never returns a vector, so there is no
+  // unfloored ranking to prevent, and the engine records the rejection in
+  // `legs.semantic.blocked` — louder than a silent lexical-only degrade.
+  const throwsOnly = (fn: ts.ArrowFunction | ts.FunctionExpression): boolean =>
+    !!fn.body &&
+    ts.isBlock(fn.body) &&
+    fn.body.statements.length === 1 &&
+    ts.isThrowStatement(fn.body.statements[0]);
+
+  const out: string[] = [];
+  const flag = (at: ts.Node, fn: ts.ArrowFunction | ts.FunctionExpression): void => {
+    if (throwsOnly(fn)) return;
+    out.push(`${label}:${sf.getLineAndCharacterOfPosition(at.getStart(sf)).line + 1}`);
+  };
+
+  const visit = (n: ts.Node): void => {
+    // `{ embedder: <fn> }` — the historical shape: a resolver returning
+    // `{ embedder, embeddingMode }` with the embedder wrapped on the way out.
+    if (ts.isPropertyAssignment(n) && n.name.getText(sf) === 'embedder' && isFnLit(n.initializer)) {
+      flag(n, n.initializer);
+    }
+    // `embedder = <fn>` — assigned into a binding declared earlier.
+    if (
+      ts.isBinaryExpression(n) &&
+      n.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      n.left.getText(sf) === 'embedder' &&
+      isFnLit(n.right)
+    ) {
+      flag(n, n.right);
+    }
+    // `const embedder = <fn>` — declared and wrapped in one step.
+    if (ts.isVariableDeclaration(n) && n.name.getText(sf) === 'embedder' && isFnLit(n.initializer)) {
+      flag(n, n.initializer);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out;
+}
+
+/**
+ * The wrap sites reachable from one surface.
+ *
+ * The whole import graph, not just the entry module: the shape this exists to
+ * catch was born in `docs/semantic-leg.ts`, one hop away from `docs/search.ts`.
+ * Scanning entries alone would have missed the very bug that prompted it.
+ */
+function embedderWrapSites(entry: string): string[] {
+  const g = importGraph(entry);
+  return [entry, ...g.modules].flatMap((f) =>
+    embedderWrapSitesIn(readFileSync(f, 'utf8'), rel(f)),
+  );
 }
 
 /** The engine entrypoint a surface's code actually reaches. */
@@ -289,6 +374,57 @@ describe('search surface conformance (P-021)', () => {
         expect(derive(abs(surface)).hasFloor).toBe(false);
       },
     );
+  });
+
+  describe('the floor survives every hop — no surface WRAPS its embedder (D-024)', () => {
+    const hybrid = SEARCH_SURFACES.filter((s) => s.engine === 'hybrid');
+    const wrapped = SEARCH_SURFACES.filter((s) => s.embedderWrap);
+
+    it.each(hybrid.filter((s) => !s.embedderWrap).map((s) => [s.id, s] as const))(
+      '%s: hands the engine the RESOLVED embedder, unwrapped',
+      (_id, surface) => {
+        // A wrapper here does not fail loudly — it silently deletes the floor
+        // and the surface keeps reporting healthy legs. Pass the resolved
+        // embedder straight through; if a wrapper is genuinely unavoidable,
+        // it is a tracked defect and needs an `embedderWrap` entry, not a
+        // quiet exemption.
+        expect(embedderWrapSites(abs(surface))).toEqual([]);
+      },
+    );
+
+    it(`the wrapped set holds at most ${EMBEDDER_WRAP_CEILING} entr(y|ies)`, () => {
+      expect(wrapped.length).toBeLessThanOrEqual(EMBEDDER_WRAP_CEILING);
+    });
+
+    it('every wrapped surface names a reason AND a tracking id', () => {
+      for (const s of wrapped) {
+        expect(s.embedderWrap?.reason?.trim(), `${s.id} embedderWrap.reason`).toBeTruthy();
+        expect(s.embedderWrap?.trackedBy, `${s.id} embedderWrap.trackedBy`).toMatch(
+          /^(EI|WI)-\d+$/,
+        );
+      }
+    });
+
+    it.each(wrapped.map((s) => [s.id, s] as const))(
+      '%s: the wrapper is still REAL — delete the entry once it is unwrapped',
+      (_id, surface) => {
+        // Without this the exemption outlives the defect and the ceiling stops
+        // measuring anything. Same contract the floor-gap set carries.
+        expect(embedderWrapSites(abs(surface)).length).toBeGreaterThan(0);
+      },
+    );
+
+    it('a wrapped surface is NOT filed as a floor gap — they are different defects', () => {
+      // `floorGap` means the policy was never installed and asserts
+      // `hasFloor === false`. A wrapped surface HAS the policy — it ran and
+      // returned undefined. Filing one as the other would fail that set's own
+      // "still REAL" check, and would hide a live defect behind a category
+      // that is measured differently.
+      for (const s of wrapped) {
+        expect(s.floorGap, `${s.id} must not hold both`).toBeUndefined();
+        expect(derive(abs(s)).hasFloor, `${s.id} reaches the policy seam`).toBe(true);
+      }
+    });
   });
 
   describe('the CENSUS — completeness is derived, not claimed', () => {

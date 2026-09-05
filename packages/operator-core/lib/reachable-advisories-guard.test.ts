@@ -78,8 +78,8 @@ describe('reachable-advisory gate: discrimination', () => {
     // Both are `high` with a fix available; only the owning workspace differs. If this
     // ever collapses to "both gate" or "neither gates", the discrimination is broken.
     const r = analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] });
-    const shipped = r.findings.find((f: { name: string }) => f.name === 'evil-shipped');
-    const testonly = r.findings.find((f: { name: string }) => f.name === 'evil-testonly');
+    const shipped = findingFor(r, 'evil-shipped');
+    const testonly = findingFor(r, 'evil-testonly');
     expect(shipped.severity).toBe(testonly.severity);
     expect(shipped.gating).toBe(true);
     expect(testonly.gating).toBe(false);
@@ -224,7 +224,7 @@ describe('reachable-advisory gate: two-lens fix feasibility', () => {
 
   it('a MAJOR fix in the installed tree overrides a compatible prod-only fix', () => {
     const r = analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] }, FULL_AUDIT_FIXTURE);
-    const f = r.findings.find((x: { name: string }) => x.name === 'evil-shipped');
+    const f = findingFor(r, 'evil-shipped');
     expect(f.patchCompatible).toBe(false);
     expect(f.fix).toContain('5.5.2');
     expect(f.fix).toContain('SEMVER-MAJOR');
@@ -234,21 +234,21 @@ describe('reachable-advisory gate: two-lens fix feasibility', () => {
     // The calibration that makes the assertion above meaningful — if analyze() ignored the
     // second lens entirely, this control and the one above could not both hold.
     const r = analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] });
-    const f = r.findings.find((x: { name: string }) => x.name === 'evil-shipped');
+    const f = findingFor(r, 'evil-shipped');
     expect(f.patchCompatible).toBe(true);
     expect(f.fix).toBe('patch-compatible');
   });
 
   it('surfaces the disagreement rather than silently taking the pessimistic side', () => {
     const r = analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] }, FULL_AUDIT_FIXTURE);
-    const f = r.findings.find((x: { name: string }) => x.name === 'evil-shipped');
+    const f = findingFor(r, 'evil-shipped');
     expect(f.fixDisagreement).toEqual(expect.stringContaining('MAJOR'));
   });
 
   it('takes the WORSE severity of the two lenses, promoting into the gate', () => {
     // moderate (prod-only) vs critical (installed tree): the gate must not under-report.
     const r = analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] }, FULL_AUDIT_FIXTURE);
-    const f = r.findings.find((x: { name: string }) => x.name === 'noisy-moderate');
+    const f = findingFor(r, 'noisy-moderate');
     expect(f.severity).toBe('critical');
     expect(r.offenders.some((o: { name: string }) => o.name === 'noisy-moderate')).toBe(true);
   });
@@ -257,7 +257,7 @@ describe('reachable-advisory gate: two-lens fix feasibility', () => {
     // evil-orphan is absent from FULL_AUDIT_FIXTURE. Absence from one lens must never
     // delete a finding — that would be the fail-OPEN direction.
     const r = analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] }, FULL_AUDIT_FIXTURE);
-    const f = r.findings.find((x: { name: string }) => x.name === 'evil-orphan');
+    const f = findingFor(r, 'evil-orphan');
     expect(f).toBeTruthy();
     expect(r.offenders.some((o: { name: string }) => o.name === 'evil-orphan')).toBe(true);
   });

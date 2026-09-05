@@ -368,6 +368,46 @@ export {
 } from './gate-bypass';
 export type { GateBypass } from '@papercusp/tooldef';
 
+// identities-v1 / D-030: expose the host-neutral kernel enforcement seam to
+// transport and operator adapters without making them depend on the generic
+// package's internal source path.
+export {
+  KERNEL_ENFORCEMENT_SCHEMA,
+  sameKernelRevision,
+  sameExecutionRevision,
+  kernelRevisionKey,
+  executionRevisionKey,
+  normalizeKernelEnforcementResult,
+  evaluateKernelEnforcement,
+  evaluateKernelDecision,
+  isKernelDenied,
+  appliedExecutionRevision,
+  actualExecutionRevision,
+  enforceKernelBoundary,
+  runAtKernelBoundary,
+  wrapKernelSpawn,
+  wrapNativeSpawn,
+  createKernelEnforcementPort,
+  createKernelPolicyPort,
+  allowKernelEnforcement,
+  KernelEnforcementDeniedError,
+} from '@papercusp/tooldef';
+export type {
+  KernelEnforcementPhase,
+  KernelBoundary,
+  KernelDecision,
+  KernelAvailability,
+  KernelExecutionRevision,
+  KernelActivationRevision,
+  KernelOwnershipRequirement,
+  KernelActivationSnapshot,
+  KernelContextState,
+  KernelEnforcementRequest,
+  KernelEnforcementResult,
+  KernelEnforcementPort,
+  KernelPolicyPort,
+} from '@papercusp/tooldef';
+
 // Resource authorization (RFC tooldef-auth). The host supplies the decision
 // (an `authorize` hook / PolicyDecisionPoint) and wires `deps.auditAuth` to a
 // sink — Papercusp's is `apps/operator/lib/tool-authz-audit.ts`.

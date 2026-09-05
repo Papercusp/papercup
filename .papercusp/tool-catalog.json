@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 849,
+  "count": 850,
   "tools": [
     {
       "name": "ablation:report",
@@ -19318,6 +19318,80 @@
       }
     },
     {
+      "name": "plans:acceptance-bar-census",
+      "http": {
+        "path": "/api/agent-tools/plans/acceptance-bar-census",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Run the versioned, rerunnable P-009 acceptance BAR census. It reports Requirements-heading adoption separately from BAR-contract coverage, names explicit exclusions/cohorts, and returns every residual plan with a repair reason. The query and parameters are included for reproduction.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "After the acceptance BAR migration reaches the queried database, to publish the measured adoption baseline and post-epoch executable coverage denominator.",
+        "notWhen": "To seed or repair a plan. Use plans:migrate-acceptance-bars for writes; this door is read-only.",
+        "chaining": "plans:acceptance-bar-census → plans:get / plans:migrate-acceptance-bars for named residuals; rerun with identical parameters to compare measuredAt reports."
+      }
+    },
+    {
       "name": "plans:add-decision",
       "http": {
         "path": "/api/agent-tools/plans/add-decision",
@@ -19325,7 +19399,7 @@
           "POST"
         ]
       },
-      "description": "Append one or many decisions to a plan. Allocates the next D-NNN inside a lock and bumps frontmatter `updated:`; concurrent calls stay collision-free. Single: `{ slug, title, body }`; bulk: `items:[{ slug, title, body, refs?, affects? }]`. `itemRefs` aliases `refs` (refs wins). Tree-fact decisions require `Measured: <file:line or command + result>`; source-like paths without it return `measurementAdvisory`, and an uncovered absence premise returns advisory `absenceLint`. Returns `{ ok, results:[{ ok, slug, decisionId, deduped?, propagated_to?, measurementAdvisory?, absenceLint? | error }], counts }`; correlate each result by `decisionId`, and one failure never fails the rest. Exact `{ title, body }` retries dedupe against the plan's most recent decision instead of appending.",
+      "description": "Append one or many decisions to a plan. Allocates the next D-NNN inside a lock and bumps frontmatter `updated:`; concurrent calls stay collision-free. Single: `{ slug, title, body }`; bulk: `items:[{ slug, title, body, refs?, affects? }]`. `itemRefs` aliases `refs` (refs wins). Tree-fact decisions require `Measured: <file:line or command + result>`; source-like paths without it return `measurementAdvisory`, and an uncovered absence premise returns advisory `absenceLint`. Returns `{ ok, results:[{ ok, slug, decisionId, ref, deduped?, propagated_to?, measurementAdvisory?, absenceLint? | error }], counts }`; correlate each result by `decisionId`, and one failure never fails the rest. CITE `ref` (`<slug>#D-NNN`) anywhere the decision is quoted onward — a bare `D-NNN` is allocated per-plan, so it is not a reference: `D-001` names 904 different rulings in this harness. Exact `{ title, body }` retries dedupe against the plan's most recent decision instead of appending.",
       "capabilities": [
         "plans:write"
       ],

@@ -281,6 +281,10 @@ describe('transcript wire fixtures still match the live wire', () => {
         const IGNORED = new Set([
           'event_msg/token_count', 'event_msg/task_started', 'event_msg/task_complete',
           'event_msg/item_completed', 'event_msg/thread_settings_applied', 'event_msg/error',
+          // Codex's usage telemetry has a `payload`, but no conversational field the
+          // timeline parsers read. Keep it explicit so the payload envelope does not
+          // classify this bookkeeping record as an uncovered conversation variant.
+          'token_usage_record',
           'turn_context', 'session_meta', 'world_state', 'compacted',
           'custom', 'custom_message', 'branch_summary', 'ttsr_injection',
           'summary', 'system', 'file-history-snapshot', 'queue-operation',
