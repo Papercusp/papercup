@@ -20,7 +20,7 @@ import { describe, it, expect } from 'vitest';
 import itemsTool from './items';
 import getTool from './get';
 import getSpecsTool from './get-specs';
-import searchTool, { normalizePlansSearchArgs } from './search';
+import searchTool, { normalizePlansSearchArgs, MAX_LIMIT, LIMIT_DESCRIPTION } from './search';
 import addItemTool, { resolveItemText, itemTextOrUndefined } from './add-item';
 import newTool from './new';
 
@@ -33,18 +33,6 @@ function parseOk(schema: { safeParse: (v: unknown) => { success: boolean; error?
   return parsed.data as Record<string, unknown>;
 }
 
-/**
- * plans:search's args are a `z.preprocess(...)` wrapper, so `.shape` is
- * undefined on the tool's schema itself — reading it directly would assert on
- * `undefined` and pass vacuously. Unwrap one effect level, and FAIL if the
- * shape is not reachable rather than returning something empty.
- */
-function searchObjectShape(): Record<string, { description?: string }> {
-  const def = (searchTool.args as unknown as { _def?: { schema?: { shape?: unknown }; innerType?: unknown } })._def;
-  const inner = def?.schema as { shape?: Record<string, { description?: string }> } | undefined;
-  if (!inner?.shape) throw new Error('plans:search args shape not reachable — the schema wrapper changed; fix this helper rather than deleting the assertion');
-  return inner.shape;
-}
 
 describe('plans:items — exact-item selector aliases (EI-21669556283807249, EI-21382868747036184, EI-21856673460402354)', () => {
   // Every one of these was filed as invalid_args AFTER `item`/`ids` already
@@ -163,9 +151,9 @@ describe('plans:search — a single-string `scope` (EI-21166014275674822)', () =
     // plans:search wraps its object in a preprocess, so the object shape sits
     // one level in — reach it explicitly rather than reading `.shape` off the
     // effect and silently asserting on `undefined`.
-    const limitDescription = searchObjectShape().limit.description as string;
-    expect(limitDescription).toMatch(/capped at 50/i);
-    expect(limitDescription).toMatch(/clamped/i);
+    expect(MAX_LIMIT).toBe(50);
+    expect(LIMIT_DESCRIPTION).toMatch(/capped at 50/i);
+    expect(LIMIT_DESCRIPTION).toMatch(/clamped/i);
   });
 
   it('still refuses a limit that is not a positive integer — only the CEILING was relaxed', () => {

@@ -70,7 +70,15 @@ const CANDIDATE_LIMIT = 200;
 const SOURCE_KEY = 'plans';
 
 /** Result ceiling. Arbitrary and read-only, so an over-large `limit` clamps. */
-const MAX_LIMIT = 50;
+export const MAX_LIMIT = 50;
+
+/**
+ * Exported so the regression guard pins the SAY half of the repair without
+ * reaching into zod internals to find it (EI-21253383007098268: the complaint
+ * was never that a cap exists, but that it was invisible until it fired).
+ */
+export const LIMIT_DESCRIPTION =
+  `Max results. Default 20, capped at ${MAX_LIMIT} — a larger value is CLAMPED to ${MAX_LIMIT} (response reports limitClamped), not refused.`;
 
 const SCOPES = ['slug', 'title', 'now', 'items', 'decisions', 'prose'] as const;
 type Scope = (typeof SCOPES)[number];
@@ -137,7 +145,7 @@ const argsSchema = z.preprocess(
       .int()
       .min(1)
       .optional()
-      .describe(`Max results. Default 20, capped at ${MAX_LIMIT} — a larger value is CLAMPED to ${MAX_LIMIT} (response reports limitClamped), not refused.`),
+      .describe(LIMIT_DESCRIPTION),
     includeArchived: z.boolean().optional().describe('Search archived plans too. Default true (the dispersal problem was *unfindable*).'),
     includeLegacy: z.boolean().optional().describe('Search legacy plans (prose only). Default true.'),
     harness: harnessArg,
