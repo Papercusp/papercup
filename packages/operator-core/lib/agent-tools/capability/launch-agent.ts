@@ -1342,6 +1342,7 @@ export default defineTool({
             return foldedConfigs[i].headless
               ? spawnHeadless({
                   envelope: { ...base, env: governedEnv, greetingCmd: cmd, cwd },
+                  writeMcpJson: true,
                   label: memberLabel,
                   logDir: headlessLogDir,
                   launchedBy: callerOwnerId ?? undefined,
@@ -1354,7 +1355,7 @@ export default defineTool({
               : spawnConsole({
                   envelope: { ...base, env: governedEnv, greetingCmd: cmd, cwd },
                   label: memberLabel,
-                  writeMcpJson: false,
+                  writeMcpJson: true,
                   scheme,
                   allowDesktopBridge: true,
                   // `pid` is the terminal emulator (or its launcher), not the
