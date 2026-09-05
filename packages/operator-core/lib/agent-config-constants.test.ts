@@ -13,6 +13,8 @@ import {
   SUPERSEDED_1M_FLEET_MEMBER_CAPS,
   selfSetCeilingForWindow,
   selfSetCeilingForSpec,
+  compactionCapBindingForWindow,
+  compactionCapBindingForTier,
   clampCompactionLimit,
   MIN_COMPACTION_LIMIT_TOKENS,
   validateCloudModelSpec,
@@ -188,6 +190,65 @@ describe('selfSetCeilingForSpec — a DELIBERATE self-set may exceed the SEEDED 
 
   it('the MIN floor still applies on the self-set path', () => {
     expect(clampCompactionLimit(1, 'opus[1m]', { selfSet: true })).toBe(MIN_COMPACTION_LIMIT_TOKENS);
+  });
+});
+
+// ── EI-19914665525338044: WHICH constraint produced the seeded cap ───────────
+// The seeded cap is min(role cap, window derivation), and callers that render it
+// to a human used to assert the window derivation unconditionally. That sentence
+// is arithmetically FALSE whenever the role cap bound first — the defect this
+// binding exists to make un-writable.
+describe('compactionCapBindingForWindow — role cap vs window derivation', () => {
+  it('a 1M window binds on the ROLE cap, and the window sentence would be false there', () => {
+    expect(compactionCapBindingForWindow(MODEL_WINDOW_1M)).toBe('role-cap');
+    // the actual falsifier: the cap × overshoot lands nowhere near the window,
+    // while the true window derivation (825k) does.
+    const cap = defaultCompactionLimitForWindow(MODEL_WINDOW_1M);
+    expect(cap).toBe(COMPACTION_LIMIT_DEFAULT_1M_CAP);
+    expect(cap * 1.2).toBeLessThan(MODEL_WINDOW_1M - 10_000);
+    expect(selfSetCeilingForWindow(MODEL_WINDOW_1M)).toBe(825_000);
+  });
+
+  it('an ordinary 200k window binds on the WINDOW derivation, where the sentence IS true', () => {
+    expect(compactionCapBindingForWindow(MODEL_WINDOW_DEFAULT)).toBe('model-window');
+    const cap = defaultCompactionLimitForWindow(MODEL_WINDOW_DEFAULT);
+    expect(cap).toBe(158_000);
+    expect(cap * 1.2).toBeLessThanOrEqual(MODEL_WINDOW_DEFAULT - 10_000);
+    // and it really is the binding one — nothing lower cut it off
+    expect(selfSetCeilingForWindow(MODEL_WINDOW_DEFAULT)).toBe(cap);
+  });
+
+  it('a fleet member on a 1M window binds on its leaner role cap', () => {
+    expect(compactionCapBindingForWindow(MODEL_WINDOW_1M, { fleetMember: true })).toBe('role-cap');
+    expect(defaultCompactionLimitForWindow(MODEL_WINDOW_1M, { fleetMember: true })).toBe(
+      COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP,
+    );
+  });
+
+  it('a window too small to clear the floor reports `minimum`', () => {
+    expect(compactionCapBindingForWindow(25_000)).toBe('minimum');
+    expect(defaultCompactionLimitForWindow(25_000)).toBe(MIN_COMPACTION_LIMIT_TOKENS);
+  });
+
+  // The binding must be DERIVED from the same inputs as the cap, never restated:
+  // for every window, the reported binding has to agree with which of the two
+  // candidate numbers actually came out.
+  it.each([25_000, MODEL_WINDOW_DEFAULT, 258_400, 400_000, MODEL_WINDOW_1M])(
+    'window %i: the reported binding agrees with the cap that was produced',
+    (window) => {
+      const cap = defaultCompactionLimitForWindow(window);
+      const binding = compactionCapBindingForWindow(window);
+      if (binding === 'minimum') expect(cap).toBe(MIN_COMPACTION_LIMIT_TOKENS);
+      else if (binding === 'role-cap') expect(cap).toBe(COMPACTION_LIMIT_DEFAULT_1M_CAP);
+      else expect(cap).toBe(selfSetCeilingForWindow(window));
+    },
+  );
+
+  it('the tier twin routes through the tier window, catalog window winning over the spec', () => {
+    expect(compactionCapBindingForTier({ spec: 'opus[1m]' })).toBe('role-cap');
+    expect(compactionCapBindingForTier({ spec: 'haiku' })).toBe('model-window');
+    // an explicit catalog window overrides the spec-derived one
+    expect(compactionCapBindingForTier({ spec: 'haiku', contextWindow: MODEL_WINDOW_1M })).toBe('role-cap');
   });
 });
 

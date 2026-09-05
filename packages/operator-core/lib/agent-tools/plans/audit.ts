@@ -49,7 +49,12 @@ import {
   type ActivationAuditPayload,
 } from '../../plan-audits';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { parseTurnRef, resolveSessionTurnRefs, SESSION_SOURCE_KINDS } from '../sessions/_shared';
+import {
+  parseSessionSelector,
+  parseTurnRef,
+  resolveSessionTurnRefs,
+  SESSION_SOURCE_KINDS,
+} from '../sessions/_shared';
 import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
 import { persistDerivedDraftClauses } from '../../derive-draft-spec-clauses';
 import { detectUnderReadFromSource } from '../../activation-under-read';
@@ -261,7 +266,20 @@ export default defineTool({
     if (args.phase === 'activation') {
       const workspaceId = sctx.workspaceId ?? activeWorkspaceId();
       const submittedActivation: ActivationAuditPayload = {
-        sourceRanges: args.sourceRanges ?? [],
+        sourceRanges: (args.sourceRanges ?? []).map((range) => {
+          // `sessions:list` exposes both the raw session id and the convenient
+          // `<sourceKind>:<sessionId>` selector. Store the canonical id so a
+          // selector range covers the public `session_turn:` refs it names and
+          // re-audits do not accumulate equivalent raw/prefixed ranges.
+          const selector = parseSessionSelector(range.sessionId);
+          return {
+            ...range,
+            sessionId:
+              selector.sourceKind === undefined || selector.sourceKind === range.sourceKind
+                ? selector.sessionId
+                : range.sessionId,
+          };
+        }),
         mappings: args.mappings ?? [],
         repairedOmissions: args.repairedOmissions ?? [],
         rejectedOrSuperseded: args.rejectedOrSuperseded ?? [],

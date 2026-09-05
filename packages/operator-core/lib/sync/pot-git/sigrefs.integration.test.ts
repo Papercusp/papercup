@@ -22,6 +22,7 @@ import {
   reconcileFetchedHeads,
   sigrefsSigningBytes,
 } from './sigrefs';
+import { makeSignedProtocolContext } from './signed-context';
 
 async function mintCommit(repoPath: string, msg: string): Promise<string> {
   const tree = await defaultRunGit(['hash-object', '-w', '-t', 'tree', '/dev/null'], repoPath);
@@ -106,6 +107,22 @@ describe('pot-git sigrefs (real bare repo, injected signer)', () => {
     expect(acceptFetchedSigrefs(v2!, otherKp.pubkeyBase64, 1)).toEqual({ ok: false, reason: 'wrong-device' });
     const tampered = { ...v2!, sig: Buffer.from('00'.repeat(64), 'hex').toString('base64') };
     expect(acceptFetchedSigrefs(tampered, devA, 1)).toEqual({ ok: false, reason: 'bad-signature' });
+  });
+
+  it('binds v3 snapshots to the signed context and rejects drift or legacy when required', async () => {
+    const context = makeSignedProtocolContext('hive-s', 'repo-1');
+    const signed = await buildSigrefs(repo, devA, sign, { nowMs: 3_000, version: 9, context });
+    expect(signed.v).toBe(3);
+    expect(verifySigrefs(signed, devA)).toBe(true);
+    expect(acceptFetchedSigrefs(signed, devA, 8, { expectedContext: context, allowLegacy: false })).toEqual({ ok: true });
+    expect(
+      acceptFetchedSigrefs(signed, devA, 8, { expectedContext: { ...context, repo_key: 'other' } }),
+    ).toEqual({ ok: false, reason: 'context-mismatch' });
+    const legacy = await buildSigrefs(repo, devA, sign, { nowMs: 4_000, version: 10 });
+    expect(acceptFetchedSigrefs(legacy, devA, 8, { expectedContext: context, allowLegacy: false })).toEqual({
+      ok: false,
+      reason: 'legacy-version',
+    });
   });
 
   it('reconcileFetchedHeads: matching heads → none; a relay-tampered head → mismatch', async () => {

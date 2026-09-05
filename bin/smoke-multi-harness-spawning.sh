@@ -329,10 +329,16 @@ else
   [ "$E9_DIR" = "1" ] && ok "E9b inbox?role=director sees the message" || bad "E9b unexpected director-count: $E9_DIR"
   [ "$E9_WORK" = "0" ] && ok "E9c inbox?role=worker excludes the message" || bad "E9c unexpected worker-count: $E9_WORK"
 
-  # Cross-harness search
-  E10=$(curl -sS "$OPERATOR_BASE/api/harness/search?q=$E9_TAG&kind=messages&limit=5")
-  E10_COUNT=$(echo "$E10" | jq -r '.messageHits | length')
-  [ "$E10_COUNT" -ge 1 ] && ok "E10 cross-harness search finds the just-sent message ($E10_COUNT hit)" || bad "E10 unexpected: $E10"
+  # E10 (cross-harness search over the just-sent message) is GONE, not migrated.
+  # It asserted on `/api/harness/search?kind=messages`, and BOTH halves of that
+  # are retired: the work-item mail corpus was removed 2026-07-26 (WI-6097), so
+  # P-018 made `kind=messages` answer 410; and the route itself was deleted
+  # 2026-09-05 as uncalled (EI-19909503716698677 — zero requests across the full
+  # 7d `route_invocations` window, never mounted on the hosted control plane, no
+  # consumer in any sibling checkout). The check had therefore been dead since
+  # P-018: `.messageHits` was absent from the 410 body, `jq length` of null is 0,
+  # and `[ 0 -ge 1 ]` reported `bad` — it could not pass. There is nothing to
+  # re-point it at, because the corpus it searched no longer exists.
 
   # KPIs endpoint
   E11=$(curl -sS "$OPERATOR_BASE/api/harness/all/kpis")

@@ -147,7 +147,6 @@ import harnessSpawn from './harness/spawn';
 import harnessBootstrapFromTemplate from './harness/bootstrap-from-template';
 import harnessPromote from './harness/promote';
 import harnessAllKpis from './harness/all-kpis';
-import harnessSearch from './harness/search';
 import harnessFile from './harness/file';
 import harnessManifest from './harness/manifest';
 import harnessIntelArtifacts from './harness/intel-artifacts';
@@ -712,7 +711,6 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten([harnessBootstrapFromTemplate] as AnyRoute[]),
   ...flatten(harnessPromote as AnyRoute[]),
   ...flatten(harnessAllKpis as AnyRoute),
-  ...flatten(harnessSearch as AnyRoute),
   ...flatten(harnessFile as AnyRoute[]),
   ...flatten(harnessManifest as AnyRoute),
   ...flatten(harnessIntelArtifacts as AnyRoute),

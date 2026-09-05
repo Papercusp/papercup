@@ -43,6 +43,11 @@
  */
 import { lazy, type ComponentType, type LazyExoticComponent } from 'react';
 import '../../../../apps/operator/app/harness/harness.css';
+// The DEV console's stylesheet. The operator loads it from `dev/layout.tsx`, a
+// route-level layout a host never renders; it is namespaced (`.pc-dev-*`), so
+// loading it once here — like harness.css above — costs nothing on the other
+// surfaces and keeps the `dev` entry a zero-prop mount (portal-parity D-007).
+import '../../../../apps/operator/app/dev/dev.css';
 // The token → grid palette bridge. Every grid-bearing surface below paints
 // from grid-core's live palette, which is a neutral DARK set until this runs
 // (portal-parity D-008 / P-012). The operator's main.tsx imports the same
@@ -63,7 +68,15 @@ export type OperatorSurfaceKind =
   | 'work'
   | 'learning'
   | 'workflows'
-  | 'brainstorm';
+  | 'brainstorm'
+  // The operator top-nav's utility destinations (portal-parity D-007 / D-009:
+  // "the cloud cupboard and dev and support tabs should all be in the web
+  // portal", and Settings is the operator's own settings surface).
+  | 'cloud'
+  | 'cupboard'
+  | 'dev'
+  | 'support'
+  | 'settings';
 
 /**
  * `Desktops` is the one surface with a SUBJECT (which workspace host to open).
@@ -117,6 +130,21 @@ export const OPERATOR_SURFACES: Record<
     const Panel = mod.default;
     return { default: () => <Panel panel="brainstorm" /> };
   }),
+  // The operator top-nav's utility set (portal-parity D-007 / D-009).
+  // /cloud-workspaces — the SAME page as `desktops` above, landing on its
+  // default step: the operator's own "Cloud" nav target is this route.
+  cloud: lazy(() => import('../../../../apps/operator/app/cloud-workspaces/page')),
+  // /cupboard + /cupboard/$id — two operator routes behind one switch, keyed by
+  // the `useParams().id` the detail page reads (the host's router shim supplies it).
+  cupboard: lazy(() => import('../../../../apps/operator/app/cupboard/CupboardSurface')),
+  // /dev — the console page itself; its tabs are nuqs state and its sub-routes
+  // (/dev/gym, /dev/tokens, …) stay operator-origin links.
+  dev: lazy(() => import('../../../../apps/operator/app/dev/page')),
+  // /support — FAQ + support chat. Its RouteLinks resolve through the host's link shim.
+  support: lazy(() => import('../../../../apps/operator/app/support/page')),
+  // /settings/** — SettingsLayout around the sub-page the (virtual) pathname
+  // selects; the sub-page table is pinned to the operator's route set by test.
+  settings: lazy(() => import('../../../../apps/operator/app/settings/SettingsSurface')),
 };
 
 /** Whether a portal rail kind has a native operator surface behind it. */

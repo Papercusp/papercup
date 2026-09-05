@@ -835,6 +835,19 @@ describe('plans:audit phase:activation', () => {
     expect(mockResolveSourceRefs).not.toHaveBeenCalled();
   });
 
+  it('normalizes a source-kind-prefixed session selector before matching canonical refs', async () => {
+    const result = ((await tool.handler(activationArgs({
+      sourceRanges: [{ sourceKind: 'codex', sessionId: 'codex:session-full-id', fromTurn: 0, toTurn: 20 }],
+    }) as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: true, phase: 'activation', sourceRefsResolved: 1 });
+    expect(mockRecordActivation).toHaveBeenCalledWith(expect.objectContaining({
+      activation: expect.objectContaining({
+        sourceRanges: [{ sourceKind: 'codex', sessionId: 'session-full-id', fromTurn: 0, toTurn: 20 }],
+      }),
+    }));
+  });
+
   it('persists an externally-censused scattered conversation map with no missing obligation', async () => {
     const mappings = [
       {

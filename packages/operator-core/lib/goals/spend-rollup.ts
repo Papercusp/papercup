@@ -91,16 +91,21 @@ export const GOAL_SPEND_SESSION_SCOPE = 'outside-goal-pots:diagnostic-only' as c
  * P-004's wording ("a THIRD scope alongside") invites that reading; the code
  * does not support it. `sessionSpendForGoal`'s predicate already begins
  * `s.goal_id = <goal> OR (...)`, so every write-time-attributed sample that is
- * not billed to a goal pot is ALREADY inside `sessionCents`. Measured
- * 2026-09-05: all 865 lineage rows in this workspace are source='interactive'
- * with harness_slug NULL, so today lineage ⊆ session and lineage ∩ pot = ∅.
+ * not billed to a goal pot is ALREADY inside `sessionCents`.
  *
- * Both of those are CONTINGENT, which is why the overlap is measured every tick
- * (`lineageInsidePotCents`) instead of asserted here. WI-2144763 proposes
- * stamping harness_slug on that very writer; the day it lands, lineage rows
- * start matching goal pots and the intersection stops being empty. A label
- * claiming disjointness would become false exactly when a sibling lane succeeds
- * — the drift the derived-truth ladder exists to prevent.
+ * The overlap with the POT leg is CONTINGENT, which is why it is MEASURED every
+ * tick (`lineageInsidePotCents`) instead of asserted here. Read that field for
+ * the live figure; do not restate one in this comment.
+ *
+ * History, because it is the cautionary case: this block used to assert that
+ * every lineage row carried harness_slug NULL, hence lineage ⊆ session and
+ * lineage ∩ pot = ∅. That was measured on 2026-09-05, hours before WI-2144763
+ * began stamping attribution at INSERT — a sharp writer cutover (last NULL-slug
+ * lineage row 01:48:18Z, first non-NULL 01:52:37Z). Since the cutover, lineage
+ * rows DO match goal pots and the intersection is non-empty and still growing,
+ * so the sentence was false the same day it was written. It was caught only
+ * because the shipped code measures the overlap rather than hardcoding zero —
+ * exactly the drift the derived-truth ladder exists to prevent (WI-2145059).
  *
  * So: diagnostic-only, like the session leg, and never added into any total.
  */
@@ -140,9 +145,10 @@ export interface GoalLineageSpend {
   sessions: number;
   /**
    * The MEASURED intersection with the pot leg, in USD: lineage samples whose
-   * harness_slug is one of the goal's live pots. Currently 0 in this workspace
-   * (the writer that stamps goal_id never writes harness_slug), but measured
-   * rather than assumed — WI-2144763 would make it nonzero.
+   * harness_slug is one of the goal's live pots. Measured every tick, never
+   * assumed — it was zero until WI-2144763 began stamping harness_slug at
+   * INSERT (2026-09-05), and has been non-empty since. See
+   * {@link GOAL_SPEND_LINEAGE_SCOPE}.
    */
   insidePotCostUsd: number;
 }
@@ -169,7 +175,7 @@ export interface GoalSpendRollup {
    * legs those aggregate, so including it would double-count.
    */
   lineageCents: number;
-  /** Measured lineage ∩ pot, in cents. 0 today; see GOAL_SPEND_LINEAGE_SCOPE. */
+  /** Measured lineage ∩ pot, in cents — measured every tick, never assumed zero; see GOAL_SPEND_LINEAGE_SCOPE. */
   lineageInsidePotCents: number;
   lineage: GoalLineageSpend;
 }

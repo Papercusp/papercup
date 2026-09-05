@@ -52,7 +52,13 @@ export type OperatorSurfaceKind =
   | 'work'
   | 'learning'
   | 'workflows'
-  | 'brainstorm';
+  | 'brainstorm'
+  // The operator top-nav's utility destinations (portal-parity D-007 / D-009).
+  | 'cloud'
+  | 'cupboard'
+  | 'dev'
+  | 'support'
+  | 'settings';
 
 /**
  * Every surface is a zero-prop lazy mount. Surfaces that need arguments

@@ -40,6 +40,12 @@ import {
   readNamespaceRef,
   writeNamespaceRef,
 } from './storage';
+import {
+  SIGNED_PROTOCOL_SCHEMA_VERSION,
+  isSignedProtocolContext,
+  signedProtocolContextMatches,
+  type SignedProtocolContext,
+} from './signed-context';
 
 /** The within-namespace ref that holds the signed snapshot blob. */
 export const SIGREFS_REF = 'refs/rad/sigrefs';
@@ -47,6 +53,10 @@ export const SIGREFS_REF = 'refs/rad/sigrefs';
 /** Sigrefs schema version (the wire shape, distinct from the monotonic
  *  per-device `version` counter used for rollback protection). */
 export const SIGREFS_SCHEMA_VERSION = 1;
+/** Context-bound hive-wide sigrefs version. */
+// Scope-repo origin claims already occupy wire version 2. Keep that legacy
+// shape intact and use v3 for the context-bound hive-wide snapshot.
+export const SIGREFS_SCHEMA_VERSION_CONTEXT = SIGNED_PROTOCOL_SCHEMA_VERSION + 1;
 
 /**
  * v2 — SCOPE-REPO sigrefs only (P-109 leg iii / C8, ratified D-017 n2 +
@@ -91,6 +101,10 @@ export interface SigrefsPayload {
   ts: number;
   /** The device's ref-set, sorted by ref name (excludes the sigrefs ref). */
   refs: SigrefEntry[];
+  /** V2 stable signed identity tuple. Absent on legacy v1 snapshots. */
+  hive_id?: string;
+  repo_key?: string;
+  store_generation?: string;
 }
 
 export interface SignedSigrefs extends SigrefsPayload {
@@ -104,7 +118,7 @@ export interface SignedSigrefs extends SigrefsPayload {
  * identical bytes. `sig` is excluded (it signs everything else).
  */
 export function sigrefsSigningBytes(payload: SigrefsPayload): Buffer {
-  const ordered = {
+  const ordered: Record<string, unknown> = {
     v: payload.v,
     device_pubkey: payload.device_pubkey,
     version: payload.version,
@@ -128,6 +142,11 @@ export function sigrefsSigningBytes(payload: SigrefsPayload): Buffer {
           : { ref: r.ref, sha: r.sha },
       ),
   };
+  if (payload.v === SIGREFS_SCHEMA_VERSION_CONTEXT) {
+    ordered.hive_id = payload.hive_id;
+    ordered.repo_key = payload.repo_key;
+    ordered.store_generation = payload.store_generation;
+  }
   return Buffer.from(JSON.stringify(ordered), 'utf8');
 }
 
@@ -172,7 +191,7 @@ export async function readSigrefs(
 function isSignedSigrefs(x: unknown): x is SignedSigrefs {
   if (!x || typeof x !== 'object') return false;
   const s = x as Record<string, unknown>;
-  return (
+  const baseOk = (
     typeof s.v === 'number' &&
     typeof s.device_pubkey === 'string' &&
     typeof s.version === 'number' &&
@@ -194,8 +213,11 @@ function isSignedSigrefs(x: unknown): x is SignedSigrefs {
         typeof c.execution_epoch === 'number'
       );
     }) &&
-    typeof s.sig === 'string'
+    typeof s.sig === 'string' &&
+    (s.v === SIGREFS_SCHEMA_VERSION || s.v === SIGREFS_SCHEMA_VERSION_CONTEXT || s.v === SIGREFS_SCHEMA_VERSION_SCOPE)
   );
+  if (!baseOk) return false;
+  return s.v !== SIGREFS_SCHEMA_VERSION_CONTEXT || isSignedProtocolContext(s);
 }
 
 /**
@@ -209,7 +231,7 @@ export async function buildSigrefs(
   repoPath: string,
   devicePubkeyBase64: string,
   sign: (bytes: Buffer) => Promise<Buffer>,
-  opts: { nowMs: number; version?: number; versionFloor?: number; runGit?: RunGit } = { nowMs: 0 },
+  opts: { nowMs: number; version?: number; versionFloor?: number; runGit?: RunGit; context?: SignedProtocolContext } = { nowMs: 0 },
 ): Promise<SignedSigrefs> {
   const runGit = opts.runGit ?? defaultRunGit;
   const all = await listNamespaceRefs(repoPath, devicePubkeyBase64, runGit);
@@ -234,11 +256,12 @@ export async function buildSigrefs(
     version = Math.max(prior?.version ?? 0, opts.versionFloor ?? 0) + 1;
   }
   const payload: SigrefsPayload = {
-    v: SIGREFS_SCHEMA_VERSION,
+    v: opts.context ? SIGREFS_SCHEMA_VERSION_CONTEXT : SIGREFS_SCHEMA_VERSION,
     device_pubkey: devicePubkeyBase64,
     version,
     ts: opts.nowMs,
     refs,
+    ...(opts.context ?? {}),
   };
   const sig = (await sign(sigrefsSigningBytes(payload))).toString('base64');
   const signed: SignedSigrefs = { ...payload, sig };
@@ -268,6 +291,7 @@ export async function buildScopeSigrefs(
     claims?: Map<string, SigrefOriginClaim>;
     version?: number;
     runGit?: RunGit;
+    context?: SignedProtocolContext;
   },
 ): Promise<SignedSigrefs> {
   const runGit = opts.runGit ?? defaultRunGit;
@@ -296,11 +320,12 @@ export async function buildScopeSigrefs(
   }
   const carriesClaims = refs.some((r) => r.originClaim !== undefined);
   const payload: SigrefsPayload = {
-    v: carriesClaims ? SIGREFS_SCHEMA_VERSION_SCOPE : SIGREFS_SCHEMA_VERSION,
+    v: opts.context ? SIGREFS_SCHEMA_VERSION_CONTEXT : carriesClaims ? SIGREFS_SCHEMA_VERSION_SCOPE : SIGREFS_SCHEMA_VERSION,
     device_pubkey: executorDevicePubkeyBase64,
     version,
     ts: opts.nowMs,
     refs,
+    ...(opts.context ?? {}),
   };
   const sig = (await sign(sigrefsSigningBytes(payload))).toString('base64');
   const signed: SignedSigrefs = { ...payload, sig };
@@ -329,7 +354,14 @@ export type SigrefsAcceptance =
   | { ok: true }
   | {
       ok: false;
-      reason: 'bad-signature' | 'wrong-device' | 'rollback' | 'malformed' | 'origin-claim-outside-scope';
+      reason:
+        | 'bad-signature'
+        | 'wrong-device'
+        | 'rollback'
+        | 'malformed'
+        | 'origin-claim-outside-scope'
+        | 'legacy-version'
+        | 'context-mismatch';
     };
 
 /** Does any entry carry a (v2, scope-repo-only) origin claim? */
@@ -352,9 +384,17 @@ export function acceptFetchedSigrefs(
   signed: SignedSigrefs,
   expectedDevicePubkeyBase64: string,
   priorVersion: number | null,
-  opts: { allowOriginClaims?: boolean } = {},
+  opts: { allowOriginClaims?: boolean; expectedContext?: SignedProtocolContext; allowLegacy?: boolean } = {},
 ): SigrefsAcceptance {
   if (!isSignedSigrefs(signed)) return { ok: false, reason: 'malformed' };
+  if (opts.expectedContext) {
+    if (signed.v === SIGREFS_SCHEMA_VERSION && opts.allowLegacy === false) {
+      return { ok: false, reason: 'legacy-version' };
+    }
+    if (signed.v === SIGREFS_SCHEMA_VERSION_CONTEXT && !signedProtocolContextMatches(signed, opts.expectedContext)) {
+      return { ok: false, reason: 'context-mismatch' };
+    }
+  }
   if (signed.device_pubkey !== expectedDevicePubkeyBase64) return { ok: false, reason: 'wrong-device' };
   if (!verifySigrefs(signed, expectedDevicePubkeyBase64)) return { ok: false, reason: 'bad-signature' };
   if (priorVersion !== null && signed.version <= priorVersion) return { ok: false, reason: 'rollback' };

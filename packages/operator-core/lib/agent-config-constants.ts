@@ -1167,10 +1167,27 @@ export const COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP = 250_000;
  * measured effective model window. Unlike the seeded default, this deliberately
  * does not impose the 400k leader/solo role cap: a self-set may use the wider
  * measured runway, while fleet members remain bounded by their 200k role cap. */
-export function selfSetCeilingForWindow(window: number, opts?: { fleetMember?: boolean }): number {
+/**
+ * The purely WINDOW-DERIVED limit, before any role cap or floor:
+ * `floor((window − margin) / overshoot)`, floored to 1k for stable display.
+ *
+ * This is the only number the claim "the cap keeps limit × 1.2 under the model
+ * window" is ever about. A ROLE cap ({@link COMPACTION_LIMIT_DEFAULT_1M_CAP})
+ * is a separate, deliberate COST bound that sits far below it on a 1M window
+ * (400,000 vs 825,000), so describing the two interchangeably states a
+ * derivation that is arithmetically false: 400,000 × 1.2 = 480,000, nowhere
+ * near 1,000,000. Callers that render a cap to a human MUST ask
+ * {@link compactionCapBindingForWindow} which constraint actually bound
+ * (EI-19914665525338044).
+ */
+function windowDerivedCompactionLimit(window: number): number {
   const finiteWindow = Number.isFinite(window) && window > 0 ? Math.floor(window) : MODEL_WINDOW_DEFAULT;
   const raw = (finiteWindow - COMPACTION_WINDOW_MARGIN_TOKENS) / COMPACTION_OVERSHOOT_FACTOR;
-  const derived = Math.floor(raw / 1000) * 1000;
+  return Math.floor(raw / 1000) * 1000;
+}
+
+export function selfSetCeilingForWindow(window: number, opts?: { fleetMember?: boolean }): number {
+  const derived = windowDerivedCompactionLimit(window);
   const roleCap = opts?.fleetMember ? COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP : Number.POSITIVE_INFINITY;
   return Math.max(MIN_COMPACTION_LIMIT_TOKENS, Math.min(roleCap, derived));
 }
@@ -1182,10 +1199,37 @@ export function selfSetCeilingForWindow(window: number, opts?: { fleetMember?: b
  * members stay at 200k even when the model window could safely allow more. */
 export function defaultCompactionLimitForWindow(window: number, opts?: { fleetMember?: boolean }): number {
   const roleCap = opts?.fleetMember ? COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP : COMPACTION_LIMIT_DEFAULT_1M_CAP;
-  const finiteWindow = Number.isFinite(window) && window > 0 ? Math.floor(window) : MODEL_WINDOW_DEFAULT;
-  const raw = (finiteWindow - COMPACTION_WINDOW_MARGIN_TOKENS) / COMPACTION_OVERSHOOT_FACTOR;
-  const derived = Math.floor(raw / 1000) * 1000;
+  const derived = windowDerivedCompactionLimit(window);
   return Math.max(MIN_COMPACTION_LIMIT_TOKENS, Math.min(roleCap, derived));
+}
+
+/**
+ * Which constraint actually produced {@link defaultCompactionLimitForWindow} —
+ * so a caller rendering that cap to a human or an agent can state the TRUE
+ * reason instead of assuming the window derivation always bound.
+ *
+ * - `model-window` — the `floor((window − margin) / 1.2)` derivation bound, so
+ *   "the cap keeps limit × 1.2 under the model window" is accurate.
+ * - `role-cap`     — a deliberate COST cap bound well below that derivation
+ *   (400k leader/solo, 250k fleet member on a 1M window). The window sentence
+ *   is FALSE here; the honest reason is spend, and a single session may still
+ *   go higher via `config:set-compaction-limit` (see {@link selfSetCeilingForSpec}).
+ * - `minimum`      — the window is so small that {@link MIN_COMPACTION_LIMIT_TOKENS}
+ *   is what the caller actually gets.
+ *
+ * Derived from the same inputs as the cap itself rather than restated, so the
+ * two cannot drift apart (EI-19914665525338044).
+ */
+export type CompactionCapBinding = 'model-window' | 'role-cap' | 'minimum';
+
+export function compactionCapBindingForWindow(
+  window: number,
+  opts?: { fleetMember?: boolean },
+): CompactionCapBinding {
+  const roleCap = opts?.fleetMember ? COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP : COMPACTION_LIMIT_DEFAULT_1M_CAP;
+  const derived = windowDerivedCompactionLimit(window);
+  if (Math.min(roleCap, derived) < MIN_COMPACTION_LIMIT_TOKENS) return 'minimum';
+  return roleCap < derived ? 'role-cap' : 'model-window';
 }
 
 /**
@@ -1258,6 +1302,15 @@ export function defaultCompactionLimitForTier(
   opts?: { fleetMember?: boolean },
 ): number {
   return defaultCompactionLimitForWindow(modelWindowForTier(tier), opts);
+}
+
+/** Backend-aware twin of {@link compactionCapBindingForWindow} for a tier row —
+ * why `defaultCompactionLimitForTier` landed where it did. */
+export function compactionCapBindingForTier(
+  tier: Pick<ModelTier, 'spec' | 'contextWindow'>,
+  opts?: { fleetMember?: boolean },
+): CompactionCapBinding {
+  return compactionCapBindingForWindow(modelWindowForTier(tier), opts);
 }
 
 /**

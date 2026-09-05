@@ -14,6 +14,7 @@ import {
   signStagingAdvance,
   verifyStagingAdvance,
 } from './staging-advance';
+import { makeSignedProtocolContext } from './signed-context';
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
@@ -119,6 +120,26 @@ describe('staging-advance (G-5d epoch fencing, pure)', () => {
     expect(acceptStagingAdvance(null as unknown as SignedStagingAdvance, null)).toEqual({
       ok: false,
       reason: 'malformed',
+    });
+  });
+
+  it('binds context in v2 and rejects a valid signature from another repository or legacy peer', async () => {
+    const kp = keypair();
+    const context = makeSignedProtocolContext('hive-a', 'gh-1');
+    const adv = await signStagingAdvance(
+      { devicePubkeyBase64: kp.pubkeyBase64, epoch: 1, seq: 1, stagingSha: SHA_A, nowMs: 1_000, context },
+      kp.sign,
+    );
+    expect(verifyStagingAdvance(adv)).toBe(true);
+    expect(acceptStagingAdvance(adv, null, { expectedContext: context, allowLegacy: false })).toEqual({ ok: true });
+    expect(acceptStagingAdvance(adv, null, { expectedContext: { ...context, hive_id: 'hive-b' } })).toEqual({
+      ok: false,
+      reason: 'context-mismatch',
+    });
+    const legacy = await advance(kp, 1, 1);
+    expect(acceptStagingAdvance(legacy, null, { expectedContext: context, allowLegacy: false })).toEqual({
+      ok: false,
+      reason: 'legacy-version',
     });
   });
 

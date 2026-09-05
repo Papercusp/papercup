@@ -16,6 +16,11 @@
  * absent policy ⇒ permissive (no enforcement); existing Hives are unaffected.
  */
 
+import {
+  type PlanAdmissionPolicy,
+  validatePlanAdmissionPolicy,
+} from './agent-tools/plans/plan-admission-policy';
+
 /** Per-member rate caps (EN-2 P-RATE reads these). Absent ⇒ no limiting. */
 export interface HivePolicyRate {
   opsPerMin?: number;
@@ -81,12 +86,22 @@ export interface HivePolicyCrefs {
   [k: string]: unknown;
 }
 
+/** Governance policy extensions. Kept under the existing signed HivePolicy record. */
+export interface HivePolicyGovernance {
+  /** P-001: exact-plan admission thresholds and ratification epoch rules. */
+  planAdmission?: PlanAdmissionPolicy;
+  /** Forward-compatibility for future governance policy fields. */
+  [k: string]: unknown;
+}
+
 /**
  * The typed view of a Hive policy document. This is a forward-compatible OPEN record:
  * the named fields are the EN-1..EN-4 surface, and `[k: string]: unknown` preserves
  * any field a newer authoring client added. The whole object is owner-signed.
  */
 export interface HivePolicy {
+  /** Owner-signed governance rules, including exact-plan admission. */
+  governance?: HivePolicyGovernance;
   rate?: HivePolicyRate;
   membership?: HiveMembershipMode;
   allowlist?: string[];
@@ -191,6 +206,16 @@ export function coerceHivePolicyInput(
     return { ok: false, error: 'policy must be a JSON object' };
   }
   const p = raw as Record<string, unknown>;
+  if (p.governance !== undefined) {
+    if (!p.governance || typeof p.governance !== 'object' || Array.isArray(p.governance)) {
+      return { ok: false, error: 'policy.governance must be an object' };
+    }
+    const governance = p.governance as Record<string, unknown>;
+    if (governance.planAdmission !== undefined) {
+      const admission = validatePlanAdmissionPolicy(governance.planAdmission);
+      if (!admission.ok) return { ok: false, error: admission.error };
+    }
+  }
   if (p.rate !== undefined) {
     if (!p.rate || typeof p.rate !== 'object' || Array.isArray(p.rate)) {
       return { ok: false, error: 'policy.rate must be an object' };

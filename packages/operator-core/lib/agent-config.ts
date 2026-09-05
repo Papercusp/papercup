@@ -311,8 +311,10 @@ export function parseTiers(raw: unknown): ModelTier[] {
     seen.add(key);
     // Optional per-tier soft compaction limit (context-trimming-tiers D-002):
     // a non-number drops the FIELD (→ model-derived default at resolution),
-    // never the row; a number is clamped so `limit × 1.2 ≤ window − margin`
-    // (D-001 — the ceiling IS the model-derived default).
+    // never the row; a number is clamped to the tier's SEEDED default (D-001 —
+    // the ceiling IS that default). That is `limit × 1.2 ≤ window − margin`
+    // only when the window derivation binds; where a role COST cap binds first
+    // the ceiling is lower than the window would allow (EI-19914665525338044).
     const rawWindow = (entry as ModelTier).contextWindow;
     const contextWindow =
       typeof rawWindow === 'number' && Number.isFinite(rawWindow) && rawWindow > 0 ? Math.floor(rawWindow) : undefined;

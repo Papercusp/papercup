@@ -53,6 +53,18 @@ export async function refreshLexiconPack(): Promise<BrandPackId> {
 }
 
 /**
+ * Adapter, not a direct pass: `lazyFlagRefresh` takes `() => void | Promise<void>` and DISCARDS
+ * the result (`void Promise.resolve(refresh())`), while `refreshLexiconPack` is exported API that
+ * RESOLVES TO the new pack id — its callers assert on that value. Widening the helper's parameter
+ * to accommodate this one caller would erase the signal the other eleven call sites rely on: that
+ * their return value is thrown away. Awaiting here keeps the kick's timing identical to passing
+ * the function directly. This is a definition, not a module-scope call — nothing runs until armed.
+ */
+const refreshLexiconPackVoid = async (): Promise<void> => {
+  await refreshLexiconPack();
+};
+
+/**
  * Arms the flag subscription on first read (WI-6650).
  *
  * `activeServerPackId()` is the SOLE arm site and that is deliberate: the
@@ -71,7 +83,7 @@ export async function refreshLexiconPack(): Promise<BrandPackId> {
  * that selects a string pack and produces no authorization verdict, so no caller
  * is disallowed from causing it.
  */
-const armLexiconFlagRefresh = lazyFlagRefresh(refreshLexiconPack, {
+const armLexiconFlagRefresh = lazyFlagRefresh(refreshLexiconPackVoid, {
   keys: [FLAGS.THE_HIVE],
   // Seed from the flag REGISTRY, not the `'classic'` literal this cache was
   // initialised with, so the pre-refresh window cannot drift if THE_HIVE ever

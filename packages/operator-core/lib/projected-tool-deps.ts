@@ -68,6 +68,7 @@ import { getServingHostIdentity } from './serving-host-identity';
 import { recordMcpTraffic } from './coverage-census/attribution/sink';
 import { observeFailureLoop } from './failure-loop-circuit-breaker';
 import { goalKickoffRefusalPayload, isGoalKickoffGuardedTool, readGoalKickoffEvidence } from './goals/kickoff-evidence';
+import { normalizeSessionActivation } from './session-activation';
 
 /**
  * The role-scoped `papercusp` MCP surface can be discovered alongside the
@@ -181,19 +182,108 @@ function operatorKernelDenial(
 }
 
 /**
- * Default Papercusp implementation of the host-neutral kernel port.
- *
- * It consumes only explicit, host-resolved state. In particular it never
- * treats a capability/tool name as proof of shell confinement, and it never
- * turns a missing optional state row into a denial. A control-plane owner can
- * install a resolver with `setKernelEnforcementResolver` for a live DB-backed
- * activation/revocation read; the structural checks below still protect the
- * common path and make negative behavior unit-testable without PG.
+ * Read the authoritative session activation/control projection for one kernel
+ * request. This is deliberately a narrow read of the existing
+ * `session_briefs.control_state` row — it does not create a second identity or
+ * policy store. Missing/unavailable rows remain UNKNOWN (null), while an
+ * explicitly malformed activation or lifecycle release is fail-closed.
  */
-export const operatorKernelEnforcement: KernelEnforcementPort = async (request: KernelEnforcementRequest) => {
-  if (kernelEnforcementResolver) return kernelEnforcementResolver(request);
+export async function readControlAnchorKernelState(
+  request: KernelEnforcementRequest,
+): Promise<KernelContextState | null> {
+  let ownerId: string;
+  try {
+    ownerId = resolveAgentIdentity(request.ctx).ownerId;
+  } catch {
+    return null;
+  }
+  const workspaceId =
+    request.ctx.workspaceId && request.ctx.workspaceId !== '*'
+      ? request.ctx.workspaceId
+      : request.ctx.principal?.workspaceId && request.ctx.principal.workspaceId !== '*'
+        ? request.ctx.principal.workspaceId
+        : null;
+  if (!workspaceId) return null;
 
-  const state: KernelContextState | undefined = request.ctx.kernelState;
+  const { sql } = getOrgPg();
+  let stateRow:
+    | { control_state: unknown; control_generation: number | string | null; workspace_id: string | null }
+    | undefined;
+  try {
+    const rows = await sql<Array<{
+      control_state: unknown;
+      control_generation: number | string | null;
+      workspace_id: string | null;
+    }>>`
+      SELECT control_state, control_generation, workspace_id
+        FROM harness_shared.session_briefs
+       WHERE owner_id = ${ownerId}
+         AND workspace_id = ${workspaceId}
+       LIMIT 1
+    `;
+    stateRow = rows[0];
+  } catch {
+    // A rolling node may not have the control-anchor migration yet. Preserve
+    // the generic fail-soft/unavailable posture in that case.
+    stateRow = undefined;
+  }
+
+  let powerUserRevoked = false;
+  if (request.ctx.isPowerUser && request.ctx.uiClientId) {
+    try {
+      const rows = await sql<Array<{ revoked_at: Date | string | null }>>`
+        SELECT revoked_at
+          FROM harness_shared.power_user_sessions
+         WHERE auth_session_id = ${request.ctx.uiClientId}
+           AND workspace_id = ${workspaceId}
+         LIMIT 1
+      `;
+      // Absence is intentionally not treated as revocation: older/in-process
+      // callers can carry the power-user marker without this optional table.
+      powerUserRevoked = rows.length > 0 && rows[0].revoked_at != null;
+    } catch {
+      powerUserRevoked = false;
+    }
+  }
+
+  const raw = stateRow?.control_state;
+  const stateObject = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : null;
+  let activation: KernelContextState['activation'] = null;
+  let malformedActivation = false;
+  if (stateObject && stateObject.activation != null) {
+    try {
+      activation = normalizeSessionActivation(stateObject.activation) ?? null;
+    } catch {
+      malformedActivation = true;
+    }
+  }
+  const lifecycle = stateObject?.lifecycle && typeof stateObject.lifecycle === 'object' && !Array.isArray(stateObject.lifecycle)
+    ? stateObject.lifecycle as Record<string, unknown>
+    : null;
+  // A release marker is a lifecycle tombstone, not a truthy convenience flag.
+  // Treat the presence of the key (including a malformed/null value) as a
+  // revocation signal so a partially-written or schema-drifted release cannot
+  // accidentally reopen the session. The writer clears the key entirely on
+  // resume; it never uses `released: null` as the clear representation.
+  const hasReleaseMarker = Boolean(lifecycle && Object.prototype.hasOwnProperty.call(lifecycle, 'released'));
+  const hasAnyState = Boolean(stateRow || powerUserRevoked);
+  if (!hasAnyState) return null;
+
+  const generation = stateRow?.control_generation == null ? null : String(stateRow.control_generation);
+  return {
+    ...(activation ? { activation } : {}),
+    ...(activation?.applied ? { appliedRevision: activation.applied } : {}),
+    ...(generation ? { policyRevision: `control:${generation}` } : {}),
+    ...(powerUserRevoked || malformedActivation || hasReleaseMarker ? { revoked: true } : {}),
+  };
+}
+
+function evaluateOperatorKernelRequest(
+  request: KernelEnforcementRequest,
+  state: KernelContextState | undefined,
+): KernelEnforcementResult {
   const policyRevision = state?.policyRevision ?? null;
   if (state?.revoked === true) {
     return operatorKernelDenial('revoked', 'session or identity authority has been revoked', policyRevision);
@@ -221,12 +311,11 @@ export const operatorKernelEnforcement: KernelEnforcementPort = async (request: 
 
   const activation = state?.activation;
   const applied = request.appliedRevision ?? state?.appliedRevision ?? activation?.applied ?? null;
-  const requested = request.requestedRevision ?? state?.requestedRevision ?? activation?.desired ?? null;
+  // A caller may explicitly request a revision, but a merely desired/prepared
+  // session update is not itself a request and must not freeze a session. Soft
+  // behavior updates continue under the last acknowledged applied revision.
+  const requested = request.requestedRevision ?? state?.requestedRevision ?? null;
   if (requested && (!applied || !sameKernelRevision(requested, applied))) {
-    // A prepared/desired revision may be surfaced to explain the refusal, but
-    // it must never be stamped as execution truth. Both phases deny here: a
-    // call must not proceed merely because a prompt was prepared while the
-    // host has not acknowledged that revision as applied.
     return operatorKernelDenial(
       'stale-activation',
       `requested revision ${requested.specificationRevision}:${requested.stateRevision} is not the applied revision`,
@@ -256,8 +345,31 @@ export const operatorKernelEnforcement: KernelEnforcementPort = async (request: 
     };
   }
 
-  // No explicit state is a normal compatibility path for pre-P-041 callers.
   return { decision: 'allow', availability: 'unavailable', applied: false };
+}
+
+/** Live control-anchor resolver installed by the operator bootstrap. */
+export const controlAnchorKernelResolver: KernelEnforcementPort = async (request) =>
+  evaluateOperatorKernelRequest(request, await readControlAnchorKernelState(request) ?? undefined);
+
+/** Install the DB-backed resolver exactly once at the host's bootstrap seam. */
+export function installControlAnchorKernelResolver(): void {
+  setKernelEnforcementResolver(controlAnchorKernelResolver);
+}
+
+/**
+ * Default Papercusp implementation of the host-neutral kernel port.
+ *
+ * It consumes only explicit, host-resolved state. In particular it never
+ * treats a capability/tool name as proof of shell confinement, and it never
+ * turns a missing optional state row into a denial. A control-plane owner can
+ * install a resolver with `setKernelEnforcementResolver` for a live DB-backed
+ * activation/revocation read; the structural checks below still protect the
+ * common path and make negative behavior unit-testable without PG.
+ */
+export const operatorKernelEnforcement: KernelEnforcementPort = async (request: KernelEnforcementRequest) => {
+  if (kernelEnforcementResolver) return kernelEnforcementResolver(request);
+  return evaluateOperatorKernelRequest(request, request.ctx.kernelState);
 };
 
 /** Adapter alias matching the generic dependency field's migration names. */

@@ -337,6 +337,42 @@ describe("tier compaction limit (context-trimming-tiers D-001/D-002)", () => {
     expect(r.persistable.tiers).toEqual(held);
   });
 
+  // ── EI-19914665525338044 ──────────────────────────────────────────────────
+  // The rejection used to explain EVERY cap with "the cap keeps limit × 1.2
+  // under the model window". On a [1m] spec the cap is the 400k ROLE cap, and
+  // 400,000 × 1.2 = 480,000 against a 1,000,000 window — so the message
+  // justified the cap with an argument that only holds for the number it is NOT
+  // using. It was true while the seeded default and the ceiling were one
+  // constant; the 2026-08-08 split falsified it and nothing covered this branch.
+  const overCapProblem = (spec: string, limit: string) => {
+    const r = assembleAgentConfig({
+      ...baseInput(),
+      tierRows: [{ name: "lean", spec, backend: "", when: "", compactionLimit: limit }],
+    });
+    const problem = r.problems.find((p) => p.includes("compaction limit"));
+    expect(problem, `expected an over-cap problem for ${spec}`).toBeDefined();
+    return problem as string;
+  };
+
+  it("a [1m] over-cap message does NOT claim the window derivation, and points at the self-set escape", () => {
+    const problem = overCapProblem("opus[1m]:high", "500000");
+    // the cap actually enforced is the 400k role cap
+    expect(problem).toContain("400,000");
+    // ...so the window sentence must NOT be what explains it
+    expect(problem).not.toContain("under the model window");
+    // ...and the honest reason plus the documented way to go higher must be
+    expect(problem).toContain("spend");
+    expect(problem).toContain("config:set-compaction-limit");
+  });
+
+  it("a small-window spec KEEPS the window explanation, because there it is true", () => {
+    const problem = overCapProblem("sonnet", "900000");
+    expect(problem).toContain("158,000");
+    expect(problem).toContain("under the model window");
+    // the spend/self-set wording belongs only to the role-cap branch
+    expect(problem).not.toContain("config:set-compaction-limit");
+  });
+
   it("a non-integer limit flags a problem", () => {
     const r = assembleAgentConfig({
       ...baseInput(),

@@ -18,19 +18,6 @@ test.describe('harness route surface', () => {
     expect(typeof body).toBe('object');
   });
 
-  test('GET /api/harness/search?q=test returns results array', async ({ request }) => {
-    const res = await request.get(`${baseURL}/api/harness/search?q=test`);
-    expect(res.status()).toBe(200);
-    const body = await res.json();
-    // Either { results: [...] } or { rows: [...] } or array directly
-    expect(typeof body).toBe('object');
-  });
-
-  test('GET /api/harness/search without q returns 400 or empty array', async ({ request }) => {
-    const res = await request.get(`${baseURL}/api/harness/search`);
-    expect([200, 400]).toContain(res.status());
-  });
-
   test('POST /api/zero-harness/rest-query without body returns 4xx', async ({ request }) => {
     const res = await request.post(`${baseURL}/api/zero-harness/rest-query`, {
       data: {},

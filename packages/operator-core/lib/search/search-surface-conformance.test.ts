@@ -496,10 +496,18 @@ describe('search surface conformance (P-021)', () => {
       expect(callers.length).toBeGreaterThanOrEqual(8);
 
       const routes = searchRoutes.map(rel);
-      // The surface that motivated the census. It reaches no engine at all, so
-      // only the ROUTE leg can see it — if this drops out, the leg has stopped
-      // covering the very case it was added for.
-      expect(routes).toContain('endpoint-route/routes/harness/search.ts');
+      // A route module carrying a search-shaped path whose handler reaches NO
+      // engine — `/adv/sessions/search` is a synchronous JSONL file scan. That
+      // is the shape only the ROUTE leg can see (the caller census looks for
+      // engine calls), so if this drops out the leg has stopped covering the
+      // very case it was added for.
+      //
+      // This canary was `endpoint-route/routes/harness/search.ts` until
+      // 2026-09-05. That route was deleted as uncalled (zero requests across the
+      // full 7d `route_invocations` window, never hosted-mounted, no consumer in
+      // any sibling checkout), and it had in any case stopped being an example of
+      // this shape when P-018 migrated it onto the hybrid engine.
+      expect(routes).toContain('endpoint-route/routes/adv/sessions.ts');
       expect(routes.length).toBeGreaterThanOrEqual(4);
 
       // 2. `unregistered` returns [] unconditionally. Drive it with a module

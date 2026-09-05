@@ -59,7 +59,12 @@
  *     surface below; the conformance test proves each edge is still present,
  *     contains the call being ignored, and that no other engine caller remains.
  *     This is deliberately exact and capped rather than a global ignore for
- *     `work-items.ts`, because `/harness/search` legitimately delegates there.
+ *     `work-items.ts`, because `work_items:search` legitimately delegates there.
+ *     (Until 2026-09-05 this cited `/harness/search`, a second surface over the
+ *     same call; that route was deleted as uncalled — zero requests across the
+ *     full 7d `route_invocations` retention window, never mounted on the hosted
+ *     control plane, and no consumer in any sibling checkout. `work_items:search`
+ *     is now the sole registered surface entering `work-items.ts`.)
  */
 
 export interface SearchSurface {
@@ -328,11 +333,6 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
       'that window contained. So an empty result means "no match in the window this call reached", ' +
       'NEVER "no such message exists" — and it degrades exactly when the stream is busiest. Use ' +
       '`sessions:search` / `search:fulltext` to ask a corpus-wide question.',
-  },
-  {
-    id: 'GET /harness/search',
-    entry: 'endpoint-route/routes/harness/search.ts',
-    engine: 'hybrid',
   },
   {
     id: 'transcript-search-warmup',

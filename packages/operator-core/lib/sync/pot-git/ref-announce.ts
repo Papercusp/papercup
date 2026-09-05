@@ -47,9 +47,17 @@ import {
   readSigrefs,
   reconcileFetchedHeads,
 } from './sigrefs';
+import {
+  SIGNED_PROTOCOL_SCHEMA_VERSION,
+  isSignedProtocolContext,
+  signedProtocolContextMatches,
+  type SignedProtocolContext,
+} from './signed-context';
 
 /** Wire schema version for the ref-announcement envelope. */
 export const REF_ANNOUNCE_SCHEMA_VERSION = 1;
+/** Context-bound envelope version. V1 remains readable only during migration. */
+export const REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT = SIGNED_PROTOCOL_SCHEMA_VERSION;
 
 /** Domain-separation tag (the staging-advance idiom) — a ref-announce signature
  *  can never be replayed as a sigrefs blob / staging advance / handoff token. */
@@ -72,6 +80,10 @@ export interface RefAnnouncePayload {
   version: number;
   /** Announce time (epoch ms) — audit/freshness only, NOT part of the ordering. */
   ts: number;
+  /** V2 stable signed identity tuple. Absent on legacy v1 envelopes. */
+  hive_id?: string;
+  repo_key?: string;
+  store_generation?: string;
 }
 
 export interface SignedRefAnnouncement extends RefAnnouncePayload {
@@ -84,7 +96,7 @@ const OID_RE = /^[0-9a-f]{40,64}$/;
 function isRefAnnouncePayload(x: unknown): x is RefAnnouncePayload {
   if (!x || typeof x !== 'object') return false;
   const s = x as Record<string, unknown>;
-  return (
+  const baseOk = (
     typeof s.v === 'number' &&
     typeof s.device_pubkey === 'string' &&
     typeof s.sigrefs_oid === 'string' &&
@@ -92,8 +104,11 @@ function isRefAnnouncePayload(x: unknown): x is RefAnnouncePayload {
     typeof s.version === 'number' &&
     Number.isInteger(s.version) &&
     s.version >= 0 &&
-    typeof s.ts === 'number'
+    typeof s.ts === 'number' &&
+    (s.v === REF_ANNOUNCE_SCHEMA_VERSION || s.v === REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT)
   );
+  if (!baseOk) return false;
+  return s.v !== REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT || isSignedProtocolContext(s);
 }
 
 export function isSignedRefAnnouncement(x: unknown): x is SignedRefAnnouncement {
@@ -102,13 +117,18 @@ export function isSignedRefAnnouncement(x: unknown): x is SignedRefAnnouncement 
 
 /** Canonical signing bytes: domain tag + fixed field order, `sig` excluded. */
 export function refAnnounceSigningBytes(payload: RefAnnouncePayload): Buffer {
-  const ordered = {
+  const ordered: Record<string, unknown> = {
     v: payload.v,
     device_pubkey: payload.device_pubkey,
     sigrefs_oid: payload.sigrefs_oid,
     version: payload.version,
     ts: payload.ts,
   };
+  if (payload.v === REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT) {
+    ordered.hive_id = payload.hive_id;
+    ordered.repo_key = payload.repo_key;
+    ordered.store_generation = payload.store_generation;
+  }
   return Buffer.from(`${REF_ANNOUNCE_SIG_DOMAIN}\n${JSON.stringify(ordered)}`, 'utf8');
 }
 
@@ -122,7 +142,7 @@ export async function buildRefAnnouncement(
   repoPath: string,
   devicePubkeyBase64: string,
   sign: (bytes: Buffer) => Promise<Buffer>,
-  opts: { nowMs: number; runGit?: RunGit },
+  opts: { nowMs: number; runGit?: RunGit; context?: SignedProtocolContext },
 ): Promise<SignedRefAnnouncement> {
   const runGit = opts.runGit ?? defaultRunGit;
   const sigrefsOid = await readNamespaceRef(repoPath, devicePubkeyBase64, SIGREFS_REF, runGit);
@@ -131,11 +151,12 @@ export async function buildRefAnnouncement(
     throw new Error('pot-git: buildRefAnnouncement requires a stored sigrefs (run buildSigrefs first)');
   }
   const payload: RefAnnouncePayload = {
-    v: REF_ANNOUNCE_SCHEMA_VERSION,
+    v: opts.context ? REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT : REF_ANNOUNCE_SCHEMA_VERSION,
     device_pubkey: devicePubkeyBase64,
     sigrefs_oid: sigrefsOid,
     version: stored.version,
     ts: opts.nowMs,
+    ...(opts.context ?? {}),
   };
   const sig = (await sign(refAnnounceSigningBytes(payload))).toString('base64');
   return { ...payload, sig };
@@ -203,13 +224,17 @@ export function takeAnnounceBudget(
 
 // ── Acceptance ────────────────────────────────────────────────────────────────
 
-export type RefAnnounceRejectReason =
+export type RefAnnounceBaseRejectReason =
   | 'malformed'
   | 'self'
   | 'wrong-device'
   | 'bad-signature'
   | 'stale-version'
   | 'over-budget';
+// Context/version failures are intentionally separate from bad signatures so
+// operators can distinguish mixed-version peers from tampering.
+export type RefAnnounceContextRejectReason = 'legacy-version' | 'context-mismatch';
+export type RefAnnounceRejectReason = RefAnnounceBaseRejectReason | RefAnnounceContextRejectReason;
 
 export type RefAnnounceAcceptance =
   | { ok: true; budgetState: AnnounceBudgetState | null }
@@ -227,6 +252,9 @@ export interface AcceptRefAnnouncementOpts {
    * whose version is ≤ this is stale — we already mirror that state or newer.
    */
   priorVersion: number | null;
+  /** Expected v2 context. V1 is accepted only when allowLegacy is true. */
+  expectedContext?: SignedProtocolContext;
+  allowLegacy?: boolean;
   /** Budget leg (omit to skip capping — e.g. the anti-entropy sweep path). */
   budget?: {
     state: AnnounceBudgetState | null;
@@ -247,6 +275,14 @@ export function acceptRefAnnouncement(
 ): RefAnnounceAcceptance {
   const currentBudget = opts.budget?.state ?? null;
   if (!isSignedRefAnnouncement(incoming)) return { ok: false, reason: 'malformed', budgetState: currentBudget };
+  if (opts.expectedContext) {
+    if (incoming.v === REF_ANNOUNCE_SCHEMA_VERSION && opts.allowLegacy === false) {
+      return { ok: false, reason: 'legacy-version', budgetState: currentBudget };
+    }
+    if (incoming.v === REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT && !signedProtocolContextMatches(incoming, opts.expectedContext)) {
+      return { ok: false, reason: 'context-mismatch', budgetState: currentBudget };
+    }
+  }
   if (opts.selfDevice !== undefined && incoming.device_pubkey === opts.selfDevice) {
     return { ok: false, reason: 'self', budgetState: currentBudget };
   }
@@ -352,6 +388,8 @@ export interface HandleRefAnnouncementOpts {
   openStream: () => Promise<Duplex> | Duplex;
   timeoutMs?: number;
   runGit?: RunGit;
+  expectedContext?: SignedProtocolContext;
+  allowLegacy?: boolean;
 }
 
 /** Ceiling applied to the `openStream` seam when the caller passes no
@@ -458,6 +496,8 @@ export async function handleRefAnnouncement(
     selfDevice: opts.selfDevice,
     allowedDevices: opts.allowedDevices,
     priorVersion,
+    expectedContext: opts.expectedContext,
+    allowLegacy: opts.allowLegacy,
     budget: opts.budget ? { state: opts.budget.state, nowMs: opts.nowMs, config: opts.budget.config } : undefined,
   });
   if (!acceptance.ok) return { action: 'rejected', reason: acceptance.reason, budgetState: acceptance.budgetState };
@@ -516,7 +556,10 @@ export async function handleRefAnnouncement(
       budgetState: acceptance.budgetState,
     };
   }
-  const verdict = acceptFetchedSigrefs(fetched, device, priorVersion);
+  const verdict = acceptFetchedSigrefs(fetched, device, priorVersion, {
+    expectedContext: opts.expectedContext,
+    allowLegacy: opts.allowLegacy,
+  });
   const mismatches = await reconcileFetchedHeads(repoPath, device, fetched, runGit);
   return {
     action: 'fetched',

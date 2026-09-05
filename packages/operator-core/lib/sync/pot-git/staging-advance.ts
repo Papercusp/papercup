@@ -33,9 +33,16 @@
 
 import { verifyEd25519 } from '../../identity/ed25519';
 import { type RunGit, defaultRunGit } from './storage';
+import {
+  SIGNED_PROTOCOL_SCHEMA_VERSION,
+  isSignedProtocolContext,
+  signedProtocolContextMatches,
+  type SignedProtocolContext,
+} from './signed-context';
 
 /** Wire schema version for the staging-advance envelope. */
 export const STAGING_ADVANCE_SCHEMA_VERSION = 1;
+export const STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT = SIGNED_PROTOCOL_SCHEMA_VERSION;
 
 /**
  * Domain-separation tag mixed into the signed bytes (the hive-policy idiom,
@@ -69,6 +76,10 @@ export interface StagingAdvancePayload extends EpochSeq {
   staging_sha: string;
   /** Advance time (epoch ms) — audit/freshness only, NOT part of the ordering. */
   ts: number;
+  /** V2 stable signed identity tuple. Absent on legacy v1 envelopes. */
+  hive_id?: string;
+  repo_key?: string;
+  store_generation?: string;
 }
 
 export interface SignedStagingAdvance extends StagingAdvancePayload {
@@ -85,15 +96,18 @@ const SHA_RE = /^[0-9a-f]{40,64}$/;
 function isStagingAdvancePayload(x: unknown): x is StagingAdvancePayload {
   if (!x || typeof x !== 'object') return false;
   const s = x as Record<string, unknown>;
-  return (
+  const baseOk = (
     typeof s.v === 'number' &&
     typeof s.device_pubkey === 'string' &&
     isNonNegInt(s.epoch) &&
     isNonNegInt(s.seq) &&
     typeof s.staging_sha === 'string' &&
     SHA_RE.test(s.staging_sha) &&
-    typeof s.ts === 'number'
+    typeof s.ts === 'number' &&
+    (s.v === STAGING_ADVANCE_SCHEMA_VERSION || s.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT)
   );
+  if (!baseOk) return false;
+  return s.v !== STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT || isSignedProtocolContext(s);
 }
 
 export function isSignedStagingAdvance(x: unknown): x is SignedStagingAdvance {
@@ -106,7 +120,7 @@ export function isSignedStagingAdvance(x: unknown): x is SignedStagingAdvance {
  * domain separation.
  */
 export function stagingAdvanceSigningBytes(payload: StagingAdvancePayload): Buffer {
-  const ordered = {
+  const ordered: Record<string, unknown> = {
     v: payload.v,
     device_pubkey: payload.device_pubkey,
     epoch: payload.epoch,
@@ -114,6 +128,11 @@ export function stagingAdvanceSigningBytes(payload: StagingAdvancePayload): Buff
     staging_sha: payload.staging_sha,
     ts: payload.ts,
   };
+  if (payload.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT) {
+    ordered.hive_id = payload.hive_id;
+    ordered.repo_key = payload.repo_key;
+    ordered.store_generation = payload.store_generation;
+  }
   return Buffer.from(`${STAGING_ADVANCE_SIG_DOMAIN}\n${JSON.stringify(ordered)}`, 'utf8');
 }
 
@@ -123,16 +142,17 @@ export function stagingAdvanceSigningBytes(payload: StagingAdvancePayload): Buff
  * tests: `bytes => signWithPrivateKeyDer(der, bytes)`).
  */
 export async function signStagingAdvance(
-  fields: { devicePubkeyBase64: string; epoch: number; seq: number; stagingSha: string; nowMs: number },
+  fields: { devicePubkeyBase64: string; epoch: number; seq: number; stagingSha: string; nowMs: number; context?: SignedProtocolContext },
   sign: (bytes: Buffer) => Promise<Buffer>,
 ): Promise<SignedStagingAdvance> {
   const payload: StagingAdvancePayload = {
-    v: STAGING_ADVANCE_SCHEMA_VERSION,
+    v: fields.context ? STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT : STAGING_ADVANCE_SCHEMA_VERSION,
     device_pubkey: fields.devicePubkeyBase64,
     epoch: fields.epoch,
     seq: fields.seq,
     staging_sha: fields.stagingSha,
     ts: fields.nowMs,
+    ...(fields.context ?? {}),
   };
   if (!isStagingAdvancePayload(payload)) {
     throw new Error('pot-git: signStagingAdvance called with a malformed payload');
@@ -181,7 +201,9 @@ export type StagingAdvanceAcceptance =
         | 'ungranted-epoch'
         | 'stale-epoch-seq'
         | 'non-fast-forward'
-        | 'unknown-sha';
+        | 'unknown-sha'
+        | 'legacy-version'
+        | 'context-mismatch';
     };
 
 export interface AcceptStagingAdvanceOpts {
@@ -213,6 +235,9 @@ export interface AcceptStagingAdvanceOpts {
    * authority) it is optional — only that authority can sign at all.
    */
   maxGrantedEpoch?: number;
+  /** Expected v2 context. V1 is accepted only when allowLegacy is true. */
+  expectedContext?: SignedProtocolContext;
+  allowLegacy?: boolean;
 }
 
 /**
@@ -230,6 +255,14 @@ export function acceptStagingAdvance(
   opts: AcceptStagingAdvanceOpts = {},
 ): StagingAdvanceAcceptance {
   if (!isSignedStagingAdvance(incoming)) return { ok: false, reason: 'malformed' };
+  if (opts.expectedContext) {
+    if (incoming.v === STAGING_ADVANCE_SCHEMA_VERSION && opts.allowLegacy === false) {
+      return { ok: false, reason: 'legacy-version' };
+    }
+    if (incoming.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT && !signedProtocolContextMatches(incoming, opts.expectedContext)) {
+      return { ok: false, reason: 'context-mismatch' };
+    }
+  }
   if (opts.expectedDevice !== undefined) {
     if (incoming.device_pubkey !== opts.expectedDevice) return { ok: false, reason: 'wrong-device' };
   } else if (opts.allowedDevices !== undefined && !opts.allowedDevices.includes(incoming.device_pubkey)) {

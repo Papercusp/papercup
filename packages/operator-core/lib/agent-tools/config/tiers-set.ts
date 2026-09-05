@@ -53,7 +53,7 @@ export default defineTool({
             .int()
             .optional()
             .describe(
-              'Soft compaction limit (tokens) sessions on this tier are seeded with. Omit for the model-derived default floor((window − 10k) / 1.2). Clamped to [20k, that default].',
+              'Soft compaction limit (tokens) sessions on this tier are seeded with. Omit for the tier default. Clamped to [20k, that default] — floor((window − 10k) / 1.2), capped by the role cost cap where one binds (400k on [1m]).',
             ),
         }),
       )

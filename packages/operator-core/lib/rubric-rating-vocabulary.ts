@@ -63,6 +63,12 @@ const NON_RATING_DIRECTIVE_WORDS = new Set([
   'with',
 ]);
 
+// These are contextual objects, not score labels.  In particular, phrases such
+// as "grade it on observed evidence" are instructions about the basis for a
+// judgement, not requests to emit the literal rating "it".  Keeping this list
+// narrow preserves the fail-closed behavior for real, unquoted labels.
+const NON_RATING_TARGET_WORDS = new Set(['it', 'this', 'that', 'them', 'one', 'ones']);
+
 function normalizeRating(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ');
 }
@@ -117,7 +123,9 @@ function parseDirectiveTarget(input: string, directive: string): ParsedDirective
   }
 
   const token = UNQUOTED_RATING_RE.exec(rest)?.[0];
-  if (!token || NON_RATING_DIRECTIVE_WORDS.has(token.toLowerCase())) return null;
+  if (!token || NON_RATING_DIRECTIVE_WORDS.has(token.toLowerCase()) || NON_RATING_TARGET_WORDS.has(token.toLowerCase())) {
+    return null;
+  }
 
   const afterToken = rest.slice(token.length).trimStart();
   const explicitBoundary =
@@ -150,6 +158,10 @@ export function extractRubricRatingInstructions(
   for (const match of text.matchAll(DIRECTIVE_RE)) {
     const directive = match[1];
     const directiveStart = match.index ?? 0;
+    // A directive embedded in a compound label (for example `GOAL+GRADE
+    // mode`) is a noun/heading, not an instruction to emit `mode`.
+    const preceding = text[directiveStart - 1];
+    if (preceding === '+' || preceding === '-' || preceding === '/') continue;
     const target = parseDirectiveTarget(text.slice(directiveStart + match[0].length), directive);
     if (!target) continue;
     const end = directiveStart + match[0].length + target.end;

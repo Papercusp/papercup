@@ -19,6 +19,7 @@ import {
   MODEL_EFFORT_LEVELS,
   MIN_COMPACTION_LIMIT_TOKENS,
   SURFACE_KEYS,
+  compactionCapBindingForTier,
   defaultCompactionLimitForTier,
   isValidModelSpec,
   type AgentBackend,
@@ -248,8 +249,13 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
       continue;
     }
     // Optional per-tier soft compaction limit (context-trimming-tiers D-001/D-002):
-    // '' = model-derived default; a number must sit in [20k, the spec's derived
-    // ceiling] — the ceiling keeps limit × 1.2 under the hard window.
+    // '' = model-derived default; a number must sit in [20k, the tier's SEEDED
+    // cap]. A tier limit seeds every session launched on that tier, so it is a
+    // fleet-wide cost policy, not the per-session deliberate self-set that
+    // `config:set-compaction-limit` serves — which is why the cap here is the
+    // seeded default and may sit below `selfSetCeilingForSpec` (EI-19914665525338044).
+    // Two different constraints can produce that cap, so ask which one bound
+    // rather than asserting the window derivation.
     let compactionLimit: number | undefined;
     const contextWindow =
       row.contextWindowSpec === spec &&
@@ -270,8 +276,15 @@ export function assembleAgentConfig(input: AssembleInput): AssembleResult {
         continue;
       }
       if (n < MIN_COMPACTION_LIMIT_TOKENS || n > cap) {
+        const binding = compactionCapBindingForTier({ spec, contextWindow });
+        const why =
+          binding === "role-cap"
+            ? "the cap bounds fleet-wide spend, since a tier limit seeds every session launched on it; a single session can go higher with config:set-compaction-limit"
+            : binding === "minimum"
+              ? "this model's window cannot safely support a larger limit"
+              : "the cap keeps limit × 1.2 under the model window";
         problems.push(
-          `tier "${name}": compaction limit must be ${MIN_COMPACTION_LIMIT_TOKENS.toLocaleString()}–${cap.toLocaleString()} for spec "${spec}" (the cap keeps limit × 1.2 under the model window)`,
+          `tier "${name}": compaction limit must be ${MIN_COMPACTION_LIMIT_TOKENS.toLocaleString()}–${cap.toLocaleString()} for spec "${spec}" (${why})`,
         );
         tiersValid = false;
         continue;

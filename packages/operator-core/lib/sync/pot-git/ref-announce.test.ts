@@ -20,6 +20,7 @@ import {
   takeAnnounceBudget,
   verifyRefAnnouncement,
 } from './ref-announce';
+import { makeSignedProtocolContext } from './signed-context';
 
 function mkSigner(): { pubkeyBase64: string; sign: (bytes: Buffer) => Promise<Buffer> } {
   const { privateKeyDer, pubkeyBase64 } = generateEd25519KeypairDer();
@@ -67,6 +68,23 @@ describe('signing bytes + verification', () => {
     expect(verifyRefAnnouncement({ ...ann, sigrefs_oid: OID_B })).toBe(false);
     expect(isSignedRefAnnouncement({ ...ann, sigrefs_oid: 'not-a-sha' })).toBe(false);
     expect(verifyRefAnnouncement(null as unknown as SignedRefAnnouncement)).toBe(false);
+  });
+
+  it('binds v2 announcements to hive/repository/store context and rejects drift or legacy when required', async () => {
+    const s = mkSigner();
+    const context = makeSignedProtocolContext('hive-a', 'gh-1');
+    const ann = await mkAnnouncement(s, { v: 2, ...context });
+    expect(verifyRefAnnouncement(ann)).toBe(true);
+    expect(acceptRefAnnouncement(ann, { priorVersion: 0, expectedContext: context, allowLegacy: false })).toMatchObject({ ok: true });
+    expect(acceptRefAnnouncement(ann, { priorVersion: 0, expectedContext: { ...context, repo_key: 'gh-2' } })).toMatchObject({
+      ok: false,
+      reason: 'context-mismatch',
+    });
+    const legacy = await mkAnnouncement(s);
+    expect(acceptRefAnnouncement(legacy, { priorVersion: 0, expectedContext: context, allowLegacy: false })).toMatchObject({
+      ok: false,
+      reason: 'legacy-version',
+    });
   });
 });
 

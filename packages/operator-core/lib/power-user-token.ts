@@ -32,6 +32,7 @@ import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import { getOrgPg } from '@papercusp/db-org';
 import { generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
+import { decodeOperatorSecretKey } from './operator-secret-key';
 
 const os = generated.operatorSecretsInHarnessShared;
 const KEY_NAME = 'power-user-token-key';
@@ -95,7 +96,7 @@ async function loadOrCreateKey(): Promise<Buffer> {
     ) {
       return cached.buf;
     }
-    const buf = Buffer.from(rows[0].valueB64, 'base64');
+    const buf = decodeOperatorSecretKey(rows[0].valueB64, KEY_NAME);
     __g.__papercuspPowerUserTokenKey = { buf, rotatedAt, loadedAt: Date.now() };
     return buf;
   }
@@ -112,7 +113,7 @@ async function loadOrCreateKey(): Promise<Buffer> {
     .where(eq(os.name, KEY_NAME))
     .limit(1);
   const rotatedAt = new Date(after[0]!.rotatedAt as never).getTime();
-  const buf = Buffer.from(after[0]!.valueB64, 'base64');
+  const buf = decodeOperatorSecretKey(after[0]!.valueB64, KEY_NAME);
   __g.__papercuspPowerUserTokenKey = { buf, rotatedAt, loadedAt: Date.now() };
   return buf;
 }

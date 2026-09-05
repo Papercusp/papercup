@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  advSessionIdFromCodexHome,
   codexSessionIdForFile,
   codexSessionRoots,
   defaultAdapters,
@@ -151,5 +152,39 @@ describe('codex session identity + per-session isolation roots (WI-2140701 (a))'
     } finally {
       await fs.rm(base, { recursive: true, force: true });
     }
+  });
+
+  // WI-2144763 / migration 1120. The value this lifts is adv_sessions.id (the PK),
+  // which is what lets the INSERT stamp harness_slug for a psu codex session
+  // without a join. Codex was ~92% of the post-1119 attribution gap because its
+  // adapter carried no such key and fell through to the session route, which
+  // cannot find these rows at all (their session_id is the rollout uuid).
+  describe('advSessionIdFromCodexHome', () => {
+    it('lifts adv_sessions.id from a <base>/session-<advId>/sessions root', () => {
+      expect(advSessionIdFromCodexHome(path.join('/b', 'session-12441', 'sessions'))).toBe(12441);
+      // Pairs with codexSessionRoots above: whatever that returns must be parseable.
+      expect(advSessionIdFromCodexHome(path.join('/tmp/codex-homes-x', 'session-1', 'sessions'))).toBe(1);
+    });
+
+    it('returns undefined — never NaN — for a root that carries no adv id', () => {
+      // Each of these would bind NaN into the INSERT if this parsed loosely, and a
+      // NaN bind is far worse than the NULL that degrades to the session fallback.
+      for (const root of [
+        path.join('/b', 'notsession-1', 'sessions'), // wrong prefix
+        path.join('/b', 'session-abc', 'sessions'), // non-numeric id
+        path.join('/b', 'session-', 'sessions'), // empty id
+        path.join('/b', 'session-12x4', 'sessions'), // partially numeric
+        path.join('/home/u', '.claude', 'projects'), // a claude root, not codex
+      ]) {
+        expect(advSessionIdFromCodexHome(root)).toBeUndefined();
+      }
+    });
+
+    it('rejects a non-positive or unsafe id rather than binding it', () => {
+      expect(advSessionIdFromCodexHome(path.join('/b', 'session-0', 'sessions'))).toBeUndefined();
+      expect(
+        advSessionIdFromCodexHome(path.join('/b', `session-${'9'.repeat(25)}`, 'sessions')),
+      ).toBeUndefined();
+    });
   });
 });

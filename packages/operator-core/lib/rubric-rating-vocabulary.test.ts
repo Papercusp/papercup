@@ -57,6 +57,16 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
     expect(result.violations).toEqual([]);
   });
 
+  it('ignores contextual objects and compound labels that are not rating values', () => {
+    const instructions = extractRubricRatingInstructions(
+      'context',
+      'method',
+      'For leadership, grade it on observed claim counts. Verify GOAL+GRADE mode for the holder.',
+    );
+
+    expect(instructions).toEqual([]);
+  });
+
   it('uses a criterion ratingScale override instead of the rubric default', () => {
     const result = validateRubricRatingVocabulary(
       [

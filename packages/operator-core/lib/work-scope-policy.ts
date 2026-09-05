@@ -18,7 +18,7 @@
  * subject is allowed and every gate is byte-identical to before. A missing
  * policy must never freeze the fleet.
  */
-import { placementOverride, readPotControlPolicy, writePotControlPolicy } from './pot-control-policy';
+import { placementOverride, readPotControlPolicy, refreshPotControlPolicy, writePotControlPolicy } from './pot-control-policy';
 
 export interface WorkScopeException {
   /** harness slug or glob (`foo/*`) the exception admits */
@@ -254,11 +254,36 @@ async function broadcastWorkScopeDecision(d: Omit<WorkScopeDecision, 'at'> & { a
   } as Parameters<typeof captureImprovement>[0]);
 }
 
+let primed: Promise<void> | null = null;
+
+/**
+ * Prime the sync policy cache ONCE per process. `placementOverride()` starts EMPTY at
+ * boot and is filled by a 60s managed refresh, so the first gate evaluations after a
+ * restart read "no-policy" and fail OPEN — measured 2026-09-05: the first
+ * `work_items:rehome` classify after a :3170 restart answered `in-scope` for a
+ * `calendar` item while the stored policy was enforce/['papercusp'], and a fresh-process
+ * probe of gateWorkScope('sidestage') answered `no-policy` for the same row. One awaited
+ * read closes that window; a read error keeps the fail-open contract
+ * (refreshPotControlPolicy never throws — it keeps the last value). Skipped under VITEST,
+ * where ./pot-control-policy is mocked and the sync cache IS the fixture.
+ */
+export function primeWorkScopePolicy(): Promise<void> {
+  if (process.env.VITEST) return Promise.resolve();
+  if (!primed) primed = refreshPotControlPolicy().catch(() => undefined);
+  return primed;
+}
+
 /**
  * One-call gate for a chokepoint: evaluate, and on a denial record it. Returns
  * the verdict so the caller shapes its own refusal (tool result vs. skip vs. throw).
+ * With no explicit `policy` the cache is primed first (see primeWorkScopePolicy) so the
+ * first call after a boot judges the STORED policy, not the empty cache.
  */
-export async function gateWorkScope(site: string, subject: WorkScopeSubject, policy: WorkScopePolicy | null = workScopePolicy()): Promise<WorkScopeVerdict> {
+export async function gateWorkScope(site: string, subject: WorkScopeSubject, policy?: WorkScopePolicy | null): Promise<WorkScopeVerdict> {
+  if (policy === undefined) {
+    await primeWorkScopePolicy();
+    policy = workScopePolicy();
+  }
   const v = evaluateWorkScope(subject, policy);
   if (!v.allowed) {
     await recordWorkScopeDecision({

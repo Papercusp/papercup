@@ -14,7 +14,11 @@
  * Imported once at startup from the agent-tools bootstrap. Idempotent.
  */
 
-import { setReactionPostInvoke, setPreconditionFire } from '../projected-tool-deps';
+import {
+  installControlAnchorKernelResolver,
+  setReactionPostInvoke,
+  setPreconditionFire,
+} from '../projected-tool-deps';
 import { handleToolInvoked } from './engine';
 import { fireReactionInProcess } from './dispatch-reaction';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
@@ -23,6 +27,13 @@ import './rules';
 // Wire the single observation point. The dispatcher now calls handleToolInvoked
 // after every tool settles (best-effort, non-blocking).
 setReactionPostInvoke(handleToolInvoked);
+
+// identities-v1 / D-030: install the live control-anchor resolver at the same
+// bootstrap seam that installs reactions. The generic dispatcher remains
+// host-neutral; this operator adapter reads the existing session activation
+// projection and applies explicit revocation/stale/ownership decisions at
+// both shared dispatch seats.
+installControlAnchorKernelResolver();
 
 // Wire the precondition fire port (`requires:` auto-correct — autoloop-pot-
 // operator-rebuild D-006). The corrective fire rides the SAME dispatch path as

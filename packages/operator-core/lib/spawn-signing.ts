@@ -64,6 +64,7 @@ import { eq, sql as dsql } from 'drizzle-orm';
 // the two signers (unify-launch-mechanics follow-on, signing dedup). Only the
 // per-process PG key-loading (below) stays local.
 import { canonicalizeSpawnParams, hmacSpawnBytes } from '@papercusp/orchestrator/spawn-signing-core';
+import { decodeOperatorSecretKey } from './operator-secret-key';
 
 const os = generated.operatorSecretsInHarnessShared;
 const sf = generated.spawnSigVerificationFailuresInHarnessShared;
@@ -110,7 +111,7 @@ async function loadOrCreateKey(): Promise<Buffer> {
     if (cached && cached.rotatedAt === rotatedAt && Date.now() - cached.loadedAt < 5 * 60 * 1000) {
       return cached.buf;
     }
-    const buf = Buffer.from(rows[0].value_b64, 'base64');
+    const buf = decodeOperatorSecretKey(rows[0].value_b64, KEY_NAME);
     __g.__papercuspSpawnSigningKey = { buf, rotatedAt, loadedAt: Date.now() };
     return buf;
   }
@@ -127,7 +128,7 @@ async function loadOrCreateKey(): Promise<Buffer> {
     .where(eq(os.name, KEY_NAME))
     .limit(1);
   const rotatedAt = new Date(after[0]!.rotated_at as never).getTime();
-  const buf = Buffer.from(after[0]!.valueB64, 'base64');
+  const buf = decodeOperatorSecretKey(after[0]!.valueB64, KEY_NAME);
   __g.__papercuspSpawnSigningKey = { buf, rotatedAt, loadedAt: Date.now() };
   return buf;
 }
