@@ -3396,6 +3396,57 @@ describe('work_items:checkpoint — absence-premise continuity lint (WI-7238)', 
   });
 });
 
+describe('work_items:checkpoint — launched-but-unread run lint (EI-19455262557905604)', () => {
+  const unread = [
+    'Kicked off the full affected suite for the auth-rate-limit change.',
+    'RESOLVED (6). REMAINING (5) — NOT yet diagnosed.',
+    'Still running; output at /tmp/affected-9182.log.',
+  ].join('\n');
+
+  it('points at the PREDICTED form when prose reports a run the writer has not read', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: unread, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(unread);
+
+    const result = await one({ id: 'WI-UNREAD', checkpoint: unread });
+
+    expect(result.ok).toBe(true);
+    expect(result.unreadRunLint).toMatchObject({
+      flagged: true,
+      note: expect.stringContaining('checks:[{ claim, recheck }]'),
+      signals: {
+        inFlight: expect.arrayContaining(['not yet diagnosed']),
+        // The trailing sentence period must not ride along into the echoed path.
+        runRefs: ['/tmp/affected-9182.log'],
+      },
+    });
+    // D-098's constraint: advisory only — the write still happened.
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalled();
+  });
+
+  it('stays absent for an ordinary progress checkpoint', async () => {
+    const body = 'Implemented the compatibility path and the focused test passes 7/7.';
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-CLEAN', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    expect(await one({ id: 'WI-UNREAD-CLEAN', checkpoint: body })).not.toHaveProperty('unreadRunLint');
+  });
+
+  it('suppresses once ANY check row was stored — the writer has already found the affordance', async () => {
+    const check = { claim: 'the affected suite is green', recheck: 'read /tmp/affected-9182.log' };
+    const stored = withCarryNoteChecks(unread, [check]);
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-COVERED', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+
+    const result = await one({ id: 'WI-UNREAD-COVERED', checkpoint: unread, checks: [check] });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('unreadRunLint');
+  });
+});
+
 describe('work_items:checkpoint — same-turn action proof (EI-21375032920365268)', () => {
   it('queries the caller spawn and clears only a successful matching coord action', async () => {
     const stored = 'Messaged fleet leader su-bce40c51 directly';
