@@ -1,6 +1,12 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+// The Settings stylesheet rides WITH the surface (like dev/dev.css from
+// dev/layout.tsx): every host that mounts SettingsLayout natively — the operator
+// and the cloud portal through @papercusp/operator-ui/surfaces — gets the
+// .pc-settings-* rules without importing the operator's whole globals.css
+// (EI-22432328055190066, portal-parity-with-papercusp-2026-09-03 P-005).
+import './settings.css';
 import { usePathname, useRouter } from '@/lib/router-compat/navigation';
 import RouteLink from '../_components/RouteLink';
 import { Select } from '../harness/Select';
