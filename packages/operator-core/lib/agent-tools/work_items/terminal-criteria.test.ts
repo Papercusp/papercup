@@ -3,7 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_REMEDIATING_KINDS,
   claimsRemediation,
+  collectApplicableDeclarations,
   evaluateTerminalCriteria,
+  refuseLoweringDeclaration,
+  resolveTerminalCriteria,
+  type ProofFloor,
+  type TerminalCriteriaDeclaration,
   type TerminalCriteriaInput,
 } from './terminal-criteria';
 
@@ -262,5 +267,111 @@ describe('falsifiability control', () => {
     const alwaysRefuses = () => ({ verdict: 'fail' as const });
     expect(alwaysRefuses().verdict).toBe('fail');
     expect(evaluateTerminalCriteria(closeThatSurvived).verdict).toBe('pass');
+  });
+});
+
+describe('resolveTerminalCriteria — criteria may only tighten (D-002)', () => {
+  const cls: TerminalCriteriaDeclaration = {
+    source: 'class',
+    sourceRef: 'plan-class-bugfix',
+    minProofFloor: 'l3',
+    requireDurableChange: true,
+    forbiddenEvidenceOnlyModes: ['already-passing'],
+  };
+
+  it('takes the max floor and the union of forbidden modes', () => {
+    const resolved = resolveTerminalCriteria([
+      cls,
+      { source: 'item', sourceRef: 'EI-1', minProofFloor: 'l4', forbiddenEvidenceOnlyModes: ['manual'] },
+    ]);
+    expect(resolved.minProofFloor).toBe('l4');
+    expect(resolved.requireDurableChange).toBe(true);
+    expect(resolved.forbiddenEvidenceOnlyModes).toEqual(['alreadypassing', 'manual']);
+    expect(resolved.sources).toEqual(['plan-class-bugfix', 'EI-1']);
+  });
+
+  it('a weakening declaration cannot pull the resolved floor down', () => {
+    const resolved = resolveTerminalCriteria([
+      cls,
+      { source: 'item', sourceRef: 'EI-1', minProofFloor: 'none', requireDurableChange: false },
+    ]);
+    expect(resolved.minProofFloor).toBe('l3');
+    expect(resolved.requireDurableChange).toBe(true);
+  });
+
+  it('is MONOTONIC: adding any declaration never lowers the effective floor', () => {
+    const floors: ProofFloor[] = ['none', 'l3', 'l4'];
+    const rank = { none: 0, l3: 1, l4: 2 } as const;
+    for (const base of floors) {
+      for (const added of floors) {
+        const before = resolveTerminalCriteria([{ source: 'class', sourceRef: 'c', minProofFloor: base }]);
+        const after = resolveTerminalCriteria([
+          { source: 'class', sourceRef: 'c', minProofFloor: base },
+          { source: 'item', sourceRef: 'i', minProofFloor: added },
+        ]);
+        expect(rank[after.minProofFloor]).toBeGreaterThanOrEqual(rank[before.minProofFloor]);
+      }
+    }
+  });
+
+  it('resolves an empty declaration set to the weakest floor rather than throwing', () => {
+    expect(resolveTerminalCriteria([])).toMatchObject({
+      minProofFloor: 'none',
+      requireDurableChange: false,
+      forbiddenEvidenceOnlyModes: [],
+    });
+  });
+});
+
+describe('refuseLoweringDeclaration — a silent drop and a typo look identical, so refuse', () => {
+  const baseline = { requireDurableChange: true, minProofFloor: 'l3' as ProofFloor };
+
+  it('refuses a floor below the baseline', () => {
+    const reason = refuseLoweringDeclaration(
+      { source: 'item', sourceRef: 'EI-1', minProofFloor: 'none' },
+      baseline,
+    );
+    expect(reason).toContain('may only tighten');
+  });
+
+  it('refuses switching requireDurableChange off', () => {
+    expect(
+      refuseLoweringDeclaration({ source: 'item', sourceRef: 'EI-1', requireDurableChange: false }, baseline),
+    ).toContain('requireDurableChange');
+  });
+
+  it('admits a tightening declaration, and an inheriting one', () => {
+    expect(refuseLoweringDeclaration({ source: 'item', sourceRef: 'EI-1', minProofFloor: 'l4' }, baseline)).toBeNull();
+    expect(refuseLoweringDeclaration({ source: 'item', sourceRef: 'EI-1' }, baseline)).toBeNull();
+  });
+});
+
+describe('collectApplicableDeclarations — decision scope needs a plan (D-010)', () => {
+  const decision: TerminalCriteriaDeclaration = { source: 'decision', sourceRef: 'some-plan#D-003', minProofFloor: 'l4' };
+  const item: TerminalCriteriaDeclaration = { source: 'item', sourceRef: 'EI-1', minProofFloor: 'l3' };
+
+  it('drops decision scope entirely when the item has no source plan', () => {
+    const applicable = collectApplicableDeclarations({
+      itemDeclaration: item,
+      decisionDeclaration: decision,
+      sourcePlanSlug: null,
+    });
+    expect(applicable.map((d) => d.sourceRef)).toEqual(['EI-1']);
+    expect(resolveTerminalCriteria(applicable).minProofFloor).toBe('l3');
+  });
+
+  it('treats a blank slug as no plan rather than as a plan named ""', () => {
+    expect(
+      collectApplicableDeclarations({ decisionDeclaration: decision, sourcePlanSlug: '   ' }),
+    ).toHaveLength(0);
+  });
+
+  it('applies decision scope when a source plan really exists', () => {
+    const applicable = collectApplicableDeclarations({
+      itemDeclaration: item,
+      decisionDeclaration: decision,
+      sourcePlanSlug: 'some-plan',
+    });
+    expect(resolveTerminalCriteria(applicable).minProofFloor).toBe('l4');
   });
 });

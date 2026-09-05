@@ -254,3 +254,133 @@ export function evaluateTerminalCriteria(input: TerminalCriteriaInput): Terminal
       : 'pass';
   return { claimsRemediation: applies, ratings, wouldBlock: [...wouldBlock], verdict };
 }
+
+/* -------------------------------------------------------------------------- *
+ * Criteria resolution across sources (P-005, per D-002 and D-010).
+ * -------------------------------------------------------------------------- */
+
+export type ProofFloor = 'none' | 'l3' | 'l4';
+
+/** Ordering for {@link ProofFloor}. The ONLY place floor strength is ranked. */
+const FLOOR_RANK: Readonly<Record<ProofFloor, number>> = { none: 0, l3: 1, l4: 2 };
+
+export type TerminalCriteriaSource = 'class' | 'item' | 'decision';
+
+export interface TerminalCriteriaDeclaration {
+  source: TerminalCriteriaSource;
+  /** `classRef` | work-item id | `<plan-slug>#D-NNN`. */
+  sourceRef: string;
+  requireDurableChange?: boolean;
+  minProofFloor?: ProofFloor;
+  forbiddenEvidenceOnlyModes?: readonly string[];
+}
+
+export interface ResolvedTerminalCriteria {
+  requireDurableChange: boolean;
+  minProofFloor: ProofFloor;
+  /** Union of every source's forbidden modes, as folded comparison keys. */
+  forbiddenEvidenceOnlyModes: string[];
+  /** `sourceRef`s that contributed, in application order. */
+  sources: string[];
+}
+
+/**
+ * Resolve declarations into one effective criteria set.
+ *
+ * D-002: `effectiveFloor = max(classFloor, itemFloor, decisionFloor)` and the forbidden set
+ * is the UNION. Criteria may only ever TIGHTEN. This function is therefore MONOTONIC by
+ * construction — adding a declaration can never lower the result — which is the property
+ * the tests pin, because it is the whole safety argument for letting an item declare
+ * criteria at all. The closer who most wants to skip evidence is exactly the one who would
+ * write the override.
+ */
+export function resolveTerminalCriteria(
+  declarations: readonly TerminalCriteriaDeclaration[],
+): ResolvedTerminalCriteria {
+  const forbidden = new Set<string>();
+  let requireDurableChange = false;
+  let floorRank = FLOOR_RANK.none;
+  const sources: string[] = [];
+
+  for (const declaration of declarations) {
+    sources.push(declaration.sourceRef);
+    if (declaration.requireDurableChange === true) requireDurableChange = true;
+    if (declaration.minProofFloor) {
+      floorRank = Math.max(floorRank, FLOOR_RANK[declaration.minProofFloor]);
+    }
+    for (const mode of declaration.forbiddenEvidenceOnlyModes ?? []) {
+      const key = dispositionKey(mode);
+      if (key) forbidden.add(key);
+    }
+  }
+
+  const minProofFloor =
+    (Object.keys(FLOOR_RANK) as ProofFloor[]).find((name) => FLOOR_RANK[name] === floorRank) ?? 'none';
+
+  return {
+    requireDurableChange,
+    minProofFloor,
+    forbiddenEvidenceOnlyModes: [...forbidden].sort(),
+    sources,
+  };
+}
+
+/**
+ * Write-time guard: refuse a declaration that would LOWER the effective floor.
+ *
+ * D-002 requires this to be a refusal rather than a silent drop. `resolveTerminalCriteria`
+ * already ignores a weakening declaration by taking a max, so the floor is safe either way
+ * — but a silently-dropped tightening and a silently-dropped loosening look identical to
+ * the caller, and one of those is a typo the author needs to hear about. Returns the
+ * refusal reason, or null when the declaration is admissible.
+ */
+export function refuseLoweringDeclaration(
+  candidate: TerminalCriteriaDeclaration,
+  baseline: Pick<ResolvedTerminalCriteria, 'requireDurableChange' | 'minProofFloor'>,
+): string | null {
+  if (candidate.requireDurableChange === false && baseline.requireDurableChange) {
+    return (
+      `Declaration ${candidate.sourceRef} sets requireDurableChange:false while the effective ` +
+      'baseline requires it. Criteria may only tighten (D-002); remove the field to inherit.'
+    );
+  }
+  if (candidate.minProofFloor && FLOOR_RANK[candidate.minProofFloor] < FLOOR_RANK[baseline.minProofFloor]) {
+    return (
+      `Declaration ${candidate.sourceRef} sets minProofFloor:'${candidate.minProofFloor}' below the ` +
+      `effective baseline '${baseline.minProofFloor}'. Criteria may only tighten (D-002); ` +
+      'remove the field to inherit the higher floor.'
+    );
+  }
+  return null;
+}
+
+export interface CriteriaSourcesInput {
+  /** Floor from the plan class, when the item has a bound clause at all. */
+  classDeclaration?: TerminalCriteriaDeclaration | null;
+  /** Item-level criteria, read from `work_items.payload` (D-010: no dedicated column). */
+  itemDeclaration?: TerminalCriteriaDeclaration | null;
+  /** Criteria declared by a governing plan Decision. */
+  decisionDeclaration?: TerminalCriteriaDeclaration | null;
+  /** The item's `source_plan_slug`; absent for ~94.66% of closes. */
+  sourcePlanSlug?: string | null;
+}
+
+/**
+ * Collect the declarations that actually APPLY to one close.
+ *
+ * D-010's binding rule lives here: with no `source_plan_slug` there is no governing plan,
+ * so decision-scope contributes NOTHING — it is dropped rather than rated `unknown` or
+ * `fail`. An item with no plan cannot add a plan Decision, so requiring one of it would be
+ * an instruction that cannot be followed. That is the EI-22166933881021603 unsatisfiability
+ * class, and it reaches the overwhelming majority of closes here, so this is the default
+ * path rather than an edge case.
+ */
+export function collectApplicableDeclarations(input: CriteriaSourcesInput): TerminalCriteriaDeclaration[] {
+  const applicable: TerminalCriteriaDeclaration[] = [];
+  if (input.classDeclaration) applicable.push(input.classDeclaration);
+  if (input.itemDeclaration) applicable.push(input.itemDeclaration);
+  if (input.decisionDeclaration && typeof input.sourcePlanSlug === 'string' && input.sourcePlanSlug.trim()) {
+    applicable.push(input.decisionDeclaration);
+  }
+  return applicable;
+}
