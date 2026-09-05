@@ -22,6 +22,8 @@ const wakeClaimableAwaitersForSubscribers = vi.hoisted(() => vi.fn());
 const listFleetMembers = vi.hoisted(() => vi.fn());
 const getClaimSpecRecord = vi.hoisted(() => vi.fn());
 const setClaimSpec = vi.hoisted(() => vi.fn());
+const previewSpecPoolEffect = vi.hoisted(() => vi.fn());
+const getFleet = vi.hoisted(() => vi.fn());
 
 // The helper is dynamically imported by the tool so its wake-plane dependency can
 // fail soft after the durable spec write. Keep this test focused on the target
@@ -38,6 +40,18 @@ vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../scheduler/claim-spec-store')>()),
   getClaimSpecRecord: (...args: unknown[]) => getClaimSpecRecord(...args),
   setClaimSpec: (...args: unknown[]) => setClaimSpec(...args),
+}));
+// WI-38283 rig: stub ONLY the two DB-backed seams the write path needs (the pool COUNT and
+// the fleet-existence read). evaluateCollapseGuard / evaluateWideningDisclosure stay REAL, so
+// these tests exercise the actual disclosure logic and its threading onto the tool result —
+// not a re-assertion of a mock.
+vi.mock('../../scheduler/spec-pool-preview', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../scheduler/spec-pool-preview')>()),
+  previewSpecPoolEffect: (...args: unknown[]) => previewSpecPoolEffect(...args),
+}));
+vi.mock('../../agent-fleets-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent-fleets-store')>()),
+  getFleet: (...args: unknown[]) => getFleet(...args),
 }));
 
 describe('wakeClaimableAwaitersAfterSpecChange — EI-20079462322478221', () => {
@@ -174,6 +188,77 @@ describe('scheduler:set_claim_spec handler — EI-22389918023611568', () => {
     expect(result.data.errors[0]).toContain('DROPS the incumbent positive goal fence');
     expect(result.data.errors[0]).toContain('confirmGoalFenceDrop:true');
     expect(setClaimSpec).not.toHaveBeenCalled();
+  });
+});
+
+describe('set_claim_spec — WI-38283 destructive-widening disclosure reaches the RESULT', () => {
+  const p2pFence = { not: { field: 'title', op: 'word', value: 'p2p' } };
+  const fencedIncumbent = {
+    source: 'fleet' as const,
+    spec: {
+      specVersion: '1.0',
+      specId: 'nonp2p-kinds',
+      revision: 15,
+      view: { filter: { all: [{ field: 'kind', op: 'in', value: ['bug', 'change'] }, p2pFence] } },
+      rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
+    },
+    revision: 15,
+    updatedBy: 'su-leader',
+    updatedAt: '2026-09-05T00:00:00.000Z',
+    harnessSlug: 'papercusp',
+  };
+  const ctx = { isSuperuser: true, uiClientId: 'su-widen-test', workspaceId: 'ws-test', harnessSlug: 'papercusp' };
+
+  /** Drive one fleet-lane write; `candidate` replaces the fenced incumbent. */
+  async function write(candidateFilter: unknown, counts: { candidate: number; incumbent: number }) {
+    getClaimSpecRecord.mockResolvedValueOnce(fencedIncumbent);
+    getFleet.mockResolvedValueOnce({ slug: 'nonp2p-drain' });
+    previewSpecPoolEffect
+      .mockResolvedValueOnce({ matched: counts.candidate, pool: 2060, states: ['open'], harness: 'papercusp' })
+      .mockResolvedValueOnce({ matched: counts.incumbent, pool: 2060, states: ['open'], harness: 'papercusp' });
+    setClaimSpec.mockResolvedValueOnce({ ok: true, revision: 16 });
+    listFleetMembers.mockResolvedValueOnce([]);
+    wakeClaimableAwaitersForSubscribers.mockResolvedValueOnce(0);
+
+    return (await (setClaimSpecTool as any).handler(
+      {
+        fleet: 'nonp2p-drain',
+        spec: {
+          specVersion: '1.0',
+          specId: 'nonp2p-kinds',
+          revision: 16,
+          view: { filter: candidateFilter },
+          rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+        },
+      },
+      ctx,
+    )) as { data: Record<string, any> };
+  }
+
+  it('REPRO 2026-07-26: a 31 → 1185 widening that deletes the fence STORES, and says so', async () => {
+    const result = await write({ field: 'kind', op: 'in', value: ['bug', 'change'] }, { candidate: 1185, incumbent: 31 });
+
+    // Deliberately NOT a refusal — the write lands (EI-18655873409999215: another confirm
+    // flag would have been passed anyway; the recovery pointer is what actually helps).
+    expect(setClaimSpec).toHaveBeenCalled();
+    expect(result.data.warning).toContain('DROPS 1 exclusion predicate');
+    expect(result.data.warning).toContain('title');
+    expect(result.data.warning).toContain('scheduler:get_claim_spec');
+    expect(result.data.warning).toContain('fleet: "nonp2p-drain"');
+    // Machine-readable half, so a caller can branch instead of regex-ing prose.
+    expect(result.data.admissibilityPreview.poolEffect.droppedExclusions).toHaveLength(1);
+    expect(result.data.admissibilityPreview.poolEffect.widened).toBe(true);
+  });
+
+  it('a widening that KEEPS the fence stores silently (no cry-wolf on the result)', async () => {
+    const result = await write(
+      { all: [{ field: 'kind', op: 'in', value: ['bug', 'change', 'task'] }, p2pFence] },
+      { candidate: 900, incumbent: 31 },
+    );
+
+    expect(setClaimSpec).toHaveBeenCalled();
+    expect(result.data.admissibilityPreview.poolEffect.droppedExclusions).toEqual([]);
+    expect(String(result.data.warning ?? '')).not.toContain('DROPS');
   });
 });
 
