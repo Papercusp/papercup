@@ -383,3 +383,218 @@ describe('deploy-cli main() — the gate chokepoint', () => {
     expect(code).toBe(0);
   });
 });
+
+/**
+ * EI-20459175302238839 — the STRANDED-SUBMODULE gate.
+ *
+ * A submodule that is POPULATED but absent from `.git/config` is invisible to git-sync:
+ * it holds uncommitted TRACKED work no sweep can ever carry, so the change exists on
+ * exactly one box and in no history, while the artifact being shipped is built from
+ * committed state WITHOUT it. git-sync already MEASURES this every tick and merely logs
+ * it; this gate is what makes the existing signal refuse instead of scroll past. It
+ * shipped twice in one week before the gate existed: WI-38933 (a token-kit patch in no
+ * history — only that box could `npm ci`) and WI-38945 (libs/sse export conditions
+ * missing from the built image → a production crash-loop).
+ *
+ * The load-bearing distinction under test is `null` (NOT MEASURED) vs `[]` (measured,
+ * clean). Collapsing those two is the exact silence the census exists to break, so it is
+ * asserted in both directions rather than left to the implementation's discretion.
+ */
+describe('deploy-cli main() — the stranded-submodule gate (EI-20459175302238839)', () => {
+  const strand = [{ path: 'libs/token-kit', trackedFiles: 2, files: ['package.json', 'src/index.ts'] }];
+  const censusOf = (v: typeof strand | null) => vi.fn(async (_integrationRoot: string) => v);
+
+  it('REFUSES stranded work → exit 2, executeDeploy NEVER called, refusal recorded', async () => {
+    const executeDeploy = vi.fn<ExecuteFn>();
+    const makeDeps = vi.fn(() => makeStubDeps());
+    const recordRefused = vi.fn(async () => {});
+    const plan = makePlan({ green: true, noop: false }); // green: ONLY the strand gate can refuse
+    const code = await main({
+      ...silent,
+      argv: ['node', 'deploy-cli.ts', '--execute'],
+      cfg,
+      gatherPlan: async () => plan,
+      makeDeps,
+      executeDeploy,
+      recordRefused,
+      censusStranded: censusOf(strand),
+    });
+
+    expect(code).toBe(2);
+    expect(executeDeploy).not.toHaveBeenCalled();
+    // Refusal lands BEFORE any real-effect dep is constructed.
+    expect(makeDeps).not.toHaveBeenCalled();
+    expect(recordRefused).toHaveBeenCalledWith(plan.targetSha);
+  });
+
+  it('names the offending submodule and its rescue in the refusal text', async () => {
+    const lines: string[] = [];
+    await main({
+      ...silent,
+      err: (m: string) => void lines.push(m),
+      argv: ['node', 'deploy-cli.ts', '--execute'],
+      cfg,
+      gatherPlan: async () => makePlan({ green: true, noop: false }),
+      makeDeps: () => makeStubDeps(),
+      executeDeploy: vi.fn<ExecuteFn>(),
+      recordRefused: async () => {},
+      censusStranded: censusOf(strand),
+    });
+
+    const text = lines.join('\n');
+    // The operator must learn WHICH submodule, WHAT is at risk, and HOW to rescue it —
+    // a bare "refused" would send them to the source to find out.
+    expect(text).toMatch(/REFUSING/);
+    expect(text).toContain('libs/token-kit');
+    expect(text).toContain('package.json');
+    expect(text).toMatch(/git submodule init/);
+    expect(text).toMatch(/--allow-stranded-submodules/);
+  });
+
+  it('--force does NOT bypass the strand gate — the two gates guard different things', async () => {
+    // --force is about shipping an UN-GREEN commit; this gate is about shipping code that
+    // is MISSING. Letting --force imply both would silently re-open the WI-38945 hole for
+    // every forced deploy, which is exactly when an operator is least likely to notice.
+    const executeDeploy = vi.fn<ExecuteFn>();
+    const code = await main({
+      ...silent,
+      argv: ['node', 'deploy-cli.ts', '--force', '--execute'],
+      cfg,
+      gatherPlan: async () => makePlan({ green: false, forced: true, noop: false }),
+      makeDeps: () => makeStubDeps(),
+      executeDeploy,
+      recordRefused: async () => {},
+      censusStranded: censusOf(strand),
+    });
+
+    expect(code).toBe(2);
+    expect(executeDeploy).not.toHaveBeenCalled();
+  });
+
+  it('--allow-stranded-submodules PROCEEDS and emits the loud audit broadcast', async () => {
+    const broadcast = vi.fn<BroadcastFn>(async () => {});
+    const plan = makePlan({ green: true, noop: false }); // green → the ONLY broadcast is the strand one
+    const executeDeploy = vi.fn<ExecuteFn>(async () => okResult(plan));
+    const code = await main({
+      ...silent,
+      argv: ['node', 'deploy-cli.ts', '--execute', '--allow-stranded-submodules'],
+      cfg,
+      gatherPlan: async () => plan,
+      makeDeps: () => makeStubDeps({ broadcast }),
+      executeDeploy,
+      censusStranded: censusOf(strand),
+    });
+
+    expect(code).toBe(0);
+    expect(executeDeploy).toHaveBeenCalledTimes(1);
+    // Knowingly shipping an artifact that omits work only one box holds is at least as
+    // consequential as knowingly shipping an un-green commit, so it is audited the same way.
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    const [summary, body] = broadcast.mock.calls[0]!;
+    expect(summary).toMatch(/STRANDED/);
+    expect(body).toContain('libs/token-kit');
+    expect(body).toMatch(/git submodule init/);
+  });
+
+  it('NOT MEASURED (null) warns loudly but does NOT refuse — a wedge is worse than the risk', async () => {
+    // `git submodule status --recursive` exits non-zero on ONE stray gitlink anywhere in
+    // the tree (a recurring condition here), so failing closed would trade a strand RISK
+    // for a pipeline-wedge CERTAINTY. It must still be audibly distinct from an all-clear.
+    const lines: string[] = [];
+    const executeDeploy = vi.fn<ExecuteFn>(async () => okResult(makePlan({ green: true, noop: false })));
+    const code = await main({
+      ...silent,
+      err: (m: string) => void lines.push(m),
+      argv: ['node', 'deploy-cli.ts', '--execute'],
+      cfg,
+      gatherPlan: async () => makePlan({ green: true, noop: false }),
+      makeDeps: () => makeStubDeps(),
+      executeDeploy,
+      censusStranded: censusOf(null),
+    });
+
+    expect(code).toBe(0);
+    expect(executeDeploy).toHaveBeenCalledTimes(1);
+    const text = lines.join('\n');
+    expect(text).toMatch(/DID NOT RUN|NOT MEASURED/);
+    // The whole point: an unmeasured pass must never read as clean.
+    expect(text).toMatch(/NOT an all-clear/i);
+  });
+
+  it('a THROWING census folds into NOT MEASURED — it can never crash the deploy CLI', async () => {
+    const lines: string[] = [];
+    const executeDeploy = vi.fn<ExecuteFn>(async () => okResult(makePlan({ green: true, noop: false })));
+    const code = await main({
+      ...silent,
+      err: (m: string) => void lines.push(m),
+      argv: ['node', 'deploy-cli.ts', '--execute'],
+      cfg,
+      gatherPlan: async () => makePlan({ green: true, noop: false }),
+      makeDeps: () => makeStubDeps(),
+      executeDeploy,
+      censusStranded: async () => {
+        throw new Error('git exploded');
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(executeDeploy).toHaveBeenCalledTimes(1);
+    expect(lines.join('\n')).toMatch(/DID NOT RUN|NOT MEASURED/);
+  });
+
+  it('a measured-clean census ([]) proceeds silently — no strand broadcast, no warning', async () => {
+    const broadcast = vi.fn<BroadcastFn>(async () => {});
+    const lines: string[] = [];
+    const plan = makePlan({ green: true, noop: false });
+    const code = await main({
+      ...silent,
+      err: (m: string) => void lines.push(m),
+      argv: ['node', 'deploy-cli.ts', '--execute'],
+      cfg,
+      gatherPlan: async () => plan,
+      makeDeps: () => makeStubDeps({ broadcast }),
+      executeDeploy: async () => okResult(plan),
+      censusStranded: censusOf([]),
+    });
+
+    expect(code).toBe(0);
+    // `[]` is a real all-clear; it must NOT produce the NOT-MEASURED warning.
+    expect(lines.join('\n')).not.toMatch(/DID NOT RUN|NOT MEASURED/);
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it('censuses the INTEGRATION tree (where work strands), not the release checkout', async () => {
+    // The release checkout is rebuilt from committed state every deploy, so it cannot hold
+    // stranded work by construction. Measuring it would make the gate permanently vacuous.
+    const censusStranded = censusOf([]);
+    const plan = makePlan({ green: true, noop: false });
+    await main({
+      ...silent,
+      argv: ['node', 'deploy-cli.ts', '--execute'],
+      cfg,
+      gatherPlan: async () => plan,
+      makeDeps: () => makeStubDeps(),
+      executeDeploy: async () => okResult(plan),
+      censusStranded,
+    });
+
+    expect(censusStranded).toHaveBeenCalledWith(cfg.integrationRoot);
+    expect(cfg.integrationRoot).not.toBe(cfg.releaseRoot);
+  });
+
+  it('PLAN ONLY (no --execute) never censuses — review mode stays side-effect free', async () => {
+    const censusStranded = censusOf(strand);
+    const code = await main({
+      ...silent,
+      argv: ['node', 'deploy-cli.ts'], // no --execute
+      cfg,
+      gatherPlan: async () => makePlan({ green: true, noop: false }),
+      makeDeps: () => makeStubDeps(),
+      executeDeploy: vi.fn<ExecuteFn>(),
+      censusStranded,
+    });
+
+    expect(code).toBe(0);
+    expect(censusStranded).not.toHaveBeenCalled();
+  });
+});

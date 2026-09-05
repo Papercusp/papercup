@@ -52,6 +52,7 @@ import {
   regenerateToolCatalogBeforeCommit,
   expandAtomicLiveLockExclusions,
   runGitBounded,
+  censusStrandedSubmodules,
   type RunGit,
 } from './run-git-sync';
 import type { FileAttribution } from './git-sync-attribution';
@@ -3277,5 +3278,135 @@ describe('discoverSubmodulesRecursive — stray-gitlink fallback (2026-07-01)', 
         ? { code: 128, stdout: '', stderr: 'fatal: broken' }
         : { code: 1, stdout: '', stderr: 'no such file' };
     expect(await discoverSubmodulesRecursive(runGit, dir, () => {})).toEqual([]);
+  });
+});
+
+/**
+ * EI-20459175302238839 — `censusStrandedSubmodules`, the census extracted from
+ * `discoverSubmodulesRecursive` so a release/deploy preflight can measure the SAME
+ * condition without running a sync pass (one copy of the logic, never two).
+ *
+ * The contract that matters to every consumer is the THREE-VALUED result:
+ *   null → NOT MEASURED (`git submodule status` failed)
+ *   []   → measured, nothing stranded  (a real all-clear)
+ *   [..] → measured, work is stranded
+ *
+ * A consumer that collapses `null` into `[]` reintroduces exactly the silence this
+ * census exists to break, so both are asserted here rather than left implicit. Each
+ * case is driven through a stub `RunGit` over a real temp dir — no network, no
+ * submodules, and no dependency on this repo's own submodule layout.
+ */
+describe('censusStrandedSubmodules — the measured/unmeasured contract (EI-20459175302238839)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'strand-census-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Mark `<dir>/<p>` as a POPULATED-but-unregistered submodule (the census lstats `.git`). */
+  const populate = (p: string) => mkdirSync(join(dir, p, '.git'), { recursive: true });
+
+  /** A stub git: `submodule status` returns `statusOut`, `status --porcelain` returns `dirty`. */
+  const stub = (
+    statusOut: { code: number; stdout: string },
+    dirty: Record<string, string> = {},
+  ): RunGit => {
+    return async (args, cwd) => {
+      if (args[0] === 'submodule') return { ...statusOut, stderr: '' };
+      const rel = cwd.startsWith(dir) ? cwd.slice(dir.length + 1) : cwd;
+      return { code: 0, stdout: dirty[rel] ?? '', stderr: '' };
+    };
+  };
+
+  it('returns NULL when `git submodule status` fails — NOT MEASURED, never an all-clear', async () => {
+    const logs: string[] = [];
+    // ONE stray gitlink anywhere in the tree makes `submodule status --recursive` exit
+    // non-zero, which is why this is a real and recurring case rather than a corner.
+    const got = await censusStrandedSubmodules(
+      stub({ code: 128, stdout: '' }),
+      dir,
+      (m) => logs.push(m),
+    );
+
+    expect(got).toBeNull();
+    // Explicitly NOT `[]` — the whole point of the three-valued result.
+    expect(got).not.toEqual([]);
+    expect(logs.join('\n')).toMatch(/NOT MEASURED/);
+    expect(logs.join('\n')).toMatch(/not an all-clear/i);
+  });
+
+  it('returns [] when measured with nothing stranded — a real all-clear', async () => {
+    const got = await censusStrandedSubmodules(
+      stub({ code: 0, stdout: ' abc123 libs/registered (v1)\n' }),
+      dir,
+    );
+    expect(got).toEqual([]);
+    expect(got).not.toBeNull();
+  });
+
+  it('reports a POPULATED but unregistered submodule holding uncommitted tracked work', async () => {
+    populate('libs/token-kit');
+    const got = await censusStrandedSubmodules(
+      stub({ code: 0, stdout: '-000000 libs/token-kit\n' }, {
+        'libs/token-kit': ' M package.json\n M src/index.ts\n',
+      }),
+      dir,
+    );
+
+    // This is the WI-38933 shape: a patch that exists on exactly one box and in no history.
+    expect(got).toEqual([
+      { path: 'libs/token-kit', trackedFiles: 2, files: ['package.json', 'src/index.ts'] },
+    ]);
+  });
+
+  it('ignores a genuinely UNINITIALIZED submodule — nothing on disk can be stranded', async () => {
+    // '-' means only that `submodule.<name>.url` is absent from .git/config; it says
+    // nothing about whether the worktree exists. No `.git` on disk → no work to lose.
+    const got = await censusStrandedSubmodules(
+      stub({ code: 0, stdout: '-000000 libs/never-cloned\n' }, {
+        'libs/never-cloned': ' M ghost.ts\n', // must not be reached
+      }),
+      dir,
+    );
+    expect(got).toEqual([]);
+  });
+
+  it('ignores a populated, unregistered submodule that is CLEAN', async () => {
+    populate('libs/pinned');
+    const got = await censusStrandedSubmodules(stub({ code: 0, stdout: '-000000 libs/pinned\n' }), dir);
+    // Parked on a deliberate detached pin with no local edits — reporting it would cry
+    // wolf on every tick, which is how a real warning gets tuned out.
+    expect(got).toEqual([]);
+  });
+
+  it('counts TRACKED modifications only — untracked scratch must never cry wolf', async () => {
+    populate('libs/pinned');
+    const seen: string[][] = [];
+    const runGit: RunGit = async (args, cwd) => {
+      seen.push(args);
+      if (args[0] === 'submodule') return { code: 0, stdout: '-000000 libs/pinned\n', stderr: '' };
+      void cwd;
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    await censusStrandedSubmodules(runGit, dir);
+
+    // The exclusion is structural, not a post-filter: a test run leaving .vitest-tmp/ in
+    // a submodule would otherwise strand-flag it on every single tick.
+    const statusArgs = seen.find((a) => a[0] === 'status');
+    expect(statusArgs).toContain('--untracked-files=no');
+  });
+
+  it('a dirty-status failure inside one submodule does not strand-flag it or throw', async () => {
+    populate('libs/broken');
+    const runGit: RunGit = async (args) =>
+      args[0] === 'submodule'
+        ? { code: 0, stdout: '-000000 libs/broken\n', stderr: '' }
+        : { code: 128, stdout: '', stderr: 'fatal: not a git repository' };
+    // An unreadable submodule yields no ROWS, so it is reported as not-stranded rather
+    // than crashing the census (and with it every caller, including the deploy gate).
+    expect(await censusStrandedSubmodules(runGit, dir)).toEqual([]);
   });
 });
