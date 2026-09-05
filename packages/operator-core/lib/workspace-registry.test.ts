@@ -8,6 +8,7 @@ import {
   WorkspaceRegistryUnreadableError,
   activeWorkspaceId,
   resolveConcreteWorkspaceId,
+  concreteWorkspaceIdOrNull,
   backgroundWorkspaceIds,
   workspaceById,
   isKnownWorkspace,
@@ -77,6 +78,38 @@ describe('workspace-registry', () => {
       const out = resolveConcreteWorkspaceId('*');
       expect(out).toBeTruthy();
       expect(out).not.toBe('*');
+    });
+  });
+
+  describe('concreteWorkspaceIdOrNull (EI-19470389781357111 — the same rule, WITHOUT the fallback)', () => {
+    it('agrees with resolveConcreteWorkspaceId whenever a candidate IS concrete', () => {
+      // One rule, one author. If these two ever disagree on a concrete input, the
+      // predicate has drifted from the resolver it was extracted out of.
+      for (const args of [['default'], ['ws-arg', 'ws-ctx'], ['*', 'default'], ['', '  ', 'ws-x']] as const) {
+        expect(concreteWorkspaceIdOrNull(...args)).toBe(resolveConcreteWorkspaceId(...args));
+      }
+    });
+
+    it('returns null where the resolver MANUFACTURES an answer from process state', () => {
+      // This pair is the whole point, and it is what makes the difference falsifiable.
+      // The resolver's ambient fallback means `!resolveConcreteWorkspaceId(x)` can
+      // NEVER be true — a guard written that way is unreachable code that reads
+      // exactly like a working one, and the operation it was meant to gate proceeds
+      // against a guessed namespace. `concreteWorkspaceIdOrNull` is the form a caller
+      // can actually branch on.
+      runWithWorkspace('ws-ambient', () => {
+        for (const sentinel of ['*', '', '   ', null, undefined] as const) {
+          // CONTROL: the resolver answers 'ws-ambient' — truthy, so a `!` guard is dead.
+          expect(resolveConcreteWorkspaceId(sentinel)).toBe('ws-ambient');
+          expect(concreteWorkspaceIdOrNull(sentinel)).toBeNull();
+        }
+        expect(concreteWorkspaceIdOrNull('*', '', null, undefined)).toBeNull();
+      });
+    });
+
+    it('never returns the "*" read sentinel, exactly like the resolver', () => {
+      expect(concreteWorkspaceIdOrNull('*', 'ws-y')).toBe('ws-y');
+      expect(concreteWorkspaceIdOrNull('*', '*')).toBeNull();
     });
   });
 

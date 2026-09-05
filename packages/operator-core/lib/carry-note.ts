@@ -35,7 +35,7 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { Sql, TransactionSql } from 'postgres';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { boundedPgReadTxn } from './pg-read-query';
-import { resolveConcreteWorkspaceId } from './workspace-registry';
+import { concreteWorkspaceIdOrNull, resolveConcreteWorkspaceId } from './workspace-registry';
 import {
   PROBE_SCOPE_MARKER_RE,
   describeProbeScope,
@@ -2710,10 +2710,15 @@ export async function setLoopCarryNoteWithPrior(
   let stampWarnings: string[] | undefined;
   let depsOpt: { deps?: unknown } = {};
   if (depsSpecified) {
-    const ws = resolveConcreteWorkspaceId(depsResolveWorkspaceId);
-    // Without a concrete resolution workspace nothing but `file:` could resolve, and
-    // silently stamping a partial set would read as a complete declaration. Refuse to
-    // stamp instead: `undeclared` routes the reader to the age heuristics honestly.
+    // `concreteWorkspaceIdOrNull`, NOT `resolveConcreteWorkspaceId`: the latter falls
+    // back to the process-global `activeWorkspaceId()`, so it NEVER returns null and
+    // the refusal below would be unreachable — the exact dead-guard this shipped with.
+    const ws = concreteWorkspaceIdOrNull(depsResolveWorkspaceId);
+    // Without a concrete resolution workspace, `work-item:`/`plan:` refs would resolve
+    // under a GUESSED namespace — silently answering about another tenant's rows, or
+    // dropping every such dep so a partial `file:`-only set reads as a complete
+    // declaration. Refuse to stamp instead: `undeclared` routes the reader to the age
+    // heuristics honestly.
     const stamped = ws
       ? await stampDeclaredDeps({
           declared: dependsOn ?? [],
@@ -2864,7 +2869,10 @@ export async function getLoopCarryNoteFreshness(
 ): Promise<FreshnessResult | undefined> {
   const deps = await getLoopCarryNoteDeps(ref);
   if (!deps) return undefined;
-  const ws = resolveConcreteWorkspaceId(resolveWorkspaceId);
+  // `concreteWorkspaceIdOrNull`, NOT `resolveConcreteWorkspaceId` — see the write side.
+  // The resolver's ambient fallback would make this guard unreachable and answer the
+  // freshness question under whatever workspace the sidecar happens to be pinned to.
+  const ws = concreteWorkspaceIdOrNull(resolveWorkspaceId);
   if (!ws) return undefined;
   const tokens = await resolveCurrentTokens(
     deps.stamps.map((s) => s.dep),

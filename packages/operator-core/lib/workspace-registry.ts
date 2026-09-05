@@ -316,6 +316,31 @@ export function activeWorkspaceId(): string {
 export function resolveConcreteWorkspaceId(
   ...candidates: Array<string | null | undefined>
 ): string {
+  return concreteWorkspaceIdOrNull(...candidates) ?? activeWorkspaceId();
+}
+
+/**
+ * The concreteness rule of {@link resolveConcreteWorkspaceId} WITHOUT its ambient
+ * fallback: the first candidate that is a real workspace identity, or `null` when
+ * none of them is.
+ *
+ * Reach for this — never `resolveConcreteWorkspaceId` — when the caller must be able
+ * to tell "no concrete workspace was supplied" apart from "here is one". The
+ * resolver's `activeWorkspaceId()` fallback MANUFACTURES an answer from process
+ * state, so its result is never falsy: a `if (!resolveConcreteWorkspaceId(x))` guard
+ * is unreachable code, and the operation it was meant to protect proceeds against a
+ * GUESSED namespace instead of refusing (EI-19470389781357111 — the loop carry-note's
+ * declared-dependency stamp shipped with exactly that dead branch).
+ *
+ * That guess is only safe where any workspace will do. It is NOT safe where the
+ * value scopes a lookup on behalf of a caller whose own workspace is unknown — a
+ * `?superuser=1` session sends the `'*'` sentinel, and resolving its refs under the
+ * sidecar's process-global workspace silently answers about a DIFFERENT tenant's
+ * rows rather than reporting that it could not answer.
+ */
+export function concreteWorkspaceIdOrNull(
+  ...candidates: Array<string | null | undefined>
+): string | null {
   for (const candidate of candidates) {
     if (typeof candidate === 'string') {
       const trimmed = candidate.trim();
@@ -324,7 +349,7 @@ export function resolveConcreteWorkspaceId(
       if (trimmed && trimmed !== '*' && !isMalformedWorkspaceId(trimmed)) return trimmed;
     }
   }
-  return activeWorkspaceId();
+  return null;
 }
 
 export function workspaceById(id: string): WorkspaceEntry | undefined {
