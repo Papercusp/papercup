@@ -127,7 +127,7 @@ export async function probeContent(opts: {
     const base = { key: detector.key, glob: detector.glob };
     let inScope: boolean;
     try {
-      inScope = detector.matches(fileName);
+      inScope = await detector.matches(fileName);
     } catch (err) {
       verdicts.push({ ...base, status: 'error', message: `scope predicate threw: ${errText(err)}` });
       continue;

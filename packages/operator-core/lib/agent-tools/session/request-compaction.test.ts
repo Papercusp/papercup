@@ -1180,6 +1180,31 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
+  it('judge role receives a tool-neutral continuation and threads role into carry assembly', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    const b = body(await call({ focus: 'evaluate the candidate evidence' }, { role: 'judge' }));
+    const msg = injected();
+
+    expect(b.ok).toBe(true);
+    expect(msg.data).toContain('assigned evaluation');
+    expect(msg.data).toContain('evaluate the candidate evidence');
+    for (const forbidden of [
+      'coord:orient',
+      'coord:declare-intent',
+      'scheduler:get_next',
+      'loop:status',
+      'code:run',
+      'sessions:search',
+      'sessions:read',
+    ]) {
+      expect(msg.data).not.toContain(forbidden);
+    }
+    expect(buildOwnerRespawnLaunchSpec).toHaveBeenCalledWith(
+      'su-caller',
+      expect.objectContaining({ role: 'judge' }),
+    );
+  });
+
   it('an armed WARM loop with NO carry-note does not hold compaction', async () => {
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,

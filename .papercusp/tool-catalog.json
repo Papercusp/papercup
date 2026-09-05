@@ -14459,7 +14459,7 @@
           "POST"
         ]
       },
-      "description": "Capture a papercusp bug, improvement, feature, or observation as a durable work-unit. kind=bug is auto-implement eligible; change/feature are agent-reviewed. Search-first dedup declines obvious matches unless force. lane:\"observation\" stays outside the work queue.",
+      "description": "Capture a papercusp bug, improvement, feature, or observation as a durable work-unit. kind=bug is auto-implement eligible; change/feature are agent-reviewed. Dedup matches are annotated on the created row; only checkDuplicatesOnly skips persistence. lane:\"observation\" stays outside the work queue.",
       "capabilities": [
         "coord:write"
       ],
@@ -30806,7 +30806,8 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "profile": "engineer",
       "guidance": {
@@ -31034,7 +31035,8 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "profile": "engineer",
       "guidance": {

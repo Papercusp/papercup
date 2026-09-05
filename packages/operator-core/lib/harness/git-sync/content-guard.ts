@@ -16,7 +16,7 @@
  * verdict excludes a file.
  */
 import type { RunGit } from './run-git-sync';
-import type { ContentDetector } from '../../content-lint/registry';
+import type { ContentDetector, ContentDetectorContext } from '../../content-lint/registry';
 
 /** One dirty file that failed a content detector — excluded from the commit + handed to the fixer. */
 export interface ContentOffender {
@@ -126,14 +126,14 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
   // Pair each dirty path with the detectors that target it; drop paths no detector wants.
   const targets: Array<{ file: string; dets: ContentDetector[] }> = [];
   for (const file of parseDirtyPaths(r.stdout)) {
-    const dets = active.filter((d) => {
+    const dets: ContentDetector[] = [];
+    for (const d of active) {
       try {
-        return d.matches(file);
+        if (await d.matches(file, { repoPath })) dets.push(d);
       } catch (e) {
         log?.(`[content-guard] detector "${d.key}" match() threw on ${file} — skipping: ${errMsg(e)}`);
-        return false;
       }
-    });
+    }
     if (dets.length > 0) targets.push({ file, dets });
   }
 
@@ -152,13 +152,13 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
     let baseline = text;
     for (const d of dets) {
       try {
-        const error = await d.detect(file, text);
+        const error = await d.detect(file, text, { repoPath });
         if (!error) continue;
         // WI-276 deterministic pre-pass: try the detector's own safe repair BEFORE
         // quarantining + dispatching the LLM fixer. Applied only to an ALREADY-failing
         // file, and kept only when it FULLY resolves the error (re-detect clean).
         if (d.autoFix && writeText) {
-          const repaired = await tryAutoFix(d, file, text, baseline, { readText, writeText, log });
+          const repaired = await tryAutoFix(d, file, text, baseline, { repoPath }, { readText, writeText, log });
           if (repaired != null) {
             text = repaired; // subsequent detectors see the repaired text
             baseline = repaired; // and future writes CAS against the just-written content
@@ -193,6 +193,7 @@ async function tryAutoFix(
   file: string,
   text: string,
   baseline: string,
+  context: ContentDetectorContext,
   io: {
     readText: (relPath: string) => Promise<string | null>;
     writeText: (relPath: string, text: string) => Promise<void>;
@@ -212,7 +213,7 @@ async function tryAutoFix(
   // Keep the repair ONLY if it fully clears the error — else the LLM fixer must look.
   let stillErr: string | null;
   try {
-    stillErr = await d.detect(file, fixed);
+    stillErr = await d.detect(file, fixed, context);
   } catch (e) {
     io.log?.(`[content-guard] "${d.key}" re-detect threw on ${file} — quarantining instead: ${errMsg(e)}`);
     return null;

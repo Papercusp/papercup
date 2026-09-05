@@ -57,6 +57,9 @@ export interface CarryDocIdentity {
   /** The session's coordination identity (PAPERCUSP_SID / su-id). */
   ownerId: string;
   ownerLabel: string | null;
+  /** The effective tool-session role. Judge sessions receive an evaluation-safe
+   *  recovery instruction instead of the su/worker coordination directive. */
+  role?: string | null;
   /** The session's harness slug (null for an operator/harness-null session). */
   harness: string | null;
   workspaceId: string;
@@ -205,6 +208,8 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
   harness?: string | null;
   account?: string | null;
   ownerLabel?: string | null;
+  /** The effective role of the session building the carry document. */
+  role?: string | null;
   /** The caller's native transcript file, for the verbatim-tail leg. The session
    *  id → transcript path resolution belongs to the CONSUMER (it knows its own
    *  session), so a path is passed in rather than derived from the coordination
@@ -431,6 +436,7 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
     identity: {
       ownerId,
       ownerLabel: opts.ownerLabel ?? null,
+      role: opts.role ?? null,
       harness: callerHarness,
       workspaceId: ws,
       fleet: brief.fleet,
@@ -704,26 +710,69 @@ export function renderBuiltAtStamp(now: number): string {
   );
 }
 
+/** Judge sessions are evaluation workers, not su/worker coordination lanes.
+ * Keep their recovery text useful without handing them directives for tools
+ * that their role is intentionally forbidden to call. */
+export const JUDGE_SAFE_POST_COMPACTION_RECOVERY_INSTRUCTION =
+  'Inspect the post-compaction recovery marker already delivered in this context. ' +
+  'If it is complete and current, recovery already arrived: continue the assigned evaluation ' +
+  'using the evidence in this context. If it is absent, incomplete, or stale, continue with ' +
+  'the evaluation task using only the permitted read-only evidence surface; do not initiate ' +
+  'engineering coordination or mutate work state.';
+
+const JUDGE_SAFE_SELF_RECALL_POINTER =
+  'The supplied evaluation context is the recovery source; use only the evidence and tools explicitly permitted to the judge role.';
+
+export function isJudgeCarryRole(role?: string | null): boolean {
+  return role?.trim().toLowerCase() === 'judge';
+}
+
+/** Return the role-appropriate post-compaction instruction. Normal su/worker
+ * callers keep the historical constant byte-for-byte. */
+export function postCompactionRecoveryInstruction(role?: string | null): string {
+  return isJudgeCarryRole(role)
+    ? JUDGE_SAFE_POST_COMPACTION_RECOVERY_INSTRUCTION
+    : MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION;
+}
+
 /** Render the marker that lets a successor distinguish automatic delivery from
  *  the fail-soft fallback. This block is always kept by the carry budget. */
 export function renderAutomaticCompactionRecovery(
   delivery: AutomaticCompactionRecovery | null | undefined,
+  role?: string | null,
 ): string {
+  const judgeSafe = isJudgeCarryRole(role);
   if (!delivery) {
     return (
       '## Post-compaction recovery — FALLBACK REQUIRED\n' +
-      'No automatic recovery marker arrived. Call `coord:orient { afterCompaction: true }` exactly once, then continue.'
+      (judgeSafe
+        ? 'No automatic recovery marker arrived. Continue with the supplied evaluation context and permitted evidence.'
+        : 'No automatic recovery marker arrived. Call `coord:orient { afterCompaction: true }` exactly once, then continue.')
     );
   }
   const { marker, recovery } = delivery;
+  const renderedMarker = judgeSafe
+    ? {
+        schemaVersion: marker.schemaVersion,
+        complete: marker.complete,
+        memoryEpoch: marker.memoryEpoch,
+        controlGeneration: marker.controlGeneration,
+      }
+    : marker;
   const lines = [
-    `${AUTOMATIC_COMPACTION_RECOVERY_MARKER} ${JSON.stringify(marker)}`,
+    `${AUTOMATIC_COMPACTION_RECOVERY_MARKER} ${JSON.stringify(renderedMarker)}`,
     marker.complete
-      ? 'Automatic recovery is complete for the stamped control generation. Do NOT call coord:orient to re-fetch it; declare your actual lane with `coord:declare-intent { intent, current_plan_slug, items }`.'
-      : 'Automatic recovery is incomplete. Call `coord:orient { afterCompaction: true }` exactly once, then continue.',
+      ? judgeSafe
+        ? 'Automatic recovery is complete for the stamped control generation. Continue the assigned evaluation using the evidence delivered here.'
+        : 'Automatic recovery is complete for the stamped control generation. Do NOT call coord:orient to re-fetch it; declare your actual lane with `coord:declare-intent { intent, current_plan_slug, items }`.'
+      : judgeSafe
+        ? 'Automatic recovery is incomplete. Continue the assigned evaluation using the permitted evidence; do not initiate engineering coordination.'
+        : 'Automatic recovery is incomplete. Call `coord:orient { afterCompaction: true }` exactly once, then continue.',
     `- recovery coverage: selfSession=${recovery.coverage.selfSession} control=${recovery.coverage.control} heldItems=${recovery.coverage.heldItems} staleness=${recovery.coverage.staleness ?? 'not-applicable'}`,
     `- held checkpoints automatically delivered below: ${recovery.checkpoints?.length ?? 0}`,
-    `- self-recall: ${recovery.selfRecall}`,
+    judgeSafe
+      ? `- recovery source: ${JUDGE_SAFE_SELF_RECALL_POINTER}`
+      : `- self-recall: ${recovery.selfRecall}`,
   ];
   if (recovery.control) {
     lines.push(`- control generation ${recovery.control.generation}: ${JSON.stringify(recovery.control.state)}`);
@@ -734,7 +783,7 @@ export function renderAutomaticCompactionRecovery(
     );
   }
   if (marker.complete) {
-    lines.push(MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION);
+    lines.push(postCompactionRecoveryInstruction(role));
   }
   return `## Post-compaction recovery (automatically delivered)\n${lines.join('\n')}`;
 }
@@ -742,6 +791,7 @@ export function renderAutomaticCompactionRecovery(
 function renderIdentity(id: CarryDocIdentity): string {
   const lines = [
     `- su-id: ${id.ownerId}${id.ownerLabel ? ` (${id.ownerLabel})` : ''}`,
+    ...(id.role ? [`- role: ${id.role}`] : []),
     `- harness: ${id.harness ?? '(operator / none)'}`,
     `- workspace: ${id.workspaceId}`,
   ];
@@ -750,7 +800,20 @@ function renderIdentity(id: CarryDocIdentity): string {
   return `## Identity\n${lines.join('\n')}`;
 }
 
-function renderSessionMode(sm: CarryDocSessionMode, hasLiveAwaits = false): string {
+function renderSessionMode(
+  sm: CarryDocSessionMode,
+  hasLiveAwaits = false,
+  role?: string | null,
+): string {
+  if (isJudgeCarryRole(role)) {
+    const modes = sm.modes.length > 0 ? sm.modes.map((m) => m.mode.toUpperCase()).join(', ') : 'none';
+    return (
+      '## Session mode\n' +
+      '- evaluation role: judge\n' +
+      `- active modes: ${modes}\n` +
+      `- continuity state: ${sm.loopActive ? 'active' : 'inactive'}`
+    );
+  }
   const lines: string[] = [];
   if (sm.modes.length > 0) {
     for (const m of sm.modes) {
@@ -920,6 +983,16 @@ const SHED_POINTERS = Object.freeze({
   asks:
     '## Open owner asks (BLOCKING — do not self-answer)\n(dropped to fit the carry budget — re-read open asks via coord:orient.)',
 });
+const JUDGE_SAFE_SHED_POINTERS = Object.freeze({
+  brief:
+    '## Standing carry\n(dropped to fit the carry budget — use the supplied evaluation context and permitted evidence.)',
+  tail:
+    '## Verbatim tail (most recent turns; tool outputs are pointers)\n(dropped to fit the carry budget — use the supplied evaluation context.)',
+  planState:
+    '## Plan state (your claimed / in-flight items)\n(dropped to fit the carry budget — use the supplied evaluation context.)',
+  asks:
+    '## Open owner asks (BLOCKING — do not self-answer)\n(dropped to fit the carry budget — use the supplied evaluation context.)',
+});
 
 /**
  * Render the deterministic carry document as text. Pure — every input is already
@@ -934,10 +1007,12 @@ const SHED_POINTERS = Object.freeze({
  * aging ladder; without it, the full document is returned unchanged.
  */
 export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: RenderCarryDocOpts = {}): string {
+  const judgeSafe = isJudgeCarryRole(doc.identity.role);
+  const shedPointers = judgeSafe ? JUDGE_SAFE_SHED_POINTERS : SHED_POINTERS;
   const head = [
     '# Carry document (deterministic — assembled from the DB, no LLM)',
     `> ${REORIENT_BANNER}`,
-    renderAutomaticCompactionRecovery(doc.automaticRecovery),
+    renderAutomaticCompactionRecovery(doc.automaticRecovery, doc.identity.role),
     // EI-18697157970421032: a carry-respawn control message can sit busy-gate
     // deferred + rearm-retried for up to CARRY_RESPAWN_MAX_AGE_MS (30min
     // default, psu-pty-host.mjs) before actual delivery — its content (this
@@ -951,7 +1026,7 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
     // time — the mandatory re-orient caught it, but only after the fact).
     renderBuiltAtStamp(now),
     renderIdentity(doc.identity),
-    renderSessionMode(doc.sessionMode, doc.brief.awaits.length > 0),
+    renderSessionMode(doc.sessionMode, doc.brief.awaits.length > 0, doc.identity.role),
   ];
   // EI-18684357744098956: the carry doc (unlike the bare brief) also carries the
   // verbatim tail — the one place a held item's checkpoint write-time can be
@@ -966,7 +1041,9 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
   const planText = renderPlanState(doc.planItems);
   const asksText = renderAsks(doc.asks);
   const continuationText = renderContinuation(doc.continuation);
-  const selfRecall = `## Self-recall\n${SELF_RECALL_POINTER}`;
+  const selfRecall = judgeSafe
+    ? `## Evaluation recovery\n${JUDGE_SAFE_SELF_RECALL_POINTER}`
+    : `## Self-recall\n${SELF_RECALL_POINTER}`;
 
   // Fixed render order; a null slot is simply omitted. The always-keep sections
   // (head, continuation, self-recall) are the successor's minimum viable
@@ -1007,8 +1084,8 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
   };
 
   // Spend order: asks, plan-state, tail, brief (brief last ⇒ it sheds first).
-  const asksOut = chargeOrPointer(asksText, SHED_POINTERS.asks);
-  const planOut = chargeOrPointer(planText, SHED_POINTERS.planState);
+  const asksOut = chargeOrPointer(asksText, shedPointers.asks);
+  const planOut = chargeOrPointer(planText, shedPointers.planState);
 
   let tailOut: string | null = null;
   if (fullTail) {
@@ -1025,11 +1102,11 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
           break;
         }
       }
-      if (!tailOut) tailOut = chargeOrPointer(SHED_POINTERS.tail, SHED_POINTERS.tail);
+      if (!tailOut) tailOut = chargeOrPointer(shedPointers.tail, shedPointers.tail);
     }
   }
 
-  const briefOut = chargeOrPointer(briefText, SHED_POINTERS.brief);
+  const briefOut = chargeOrPointer(briefText, shedPointers.brief);
 
   return assemble(briefOut, planOut, asksOut, tailOut);
 }

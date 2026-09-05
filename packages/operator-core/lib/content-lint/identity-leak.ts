@@ -45,14 +45,70 @@
  * machine-agnostic — they match a path SHAPE and a tag SHAPE, so they behave
  * identically on every contributor's checkout.
  */
-import {
-  findBoxIdentityPaths,
-  findOwnerNameLeaks,
-  isSkippedPath,
-  renderLeak,
-  FIX_HINT,
-  BOX_IDENTITY_FIX_HINT,
-} from '../../../../scripts/lib/identity-leak-patterns.mjs';
+import { statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import type { ContentDetectorContext } from './registry';
+
+interface OwnerLeak {
+  line: number;
+  name: string;
+  text: string;
+  form?: string;
+}
+
+interface BoxIdentityPath {
+  line: number;
+  user: string;
+  text: string;
+}
+
+interface IdentityPatternsModule {
+  findBoxIdentityPaths(text: string): BoxIdentityPath[];
+  findOwnerNameLeaks(text: string): OwnerLeak[];
+  isSkippedPath(file: string): boolean;
+  renderLeak(row: OwnerLeak): string;
+  FIX_HINT: string;
+  BOX_IDENTITY_FIX_HINT: string;
+}
+
+interface CachedIdentityPatterns {
+  fingerprint: string;
+  module: IdentityPatternsModule;
+}
+
+/**
+ * The guard runs from the operator bundle, which may live in a release checkout
+ * different from the working tree it is committing. Resolve the detector from
+ * the guarded checkout at call time so its rules and its input cannot drift.
+ */
+const IDENTITY_PATTERNS_RELATIVE = join('scripts', 'lib', 'identity-leak-patterns.mjs');
+const identityPatternsCache = new Map<string, CachedIdentityPatterns>();
+
+function identityPatternsPath(repoPath?: string): string {
+  return join(resolve(repoPath ?? process.cwd()), IDENTITY_PATTERNS_RELATIVE);
+}
+
+function identityPatternsFingerprint(file: string): string {
+  const stat = statSync(file);
+  const mtime = 'mtimeNs' in stat ? String(stat.mtimeNs) : String(stat.mtimeMs);
+  return `${stat.size}:${mtime}`;
+}
+
+async function loadIdentityPatterns(repoPath?: string): Promise<IdentityPatternsModule> {
+  const file = identityPatternsPath(repoPath);
+  const fingerprint = identityPatternsFingerprint(file);
+  const cached = identityPatternsCache.get(file);
+  if (cached?.fingerprint === fingerprint) return cached.module;
+
+  // The query changes when the guarded working-tree module changes, avoiding
+  // Node's URL-keyed ESM cache retaining a pre-change ruleset in a long-lived
+  // bg-host process.
+  const url = `${pathToFileURL(file).href}?identity-patterns=${encodeURIComponent(fingerprint)}`;
+  const module = (await import(/* @vite-ignore */ url)) as IdentityPatternsModule;
+  identityPatternsCache.set(file, { fingerprint, module });
+  return module;
+}
 
 /** One leak row as the shared matcher returns it. */
 interface LeakRow {
@@ -72,8 +128,9 @@ function renderRows(rows: LeakRow[], label: (row: LeakRow) => string, max = 3): 
  * through the same `isSkippedPath`), so the guard never quarantines a file the gate
  * would not flag, and never passes one it would.
  */
-export function identityLeakScopeMatches(file: string): boolean {
-  return !isSkippedPath(file);
+export async function identityLeakScopeMatches(file: string, repoPath?: string): Promise<boolean> {
+  const patterns = await loadIdentityPatterns(repoPath);
+  return !patterns.isSkippedPath(file);
 }
 
 /**
@@ -83,25 +140,30 @@ export function identityLeakScopeMatches(file: string): boolean {
  *   prompt), or null when the file is clean. Never throws for content reasons; the
  *   guard additionally treats a throw as fail-open.
  */
-export function findIdentityLeakError(file: string, text: string): string | null {
+export async function findIdentityLeakError(
+  file: string,
+  text: string,
+  repoPath?: string,
+): Promise<string | null> {
+  const patterns = await loadIdentityPatterns(repoPath);
   const parts: string[] = [];
 
   // CLASS 1 — named owner-provenance tags (`[owner:<name>]`).
-  const named: LeakRow[] = findOwnerNameLeaks(text) ?? [];
+  const named: LeakRow[] = patterns.findOwnerNameLeaks(text) ?? [];
   if (named.length) {
     parts.push(
       `${named.length} named owner-provenance tag(s):\n` +
-        `${renderRows(named, (r) => renderLeak(r as never))}\n${FIX_HINT}`,
+        `${renderRows(named, (r) => patterns.renderLeak(r as never))}\n${patterns.FIX_HINT}`,
     );
   }
 
   // CLASS 2 — hardcoded home paths (`/home/<someone>/…`). A path SHAPE, not a value.
-  const boxed: LeakRow[] = findBoxIdentityPaths(text) ?? [];
+  const boxed: Array<LeakRow & { user: string }> = patterns.findBoxIdentityPaths(text) ?? [];
   if (boxed.length) {
     parts.push(
       `${boxed.length} hardcoded home path(s):\n` +
         `${renderRows(boxed, (r) => `(user "${(r as unknown as { user: string }).user}")`)}\n` +
-        `${BOX_IDENTITY_FIX_HINT}`,
+        `${patterns.BOX_IDENTITY_FIX_HINT}`,
     );
   }
 

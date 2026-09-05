@@ -165,6 +165,9 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
     expect(doc.sessionMode.loopActive).toBe(true);
     expect(doc.sessionMode.loopIntervalSec).toBe(60);
     expect(doc.sessionMode.modes).toEqual([{ mode: 'auto', ownerDirected: true, reason: 'owner set it' }]);
+
+    const judgeDoc = await buildCarryDoc('su-1', { ...base, role: 'judge' });
+    expect(judgeDoc.identity.role).toBe('judge');
   });
 
   it('builds one automatic recovery from the already-read carry held-items snapshot', async () => {
@@ -432,6 +435,45 @@ describe('renderCarryDoc (pure)', () => {
     expect(text).toContain('coord:declare-intent { intent, current_plan_slug, items }');
     expect(text).not.toContain('planItems');
     expect(text).toContain('control generation 17');
+  });
+
+  it('renders judge recovery without engineering or transcript-recall directives', () => {
+    const base = doc();
+    const text = renderCarryDoc(
+      {
+        ...base,
+        identity: { ...base.identity, role: 'judge' },
+        automaticRecovery: automaticRecovery(),
+      },
+      NOW,
+    );
+
+    expect(text).toContain('- role: judge');
+    expect(text).toContain('assigned evaluation');
+    for (const forbidden of [
+      'coord:orient',
+      'coord:declare-intent',
+      'scheduler:get_next',
+      'loop:status',
+      'code:run',
+      'sessions:search',
+      'sessions:read',
+    ]) {
+      expect(text).not.toContain(forbidden);
+    }
+  });
+
+  it('keeps judge fallback recovery tool-neutral when the marker is absent or incomplete', () => {
+    const base = doc();
+    for (const recovery of [null, automaticRecovery(false)]) {
+      const text = renderCarryDoc(
+        { ...base, identity: { ...base.identity, role: 'judge' }, automaticRecovery: recovery },
+        NOW,
+      );
+      expect(text).toContain('evaluation context');
+      expect(text).not.toContain('coord:orient');
+      expect(text).not.toContain('sessions:search');
+    }
   });
 
   it('renders exactly one orient fallback instruction when the marker is absent or incomplete', () => {

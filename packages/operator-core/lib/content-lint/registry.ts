@@ -52,6 +52,18 @@ export function setContentLintExemptionLoader(loader?: ExemptionLoader): void {
   contentLintExemptions = loader ?? cachedExemptionLoader(defaultExemptionLoader);
 }
 
+/** Context available when a detector runs against a concrete repository checkout. */
+export interface ContentDetectorContext {
+  /**
+   * Physical repository checkout whose working-tree content is being checked.
+   *
+   * Most detectors are repository-independent, but detectors whose rules are
+   * source files in the checked tree must resolve those files from this path
+   * rather than from the operator bundle's checkout.
+   */
+  repoPath?: string;
+}
+
 /** A registered content check. */
 export interface ContentDetector {
   /** Stable key — recorded on offender records + escalation bodies (e.g. 'mdx'). */
@@ -61,10 +73,14 @@ export interface ContentDetector {
   glob: string;
   /** Whether this detector applies to a repo-relative path — mirrors the CI lint's
    *  EXACT scope so the guard + CI never disagree (D-003). */
-  matches: (file: string) => boolean;
+  matches: (file: string, context?: ContentDetectorContext) => boolean | Promise<boolean>;
   /** Run the check on the file's text. Returns a human-readable error string when
    *  the file is broken, or null when it is valid. May be async (MDX compiles). */
-  detect: (file: string, text: string) => Promise<string | null> | string | null;
+  detect: (
+    file: string,
+    text: string,
+    context?: ContentDetectorContext,
+  ) => Promise<string | null> | string | null;
   /** The agent role git-sync dispatches to fix this class of content error. */
   fixerRole: string;
   /**
@@ -590,8 +606,8 @@ export const secretsDetector: ContentDetector = {
 export const identityLeakDetector: ContentDetector = {
   key: 'identity-leak',
   glob: '**/*',
-  matches: identityLeakScopeMatches,
-  detect: (file, text) => findIdentityLeakError(file, text),
+  matches: (file, context) => identityLeakScopeMatches(file, context?.repoPath),
+  detect: (file, text, context) => findIdentityLeakError(file, text, context?.repoPath),
   fixerRole: CONTENT_FIXER_ROLE,
   repoScope: 'superproject-only',
 };

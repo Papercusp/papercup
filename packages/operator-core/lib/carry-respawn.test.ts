@@ -212,6 +212,26 @@ describe('buildOwnerRespawnLaunchSpec — live fail-soft adapter', () => {
     expect(out?.systemPromptAddendum).toContain('Carry document (deterministic');
   });
 
+  it('threads the effective role into CarryDoc so judge recovery stays safe', async () => {
+    const buildFn = async (_ownerId: string, opts?: BuildCarryDocOpts) => {
+      expect(opts?.role).toBe('judge');
+      const base = doc(NO_OWNER);
+      return {
+        ...base,
+        identity: { ...base.identity, role: opts?.role },
+        automaticRecovery: null,
+      };
+    };
+    const out = await buildOwnerRespawnLaunchSpec('su-1', {
+      effectiveWindowTokens: 400_000,
+      role: 'judge',
+      buildFn,
+    });
+    expect(out?.systemPromptAddendum).toContain('evaluation context');
+    expect(out?.systemPromptAddendum).not.toContain('coord:orient');
+    expect(out?.systemPromptAddendum).not.toContain('sessions:search');
+  });
+
   it('lets the live caller explicitly mark a forced boundary', async () => {
     const buildFn = async (_ownerId: string, opts?: BuildCarryDocOpts) => {
       expect(opts?.boundaryDeliberate).toBe(false);

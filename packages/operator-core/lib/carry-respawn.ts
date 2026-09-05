@@ -108,6 +108,9 @@ export interface BuildRespawnLaunchSpecInput {
  * the already-defined carry-document producer and fails soft for the watcher. */
 export interface BuildOwnerRespawnLaunchSpecOpts
   extends Omit<BuildRespawnLaunchSpecInput, 'doc'> {
+  /** Effective tool-session role, threaded into the carry document so role-
+   * aware recovery text can be selected at the render boundary. */
+  role?: string | null;
   /** Session/transcript/workspace inputs owned by the live watcher. A threshold
    * boundary is deliberate by default; callers can explicitly mark a forced cut. */
   buildOpts?: BuildCarryDocOpts;
@@ -147,7 +150,12 @@ export async function buildOwnerRespawnLaunchSpec(
   if (!ownerId?.trim()) return null;
   try {
     const build = opts.buildFn ?? buildCarryDoc;
-    const doc = await build(ownerId.trim(), { boundaryDeliberate: true, ...opts.buildOpts });
+    const buildOpts: BuildCarryDocOpts = {
+      boundaryDeliberate: true,
+      ...opts.buildOpts,
+    };
+    if (opts.role !== undefined) buildOpts.role = opts.role;
+    const doc = await build(ownerId.trim(), buildOpts);
     return buildRespawnLaunchSpec({
       doc,
       effectiveWindowTokens: opts.effectiveWindowTokens,
