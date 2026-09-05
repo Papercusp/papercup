@@ -130,8 +130,24 @@ describe('buildAnalyzeArgs', () => {
     expect(buildAnalyzeArgs('/some/root', 'x')).toContain('/some/root');
   });
 
-  it('does not pass --force (that would defeat any staleness short-circuit analyze does)', () => {
-    expect(buildAnalyzeArgs('/repo', 'x')).not.toContain('--force');
+  // -------------------------------------------------------------------------
+  // --force (D-002). gitnexus 1.6.9 defaults to an INCREMENTAL writeback, and on this graph
+  // that path is the outage: measured 2026-09-05 twice (run #2 on /tmp and the live
+  // bootstrap, both 'Incremental: changed≈140–296 … +5,784–6,839 importer(s)'), it breached
+  // the 16 GiB GITNEXUS_LBUG_MAX_DB_BYTES ceiling ~35–45 min in and SIGSEGV'd, leaving the
+  // D-016 residue — while a FULL rebuild of the same graph finished in 3,133s with the DB
+  // at 5.3 GiB. The previous assertion here ('does not pass --force') pinned the opposite
+  // on the belief that analyze had a cheap staleness short-circuit; decideReindex is that
+  // short-circuit, and it runs BEFORE the spawn.
+  // -------------------------------------------------------------------------
+  it('ALWAYS passes --force — the incremental path breaches the LadybugDB ceiling on this graph', () => {
+    expect(buildAnalyzeArgs('/repo', 'x')).toContain('--force');
+  });
+
+  it('places --force BEFORE --embeddings (which takes an optional value and must stay last)', () => {
+    const args = buildAnalyzeArgs('/repo', 'x');
+    expect(args.indexOf('--force')).toBeLessThan(args.indexOf('--embeddings'));
+    expect(args.indexOf('--force')).toBeGreaterThan(args.indexOf('--skip-agents-md'));
   });
 
   // -------------------------------------------------------------------------

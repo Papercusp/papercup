@@ -10,29 +10,41 @@
  * pins the `code-search.definition-lookup` substitution pair at `observe`
  * (`lib/bash-substitution/pairs/code-search.ts`).
  *
- * WHY A GATED HOURLY TICK RATHER THAN A PLAIN CRON. `analyze` is NOT incremental — the
- * CLI self-describes as "Index a repository (full analysis)", and it was measured on
- * this box at **309s cold / 234s against an already-fresh index** (an unforced re-run
- * still costs 76% of a cold build). So the cadence cannot be "run it every hour" — the
- * routine fires hourly but the EXPENSIVE part is conditional: each tick reads the
- * registry + git + loadavg and the latest perf-signals capture (all cheap) and only
- * then decides to spawn. `decideReindex`
- * is the whole policy, kept pure so it is testable without a 4-minute subprocess.
+ * WHY A GATED HOURLY TICK RATHER THAN A PLAIN CRON. Every spawn is a FULL rebuild (see
+ * `--force` below) that was measured on this box at **309s cold** on the 2026-08 graph and
+ * ~14.5 min of non-embedding work on the 2026-09-05 graph under fleet load. So the cadence
+ * cannot be "run it every hour" — the routine fires hourly but the EXPENSIVE part is
+ * conditional: each tick reads the registry + git + loadavg and the latest perf-signals
+ * capture (all cheap) and only then decides to spawn. `decideReindex` is the whole policy,
+ * kept pure so it is testable without a 15-minute subprocess.
  *
- * EMBEDDINGS ARE ON (plan gitnexus-embeddings-enablement-2026-09-05 / WI-39394). Every
- * spawn passes `--embeddings 0` (GITNEXUS_EMBEDDINGS_NODE_CAP) so the vector leg of
- * `gitnexus.query` is populated instead of the permanent 0-of-246k it sat at since
- * WI-35557. Cost, MEASURED 2026-09-05 on the full 246,622-node graph (device=cuda,
- * /tmp/wi39394/run1-embed-run.log): the COLD pass is ~52 min — embedding phase ≈2,265s for
- * 217,120 embeddings at ≈96/s — and is therefore NOT something this routine runs; it is a
- * ONE-SHOT SUPERVISED BOOTSTRAP outside the routine (D-002). The hourly tick is
- * INCREMENTAL: gitnexus loads its embedding cache and generates only for new/changed nodes
- * (`core/embedding-mode.js`: `--embeddings` → "load cache, restore, then generate"). ⚠ An
- * analyze WITHOUT the flag merely PRESERVES the embeddings already present and never embeds
- * a new node, so dropping the flag does not "turn embeddings off" — it silently freezes the
- * vector leg at bootstrap time while every count still reads healthy. That is why the flag
- * lives in `buildAnalyzeArgs` beside `--skip-agents-md` and is asserted by a test, and why
- * the canary treats `embeddings == 0` after an embeddings-enabled run as a DEGRADATION.
+ * `--force` IS MANDATORY (D-002, plan gitnexus-embeddings-enablement-2026-09-05). gitnexus
+ * 1.6.9 defaults to an INCREMENTAL path (changed files + a BFS of their importers, "skipping
+ * wipe") and on this graph that path is the outage: MEASURED 2026-09-05, twice, on a
+ * 296-changed / 91-added / +6,839-importer write set, the incremental writeback breached the
+ * 16 GiB GITNEXUS_LBUG_MAX_DB_BYTES ceiling ~35–45 min in ("Maximum database size of
+ * 17179869184 bytes has been reached" → "manual WAL checkpoint failed after retries" →
+ * SIGSEGV), leaving the D-016 residue that wedges every reader (/tmp/wi39394/run2-embed-run.log,
+ * /tmp/wi39394/bootstrap-live/run.log); the same path had timeout-killed the hourly tick ~10×
+ * over the preceding 3 days. A FULL rebuild of the same graph completed in 3,133s INCLUDING a
+ * cold 2,265s embedding phase, with the database file ending at 5.3 GiB
+ * (/tmp/wi39394/run1-embed-run.log). Full-per-tick is therefore the cheaper AND the durable
+ * design here; a bigger ceiling merely moves the cliff (the live root has ~70 GB free).
+ *
+ * EMBEDDINGS ARE ON (WI-39394). Every spawn passes `--embeddings 0`
+ * (GITNEXUS_EMBEDDINGS_NODE_CAP) so the vector leg of `gitnexus.query` is populated instead
+ * of the permanent 0-of-246k it sat at since WI-35557. The cold 217,120-embedding pass
+ * (≈96/s on cuda) is NOT something this routine pays every tick: `--force --embeddings`
+ * LOADS the embedding cache from the existing index BEFORE the wipe, RESTORES it into the
+ * fresh database, and generates only for new/changed nodes (`core/run-analyze.js`
+ * "We *always* load the embedding cache when one is requested"; `core/embedding-mode.js`).
+ * The first population is a ONE-SHOT SUPERVISED BOOTSTRAP outside the routine (D-002).
+ * ⚠ An analyze WITHOUT `--embeddings` merely PRESERVES the embeddings already present and
+ * never embeds a new node, so dropping the flag does not "turn embeddings off" — it silently
+ * freezes the vector leg at bootstrap time while every count still reads healthy. That is
+ * why both flags live in `buildAnalyzeArgs` beside `--skip-agents-md` and are asserted by
+ * tests, and why the canary treats `embeddings == 0` after an embeddings-enabled run as a
+ * DEGRADATION.
  *
  * ⚠ `--skip-agents-md` IS MANDATORY AND IS HARDCODED HERE ON PURPOSE. Without it,
  * `analyze` REWRITES a gitnexus section into `CLAUDE.md` and `AGENTS.md`. In this repo
@@ -372,16 +384,28 @@ export function decideReindex(i: ReindexDecisionInput): ReindexDecision {
  * a caller's choice — see this module's header for what happens without it. `--embeddings`
  * is likewise not a caller's choice: dropping it does not disable embeddings, it FREEZES
  * them (existing ones are preserved, new nodes are never embedded), see the header.
+ * `--force` is not a caller's choice either: without it gitnexus takes the INCREMENTAL
+ * writeback that breaches the LadybugDB ceiling and segfaults on this graph (header, D-002).
  *
  * `--embeddings` takes an OPTIONAL value in gitnexus's commander definition, so it is placed
- * LAST — a positional after it would be swallowed as the cap.
+ * LAST — a positional after it would be swallowed as the cap. `--force` therefore goes
+ * BEFORE it, never after.
  */
 export function buildAnalyzeArgs(
   root: string,
   repoName: string,
   embeddingsNodeCap: number = GITNEXUS_EMBEDDINGS_NODE_CAP,
 ): string[] {
-  return ['analyze', root, '--skip-agents-md', '--name', repoName, '--embeddings', String(embeddingsNodeCap)];
+  return [
+    'analyze',
+    root,
+    '--skip-agents-md',
+    '--name',
+    repoName,
+    '--force',
+    '--embeddings',
+    String(embeddingsNodeCap),
+  ];
 }
 
 /**
