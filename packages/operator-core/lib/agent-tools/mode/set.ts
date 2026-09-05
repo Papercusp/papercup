@@ -231,6 +231,16 @@ export default defineTool({
       'mode:set → read the returned contract (self) · coord:orient re-injects active contracts each wake · mode:get { agent } ' +
       'to inspect anyone · exiting: mode:set { mode, enabled:false, reason }. A stickyConflict result means the incumbent is ' +
       'owner-directed: your reason was delivered as a REQUEST — do not retry, wait for the target/owner.',
+    /* EI-20356723237531047: same targeted-key drift as mode:get, and this tool is
+       the one mode:get's own `chaining` sends you to — so leaving it alone would
+       just move the retry one hop down the recommended path. `ownerId` is a declared
+       alias below; these redirects cost ZERO prompt weight (uncounted, like `returns`)
+       and are paid only when a caller actually gets it wrong. */
+    argRedirects: {
+      owner: 'agent',
+      ownerIds: 'agent',
+      agentId: 'agent',
+    },
     /* UNCOUNTED by the prompt-weight budget (description + when/notWhen/chaining
        only), and demand-loaded via tools:find — which is exactly where response
        shape belongs: a caller needs it after deciding to call, not in every
@@ -274,6 +284,13 @@ export default defineTool({
       ),
     enabled: z.boolean().optional().describe('default true; false ⇒ exit the mode'),
     agent: z.string().max(120).optional().describe('target ownerId (exact, e.g. su-…); omit for yourself'),
+    ownerId: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        'Compatibility alias for `agent`, for callers carrying the roster/presence field name; normalized to `agent` before use. Pass one or the other — `agent` wins if both are given.',
+      ),
     ownerDirected: z
       .boolean()
       .optional()
@@ -298,7 +315,9 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    const target = args.agent?.trim() || ident.ownerId;
+    // Normalize the alias at the boundary so the self/peer split, the sticky
+    // guard and delivery below all consume the canonical `agent` selector only.
+    const target = (args.agent ?? args.ownerId)?.trim() || ident.ownerId;
     const isSelf = target === ident.ownerId;
     const enabled = args.enabled !== false;
     const def = modeById(args.mode);

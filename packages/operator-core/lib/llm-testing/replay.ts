@@ -39,6 +39,7 @@ import {
 
 import { llmCall } from './llm-client';
 import { pullToolInvocations, pullContinueChainRows } from './telemetry';
+import { normalizeToolResultEvidence } from './tool-result-evidence';
 
 // Transactional pool — re-resolves the admin URL on every use and rebinds if the endpoint
 // moved (EI-19306394439939264). Shared connection options + idle policy come with it.
@@ -196,6 +197,7 @@ export async function reEvaluateRun(opts: ReEvaluateOpts): Promise<ReplayResult>
       idx: number;
       assistantText: string;
       toolCalls: unknown;
+      toolResults?: unknown;
       cards: unknown;
       controlTags: unknown;
       finishReason: string;
@@ -225,6 +227,7 @@ export async function reEvaluateRun(opts: ReEvaluateOpts): Promise<ReplayResult>
     ? row.transcript_norm_json.map((t) => ({
       assistantText: t.assistantText,
       toolCalls: (t.toolCalls as TurnResult['toolCalls']) ?? [],
+      toolResults: normalizeToolResultEvidence(t.toolResults),
       cards: (t.cards as TurnResult['cards']) ?? [],
       controlTags: (t.controlTags as TurnResult['controlTags']) ?? [],
       costUsd: t.costUsd,

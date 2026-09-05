@@ -163,7 +163,7 @@ export default defineTool({
     notWhen:
       'To mutate the release pipeline. Follow the returned nextVerb; release:trace itself never commits, runs a gate, or deploys.',
     chaining:
-      'release:trace { path | sha, work_item? } → follow the single non-null nextVerb → after a wake, call release:trace again with after_generation from the prior response.',
+      'release:trace { path | sha, work_item? } → follow the single non-null nextVerb → after a wake, call release:trace again with after_generation from the prior response. The await verb is progress-certified (default ON): only a `progressing` run yields checkpoint:await; `stalled`/`unknown` route elsewhere — do not re-read lane heartbeats to second-guess it.',
     returns:
       '{ generatedAtMs, target, gate: { candidateVerdict, fixCommitContainment, ... }, greenPin, deploy, testedDeployedParity, awaits, staleWake, constraints, nextVerb, resync, summary }',
     seeAlso: ['dev:pipeline_position', 'release:deploy', 'events:status', 'deploy:await', 'checkpoint:await'],

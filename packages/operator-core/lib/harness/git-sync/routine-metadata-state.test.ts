@@ -42,6 +42,8 @@ const refAnnounceState: RefAnnounceRoutineState = {
   lastEventId: 0,
   budgetStates: {},
   publishVersion: 0,
+  publishGeneration: null,
+  replayFloors: {},
   parked: {},
   at: 1,
 };

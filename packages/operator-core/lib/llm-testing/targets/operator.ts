@@ -208,6 +208,7 @@ class OperatorSession implements ChatSession {
     const result: TurnResult = {
       assistantText: '',
       toolCalls: [],
+      toolResults: [],
       cards: [],
       controlTags: [],
       costUsd: 0,
@@ -594,6 +595,7 @@ function errorTurn(message: string, latencyMs: number): TurnResult {
   return {
     assistantText: '',
     toolCalls: [],
+    toolResults: [],
     cards: [],
     controlTags: [],
     costUsd: 0,

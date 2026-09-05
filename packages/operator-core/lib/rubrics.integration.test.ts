@@ -1219,10 +1219,9 @@ describe('workspace scope follows activeWorkspaceId (WI-976 regression)', () => 
 // the SAME withPlanLock + evaluateSetTemplateData pair the tool handler uses is the point
 // — asserting on the guard function alone would pass even if nothing called it.
 describe('template_data persistence boundary — the set-template-data door', () => {
-  it('advances all BAR revision pins with a METHOD edit and rolls back a late projection refusal', async () => {
+  async function seedBarContract(subject: string) {
     const { seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
     const workspaceId = activeWorkspaceId();
-    const subject = 'method-pin-subject';
     const content = `---\ntitle: METHOD pins\nslug: ${subject}\nstatus: active\n---\n\n## Requirements\n\n**R-1 — First outcome.** The first outcome holds.\n\n**R-2 — Second outcome.** The second outcome holds.\n\n## Design\n\n### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n|---|---|---|\n| R-1 | P-001 | tree |\n| R-2 | P-002 | tree |\n\n## Work\n\n- **P-001** \`done\` first outcome\n- **P-002** \`done\` second outcome\n`;
     await db.adminSql`
       INSERT INTO harness_shared.harness_plans
@@ -1240,6 +1239,12 @@ describe('template_data persistence boundary — the set-template-data door', ()
     }));
     expect(seeded.ok).toBe(true);
     if (!seeded.ok) throw new Error(seeded.message);
+    return { ...seeded, workspaceId, subject };
+  }
+
+  it('advances all BAR revision pins with a METHOD edit and rolls back a late projection refusal', async () => {
+    const seeded = await seedBarContract('method-pin-subject');
+    const { workspaceId, subject } = seeded;
     const before = await rubrics.getRubric(seeded.rubricSlug);
     const data = await storedTemplateData(seeded.rubricSlug);
     const next = { ...data, criteria: data.criteria.map((criterion) => ({
@@ -1278,6 +1283,48 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(divergent.status).toBe('revised');
     await expect(setTemplateDataDoor(seeded.rubricSlug, next)).rejects.toThrow(/acceptance_bar_revision_/);
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(after!.revision);
+  });
+
+  it('advances unchanged BAR projections on a semantic amendment and rolls back both plans on a late failure', async () => {
+    const seeded = await seedBarContract('semantic-pin-subject');
+    const { workspaceId, subject } = seeded;
+    const before = await rubrics.getRubric(seeded.rubricSlug);
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      criterion: { key: before!.criteria[0]!.key, field: 'driftMarkers' as const,
+        mode: 'replace' as const, text: 'The first outcome is absent after the transaction commits.' },
+      actorId: 'amendment-actor', reason: 'Make the falsifier observable.',
+      approvalRef: 'fixture:outside-approval', approvedBy: 'outside-reviewer',
+    };
+    const after = await rubrics.amendRubric(amendment);
+    expect(after).not.toBeNull();
+    const current = await rubrics.getRubric(seeded.rubricSlug);
+    expect(current!.barSetHash).not.toBe(before!.barSetHash);
+    expect(current!.criteria[1]!.barHash).toBe(before!.criteria[1]!.barHash);
+    const projections = await db.adminSql`SELECT r.source_rubric_revision, r.source_bar_set_hash
+      FROM harness_shared.plan_spec_clauses c
+      JOIN harness_shared.plan_spec_clause_revisions r USING (workspace_id,harness_slug,plan_slug,spec_id)
+      WHERE c.workspace_id=${workspaceId} AND c.harness_slug='papercusp' AND c.plan_slug=${subject}
+        AND r.revision=c.current_revision ORDER BY c.spec_id`;
+    expect(projections).toHaveLength(2);
+    expect(projections.map((row) => Number(row.source_rubric_revision))).toEqual([current!.revision, current!.revision]);
+    expect(projections.map((row) => row.source_bar_set_hash)).toEqual([current!.barSetHash, current!.barSetHash]);
+    const [subjectBeforeFailure] = await db.adminSql`SELECT content, version, acceptance_bar_rubric_revision
+      FROM harness_shared.harness_plans WHERE workspace_id=${workspaceId}
+        AND harness_slug='papercusp' AND plan_slug=${subject}`;
+    expect(Number(subjectBeforeFailure.acceptance_bar_rubric_revision)).toBe(current!.revision);
+    await expect(rubrics.amendRubric({ ...amendment,
+      criterion: { ...amendment.criterion, text: 'The first outcome is absent or has the wrong value.' },
+      faultInjection: 'after-projection',
+    })).rejects.toThrow('acceptance_bar_amendment_fault_injected:after-projection');
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(current!.revision);
+    const [subjectAfterFailure] = await db.adminSql`SELECT content, version, acceptance_bar_rubric_revision
+      FROM harness_shared.harness_plans WHERE workspace_id=${workspaceId}
+        AND harness_slug='papercusp' AND plan_slug=${subject}`;
+    expect(subjectAfterFailure).toEqual(subjectBeforeFailure);
+    const [history] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.plan_spec_clause_revisions
+      WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
+    expect(history.n).toBe(4);
   });
 
   /** Read the rubric's stored template_data straight off the row, so a resubmission is

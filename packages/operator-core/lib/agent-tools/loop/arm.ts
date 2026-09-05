@@ -39,6 +39,7 @@ import {
 } from '../../harness/routines/loop';
 import {
   resolveBlockedSince,
+  suggestBlockerRef,
   type LoopBlockedOnRecord,
 } from '../../harness/routines/loop-blocker-liveness';
 import {
@@ -1498,6 +1499,16 @@ export default defineTool({
     // was capped, and (when an event was named) that naming it is not the same as parking
     // on it. A silently-capped interval would be worse than no cap at all.
     const backoffNote = backoff.note ? ` ${backoff.note}` : '';
+
+    // EI-21526226279199560 — the caller NAMED an agent in prose but passed no `ref`, so
+    // the per-wake liveness check cannot resolve a subject and stays silent. Offered here
+    // because this is the one moment it is actionable: the agent is declaring the blocker
+    // right now and demonstrably knows the id. Purely advisory — the arm proceeds either
+    // way, exactly like the D-098 nudge whose measured effect was 0% → 10.4% adoption.
+    const suggestedRef = suggestBlockerRef(args.blockedOn);
+    const blockerRefNudge = suggestedRef
+      ? ` 💡 Your blocker names \`${suggestedRef}\` but passes no \`ref\`, so each wake can only re-read your own sentence — it cannot check whether that agent is still ALIVE. Re-arm with blockedOn: { reason, kind: 'agent', ref: '${suggestedRef}' } and every wake tells you the moment they die, instead of you discovering it hours later.`
+      : '';
     const warningNote = unboundedWarmLoopWarning ? ` ⚠ ${unboundedWarmLoopWarning}` : '';
     // EI-21542193720279374 part (b) — see the coldNoCarryNoteWarning computation above.
     const coldCarryNoteWarningText = coldNoCarryNoteWarning ? ` ⚠ ${coldNoCarryNoteWarning}` : '';
@@ -1532,6 +1543,7 @@ export default defineTool({
       baseNote +
       overwriteNoteText +
       backoffNote +
+      blockerRefNudge +
       claimNote +
       warningNote +
       coldCarryNoteWarningText +

@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   assessBlockerLiveness,
   formatWaitDuration,
+  resolveBlockedSince,
+  suggestBlockerRef,
   BLOCKER_WAIT_SURFACE_MS,
   type LoopBlockedOnRecord,
   type BlockerLiveness,
@@ -165,5 +167,79 @@ describe('formatWaitDuration', () => {
   it('does not invent a duration from a nonsense input', () => {
     expect(formatWaitDuration(Number.NaN)).toBe('an unknown time');
     expect(formatWaitDuration(-1)).toBe('an unknown time');
+  });
+});
+
+describe('resolveBlockedSince — the clock must survive a re-arm', () => {
+  const NOW_ISO = new Date(NOW).toISOString();
+
+  it('CARRIES the origin forward across a re-arm of the same blocker — without this the elapsed-wait branch is unreachable', () => {
+    // The defect this guards is silent and total. An AUTO loop re-arms every wake, and a
+    // blocked agent re-arms while still blocked on the very same thing — so a restamped
+    // `since` would reset the measured wait to ~0 forever, and 'wait-exceeded-clock'
+    // would never once fire while looking entirely implemented.
+    const prior = agentBlocker({ since: iso(2.5 * HOUR) });
+    const next = agentBlocker({ since: undefined });
+    expect(resolveBlockedSince(next, prior, NOW_ISO)).toBe(prior.since);
+
+    // ...and here is that reachability, shown rather than asserted: ONE record, both
+    // origins, opposite verdicts. This is the assertion that fails if anyone "simplifies"
+    // the carry-forward away.
+    const carried = { ...next, since: resolveBlockedSince(next, prior, NOW_ISO) };
+    const restamped = { ...next, since: NOW_ISO };
+    expect(assessBlockerLiveness(carried, live({ sessionState: 'live' }), NOW).trigger).toBe(
+      'wait-exceeded-clock',
+    );
+    expect(assessBlockerLiveness(restamped, live({ sessionState: 'live' }), NOW).trigger).toBeNull();
+  });
+
+  it('RESETS when the blocker genuinely changes — a new wait is a new clock', () => {
+    const prior = agentBlocker({ ref: 'su-d6ae254f', since: iso(2.5 * HOUR) });
+    expect(resolveBlockedSince(agentBlocker({ ref: 'su-other' }), prior, NOW_ISO)).toBe(NOW_ISO);
+  });
+
+  it('identifies a ref-less blocker by its reason, since it has nothing else to be identified by', () => {
+    const prior: LoopBlockedOnRecord = { reason: 'green gate red', since: iso(3 * HOUR) };
+    expect(resolveBlockedSince({ reason: '  GREEN GATE RED  ' }, prior, NOW_ISO)).toBe(prior.since);
+    expect(resolveBlockedSince({ reason: 'a different wait' }, prior, NOW_ISO)).toBe(NOW_ISO);
+  });
+
+  it('never carries an origin between a ref-less and a ref-bearing blocker', () => {
+    const priorNoRef: LoopBlockedOnRecord = { reason: 'same words', since: iso(3 * HOUR) };
+    const nextWithRef = { reason: 'same words', kind: 'agent' as const, ref: 'su-abc' };
+    expect(resolveBlockedSince(nextWithRef, priorNoRef, NOW_ISO)).toBe(NOW_ISO);
+    expect(resolveBlockedSince({ reason: 'same words' }, nextWithRef, NOW_ISO)).toBe(NOW_ISO);
+  });
+
+  it('stamps now when there is no prior, or its origin is missing or unparseable', () => {
+    expect(resolveBlockedSince(agentBlocker(), null, NOW_ISO)).toBe(NOW_ISO);
+    expect(resolveBlockedSince(agentBlocker(), agentBlocker({ since: null }), NOW_ISO)).toBe(NOW_ISO);
+    expect(resolveBlockedSince(agentBlocker(), agentBlocker({ since: 'not-a-date' }), NOW_ISO)).toBe(
+      NOW_ISO,
+    );
+  });
+});
+
+describe('suggestBlockerRef — closing the adoption gap that would make the liveness branch unreachable', () => {
+  it('finds the id a caller named in prose while passing no ref — the measured 127-of-1014 case', () => {
+    expect(
+      suggestBlockerRef({ reason: 'freeze imposed by su-d6ae254f, cannot touch the tree' }),
+    ).toBe('su-d6ae254f');
+    expect(suggestBlockerRef({ reason: 'waiting on cup-9f3a1b2c to finish the migration' })).toBe(
+      'cup-9f3a1b2c',
+    );
+  });
+
+  it('says nothing when the blocker is ALREADY structured — the nudge is for the gap, not for everyone', () => {
+    expect(
+      suggestBlockerRef({ reason: 'freeze imposed by su-d6ae254f', ref: 'su-d6ae254f' }),
+    ).toBeNull();
+  });
+
+  it('says nothing when no agent id is named, so a gate or deploy blocker is never nagged', () => {
+    expect(suggestBlockerRef({ reason: 'green gate red 8h, blocking every deploy' })).toBeNull();
+    expect(suggestBlockerRef({ reason: 'waiting on WI-2145833 to land' })).toBeNull();
+    expect(suggestBlockerRef(null)).toBeNull();
+    expect(suggestBlockerRef({})).toBeNull();
   });
 });

@@ -59,6 +59,7 @@ import {
   messagesToResponsesInput,
   type ResponsesInputItem,
 } from './codex-responses-tool-loop';
+import { captureToolResultEvidence } from '../tool-result-evidence';
 import { renderCoordLegend } from '../../coord-schema';
 import { COORD_LEGEND_MARKER } from '../../desktop-install/splice-tooling-overlay';
 
@@ -480,6 +481,7 @@ class SuSession implements ChatSession {
     const result: TurnResult = {
       assistantText: '',
       toolCalls: [],
+      toolResults: [],
       cards: [],
       controlTags: [],
       costUsd: 0,
@@ -602,6 +604,7 @@ class SuSession implements ChatSession {
         for (const tu of toolUses) {
           const canonical = this.state.catalog.canonicalBySanitized.get(tu.name) ?? tu.name;
           const { text, isError } = await this.resolveToolResult(canonical, tu.input);
+          result.toolResults.push(captureToolResultEvidence(canonical, text, isError));
           toolResults.push({
             type: 'tool_result',
             tool_use_id: tu.id,
@@ -629,6 +632,7 @@ class SuSession implements ChatSession {
     const result: TurnResult = {
       assistantText: '',
       toolCalls: [],
+      toolResults: [],
       cards: [],
       controlTags: [],
       costUsd: 0,
@@ -679,6 +683,9 @@ class SuSession implements ChatSession {
           result.toolCalls.push(event);
           result.rawSseTape.push(sse('tool_call', event));
           const toolResult = await this.resolveToolResult(canonical, call.input);
+          result.toolResults.push(
+            captureToolResultEvidence(canonical, toolResult.text, toolResult.isError),
+          );
           outputs.push({
             type: 'function_call_output',
             call_id: call.callId,
@@ -897,6 +904,7 @@ function errorTurn(message: string, latencyMs: number): TurnResult {
   return {
     assistantText: '',
     toolCalls: [],
+    toolResults: [],
     cards: [],
     controlTags: [],
     costUsd: 0,

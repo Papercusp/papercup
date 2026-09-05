@@ -38,9 +38,11 @@ import { canonicalJson } from '../authority/authority-rpc-envelope';
 import {
   distributionManifestDigest,
   resolveDistributionSources,
+  validateDistributionManifest,
   type ArtifactChunk,
   type ArtifactDistributionManifest,
   type ArtifactDistributionState,
+  type DistributionManifestErrorCode,
   type DistributionResolutionReason,
   type DistributionSource,
   type PinHealth,
@@ -182,6 +184,76 @@ export function packageMatchesManifest(pkg: ArtifactPackage, manifest: Pick<Arti
     return { ok: false, code: 'root-hash-mismatch', detail: `package root is ${pkg.rootHash}, manifest declares ${manifest.rootHash}` };
   }
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Publish-time admission
+// ---------------------------------------------------------------------------
+
+export type ReleasePublicationCode = DistributionManifestErrorCode | PackageIntegrityCode;
+
+export type ReleasePublication =
+  | { readonly ok: true; readonly manifest: ArtifactDistributionManifest }
+  | { readonly ok: false; readonly code: ReleasePublicationCode; readonly detail: string };
+
+/**
+ * The sanctioned PUBLISH door for a public listing — the counterpart of
+ * `publishPrivateArtifact` for the unencrypted path (D-041 ruling 5: the
+ * content-address agreement is checked at publish time, not at retrieval).
+ *
+ * `validateDistributionManifest` and `verifyManifestRoot` are each sound and
+ * each insufficient alone, which is why this door exists rather than a note in
+ * a doc (EI-22433992128803548):
+ *
+ *   - `validateDistributionManifest` checks that a PUBLIC `rootHash` equals the
+ *     release `contentHash`, and that a PRIVATE one equals
+ *     `encryption.ciphertextHash`. It never recomputes anything, so a publisher
+ *     who derives BOTH sides the same wrong way satisfies it.
+ *   - `verifyManifestRoot` recomputes the Merkle root over the chunk list, but
+ *     nothing called it before bytes were fetched.
+ *
+ * So the unstated convention — `contentHash` is `merkleRoot(chunk digests)`,
+ * NOT `sha256(bytes)` — held only by luck. A publisher doing the obvious thing
+ * (`sha256Prefixed(bytes)`, which is what the name means everywhere else in
+ * this repo and what `artifact-store.ts` uses to derive the hosted object key)
+ * passed both validators and was refused later, on the CLIENT, at retrieval,
+ * by a message reading "chunk list commits to X, manifest declares Y" — which
+ * points at the chunk list, i.e. at the bytes, and costs a chunking
+ * investigation that can never find anything. The two addresses coincide at no
+ * size: `merkleRoot([h]) !== h` even for a single chunk.
+ *
+ * Composing the two checks here is cycle-free because this module already
+ * imports `artifact-distribution` and that dependency is one-way; the reverse
+ * direction (teaching `validateDistributionManifest` to recompute the root) is
+ * what the cycle forbids.
+ */
+export function validatePublishableRelease(raw: unknown): ReleasePublication {
+  const shape = validateDistributionManifest(raw);
+  if (!shape.ok) return { ok: false, code: shape.code, detail: shape.detail };
+
+  const manifest = shape.manifest;
+  const root = verifyManifestRoot(manifest);
+  if (root.ok) return { ok: true, manifest };
+
+  // Re-attribute the one failure whose default message names the wrong thing.
+  // `validateDistributionManifest` has already established that `rootHash`
+  // equals the declared content address for this visibility, so a root that
+  // does not commit to the chunk list means that ADDRESS was computed the wrong
+  // way — the chunk list is a bystander.
+  if (root.code === 'root-hash-mismatch') {
+    const recomputed = merkleRoot(manifest.chunks.map((chunk) => chunk.contentHash));
+    const field = manifest.visibility === 'public' ? 'release contentHash' : 'encryption.ciphertextHash';
+    return {
+      ok: false,
+      code: 'root-hash-mismatch',
+      detail:
+        `${field} is ${manifest.rootHash}, but this chunk list addresses to ${recomputed}. ` +
+        `A ${manifest.visibility} listing's content address is merkleRoot(chunk digests), NOT sha256(bytes) — ` +
+        `the two never coincide, not even for a single chunk. Recompute it with buildArtifactPackage(bytes).rootHash.`,
+    };
+  }
+
+  return { ok: false, code: root.code, detail: root.detail };
 }
 
 // ---------------------------------------------------------------------------

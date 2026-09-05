@@ -6,6 +6,19 @@ import { SuTarget } from '../targets/su';
 
 type OutputDelivery = 'snapshot' | 'streamed-only' | 'both';
 
+const anthropicMock = vi.hoisted(() => ({ responses: [] as unknown[] }));
+vi.mock('@anthropic-ai/sdk', () => ({
+  default: class MockAnthropic {
+    messages = {
+      create: vi.fn(async () => {
+        const response = anthropicMock.responses.shift();
+        if (!response) throw new Error('unexpected Anthropic call');
+        return response;
+      }),
+    };
+  },
+}));
+
 function completed(output: unknown[], delivery: OutputDelivery): Response {
   const events: unknown[] = delivery === 'snapshot' ? [] : output.map((item, output_index) => ({
     type: 'response.output_item.done', output_index, item,
@@ -48,9 +61,8 @@ describe('SuTarget Codex Responses tool loop', () => {
         },
       ], delivery);
     });
-    const dispatch = vi.fn(async () => ({
-      content: [{ text: JSON.stringify({ ok: true, results: [{ slug: 'x' }] }) }],
-    }));
+    const dispatchOutput = JSON.stringify({ ok: true, results: [{ slug: 'x' }] });
+    const dispatch = vi.fn(async () => ({ content: [{ text: dispatchOutput }] }));
     const target = new SuTarget({
       catalog: buildCatalog([
         {
@@ -101,7 +113,81 @@ describe('SuTarget Codex Responses tool loop', () => {
     ]));
     expect(dispatch).toHaveBeenCalledWith('docs:get', { slugs: ['x'], harness: 'all' });
     expect(result.toolCalls).toEqual([{ name: 'docs:get', input: { slugs: ['x'], harness: 'all' } }]);
+    expect(result.toolResults).toEqual([{
+      name: 'docs:get',
+      output: dispatchOutput,
+      isError: false,
+      truncated: false,
+      sourceChars: dispatchOutput.length,
+    }]);
     expect(result.assistantText).toBe('Done from Sol.');
     expect(result.finishReason).toBe('done');
+  });
+
+  it('captures tool-result evidence on the Anthropic Messages path', async () => {
+    const previousApiKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'test-only-anthropic-key';
+    try {
+      anthropicMock.responses = [
+        {
+          content: [{
+            type: 'tool_use',
+            id: 'toolu_1',
+            name: 'docs__get',
+            input: { slugs: ['x'], harness: 'all' },
+          }],
+          stop_reason: 'tool_use',
+          usage: { input_tokens: 10, output_tokens: 4 },
+        },
+        {
+          content: [{ type: 'text', text: 'Done from Claude.' }],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 10, output_tokens: 4 },
+        },
+      ];
+      const dispatchOutput = JSON.stringify({ ok: true, results: [{ slug: 'x' }] });
+      const dispatch = vi.fn(async () => ({ content: [{ text: dispatchOutput }] }));
+      const target = new SuTarget({
+        catalog: buildCatalog([{
+          name: 'docs:get',
+          description: 'Read a doc.',
+          input: {
+            type: 'object',
+            properties: {
+              slugs: { type: 'array', items: { type: 'string' } },
+              harness: { type: 'string' },
+            },
+            required: ['slugs', 'harness'],
+          },
+        }]),
+        loadSystemPrompt: () => 'Follow the playbook.',
+      });
+      const session = await target.open({
+        runId: 'claude-tool-loop',
+        sutModel: 'claude-sonnet-4-6',
+        workspaceMode: 'isolated',
+        transport: 'in-process',
+        dispatchOverride: { override: dispatch } as never,
+      });
+
+      const result = await session.send({
+        trigger: 'user_message',
+        messages: [{ role: 'user', content: 'Read x.' }],
+      });
+
+      expect(dispatch).toHaveBeenCalledWith('docs:get', { slugs: ['x'], harness: 'all' });
+      expect(result.toolResults).toEqual([{
+        name: 'docs:get',
+        output: dispatchOutput,
+        isError: false,
+        truncated: false,
+        sourceChars: dispatchOutput.length,
+      }]);
+      expect(result.assistantText).toBe('Done from Claude.');
+    } finally {
+      if (previousApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previousApiKey;
+      anthropicMock.responses = [];
+    }
   });
 });

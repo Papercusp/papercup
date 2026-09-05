@@ -244,7 +244,7 @@ describe('pot-git handoff token + park tokens (G-0/G-0b, real bare repo)', () =>
       { devicePubkeyBase64: newAuth.pubkeyBase64, epoch: 2, seq: 1, stagingSha: sideways, nowMs: 8_000 },
       newAuth.sign,
     );
-    expect(await acceptStagingAdvanceFF(repo, sidewaysAdv, prior, newStaging)).toEqual({
+    expect(await acceptStagingAdvanceFF(repo, sidewaysAdv, prior, newStaging, { allowLegacy: true })).toEqual({
       ok: false,
       reason: 'non-fast-forward',
     });
@@ -254,13 +254,13 @@ describe('pot-git handoff token + park tokens (G-0/G-0b, real bare repo)', () =>
       { devicePubkeyBase64: newAuth.pubkeyBase64, epoch: 2, seq: 1, stagingSha: forward, nowMs: 8_001 },
       newAuth.sign,
     );
-    expect(await acceptStagingAdvanceFF(repo, forwardAdv, prior, newStaging)).toEqual({ ok: true });
+    expect(await acceptStagingAdvanceFF(repo, forwardAdv, prior, newStaging, { allowLegacy: true })).toEqual({ ok: true });
     // A sha we do not have → unknown-sha (fetch first).
     const ghostAdv = await signStagingAdvance(
       { devicePubkeyBase64: newAuth.pubkeyBase64, epoch: 2, seq: 2, stagingSha: 'd'.repeat(40), nowMs: 8_002 },
       newAuth.sign,
     );
-    expect(await acceptStagingAdvanceFF(repo, ghostAdv, prior, newStaging)).toEqual({
+    expect(await acceptStagingAdvanceFF(repo, ghostAdv, prior, newStaging, { allowLegacy: true })).toEqual({
       ok: false,
       reason: 'unknown-sha',
     });
@@ -269,7 +269,7 @@ describe('pot-git handoff token + park tokens (G-0/G-0b, real bare repo)', () =>
       { devicePubkeyBase64: oldAuth.pubkeyBase64, epoch: 1, seq: 99, stagingSha: forward, nowMs: 8_003 },
       oldAuth.sign,
     );
-    expect(await acceptStagingAdvanceFF(repo, staleAdv, prior, newStaging)).toEqual({
+    expect(await acceptStagingAdvanceFF(repo, staleAdv, prior, newStaging, { allowLegacy: true })).toEqual({
       ok: false,
       reason: 'stale-epoch-seq',
     });

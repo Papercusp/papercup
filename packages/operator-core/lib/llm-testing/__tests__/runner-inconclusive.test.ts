@@ -22,6 +22,7 @@ import type { TurnResult } from '@papercusp/testing-shell/llm';
 const turn = (over: Partial<TurnResult> = {}): TurnResult => ({
   assistantText: 'hello there',
   toolCalls: [],
+  toolResults: [],
   cards: [],
   controlTags: [],
   costUsd: 0,

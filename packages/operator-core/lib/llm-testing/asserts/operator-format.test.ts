@@ -39,6 +39,7 @@ function mkTurn(partial: Partial<TurnResult> = {}): TurnResult {
   return {
     assistantText: '',
     toolCalls: [],
+    toolResults: [],
     cards: [],
     controlTags: [],
     costUsd: 0,

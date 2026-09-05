@@ -107,6 +107,32 @@ export function resolveBlockedSince(
   return carried;
 }
 
+/**
+ * The agent id a caller NAMED IN PROSE while passing no `ref` — or null.
+ *
+ * WHY THIS EXISTS, AND WHY IT IS NOT DOCUMENTATION. The liveness branch above can only
+ * fire for a blocker carrying `kind:'agent'` + `ref`, so a `kind` nobody passes makes the
+ * headline case unreachable — the same "field nobody populates" trap this whole change
+ * exists to close, reintroduced one level down. It is not hypothetical: of 1,014
+ * `blockedOn` declarations in 14 days (measured 2026-09-05), 127 already NAME a session
+ * id in their reason text while passing no ref at all. Those agents know exactly who they
+ * are waiting on; they simply have no idea the structured field would buy them anything.
+ *
+ * D-098 is the precedent, and it is a measured one: `blockedOn` itself sat at ZERO uses
+ * until it was surfaced at the moment it was actionable, and now runs at 10.4% of arms.
+ * So this follows those constraints exactly — advisory, no rejection, no behaviour
+ * change, fail-open — and fires only when the caller has already demonstrated they know
+ * the id, which is what keeps it rare enough to be read rather than becoming scenery.
+ */
+export function suggestBlockerRef(
+  blockedOn: { reason?: string; ref?: string | null } | null | undefined,
+): string | null {
+  if (!blockedOn || typeof blockedOn.reason !== 'string') return null;
+  if (blockedOn.ref?.trim()) return null; // already structured — nothing to suggest
+  const m = /\b((?:su|cup|bee)-[0-9a-f]{6,}(?:-[0-9a-f]+)*)/i.exec(blockedOn.reason);
+  return m ? m[1] : null;
+}
+
 /** The blocker's liveness as returned by THE oracle (`resolveSessionStates`). */
 export interface BlockerLiveness {
   /**

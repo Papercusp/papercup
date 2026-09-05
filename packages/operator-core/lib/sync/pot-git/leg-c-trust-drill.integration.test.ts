@@ -93,7 +93,7 @@ describe('pot-git Leg C trust drill (P-304): tamper / rollback / non-member refu
     const sha1 = await mintCommit(sharedRepo, 'C work 1');
     await writeNamespaceRef(sharedRepo, devC.pubkeyBase64, 'refs/heads/work', sha1);
     const v1 = await buildSigrefs(sharedRepo, devC.pubkeyBase64, devC.sign, { nowMs: 1000 });
-    expect(acceptFetchedSigrefs(v1, devC.pubkeyBase64, null)).toEqual({ ok: true });
+    expect(acceptFetchedSigrefs(v1, devC.pubkeyBase64, null, { allowLegacy: true })).toEqual({ ok: true });
     expect(await reconcileFetchedHeads(sharedRepo, devC.pubkeyBase64, v1)).toEqual([]);
 
     // C signs v2 legitimately over sha2 — then a dishonest RELAY (standing in
@@ -106,7 +106,7 @@ describe('pot-git Leg C trust drill (P-304): tamper / rollback / non-member refu
     await writeNamespaceRef(sharedRepo, devC.pubkeyBase64, 'refs/heads/work', rogue); // the lie, post-signature
 
     // C's own signature is genuinely valid — the relay cannot forge it.
-    expect(acceptFetchedSigrefs(v2, devC.pubkeyBase64, 1)).toEqual({ ok: true });
+    expect(acceptFetchedSigrefs(v2, devC.pubkeyBase64, 1, { allowLegacy: true })).toEqual({ ok: true });
     // The reconcile step catches what the signature check structurally
     // cannot: the served bytes don't match what C actually signed. This
     // mismatch record IS the loud, structured refusal (D-004's receipt/
@@ -127,12 +127,12 @@ describe('pot-git Leg C trust drill (P-304): tamper / rollback / non-member refu
     // A relay replaying the OLDER (already-superseded) snapshot — the
     // signature checks out (it really was signed by C), but the version
     // fence alone must refuse it once a newer version (2) was accepted.
-    expect(acceptFetchedSigrefs(v1, devC.pubkeyBase64, /* priorVersion */ 2)).toEqual({
+    expect(acceptFetchedSigrefs(v1, devC.pubkeyBase64, /* priorVersion */ 2, { allowLegacy: true })).toEqual({
       ok: false,
       reason: 'rollback',
     });
     // Same version replayed is refused too (strict >, not >=).
-    expect(acceptFetchedSigrefs(v1, devC.pubkeyBase64, 1)).toEqual({ ok: false, reason: 'rollback' });
+    expect(acceptFetchedSigrefs(v1, devC.pubkeyBase64, 1, { allowLegacy: true })).toEqual({ ok: false, reason: 'rollback' });
   });
 
   it('non-member fetch of a scope repo is refused by the scope-serve-gate, fail-closed, with a structured refusal', async () => {

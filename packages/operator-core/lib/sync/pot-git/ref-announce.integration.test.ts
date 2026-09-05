@@ -95,7 +95,7 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
     firstAnnouncement = await buildRefAnnouncement(serverRepo, devB.pubkeyBase64, devB.sign, { nowMs: now });
     expect(firstAnnouncement.version).toBe(1);
 
-    const r = await handleRefAnnouncement(mirrorRepo, firstAnnouncement, {
+    const r = await handleRefAnnouncement(mirrorRepo, firstAnnouncement, { allowLegacy: true,
       selfDevice: devA.pubkeyBase64,
       allowedDevices: members(),
       nowMs: now,
@@ -111,7 +111,7 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
   });
 
   it('replaying the same announcement is fenced by the mirror watermark', async () => {
-    const r = await handleRefAnnouncement(mirrorRepo, firstAnnouncement, {
+    const r = await handleRefAnnouncement(mirrorRepo, firstAnnouncement, { allowLegacy: true,
       selfDevice: devA.pubkeyBase64,
       allowedDevices: members(),
       nowMs: ++now,
@@ -127,7 +127,7 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
     const ann = await buildRefAnnouncement(serverRepo, devB.pubkeyBase64, devB.sign, { nowMs: now });
     expect(ann.version).toBe(2);
 
-    const r = await handleRefAnnouncement(mirrorRepo, ann, {
+    const r = await handleRefAnnouncement(mirrorRepo, ann, { allowLegacy: true,
       selfDevice: devA.pubkeyBase64,
       allowedDevices: members(),
       nowMs: now,
@@ -150,7 +150,7 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
     const rogue = await mintCommit(serverRepo, 'relay-injected');
     await writeNamespaceRef(serverRepo, devB.pubkeyBase64, 'refs/heads/work', rogue);
 
-    const r = await handleRefAnnouncement(mirrorRepo, ann, {
+    const r = await handleRefAnnouncement(mirrorRepo, ann, { allowLegacy: true,
       selfDevice: devA.pubkeyBase64,
       allowedDevices: members(),
       nowMs: now,
@@ -173,7 +173,7 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
     expect(sigrefsOid).toBeTruthy();
     // Forged: outsider signs an announcement claiming to be B.
     const forged = await buildRefAnnouncement(serverRepo, devB.pubkeyBase64, outsider.sign, { nowMs: ++now });
-    const rf = await handleRefAnnouncement(mirrorRepo, { ...forged, version: 99 }, {
+    const rf = await handleRefAnnouncement(mirrorRepo, { ...forged, version: 99 }, { allowLegacy: true,
       allowedDevices: members(),
       nowMs: now,
       openStream: () => {
@@ -185,7 +185,7 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
     await writeNamespaceRef(serverRepo, outsider.pubkeyBase64, 'refs/heads/work', await mintCommit(serverRepo, 'x'));
     await buildSigrefs(serverRepo, outsider.pubkeyBase64, outsider.sign, { nowMs: now });
     const alien = await buildRefAnnouncement(serverRepo, outsider.pubkeyBase64, outsider.sign, { nowMs: now });
-    const ra = await handleRefAnnouncement(mirrorRepo, alien, {
+    const ra = await handleRefAnnouncement(mirrorRepo, alien, { allowLegacy: true,
       allowedDevices: members(),
       nowMs: now,
       openStream: () => {
@@ -204,7 +204,7 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
 
     // Budget exhausted by a prior take in this window → deferred, mirror unchanged.
     const before = (await readSigrefs(mirrorRepo, devB.pubkeyBase64))?.version;
-    const r1 = await handleRefAnnouncement(mirrorRepo, ann, {
+    const r1 = await handleRefAnnouncement(mirrorRepo, ann, { allowLegacy: true,
       allowedDevices: members(),
       budget: { state: { windowStartMs: now, count: 1 }, config: cfg },
       nowMs: now,
@@ -216,7 +216,7 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
     expect((await readSigrefs(mirrorRepo, devB.pubkeyBase64))?.version).toBe(before);
 
     // Next window: the same announcement now lands (the sweep semantics).
-    const r2 = await handleRefAnnouncement(mirrorRepo, ann, {
+    const r2 = await handleRefAnnouncement(mirrorRepo, ann, { allowLegacy: true,
       allowedDevices: members(),
       budget: { state: r1.budgetState, config: cfg },
       nowMs: now + cfg.windowMs,
@@ -243,7 +243,7 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
 
     let dialed = false;
     const t0 = Date.now();
-    const r = await handleRefAnnouncement(mirrorRepo, ann, {
+    const r = await handleRefAnnouncement(mirrorRepo, ann, { allowLegacy: true,
       allowedDevices: members(),
       nowMs: now,
       openStream: () => {
@@ -299,7 +299,7 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
     // Six drivers racing for the same repo, exactly as the staggered routines do.
     const drives = await Promise.all(
       Array.from({ length: 6 }, () =>
-        handleRefAnnouncement(mirrorRepo, ann, {
+        handleRefAnnouncement(mirrorRepo, ann, { allowLegacy: true,
           selfDevice: devA.pubkeyBase64,
           allowedDevices: members(),
           nowMs: now,
@@ -346,7 +346,7 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
     const holderEntered = new Promise<void>((resolve) => {
       markHolderEntered = resolve;
     });
-    const holder = handleRefAnnouncement(mirrorRepo, ann, {
+    const holder = handleRefAnnouncement(mirrorRepo, ann, { allowLegacy: true,
       allowedDevices: members(),
       nowMs: now,
       openStream: () => {
@@ -356,7 +356,7 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
       timeoutMs: 300,
     });
     await holderEntered;
-    const collapsed = await handleRefAnnouncement(mirrorRepo, ann, {
+    const collapsed = await handleRefAnnouncement(mirrorRepo, ann, { allowLegacy: true,
       allowedDevices: members(),
       nowMs: now,
       openStream: dial,
@@ -366,7 +366,7 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
     await holder;
 
     // The fence is intact, so a later tick can still mirror this announcement.
-    const retried = await handleRefAnnouncement(mirrorRepo, ann, {
+    const retried = await handleRefAnnouncement(mirrorRepo, ann, { allowLegacy: true,
       allowedDevices: members(),
       nowMs: now,
       openStream: dial,

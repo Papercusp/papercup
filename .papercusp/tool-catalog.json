@@ -2836,7 +2836,7 @@
           "POST"
         ]
       },
-      "description": "Make an outbound HTTP(S) request and return status, headers, and (truncated) body. Body beyond the byte cap spills to a file. The sandbox egress policy bounds which hosts are reachable. For MCP streamable-HTTP POSTs, send Accept: application/json, text/event-stream; application/json alone returns 406. A local ?superuser=1 MCP endpoint also needs Authorization: Bearer <contents of ~/.papercusp/superuser-token>: without it initialize STILL SUCCEEDS, while tools/list and tools/call are refused as HTTP 200 carrying superuser_invalid_bearer in the body — so ok:true is not proof the call was accepted.",
+      "description": "Make an outbound HTTP(S) request and return status, headers, and a bounded body. The server-resolved boundary profile validates every destination, DNS answer, and redirect; confined callers cannot target private addresses, mutate, or forward credentials. Bodies spill only within a hard streamed-download ceiling. For MCP streamable-HTTP POSTs, send Accept: application/json, text/event-stream; application/json alone returns 406. A local ?superuser=1 MCP endpoint also needs Authorization: Bearer <contents of ~/.papercusp/superuser-token>: without it initialize STILL SUCCEEDS, while tools/list and tools/call are refused as HTTP 200 carrying superuser_invalid_bearer in the body — so ok:true is not proof the call was accepted.",
       "capabilities": [
         "capability:net"
       ],
@@ -25956,7 +25956,7 @@
       "guidance": {
         "when": "After a release/gate/deploy wake, or whenever one commit’s truth is scattered across pipeline, gate, deploy, and await reads. Pass path when runtime ownership matters; pass sha for the canonical exact ancestry answer at gate.fixCommitContainment — do not derive it from logs, working-tree diffs, or a hand-run merge-base.",
         "notWhen": "To mutate the release pipeline. Follow the returned nextVerb; release:trace itself never commits, runs a gate, or deploys.",
-        "chaining": "release:trace { path | sha, work_item? } → follow the single non-null nextVerb → after a wake, call release:trace again with after_generation from the prior response."
+        "chaining": "release:trace { path | sha, work_item? } → follow the single non-null nextVerb → after a wake, call release:trace again with after_generation from the prior response. The await verb is progress-certified (default ON): only a `progressing` run yields checkpoint:await; `stalled`/`unknown` route elsewhere — do not re-read lane heartbeats to second-guess it."
       }
     },
     {

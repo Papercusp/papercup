@@ -39,10 +39,17 @@ function mkDeps(
     | 'rescheduleSuppressedWake'
     | 'ensureWakeArmed'
     | 'armWakeForColdRespawn'
+    | 'readBlockerLiveness'
   >
 > {
   return {
     checkFireGate: vi.fn(async () => ({ allow: true, consecutiveErrors: 0 })) as never,
+    // EI-21526226279199560: defaults to the UNMEASURED verdict, so every unrelated test
+    // keeps its wake text stamp-free — an unresolved blocker yields no line by design.
+    readBlockerLiveness: vi.fn(async () => ({
+      sessionState: null,
+      lastActiveMsAgo: null,
+    })) as never,
     recordFire: vi.fn(async () => {}) as never,
     recordWithheld: vi.fn(async () => {}) as never,
     wake: vi.fn(async () => ({
@@ -188,6 +195,48 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
     await fireLoopWake(baseInput, deps2);
     const summary2 = (deps2.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary as string;
     expect(summary2.startsWith(defaultLoopKickoff(baseInput.routineId))).toBe(true);
+  });
+
+  it('re-resolves a persisted blockedOn at FIRE time and stamps a DEAD blocker into the wake (EI-21526226279199560)', async () => {
+    // The bug: `blockedOn` reached the wake only as frozen prose prepended to the kickoff,
+    // so a premise naming a peer that had since ENDED was re-delivered verbatim on every
+    // wake — 2.5h and 6 clean wakes in the measured incident. Re-DELIVERING is not
+    // re-EVALUATING; this test is the difference between the two.
+    const deps = mkDeps({
+      readBlockerLiveness: vi.fn(async () => ({
+        sessionState: 'ended',
+        lastActiveMsAgo: 3 * 60 * 60 * 1000,
+      })) as never,
+    });
+
+    await fireLoopWake(
+      {
+        ...baseInput,
+        payloadTemplate: {
+          kickoff: 'work plan X',
+          blockedOn: {
+            reason: 'freeze imposed by su-d6ae254f, cannot touch the tree until it lifts',
+            kind: 'agent',
+            ref: 'su-d6ae254f',
+            since: new Date(Date.now() - 2.5 * 60 * 60 * 1000).toISOString(),
+          },
+        },
+      },
+      deps,
+    );
+
+    expect(deps.readBlockerLiveness).toHaveBeenCalledWith('su-d6ae254f', expect.anything());
+    const summary = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0][1].summary as string;
+    expect(summary).toContain('THE AGENT YOU ARE BLOCKED ON IS DEAD');
+    expect(summary).toContain('su-d6ae254f');
+    // The stamp ANNOTATES the kickoff; it never replaces it.
+    expect(summary).toContain('work plan X');
+  });
+
+  it('reads no liveness at all when the loop declared no blocker — the overwhelming majority of fires', async () => {
+    const deps = mkDeps({ readBlockerLiveness: vi.fn() as never });
+    await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: 'work plan X' } }, deps);
+    expect(deps.readBlockerLiveness).not.toHaveBeenCalled();
   });
 
   it('appends open owner directives without replacing the routine kickoff', async () => {

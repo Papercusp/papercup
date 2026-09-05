@@ -360,7 +360,7 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
     let firstAnnouncement: SignedRefAnnouncement;
 
     it('no-ops on an empty batch', async () => {
-      const out = await runRefAnnounceReceiveTick({
+      const out = await runRefAnnounceReceiveTick({ allowLegacy: true,
         repoPath: repoA,
         pending: [],
         openStream: dial,
@@ -384,7 +384,7 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
       expect(t1.announcement).not.toBeNull();
       firstAnnouncement = t1.announcement as SignedRefAnnouncement;
 
-      const out = await runRefAnnounceReceiveTick({
+      const out = await runRefAnnounceReceiveTick({ allowLegacy: true,
         repoPath: repoA,
         pending: [firstAnnouncement],
         selfDevice: devA.pubkeyBase64,
@@ -404,7 +404,7 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
 
       // Replaying the SAME announcement in a later tick is fenced — never
       // throws, never halts a batch that also has other work.
-      const replay = await runRefAnnounceReceiveTick({
+      const replay = await runRefAnnounceReceiveTick({ allowLegacy: true,
         repoPath: repoA,
         pending: [firstAnnouncement],
         selfDevice: devA.pubkeyBase64,
@@ -435,7 +435,7 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
       const forged = await buildRefAnnouncement(repoB, devD.pubkeyBase64, outsider.sign, { nowMs: 6_000 });
 
       let openedForForged = false;
-      const out = await runRefAnnounceReceiveTick({
+      const out = await runRefAnnounceReceiveTick({ allowLegacy: true,
         repoPath: repoA,
         pending: [{ ...forged, version: 99 }, legit],
         allowedDevices: [devD.pubkeyBase64],
@@ -475,7 +475,7 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
       expect(announcement).not.toBeNull();
 
       let dials = 0;
-      const out = await runRefAnnounceReceiveTick({
+      const out = await runRefAnnounceReceiveTick({ allowLegacy: true,
         repoPath: repoA,
         // Three queued announcements from the same device (a replayed row is a
         // faithful model: the mirror never gains the ref, so every one of them
@@ -527,7 +527,7 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
       const announcement = tG.announcement as SignedRefAnnouncement;
       expect(announcement).not.toBeNull();
 
-      const out = await runRefAnnounceReceiveTick({
+      const out = await runRefAnnounceReceiveTick({ allowLegacy: true,
         repoPath: repoA,
         pending: [announcement],
         selfDevice: devA.pubkeyBase64,

@@ -61,7 +61,7 @@ function run(pending: SignedStagingAdvance[], script: Script, extra: Partial<Par
     worktreePath: '/nonexistent/wt',
     pending,
     prior: { epochSeq: null, stagingSha: null },
-    accept: { allowedDevices: [DEV_A, DEV_B] },
+    accept: { allowLegacy: true, allowedDevices: [DEV_A, DEV_B] },
     handle,
     ...extra,
   }).then((out) => ({ out, seen }));
@@ -175,7 +175,7 @@ describe('runWorktreeBridgeTick — a fetch failure does not head-of-line block 
       worktreePath: '/nonexistent/wt',
       pending: [advance(1, 1, DEV_A), advance(1, 2, DEV_A), advance(1, 3, DEV_B), advance(1, 4, DEV_A)],
       prior: { epochSeq: null, stagingSha: null },
-      accept: { allowedDevices: [DEV_A, DEV_B] },
+      accept: { allowLegacy: true, allowedDevices: [DEV_A, DEV_B] },
       openDuplex,
       handle,
     });

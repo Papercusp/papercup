@@ -30,15 +30,25 @@ vi.mock('../embedded-pg-discovery', () => ({
 const { persistRunReport, decompressTranscript } = await import('./storage');
 
 const RUN_ID = '11111111-1111-1111-1111-111111111111';
+const PERSISTENCE_SECRET = `sk-${'p'.repeat(48)}`;
 let rootSql: postgres.Sql;
 
 // Minimal RunReport — only the fields persistSingleRun reads (cast past the rich type).
 function makeReport() {
   const turn = (rawSseTape: unknown[]) => ({
-    rawSseTape, assistantText: 'hi', toolCalls: [], cards: [], controlTags: [],
+    rawSseTape, assistantText: 'hi', toolCalls: [], toolResults: [], cards: [], controlTags: [],
     finishReason: 'stop', costUsd: 0.1, latencyMs: 5, error: null,
   });
-  const firstTurn = turn([{ e: 'a' }]);
+  const firstTurn = {
+    ...turn([{ e: 'a' }]),
+    toolResults: [{
+      name: 'work_items:get',
+      output: JSON.stringify({ apiKey: PERSISTENCE_SECRET, results: [{ id: 'WI-200' }] }),
+      isError: false,
+      truncated: false,
+      sourceChars: 100,
+    }],
+  };
   const secondTurn = turn([{ e: 'b' }, { e: 'c' }]);
   const summary = {
     runId: RUN_ID, scenarioId: 'sc-1', scenarioVersion: 1, identityHash: 'idh',
@@ -138,6 +148,10 @@ describe('persistRunReport (PG)', () => {
     expect(r.transcript_norm_json).toEqual([
       expect.objectContaining({
         idx: 0,
+        toolResults: [expect.objectContaining({
+          name: 'work_items:get',
+          output: expect.stringContaining('[redacted]'),
+        })],
         userText: 'Please approve this write.',
         simThought: 'needs approval',
         simKind: 'text',
@@ -149,6 +163,7 @@ describe('persistRunReport (PG)', () => {
         simKind: 'choice',
       }),
     ]);
+    expect(JSON.stringify(r.transcript_norm_json)).not.toContain(PERSISTENCE_SECRET);
   });
 
   it('writes one findings row per violation (assert) + per judge finding (judge)', async () => {

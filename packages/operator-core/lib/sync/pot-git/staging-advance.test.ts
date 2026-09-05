@@ -59,18 +59,18 @@ describe('staging-advance (G-5d epoch fencing, pure)', () => {
     const kp = keypair();
     const prior = { epoch: 2, seq: 5 };
     // Higher seq, same epoch.
-    expect(acceptStagingAdvance(await advance(kp, 2, 6), prior)).toEqual({ ok: true });
+    expect(acceptStagingAdvance(await advance(kp, 2, 6), prior, { allowLegacy: true })).toEqual({ ok: true });
     // Higher epoch, seq resets.
-    expect(acceptStagingAdvance(await advance(kp, 3, 0), prior)).toEqual({ ok: true });
+    expect(acceptStagingAdvance(await advance(kp, 3, 0), prior, { allowLegacy: true })).toEqual({ ok: true });
     // Equal → replay, rejected.
-    expect(acceptStagingAdvance(await advance(kp, 2, 5), prior)).toEqual({ ok: false, reason: 'stale-epoch-seq' });
+    expect(acceptStagingAdvance(await advance(kp, 2, 5), prior, { allowLegacy: true })).toEqual({ ok: false, reason: 'stale-epoch-seq' });
     // Lower seq, same epoch → stale.
-    expect(acceptStagingAdvance(await advance(kp, 2, 4), prior)).toEqual({ ok: false, reason: 'stale-epoch-seq' });
+    expect(acceptStagingAdvance(await advance(kp, 2, 4), prior, { allowLegacy: true })).toEqual({ ok: false, reason: 'stale-epoch-seq' });
     // Lower epoch with a huge seq → STILL stale (epoch dominates — this is the
     // late advance from a fenced ex-authority).
-    expect(acceptStagingAdvance(await advance(kp, 1, 999), prior)).toEqual({ ok: false, reason: 'stale-epoch-seq' });
+    expect(acceptStagingAdvance(await advance(kp, 1, 999), prior, { allowLegacy: true })).toEqual({ ok: false, reason: 'stale-epoch-seq' });
     // No prior → anything valid is accepted.
-    expect(acceptStagingAdvance(await advance(kp, 0, 0), null)).toEqual({ ok: true });
+    expect(acceptStagingAdvance(await advance(kp, 0, 0), null, { allowLegacy: true })).toEqual({ ok: true });
   });
 
   it('rejects a bad signature and a forged device', async () => {
@@ -78,7 +78,7 @@ describe('staging-advance (G-5d epoch fencing, pure)', () => {
     const forger = keypair();
     const adv = await advance(kp, 3, 1);
     // Corrupt the sig.
-    expect(acceptStagingAdvance({ ...adv, sig: Buffer.alloc(64).toString('base64') }, null)).toEqual({
+    expect(acceptStagingAdvance({ ...adv, sig: Buffer.alloc(64).toString('base64') }, null, { allowLegacy: true })).toEqual({
       ok: false,
       reason: 'bad-signature',
     });
@@ -87,22 +87,22 @@ describe('staging-advance (G-5d epoch fencing, pure)', () => {
       { devicePubkeyBase64: kp.pubkeyBase64, epoch: 9, seq: 0, stagingSha: SHA_A, nowMs: 1 },
       forger.sign,
     );
-    expect(acceptStagingAdvance(forged, null)).toEqual({ ok: false, reason: 'bad-signature' });
+    expect(acceptStagingAdvance(forged, null, { allowLegacy: true })).toEqual({ ok: false, reason: 'bad-signature' });
   });
 
   it('gates the embedded device via expectedDevice / allowedDevices', async () => {
     const kp = keypair();
     const other = keypair();
     const adv = await advance(kp, 1, 1);
-    expect(acceptStagingAdvance(adv, null, { expectedDevice: kp.pubkeyBase64 })).toEqual({ ok: true });
-    expect(acceptStagingAdvance(adv, null, { expectedDevice: other.pubkeyBase64 })).toEqual({
+    expect(acceptStagingAdvance(adv, null, { allowLegacy: true, expectedDevice: kp.pubkeyBase64 })).toEqual({ ok: true });
+    expect(acceptStagingAdvance(adv, null, { allowLegacy: true, expectedDevice: other.pubkeyBase64 })).toEqual({
       ok: false,
       reason: 'wrong-device',
     });
-    expect(acceptStagingAdvance(adv, null, { allowedDevices: [other.pubkeyBase64, kp.pubkeyBase64] })).toEqual({
+    expect(acceptStagingAdvance(adv, null, { allowLegacy: true, allowedDevices: [other.pubkeyBase64, kp.pubkeyBase64] })).toEqual({
       ok: true,
     });
-    expect(acceptStagingAdvance(adv, null, { allowedDevices: [other.pubkeyBase64] })).toEqual({
+    expect(acceptStagingAdvance(adv, null, { allowLegacy: true, allowedDevices: [other.pubkeyBase64] })).toEqual({
       ok: false,
       reason: 'wrong-device',
     });
@@ -111,13 +111,13 @@ describe('staging-advance (G-5d epoch fencing, pure)', () => {
   it('rejects malformed envelopes (negative/non-integer epoch or seq, bad sha)', async () => {
     const kp = keypair();
     const adv = await advance(kp, 1, 1);
-    expect(acceptStagingAdvance({ ...adv, epoch: -1 }, null)).toEqual({ ok: false, reason: 'malformed' });
-    expect(acceptStagingAdvance({ ...adv, seq: 1.5 }, null)).toEqual({ ok: false, reason: 'malformed' });
-    expect(acceptStagingAdvance({ ...adv, staging_sha: 'not-a-sha' }, null)).toEqual({
+    expect(acceptStagingAdvance({ ...adv, epoch: -1 }, null, { allowLegacy: true })).toEqual({ ok: false, reason: 'malformed' });
+    expect(acceptStagingAdvance({ ...adv, seq: 1.5 }, null, { allowLegacy: true })).toEqual({ ok: false, reason: 'malformed' });
+    expect(acceptStagingAdvance({ ...adv, staging_sha: 'not-a-sha' }, null, { allowLegacy: true })).toEqual({
       ok: false,
       reason: 'malformed',
     });
-    expect(acceptStagingAdvance(null as unknown as SignedStagingAdvance, null)).toEqual({
+    expect(acceptStagingAdvance(null as unknown as SignedStagingAdvance, null, { allowLegacy: true })).toEqual({
       ok: false,
       reason: 'malformed',
     });
@@ -125,7 +125,7 @@ describe('staging-advance (G-5d epoch fencing, pure)', () => {
 
   it('binds context in v2 and rejects a valid signature from another repository or legacy peer', async () => {
     const kp = keypair();
-    const context = makeSignedProtocolContext('hive-a', 'gh-1');
+    const context = makeSignedProtocolContext('hive-a', 'gh-1', 'sg2-1-' + 'a'.repeat(40));
     const adv = await signStagingAdvance(
       { devicePubkeyBase64: kp.pubkeyBase64, epoch: 1, seq: 1, stagingSha: SHA_A, nowMs: 1_000, context },
       kp.sign,
@@ -154,14 +154,14 @@ describe('staging-advance (G-5d epoch fencing, pure)', () => {
       // the cap this was ACCEPTED (member set passes, sig is self-consistent,
       // (1e9, 0) > (2, 5)) — poisoning the watermark unrecoverably.
       const poison = await advance(insider, 1_000_000_000, 0);
-      expect(acceptStagingAdvance(poison, prior, { allowedDevices: members })).toEqual({ ok: true }); // the documented hole
+      expect(acceptStagingAdvance(poison, prior, { allowLegacy: true, allowedDevices: members })).toEqual({ ok: true }); // the documented hole
       expect(
-        acceptStagingAdvance(poison, prior, { allowedDevices: members, maxGrantedEpoch: 2 }),
+        acceptStagingAdvance(poison, prior, { allowLegacy: true, allowedDevices: members, maxGrantedEpoch: 2 }),
       ).toEqual({ ok: false, reason: 'ungranted-epoch' });
 
       // Legitimate advances at/below the granted epoch still pass.
       expect(
-        acceptStagingAdvance(await advance(authority, 2, 6), prior, {
+        acceptStagingAdvance(await advance(authority, 2, 6), prior, { allowLegacy: true,
           allowedDevices: members,
           maxGrantedEpoch: 2,
         }),
@@ -174,11 +174,11 @@ describe('staging-advance (G-5d epoch fencing, pure)', () => {
       const bumped = await advance(authority, 3, 0);
       // Before the receiver verifies the G-0 handoff, epoch 3 is ungranted…
       expect(
-        acceptStagingAdvance(bumped, prior, { allowedDevices: [authority.pubkeyBase64], maxGrantedEpoch: 2 }),
+        acceptStagingAdvance(bumped, prior, { allowLegacy: true, allowedDevices: [authority.pubkeyBase64], maxGrantedEpoch: 2 }),
       ).toEqual({ ok: false, reason: 'ungranted-epoch' });
       // …after adopting the token (nextEpoch = 3) it is granted and accepted.
       expect(
-        acceptStagingAdvance(bumped, prior, { allowedDevices: [authority.pubkeyBase64], maxGrantedEpoch: 3 }),
+        acceptStagingAdvance(bumped, prior, { allowLegacy: true, allowedDevices: [authority.pubkeyBase64], maxGrantedEpoch: 3 }),
       ).toEqual({ ok: true });
     });
 
@@ -191,13 +191,13 @@ describe('staging-advance (G-5d epoch fencing, pure)', () => {
       // CURRENT epoch.
       const seqPoison = await advance(insider, 2, 1_000_000_000);
       expect(
-        acceptStagingAdvance(seqPoison, { epoch: 2, seq: 5 }, { allowedDevices: members, maxGrantedEpoch: 2 }),
+        acceptStagingAdvance(seqPoison, { epoch: 2, seq: 5 }, { allowLegacy: true, allowedDevices: members, maxGrantedEpoch: 2 }),
       ).toEqual({ ok: true });
 
       // The real authority recovers at the NEXT epoch grant: (3, 0) > (2, 1e9).
       const recovered = await advance(authority, 3, 0);
       expect(
-        acceptStagingAdvance(recovered, { epoch: 2, seq: 1_000_000_000 }, {
+        acceptStagingAdvance(recovered, { epoch: 2, seq: 1_000_000_000 }, { allowLegacy: true,
           allowedDevices: members,
           maxGrantedEpoch: 3,
         }),
@@ -208,10 +208,10 @@ describe('staging-advance (G-5d epoch fencing, pure)', () => {
       const authority = keypair();
       const over = await advance(authority, 9, 0);
       expect(
-        acceptStagingAdvance(over, null, { expectedDevice: authority.pubkeyBase64, maxGrantedEpoch: 8 }),
+        acceptStagingAdvance(over, null, { allowLegacy: true, expectedDevice: authority.pubkeyBase64, maxGrantedEpoch: 8 }),
       ).toEqual({ ok: false, reason: 'ungranted-epoch' });
       expect(
-        acceptStagingAdvance(over, null, { expectedDevice: authority.pubkeyBase64, maxGrantedEpoch: 9 }),
+        acceptStagingAdvance(over, null, { allowLegacy: true, expectedDevice: authority.pubkeyBase64, maxGrantedEpoch: 9 }),
       ).toEqual({ ok: true });
     });
   });

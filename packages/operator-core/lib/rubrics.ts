@@ -67,10 +67,11 @@ import { withPlanLock, bumpUpdatedDate } from './agent-tools/plans/with-plan-loc
 import {
   withAcceptanceBarAmendmentTransaction,
   acceptanceBarAmendmentKey,
+  synchronizeAcceptanceBarRevision,
   type AcceptanceBarAmendmentSql,
 } from './acceptance-bar-amendment';
 import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
-import { setSpecClause, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
+import type { SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 import { appendDecisionToBody, allocateNextDecisionId } from './agent-tools/plans/add-decision';
 import { setFrontmatterScalar } from './agent-tools/plans/transfer-owner';
 import { deriveIndexFromContent } from './agent-tools/plans/source';
@@ -2704,8 +2705,9 @@ async function amendAcceptanceBarRubric(
          WHERE c.workspace_id = ${subjectScope.workspaceId}
            AND c.harness_slug = ${subjectScope.harnessSlug}
            AND c.plan_slug = ${subjectPlanHint}
-           AND r.source_bar_key = ANY(${changedBars}::text[])
-         ORDER BY c.spec_id`;
+           AND r.source_bar_key IS NOT NULL
+         ORDER BY c.spec_id LIMIT 1001`;
+      if (clauses.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
       const itemIds = [...new Set(clauses.map((clause) => clause.plan_item_id))];
       const itemRows = itemIds.length
         ? await tx<{ item_id: string; status: string }[]>`
@@ -2797,49 +2799,15 @@ async function amendAcceptanceBarRubric(
            AND plan_slug = ${subjectPlanHint}`;
       await writePlanIndexRows(tx as never, { workspaceId: subjectScope.workspaceId, harnessSlug: subjectScope.harnessSlug, planSlug: subjectPlanHint }, subjectIdx);
 
-      const newClauseRevisions = new Map<string, number>();
-      for (const clause of clauses) {
-        const sourceBarKey = String(clause.source_bar_key ?? '');
-        const resolvedCriterion = (guard.data.criteria as Array<Record<string, unknown>>).find(
-          (candidate) => String(candidate.barKey ?? candidate.key) === sourceBarKey,
-        );
-        if (!resolvedCriterion) continue;
-        const result = await setSpecClause(
-          {
-            planSlug: subjectPlanHint,
-            specId: clause.spec_id,
-            sourceValId: clause.source_val_id,
-            expectedRevision: Number(clause.current_revision),
-            planItemId: clause.plan_item_id,
-            behavior: String(resolvedCriterion.model ?? clause.behavior),
-            behaviorClass: clause.behavior_class,
-            requiredEvidence: clause.required_evidence,
-            requiredTestLayers: clause.required_test_layers,
-            mutationRequired: clause.mutation_required,
-            lifecycleStatus: clause.lifecycle_status,
-            supersedes: clause.supersedes_spec_id && clause.supersedes_revision
-              ? { specId: clause.supersedes_spec_id, revision: Number(clause.supersedes_revision) }
-              : null,
-            exemption: clause.exemption,
-            falsifier: { observation: String(resolvedCriterion.driftMarkers ?? '') },
-            acceptanceRef: `${input.rubricId}@${nextRubricRevision}:${sourceBarKey}`,
-            sourceBar: {
-              barKey: sourceBarKey,
-              barHash: String(resolvedCriterion.barHash),
-              barSetHash: String(guard.data.barSetHash),
-              rubricSlug: input.rubricId,
-              rubricRevision: nextRubricRevision,
-              evidencePlane: String(resolvedCriterion.evidencePlane ?? 'tree') as 'tree' | 'deployed' | 'live',
-            },
-            actorId,
-          },
-          { executor: tx as never, workspaceId: subjectScope.workspaceId, harnessSlug: subjectScope.harnessSlug },
-        );
-        if (result.status !== 'created' && result.status !== 'revised' && result.status !== 'unchanged') {
-          throw new Error(`acceptance_bar_amendment_projection_conflict:${clause.spec_id}:${result.status}`);
-        }
-        newClauseRevisions.set(clause.spec_id, result.revision ?? Number(clause.current_revision));
-      }
+      // Every projection pins the GLOBAL rubric revision and BAR-set hash,
+      // including BARs whose individual meaning did not change.
+      const newClauseRevisions = await synchronizeAcceptanceBarRevision(tx as never, {
+        ...subjectScope,
+        rubricSlug: input.rubricId,
+        rubricRevision: nextRubricRevision,
+        templateData: guard.data,
+        actorId,
+      });
       injectAmendmentFault(input, 'after-projection');
 
       let reboundContracts = 0;
@@ -2879,10 +2847,13 @@ async function amendAcceptanceBarRubric(
       injectAmendmentFault(input, 'after-rebind');
 
       const evidence = await tx<{ count: string }[]>`
-        SELECT count(*)::text AS count FROM harness_shared.spec_evidence_bindings
-         WHERE workspace_id = ${subjectScope.workspaceId} AND harness_slug = ${subjectScope.harnessSlug}
-           AND plan_slug = ${subjectPlanHint} AND spec_id = ANY(${clauses.map((c) => c.spec_id)}::text[])
-           AND spec_revision < ${Math.max(...[...newClauseRevisions.values(), oldSubjectRevision])}`;
+        SELECT count(*)::text AS count FROM harness_shared.spec_evidence_bindings e
+          JOIN harness_shared.plan_spec_clauses c
+            ON c.workspace_id = e.workspace_id AND c.harness_slug = e.harness_slug
+           AND c.plan_slug = e.plan_slug AND c.spec_id = e.spec_id
+         WHERE e.workspace_id = ${subjectScope.workspaceId} AND e.harness_slug = ${subjectScope.harnessSlug}
+           AND e.plan_slug = ${subjectPlanHint} AND e.spec_id = ANY(${clauses.map((c) => c.spec_id)}::text[])
+           AND e.spec_revision < c.current_revision`;
       const scorecards = await tx<{ count: string }[]>`
         SELECT count(*)::text AS count FROM harness_shared.work_items
          WHERE workspace_id = ${subjectScope.workspaceId}

@@ -134,11 +134,11 @@ describe('publishForeignResult → importForeignResultToCanonical', () => {
     // …and CONFINED: the hive-wide integrator refuses claim-bearing sigrefs
     // (D-017 n2), while a scope integrator opts in.
     expect(sigrefsCarryOriginClaims(stored!)).toBe(true);
-    expect(acceptFetchedSigrefs(stored!, kp.pubkeyBase64, null)).toEqual({
+    expect(acceptFetchedSigrefs(stored!, kp.pubkeyBase64, null, { allowLegacy: true })).toEqual({
       ok: false,
       reason: 'origin-claim-outside-scope',
     });
-    expect(acceptFetchedSigrefs(stored!, kp.pubkeyBase64, null, { allowOriginClaims: true })).toEqual({
+    expect(acceptFetchedSigrefs(stored!, kp.pubkeyBase64, null, { allowLegacy: true, allowOriginClaims: true })).toEqual({
       ok: true,
     });
 

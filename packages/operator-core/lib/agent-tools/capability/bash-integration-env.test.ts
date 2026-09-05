@@ -20,7 +20,14 @@ vi.mock('../../integration-credentials', () => ({
 }));
 vi.mock('./exec-sandbox', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./exec-sandbox')>()),
-  capabilityExecSandboxEnabled: vi.fn(async () => false),
+  // This suite owns credential injection/redaction, not operation-profile
+  // classification. Keep its child-process fixture on the trusted/raw path;
+  // boundary-profile.test.ts pins the real policy seam separately.
+  capabilityExecSandboxPolicy: vi.fn(async () => ({
+    enabled: false,
+    required: false,
+    profile: { kind: 'trusted', reason: 'system-operator' },
+  })),
 }));
 
 import bashTool from './bash';

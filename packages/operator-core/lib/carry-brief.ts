@@ -280,6 +280,58 @@ const INACTIVE_LOOP_NOTE_STALE_MS = 24 * 60 * 60_000;
  * superseded by work later in the very same pre-cut session. */
 const HELD_ITEM_CHECKPOINT_STALE_MARGIN_MS = 2 * 60_000;
 
+/**
+ * EI-20375177522112122: a cold successor reads its held work-item ids here and
+ * has, twice, passed one straight to `coord:declare-intent { items }` — which
+ * takes the PLAN-item namespace (P-NNN) and rejects a WI-/EI- id outright. The
+ * existing mitigation (EI-21139039044360936) is at the point of FAILURE: the
+ * refusal string now names the route. This is the same correction at the point
+ * of READ, where the successor still has a choice to make.
+ *
+ * ⚠ The filing proposed "relocating the join declare-intent already runs for
+ * validation". No such join exists: declare-intent rejects a work-item id with
+ * a zod REGEX (`/^P-\d{3,}$/`) before any query, and its one DB check
+ * (`planItemsForRow`) resolves plan-slug → that plan's parsed items — it never
+ * maps a work-item to a plan-item. So nothing is relocated and no query is
+ * added: `sourcePlanSlug`/`sourcePlanItemIds` are ALREADY on the held row this
+ * renderer loaded (see the held-items SELECT above), and this only renders them.
+ *
+ * The three states are deliberately distinct. `undefined` means the binding was
+ * NOT LOADED (an injected test read may omit the columns), and rendering
+ * "no plan-item" for it would assert an absence from a measurement never taken —
+ * the false-negative class this repo treats as a defect, not a rounding. Only a
+ * loaded-and-empty binding is reported as none.
+ */
+function renderDeclareIntentLane(h: {
+  id: string;
+  sourcePlanSlug?: string | null;
+  sourcePlanItemIds?: string[] | null;
+}): string {
+  // Not loaded ⇒ say nothing. Never infer absence from an unasked question.
+  if (h.sourcePlanSlug === undefined && h.sourcePlanItemIds === undefined) return '';
+  const slug = h.sourcePlanSlug?.trim() || null;
+  const items = (h.sourcePlanItemIds ?? []).filter((i) => typeof i === 'string' && i.trim() !== '');
+  const never = `${h.id} is a WORK-item id and \`items\` rejects it (P-NNN only)`;
+  if (slug && items.length > 0) {
+    return (
+      `\n    declare-intent lane: plan '${slug}' → ${items.join(', ')} — pass THOSE ids as ` +
+      `coord:declare-intent { current_plan_slug: '${slug}', items: [${items.map((i) => `'${i}'`).join(', ')}] }; ${never}.`
+    );
+  }
+  if (slug) {
+    // Bound to a plan but carrying no item id: real, and not the same as "none".
+    return (
+      `\n    declare-intent lane: plan '${slug}', but NO plan-item id is recorded on this row — ` +
+      `read plans:items { slug: '${slug}' } to find your P-NNN before declaring a lane; ${never}.`
+    );
+  }
+  return (
+    `\n    declare-intent lane: none — this work-item has no plan-item binding, so pass NO \`items\` at all ` +
+    `(omit it; \`items: []\` with no plan is a presence re-declaration, not a lane). Name ${h.id} in \`intent\` instead — ` +
+    `scheduler:get_next already declared it when it claimed.`
+  );
+}
+
 /** `HH:MM` (UTC) for the superseded-checkpoint flag — compact, sortable, and
  *  unambiguous next to another such stamp in the same line. */
 function fmtClock(ms: number): string {
@@ -1517,6 +1569,7 @@ export function renderCarryBriefColdExtras(
     };
     const lines = brief.heldItems.map((h) => {
       const title = h.title ? ` — ${cap(h.title, COLD_TITLE_CAP)}` : '';
+      const lane = renderDeclareIntentLane(h);
       // EI-20467754551087390: checkpoint prose commonly names files relative to
       // the held item's harness repository. A cold successor may be running from
       // a different harness/workspace root, so state the path scope next to the
@@ -1547,7 +1600,7 @@ export function renderCarryBriefColdExtras(
             `${excerptCheckpoint(h)}`
           : `\n    checkpoint: ${excerptCheckpoint(h)}`;
       }
-      return `  • ${h.id}${title}${pathScope}${ckpt}`;
+      return `  • ${h.id}${title}${lane}${pathScope}${ckpt}`;
     });
     sections.push(
       `You HELD these work-items as of just before this respawn (the full checkpoint re-injects on the item's next invocation; refresh it before ending). ` +

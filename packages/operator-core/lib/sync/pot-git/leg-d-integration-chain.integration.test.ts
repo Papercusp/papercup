@@ -206,7 +206,7 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
       worktreePath: otherMachineWt,
       pending: [announcement],
       prior: { epochSeq: null, stagingSha: null },
-      accept: { expectedDevice: integrator.pubkeyBase64 },
+      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
     });
 
     expect(tickOut.ran).toBe(true);
@@ -259,7 +259,7 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
       worktreePath: lockedWt,
       pending: [(globalThis as unknown as { __legd: { announcement: import('./staging-advance').SignedStagingAdvance } }).__legd.announcement],
       prior: { epochSeq: null, stagingSha: null },
-      accept: { expectedDevice: integrator.pubkeyBase64 },
+      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
     });
     expect(seed.ran).toBe(true);
     expect(seed.results[0]?.bridge.outcome).toBe('accepted');
@@ -273,7 +273,7 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
       worktreePath: lockedWt,
       pending: [out2.announcement!],
       prior: seed.watermark,
-      accept: { expectedDevice: integrator.pubkeyBase64 },
+      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
     });
 
     expect(advanceOut.ran).toBe(true);

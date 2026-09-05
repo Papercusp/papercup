@@ -201,7 +201,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       worktreePath: wt,
       pending: [],
       prior,
-      accept: { expectedDevice: integrator.pubkeyBase64 },
+      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
       openDuplex,
     });
     expect(out).toEqual({
@@ -228,7 +228,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       worktreePath: wt,
       pending: [await announce(1, 1, s1), await announce(1, 2, s2)],
       prior: { epochSeq: null, stagingSha: null },
-      accept: { expectedDevice: integrator.pubkeyBase64 },
+      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
       openDuplex,
     });
     expect(out.ran).toBe(true);
@@ -252,7 +252,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       worktreePath: wt,
       pending: [stale, fresh],
       prior: priorWatermark,
-      accept: { expectedDevice: integrator.pubkeyBase64 },
+      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
       openDuplex,
     });
     expect(out.ran).toBe(true);
@@ -283,7 +283,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       worktreePath: wt,
       pending: [a4, a5],
       prior: priorWatermark,
-      accept: { expectedDevice: integrator.pubkeyBase64 },
+      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
       openDuplex: deadOpenDuplex,
     });
     expect(out.ran).toBe(true);
@@ -314,7 +314,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       worktreePath: wt,
       pending: [ghost, alsoPending],
       prior: priorWatermark,
-      accept: { expectedDevice: integrator.pubkeyBase64 },
+      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
       // no openDuplex — the unknown sha rejects pre-fetch
     });
     expect(out.ran).toBe(true);
@@ -336,7 +336,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       worktreePath: wt,
       pending: [successor],
       prior: priorWatermark,
-      accept: { expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 1 },
+      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 1 },
     });
     expect(out.ran).toBe(true);
     expect(out.unprocessedFromIndex).toBe(0);
@@ -352,7 +352,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       worktreePath: wt,
       pending: [stale],
       prior: priorWatermark,
-      accept: { expectedDevice: integrator.pubkeyBase64 },
+      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
     });
     expect(out.ran).toBe(true);
     expect(out.unprocessedFromIndex).toBe(null); // fully processed — cursor consumes it
@@ -368,7 +368,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       worktreePath: wt2,
       pending: [await announce(1, 3, s3)],
       prior: { epochSeq: null, stagingSha: null },
-      accept: { expectedDevice: integrator.pubkeyBase64 },
+      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
       // no openDuplex
     });
     expect(out.ran).toBe(true);
@@ -386,7 +386,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
         worktreePath: wt,
         pending: [await announce(1, 6, s3)],
         prior: { epochSeq: { epoch: 1, seq: 3 }, stagingSha: s3 },
-        accept: {},
+        accept: { allowLegacy: true,},
       }),
     ).rejects.toThrow(/device gate/);
   });
@@ -407,7 +407,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
         worktreePath: wt,
         pending: [await announce(2, 1, s3)],
         prior: { epochSeq: { epoch: 1, seq: 3 }, stagingSha: bogus },
-        accept: { expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
+        accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
         openDuplex,
       });
       expect(out.ran).toBe(true);
@@ -430,7 +430,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
         worktreePath: wt,
         pending: [await announce(2, 2, s1)],
         prior: { epochSeq: { epoch: 2, seq: 1 }, stagingSha: bogus },
-        accept: { expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
+        accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
         openDuplex,
       });
       expect(out.ran).toBe(true);
@@ -468,7 +468,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
         worktreePath: wt,
         pending: [await announce(2, 3, s1), await announce(2, 4, s2), await announce(2, 5, s1)],
         prior: priorWatermark,
-        accept: { expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
+        accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
         openDuplex,
       });
 
@@ -506,7 +506,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       worktreePath: wt,
       pending: [await announce(2, 6, s1), await announce(2, 7, s4)],
       prior: { epochSeq: { epoch: 2, seq: 2 }, stagingSha: s3 },
-      accept: { expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
+      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
       openDuplex,
     });
     expect(out.results).toHaveLength(2);
@@ -541,7 +541,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       worktreePath: wt,
       pending: [incoming],
       prior,
-      accept: { expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
+      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
       openDuplex: async () => {
         markEntered();
         await fetchGate;
@@ -555,7 +555,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       worktreePath: wt,
       pending: [incoming],
       prior,
-      accept: { expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
+      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
       openDuplex: () => Promise.reject(new Error('collapsed drive must not dial')),
     });
     expect(collapsed.results[0].bridge).toEqual({ outcome: 'already-in-flight' });
@@ -597,7 +597,7 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       worktreePath: wt,
       pending: [ghost, real],
       prior,
-      accept: { allowedDevices: [integrator.pubkeyBase64, deadDevice.pubkeyBase64], maxGrantedEpoch: 2 },
+      accept: { allowLegacy: true, allowedDevices: [integrator.pubkeyBase64, deadDevice.pubkeyBase64], maxGrantedEpoch: 2 },
       openDuplex: (device: string) => {
         dialedDevices.push(device);
         return device === deadDevice.pubkeyBase64 ? Promise.reject(new Error('no live dial path')) : openDuplex();

@@ -96,21 +96,21 @@ describe('pot-git sigrefs (real bare repo, injected signer)', () => {
   it('acceptFetchedSigrefs: newer → ok; same/older → rollback; bad sig → bad-signature', async () => {
     const v2 = await readSigrefs(repo, devA);
     // A receiver at prior version 1 accepts v2.
-    expect(acceptFetchedSigrefs(v2!, devA, 1)).toEqual({ ok: true });
+    expect(acceptFetchedSigrefs(v2!, devA, 1, { allowLegacy: true })).toEqual({ ok: true });
     // No prior (first ever) accepts.
-    expect(acceptFetchedSigrefs(v2!, devA, null)).toEqual({ ok: true });
+    expect(acceptFetchedSigrefs(v2!, devA, null, { allowLegacy: true })).toEqual({ ok: true });
     // A replayed/rolled-back v2 against a receiver already at v2 is rejected.
-    expect(acceptFetchedSigrefs(v2!, devA, 2)).toEqual({ ok: false, reason: 'rollback' });
-    expect(acceptFetchedSigrefs(v2!, devA, 3)).toEqual({ ok: false, reason: 'rollback' });
+    expect(acceptFetchedSigrefs(v2!, devA, 2, { allowLegacy: true })).toEqual({ ok: false, reason: 'rollback' });
+    expect(acceptFetchedSigrefs(v2!, devA, 3, { allowLegacy: true })).toEqual({ ok: false, reason: 'rollback' });
     // Wrong device / tampered signature.
     const otherKp = generateEd25519KeypairDer();
-    expect(acceptFetchedSigrefs(v2!, otherKp.pubkeyBase64, 1)).toEqual({ ok: false, reason: 'wrong-device' });
+    expect(acceptFetchedSigrefs(v2!, otherKp.pubkeyBase64, 1, { allowLegacy: true })).toEqual({ ok: false, reason: 'wrong-device' });
     const tampered = { ...v2!, sig: Buffer.from('00'.repeat(64), 'hex').toString('base64') };
-    expect(acceptFetchedSigrefs(tampered, devA, 1)).toEqual({ ok: false, reason: 'bad-signature' });
+    expect(acceptFetchedSigrefs(tampered, devA, 1, { allowLegacy: true })).toEqual({ ok: false, reason: 'bad-signature' });
   });
 
   it('binds v3 snapshots to the signed context and rejects drift or legacy when required', async () => {
-    const context = makeSignedProtocolContext('hive-s', 'repo-1');
+    const context = makeSignedProtocolContext('hive-s', 'repo-1', 'sg2-1-' + 'a'.repeat(40));
     const signed = await buildSigrefs(repo, devA, sign, { nowMs: 3_000, version: 9, context });
     expect(signed.v).toBe(3);
     expect(verifySigrefs(signed, devA)).toBe(true);

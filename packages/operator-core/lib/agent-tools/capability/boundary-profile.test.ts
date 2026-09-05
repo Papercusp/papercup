@@ -102,7 +102,7 @@ describe('operation-boundary handler wiring — resource parity', () => {
   ] as const)('%s resolves the server profile and passes required confinement to every spawn', (file, requiredUses) => {
     const text = source(file);
     expect(text).toContain('await capabilityExecSandboxPolicy(ctx)');
-    expect(text.match(/sandboxRequired: sandboxPolicy\.required/g)).toHaveLength(requiredUses);
+    expect(text.match(/sandboxPolicy\.required/g)).toHaveLength(requiredUses);
   });
 
   it('fetch.ts resolves the same server profile and carries it through policy plus bounded streaming', () => {

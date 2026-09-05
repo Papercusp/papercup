@@ -22,6 +22,7 @@ import {
   type SimHistoryEntry,
   type SimTurnContext,
 } from '@papercusp/testing-shell/llm';
+import { normalizeToolResultEvidence } from './tool-result-evidence';
 
 /**
  * EI-9319: postgres.js's `sql.json()` param type is a structural JSONValue
@@ -186,6 +187,7 @@ function normalizeTurns(
       idx,
       assistantText: t.assistantText,
       toolCalls: t.toolCalls,
+      toolResults: normalizeToolResultEvidence(t.toolResults),
       cards: t.cards,
       controlTags: t.controlTags,
       finishReason: t.finishReason,

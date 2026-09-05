@@ -72,7 +72,7 @@ describe('signing bytes + verification', () => {
 
   it('binds v2 announcements to hive/repository/store context and rejects drift or legacy when required', async () => {
     const s = mkSigner();
-    const context = makeSignedProtocolContext('hive-a', 'gh-1');
+    const context = makeSignedProtocolContext('hive-a', 'gh-1', 'sg2-1-' + 'a'.repeat(40));
     const ann = await mkAnnouncement(s, { v: 2, ...context });
     expect(verifyRefAnnouncement(ann)).toBe(true);
     expect(acceptRefAnnouncement(ann, { priorVersion: 0, expectedContext: context, allowLegacy: false })).toMatchObject({ ok: true });
@@ -92,14 +92,14 @@ describe('acceptRefAnnouncement ordering', () => {
   it('accepts a fresh valid announcement from a member', async () => {
     const s = mkSigner();
     const ann = await mkAnnouncement(s);
-    const r = acceptRefAnnouncement(ann, { allowedDevices: [s.pubkeyBase64], priorVersion: 2 });
+    const r = acceptRefAnnouncement(ann, { allowLegacy: true, allowedDevices: [s.pubkeyBase64], priorVersion: 2 });
     expect(r.ok).toBe(true);
   });
 
   it('filters our own announcements (self)', async () => {
     const s = mkSigner();
     const ann = await mkAnnouncement(s);
-    const r = acceptRefAnnouncement(ann, { selfDevice: s.pubkeyBase64, priorVersion: null });
+    const r = acceptRefAnnouncement(ann, { allowLegacy: true, selfDevice: s.pubkeyBase64, priorVersion: null });
     expect(r).toMatchObject({ ok: false, reason: 'self' });
   });
 
@@ -107,7 +107,7 @@ describe('acceptRefAnnouncement ordering', () => {
     const s = mkSigner();
     const member = mkSigner();
     const ann = await mkAnnouncement(s);
-    const r = acceptRefAnnouncement(ann, { allowedDevices: [member.pubkeyBase64], priorVersion: null });
+    const r = acceptRefAnnouncement(ann, { allowLegacy: true, allowedDevices: [member.pubkeyBase64], priorVersion: null });
     expect(r).toMatchObject({ ok: false, reason: 'wrong-device' });
   });
 
@@ -115,17 +115,17 @@ describe('acceptRefAnnouncement ordering', () => {
     const s = mkSigner();
     const ann = await mkAnnouncement(s);
     const forged = { ...ann, version: ann.version + 5 };
-    const r = acceptRefAnnouncement(forged, { allowedDevices: [s.pubkeyBase64], priorVersion: null });
+    const r = acceptRefAnnouncement(forged, { allowLegacy: true, allowedDevices: [s.pubkeyBase64], priorVersion: null });
     expect(r).toMatchObject({ ok: false, reason: 'bad-signature' });
   });
 
   it('fences stale/replayed versions against the mirror watermark', async () => {
     const s = mkSigner();
     const ann = await mkAnnouncement(s, { version: 3 });
-    expect(acceptRefAnnouncement(ann, { priorVersion: 3 })).toMatchObject({ ok: false, reason: 'stale-version' });
-    expect(acceptRefAnnouncement(ann, { priorVersion: 7 })).toMatchObject({ ok: false, reason: 'stale-version' });
-    expect(acceptRefAnnouncement(ann, { priorVersion: 2 }).ok).toBe(true);
-    expect(acceptRefAnnouncement(ann, { priorVersion: null }).ok).toBe(true);
+    expect(acceptRefAnnouncement(ann, { allowLegacy: true, priorVersion: 3 })).toMatchObject({ ok: false, reason: 'stale-version' });
+    expect(acceptRefAnnouncement(ann, { allowLegacy: true, priorVersion: 7 })).toMatchObject({ ok: false, reason: 'stale-version' });
+    expect(acceptRefAnnouncement(ann, { allowLegacy: true, priorVersion: 2 }).ok).toBe(true);
+    expect(acceptRefAnnouncement(ann, { allowLegacy: true, priorVersion: null }).ok).toBe(true);
   });
 
   it('charges the budget only on otherwise-acceptable announcements', async () => {
@@ -133,7 +133,7 @@ describe('acceptRefAnnouncement ordering', () => {
     const cfg = { windowMs: 60_000, maxPerWindow: 2 };
     // A stale announcement does NOT consume budget.
     const stale = await mkAnnouncement(s, { version: 1 });
-    const r0 = acceptRefAnnouncement(stale, {
+    const r0 = acceptRefAnnouncement(stale, { allowLegacy: true,
       priorVersion: 5,
       budget: { state: null, nowMs: 0, config: cfg },
     });
@@ -146,7 +146,7 @@ describe('acceptRefAnnouncement ordering', () => {
       [12, false],
     ] as const) {
       const ann = await mkAnnouncement(s, { version });
-      const r = acceptRefAnnouncement(ann, {
+      const r = acceptRefAnnouncement(ann, { allowLegacy: true,
         priorVersion: 5,
         budget: { state, nowMs: 1_000, config: cfg },
       });
@@ -156,7 +156,7 @@ describe('acceptRefAnnouncement ordering', () => {
     }
     // A new window refills.
     const later = await mkAnnouncement(s, { version: 13 });
-    const r3 = acceptRefAnnouncement(later, {
+    const r3 = acceptRefAnnouncement(later, { allowLegacy: true,
       priorVersion: 5,
       budget: { state, nowMs: 1_000 + cfg.windowMs, config: cfg },
     });

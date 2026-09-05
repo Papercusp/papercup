@@ -128,7 +128,7 @@ describe('worktree-bridge (G-7: announcement → fetch → accept → ff worktre
       worktreePath: wt,
       prior,
       openDuplex,
-      accept: { expectedDevice: integrator.pubkeyBase64 },
+      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
     };
   }
 
@@ -239,7 +239,7 @@ describe('worktree-bridge (G-7: announcement → fetch → accept → ff worktre
       attacker.sign,
     );
     const dialsBefore = dials;
-    const gateless = { ...cfg(watermark), accept: {} };
+    const gateless = { ...cfg(watermark), accept: { allowLegacy: true,} };
     await expect(handleStagingAdvance(gateless, poison)).rejects.toThrow(/device gate/);
     const missing = { ...cfg(watermark) } as { accept?: unknown };
     delete missing.accept;
@@ -306,7 +306,7 @@ describe('worktree-bridge (G-7: announcement → fetch → accept → ff worktre
         bareRepoPath: localMirror,
         worktreePath: wt2,
         prior: { epochSeq: null, stagingSha: null },
-        accept: { expectedDevice: integrator.pubkeyBase64 },
+        accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
       },
       await announce(1, 3, s3),
     );
@@ -325,7 +325,7 @@ describe('worktree-bridge (G-7: announcement → fetch → accept → ff worktre
         bareRepoPath: localMirror,
         worktreePath: wt3,
         prior: { epochSeq: null, stagingSha: null },
-        accept: { expectedDevice: integrator.pubkeyBase64 },
+        accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
       },
       await announce(1, 3, s3),
     );

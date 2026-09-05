@@ -1162,6 +1162,72 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     expect(out).toContain('apps/web/src/auction.css');
   });
 
+  describe('EI-20375177522112122 — the held-item line must resolve the declare-intent namespace', () => {
+    const briefWith = (held: Partial<CarryBriefHeldItem>): CarryBrief => ({
+      ownerId: 'x',
+      loop: null,
+      heldItems: [{
+        id: 'EI-20375177522112122',
+        title: 'Cold-wake lane',
+        body: null,
+        harness: 'papercusp',
+        checkpoint: null,
+        ...held,
+      } as CarryBriefHeldItem],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    });
+
+    it('names the P-NNN ids to pass, and that the work-item id is not one', () => {
+      const out = renderCarryBriefColdExtras(
+        briefWith({ sourcePlanSlug: 'drain-2026-09-04', sourcePlanItemIds: ['P-007', 'P-008'] }),
+      );
+      expect(out).toContain("declare-intent lane: plan 'drain-2026-09-04' → P-007, P-008");
+      expect(out).toContain("items: ['P-007', 'P-008']");
+      // The whole point: the id in hand must be marked as NOT the one to pass.
+      expect(out).toContain('EI-20375177522112122 is a WORK-item id and `items` rejects it (P-NNN only)');
+    });
+
+    it('says NONE — and says to omit `items` rather than send an empty lane', () => {
+      const out = renderCarryBriefColdExtras(
+        briefWith({ sourcePlanSlug: null, sourcePlanItemIds: null }),
+      );
+      expect(out).toContain('declare-intent lane: none');
+      // `items: []` without a plan is a presence re-declaration, NOT a lane — so
+      // "no plan item" must not be read as "send an empty one".
+      expect(out).toContain('pass NO `items` at all');
+      expect(out).toContain('presence re-declaration, not a lane');
+    });
+
+    it('distinguishes a plan binding with no recorded item id from no binding', () => {
+      const out = renderCarryBriefColdExtras(
+        briefWith({ sourcePlanSlug: 'drain-2026-09-04', sourcePlanItemIds: null }),
+      );
+      expect(out).toContain('NO plan-item id is recorded on this row');
+      expect(out).toContain("plans:items { slug: 'drain-2026-09-04' }");
+      expect(out).not.toContain('declare-intent lane: none');
+    });
+
+    it('stays SILENT when the binding was never loaded — an unasked question is not an absence', () => {
+      // Neither column supplied (the injected-read shape). Rendering "none" here
+      // would assert an absence from a measurement that was never taken.
+      const out = renderCarryBriefColdExtras(briefWith({}));
+      expect(out).toContain('EI-20375177522112122');
+      expect(out).not.toContain('declare-intent lane:');
+    });
+
+    it('treats an empty-array binding as none, not as a lane', () => {
+      const out = renderCarryBriefColdExtras(
+        briefWith({ sourcePlanSlug: '', sourcePlanItemIds: [] }),
+      );
+      expect(out).toContain('declare-intent lane: none');
+    });
+  });
+
   describe('EI-19952485326105760 — a SUPERSEDING owner directive past the cut must not be lost', () => {
     // The real shape: an older plan, followed by a LATER block that REVOKES it.
     // Both are real content; only the second is still operative. A plain

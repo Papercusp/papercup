@@ -27,6 +27,7 @@ function turn(text: string, overrides: Partial<TurnResult> = {}): TurnResult {
   return {
     assistantText: text,
     toolCalls: [],
+    toolResults: [],
     cards: [],
     controlTags: [],
     costUsd: 0,

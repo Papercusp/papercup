@@ -26,6 +26,7 @@ import {
   sha256Prefixed,
   unsignedChannelPointer,
   validateChannelPointer,
+  validatePublishableRelease,
   verifyManifestRoot,
   type ArtifactProviderAdapter,
   type ReleaseChannelPointer,
@@ -226,6 +227,82 @@ describe('manifest root integrity', () => {
     expect(verdict.ok === false && verdict.code).toBe('total-size-mismatch');
     const mismatched = packageMatchesManifest(buildArtifactPackage(Buffer.from('other bytes entirely'), { chunkSizeBytes: CHUNK }), manifest());
     expect(mismatched.ok === false && mismatched.code).toBe('chunk-count-mismatch');
+  });
+});
+
+describe('publish-time admission (EI-22433992128803548)', () => {
+  // The obvious-but-wrong content address: sha256 over the whole blob, which is
+  // what `contentHash` means everywhere else in this repo and what
+  // artifact-store.ts uses for its hosted object key.
+  const FLAT = sha256Prefixed(BYTES);
+
+  it('accepts a correctly published release', () => {
+    const verdict = validatePublishableRelease(manifest());
+    expect(verdict.ok).toBe(true);
+    expect(verdict.ok && verdict.manifest.rootHash).toBe(PKG.rootHash);
+  });
+
+  it('the flat digest is genuinely a DIFFERENT address, at every size', () => {
+    expect(FLAT).not.toBe(PKG.rootHash);
+    // Not even one chunk collapses the two: merkleRoot([h]) !== h by construction.
+    const single = buildArtifactPackage(BYTES, { chunkSizeBytes: BYTES.length });
+    expect(single.chunks).toHaveLength(1);
+    expect(single.rootHash).not.toBe(FLAT);
+    expect(single.rootHash).not.toBe(single.chunks[0]!.contentHash);
+  });
+
+  it('refuses a PUBLIC release whose contentHash is sha256(bytes) instead of the Merkle root', () => {
+    const wrong = manifest({ rootHash: FLAT, release: release({ contentHash: FLAT }) });
+
+    // THE CONTROL, and the whole reason this door exists: the pre-existing
+    // validator accepts it. Both fields are well-formed and equal to each
+    // other, so nothing in a shape check can tell they were derived the wrong
+    // way. If this assertion ever flips to false the door has become redundant
+    // and should be deleted rather than kept as ceremony.
+    expect(validateDistributionManifest(wrong).ok).toBe(true);
+
+    const verdict = validatePublishableRelease(wrong);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.ok === false && verdict.code).toBe('root-hash-mismatch');
+    // The message must name the hash that is actually wrong. The retrieval-time
+    // message this replaces said "chunk list commits to X" — which sends the
+    // reader to investigate the bytes, where there is nothing to find.
+    const detail = verdict.ok === false ? verdict.detail : '';
+    expect(detail).toContain('release contentHash');
+    expect(detail).toContain('merkleRoot(chunk digests)');
+    expect(detail).toContain(PKG.rootHash);
+    expect(detail).not.toContain('chunk list commits to');
+  });
+
+  it('refuses a PRIVATE release whose ciphertextHash is flat, and blames that field instead', () => {
+    const wrong = manifest({
+      visibility: 'private',
+      rootHash: FLAT,
+      encryption: { scheme: 'aes-256-gcm', keyVersion: 1, ciphertextHash: FLAT, wrappedKeyIds: ['wk-1'] },
+    });
+    expect(validateDistributionManifest(wrong).ok).toBe(true);
+
+    const verdict = validatePublishableRelease(wrong);
+    expect(verdict.ok === false && verdict.code).toBe('root-hash-mismatch');
+    const detail = verdict.ok === false ? verdict.detail : '';
+    expect(detail).toContain('encryption.ciphertextHash');
+    expect(detail).not.toContain('release contentHash');
+  });
+
+  it('passes a shape failure through untouched rather than re-labelling it', () => {
+    const verdict = validatePublishableRelease(manifest({ signature: '' }));
+    expect(verdict.ok === false && verdict.code).toBe('missing-signature');
+  });
+
+  it('still refuses a swapped chunk digest, which is a real bytes fault', () => {
+    // Here the chunk list genuinely IS the problem, so the re-attributed
+    // message would be wrong. The root check fires before the door can
+    // re-attribute anything, because rootHash no longer matches the list.
+    const tampered = manifest({
+      chunks: [{ ...PKG.chunks[0]!, contentHash: sha256Prefixed(Buffer.from('evil')) }, ...PKG.chunks.slice(1)],
+    });
+    const verdict = validatePublishableRelease(tampered);
+    expect(verdict.ok === false && verdict.code).toBe('root-hash-mismatch');
   });
 });
 

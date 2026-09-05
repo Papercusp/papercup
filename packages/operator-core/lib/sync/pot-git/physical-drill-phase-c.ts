@@ -197,7 +197,7 @@ export async function executePhysicalPhaseCHost(input: {
     (bytes) => Promise.resolve(signWithPrivateKeyDer(third.privateKeyDer, bytes)),
     { nowMs: Date.now(), version: 1 },
   );
-  const signatureAcceptance = acceptFetchedSigrefs(signedSigrefs, third.pubkeyBase64, null);
+  const signatureAcceptance = acceptFetchedSigrefs(signedSigrefs, third.pubkeyBase64, null, { allowLegacy: true });
   if (!signatureAcceptance.ok) {
     throw new Error(`physical Phase C authentic sigrefs was rejected: ${signatureAcceptance.reason}`);
   }
@@ -226,7 +226,7 @@ export async function executePhysicalPhaseCHost(input: {
   if (restoredMismatches.length !== 0) {
     throw new Error('physical Phase C failed to restore the honest signed namespace after the relay control');
   }
-  const rollbackDecision = acceptFetchedSigrefs(signedSigrefs, third.pubkeyBase64, signedSigrefs.version);
+  const rollbackDecision = acceptFetchedSigrefs(signedSigrefs, third.pubkeyBase64, signedSigrefs.version, { allowLegacy: true });
   if (rollbackDecision.ok || rollbackDecision.reason !== 'rollback') {
     throw new Error('physical Phase C stale sigrefs did not fail the monotonic rollback fence');
   }
@@ -341,7 +341,7 @@ function validateHost(
   ) {
     errors.push(`${label} signed snapshot does not bind the exact honest run ref`);
   }
-  if (!host.signatureAcceptance?.ok || !acceptFetchedSigrefs(host.signedSigrefs, host.thirdDeviceKey, null).ok) {
+  if (!host.signatureAcceptance?.ok || !acceptFetchedSigrefs(host.signedSigrefs, host.thirdDeviceKey, null, { allowLegacy: true }).ok) {
     errors.push(`${label} authentic signed snapshot was not accepted before tamper`);
   }
   if (
@@ -352,7 +352,7 @@ function validateHost(
   ) {
     errors.push(`${label} relay lie is not the exact signed-head mismatch`);
   }
-  const rollback = acceptFetchedSigrefs(host.signedSigrefs, host.thirdDeviceKey, host.rollback.priorVersion);
+  const rollback = acceptFetchedSigrefs(host.signedSigrefs, host.thirdDeviceKey, host.rollback.priorVersion, { allowLegacy: true });
   if (
     host.rollback.priorVersion !== host.signedSigrefs.version ||
     host.rollback.decision.ok !== false ||
