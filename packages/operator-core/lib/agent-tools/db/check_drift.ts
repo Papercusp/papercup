@@ -30,6 +30,36 @@ export default defineTool({
       'db:migrate (apply a pending migration)',
       'db:next-migration (scaffold the next migration file)',
     ],
+    // EI-21845887728688371 / EI-21204271205240672 / EI-21720758362170049 /
+    // EI-22030961127733262 — four independent filings, one shape: a caller forwards a
+    // scope key (`harness`, `workspace`) to a tool that declares NONE. The description
+    // and `when` BOTH already say "Operator-global: call with `{}`; do not pass
+    // `harness`", and callers pass it anyway — which is the point: prose in the catalog
+    // is not on the failure path, and the failure path is the only moment the caller is
+    // holding the rejected key. Same borrowed-scope family as `workspace` on
+    // routines:list (EI-20206183390542424) and `harness` on coord:presence.
+    //
+    // The OBJECT (corrective-call) form is REQUIRED here, not a style preference: this
+    // tool declares zero keys, so `unknownArgHint` early-returns '' on
+    // `keys.length === 0` and a `declaredKey — explanation` string (D-004's normal form)
+    // could never render at all — there is no declared key to name. The object form
+    // routes through buildCorrectedCall/correctedCallHint, which has no such floor, and
+    // the self-referential `{ tool: 'db:check_drift', args: {} }` renders the genuinely
+    // correct corrective call: the same tool, with the key gone.
+    argRedirects: {
+      harness: {
+        tool: 'db:check_drift',
+        args: {},
+        note:
+          'migration drift is OPERATOR-GLOBAL: one live DB and one sql/ dir serve every harness, so there is nothing for a harness to select and this tool declares no arg at all. DROP the key and call it with `{}`. To narrow the ANSWER, read `missing_canonical` (the staging tree you author in) rather than `missing` (whichever tree served the call)',
+      },
+      workspace: {
+        tool: 'db:check_drift',
+        args: {},
+        note:
+          'this tool takes NO scope key — schema_migrations is per-DATABASE, not per-workspace, so a workspace cannot narrow it. DROP the key and call it with `{}`. If you meant "did MY migration land", that is `missing`/`missing_canonical` in the result, not an argument',
+      },
+    },
   },
   capability: 'locks:read',
   requirePrincipal: false,

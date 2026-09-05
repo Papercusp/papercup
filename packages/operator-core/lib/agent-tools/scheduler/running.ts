@@ -80,6 +80,33 @@ export default defineTool({
       'scheduler:get_next (claim work)',
       'scheduler:set_claim_spec (re-steer a bee)',
     ],
+    // EI-21660575785894728 / EI-21499923447552385 / EI-21500049186436819 /
+    // EI-21498247833790802 — four independent filings of ONE shape, all from the same
+    // situation: an agent under a fleet-scoped monitor directive is told to produce a
+    // fleet-scoped falsifier, reaches for the live-execution view, and passes `fleet`
+    // (or `plan`). This tool filters by `harness`/`cup` only. The bare unrecognized-key
+    // rejection lists the accepted keys and therefore reads as "the live view cannot be
+    // fleet-scoped at all" — which sends the caller either to raw SQL or to reporting
+    // the directive as unsatisfiable. It is not: fleet:assignments matches `fleet_slug`
+    // on every row and is the fleet-scoped roster this caller actually wants.
+    //
+    // Object (corrective-call) form on purpose: a `harness — …` string would render
+    // "pass it as `harness` instead" over a FLEET slug, which is rejected a second time
+    // (a fleet is not a harness). The remedy is a different tool, so say so.
+    argRedirects: {
+      fleet: {
+        tool: 'fleet:assignments',
+        args: { fleet: '<fleet-slug>' },
+        note:
+          'this view is scoped by `harness` / `cup`, never by fleet — a fleet slug is not one of its selectors. fleet:assignments matches fleet_slug on EVERY row (presence + claims) and is the fleet-scoped roster; it is also the wider view (all claim kinds, orphan detection), where this tool sees bee RUNS only. If you already know the members, `cup` filters this view to one of them',
+      },
+      plan: {
+        tool: 'fleet:assignments',
+        args: { plan: '<plan-slug>' },
+        note:
+          'a bee run is addressed by WHO is executing (`harness` / `cup`), not by the plan its claimed item came from, so this view has no plan selector. fleet:assignments { plan } answers "who is on plan P"; for the plan\'s own item states use plans:items',
+      },
+    },
   },
   capability: 'work_items:read',
   // scheduler:running is model-facing, but its default view is deliberately

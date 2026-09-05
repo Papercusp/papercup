@@ -19,6 +19,32 @@ export default defineTool({
     when: 'Choosing a fleet — to join (fleet:join), inspect (fleet:status), or hand a plan to (fleet:take-leadership). `available` fleets have a live desktop MEMBER (driver) right now — beeCount is background autonomous-loop workers, not a driver.',
     notWhen: 'For who is IN one fleet and what each is doing, use fleet:status { fleet }.',
     chaining: ROUTING_LADDER,
+    // EI-21248152995233175 / EI-21825385718246336 / EI-22390116220854624 — three
+    // independent filings, one shape: a caller passes `workspace` (and once `harness`
+    // alongside it) to a tool that declares NO keys. The key was never a typo — this
+    // tool reads its workspace AMBIENTLY from the caller's identity, so an agent
+    // reasoning from the catalog's many workspace-scoped verbs guesses a parameter with
+    // no counterpart here, and the bare unrecognized-key rejection ("accepts only: ")
+    // reads as "this tool cannot be scoped", whose honest next move is to hunt for a
+    // different tool. Same family as `workspace` on routines:list (EI-20206183390542424).
+    //
+    // OBJECT (corrective-call) form is REQUIRED, not preferred: with zero declared keys
+    // `unknownArgHint` early-returns on `keys.length === 0`, so a D-004
+    // `declaredKey — explanation` string has no key to name and would never render.
+    argRedirects: {
+      workspace: {
+        tool: 'fleet:list',
+        args: {},
+        note:
+          'this tool has NO `workspace` arg and needs none — it already resolves the workspace AMBIENTLY from your session identity, so the fleets you get back are that workspace\'s. DROP the key and call it with `{}`. There is no cross-workspace fleet listing: to read another workspace, run in a session scoped to it',
+      },
+      harness: {
+        tool: 'fleet:list',
+        args: {},
+        note:
+          'fleets are a WORKSPACE-level registry, not a harness one, so there is no harness to select and this tool declares no arg at all. DROP the key and call it with `{}`. To narrow to ONE fleet\'s membership use fleet:status { fleet }; for who is on what across fleets use fleet:assignments { fleet }',
+      },
+    },
   },
   capability: 'fleet:list',
   requirePrincipal: false,

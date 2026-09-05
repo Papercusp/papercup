@@ -5623,6 +5623,7 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     AND ${reservedPlanLaneExclusionSql(sql, opts.cooldownAssignee ?? '', 'payload', {
       claimantFleetSlug: opts.claimantFleetSlug,
       claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
+      claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
     })}
     -- EI-14806: the cross-machine-rig floor, extended to the FEATURE family. The issue-family
     -- claim has honored payload.needs_2_machine_rig since WI-2796, but a FEATURE-family item can

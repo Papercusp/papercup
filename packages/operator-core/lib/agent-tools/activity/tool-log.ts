@@ -115,6 +115,27 @@ export default defineTool({
     when: "You want the cheap chronological picture of what a session DID (yours pre-compaction, or a peer's) — not the full row stream. Pass owner:'self' for your own trail; use absolute ISO 8601 timestamps for since/until to window it (relative durations such as '-15 min' are not supported).",
     notWhen: 'For raw rows with detail payloads use `activity:recent`; for the agent-authored turn notes use `journal:recent`.',
     seeAlso: ['activity:recent (raw ledger rows)', 'journal:recent (per-turn journal notes)'],
+    // EI-21837773431817305 — the mirror image of activity:recent's redirects, filed by a
+    // caller who was forced into a broader owner-scoped retry. The two tools read the
+    // same ledger with OPPOSITE vocabularies (`limit`/`since_id` there,
+    // `max_lines`/`top_k` + `since`/`until` here) while deliberately sharing the spelling
+    // of `session_id`, so the divergence is genuinely hard to predict from either side.
+    argRedirects: {
+      limit:
+        'max_lines — this tool budgets ITEMIZED LINES rather than rows (default 40, 5-200), and older successes decay out first, so it is a display budget and not a row count. RENAME the key rather than dropping it, or you silently get the default 40 lines. `limit` is the spelling used by the sibling raw-row read, activity:recent. Use `top_k` to size the touched-set on the decay line.',
+      // OBJECT form deliberately, not a plain string. The remedy here is "there is no
+      // such filter — go to the sibling", and the renderer has exactly two shapes: a
+      // local relocation, or "`tool` is not an arg of this tool — it is written by
+      // <target>". A prose string containing its own em-dash would be split by
+      // splitLocalSchemaTarget, fail the path regex, and render as
+      // "…it is written by DROP the key. …" — the D-004 misattribution, reintroduced.
+      // Naming the sibling call makes that same sentence read correctly.
+      tool: {
+        tool: 'activity:recent',
+        args: { kind: 'tool', owner: '<owner>' },
+        note: 'activity:tool-log has NO per-tool filter: it returns ONE chronological, decayed digest of what a session did (older successes decay out first), so narrowing to a single tool name is not a view it can produce. activity:recent { kind: \'tool\' } returns the raw ledger rows with their detail payloads, which you can filter yourself.',
+      },
+    },
   },
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],

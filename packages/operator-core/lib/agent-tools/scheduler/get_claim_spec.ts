@@ -42,6 +42,36 @@ export default defineTool({
       'scheduler:running (live-execution view across many bees)',
       'fleet:assignments (full fleet roster)',
     ],
+    // A caller reaching this tool almost always arrives from `coord:orient` or a fleet
+    // wake, both of which hand them a `harness` in context — and the natural move is to
+    // forward it. `when` already says not to, in the same sentence that names the
+    // accepted selectors, and the filings kept coming: catalog prose is not on the
+    // FAILURE path, which is the only moment the caller is holding the rejected key.
+    //
+    // The trap this must not repeat is specific: the WRITE half of the same chain,
+    // scheduler:set_claim_spec, DOES take `harness` and takes no `workspace`. So the
+    // rejection cannot simply be read as "harness scoping does not exist here" — a
+    // caller who concludes that will drop it from the set call too and re-steer the
+    // wrong partition. The note therefore names the asymmetry, not just the remedy.
+    //
+    // Object (corrective-call) form because there is no local key a harness VALUE could
+    // be relocated onto: `fleet` takes a fleet slug, not a harness slug, so a
+    // `fleet — explanation` string would render "pass it as `fleet` instead" over a
+    // value that would then be rejected a second time.
+    argRedirects: {
+      harness: {
+        tool: 'scheduler:get_claim_spec',
+        args: { fleet: '<fleet-slug>' },
+        note:
+          'this READ is selector-only — exactly ONE of `cupId` (one cup, with fleet inheritance) or `fleet` (a fleet\'s own sentinel spec); a harness is not a selector here. ⚠ Do NOT conclude harness scoping is absent from the family: the WRITE verb scheduler:set_claim_spec DOES take `harness` and takes NO `workspace`, exactly inverted from this read — so drop `harness` here, and keep it there. To override the partition on this read, use `workspace`',
+      },
+      planSlug: {
+        tool: 'scheduler:get_claim_spec',
+        args: { fleet: '<fleet-slug>' },
+        note:
+          'a claim spec is addressed by WHO runs it (a cup or a fleet), never by the plan it happens to be working — one fleet\'s spec can admit several plans, so a plan slug cannot identify a spec row. Pass `fleet` (or `cupId`). For "who is on plan P" use fleet:assignments { plan }',
+      },
+    },
   },
   capability: 'work_items:read',
   requirePrincipal: false,

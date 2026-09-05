@@ -1000,11 +1000,44 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
  * memory block must not swallow it. With the flag off (or no excerpts) the
  * return value is byte-identical to the pre-P-008 block.
  */
+/**
+ * Outcomes where the corpus leg never got to say what it knows. A recall that
+ * ends in one of these has LOST context; one that ends 'ok'/'no-query'/
+ * 'disabled' searched fine and had nothing to say. Those are not the same
+ * event and must not render the same way — telling an agent its context is
+ * degraded when retrieval was simply empty trains it to ignore the marker.
+ */
+const CORPUS_DEGRADED_OUTCOMES: ReadonlySet<CorpusAdmissionStats['outcome']> = new Set([
+  'timed-out',
+  'failed',
+]);
+
 function composeWithCorpus(
   memoryBlock: string | null,
   corpus: CorpusLegResult | null,
 ): string | null {
-  if (!corpus || corpus.lines.length === 0) return memoryBlock;
+  if (!corpus || corpus.lines.length === 0) {
+    // EI-16220: a leg that TIMED OUT or FAULTED produces no lines — so the
+    // gate's own notice, which the block below attaches TO those lines, is
+    // structurally unreachable on exactly the turns that lost the most. The
+    // turn is then silently context-poor and the agent cannot tell, which is
+    // how a confident-but-uninformed answer gets produced. Measured
+    // 2026-09-05 over 7 days of harness_shared.memory_recall_stats: 11.77% of
+    // this workspace's recalls (18,580 of 157,902) ended 'timed-out', every
+    // one of them silently.
+    //
+    // Emitting one line converts an unknown-unknown into a known-degraded the
+    // agent can act on, and `memory:search` is the recovery the rest of this
+    // module already points at for budget-dropped entries.
+    if (corpus && CORPUS_DEGRADED_OUTCOMES.has(corpus.outcome)) {
+      const marker =
+        `⚠ Memory retrieval was DEGRADED this turn (corpus leg: ${corpus.outcome}) — ` +
+        'context you would normally have is MISSING, not absent. ' +
+        'Recover it on demand with memory:search before relying on recall.';
+      return memoryBlock ? `${memoryBlock}\n\n${marker}` : marker;
+    }
+    return memoryBlock;
+  }
   // P-003: the degradation notice leads the section rather than trailing it.
   // A caveat after the pointers is read after they have already been believed —
   // and on a truncated block it may not be read at all, since this section sits

@@ -640,6 +640,48 @@ export default defineTool({
     when: 'After leaving an edit in the tree (git-sync owns commit/push): to confirm it reached staging/main/:3070, to see WHY it is stuck (gate red/stalled) — or, whenever the code you touched might not be operator code, to find out whether a deploy or a RESTART is what activates it. Pass `path`, not `sha`: the sha cannot tell you which host runs the code.',
     notWhen: 'To PAUSE sync (use locks:acquire_resource on git-sync:<slug>). For the whole-pipeline dashboard use the /admin Git tab; this is the targeted per-path/sha probe.',
     chaining: 'Edit → dev:pipeline_position{path} → if `activation` is present, dev:restart{target} (a deploy would be a no-op); else deploy:await / release:deploy.',
+    // EI-21631524117377159 (`work_item`), EI-21717329651353280 (`harness`),
+    // EI-21690472537735874 (`harness` + `workspace`) — one shape: a caller forwards the
+    // scope they are holding (a work-item id, their harness, their workspace) to a probe
+    // whose ONLY selectors are `path` / `sha` / `marker`. The rejection lists those three
+    // and stops there, which is why `work_item` was re-filed after a caller "retried with
+    // sha only" (EI-21052251222436407): they dropped the semantics rather than
+    // translating them, and a bare sha cannot answer "which process runs this code".
+    //
+    // `work_item` is the load-bearing one. This tool answers about a FILE, and a
+    // work-item's changed files are exactly the bridge — but nothing in the rejection
+    // says so, and the `marker` arg (which is what makes the answer definitive when a
+    // peer commit has moved the path) is invisible from there.
+    //
+    // Corrective-call form throughout: none of these keys has a local destination a
+    // VALUE could be relocated onto, so a `path — …` string would render "pass it as
+    // `path` instead" over a work-item id or a harness slug and be rejected again.
+    argRedirects: {
+      work_item: {
+        tool: 'dev:pipeline_position',
+        args: { path: '<a repo-relative file the work-item changed>', marker: '<a literal string that change introduced>' },
+        note:
+          'this probe addresses a FILE, not a work-item — there is no work_item selector. Read the item\'s changed files (work_items:get → completion.filesChanged, or its checkpoint) and pass ONE of them as `path`. Do NOT fall back to `sha` alone: git-sync commits the whole tree under one identity, so no commit is identifiably "yours", and a path resolves to its NEWEST commit — which any peer edit to the same file breaks. `marker` (a literal string YOUR change introduced) is what makes the verdict definitive in that case',
+      },
+      workItem: {
+        tool: 'dev:pipeline_position',
+        args: { path: '<a repo-relative file the work-item changed>', marker: '<a literal string that change introduced>' },
+        note:
+          'same as `work_item`: this probe addresses a FILE. Translate the item to one of its changed paths and pass `path` (+ `marker` for a definitive verdict); there is no work-item selector',
+      },
+      harness: {
+        tool: 'dev:pipeline_position',
+        args: { path: '<repo-relative path>' },
+        note:
+          'DROP the key — the repo is derived from `path` itself (a submodule path is resolved submodule-aware), so a harness cannot narrow this and passing one never could. ⚠ If your path lives in a SIBLING checkout, that is not a harness argument either: the reply reports it as `harnessMismatch`, and the state-plane cells it points at are audience-filtered to the reported harness',
+      },
+      workspace: {
+        tool: 'dev:pipeline_position',
+        args: { path: '<repo-relative path>' },
+        note:
+          'DROP the key — this probe reads git, systemd and the release checkout on THIS host; there is no workspace partition to select. Pass `path` (preferred — it also tells you WHICH PROCESS runs that code) or `sha`',
+      },
+    },
     /**
      * state-plane-adoption-2026-08-02 P-002: route this incumbent door at the state
      * plane. Deliberately a `seeAlso` and NOT a `chaining` line, for two independent

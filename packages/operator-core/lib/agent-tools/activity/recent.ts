@@ -54,6 +54,22 @@ export default defineTool({
   guidance: {
     when: 'You want to inspect what a worker (or the whole fleet) has been doing — the recent native tool-call stream, todo snapshots, or lifecycle transitions. Pass owner for one pane, session_id for one CLI run of it, harness for one project, since_id to page forward.',
     notWhen: 'For a LIVE feed subscribe to the /api/activity/stream SSE (the pui does this). To report activity (you almost never need to) use `activity:report`. For coord messages use `coord:inbox`.',
+    // EI-22047814129755519. This tool and activity:tool-log read the SAME ledger but
+    // window it with OPPOSITE vocabularies: here it is `since_id` + `limit`, there it is
+    // `since`/`until` + `max_lines`/`top_k`. `session_id` is already spelled identically
+    // in both ON PURPOSE (see its .describe() below), so a caller has direct evidence
+    // that these two agree on arg names — which makes the time/budget divergence a
+    // reasonable thing to get wrong, not carelessness. Zero prompt weight (argRedirects
+    // is excluded from describeFromGuidance), paid only on the rejection that needs it.
+    argRedirects: {
+      since:
+        'since_id — this read pages by monotonic ROW ID, not by clock: pass the `since_id` from a prior response to catch up (rows then come oldest-first). If you actually want a WALL-CLOCK window, this tool has none — activity:tool-log { since, until } takes absolute ISO 8601 bounds over the same underlying activity.',
+      until: {
+        tool: 'activity:tool-log',
+        args: { owner: 'self', since: '<ISO 8601>', until: '<ISO 8601>' },
+        note: 'activity:recent has NO upper time bound at all — it pages forward from `since_id` and stops at `limit`, so there is no key to rename `until` to. activity:tool-log windows the same activity by absolute ISO 8601 `since`/`until` (relative durations like "-15 min" are rejected there too).',
+      },
+    },
     seeAlso: [
       'activity:report (inject a synthetic activity marker)',
       'coord:inbox (peer coord messages, not the tool stream)',

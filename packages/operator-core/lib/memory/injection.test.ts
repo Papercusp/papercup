@@ -1705,6 +1705,43 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
     }
   });
 
+  /**
+   * EI-16220 — the SILENT half of this same regression, and the reason it went
+   * unnoticed: the coverage gate's notice is attached to the pointer LINES, so
+   * a leg with no lines cannot render it. That makes the notice structurally
+   * unreachable on exactly the turns that lost the most context — the turn is
+   * quietly context-poor and the agent has no way to tell.
+   *
+   * Measured 2026-09-05 over 7 days of harness_shared.memory_recall_stats:
+   * 11.77% of this workspace's recalls (18,580 of 157,902) ended 'timed-out',
+   * every one of them silently.
+   */
+  it('marks a TIMED-OUT corpus leg so the turn knows its context is incomplete', async () => {
+    corpusIoResult = oneLine({ lines: [], candidateCount: 0, outcome: 'timed-out' });
+    const block = await run();
+    expect(block).toContain('Memory retrieval was DEGRADED');
+    expect(block).toContain('timed-out');
+    // The marker must carry its own recovery, or it is just an apology.
+    expect(block).toContain('memory:search');
+  });
+
+  it('marks a FAILED corpus leg the same way', async () => {
+    corpusIoResult = oneLine({ lines: [], candidateCount: 0, outcome: 'failed' });
+    expect(await run()).toContain('Memory retrieval was DEGRADED');
+  });
+
+  /**
+   * The control that keeps the marker worth reading. A leg that ran fine and
+   * had nothing to say has lost NOTHING; marking that case would fire the
+   * warning on ordinary turns and train the reader to skip it on the turns
+   * where it is real. Without this test the fix above passes just as well
+   * while emitting the marker unconditionally.
+   */
+  it('stays SILENT when the leg ran fine and simply found nothing', async () => {
+    corpusIoResult = oneLine({ lines: [], candidateCount: 0, outcome: 'ok' });
+    expect(await run()).not.toContain('Memory retrieval was DEGRADED');
+  });
+
   it('renders the pointer section identically whether or not the embedder ran', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
