@@ -66,6 +66,12 @@ import {
 import { getClaimTimeRetractionAdvisory } from '../work_items/retraction-advisory';
 import { fetchContextPressure } from '../coordination/context-pressure';
 import { decideContextPressureGate, contextCriticalRefusalResult } from '../../scheduler/context-pressure-claim-gate';
+import type { ContextPressureBucket } from '../coordination/context-pressure';
+import { autoBenchContextCriticalCaller as autoBenchContextCriticalCallerCore } from '../../fleet/context-critical-bench';
+import { registerBenchPark } from '../../fleet/bench-park';
+import { listParkedAwaitsForSubscribers as listParkedAwaitsForSubscribersStore } from '../../events/await/store';
+import { registerAwait as registerAwaitStore } from '../../events/await/store';
+import { captureWakeHandleForOwner as captureWakeHandleForOwnerStore } from '../../events/await/handle';
 import { decideGoalStewardGate, goalStewardRefusalResult } from '../../scheduler/goal-steward-claim-gate';
 import { readGoalHolderAuthority } from '../../goals/holder-authority';
 import { getOrgPg } from '@papercusp/db-org';
@@ -1186,6 +1192,9 @@ export default defineTool({
           /** WI-5940: caller is at CRITICAL context pressure — serve a compact-first verdict. */
           kind: 'context-critical';
           refusal: ReturnType<typeof contextCriticalRefusalResult>;
+          /** P-009: the bucket that justified the refusal, carried out so the auto-bench
+           *  decision runs on the SAME reading rather than re-reading pressure. */
+          bucket: ContextPressureBucket | null;
         }
       | {
           /** WI-2092233: caller holds active GOAL-steward authority — serve a route-it-instead verdict. */
@@ -1251,7 +1260,13 @@ export default defineTool({
           overrideArg: 'ignoreContextPressure',
         });
         if (contextGate.refuse) {
-          return { kind: 'context-critical', refusal: contextCriticalRefusalResult(contextGate) };
+          // P-009: the auto-bench is deliberately NOT armed here. This closure is the
+          // SHARED bounded preflight budget, and arming a park needs two more IO ops
+          // (wake-handle capture + registerAwait). D-009 upheld that instinct: wire the
+          // bench to the existing park surface, do not open-code an await at this site.
+          // The bench is registered on the refusal RETURN path below, where the claim
+          // decision is already made and nothing is racing this budget.
+          return { kind: 'context-critical', refusal: contextCriticalRefusalResult(contextGate), bucket: contextBucket };
         }
         // WI-2092233: refuse to SERVE a caller holding active GOAL-steward authority — the GOAL
         // contract is categorical (the holder never implements; every execution unit is a
@@ -1358,8 +1373,38 @@ export default defineTool({
     // WI-5940: the compact-first verdict. Returned BEFORE every claim path below, so the
     // filing's "and no item is claimed" holds by construction rather than by inspection.
     if (preflightState.kind === 'context-critical') {
+      // P-009: park the refused member so a critical-context refusal converges instead of
+      // spinning. Before this, a refused member was told to compact and left to re-pull on
+      // its own, and NOTHING observed whether it ever came back — the member's own loop
+      // simply re-fired into the same refusal. The bench makes the park visible to the
+      // leader (fleet:bench { list:true } / leader-brief) and gives it a deadline.
+      //
+      // Wake key: `session:compacted:<owner>`. It is the member's OWN recovery condition —
+      // it was refused because its context is critical, and compaction is what fixes that.
+      // It also cannot self-defeat the park, which is why the two obvious keys were
+      // rejected (D-009): `work-item:claimable` re-wakes immediately because the member
+      // pulled BECAUSE work exists, and the fleet `controlResumeGate` is null on an active
+      // fleet, so benching on it is a no-op dressed as a feature.
+      //
+      // FAIL-SOFT, always: the refusal is the load-bearing behaviour and ships unchanged
+      // whether or not the bench registers. A bench failure must never convert a clean
+      // compact-first verdict into an error.
+      const benchOutcome = await autoBenchContextCriticalCallerCore(
+        { ownerId: ident.ownerId, bucket: preflightState.bucket },
+        {
+          listParkedAwaitsForSubscribers: listParkedAwaitsForSubscribersStore,
+          registerBenchPark,
+          captureWakeHandleForOwner: captureWakeHandleForOwnerStore,
+          registerAwait: registerAwaitStore,
+        },
+      );
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify(preflightState.refusal) }],
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ ...preflightState.refusal, ...(benchOutcome ? { bench: benchOutcome } : {}) }),
+          },
+        ],
       };
     }
     // WI-2092233: the route-it-instead verdict for an active GOAL steward. Returned BEFORE every

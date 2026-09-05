@@ -48,6 +48,7 @@ import {
   listParkedAwaitsForSubscribers,
   FLEET_BENCH_NOTE_PREFIX,
 } from '../../events/await/store';
+import { registerBenchPark } from '../../fleet/bench-park';
 import { isPattern, expandPatternMacro, assertUsablePattern } from '../../events/await/pattern';
 import { AWAIT_MAX_TIMEOUT_SEC } from '../../events/await/types';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -681,40 +682,37 @@ export default defineTool({
         : { filter: null, source: null };
 
     const staged = clampText(args.stagedAssignment, LIMITS.ANNOTATION) ?? '';
-    const { handle, note: handleNote } = await captureWakeHandleForOwner(args.member);
 
-    const row = await registerAwait({
-      subscriberId: args.member,
-      eventKey,
-      policy: 'wake',
-      note: BENCH_NOTE_PREFIX + staged,
-      wakeHandle: handle,
-      timeoutBehavior: 'wake',
-      // A fleet bench is a leader-managed park, not a normal short-lived await. An
-      // omitted deadline must survive a long-lived blocker (and the leader's own
-      // session ending); callers can still opt into a timeout when they need one.
-      timeoutSec: args.timeout_sec ?? null,
-      payloadFilter: claimableFilterScope.filter,
-      // A leader stages one NEXT assignment per member. Retargeting that member
-      // to a different gate replaces every prior leader-managed bench atomically;
-      // ordinary member-owned awaits are preserved by the note-prefix filter.
-      supersedePending: {
-        allEventKeys: true,
-        includeNotePrefix: BENCH_NOTE_PREFIX,
+    // D-009: the park itself lives in ../../fleet/bench-park so this leader-driven
+    // surface and P-009's context-critical auto-bench register ONE park shape rather
+    // than two that can drift. `supersedePriorBenches: true` is the LEADER semantic —
+    // a leader staging a NEW assignment replaces the old one atomically, and
+    // ordinary member-owned awaits are preserved by the note-prefix filter. An
+    // auto-bench must pass false; see the hazard note in that module.
+    const park = await registerBenchPark(
+      {
+        member: args.member,
+        eventKey,
+        stagedAssignment: staged,
+        timeoutSec: args.timeout_sec ?? null,
+        payloadFilter: claimableFilterScope.filter,
+        supersedePriorBenches: true,
       },
-    });
-    const supersededBenches = row.supersededPendingCount ?? 0;
+      { captureWakeHandleForOwner, registerAwait },
+    );
+    const handleNote = park.wakeHandleNote;
+    const supersededBenches = park.supersededBenches;
 
     return {
       data: {
         ok: true,
-        bench_id: row.id,
+        bench_id: park.benchId,
         member: args.member,
-        event: row.eventKey,
+        event: park.eventKey,
         ...(patternAwait ? { pattern: true } : {}),
         stagedAssignment: staged || null,
-        expires_ts: row.expiresTs,
-        registered: handle !== null,
+        expires_ts: park.expiresTs,
+        registered: park.registered,
         wake_handle_note: handleNote,
         benched_by: ownerId,
         ...(supersededBenches > 0 ? { superseded_benches: supersededBenches } : {}),
@@ -772,7 +770,7 @@ export default defineTool({
             }
           : {}),
         advice:
-          handle !== null
+          park.registered
             ? 'Benched. events:emit on this key will wake them; the staged assignment rides the wake note.'
             : `BENCH MISS at stage time: ${handleNote} — the await row exists but has no wake handle to re-invoke; emitting this key will not resume them. Confirm they have a live session before relying on this bench.`,
       },
