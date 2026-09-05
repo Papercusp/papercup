@@ -19,6 +19,7 @@ import {
   isPidAlive,
   judgeAbandonedInFlightCandidate,
   parseInFlightCandidate,
+  stampInFlightVerdictWritten,
   type StoredInFlightCandidate,
 } from './in-flight-candidate';
 
@@ -39,6 +40,7 @@ function marker(over: Partial<StoredInFlightCandidate> = {}): StoredInFlightCand
     refireDepth: 0,
     pid: 1884596,
     observedAtMs: NOW - 60_000,
+    verdictWrittenAtMs: null,
     ...over,
   };
 }
@@ -51,6 +53,20 @@ describe('parseInFlightCandidate', () => {
     // failure silent, so it is asserted field-by-field rather than by shape.
     const parsed = parseInFlightCandidate(marker(), NOW);
     expect(parsed).toEqual(marker());
+  });
+
+  it('carries a stamped verdict time — the field exists to make "decided" readable, not just writable', () => {
+    const decided = marker({ verdictWrittenAtMs: NOW - 16 * 60_000 });
+    expect(parseInFlightCandidate(decided, NOW)?.verdictWrittenAtMs).toBe(NOW - 16 * 60_000);
+  });
+
+  it('reads a malformed verdict stamp as UNDECIDED rather than as a decision', () => {
+    // CALIBRATION CONTROL for the test above. It would pass just as happily if the parser echoed
+    // whatever it was given, so this pins the direction the coercion must fail in: a garbage stamp
+    // must degrade to "still deciding" (the state that makes a reader WAIT), never manufacture a
+    // verdict that would tell them the run is finished when it is not.
+    expect(parseInFlightCandidate(marker({ verdictWrittenAtMs: 'yes' as never }), NOW)?.verdictWrittenAtMs).toBeNull();
+    expect(parseInFlightCandidate({ ...marker(), verdictWrittenAtMs: undefined }, NOW)?.verdictWrittenAtMs).toBeNull();
   });
 
   it('returns null for a marker older than the freshness bound — an abandoned run must not read as live', () => {
@@ -99,6 +115,25 @@ describe('describeInFlightCandidate', () => {
     expect(line).toContain('60s ago');
   });
 
+  it('says the verdict is ALREADY WRITTEN, so a live process is not read as a live decision', () => {
+    // The 2026-08-14 misreading this whole field exists for: two agents spent ~1h on a run that
+    // had decided 16 minutes earlier, because the only elapsed number described the PROCESS. The
+    // sentence must also name the trap that misreading leads to — firing a manual re-run.
+    const line = describeInFlightCandidate(marker({ verdictWrittenAtMs: NOW - 16 * 60_000 }), NOW);
+    expect(line).toContain('VERDICT ALREADY WRITTEN 16m ago');
+    expect(line).toContain('NOT time spent deciding');
+    expect(line).toMatch(/Do NOT fire a manual re-run/);
+  });
+
+  it('claims no verdict while the run is genuinely still deciding', () => {
+    // CALIBRATION CONTROL for the test above: it would pass on an implementation that appended the
+    // decided-clause unconditionally, which would be the strictly worse bug — telling a reader a
+    // still-running suite is finished. The undecided line must stay silent about verdicts.
+    const line = describeInFlightCandidate(marker({ verdictWrittenAtMs: null }), NOW);
+    expect(line).not.toContain('VERDICT');
+    expect(line).not.toContain('re-run');
+  });
+
   it('labels a pinned diagnostic explicitly so no reader treats it as the live gate', () => {
     const line = describeInFlightCandidate(marker({ candidateSource: 'pinned' }), NOW);
     expect(line).toContain('source=pinned diagnostic');
@@ -132,6 +167,56 @@ describe('describeInFlightCandidate', () => {
  * f16fa1c7030d published its marker and then vanished with its bg-host generation, leaving a
  * marker that read "in flight" for hours. A peer spent a claim waiting on that verdict.
  */
+describe('stampInFlightVerdictWritten', () => {
+  const target = { workspaceId: 'papercusp-workspace', installSlug: 'papercusp' };
+
+  it('stamps only THIS run\'s marker for THIS candidate, and only while unstamped', async () => {
+    sqlUnsafeMock.mockResolvedValue({ count: 1 });
+    const live = marker();
+
+    await expect(
+      stampInFlightVerdictWritten(target, {
+        candidate: live.candidate,
+        pid: live.pid,
+        verdictWrittenAtMs: NOW,
+      }),
+    ).resolves.toBe(true);
+
+    const [query, values] = sqlUnsafeMock.mock.calls[0];
+    expect(query).toContain("target_role = 'system:green-checkpoint'");
+    // The generation guard: without BOTH of these a stamp could land on a replacement run's
+    // marker, dating another candidate's verdict to this run's clock.
+    expect(query).toContain("inFlightCandidate'->>'candidate' = $3");
+    expect(query).toContain("inFlightCandidate'->>'pid' = $4");
+    // First-write-wins. `->>` yields SQL NULL for an absent key AND a JSON null, which is exactly
+    // the not-yet-stamped set; without this a retry would move the recorded decision time later.
+    expect(query).toContain("inFlightCandidate'->>'verdictWrittenAtMs' IS NULL");
+    expect(values).toEqual([
+      'papercusp',
+      'papercusp-workspace',
+      live.candidate,
+      String(live.pid),
+      String(NOW),
+    ]);
+  });
+
+  it('reports a marker already retired, replaced, or stamped as NOT stamped', async () => {
+    // count:0 is the expected outcome of every guard above doing its job — a legitimate answer,
+    // never an error to escalate.
+    sqlUnsafeMock.mockResolvedValue({ count: 0 });
+    await expect(
+      stampInFlightVerdictWritten(target, { candidate: marker().candidate, pid: 999_999 }),
+    ).resolves.toBe(false);
+  });
+
+  it('fails closed on database uncertainty rather than claiming a stamp it did not write', async () => {
+    sqlUnsafeMock.mockRejectedValue(new Error('database unavailable'));
+    await expect(
+      stampInFlightVerdictWritten(target, { candidate: marker().candidate, pid: marker().pid }),
+    ).resolves.toBe(false);
+  });
+});
+
 describe('judgeAbandonedInFlightCandidate', () => {
   it('never reports a run\'s OWN marker as lost — an in-process refire re-publishes over itself', () => {
     // The healthy rescue path re-enters runGreenCheckpoint recursively with pid UNCHANGED. A

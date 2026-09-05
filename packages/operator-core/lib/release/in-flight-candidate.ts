@@ -85,6 +85,29 @@ export interface InFlightCandidateInfo {
  *  to judge freshness. */
 export interface StoredInFlightCandidate extends InFlightCandidateInfo {
   observedAtMs: number;
+  /**
+   * EI-20427717764878875: the instant THIS run published its verdict for THIS candidate, or
+   * `null` while it is genuinely still deciding.
+   *
+   * Deliberately on the STORED shape and not on {@link InFlightCandidateInfo}: the publisher
+   * writes at candidate-FINAL time, when no verdict can exist yet, so a run never supplies this
+   * — it is stamped later by {@link stampInFlightVerdictWritten}.
+   *
+   * WHY IT IS WORTH A FIELD. A green-checkpoint run does NOT exit when it decides: after writing
+   * its verdict it continues into the longest-clean-prefix salvage, and the marker stays live
+   * through that (`green-checkpoint.ts:11408` — "the in-flight marker is retired for every
+   * terminal path at the outer CLI seam", which runs after the run returns). So the honest state
+   * "decided 16 minutes ago, still salvaging" was indistinguishable from "68 minutes and still no
+   * verdict", because `elapsedSec` measures the process, not the decision. Two agents spent ~1h on
+   * 2026-08-14 reasoning about a settled run, and the natural response to an apparently-overdue
+   * run is to fire `release:checkpoint-run` — the one action CLAUDE.md forbids, because it
+   * discards an in-flight rescue and costs a full suite. The surface manufactured exactly the
+   * impulse the docs then have to talk you out of.
+   *
+   * With this, elapsed-vs-verdict is COMPUTABLE instead of guessable: `null` means genuinely
+   * undecided, a number means the deciding is over whatever the process is still doing.
+   */
+  verdictWrittenAtMs: number | null;
 }
 
 /**
@@ -95,7 +118,11 @@ export interface StoredInFlightCandidate extends InFlightCandidateInfo {
  * with. Best-effort: never throws.
  */
 export async function recordInFlightCandidate(target: GateVerdictTarget, info: InFlightCandidateInfo): Promise<void> {
-  const stored: StoredInFlightCandidate = { ...info, observedAtMs: Date.now() };
+  // `verdictWrittenAtMs: null` is load-bearing on the REFIRE path, not just boilerplate for the
+  // first publish. An auto-refire re-publishes over its own marker with a NEW candidate, and that
+  // candidate has not been decided yet — so resetting to null is what stops a previous candidate's
+  // verdict timestamp being read as if it belonged to the sha now under judgement.
+  const stored: StoredInFlightCandidate = { ...info, observedAtMs: Date.now(), verdictWrittenAtMs: null };
   await mergeGateHealth(target, { inFlightCandidate: stored });
 }
 
@@ -161,6 +188,65 @@ export async function clearInFlightCandidateIfUnchanged(
 }
 
 /**
+ * Stamp "I have published my verdict" onto this run's OWN live marker.
+ *
+ * WHY A CONDITIONAL UPDATE AND NOT A RE-PUBLISH. Re-publishing the whole marker through
+ * {@link recordInFlightCandidate} would need the run to still hold its original info object, and
+ * it would happily overwrite a REPLACEMENT run's marker in the same race
+ * {@link clearInFlightCandidateIfUnchanged} exists to survive. Updating the single key under a
+ * generation guard cannot clobber a stranger's marker, cannot resurrect a cleared one (the guard
+ * simply matches nothing), and needs no read-modify-write two runs could interleave.
+ *
+ * The guard is candidate + pid — the marker generation minus `observedAtMs`, which deliberately
+ * moves when a refire re-publishes. So this stamps the marker for THIS candidate from THIS
+ * process and no other.
+ *
+ * FIRST WRITE WINS, via `->>'verdictWrittenAtMs' IS NULL`: the field records the instant the
+ * verdict was published, so a retried or duplicated call must not move it later. (`->>` yields
+ * SQL NULL for both an absent key and a JSON null, which is exactly the "not yet stamped" set.)
+ *
+ * Returns whether a marker was stamped. `false` is a legitimate, expected outcome — the marker
+ * was already retired, a newer run owns the field, or it was stamped before — and never an error
+ * to escalate. Best-effort like every write in this module: a diagnostic must never break or slow
+ * the run it observes, so database uncertainty returns false rather than throwing.
+ */
+export async function stampInFlightVerdictWritten(
+  target: GateVerdictTarget,
+  stamp: { candidate: string; pid: number; verdictWrittenAtMs?: number },
+): Promise<boolean> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const result = await sql.unsafe(
+      `UPDATE harness_shared.routines
+          SET metadata = jsonb_set(
+                COALESCE(metadata, '{}'::jsonb),
+                '{gate_health,inFlightCandidate,verdictWrittenAtMs}',
+                to_jsonb($5::bigint),
+                true
+              ),
+              updated_at = now()
+        WHERE install_slug = $1
+          AND workspace_id = $2
+          AND target_role = 'system:green-checkpoint'
+          AND metadata->'gate_health'->'inFlightCandidate'->>'candidate' = $3
+          AND metadata->'gate_health'->'inFlightCandidate'->>'pid' = $4
+          AND metadata->'gate_health'->'inFlightCandidate'->>'verdictWrittenAtMs' IS NULL`,
+      [
+        target.installSlug,
+        target.workspaceId,
+        stamp.candidate,
+        String(stamp.pid),
+        String(stamp.verdictWrittenAtMs ?? Date.now()),
+      ],
+    );
+    return result.count === 1;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * PURE: interpret the raw `gate_health.inFlightCandidate` value. Returns null for anything not
  * trustworthy right now — missing, malformed, or older than
  * {@link IN_FLIGHT_CANDIDATE_MAX_AGE_MS}. Unit-testable without PG.
@@ -189,6 +275,9 @@ export function parseInFlightCandidate(raw: unknown, nowMs: number = Date.now())
     refireDepth: typeof r.refireDepth === 'number' ? r.refireDepth : 0,
     pid: typeof r.pid === 'number' ? r.pid : 0,
     observedAtMs,
+    // Carried per the ⚠ above: this literal is exhaustive, so omitting it here would persist the
+    // stamp and never read it back — the precise shape of EI-19343516395023183.
+    verdictWrittenAtMs: typeof r.verdictWrittenAtMs === 'number' ? r.verdictWrittenAtMs : null,
   };
 }
 
@@ -204,7 +293,15 @@ export function describeInFlightCandidate(marker: StoredInFlightCandidate, nowMs
       ? ` — quiet cut stepped back from tip ${marker.tipAtSelection.slice(0, 8)}, so commits newer than this candidate are deliberately NOT judged`
       : '';
   const source = marker.candidateSource === 'pinned' ? 'pinned diagnostic' : 'tip';
-  return `judging ${marker.candidate.slice(0, 12)} (source=${source}), selected ${age}s ago${refire}${quiet}`;
+  // EI-20427717764878875: say the DECISION state out loud. Without this the sentence describes a
+  // decided run and an undecided one identically, and the reader's next move differs completely.
+  const decided =
+    marker.verdictWrittenAtMs != null
+      ? ` — VERDICT ALREADY WRITTEN ${Math.max(0, Math.round((nowMs - marker.verdictWrittenAtMs) / 60_000))}m ago;` +
+        ` the process is still alive (post-verdict salvage), so elapsed time is NOT time spent deciding.` +
+        ` Do NOT fire a manual re-run: it would discard an in-flight rescue and cost a full suite`
+      : '';
+  return `judging ${marker.candidate.slice(0, 12)} (source=${source}), selected ${age}s ago${refire}${quiet}${decided}`;
 }
 
 /**

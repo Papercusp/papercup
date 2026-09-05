@@ -807,7 +807,7 @@ continuing is the anti-pattern; force it and move on.
 | is this leg stuck, or just slow | `stages[].health` (`advancing`/`stalled`/`disabled`/`broken`) | `positions.*` alone — that read a 2h52m push freeze as "not yet" |
 | did my work reach origin | `gitSync.pushedRepos` | `gitSync.status` — `'synced'` is reachable with **nothing** pushed |
 | is the running process executing my code | `serving.startedSinceCodeChange` | `positions.deployed` — a git fact stating a process conclusion ("deployed ✓" ≠ live; filed 4× independently) |
-| is the gate judging MY code | `changeInCandidate.judgingContainsPath` — but ONLY trust a `true`, and read `missingReason` before believing a `false` (see below) | assuming a red is about your change — a run judging a candidate without it isn't |
+| is the gate judging MY code | `changeInCandidate.markerJudging` — pass `marker`, a literal string YOUR change introduced. `judgingContainsPath` answers only about THE PATH YOU PASSED, so its `true` is a verdict on your change only when that path is one you actually edited; read `missingReason` before believing a `false` (see below) | trusting a bare `true` from a fixed probe path reused across wakes — it reads `true` on nearly every call while saying NOTHING about whether your fix is in the candidate |
 | will the next tick commit my half-finished refactor | `sweepExposure` (blast radius + when) | nothing — git-sync sweeps the WHOLE tree, so `git-sync:run` mid-refactor commits the broken intermediate on purpose |
 
 `nextAction: null` is a **positive** answer ("waiting is correct"), never a missing one —

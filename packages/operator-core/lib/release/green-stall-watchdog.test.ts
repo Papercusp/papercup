@@ -117,6 +117,10 @@ const deadCheckpointMarker = (over: Partial<StoredInFlightCandidate> = {}): Stor
   refireDepth: 0,
   pid: 424242,
   observedAtMs: NOW - 120_000,
+  // EI-20427717764878875. `null` is the right default for THIS fixture specifically: it models an
+  // ABANDONED run — one that died without ever reaching a verdict — so a stamped decision time
+  // would contradict the very condition these cases exercise.
+  verdictWrittenAtMs: null,
   ...over,
 });
 
