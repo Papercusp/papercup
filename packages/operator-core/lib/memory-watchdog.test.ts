@@ -262,6 +262,126 @@ describe('startMemoryWatchdog', () => {
     h.stop();
   });
 
+  // WI-2145733 — the native-heap trim seam. V8's GC returns freed bytes to the
+  // ALLOCATOR, which keeps them: measured on a live :3170 worker, a forced full GC
+  // moved 3.8% of committed memory while a `malloc_trim(0)` returned 627 MB. These
+  // tests pin the seam's contract, not the (not-yet-existing) binding.
+  const TRIM_LINE = '[memory-watchdog] native heap trim (allocator arena returned to the OS)';
+
+  it('runs the native-heap trim AFTER the forced GC and reports the allocator reclaim separately', () => {
+    withRss(2500);
+    const forceGc = vi.fn(); // a GC that frees nothing the allocator gives back
+    const trimNativeHeap = vi.fn(() => withRss(900)); // the trim is what actually returns pages
+    const log = vi.fn();
+    const h = startMemoryWatchdog({
+      readSwapMb: noSwap,
+      intervalMs: 1000,
+      limitMb: 12288,
+      proactiveGcMb: 1920,
+      gcCooldownMs: 0,
+      forceGc,
+      trimNativeHeap,
+      log,
+    });
+
+    vi.advanceTimersByTime(1000);
+
+    expect(trimNativeHeap).toHaveBeenCalledTimes(1);
+    // ORDER is the contract: trimming BEFORE the GC would leave the bytes the GC is
+    // about to free still parked in the arena until the next rung.
+    expect(forceGc.mock.invocationCallOrder[0]).toBeLessThan(trimNativeHeap.mock.invocationCallOrder[0]);
+    expect(log).toHaveBeenCalledWith(
+      TRIM_LINE,
+      expect.objectContaining({ committedMbBeforeTrim: 2500, committedMbAfterTrim: 900, reclaimedCommittedMb: 1600 }),
+    );
+    h.stop();
+  });
+
+  /**
+   * THE REGRESSION GUARD, and the reason the trim emits its own record instead of
+   * being folded into the one above it. ~1300 proactive-GC records exist per worker
+   * per 14h and the WI-38221 analysis reads them as a time series, so letting the
+   * trim's reclaim leak into `committedMbAfter` would silently re-base an existing
+   * field from "after GC" to "after GC + trim" — corrupting history rather than
+   * correcting it. This asserts the GC record still describes the GC ALONE even
+   * though a trim ran in the same tick and dropped committed memory by 1600 MB.
+   */
+  it('does not re-base the existing proactive-GC record with the trim reclaim', () => {
+    withRss(2500);
+    const log = vi.fn();
+    const h = startMemoryWatchdog({
+      readSwapMb: noSwap,
+      intervalMs: 1000,
+      limitMb: 12288,
+      proactiveGcMb: 1920,
+      gcCooldownMs: 0,
+      forceGc: vi.fn(),
+      trimNativeHeap: () => withRss(900),
+      log,
+    });
+
+    vi.advanceTimersByTime(1000);
+
+    const gcRecord = log.mock.calls.find((c) => c[0] === '[memory-watchdog] proactive GC (heap kept out of the stall zone)');
+    expect(gcRecord).toBeDefined();
+    // 2500, NOT 900: the GC freed nothing the allocator returned. If this reads 900
+    // the trim has been folded into the GC's own sample and the series is corrupt.
+    expect(gcRecord?.[1]).toMatchObject({ committedMbAfter: 2500, reclaimedCommittedMb: 0 });
+    h.stop();
+  });
+
+  it('is DISABLED by default — no trim rung runs when no binding is injected', () => {
+    withRss(2500);
+    const log = vi.fn();
+    const h = startMemoryWatchdog({
+      readSwapMb: noSwap,
+      intervalMs: 1000,
+      limitMb: 12288,
+      proactiveGcMb: 1920,
+      gcCooldownMs: 0,
+      forceGc: vi.fn(),
+      log,
+    });
+
+    vi.advanceTimersByTime(1000);
+
+    // The proactive GC still ran — this is the control proving the rung was reached
+    // at all, so the absent trim line below is a real absence and not a dead test.
+    expect(log).toHaveBeenCalledWith(
+      '[memory-watchdog] proactive GC (heap kept out of the stall zone)',
+      expect.objectContaining({ proactiveGcMb: 1920 }),
+    );
+    expect(log.mock.calls.some((c) => c[0] === TRIM_LINE)).toBe(false);
+    h.stop();
+  });
+
+  it('a throwing trim never crashes the watchdog, and the recycle backstop still works', () => {
+    withRss(2500);
+    const onTrip = vi.fn();
+    const h = startMemoryWatchdog({
+      readSwapMb: noSwap,
+      intervalMs: 1000,
+      tripsToRecycle: 1,
+      limitMb: 12288,
+      proactiveGcMb: 1920,
+      gcCooldownMs: 0,
+      forceGc: vi.fn(),
+      trimNativeHeap: () => {
+        throw new Error('binding unavailable');
+      },
+      onTrip,
+      log: vi.fn(),
+    });
+
+    expect(() => vi.advanceTimersByTime(1000)).not.toThrow();
+    // ...and the watchdog is still live afterwards: push it over the limit and the
+    // recycle path still fires, proving the throw did not kill the interval.
+    withRss(13000);
+    vi.advanceTimersByTime(1000);
+    expect(onTrip).toHaveBeenCalledTimes(1);
+    h.stop();
+  });
+
   // WI-38221: RSS alone says HOW MUCH a worker holds and never WHAT, which is the
   // gap that left the :3070 ~2GB/worker growth un-diagnosable for weeks.
   function withMemory(rssMb: number, heapUsedMb: number) {

@@ -205,6 +205,35 @@ export interface MemoryWatchdogOpts {
   suppressBornOverBudgetRecycle?: boolean;
   /** Injectable forced-GC seam (tests). Defaults to `global.gc` when `--expose-gc`. */
   forceGc?: (() => void) | null;
+  /**
+   * Injectable native-heap trim seam — `malloc_trim(0)` in practice (WI-2145733).
+   *
+   * WHY THIS EXISTS, and why a forced GC is not enough: V8's GC hands freed bytes
+   * back to the ALLOCATOR; glibc's allocator keeps them. Measured 2026-09-05 on a
+   * 2.65h-old :3170 worker (pid 1596606) at 1709 MB committed — 1066 MB of that was
+   * the glibc `[heap]` arena. A forced full GC freed 13 MB (3.8%); a `malloc_trim(0)`
+   * freed 627 MB (`[heap]` Rss 1066.0 -> 421.6), process healthy afterwards. So the
+   * proactive-GC rung can run, succeed, and barely move committed memory — after
+   * which the watchdog recycles and kills in-flight converse SSE streams (EI-11522).
+   *
+   * NOT reachable by tuning: `MALLOC_TRIM_THRESHOLD_` / `mallopt(M_TRIM_THRESHOLD)`
+   * govern only TOP-of-heap shrinking. In the same measurement `[heap]` Vsz stayed
+   * at 1088.8 MB while Rss fell — the brk top never moved, so the release was
+   * `MADV_DONTNEED` on INTERIOR free pages, which no threshold can reach.
+   *
+   * DEFAULT IS null — there is deliberately no in-process binding yet. Calling
+   * `malloc_trim` from Node needs a native (N-API) addon or an FFI library; as of
+   * 2026-09-05 this repo declares NEITHER (verified: `node-addon-api`,
+   * `node-gyp-build` and `bindings` appear in 0 of 71 tracked package.json files,
+   * and no `koffi`/`ffi-napi` is installed). Adding one is a real build-surface
+   * decision, so it is left to the caller: inject an implementation here and the
+   * watchdog starts trimming and reporting reclaim with no further change.
+   *
+   * Contract for an implementation: synchronous, must not throw (a throw is caught
+   * and swallowed — a trim must never crash the watchdog), and a no-op on any
+   * platform without glibc.
+   */
+  trimNativeHeap?: (() => void) | null;
   /** Structured log sink. Default console.warn. */
   log?: (line: string, detail: Record<string, number>) => void;
   /**
@@ -372,6 +401,11 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
   // any box (the production box happens to carry `--expose-gc` in a box-wide
   // ~/.profile, but a fresh deploy must not silently lose proactive GC).
   const forceGc = opts.forceGc !== undefined ? opts.forceGc : resolveForceGc();
+  // Native-heap trim seam (WI-2145733). Unlike `forceGc` there is no resolver to
+  // fall back to: no in-process `malloc_trim` binding exists in this repo yet, so
+  // the default is null (disabled) and the rung below is skipped entirely. This is
+  // the seam, not the binding — see `MemoryWatchdogOpts.trimNativeHeap`.
+  const trimNativeHeap = opts.trimNativeHeap ?? null;
   const log =
     opts.log ??
     ((line, detail) => {
@@ -489,6 +523,38 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
         // between a retention bug and a GC-tuning problem (WI-38221).
         ...heapBreakdown(),
       });
+      // NATIVE HEAP TRIM (WI-2145733) — deliberately AFTER the forced GC, so the
+      // bytes that GC just handed back to the allocator are included in the trim,
+      // and deliberately AFTER the log above rather than before the `sample()` that
+      // feeds it. That ordering is load-bearing: folding the trim into the existing
+      // record would silently re-base `committedMbAfter`/`reclaimedCommittedMb`
+      // from "after GC" to "after GC + trim", corrupting the ~1300-records-per-
+      // worker-per-14h time series the WI-38221 analysis reads, exactly as the
+      // comment above warns. The trim therefore reports its OWN reclaim, so GC
+      // reclaim and allocator reclaim stay separately attributable — the whole
+      // point being that the first was measured at 3.8% and the second at 627 MB.
+      if (trimNativeHeap) {
+        const committedBeforeTrim = post.committedMb;
+        try {
+          trimNativeHeap();
+        } catch {
+          /* a heap trim must never crash the watchdog (same rule as forceGc) */
+        }
+        const postTrim = sample();
+        log('[memory-watchdog] native heap trim (allocator arena returned to the OS)', {
+          committedMbBeforeTrim: committedBeforeTrim,
+          committedMbAfterTrim: postTrim.committedMb,
+          // The measurable this rung exists for. A near-zero value here is a REAL
+          // finding, not a broken trim: it means committed memory is genuinely live
+          // rather than parked in the allocator, which is the case where a recycle
+          // is the correct response rather than an avoidable one.
+          reclaimedCommittedMb: Math.max(0, committedBeforeTrim - postTrim.committedMb),
+          rssMbAfterTrim: postTrim.rssMb,
+          swapMbAfterTrim: postTrim.swapMb,
+          proactiveGcMb,
+          limitMb,
+        });
+      }
     }
     if (committed >= limitMb) {
       overCount += 1;
