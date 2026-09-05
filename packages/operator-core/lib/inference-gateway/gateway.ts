@@ -1418,6 +1418,13 @@ export interface GatewayStats {
   codex: { requests: number; upstream429: number; failovers: number; errors: number };
   /** Codex accounts that can serve right now, including ChatGPT-subscription CLI bridge accounts. */
   codexHealthyAccounts?: number;
+  /** Total configured Codex/OpenAI accounts, including temporarily parked accounts. */
+  codexTotalAccounts?: number;
+  /**
+   * Pool-wide Codex recovery horizon: 0 while an account can serve now, an epoch-ms instant
+   * when every account is out but one has a known return, or null when no return is known.
+   */
+  codexEarliestRecoveryAt?: number | null;
   /** Bee-FACING final 503s (2026-06-22 audit) — what the bee receives after the gateway exhausts internal
    *  retries. Makes egress-proxy leakage visible (it isn't a rate shed, so shedAllThrottled never counted it). */
   beeFacing503: { egressExhausted: number; tokenStall: number };
@@ -2085,7 +2092,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (typeof size === 'number' && Number.isFinite(size)) return Math.max(0, Math.floor(size));
     return accountPool?.entries?.().length ?? 0;
   };
-  const codexAccountCount =
+  const codexAccountCount = () =>
     accountPoolSize(deps.codexPool) + (codexCliPool ? accountPoolSize(codexCliPool) : codexCliAccounts().length);
   // P-010: Codex no longer derives a DIFFERENT starting window from its account
   // count. Account arithmetic described serviceability, not physical capacity, and
@@ -2093,7 +2100,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // Claude-default / Codex-special capacity logic" this item deletes. Both lanes
   // now start from the same seed and are separated only by the outcomes they
   // actually observe. `codexAccountCount` remains for routing/telemetry.
-  void codexAccountCount;
   // WI-2198: when ON, a codex-cli account STREAMS /v1/responses via the OAuth reverse-proxy.
   const codexOAuthProxyEnabled = deps.codexOAuthProxy === true;
   const codexOAuthNonStreamEnabled = deps.codexOAuthNonStream ?? DEFAULT_CODEX_OAUTH_NONSTREAM;
@@ -3725,6 +3731,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // concurrency governor leaves it undefined). The active/bound account is added from `snap` first
     // so it is present even when a test injects governors via deps.governorFor (registry bypassed).
     const now = Date.now();
+    const codexHealthyAccounts =
+      (deps.codexPool?.healthyCount ? deps.codexPool.healthyCount() : 0) +
+      (codexCliPool?.healthyCount ? codexCliPool.healthyCount() : codexCliAccounts().length);
+    const codexRecoveryHorizons = [deps.codexPool, codexCliPool]
+      .filter((candidate): candidate is AccountPool => !!candidate?.earliestAvailableAt)
+      .map((candidate) =>
+        candidate.earliestAvailableAt!({
+          now,
+          keyOf: (account) => accountHealthKey(account, now),
+          recoverAtOf: (account) => hintRecoveryAt(account.accountId, now),
+        }),
+      );
+    const codexEarliestRecoveryAt =
+      codexHealthyAccounts > 0 ? 0 : codexRecoveryHorizons.length > 0 ? Math.min(...codexRecoveryHorizons) : Infinity;
     const paceEntry = (st: typeof snap) => ({
       smoothRpm: st.smoothRpm === true,
       rpm: st.limits.rpm ?? null,
@@ -3844,9 +3864,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         failovers: codexFailovers,
         errors: codexUpstreamErrors,
       },
-      codexHealthyAccounts:
-        (deps.codexPool?.healthyCount ? deps.codexPool.healthyCount() : 0) +
-        (codexCliPool?.healthyCount ? codexCliPool.healthyCount() : codexCliAccounts().length),
+      codexHealthyAccounts,
+      codexTotalAccounts: codexAccountCount(),
+      codexEarliestRecoveryAt: Number.isFinite(codexEarliestRecoveryAt) ? codexEarliestRecoveryAt : null,
       beeFacing503: { egressExhausted: beeEgressExhausted, tokenStall: beeTokenStall },
       // EI-535 (gateway-healthz-stale-latch fix): `snap.unified` freezes at its last-observed value once
       // traffic goes idle — no new upstream response means recordHeaders never runs again to update it.

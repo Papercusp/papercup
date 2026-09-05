@@ -1591,6 +1591,34 @@ describe('proxyOpenAi — ChatGPT OAuth initial account selection (D-010 catcher
 });
 
 describe('proxyOpenAi — health and self-heal control-plane parity', () => {
+  it('surfaces the Codex pool denominator and earliest recovery horizon for launch preflight', () => {
+    const now = Date.UTC(2026, 8, 5, 20, 0, 0);
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const codexPool = createFailoverPool([codexAcct('cdx-1'), codexAcct('cdx-2')]);
+    codexPool.onExhausted('cdx-1', now + 60_000);
+    codexPool.onExhausted('cdx-2', now + 120_000);
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexPool,
+      selfHeal: { enabled: false },
+    });
+
+    expect(gw.stats()).toMatchObject({
+      codexHealthyAccounts: 0,
+      codexTotalAccounts: 2,
+      codexEarliestRecoveryAt: now + 60_000,
+    });
+
+    codexPool.readmit?.('cdx-1', { reason: 'admin' });
+    expect(gw.stats()).toMatchObject({
+      codexHealthyAccounts: 1,
+      codexTotalAccounts: 2,
+      codexEarliestRecoveryAt: 0,
+    });
+  });
+
   it('surfaces Codex admission/health in live config, includes ChatGPT egress, and readmits a paused Codex account', async () => {
     openaiUpstream = await startUpstream(ok);
     const codexPool = createFailoverPool([

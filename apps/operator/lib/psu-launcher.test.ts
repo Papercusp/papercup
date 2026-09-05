@@ -64,6 +64,7 @@ import {
   claudeCredExpiresAt,
   gatewayPinEnv,
   gatewayAutoEnv,
+  codexAutoPoolWarning,
   accountRoutingMode,
   codexGatewayConfigPatch,
   accountPinnable,
@@ -4330,6 +4331,73 @@ describe("psu-launcher arg parsing", () => {
     // Anything else is a specific pool account id → pin.
     for (const v of ["aviynw6", "codex-main", "team-pool-3"])
       expect(accountRoutingMode(v)).toBe("pin");
+  });
+
+  it("codexAutoPoolWarning: warns with the live denominator and recovery horizon only for an all-walled Codex auto route", () => {
+    const now = Date.UTC(2026, 8, 5, 20, 0, 0);
+    const warning = codexAutoPoolWarning({
+      agent: "codex",
+      model: "gpt-5.6-sol",
+      account: "auto",
+      stats: {
+        codexHealthyAccounts: 0,
+        codexTotalAccounts: 7,
+        codexEarliestRecoveryAt: now + 3_600_000,
+      },
+      now,
+    });
+    expect(warning).toContain("0 of 7 ChatGPT accounts serviceable");
+    expect(warning).toContain(
+      "earliest known recovery 2026-09-05T21:00:00.000Z",
+    );
+    expect(warning).toContain("first model call will fail fast with 429");
+
+    expect(
+      codexAutoPoolWarning({
+        agent: "codex",
+        model: "gpt-5.6-sol",
+        account: "auto",
+        stats: {
+          codexHealthyAccounts: 1,
+          codexTotalAccounts: 7,
+          codexEarliestRecoveryAt: 0,
+        },
+        now,
+      }),
+    ).toBeNull();
+    expect(
+      codexAutoPoolWarning({
+        agent: "claude",
+        model: "claude-fable-5",
+        account: "auto",
+        stats: { codexHealthyAccounts: 0, codexTotalAccounts: 7 },
+        now,
+      }),
+    ).toBeNull();
+    expect(
+      codexAutoPoolWarning({
+        agent: "codex",
+        model: "gpt-5.6-sol",
+        account: "default",
+        stats: { codexHealthyAccounts: 0, codexTotalAccounts: 7 },
+        now,
+      }),
+    ).toBeNull();
+  });
+
+  it("codexAutoPoolWarning: recognizes an OMP model routed through the Codex pool and handles an unknown horizon honestly", () => {
+    const warning = codexAutoPoolWarning({
+      agent: "omp",
+      model: "openai-codex/gpt-5.6-terra:xhigh",
+      account: { mode: "auto", provider: "codex" },
+      stats: {
+        codexHealthyAccounts: 0,
+        codexTotalAccounts: 2,
+        codexEarliestRecoveryAt: null,
+      },
+    });
+    expect(warning).toContain("0 of 2 ChatGPT accounts serviceable");
+    expect(warning).toContain("earliest recovery unknown");
   });
 
   it("gatewayAutoEnv: claude routes through the gateway with NO account pin header (let it auto-select)", () => {
