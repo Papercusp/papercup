@@ -30561,7 +30561,7 @@
           "POST"
         ]
       },
-      "description": "Write or clear one OR many work-item checkpoints. Single: `{ id, checkpoint? }`; many: `items:[{ id, checkpoint?, harness? }]`. Checkpoints preserve successor continuity across task boundaries; replace-on-write by default, `append:true` joins prior text. Writes verify-read and block suspicious shrink; peer-held/terminal-item writes are refused while explicit clears remain allowed. `rowsMode:\"merge\"` adds check rows while replacing the body; `\"replace\"` retires rows. Full body+rows replacement requires `append:false, rowsMode:\"replace\", confirmShrink:true, confirmRetire:true`.",
+      "description": "Write or clear work-item checkpoints. Single: `{ id, checkpoint? }`; many: `items:[{ id, checkpoint?, harness? }]`. Checkpoints preserve successor continuity across task boundaries; replace-on-write by default, `append:true` joins prior text. Writes verify-read; a big shrink keeps prior under your note; peer-held/terminal-item writes are refused while explicit clears remain allowed. `rowsMode:\"merge\"` adds check rows while replacing the body; `\"replace\"` retires rows. Full body+rows replacement requires `append:false, rowsMode:\"replace\", confirmShrink:true, confirmRetire:true`.",
       "capabilities": [
         "work_items:write"
       ],
