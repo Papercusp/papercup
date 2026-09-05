@@ -76,6 +76,10 @@ import { RUNNER_PROCESS_BOOTED_AT_MS } from "@papercusp/operator-core/lib/releas
 import { assessFrozenLineagePromotion } from "@papercusp/operator-core/lib/release/frozen-lineage-promotion";
 import { frozenLineageRef } from "@papercusp/operator-core/lib/release/repair-head-admission";
 import {
+  describeRetriageTarget,
+  resolveRetriageTarget,
+} from "@papercusp/operator-core/lib/release/retriage-target";
+import {
   GREEN_CHECKPOINT_SIGKILL_GRACE_MS,
   GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
 } from "@papercusp/operator-core/lib/release/green-checkpoint-schedule";
@@ -11793,7 +11797,29 @@ async function runGreenCheckpointInner(
       "delivering",
     );
     deps.reportProgress?.("phase:delivering");
-    const tip = (await deps.resolveTip?.().catch(() => null)) ?? null;
+    // P-024 (D-003 / D-011, WI-2144110): the sha this rescue re-runs at — and REFIRES on when the
+    // red proves stale — is resolved through the frozen lineage whenever a repair queue row exists
+    // (in this run's snapshot or persisted since the suite started), never through the integration
+    // branch. Measured 2026-09-04 12:23:16Z: with the queue frozen at 97c0b102 @ a93a1cab this block
+    // refired at 88b78003, a fresh cut at tip taken while the freeze was held — the fourth
+    // un-freezing path, same class as the deleted age/stall/fossil retirements. The resolver is
+    // pure and pinned by frozen-lineage-never-reads-tip.test.ts; `deps.resolveTip` reaches this
+    // block ONLY as the resolver's no-row input.
+    const resolveRetriageRef = () =>
+      resolveRetriageTarget({
+        repairQueue,
+        ...(deps.readFrozenRepairQueue
+          ? { readFreshQueue: () => deps.readFrozenRepairQueue!() }
+          : {}),
+        ...(deps.resolveTip
+          ? { resolveIntegrationTip: () => deps.resolveTip!() }
+          : {}),
+        isLineageDescendant: (base, ref) =>
+          isAncestor(cfg.integrationRoot, base, ref),
+      });
+    const retriageTarget = await resolveRetriageRef();
+    deps.log(describeRetriageTarget(retriageTarget));
+    const tip = retriageTarget.ref;
     let retriage: (RedTriage & { tip: string | null }) | undefined;
     // WI-7290: hoisted out of the rescue block below so the skip-reason synthesis after it
     // can name WHICH non-test gates (if any) were in play.
@@ -11865,8 +11891,10 @@ async function runGreenCheckpointInner(
         // classified, making even a successful tip re-run stale again. Re-resolve HEAD only after
         // BOTH rescue arms finish; if it moved (or the read failed), the evidence is inconclusive:
         // hold the gate and make the next run re-verify instead of auto-refiring on an older SHA.
-        const currentTipAfterRetriage =
-          (await deps.resolveTip?.().catch(() => null)) ?? null;
+        // P-024: re-resolved through the SAME lineage-aware resolver — while a queue row exists
+        // "the tip moved" means "an admission advanced repairHead during the re-run", and the
+        // integration branch moving is irrelevant to (and never read by) a frozen re-triage.
+        const currentTipAfterRetriage = (await resolveRetriageRef()).ref;
         // A half that could not EXECUTE (null) leaves the red unmeasured — the same fail-soft
         // "treating red as real" both arms already had, now applied to the composed pair. A half that
         // was not NEEDED (undefined) contributes no failure.
