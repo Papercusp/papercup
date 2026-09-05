@@ -567,9 +567,18 @@ export default defineTool({
     workItem: z
       .string()
       .max(120)
-      .optional()
+      // tool-contract-repair-2026-09-05 P-005 (EI-20248542835326817): `.nullish()`, not
+      // `.optional()`, for exactly the reason loop:checkpoint's own `workItem` was widened
+      // (EI-21719647580242620) — these two tools share a payload, and an explicit `null` is
+      // the shape a shared payload takes for a slot with no value, so `.optional()` refused
+      // the case the field exists to serve. arm.ts was the unfixed half of that pair: a
+      // fleet wake-recovery carry that armed with `workItem: null` was rejected outright.
+      // The readers here already coalesce (`args.workItem?.trim()`), and this schema has no
+      // `.refine()` counting `!== undefined` on it, so widening the schema IS sufficient —
+      // unlike checkpoint.ts, where two non-coalescing readers had to be repaired with it.
+      .nullish()
       .describe(
-        "The WI-/EI-/F- work-item this loop is DRIVING. The loop attempts to auto-CLAIM it for the loop owner at arm time (WI-2429), subject to the same fleet-scope admission as work_items:claim; an out-of-scope binding is refused while the loop itself remains armed. When admitted, the item is HELD from wake 1 — the per-item work_items:checkpoint death-resilience net engages and a successor/reclaimer inherits it if the session dies. Safe: the claim never steals a live peer's item (a conflict is reported, not forced). If omitted on a COLD loop, a single WI-/EI-/F- id mentioned in `goal` is auto-detected and attempted the same way.",
+        "The WI-/EI-/F- work-item this loop is DRIVING. Explicit null is treated as omission. The loop attempts to auto-CLAIM it for the loop owner at arm time (WI-2429), subject to the same fleet-scope admission as work_items:claim; an out-of-scope binding is refused while the loop itself remains armed. When admitted, the item is HELD from wake 1 — the per-item work_items:checkpoint death-resilience net engages and a successor/reclaimer inherits it if the session dies. Safe: the claim never steals a live peer's item (a conflict is reported, not forced). If omitted on a COLD loop, a single WI-/EI-/F- id mentioned in `goal` is auto-detected and attempted the same way.",
       ),
     carry: z
       .enum(['warm', 'cold'])

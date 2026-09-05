@@ -613,6 +613,39 @@ const CARRY_CLAIM_ALIASES = ['label', 'name', 'text', 'body', 'summary', 'descri
 const CARRY_ID_ALIASES = ['key'] as const;
 
 /**
+ * Claim aliases admitted ONLY on a row that carries no claim text of its own.
+ *
+ * `value` earns a place here (tool-contract-repair-2026-09-05 P-005) on two independent
+ * filings, one per surface: EI-21270302136437045 on `loop:checkpoint` ("the declared
+ * checks schema rejects {key,value}") and an unconditional-key rejection on
+ * `work_items:checkpoint` ("checks.0 and checks.1 rejected unrecognized key value"). The
+ * caller's shape is the key/value pair `{key, value}` — `key` is already an id alias, so
+ * `value` is the only reason the whole write still fails.
+ *
+ * It is CONDITIONAL, not a seventh entry in CARRY_CLAIM_ALIASES, because it is not a
+ * synonym. When a row supplies the canonical `claim` alongside a descriptive alias, the
+ * resolver keeps the claim and DELETES the alias — correct for `label`/`text`/`summary`,
+ * where the two say the same thing, and destructive for `value`, where `{claim, value}`
+ * says two different things and `value` may well be the evidence. Admitting it only on a
+ * claimless row makes the repair provably lossless: the `{key, value}` shape both filings
+ * describe is accepted, and any row where `value` could mean something else still fails
+ * loudly at the strict schema rather than having its data silently dropped. This mirrors
+ * the existing `claimlessWithIdentity` fallback — a repair scoped to the one shape where
+ * its meaning is unambiguous.
+ */
+const CARRY_CONDITIONAL_CLAIM_ALIASES = ['value'] as const;
+
+/**
+ * Append any conditional claim alias present on a row that has no claim text at all.
+ * Shared by the checks and walls coercions so the two cannot drift (they already did once
+ * — see coerceWallRowShape's header).
+ */
+function withConditionalClaimAliases(r: Record<string, unknown>, claimAliases: string[]): string[] {
+  if (claimAliases.length || 'claim' in r) return claimAliases;
+  return [...claimAliases, ...CARRY_CONDITIONAL_CLAIM_ALIASES.filter((k) => k in r)];
+}
+
+/**
  * Repair one incoming `checks`/`walls` row IN THE ARGUMENT SHAPE, before validation.
  *
  * Handles the common wrong shapes agents reach for: `{label/name/text/body/summary,
@@ -664,7 +697,7 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
   const hasKind = isChecksRow && 'kind' in r;
   const hasCommand = isChecksRow && 'command' in r;
   const hasResult = isChecksRow && 'result' in r;
-  const claimAliases = CARRY_CLAIM_ALIASES.filter((k) => k in r);
+  const claimAliases = withConditionalClaimAliases(r, [...CARRY_CLAIM_ALIASES.filter((k) => k in r)]);
   const idAliases = CARRY_ID_ALIASES.filter((k) => k in r);
   const hasStatus = 'status' in r;
   const hasEvidence = 'evidence' in r;
@@ -914,7 +947,7 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
 export function coerceWallRowShape(row: unknown, path: string, repairs: CarryArgRepair[]): unknown {
   if (typeof row === 'string' || !row || typeof row !== 'object' || Array.isArray(row)) return row;
   const r = { ...(row as Record<string, unknown>) };
-  const claimAliases = CARRY_CLAIM_ALIASES.filter((k) => k in r);
+  const claimAliases = withConditionalClaimAliases(r, [...CARRY_CLAIM_ALIASES.filter((k) => k in r)]);
   const idAliases = CARRY_ID_ALIASES.filter((k) => k in r);
   if (!claimAliases.length && !idAliases.length) return row;
 

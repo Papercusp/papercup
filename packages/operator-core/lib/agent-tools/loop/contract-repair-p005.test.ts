@@ -12,7 +12,8 @@
  * text search, and the miss looks exactly like a clean result).
  */
 import { describe, expect, it } from 'vitest';
-import { coerceWallRowShape } from '../../carry-note';
+import { z } from 'zod';
+import { coerceCarryRowShape, coerceWallRowShape } from '../../carry-note';
 import type { CarryArgRepair } from '../../carry-note';
 import loopArm from './arm';
 import loopCheckpoint from './checkpoint';
@@ -168,6 +169,151 @@ describe('P-005 loop family — argument contract repairs', () => {
       expect(coerceWallRowShape('a compact claim', 'walls[0]', repairs)).toBe('a compact claim');
       expect(coerceWallRowShape(null, 'walls[0]', repairs)).toBe(null);
       expect(repairs).toHaveLength(0);
+    });
+  });
+
+  describe('loop:arm accepts `workItem: null` — the unfixed half of a shared payload (EI-20248542835326817)', () => {
+    // loop:arm and loop:checkpoint share a carry payload, and an explicit null is the
+    // shape that payload takes for a slot with no value. checkpoint.ts was widened to
+    // `.nullish()` for that reason (EI-21719647580242620); arm.ts was left `.optional()`,
+    // so a fleet wake-recovery carry that armed with `workItem: null` was refused and the
+    // loop never armed at all.
+    it('accepts an explicit null workItem', () => {
+      const parsed = parseArgs(loopArm, { intervalSec: 120, goal: 'drive the lane', workItem: null });
+      expect(parsed.success).toBe(true);
+    });
+
+    it('still accepts the canonical string form', () => {
+      const parsed = parseArgs(loopArm, { intervalSec: 120, goal: 'drive the lane', workItem: 'WI-2145859' });
+      expect(parsed.success).toBe(true);
+      expect((parsed.data as { workItem?: string }).workItem).toBe('WI-2145859');
+    });
+
+    it('NEGATIVE CONTROL: a non-string, non-null workItem is still refused', () => {
+      // Without this the test above passes just as well against a field widened all the
+      // way to `z.any()`, which would be a vacuous repair rather than the narrow one made.
+      expect(parseArgs(loopArm, { intervalSec: 120, goal: 'g', workItem: 42 }).success).toBe(false);
+    });
+
+    it('loop:checkpoint (the other half of the pair) also takes null', () => {
+      // Pins the PAIR, not just this file: if either half regresses to `.optional()` the
+      // shared-payload case breaks again on whichever tool the carry happens to call.
+      // The null must ride ALONGSIDE a real write — a bare `{ workItem: null }` is refused
+      // by the object refine that counts writes, which is the OTHER half of the same
+      // EI-21719647580242620 repair (a null must not count as a write). Asserting the bare
+      // form here would pin that repair backwards.
+      expect(parseArgs(loopCheckpoint, { workItem: null, did: 'one unit of work' }).success).toBe(true);
+    });
+
+    it('and a null STILL does not count as a write on either tool', () => {
+      expect(parseArgs(loopCheckpoint, { workItem: null }).success).toBe(false);
+    });
+  });
+
+  describe('`value` is a CONDITIONAL claim alias — the {key,value} row shape (EI-21270302136437045)', () => {
+    // Two independent filings, one per surface: loop:checkpoint ("the declared checks
+    // schema rejects {key,value}") and work_items:checkpoint ("checks.0 and checks.1
+    // rejected unrecognized key value"). `key` was already an id alias, so `value` was
+    // the only remaining reason the whole write failed.
+    it('maps value to claim on a claimless {key,value} row', () => {
+      const repairs: CarryArgRepair[] = [];
+      const out = coerceCarryRowShape({ key: 'suite', value: 'green on the candidate' }, 'checks[0]', repairs);
+      expect(out).toMatchObject({ id: 'suite', claim: 'green on the candidate' });
+      expect(repairs.map((r) => r.field)).toContain('checks[0].value');
+    });
+
+    it('applies on a walls row too, where the shape is identical', () => {
+      const repairs: CarryArgRepair[] = [];
+      const out = coerceWallRowShape({ key: 'owner-signoff', value: 'awaiting the owner call' }, 'walls[0]', repairs);
+      expect(out).toMatchObject({ id: 'owner-signoff', claim: 'awaiting the owner call' });
+    });
+
+    it('THE CONDITION — a row that already has a claim keeps `value` undeclared, so it fails LOUDLY', () => {
+      // This is the whole reason `value` is not a seventh entry in CARRY_CLAIM_ALIASES.
+      // The resolver DELETES an alias when a canonical claim is present — right for
+      // `label`/`text`/`summary`, which say the same thing, and destructive for `value`,
+      // which on such a row plainly says something else (often the evidence). Leaving it
+      // undeclared means the caller is told, instead of having the data silently dropped.
+      const repairs: CarryArgRepair[] = [];
+      const out = coerceCarryRowShape({ claim: 'the suite is green', value: 'exit 0' }, 'checks[0]', repairs);
+      expect((out as { claim: string }).claim).toBe('the suite is green');
+      expect((out as { value?: string }).value).toBe('exit 0');
+      // Undeclared on the strict row schema ⇒ the write is refused rather than repaired.
+      expect(parseArgs(loopCheckpoint, { checks: [{ claim: 'the suite is green', value: 'exit 0' }] }).success).toBe(
+        false,
+      );
+    });
+
+    it('THE CONDITION, other direction — a real claim alias also suppresses `value`', () => {
+      const repairs: CarryArgRepair[] = [];
+      const out = coerceCarryRowShape({ summary: 'the real claim', value: 'exit 0' }, 'checks[0]', repairs);
+      expect((out as { claim: string }).claim).toBe('the real claim');
+      expect((out as { value?: string }).value).toBe('exit 0');
+    });
+
+    it('the repaired {key,value} row passes the real loop:checkpoint schema end to end', () => {
+      // The coercion runs inside loop:checkpoint's own preprocessor, so this is the
+      // assertion that the filed call now succeeds — not just that a helper returns a
+      // tidy object.
+      const parsed = parseArgs(loopCheckpoint, { checks: [{ key: 'suite', value: 'green on the candidate' }] });
+      expect(parsed.success).toBe(true);
+    });
+
+    it('NEGATIVE CONTROL: a genuinely unmappable row is still refused', () => {
+      expect(parseArgs(loopCheckpoint, { checks: [{ valu: 'typo', whatever: 1 }] }).success).toBe(false);
+    });
+  });
+
+  describe('every repaired schema still RENDERS to JSON Schema', () => {
+    // The blast radius that makes this worth its own guard: `z.toJSONSchema(def.args)`
+    // runs at defineTool registration with NO try/catch (limits.ts, work_items/comment.ts),
+    // so a single unrepresentable schema does not break one tool — it crashes tools/list
+    // for the WHOLE catalog. Widening a field is exactly the edit that can do it, and the
+    // damage lands nowhere near the file that caused it.
+    const tools: Array<[string, { args: unknown }]> = [
+      ['loop:arm', loopArm],
+      ['loop:checkpoint', loopCheckpoint],
+      ['loop:status', loopStatus],
+      ['loop:end', loopEnd],
+    ];
+
+    for (const [name, tool] of tools) {
+      it(`${name} renders without throwing`, () => {
+        expect(() => z.toJSONSchema(tool.args as Parameters<typeof z.toJSONSchema>[0])).not.toThrow();
+      });
+    }
+
+    it('the widened loop:arm workItem is PUBLISHED as nullable, not merely tolerated server-side', () => {
+      // A client validates the published schema before the server ever sees the call, so a
+      // repair that lives only in the parser still reports invalid_args to the caller —
+      // the EI-21575304064818009 precedent that put `description`/`key` in the walls row.
+      const rendered = z.toJSONSchema(loopArm.args as Parameters<typeof z.toJSONSchema>[0]) as {
+        properties?: { workItem?: { anyOf?: Array<{ type?: string }> } };
+        required?: string[];
+      };
+      const workItem = rendered.properties?.workItem;
+      expect(workItem).toBeDefined();
+      // The assertion has to be this specific to mean anything: `.optional()` renders a
+      // bare `{ type: 'string' }` and is ALSO absent from `required`, so a
+      // presence-and-not-required check passes just as well against the unrepaired field.
+      // Only the published `null` branch distinguishes the two, and it is what a
+      // client-side validator reads before the server is ever reached.
+      expect(workItem?.anyOf?.map((b) => b.type)).toEqual(expect.arrayContaining(['string', 'null']));
+      // Never required — a null must be as acceptable as an omission.
+      expect(rendered.required ?? []).not.toContain('workItem');
+    });
+
+    it('CONTROL: the same assertion FAILS against a deliberately unrepaired `.optional()` field', () => {
+      // Falsifiability, proven without mutating the shared tree — the tier the repo's
+      // mutation-probe guidance prescribes for a subject you `import` rather than read
+      // from a path. Measured: `.optional()` renders `{type:'string',maxLength:120}` with
+      // NO `anyOf` at all, while `.nullish()` renders the two-branch union asserted above.
+      // If this control ever passes, the assertion above has stopped discriminating and is
+      // silently vacuous — which is the failure mode a guard cannot report about itself.
+      const unrepaired = z.toJSONSchema(z.object({ workItem: z.string().max(120).optional() })) as {
+        properties?: { workItem?: { anyOf?: Array<{ type?: string }> } };
+      };
+      expect(unrepaired.properties?.workItem?.anyOf).toBeUndefined();
     });
   });
 });
