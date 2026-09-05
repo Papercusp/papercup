@@ -2571,6 +2571,33 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(writtenChecks).not.toContain('one row past the cap');
   });
 
+  // EI-22377179869127416 — the harm the row-cap refusal actually caused. At a full cap an
+  // ordinary additive checkpoint was refused ENTIRELY, so the stored note kept the PREVIOUS
+  // turn's narrative and a cold wake resumed from work that was already finished. The row
+  // cap and the narrative are separate commitments; only the rows were ever in conflict.
+  it('replaces a stale narrative even when the row write is refused, so a cold wake resumes from this turn', async () => {
+    getLoopCarryNote.mockResolvedValue(
+      buildPrior(Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({ claim: `carried ${i + 1}` }))),
+    );
+
+    const b = body(
+      await call({
+        did: 'the turn that must not be lost',
+        checks: [{ claim: 'one row past the cap' }],
+        rowsMode: 'merge',
+      }),
+    );
+
+    expect(b.ok).toBe(false);
+    expect(b.narrativePersisted).toBe(true);
+
+    const written = setLoopCarryNote.mock.calls[0]?.[1] as string;
+    // The successor reads THIS turn...
+    expect(written).toContain('the turn that must not be lost');
+    // ...and not the stale body it would have been left with before the fix.
+    expect(written).not.toContain('prior body');
+  });
+
   it('normalizes a legacy over-cap carried check set once instead of refusing every additive write', async () => {
     const verifiedRows = Array.from({ length: 8 }, (_, i) => ({
       claim: `VERIFIED-${String(i + 1).padStart(2, '0')} holds`,
