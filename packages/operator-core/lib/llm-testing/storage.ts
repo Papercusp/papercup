@@ -82,7 +82,7 @@ async function persistSingleRun(
       cost_usd, cap_breaches,
       scores_json, findings_count,
       transcript_raw_zstd, transcript_norm_json,
-      telemetry_json, asserts_json, judge_json
+      telemetry_json, asserts_json, judge_json, metadata_json
     ) VALUES (
       ${s.runId}, ${s.scenarioId}, ${s.scenarioVersion}, 'operator', ${scenarioHash},
       ${s.identityHash}, ${matrixGroupId ?? null}, ${s.matrixIndex ?? null},
@@ -96,7 +96,8 @@ async function persistSingleRun(
       ${transcriptRawBytes}, ${sql.json(normalizeTurns(s.turns, r.simHistory) as unknown as JSONValueCompat)},
       ${sql.json({ toolInvocations: s.toolInvocations, continueChainRows: s.continueChainRows, ...(s.variantId ? { variantId: s.variantId } : {}) } as unknown as JSONValueCompat)},
       ${sql.json({ asserts: 'see-scenario', violations: r.violations } as unknown as JSONValueCompat)},
-      ${sql.json({ scores: r.judge.scores, findings: r.judge.findings, notes: r.judge.notes, judgeOverruledAssert: r.judge.judgeOverruledAssert, costUsd: r.judge.costUsd } as unknown as JSONValueCompat)}
+      ${sql.json({ scores: r.judge.scores, findings: r.judge.findings, notes: r.judge.notes, judgeOverruledAssert: r.judge.judgeOverruledAssert, costUsd: r.judge.costUsd } as unknown as JSONValueCompat)},
+      ${sql.json({ ...(s.timeout ? { timeout: s.timeout } : {}) } as unknown as JSONValueCompat)}
     )
   `;
 

@@ -56,6 +56,7 @@ function makeReport() {
     personaTraits: { tone: 'curt' }, workspaceMode: 'isolated', transportMode: 'sse',
     startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T00:01:00Z',
     totalCostUsd: 1.25, capBreaches: ['cap-x'],
+    timeout: { cause: 'wallclock_deadline', stage: 'sut_session_send', turnIndex: 0 },
     turns: [firstTurn, secondTurn],
     toolInvocations: [], continueChainRows: [],
   };
@@ -133,8 +134,8 @@ afterAll(async () => {
 describe('persistRunReport (PG)', () => {
   it('inserts the run row with the cross-source findings_count and round-trippable transcript', async () => {
     await persistRunReport(makeReport(), 'rubric-v3', 'scenhash');
-    const runs = await rootSql<{ status: string; findings_count: Record<string, number>; cost_usd: string; cap_breaches: string[]; rubric_version: string; transcript_raw_zstd: Buffer; transcript_norm_json: unknown }[]>`
-      SELECT status, findings_count, cost_usd, cap_breaches, rubric_version, transcript_raw_zstd, transcript_norm_json
+    const runs = await rootSql<{ status: string; findings_count: Record<string, number>; cost_usd: string; cap_breaches: string[]; rubric_version: string; transcript_raw_zstd: Buffer; transcript_norm_json: unknown; metadata_json: unknown }[]>`
+      SELECT status, findings_count, cost_usd, cap_breaches, rubric_version, transcript_raw_zstd, transcript_norm_json, metadata_json
         FROM harness_shared.llm_test_runs WHERE id = ${RUN_ID}`;
     expect(runs).toHaveLength(1);
     const r = runs[0]!;
@@ -143,6 +144,13 @@ describe('persistRunReport (PG)', () => {
     expect(Number(r.cost_usd)).toBeCloseTo(1.25, 6);
     expect(r.cap_breaches).toEqual(['cap-x']);
     expect(r.rubric_version).toBe('rubric-v3');
+    expect(r.metadata_json).toEqual({
+      timeout: {
+        cause: 'wallclock_deadline',
+        stage: 'sut_session_send',
+        turnIndex: 0,
+      },
+    });
     // transcript compressed on write → decompressTranscript restores the flattened rawSseTape.
     expect(decompressTranscript(r.transcript_raw_zstd)).toEqual([{ e: 'a' }, { e: 'b' }, { e: 'c' }]);
     expect(r.transcript_norm_json).toEqual([
