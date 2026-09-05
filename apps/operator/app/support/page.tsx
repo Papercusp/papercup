@@ -1,5 +1,7 @@
 'use client';
 
+// Carried by the surface (like dev/dev.css): every host that mounts Support natively gets it.
+import './support.css';
 import RouteLink from '../_components/RouteLink';
 import * as Collapsible from '@radix-ui/react-collapsible';
 
