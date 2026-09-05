@@ -3405,6 +3405,30 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(result.data?.completion).not.toHaveProperty('settlementManifest');
     });
 
+    it('accepts the server-stamped assumptions object on a read→retry (EI-22404076241784390)', () => {
+      const result = (
+        complete.args as {
+          safeParse: (value: unknown) => { success: boolean; data?: any; error?: unknown };
+        }
+      ).safeParse({
+        id: 'EI-22404076241784390',
+        state: 'done',
+        assumptions: {
+          declared: 'none',
+          resolvedAt: '2026-09-05T21:00:00.000Z',
+        },
+        completion: {
+          workItem: 'EI-22404076241784390',
+          summary: 'retrying the recorded completion',
+          filesChanged: [],
+          filesDeleted: [],
+        },
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data?.assumptions).toBe('none');
+    });
+
     it('splits a scalar filesChanged path list on comma, semicolon, or newline', () => {
       const out = coerceCompletionShape({
         summary: 's',
